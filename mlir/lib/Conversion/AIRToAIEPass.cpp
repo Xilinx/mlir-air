@@ -2681,7 +2681,7 @@ public:
 
     int64_t len = getMemcpySizesAsInt(memref, sizes);
     int64_t offset =
-        get1DOffset(offsets, strides, getElementSizeInBytes(memref.getType()));
+        get1DOffset(offsets, strides);
 
     Value length =
         b.create<arith::ConstantIndexOp>(memcpyOp.getLoc(), len)->getResult(0);
@@ -2691,8 +2691,7 @@ public:
                              lockAqValue);
 
     std::vector<AIE::BDDimLayoutAttr> dims = getWrapsAndStrides(
-        sizes, strides, getElementSizeInBytes(memref.getType()),
-        ndcpy->getContext());
+        sizes, strides, ndcpy->getContext());
     auto wraps_and_strides =
         AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
     bool useDefaultDataAccessPattern =

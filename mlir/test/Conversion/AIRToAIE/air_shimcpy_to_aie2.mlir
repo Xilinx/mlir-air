@@ -541,7 +541,7 @@ func.func @func7(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb2, repeat_count = 1)
 // CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:   aie.dma_bd({{.*}} : memref<64x256xi32, 1>, 32768, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<64x256xi32, 1>, 8192, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
 // CHECK:   aie.use_lock({{.*}}, Release, 1)
 // CHECK:   aie.next_bd ^bb1
 // CHECK: ^bb2:  // pred: ^bb0
@@ -586,7 +586,7 @@ func.func @func8(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 0, 32)
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2, repeat_count = 1)
-// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 128, 32)
+// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 32, 32)
 // CHECK: @func9
 #map = affine_map<()[s0] -> (s0 * 32)>
 air.channel @channel_1 [2, 1]
@@ -708,15 +708,15 @@ func.func @func10(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // CHECK: aie.device(xcve2802)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 16384, 8192, [<size = 8, stride = 16>, <size = 32, stride = 128>, <size = 16, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 8192, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
 // CHECK: %[[tileDMA_0_3:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 16384, 8192, [<size = 8, stride = 16>, <size = 32, stride = 128>, <size = 16, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 8192, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
-// CHECK:   memref<32x256xbf16, 1>, 0, 65536, [<size = 8, stride = 16>, <size = 32, stride = 128>, <size = 128, stride = 1>])
+// CHECK:   memref<32x256xbf16, 1>, 0, 8192, [<size = 1, stride = 32>, <size = 32, stride = 256>, <size = 256, stride = 1>])
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2, repeat_count = 1)
-// CHECK:   memref<32x256xbf16, 1>, 0, 65536, [<size = 8, stride = 16>, <size = 32, stride = 128>, <size = 128, stride = 1>])
+// CHECK:   memref<32x256xbf16, 1>, 0, 8192, [<size = 1, stride = 32>, <size = 32, stride = 256>, <size = 256, stride = 1>])
 // CHECK: @func11
 #map = affine_map<()[s0] -> (s0 * 32)>
 air.channel @channel_1 [2, 1]
@@ -735,7 +735,7 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
         air.execute_terminator %alloc : memref<32x256xbf16, 1>
       }
       %2 = scf.parallel (%arg4) = (%c0) to (%c2_0) step (%c1) init (%async_token) -> !air.async.token {
-        %4 = air.channel.put async [%async_token]  @channel_1[%arg4, %c0] (%results[%c0, %c0, %c0] [%c8, %c32, %c256] [%c32, %c256, %c1]) {id = 4 : i32} : (memref<32x256xbf16, 1>)
+        %4 = air.channel.put async [%async_token]  @channel_1[%arg4, %c0] (%results[%c0, %c0, %c0] [%c1, %c32, %c256] [%c32, %c256, %c1]) {id = 4 : i32} : (memref<32x256xbf16, 1>)
         scf.reduce(%4 : !air.async.token) {
         ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
           %5 = air.wait_all async [%arg5, %arg6] 
