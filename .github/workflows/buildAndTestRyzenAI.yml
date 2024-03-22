@@ -68,7 +68,7 @@ jobs:
           mkdir build
           pushd build
 
-          export PATH=/opt/Xilinx/Vitis/2023.2/bin:/opt/Xilinx/Vitis/2023.2/aietools/bin:$PATH
+          export PATH=$PATH:/opt/Xilinx/Vitis/2023.2/bin:/opt/Xilinx/Vitis/2023.2/aietools/bin
           cmake .. \
             -GNinja \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -103,7 +103,7 @@ jobs:
           mkdir build_assert
           pushd build_assert
 
-          export PATH=/opt/Xilinx/Vitis/2023.2/bin:/opt/Xilinx/Vitis/2023.2/aietools/bin:$PATH
+          export PATH=$PATH:/opt/Xilinx/Vitis/2023.2/bin:/opt/Xilinx/Vitis/2023.2/aietools/bin
           cmake .. \
             -GNinja \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -131,6 +131,7 @@ jobs:
           ninja check-air-cpp
           ninja check-air-mlir
           ninja check-air-python
+          env
           ninja check-air-e2e
           popd
           rm -rf build_assert
