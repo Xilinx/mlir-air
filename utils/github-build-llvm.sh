@@ -20,6 +20,9 @@ mkdir -p llvm/$INSTALL_DIR
 pushd llvm/$BUILD_DIR
 cmake ../llvm \
   -GNinja \
+  -DCMAKE_C_COMPILER=clang-15 \
+	-DCMAKE_CXX_COMPILER=clang++-15 \
+	-DCMAKE_ASM_COMPILER=clang-15 \
   -DLLVM_BUILD_EXAMPLES=OFF \
   -DLLVM_TARGETS_TO_BUILD="host" \
   -DCMAKE_INSTALL_PREFIX=../$INSTALL_DIR \
@@ -31,9 +34,7 @@ cmake ../llvm \
   -DLLVM_CCACHE_BUILD=ON \
   -DLLVM_ENABLE_LLD=ON \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
-  -DCMAKE_C_VISIBILITY_PRESET=hidden \
-  -DCMAKE_CXX_VISIBILITY_PRESET=hidden \
+  -DLLVM_ENABLE_RTTI=ON \
   -DLLVM_ENABLE_ASSERTIONS=ON
 
 cmake --build . --target install -- -j$(nproc)
