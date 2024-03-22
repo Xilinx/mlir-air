@@ -708,10 +708,10 @@ func.func @func10(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // CHECK: aie.device(xcve2802)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 8192, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 0, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
 // CHECK: %[[tileDMA_0_3:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
-// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 8192, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 0, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
 // CHECK:   memref<32x256xbf16, 1>, 0, 8192, [<size = 1, stride = 32>, <size = 32, stride = 256>, <size = 256, stride = 1>])
@@ -753,7 +753,7 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
           %alloc = memref.alloc() : memref<32x256xbf16, 2>
           air.execute_terminator %alloc : memref<32x256xbf16, 2>
         }
-        %5 = air.channel.get async [%4, %async_token_3]  @channel_1[%arg5, %c0_2] (%results_4[%c0_2, %c32_3, %c0_2] [%c8_6, %c32_3, %c32_3] [%c32_3, %c256_5, %c1_4]) {id = 6 : i32} : (memref<32x256xbf16, 2>)
+        %5 = air.channel.get async [%4, %async_token_3]  @channel_1[%arg5, %c0_2] (%results_4[%c0_2, %c0_2, %c0_2] [%c8_6, %c32_3, %c32_3] [%c32_3, %c256_5, %c1_4]) {id = 6 : i32} : (memref<32x256xbf16, 2>)
         %async_token_5 = air.execute [%5] {
           memref.dealloc %results_4 : memref<32x256xbf16, 2>
         }
