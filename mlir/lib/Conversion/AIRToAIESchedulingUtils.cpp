@@ -197,8 +197,7 @@ int air::getRepeatCount(Operation *memcpy_op) {
 
 std::vector<AIE::BDDimLayoutAttr>
 air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
-                        SmallVector<Value> memcpy_strides,
-                        MLIRContext *ctx) {
+                        SmallVector<Value> memcpy_strides, MLIRContext *ctx) {
   if (memcpy_sizes.empty() || memcpy_strides.empty())
     return std::vector<AIE::BDDimLayoutAttr>{};
   assert(memcpy_sizes.size() == memcpy_strides.size() &&
