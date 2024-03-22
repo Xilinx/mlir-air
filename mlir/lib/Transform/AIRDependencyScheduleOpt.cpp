@@ -3362,9 +3362,14 @@ public:
     // Hoist ops out of each scf.for.
     for (auto pair : target_ops_map) {
       OpBuilder builder(pair.first);
-      for (auto op : pair.second)
-        hoistTargetOpsToNewSCFFor(builder, pair.first,
+      for (auto op : pair.second){
+        auto newForOp = hoistTargetOpsToNewSCFFor(builder, pair.first,
                                   SmallVector<Operation *>{op});
+        if (!newForOp) continue;
+        // Redo async dependency tracing.
+        air::dependencyTracer depTracer;
+        depTracer.traceDependencyFromScfForOp(newForOp);
+      }
     }
 
     // Post processing, hoisting air.herd ops out of perfectly nested scf.for

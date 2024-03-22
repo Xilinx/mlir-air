@@ -436,6 +436,14 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
     return nullptr;
   }
 }
+air::WaitAllOp assignEmptyWaitAllAtScfForIterArg(OpBuilder builder, scf::ForOp &op){
+  auto checkpoint = builder.saveInsertionPoint();
+  builder.setInsertionPoint(op);
+  air::WaitAllOp sink_wait_all_op = builder.create<air::WaitAllOp>(op->getLoc(), air::AsyncTokenType::get(builder.getContext()), SmallVector<Value>{});
+  op->getOpOperand(op.getNumControlOperands()).assign(sink_wait_all_op.getAsyncToken());
+  builder.restoreInsertionPoint(checkpoint);
+  return sink_wait_all_op;
+}
 
 // Create scf.reduce op to reduce all async tokens in an scf.parallel
 scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
@@ -619,7 +627,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   IRMapping remap;
   auto new_for_op = builder.create<scf::ForOp>(
       loc, for_op.getLowerBound(), for_op.getUpperBound(), for_op.getStep(),
-      for_op.getInitArgs());
+      SmallVector<Value>{builder.create<air::WaitAllOp>(loc, air::AsyncTokenType::get(builder.getContext()), SmallVector<Value>{}).getAsyncToken()});
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -2288,6 +2296,26 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
     return 'r';
   else
     return 'w';
+}
+
+void dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
+  OpBuilder builder(forOp);
+  air::WaitAllOp sink_wait_all_op = assignEmptyWaitAllAtScfForIterArg(builder, forOp);
+  SmallVector<air::AsyncOpInterface> asyncChildOps;
+  forOp.walk([&](air::AsyncOpInterface op) { asyncChildOps.push_back(op); });
+  for (auto op : asyncChildOps){
+    SmallVector<air::partialMemref, 1> sink_op_memref_reads;
+    SmallVector<air::partialMemref, 1> sink_op_memref_writes;
+    SmallVector<Value, 1> sink_op_scalar_ins;
+    SmallVector<Value, 1> sink_op_scalar_outs;
+    getPartialMemrefFromOp(
+        op.getOperation(), sink_op_memref_reads,
+        sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs);
+    traceDependencyFromOp<air::WaitAllOp>(
+        sink_op_memref_reads, sink_wait_all_op, "RAW");
+    traceDependencyFromOp<air::WaitAllOp>(
+        sink_op_memref_writes, sink_wait_all_op, "WAW/WAR");
+  }
 }
 
 void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
