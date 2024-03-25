@@ -1763,7 +1763,8 @@ public:
     for (auto o : memcpyOps) {
       // Clone memcpy op
       if (auto par = getChannelIndicesOwner(o)) {
-        (void)unrollAIRChannelPutGetInScfParallel(builder, par, o.getOperation(), remap);
+        (void)unrollAIRChannelPutGetInScfParallel(builder, par,
+                                                  o.getOperation(), remap);
       } else {
         auto new_memcpy = builder.clone(*o, remap);
         clearAsyncDependenciesOfAsyncOp(new_memcpy);
