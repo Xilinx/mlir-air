@@ -1086,6 +1086,20 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     return std::nullopt;
   }
 
+  std::optional<AIE::ObjectFifoCreateOp>
+  getObjectFifoCreateOpForSymbol(AIE::DeviceOp dev, StringRef sym_name) {
+    auto sym = dev.lookupSymbol(sym_name);
+    if (!sym)
+      return std::nullopt;
+
+    for (auto objFifoCreateOp : dev.getOps<AIE::ObjectFifoCreateOp>()) {
+      if (objFifoCreateOp.getSymName().str() == sym_name.str())
+        return objFifoCreateOp;
+    }
+
+    return std::nullopt;
+  }
+
   void insertIpuSyncOpForResults(ModuleOp module) {
     module.walk([&](mlir::func::FuncOp f) {
       SmallVector<AIEX::IpuDmaMemcpyNdOp> dmas;
@@ -1138,13 +1152,27 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     std::map<int, int> chanToIdMap;
     AIE::DeviceOp d = nullptr;
     blk->walk([&](AIE::DeviceOp op) { d = op; });
-    if (!d)
-      return;
     blk->walk([&](Operation *op) {
       if (auto dma = dyn_cast<AIEX::IpuDmaMemcpyNdOp>(op)) {
         OpBuilder builder(dma);
-        auto infoOp = getAllocOpForSymbol(d, dma.getMetadata());
-        int col = infoOp->getCol();
+        int col = -1;
+        if (d) {
+          if (auto infoOp = getAllocOpForSymbol(d, dma.getMetadata())) {
+            col = infoOp->getCol();
+          } else if (auto objFifoCreateOp =
+                         getObjectFifoCreateOpForSymbol(d, dma.getMetadata())) {
+            auto prodTileOp =
+                objFifoCreateOp->getProducerTile().getDefiningOp<AIE::TileOp>();
+            if (prodTileOp.isShimTile())
+              col = prodTileOp.colIndex();
+            for (auto consumerTileOp : objFifoCreateOp->getConsumerTiles()) {
+              auto consTileOp = consumerTileOp.getDefiningOp<AIE::TileOp>();
+              if (consTileOp.isShimTile()) {
+                col = consTileOp.colIndex();
+              }
+            }
+          }
+        }
         if (!chanToIdMap.count(col))
           chanToIdMap[col] = 0;
         dma->setAttr("id", mlir::IntegerAttr::get(
