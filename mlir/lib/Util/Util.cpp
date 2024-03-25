@@ -1001,7 +1001,8 @@ void air::populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
   }
 }
 
-// Check if the wraps and strides imply the default (contiguous, row-major) data access pattern.
+// Check if the wraps and strides imply the default (contiguous, row-major) data
+// access pattern.
 bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
                                      SmallVector<Value> memcpy_strides,
                                      Value memref) {
@@ -1042,14 +1043,14 @@ air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
                                              SmallVector<Value> strides) {
   SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
   for (int i = sizes.size() - 1; i >= 0; i--) {
-    int current_memref_volumn = 1;
+    int current_memref_volume = 1;
     for (int j = memref_shape.size() - 1; j >= 0; j--) {
-      current_memref_volumn *= memref_shape[j];
+      current_memref_volume *= memref_shape[j];
       if (mlir::floorDiv(*getConstantIntValue(strides[i]),
-                         current_memref_volumn))
+                         current_memref_volume))
         continue;
       int64_t bound = mlir::floorDiv(*getConstantIntValue(strides[i]),
-                                     current_memref_volumn / memref_shape[j]) *
+                                     current_memref_volume / memref_shape[j]) *
                       *getConstantIntValue(sizes[i]);
       access_bounds[j] = std::max(access_bounds[j], bound);
     }
@@ -1093,4 +1094,31 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
           std::max(overall_access_bounds[i], access_bounds[i]);
   }
   return overall_access_bounds;
+}
+
+// Update strides after memref shrinkage. Assuming there is only one dimension
+// being shrunk.
+SmallVector<int>
+air::getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
+                                     SmallVector<int64_t> new_memref_shape,
+                                     SmallVector<Value> strides) {
+  SmallVector<int> new_strides(strides.size(), -1);
+  int shrinkage_volumn = 1;
+  int shrinkage_factor = 1;
+  for (int j = old_memref_shape.size() - 1; j >= 0; j--) {
+    shrinkage_volumn *= old_memref_shape[j];
+    if (old_memref_shape[j] != new_memref_shape[j]) {
+      shrinkage_factor =
+          mlir::ceilDiv(old_memref_shape[j], new_memref_shape[j]);
+      break;
+    }
+  }
+  for (int i = strides.size() - 1; i >= 0; i--) {
+    if (mlir::floorDiv(*getConstantIntValue(strides[i]), shrinkage_volumn))
+      new_strides[i] =
+          mlir::ceilDiv(*getConstantIntValue(strides[i]), shrinkage_factor);
+    else
+      new_strides[i] = *getConstantIntValue(strides[i]);
+  }
+  return new_strides;
 }

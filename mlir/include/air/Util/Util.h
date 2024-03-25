@@ -158,10 +158,11 @@ void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
                                     SmallVector<Value> &wraps,
                                     SmallVector<Value> &strides);
 
-// Check if the wraps and strides imply the default (contiguous, row-major) data access pattern.
+// Check if the wraps and strides imply the default (contiguous, row-major) data
+// access pattern.
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
-                                     SmallVector<Value> memcpy_strides,
-                                     Value memref);
+                                SmallVector<Value> memcpy_strides,
+                                Value memref);
 // Get the memref size along a given dimension, that the access pattern actually
 // covers.
 SmallVector<int64_t>
@@ -174,6 +175,13 @@ getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
 SmallVector<int64_t>
 getDataAccessShapeFromMemcpyOp(Value memref,
                                SmallVector<air::ChannelInterface> chanOps);
+
+// Update strides after memref shrinkage. Assuming there is only one dimension
+// being shrunk.
+SmallVector<int>
+getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
+                                SmallVector<int64_t> new_memref_shape,
+                                SmallVector<Value> strides);
 
 } // namespace air
 } // namespace xilinx

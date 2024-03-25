@@ -3294,16 +3294,20 @@ public:
           }
           if (isa<air::HierarchyInterface>(parent))
             return;
+          if (isa<affine::AffineIfOp>(parent))
+            return;
           // Check if for loop is splittable by tracing air dependency.
-          for (auto op : target_ops_map[for_op]){
-            if (areAsyncDependent(op, parent)){
+          for (auto op : target_ops_map[for_op]) {
+            if (areAsyncDependent(op, parent)) {
               target_ops_map.erase(for_op);
               return;
             }
           }
           push_back_if_unique<Operation *>(target_ops_map[for_op], parent);
           // Check if any memref.alloc needs to be hoisted.
-          if (memcpyOp.getSrcMemref() && !memcpyOp.getSrcMemref().getDefiningOp()) return;
+          if (memcpyOp.getSrcMemref() &&
+              !memcpyOp.getSrcMemref().getDefiningOp())
+            return;
           if (memcpyOp.getSrcMemref() &&
               for_op->isProperAncestor(
                   memcpyOp.getSrcMemref().getDefiningOp())) {
@@ -3319,7 +3323,9 @@ public:
                 "hoist_alloc",
                 mlir::BoolAttr::get(memref_def->getContext(), true));
           }
-          if (memcpyOp.getDstMemref() && !memcpyOp.getDstMemref().getDefiningOp()) return;
+          if (memcpyOp.getDstMemref() &&
+              !memcpyOp.getDstMemref().getDefiningOp())
+            return;
           if (memcpyOp.getDstMemref() &&
               for_op->isProperAncestor(
                   memcpyOp.getDstMemref().getDefiningOp())) {
@@ -3362,10 +3368,11 @@ public:
     // Hoist ops out of each scf.for.
     for (auto pair : target_ops_map) {
       OpBuilder builder(pair.first);
-      for (auto op : pair.second){
+      for (auto op : pair.second) {
         auto newForOp = hoistTargetOpsToNewSCFFor(builder, pair.first,
-                                  SmallVector<Operation *>{op});
-        if (!newForOp) continue;
+                                                  SmallVector<Operation *>{op});
+        if (!newForOp)
+          continue;
         // Redo async dependency tracing.
         air::dependencyTracer depTracer;
         depTracer.traceDependencyFromScfForOp(newForOp);
@@ -3406,7 +3413,7 @@ struct ShrinkMemrefSizesByAccessPattern
     if (auto exec = dyn_cast<air::ExecuteOp>(alloc->getParentOp()))
       memref = exec->getResult(1);
 
-    if (alloc->hasAttr("test"))
+    if (alloc->hasAttr("shrinkage"))
       return failure();
 
     // Get dealloc.
@@ -3447,7 +3454,8 @@ struct ShrinkMemrefSizesByAccessPattern
             dyn_cast<air::AsyncOpInterface>(chanOp.getOperation())
                 .getAsyncDependencies()
                 .size() +
-            1 + chanOp.getOffsets().size() + chanOp.getSizes().size();
+            chanOp.getIndices().size() + chanOp.getOffsets().size() +
+            chanOp.getSizes().size() + 1;
         for (unsigned i = strideListIdxOffset;
              i < strideListIdxOffset + chanOp.getStrides().size(); i++) {
           chanOp->getOpOperand(i).assign(
@@ -3471,6 +3479,7 @@ struct ShrinkMemrefSizesByAccessPattern
         rewriter.setInsertionPointToStart(async_exec_bb);
         auto newAlloc =
             rewriter.create<memref::AllocOp>(alloc->getLoc(), newMemrefType);
+        newAlloc->setAttr("shrinkage", rewriter.getBoolAttr(true));
         rewriter.create<air::ExecuteTerminatorOp>(rewriter.getUnknownLoc(),
                                                   newAlloc.getResult());
         for (unsigned i = 0; i < execOp->getNumResults(); i++)
@@ -3481,7 +3490,7 @@ struct ShrinkMemrefSizesByAccessPattern
         rewriter.setInsertionPoint(alloc);
         auto newAlloc =
             rewriter.create<memref::AllocOp>(alloc->getLoc(), newMemrefType);
-        newAlloc->setAttr("test", rewriter.getBoolAttr(true));
+        newAlloc->setAttr("shrinkage", rewriter.getBoolAttr(true));
         alloc.getResult().replaceAllUsesWith(newAlloc.getResult());
         rewriter.eraseOp(alloc);
       }
@@ -3492,32 +3501,6 @@ struct ShrinkMemrefSizesByAccessPattern
   }
 
 private:
-  // Update strides after memref shrinkage. Assuming there is only dimension
-  // being shrunk.
-  SmallVector<int>
-  getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
-                                  SmallVector<int64_t> new_memref_shape,
-                                  SmallVector<Value> strides) const {
-    SmallVector<int> new_strides(strides.size(), -1);
-    int shrinkage_volumn = 1;
-    int shrinkage_factor = 1;
-    for (int j = old_memref_shape.size() - 1; j >= 0; j--) {
-      shrinkage_volumn *= old_memref_shape[j];
-      if (old_memref_shape[j] != new_memref_shape[j]) {
-        shrinkage_factor =
-            mlir::ceilDiv(old_memref_shape[j], new_memref_shape[j]);
-        break;
-      }
-    }
-    for (int i = strides.size() - 1; i >= 0; i--) {
-      if (mlir::floorDiv(*getConstantIntValue(strides[i]), shrinkage_volumn))
-        new_strides[i] =
-            mlir::ceilDiv(*getConstantIntValue(strides[i]), shrinkage_factor);
-      else
-        new_strides[i] = *getConstantIntValue(strides[i]);
-    }
-    return new_strides;
-  }
 };
 
 // A pass which performs loop fusion within air.segment op's region.
@@ -3526,7 +3509,7 @@ class AIRSegmentLoopFusion
 
 public:
   AIRSegmentLoopFusion() = default;
-  AIRSegmentLoopFusion(const AIRSegmentLoopFusion &pass) {}
+  AIRSegmentLoopFusion(const AIRSegmentLoopFusion &pass){}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect>();
@@ -3588,25 +3571,24 @@ public:
     // From the loop bands, get fusable scf.for for loop bands.
     SmallVector<scf::ForOp> equalIterationForOps;
     equalIterationForOps.push_back(perfectlyNestedForBands[0]);
-    auto lb = perfectlyNestedForBands[0].getLowerBound();
-    auto ub = perfectlyNestedForBands[0].getUpperBound();
-    auto step = perfectlyNestedForBands[0].getStep();
+    int lb = *getConstantIntValue(perfectlyNestedForBands[0].getLowerBound());
+    int ub = *getConstantIntValue(perfectlyNestedForBands[0].getUpperBound());
+    int step = *getConstantIntValue(perfectlyNestedForBands[0].getStep());
     for (unsigned i = 1; i < perfectlyNestedForBands.size(); i++) {
-      int band_step_as_int =
-          *mlir::getConstantIntValue(perfectlyNestedForBands[i].getStep());
-      int step_as_int = *mlir::getConstantIntValue(step);
-      if (perfectlyNestedForBands[i].getLowerBound() == lb &&
-          perfectlyNestedForBands[i].getUpperBound() == ub &&
-          perfectlyNestedForBands[i].getStep() == step) {
+      int band_step =
+          *getConstantIntValue(perfectlyNestedForBands[i].getStep());
+      int band_lb =
+          *getConstantIntValue(perfectlyNestedForBands[i].getLowerBound());
+      int band_ub =
+          *getConstantIntValue(perfectlyNestedForBands[i].getUpperBound());
+      if (band_lb == lb && band_ub == ub && band_step == step) {
         equalIterationForOps.push_back(perfectlyNestedForBands[i]);
-      } else if (perfectlyNestedForBands[i].getLowerBound() == lb &&
-                 perfectlyNestedForBands[i].getUpperBound() == ub &&
-                 mlir::mod(std::max(band_step_as_int, step_as_int),
-                           std::min(band_step_as_int, step_as_int)) == 0) {
+      } else if (band_lb == lb && band_ub == ub &&
+                 mlir::mod(std::max(band_step, step),
+                           std::min(band_step, step)) == 0) {
         // If scf.for loops are not identical, but tilable to having identical
         // roots.
-        if (simpleScfForLoopTiling(perfectlyNestedForBands[i], step_as_int,
-                                   band_step_as_int))
+        if (simpleScfForLoopTiling(perfectlyNestedForBands[i], step, band_step))
           equalIterationForOps.push_back(perfectlyNestedForBands[i]);
       }
     }
@@ -3622,9 +3604,11 @@ public:
                 loc, air::AsyncTokenType::get(builder.getContext()),
                 SmallVector<Value>{})
             .getAsyncToken();
-    scf::ForOp new_loop_op =
-        builder.create<scf::ForOp>(builder.getUnknownLoc(), lb, ub, step,
-                                   SmallVector<Value>{new_loop_op_init_arg});
+    scf::ForOp new_loop_op = builder.create<scf::ForOp>(
+        builder.getUnknownLoc(), perfectlyNestedForBands[0].getLowerBound(),
+        perfectlyNestedForBands[0].getUpperBound(),
+        perfectlyNestedForBands[0].getStep(),
+        SmallVector<Value>{new_loop_op_init_arg});
     SmallVector<air::ExecuteOp> erase_keys;
     for (auto execOpPair : alloc_dealloc_execs) {
       bool canMove = false;
@@ -3739,6 +3723,7 @@ public:
       runOnSegment(seg);
     }
     runPostProcPatterns(func);
+    func.walk([&](memref::AllocOp op) { op->removeAttr("shrinkage"); });
   }
 
 private:
@@ -3769,11 +3754,11 @@ private:
       return scf::ForOp(); // NYI.
     if (offsets.size() > memref_shape.size())
       induction_var_dim -= offsets.size() - memref_shape.size();
-    unsigned access_volumn = 1;
+    unsigned access_volume = 1;
     for (auto v : sizes)
-      access_volumn *= *getConstantIntValue(v);
+      access_volume *= *getConstantIntValue(v);
     if (offsets.empty() ||
-        access_volumn == getTensorVolume(channel_ops[0].getMemref().getType()))
+        access_volume == getTensorVolume(channel_ops[0].getMemref().getType()))
       return scf::ForOp(); // May access the whole memref.
 
     int effective_access_size = getEffectiveMemrefSizeFromAccessPattern(
