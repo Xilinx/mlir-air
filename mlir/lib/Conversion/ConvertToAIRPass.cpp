@@ -248,9 +248,12 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
   auto wa_op = builder.create<air::WaitAllOp>(
       loc, air::AsyncTokenType::get(ctx), SmallVector<Value, 1>{});
   SmallVector<Value, 1> deps_in{wa_op.getAsyncToken()};
-  auto scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps, deps_in);
-
-  generateYieldAndOrReduceToScfLoop(builder, ctx, scf_par);
+  scf::ParallelOp scf_par = nullptr;
+  if (isAsyncOp(herd)) {
+    scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps, deps_in);
+    generateYieldAndOrReduceToScfLoop(builder, ctx, scf_par);
+  } else
+    scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps);
 
   scf_par->setAttr("hoist", StringAttr::get(ctx, "hoistedLoop"));
   scf_par->setAttr("loop-carried-dep", StringAttr::get(ctx, "hoistedLoop"));
@@ -1493,11 +1496,9 @@ class AIRDemoteDmaToAIRHierarchyConversion
       }
 
       for (auto b : backwardSlice) {
-        if (dyn_cast<air::ExecuteOp>(b)) {
-          for (auto &exec_child_op : b->getRegions().front().getOps()) {
-            getBackwardSlice(&exec_child_op, &backwardSlice, bsOptions);
-            backwardSlice.insert(&exec_child_op);
-          }
+        if (auto execOp = dyn_cast<air::ExecuteOp>(b)) {
+          getBackwardSlice(execOp.getChildOp(), &backwardSlice, bsOptions);
+          backwardSlice.insert(execOp.getChildOp());
         }
       }
 
@@ -1618,7 +1619,7 @@ public:
 
   AffineParToHerdConversion(MLIRContext *ctx,
                             SmallPtrSet<Operation *, 8> &filteredOps)
-      : OpRewritePattern(ctx), filteredOps(filteredOps){};
+      : OpRewritePattern(ctx), filteredOps(filteredOps) {};
 
   LogicalResult matchAndRewrite(affine::AffineParallelOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1880,7 +1881,7 @@ public:
                          llvm::SmallSet<air::HerdOp, 2> &replacementOps,
                          int firstDim)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps), firstDim(firstDim){};
+        replacementOps(replacementOps), firstDim(firstDim) {};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -1996,7 +1997,7 @@ public:
                             llvm::SmallSet<air::HerdOp, 2> &replacementOps,
                             int firstDim)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps), firstDim(firstDim){};
+        replacementOps(replacementOps), firstDim(firstDim) {};
 
   LogicalResult matchAndRewrite(scf::ForallOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -2146,7 +2147,7 @@ public:
                            llvm::SmallSet<air::LaunchOp, 2> &replacementOps,
                            bool generateSegment)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps), generateSegment(generateSegment){};
+        replacementOps(replacementOps), generateSegment(generateSegment) {};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -2255,7 +2256,7 @@ public:
                               llvm::SmallSet<air::LaunchOp, 2> &replacementOps,
                               bool generateSegment)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps), generateSegment(generateSegment){};
+        replacementOps(replacementOps), generateSegment(generateSegment) {};
 
   LogicalResult matchAndRewrite(scf::ForallOp forOp,
                                 PatternRewriter &rewriter) const override {
