@@ -3509,7 +3509,7 @@ class AIRSegmentLoopFusion
 
 public:
   AIRSegmentLoopFusion() = default;
-  AIRSegmentLoopFusion(const AIRSegmentLoopFusion &pass){}
+  AIRSegmentLoopFusion(const AIRSegmentLoopFusion &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect>();
