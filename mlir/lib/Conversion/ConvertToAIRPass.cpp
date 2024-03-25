@@ -1619,7 +1619,7 @@ public:
 
   AffineParToHerdConversion(MLIRContext *ctx,
                             SmallPtrSet<Operation *, 8> &filteredOps)
-      : OpRewritePattern(ctx), filteredOps(filteredOps) {};
+      : OpRewritePattern(ctx), filteredOps(filteredOps){};
 
   LogicalResult matchAndRewrite(affine::AffineParallelOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1881,7 +1881,7 @@ public:
                          llvm::SmallSet<air::HerdOp, 2> &replacementOps,
                          int firstDim)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps), firstDim(firstDim) {};
+        replacementOps(replacementOps), firstDim(firstDim){};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -1997,7 +1997,7 @@ public:
                             llvm::SmallSet<air::HerdOp, 2> &replacementOps,
                             int firstDim)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps), firstDim(firstDim) {};
+        replacementOps(replacementOps), firstDim(firstDim){};
 
   LogicalResult matchAndRewrite(scf::ForallOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -2147,7 +2147,7 @@ public:
                            llvm::SmallSet<air::LaunchOp, 2> &replacementOps,
                            bool generateSegment)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps), generateSegment(generateSegment) {};
+        replacementOps(replacementOps), generateSegment(generateSegment){};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -2256,7 +2256,7 @@ public:
                               llvm::SmallSet<air::LaunchOp, 2> &replacementOps,
                               bool generateSegment)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps), generateSegment(generateSegment) {};
+        replacementOps(replacementOps), generateSegment(generateSegment){};
 
   LogicalResult matchAndRewrite(scf::ForallOp forOp,
                                 PatternRewriter &rewriter) const override {
