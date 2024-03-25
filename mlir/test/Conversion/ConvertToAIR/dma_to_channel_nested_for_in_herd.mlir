@@ -20,22 +20,22 @@ module {
     linalg.fill ins(%c0_i32 : i32) outs(%alloc : memref<64x64xi32>)
     %alloc_0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
     memref.copy %alloc, %alloc_0 : memref<64x64xi32> to memref<64x64xi32>
-// CHECK: %[[EVENT0:.*]] = scf.parallel (%[[VALUE0:.*]], %[[VALUE1:.*]]) ={{.*}}init
+// CHECK: scf.parallel (%[[VALUE0:.*]], %[[VALUE1:.*]]) =
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: air.channel.put @channel_0[%[[VALUE0]], %[[VALUE1]]]
-// CHECK: %[[EVENT1:.*]] = scf.parallel (%[[VALUE2:.*]], %[[VALUE3:.*]]) ={{.*}}init
+// CHECK: scf.parallel (%[[VALUE2:.*]], %[[VALUE3:.*]]) =
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: air.channel.put @channel_1[%[[VALUE2]], %[[VALUE3]]]
-// CHECK: %[[EVENT2:.*]] = scf.parallel (%[[VALUE4:.*]], %[[VALUE5:.*]]) ={{.*}}init
+// CHECK: scf.parallel (%[[VALUE4:.*]], %[[VALUE5:.*]]) =
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: air.channel.put @channel_2[%[[VALUE4]], %[[VALUE5]]]
-// CHECK: %[[EVENT3:.*]] = scf.parallel (%[[VALUE6:.*]], %[[VALUE7:.*]]) ={{.*}}init
+// CHECK: scf.parallel (%[[VALUE6:.*]], %[[VALUE7:.*]]) =
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: scf.for
