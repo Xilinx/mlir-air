@@ -1133,15 +1133,25 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     });
   }
 
+  // Renumber aiex.ipu.dma_memcpy_nd ops per column of AIEs.
   void renumberIpuDmaOps(Block *blk) {
-    unsigned id = 0;
+    std::map<int, int> chanToIdMap;
+    AIE::DeviceOp d = nullptr;
+    blk->walk([&](AIE::DeviceOp op) { d = op; });
+    if (!d)
+      return;
     blk->walk([&](Operation *op) {
-      if (isa<AIEX::IpuDmaMemcpyNdOp>(op)) {
-        op->setAttr("id",
-                    mlir::IntegerAttr::get(
-                        mlir::IntegerType::get(op->getContext(), 64), id++));
+      if (auto dma = dyn_cast<AIEX::IpuDmaMemcpyNdOp>(op)) {
+        OpBuilder builder(dma);
+        auto infoOp = getAllocOpForSymbol(d, dma.getMetadata());
+        int col = infoOp->getCol();
+        if (!chanToIdMap.count(col))
+          chanToIdMap[col] = 0;
+        dma->setAttr("id", mlir::IntegerAttr::get(
+                               mlir::IntegerType::get(dma->getContext(), 64),
+                               chanToIdMap[col]++));
       } else if (isa<AIEX::IpuSyncOp>(op))
-        id = 0;
+        chanToIdMap.clear();
     });
   }
 
