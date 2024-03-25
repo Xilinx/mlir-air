@@ -436,11 +436,15 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
     return nullptr;
   }
 }
-air::WaitAllOp assignEmptyWaitAllAtScfForIterArg(OpBuilder builder, scf::ForOp &op){
+air::WaitAllOp assignEmptyWaitAllAtScfForIterArg(OpBuilder builder,
+                                                 scf::ForOp &op) {
   auto checkpoint = builder.saveInsertionPoint();
   builder.setInsertionPoint(op);
-  air::WaitAllOp sink_wait_all_op = builder.create<air::WaitAllOp>(op->getLoc(), air::AsyncTokenType::get(builder.getContext()), SmallVector<Value>{});
-  op->getOpOperand(op.getNumControlOperands()).assign(sink_wait_all_op.getAsyncToken());
+  air::WaitAllOp sink_wait_all_op = builder.create<air::WaitAllOp>(
+      op->getLoc(), air::AsyncTokenType::get(builder.getContext()),
+      SmallVector<Value>{});
+  op->getOpOperand(op.getNumControlOperands())
+      .assign(sink_wait_all_op.getAsyncToken());
   builder.restoreInsertionPoint(checkpoint);
   return sink_wait_all_op;
 }
@@ -471,6 +475,15 @@ SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ForOp op) {
 SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ParallelOp op) {
   return op.getInitVals();
 }
+SmallVector<Value> getAsyncDependenciesFromOpImpl(affine::AffineIfOp op) {
+  SmallVector<Value> depList;
+  for (auto operand : op->getOperands()) {
+    if (!isa<air::AsyncTokenType>(operand.getType()))
+      continue;
+    depList.push_back(operand);
+  }
+  return depList;
+}
 SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
     return getAsyncDependenciesFromOpImpl(async_op);
@@ -478,8 +491,48 @@ SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
     return getAsyncDependenciesFromOpImpl(for_op);
   else if (auto par_op = dyn_cast<scf::ParallelOp>(op))
     return getAsyncDependenciesFromOpImpl(par_op);
+  else if (auto aif_op = dyn_cast<affine::AffineIfOp>(op))
+    return getAsyncDependenciesFromOpImpl(aif_op);
   else
     return SmallVector<Value>();
+}
+
+// Get returned async token from op
+Value getAsyncTokenFromOpImpl(air::AsyncOpInterface op) {
+  return op.getAsyncToken();
+}
+Value getAsyncTokenFromOpImpl(scf::ForOp op) {
+  for (auto res : op->getResults()) {
+    if (isa<air::AsyncTokenType>(res.getType()))
+      return res;
+  }
+  return nullptr;
+}
+Value getAsyncTokenFromOpImpl(scf::ParallelOp op) {
+  for (auto res : op->getResults()) {
+    if (isa<air::AsyncTokenType>(res.getType()))
+      return res;
+  }
+  return nullptr;
+}
+Value getAsyncTokenFromOpImpl(affine::AffineIfOp op) {
+  for (auto res : op->getResults()) {
+    if (isa<air::AsyncTokenType>(res.getType()))
+      return res;
+  }
+  return nullptr;
+}
+Value getAsyncTokenFromOp(Operation *op) {
+  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
+    return getAsyncTokenFromOpImpl(async_op);
+  else if (auto for_op = dyn_cast<scf::ForOp>(op))
+    return getAsyncTokenFromOpImpl(for_op);
+  else if (auto par_op = dyn_cast<scf::ParallelOp>(op))
+    return getAsyncTokenFromOpImpl(par_op);
+  else if (auto aif_op = dyn_cast<affine::AffineIfOp>(op))
+    return getAsyncTokenFromOpImpl(aif_op);
+  else
+    return nullptr;
 }
 
 // Add async dependency to op if unique
@@ -583,16 +636,24 @@ bool isAsyncOp(Operation *op) {
 }
 
 bool areAsyncDependent(Operation *a, Operation *b) {
-  auto async_a = dyn_cast<air::AsyncOpInterface>(a);
-  auto async_b = dyn_cast<air::AsyncOpInterface>(b);
-  if (!async_a) return false;
-  if (!async_b) return false;
-  for (auto dep : async_a.getAsyncDependencies()){
-    if (dep.getDefiningOp() == async_b) return true;
-  }
-  for (auto dep : async_b.getAsyncDependencies()){
-    if (dep.getDefiningOp() == async_a) return true;
-  }
+  SmallVector<Value> dep_a = getAsyncDependenciesFromOp(a);
+  Value token_a = getAsyncTokenFromOp(a);
+  SmallVector<Value> dep_b = getAsyncDependenciesFromOp(b);
+  Value token_b = getAsyncTokenFromOp(b);
+  if (!token_a)
+    return false;
+  if (!token_b)
+    return false;
+  if (dep_a.empty())
+    return false;
+  if (dep_b.empty())
+    return false;
+  for (auto dep : dep_a)
+    if (dep == token_b)
+      return true;
+  for (auto dep : dep_b)
+    if (dep == token_a)
+      return true;
   return false;
 }
 
@@ -627,7 +688,12 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   IRMapping remap;
   auto new_for_op = builder.create<scf::ForOp>(
       loc, for_op.getLowerBound(), for_op.getUpperBound(), for_op.getStep(),
-      SmallVector<Value>{builder.create<air::WaitAllOp>(loc, air::AsyncTokenType::get(builder.getContext()), SmallVector<Value>{}).getAsyncToken()});
+      SmallVector<Value>{builder
+                             .create<air::WaitAllOp>(
+                                 loc,
+                                 air::AsyncTokenType::get(builder.getContext()),
+                                 SmallVector<Value>{})
+                             .getAsyncToken()});
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -637,9 +703,11 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
     if (op->getParentOp() != for_op.getOperation())
       continue;
     // Clone operands' defining ops.
-    for (auto operand : op->getOperands()){
-      if (!operand.getDefiningOp()) continue;
-      if (operand.getDefiningOp()->getParentOp() != for_op.getOperation()) continue;
+    for (auto operand : op->getOperands()) {
+      if (!operand.getDefiningOp())
+        continue;
+      if (operand.getDefiningOp()->getParentOp() != for_op.getOperation())
+        continue;
       builder.clone(*operand.getDefiningOp(), remap);
     }
     auto new_op = builder.clone(*op, remap);
@@ -695,7 +763,10 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
 }
 
 // Unroll scf.parallel ops.
-LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder, scf::ParallelOp par, Operation * originalChanOp, IRMapping &remap){
+LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
+                                                  scf::ParallelOp par,
+                                                  Operation *originalChanOp,
+                                                  IRMapping &remap) {
   SmallVector<int, 2> lbs_spatial, ubs_spatial;
   air::getSizesFromSpatialLoop(par.getOperation(), lbs_spatial, ubs_spatial);
   std::vector<unsigned> par_size;
@@ -719,12 +790,11 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder, scf::Parall
                     builder.create<arith::ConstantIndexOp>(
                         builder.getUnknownLoc(), position[i]));
       } else if (position.size() == 1 &&
-                std::find(air_chan_size.begin(), air_chan_size.end(),
-                          air_chan.getBundleSize()) !=
-                    air_chan_size.end()) {
+                 std::find(air_chan_size.begin(), air_chan_size.end(),
+                           air_chan.getBundleSize()) != air_chan_size.end()) {
         auto idx = std::find(air_chan_size.begin(), air_chan_size.end(),
-                            air_chan.getBundleSize()) -
-                  air_chan_size.begin();
+                             air_chan.getBundleSize()) -
+                   air_chan_size.begin();
         remap.map(putget.getIndices()[idx],
                   builder.create<arith::ConstantIndexOp>(
                       builder.getUnknownLoc(), position[0]));
@@ -736,14 +806,12 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder, scf::Parall
     for (auto oper : originalChanOp->getOperands()) {
       if (oper.getDefiningOp()) {
         mlir::affine::AffineApplyOp position_apply = nullptr;
-        if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(
-                oper.getDefiningOp()))
+        if (auto apply_op =
+                dyn_cast<mlir::affine::AffineApplyOp>(oper.getDefiningOp()))
           position_apply = apply_op;
-        else if (auto exec =
-                    dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
+        else if (auto exec = dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
           auto child_op = &exec.getBody().front().getOperations().front();
-          if (auto apply_op =
-                  dyn_cast<mlir::affine::AffineApplyOp>(child_op))
+          if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(child_op))
             position_apply = apply_op;
         }
         if (position_apply) {
@@ -751,8 +819,8 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder, scf::Parall
           for (unsigned i = 0; i < par.getInductionVars().size(); i++) {
             for (auto map_o : position_apply.getMapOperands()) {
               if (par.getInductionVars()[i] == map_o) {
-                const_syms.push_back(getAffineConstantExpr(
-                    position[i], builder.getContext()));
+                const_syms.push_back(
+                    getAffineConstantExpr(position[i], builder.getContext()));
               }
             }
           }
@@ -2300,21 +2368,22 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
 
 void dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
   OpBuilder builder(forOp);
-  air::WaitAllOp sink_wait_all_op = assignEmptyWaitAllAtScfForIterArg(builder, forOp);
+  air::WaitAllOp sink_wait_all_op =
+      assignEmptyWaitAllAtScfForIterArg(builder, forOp);
   SmallVector<air::AsyncOpInterface> asyncChildOps;
   forOp.walk([&](air::AsyncOpInterface op) { asyncChildOps.push_back(op); });
-  for (auto op : asyncChildOps){
+  for (auto op : asyncChildOps) {
     SmallVector<air::partialMemref, 1> sink_op_memref_reads;
     SmallVector<air::partialMemref, 1> sink_op_memref_writes;
     SmallVector<Value, 1> sink_op_scalar_ins;
     SmallVector<Value, 1> sink_op_scalar_outs;
-    getPartialMemrefFromOp(
-        op.getOperation(), sink_op_memref_reads,
-        sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs);
-    traceDependencyFromOp<air::WaitAllOp>(
-        sink_op_memref_reads, sink_wait_all_op, "RAW");
-    traceDependencyFromOp<air::WaitAllOp>(
-        sink_op_memref_writes, sink_wait_all_op, "WAW/WAR");
+    getPartialMemrefFromOp(op.getOperation(), sink_op_memref_reads,
+                           sink_op_memref_writes, sink_op_scalar_ins,
+                           sink_op_scalar_outs);
+    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads,
+                                          sink_wait_all_op, "RAW");
+    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes,
+                                          sink_wait_all_op, "WAW/WAR");
   }
 }
 

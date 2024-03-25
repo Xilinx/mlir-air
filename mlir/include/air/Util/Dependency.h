@@ -56,17 +56,22 @@ void clearAsyncDependenciesOfAsyncOp(Operation *op);
 Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op);
 Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
                                    std::string operand_or_argument = "operand");
-air::WaitAllOp assignEmptyWaitAllAtScfForIterArg(OpBuilder builder, scf::ForOp &op);
+air::WaitAllOp assignEmptyWaitAllAtScfForIterArg(OpBuilder builder,
+                                                 scf::ForOp &op);
 scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
                                                  Location loc, Value token,
                                                  MLIRContext *ctx);
 SmallVector<Value> getAsyncDependenciesFromOp(Operation *op);
+Value getAsyncTokenFromOp(Operation *op);
 void addAsyncDependencyIfNew(Operation *op, Value token);
 bool isAsyncOp(Operation *op);
 bool areAsyncDependent(Operation *a, Operation *b);
 scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops);
-LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder, scf::ParallelOp par, Operation * originalChanOp, IRMapping &remap);
+LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
+                                                  scf::ParallelOp par,
+                                                  Operation *originalChanOp,
+                                                  IRMapping &remap);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph
@@ -344,7 +349,8 @@ public:
     }
   }
 
-  // Re-establish async dependency from an scf.for op to all other async ops in the module.
+  // Re-establish async dependency from an scf.for op to all other async ops in
+  // the module.
   void traceDependencyFromScfForOp(scf::ForOp &forOp);
 
   // Recursively reconnect loop-carried dependency in scf loop nest
