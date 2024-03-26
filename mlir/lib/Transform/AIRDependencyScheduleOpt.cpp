@@ -3354,8 +3354,11 @@ public:
 
     SmallVector<func::FuncOp, 4> funcOps;
     std::vector<air::HierarchyInterface> air_hier_ops;
-    module.walk(
-        [&](air::HierarchyInterface op) { air_hier_ops.push_back(op); });
+    // Skipping over loop splitting inside herd.
+    module.walk([&](air::HierarchyInterface op) {
+      if (!isa<air::HerdOp>(op))
+        air_hier_ops.push_back(op);
+    });
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
 
     // Identify scf.for ops and target child ops for hoisting.
