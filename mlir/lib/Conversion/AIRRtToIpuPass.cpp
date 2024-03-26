@@ -1086,6 +1086,20 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     return std::nullopt;
   }
 
+  std::optional<AIE::ObjectFifoCreateOp>
+  getObjectFifoCreateOpForSymbol(AIE::DeviceOp dev, StringRef sym_name) {
+    auto sym = dev.lookupSymbol(sym_name);
+    if (!sym)
+      return std::nullopt;
+
+    for (auto objFifoCreateOp : dev.getOps<AIE::ObjectFifoCreateOp>()) {
+      if (objFifoCreateOp.getSymName().str() == sym_name.str())
+        return objFifoCreateOp;
+    }
+
+    return std::nullopt;
+  }
+
   void insertIpuSyncOpForResults(ModuleOp module) {
     module.walk([&](mlir::func::FuncOp f) {
       SmallVector<AIEX::IpuDmaMemcpyNdOp> dmas;
@@ -1133,15 +1147,39 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     });
   }
 
+  // Renumber aiex.ipu.dma_memcpy_nd ops per column of AIEs.
   void renumberIpuDmaOps(Block *blk) {
-    unsigned id = 0;
+    std::map<int, int> chanToIdMap;
+    AIE::DeviceOp d = nullptr;
+    blk->walk([&](AIE::DeviceOp op) { d = op; });
     blk->walk([&](Operation *op) {
-      if (isa<AIEX::IpuDmaMemcpyNdOp>(op)) {
-        op->setAttr("id",
-                    mlir::IntegerAttr::get(
-                        mlir::IntegerType::get(op->getContext(), 64), id++));
+      if (auto dma = dyn_cast<AIEX::IpuDmaMemcpyNdOp>(op)) {
+        OpBuilder builder(dma);
+        int col = -1;
+        if (d) {
+          if (auto infoOp = getAllocOpForSymbol(d, dma.getMetadata())) {
+            col = infoOp->getCol();
+          } else if (auto objFifoCreateOp =
+                         getObjectFifoCreateOpForSymbol(d, dma.getMetadata())) {
+            auto prodTileOp =
+                objFifoCreateOp->getProducerTile().getDefiningOp<AIE::TileOp>();
+            if (prodTileOp.isShimTile())
+              col = prodTileOp.colIndex();
+            for (auto consumerTileOp : objFifoCreateOp->getConsumerTiles()) {
+              auto consTileOp = consumerTileOp.getDefiningOp<AIE::TileOp>();
+              if (consTileOp.isShimTile()) {
+                col = consTileOp.colIndex();
+              }
+            }
+          }
+        }
+        if (!chanToIdMap.count(col))
+          chanToIdMap[col] = 0;
+        dma->setAttr("id", mlir::IntegerAttr::get(
+                               mlir::IntegerType::get(dma->getContext(), 64),
+                               chanToIdMap[col]++));
       } else if (isa<AIEX::IpuSyncOp>(op))
-        id = 0;
+        chanToIdMap.clear();
     });
   }
 

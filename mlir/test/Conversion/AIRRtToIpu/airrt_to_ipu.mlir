@@ -661,8 +661,8 @@ module {
 // CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][2, 2, 512, 128][128, 131072, 256]) {id = 3 : i64, metadata = @airMemcpyId12} : memref<262144xi32>
 // CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 0][2, 2, 64, 128][65536, 128, 256]) {id = 4 : i64, metadata = @airMemcpyId45} : memref<131072xi32>
 // CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 16384][2, 2, 64, 128][65536, 128, 256]) {id = 5 : i64, metadata = @airMemcpyId46} : memref<131072xi32>
-// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 32768][2, 2, 64, 128][65536, 128, 256]) {id = 6 : i64, metadata = @airMemcpyId47} : memref<131072xi32>
-// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 49152][2, 2, 64, 128][65536, 128, 256]) {id = 7 : i64, metadata = @airMemcpyId48} : memref<131072xi32>
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 32768][2, 2, 64, 128][65536, 128, 256]) {id = 0 : i64, metadata = @airMemcpyId47} : memref<131072xi32>
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 49152][2, 2, 64, 128][65536, 128, 256]) {id = 1 : i64, metadata = @airMemcpyId48} : memref<131072xi32>
 // CHECK: aiex.ipu.sync {channel = 0 : i32, column = 1 : i32, column_num = 1 : i32, direction = 0 : i32, row = 0 : i32, row_num = 1 : i32}
 // CHECK: aiex.ipu.sync {channel = 1 : i32, column = 0 : i32, column_num = 1 : i32, direction = 0 : i32, row = 0 : i32, row_num = 1 : i32}
 // CHECK: aiex.ipu.sync {channel = 0 : i32, column = 0 : i32, column_num = 1 : i32, direction = 0 : i32, row = 0 : i32, row_num = 1 : i32}
