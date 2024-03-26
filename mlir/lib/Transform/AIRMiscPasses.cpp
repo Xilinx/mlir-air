@@ -346,128 +346,131 @@ public:
 
 private:
   void specializeDmaBroadcastWithAffineIf(func::FuncOp f) {
-
-    f.walk([&](air::HerdOp launch) {
-      launch.walk([&](air::DmaMemcpyNdOp memcpyOp) {
-        auto herd_id = launch.getIds();
-        OpBuilder builder(memcpyOp);
-        auto loc = memcpyOp->getLoc();
-        auto broadcast_pattern =
-            memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
-        auto ctx = memcpyOp->getContext();
-        if (broadcast_pattern) {
-          auto is = broadcast_pattern.getValue();
-          auto constraints = is.getConstraints();
-          auto eqFlags = is.getEqFlags();
-
-          unsigned numSegments = 0;
-          // Get symbol range (i.e. segment range)
-          SmallVector<AffineExpr, 1> zero_syms{
-              getAffineConstantExpr(0, ctx),
-          };
-          for (auto c : constraints) {
-            if (c.isSymbolicOrConstant()) {
-              auto newC = c.replaceSymbols(zero_syms);
-              auto expr =
-                  dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
-              if (!expr) {
-                continue;
-              }
-              if (expr.getValue() != 0) {
-                numSegments = expr.getValue() + 1;
-              }
+    f.walk([&](air::DmaMemcpyNdOp memcpyOp) {
+      auto herdOp = memcpyOp->getParentOfType<air::HerdOp>();
+      if (!herdOp)
+        return;
+      auto herd_id = herdOp.getIds();
+      OpBuilder builder(memcpyOp);
+      auto loc = memcpyOp->getLoc();
+      auto broadcast_pattern =
+          memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
+      auto ctx = memcpyOp->getContext();
+      if (broadcast_pattern) {
+        auto is = broadcast_pattern.getValue();
+        auto constraints = is.getConstraints();
+        auto eqFlags = is.getEqFlags();
+        unsigned numSegments = 1;
+        // Get symbol range (i.e. segment range)
+        SmallVector<AffineExpr, 1> zero_syms{
+            getAffineConstantExpr(0, ctx),
+        };
+        for (auto c : constraints) {
+          if (c.isSymbolicOrConstant()) {
+            auto newC = c.replaceSymbols(zero_syms);
+            auto expr =
+                dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
+            if (!expr) {
+              continue;
+            }
+            if (expr.getValue() != 0) {
+              numSegments = expr.getValue() + 1;
             }
           }
-          // Walk each set in the patitioning scheme
-          // Specialize each affine set
-          for (unsigned i = 0; i < numSegments; i++) {
-            SmallVector<AffineExpr, 2> newConstraints;
-            SmallVector<bool, 2> newEqflags;
-            SmallVector<AffineExpr, 1> i_syms{
-                getAffineConstantExpr(i, ctx),
-            };
-            SmallVector<AffineExpr, 2> syms{
-                getAffineSymbolExpr(0, ctx),
-                getAffineSymbolExpr(1, ctx),
-            };
-            int c_iter = 0;
-            for (auto c : constraints) {
-              if (!c.isSymbolicOrConstant()) {
-                // Substitute segment id i_syms into inequalities
-                auto newC = c.replaceSymbols(i_syms);
-                // Replace all dims with symbols
-                newC = newC.replaceDims(syms);
-                newConstraints.push_back(newC);
-                newEqflags.push_back(eqFlags[c_iter]);
-              }
-              c_iter++;
-            }
-            auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
-            SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
-            // Duplicate dma ops per spatial segment
-            if (i == 0) {
-              affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
-                  loc, air::AsyncTokenType::get(ctx), int_set, int_set_args,
-                  (i != numSegments - 1));
-              builder.setInsertionPointToStart(aif.getThenBlock());
-              auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-              memcpyOp_cloned->removeAttr("broadcast_pattern");
-              memcpyOp_cloned->setAttr("broadcast_set",
-                                       mlir::IntegerSetAttr::get(int_set));
-              SmallVector<Value, 1> yield_token;
-              yield_token.push_back(
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
-                      .getAsyncToken());
-              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                                    yield_token);
-              if (numSegments != 1) {
-                // If more than 1 spatial segments, then move loc to else
-                // block
-                builder.setInsertionPointToStart(aif.getElseBlock());
-              }
-              // Reconnect dependency graph using the outermost affine.if's
-              // token
-              auto async_memcpyOp =
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
-              async_memcpyOp.getAsyncToken().replaceAllUsesWith(
-                  aif.getResult(0));
-            } else if (i < numSegments - 1) {
-              affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
-                  builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
-                  int_set, int_set_args, (i != numSegments - 1));
-              builder.setInsertionPointToStart(aif.getThenBlock());
-              auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-              memcpyOp_cloned->removeAttr("broadcast_pattern");
-              memcpyOp_cloned->setAttr("broadcast_set",
-                                       mlir::IntegerSetAttr::get(int_set));
-              SmallVector<Value, 1> yield_token;
-              yield_token.push_back(
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
-                      .getAsyncToken());
-              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                                    yield_token);
-              builder.setInsertionPointAfter(aif);
-              SmallVector<Value, 1> parent_block_yield_token = {
-                  aif.getResult(0)};
-              builder.create<affine::AffineYieldOp>(builder.getUnknownLoc(),
-                                                    parent_block_yield_token);
-              builder.setInsertionPointToStart(aif.getElseBlock());
-            } else {
-              auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-              memcpyOp_cloned->removeAttr("broadcast_pattern");
-              memcpyOp_cloned->setAttr("broadcast_set",
-                                       mlir::IntegerSetAttr::get(int_set));
-              SmallVector<Value, 1> yield_token;
-              yield_token.push_back(
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
-                      .getAsyncToken());
-              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                                    yield_token);
-            }
-          }
-          memcpyOp.erase();
         }
-      });
+        // Walk each set in the patitioning scheme
+        // Specialize each affine set
+        for (unsigned i = 0; i < numSegments; i++) {
+          SmallVector<AffineExpr, 2> newConstraints;
+          SmallVector<bool, 2> newEqflags;
+          SmallVector<AffineExpr, 1> i_syms{
+              getAffineConstantExpr(i, ctx),
+          };
+          SmallVector<AffineExpr, 2> syms{
+              getAffineSymbolExpr(0, ctx),
+              getAffineSymbolExpr(1, ctx),
+          };
+          int c_iter = 0;
+          for (auto c : constraints) {
+            if (!c.isSymbolicOrConstant()) {
+              // Substitute segment id i_syms into inequalities
+              auto newC = c.replaceSymbols(i_syms);
+              // Replace all dims with symbols
+              newC = newC.replaceDims(syms);
+              newConstraints.push_back(newC);
+              newEqflags.push_back(eqFlags[c_iter]);
+            }
+            c_iter++;
+          }
+          auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
+          SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
+          // Duplicate dma ops per spatial segment
+          if (i == 0) {
+            affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
+                loc, air::AsyncTokenType::get(ctx), int_set, int_set_args,
+                true);
+            builder.setInsertionPointToStart(aif.getThenBlock());
+            auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+            memcpyOp_cloned->removeAttr("broadcast_pattern");
+            memcpyOp_cloned->setAttr("broadcast_set",
+                                     mlir::IntegerSetAttr::get(int_set));
+            SmallVector<Value, 1> yield_token;
+            yield_token.push_back(
+                dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
+                    .getAsyncToken());
+            builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                  yield_token);
+            // Reconnect dependency graph using the outermost affine.if's
+            // token
+            auto async_memcpyOp =
+                dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+            async_memcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
+            builder.setInsertionPointToStart(aif.getElseBlock());
+            // If single segment, then create an empty else block.
+            if (numSegments == 1) {
+              auto waitAllOp = builder.create<air::WaitAllOp>(
+                  memcpyOp_cloned->getLoc(),
+                  air::AsyncTokenType::get(memcpyOp_cloned->getContext()),
+                  memcpyOp.getAsyncDependencies());
+              builder.create<affine::AffineYieldOp>(
+                  memcpyOp_cloned->getLoc(),
+                  SmallVector<Value>{waitAllOp.getAsyncToken()});
+            }
+          } else if (i < numSegments - 1) {
+            affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
+                builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), int_set,
+                int_set_args, (i != numSegments - 1));
+            builder.setInsertionPointToStart(aif.getThenBlock());
+            auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+            memcpyOp_cloned->removeAttr("broadcast_pattern");
+            memcpyOp_cloned->setAttr("broadcast_set",
+                                     mlir::IntegerSetAttr::get(int_set));
+            SmallVector<Value, 1> yield_token;
+            yield_token.push_back(
+                dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
+                    .getAsyncToken());
+            builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                  yield_token);
+            builder.setInsertionPointAfter(aif);
+            SmallVector<Value, 1> parent_block_yield_token = {aif.getResult(0)};
+            builder.create<affine::AffineYieldOp>(builder.getUnknownLoc(),
+                                                  parent_block_yield_token);
+            builder.setInsertionPointToStart(aif.getElseBlock());
+          } else {
+            auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+            memcpyOp_cloned->removeAttr("broadcast_pattern");
+            memcpyOp_cloned->setAttr("broadcast_set",
+                                     mlir::IntegerSetAttr::get(int_set));
+            SmallVector<Value, 1> yield_token;
+            yield_token.push_back(
+                dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
+                    .getAsyncToken());
+            builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                  yield_token);
+          }
+        }
+        memcpyOp.erase();
+      }
     });
   }
 
