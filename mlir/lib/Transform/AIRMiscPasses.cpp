@@ -1221,7 +1221,6 @@ int getFirstConstantOffsetValueIndex(SmallVector<Value> offsets, int memrefRank,
 void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     SmallVector<air::ChannelPutOp> &puts, SmallVector<air::ChannelGetOp> &gets,
     int dim, std::string splitType = "") {
-  // dim // MM2SChannels
   auto memref = puts.front().getMemref();
   MemRefType ty = memref.getType().cast<MemRefType>();
   auto allocOp = memref.getDefiningOp();
@@ -1244,7 +1243,6 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
   for (auto op : puts) {
     auto offset = getFirstConstantOffsetValue(
         op.getOffsets(), air::getTensorShape(ty).size(), dim);
-    assert(offset);
     push_back_if_unique<int>(keys, *offset);
     if (!chanOpPartitions.count(*offset))
       chanOpPartitions[*offset] = SmallVector<air::ChannelInterface>{op};
@@ -1254,7 +1252,6 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
   for (auto op : gets) {
     auto offset = getFirstConstantOffsetValue(
         op.getOffsets(), air::getTensorShape(ty).size(), dim);
-    assert(offset);
     push_back_if_unique<int>(keys, *offset);
     if (!chanOpPartitions.count(*offset))
       chanOpPartitions[*offset] = SmallVector<air::ChannelInterface>{op};
@@ -1412,6 +1409,8 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
         push_back_if_unique<std::string>(S2MMChannels, get.getChanName().str());
       }
     }
+    if (MM2SChannels.size() <= 1 && S2MMChannels.size() <= 1)
+      continue;
     if (!targetMemrefsToColTilingFactors.count(allocOp)) {
       targetMemrefsToColTilingFactors[allocOp] = SmallVector<int>{};
       targetMemrefs.push_back(allocOp);
