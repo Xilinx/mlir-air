@@ -248,9 +248,12 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
   auto wa_op = builder.create<air::WaitAllOp>(
       loc, air::AsyncTokenType::get(ctx), SmallVector<Value, 1>{});
   SmallVector<Value, 1> deps_in{wa_op.getAsyncToken()};
-  auto scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps, deps_in);
-
-  generateYieldAndOrReduceToScfLoop(builder, ctx, scf_par);
+  scf::ParallelOp scf_par = nullptr;
+  if (isAsyncOp(herd)) {
+    scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps, deps_in);
+    generateYieldAndOrReduceToScfLoop(builder, ctx, scf_par);
+  } else
+    scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps);
 
   scf_par->setAttr("hoist", StringAttr::get(ctx, "hoistedLoop"));
   scf_par->setAttr("loop-carried-dep", StringAttr::get(ctx, "hoistedLoop"));
@@ -1493,11 +1496,9 @@ class AIRDemoteDmaToAIRHierarchyConversion
       }
 
       for (auto b : backwardSlice) {
-        if (dyn_cast<air::ExecuteOp>(b)) {
-          for (auto &exec_child_op : b->getRegions().front().getOps()) {
-            getBackwardSlice(&exec_child_op, &backwardSlice, bsOptions);
-            backwardSlice.insert(&exec_child_op);
-          }
+        if (auto execOp = dyn_cast<air::ExecuteOp>(b)) {
+          getBackwardSlice(execOp.getChildOp(), &backwardSlice, bsOptions);
+          backwardSlice.insert(execOp.getChildOp());
         }
       }
 

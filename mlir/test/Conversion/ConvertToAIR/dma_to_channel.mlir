@@ -22,37 +22,23 @@ module attributes {torch.debug_module_name = "mmult"} {
     linalg.fill ins(%c0_i32 : i32) outs(%alloc : memref<64x64xi32>)
     %alloc_0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
     memref.copy %alloc, %alloc_0 : memref<64x64xi32> to memref<64x64xi32>
-// CHECK: %[[EVENT0:.*]] = air.wait_all async
-// CHECK: %[[EVENT1:.*]] = scf.parallel{{.*}}init (%[[EVENT0]])
+// CHECK: scf.parallel
 // CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_0
-// CHECK: %[[EVENT2:.*]] = air.wait_all async
-// CHECK: scf.reduce(%[[EVENT2]]
-// CHECK: %[[EVENT3:.*]] = air.wait_all async [%[[EVENT4:.*]], %[[EVENT5:.*]]]
 
-// CHECK: %[[EVENT6:.*]] = air.wait_all async
-// CHECK: %[[EVENT7:.*]] = scf.parallel{{.*}}init (%[[EVENT6]])
+// CHECK: scf.parallel
 // CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_1
-// CHECK: %[[EVENT8:.*]] = air.wait_all async
-// CHECK: scf.reduce(%[[EVENT8]]
-// CHECK: %[[EVENT9:.*]] = air.wait_all async [%[[EVENT10:.*]], %[[EVENT11:.*]]]
 
 // CHECK: %[[EVENT12:.*]] = air.wait_all async
-// CHECK: %[[EVENT13:.*]] = scf.parallel{{.*}}init (%[[EVENT12]])
+// CHECK: scf.parallel
 // CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_2
-// CHECK: %[[EVENT14:.*]] = air.wait_all async
-// CHECK: scf.reduce(%[[EVENT14]]
-// CHECK: %[[EVENT15:.*]] = air.wait_all async [%[[EVENT16:.*]], %[[EVENT17:.*]]]
 
 // CHECK: %[[EVENT18:.*]] = air.wait_all async
-// CHECK: %[[EVENT19:.*]] = scf.parallel{{.*}}init (%[[EVENT18]])
+// CHECK: scf.parallel
 // CHECK: scf.for
 // CHECK: air.channel.get{{.*}}@channel_3
-// CHECK: %[[EVENT20:.*]] = air.wait_all async
-// CHECK: scf.reduce(%[[EVENT20]]
-// CHECK: %[[EVENT21:.*]] = air.wait_all async [%[[EVENT22:.*]], %[[EVENT23:.*]]]
     air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c2, %arg5=%c2) args(%arg6=%arg0, %arg7=%arg1, %arg8=%alloc_0) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
       %c1 = arith.constant 1 : index
       %c0 = arith.constant 0 : index
