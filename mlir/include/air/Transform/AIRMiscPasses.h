@@ -35,8 +35,6 @@ std::unique_ptr<mlir::Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass();
 std::unique_ptr<mlir::Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass(
     AIRUnrollOuterPerfectlyNestedLoopsPassOptions options);
 std::unique_ptr<mlir::Pass> createAIRSplitL2MemrefForBufferConstraintPass();
-std::unique_ptr<mlir::Pass> createAIRSplitL2MemrefForBufferConstraintPass(
-    AIRSplitL2MemrefForBufferConstraintPassOptions options);
 
 } // namespace air
 } // namespace xilinx

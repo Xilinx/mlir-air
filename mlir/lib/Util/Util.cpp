@@ -1001,6 +1001,40 @@ void air::populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
   }
 }
 
+// Check if the wraps and strides imply the default (contiguous, row-major) data
+// access pattern.
+bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
+                                     SmallVector<Value> memcpy_strides,
+                                     Value memref) {
+  if (memcpy_sizes.size() != memcpy_strides.size())
+    return false;
+  // If the sizes and strides were already accessing the memref in default
+  // order, then wraps and strides are not needed
+  if (memcpy_sizes.empty() || memcpy_strides.empty())
+    return true;
+  if (memcpy_sizes.size() == 1 && memcpy_strides.size() == 1) {
+    auto stepsize = mlir::getConstantIntValue(memcpy_strides[0]);
+    if (stepsize && *stepsize == 1)
+      return true;
+  }
+  SmallVector<int> memref_shape = getTensorShape(memref.getType());
+  if (memcpy_sizes.size() != memref_shape.size())
+    return false;
+  unsigned stride_factor = 1;
+  for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
+    auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
+    assert(stepsize && "non-static stride");
+    auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
+    assert(wrap && "non-static wrap");
+    if (*stepsize != stride_factor)
+      return false;
+    if (*wrap != memref_shape[i])
+      return false;
+    stride_factor *= *wrap;
+  }
+  return true;
+}
+
 // Get the memref size along a given dimension, that the access pattern actually
 // covers.
 SmallVector<int64_t>
@@ -1009,14 +1043,14 @@ air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
                                              SmallVector<Value> strides) {
   SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
   for (int i = sizes.size() - 1; i >= 0; i--) {
-    int current_memref_volumn = 1;
+    int current_memref_volume = 1;
     for (int j = memref_shape.size() - 1; j >= 0; j--) {
-      current_memref_volumn *= memref_shape[j];
+      current_memref_volume *= memref_shape[j];
       if (mlir::floorDiv(*getConstantIntValue(strides[i]),
-                         current_memref_volumn))
+                         current_memref_volume))
         continue;
       int64_t bound = mlir::floorDiv(*getConstantIntValue(strides[i]),
-                                     current_memref_volumn / memref_shape[j]) *
+                                     current_memref_volume / memref_shape[j]) *
                       *getConstantIntValue(sizes[i]);
       access_bounds[j] = std::max(access_bounds[j], bound);
     }
@@ -1060,4 +1094,31 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
           std::max(overall_access_bounds[i], access_bounds[i]);
   }
   return overall_access_bounds;
+}
+
+// Update strides after memref shrinkage. Assuming there is only one dimension
+// being shrunk.
+SmallVector<int>
+air::getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
+                                     SmallVector<int64_t> new_memref_shape,
+                                     SmallVector<Value> strides) {
+  SmallVector<int> new_strides(strides.size(), -1);
+  int shrinkage_volumn = 1;
+  int shrinkage_factor = 1;
+  for (int j = old_memref_shape.size() - 1; j >= 0; j--) {
+    shrinkage_volumn *= old_memref_shape[j];
+    if (old_memref_shape[j] != new_memref_shape[j]) {
+      shrinkage_factor =
+          mlir::ceilDiv(old_memref_shape[j], new_memref_shape[j]);
+      break;
+    }
+  }
+  for (int i = strides.size() - 1; i >= 0; i--) {
+    if (mlir::floorDiv(*getConstantIntValue(strides[i]), shrinkage_volumn))
+      new_strides[i] =
+          mlir::ceilDiv(*getConstantIntValue(strides[i]), shrinkage_factor);
+    else
+      new_strides[i] = *getConstantIntValue(strides[i]);
+  }
+  return new_strides;
 }

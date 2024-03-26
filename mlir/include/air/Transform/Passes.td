@@ -1177,12 +1177,6 @@ def AIRUnrollOuterPerfectlyNestedLoopsPass : Pass<"air-unroll-outer-affine-loops
 def AIRSplitL2MemrefForBufferConstraintPass : Pass<"air-split-l2-memref", "func::FuncOp"> {
   let summary = "Split L2 memref into smaller buffers if it couldn't fit with the buffer harware constraints";
   let constructor = "xilinx::air::createAIRSplitL2MemrefForBufferConstraintPass()";
-  let options = [
-    Option<"clMM2SChannels", "mm2s-channel-count", "int", /*default=*/"-1",
-           "The number of memory-mapped-to-streaming (MM2S) channels each hardware buffer has.">,
-    Option<"clS2MMChannels", "s2mm-channel-count", "int", /*default=*/"-1",
-           "The number of streaming-to-memory-mapped (S2MM) channels each hardware buffer has.">,
-  ];
 }
 
 #endif // AIR_CONVERSION_PASSES

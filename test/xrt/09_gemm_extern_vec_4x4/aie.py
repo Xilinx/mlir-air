@@ -135,6 +135,9 @@ with air.ir.Context() as ctx, Location.unknown():
         "canonicalize", "cse",
         "air-dependency-canonicalize",
         "canonicalize", "cse",
+        'func.func(air-split-l2-memref)',
+        "air-isolate-async-dma-loop-nests",
+        "canonicalize", "cse",
         "func.func(air-loop-fusion)",
         "air-label-scf-for-to-ping-pong",
     ])+')'
@@ -175,7 +178,6 @@ with air.ir.Context() as ctx, Location.unknown():
     ################################################
     
     pipeline = "builtin.module("+",".join([
-        'func.func(air-split-l2-memref{mm2s-channel-count=6 s2mm-channel-count=6})',
         'canonicalize', 'cse',
         'air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}',
         'canonicalize',
