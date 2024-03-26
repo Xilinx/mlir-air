@@ -1388,6 +1388,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     for (auto user : memref.getUsers()) {
       if (isa<air::ChannelInterface>(user) &&
           isa<scf::ParallelOp>(user->getParentOp())) {
+        auto chanOp = dyn_cast<air::ChannelInterface>(user);
         SmallVector<int, 2> lbs_spatial;
         SmallVector<int, 2> ubs_spatial;
         air::getSizesFromSpatialLoop(user->getParentOp(), lbs_spatial,
@@ -1398,6 +1399,23 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
           targetMemrefs.push_back(allocOp);
           allocOp->setAttr("split", BoolAttr::get(ctx, true));
           allocOp->setAttr("split_type", StringAttr::get(ctx, "scf.parallel"));
+          if (lbs_spatial.size() == 1) {
+            // If scf.parallel has less dims than the memref, i.e. partial
+            // unrolling, then label the dim.
+            int unrollDim = 0;
+            for (auto index : chanOp.getIndices()) {
+              if (auto indexOwner =
+                      scf::getParallelForInductionVarOwner(index)) {
+                if (indexOwner == user->getParentOp()) {
+                  allocOp->setAttr(
+                      "split_dim",
+                      IntegerAttr::get(IntegerType::get(ctx, 32), unrollDim));
+                  break;
+                }
+              }
+              unrollDim++;
+            }
+          }
         }
         for (unsigned i = 0; i < ubs_spatial.size(); i++) {
           targetMemrefsToColTilingFactors[allocOp].push_back(
@@ -1518,6 +1536,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
           auto memrefShape = air::getTensorShape(memref.getType());
 
           int dim = 0;
+          if (allocOp->hasAttr("split_dim"))
+            dim = allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt();
           for (unsigned i = 0; i < memrefShape.size(); i++) {
             if (chanUserOp.getOffsets().empty())
               break;
@@ -1583,7 +1603,11 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       else if (auto get = dyn_cast<air::ChannelGetOp>(user))
         gets.push_back(get);
     }
-    partitionMemref(puts, gets, 0,
+    int dim = 0;
+    if (allocOp->hasAttr("split_dim"))
+      dim = allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt();
+
+    partitionMemref(puts, gets, dim,
                     allocOp->getAttrOfType<StringAttr>("split_type").str());
   }
   for (auto allocOp : allocOps) {
