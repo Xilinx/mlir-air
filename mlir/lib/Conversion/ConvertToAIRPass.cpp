@@ -902,11 +902,13 @@ void HoistingAffineIf(affine::AffineIfOp op) {
   }
   // The last else block
   auto else_block_dma = air::getAIRDmaInBlock(current_if.getElseBlock());
-  dmas.push_back(else_block_dma);
-  module_builder.setInsertionPoint(else_block_dma);
-  replaceAIRDmaWithAIRChannelPairs(module_builder, innerMemorySpace,
-                                   else_block_dma, internalGetPut,
-                                   externalGetPut);
+  if (else_block_dma) {
+    dmas.push_back(else_block_dma);
+    module_builder.setInsertionPoint(else_block_dma);
+    replaceAIRDmaWithAIRChannelPairs(module_builder, innerMemorySpace,
+                                     else_block_dma, internalGetPut,
+                                     externalGetPut);
+  }
 
   // Get dependent ops to hoist together with external get/put
   SetVector<Operation *> backwardSlice;
