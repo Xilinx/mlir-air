@@ -746,3 +746,21 @@ module {
     return
   }
 }
+
+// -----
+
+// AIRRt alloc / dealloc.
+
+// CHECK-LABEL: func.func @func16
+// CHECK-NEXT: return
+module {
+  func.func @func16() {
+    %0 = airrt.alloc : memref<8x16xi32, 1 : i32>
+    %1 = airrt.alloc : memref<32x16xi32, 1 : i32>
+    %2 = airrt.alloc : memref<8x32xi32, 1 : i32>
+    airrt.dealloc %0 : memref<8x16xi32, 1 : i32>
+    airrt.dealloc %1 : memref<32x16xi32, 1 : i32>
+    airrt.dealloc %2 : memref<8x32xi32, 1 : i32>
+    return
+  }
+}
