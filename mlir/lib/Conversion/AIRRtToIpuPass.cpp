@@ -288,6 +288,32 @@ public:
   }
 };
 
+class AIRRtAllocOpConversion : public OpConversionPattern<airrt::AllocOp> {
+public:
+  using OpConversionPattern<airrt::AllocOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(airrt::AllocOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+class AIRRtDeallocOpConversion : public OpConversionPattern<airrt::DeallocOp> {
+public:
+  using OpConversionPattern<airrt::DeallocOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(airrt::DeallocOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 // This is a hack due to the short-term limited support with lowering host code.
 // This should be removed in the future.
 class HostMemRefCopyOpConversion : public OpConversionPattern<memref::CopyOp> {
@@ -884,7 +910,8 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     RewritePatternSet patterns(ctx);
     patterns.add<DmaToIpuPattern, HerdLoadToIpuPattern, SegmentLoadToIpuPattern,
                  ModuleMetadataToIpuPattern, L1MemRefStoreOpConversion,
-                 L1AffineStoreOpConversion, HostMemRefCopyOpConversion>(ctx);
+                 L1AffineStoreOpConversion, HostMemRefCopyOpConversion,
+                 AIRRtAllocOpConversion, AIRRtDeallocOpConversion>(ctx);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
