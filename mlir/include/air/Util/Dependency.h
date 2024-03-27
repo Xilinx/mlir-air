@@ -71,7 +71,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
 LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
                                                   scf::ParallelOp par,
                                                   Operation *originalChanOp,
-                                                  IRMapping &remap);
+                                                  IRMapping remap);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph
