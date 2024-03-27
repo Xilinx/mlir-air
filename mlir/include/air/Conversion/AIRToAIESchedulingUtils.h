@@ -45,14 +45,13 @@ std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec);
 bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 
 int64_t get1DOffset(SmallVector<Value> memcpy_offsets,
-                    SmallVector<Value> memcpy_strides, int byte_count_per_elem);
+                    SmallVector<Value> memcpy_strides);
 
 int getRepeatCount(Operation *memcpy_op);
 
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
-                   SmallVector<Value> memcpy_strides, int byte_count_per_elem,
-                   MLIRContext *ctx);
+                   SmallVector<Value> memcpy_strides, MLIRContext *ctx);
 
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
                                 SmallVector<Value> memcpy_strides,
