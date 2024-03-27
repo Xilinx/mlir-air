@@ -1131,7 +1131,7 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
   Operation *affineApplyOp = nullptr;
   if (!originalChanOp.getOffsets().empty()) {
     auto offsetDefOp = originalChanOp.getOffsets()[dim].getDefiningOp();
-    if (offsetDefOp && (isa<affine::AffineApplyOp>(offsetDefOp)) ||
+    if ((offsetDefOp && isa<affine::AffineApplyOp>(offsetDefOp)) ||
         isa<air::ExecuteOp>(offsetDefOp))
       affineApplyOp = offsetDefOp;
   }
