@@ -335,16 +335,16 @@ void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op) {
 void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op) {
   SmallVector<Value> operands_without_wait_all;
   for (auto iter_oper : op.getInitArgs()) {
-    if (auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp())) {
-      clearAsyncDependenciesOfAsyncOpImpl(wa_op);
-    } else {
-      // Push to vec if unique
-      if (std::find(operands_without_wait_all.begin(),
-                    operands_without_wait_all.end(),
-                    iter_oper) == operands_without_wait_all.end()) {
-        operands_without_wait_all.push_back(iter_oper);
-      }
+    // if (auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp())) {
+    //   clearAsyncDependenciesOfAsyncOpImpl(wa_op);
+    // } else {
+    // Push to vec if unique
+    if (std::find(operands_without_wait_all.begin(),
+                  operands_without_wait_all.end(),
+                  iter_oper) == operands_without_wait_all.end()) {
+      operands_without_wait_all.push_back(iter_oper);
     }
+    // }
   }
   for (auto v : operands_without_wait_all) {
     OpBuilder builder(op);
@@ -766,7 +766,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
 LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
                                                   scf::ParallelOp par,
                                                   Operation *originalChanOp,
-                                                  IRMapping &remap) {
+                                                  IRMapping remap) {
   SmallVector<int, 2> lbs_spatial, ubs_spatial;
   air::getSizesFromSpatialLoop(par.getOperation(), lbs_spatial, ubs_spatial);
   std::vector<unsigned> par_size;
@@ -776,6 +776,7 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
     par_vol *= ubs_spatial[i] - lbs_spatial[i] + 1;
   }
   for (unsigned iter = 0; iter < par_vol; iter++) {
+    IRMapping localRemap = remap;
     std::vector<unsigned> position =
         air::getMDVectorFromIterator(par_size, iter);
     SmallVector<Value, 4> emptyVec = {};
@@ -786,18 +787,18 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
           extractFromIntegerArrayAttr<int64_t>(air_chan.getSize());
       if (position.size() == putget.getIndices().size()) {
         for (unsigned i = 0; i < putget.getIndices().size(); i++)
-          remap.map(putget.getIndices()[i],
-                    builder.create<arith::ConstantIndexOp>(
-                        builder.getUnknownLoc(), position[i]));
+          localRemap.map(putget.getIndices()[i],
+                         builder.create<arith::ConstantIndexOp>(
+                             builder.getUnknownLoc(), position[i]));
       } else if (position.size() == 1 &&
                  std::find(air_chan_size.begin(), air_chan_size.end(),
                            air_chan.getBundleSize()) != air_chan_size.end()) {
         auto idx = std::find(air_chan_size.begin(), air_chan_size.end(),
                              air_chan.getBundleSize()) -
                    air_chan_size.begin();
-        remap.map(putget.getIndices()[idx],
-                  builder.create<arith::ConstantIndexOp>(
-                      builder.getUnknownLoc(), position[0]));
+        localRemap.map(putget.getIndices()[idx],
+                       builder.create<arith::ConstantIndexOp>(
+                           builder.getUnknownLoc(), position[0]));
       } else
         assert(false && "mismatching dimension counts between loop "
                         "iteration space and air.channel shape");
@@ -828,14 +829,21 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
           newC = newC.replaceSymbols(const_syms);
           auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
               newC, 0, position_apply.getMapOperands().size()));
-          assert(expr);
-          int result = expr.getValue();
-          remap.map(oper, builder.create<arith::ConstantIndexOp>(
-                              builder.getUnknownLoc(), result));
+          if (expr) {
+            int result = expr.getValue();
+            localRemap.map(oper, builder.create<arith::ConstantIndexOp>(
+                                     builder.getUnknownLoc(), result));
+          }
         }
       }
     }
-    auto new_memcpy = builder.clone(*originalChanOp, remap);
+    // Clone the immediate child op under scf.parallel.
+    Operation *parent = originalChanOp;
+    assert(par->isProperAncestor(originalChanOp));
+    while (parent->getParentOp() != par) {
+      parent = parent->getParentOp();
+    }
+    auto new_memcpy = builder.clone(*parent, localRemap);
     clearAsyncDependenciesOfAsyncOp(new_memcpy);
   }
   return success();
