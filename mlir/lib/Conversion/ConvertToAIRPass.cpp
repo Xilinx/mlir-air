@@ -503,6 +503,9 @@ T cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                         lookupOrDefaultRange(loop_op.getUpperBound(), remap),
                         lookupOrDefaultRange(loop_op.getStep(), remap),
                         lookupOrDefaultRange(getLoopTokens(loop_op), remap));
+  // Remap newly created loop op
+  for (unsigned i = 0; i < loop_op->getNumResults(); i++)
+    remap.map(loop_op->getResult(i), new_loop_op->getResult(i));
   auto insertionCheckpoint = builder.saveInsertionPoint();
   builder.setInsertionPointToStart(new_loop_op.getBody());
   for (Operation &child_op : loop_op.getBody()->getOperations()) {
@@ -1441,11 +1444,11 @@ class AIRDemoteDmaToAIRHierarchyConversion
     } else
       return failure();
 
-    if (src_type.getMemorySpaceAsInt() == innerMemorySpace ||
-        dst_type.getMemorySpaceAsInt() == innerMemorySpace)
+    auto memcpyInnerMemorySpace = std::max(src_type.getMemorySpaceAsInt(),
+                                           dst_type.getMemorySpaceAsInt());
+    if (memcpyInnerMemorySpace == innerMemorySpace)
       return failure(); // Dma op is already under correct hierarchy
-    else if (src_type.getMemorySpaceAsInt() > innerMemorySpace ||
-             dst_type.getMemorySpaceAsInt() > innerMemorySpace)
+    else if (memcpyInnerMemorySpace > innerMemorySpace)
       return failure(); // This pass is currently not able to promote in memory
                         // tier
 
@@ -1525,7 +1528,6 @@ class AIRDemoteDmaToAIRHierarchyConversion
         scf_par = hoistHerdToAsyncParallel(rewriter, loc, ctx, herd, lbs, ubs);
       } else if (segment) {
         // Since segment doesn't have iteration space, it doesn't hoist a loop
-        // insertionPointAtHierOp = rewriter.saveInsertionPoint();
       }
 
       if (herd) {
@@ -2914,7 +2916,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         // Start tracing dependency only if this put/get op is async
         auto async_op =
             dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation());
-        if (!async_op.getAsyncToken())
+        if (!async_op)
           return;
 
         // Connect async dependency of external put/get scf parallel
@@ -2946,9 +2948,6 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           }
         }
 
-        clearAsyncDependenciesOfAsyncOp(
-            dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()));
-
         depTracer.getPartialMemrefFromOp(
             memcpy_op.getOperation(), sink_op_memref_reads,
             sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs);
@@ -2965,6 +2964,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
               sink_op_memref_writes, sink_wait_all_op, "WAW/WAR");
 
           // Rebuild loop-carried dependency in scf loop nest
+          air::clearAsyncDependenciesOfAsyncOp(memcpy_op);
           depTracer.reconnectLoopCarriedDependencyFromOp(
               memcpy_op.getOperation());
         }

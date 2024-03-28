@@ -177,23 +177,17 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
 }
 
 // Recursively check for dependency to any air.herd induction variables.
-void traceDependentHerdId(air::AsyncOpInterface async_op,
+void traceDependentHerdId(Operation *async_op,
                           SmallVector<Value> &loop_dep_history,
                           SmallVector<Operation *> &op_history) {
+  if (!isAsyncOp(async_op))
+    return;
   // Get child op if async_op is air.execute
   Operation *op = nullptr;
-  if (auto air_region_op = dyn_cast<air::ExecuteOp>(async_op.getOperation())) {
-    if (air_region_op.getBody().front().getOperations().size() != 2) {
-      air_region_op->emitOpError("air::ExecuteOp should have only one child "
-                                 "operation beside the terminator");
-      return;
-    }
-    for (auto &child_op : air_region_op.getBody().front().getOperations()) {
-      if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
-        op = &child_op;
-    }
+  if (auto air_execute_op = dyn_cast<air::ExecuteOp>(async_op)) {
+    op = air_execute_op.getChildOp();
   } else {
-    op = async_op.getOperation();
+    op = async_op;
   }
 
   // Check for immediate dependency to loop induction vars
@@ -214,10 +208,12 @@ void traceDependentHerdId(air::AsyncOpInterface async_op,
         operand.getType().isa<IndexType>()) { // Only tracing scalar operands
       if (operand.getDefiningOp() &&
           mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
-        auto ancestor_async_op =
-            dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-        op_history.push_back(ancestor_async_op.getOperation());
-        traceDependentHerdId(ancestor_async_op, loop_dep_history, op_history);
+        op_history.push_back(operand.getDefiningOp());
+        traceDependentHerdId(operand.getDefiningOp(), loop_dep_history,
+                             op_history);
+      } else if (auto scf_for = scf::getForInductionVarOwner(operand)) {
+        op_history.push_back(scf_for);
+        traceDependentHerdId(scf_for, loop_dep_history, op_history);
       }
     }
   }
@@ -237,6 +233,17 @@ traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
                                                SmallVector<Value>{},
                                                SmallVector<Operation *>{}));
     loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcStrides()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+  }
+  for (unsigned i = 0; i < dmaNd_op.getDstOffsets().size(); i++) {
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstOffsets()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstSizes()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstStrides()[i],
                                                SmallVector<Value>{},
                                                SmallVector<Operation *>{}));
   }
@@ -260,9 +267,8 @@ traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
       if (std::get<0>(elem).getDefiningOp() &&
           mlir::dyn_cast<air::AsyncOpInterface>(
               std::get<0>(elem).getDefiningOp())) {
-        auto ancestor_async_op =
-            dyn_cast<air::AsyncOpInterface>(std::get<0>(elem).getDefiningOp());
-        std::get<2>(elem).push_back(ancestor_async_op.getOperation());
+        auto ancestor_async_op = std::get<0>(elem).getDefiningOp();
+        std::get<2>(elem).push_back(ancestor_async_op);
         traceDependentHerdId(ancestor_async_op, std::get<1>(elem),
                              std::get<2>(elem));
       }
@@ -335,16 +341,12 @@ void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op) {
 void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op) {
   SmallVector<Value> operands_without_wait_all;
   for (auto iter_oper : op.getInitArgs()) {
-    // if (auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp())) {
-    //   clearAsyncDependenciesOfAsyncOpImpl(wa_op);
-    // } else {
     // Push to vec if unique
     if (std::find(operands_without_wait_all.begin(),
                   operands_without_wait_all.end(),
                   iter_oper) == operands_without_wait_all.end()) {
       operands_without_wait_all.push_back(iter_oper);
     }
-    // }
   }
   for (auto v : operands_without_wait_all) {
     OpBuilder builder(op);
