@@ -20,6 +20,7 @@ CFLAGS += -g -I/opt/xaiengine/include
 CFLAGS += -I${ROCM_ROOT}/include
 CFLAGS += -std=c++17 -I$(ACDC_AIR)/runtime_lib/airhost/include -I$(ACDC_AIE)/runtime_lib/x86_64/test_lib/include \
           -DAIR_LIBXAIE_ENABLE
+CFLAGS += -I air_project/herd_0/
 LDFLAGS += -L/opt/xaiengine/lib -Wl,-R/opt/xaiengine/lib
 LDFLAGS += -L$(ACDC_AIR)/runtime_lib/airhost
 LDFLAGS += -L/lib/x86_64-linux-gnu/

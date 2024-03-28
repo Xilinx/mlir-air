@@ -22,6 +22,8 @@
 #include "air.hpp"
 #include "test_library.h"
 
+#include "aie_inc.cpp"
+
 #include "hsa/hsa.h"
 #include "hsa/hsa_ext_amd.h"
 
@@ -34,11 +36,6 @@
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 8
 #define TILE_SIZE (TILE_WIDTH * TILE_HEIGHT)
-
-namespace air::segments::segment_0 {
-void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t *, int, int32_t);
-};
-using namespace air::segments::segment_0;
 
 int main(int argc, char *argv[]) {
   uint64_t row = 3;
