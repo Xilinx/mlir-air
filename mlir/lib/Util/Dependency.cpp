@@ -666,8 +666,9 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   auto loc = for_op->getLoc();
   // If target ops are already perfectly nested, then skip
   auto hasNChannelOps = [](Block *block, unsigned N) {
-    auto count = llvm::range_size(block->getOps<air::ChannelInterface>());
-    return count == N;
+    SmallVector<air::ChannelInterface> chanOps;
+    block->walk([&](air::ChannelInterface op) { chanOps.push_back(op); });
+    return chanOps.size() == N;
   };
   if (hasNChannelOps(for_op.getBody(), 1))
     return for_op;
