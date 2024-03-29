@@ -503,6 +503,9 @@ T cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                         lookupOrDefaultRange(loop_op.getUpperBound(), remap),
                         lookupOrDefaultRange(loop_op.getStep(), remap),
                         lookupOrDefaultRange(getLoopTokens(loop_op), remap));
+  // Remap newly created loop op
+  for (unsigned i = 0; i < loop_op->getNumResults(); i++)
+    remap.map(loop_op->getResult(i), new_loop_op->getResult(i));
   auto insertionCheckpoint = builder.saveInsertionPoint();
   builder.setInsertionPointToStart(new_loop_op.getBody());
   for (Operation &child_op : loop_op.getBody()->getOperations()) {
@@ -775,7 +778,8 @@ void replaceAIRDmaWithAIRChannelPairs(
     annotateChannelOpWithBCastShape(builder, channel_op,
                                     op->getParentOfType<air::HerdOp>());
   } else {
-    // Else, infer channel's input shape from parent herd, if within a herd
+    // Else, infer channel's input shape from parent spatial loop, i.e. herd if
+    // within a herd, or scf.parallel if within an scf.parallel.
     SmallVector<int64_t, 2> channel_sizes = {1, 1};
     if (auto parent_herd_op = op->getParentOfType<air::HerdOp>()) {
       auto herd_size = parent_herd_op.getSizeOperands();
@@ -783,6 +787,11 @@ void replaceAIRDmaWithAIRChannelPairs(
         channel_sizes[i] =
             herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
       }
+    } else if (auto parent_par_op = op->getParentOfType<scf::ParallelOp>()) {
+      SmallVector<int, 2> lbs_spatial, ubs_spatial;
+      air::getSizesFromSpatialLoop(parent_par_op, lbs_spatial, ubs_spatial);
+      for (unsigned i = 0; i < ubs_spatial.size(); i++)
+        channel_sizes[i] = ubs_spatial[i] - lbs_spatial[i] + 1;
     }
     createChannelOpWithBCast(builder, module, cname, loc, channel_sizes);
   }
@@ -796,8 +805,14 @@ void replaceAIRDmaWithAIRChannelPairs(
       channel_idx_internal.push_back(operand);
     }
   } else if (auto parent_herd_op = op->getParentOfType<air::HerdOp>()) {
-    // Else, let both channel ops inherit herd's induction variables
+    // Let both channel ops inherit herd's induction variables
     for (auto iv : parent_herd_op.getIds()) {
+      channel_idx_internal.push_back(iv);
+      channel_idx_external.push_back(iv);
+    }
+  } else if (auto parent_par_op = op->getParentOfType<scf::ParallelOp>()) {
+    // Likewise, inherit scf.paralel op's induction variables
+    for (auto iv : parent_par_op.getInductionVars()) {
       channel_idx_internal.push_back(iv);
       channel_idx_external.push_back(iv);
     }
@@ -808,10 +823,6 @@ void replaceAIRDmaWithAIRChannelPairs(
   if (auto op_token = op.getAsyncToken()) {
     tys.push_back(air::AsyncTokenType::get(ctx));
   }
-  // assert(dst_type.getMemorySpaceAsInt() != src_type.getMemorySpaceAsInt());
-  // innerMemorySpace = dst_type.getMemorySpaceAsInt() >
-  // src_type.getMemorySpaceAsInt() ? dst_type.getMemorySpaceAsInt() :
-  // src_type.getMemorySpaceAsInt();
   if (dst_type.getMemorySpaceAsInt() == innerMemorySpace) {
     auto internal = builder.create<air::ChannelGetOp>(
         loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
@@ -1201,6 +1212,26 @@ class AIRDmaToAIRChannelConversion
                                 .getOperations()) {
           if (isa<air::SegmentTerminatorOp>(o))
             continue;
+          // When hoisting air.channel puts/gets from air.segment to air.launch,
+          // any dependence to air.herd should drop. TODO: generalize this to
+          // cover more event types.
+          if (air::isAsyncOp(&o)) {
+            for (auto operand : o.getOperands()) {
+              if (!operand.getDefiningOp())
+                continue;
+              if (auto depHerdOp =
+                      dyn_cast<air::HerdOp>(operand.getDefiningOp())) {
+                auto checkpoint = rewriter.saveInsertionPoint();
+                remap.map(depHerdOp.getAsyncToken(),
+                          rewriter
+                              .create<air::WaitAllOp>(
+                                  loc, air::AsyncTokenType::get(o.getContext()),
+                                  SmallVector<Value>{})
+                              .getAsyncToken());
+                rewriter.restoreInsertionPoint(checkpoint);
+              }
+            }
+          }
           if (o.hasAttr("hoist")) {
             if (auto child_for_op = dyn_cast<scf::ForOp>(o)) {
               cloneScfLoopUsingRemap<scf::ForOp>(rewriter, remap, child_for_op);
@@ -1441,11 +1472,11 @@ class AIRDemoteDmaToAIRHierarchyConversion
     } else
       return failure();
 
-    if (src_type.getMemorySpaceAsInt() == innerMemorySpace ||
-        dst_type.getMemorySpaceAsInt() == innerMemorySpace)
+    auto memcpyInnerMemorySpace = std::max(src_type.getMemorySpaceAsInt(),
+                                           dst_type.getMemorySpaceAsInt());
+    if (memcpyInnerMemorySpace == innerMemorySpace)
       return failure(); // Dma op is already under correct hierarchy
-    else if (src_type.getMemorySpaceAsInt() > innerMemorySpace ||
-             dst_type.getMemorySpaceAsInt() > innerMemorySpace)
+    else if (memcpyInnerMemorySpace > innerMemorySpace)
       return failure(); // This pass is currently not able to promote in memory
                         // tier
 
@@ -1525,7 +1556,6 @@ class AIRDemoteDmaToAIRHierarchyConversion
         scf_par = hoistHerdToAsyncParallel(rewriter, loc, ctx, herd, lbs, ubs);
       } else if (segment) {
         // Since segment doesn't have iteration space, it doesn't hoist a loop
-        // insertionPointAtHierOp = rewriter.saveInsertionPoint();
       }
 
       if (herd) {
@@ -2914,7 +2944,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         // Start tracing dependency only if this put/get op is async
         auto async_op =
             dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation());
-        if (!async_op.getAsyncToken())
+        if (!async_op)
           return;
 
         // Connect async dependency of external put/get scf parallel
@@ -2946,9 +2976,6 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           }
         }
 
-        clearAsyncDependenciesOfAsyncOp(
-            dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()));
-
         depTracer.getPartialMemrefFromOp(
             memcpy_op.getOperation(), sink_op_memref_reads,
             sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs);
@@ -2965,6 +2992,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
               sink_op_memref_writes, sink_wait_all_op, "WAW/WAR");
 
           // Rebuild loop-carried dependency in scf loop nest
+          air::clearAsyncDependenciesOfAsyncOp(memcpy_op);
           depTracer.reconnectLoopCarriedDependencyFromOp(
               memcpy_op.getOperation());
         }
