@@ -1212,6 +1212,26 @@ class AIRDmaToAIRChannelConversion
                                 .getOperations()) {
           if (isa<air::SegmentTerminatorOp>(o))
             continue;
+          // When hoisting air.channel puts/gets from air.segment to air.launch,
+          // any dependence to air.herd should drop. TODO: generalize this to
+          // cover more event types.
+          if (air::isAsyncOp(&o)) {
+            for (auto operand : o.getOperands()) {
+              if (!operand.getDefiningOp())
+                continue;
+              if (auto depHerdOp =
+                      dyn_cast<air::HerdOp>(operand.getDefiningOp())) {
+                auto checkpoint = rewriter.saveInsertionPoint();
+                remap.map(depHerdOp.getAsyncToken(),
+                          rewriter
+                              .create<air::WaitAllOp>(
+                                  loc, air::AsyncTokenType::get(o.getContext()),
+                                  SmallVector<Value>{})
+                              .getAsyncToken());
+                rewriter.restoreInsertionPoint(checkpoint);
+              }
+            }
+          }
           if (o.hasAttr("hoist")) {
             if (auto child_for_op = dyn_cast<scf::ForOp>(o)) {
               cloneScfLoopUsingRemap<scf::ForOp>(rewriter, remap, child_for_op);
