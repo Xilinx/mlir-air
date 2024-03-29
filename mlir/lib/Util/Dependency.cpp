@@ -837,11 +837,18 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
         }
       }
     }
-    // Clone the immediate child op under scf.parallel.
+    // Clone the immediate child op (and any dependent ops) under scf.parallel.
     Operation *parent = originalChanOp;
     assert(par->isProperAncestor(originalChanOp));
     while (parent->getParentOp() != par) {
       parent = parent->getParentOp();
+    }
+    for (auto operand : parent->getOperands()) {
+      if (!operand.getDefiningOp())
+        continue;
+      auto defOp = operand.getDefiningOp();
+      if (defOp->getParentOp() == par)
+        builder.clone(*defOp, localRemap);
     }
     auto new_memcpy = builder.clone(*parent, localRemap);
     clearAsyncDependenciesOfAsyncOp(new_memcpy);

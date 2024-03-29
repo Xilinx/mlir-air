@@ -1517,6 +1517,18 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         (void)air::unrollAIRChannelPutGetInScfParallel(builder, par, user,
                                                        remap);
         erased.push_back(par);
+
+        // Update the other channel op of the chanUserChannelDeclr.
+        for (auto theOtherChanOp :
+             air::getTheOtherChannelOpThroughSymbol(chanUserOp)) {
+          if (auto theOtherPar =
+                  theOtherChanOp->getParentOfType<scf::ParallelOp>()) {
+            builder.setInsertionPoint(theOtherPar);
+            (void)air::unrollAIRChannelPutGetInScfParallel(
+                builder, theOtherPar, theOtherChanOp, remap);
+            erased.push_back(theOtherPar);
+          }
+        }
       } else if ((isa<air::ChannelPutOp>(user) &&
                   splitTypeAttr.str() == "MM2SChannels") ||
                  (isa<air::ChannelGetOp>(user) &&
