@@ -1023,6 +1023,10 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
     is such that the puts and gets of all candidate channels mush share the same control 
     loop hierarchy, where every parent loops must have matching loop bounds.
   }];
+  let options = [
+    Option<"clAggressiveMode", "aggressive-mode", "bool", /*default=*/"false",
+            "When enabled, will attempt to use as few air.channels as possible">
+  ];
 }
 
 def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "ModuleOp"> {

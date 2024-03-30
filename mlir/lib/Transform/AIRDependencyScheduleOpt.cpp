@@ -2986,6 +2986,8 @@ class AIRFuseChannels
 public:
   AIRFuseChannels() = default;
   AIRFuseChannels(const AIRFuseChannels &pass) {}
+  AIRFuseChannels(const AIRFuseChannelsOptions &options)
+      : AIRFuseChannelsBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect>();
@@ -2997,9 +2999,19 @@ public:
     std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
-        if (checkIfMergeable(channelOps[i], channelOps[j])) {
+        if (clAggressiveMode &&
+            checkIfMergeable(channelOps[i], channelOps[j])) {
+          // Aggressively fuse air.channels by time multiplexing.
           mergeChannels(channelOps[i], channelOps[j]);
           chan_merge_map[channelOps[j]] = channelOps[i];
+        } else if (checkIfScfForMergeable(channelOps[i], channelOps[j])) {
+          // Fuse air.channels by scf.for loop unpeeling, i.e. recovering any
+          // missing zeroth iterations in scf.for loops.
+          air::ChannelOp chanA = channelOps[i];
+          air::ChannelOp chanB = channelOps[j];
+          sortChannelsByLoopNests(chanA, chanB);
+          mergeChannelOpsByScfFor(chanA, chanB);
+          chan_merge_map[chanB] = chanA;
         }
       }
     }
@@ -3031,6 +3043,39 @@ public:
   }
 
 private:
+  void sortChannelsByLoopNests(air::ChannelOp &chan_a, air::ChannelOp &chan_b) {
+    std::vector<air::ChannelPutOp> a_puts =
+        getChannelPutOpThroughSymbol(chan_a);
+    std::vector<air::ChannelPutOp> b_puts =
+        getChannelPutOpThroughSymbol(chan_b);
+    std::vector<air::ChannelGetOp> a_gets =
+        getChannelGetOpThroughSymbol(chan_a);
+    std::vector<air::ChannelGetOp> b_gets =
+        getChannelGetOpThroughSymbol(chan_b);
+    assert(a_puts.size() == 1);
+    assert(b_puts.size() == 1);
+    assert(a_gets.size() == 1);
+    assert(b_gets.size() == 1);
+    int a_put_loop_nest_size =
+        getParentLoopNest(a_puts[0].getOperation()).size();
+    int b_put_loop_nest_size =
+        getParentLoopNest(b_puts[0].getOperation()).size();
+    int a_get_loop_nest_size =
+        getParentLoopNest(a_gets[0].getOperation()).size();
+    int b_get_loop_nest_size =
+        getParentLoopNest(b_gets[0].getOperation()).size();
+    if ((a_put_loop_nest_size - b_put_loop_nest_size == 1) &&
+        (a_get_loop_nest_size - b_get_loop_nest_size == 1))
+      return;
+    else if ((b_put_loop_nest_size - a_put_loop_nest_size == 1) &&
+             (b_get_loop_nest_size - a_get_loop_nest_size == 1)) {
+      air::ChannelOp temp = chan_a;
+      chan_a = chan_b;
+      chan_b = temp;
+      return;
+    } else
+      assert(false && "NYI");
+  }
   bool checkIfMergeable(air::ChannelOp chan_a, air::ChannelOp chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
@@ -3061,6 +3106,87 @@ private:
       for (unsigned i = 0; i < a_get_loop_nest.size(); i++)
         if (!areEquivalentControlLoops(a_get_loop_nest[i], b_get_loop_nest[i]))
           return false;
+    }
+    return true;
+  }
+
+  bool checkIfScfForMergeableImpl(std::vector<Operation *> a_loop_nest,
+                                  std::vector<Operation *> b_loop_nest) {
+    if (std::abs((int)a_loop_nest.size() - (int)b_loop_nest.size()) != 1)
+      return false;
+    unsigned max_loop_nest_count =
+        std::max(a_loop_nest.size(), b_loop_nest.size());
+    // Skip over the unequal scf.for loop, and check equality for the rest of
+    // the loops first.
+    unsigned outermostScfFor = -1;
+    for (unsigned i = 0; i < max_loop_nest_count; i++) {
+      unsigned scfForCount = 0;
+      if ((i < a_loop_nest.size()) && isa<scf::ForOp>(a_loop_nest[i]))
+        scfForCount++;
+      if ((i < b_loop_nest.size()) && isa<scf::ForOp>(b_loop_nest[i]))
+        scfForCount++;
+      if (scfForCount == 1)
+        outermostScfFor = i;
+    }
+    if (outermostScfFor < 0)
+      return false;
+    SmallVector<unsigned> controlLoopIndices;
+    for (unsigned i = 0; i < max_loop_nest_count; i++)
+      if (i != outermostScfFor)
+        controlLoopIndices.push_back(i);
+    unsigned index = 0;
+    if (a_loop_nest.size() > b_loop_nest.size()) {
+      for (auto i : controlLoopIndices) {
+        if (!areEquivalentControlLoops(a_loop_nest[i], b_loop_nest[index++]))
+          return false;
+      }
+      // Check if the skipped scf.for loop has LB = 1. This is a sign of
+      // peeling, indicating opportunity of merge by unpeeling.
+      auto outerMostScfFor = dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]);
+      assert(outerMostScfFor);
+      if (auto constLB = getConstantIntValue(outerMostScfFor.getLowerBound()))
+        if (*constLB != 1)
+          return false;
+    } else {
+      for (auto i : controlLoopIndices) {
+        if (!areEquivalentControlLoops(a_loop_nest[index++], b_loop_nest[i]))
+          return false;
+      }
+      // Same as above
+      auto outerMostScfFor = dyn_cast<scf::ForOp>(b_loop_nest[outermostScfFor]);
+      assert(outerMostScfFor);
+      if (auto constLB = getConstantIntValue(outerMostScfFor.getLowerBound()))
+        if (*constLB != 1)
+          return false;
+    }
+    return true;
+  }
+  bool checkIfScfForMergeable(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    std::vector<air::ChannelPutOp> a_puts =
+        getChannelPutOpThroughSymbol(chan_a);
+    std::vector<air::ChannelPutOp> b_puts =
+        getChannelPutOpThroughSymbol(chan_b);
+    std::vector<air::ChannelGetOp> a_gets =
+        getChannelGetOpThroughSymbol(chan_a);
+    std::vector<air::ChannelGetOp> b_gets =
+        getChannelGetOpThroughSymbol(chan_b);
+    if (a_puts.size() != b_puts.size())
+      return false;
+    if (a_puts.size() != 1)
+      return false;
+    if (a_gets.size() != b_gets.size())
+      return false;
+    if (a_gets.size() != 1)
+      return false;
+    for (unsigned i = 0; i < a_puts.size(); i++) {
+      auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
+      auto b_put_loop_nest = getParentLoopNest(b_puts[i].getOperation());
+      return checkIfScfForMergeableImpl(a_put_loop_nest, b_put_loop_nest);
+    }
+    for (unsigned i = 0; i < a_gets.size(); i++) {
+      auto a_get_loop_nest = getParentLoopNest(a_gets[i].getOperation());
+      auto b_get_loop_nest = getParentLoopNest(b_gets[i].getOperation());
+      return checkIfScfForMergeableImpl(a_get_loop_nest, b_get_loop_nest);
     }
     return true;
   }
@@ -3138,6 +3264,28 @@ private:
       return false;
     return false;
   }
+  void mergeChannelOps(air::ChannelInterface a, air::ChannelInterface b) {
+    OpBuilder builder(a);
+    IRMapping remap;
+    remapAllParentLoopArgs(remap, a, b);
+    auto new_b = cloneOpAndOperands(builder, remap, b);
+    eraseParentLoopIfEmpty(*b);
+    auto async_a = dyn_cast<air::AsyncOpInterface>(a.getOperation());
+    if (async_a.getAsyncToken())
+      async_a.addAsyncDependency(
+          dyn_cast<air::AsyncOpInterface>(new_b).getAsyncToken());
+  }
+  void mergeChannelOpsByScfFor(air::ChannelInterface a,
+                               air::ChannelInterface b) {
+    scf::ForOp parentForOp = a->getParentOfType<scf::ForOp>();
+    while (parentForOp && parentForOp->getParentOfType<scf::ForOp>()) {
+      parentForOp = parentForOp->getParentOfType<scf::ForOp>();
+    }
+    OpBuilder builder(parentForOp);
+    parentForOp->getOpOperand(0).assign(
+        builder.create<arith::ConstantIndexOp>(parentForOp->getLoc(), 0));
+    eraseParentLoopIfEmpty(*b);
+  }
   void mergeChannels(air::ChannelOp chan_a, air::ChannelOp chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
@@ -3149,24 +3297,26 @@ private:
         getChannelGetOpThroughSymbol(chan_b);
     // Interleave puts and gets
     for (unsigned i = 0; i < a_puts.size(); i++) {
-      OpBuilder builder(a_puts[i]);
-      IRMapping remap;
-      remapAllParentLoopArgs(remap, a_puts[i], b_puts[i]);
-      auto new_b_put = cloneOpAndOperands(builder, remap, b_puts[i]);
-      eraseParentLoopIfEmpty(*b_puts[i]);
-      if (a_puts[i].getAsyncToken())
-        a_puts[i].addAsyncDependency(
-            dyn_cast<air::ChannelPutOp>(new_b_put).getAsyncToken());
+      mergeChannelOps(a_puts[i], b_puts[i]);
     }
     for (unsigned i = 0; i < a_gets.size(); i++) {
-      OpBuilder builder(a_gets[i]);
-      IRMapping remap;
-      remapAllParentLoopArgs(remap, a_gets[i], b_gets[i]);
-      auto new_b_get = cloneOpAndOperands(builder, remap, b_gets[i]);
-      eraseParentLoopIfEmpty(*b_gets[i]);
-      if (a_gets[i].getAsyncToken())
-        a_gets[i].addAsyncDependency(
-            dyn_cast<air::ChannelGetOp>(new_b_get).getAsyncToken());
+      mergeChannelOps(a_gets[i], b_gets[i]);
+    }
+  }
+  void mergeChannelOpsByScfFor(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    std::vector<air::ChannelPutOp> a_puts =
+        getChannelPutOpThroughSymbol(chan_a);
+    std::vector<air::ChannelPutOp> b_puts =
+        getChannelPutOpThroughSymbol(chan_b);
+    std::vector<air::ChannelGetOp> a_gets =
+        getChannelGetOpThroughSymbol(chan_a);
+    std::vector<air::ChannelGetOp> b_gets =
+        getChannelGetOpThroughSymbol(chan_b);
+    if (!b_puts[0]->getParentOfType<air::HerdOp>()) {
+      mergeChannelOpsByScfFor(a_puts[0], b_puts[0]);
+    }
+    if (!b_gets[0]->getParentOfType<air::HerdOp>()) {
+      mergeChannelOpsByScfFor(a_gets[0], b_gets[0]);
     }
   }
   Operation *cloneOpAndOperands(OpBuilder builder, IRMapping remap,
@@ -3223,38 +3373,43 @@ private:
     }
   }
   void eraseParentLoopIfEmpty(Operation &op) {
-    auto parent_region = op.getParentRegion();
-    auto parent_op = op.getParentOp();
-    if (!parent_region || !parent_op)
-      return;
-    int parent_op_count = 0;
-    Operation *op_pointer = nullptr;
-    for (auto &o : parent_region->getOps()) {
-      parent_op_count++;
-      op_pointer = &o;
-    }
-    if (parent_op_count == 1 ||
-        (parent_op_count == 2 && isa<scf::YieldOp>(op_pointer))) {
-      OpBuilder builder(parent_op);
-      if (parent_op->getNumResults()) {
-        auto wa = builder.create<air::WaitAllOp>(
-            builder.getUnknownLoc(),
-            air::AsyncTokenType::get(builder.getContext()),
-            SmallVector<Value>{});
-        parent_op->getResult(0).replaceAllUsesWith(wa.getAsyncToken());
+    auto hasNEvents = [](Block *block, unsigned N) {
+      unsigned eventCounter = 0;
+      for (auto &o : block->getOperations()) {
+        if (isa<scf::YieldOp>(o))
+          continue;
+        if (isa<air::WaitAllOp>(o))
+          continue;
+        if (auto execOp = dyn_cast<air::ExecuteOp>(o))
+          if (execOp->getNumResults() == 2 &&
+              execOp->getResult(1).getType().isa<IndexType>())
+            continue;
+        eventCounter++;
       }
-      parent_op->erase();
-    } else {
-      OpBuilder builder(&op);
-      if (op.getNumResults()) {
-        auto wa = builder.create<air::WaitAllOp>(
-            builder.getUnknownLoc(),
-            air::AsyncTokenType::get(builder.getContext()),
-            SmallVector<Value>{});
-        op.getResult(0).replaceAllUsesWith(wa.getAsyncToken());
-      }
-      op.erase();
+      return eventCounter == N;
+    };
+    Operation *targetOp = &op;
+    for (Operation *parent = &op; !isa<air::HierarchyInterface>(parent);
+         parent = parent->getParentOp()) {
+      if (!hasNEvents(parent->getBlock(), 1)) {
+        targetOp = parent;
+        break;
+      };
     }
+    // Erase target op.
+    OpBuilder builder(targetOp);
+    SmallVector<Value> depList;
+    for (auto operand : targetOp->getOperands()) {
+      if (operand.getType().isa<air::AsyncTokenType>())
+        depList.push_back(operand);
+    }
+    for (auto res : targetOp->getResults()) {
+      auto wa = builder.create<air::WaitAllOp>(
+          builder.getUnknownLoc(),
+          air::AsyncTokenType::get(builder.getContext()), depList);
+      res.replaceAllUsesWith(wa.getAsyncToken());
+    }
+    targetOp->erase();
   }
 };
 
@@ -3891,6 +4046,10 @@ std::unique_ptr<Pass> createAIRDeAliasMemref() {
 
 std::unique_ptr<Pass> createAIRFuseChannels() {
   return std::make_unique<AIRFuseChannels>();
+}
+std::unique_ptr<OperationPass<ModuleOp>>
+createAIRFuseChannels(const AIRFuseChannelsOptions &options) {
+  return std::make_unique<AIRFuseChannels>(options);
 }
 
 std::unique_ptr<Pass> createAIRIsolateAsyncDmaLoopNests() {
