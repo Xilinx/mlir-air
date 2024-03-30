@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-fuse-channels -air-to-aie="row-offset=2 col-offset=0 device=ipu" -canonicalize -cse %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels="aggressive-mode=true" -air-to-aie="row-offset=2 col-offset=0 device=ipu" -canonicalize -cse %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(ipu) {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(0, 0)

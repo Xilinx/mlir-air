@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-fuse-channels -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels="aggressive-mode=true" -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) {
 // CHECK:   %[[VAL_0:.*]] = aie.tile(2, 0)
