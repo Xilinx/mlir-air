@@ -462,6 +462,11 @@ _Fuse multiple air.channel ops into one_
 This pass fuses multiple air.channel ops into one. The condition for fusing channels 
 is such that the puts and gets of all candidate channels mush share the same control 
 loop hierarchy, where every parent loops must have matching loop bounds.
+
+#### Options
+```
+-aggressive-mode : When enabled, will attempt to use as few air.channels as possible
+```
 ### `-air-fuse-parallel-launch`
 
 _Fuse parallel launch pass_
