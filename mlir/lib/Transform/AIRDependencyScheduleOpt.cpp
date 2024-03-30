@@ -3374,7 +3374,6 @@ private:
   }
   void eraseParentLoopIfEmpty(Operation &op) {
     auto hasNEvents = [](Block *block, unsigned N) {
-      auto op_ptr = block->begin();
       unsigned eventCounter = 0;
       for (auto &o : block->getOperations()) {
         if (isa<scf::YieldOp>(o))
