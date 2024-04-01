@@ -2138,6 +2138,56 @@ private:
   int firstDim;
 };
 
+// Attempt to tile an L2-L1 air.dma_memcpy_nd op using an scf.parallel op.
+LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
+                                                bool SrcIsL1) {
+  OpBuilder builder(op);
+  auto loc = op->getLoc();
+  auto L1Memref = SrcIsL1 ? op.getSrcMemref() : op.getDstMemref();
+  auto L2Memref = SrcIsL1 ? op.getDstMemref() : op.getSrcMemref();
+  auto L1MemrefShape = air::getTensorShape(L1Memref.getType());
+  if (L1MemrefShape.size() < 2)
+    return failure();
+  SmallVector<Value, 2> lowerBounds, upperBounds, steps;
+  auto cst0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  auto cst1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+  lowerBounds = {cst0, cst0};
+  steps = {cst1, cst1};
+  for (unsigned i = 0; i < 2; i++) {
+    upperBounds.push_back(
+        builder.create<arith::ConstantIndexOp>(loc, L1MemrefShape[i]));
+  }
+  auto scfPar =
+      builder.create<scf::ParallelOp>(loc, lowerBounds, upperBounds, steps);
+
+  builder.setInsertionPointToStart(scfPar.getBody());
+  SmallVector<Value> newL2Offsets, newL2Wraps, newL2Strides;
+  air::populateDefaultWrapsAndStrides(builder, L2Memref, newL2Offsets,
+                                      newL2Wraps, newL2Strides);
+  SmallVector<Type, 4> tys;
+  SmallVector<Value, 4> deps;
+  air::DmaMemcpyNdOp newOp = nullptr;
+  if (SrcIsL1)
+    newOp = builder.create<air::DmaMemcpyNdOp>(
+        loc, tys, deps, L2Memref, newL2Offsets, newL2Wraps, newL2Strides,
+        L1Memref, op.getSrcOffsets(), op.getSrcSizes(), op.getSrcStrides());
+  else
+    newOp = builder.create<air::DmaMemcpyNdOp>(
+        loc, tys, deps, L1Memref, op.getSrcOffsets(), op.getSrcSizes(),
+        op.getSrcStrides(), L2Memref, newL2Offsets, newL2Wraps, newL2Strides);
+  int L1offsetsOffset = SrcIsL1 ? (2 + newOp.getDstOffsets().size() * 3) : (1);
+  int L2offsetsOffset = SrcIsL1 ? (1) : (2 + newOp.getDstOffsets().size() * 3);
+  // Mutate new memcpy op after tiling.
+  for (unsigned i = 0; i < 2; i++) {
+    newOp->getOpOperand(L1offsetsOffset + i)
+        .assign(scfPar.getInductionVars()[i]);
+    newOp->getOpOperand(L2offsetsOffset + i)
+        .assign(scfPar.getInductionVars()[i]);
+  }
+  op->erase();
+  return success();
+}
+
 template <class T>
 air::SegmentOp generateEmptySegmentOp(OpBuilder &rewriter, T op,
                                       air::LaunchOp launch) {
@@ -3100,6 +3150,54 @@ struct ParallelToHerdPass
 
     LLVM_DEBUG(llvm::outs() << "input\n");
     LLVM_DEBUG(module.print(llvm::outs()));
+
+    // Ensure that air.dma_memcpy_nd ops between L1 and L2 are within at least
+    // two parent scf.parallel loops.
+    module.walk([&](air::DmaMemcpyNdOp op) {
+      auto srcMemrefTy = op.getSrcMemref().getType().cast<MemRefType>();
+      auto dstMemrefTy = op.getDstMemref().getType().cast<MemRefType>();
+      Value L1Memref = nullptr;
+      Value L2Memref = nullptr;
+      bool SrcIsL1 = false;
+      if ((srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L1) &&
+          (dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L2)) {
+        L1Memref = op.getSrcMemref();
+        L2Memref = op.getDstMemref();
+        SrcIsL1 = true;
+      } else if ((srcMemrefTy.getMemorySpaceAsInt() ==
+                  (int)air::MemorySpace::L2) &&
+                 (dstMemrefTy.getMemorySpaceAsInt() ==
+                  (int)air::MemorySpace::L1)) {
+        L1Memref = op.getDstMemref();
+        L2Memref = op.getSrcMemref();
+        SrcIsL1 = false;
+      } else
+        return;
+      // L2-side dma data access pattern needs to be the default. Otherwise,
+      // NYI.
+      if (SrcIsL1 && (!op.getDstOffsets().empty()))
+        return;
+      if ((!SrcIsL1) && (!op.getSrcOffsets().empty()))
+        return;
+      // Check if the memcpy op has at least two parent scf.parallel loops.
+      int parentParOpCount = 0;
+      Operation *parentParOp = op;
+      while (parentParOp->getParentOfType<scf::ParallelOp>()) {
+        parentParOp = parentParOp->getParentOfType<scf::ParallelOp>();
+        parentParOpCount++;
+      }
+      parentParOp = op;
+      while (parentParOp->getParentOfType<scf::ForallOp>()) {
+        parentParOp = parentParOp->getParentOfType<scf::ForallOp>();
+        parentParOpCount++;
+      }
+      if (parentParOpCount > 1)
+        return;
+      assert(parentParOpCount && "Expects at least one scf.parallel or "
+                                 "scf.forall parent op around an L2-L1 dma op");
+      if (TileL1L2AIRMemcpyUsingScfParallel(op, SrcIsL1).failed())
+        assert(false && "debug");
+    });
 
     llvm::SmallVector<Operation *> hierOps;
     module.walk([&](air::HierarchyInterface op) { hierOps.push_back(op); });

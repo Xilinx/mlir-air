@@ -183,3 +183,42 @@ module {
     return
   }
 }
+
+// -----
+
+// This test demonstrates how to infer an air.dma_memcpy_nd op between L2 and L1, not within two scf.parallel loop nests, gets inferred with a herd around it. 
+
+// CHECK-LABEL: module {
+//       CHECK:  func.func @l2_to_l1_dma_infer_herd(
+//       CHECK:    air.herd @herd_0
+//       CHECK:       air.dma_memcpy_nd
+//       CHECK:       air.herd_terminator
+//       CHECK:    }
+//       CHECK:    return
+//       CHECK:  }
+//       CHECK: }
+module {
+  func.func @l2_to_l1_dma_infer_herd(%l2_buffer: memref<2x2x32x32xi32, 1>, %l1_buffer: memref<2x2x4x8x4x8xi32, 2>) {
+    %c64 = arith.constant 64 : index
+    %c16384 = arith.constant 16384 : index
+    %c1024 = arith.constant 1024 : index
+    %c8192 = arith.constant 8192 : index
+    %c512 = arith.constant 512 : index
+    %c131072 = arith.constant 131072 : index
+    %c2 = arith.constant 2 : index
+    %c2048 = arith.constant 2048 : index
+    %c256 = arith.constant 256 : index
+    %c65536 = arith.constant 65536 : index
+    %c0 = arith.constant 0 : index
+    %c0_i32 = arith.constant 0 : i32
+    %c8 = arith.constant 8 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c4 = arith.constant 4 : index
+    %c16 = arith.constant 16 : index
+    scf.parallel (%x,%y) = (%c0,%c0) to (%c16,%c8) step (%c1, %c1) {
+      air.dma_memcpy_nd (%l2_buffer[] [] [], %l1_buffer[%c0, %c0, %c0, %c0, %c0, %c0] [%c2, %c2, %c8, %c4, %c4, %c8] [%c2048, %c1024, %c32, %c8, %c256, %c1]) : (memref<2x2x32x32xi32, 1>, memref<2x2x4x8x4x8xi32, 2>)
+    }
+    return
+  }
+}
