@@ -1091,6 +1091,8 @@ private:
   getTargetMemrefAllocs(func::FuncOp func,
                         std::map<memref::AllocOp, SmallVector<int>>
                             &targetMemrefsToColTilingFactors);
+  int getMemrefSplitDim(SmallVector<air::ChannelInterface> putgets,
+                        int memrefRank);
 };
 
 template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
@@ -1365,6 +1367,32 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     deallocOp->erase();
 }
 
+// Infer the dimension to which the join / distribute pattern happens, as basis
+// for memref splitting.
+int AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
+    SmallVector<air::ChannelInterface> putgets, int memrefRank) {
+  int split_dim = 0;
+  for (unsigned i = 0; i < putgets.size() - 1; i++) {
+    for (unsigned j = i + 1; j < putgets.size(); j++) {
+      if (putgets[i].getOffsets().size() != putgets[j].getOffsets().size())
+        continue;
+      for (unsigned k = 0; k < putgets[i].getOffsets().size(); k++) {
+        if (getConstantIntValue(putgets[i].getOffsets()[k]) &&
+            getConstantIntValue(putgets[j].getOffsets()[k])) {
+          if (*getConstantIntValue(putgets[i].getOffsets()[k]) !=
+              *getConstantIntValue(putgets[j].getOffsets()[k]))
+            split_dim = k;
+        }
+      }
+    }
+  }
+  // Match offset dims with memref shape.
+  if (split_dim)
+    split_dim = split_dim + memrefRank - putgets[0].getOffsets().size();
+  split_dim = std::max(split_dim, 0);
+  return split_dim;
+}
+
 SmallVector<memref::AllocOp>
 AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     func::FuncOp func, std::map<memref::AllocOp, SmallVector<int>>
@@ -1390,8 +1418,8 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     Value memref = allocOp.getMemref();
     if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
       memref = exec->getResult(1);
-    SmallVector<std::string> MM2SChannels;
-    SmallVector<std::string> S2MMChannels;
+    SmallVector<air::ChannelOp> MM2SChannels;
+    SmallVector<air::ChannelOp> S2MMChannels;
     for (auto user : memref.getUsers()) {
       if (isa<air::ChannelInterface>(user) &&
           user->getParentOfType<scf::ParallelOp>()) {
@@ -1429,9 +1457,11 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
               ubs_spatial[i] - lbs_spatial[i] + 1);
         }
       } else if (auto put = dyn_cast<air::ChannelPutOp>(user)) {
-        push_back_if_unique<std::string>(MM2SChannels, put.getChanName().str());
+        push_back_if_unique<air::ChannelOp>(
+            MM2SChannels, air::getChannelDeclarationThroughSymbol(put));
       } else if (auto get = dyn_cast<air::ChannelGetOp>(user)) {
-        push_back_if_unique<std::string>(S2MMChannels, get.getChanName().str());
+        push_back_if_unique<air::ChannelOp>(
+            S2MMChannels, air::getChannelDeclarationThroughSymbol(get));
       }
     }
     if (MM2SChannels.size() <= 1 && S2MMChannels.size() <= 1)
@@ -1444,10 +1474,30 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     if (MM2SChannels.size() > 1) {
       targetMemrefsToColTilingFactors[allocOp].push_back(MM2SChannels.size());
       allocOp->setAttr("split_type", StringAttr::get(ctx, "MM2SChannels"));
+      SmallVector<air::ChannelInterface> putgets;
+      for (auto chanOp : MM2SChannels)
+        for (auto put : air::getChannelPutOpThroughSymbol(chanOp))
+          putgets.push_back(put);
+      int split_dim = getMemrefSplitDim(
+          putgets, air::getTensorShape(memref.getType()).size());
+      if (split_dim)
+        allocOp->setAttr(
+            "split_dim",
+            IntegerAttr::get(IntegerType::get(ctx, 32), split_dim));
     }
     if (S2MMChannels.size() > 1) {
       targetMemrefsToColTilingFactors[allocOp].push_back(S2MMChannels.size());
       allocOp->setAttr("split_type", StringAttr::get(ctx, "S2MMChannels"));
+      SmallVector<air::ChannelInterface> putgets;
+      for (auto chanOp : MM2SChannels)
+        for (auto get : air::getChannelGetOpThroughSymbol(chanOp))
+          putgets.push_back(get);
+      int split_dim = getMemrefSplitDim(
+          putgets, air::getTensorShape(memref.getType()).size());
+      if (split_dim)
+        allocOp->setAttr(
+            "split_dim",
+            IntegerAttr::get(IntegerType::get(ctx, 32), split_dim));
     }
   }
   return targetMemrefs;
