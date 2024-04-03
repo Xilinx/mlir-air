@@ -2173,13 +2173,13 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
         L1Memref, op.getSrcOffsets(), op.getSrcSizes(), op.getSrcStrides());
   else
     newOp = builder.create<air::DmaMemcpyNdOp>(
-        loc, tys, deps, L1Memref, op.getSrcOffsets(), op.getSrcSizes(),
-        op.getSrcStrides(), L2Memref, newL2Offsets, newL2Wraps, newL2Strides);
+        loc, tys, deps, L1Memref, op.getDstOffsets(), op.getDstSizes(),
+        op.getDstStrides(), L2Memref, newL2Offsets, newL2Wraps, newL2Strides);
   int L1offsetsOffset = SrcIsL1 ? (2 + newOp.getDstOffsets().size() * 3) : (1);
   int L2offsetsOffset = SrcIsL1 ? (1) : (2 + newOp.getDstOffsets().size() * 3);
-  int L2sizesOffset =
-      L2offsetsOffset +
-      (SrcIsL1 ? newOp.getDstOffsets().size() : newOp.getSrcOffsets().size());
+  int srcSizesOffset =
+      2 + newOp.getDstOffsets().size() * 3 + newOp.getSrcOffsets().size();
+  int dstSizesOffset = 1 + newOp.getDstOffsets().size();
   // Mutate new memcpy op after tiling.
   builder.setInsertionPoint(newOp);
   for (unsigned i = 0; i < 2; i++) {
@@ -2187,10 +2187,16 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
         .assign(scfPar.getInductionVars()[i]);
     newOp->getOpOperand(L2offsetsOffset + i)
         .assign(scfPar.getInductionVars()[i]);
-    int newL2SizeInt = mlir::ceilDiv(*getConstantIntValue(newL2Wraps[i]),
-                                     *getConstantIntValue(upperBounds[i]));
-    newOp->getOpOperand(L2sizesOffset + i)
-        .assign(builder.create<arith::ConstantIndexOp>(loc, newL2SizeInt));
+    int newSrcSizeInt =
+        mlir::ceilDiv(*getConstantIntValue(newOp.getSrcSizes()[i]),
+                      *getConstantIntValue(upperBounds[i]));
+    int newDstSizeInt =
+        mlir::ceilDiv(*getConstantIntValue(newOp.getDstSizes()[i]),
+                      *getConstantIntValue(upperBounds[i]));
+    newOp->getOpOperand(srcSizesOffset + i)
+        .assign(builder.create<arith::ConstantIndexOp>(loc, newSrcSizeInt));
+    newOp->getOpOperand(dstSizesOffset + i)
+        .assign(builder.create<arith::ConstantIndexOp>(loc, newDstSizeInt));
   }
   op->erase();
   return success();
