@@ -247,7 +247,7 @@ traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
                                                SmallVector<Value>{},
                                                SmallVector<Operation *>{}));
   }
-  for (auto elem : loop_dep_history) {
+  for (auto &elem : loop_dep_history) {
     // If parent loop op is an air.launch_herd
     if (auto hl_op = air::getHerdArgOwner(std::get<0>(elem))) {
       for (auto id : hl_op.getIds()) {
