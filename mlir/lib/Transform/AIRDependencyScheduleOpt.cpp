@@ -3816,6 +3816,20 @@ public:
       clearAsyncDependenciesOfAsyncOp(dealloc_exec);
     }
 
+    // Clear any async token usage of fused allocs outside of the fused scf.for
+    // loop.
+    for (auto execOpPair : alloc_dealloc_execs) {
+      air::ExecuteOp alloc_exec = execOpPair.first;
+      for (auto user : alloc_exec.getAsyncToken().getUsers()) {
+        if (new_loop_op->isProperAncestor(user))
+          continue;
+        if (!isa<air::AsyncOpInterface>(user))
+          continue;
+        air::eraseAsyncDependencyFromAsyncOp(
+            dyn_cast<air::AsyncOpInterface>(user), alloc_exec.getAsyncToken());
+      }
+    }
+
     // Scf.yield op.
     builder.setInsertionPointToEnd(new_loop_op.getBody());
     SmallVector<Value> yield_dep_list;
