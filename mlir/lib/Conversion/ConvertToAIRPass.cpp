@@ -2177,12 +2177,20 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
         op.getSrcStrides(), L2Memref, newL2Offsets, newL2Wraps, newL2Strides);
   int L1offsetsOffset = SrcIsL1 ? (2 + newOp.getDstOffsets().size() * 3) : (1);
   int L2offsetsOffset = SrcIsL1 ? (1) : (2 + newOp.getDstOffsets().size() * 3);
+  int L2sizesOffset =
+      L2offsetsOffset +
+      (SrcIsL1 ? newOp.getDstOffsets().size() : newOp.getSrcOffsets().size());
   // Mutate new memcpy op after tiling.
+  builder.setInsertionPoint(newOp);
   for (unsigned i = 0; i < 2; i++) {
     newOp->getOpOperand(L1offsetsOffset + i)
         .assign(scfPar.getInductionVars()[i]);
     newOp->getOpOperand(L2offsetsOffset + i)
         .assign(scfPar.getInductionVars()[i]);
+    int newL2SizeInt = mlir::ceilDiv(*getConstantIntValue(newL2Wraps[i]),
+                                     *getConstantIntValue(upperBounds[i]));
+    newOp->getOpOperand(L2sizesOffset + i)
+        .assign(builder.create<arith::ConstantIndexOp>(loc, newL2SizeInt));
   }
   op->erase();
   return success();
@@ -3196,7 +3204,7 @@ struct ParallelToHerdPass
       assert(parentParOpCount && "Expects at least one scf.parallel or "
                                  "scf.forall parent op around an L2-L1 dma op");
       if (TileL1L2AIRMemcpyUsingScfParallel(op, SrcIsL1).failed())
-        assert(false && "debug");
+        assert(false);
     });
 
     llvm::SmallVector<Operation *> hierOps;
