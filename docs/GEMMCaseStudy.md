@@ -1,69 +1,60 @@
 # Bfloat16 GEMM on Ryzen AI: A Case Study for MLIR-AIR compilation pipeline.
 
 ## MLIR-AIR Compilation Recipe
-    
-    ################################################
-    ## Binding scf.parallel to air hierarchies
-    ################################################
 
-        "buffer-results-to-out-params",
-        "air-linalg-to-func{link-with=mm.o}",
-        "air-par-to-herd{depth=1}",
-        "air-par-to-launch{has-air-segment=true}",
-        "air-copy-to-dma",
-        "canonicalize", "cse",
     
-    ###############################################
-    # Extract event dependency and optimize schedule
-    ###############################################
+#### Binding scf.parallel to air hierarchies
 
-        "air-dependency",
-        "air-dependency-schedule-opt",
-        "air-specialize-dma-broadcast",
-        "air-dma-to-channel",
-        "canonicalize", "cse",
-        "air-dependency-canonicalize",
-        "canonicalize", "cse",
-        'func.func(air-split-l2-memref)',
-        "air-isolate-async-dma-loop-nests",
-        "canonicalize", "cse",
-        "func.func(air-loop-fusion)",
-        "air-label-scf-for-to-ping-pong",
-        "air-ping-pong-transform{keep-memref-dealloc=true}",
-        "canonicalize", "cse",
-        "air-specialize-channel-wrap-and-stride",
-        "canonicalize", "cse",
+"buffer-results-to-out-params"  
+"air-linalg-to-func{link-with=mm.o}"  
+["air-par-to-herd{depth=1}"](#air-par-to-herd)  
+["air-par-to-launch{has-air-segment=true}"](#air-par-to-launch)  
+["air-copy-to-dma"](#air-copy-to-dma)   
+"canonicalize", "cse"  
     
-    ################################################
-    ## Place herd to segment
-    ################################################
+#### Extract event dependency and optimize schedule
 
-        "func.func(air-collapse-herd{max-col-size=4})",
-        'canonicalize', 'cse',
-        "air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}",
-        'canonicalize', 'cse',
-        'func.func(air-renumber-dma)'
+["air-dependency"](#air-dependency)  
+["air-dependency-schedule-opt"](#air-dependency-schedule-opt)  
+"air-specialize-dma-broadcast"  
+["air-dma-to-channel"](#air-dma-to-channel)  
+"canonicalize", "cse"  
+["air-dependency-canonicalize"](#air-dependency-canonicalize)  
+"canonicalize", "cse"  
+['func.func(air-split-l2-memref)'](#air-split-l2-memref)  
+["air-isolate-async-dma-loop-nests"](#air-isolate-async-dma-loop-nests)  
+"canonicalize", "cse"  
+["func.func(air-loop-fusion)"](#air-loop-fusion)  
+["air-label-scf-for-to-ping-pong"](#air-label-scf-for-to-ping-pong)  
+["air-ping-pong-transform{keep-memref-dealloc=true}"](#air-ping-pong-transform)  
+"canonicalize", "cse"  
+"air-specialize-channel-wrap-and-stride"  
+"canonicalize", "cse"
     
-    ################################################
-    ## MLIR-AIR to MLIR-AIE
-    ################################################
-    
-        'canonicalize', 'cse',
-        'air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}',
-        'canonicalize',
-    
-    ################################################
-    ## MLIR-AIR runtime lowering
-    ################################################
+### Place herd to segment
 
-        'air-to-std',
-        'canonicalize',
-        'symbol-dce',
-        'func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})',
-        'func.func(air-unroll-outer-affine-loops{depth=2})',
-        'affine-expand-index-ops',
-        'airrt-to-ipu',
-        'canonicalize',
+["func.func(air-collapse-herd{max-col-size=4})"](#air-collapse-herd)  
+'canonicalize', 'cse'  
+["air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}"](#air-place-herds)  
+'canonicalize', 'cse'  
+'func.func(air-renumber-dma)'
+    
+### MLIR-AIR to MLIR-AIE
+    
+'canonicalize', 'cse'  
+['air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}'](#air-to-aie)  
+'canonicalize'
+    
+### MLIR-AIR runtime lowering
+
+['air-to-std'](#air-to-std)  
+'canonicalize'  
+'symbol-dce'  
+['func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})'](#affine-loop-opt)  
+['func.func(air-unroll-outer-affine-loops{depth=2})'](#air-unroll-outer-affine-loops)  
+'affine-expand-index-ops'  
+['airrt-to-ipu'](#airrt-to-ipu)  
+'canonicalize'
 
 ## Overview
 
@@ -82,8 +73,8 @@
 ||||||
 
 ## MLIR-AIR Passes
-
-`air-par-to-herd`
+        
+### air-par-to-herd
 
 Converts parallel computations, represented by `scf.parallel` or `scf.forall`, into a more optimized, hardware-specific form called `air.herd`. This transformation is targeted towards accelerating the matrix multiplication problem, by partitioning the proglem into strictly spatial concurrent threads represented by the iteration space of `air.herd`.
 
@@ -99,7 +90,7 @@ By consolidating the `scf.parallel` body with the `isolateFromAbove` `air.herd` 
 
 The L1 memory allocation, deallocation, and copying operations that prepare data for the `air.herd` operation are retained within its body. This ensures that the memory management within each of its parallel thread is still handled explicitly, to maintain control over data layout and access patterns.
 
-`air-par-to-launch`
+### air-par-to-launch`
 
 Converts parallel computations, represented by `scf.parallel` or `scf.forall`, into `air.launch` construct. This transformation is targeted towards the dispatching of the already parallelized computations---represented by `air.herd`---in a more structured and *potentially* parallelized manner that is better suited for the dynamic launching of program iterations to reuse hardware configurations by the host.
 
@@ -115,7 +106,7 @@ The `air.segment` encapsulates the original computational logic, including L2 me
 
 The transformation retains the explicit management of L2 memory (allocations and copies) and computations (the `air.herd` operation) but organizes them within the `air.launch` construct. This organization could facilitate the dynamic hardware dispatch managed from the host-side control program, scheduled by the compiler or runtime system, taking advantage of hardware capabilities for parallel execution.
 
-`air-copy-to-dma`
+### air-copy-to-dma
 
 Converts memory operations to optimize data transfer through Direct Memory Access (DMA) operations, targeting AIE's DMA hardware.
 
@@ -134,7 +125,7 @@ The core computational logic, represented by operations like `linalg.generic`, r
 
 The DMA operations include identifiers (`{id = 1 : i32}, {id = 2 : i32}, {id = 3 : i32}`), which could be used for tracking, debugging, or further optimization by subsequent passes or by the runtime system. This explicit tagging could help in analyzing the performance or behavior of DMA operations within the execution pipeline.
 
-`air-dependency`
+### air-dependency
 
 Transforms the original IR towards an asynchronous execution model, specifically targeting optimizations and parallel execution of memory operations, computational tasks, and data transfers.
 
@@ -150,7 +141,7 @@ If the input code was organized as nests and segments of `air.herd`, `air.segmen
 
 The pass separates data preparation (e.g., memory allocations and data transfers) from the computational workload. By doing so, it allows for data transfers to be overlapped with computations, minimizing the overall execution latency. This is particularly beneficial to AIEs featuring discrete hardware DMA, which is faster and more efficient than host-driven memory transfers, as they can move data directly between memory locations without host intervention.
 
-`air-dependency-schedule-opt`
+### air-dependency-schedule-opt
 
 Optimizes the scheduling of dependencies in the MLIR module, specifically focusing on improving the parallelism and efficiency of execution through the asynchronous execution model. One key optimization introduced is the detection of broadcasting data movement opportunities, and the subsequent inferring of broadcasting pattern.
 
@@ -165,7 +156,7 @@ specifying a broadcast_pattern for data transfers in its body reduces the bandwi
 
 The specific details of the broadcast_pattern attribute (e.g., `affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, -d1 + 3 >= 0, s0 >= 0, -s0 + 3 >= 0)>`) describe the rules that govern the data  replication pattern. Specifically, the symbol `s0` represents an iteration across unique broadcast sources, while the dimensions `d0` and `d1` represent the two-dimensional broadcast destination space: the set in `d0, d1` space corresponding to a `true` result in the `affine_set` represents all broadcast destinations to the broacast source `s0`. For example, in the `affine_set` given above, for each integer value of `s0`, ranged within `[0, 3]`, the set returns `true` if `(d0 == s0, 0 <= d1 <= 3`, meaning that this DMA operation shall involve four unique broadcast sources, where each source is broadcasted four-way across the 2nd (`d1`) dimension.
 
-`dma-to-channel`
+### air-dma-to-channel
 
 Transforms direct memory access (DMA) operations into channel-based communications, consisting of a series of channel put and get operations via shared channel constructs.
 
@@ -179,7 +170,7 @@ The use of channels for communication also implies a synchronization mechanism. 
 
 By organizing data movement through channels, the transformed IR is better suited for parallel execution across AIE tiles, where channels can facilitate the broadcasting of data across multiple AIE tiles.
 
-`air-dependency-canonicalize`
+### air-dependency-canonicalize
 
 Transforms the input IR by optimizing and restructuring the dependency and execution flow of the operations without altering the semantics of the original program. 
 
@@ -193,7 +184,7 @@ The pass also optimizes unnecessary asynchronous events, including memory alloca
 
 The pass simplifies the loop-carred async tokens in control flow constructs (`scf.for`, `scf.parallel`) and potentially merges or eliminates redundant control flow paths. This makes the program easier to understand and can help in further optimization passes.
 
-`air-split-l2-memref`
+### air-split-l2-memref
 
 Transforms the input IR by splitting certain L2 memory references (`memrefs`) to adhere to AIE memtile-specific buffer and DMA channel constraints or optimization opportunities.
 
@@ -207,7 +198,7 @@ Once L2 memref splitting opportunities are detected, the pass then replaces them
 
 The pass introduces explicit memory allocation and deallocation operations for the newly created L2 memrefs, thus explicitly managing their lifetime and facilitating their bufferization onto memtiles in the downstream pass.
 
-`air-isolate-async-dma-loop-nest`
+### air-isolate-async-dma-loop-nests
 
 Transforms the IR by splitting the `scf.for` loop nests in `air.segment` body, based on the loop-carried async dependency of the original loop. The goal is to attempt to split nested `scf.for` loops around `air.channel.put/get` operations into perfect `scf.for` loop nests where only a single `air.channel.put`, or `air.channel.get` operation exists. This exposes DMA channel optimization opportunities, where perfectly nested parent for loops can fold as extra DMA channel wrap-and-stride dimensions.
 
@@ -221,7 +212,7 @@ This pass exposes channel operation optimization opportunities, where any perfec
 
 In addition, the pass also eliminates any perfectly nested for loops surrounding any `air.herd`. The rationale is that the `air.herd` body will be outlined into compute tasks executed on AIE cores as well as finite-state machines of AIE tile DMA Buffer Descriptors, both of which are executing within infinite loops.
 
-`air-loop-fusion`
+### air-loop-fusion
 
 Optimizes the data movement around L2 memories by rearranging and potentially fusing perfect `scf.for` loop nests of `air.channel.put` and `air.channel.get`, which access the same L2 memref, into `scf.for` loop nest patterns mappable to a complex finite-state machine consisting of a multiple of AIE DMA Block Descriptors.
 
@@ -238,7 +229,7 @@ Within the confined lifetime of the L2 `memref`, the pass also attempts to analy
 
 After loop fusion, the compilation pass analyzes the data production and consuption pattern around the L2 memref, and reconstructs the loop-carried asynch dependency within the fused loop body. The newly constructed dependency edges represent the transition edges connecting the states (i.e. `air.channel.put` and `air.channel.get` operations) of the finite-state machine.
 
-`air-label-scf-for-to-ping-pong`
+### air-label-scf-for-to-ping-pong
 
 The analysis pass detects ping-pong buffering opportunities implied in a `scf.for` loop, based on inspection of the data production and consumption around a `memref` with a lifetime within its body. Upon successful detection of ping-pong buffering opportunities, the pass assigns an `unroll=2` attribute, as compiler flag for a downstream pass to transform the loop into explicitly representing the ping-pong schedule.
 
@@ -248,7 +239,7 @@ The input IR consists of some memory references (`memrefs`) accessed by `air.cha
 *Output IR:*
 The pass analyzes the computational graph of an `scf.for` loop body, and detect whether its hardware schedule is ping-pong transformable. Currently, any `scf.for` loop with any `memref` whose lifetime is scoped within its iteration, is considered as ping-pong transformable.
 
-`air-ping-pong-transform`
+### air-ping-pong-transform
 
 Transforms the IR into explicitly representing a ping-pong buffered hardware schedule, via unrolling the `scf.for` loop by two, and explicitly representing a multiple of async threads passing through the `scf.for` loop body in parallel.
 
@@ -263,7 +254,7 @@ The pass is first unrolled by a factor of two to generate explicit "ping" and "p
 
 The `scf.for` body is transformed into having a multiple of async tokens (`%async_token`) passed into its body via `iter_args` operands/arguments, and yielded and returned via `scf.yield`. Each of those tokens represents an async thread flowing through a path made of async dependency edges across the for-loop iterations.
 
-`air-collapse-herd`
+### air-collapse-herd
 
 Transforms the shape of `air.herd` by attempting to collapse to occupy complete columns on AIE device.
 
@@ -273,7 +264,7 @@ The input IR has the L1 memory management and computation encapsulated within `a
 *Output IR:*
 The pass attempts to collapse the `air.herd` to the left, attempting to occupy complete columns of AIE tiles. The attempt will stop if the number of tiles in `air.herd` exceeds the user provided `max-col-size` option.
 
-`air-place-herds`
+### air-place-herds
 
 Places `air.herd` within its parent `air.segment` using Greedy method; infers `air.segment` shape based on the shape and size of all `air.herd` operations within its body.
 
@@ -287,7 +278,7 @@ After the pass has been applied, both the `air.segment` and `air.herd` operation
 `x_size` and `y_size` specify the dimensions of the segment, indicating how much space the segment occupies in each dimension.
 The pass is responsible for spatially placing `air.herd` opertaions onto a grid of AIE tiles using Greedy method.
 
-`air-to-aie`
+### air-to-aie
 
 Convertss an input IR from MLIR-AIR dialect into MLIR-AIE dialect, for efficient mapping onto AIEs.
 
@@ -307,7 +298,7 @@ The computation (`linalg.generic`, `func.call` or `arith`/`scf` loop nests of `a
 
 The AIE core code includes explicit control flow for data movement and computation (`cf.br`, `scf.for` loops) iterating over data chunks.
 
-`air-to-std`
+### air-to-std
 
 Converts the MLIR-AIR dialect code into AIRRt dialect which represents the runtime code dispatching the program by pushing and pulling data from the AIE SHIM tile DMAs.
 
@@ -323,7 +314,7 @@ The control flow is represented with `affine` and `scf` loops, either retained f
 
 The transformation includes explicit synchronization points (`airrt.wait_all`), which are crucial for managing dependencies between parallel operations, ensuring correct execution order without unnecessary stalls.
 
-`affine-loop-opt`
+### affine-loop-opt
 
 Transforms the IR by optimizing `affine` loop nests. `affine` loop nests are loops that iterate over multi-dimensional arrays in a manner that can be described using `affine` transformations.
 
@@ -333,7 +324,7 @@ The input AIRRt dialect code represents the runtime program for the AIE accelera
 *Output IR:*
 The most notable transformation applied by the pass is loop tiling on `affine` loop nests containing `airrt.dma_memcpy_nd` operations in innermost loop. The pass attempts to tile the loop nest by user-provided factors (option `affine-opt-tile-sizes`). The tiled loops are then unrolled by a downstream pass (`air-unroll-outer-affine-loops`) to give an unrolled sequence of SHIM DMA Block Descriptors.
 
-`air-unroll-outer-affine-loops`
+### air-unroll-outer-affine-loops
 Unrolls the two outermost dimensions in `affine` loop nests of the AIRRt runtime code.
 
 *Input IR:*
@@ -341,7 +332,7 @@ The input IR contains nested `affine.for` loops, previously tiled by an upstream
 
 *Output IR:*
 
-`airrt-to-ipu`
+### airrt-to-ipu
 Converts the runtime program, described in AIRRt dialect, into instruction sequence specific to the LX6 controllers on Ryzen AI platform.
 
 *Input IR:*
