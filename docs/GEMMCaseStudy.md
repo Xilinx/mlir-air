@@ -79,27 +79,98 @@
 Converts parallel computations, represented by `scf.parallel` or `scf.forall`, into a more optimized, hardware-specific form called `air.herd`. This transformation is targeted towards accelerating the matrix multiplication problem, by partitioning the proglem into strictly spatial concurrent threads represented by the iteration space of `air.herd`.
 
 *Input IR:*
+```
+module {
+  func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+    ...
+    scf.parallel (%arg0, %arg1) = (%c0, %c0) to (%c512, %c512) step (%c128, %c128) {
+      ...
+      scf.parallel (%arg2, %arg3) = (%c0, %c0) to (%c128, %c128) step (%c32, %c32) {
+        ...
+        scf.reduce 
+      }
+      ...
+      scf.reduce 
+    }
+    return
+  }
+}
+```
 The input IR sets up a matrix multiplication operation, with input and output data references to memory via `memref` values. It includes MLIR operations which specify sub-views to memory and subdivide the work into smaller chunks that can be processed in parallel or in a loop, for performance optimization.
 
 It features nested `scf.parallel` and `scf.for` loops to iterate over matrix elements, creating subviews and temporary buffers (`memref.alloc`) for storing intermediate results in each AIE tile's local (L1) memory. Inside these loops, `memref.copy` and `linalg.copy` operations are used to move data between different parts of memory, indicating a complex memory management pattern aimed at optimizing data locality and access patterns for the matrix multiplication.
 
 *Output IR:*
+```
+module {
+  func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+    ...
+    scf.parallel (%arg0, %arg1) = (%c0, %c0) to (%c512, %c512) step (%c128, %c128) {
+      ...
+      air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c4_8, %arg5=%c4_9) args(%arg6=%alloc, %arg7=%alloc_0, %arg8=%alloc_1) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> {
+        ...
+        air.herd_terminator
+      }
+      ...
+      scf.reduce 
+    }
+    return
+  }
+}
+```
 The transformed code replaces certain `scf.parallel` loop structures in the loop nest---specified by `depth` option---with the air.herd operation, where the `air.herd` encapsulates the parallelism in memory management and computation (like loading, computing, and storing results) that is common in matrix multiplications.
 
 By consolidating the `scf.parallel` body with the `isolateFromAbove` `air.herd` interface, the `air.herd` operation reduces the overhead associated with loop management and memory operations within the parent region.
 
 The L1 memory allocation, deallocation, and copying operations that prepare data for the `air.herd` operation are retained within its body. This ensures that the memory management within each of its parallel thread is still handled explicitly, to maintain control over data layout and access patterns.
 
-### air-par-to-launch`
+### air-par-to-launch
 
 Converts parallel computations, represented by `scf.parallel` or `scf.forall`, into `air.launch` construct. This transformation is targeted towards the dispatching of the already parallelized computations---represented by `air.herd`---in a more structured and *potentially* parallelized manner that is better suited for the dynamic launching of program iterations to reuse hardware configurations by the host.
 
 *Input IR:*
+```
+module {
+  func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+    ...
+    scf.parallel (%arg0, %arg1) = (%c0, %c0) to (%c512, %c512) step (%c128, %c128) {
+      ...
+      air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c4_8, %arg5=%c4_9) args(%arg6=%alloc, %arg7=%alloc_0, %arg8=%alloc_1) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> {
+        ...
+        air.herd_terminator
+      }
+      ...
+      scf.reduce 
+    }
+    return
+  }
+}
+```
 The input IR uses nested loops (`scf.parallel` and `scf.for`) to iterate over the chunks of the matrices and perform computations in a tiled manner, with `scf.parallel` representing parallelizable chunks and `scf.for` representing strictly sqeuential chunks due to loop-carried dependency.
 
 Inside the parallel and for-loop constructs, there are detailed memory management operations (`memref.alloc`, `memref.copy`) and computational kernels (encapsulated in the `air.herd` operation).
 
 *Output IR:*
+```
+module {
+  func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+    ...
+    air.launch (%arg0, %arg1) in (%arg2=%c4_6, %arg3=%c4_7) args(%arg4=%2, %arg5=%0, %arg6=%1) : memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> {
+      air.segment @segment_0  args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg2, %arg10=%arg3, %arg11=%arg4, %arg12=%arg5, %arg13=%arg6) : index, index, index, index, memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> {
+        ...
+        air.herd @herd_0  tile (%arg14, %arg15) in (%arg16=%c4_19, %arg17=%c4_20) args(%arg18=%alloc, %arg19=%alloc_11, %arg20=%alloc_12) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> {
+          ...
+          air.herd_terminator
+        }
+        ...
+        air.segment_terminator
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
+```
 The transformed code introduces `air.launch` as the top-level construct, indicating the start of a parallelizable hardware-accelerated computation. Within `air.launch`, an `air.segment` construct is also optionally generated---controlled by option `has-air-segment`---representing a partition of the program, consisting of single or multiple `air.herd` and L2 memory operations, to be strictly spatially mapped to a spatially contiguous plot of AIE tiles and memtiles. The guaranteed spatial coexistence of all `air.herd` and L2 memory references ensure data flow between specialized AIE tiles via L2 memory.
 
 The `air.segment` encapsulates the original computational logic, including L2 memory operations and the `air.herd` operation, which itself represents a computational kernel optimized for a matrix of AIE compute tiles. This encapsulation suggests that the computation can be offloaded in a virtualized AIE device cloud, as long as the resource requirements are fulfilled.
@@ -111,10 +182,24 @@ The transformation retains the explicit management of L2 memory (allocations and
 Converts memory operations to optimize data transfer through Direct Memory Access (DMA) operations, targeting AIE's DMA hardware.
 
 *Input IR:*
+```
+scf.for %arg12 = %c0_1 to %c1024 step %c256 {
+  %subview_4 = memref.subview %arg10[%3, %arg12] [128, 256] [1,1] : memref<512x1024xi32> to memref<128x256xi32, strided<[1024,1], offset: ?>>
+  %subview_5 = memref.subview %alloc[0, %arg12] [128, 256] [1, 1]: memref<128x1024xi32, 1 : i32> to memref<128x256xi32, strided[1024, 1], offset: ?>, 1 : i32>
+  memref.copy %subview_4, %subview_5 : memref<128x256xi32,strided<[1024, 1], offset: ?>> to memref<128x256xi32, strided[1024, 1], offset: ?>, 1 : i32>
+}
+```
 The input IR contains some generic memory copy operations (`memref.copy` or `linalg.copy`), moving data between L1, L2 or L3 memories.
 
 
 *Output IR:*
+```
+scf.for %arg12 = %c0_1 to %c1024 step %c256 {
+  %subview_5 = memref.subview %arg10[%3, %arg12] [128, 256] [11] : memref<512x1024xi32> to memref<128x256xi32, stride[1024, 1], offset: ?>>
+  %subview_6 = memref.subview %alloc[0, %arg12] [128, 256] [11] : memref<128x1024xi32, 1 : i32> to memref<128x256xi32strided<[1024, 1], offset: ?>, 1 : i32>
+  air.dma_memcpy_nd (%alloc[%c0_11, %arg12] [%c128_12, %c256_13] [%c1024_14, %c1_15], %arg10[%3, %arg12] [%c128_7, %c256_8] [%c1024_9, %c1_10]) {id = 1 : i32} (memref<128x1024xi32, 1 : i32>, memref<512x1024xi32>)
+}
+```
 The transformed code replaces some of the generic memory copy operations with `air.dma_memcpy_nd` operations. These DMA operations are specialized for direct memory-to-memory transfers, bypassing the host and thus reducing data transfer latency and host workload. The `air.dma_memcpy_nd` operation is designed to handle n-dimensional data transfers efficiently, explicitly representing the n-dimensional data rearrangement pattern on the fly.
 
 Optimization of Data Transfer Dimensions: The transformation includes specifying the *offsets,* *sizes* and *strides* for the DMA operations explicitly, counted in number of elements (e.g. `[%c0_11, %arg12] [%c128_12, %c256_13] [%c1024_14, %c1_15]`).
@@ -146,9 +231,59 @@ The pass separates data preparation (e.g., memory allocations and data transfers
 Optimizes the scheduling of dependencies in the MLIR module, specifically focusing on improving the parallelism and efficiency of execution through the asynchronous execution model. One key optimization introduced is the detection of broadcasting data movement opportunities, and the subsequent inferring of broadcasting pattern.
 
 *Input IR:*
+```
+%6 = air.herd @herd_0 async [%async_token_13, %async_token_15, %async_token_17]  tile (%arg12, %arg13) in (%arg14=%c4_7, %arg15=%c4_7) args(%arg16=%results_14, %arg17=%results_16, %arg18=%results_18) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> attributes {id = 1 : i32} {
+  ..
+  %async_token_31, %results_32 = air.execute -> (memref<8x8x4x4xi32, 2   32>) {
+    %alloc = memref.alloc() : memref<8x8x4x4xi32, 2 : i32>
+    air.execute_terminator %alloc : memref<8x8x4x4xi32, 2 : i32>
+  } {id = 14 : i32}
+  %async_token_33 = air.execute [%async_token_31] {
+    linalg.fill ins(%c0_i32 : i32) outs(%results_32 : memref<8x8x4x4xi32, 2 : i32>)
+  } {id = 15 : i32}
+  %8 = air.wait_all async [%async_token_27, %async_token_29, %async_token_33]  {id = 12 : i32}
+  %9 = scf.for %arg19 = %c0_23 to %c128_26 step %c4_24 iter_args(%arg20 = %8) -> (!air.async.token) {
+    ...
+    %11 = air.dma_memcpy_nd async [%async_token_44, %async_token_42, %arg20] (%results_45[%c0_35] [%c1024_36] [%c1_37], %arg16[%c0_35, %results_28, %results_43] [%c4_38, %c32_39, %c8_40] [%c8_40, %c1024_36, %c1_37]) {id = 3 : i32} : (memref<4x8x4x8xi32, 2 : i32>, memref<128x1024xi32, 1 : i32>)
+    %async_token_46, %results_47 = air.execute -> (memref<8x4x8x4xi32, 2 : i32>) {
+      %alloc = memref.alloc() : memref<8x4x8x4xi32, 2 : i32>
+      air.execute_terminator %alloc : memref<8x4x8x4xi32, 2 : i32>
+    } {id = 18 : i32}
+    %12 = air.dma_memcpy_nd async [%async_token_46, %async_token_42, %arg20] (%results_47[%c0_35] [%c1024_36] [%c1_37], %arg17[%c0_35, %results_43, %results_30] [%c8_40, %c32_39, %c4_38] [%c4_38, %c128_41, %c1_37]) {id = 4 : i32} : (memref<8x4x8x4xi32, 2 : i32>, memref<1024x128xi32, 1 : i32>)
+    ...
+    scf.yield %15 : !air.async.token
+  }
+  %10 = air.dma_memcpy_nd async [%async_token_27, %async_token_29, %async_token_33] (%arg18[%results_28, %results_30] [%c32, %c32] [%c128_26, %c1_25], %results_32[%c0_23, %c0_23, %c0_23] [%c32, %c8, %c4_24] [%c4_24, %c128_26, %c1_25]) {id = 5 : i32} : (memref<128x128xi32, 1 : i32>, memref<8x8x4x4xi32, 2 : i32>)
+  ...
+  air.herd_terminator
+}
+```
 The input IR has the L1 memory management and computation encapsulated within `air.herd`, and any direct memory-to-memory transfers represented with `air.dma_memcpy_nd` operations.
 
 *Output IR:*
+```
+%6 = air.herd @herd_0 async [%async_token_13, %async_token_15, %async_token_17]  tile (%arg12, %arg13) in (%arg14=%c4_7, %arg15=%c4_7) args(%arg16=%results_14, %arg17=%results_16, %arg18=%results_18) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> attributes {id = 1 : i32} {
+  ...
+  %9 = scf.for %arg19 = %c0_23 to %c128_26 step %c4_24 iter_args(%arg20 = %8) -> (!air.async.token) {
+    ...
+    %async_token_37, %results_38 = air.execute -> (memref<4x8x4x8xi32, 2 : i32>) {
+      %alloc = memref.alloc() : memref<4x8x4x8xi32, 2 : i32>
+      air.execute_terminator %alloc : memref<4x8x4x8xi32, 2 : i32>
+    } {id = 17 : i32}
+    %11 = air.dma_memcpy_nd async [%async_token_37, %async_token_35, %arg20] (%results_38[%c0_23] [%c1024_22] [%c1_25], %arg16[%c0_23, %results_28, %results_36] [%c4_24, %c32, %c8] [%c8, %c1024_22, %c1_25]) {broadcast_pattern = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, -d1 + 3 >= 0, s0 >= 0, -s0 + 3 >= 0)>, id = 3 : i32} : (memref<4x8x4x8xi32, 2 : i32>, memref<128x1024xi32, 1 : i32>)
+    %async_token_39, %results_40 = air.execute -> (memref<8x4x8x4xi32, 2 : i32>) {
+      %alloc = memref.alloc() : memref<8x4x8x4xi32, 2 : i32>
+      air.execute_terminator %alloc : memref<8x4x8x4xi32, 2 : i32>
+    } {id = 18 : i32}
+    %12 = air.dma_memcpy_nd async [%async_token_39, %async_token_35, %arg20] (%results_40[%c0_23] [%c1024_22] [%c1_25], %arg17[%c0_23, %results_36, %results_30] [%c8, %c32, %c4_24] [%c4_24, %c128_26, %c1_25]) {broadcast_pattern = affine_set<(d0, d1)[s0] : (d0 >= 0, -d0 + 3 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 3 >= 0)>, id = 4 : i32} : (memref<8x4x8x4xi32, 2 : i32>, memref<1024x128xi32, 1 : i32>)
+    ...
+    scf.yield %15 : !air.async.token
+  }
+  %10 = air.dma_memcpy_nd async [%async_token_27, %async_token_29, %async_token_33] (%arg18[%results_28, %results_30] [%c32, %c32] [%c128_26, %c1_25], %results_32[%c0_23, %c0_23, %c0_23] [%c32, %c8, %c4_24] [%c4_24, %c128_26, %c1_25]) {id = 5 : i32} : (memref<128x128xi32, 1 : i32>, memref<8x8x4x4xi32, 2 : i32>)
+  ...
+  air.herd_terminator
+}
+```
 The transformation pass optimizes some `air.dma_memcpy_nd` operations within the body of `air.herd` by introducing a `broadcast_pattern` attribute. The presence of a `broadcast_pattern` attribute in an `air.dma_memcpy_nd` operation suggests that the data transfer is being optimized to replicate data across multiple destinations in a specific pattern. 
 
 `air.herd` orchestrates parallel execution of computational tasks across multiple AIE tiles, and
