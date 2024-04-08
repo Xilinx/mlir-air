@@ -3683,7 +3683,7 @@ public:
     SmallVector<air::ExecuteOp> memdealloc_execs;
     // Map from air.execute op containing alloc to air.execute op containing
     // dealloc.
-    std::map<air::ExecuteOp, air::ExecuteOp> alloc_dealloc_execs;
+    std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> alloc_dealloc_execs;
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
       if (!execOp.getChildOp())
         continue;
@@ -3696,19 +3696,18 @@ public:
           if (!isa<scf::ForOp>(user->getParentOp()))
             allChannelUsersAreInScfFor = false;
       if (allChannelUsersAreInScfFor)
-        alloc_dealloc_execs[execOp] = nullptr;
+        alloc_dealloc_execs.push_back(std::make_pair(execOp, nullptr));
     }
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
-      if (auto child_op = execOp.getChildOp()) {
-        if (auto dealloc = dyn_cast<memref::DeallocOp>(child_op))
-          if (llvm::any_of(alloc_dealloc_execs,
-                           [&](std::pair<air::ExecuteOp, air::ExecuteOp> pair) {
-                             return dealloc.getMemref() ==
-                                    pair.first.getResult(1);
-                           })) {
-            alloc_dealloc_execs[dyn_cast<air::ExecuteOp>(
-                dealloc.getMemref().getDefiningOp())] = execOp;
-          }
+      if (!execOp.getChildOp())
+        continue;
+      if (!isa<memref::DeallocOp>(execOp.getChildOp()))
+        continue;
+      auto dealloc = dyn_cast<memref::DeallocOp>(execOp.getChildOp());
+      for (auto &pair : alloc_dealloc_execs) {
+        if (dealloc.getMemref() == pair.first.getResult(1)) {
+          pair.second = execOp;
+        }
       }
     }
     // Get roots to perfectly nested scf.for loops.
@@ -3794,7 +3793,9 @@ public:
         erase_keys.push_back(alloc_exec);
     }
     for (auto e : erase_keys)
-      alloc_dealloc_execs.erase(e);
+      for (unsigned i = 0; i < alloc_dealloc_execs.size(); i++)
+        if (e == alloc_dealloc_execs[i].first)
+          alloc_dealloc_execs.erase(alloc_dealloc_execs.begin() + i);
 
     // Loop fusion.
     IRMapping remap;
