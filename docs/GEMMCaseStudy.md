@@ -59,18 +59,18 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 
 ## Overview
 
-|Compilation Stage |Passes |Description | Assumption on input IR |
-|:--- |:--- |:--- |:--- |
-|Binding MLIR operations to MLIR-AIR    |   <br> <ul><li>`air-linalg-to-func{link-with=mm.o}`</li><li>`air-par-to-herd{depth=1}`</li><li>`air-par-to-launch{has-air-segment=true}`</li><li>`air-copy-to-dma`</li></ul>    |   Binding parallelizable loops to `air` hierarchies; binding data movement operations to `air.dma_memcpy_nd` operations; binding linear algebra compute operations with link to AIE core kernel. | |
-|Extract asynchronous event dependency and construct a task graph    |   <br> <ul><li>`air-dependency`</li><li>`air-dependency-canonicalize`</li></ul>    |   Construction of asynchronous task graph, as an explicit representation of the asynchronous concurrency in the hardware schedule. | |
+|Compilation Stage |Passes |Description |
+|:--- |:--- |:--- |
+|Binding MLIR operations to MLIR-AIR    |   <br> <ul><li>`air-linalg-to-func{link-with=mm.o}`</li><li>`air-par-to-herd{depth=1}`</li><li>`air-par-to-launch{has-air-segment=true}`</li><li>`air-copy-to-dma`</li></ul>    |   Binding parallelizable loops to `air` hierarchies; binding data movement operations to `air.dma_memcpy_nd` operations; binding linear algebra compute operations with link to AIE core kernel. |
+|Extract asynchronous event dependency and construct a task graph    |   <br> <ul><li>`air-dependency`</li><li>`air-dependency-canonicalize`</li></ul>    |   Construction of asynchronous task graph, as an explicit representation of the asynchronous concurrency in the hardware schedule. |
 |Broadcasting data movement    |   <br> <ul><li>`air-dependency-schedule-opt`</li><li>`air-specialize-dma-broadcast`</li></ul>    |   Detection and lowering of broadcasting data movement to map to circuit-routed streaming interconnects. |
-|Generating half-dma operations mappable to AIE DMA Block Descriptors    |   <br> <ul><li>`air-dma-to-channel`</li></ul>    |   Lowering synchronous or asynchronous `air.dma_memcpy_nd` operations to `air.channel.put` or `air.channel.get` operations representing half-dma data sends and receives. | |
-|Memtile (L2) buffer allocation optimization    |   <br> <ul><li>`func.func(air-split-l2-memref)`</li></ul>    |   Tiling L2 memrefs based on parallelizable data movements, explicitly represented via `scf.parallel` or `air.channel.put/get` operations, in order to maximize memtile bandwidth utilization. | |
-|Memtile (L2) Block Descriptor lowering and optimization    |   <br> <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. | |
-|Inferring double buffering patterns    |   <br> <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. | |
-|Place herd to segment    |   <br> <ul><li>`func.func(air-collapse-herd{max-col-size=4})`</li><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Reshaping and placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. | |
-|MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. | |
-|MLIR-AIR runtime lowering    |   <br> <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-ipu`</li></ul>    |   Converting the control code via AIRRt and AIEX.IPU dialect to LX6 instruction sequence. | |
+|Generating half-dma operations mappable to AIE DMA Block Descriptors    |   <br> <ul><li>`air-dma-to-channel`</li></ul>    |   Lowering synchronous or asynchronous `air.dma_memcpy_nd` operations to `air.channel.put` or `air.channel.get` operations representing half-dma data sends and receives. |
+|Memtile (L2) buffer allocation optimization    |   <br> <ul><li>`func.func(air-split-l2-memref)`</li></ul>    |   Tiling L2 memrefs based on parallelizable data movements, explicitly represented via `scf.parallel` or `air.channel.put/get` operations, in order to maximize memtile bandwidth utilization. |
+|Memtile (L2) Block Descriptor lowering and optimization    |   <br> <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. |
+|Inferring double buffering patterns    |   <br> <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
+|Place herd to segment    |   <br> <ul><li>`func.func(air-collapse-herd{max-col-size=4})`</li><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Reshaping and placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
+|MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
+|MLIR-AIR runtime lowering    |   <br> <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-ipu`</li></ul>    |   Converting the control code via AIRRt and AIEX.IPU dialect to IPU SHIM DMA instruction sequence. |
 ||||||
 
 ## MLIR-AIR Passes
@@ -226,6 +226,8 @@ By leveraging asynchronous tokens and explicit waits (`air.wait_all`), the pass 
 If the input code was organized as nests and segments of `air.herd`, `air.segment` and `air.launch`, the transformed code shall also explicitly manage how they can be executed asynchronously (`air.launch async`). This segmentation, along with the assignment of unique identifiers to operations ({id = X : i32}), suggests a fine-grained control over the execution flow, enabling optimizations like concurrent execution of independent code segments.
 
 The pass separates data preparation (e.g., memory allocations and data transfers) from the computational workload. By doing so, it allows for data transfers to be overlapped with computations, minimizing the overall execution latency. This is particularly beneficial to AIEs featuring discrete hardware DMA, which is faster and more efficient than host-driven memory transfers, as they can move data directly between memory locations without host intervention.
+
+Please check out this [link](https://github.com/Xilinx/mlir-air/blob/main/docs/AIRAsyncConcurrency.md) for a detailed description of this pass.
 
 ### air-dependency-schedule-opt
 
@@ -1159,7 +1161,7 @@ func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 The most notable transformation applied by the pass is loop tiling on `affine` loop nests containing `airrt.dma_memcpy_nd` operations in innermost loop. The pass attempts to tile the loop nest by user-provided factors (option `affine-opt-tile-sizes`). The tiled loops are then unrolled by a downstream pass (`air-unroll-outer-affine-loops`) to give an unrolled sequence of SHIM DMA Block Descriptors.
 
 ### air-unroll-outer-affine-loops
-Unrolls the two outermost dimensions in `affine` loop nests of the AIRRt runtime code.
+Unrolls the outermost dimensions in `affine` loop nests of the AIRRt runtime code.
 
 *Input IR:*
 ```
@@ -1206,7 +1208,7 @@ func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
 This pass works together with a prior pass (`affine-loop-opt`) to generate a desirable number of unrolled instances of `airrt.dma_memcpy_nd` operations per AIE SHIM DMA channel, so that when those operations are lowered to AIE DMA BDs---plus the insertion of DMA BD reprograming synchronization points---by a downstream pass (`airrt-to-ipu`), they do not violate the AIE DMA BD count limitations.
 
 ### airrt-to-ipu
-Converts the runtime program, described in AIRRt dialect, into instruction sequence specific to the LX6 controllers on Ryzen AI platform.
+Converts the runtime program, described in AIRRt dialect, into instruction sequence specific to the SHIM DMA controllers on Ryzen AI platform.
 
 *Input IR:*
 ```
