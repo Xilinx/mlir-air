@@ -3,12 +3,87 @@
 
 _Convert memcpy to air.dma_memcpy_nd_
 
-Convert memcpy to air.dma_memcpy_nd
+Converts memory operations to optimize data transfer through Direct Memory 
+Access (DMA) operations.
 ### `-air-dma-to-channel`
 
 _Convert air.dma_memcpy_nd to air.channel_
 
-Convert air.dma_memcpy_nd to air.channel
+Transforms direct memory access (DMA) operations into channel-based 
+communications, consisting of a series of channel put and get operations 
+via shared channel constructs.
+
+Example:
+
+Input:
+```mlir
+%0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 3 : i32} {
+  %1 = air.segment @segment_0 async  args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg4, %arg10=%arg5, %arg11=%arg6) : index, index, memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 2 : i32} {
+    ...
+    %3 = scf.for %arg12 = %c0_8 to %c1024 step %c256 iter_args(%arg13 = %2) -> (!air.async.token) {
+      %8 = air.dma_memcpy_nd async [%arg13, %arg13] (%results_14[%c0_8, %arg12] [%c128, %c256] [%c1024, %c1], %arg10[%results_10, %arg12] [%c128, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref<128x1024xi32, 1 : i32>, memref<512x1024xi32>)
+      ...
+    }
+    %6 = air.herd @herd_0 async [%async_token_13, %async_token_15, %async_token_17]  tile (%arg12, %arg13) in (%arg14=%c4_7, %arg15=%c4_7) args(%arg16=%results_14, %arg17=%results_16, %arg18=%results_18) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> attributes {id = 1 : i32} {
+      ...
+      %9 = scf.for %arg19 = %c0_23 to %c128_26 step %c4_24 iter_args(%arg20 = %8) -> (!air.async.token) {
+        ...
+        %16 = air.dma_memcpy_nd async [%async_token_37, %async_token_35, %arg20] (%results_38[%c0_23] [%c1024_22] [%c1_25], %arg16[%c0_44, %c0_43, %results_36] [%c4_24, %c32, %c8] [%c8, %c1024_22, %c1_25]) {broadcast_set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>, id = 3 : i32} : (memref<4x8x4x8xi32, 2 : i32>, memref<128x1024xi32, 1 : i32>)
+        ...
+      }
+      ...
+      air.herd_terminator
+    }
+    ...
+    air.segment_terminator
+  }
+  air.launch_terminator
+}
+```
+
+Output:
+```mlir
+...
+air.channel @channel_8 [1, 1]
+...
+air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
+...
+%0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 3 : i32} {
+  ...
+  %2 = scf.for %arg7 = %c0_7 to %c1024 step %c256 iter_args(%arg8 = %1) -> (!air.async.token) {
+    ...
+    %17 = air.channel.put async [%async_token_8, %arg8]  @channel_8[] (%arg5[%results_9, %arg7] [%c128, %c256] [%c1024, %c1]) : (memref<512x1024xi32>)
+    ...
+  }
+  ...
+  %16 = air.segment @segment_0 async  args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg4, %arg10=%arg5, %arg11=%arg6) : index, index, memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 2 : i32} {
+    ...
+    %18 = scf.for %arg12 = %c0_32 to %c1024_33 step %c256_34 iter_args(%arg13 = %17) -> (!air.async.token) {
+      %49 = air.channel.get async [%arg13, %arg13]  @channel_8[] (%results_40[%c0_32, %arg12] [%c128_30, %c256_34] [%c1024_33, %c1_29]) : (memref<128x1024xi32, 1 : i32>)
+      ...
+    }
+    ...
+    %23 = scf.for %arg12 = %c0_47 to %c128_50 step %c4_48 iter_args(%arg13 = %22) -> (!air.async.token) {
+      ...
+      %49 = air.channel.put async [%async_token_160, %async_token_39, %arg13]  @channel_0[] (%results_40[%c0_163, %c0_162, %results_161] [%c4_48, %c32, %c8] [%c8, %c1024_46, %c1_49]) : (memref<128x1024xi32, 1 : i32>)
+      ...
+    }
+    ...
+    %47 = air.herd @herd_0 async [%async_token_39, %async_token_41, %async_token_43]  tile (%arg12, %arg13) in (%arg14=%c4_31, %arg15=%c4_31) args(%arg16=%results_40, %arg17=%results_42, %arg18=%results_44) : memref<128x1024xi32, 1 : i32>, memref<1024x128xi32, 1 : i32>, memref<128x128xi32, 1 : i32> attributes {id = 1 : i32} {
+      ...
+      %50 = scf.for %arg19 = %c0_155 to %c128_159 step %c4_156 iter_args(%arg20 = %49) -> (!air.async.token) {
+        ...
+        %57 = air.channel.get async [%async_token_170, %async_token_168, %arg20]  @channel_0[%arg12, %arg13] (%results_171[%c0_155] [%c1024_154] [%c1_158]) : (memref<4x8x4x8xi32, 2 : i32>)
+        ...
+      }
+      ...
+      air.herd_terminator
+    }
+    air.segment_terminator
+  }
+  air.launch_terminator
+}
+```
 ### `-air-insert-launch-and-segment-around-herd`
 
 _Insert segment and launch ops around herd op_
@@ -247,7 +322,80 @@ AIR dialect memcpy operations into AIRRt memcpy operations.
 
 _Lower AIRRt dialect to AIEX.ipu dialect_
 
-Lower AIRRt dialect to AIEX.ipu dialect
+Converts the runtime program, described in AIRRt dialect, into 
+instruction sequence specific to the SHIM DMA controllers on Ryzen AI 
+platform.
+
+Example:
+
+Input:
+```mlir
+module {
+  aie.device(ipu) {
+    ...
+    aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
+    memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
+    ...
+    aie.shim_dma_allocation @airMemcpyId19(MM2S, 0, 0)
+    memref.global "public" @airMemcpyId19 : memref<32x256xi32, 1>
+    ...
+    aie.shim_dma_allocation @airMemcpyId15(MM2S, 0, 2)
+    memref.global "public" @airMemcpyId15 : memref<256x32xi32, 1>
+    ...
+  } {sym_name = "segment_0"}
+  ...
+  func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+    ...
+    affine.for %arg0 = affine_map<(d0) -> (d0)>(%c0) to affine_map<(d0) -> (d0 + 4)>(%c0) {
+      affine.for %arg1 = affine_map<(d0) -> (d0)>(%c0_0) to affine_map<(d0) -> (d0 + 4)>(%c0_0) {
+        ...
+        %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref<512x1024xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        ...
+        %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_15, %c0_i64_15, %69, %70], [%c1_i64_16, %c1_i64_16, %72, %73], [%c0_i64_15, %c0_i64_15, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref<1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        ...
+        %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_26, %c0_i64_26, %106, %107], [%c1_i64_27, %c1_i64_27, %109, %110], [%c0_i64_26, %c0_i64_26, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref<512x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        ...
+      }
+    }
+    return
+  }
+}
+```
+
+Output:
+```mlir
+module {
+  aie.device(ipu) {
+    ...
+    aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
+    memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
+    ...
+    aie.shim_dma_allocation @airMemcpyId19(MM2S, 0, 0)
+    memref.global "public" @airMemcpyId19 : memref<32x256xi32, 1>
+    ...
+    aie.shim_dma_allocation @airMemcpyId15(MM2S, 0, 2)
+    memref.global "public" @airMemcpyId15 : memref<256x32xi32, 1>
+    ...
+    func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+      ...
+      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][4, 4, 32, 256][0, 256, 1024]) {id = 0 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 128, 0][4, 4, 32, 256][0, 256, 1024]) {id = 1 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 256, 0][4, 4, 32, 256][0, 256, 1024]) {id = 2 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 384, 0][4, 4, 32, 256][0, 256, 1024]) {id = 3 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      ...
+      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 0 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 1 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 2 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 3 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      ...
+      aiex.ipu.dma_memcpy_nd(0, 0, %arg2[0, 0, 0, 0][4, 4, 32, 128][65536, 128, 512]) {id = 8 : i64, metadata = @airMemcpyId78} : memref<512x512xi32>
+      ...
+      return
+    }
+  } {sym_name = "segment_0"}
+}
+```
+
 ### `-airrt-to-llvm`
 
 _Lower AIRRt dialect to LLVM dialect_
