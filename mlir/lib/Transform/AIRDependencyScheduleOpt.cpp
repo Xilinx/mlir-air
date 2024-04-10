@@ -3216,7 +3216,7 @@ private:
                                  .getType()
                                  .cast<MemRefType>()
                                  .getMemorySpaceAsInt())
-        return false; // Inconsistent memory space for all puts
+        return false; // Inconsistent memory space for all gets
     bMemrefMemSpace = b_gets[0]
                           .getMemref()
                           .getType()
@@ -3228,7 +3228,7 @@ private:
                                  .getType()
                                  .cast<MemRefType>()
                                  .getMemorySpaceAsInt())
-        return false; // Inconsistent memory space for all puts
+        return false; // Inconsistent memory space for all gets
     if (aMemrefMemSpace != bMemrefMemSpace)
       return false;
     for (unsigned i = 0; i < a_puts.size(); i++) {
