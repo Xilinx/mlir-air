@@ -2518,15 +2518,6 @@ void dependencyTracer::pushTileIndexAsDep(mlir::Value tile_index,
     if (auto defop = tile_index.getDefiningOp<air::ExecuteOp>()) {
       addAsyncDependencyIfNew(op, defop.getResult(0));
     }
-    // If created by hierarchy (as loop iter)
-    else if (auto hier = dyn_cast<air::HierarchyInterface>(
-                 tile_index.getParentRegion()->getParentOp())) {
-      for (auto id : hier.getIds()) {
-        if (id == tile_index) {
-          addAsyncDependencyIfNew(op, tile_index);
-        }
-      }
-    }
   }
 }
 
