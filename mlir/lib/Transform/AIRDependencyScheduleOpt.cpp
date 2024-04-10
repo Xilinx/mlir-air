@@ -3178,6 +3178,59 @@ private:
       return false;
     if (a_gets.size() != 1)
       return false;
+    // Check for equal src and dst memory spaces
+    unsigned aMemrefMemSpace = a_puts[0]
+                                   .getMemref()
+                                   .getType()
+                                   .cast<MemRefType>()
+                                   .getMemorySpaceAsInt();
+    for (unsigned i = 1; i < a_puts.size(); i++)
+      if (aMemrefMemSpace != a_puts[i]
+                                 .getMemref()
+                                 .getType()
+                                 .cast<MemRefType>()
+                                 .getMemorySpaceAsInt())
+        return false; // Inconsistent memory space for all puts
+    unsigned bMemrefMemSpace = b_puts[0]
+                                   .getMemref()
+                                   .getType()
+                                   .cast<MemRefType>()
+                                   .getMemorySpaceAsInt();
+    for (unsigned i = 1; i < b_puts.size(); i++)
+      if (bMemrefMemSpace != b_puts[i]
+                                 .getMemref()
+                                 .getType()
+                                 .cast<MemRefType>()
+                                 .getMemorySpaceAsInt())
+        return false; // Inconsistent memory space for all puts
+    if (aMemrefMemSpace != bMemrefMemSpace)
+      return false;
+    aMemrefMemSpace = a_gets[0]
+                          .getMemref()
+                          .getType()
+                          .cast<MemRefType>()
+                          .getMemorySpaceAsInt();
+    for (unsigned i = 1; i < a_gets.size(); i++)
+      if (aMemrefMemSpace != a_gets[i]
+                                 .getMemref()
+                                 .getType()
+                                 .cast<MemRefType>()
+                                 .getMemorySpaceAsInt())
+        return false; // Inconsistent memory space for all puts
+    bMemrefMemSpace = b_gets[0]
+                          .getMemref()
+                          .getType()
+                          .cast<MemRefType>()
+                          .getMemorySpaceAsInt();
+    for (unsigned i = 1; i < b_gets.size(); i++)
+      if (bMemrefMemSpace != b_gets[i]
+                                 .getMemref()
+                                 .getType()
+                                 .cast<MemRefType>()
+                                 .getMemorySpaceAsInt())
+        return false; // Inconsistent memory space for all puts
+    if (aMemrefMemSpace != bMemrefMemSpace)
+      return false;
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
       auto b_put_loop_nest = getParentLoopNest(b_puts[i].getOperation());
