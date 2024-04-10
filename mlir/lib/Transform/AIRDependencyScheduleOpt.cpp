@@ -3178,6 +3178,59 @@ private:
       return false;
     if (a_gets.size() != 1)
       return false;
+    // Check for equal src and dst memory spaces
+    unsigned aMemrefMemSpace = a_puts[0]
+                                   .getMemref()
+                                   .getType()
+                                   .cast<MemRefType>()
+                                   .getMemorySpaceAsInt();
+    for (unsigned i = 1; i < a_puts.size(); i++)
+      if (aMemrefMemSpace != a_puts[i]
+                                 .getMemref()
+                                 .getType()
+                                 .cast<MemRefType>()
+                                 .getMemorySpaceAsInt())
+        return false; // Inconsistent memory space for all puts
+    unsigned bMemrefMemSpace = b_puts[0]
+                                   .getMemref()
+                                   .getType()
+                                   .cast<MemRefType>()
+                                   .getMemorySpaceAsInt();
+    for (unsigned i = 1; i < b_puts.size(); i++)
+      if (bMemrefMemSpace != b_puts[i]
+                                 .getMemref()
+                                 .getType()
+                                 .cast<MemRefType>()
+                                 .getMemorySpaceAsInt())
+        return false; // Inconsistent memory space for all puts
+    if (aMemrefMemSpace != bMemrefMemSpace)
+      return false;
+    aMemrefMemSpace = a_gets[0]
+                          .getMemref()
+                          .getType()
+                          .cast<MemRefType>()
+                          .getMemorySpaceAsInt();
+    for (unsigned i = 1; i < a_gets.size(); i++)
+      if (aMemrefMemSpace != a_gets[i]
+                                 .getMemref()
+                                 .getType()
+                                 .cast<MemRefType>()
+                                 .getMemorySpaceAsInt())
+        return false; // Inconsistent memory space for all gets
+    bMemrefMemSpace = b_gets[0]
+                          .getMemref()
+                          .getType()
+                          .cast<MemRefType>()
+                          .getMemorySpaceAsInt();
+    for (unsigned i = 1; i < b_gets.size(); i++)
+      if (bMemrefMemSpace != b_gets[i]
+                                 .getMemref()
+                                 .getType()
+                                 .cast<MemRefType>()
+                                 .getMemorySpaceAsInt())
+        return false; // Inconsistent memory space for all gets
+    if (aMemrefMemSpace != bMemrefMemSpace)
+      return false;
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
       auto b_put_loop_nest = getParentLoopNest(b_puts[i].getOperation());
@@ -3713,10 +3766,15 @@ public:
     // Get roots to perfectly nested scf.for loops.
     SmallVector<scf::ForOp> perfectlyNestedForBands;
     auto hasNElements = [](Block *block, unsigned N) {
-      auto op_ptr = block->begin();
-      for (unsigned i = 0; i < N; i++)
-        op_ptr = std::next(op_ptr);
-      return op_ptr != block->end() && &*op_ptr == &block->back();
+      unsigned counter = 0;
+      for (auto &o : block->getOperations()) {
+        if (o.mightHaveTrait<OpTrait::IsTerminator>())
+          continue;
+        if (isa<air::WaitAllOp>(o))
+          continue;
+        counter++;
+      }
+      return counter == N;
     };
     for (auto forOp : op.getOps<scf::ForOp>()) {
       if (hasNElements(forOp.getBody(), 1) &&
@@ -3782,10 +3840,22 @@ public:
         }
       }
       if (canMove) {
-        for (auto user : alloc_exec.getAsyncToken().getUsers()) {
+        // Clear async dependencies to alloc op
+        for (auto user : alloc_exec.getAsyncToken().getUsers())
           if (auto async_user = dyn_cast<air::AsyncOpInterface>(user))
             eraseAsyncDependencyFromAsyncOp(async_user,
                                             alloc_exec.getAsyncToken());
+        for (auto &use : alloc_exec.getAsyncToken().getUses()) {
+          if (auto for_user = dyn_cast<scf::ForOp>(use.getOwner())) {
+            OpBuilder waitAllBuilder(for_user);
+            use.assign(
+                waitAllBuilder
+                    .create<air::WaitAllOp>(
+                        loc,
+                        air::AsyncTokenType::get(waitAllBuilder.getContext()),
+                        alloc_exec.getAsyncDependencies())
+                    .getAsyncToken());
+          }
         }
         alloc_exec->moveBefore(new_loop_op.getBody(),
                                new_loop_op.getBody()->getOperations().end());
