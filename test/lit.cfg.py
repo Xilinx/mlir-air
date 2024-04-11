@@ -90,7 +90,8 @@ if config.xrt_lib_dir:
             [xbutil, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         result = result.stdout.decode("utf-8").split("\n")
-        p = re.compile("\[.+:.+:.+\].+Phoenix")
+        # Starting with Linux 6.8 the format is like "[0000:66:00.1]  :  RyzenAI-npu1"
+        p = re.compile("\[.+:.+:.+\].+(Phoenix|RyzenAI-(npu\d))")
         for l in result:
             m = p.match(l)
             if m:
