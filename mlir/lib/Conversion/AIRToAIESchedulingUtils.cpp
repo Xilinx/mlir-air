@@ -466,9 +466,11 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
   if (target_model.isMemTile(col, row))
     init_pair =
         getLockValuePair(target_model.getTargetArch(), bufferOp->getResult(0));
-  else
+  else {
+    assert(bufferOp);
     init_pair = getLockValuePair(target_model.getTargetArch(),
                                  bufferOp->getResult(0), air_chan);
+  }
   auto init = std::max(init_pair.first, init_pair.second);
 
   OpBuilder builder(bufferOp);
