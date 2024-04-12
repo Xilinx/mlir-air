@@ -2138,70 +2138,6 @@ private:
   int firstDim;
 };
 
-// Attempt to tile an L2-L1 air.dma_memcpy_nd op using an scf.parallel op.
-LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
-                                                bool SrcIsL1) {
-  OpBuilder builder(op);
-  auto loc = op->getLoc();
-  auto L1Memref = SrcIsL1 ? op.getSrcMemref() : op.getDstMemref();
-  auto L2Memref = SrcIsL1 ? op.getDstMemref() : op.getSrcMemref();
-  auto L1MemrefShape = air::getTensorShape(L1Memref.getType());
-  if (L1MemrefShape.size() < 2)
-    return failure();
-  SmallVector<Value, 2> lowerBounds, upperBounds, steps;
-  auto cst0 = builder.create<arith::ConstantIndexOp>(loc, 0);
-  auto cst1 = builder.create<arith::ConstantIndexOp>(loc, 1);
-  lowerBounds = {cst0, cst0};
-  steps = {cst1, cst1};
-  for (unsigned i = 0; i < 2; i++) {
-    upperBounds.push_back(
-        builder.create<arith::ConstantIndexOp>(loc, L1MemrefShape[i]));
-  }
-  auto scfPar =
-      builder.create<scf::ParallelOp>(loc, lowerBounds, upperBounds, steps);
-
-  builder.setInsertionPointToStart(scfPar.getBody());
-  SmallVector<Value> newL2Offsets, newL2Wraps, newL2Strides;
-  air::populateDefaultWrapsAndStrides(builder, L2Memref, newL2Offsets,
-                                      newL2Wraps, newL2Strides);
-  SmallVector<Type, 4> tys;
-  SmallVector<Value, 4> deps;
-  air::DmaMemcpyNdOp newOp = nullptr;
-  if (SrcIsL1)
-    newOp = builder.create<air::DmaMemcpyNdOp>(
-        loc, tys, deps, L2Memref, newL2Offsets, newL2Wraps, newL2Strides,
-        L1Memref, op.getSrcOffsets(), op.getSrcSizes(), op.getSrcStrides());
-  else
-    newOp = builder.create<air::DmaMemcpyNdOp>(
-        loc, tys, deps, L1Memref, op.getDstOffsets(), op.getDstSizes(),
-        op.getDstStrides(), L2Memref, newL2Offsets, newL2Wraps, newL2Strides);
-  int L1offsetsOffset = SrcIsL1 ? (2 + newOp.getDstOffsets().size() * 3) : (1);
-  int L2offsetsOffset = SrcIsL1 ? (1) : (2 + newOp.getDstOffsets().size() * 3);
-  int srcSizesOffset =
-      2 + newOp.getDstOffsets().size() * 3 + newOp.getSrcOffsets().size();
-  int dstSizesOffset = 1 + newOp.getDstOffsets().size();
-  // Mutate new memcpy op after tiling.
-  builder.setInsertionPoint(newOp);
-  for (unsigned i = 0; i < 2; i++) {
-    newOp->getOpOperand(L1offsetsOffset + i)
-        .assign(scfPar.getInductionVars()[i]);
-    newOp->getOpOperand(L2offsetsOffset + i)
-        .assign(scfPar.getInductionVars()[i]);
-    int newSrcSizeInt =
-        mlir::ceilDiv(*getConstantIntValue(newOp.getSrcSizes()[i]),
-                      *getConstantIntValue(upperBounds[i]));
-    int newDstSizeInt =
-        mlir::ceilDiv(*getConstantIntValue(newOp.getDstSizes()[i]),
-                      *getConstantIntValue(upperBounds[i]));
-    newOp->getOpOperand(srcSizesOffset + i)
-        .assign(builder.create<arith::ConstantIndexOp>(loc, newSrcSizeInt));
-    newOp->getOpOperand(dstSizesOffset + i)
-        .assign(builder.create<arith::ConstantIndexOp>(loc, newDstSizeInt));
-  }
-  op->erase();
-  return success();
-}
-
 template <class T>
 air::SegmentOp generateEmptySegmentOp(OpBuilder &rewriter, T op,
                                       air::LaunchOp launch) {
@@ -3083,16 +3019,65 @@ static void getHerdNames(ModuleOp module) {
   std::vector<std::string> herd_syms;
   for (auto f : module.getOps<func::FuncOp>()) {
     // record existing symbol names
+    SmallVector<air::HerdOp> herds;
     f.walk([&](air::HerdOp op) {
       if (auto attr =
               op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
         std::string name = attr.getValue().str();
-        assert((std::find(herd_syms.begin(), herd_syms.end(), name) ==
-                herd_syms.end()) &&
-               "unexpected duplicate symbol");
-        herd_syms.push_back(name);
+        if (std::find(herd_syms.begin(), herd_syms.end(), name) ==
+            herd_syms.end())
+          herd_syms.push_back(name);
       }
+      herds.push_back(op);
     });
+    // generate shared symbol name across herds using shared L1 memref as
+    // argument; herds sharing the same symbolic name represent different time
+    // phases of the same physical herd.
+    if (herds.size() > 1)
+      for (unsigned i = 0; i < herds.size() - 1; i++) {
+        for (unsigned j = i + 1; j < herds.size(); j++) {
+          auto herdI = herds[i];
+          auto herdJ = herds[j];
+          for (auto operI : herdI->getOperands()) {
+            for (auto operJ : herdJ->getOperands()) {
+              if (!isa<MemRefType>(operI.getType()))
+                continue;
+              if (!isa<MemRefType>(operJ.getType()))
+                continue;
+              if (operI.getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+                  (int)air::MemorySpace::L1)
+                continue;
+              if (operJ.getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+                  (int)air::MemorySpace::L1)
+                continue;
+              if (operI != operJ)
+                continue;
+
+              std::string name;
+              if (auto attr = herdI->getAttrOfType<StringAttr>(
+                      SymbolTable::getSymbolAttrName()))
+                name = attr.getValue().str();
+              else if (auto attr = herdJ->getAttrOfType<StringAttr>(
+                           SymbolTable::getSymbolAttrName()))
+                name = attr.getValue().str();
+              else {
+                unsigned id = 0;
+                do {
+                  std::stringstream ss;
+                  ss << "herd_" << id++;
+                  name = ss.str();
+                } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
+                         herd_syms.end());
+              }
+              herdI->setAttr(SymbolTable::getSymbolAttrName(),
+                             StringAttr::get(herdI->getContext(), name));
+              herdJ->setAttr(SymbolTable::getSymbolAttrName(),
+                             StringAttr::get(herdJ->getContext(), name));
+              herd_syms.push_back(name);
+            }
+          }
+        }
+      }
     // generate missing symbol names
     f.walk([&](air::HerdOp op) {
       if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
@@ -3209,8 +3194,51 @@ struct ParallelToHerdPass
         return;
       assert(parentParOpCount && "Expects at least one scf.parallel or "
                                  "scf.forall parent op around an L2-L1 dma op");
-      if (TileL1L2AIRMemcpyUsingScfParallel(op, SrcIsL1).failed())
-        assert(false);
+      Operation *L1MemrefAlloc = L1Memref.getDefiningOp();
+      SmallVector<Operation *> memrefOpLog;
+      while (L1MemrefAlloc && !isa<memref::AllocOp>(L1MemrefAlloc)) {
+        memrefOpLog.push_back(L1MemrefAlloc);
+        L1MemrefAlloc = L1MemrefAlloc->getOperand(0).getDefiningOp();
+      }
+      L1Memref = dyn_cast<memref::AllocOp>(L1MemrefAlloc).getMemref();
+      memref::SubViewOp tilingHintSubview = nullptr;
+      scf::ParallelOp previousTilingScfPar = nullptr;
+      for (auto user : L1Memref.getUsers()) {
+        tilingHintSubview = dyn_cast<memref::SubViewOp>(user);
+        if (!tilingHintSubview)
+          continue;
+        previousTilingScfPar =
+            tilingHintSubview->getParentOfType<scf::ParallelOp>();
+        if (!previousTilingScfPar)
+          continue;
+      }
+      if (!tilingHintSubview || !previousTilingScfPar)
+        return;
+      OpBuilder builder(op);
+      builder.setInsertionPointAfter(op);
+      auto newTilingPar = builder.create<scf::ParallelOp>(
+          builder.getUnknownLoc(), previousTilingScfPar.getLowerBound(),
+          previousTilingScfPar.getUpperBound(), previousTilingScfPar.getStep());
+      IRMapping remap;
+      for (unsigned i = 0; i < previousTilingScfPar.getInductionVars().size();
+           i++)
+        remap.map(previousTilingScfPar.getInductionVars()[i],
+                  newTilingPar.getInductionVars()[i]);
+      builder.setInsertionPointToStart(newTilingPar.getBody());
+      auto newSubview = builder.clone(*tilingHintSubview, remap);
+      remap.map(L1Memref, newSubview->getResult(0));
+      for (auto o : memrefOpLog) {
+        if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
+          memref::TransposeOp transposeOp = builder.create<memref::TransposeOp>(
+              builder.getUnknownLoc(), newSubview->getResult(0),
+              AffineMapAttr::get(tr.getPermutation()));
+          remap.map(tr.getResult(), transposeOp.getResult());
+        }
+      }
+      builder.clone(*op, remap);
+      op->erase();
+      for (auto o : memrefOpLog)
+        o->erase();
     });
 
     llvm::SmallVector<Operation *> hierOps;
