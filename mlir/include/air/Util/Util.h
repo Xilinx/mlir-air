@@ -12,6 +12,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -172,9 +173,23 @@ getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
 
 // Get the overall data access pattern from air.channel ops which access the
 // memref.
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+writeAccessPattern(air::ChannelInterface chanOp);
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+writeAccessPattern(memref::SubViewOp subview);
+SmallVector<int64_t>
+getDataAccessShapeFromMemcpyOp(Value memref,
+                               SmallVector<air::ChannelInterface> chanUsers);
 SmallVector<int64_t>
 getDataAccessShapeFromMemcpyOp(Value memref,
                                SmallVector<air::ChannelInterface> chanOps);
+SmallVector<int64_t> getDataAccessShapeFromMemcpyOp(
+    Value memref,
+    SmallVector<
+        std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
+        patterns);
+SmallVector<int64_t>
+getDataAccessShapeFromMemcpyOp(Value memref, SmallVector<Operation *> users);
 
 // Update strides after memref shrinkage. Assuming there is only one dimension
 // being shrunk.
@@ -182,6 +197,11 @@ SmallVector<int>
 getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
                                 SmallVector<int64_t> new_memref_shape,
                                 SmallVector<Value> strides);
+// Update offsets after memref shrinkage.
+SmallVector<int>
+getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
+                                SmallVector<int64_t> new_memref_shape,
+                                SmallVector<Value> offsets);
 
 } // namespace air
 } // namespace xilinx
