@@ -4010,7 +4010,7 @@ public:
                   .create<air::WaitAllOp>(
                       loc,
                       air::AsyncTokenType::get(waitAllBuilder.getContext()),
-                      exec.getAsyncDependencies())
+                      SmallVector<Value>{})
                   .getAsyncToken());
         }
       }
@@ -4062,18 +4062,17 @@ public:
     });
     for (auto put_parent : put_parents) {
       auto get_parent = put_get_mapping[put_parent];
-      if (put_parent->isBeforeInBlock(get_parent)) {
+      if (put_parent->isBeforeInBlock(get_parent))
         put_parent->moveAfter(get_parent);
-        Value get_parent_token = nullptr;
-        for (auto res : get_parent->getResults())
-          if (isa<AsyncTokenType>(res.getType()))
-            get_parent_token = res;
-        for (unsigned i = 0; i < put_parent->getNumOperands(); i++)
-          if (get_parent_token &&
-              isa<AsyncTokenType>(put_parent->getOperand(i).getType())) {
-            put_parent->getOpOperand(i).assign(get_parent_token);
-          }
-      }
+      Value get_parent_token = nullptr;
+      for (auto res : get_parent->getResults())
+        if (isa<AsyncTokenType>(res.getType()))
+          get_parent_token = res;
+      for (unsigned i = 0; i < put_parent->getNumOperands(); i++)
+        if (get_parent_token &&
+            isa<AsyncTokenType>(put_parent->getOperand(i).getType())) {
+          put_parent->getOpOperand(i).assign(get_parent_token);
+        }
     }
   }
 
