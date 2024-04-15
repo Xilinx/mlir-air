@@ -1067,9 +1067,9 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
         std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
         patterns) {
   auto memref_shape = getTensorShape(memref.getType());
-  SmallVector<int64_t> overall_access_bounds(memref_shape.size(), -1);
+  SmallVector<int64_t> overall_access_bounds(memref_shape.size(), 1);
   for (auto pattern : patterns) {
-    SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
+    SmallVector<int64_t> access_bounds(memref_shape.size(), 1);
     if (std::get<0>(pattern).empty())
       for (unsigned i = 0; i < memref_shape.size(); i++)
         access_bounds[i] = memref_shape[i];
@@ -1198,14 +1198,25 @@ air::getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
     int memref_idx = i + old_memref_shape.size() - offsets.size();
     if (memref_idx >= 0) {
       // Reset offset to zero, if the user air.channel put/get has offset being
-      // variant wrt a parent herd induction variable.
-      if (getHerdArgOwner(offsets[i]))
-        new_offsets[i] = 0;
-      else if (auto exec =
-                   dyn_cast<air::ExecuteOp>(offsets[i].getDefiningOp())) {
-        for (auto oper : exec.getChildOp()->getOperands())
-          if (getHerdArgOwner(oper))
-            new_offsets[i] = 0;
+      // variant wrt a parent spatial iteration space (e.g. air.herd,
+      // scf.parallel).
+      if (offsets[i].getDefiningOp()) {
+        if (auto exec = dyn_cast<air::ExecuteOp>(offsets[i].getDefiningOp())) {
+          for (auto oper : exec.getChildOp()->getOperands())
+            if (getHerdArgOwner(oper))
+              new_offsets[i] = 0;
+        }
+      } else {
+        // If offset is some block argument
+        if (getHerdArgOwner(offsets[i]))
+          new_offsets[i] = 0;
+        else if (scf::getParallelForInductionVarOwner(offsets[i]))
+          new_offsets[i] = 0;
+        else if (scf::getForInductionVarOwner(offsets[i]))
+          continue;
+        else
+          assert(false &&
+                 "offset is block argument to an unknown iteration space");
       }
     }
   }
