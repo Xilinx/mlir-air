@@ -3645,13 +3645,15 @@ struct ShrinkMemrefSizesByAccessPattern
     auto memref_shape = getTensorShape(memref.getType());
 
     bool shrinkMemref = false;
+    bool boundsAreAllOnes = true;
     for (unsigned i = 0; i < memref_shape.size(); i++) {
-      if (overall_access_bounds[i] <= 0)
-        return failure();
-      if (overall_access_bounds[i] < memref_shape[i]) {
+      if (overall_access_bounds[i] != 1)
+        boundsAreAllOnes = false;
+      if (overall_access_bounds[i] < memref_shape[i])
         shrinkMemref = true;
-      }
     }
+    if (boundsAreAllOnes)
+      return failure(); // Memref access pattern analysis failed
     if (shrinkMemref) {
       // Start shrinking memref.
       for (auto user : users) {

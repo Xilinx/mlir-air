@@ -1042,7 +1042,7 @@ SmallVector<int64_t>
 air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
                                              SmallVector<Value> sizes,
                                              SmallVector<Value> strides) {
-  SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
+  SmallVector<int64_t> access_bounds(memref_shape.size(), 1);
   for (int i = sizes.size() - 1; i >= 0; i--) {
     int current_memref_volume = 1;
     for (int j = memref_shape.size() - 1; j >= 0; j--) {
@@ -1106,6 +1106,11 @@ air::writeAccessPattern(memref::SubViewOp subview) {
   auto static_offsets = subview.getStaticOffsets();
   auto static_sizes = subview.getStaticSizes();
   auto static_strides = subview.getStaticStrides();
+  // Get strided layout from subview op's output MemRefType
+  if (auto strided = llvm::dyn_cast<StridedLayoutAttr>(
+          subview.getResult().getType().cast<MemRefType>().getLayout()))
+    static_strides = strided.getStrides();
+
   auto loc = subview.getLoc();
   OpBuilder builder(subview);
   for (auto o : static_offsets) {
@@ -1191,10 +1196,18 @@ air::getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
   SmallVector<int> new_offsets(offsets.size(), -1);
   for (int i = 0; i < (int)offsets.size(); i++) {
     int memref_idx = i + old_memref_shape.size() - offsets.size();
-    if ((memref_idx >= 0) && (new_memref_shape[memref_idx] == 1))
-      new_offsets[i] =
-          0; // Reset offset to zero, if the corresponding size has been shrunk
-             // to 1. TODO: generalize this for more complex shrinkage cases.
+    if (memref_idx >= 0) {
+      // Reset offset to zero, if the user air.channel put/get has offset being
+      // variant wrt a parent herd induction variable.
+      if (getHerdArgOwner(offsets[i]))
+        new_offsets[i] = 0;
+      else if (auto exec =
+                   dyn_cast<air::ExecuteOp>(offsets[i].getDefiningOp())) {
+        for (auto oper : exec.getChildOp()->getOperands())
+          if (getHerdArgOwner(oper))
+            new_offsets[i] = 0;
+      }
+    }
   }
   return new_offsets;
 }
