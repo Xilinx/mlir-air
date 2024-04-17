@@ -3705,27 +3705,23 @@ struct ShrinkMemrefSizesByAccessPattern
           if (static_sizes[i] < 0) {
             if (*getConstantIntValue(*subview_sizes++) !=
                 overall_access_bounds[i])
-              assert(
-                  false &&
-                  "Memref shrinkage attempting to mutate memref.subview, NYI.");
+              return failure(); // Memref shrinkage attempting to mutate
+                                // memref.subview, NYI.
           } else {
             if (static_sizes[i] != overall_access_bounds[i])
-              assert(
-                  false &&
-                  "Memref shrinkage attempting to mutate memref.subview, NYI.");
+              return failure(); // Memref shrinkage attempting to mutate
+                                // memref.subview, NYI.
           }
         }
         for (unsigned i = 0; i < static_strides.size(); i++) {
           if (static_strides[i] < 0) {
             if (*getConstantIntValue(*subview_strides++) != 1)
-              assert(
-                  false &&
-                  "Memref shrinkage attempting to mutate memref.subview, NYI.");
+              return failure(); // Memref shrinkage attempting to mutate
+                                // memref.subview, NYI.
           } else {
             if (static_strides[i] != 1)
-              assert(
-                  false &&
-                  "Memref shrinkage attempting to mutate memref.subview, NYI.");
+              return failure(); // Memref shrinkage attempting to mutate
+                                // memref.subview, NYI.
           }
         }
         subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
