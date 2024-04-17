@@ -186,38 +186,150 @@ module {
 
 // -----
 
-// This test demonstrates how to infer an air.dma_memcpy_nd op between L2 and L1, not within two scf.parallel loop nests, gets inferred with a herd around it. 
+// This test demonstrates how to assign multiple air.herds, which use some shared L1 memrefs, with the same symbolic name, in order to represent that they shall get mapped to the same set of compute resources.
 
 // CHECK-LABEL: module {
-//       CHECK:  func.func @l2_to_l1_dma_infer_herd(
+//       CHECK:  func.func @shared_herd_name(
 //       CHECK:    air.herd @herd_0
-//       CHECK:       air.dma_memcpy_nd
+//       CHECK:       air.herd_terminator
+//       CHECK:    }
+//       CHECK:    air.herd @herd_0
+//       CHECK:       air.herd_terminator
+//       CHECK:    }
+//       CHECK:    air.herd @herd_0
 //       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    return
 //       CHECK:  }
 //       CHECK: }
 module {
-  func.func @l2_to_l1_dma_infer_herd(%l2_buffer: memref<2x2x32x32xi32, 1>, %l1_buffer: memref<2x2x4x8x4x8xi32, 2>) {
-    %c64 = arith.constant 64 : index
-    %c16384 = arith.constant 16384 : index
-    %c1024 = arith.constant 1024 : index
-    %c8192 = arith.constant 8192 : index
-    %c512 = arith.constant 512 : index
-    %c131072 = arith.constant 131072 : index
-    %c2 = arith.constant 2 : index
-    %c2048 = arith.constant 2048 : index
-    %c256 = arith.constant 256 : index
-    %c65536 = arith.constant 65536 : index
-    %c0 = arith.constant 0 : index
-    %c0_i32 = arith.constant 0 : i32
-    %c8 = arith.constant 8 : index
-    %c1 = arith.constant 1 : index
+  func.func @shared_herd_name(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c32 = arith.constant 32 : index
-    %c4 = arith.constant 4 : index
+    %c128 = arith.constant 128 : index
+    %c512 = arith.constant 512 : index
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 0.000000e+00 : bf16
     %c16 = arith.constant 16 : index
-    scf.parallel (%x,%y) = (%c0,%c0) to (%c16,%c8) step (%c1, %c1) {
-      air.dma_memcpy_nd (%l2_buffer[] [] [], %l1_buffer[%c0, %c0, %c0, %c0, %c0, %c0] [%c2, %c2, %c8, %c4, %c4, %c8] [%c2048, %c1024, %c32, %c8, %c256, %c1]) : (memref<2x2x32x32xi32, 1>, memref<2x2x4x8x4x8xi32, 2>)
+    %c1 = arith.constant 1 : index
+    scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c512, %c512) step (%c128, %c128) {
+      %alloc_3 = memref.alloc() : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      %alloc_4 = memref.alloc() : memref<1x1x128x128xbf16, 1 : i32>
+      scf.parallel (%arg5, %arg6) = (%c0, %c0) to (%c32, %c32) step (%c16, %c16) {
+        %subview_16 = memref.subview %alloc_3[0, 0, %arg6, %arg5, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+        linalg.fill ins(%cst : bf16) outs(%subview_16 : memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>)
+        scf.reduce 
+      }
+      scf.for %arg5 = %c1 to %c16 step %c1 {
+        scf.parallel (%arg6, %arg7) = (%c0, %c0) to (%c32, %c32) step (%c16, %c16) {
+          %subview_18 = memref.subview %alloc_3[0, 0, %arg7, %arg6, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+          linalg.fill ins(%cst : bf16) outs(%subview_18 : memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>)
+          scf.reduce 
+        }
+      }
+      %transpose = memref.transpose %alloc_3 (d0, d1, d2, d3, d4, d5) -> (d0, d1, d3, d4, d2, d5) : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x32x4x32x4xbf16, strided<[16384, 16384, 16, 4, 512, 1]>, 2 : i32>
+      air.dma_memcpy_nd (%alloc_4[] [] [], %transpose[] [] []) : (memref<1x1x128x128xbf16, 1 : i32>, memref<1x1x32x4x32x4xbf16, strided<[16384, 16384, 16, 4, 512, 1]>, 2 : i32>)
+      memref.dealloc %alloc_4 : memref<1x1x128x128xbf16, 1 : i32>
+      memref.dealloc %alloc_3 : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      scf.reduce 
+    }
+    return
+  }
+}
+
+// -----
+
+// Contrary to the "shared_herd_name" test above, when multiple herds do not share any L1 memref, then they must be assigned with unique symbolic names, and subsequently mapped to distinct hw compute resources.
+
+// CHECK-LABEL: module {
+//       CHECK:  func.func @unique_herd_name(
+//       CHECK:    air.herd @herd_0
+//       CHECK:       air.herd_terminator
+//       CHECK:    }
+//       CHECK:    air.herd @herd_1
+//       CHECK:       air.herd_terminator
+//       CHECK:    }
+//       CHECK:    return
+//       CHECK:  }
+//       CHECK: }
+module {
+  func.func @unique_herd_name(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %c512 = arith.constant 512 : index
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 0.000000e+00 : bf16
+    %c16 = arith.constant 16 : index
+    %c1 = arith.constant 1 : index
+    scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c512, %c512) step (%c128, %c128) {
+      %alloc_1 = memref.alloc() : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      %alloc_2 = memref.alloc() : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      scf.parallel (%arg5, %arg6) = (%c0, %c0) to (%c32, %c32) step (%c16, %c16) {
+        %subview_16 = memref.subview %alloc_1[0, 0, %arg6, %arg5, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+        linalg.fill ins(%cst : bf16) outs(%subview_16 : memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>)
+        scf.reduce 
+      }
+      scf.for %arg5 = %c1 to %c16 step %c1 {
+        scf.parallel (%arg6, %arg7) = (%c0, %c0) to (%c32, %c32) step (%c16, %c16) {
+          %subview_18 = memref.subview %alloc_2[0, 0, %arg7, %arg6, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+          linalg.fill ins(%cst : bf16) outs(%subview_18 : memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>)
+          scf.reduce 
+        }
+      }
+      memref.dealloc %alloc_2 : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      memref.dealloc %alloc_1 : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      scf.reduce 
+    }
+    return
+  }
+}
+
+// -----
+
+// This test demonstrates how to infer an air.dma_memcpy_nd op between L2 and L1, not within two scf.parallel loop nests, gets inferred with a herd around it. 
+
+// CHECK-LABEL: module {
+//       CHECK:  func.func @l2_to_l1_dma_infer_herd(
+//       CHECK:    air.herd @herd_0
+//       CHECK:       %[[VAL_0:.*]] = affine.apply
+//       CHECK:       %[[VAL_1:.*]] = affine.apply
+//       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_1]], %[[VAL_0]], 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+//       CHECK:       air.herd_terminator
+//       CHECK:    }
+//       CHECK:    air.herd @herd_0
+//       CHECK:       %[[VAL_0:.*]] = affine.apply
+//       CHECK:       %[[VAL_1:.*]] = affine.apply
+//       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_1]], %[[VAL_0]], 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+//       CHECK:       %[[VAL_2:.*]] = affine.apply
+//       CHECK:       %[[VAL_3:.*]] = affine.apply
+//       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_2]], %[[VAL_3]]] [1, 1, 64, 64] [1, 1, 1, 1] : memref<1x1x128x128xbf16, 1 : i32> to memref<1x1x64x64xbf16, strided<[16384, 16384, 128, 1], offset: ?>, 1 : i32>
+//       CHECK:       air.dma_memcpy_nd {{.*}} : (memref<1x1x64x64xbf16, strided<[16384, 16384, 128, 1], offset: ?>, 1 : i32>, memref<1x1x16x4x16x4xbf16, strided<[16384, 16384, 16, 4, 512, 1], offset: ?>, 2 : i32>)
+//       CHECK:       air.herd_terminator
+//       CHECK:    }
+//       CHECK:    return
+//       CHECK:  }
+//       CHECK: }
+module {
+  func.func @l2_to_l1_dma_infer_herd() {
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %c512 = arith.constant 512 : index
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 0.000000e+00 : bf16
+    %c16 = arith.constant 16 : index
+    %c1 = arith.constant 1 : index
+    scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c512, %c512) step (%c128, %c128) {
+      %alloc_3 = memref.alloc() : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      %alloc_4 = memref.alloc() : memref<1x1x128x128xbf16, 1 : i32>
+      scf.parallel (%arg5, %arg6) = (%c0, %c0) to (%c32, %c32) step (%c16, %c16) {
+        %subview_16 = memref.subview %alloc_3[0, 0, %arg6, %arg5, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+        linalg.fill ins(%cst : bf16) outs(%subview_16 : memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>)
+        scf.reduce 
+      }
+      %transpose = memref.transpose %alloc_3 (d0, d1, d2, d3, d4, d5) -> (d0, d1, d3, d4, d2, d5) : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x32x4x32x4xbf16, strided<[16384, 16384, 16, 4, 512, 1]>, 2 : i32>
+      air.dma_memcpy_nd (%alloc_4[] [] [], %transpose[] [] []) : (memref<1x1x128x128xbf16, 1 : i32>, memref<1x1x32x4x32x4xbf16, strided<[16384, 16384, 16, 4, 512, 1]>, 2 : i32>)
+      memref.dealloc %alloc_4 : memref<1x1x128x128xbf16, 1 : i32>
+      memref.dealloc %alloc_3 : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      scf.reduce 
     }
     return
   }

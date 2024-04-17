@@ -2138,6 +2138,139 @@ private:
   int firstDim;
 };
 
+LogicalResult
+getMemrefBackwardSlices(Value &memref, Operation *&memrefAlloc,
+                        SmallVector<Operation *> &backwardSlices) {
+  if (!memrefAlloc)
+    return failure();
+  while (!isa<memref::AllocOp>(memrefAlloc)) {
+    backwardSlices.push_back(memrefAlloc);
+    memrefAlloc = memrefAlloc->getOperand(0).getDefiningOp();
+    if (!memrefAlloc)
+      return failure();
+  }
+  memref = dyn_cast<memref::AllocOp>(memrefAlloc).getMemref();
+  return success();
+}
+
+// Attempt to tile an L2-L1 air.dma_memcpy_nd op using an scf.parallel op.
+LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
+                                                bool SrcIsL1) {
+  OpBuilder builder(op);
+  auto loc = op->getLoc();
+  auto L1Memref = SrcIsL1 ? op.getSrcMemref() : op.getDstMemref();
+  auto L2Memref = SrcIsL1 ? op.getDstMemref() : op.getSrcMemref();
+  auto L1MemrefShape = air::getTensorShape(L1Memref.getType());
+  auto L2MemrefShape = air::getTensorShape(L2Memref.getType());
+
+  Operation *L1MemrefAlloc = L1Memref.getDefiningOp();
+  SmallVector<Operation *> L1MemrefOpLog;
+  if (getMemrefBackwardSlices(L1Memref, L1MemrefAlloc, L1MemrefOpLog).failed())
+    return failure();
+
+  Operation *L2MemrefAlloc = L2Memref.getDefiningOp();
+  SmallVector<Operation *> L2MemrefOpLog;
+  if (getMemrefBackwardSlices(L2Memref, L2MemrefAlloc, L2MemrefOpLog).failed())
+    return failure();
+
+  memref::SubViewOp tilingHintSubview = nullptr;
+  scf::ParallelOp previousTilingScfPar = nullptr;
+  for (auto user : L1Memref.getUsers()) {
+    tilingHintSubview = dyn_cast<memref::SubViewOp>(user);
+    if (!tilingHintSubview)
+      continue;
+    previousTilingScfPar =
+        tilingHintSubview->getParentOfType<scf::ParallelOp>();
+    if (!previousTilingScfPar)
+      continue;
+  }
+  if (!tilingHintSubview || !previousTilingScfPar)
+    return failure();
+  if (L1MemrefShape.size() < previousTilingScfPar.getStep().size())
+    return failure();
+  if (L2MemrefShape.size() < previousTilingScfPar.getStep().size())
+    return failure();
+  builder.setInsertionPointAfter(op);
+  auto newTilingPar = builder.create<scf::ParallelOp>(
+      loc, previousTilingScfPar.getLowerBound(),
+      previousTilingScfPar.getUpperBound(), previousTilingScfPar.getStep());
+  IRMapping remap;
+  for (unsigned i = 0; i < previousTilingScfPar.getInductionVars().size(); i++)
+    remap.map(previousTilingScfPar.getInductionVars()[i],
+              newTilingPar.getInductionVars()[i]);
+  // Generate memref subview op leading the tiling of the L1 memref
+  builder.setInsertionPointToStart(newTilingPar.getBody());
+  auto newL1Subview =
+      dyn_cast<memref::SubViewOp>(builder.clone(*tilingHintSubview, remap));
+  remap.map(L1Memref, newL1Subview.getResult());
+  for (auto o : L1MemrefOpLog) {
+    if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
+      memref::TransposeOp transposeOp = builder.create<memref::TransposeOp>(
+          loc, newL1Subview.getResult(),
+          AffineMapAttr::get(tr.getPermutation()));
+      remap.map(tr.getResult(), transposeOp.getResult());
+    } else
+      assert(false && "NYI memref operation type on L1 memref");
+  }
+  // Generate memref subview op leading the tiling of the L2 memref
+  SmallVector<int64_t> tilingFactors;
+  for (unsigned i = 0; i < newTilingPar.getStep().size(); i++) {
+    auto factor =
+        mlir::ceilDiv(*getConstantIntValue(newTilingPar.getUpperBound()[i]) -
+                          *getConstantIntValue(newTilingPar.getLowerBound()[i]),
+                      *getConstantIntValue(newTilingPar.getStep()[i]));
+    tilingFactors.push_back(factor);
+  }
+  Attribute zeroIdxAttr = builder.getIndexAttr(0);
+  Attribute oneIdxAttr = builder.getIndexAttr(1);
+  SmallVector<OpFoldResult> L2Offsets(L2MemrefShape.size(), zeroIdxAttr);
+  SmallVector<int> L2TiledShape = L2MemrefShape;
+  // Tiling the L2 memref with the first two tilable dimensions. TODO:
+  // generalize/replace this logic.
+  int dimIndex = 0;
+  for (unsigned i = 0; i < L2MemrefShape.size(); i++) {
+    int stepSizeInInt = *getConstantIntValue(newTilingPar.getStep()[dimIndex]);
+    if (L2MemrefShape[i] >= tilingFactors[dimIndex] * stepSizeInInt) {
+      int applyFactor = mlir::ceilDiv(L2MemrefShape[i],
+                                      tilingFactors[dimIndex] * stepSizeInInt);
+      AffineExpr d0 = builder.getAffineDimExpr(0);
+      AffineExpr mul = d0 * applyFactor;
+      auto map = AffineMap::get(1, 0, mul);
+      Value new_iv = builder.create<affine::AffineApplyOp>(
+          loc, map, newTilingPar.getInductionVars()[dimIndex]);
+      L2Offsets[i] = new_iv;
+      L2TiledShape[i] =
+          mlir::ceilDiv(L2MemrefShape[i], tilingFactors[dimIndex]);
+      dimIndex++;
+    }
+    if (dimIndex >= 2)
+      break;
+  }
+  SmallVector<OpFoldResult> L2Strides(L2MemrefShape.size(), oneIdxAttr);
+  SmallVector<OpFoldResult> L2Sizes;
+  for (unsigned i = 0; i < L2MemrefShape.size(); i++)
+    L2Sizes.push_back(builder.getIndexAttr(L2TiledShape[i]));
+  auto subviewOutputType =
+      memref::SubViewOp::inferResultType(L2Memref.getType().cast<MemRefType>(),
+                                         L2Offsets, L2Sizes, L2Strides)
+          .cast<MemRefType>();
+  auto newL2Subview = builder.create<memref::SubViewOp>(
+      loc, subviewOutputType, L2Memref, L2Offsets, L2Sizes, L2Strides);
+  remap.map(L2Memref, newL2Subview.getResult());
+  for (auto o : L2MemrefOpLog) {
+    if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
+      memref::TransposeOp transposeOp = builder.create<memref::TransposeOp>(
+          loc, newL2Subview.getResult(),
+          AffineMapAttr::get(tr.getPermutation()));
+      remap.map(tr.getResult(), transposeOp.getResult());
+    } else
+      assert(false && "NYI memref operation type on L1 memref");
+  }
+  builder.clone(*op, remap);
+  op->erase();
+  return success();
+}
+
 template <class T>
 air::SegmentOp generateEmptySegmentOp(OpBuilder &rewriter, T op,
                                       air::LaunchOp launch) {
@@ -3192,53 +3325,10 @@ struct ParallelToHerdPass
       }
       if (parentParOpCount > 1)
         return;
-      assert(parentParOpCount && "Expects at least one scf.parallel or "
-                                 "scf.forall parent op around an L2-L1 dma op");
-      Operation *L1MemrefAlloc = L1Memref.getDefiningOp();
-      SmallVector<Operation *> memrefOpLog;
-      while (L1MemrefAlloc && !isa<memref::AllocOp>(L1MemrefAlloc)) {
-        memrefOpLog.push_back(L1MemrefAlloc);
-        L1MemrefAlloc = L1MemrefAlloc->getOperand(0).getDefiningOp();
-      }
-      L1Memref = dyn_cast<memref::AllocOp>(L1MemrefAlloc).getMemref();
-      memref::SubViewOp tilingHintSubview = nullptr;
-      scf::ParallelOp previousTilingScfPar = nullptr;
-      for (auto user : L1Memref.getUsers()) {
-        tilingHintSubview = dyn_cast<memref::SubViewOp>(user);
-        if (!tilingHintSubview)
-          continue;
-        previousTilingScfPar =
-            tilingHintSubview->getParentOfType<scf::ParallelOp>();
-        if (!previousTilingScfPar)
-          continue;
-      }
-      if (!tilingHintSubview || !previousTilingScfPar)
+      if (!parentParOpCount)
         return;
-      OpBuilder builder(op);
-      builder.setInsertionPointAfter(op);
-      auto newTilingPar = builder.create<scf::ParallelOp>(
-          builder.getUnknownLoc(), previousTilingScfPar.getLowerBound(),
-          previousTilingScfPar.getUpperBound(), previousTilingScfPar.getStep());
-      IRMapping remap;
-      for (unsigned i = 0; i < previousTilingScfPar.getInductionVars().size();
-           i++)
-        remap.map(previousTilingScfPar.getInductionVars()[i],
-                  newTilingPar.getInductionVars()[i]);
-      builder.setInsertionPointToStart(newTilingPar.getBody());
-      auto newSubview = builder.clone(*tilingHintSubview, remap);
-      remap.map(L1Memref, newSubview->getResult(0));
-      for (auto o : memrefOpLog) {
-        if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
-          memref::TransposeOp transposeOp = builder.create<memref::TransposeOp>(
-              builder.getUnknownLoc(), newSubview->getResult(0),
-              AffineMapAttr::get(tr.getPermutation()));
-          remap.map(tr.getResult(), transposeOp.getResult());
-        }
-      }
-      builder.clone(*op, remap);
-      op->erase();
-      for (auto o : memrefOpLog)
-        o->erase();
+      if (TileL1L2AIRMemcpyUsingScfParallel(op, SrcIsL1).failed())
+        return;
     });
 
     llvm::SmallVector<Operation *> hierOps;
