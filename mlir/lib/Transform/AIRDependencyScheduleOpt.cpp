@@ -2702,8 +2702,8 @@ class AIRUnrollChannelByFactorPattern
 
 public:
   AIRUnrollChannelByFactorPattern() = default;
-  AIRUnrollChannelByFactorPattern(const AIRUnrollChannelByFactorPattern &pass) {
-  };
+  AIRUnrollChannelByFactorPattern(
+      const AIRUnrollChannelByFactorPattern &pass){};
 
   void runOnOperation() override {
     auto module = getOperation();
