@@ -3969,7 +3969,9 @@ public:
     for (auto forOp : fusableForOps) {
       remap.map(forOp.getInductionVar(), new_loop_op.getInductionVar());
       for (unsigned i = 0; i < forOp.getRegionIterArgs().size(); i++)
-        remap.map(forOp.getRegionIterArgs(), new_loop_op.getRegionIterArgs());
+        remap.map(forOp.getRegionIterArgs()[i],
+                  remap.lookupOrDefault(
+                      forOp.getOperand(i + forOp.getNumControlOperands())));
       builder.setInsertionPointToEnd(new_loop_op.getBody());
       for (auto &child_op : forOp.getBody()->getOperations())
         if (!child_op.mightHaveTrait<OpTrait::IsTerminator>())
