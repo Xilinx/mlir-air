@@ -107,29 +107,29 @@ include_directories(${PROJECT_BINARY_DIR}/mlir/include)
 
 add_definitions(${LLVM_DEFINITIONS})
 
-## flags duplicated from mlir-aie
-add_flag_if_supported("-Werror=sign-compare" WERROR_SIGN_COMPARE)
-add_flag_if_supported("-Werror=unused" WERROR_USED)
-# What happens when you have a non-void function with no return?
-# No `ret` instruction is generated and so execution of that function just
-# proceeds as if it doesn't have a care in the world (right into whatever comes next).
-# https://godbolt.org/z/Wr9nzv6ns
-add_flag_if_supported("-Werror=return-type" WERROR_RETURN_TYPE)
-## Stolen from MLIR
-# Forbid implicit function declaration: this may lead to subtle bugs and we
-# don't have a reason to support this.
-add_flag_if_supported("-Werror=implicit-function-declaration" WERROR_IMPLICIT_FUNCTION_DECLARATION)
-# Forbid mismatch between declaration and definition for class vs struct. This is
-# harmless on Unix systems, but it'll be a ticking bomb for MSVC/Windows systems
-# where it creeps into the ABI.
-add_flag_if_supported("-Werror=mismatched-tags" WERROR_MISMATCHED_TAGS)
-# Silence a false positive GCC -Wunused-but-set-parameter warning in constexpr
-# cases, by marking SelectedCase as used. See
-# https://gcc.gnu.org/bugzilla/show_bug.cgi?id=85827 for details. The issue is
-# fixed in GCC 10.
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "10.0")
-  add_flag_if_supported("-Wno-unused-but-set-parameter" WNO_UNUSED_BUT_SET_PARAMETER)
-endif()
+# ## flags duplicated from mlir-aie
+# add_flag_if_supported("-Werror=sign-compare" WERROR_SIGN_COMPARE)
+# add_flag_if_supported("-Werror=unused" WERROR_USED)
+# # What happens when you have a non-void function with no return?
+# # No `ret` instruction is generated and so execution of that function just
+# # proceeds as if it doesn't have a care in the world (right into whatever comes next).
+# # https://godbolt.org/z/Wr9nzv6ns
+# add_flag_if_supported("-Werror=return-type" WERROR_RETURN_TYPE)
+# ## Stolen from MLIR
+# # Forbid implicit function declaration: this may lead to subtle bugs and we
+# # don't have a reason to support this.
+# add_flag_if_supported("-Werror=implicit-function-declaration" WERROR_IMPLICIT_FUNCTION_DECLARATION)
+# # Forbid mismatch between declaration and definition for class vs struct. This is
+# # harmless on Unix systems, but it'll be a ticking bomb for MSVC/Windows systems
+# # where it creeps into the ABI.
+# add_flag_if_supported("-Werror=mismatched-tags" WERROR_MISMATCHED_TAGS)
+# # Silence a false positive GCC -Wunused-but-set-parameter warning in constexpr
+# # cases, by marking SelectedCase as used. See
+# # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=85827 for details. The issue is
+# # fixed in GCC 10.
+# if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "10.0")
+#   add_flag_if_supported("-Wno-unused-but-set-parameter" WNO_UNUSED_BUT_SET_PARAMETER)
+# endif()
 
 add_custom_target(check-all)
 

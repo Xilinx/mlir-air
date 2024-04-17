@@ -289,14 +289,13 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         auto prev_bb_branch =
             dyn_cast<cf::BranchOp>(prev_bb_back->getTerminator());
         auto prev_bb_end = dyn_cast<AIE::EndOp>(prev_bb_back->getTerminator());
-        assert(prev_bb_branch &&
-               "Prevous block isn't terminated with a BranchOp");
         core_bb = core_builder.createBlock(&core.getBody());
         if (prev_bb_branch)
           prev_bb_branch.setDest(core_bb);
         else if (prev_bb_end) {
-          core_builder.setInsertionPointToEnd(prev_bb_back);
+          core_builder.setInsertionPoint(prev_bb_end);
           core_builder.create<cf::BranchOp>(hloc, core_bb);
+          prev_bb_end->erase();
         }
         core_builder.setInsertionPointToEnd(core_bb);
       }
@@ -3459,9 +3458,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /* .generate_shim_dma = */ false,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
-  p.walk([&](xilinx::air::HerdOp h) {
-    aie_modules.push_back({aie_module, h});
-  });
+  p.walk(
+      [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
   std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
