@@ -2702,8 +2702,8 @@ class AIRUnrollChannelByFactorPattern
 
 public:
   AIRUnrollChannelByFactorPattern() = default;
-  AIRUnrollChannelByFactorPattern(
-      const AIRUnrollChannelByFactorPattern &pass){};
+  AIRUnrollChannelByFactorPattern(const AIRUnrollChannelByFactorPattern &pass) {
+  };
 
   void runOnOperation() override {
     auto module = getOperation();
@@ -3940,6 +3940,7 @@ public:
         perfectlyNestedForBands[0].getStep(),
         SmallVector<Value>{new_loop_op_init_arg});
     SmallVector<air::ExecuteOp> erase_keys;
+    IRMapping remap;
     for (auto execOpPair : alloc_dealloc_execs) {
       bool canMove = false;
       air::ExecuteOp alloc_exec = execOpPair.first;
@@ -3955,9 +3956,7 @@ public:
         builder.setInsertionPointToEnd(new_loop_op.getBody());
         auto new_alloc_exec = builder.clone(*alloc_exec);
         for (unsigned i = 0; i < new_alloc_exec->getNumResults(); i++)
-          alloc_exec->getResult(i).replaceAllUsesWith(
-              new_alloc_exec->getResult(i));
-        alloc_exec->erase();
+          remap.map(alloc_exec->getResult(i), new_alloc_exec->getResult(i));
       } else
         erase_keys.push_back(alloc_exec);
     }
@@ -3967,7 +3966,6 @@ public:
           alloc_dealloc_execs.erase(alloc_dealloc_execs.begin() + i);
 
     // Loop fusion.
-    IRMapping remap;
     for (auto forOp : fusableForOps) {
       remap.map(forOp.getInductionVar(), new_loop_op.getInductionVar());
       for (unsigned i = 0; i < forOp.getRegionIterArgs().size(); i++)
@@ -3981,39 +3979,9 @@ public:
     // Fuse dealloc ops.
     for (auto execOpPair : alloc_dealloc_execs) {
       air::ExecuteOp dealloc_exec = execOpPair.second;
-      dealloc_exec->moveBefore(new_loop_op.getBody(),
-                               new_loop_op.getBody()->getOperations().end());
       clearAsyncDependenciesOfAsyncOp(dealloc_exec);
-    }
-
-    // Clear any async token usage of fused allocs outside of the fused scf.for
-    // loop.
-    for (auto exec : new_loop_op.getOps<air::ExecuteOp>()) {
-      if (!isa<memref::AllocOp>(exec.getChildOp())) {
-        continue;
-      }
-      auto userList = exec.getAsyncToken().getUsers();
-      for (auto user : userList) {
-        if (new_loop_op->isProperAncestor(user))
-          continue;
-        if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
-          clearAsyncDependenciesOfAsyncOp(async_user);
-        }
-      }
-      for (auto &use : exec.getAsyncToken().getUses()) {
-        if (new_loop_op->isProperAncestor(use.getOwner()))
-          continue;
-        else if (auto for_user = dyn_cast<scf::ForOp>(use.getOwner())) {
-          OpBuilder waitAllBuilder(for_user);
-          use.assign(
-              waitAllBuilder
-                  .create<air::WaitAllOp>(
-                      loc,
-                      air::AsyncTokenType::get(waitAllBuilder.getContext()),
-                      SmallVector<Value>{})
-                  .getAsyncToken());
-        }
-      }
+      builder.setInsertionPointToEnd(new_loop_op.getBody());
+      builder.clone(*dealloc_exec, remap);
     }
 
     // Scf.yield op.
@@ -4073,6 +4041,16 @@ public:
             isa<AsyncTokenType>(put_parent->getOperand(i).getType())) {
           put_parent->getOpOperand(i).assign(get_parent_token);
         }
+    }
+
+    // Erase allocs/deallocs
+    for (auto execOpPair : alloc_dealloc_execs) {
+      auto alloc = execOpPair.first;
+      replaceAsyncOpWithWaitAll(builder, alloc);
+      alloc->erase();
+      auto dealloc = execOpPair.second;
+      replaceAsyncOpWithWaitAll(builder, dealloc);
+      dealloc->erase();
     }
   }
 
@@ -4231,6 +4209,16 @@ private:
       if (herdOp.getKernelOperand(i) == v)
         return herdOp.getKernelArgument(i);
     return nullptr;
+  }
+
+  // Erase async op and replace with air wait all
+  void replaceAsyncOpWithWaitAll(OpBuilder builder, Operation *op) const {
+    builder.setInsertionPoint(op);
+    auto waitAllReplaceAlloc = builder.create<air::WaitAllOp>(
+        builder.getUnknownLoc(), air::AsyncTokenType::get(builder.getContext()),
+        SmallVector<Value>{});
+    for (unsigned i = 0; i < op->getNumResults(); i++)
+      op->getResult(i).replaceAllUsesWith(waitAllReplaceAlloc.getAsyncToken());
   }
 };
 
