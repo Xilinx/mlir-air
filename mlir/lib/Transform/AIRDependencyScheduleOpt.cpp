@@ -3635,47 +3635,99 @@ struct ShrinkMemrefSizesByAccessPattern
     // Get channel op users.
     SmallVector<air::ChannelGetOp> gets;
     SmallVector<air::ChannelPutOp> puts;
-    SmallVector<air::ChannelInterface> chanOps;
-    for (auto user : memref.getUsers()) {
-      if (auto da = dyn_cast<memref::DeallocOp>(user))
-        dealloc = da;
-      else if (auto chanOp = dyn_cast<air::ChannelInterface>(user))
-        chanOps.push_back(chanOp);
-      else
-        return failure(); // NYI.
-    }
+    SmallVector<Operation *> users;
+    if (getAllChanUsers(memref, users, dealloc, rewriter).failed())
+      return failure();
 
     // Analyze data access pattern.
     SmallVector<int64_t> overall_access_bounds =
-        air::getDataAccessShapeFromMemcpyOp(memref, chanOps);
+        air::getDataAccessShapeFromMemcpyOp(memref, users);
     auto memref_shape = getTensorShape(memref.getType());
 
     bool shrinkMemref = false;
+    bool boundsAreAllOnes = true;
     for (unsigned i = 0; i < memref_shape.size(); i++) {
-      if (overall_access_bounds[i] < 0)
-        return failure();
-      if (overall_access_bounds[i] < memref_shape[i]) {
+      if (overall_access_bounds[i] != 1)
+        boundsAreAllOnes = false;
+      if (overall_access_bounds[i] < memref_shape[i])
         shrinkMemref = true;
-      }
     }
+    if (boundsAreAllOnes)
+      return failure(); // Memref access pattern analysis failed
     if (shrinkMemref) {
       // Start shrinking memref.
-      for (auto chanOp : chanOps) {
+      for (auto user : users) {
+        // Update access patterns to shrunk memref from air.channel puts and
+        // gets.
+        if (!isa<air::ChannelInterface>(user))
+          continue;
+        auto chanOp = dyn_cast<air::ChannelInterface>(user);
         rewriter.setInsertionPoint(chanOp);
-        auto new_strides = getUpdatedStridesAfterShrinkage(
-            memref_shape, overall_access_bounds, chanOp.getStrides());
-        int strideListIdxOffset =
+        // Update offsets.
+        auto new_offsets = getUpdatedOffsetsAfterShrinkage(
+            memref_shape, overall_access_bounds, chanOp.getOffsets());
+        int offsetListIdxOffset =
             dyn_cast<air::AsyncOpInterface>(chanOp.getOperation())
                 .getAsyncDependencies()
                 .size() +
-            chanOp.getIndices().size() + chanOp.getOffsets().size() +
-            chanOp.getSizes().size() + 1;
+            chanOp.getIndices().size() + 1;
+        for (unsigned i = offsetListIdxOffset;
+             i < offsetListIdxOffset + chanOp.getOffsets().size(); i++) {
+          if (new_offsets[i - offsetListIdxOffset] < 0)
+            continue;
+          chanOp->getOpOperand(i).assign(
+              rewriter.create<arith::ConstantIndexOp>(
+                  chanOp->getLoc(), new_offsets[i - offsetListIdxOffset]));
+        }
+        // Update strides.
+        auto new_strides = getUpdatedStridesAfterShrinkage(
+            memref_shape, overall_access_bounds, chanOp.getStrides());
+        int strideListIdxOffset = offsetListIdxOffset +
+                                  chanOp.getOffsets().size() +
+                                  chanOp.getSizes().size();
         for (unsigned i = strideListIdxOffset;
              i < strideListIdxOffset + chanOp.getStrides().size(); i++) {
           chanOp->getOpOperand(i).assign(
               rewriter.create<arith::ConstantIndexOp>(
                   chanOp->getLoc(), new_strides[i - strideListIdxOffset]));
         }
+      }
+      for (auto user : users) {
+        // Update access patterns to shrunk memref from memref.subview.
+        if (!isa<memref::SubViewOp>(user))
+          continue;
+        auto subViewOp = dyn_cast<memref::SubViewOp>(user);
+        auto subview_sizes = subViewOp.getSizes().begin();
+        auto subview_strides = subViewOp.getStrides().begin();
+        auto static_sizes = subViewOp.getStaticSizes();
+        auto static_strides = subViewOp.getStaticStrides();
+        for (unsigned i = 0; i < static_sizes.size(); i++) {
+          if (static_sizes[i] < 0) {
+            if (*getConstantIntValue(*subview_sizes++) !=
+                overall_access_bounds[i])
+              return failure(); // Memref shrinkage attempting to mutate
+                                // memref.subview, NYI.
+          } else {
+            if (static_sizes[i] != overall_access_bounds[i])
+              return failure(); // Memref shrinkage attempting to mutate
+                                // memref.subview, NYI.
+          }
+        }
+        for (unsigned i = 0; i < static_strides.size(); i++) {
+          if (static_strides[i] < 0) {
+            if (*getConstantIntValue(*subview_strides++) != 1)
+              return failure(); // Memref shrinkage attempting to mutate
+                                // memref.subview, NYI.
+          } else {
+            if (static_strides[i] != 1)
+              return failure(); // Memref shrinkage attempting to mutate
+                                // memref.subview, NYI.
+          }
+        }
+        subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
+        rewriter.eraseOp(subViewOp);
+        for (auto newUser : subViewOp.getSource().getUsers())
+          push_back_if_unique<Operation *>(users, newUser);
       }
 
       // Replace memref alloc op;
@@ -3698,6 +3750,14 @@ struct ShrinkMemrefSizesByAccessPattern
                                                   newAlloc.getResult());
         for (unsigned i = 0; i < execOp->getNumResults(); i++)
           execOp->getResult(i).replaceAllUsesWith(newExecOp->getResult(i));
+        // For air hierarchy ops, also update the argument type
+        for (auto res : newExecOp->getResults())
+          for (auto user : res.getUsers()) {
+            if (!isa<air::HerdOp>(user))
+              continue;
+            auto herdOp = dyn_cast<air::HerdOp>(user);
+            updateHerdArgumentTypes(herdOp);
+          }
         rewriter.eraseOp(execOp);
 
       } else {
@@ -3715,6 +3775,54 @@ struct ShrinkMemrefSizesByAccessPattern
   }
 
 private:
+  template <typename T>
+  void push_back_if_unique(SmallVector<T> &vec, T entry) const {
+    if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
+      vec.push_back(entry);
+    }
+  }
+
+  LogicalResult getAllChanUsers(Value memref, SmallVector<Operation *> &users,
+                                memref::DeallocOp &dealloc,
+                                OpBuilder &builder) const {
+    for (auto user : memref.getUsers()) {
+      if (auto da = dyn_cast<memref::DeallocOp>(user))
+        dealloc = da;
+      else if (auto chanOp = dyn_cast<air::ChannelInterface>(user)) {
+        users.push_back(user);
+      } else if (auto subviewOp = dyn_cast<memref::SubViewOp>(user)) {
+        users.push_back(user);
+      } else if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
+        for (unsigned i = 0; i < herdOp.getNumKernelOperands(); i++) {
+          if (herdOp.getKernelOperand(i) == memref) {
+            auto memrefInHerd = herdOp.getKernelArgument(i);
+            if (getAllChanUsers(memrefInHerd, users, dealloc, builder).failed())
+              return failure();
+          }
+        }
+
+      } else
+        return failure(); // NYI.
+    }
+    return success();
+  }
+
+  // Update herd argument types based on herd operand types
+  void updateHerdArgumentTypes(air::HerdOp herdOp) const {
+    for (unsigned i = 0; i < herdOp.getNumKernelOperands(); i++) {
+      if (herdOp.getKernelArgument(i).getType() ==
+          herdOp.getKernelOperand(i).getType())
+        continue;
+      auto oldArg = herdOp.getKernelArgument(i);
+      auto newArg = herdOp.getBody().front().insertArgument(
+          herdOp.getNumDims() * 2 + i, herdOp.getKernelOperand(i).getType(),
+          herdOp->getLoc());
+      for (auto &oldArgUse : oldArg.getUses())
+        oldArgUse.assign(newArg);
+      oldArg.replaceAllUsesWith(newArg);
+      herdOp.getBody().front().eraseArgument(herdOp.getNumDims() * 2 + i + 1);
+    }
+  }
 };
 
 // A pass which performs loop fusion within air.segment op's region.
@@ -3828,6 +3936,7 @@ public:
         perfectlyNestedForBands[0].getStep(),
         SmallVector<Value>{new_loop_op_init_arg});
     SmallVector<air::ExecuteOp> erase_keys;
+    IRMapping remap;
     for (auto execOpPair : alloc_dealloc_execs) {
       bool canMove = false;
       air::ExecuteOp alloc_exec = execOpPair.first;
@@ -3840,25 +3949,12 @@ public:
         }
       }
       if (canMove) {
-        // Clear async dependencies to alloc op
-        for (auto user : alloc_exec.getAsyncToken().getUsers())
-          if (auto async_user = dyn_cast<air::AsyncOpInterface>(user))
-            eraseAsyncDependencyFromAsyncOp(async_user,
-                                            alloc_exec.getAsyncToken());
-        for (auto &use : alloc_exec.getAsyncToken().getUses()) {
-          if (auto for_user = dyn_cast<scf::ForOp>(use.getOwner())) {
-            OpBuilder waitAllBuilder(for_user);
-            use.assign(
-                waitAllBuilder
-                    .create<air::WaitAllOp>(
-                        loc,
-                        air::AsyncTokenType::get(waitAllBuilder.getContext()),
-                        alloc_exec.getAsyncDependencies())
-                    .getAsyncToken());
-          }
-        }
-        alloc_exec->moveBefore(new_loop_op.getBody(),
-                               new_loop_op.getBody()->getOperations().end());
+        builder.setInsertionPointToEnd(new_loop_op.getBody());
+        auto new_alloc_exec = builder.clone(*alloc_exec, remap);
+        clearAsyncDependenciesOfAsyncOp(
+            dyn_cast<air::AsyncOpInterface>(new_alloc_exec));
+        for (unsigned i = 0; i < new_alloc_exec->getNumResults(); i++)
+          remap.map(alloc_exec->getResult(i), new_alloc_exec->getResult(i));
       } else
         erase_keys.push_back(alloc_exec);
     }
@@ -3868,11 +3964,12 @@ public:
           alloc_dealloc_execs.erase(alloc_dealloc_execs.begin() + i);
 
     // Loop fusion.
-    IRMapping remap;
     for (auto forOp : fusableForOps) {
       remap.map(forOp.getInductionVar(), new_loop_op.getInductionVar());
       for (unsigned i = 0; i < forOp.getRegionIterArgs().size(); i++)
-        remap.map(forOp.getRegionIterArgs(), new_loop_op.getRegionIterArgs());
+        remap.map(forOp.getRegionIterArgs()[i],
+                  remap.lookupOrDefault(
+                      forOp.getOperand(i + forOp.getNumControlOperands())));
       builder.setInsertionPointToEnd(new_loop_op.getBody());
       for (auto &child_op : forOp.getBody()->getOperations())
         if (!child_op.mightHaveTrait<OpTrait::IsTerminator>())
@@ -3882,23 +3979,9 @@ public:
     // Fuse dealloc ops.
     for (auto execOpPair : alloc_dealloc_execs) {
       air::ExecuteOp dealloc_exec = execOpPair.second;
-      dealloc_exec->moveBefore(new_loop_op.getBody(),
-                               new_loop_op.getBody()->getOperations().end());
       clearAsyncDependenciesOfAsyncOp(dealloc_exec);
-    }
-
-    // Clear any async token usage of fused allocs outside of the fused scf.for
-    // loop.
-    for (auto execOpPair : alloc_dealloc_execs) {
-      air::ExecuteOp alloc_exec = execOpPair.first;
-      for (auto user : alloc_exec.getAsyncToken().getUsers()) {
-        if (new_loop_op->isProperAncestor(user))
-          continue;
-        if (!isa<air::AsyncOpInterface>(user))
-          continue;
-        air::eraseAsyncDependencyFromAsyncOp(
-            dyn_cast<air::AsyncOpInterface>(user), alloc_exec.getAsyncToken());
-      }
+      builder.setInsertionPointToEnd(new_loop_op.getBody());
+      builder.clone(*dealloc_exec, remap);
     }
 
     // Scf.yield op.
@@ -3926,23 +4009,48 @@ public:
       forOp->erase();
     }
 
-    std::vector<scf::ForOp> put_parents;
-    // Map from channel.put's scf.for op parents to dependent channel.get.
-    std::map<scf::ForOp, air::ChannelGetOp> put_get_mapping;
+    // Map from channel.put (or any parent scf.for op) to dependent channel.get.
+    std::vector<Operation *> put_parents;
+    std::map<Operation *, Operation *> put_get_mapping;
     new_loop_op.walk([&](air::ChannelPutOp putOp) {
       air::ChannelGetOp getOp = nullptr;
       for (auto user : putOp.getMemref().getUsers())
         if (auto get_user = dyn_cast<air::ChannelGetOp>(user))
           getOp = get_user;
-      scf::ForOp put_parent = putOp->getParentOfType<scf::ForOp>();
-      put_get_mapping[put_parent] = getOp;
+      Operation *put_parent = putOp;
+      while (put_parent->getParentOp() != new_loop_op) {
+        put_parent = put_parent->getParentOp();
+      }
+      Operation *get_parent = getOp;
+      while (get_parent->getParentOp() != new_loop_op) {
+        get_parent = get_parent->getParentOp();
+      }
+      put_get_mapping[put_parent] = get_parent;
       put_parents.push_back(put_parent);
     });
     for (auto put_parent : put_parents) {
-      auto getOp = put_get_mapping[put_parent];
-      put_parent->moveAfter(getOp);
-      put_parent->setOperand(put_parent.getNumControlOperands(),
-                             getOp.getAsyncToken());
+      auto get_parent = put_get_mapping[put_parent];
+      if (put_parent->isBeforeInBlock(get_parent))
+        put_parent->moveAfter(get_parent);
+      Value get_parent_token = nullptr;
+      for (auto res : get_parent->getResults())
+        if (isa<AsyncTokenType>(res.getType()))
+          get_parent_token = res;
+      for (unsigned i = 0; i < put_parent->getNumOperands(); i++)
+        if (get_parent_token &&
+            isa<AsyncTokenType>(put_parent->getOperand(i).getType())) {
+          put_parent->getOpOperand(i).assign(get_parent_token);
+        }
+    }
+
+    // Erase allocs/deallocs
+    for (auto execOpPair : alloc_dealloc_execs) {
+      auto alloc = execOpPair.first;
+      replaceAsyncOpWithWaitAll(builder, alloc);
+      alloc->erase();
+      auto dealloc = execOpPair.second;
+      replaceAsyncOpWithWaitAll(builder, dealloc);
+      dealloc->erase();
     }
   }
 
@@ -3958,6 +4066,30 @@ public:
     RewritePatternSet patterns(&getContext());
     patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    // Update func.call declaration post memref shrinkage
+    SmallVector<memref::AllocOp> shrunkMemallocs;
+    funcOp.walk([&](memref::AllocOp op) {
+      if (op->hasAttr("shrinkage"))
+        shrunkMemallocs.push_back(op);
+    });
+    for (auto alloc : shrunkMemallocs) {
+      Value memref = alloc.getMemref();
+      if (auto exec = dyn_cast<air::ExecuteOp>(alloc->getParentOp()))
+        memref = exec.getResult(1);
+      for (auto user : memref.getUsers()) {
+        if (auto funcCall = dyn_cast<func::CallOp>(user))
+          updateFuncOpInputTypesFromCall(funcCall);
+        // Diving into isolatedFromAbove air.herd body
+        else if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
+          if (!getHerdArgumentFromHerdOperand(herdOp, memref))
+            continue;
+          auto herdArg = getHerdArgumentFromHerdOperand(herdOp, memref);
+          for (auto userInHerd : herdArg.getUsers())
+            if (auto funcCall = dyn_cast<func::CallOp>(userInHerd))
+              updateFuncOpInputTypesFromCall(funcCall);
+        }
+      }
+    }
   }
 
   void runOnOperation() override {
@@ -4053,6 +4185,40 @@ private:
     }
 
     return new_for_op;
+  }
+
+  void updateFuncOpInputTypesFromCall(func::CallOp callOp) const {
+    // Fetch name.
+    StringRef fnName = callOp.getCallee();
+    auto fnDecl = dyn_cast_or_null<func::FuncOp>(SymbolTable::lookupSymbolIn(
+        callOp->getParentOfType<ModuleOp>(), fnName));
+    assert(fnDecl && "expected function declaration");
+
+    // Update function's argument types.
+    auto functionType = fnDecl.getFunctionType();
+    auto newArgTypes = llvm::to_vector<6>(callOp.getOperandTypes());
+    auto newFunctionType = FunctionType::get(fnDecl.getContext(), newArgTypes,
+                                             functionType.getResults());
+    fnDecl.setType(newFunctionType);
+  }
+
+  // Get herd argument to a herd operand
+  BlockArgument getHerdArgumentFromHerdOperand(air::HerdOp herdOp,
+                                               Value v) const {
+    for (unsigned i = 0; i < herdOp.getNumKernelOperands(); i++)
+      if (herdOp.getKernelOperand(i) == v)
+        return herdOp.getKernelArgument(i);
+    return nullptr;
+  }
+
+  // Erase async op and replace with air wait all
+  void replaceAsyncOpWithWaitAll(OpBuilder builder, Operation *op) const {
+    builder.setInsertionPoint(op);
+    auto waitAllReplaceAlloc = builder.create<air::WaitAllOp>(
+        builder.getUnknownLoc(), air::AsyncTokenType::get(builder.getContext()),
+        SmallVector<Value>{});
+    for (unsigned i = 0; i < op->getNumResults(); i++)
+      op->getResult(i).replaceAllUsesWith(waitAllReplaceAlloc.getAsyncToken());
   }
 };
 

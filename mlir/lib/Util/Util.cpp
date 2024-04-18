@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IntegerSet.h"
@@ -1041,7 +1042,7 @@ SmallVector<int64_t>
 air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
                                              SmallVector<Value> sizes,
                                              SmallVector<Value> strides) {
-  SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
+  SmallVector<int64_t> access_bounds(memref_shape.size(), 1);
   for (int i = sizes.size() - 1; i >= 0; i--) {
     int current_memref_volume = 1;
     for (int j = memref_shape.size() - 1; j >= 0; j--) {
@@ -1061,39 +1062,106 @@ air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
 // Get the overall data access pattern from air.channel ops which access the
 // memref.
 SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
-    Value memref, SmallVector<air::ChannelInterface> chanOps) {
+    Value memref,
+    SmallVector<
+        std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
+        patterns) {
   auto memref_shape = getTensorShape(memref.getType());
-  SmallVector<int64_t> overall_access_bounds(memref_shape.size(), -1);
-  for (auto chanOp : chanOps) {
-    if (chanOp.getMemref() != memref)
-      continue;
-    SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
-    if (chanOp.getOffsets().empty())
+  SmallVector<int64_t> overall_access_bounds(memref_shape.size(), 1);
+  for (auto pattern : patterns) {
+    SmallVector<int64_t> access_bounds(memref_shape.size(), 1);
+    // Empty offsets list means default data access pattern spaning the entire
+    // memref
+    if (std::get<0>(pattern).empty())
       for (unsigned i = 0; i < memref_shape.size(); i++)
         access_bounds[i] = memref_shape[i];
-    bool forIterationAccess = false;
-    for (unsigned i = 0; i < chanOp.getOffsets().size(); i++) {
-      if (auto forOp = scf::getForInductionVarOwner(chanOp.getOffsets()[i])) {
-        if (forOp == chanOp->getParentOp() &&
-            getStaticScfForTripCountAsInt(forOp)) {
-          access_bounds = getEffectiveMemrefSizeFromAccessPattern(
-              memref_shape, chanOp.getSizes(), chanOp.getStrides());
-          forIterationAccess = true;
-        }
-      }
-    }
-    if (!forIterationAccess &&
-        memref_shape.size() == chanOp.getSizes().size()) {
-      for (unsigned i = 0; i < memref_shape.size(); i++) {
-        access_bounds[i] = *getConstantIntValue(chanOp.getSizes()[i]);
-      }
-    }
+    else
+      access_bounds = getEffectiveMemrefSizeFromAccessPattern(
+          memref_shape, std::get<1>(pattern), std::get<2>(pattern));
     // Update overall access bounds.
     for (unsigned i = 0; i < memref_shape.size(); i++)
       overall_access_bounds[i] =
           std::max(overall_access_bounds[i], access_bounds[i]);
   }
   return overall_access_bounds;
+}
+
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+air::writeAccessPattern(air::ChannelInterface chanOp) {
+  std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+      pattern;
+  for (auto offset : chanOp.getOffsets())
+    std::get<0>(pattern).push_back(offset);
+  for (auto size : chanOp.getSizes())
+    std::get<1>(pattern).push_back(size);
+  for (auto stride : chanOp.getStrides())
+    std::get<2>(pattern).push_back(stride);
+  return pattern;
+}
+
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+air::writeAccessPattern(memref::SubViewOp subview) {
+  std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+      pattern;
+  auto subview_offsets = subview.getOffsets().begin();
+  auto subview_sizes = subview.getSizes().begin();
+  auto subview_strides = subview.getStrides().begin();
+  auto static_offsets = subview.getStaticOffsets();
+  auto static_sizes = subview.getStaticSizes();
+  auto static_strides = subview.getStaticStrides();
+  // Get strided layout from subview op's output MemRefType
+  if (auto strided = llvm::dyn_cast<StridedLayoutAttr>(
+          subview.getResult().getType().cast<MemRefType>().getLayout()))
+    static_strides = strided.getStrides();
+
+  auto loc = subview.getLoc();
+  OpBuilder builder(subview);
+  for (auto o : static_offsets) {
+    if (o >= 0)
+      std::get<0>(pattern).push_back(
+          builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      std::get<0>(pattern).push_back(*subview_offsets++);
+  }
+  for (auto o : static_sizes) {
+    if (o >= 0)
+      std::get<1>(pattern).push_back(
+          builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      std::get<1>(pattern).push_back(*subview_sizes++);
+  }
+  for (auto o : static_strides) {
+    if (o >= 0)
+      std::get<2>(pattern).push_back(
+          builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      std::get<2>(pattern).push_back(*subview_strides++);
+  }
+  return pattern;
+}
+SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
+    Value memref, SmallVector<air::ChannelInterface> chanUsers) {
+  SmallVector<
+      std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
+      accessPatterns;
+  for (auto chanUser : chanUsers) {
+    accessPatterns.push_back(writeAccessPattern(chanUser));
+  }
+  return getDataAccessShapeFromMemcpyOp(memref, accessPatterns);
+}
+SmallVector<int64_t>
+air::getDataAccessShapeFromMemcpyOp(Value memref,
+                                    SmallVector<Operation *> users) {
+  SmallVector<
+      std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
+      accessPatterns;
+  for (auto user : users) {
+    if (auto chanUser = dyn_cast<air::ChannelInterface>(user))
+      accessPatterns.push_back(writeAccessPattern(chanUser));
+    else if (auto svUser = dyn_cast<memref::SubViewOp>(user))
+      accessPatterns.push_back(writeAccessPattern(svUser));
+  }
+  return getDataAccessShapeFromMemcpyOp(memref, accessPatterns);
 }
 
 // Update strides after memref shrinkage. Assuming there is only one dimension
@@ -1103,10 +1171,10 @@ air::getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
                                      SmallVector<int64_t> new_memref_shape,
                                      SmallVector<Value> strides) {
   SmallVector<int> new_strides(strides.size(), -1);
-  int shrinkage_volumn = 1;
+  int shrinkage_volume = 1;
   int shrinkage_factor = 1;
   for (int j = old_memref_shape.size() - 1; j >= 0; j--) {
-    shrinkage_volumn *= old_memref_shape[j];
+    shrinkage_volume *= old_memref_shape[j];
     if (old_memref_shape[j] != new_memref_shape[j]) {
       shrinkage_factor =
           mlir::ceilDiv(old_memref_shape[j], new_memref_shape[j]);
@@ -1114,11 +1182,46 @@ air::getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
     }
   }
   for (int i = strides.size() - 1; i >= 0; i--) {
-    if (mlir::floorDiv(*getConstantIntValue(strides[i]), shrinkage_volumn))
+    if (mlir::floorDiv(*getConstantIntValue(strides[i]), shrinkage_volume))
       new_strides[i] =
           mlir::ceilDiv(*getConstantIntValue(strides[i]), shrinkage_factor);
     else
       new_strides[i] = *getConstantIntValue(strides[i]);
   }
   return new_strides;
+}
+
+// Update offsets after memref shrinkage.
+SmallVector<int>
+air::getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
+                                     SmallVector<int64_t> new_memref_shape,
+                                     SmallVector<Value> offsets) {
+  SmallVector<int> new_offsets(offsets.size(), -1);
+  for (int i = 0; i < (int)offsets.size(); i++) {
+    int memref_idx = i + old_memref_shape.size() - offsets.size();
+    if (memref_idx >= 0) {
+      // Reset offset to zero, if the user air.channel put/get has offset being
+      // variant wrt a parent spatial iteration space (e.g. air.herd,
+      // scf.parallel).
+      if (offsets[i].getDefiningOp()) {
+        if (auto exec = dyn_cast<air::ExecuteOp>(offsets[i].getDefiningOp())) {
+          for (auto oper : exec.getChildOp()->getOperands())
+            if (getHerdArgOwner(oper))
+              new_offsets[i] = 0;
+        }
+      } else {
+        // If offset is some block argument
+        if (getHerdArgOwner(offsets[i]))
+          new_offsets[i] = 0;
+        else if (scf::getParallelForInductionVarOwner(offsets[i]))
+          new_offsets[i] = 0;
+        else if (scf::getForInductionVarOwner(offsets[i]))
+          continue;
+        else
+          assert(false &&
+                 "offset is block argument to an unknown iteration space");
+      }
+    }
+  }
+  return new_offsets;
 }

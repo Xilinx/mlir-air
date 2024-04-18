@@ -161,3 +161,108 @@ func.func @func1() {
   }
   return
 }
+
+// Multiple herds.
+
+// CHECK: func.func private @linalg_fill_bf16(bf16, memref<1x1x16x16x4x4xbf16, 2 : i32>)
+// CHECK-LABEL: func.func @func2
+// CHECK: air.launch
+// CHECK: air.segment
+// CHECK: %[[EVENT1:.*]], %[[RESULT1:.*]] = air.execute -> (memref<1x1x16x16x4x4xbf16, 2 : i32>) {
+// CHECK-NEXT: memref.alloc() : memref<1x1x16x16x4x4xbf16, 2 : i32>
+// CHECK: %[[EVENT2:.*]] = air.herd @herd_0 async [%[[EVENT1]]]  tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%c2, %{{.*}}=%c2) args(%{{.*}}=%[[RESULT1]]) : memref<1x1x16x16x4x4xbf16, 2 : i32>
+// CHECK: func.call @linalg_fill_bf16(%{{.*}}, %{{.*}}) : (bf16, memref<1x1x16x16x4x4xbf16, 2 : i32>) -> ()
+// CHECK: air.herd_terminator
+// CHECK: %[[EVENT3:.*]] = air.herd @herd_0 async [%[[EVENT2]]]  tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%c2, %{{.*}}=%c2) args(%{{.*}}=%[[RESULT1]]) : memref<1x1x16x16x4x4xbf16, 2 : i32>
+// CHECK: func.call @linalg_fill_bf16(%{{.*}}, %{{.*}}) : (bf16, memref<1x1x16x16x4x4xbf16, 2 : i32>) -> ()
+// CHECK: air.herd_terminator
+// CHECK: %[[EVENT4:.*]] = air.herd @herd_0 async  tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%c2, %{{.*}}=%c2) args(%{{.*}}=%[[RESULT1]]) : memref<1x1x16x16x4x4xbf16, 2 : i32>
+// CHECK-DAG: %[[CST256:.*]] = arith.constant 256 : index
+// CHECK-DAG: %[[CST8192:.*]] = arith.constant 8192 : index
+// CHECK-DAG: %[[CST1:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[CST4:.*]] = arith.constant 4 : index
+// CHECK-DAG: %[[CST16:.*]] = arith.constant 16 : index
+// CHECK-DAG: %[[CST0:.*]] = arith.constant 0 : index
+// CHECK: air.channel.put async [{{.*}}]  @channel_12[%{{.*}}, %{{.*}}] (%{{.*}}[%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]]] [%[[CST1]], %[[CST1]], %[[CST16]], %[[CST4]], %[[CST16]], %[[CST4]]] [%[[CST8192]], %[[CST8192]], %[[CST16]], %[[CST4]], %[[CST256]], %[[CST1]]]) {{.*}} : (memref<1x1x16x16x4x4xbf16, 2 : i32>)
+// CHECK: air.herd_terminator
+// CHECK: memref.dealloc %{{.*}} : memref<1x1x16x16x4x4xbf16, 2 : i32>
+
+#map = affine_map<()[s0] -> (s0 * 128)>
+air.channel @channel_12 [2, 2]
+air.channel @channel_5 [1, 1] {broadcast_shape = [1, 2]}
+air.channel @channel_4 [1, 1] {broadcast_shape = [1, 2]}
+func.func private @linalg_fill_bf16(bf16, memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>) attributes {link_with = "mm.o", llvm.emit_c_interface}
+func.func @func2() {
+  %c4 = arith.constant 4 : index
+  %0 = air.launch async (%arg3, %arg4) in (%arg5=%c4, %arg6=%c4) attributes {id = 1 : i32} {
+    %1 = air.segment @segment_0 async  attributes {id = 2 : i32} {
+      %c2 = arith.constant 2 : index
+      %async_token, %results = air.execute -> (memref<1x1x32x32x4x4xbf16, 2 : i32>) {
+        %alloc = memref.alloc() : memref<1x1x32x32x4x4xbf16, 2 : i32>
+        air.execute_terminator %alloc : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      }
+      %2 = air.herd @herd_0 async [%async_token]  tile (%arg7, %arg8) in (%arg9=%c2, %arg10=%c2) args(%arg11=%results) : memref<1x1x32x32x4x4xbf16, 2 : i32> attributes {id = 3 : i32, link_with = "mm.o"} {
+        %cst = arith.constant 0.000000e+00 : bf16
+        %async_token_1, %results_2 = air.execute -> (index) {
+          %5 = affine.apply #map()[%arg7]
+          air.execute_terminator %5 : index
+        }
+        %async_token_3, %results_4 = air.execute -> (index) {
+          %5 = affine.apply #map()[%arg8]
+          air.execute_terminator %5 : index
+        }
+        %subview = memref.subview %arg11[0, 0, %results_4, %results_2, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+        %async_token_5 = air.execute {
+          func.call @linalg_fill_bf16(%cst, %subview) : (bf16, memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>) -> ()
+        }
+        air.herd_terminator
+      }
+      %3 = air.herd @herd_0 async [%2]  tile (%arg7, %arg8) in (%arg9=%c2, %arg10=%c2) args(%arg11=%results) : memref<1x1x32x32x4x4xbf16, 2 : i32> attributes {id = 4 : i32, link_with = "mm.o"} {
+        %cst = arith.constant 0.000000e+00 : bf16
+        %c1 = arith.constant 1 : index
+        %c16 = arith.constant 16 : index
+        scf.for %arg12 = %c1 to %c16 step %c1 {
+          %async_token_1, %results_2 = air.execute -> (index) {
+            %5 = affine.apply #map()[%arg7]
+            air.execute_terminator %5 : index
+          }
+          %async_token_3, %results_4 = air.execute -> (index) {
+            %5 = affine.apply #map()[%arg8]
+            air.execute_terminator %5 : index
+          }
+          %subview = memref.subview %arg11[0, 0, %results_4, %results_2, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+          %async_token_5 = air.execute [%async_token_1, %async_token_3] {
+            func.call @linalg_fill_bf16(%cst, %subview) : (bf16, memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>) -> ()
+          }
+        }
+        air.herd_terminator
+      }
+      %4 = air.herd @herd_0 async  tile (%arg7, %arg8) in (%arg9=%c2, %arg10=%c2) args(%arg11=%results) : memref<1x1x32x32x4x4xbf16, 2 : i32> attributes {id = 5 : i32} {
+        %c1 = arith.constant 1 : index
+        %c512 = arith.constant 512 : index
+        %c4_1 = arith.constant 4 : index
+        %c16 = arith.constant 16 : index
+        %c16384 = arith.constant 16384 : index
+        %c0 = arith.constant 0 : index
+        %async_token_2, %results_3 = air.execute -> (index) {
+          %8 = affine.apply #map()[%arg7]
+          air.execute_terminator %8 : index
+        }
+        %async_token_4, %results_5 = air.execute -> (index) {
+          %8 = affine.apply #map()[%arg8]
+          air.execute_terminator %8 : index
+        }
+        %5 = air.wait_all async 
+        %6 = air.wait_all async 
+        %7 = air.channel.put async [%async_token_2, %async_token_4, %5, %6]  @channel_12[%arg7, %arg8] (%arg11[%c0, %c0, %results_5, %results_3, %c0, %c0] [%c1, %c1, %c16, %c4_1, %c16, %c4_1] [%c16384, %c16384, %c16, %c4_1, %c512, %c1]) {id = 27 : i32} : (memref<1x1x32x32x4x4xbf16, 2 : i32>)
+        air.herd_terminator
+      }
+      %async_token_0 = air.execute [%4] {
+        memref.dealloc %results : memref<1x1x32x32x4x4xbf16, 2 : i32>
+      }
+      air.segment_terminator
+    }
+    air.launch_terminator
+  }
+  return
+}
