@@ -1070,11 +1070,14 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
   SmallVector<int64_t> overall_access_bounds(memref_shape.size(), 1);
   for (auto pattern : patterns) {
     SmallVector<int64_t> access_bounds(memref_shape.size(), 1);
+    // Empty offsets list means default data access pattern spaning the entire
+    // memref
     if (std::get<0>(pattern).empty())
       for (unsigned i = 0; i < memref_shape.size(); i++)
         access_bounds[i] = memref_shape[i];
-    access_bounds = getEffectiveMemrefSizeFromAccessPattern(
-        memref_shape, std::get<1>(pattern), std::get<2>(pattern));
+    else
+      access_bounds = getEffectiveMemrefSizeFromAccessPattern(
+          memref_shape, std::get<1>(pattern), std::get<2>(pattern));
     // Update overall access bounds.
     for (unsigned i = 0; i < memref_shape.size(); i++)
       overall_access_bounds[i] =
