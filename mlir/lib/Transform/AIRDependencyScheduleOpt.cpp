@@ -3950,7 +3950,9 @@ public:
       }
       if (canMove) {
         builder.setInsertionPointToEnd(new_loop_op.getBody());
-        auto new_alloc_exec = builder.clone(*alloc_exec);
+        auto new_alloc_exec = builder.clone(*alloc_exec, remap);
+        clearAsyncDependenciesOfAsyncOp(
+            dyn_cast<air::AsyncOpInterface>(new_alloc_exec));
         for (unsigned i = 0; i < new_alloc_exec->getNumResults(); i++)
           remap.map(alloc_exec->getResult(i), new_alloc_exec->getResult(i));
       } else
