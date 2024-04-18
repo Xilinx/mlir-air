@@ -271,12 +271,34 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       // generate the aie.core body
       //
       OpBuilder core_builder(core);
-      Block *core_bb = core_builder.createBlock(&core.getBody());
-
-      Block *entry_bb = core_builder.createBlock(core_bb);
-      core_builder.setInsertionPointToEnd(entry_bb);
-      core_builder.create<cf::BranchOp>(hloc, core_bb);
-      core_builder.setInsertionPointToEnd(core_bb);
+      Block *core_bb = nullptr;
+      Block *entry_bb = nullptr;
+      // check if entry block already exists
+      if (core.getBody().empty()) {
+        core_bb = core_builder.createBlock(&core.getBody());
+        entry_bb = core_builder.createBlock(core_bb);
+        core_builder.setInsertionPointToEnd(entry_bb);
+        core_builder.create<cf::BranchOp>(hloc, core_bb);
+        core_builder.setInsertionPointToEnd(core_bb);
+      } else {
+        // extending upon the existing bb chain
+        for (auto &b : core.getBody().getBlocks())
+          if (b.isEntryBlock())
+            entry_bb = &b;
+        Block *prev_bb_back = &core.getBody().back();
+        auto prev_bb_branch =
+            dyn_cast<cf::BranchOp>(prev_bb_back->getTerminator());
+        auto prev_bb_end = dyn_cast<AIE::EndOp>(prev_bb_back->getTerminator());
+        core_bb = core_builder.createBlock(&core.getBody());
+        if (prev_bb_branch)
+          prev_bb_branch.setDest(core_bb);
+        else if (prev_bb_end) {
+          core_builder.setInsertionPoint(prev_bb_end);
+          core_builder.create<cf::BranchOp>(hloc, core_bb);
+          prev_bb_end->erase();
+        }
+        core_builder.setInsertionPointToEnd(core_bb);
+      }
 
       // map the tile ids and herd size to constants
       remap.map(h.getIds()[0],
@@ -288,13 +310,21 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       remap.map(h.getSize()[1],
                 core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_y));
 
-      for (auto a : h.getKernelArguments()) {
+      for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
+        auto a = h.getKernelArgument(i);
         auto memrefTy = a.getType().dyn_cast<MemRefType>();
         if (!memrefTy)
           continue;
 
         OpBuilder b(aie_device);
         b.setInsertionPoint(core);
+
+        if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L1) {
+          // fused herds sometimes have L1 memref allocation outside of herds.
+          // mapping them back
+          remap.map(a, h.getKernelOperand(i));
+          continue;
+        }
 
         int which_try = 0;
         std::string sym_name = "__air_herd_arg_0";
@@ -325,9 +355,10 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
                                             herd_lock, AIE::LockAction::Release,
                                             0);
 
-      if (options.emit_while)
-        core_builder.create<cf::BranchOp>(hloc, core_bb);
-      else
+      if (options.emit_while) {
+        auto entry_bb_br = dyn_cast<cf::BranchOp>(entry_bb->getTerminator());
+        core_builder.create<cf::BranchOp>(hloc, entry_bb_br.getDest());
+      } else
         core_builder.create<AIE::EndOp>(hloc);
 
       core.walk([&](Operation *op) {
@@ -388,6 +419,11 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
     // make the aie.tile
     getPhysTileOp(aie_device, phys_x, phys_y);
   }
+}
+
+template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
+  if (std::find(vec.begin(), vec.end(), entry) == vec.end())
+    vec.push_back(entry);
 }
 
 void createAIEModulesAndOutlineCores(
@@ -453,6 +489,44 @@ void createAIEModulesAndOutlineCores(
     auto h = std::get<1>(p);
     OpBuilder builder(aie_dev);
     outlineAIECores(builder, aie_dev, h, tileToHerdMap, options);
+  }
+  // Outline any L1 memref allocs used by herds but located outside of any herd
+  std::vector<Value> sharedL1Memrefs;
+  for (auto &p : aie_modules) {
+    // for (auto h : herds) {
+    auto h = std::get<1>(p);
+    for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
+      auto oper = h.getKernelOperand(i);
+      if (!oper.getDefiningOp())
+        continue;
+      auto memrefTy = oper.getType().dyn_cast<MemRefType>();
+      if (!memrefTy)
+        continue;
+      if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+        continue;
+      push_back_if_unique<Value>(sharedL1Memrefs, oper);
+    }
+  }
+  std::map<Operation *, std::vector<AIE::CoreOp>> sharedL1AllocsToCoreMap;
+  for (auto memref : sharedL1Memrefs) {
+    for (auto user : memref.getUsers()) {
+      auto coreOp = user->getParentOfType<AIE::CoreOp>();
+      if (!coreOp)
+        continue;
+      push_back_if_unique<AIE::CoreOp>(
+          sharedL1AllocsToCoreMap[memref.getDefiningOp()], coreOp);
+    }
+  }
+  for (auto memref : sharedL1Memrefs) {
+    for (auto coreOp : sharedL1AllocsToCoreMap[memref.getDefiningOp()]) {
+      OpBuilder builder(coreOp);
+      builder.setInsertionPointToStart(&coreOp.getBody().front());
+      auto outlinedL1Alloc = builder.clone(*memref.getDefiningOp());
+      for (unsigned i = 0; i < memref.getDefiningOp()->getNumResults(); i++)
+        replaceAllUsesInRegionWith(memref.getDefiningOp()->getResult(i),
+                                   outlinedL1Alloc->getResult(i),
+                                   coreOp.getBody());
+    }
   }
 }
 
@@ -1049,12 +1123,6 @@ void allocL2Buffers(AIE::DeviceOp m,
     patterns.insert<AllocL2BuffersPattern>(ctx, memrefToTileMap,
                                            bufferToMemtileMap, BufferId);
     (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
-  }
-}
-
-template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
-  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
-    vec.push_back(entry);
   }
 }
 
@@ -2463,9 +2531,13 @@ public:
       builder.setInsertionPoint(bco.getOperand().getDefiningOp());
     else if (isa<memref::AllocaOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(alloc.getDefiningOp());
-    else if (!tileInbound && isa<AIE::BufferOp>(alloc.getDefiningOp()))
-      builder.setInsertionPointToStart(memcpyOpIf->getBlock());
-    else
+    else if (!tileInbound && isa<AIE::BufferOp>(alloc.getDefiningOp())) {
+      auto br = dyn_cast<cf::BranchOp>(memcpyOpIf->getBlock()->getTerminator());
+      if (br)
+        builder.setInsertionPointToStart(br.getDest());
+      else
+        builder.setInsertionPointToStart(memcpyOpIf->getBlock());
+    } else
       builder.setInsertionPoint(memcpyOpIf);
 
     builder.create<AIE::UseLockOp>(memcpyOpIf->getLoc(), acqLockOp,
