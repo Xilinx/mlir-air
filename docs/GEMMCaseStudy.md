@@ -4,17 +4,12 @@
 
 The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://github.com/Xilinx/mlir-air/blob/main/test/xrt/09_gemm_extern_vec_4x4/aie.py) is listed below.
 
-#### Binding scf.parallel to air hierarchies
-
 "buffer-results-to-out-params"  
-"air-linalg-to-func{link-with=mm.o}"  
+["air-linalg-to-func{link-with=mm.o}"](#air-linalg-to-func)  
 ["air-par-to-herd{depth=1}"](#air-par-to-herd)  
 ["air-par-to-launch{has-air-segment=true}"](#air-par-to-launch)  
 ["air-copy-to-dma"](#air-copy-to-dma)   
 "canonicalize", "cse"  
-    
-#### Extract event dependency and optimize schedule
-
 ["air-dependency"](#air-dependency)  
 ["air-dependency-schedule-opt"](#air-dependency-schedule-opt)  
 ["air-specialize-dma-broadcast"](#air-specialize-dma-broadcast)  
@@ -31,23 +26,14 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 "canonicalize", "cse"  
 ["air-specialize-channel-wrap-and-stride"](#air-specialize-channel-wrap-and-stride)  
 "canonicalize", "cse"
-    
-### Place herd to segment
-
 ["func.func(air-collapse-herd{max-col-size=4})"](#air-collapse-herd)  
 'canonicalize', 'cse'  
 ["air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}"](#air-place-herds)  
 'canonicalize', 'cse'  
 'func.func(air-renumber-dma)'
-    
-### MLIR-AIR to MLIR-AIE
-    
 'canonicalize', 'cse'  
 ['air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}'](#air-to-aie)  
 'canonicalize'
-    
-### MLIR-AIR runtime lowering
-
 ['air-to-std'](#air-to-std)  
 'canonicalize'  
 'symbol-dce'  
@@ -61,19 +47,47 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 
 |Compilation Stage |Passes |Description |
 |:--- |:--- |:--- |
-|Binding MLIR operations to MLIR-AIR    |   <br> <ul><li>`air-linalg-to-func{link-with=mm.o}`</li><li>`air-par-to-herd{depth=1}`</li><li>`air-par-to-launch{has-air-segment=true}`</li><li>`air-copy-to-dma`</li></ul>    |   Binding parallelizable loops to `air` hierarchies; binding data movement operations to `air.dma_memcpy_nd` operations; binding linear algebra compute operations with link to AIE core kernel. |
-|Extract asynchronous event dependency and construct a task graph    |   <br> <ul><li>`air-dependency`</li><li>`air-dependency-canonicalize`</li></ul>    |   Construction of asynchronous task graph, as an explicit representation of the asynchronous concurrency in the hardware schedule. |
-|Broadcasting data movement    |   <br> <ul><li>`air-dependency-schedule-opt`</li><li>`air-specialize-dma-broadcast`</li></ul>    |   Detection and lowering of broadcasting data movement to map to circuit-routed streaming interconnects. |
-|Generating half-dma operations mappable to AIE DMA Block Descriptors    |   <br> <ul><li>`air-dma-to-channel`</li></ul>    |   Lowering synchronous or asynchronous `air.dma_memcpy_nd` operations to `air.channel.put` or `air.channel.get` operations representing half-dma data sends and receives. |
-|Memtile (L2) buffer allocation optimization    |   <br> <ul><li>`func.func(air-split-l2-memref)`</li></ul>    |   Tiling L2 memrefs based on parallelizable data movements, explicitly represented via `scf.parallel` or `air.channel.put/get` operations, in order to maximize memtile bandwidth utilization. |
-|Memtile (L2) Block Descriptor lowering and optimization    |   <br> <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. |
-|Inferring double buffering patterns    |   <br> <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
-|Place herd to segment    |   <br> <ul><li>`func.func(air-collapse-herd{max-col-size=4})`</li><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Reshaping and placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
-|MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
-|MLIR-AIR runtime lowering    |   <br> <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-ipu`</li></ul>    |   Converting the control code via AIRRt and AIEX.IPU dialect to IPU SHIM DMA instruction sequence. |
+|Convert to MLIR-AIR    |   <br> <ul><li>`air-linalg-to-func{link-with=mm.o}`</li><li>`air-par-to-herd{depth=1}`</li><li>`air-par-to-launch{has-air-segment=true}`</li><li>`air-copy-to-dma`</li></ul>    |   Binding parallelizable loops to `air` hierarchies; binding data movement operations to `air.dma_memcpy_nd` operations; binding linear algebra compute operations with link to AIE core kernel. |
+|Asynchronous dependency analysis    |   <br> <ul><li>`air-dependency`</li><li>`air-dependency-canonicalize`</li></ul>    |   Construction of asynchronous task graph, as an explicit representation of the asynchronous concurrency in the hardware schedule. |
+|Broadcast    |   <br> <ul><li>`air-dependency-schedule-opt`</li><li>`air-specialize-dma-broadcast`</li></ul>    |   Detection and lowering of broadcasting data movement to map to circuit-routed streaming interconnects. |
+|Generate half-dma operations    |   <br> <ul><li>`air-dma-to-channel`</li></ul>    |   Lowering synchronous or asynchronous `air.dma_memcpy_nd` operations to `air.channel.put` or `air.channel.get` operations representing half-dma data sends and receives. |
+|Outline L2 memrefs to memtile buffers    |   <br> <ul><li>`func.func(air-split-l2-memref)`</li></ul>    |   Tiling L2 memrefs based on parallelizable data movements, explicitly represented via `scf.parallel` or `air.channel.put/get` operations, in order to maximize memtile bandwidth utilization. |
+|Memtile DMA BD Optimization    |   <br> <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. |
+|Double buffering    |   <br> <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
+|Outline air.herd to aie.tiles    |   <br> <ul><li>`func.func(air-collapse-herd{max-col-size=4})`</li><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Reshaping and placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
+|Convert MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
+|SHIM DMA BD Optimization    |   <br> <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-ipu`</li></ul>    |   Converting the control code via AIRRt and AIEX.IPU dialect to IPU SHIM DMA instruction sequence. |
 ||||||
 
 ## MLIR-AIR Passes
+
+### air-linalg-to-func
+
+Links `linalg.generic` operation and variants with object file (.o) compiled from each `aie.core`'s compute kernel.
+
+*Input IR:*
+```
+linalg.generic {library_call = "zero_f32", indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel"]} ins(%cst : f32) outs(%arg2 : memref<64x64xf32>) {
+^bb0(%in: f32, %out: f32):
+  linalg.yield %in : f32
+}
+linalg.generic {library_call = "matmul_f32", indexing_maps = [#map2, #map3, #map4], iterator_types = ["parallel", "parallel", "reduction"]} ins(%arg0, %arg1 : memref<64x256xf32>, memref<256x64xf32>) outs(%arg2 : memref<64x64xf32>) {
+^bb0(%in: f32, %in_0: f32, %out: f32):
+  %0 = arith.mulf %in, %in_0 : f32
+  %1 = arith.addf %out, %0 : f32
+  linalg.yield %1 : f32
+}
+```
+The input IR has `linalg.generic` attribute `library_call` that specifies the name of an external library call.
+
+*Output IR:*
+```
+func.func private @zero_f32(f32, memref<64x64xf32>) attributes {link_with = "test.o", llvm.emit_c_interface}
+func.func private @matmul_f32(memref<64x256xf32>, memref<256x64xf32>, memref<64x64xf32>) attributes {link_with = "test.o", llvm.emit_c_interface}
+call @zero_f32(%cst, %arg2) : (f32, memref<64x64xf32>) -> ()
+call @matmul_f32(%arg0, %arg1, %arg2) : (memref<64x256xf32>, memref<256x64xf32>, memref<64x64xf32>) -> ()
+```
+The output IR generates the `func.func` declaration to the function call, and replaces the `linalg.generic` with `call`.
         
 ### air-par-to-herd
 
@@ -960,17 +974,23 @@ Canonicalizes `air.channel.put` and `air.channel.get` operations' `offsets`, `si
 
 *Input IR*
 ```
-%73 = air.channel.get async [%arg14, %async_token_78, %arg12]  @channel_0[%arg7, %arg8] (%results_79[%c0_66] [%c1024_65] [%c1_69]) {id = 45 : i32} : (memref<4x8x4x8xi32, 2 : i32>)
+scf.for %arg2 = %c0 to %c128 step %c32 {
+  air.channel.put  @channel_1[%c0, %c0] (%arg0[%arg2] [%c32] [%c1]) : (memref<128xf32>)
+}
 ...
-%53 = air.channel.put async [%32, %33, %52]  @channel_14[%c0_17, %c0_17] (%results_53[%c0_17, %c0_17] [%c32_13, %c128_15] [%c128_15, %c1_14]) {id = 54 : i32} : (memref<32x128xi32, 1>)
+scf.for %arg2 = %c0 to %c128 step %c32 {
+  scf.for %arg3 = %c0 to %c128 step %c32 {
+    air.channel.get  @channel_2[%c0, %c0] (%arg1[%arg2, %arg3] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
+  }
+}
 ```
 The input IR contains data movement The input IR consists of some memory references (`memrefs`) accessed by `air.channel.put` and `air.channel.get` data movement operations, nested under some `scf.for` loop.
 
 *Output IR*
 ```
-%73 = air.channel.get async [%arg14, %async_token_78, %arg12]  @channel_0[%arg7, %arg8] (%results_79[] [] []) : (memref<4x8x4x8xi32, 2 : i32>)
+air.channel.put  @channel_1[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
 ...
-%53 = air.channel.put async [%32, %33, %52]  @channel_14[%c0_18, %c0_18] (%results_54[] [] []) : (memref<32x128xi32, 1>)
+air.channel.get  @channel_2[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]) : (memref<128x128xf32>)
 ```
 The pass adjusts the wraps (`sizes`) and strides of the data movement operations into eliminating any perfectly nested parent `scf.for` loop nests, and transforming them as new highest dimensions of offsets, wraps and strides lists, where the lower bounds become additional offsets, trip counts become additional wraps, and step sizes are used to infer additional strides.
 
@@ -981,9 +1001,25 @@ The pass also identifies and eliminates any redundant entries in the `offsets`, 
 Transforms the shape of `air.herd` by attempting to collapse to occupy complete columns on AIE device.
 
 *Input IR:*
+```
+air.herd tile (%x, %y) in (%sx=%c2, %sy=%c2) {
+  %c0 = arith.constant 0 : index
+  ...
+}
+```
 The input IR has the L1 memory management and computation encapsulated within `air.herd`.
 
 *Output IR:*
+```
+air.herd  tile (%arg0, %arg1) in (%arg2=%c1, %arg3=%c4) {
+  %c0 = arith.constant 0 : index
+  %c2 = arith.constant 2 : index
+  %0 = arith.remsi %arg1, %c2 : index
+  %1 = arith.divsi %arg1, %c2 : index
+  ...
+  air.herd_terminator
+}
+```
 The pass attempts to collapse the `air.herd` to the left, attempting to occupy complete columns of AIE tiles. The attempt will stop if the number of tiles in `air.herd` exceeds the user provided `max-col-size` option.
 
 ### air-place-herds
@@ -1012,23 +1048,197 @@ The pass is responsible for spatially placing `air.herd` opertaions onto a grid 
 
 ### air-to-aie
 
-Converts an input IR from MLIR-AIR dialect into MLIR-AIE dialect, for efficient mapping onto AIEs.
+Converts an input IR from MLIR-AIR dialect into MLIR-AIE dialect, for efficient mapping onto AIEs. Outlines (1) `air.herd` to `aie.cores` and `aie.mems`, (2) `air.segment` to `aie.memtiles`, (3) `air.channel.put/get` to `aie.dma_start`, `aie.dma_bd` and `aie.use_locks`, and (4) `memref.alloc` to `aie.buffer`.
+
+#### Outline air.herd to aie.cores and aie.mems
 
 *Input IR:*
-The input MLIR-AIR dialect code specifies the memory allocation and management, execution synchronization, and the computation of a hardware schedule. It uses constructs such as `air.execute`, `air.herd`, `air.channel.put/get`, and `memref` operations to describe a hardware schedule of computation and data movement in a platform-agnostic manner. This includes managing data movement, synchronization tokens for asynchronous execution, and detailed sub-tasks like broadcasting data copy and ping-pong buffering for optimal access patterns.
+```
+air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="herd1"} {
+  %buf0 = memref.alloc() : memref<1024xi32, 2>
+  %buf1 = memref.alloc() : memref<512xi32, 2>
+  air.channel.get @channel_0[%tx, %ty] (%buf0[] [] []) {id = 2 : i32} : (memref<1024xi32, 2>)
+  air.channel.put @channel_1[%tx, %ty] (%buf1[] [] []) {id = 3 : i32} : (memref<512xi32, 2>)
+  memref.dealloc %buf0 : memref<1024xi32, 2>
+  memref.dealloc %buf1 : memref<512xi32, 2>
+  air.herd_terminator
+}
+```
+The input MLIR-AIR dialect code specifies the spatial compute across a rectangular plot of AIE cores using `air.herd`.
 
 *Output IR:*
-The output MLIR-AIE dialect code is much more hardware-specific. It maps the abstract operations into concrete actions on the AIE tiles, including data movement between tiles (using DMA operations), buffer allocation on specific tiles, and computation instructions for the AI Engines.
+```
+%buf1 = aie.buffer(%tile_2_3) {sym_name = "buf1"} : memref<1024xi32, 2> 
+%buf0 = aie.buffer(%tile_2_3) {sym_name = "buf0"} : memref<512xi32, 2> 
+...
+%mem_2_3 = aie.mem(%tile_2_3) {
+  %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+^bb1:  // 2 preds: ^bb0, ^bb1
+  aie.use_lock(%lock_2_3, AcquireGreaterEqual, 1)
+  aie.dma_bd(%buf1 : memref<1024xi32, 2>, 0, 1024)
+  aie.use_lock(%lock_2_3_0, Release, 1)
+  aie.next_bd ^bb1
+^bb2:  // pred: ^bb3
+  aie.end
+^bb3:  // pred: ^bb0
+  %1 = aie.dma_start(MM2S, 0, ^bb4, ^bb2, repeat_count = 1)
+^bb4:  // 2 preds: ^bb3, ^bb4
+  aie.use_lock(%lock_2_3_2, AcquireGreaterEqual, 1)
+  aie.dma_bd(%buf0 : memref<512xi32, 2>, 0, 512)
+  aie.use_lock(%lock_2_3_1, Release, 1)
+  aie.next_bd ^bb4
+}
+%core_2_3 = aie.core(%tile_2_3) {
+  cf.br ^bb1
+^bb1:  // pred: ^bb0
+  cf.br ^bb2
+^bb2:  // pred: ^bb1
+  aie.use_lock(%lock_2_3_1, AcquireGreaterEqual, 1)
+  aie.use_lock(%lock_2_3_0, AcquireGreaterEqual, 1)
+  aie.use_lock(%lock_2_3, Release, 1)
+  aie.use_lock(%lock_2_3_2, Release, 1)
+  aie.end
+} {elf_file = "herd1_core_2_3.elf"}
+```
+The output IR outlines the computation in each AIE core using `aie.core`, and data movement to/from the core using `aie.dma_bd` within `aie.mem`. Memref is allocated to `aie.buffer`. Each AIE tile's `aie.core` and `aie.mem` synchronize using `aie.use_lock`. Each core links to a unique `elf` file. The AIE core code includes explicit control flow for data movement and computation (`cf.br`, `scf.for` loops) iterating over data chunks.
 
-The input IR is cloned, where the original copy lowers to MLIR-AIE dialect and the cloned copy gets lowered to runtime program by a downstream pass (`air-to-std`). The SHIM DMA copy operations in the runtime program maintains linkage to the MLIR-AIE accelerator's physical SHIM DMA channel via metadata annotations (e.g., `metadata = @airMemcpyIdXX`).
+#### Outline air.segment to aie.memtile
 
-Lowered from `air.channel.put` and `air.channel.get`, DMA operations (`aie.dma_start`, `aie.dma_bd`) are explicitly detailed, showing how data is moved between buffer and processing cores. This is crucial for performance, as efficient data movement is key to achieving high throughput on the AIE architecture.
+*Input IR:*
+```
+air.segment @segment0 {
+  %herd_cols = arith.constant 1 : index
+  %herd_rows = arith.constant 1 : index
+  %memtile0 = memref.alloc() : memref<1024xi32, 1>
+  air.channel.get @channel_2[] (%memtile0[] [] []) {id = 2 : i32} : (memref<1024xi32, 1>)
+  air.channel.put @channel_3[] (%memtile0[] [] []) {id = 3 : i32} : (memref<1024xi32, 1>)
+  memref.dealloc %memtile0 : memref<1024xi32, 1>
+  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) attributes { sym_name="herd4"} {
+    ...
+    air.herd_terminator
+  }
+  %memtile1 = memref.alloc() : memref<1024xi32, 1>
+  air.channel.get @channel_4[] (%memtile1[] [] []) {id = 6 : i32} : (memref<1024xi32, 1>)
+  air.channel.put @channel_5[] (%memtile1[] [] []) {id = 7 : i32} : (memref<1024xi32, 1>)
+  memref.dealloc %memtile1 : memref<1024xi32, 1>
+  air.segment_terminator
+}
+```
+The input MLIR-AIR dialect code encapsulates any L2 memory allocation, deallocation, and data movement within `air.segment`.
 
-The combination of multiple data consumers and producers (e.g. `air.channel.put/get` and `linalg.generic`), connected via a chain of `scf.for` loop-carried async tokens, form a representation of finite-state machines, which are subsequently lowered into a combination of lock (`aie.lock`) acquire-release actions, DMA Block Descriptors (`aie.dma_bd`) and AIE core compute kernels. Locks ensure that data dependencies are respected, and resources are not accessed simultaneously by multiple tiles in a way that could lead to conflicts or data corruption.
+*Output IR:*
+```
+%buf2 = aie.buffer(%tile_2_1) {sym_name = "buf2"} : memref<1024xi32, 1> 
+%buf1 = aie.buffer(%tile_2_1) {sym_name = "buf1"} : memref<1024xi32, 1> 
+...
+%memtile_dma_2_1 = aie.memtile_dma(%tile_2_1) {
+  %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb7, repeat_count = 1)
+^bb1:  // 2 preds: ^bb0, ^bb1
+  aie.use_lock(%lock_2_1_1, AcquireGreaterEqual, 1)
+  aie.dma_bd(%buf2 : memref<1024xi32, 1>, 0, 1024)
+  aie.use_lock(%lock_2_1_2, Release, 1)
+  aie.next_bd ^bb1
+^bb2:  // pred: ^bb3
+  aie.end
+^bb3:  // pred: ^bb5
+  %1 = aie.dma_start(S2MM, 1, ^bb4, ^bb2, repeat_count = 1)
+^bb4:  // 2 preds: ^bb3, ^bb4
+  aie.use_lock(%lock_2_1, AcquireGreaterEqual, 1)
+  aie.dma_bd(%buf1 : memref<1024xi32, 1>, 0, 1024)
+  aie.use_lock(%lock_2_1_0, Release, 1)
+  aie.next_bd ^bb4
+^bb5:  // pred: ^bb7
+  %2 = aie.dma_start(MM2S, 0, ^bb6, ^bb3, repeat_count = 1)
+^bb6:  // 2 preds: ^bb5, ^bb6
+  aie.use_lock(%lock_2_1_2, AcquireGreaterEqual, 1)
+  aie.dma_bd(%buf2 : memref<1024xi32, 1>, 0, 1024)
+  aie.use_lock(%lock_2_1_1, Release, 1)
+  aie.next_bd ^bb6
+^bb7:  // pred: ^bb0
+  %3 = aie.dma_start(MM2S, 1, ^bb8, ^bb5, repeat_count = 1)
+^bb8:  // 2 preds: ^bb7, ^bb8
+  aie.use_lock(%lock_2_1_0, AcquireGreaterEqual, 1)
+  aie.dma_bd(%buf1 : memref<1024xi32, 1>, 0, 1024)
+  aie.use_lock(%lock_2_1, Release, 1)
+  aie.next_bd ^bb8
+}
+```
+The output IR outlines the data movement to/from each memtile using `aie.memtile_dma`. Multiple `aie.dma_bd` within the same AIE tile synchronize using `aie.dma_bd`.
 
-The computation (`linalg.generic`, `func.call` or `arith`/`scf` loop nests of `arith` scalar operations) is divided across multiple AIE cores, with specific L1 buffers (`aie.buffer`) and computational kernels outlined to each core. This shows how the program is parallelized and distributed across the hardware.
+#### Outline AIE circuit-switched streaming interconnects using aie.flow.
 
-The AIE core code includes explicit control flow for data movement and computation (`cf.br`, `scf.for` loops) iterating over data chunks.
+*Input IR:*
+```
+func.func @func4(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+  ...
+  air.segment @segment0  {
+    ...
+    air.channel.put  @channel_3[] (%alloc[] [] []) {id = 3 : i32} : (memref<1024xi32, 1>)
+    ...
+    air.herd @herd4  tile (%arg2, %arg3) in (%arg4=%c1_0, %arg5=%c1_1) attributes {x_loc = 2 : i32, y_loc = 3 : i32} {
+      ...
+      air.channel.get  @channel_3[%arg2, %arg3] (%alloc_3[] [] []) {id = 4 : i32} : (memref<1024xi32, 2>)
+      ...
+      air.herd_terminator
+    }
+    ...
+    air.segment_terminator
+  }
+  ...
+  return
+}
+```
+The input IR represents data movement across memory spaces using `air.channel.put/get`, paired using channel symbols.
+
+*Output IR:*
+```
+aie.flow(%tile_2_1, DMA : 0, %tile_2_3, DMA : 0)
+```
+The output IR outlines circuit-switched streaming dataflow using `aie.flow`, connecting the source and destination DMA channels.
+
+#### Generate aie.shim_dma_allocation as handle to runtime operations.
+
+*Input IR:*
+```
+func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
+  ...
+  air.channel.put @channel_2[] (%arg0[] [] []) {id = 1 : i32} : (memref<1024xi32>)
+  air.segment @segment0 {
+    ...
+    air.channel.get @channel_2[] (%memtile0[] [] []) {id = 2 : i32} : (memref<1024xi32, 1>)
+    ...
+    air.channel.put @channel_5[] (%memtile1[] [] []) {id = 7 : i32} : (memref<1024xi32, 1>)
+    ...
+    air.segment_terminator
+  }
+  ...
+  air.channel.get @channel_5[] (%arg1[] [] []) {id = 8 : i32} : (memref<1024xi32>)
+  return
+}
+```
+The input IR represent data movements to/from external memory using `air.channel.put/get` on L3 memref.
+
+*Output IR:*
+```
+aie.device(xcve2802) {
+  ...
+  aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 2)
+  memref.global "public" @airMemcpyId7 : memref<1024xi32, 1>
+  aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 2)
+  memref.global "public" @airMemcpyId2 : memref<1024xi32, 1>
+  ...
+} {sym_name = "segment0"}
+...
+func.func @func4(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+  ...
+  air.channel.put  @channel_2[] (%arg0[] [] []) {id = 1 : i32, metadata = @airMemcpyId2} : (memref<1024xi32>)
+  ...
+  air.channel.get  @channel_5[] (%arg1[] [] []) {id = 8 : i32, metadata = @airMemcpyId7} : (memref<1024xi32>)
+  ...
+  return
+}
+```
+The output IR generates `aie.shim_dma_allocation` as handle to link with the runtime code using `metadata` attribute.
 
 ### air-to-std
 
