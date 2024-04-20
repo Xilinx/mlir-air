@@ -3442,6 +3442,63 @@ struct ParallelToLaunchPass
       filteredOps.insert(op);
     });
 
+    // if any L1 or L2 memref has lifetime only within the scf.par/forall
+    // region, but allocated outside, then attempt to move them into the region.
+    std::map<memref::AllocOp, SmallVector<Block *>> allocToParBodyMap;
+    SmallVector<memref::AllocOp> globalAllocs;
+    for (auto op : filteredOps) {
+      Block *opBlk = nullptr;
+      if (auto par = dyn_cast<scf::ParallelOp>(op))
+        opBlk = par.getBody();
+      else if (auto forall = dyn_cast<scf::ForallOp>(op))
+        opBlk = forall.getBody();
+      if (!opBlk)
+        continue;
+      llvm::SetVector<Value> regionArgs;
+      getUsedValuesDefinedAbove(*opBlk->getParent(), regionArgs);
+      for (auto arg : regionArgs) {
+        if (auto allocOp = arg.getDefiningOp<memref::AllocOp>()) {
+          allocToParBodyMap[allocOp].push_back(opBlk);
+          if (std::find(globalAllocs.begin(), globalAllocs.end(), allocOp) ==
+              globalAllocs.end())
+            globalAllocs.push_back(allocOp);
+        }
+      }
+    }
+    // check for memref lifetime
+    for (auto allocOp : globalAllocs) {
+      if (allocToParBodyMap[allocOp].size() != 1)
+        continue;
+      auto blk = allocToParBodyMap[allocOp][0];
+      memref::DeallocOp dealloc = nullptr;
+      bool hasExtraUsers = false;
+      for (auto user : allocOp.getMemref().getUsers()) {
+        if (!blk->getParentOp()->isProperAncestor(user)) {
+          if (auto da = dyn_cast<memref::DeallocOp>(user))
+            dealloc = da;
+          else
+            hasExtraUsers = true;
+        }
+      }
+      if (hasExtraUsers)
+        continue;
+      OpBuilder builder(allocOp);
+      builder.setInsertionPointToStart(blk);
+      auto newAlloc = dyn_cast<memref::AllocOp>(builder.clone(*allocOp));
+      allocOp.getMemref().replaceAllUsesWith(newAlloc.getMemref());
+      allocOp->erase();
+      if (dealloc) {
+        if (auto term = blk->getTerminator()) {
+          builder.setInsertionPoint(term);
+          builder.clone(*dealloc);
+        } else {
+          builder.setInsertionPointToEnd(blk);
+          builder.clone(*dealloc);
+        }
+        dealloc->erase();
+      }
+    }
+
     RewritePatternSet patterns(context);
     patterns.add<ScfParToLaunchConversion>(context, filteredOps, replacementOps,
                                            clHasSegment);
