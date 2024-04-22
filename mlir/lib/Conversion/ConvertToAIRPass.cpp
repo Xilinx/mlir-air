@@ -2176,12 +2176,14 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   memref::SubViewOp tilingHintSubview = nullptr;
   scf::ParallelOp previousTilingScfPar = nullptr;
   for (auto user : L1Memref.getUsers()) {
-    tilingHintSubview = dyn_cast<memref::SubViewOp>(user);
-    if (!tilingHintSubview)
+    if (auto subViewUser = dyn_cast<memref::SubViewOp>(user))
+      tilingHintSubview = subViewUser;
+    else
       continue;
-    previousTilingScfPar =
-        tilingHintSubview->getParentOfType<scf::ParallelOp>();
-    if (!previousTilingScfPar)
+    if (auto subViewParentPar =
+            tilingHintSubview->getParentOfType<scf::ParallelOp>())
+      previousTilingScfPar = subViewParentPar;
+    else
       continue;
   }
   if (!tilingHintSubview || !previousTilingScfPar)
