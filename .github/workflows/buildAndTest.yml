@@ -11,6 +11,17 @@ on:
     types: [assigned, opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  # A PR number if a pull request and otherwise the commit hash. This cancels
+  # queued and in-progress runs for the same PR (presubmit) or commit
+  # (postsubmit).
+  group: ci-build-test-aie-tools-linux-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   build-repo:
     name: Build and Test with ROCm runtime
@@ -66,7 +77,6 @@ jobs:
       - name: Get Submodule Hash
         id: get-submodule-hash
         run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-llvm.sh))"
-        shell: bash
 
       - name: Ccache for C++ compilation
         uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
@@ -92,7 +102,6 @@ jobs:
       - name: Get ROCm-air-platforms
         id: clone-rocm-air-platforms
         run: utils/clone-rocm-air-platforms.sh
-        shell: bash
 
       - name: Build and Install libxaie
         run: utils/github-clone-build-libxaie.sh
@@ -100,7 +109,6 @@ jobs:
       - name: Get mlir-aie
         id: clone-mlir-aie
         run: utils/clone-mlir-aie.sh
-        shell: bash
 
       - name: Build and Install mlir-aie
         run: |
