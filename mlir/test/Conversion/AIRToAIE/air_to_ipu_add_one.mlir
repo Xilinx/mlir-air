@@ -1,4 +1,4 @@
-//===- air_to_ipu_spatial_add_one.mlir -------------------------*- MLIR -*-===//
+//===- air_to_npu_spatial_add_one.mlir -------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
 // Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=ipu})' --split-input-file | FileCheck %s
+// RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu})' --split-input-file | FileCheck %s
 
 // CHECK: %[[VAL0:.*]] = aie.tile(0, 1)
 // CHECK: %[[VAL1:.*]] = aie.tile(0, 2)

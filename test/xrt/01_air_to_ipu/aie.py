@@ -129,7 +129,7 @@ with air.ir.Context() as ctx, Location.unknown():
     # ################################################
     
     pipeline = "builtin.module("+",".join([
-        'air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}',
+        'air-to-aie{row-offset=2 col-offset=0 device=npu emit-while-loop=true}',
         'canonicalize',
     ])+')'
     pm = air.passmanager.PassManager.parse(pipeline)
@@ -143,7 +143,7 @@ with air.ir.Context() as ctx, Location.unknown():
 
     pipeline = "builtin.module("+",".join([
       'air-to-std',
-      'airrt-to-ipu',
+      'airrt-to-npu',
       'canonicalize',
     ])+')'
     pm = air.passmanager.PassManager.parse(pipeline)

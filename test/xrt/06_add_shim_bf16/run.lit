@@ -3,4 +3,4 @@
 //
 // REQUIRES: ryzen_ai
 // RUN: %python %S/gen.py
-// RUN: %run_on_ipu %python %S/run.py add.xclbin
+// RUN: %run_on_npu %python %S/run.py add.xclbin

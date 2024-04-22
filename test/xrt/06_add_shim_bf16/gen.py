@@ -83,7 +83,7 @@ with Context() as ctx, Location.unknown():
     #     f.write(str(mlir_module))
 
     pipeline = "builtin.module(" + ",".join([
-        "air-to-aie{emit-while-loop=true device=ipu row-offset=2 col-offset=0 use-objectfifo=false}",
+        "air-to-aie{emit-while-loop=true device=npu row-offset=2 col-offset=0 use-objectfifo=false}",
         "air-to-std",
         "canonicalize", "cse",
     ]) + ")"
@@ -95,23 +95,23 @@ with Context() as ctx, Location.unknown():
     #     f.write(str(mlir_module))
 
     pipeline = "builtin.module(" + ",".join([
-        "airrt-to-ipu",
+        "airrt-to-npu",
         "canonicalize", "cse",
     ]) + ")"
     pm = PassManager.parse(pipeline)
     pm.run(mlir_module.operation)
 
     # print("\nAIE Module:\n\n", mlir_module)
-    # with open("add.aieipu.mlir", "w") as f:
+    # with open("add.aienpu.mlir", "w") as f:
     #     f.write(str(mlir_module))
 
     import aie.compiler.aiecc.main as aiecc
 
     aiecc_options = ['--no-aiesim',
                      '--aie-generate-cdo',
-                     '--aie-generate-ipu',
+                     '--aie-generate-npu',
                      '--no-compile-host',
-                     '--ipu-insts-name=insts.txt',
+                     '--npu-insts-name=insts.txt',
                      '--xclbin-name=add.xclbin',
                      'aie.mlir']
     aiecc.run(mlir_module, aiecc_options)

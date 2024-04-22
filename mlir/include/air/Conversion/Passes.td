@@ -373,9 +373,9 @@ def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
   let options = [];
 }
 
-def AIRRtToIpu : Pass<"airrt-to-ipu", "ModuleOp"> {
-  let summary = "Lower AIRRt dialect to AIEX.ipu dialect";
-  let constructor = "xilinx::airrt::createAIRRtToIpuPass()";
+def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
+  let summary = "Lower AIRRt dialect to AIEX.npu dialect";
+  let constructor = "xilinx::airrt::createAIRRtToNpuPass()";
   let description =  [{
     Converts the runtime program, described in AIRRt dialect, into 
     instruction sequence specific to the SHIM DMA controllers on Ryzen AI 
@@ -386,7 +386,7 @@ def AIRRtToIpu : Pass<"airrt-to-ipu", "ModuleOp"> {
     Input:
     ```mlir
     module {
-      aie.device(ipu) {
+      aie.device(npu) {
         ...
         aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
         memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -420,7 +420,7 @@ def AIRRtToIpu : Pass<"airrt-to-ipu", "ModuleOp"> {
     Output:
     ```mlir
     module {
-      aie.device(ipu) {
+      aie.device(npu) {
         ...
         aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
         memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -433,17 +433,17 @@ def AIRRtToIpu : Pass<"airrt-to-ipu", "ModuleOp"> {
         ...
         func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
           ...
-          aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][4, 4, 32, 256][0, 256, 1024]) {id = 0 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
-          aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 128, 0][4, 4, 32, 256][0, 256, 1024]) {id = 1 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
-          aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 256, 0][4, 4, 32, 256][0, 256, 1024]) {id = 2 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
-          aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 384, 0][4, 4, 32, 256][0, 256, 1024]) {id = 3 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+          aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][4, 4, 32, 256][0, 256, 1024]) {id = 0 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+          aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 128, 0][4, 4, 32, 256][0, 256, 1024]) {id = 1 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+          aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 256, 0][4, 4, 32, 256][0, 256, 1024]) {id = 2 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+          aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 384, 0][4, 4, 32, 256][0, 256, 1024]) {id = 3 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
           ...
-          aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 0 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
-          aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 1 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
-          aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 2 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
-          aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 3 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+          aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 0 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+          aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 1 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+          aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 2 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+          aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 3 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
           ...
-          aiex.ipu.dma_memcpy_nd(0, 0, %arg2[0, 0, 0, 0][4, 4, 32, 128][65536, 128, 512]) {id = 8 : i64, metadata = @airMemcpyId78} : memref<512x512xi32>
+          aiex.npu.dma_memcpy_nd(0, 0, %arg2[0, 0, 0, 0][4, 4, 32, 128][65536, 128, 512]) {id = 8 : i64, metadata = @airMemcpyId78} : memref<512x512xi32>
           ...
           return
         }
