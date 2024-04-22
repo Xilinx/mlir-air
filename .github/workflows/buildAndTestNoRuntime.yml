@@ -11,6 +11,17 @@ on:
     types: [assigned, opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  # A PR number if a pull request and otherwise the commit hash. This cancels
+  # queued and in-progress runs for the same PR (presubmit) or commit
+  # (postsubmit).
+  group: ci-build-test-air-tools-linux-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   build-repo:
     name: Build and Test
@@ -58,7 +69,6 @@ jobs:
       - name: Get Submodule Hash
         id: get-submodule-hash
         run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-llvm.sh))"
-        shell: bash
 
       - name: Ccache for C++ compilation
         uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
@@ -69,7 +79,6 @@ jobs:
       - name: Get mlir-aie
         id: clone-mlir-aie
         run: utils/clone-mlir-aie.sh
-        shell: bash
 
       - name: Install pip packages
         run: |
@@ -80,8 +89,7 @@ jobs:
       - name: Get LLVM
         id: clone-llvm
         run: utils/clone-llvm.sh
-        shell: bash
-        
+
       - name: Rebuild and Install LLVM
         run: utils/github-build-llvm.sh
 
