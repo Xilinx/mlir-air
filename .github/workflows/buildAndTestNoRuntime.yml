@@ -70,6 +70,9 @@ jobs:
           key: ${{ matrix.build_type }}-${{ runner.os }}-${{ matrix.ubuntu_version }}
           max-size: 1G
 
+      - name: Build and Install libxaie
+        run: utils/github-clone-build-libxaie.sh
+
       - name: Get mlir-aie
         id: clone-mlir-aie
         run: utils/clone-mlir-aie.sh
@@ -88,9 +91,6 @@ jobs:
           popd
 
           utils/github-build-mlir-aie.sh
-
-      - name: Rebuild and Install libxaie
-        run: utils/github-clone-build-libxaie.sh
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
