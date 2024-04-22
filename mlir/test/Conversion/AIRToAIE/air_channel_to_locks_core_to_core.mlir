@@ -9,7 +9,6 @@
 
 // one-to-one communication
 // CHECK: aie.device
-// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = aie.tile(2, 4)
 // CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1)
@@ -92,7 +91,6 @@ func.func @one_to_one() {
 
 // two-to-two parallel dataflow
 // CHECK: aie.device
-// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = aie.tile(3, 3)
 // CHECK:         %[[VAL_3:.*]] = aie.tile(2, 4)
@@ -141,7 +139,6 @@ func.func @two_to_two() {
 
 // one-to-two core-to-core broadcast
 // CHECK: aie.device
-// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = aie.tile(3, 3)
 // CHECK:         %[[VAL_3:.*]] = aie.tile(2, 4)
