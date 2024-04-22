@@ -71,7 +71,7 @@ jobs:
         run: utils/clone-mlir-aie.sh
         shell: bash
 
-      - name: Install pip packages
+      - name: Build and install mlir-aie
         run: |
           pushd mlir-aie
           pip install -r python/requirements.txt
