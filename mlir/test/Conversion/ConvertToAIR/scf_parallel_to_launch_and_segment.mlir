@@ -48,3 +48,25 @@ func.func @f2()  {
   }
   return
 }
+
+// CHECK-LABEL: func.func @f3
+// CHECK: air.launch
+// CHECK:   air.segment @segment_3
+// CHECK:     memref.alloc() : memref<1x1x64x128xbf16, 1 : i32>
+// CHECK:     memref.alloc() : memref<1x1x16x8x8x4xbf16, 2 : i32>
+// CHECK:     air.dma_memcpy_nd
+// CHECK:     memref.dealloc
+// CHECK:     memref.dealloc
+func.func @f3()  {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %alloc = memref.alloc() : memref<1x1x16x8x8x4xbf16, 2 : i32>
+  %alloc_0 = memref.alloc() : memref<1x1x64x128xbf16, 1 : i32>
+  scf.parallel (%x,%y) = (%c0,%c0) to (%c2, %c2) step (%c1,%c1) {
+    air.dma_memcpy_nd (%alloc[] [] [], %alloc_0[] [] []) : (memref<1x1x16x8x8x4xbf16, 2 : i32>, memref<1x1x64x128xbf16, 1 : i32>)
+  }
+  memref.dealloc %alloc_0 : memref<1x1x64x128xbf16, 1 : i32>
+  memref.dealloc %alloc : memref<1x1x16x8x8x4xbf16, 2 : i32>
+  return
+}
