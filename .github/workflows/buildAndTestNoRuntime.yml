@@ -88,30 +88,6 @@ jobs:
       - name: Rebuild and Install libxaie
         run: utils/github-clone-build-libxaie.sh
 
-      - name: Rebuild and Install mlir-aie
-        run: |
-          mkdir -p mlir-aie/build
-          mkdir -p mlir-aie/install
-          pushd mlir-aie/build
-          cmake .. \
-              -GNinja \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DAIE_COMPILER=NONE \
-              -DAIE_LINKER=NONE \
-              -DHOST_COMPILER=NONE \
-              -DLLVM_ENABLE_ASSERTIONS=ON \
-              -DCMAKE_MODULE_PATH=`pwd`/../cmake/modulesXilinx \
-              -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
-              -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
-              -DCMAKE_LINKER=lld \
-              -DLLVM_EXTERNAL_LIT=$(which lit) \
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-              -DLibXAIE_x86_64_DIR=`pwd`/../../aienginev2/install/lib \
-              -DCMAKE_INSTALL_PREFIX=`pwd`/../install
-          ninja install
-          popd
-          rm -rf mlir-aie/build
-
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
         if: matrix.build_type == 'Assert'
@@ -124,8 +100,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
-            -DMLIR_DIR=`pwd`/../llvm/install/lib/cmake/mlir/ \
-            -DLLVM_DIR=`pwd`/../llvm/install/lib/cmake/llvm/ \
+            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
+            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
@@ -152,8 +128,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
             -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
-            -DMLIR_DIR=`pwd`/../llvm/install/lib/cmake/mlir/ \
-            -DLLVM_DIR=`pwd`/../llvm/install/lib/cmake/llvm/ \
+            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
+            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
