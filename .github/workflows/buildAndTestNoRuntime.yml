@@ -75,15 +75,15 @@ jobs:
         run: |
           pushd mlir-aie
           pip install -r python/requirements.txt
+
+          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          pip -q download mlir==$VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          unzip -q mlir-*.whl
+          find mlir -exec touch -a -m -t 201108231405.14 {} \;
           popd
 
-      - name: Get LLVM
-        id: clone-llvm
-        run: utils/clone-llvm.sh
-        shell: bash
-        
-      - name: Rebuild and Install LLVM
-        run: utils/github-build-llvm.sh
+          utils/github-build-mlir-aie.sh
 
       - name: Rebuild and Install libxaie
         run: utils/github-clone-build-libxaie.sh
@@ -101,8 +101,8 @@ jobs:
               -DHOST_COMPILER=NONE \
               -DLLVM_ENABLE_ASSERTIONS=ON \
               -DCMAKE_MODULE_PATH=`pwd`/../cmake/modulesXilinx \
-              -DMLIR_DIR=`pwd`/../../llvm/install/lib/cmake/mlir/ \
-              -DLLVM_DIR=`pwd`/../../llvm/install/lib/cmake/llvm/ \
+              -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
+              -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
               -DCMAKE_LINKER=lld \
               -DLLVM_EXTERNAL_LIT=$(which lit) \
               -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
