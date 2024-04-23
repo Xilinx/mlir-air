@@ -531,6 +531,19 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   return false;
 }
 
+// A naive implementation to find largest factor, smaller than a given int, for
+// a given integer.
+int getLargestFactorSmallerThan(int inputInt, int smallerThanInt = 0) {
+  int factor = 1;
+  for (int i = 2; i < inputInt; i++) {
+    if (smallerThanInt && i >= smallerThanInt)
+      break;
+    if (inputInt % i == 0)
+      factor = i;
+  }
+  return factor;
+}
+
 void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
   auto oper_begin = memcpy_op.getOperands().begin();
@@ -547,18 +560,18 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
     auto const_stride = *getConstantIntValue(strides[i]);
     if (const_wrap >= AIE2_WRAP_UPPER_BOUND) {
       // Found dimension with illegal wrap. Tiling.
-      assert(!(const_wrap % (AIE2_WRAP_UPPER_BOUND / 2)) &&
-             "Currently do not support remainder tiles");
-      int new_wrap = mlir::ceilDiv(const_wrap, AIE2_WRAP_UPPER_BOUND / 2);
+      int inner_wrap =
+          getLargestFactorSmallerThan(const_wrap, AIE2_WRAP_UPPER_BOUND);
+      int new_wrap = mlir::ceilDiv(const_wrap, inner_wrap);
       wraps[i] = builder.create<arith::ConstantOp>(
           loc, builder.getI64Type(),
-          IntegerAttr::get(builder.getI64Type(), AIE2_WRAP_UPPER_BOUND / 2));
+          IntegerAttr::get(builder.getI64Type(), inner_wrap));
       wraps.insert(wraps.begin() + i,
                    builder.create<arith::ConstantOp>(
                        loc, builder.getI64Type(),
                        IntegerAttr::get(builder.getI64Type(), new_wrap)));
       auto new_const_stride =
-          (const_stride * AIE2_WRAP_UPPER_BOUND / 2) %
+          (const_stride * inner_wrap) %
           air::getTensorVolume(
               memcpy_op.getMemref().getType().cast<MemRefType>());
       strides.insert(
