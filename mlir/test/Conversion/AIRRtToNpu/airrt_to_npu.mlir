@@ -519,15 +519,15 @@ module {
 
 // Dealing with scenarios where wrap dimension in airrt.dma_memcpy_nd goes beyond the [0, 1023] hardware limit (test case 2).
 
-// CHECK-LABEL: aie.device(ipu)
+// CHECK-LABEL: aie.device(npu)
 // CHECK:  func.func @func10(%[[ARG0:.*]]: memref<2654208xi32>)
-// CHECK:  aiex.ipu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][3, 3, 768, 32][128, 884736, 1152]) {id = 0 : i64, metadata = @airMemcpyId21} : memref<2654208xi32>
-// CHECK:  aiex.ipu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][3, 3, 768, 32][128, 884736, 1152]) {id = 1 : i64, metadata = @airMemcpyId21} : memref<2654208xi32>
-// CHECK:  aiex.ipu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][3, 3, 768, 32][128, 884736, 1152]) {id = 2 : i64, metadata = @airMemcpyId21} : memref<2654208xi32>
+// CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][3, 3, 768, 32][128, 884736, 1152]) {id = 0 : i64, metadata = @airMemcpyId21} : memref<2654208xi32>
+// CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][3, 3, 768, 32][128, 884736, 1152]) {id = 1 : i64, metadata = @airMemcpyId21} : memref<2654208xi32>
+// CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][3, 3, 768, 32][128, 884736, 1152]) {id = 2 : i64, metadata = @airMemcpyId21} : memref<2654208xi32>
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 module {
-  aie.device(ipu) {
+  aie.device(npu) {
     %tile_0_0 = aie.tile(0, 0)
     aie.shim_dma_allocation @airMemcpyId21(MM2S, 0, 2)
     memref.global "public" @airMemcpyId21 : memref<256x64xbf16, 1>
