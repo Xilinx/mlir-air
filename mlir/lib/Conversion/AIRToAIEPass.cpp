@@ -418,10 +418,11 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
 
     // make the aie.tile
     AIE::TileOp tile = getPhysTileOp(aie_device, phys_x, phys_y);
-    auto memrefTy = MemRefType::get(SmallVector<int64_t>{1}, builder.getI8Type());
+    auto memrefTy =
+        MemRefType::get(SmallVector<int64_t>{1}, builder.getI8Type());
     builder.create<AIE::BufferOp>(
-      tile->getLoc(), memrefTy, tile, /*sym_name*/ nullptr,
-      /*address*/ nullptr, /*initial_value*/ nullptr);
+        tile->getLoc(), memrefTy, tile, /*sym_name*/ nullptr,
+        /*address*/ nullptr, /*initial_value*/ nullptr);
   }
 }
 
