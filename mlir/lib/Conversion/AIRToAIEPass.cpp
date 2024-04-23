@@ -1159,6 +1159,10 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
 
+    channel->print(llvm::outs());
+    llvm::outs() << "channelPuts" << channelPuts.size() << "\n";
+    llvm::outs() << "channelGets" << channelGets.size() << "\n";
+
     // keep track of potential LinkOp
     bool linkToComplete =
         false; // track if objFifo has to be added to linksToComplete
@@ -1348,6 +1352,8 @@ private:
       }
       return success();
     } else {
+      op->dump();
+      op.getMemref().dump();
       return op.emitOpError("unsupported memory space");
     }
   }
@@ -1395,7 +1401,8 @@ private:
 
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
-      rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
+      rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(a.getOperation(), a.getType(), producerAccess.getOutput());
+      //rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
   }
 
   template <typename MyOp>
