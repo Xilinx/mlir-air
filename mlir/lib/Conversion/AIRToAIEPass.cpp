@@ -1401,8 +1401,8 @@ private:
 
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
-      rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(a.getOperation(), a.getType(), producerAccess.getOutput());
-      //rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
+      rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(
+          a.getOperation(), a.getType(), producerAccess.getOutput());
   }
 
   template <typename MyOp>
