@@ -84,7 +84,7 @@ struct ShimTileAllocator {
   const AIE::AIETargetModel &aie_target;
 
   struct shim_allocation_info_t {
-    AIE::TileOp shim_tile;
+    int shim_col;
     int available_channels;
     std::vector<std::string> chan_names;
   };
@@ -111,12 +111,12 @@ struct ShimTileAllocator {
       if (t.available_channels > 0) {
         t.available_channels -= 1;
         t.chan_names.push_back(chan_name);
-        return t.shim_tile;
+        return getPhysTileOp(aie_device, t.shim_col, 0);
       }
     }
     auto shim_col = shim_columns[allocs->size()];
     auto shim_tile = getPhysTileOp(aie_device, shim_col, 0);
-    allocs->push_back({shim_tile, shim_dma_channels - 1, {chan_name}});
+    allocs->push_back({shim_col, shim_dma_channels - 1, {chan_name}});
 
     return shim_tile;
   }
@@ -418,7 +418,12 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
     auto phys_y = 1;
 
     // make the aie.tile
-    getPhysTileOp(aie_device, phys_x, phys_y);
+    AIE::TileOp tile = getPhysTileOp(aie_device, phys_x, phys_y);
+    auto memrefTy =
+        MemRefType::get(SmallVector<int64_t>{1}, builder.getI8Type());
+    builder.create<AIE::BufferOp>(
+        tile->getLoc(), memrefTy, tile, /*sym_name*/ nullptr,
+        /*address*/ nullptr, /*initial_value*/ nullptr);
   }
 }
 
@@ -1154,6 +1159,10 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
 
+    channel->print(llvm::outs());
+    llvm::outs() << "channelPuts" << channelPuts.size() << "\n";
+    llvm::outs() << "channelGets" << channelGets.size() << "\n";
+
     // keep track of potential LinkOp
     bool linkToComplete =
         false; // track if objFifo has to be added to linksToComplete
@@ -1343,6 +1352,8 @@ private:
       }
       return success();
     } else {
+      op->dump();
+      op.getMemref().dump();
       return op.emitOpError("unsupported memory space");
     }
   }
@@ -1390,7 +1401,8 @@ private:
 
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
-      rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
+      rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(
+          a.getOperation(), a.getType(), producerAccess.getOutput());
   }
 
   template <typename MyOp>

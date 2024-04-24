@@ -32,7 +32,7 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 'canonicalize', 'cse'  
 'func.func(air-renumber-dma)'
 'canonicalize', 'cse'  
-['air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}'](#air-to-aie)  
+['air-to-aie{row-offset=2 col-offset=0 device=npu emit-while-loop=true}'](#air-to-aie)  
 'canonicalize'
 ['air-to-std'](#air-to-std)  
 'canonicalize'  
@@ -40,7 +40,7 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 ['func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})'](#affine-loop-opt)  
 ['func.func(air-unroll-outer-affine-loops{depth=2})'](#air-unroll-outer-affine-loops)  
 'affine-expand-index-ops'  
-['airrt-to-ipu'](#airrt-to-ipu)  
+['airrt-to-npu'](#airrt-to-npu)  
 'canonicalize'
 
 ## Overview
@@ -55,8 +55,8 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 |Memtile DMA BD Optimization    |   <br> <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. |
 |Double buffering    |   <br> <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
 |Outline air.herd to aie.tiles    |   <br> <ul><li>`func.func(air-collapse-herd{max-col-size=4})`</li><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Reshaping and placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
-|Convert MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
-|SHIM DMA BD Optimization    |   <br> <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-ipu`</li></ul>    |   Converting the control code via AIRRt and AIEX.IPU dialect to IPU SHIM DMA instruction sequence. |
+|Convert MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=npu emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
+|SHIM DMA BD Optimization    |   <br> <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-npu`</li></ul>    |   Converting the control code via AIRRt and AIEX.NPU dialect to NPU SHIM DMA instruction sequence. |
 ||||||
 
 ## MLIR-AIR Passes
@@ -1247,7 +1247,7 @@ Converts the MLIR-AIR dialect code into AIRRt dialect which represents the runti
 *Input IR:*
 ```
 module {
-  aie.device(ipu) {
+  aie.device(npu) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -1281,7 +1281,7 @@ The input IR contains some `air.channel.put` and `air.channel.get` memory operat
 *Output IR:*
 ```
 module {
-  aie.device(ipu) {
+  aie.device(npu) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -1415,15 +1415,15 @@ func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
   return
 }
 ```
-This pass works together with a prior pass (`affine-loop-opt`) to generate a desirable number of unrolled instances of `airrt.dma_memcpy_nd` operations per AIE SHIM DMA channel, so that when those operations are lowered to AIE DMA BDs---plus the insertion of DMA BD reprograming synchronization points---by a downstream pass (`airrt-to-ipu`), they do not violate the AIE DMA BD count limitations.
+This pass works together with a prior pass (`affine-loop-opt`) to generate a desirable number of unrolled instances of `airrt.dma_memcpy_nd` operations per AIE SHIM DMA channel, so that when those operations are lowered to AIE DMA BDs---plus the insertion of DMA BD reprograming synchronization points---by a downstream pass (`airrt-to-npu`), they do not violate the AIE DMA BD count limitations.
 
-### airrt-to-ipu
+### airrt-to-npu
 Converts the runtime program, described in AIRRt dialect, into instruction sequence specific to the SHIM DMA controllers on Ryzen AI platform.
 
 *Input IR:*
 ```
 module {
-  aie.device(ipu) {
+  aie.device(npu) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -1458,7 +1458,7 @@ The input IR contains some L3 memory operations (`airrt.dma_memcpy_nd`) optional
 *Output IR:*
 ```
 module {
-  aie.device(ipu) {
+  aie.device(npu) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -1471,27 +1471,27 @@ module {
     ...
     func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
       ...
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][4, 4, 32, 256][0, 256, 1024]) {id = 0 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 128, 0][4, 4, 32, 256][0, 256, 1024]) {id = 1 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 256, 0][4, 4, 32, 256][0, 256, 1024]) {id = 2 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 384, 0][4, 4, 32, 256][0, 256, 1024]) {id = 3 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][4, 4, 32, 256][0, 256, 1024]) {id = 0 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 128, 0][4, 4, 32, 256][0, 256, 1024]) {id = 1 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 256, 0][4, 4, 32, 256][0, 256, 1024]) {id = 2 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 384, 0][4, 4, 32, 256][0, 256, 1024]) {id = 3 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
       ...
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 0 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 1 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 2 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 3 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 0 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 1 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 2 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 3 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
       ...
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg2[0, 0, 0, 0][4, 4, 32, 128][65536, 128, 512]) {id = 8 : i64, metadata = @airMemcpyId78} : memref<512x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg2[0, 0, 0, 0][4, 4, 32, 128][65536, 128, 512]) {id = 8 : i64, metadata = @airMemcpyId78} : memref<512x512xi32>
       ...
       return
     }
   } {sym_name = "segment_0"}
 }
 ```
-The output is significantly simplified and optimized compared to the input. It focuses on the data movement instructions on the AIE SHIM DMA controller (`aiex.ipu.dma_memcpy_nd`) driving the data movement between the AIE accelerator and external memory via the SHIM DMA.
+The output is significantly simplified and optimized compared to the input. It focuses on the data movement instructions on the AIE SHIM DMA controller (`aiex.npu.dma_memcpy_nd`) driving the data movement between the AIE accelerator and external memory via the SHIM DMA.
 
 The pass attempts to eliminate any `affine.for` loops by performing a sequence of loop transformations, aiming for folding those loop nests into additional wrap-and-stride data access patterns in the DMA BDs if possible. When the attempt fails, falls back to unrolling the loops into generating longer instruction sequence.
 
-The transformed code introduces `aiex.ipu.sync` operations used to reprogram all DMA Block Descriptors in a SHIM DMA.
+The transformed code introduces `aiex.npu.sync` operations used to reprogram all DMA Block Descriptors in a SHIM DMA.
 
 The function signature in the output code (e.g. `func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32(%arg0: memref<512x1024xi32>, %arg1: memref<1024x512xi32>, %arg2: memref<512x512xi32>)`) takes the L3 `memrefs` to external memory as input.

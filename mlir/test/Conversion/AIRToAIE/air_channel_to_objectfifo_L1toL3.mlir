@@ -16,11 +16,13 @@
 // CHECK:     affine.for %[[VAL_5:.*]] = 0 to 4096 step 32 {
 // CHECK:       %[[VAL_6:.*]] = aie.objectfifo.acquire @[[VAL_3]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
 // CHECK:       %[[VAL_7:.*]] = aie.objectfifo.subview.access %[[VAL_6]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:       %[[VAL_17:.*]] = {{.*}}cast{{.*}} %[[VAL_7]]
 // CHECK:       %[[VAL_8:.*]] = aie.objectfifo.acquire @[[VAL_2]](Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
 // CHECK:       %[[VAL_9:.*]] = aie.objectfifo.subview.access %[[VAL_8]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:       %[[VAL_19:.*]] = {{.*}}cast{{.*}} %[[VAL_9]]
 // CHECK:       affine.for %[[VAL_10:.*]] = 0 to 32 {
-// CHECK:         %[[VAL_11:.*]] = affine.load %[[VAL_7]]{{\[}}%[[VAL_10]]] : memref<32xi32>
-// CHECK:         affine.store %[[VAL_11]], %[[VAL_9]]{{\[}}%[[VAL_10]]] : memref<32xi32>
+// CHECK:         %[[VAL_11:.*]] = affine.load %[[VAL_17]]{{\[}}%[[VAL_10]]] : memref<32xi32, 2>
+// CHECK:         affine.store %[[VAL_11]], %[[VAL_19]]{{\[}}%[[VAL_10]]] : memref<32xi32, 2>
 // CHECK:       }
 // CHECK:       aie.objectfifo.release @[[VAL_2]](Produce, 1)
 // CHECK:       aie.objectfifo.release @[[VAL_3]](Consume, 1)

@@ -1477,7 +1477,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
 }
 
 // Check if each L2 memref shall violate buffer hardware constraint, and if so,
-// attempt to split it (in columns, per IPU device layout).
+// attempt to split it (in columns, per NPU device layout).
 void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();

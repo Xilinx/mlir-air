@@ -83,7 +83,7 @@ if config.xrt_lib_dir:
     )
     config.available_features.add("xrt")
 
-    run_on_ipu = "echo"
+    run_on_npu = "echo"
     try:
         xbutil = os.path.join(config.xrt_bin_dir, "xbutil")
         result = subprocess.run(
@@ -98,8 +98,8 @@ if config.xrt_lib_dir:
                 print("Found Ryzen AI device:", m.group().split()[0])
                 config.available_features.add("ryzen_ai")
                 if config.enable_run_xrt_tests:
-                    run_on_ipu = (
-                        f"flock /tmp/ipu.lock {config.air_src_root}/utils/run_on_ipu.sh"
+                    run_on_npu = (
+                        f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
                     )
                     # see https://github.com/amd/xdna-driver/blob/main/src/shim/kmq/hwctx.cpp
                     config.environment['XRT_HACK_UNSECURE_LOADING_XCLBIN'] = "1"
@@ -109,7 +109,7 @@ if config.xrt_lib_dir:
     except:
         print("Failed to run xbutil")
         pass
-    config.substitutions.append(("%run_on_ipu", run_on_ipu))
+    config.substitutions.append(("%run_on_npu", run_on_npu))
     config.substitutions.append(("%xrt_flags", xrt_flags))
     config.substitutions.append(("%XRT_DIR", config.xrt_dir))
 else:

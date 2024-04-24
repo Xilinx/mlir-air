@@ -1,13 +1,13 @@
-//===- async_gemm_w_ping_pong_to_locks_ipu.mlir ----------------*- MLIR -*-===//
+//===- async_gemm_w_ping_pong_to_locks_npu.mlir ----------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-fuse-channels="aggressive-mode=true" -air-to-aie="row-offset=2 col-offset=0 device=ipu" -canonicalize -cse %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels="aggressive-mode=true" -air-to-aie="row-offset=2 col-offset=0 device=npu" -canonicalize -cse %s | FileCheck %s
 
-// CHECK-LABEL:   aie.device(ipu) {
+// CHECK-LABEL:   aie.device(npu) {
 // CHECK:   %[[tile_0_0:.*]] = aie.tile(0, 0)
 // CHECK:   %[[tile_0_1:.*]] = aie.tile(0, 1)
 // CHECK:   %[[tile_1_1:.*]] = aie.tile(1, 1)

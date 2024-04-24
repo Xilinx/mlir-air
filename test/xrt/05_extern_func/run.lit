@@ -8,6 +8,6 @@
 // REQUIRES: ryzen_ai, valid_xchess_license
 
 // RUN: xchesscc_wrapper aie2 -I %aietools/include -c %S/chess/beefmaker_kernel.cc
-// RUN: air-opt %S/air.mlir -air-dma-to-channel -canonicalize -air-dependency -air-to-aie="device=ipu row-offset=2 col-offset=0" -air-to-std -symbol-dce -airrt-to-ipu -canonicalize -cse -o aie.mlir
-// RUN: %python aiecc.py --no-aiesim --aie-generate-cdo --aie-generate-ipu --no-compile-host --xclbin-name=aie.xclbin --ipu-insts-name=insts.txt aie.mlir
-// RUN: %run_on_ipu %python %S/run.py aie.xclbin
+// RUN: air-opt %S/air.mlir -air-dma-to-channel -canonicalize -air-dependency -air-to-aie="device=npu row-offset=2 col-offset=0" -air-to-std -symbol-dce -airrt-to-npu -canonicalize -cse -o aie.mlir
+// RUN: %python aiecc.py --no-aiesim --aie-generate-cdo --aie-generate-npu --no-compile-host --xclbin-name=aie.xclbin --npu-insts-name=insts.txt aie.mlir
+// RUN: %run_on_npu %python %S/run.py aie.xclbin
