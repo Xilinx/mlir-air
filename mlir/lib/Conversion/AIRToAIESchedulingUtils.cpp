@@ -269,32 +269,38 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
   if (!air_chan)
     return getLockValuePair(arch, buffer_memref);
 
-  // Infer semaphore lock values using air.channel
-  int read_counter = 0;
-  int write_counter = 0;
+  // Infer semaphore lock values using air.channel. This method enables
+  // ping-pong compute-communication overlap.
+  SmallVector<Value> unique_write_buffers;
+  SmallVector<Value> unique_read_buffers;
   for (auto get : getChannelGetOpThroughSymbol(air_chan)) {
     if (isa<AIE::ExternalBufferOp>(buffer_memref.getDefiningOp())) {
       // Shim DMA locks
-      write_counter = 1;
+      unique_write_buffers.clear();
+      unique_write_buffers.push_back(buffer_memref);
+      break;
     } else if (auto core_op = get->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
           buffer_memref.getDefiningOp()->getOperand(0)) {
-        write_counter++;
+        push_back_if_unique<Value>(unique_write_buffers, get.getMemref());
       }
     }
   }
   for (auto put : getChannelPutOpThroughSymbol(air_chan)) {
     if (isa<AIE::ExternalBufferOp>(buffer_memref.getDefiningOp())) {
       // Shim DMA locks
-      read_counter = 1;
+      unique_read_buffers.clear();
+      unique_read_buffers.push_back(buffer_memref);
+      break;
     } else if (auto core_op = put->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
           buffer_memref.getDefiningOp()->getOperand(0)) {
-        read_counter++;
+        push_back_if_unique<Value>(unique_read_buffers, put.getMemref());
       }
     }
   }
-  return std::make_pair(read_counter, write_counter);
+  return std::make_pair(unique_read_buffers.size(),
+                        unique_write_buffers.size());
 }
 
 // allocation_info_t impl.
@@ -1007,6 +1013,12 @@ template <typename T> int air::foundInVector(T item, std::vector<T> vec) {
   auto it = std::find(vec.begin(), vec.end(), item);
   int index = it - vec.begin();
   return index;
+}
+
+template <typename T>
+void air::push_back_if_unique(SmallVector<T> &vec, T entry) {
+  if (std::find(vec.begin(), vec.end(), entry) == vec.end())
+    vec.push_back(entry);
 }
 
 int air::getSCFForLoopDepth(Operation *o) {
