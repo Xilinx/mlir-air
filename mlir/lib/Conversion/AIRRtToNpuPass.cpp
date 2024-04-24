@@ -1154,15 +1154,33 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       SmallVector<AIEX::NpuDmaMemcpyNdOp> dmas;
       f.walk([&](AIEX::NpuDmaMemcpyNdOp dma) { dmas.push_back(dma); });
       auto d = f->getParentOfType<AIE::DeviceOp>();
+
+      SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps;
+      if (d)
+        d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
+          shimDmaAllocOps.push_back(shimDmaAllocOp);
+        });
+      // Performance optimization: instead of repeating calls to
+      // getAllocOpForSymbol with the same symbol name, cache the result of the
+      // first call and use the cache for subsequent calls. This dramatically
+      // improves compile time for some designs.
+      llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
+          allocationCache;
+      auto getAllocOpForSymbolWithCaching = [&](StringRef sym_name) {
+        auto iter = allocationCache.find(sym_name);
+        if (iter != allocationCache.end()) {
+          return iter->second;
+        }
+        auto infaOp = getAllocOpForSymbol(shimDmaAllocOps, sym_name);
+        allocationCache.insert({sym_name, infaOp});
+        return infaOp;
+      };
+
       if (!d)
         continue;
-      SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps;
-      d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
-        shimDmaAllocOps.push_back(shimDmaAllocOp);
-      });
       OpBuilder builder(f);
       for (auto dma : dmas) {
-        auto infoOp = getAllocOpForSymbol(shimDmaAllocOps, dma.getMetadata());
+        auto infoOp = getAllocOpForSymbolWithCaching(dma.getMetadata());
         if (!infoOp)
           continue;
         if (infoOp->getChannelDir() != AIE::DMAChannelDir::S2MM)
@@ -1186,7 +1204,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (auto sync = dyn_cast<AIEX::NpuSyncOp>(op))
           previsouSyncs.push_back(sync);
         else if (auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op)) {
-          auto infoOp = getAllocOpForSymbol(shimDmaAllocOps, dma.getMetadata());
+          auto infoOp = getAllocOpForSymbolWithCaching(dma.getMetadata());
           if (!infoOp)
             return;
           if (previsouSyncs.empty())
@@ -1212,6 +1230,21 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
         shimDmaAllocOps.push_back(shimDmaAllocOp);
       });
+    // Performance optimization: instead of repeating calls to
+    // getAllocOpForSymbol with the same symbol name, cache the result of the
+    // first call and use the cache for subsequent calls. This dramatically
+    // improves compile time for some designs.
+    llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
+        allocationCache;
+    auto getAllocOpForSymbolWithCaching = [&](StringRef sym_name) {
+      auto iter = allocationCache.find(sym_name);
+      if (iter != allocationCache.end()) {
+        return iter->second;
+      }
+      auto infaOp = getAllocOpForSymbol(shimDmaAllocOps, sym_name);
+      allocationCache.insert({sym_name, infaOp});
+      return infaOp;
+    };
     SmallVector<AIE::ObjectFifoCreateOp> objectFifoCreateOps;
     if (d)
       d.walk([&](AIE::ObjectFifoCreateOp objectFifoCreateOp) {
@@ -1230,8 +1263,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       builder.setInsertionPoint(dma);
       int col = -1;
       if (d) {
-        if (auto infoOp =
-                getAllocOpForSymbol(shimDmaAllocOps, dma.getMetadata())) {
+        if (auto infoOp = getAllocOpForSymbolWithCaching(dma.getMetadata())) {
           col = infoOp->getCol();
         } else if (auto objFifoCreateOp = getObjectFifoCreateOpForSymbol(
                        objectFifoCreateOps, dma.getMetadata())) {
