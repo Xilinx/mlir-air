@@ -318,9 +318,20 @@ AIR dialect memcpy operations into AIRRt memcpy operations.
     return
   }
 ```
-### `-airrt-to-ipu`
+### `-airrt-to-llvm`
 
-_Lower AIRRt dialect to AIEX.ipu dialect_
+_Lower AIRRt dialect to LLVM dialect_
+
+This pass lowers AIRRt dialect to function calls and data structures
+matching those found in air_host.h.
+
+AIRRt static metadata is transformed to LLVM dialect data structures.
+The data is generated as a number of globals with external linkage.
+The data layout is closely tied the AIR runtime and the definitions in
+air_host.h.  Any changes to this pass must be reflected there.
+### `-airrt-to-npu`
+
+_Lower AIRRt dialect to AIEX.npu dialect_
 
 Converts the runtime program, described in AIRRt dialect, into 
 instruction sequence specific to the SHIM DMA controllers on Ryzen AI 
@@ -331,7 +342,7 @@ Example:
 Input:
 ```mlir
 module {
-  aie.device(ipu) {
+  aie.device(npu) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -365,7 +376,7 @@ module {
 Output:
 ```mlir
 module {
-  aie.device(ipu) {
+  aie.device(npu) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -378,17 +389,17 @@ module {
     ...
     func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
       ...
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][4, 4, 32, 256][0, 256, 1024]) {id = 0 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 128, 0][4, 4, 32, 256][0, 256, 1024]) {id = 1 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 256, 0][4, 4, 32, 256][0, 256, 1024]) {id = 2 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 384, 0][4, 4, 32, 256][0, 256, 1024]) {id = 3 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][4, 4, 32, 256][0, 256, 1024]) {id = 0 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 128, 0][4, 4, 32, 256][0, 256, 1024]) {id = 1 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 256, 0][4, 4, 32, 256][0, 256, 1024]) {id = 2 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 384, 0][4, 4, 32, 256][0, 256, 1024]) {id = 3 : i64, metadata = @airMemcpyId19} : memref<512x1024xi32>
       ...
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 0 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 1 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 2 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 3 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 0 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 1 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 2 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg1[0, 0, 0, 0][4, 2, 512, 32][128, 262144, 512]) {id = 3 : i64, metadata = @airMemcpyId15} : memref<1024x512xi32>
       ...
-      aiex.ipu.dma_memcpy_nd(0, 0, %arg2[0, 0, 0, 0][4, 4, 32, 128][65536, 128, 512]) {id = 8 : i64, metadata = @airMemcpyId78} : memref<512x512xi32>
+      aiex.npu.dma_memcpy_nd(0, 0, %arg2[0, 0, 0, 0][4, 4, 32, 128][65536, 128, 512]) {id = 8 : i64, metadata = @airMemcpyId78} : memref<512x512xi32>
       ...
       return
     }
@@ -396,14 +407,3 @@ module {
 }
 ```
 
-### `-airrt-to-llvm`
-
-_Lower AIRRt dialect to LLVM dialect_
-
-This pass lowers AIRRt dialect to function calls and data structures
-matching those found in air_host.h.
-
-AIRRt static metadata is transformed to LLVM dialect data structures.
-The data is generated as a number of globals with external linkage.
-The data layout is closely tied the AIR runtime and the definitions in
-air_host.h.  Any changes to this pass must be reflected there.
