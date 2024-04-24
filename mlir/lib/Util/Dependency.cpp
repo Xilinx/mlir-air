@@ -1390,14 +1390,14 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
   std::pair<Graph::VertexId, dependencyGraph *> output;
   if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)) {
     if (front_or_back == "front") {
-      auto execute_front_op = &(*op->getRegions().front().op_begin());
+      auto execute_front_op = execute_op.getChildOp();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_front_op);
       output.first = dep_ctx.op_to_v[entry_pair];
       output.second = dep_ctx.op_to_g[entry_pair];
     } else if (front_or_back == "back") {
       auto execute_end_op =
-          op->getRegions().front().getBlocks().front().getTerminator();
+          execute_op.getBody().getBlocks().front().getTerminator();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_end_op);
       output.first = dep_ctx.op_to_v[entry_pair];
@@ -1853,7 +1853,7 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
   func.walk([&](air::ExecuteOp op) {
     // Check the type of op inside the execute. Only remove ops with no side
     // effects
-    auto child_op = &(*op->getRegions().front().op_begin());
+    auto child_op = op.getChildOp();
     if (dyn_cast<memref::AllocOp>(child_op) ||
         dyn_cast<affine::AffineApplyOp>(child_op)) {
       // The second result is the ssa value yielded from child op inside execute

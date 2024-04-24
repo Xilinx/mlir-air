@@ -30,6 +30,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -512,14 +513,13 @@ void createAIEModulesAndOutlineCores(
       push_back_if_unique<Value>(sharedL1Memrefs, oper);
     }
   }
-  std::map<Operation *, std::vector<AIE::CoreOp>> sharedL1AllocsToCoreMap;
+  std::map<Operation *, llvm::SmallSet<AIE::CoreOp, 2>> sharedL1AllocsToCoreMap;
   for (auto memref : sharedL1Memrefs) {
     for (auto user : memref.getUsers()) {
       auto coreOp = user->getParentOfType<AIE::CoreOp>();
       if (!coreOp)
         continue;
-      push_back_if_unique<AIE::CoreOp>(
-          sharedL1AllocsToCoreMap[memref.getDefiningOp()], coreOp);
+      sharedL1AllocsToCoreMap[memref.getDefiningOp()].insert(coreOp);
     }
   }
   for (auto memref : sharedL1Memrefs) {
@@ -1278,8 +1278,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     }
 
     // replace put/get and any associated memref alloc/dealloc
-    std::vector<Operation *> erased_deallocs;
-    std::vector<Operation *> erased_allocs;
+    llvm::SmallSet<Operation *, 2> erased_deallocs;
+    llvm::SmallSet<Operation *, 2> erased_allocs;
     for (auto put : channelPuts) {
       rewriteChannelAllocs<ChannelPutOp>(
           rewriter, put, objFifo, AIE::ObjectFifoPort::Produce, erased_allocs);
@@ -1371,16 +1371,16 @@ private:
   }
 
   template <typename MyOp>
-  void rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op,
-                            AIE::ObjectFifoCreateOp objFifo,
-                            AIE::ObjectFifoPort port,
-                            std::vector<Operation *> &erased_allocs) const {
+  void
+  rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op,
+                       AIE::ObjectFifoCreateOp objFifo,
+                       AIE::ObjectFifoPort port,
+                       llvm::SmallSet<Operation *, 2> &erased_allocs) const {
     MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
       // add alloc to list of ops to erase
-      push_back_if_unique<Operation *>(erased_allocs,
-                                       op.getMemref().getDefiningOp());
+      erased_allocs.insert(op.getMemref().getDefiningOp());
       return;
     }
 
@@ -1406,10 +1406,10 @@ private:
   }
 
   template <typename MyOp>
-  void rewriteChannelDeallocs(PatternRewriter &rewriter, MyOp op,
-                              AIE::ObjectFifoCreateOp objFifo,
-                              AIE::ObjectFifoPort port,
-                              std::vector<Operation *> &erased_deallocs) const {
+  void rewriteChannelDeallocs(
+      PatternRewriter &rewriter, MyOp op, AIE::ObjectFifoCreateOp objFifo,
+      AIE::ObjectFifoPort port,
+      llvm::SmallSet<Operation *, 2> &erased_deallocs) const {
     MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
@@ -1422,8 +1422,7 @@ private:
                                                   objFifo.getName(), 1);
         // Delete ops at the end of the rewrite pattern to avoid repeatedly
         // deleting the same op
-        push_back_if_unique<Operation *>(erased_deallocs,
-                                         dealloc.getOperation());
+        erased_deallocs.insert(dealloc.getOperation());
       }
     }
   }
@@ -2867,9 +2866,8 @@ public:
     }
 
     // Disable generation of shim dma program if generate_shim_dma unset
-    if (!options.generate_shim_dma) {
+    if (!options.generate_shim_dma)
       shimtiles.clear();
-    }
 
     for (auto tile : shimtiles) {
       auto x = tile.getCol();

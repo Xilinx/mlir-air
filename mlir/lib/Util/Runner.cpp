@@ -219,7 +219,7 @@ public:
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'execute' as event type, but op isn't of type "
                "air::ExecuteOp";
-      auto child_op = &*(c.op->getRegions().front().getOps().begin());
+      auto child_op = dyn_cast<air::ExecuteOp>(c.op).getChildOp();
       if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
         uint64_t compute_op_cost = getComputeCostFromCostModel(d, child_op);

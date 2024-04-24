@@ -786,14 +786,8 @@ public:
       return true;
     });
 
-    target.addDynamicallyLegalOp<scf::ParallelOp>([&](scf::ParallelOp op) {
-      // for (auto o : op.getRegionIterArgs()) {
-      //   if (o.getType().isa<air::AsyncTokenType>())
-      //     return false;
-      // }
-      // return true;
-      return false;
-    });
+    target.addDynamicallyLegalOp<scf::ParallelOp>(
+        [&](scf::ParallelOp op) { return false; });
 
     target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
       for (auto v : op.getResults()) {
