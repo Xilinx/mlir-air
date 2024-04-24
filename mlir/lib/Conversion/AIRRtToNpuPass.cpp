@@ -578,15 +578,15 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
     auto const_stride = *getConstantIntValue(strides[i]);
     if (const_wrap >= AIE2_WRAP_UPPER_BOUND) {
       // Found dimension with illegal wrap. Tiling.
-      int inner_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUND - 1);
-      int new_wrap = mlir::ceilDiv(const_wrap, inner_wrap);
+      int outer_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUND - 1);
+      int inner_wrap = mlir::ceilDiv(const_wrap, outer_wrap);
       wraps[i] = builder.create<arith::ConstantOp>(
           loc, builder.getI64Type(),
           IntegerAttr::get(builder.getI64Type(), inner_wrap));
       wraps.insert(wraps.begin() + i,
                    builder.create<arith::ConstantOp>(
                        loc, builder.getI64Type(),
-                       IntegerAttr::get(builder.getI64Type(), new_wrap)));
+                       IntegerAttr::get(builder.getI64Type(), outer_wrap)));
       auto new_const_stride =
           (const_stride * inner_wrap) %
           air::getTensorVolume(
