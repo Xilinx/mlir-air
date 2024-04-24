@@ -1162,10 +1162,27 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       SmallVector<AIEX::NpuDmaMemcpyNdOp> dmas;
       f.walk([&](AIEX::NpuDmaMemcpyNdOp dma) { dmas.push_back(dma); });
       auto d = f->getParentOfType<AIE::DeviceOp>();
+
+     // Performance optimization: instead of repeating calls to
+     // getAllocOpForSymbol with the same symbol name, cache the result of the
+     // first call and use the cache for subsequent calls. This dramatically
+     // improves compile time for some designs.
+     llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
+         allocationCache;
+     auto getAllocOpForSymbolWithCaching = [&](StringRef sym_name) {
+       auto iter = allocationCache.find(sym_name);
+       if (iter != allocationCache.end()) {
+         return iter->second;
+       }
+       auto infaOp = getAllocOpForSymbol(d, sym_name);
+       allocationCache.insert({sym_name, infaOp});
+       return infaOp;
+     };
+
       if (!d)
         return;
       for (auto dma : dmas) {
-        if (auto infoOp = getAllocOpForSymbol(d, dma.getMetadata())) {
+        if (auto infoOp = getAllocOpForSymbolWithCaching(dma.getMetadata())) {
           if (infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM) {
             // Found dma op copying results to host
             OpBuilder builder(dma);
@@ -1189,7 +1206,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (auto sync = dyn_cast<AIEX::NpuSyncOp>(op))
           previsouSyncs.push_back(sync);
         else if (auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op)) {
-          auto infoOp = getAllocOpForSymbol(d, dma.getMetadata());
+          auto infoOp = getAllocOpForSymbolWithCaching(dma.getMetadata());
           if (infoOp && infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM &&
               !previsouSyncs.empty()) {
             for (auto prevSync : previsouSyncs)
@@ -1209,12 +1226,29 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     std::map<int, int> chanToIdMap;
     AIE::DeviceOp d = nullptr;
     blk->walk([&](AIE::DeviceOp op) { d = op; });
+
+     // Performance optimization: instead of repeating calls to
+     // getAllocOpForSymbol with the same symbol name, cache the result of the
+     // first call and use the cache for subsequent calls. This dramatically
+     // improves compile time for some designs.
+     llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
+         allocationCache;
+     auto getAllocOpForSymbolWithCaching = [&](StringRef sym_name) {
+       auto iter = allocationCache.find(sym_name);
+       if (iter != allocationCache.end()) {
+         return iter->second;
+       }
+       auto infaOp = getAllocOpForSymbol(d, sym_name);
+       allocationCache.insert({sym_name, infaOp});
+       return infaOp;
+     };
+
     blk->walk([&](Operation *op) {
       if (auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op)) {
         OpBuilder builder(dma);
         int col = -1;
         if (d) {
-          if (auto infoOp = getAllocOpForSymbol(d, dma.getMetadata())) {
+          if (auto infoOp = getAllocOpForSymbolWithCaching(dma.getMetadata())) {
             col = infoOp->getCol();
           } else if (auto objFifoCreateOp =
                          getObjectFifoCreateOpForSymbol(d, dma.getMetadata())) {
