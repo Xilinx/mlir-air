@@ -274,10 +274,10 @@ def run(mlir_module, args=None):
       print('created temporary directory', tmpdirname)
 
   if not opts.num_cols:
-    opts.num_cols = 4 if "ipu" in opts.device else 10
+    opts.num_cols = 4 if "npu" in opts.device else 10
 
   if not opts.col_offset:
-    opts.col_offset = 0 if "ipu" in opts.device else 7
+    opts.col_offset = 0 if "npu" in opts.device else 7
 
   if not opts.num_rows:
     opts.num_rows = 6
@@ -309,7 +309,7 @@ def run(mlir_module, args=None):
     pass_pipeline = ','.join([
       'air-insert-launch-and-segment-around-herd',
       'func.func(air-lower-herd-parallel)'] +
-      (['air-dma-to-channel'] if "ipu" in opts.device else []) +
+      (['air-dma-to-channel'] if "npu" in opts.device else []) +
       ['canonicalize', 'cse',
       'air-specialize-channel-wrap-and-stride',
       'func.func(air-renumber-dma)',
@@ -333,15 +333,15 @@ def run(mlir_module, args=None):
     run_passes('builtin.module('+pass_pipeline+')', air_to_aie_module, opts,
                air_to_aie_file)
 
-    if "ipu" in opts.device:
-      air_to_ipu_file = opts.tmpdir+'/ipu.'+air_mlir_filename
-      air_to_ipu_module = Module.parse(str(air_to_aie_module))
-      air_to_ipu_passes = "builtin.module(" + ",".join([
+    if "npu" in opts.device:
+      air_to_npu_file = opts.tmpdir+'/npu.'+air_mlir_filename
+      air_to_npu_module = Module.parse(str(air_to_aie_module))
+      air_to_npu_passes = "builtin.module(" + ",".join([
         "air-to-std",
-        "airrt-to-ipu",
+        "airrt-to-npu",
         "canonicalize", "cse",
       ]) + ")"
-      run_passes(air_to_ipu_passes, air_to_ipu_module, opts, air_to_ipu_file)
+      run_passes(air_to_npu_passes, air_to_npu_module, opts, air_to_npu_file)
       if opts.output_file:
         xclbin_file = opts.output_file
         insts_file = opts.output_file.removesuffix('.xclbin') + ".insts.txt"
@@ -353,12 +353,12 @@ def run(mlir_module, args=None):
                        '--xchesscc' if opts.xchesscc else '--no-xchesscc',
                        '--xbridge' if opts.xbridge else '--no-xbridge',
                        '--aie-generate-cdo',
-                       '--aie-generate-ipu',
+                       '--aie-generate-npu',
                        '--no-compile-host',
                        '--xclbin-name=' + xclbin_file,
-                       '--ipu-insts-name=' + insts_file,
-                       air_to_ipu_file]
-      aiecc.run(air_to_ipu_module, aiecc_options)
+                       '--npu-insts-name=' + insts_file,
+                       air_to_npu_file]
+      aiecc.run(air_to_npu_module, aiecc_options)
     else:
       lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filename)
 

@@ -143,7 +143,7 @@ with air.ir.Context() as ctx, Location.unknown():
     ################################################
     
     pipeline = "builtin.module("+",".join([
-        'air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}',
+        'air-to-aie{row-offset=2 col-offset=0 device=npu emit-while-loop=true}',
         'canonicalize',
     ])+')'
     pm = air.passmanager.PassManager.parse(pipeline)
@@ -159,7 +159,7 @@ with air.ir.Context() as ctx, Location.unknown():
       'func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})',
       'func.func(air-unroll-outer-affine-loops{depth=2})',
       'affine-expand-index-ops',
-      'airrt-to-ipu',
+      'airrt-to-npu',
       'canonicalize',
     ])+')'
     pm = air.passmanager.PassManager.parse(pipeline)

@@ -1,11 +1,11 @@
-//===- AIRRtToIpuPass.cpp --------------------------------------*- C++ -*-===//
+//===- AIRRtToNpuPass.cpp --------------------------------------*- C++ -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-#include "air/Conversion/AIRRtToIpuPass.h"
+#include "air/Conversion/AIRRtToNpuPass.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -29,14 +29,14 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cstddef>
 
-#define DEBUG_TYPE "airrt-to-ipu-pass"
+#define DEBUG_TYPE "airrt-to-npu-pass"
 
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::airrt;
 
 namespace {
-#define GEN_PASS_DEF_AIRRTTOIPU
+#define GEN_PASS_DEF_AIRRTTONPU
 #include "air/Conversion/Passes.h.inc"
 
 //
@@ -91,10 +91,10 @@ struct RelocateAssumeAlignmentOp
   }
 };
 
-struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
+struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
   using OpConversionPattern<DmaMemcpyNdOp>::OpConversionPattern;
 
-  DmaToIpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
+  DmaToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern<DmaMemcpyNdOp>(context, benefit) {}
 
   LogicalResult
@@ -202,7 +202,7 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
                                                        memref)
                    .getResult(0);
 
-    rewriter.replaceOpWithNewOp<AIEX::IpuDmaMemcpyNdOp>(
+    rewriter.replaceOpWithNewOp<AIEX::NpuDmaMemcpyNdOp>(
         op, xInt, yInt, memref, offsets, sizes, strides, staticOffsets,
         staticSizes, staticStrides, metadata, idInt);
 
@@ -210,10 +210,10 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
   }
 };
 
-struct HerdLoadToIpuPattern : public OpConversionPattern<HerdLoadOp> {
+struct HerdLoadToNpuPattern : public OpConversionPattern<HerdLoadOp> {
   using OpConversionPattern<HerdLoadOp>::OpConversionPattern;
 
-  HerdLoadToIpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
+  HerdLoadToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern<HerdLoadOp>(context, benefit) {}
 
   LogicalResult
@@ -224,10 +224,10 @@ struct HerdLoadToIpuPattern : public OpConversionPattern<HerdLoadOp> {
   }
 };
 
-struct SegmentLoadToIpuPattern : public OpConversionPattern<SegmentLoadOp> {
+struct SegmentLoadToNpuPattern : public OpConversionPattern<SegmentLoadOp> {
   using OpConversionPattern<SegmentLoadOp>::OpConversionPattern;
 
-  SegmentLoadToIpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
+  SegmentLoadToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern<SegmentLoadOp>(context, benefit) {}
 
   LogicalResult
@@ -238,11 +238,11 @@ struct SegmentLoadToIpuPattern : public OpConversionPattern<SegmentLoadOp> {
   }
 };
 
-struct ModuleMetadataToIpuPattern
+struct ModuleMetadataToNpuPattern
     : public OpConversionPattern<ModuleMetadataOp> {
   using OpConversionPattern<ModuleMetadataOp>::OpConversionPattern;
 
-  ModuleMetadataToIpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
+  ModuleMetadataToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern<ModuleMetadataOp>(context, benefit) {}
 
   LogicalResult
@@ -340,14 +340,14 @@ public:
 
 static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
                                       PatternRewriter &rewriter) {
-  // only run on ipu control functions
-  bool hasIpuOps = false;
-  funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) { hasIpuOps = true; });
-  if (!hasIpuOps)
+  // only run on npu control functions
+  bool hasNpuOps = false;
+  funcOp.walk([&](AIEX::NpuDmaMemcpyNdOp dma) { hasNpuOps = true; });
+  if (!hasNpuOps)
     return failure();
 
   // cast all the function args to i32 types.
-  // this is in support of ipu.dma_memcpy_nd which only allow 32bit types
+  // this is in support of npu.dma_memcpy_nd which only allow 32bit types
   mlir::FunctionType funcType = funcOp.getFunctionType();
   SmallVector<Type> argTypes(funcType.getInputs());
   for (int i = 0, e = argTypes.size(); i < e; i++) {
@@ -382,14 +382,14 @@ static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
         users.push_back(user);
     }
     for (Operation *user : users) {
-      if (auto dmaUser = dyn_cast<AIEX::IpuDmaMemcpyNdOp>(user)) {
+      if (auto dmaUser = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(user)) {
         int oneDOffset = *getConstantIntValue(dmaUser.getMixedOffsets().back());
         for (int j = dmaUser.getMixedOffsets().size() - 2; j >= 0; j--)
           oneDOffset += *getConstantIntValue(dmaUser.getMixedOffsets()[j]) *
                         *getConstantIntValue(dmaUser.getMixedStrides()[j]);
         rewriter.setInsertionPoint(dmaUser);
         const std::vector<int64_t> newStaticOffsets = {0, 0, 0, oneDOffset};
-        rewriter.create<AIEX::IpuDmaMemcpyNdOp>(
+        rewriter.create<AIEX::NpuDmaMemcpyNdOp>(
             rewriter.getUnknownLoc(), dmaUser.getX(), dmaUser.getY(),
             dmaUser.getMemref(), SmallVector<Value>{}, dmaUser.getSizes(),
             dmaUser.getStrides(), ArrayRef(newStaticOffsets),
@@ -860,7 +860,7 @@ void specializeAffineForInAIRRtDmaWrapAndStride(ModuleOp module) {
     o->erase();
 }
 
-struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
+struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   void runOnOperation() override {
 
     ModuleOp module = getOperation();
@@ -938,15 +938,15 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
       return true;
     });
     RewritePatternSet patterns(ctx);
-    patterns.add<DmaToIpuPattern, HerdLoadToIpuPattern, SegmentLoadToIpuPattern,
-                 ModuleMetadataToIpuPattern, L1MemRefStoreOpConversion,
+    patterns.add<DmaToNpuPattern, HerdLoadToNpuPattern, SegmentLoadToNpuPattern,
+                 ModuleMetadataToNpuPattern, L1MemRefStoreOpConversion,
                  L1AffineStoreOpConversion, HostMemRefCopyOpConversion,
                  AIRRtAllocOpConversion, AIRRtDeallocOpConversion>(ctx);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
 
-    // Simplify arith ops (from airrt-to-ipu)
+    // Simplify arith ops (from airrt-to-npu)
     RewritePatternSet canoPatterns_2(ctx);
     canoPatterns_2.insert<RelocateAssumeAlignmentOp>(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_2, ctx);
@@ -955,7 +955,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     // Unroll any affine for loops
     unrollAffineFors(module);
 
-    // Buffer ipu.dma_memcpy_nd memref to function's argument list.
+    // Buffer npu.dma_memcpy_nd memref to function's argument list.
     BufferMemrefToFuncArgs(module);
 
     // Cast buffers to i32 types
@@ -964,10 +964,10 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     (void)applyPatternsAndFoldGreedily(module, std::move(castPattern));
 
     // Insert sync op after copying data out to host
-    insertIpuSyncOpForResults(module);
+    insertNpuSyncOpForResults(module);
 
-    // Renumber ipu dma ops
-    renumberIpuDmaOps(module.getBody());
+    // Renumber npu dma ops
+    renumberNpuDmaOps(module.getBody());
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -1157,10 +1157,10 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     return std::nullopt;
   }
 
-  void insertIpuSyncOpForResults(ModuleOp module) {
+  void insertNpuSyncOpForResults(ModuleOp module) {
     module.walk([&](mlir::func::FuncOp f) {
-      SmallVector<AIEX::IpuDmaMemcpyNdOp> dmas;
-      f.walk([&](AIEX::IpuDmaMemcpyNdOp dma) { dmas.push_back(dma); });
+      SmallVector<AIEX::NpuDmaMemcpyNdOp> dmas;
+      f.walk([&](AIEX::NpuDmaMemcpyNdOp dma) { dmas.push_back(dma); });
       auto d = f->getParentOfType<AIE::DeviceOp>();
       if (!d)
         return;
@@ -1176,19 +1176,19 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
             auto col_num = builder.getI32IntegerAttr(1);
             auto row_num = builder.getI32IntegerAttr(1);
             builder.setInsertionPointAfter(dma);
-            builder.create<AIEX::IpuSyncOp>(dma->getLoc(), col, row, dir, chan,
+            builder.create<AIEX::NpuSyncOp>(dma->getLoc(), col, row, dir, chan,
                                             col_num, row_num);
           }
         }
       }
 
-      // Attempt to make ipu.sync ops contiguous if they are not operating on
+      // Attempt to make npu.sync ops contiguous if they are not operating on
       // the same channel.
-      SmallVector<AIEX::IpuSyncOp> previsouSyncs;
+      SmallVector<AIEX::NpuSyncOp> previsouSyncs;
       f.walk([&](Operation *op) {
-        if (auto sync = dyn_cast<AIEX::IpuSyncOp>(op))
+        if (auto sync = dyn_cast<AIEX::NpuSyncOp>(op))
           previsouSyncs.push_back(sync);
-        else if (auto dma = dyn_cast<AIEX::IpuDmaMemcpyNdOp>(op)) {
+        else if (auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op)) {
           auto infoOp = getAllocOpForSymbol(d, dma.getMetadata());
           if (infoOp && infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM &&
               !previsouSyncs.empty()) {
@@ -1204,13 +1204,13 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     });
   }
 
-  // Renumber aiex.ipu.dma_memcpy_nd ops per column of AIEs.
-  void renumberIpuDmaOps(Block *blk) {
+  // Renumber aiex.npu.dma_memcpy_nd ops per column of AIEs.
+  void renumberNpuDmaOps(Block *blk) {
     std::map<int, int> chanToIdMap;
     AIE::DeviceOp d = nullptr;
     blk->walk([&](AIE::DeviceOp op) { d = op; });
     blk->walk([&](Operation *op) {
-      if (auto dma = dyn_cast<AIEX::IpuDmaMemcpyNdOp>(op)) {
+      if (auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op)) {
         OpBuilder builder(dma);
         int col = -1;
         if (d) {
@@ -1235,12 +1235,12 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
         dma->setAttr("id", mlir::IntegerAttr::get(
                                mlir::IntegerType::get(dma->getContext(), 64),
                                chanToIdMap[col]++));
-      } else if (isa<AIEX::IpuSyncOp>(op))
+      } else if (isa<AIEX::NpuSyncOp>(op))
         chanToIdMap.clear();
     });
   }
 
-  // Buffers ipu.dma_memcpy_op memref as function argument
+  // Buffers npu.dma_memcpy_op memref as function argument
   void BufferMemrefToFuncArgs(ModuleOp module) {
     module.walk([&](mlir::func::FuncOp f) { BufferMemrefToFuncArgs(f); });
   }
@@ -1251,7 +1251,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     // Collect illegal dma ops whose memrefs are not in function's arguments.
     SmallVector<Type, 6> memrefTypes;
     SmallVector<Value, 6> memrefs;
-    funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
+    funcOp.walk([&](AIEX::NpuDmaMemcpyNdOp dma) {
       Value memref = dma.getMemref();
       auto args = funcOp.getArguments();
       // if the memref is an arg, return
@@ -1297,8 +1297,8 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 namespace xilinx {
 namespace airrt {
 
-std::unique_ptr<mlir::Pass> createAIRRtToIpuPass() {
-  return std::make_unique<AIRRtToIpuPass>();
+std::unique_ptr<mlir::Pass> createAIRRtToNpuPass() {
+  return std::make_unique<AIRRtToNpuPass>();
 }
 
 } // namespace airrt

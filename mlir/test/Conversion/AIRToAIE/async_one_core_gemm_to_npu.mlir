@@ -1,13 +1,13 @@
-//===- async_one_core_gemm_to_ipu.mlir -------------------------*- MLIR -*-===//
+//===- async_one_core_gemm_to_npu.mlir -------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-fuse-channels="aggressive-mode=true" -air-to-aie="row-offset=2 col-offset=0 device=ipu" -canonicalize -cse %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels="aggressive-mode=true" -air-to-aie="row-offset=2 col-offset=0 device=npu" -canonicalize -cse %s | FileCheck %s
 
-// CHECK-LABEL:   aie.device(ipu) {
+// CHECK-LABEL:   aie.device(npu) {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(0, 0)
 // CHECK:  %[[VAL_1:.*]] = aie.tile(0, 1)
 // CHECK:  %[[VAL_2:.*]] = aie.tile(0, 2)
