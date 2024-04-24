@@ -7,10 +7,10 @@
 import torch
 import torch_mlir.ir
 import torch_mlir.passmanager
-from torch_mlir.dynamo import make_simple_dynamo_backend
+from torch_mlir import torchscript
 
-import air.mlir.ir
-import air.mlir.passmanager
+import air.ir
+import air.passmanager
 
 from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import RefBackendLinalgOnTensorsBackend
 
@@ -26,8 +26,6 @@ import ctypes
 from pathlib import Path
 from typing import List
 
-path = Path(air.backend.__file__).resolve().parent
-
 # First need to load the libhsa-runtime64.so.1 so we can load libairhost_shared
 try:
     ctypes.CDLL(f"{rocm_path}/../../libhsa-runtime64.so.1", mode=ctypes.RTLD_GLOBAL)
@@ -38,12 +36,12 @@ except Exception as e:
 
 # After loading libhsa-runtime64.so we can load the AIR runtime functions
 try:
-    ctypes.CDLL(f"{path}/../../../runtime_lib/airhost/libairhost_shared.so", mode=ctypes.RTLD_GLOBAL)
+    ctypes.CDLL(f"{install_path()}/runtime_lib/x86_64/airhost/libairhost_shared.so", mode=ctypes.RTLD_GLOBAL)
 except Exception as e:
     print("[WARNING] We were not able to load .so for libairhost_shared.so");
     print(e)
     pass
-import air.mlir._mlir_libs._airRt as airrt
+import air._mlir_libs._airRt as airrt
 
 __all__ = [
     "LinalgOnTensorsAirBackend",
@@ -112,25 +110,26 @@ class LinalgOnTensorsAirBackend(AirBackend):
 
         if type(imported_module) is torch_mlir.ir.Module:
             with imported_module.context:
+                imported_module = torchscript._lower_mlir_module(False, torchscript.OutputType.LINALG_ON_TENSORS, imported_module)
                 pm = torch_mlir.passmanager.PassManager.parse('builtin.module(refback-mlprogram-bufferize)')
-                pm.run(imported_module)
+                pm.run(imported_module.operation)
 
-        with air.mlir.ir.Context():
-            air_module = air.mlir.ir.Module.parse(str(imported_module))
-            pm = air.mlir.passmanager.PassManager.parse(
+        with air.ir.Context():
+            air_module = air.ir.Module.parse(str(imported_module))
+            pm = air.passmanager.PassManager.parse(
                 air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
 
             if verbose:
                 print("Running MLIR pass pipeline: ",
                       air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
 
-            pm.run(air_module)
+            pm.run(air_module.operation)
 
             if verbose:
                 print("Running MLIR pass pipeline: ", pipeline)
 
-            pm = air.mlir.passmanager.PassManager.parse(pipeline)
-            pm.run(air_module)
+            pm = air.passmanager.PassManager.parse(pipeline)
+            pm.run(air_module.operation)
 
             if verbose:
                 print("AIR Module:")
@@ -164,7 +163,6 @@ class LinalgOnTensorsAirBackend(AirBackend):
         # Keeping the agent and queue as a part of the backend so Python doesn't delete them
         self.a = a
         self.q = q
-        
         return self.refbackend.load(module)
 
     def unload(self):
@@ -172,7 +170,8 @@ class LinalgOnTensorsAirBackend(AirBackend):
         if self.handle:
             airrt.host.module_unload(self.handle)
         self.handle = None
-        airrt.host.shut_down()
+        self.q = None
+        self.a = None
 
 def make_dynamo_backend(pipeline=None, verbose=False,
                         segment_offset=None, segment_size=None):
@@ -193,12 +192,10 @@ def make_dynamo_backend(pipeline=None, verbose=False,
     @make_simple_dynamo_backend
     def air_backend(fx_graph: torch.fx.GraphModule,
                     example_inputs: List[torch.Tensor]):
-        
         # get the linalg mlir of the model from torch_mlir
-        mlir_module = torch_mlir.compile(
+        mlir_module = torchscript.compile(
             fx_graph, example_inputs,
-            output_type=torch_mlir.OutputType.LINALG_ON_TENSORS)
-
+            output_type="linalg-on-tensors")
         # compile the mlir model with aircc
         compiled = backend.compile(mlir_module, pipeline=pipeline,
             verbose=verbose, segment_offset=segment_offset,
