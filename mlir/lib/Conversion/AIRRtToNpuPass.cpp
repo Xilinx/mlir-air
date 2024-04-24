@@ -1130,56 +1130,53 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   std::optional<AIE::ShimDMAAllocationOp>
-  getAllocOpForSymbol(AIE::DeviceOp dev, StringRef sym_name) {
-    auto sym = dev.lookupSymbol(sym_name);
-    if (!sym)
-      return std::nullopt;
-
-    auto uses = SymbolTable::getSymbolUses(sym, dev);
-    for (auto use : *uses)
-      if (auto infoOp = dyn_cast<AIE::ShimDMAAllocationOp>(use.getUser()))
-        return infoOp;
-
+  getAllocOpForSymbol(SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps,
+                      StringRef sym_name) {
+    for (auto shimDmaAllocOp : shimDmaAllocOps)
+      if (shimDmaAllocOp.getSymName() == sym_name)
+        return shimDmaAllocOp;
     return std::nullopt;
   }
 
-  std::optional<AIE::ObjectFifoCreateOp>
-  getObjectFifoCreateOpForSymbol(AIE::DeviceOp dev, StringRef sym_name) {
-    auto sym = dev.lookupSymbol(sym_name);
-    if (!sym)
-      return std::nullopt;
-
-    for (auto objFifoCreateOp : dev.getOps<AIE::ObjectFifoCreateOp>()) {
-      if (objFifoCreateOp.getSymName().str() == sym_name.str())
-        return objFifoCreateOp;
-    }
-
+  std::optional<AIE::ObjectFifoCreateOp> getObjectFifoCreateOpForSymbol(
+      SmallVector<AIE::ObjectFifoCreateOp> objectFifoCreateOps,
+      StringRef sym_name) {
+    for (auto objectFifoCreateOp : objectFifoCreateOps)
+      if (objectFifoCreateOp.getSymName().str() == sym_name.str())
+        return objectFifoCreateOp;
     return std::nullopt;
   }
 
   void insertNpuSyncOpForResults(ModuleOp module) {
-    module.walk([&](mlir::func::FuncOp f) {
+    SmallVector<mlir::func::FuncOp> funcOps;
+    module.walk([&](mlir::func::FuncOp f) { funcOps.push_back(f); });
+    for (auto f : funcOps) {
       SmallVector<AIEX::NpuDmaMemcpyNdOp> dmas;
       f.walk([&](AIEX::NpuDmaMemcpyNdOp dma) { dmas.push_back(dma); });
       auto d = f->getParentOfType<AIE::DeviceOp>();
       if (!d)
-        return;
+        continue;
+      SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps;
+      d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
+        shimDmaAllocOps.push_back(shimDmaAllocOp);
+      });
+      OpBuilder builder(f);
       for (auto dma : dmas) {
-        if (auto infoOp = getAllocOpForSymbol(d, dma.getMetadata())) {
-          if (infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM) {
-            // Found dma op copying results to host
-            OpBuilder builder(dma);
-            auto col = builder.getI32IntegerAttr(infoOp->getCol());
-            auto row = builder.getI32IntegerAttr(0);
-            auto dir = builder.getI32IntegerAttr(0);
-            auto chan = builder.getI32IntegerAttr(infoOp->getChannelIndex());
-            auto col_num = builder.getI32IntegerAttr(1);
-            auto row_num = builder.getI32IntegerAttr(1);
-            builder.setInsertionPointAfter(dma);
-            builder.create<AIEX::NpuSyncOp>(dma->getLoc(), col, row, dir, chan,
-                                            col_num, row_num);
-          }
-        }
+        auto infoOp = getAllocOpForSymbol(shimDmaAllocOps, dma.getMetadata());
+        if (!infoOp)
+          continue;
+        if (infoOp->getChannelDir() != AIE::DMAChannelDir::S2MM)
+          continue;
+        // Found dma op copying results to host
+        auto col = builder.getI32IntegerAttr(infoOp->getCol());
+        auto row = builder.getI32IntegerAttr(0);
+        auto dir = builder.getI32IntegerAttr(0);
+        auto chan = builder.getI32IntegerAttr(infoOp->getChannelIndex());
+        auto col_num = builder.getI32IntegerAttr(1);
+        auto row_num = builder.getI32IntegerAttr(1);
+        builder.setInsertionPointAfter(dma);
+        builder.create<AIEX::NpuSyncOp>(dma->getLoc(), col, row, dir, chan,
+                                        col_num, row_num);
       }
 
       // Attempt to make npu.sync ops contiguous if they are not operating on
@@ -1189,19 +1186,20 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (auto sync = dyn_cast<AIEX::NpuSyncOp>(op))
           previsouSyncs.push_back(sync);
         else if (auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op)) {
-          auto infoOp = getAllocOpForSymbol(d, dma.getMetadata());
-          if (infoOp && infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM &&
-              !previsouSyncs.empty()) {
+          auto infoOp = getAllocOpForSymbol(shimDmaAllocOps, dma.getMetadata());
+          if (!infoOp)
+            return;
+          if (previsouSyncs.empty())
+            return;
+          if (infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM) {
             for (auto prevSync : previsouSyncs)
               prevSync->moveAfter(op);
-          } else if (infoOp &&
-                     infoOp->getChannelDir() == AIE::DMAChannelDir::MM2S &&
-                     !previsouSyncs.empty()) {
+          } else if (infoOp->getChannelDir() == AIE::DMAChannelDir::MM2S) {
             previsouSyncs.clear();
           }
         }
       });
-    });
+    }
   }
 
   // Renumber aiex.npu.dma_memcpy_nd ops per column of AIEs.
@@ -1209,34 +1207,51 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     std::map<int, int> chanToIdMap;
     AIE::DeviceOp d = nullptr;
     blk->walk([&](AIE::DeviceOp op) { d = op; });
+    SmallVector<AIE::ShimDMAAllocationOp> shimDmaAllocOps;
+    if (d)
+      d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
+        shimDmaAllocOps.push_back(shimDmaAllocOp);
+      });
+    SmallVector<AIE::ObjectFifoCreateOp> objectFifoCreateOps;
+    if (d)
+      d.walk([&](AIE::ObjectFifoCreateOp objectFifoCreateOp) {
+        objectFifoCreateOps.push_back(objectFifoCreateOp);
+      });
+    OpBuilder builder(blk->getParentOp());
     blk->walk([&](Operation *op) {
-      if (auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op)) {
-        OpBuilder builder(dma);
-        int col = -1;
-        if (d) {
-          if (auto infoOp = getAllocOpForSymbol(d, dma.getMetadata())) {
-            col = infoOp->getCol();
-          } else if (auto objFifoCreateOp =
-                         getObjectFifoCreateOpForSymbol(d, dma.getMetadata())) {
-            auto prodTileOp =
-                objFifoCreateOp->getProducerTile().getDefiningOp<AIE::TileOp>();
-            if (prodTileOp.isShimTile())
-              col = prodTileOp.colIndex();
-            for (auto consumerTileOp : objFifoCreateOp->getConsumerTiles()) {
-              auto consTileOp = consumerTileOp.getDefiningOp<AIE::TileOp>();
-              if (consTileOp.isShimTile()) {
-                col = consTileOp.colIndex();
-              }
+      auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op);
+      auto sync = dyn_cast<AIEX::NpuSyncOp>(op);
+      if (sync) {
+        chanToIdMap.clear();
+        return;
+      }
+      if (!dma)
+        return;
+      builder.setInsertionPoint(dma);
+      int col = -1;
+      if (d) {
+        if (auto infoOp =
+                getAllocOpForSymbol(shimDmaAllocOps, dma.getMetadata())) {
+          col = infoOp->getCol();
+        } else if (auto objFifoCreateOp = getObjectFifoCreateOpForSymbol(
+                       objectFifoCreateOps, dma.getMetadata())) {
+          auto prodTileOp =
+              objFifoCreateOp->getProducerTile().getDefiningOp<AIE::TileOp>();
+          if (prodTileOp.isShimTile())
+            col = prodTileOp.colIndex();
+          for (auto consumerTileOp : objFifoCreateOp->getConsumerTiles()) {
+            auto consTileOp = consumerTileOp.getDefiningOp<AIE::TileOp>();
+            if (consTileOp.isShimTile()) {
+              col = consTileOp.colIndex();
             }
           }
         }
-        if (!chanToIdMap.count(col))
-          chanToIdMap[col] = 0;
-        dma->setAttr("id", mlir::IntegerAttr::get(
-                               mlir::IntegerType::get(dma->getContext(), 64),
-                               chanToIdMap[col]++));
-      } else if (isa<AIEX::NpuSyncOp>(op))
-        chanToIdMap.clear();
+      }
+      if (!chanToIdMap.count(col))
+        chanToIdMap[col] = 0;
+      dma->setAttr("id", mlir::IntegerAttr::get(
+                             mlir::IntegerType::get(dma->getContext(), 64),
+                             chanToIdMap[col]++));
     });
   }
 
