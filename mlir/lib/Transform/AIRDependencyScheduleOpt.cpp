@@ -294,7 +294,7 @@ private:
     for (auto user : dependency_token.getUsers()) {
       if (auto exec_op = dyn_cast<air::ExecuteOp>(user)) {
         // Found air.ExecuteOp in downstream dependency
-        auto child_op = &exec_op.getRegion().front().getOperations().front();
+        auto child_op = exec_op.getChildOp();
         if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
           // Found memref.deallocOp inside air.ExecuteOp
           foundDepToMemrefDealloc = true;
@@ -583,7 +583,7 @@ struct AnnotateFrontAndBackOpsInForPattern
             }
           }
         }
-        auto child_op = &exec_op.getRegion().front().getOperations().front();
+        auto child_op = exec_op.getChildOp();
         if (isa<memref::AllocOp>(child_op) && isFrontCandidate) {
           iterTokens.push_back(op.getResult(0));
           // Note: skipping over alloc ops, since they will get hoisted out of
@@ -631,7 +631,7 @@ struct AnnotateFrontAndBackOpsInForPattern
     for (auto token : yielded_tokens) {
       auto back_candidate = token.getDefiningOp();
       if (auto exec_op = dyn_cast<air::ExecuteOp>(back_candidate)) {
-        auto child_op = &exec_op.getRegion().front().getOperations().front();
+        auto child_op = exec_op.getChildOp();
         if (isa<memref::DeallocOp>(child_op)) {
           for (auto d : exec_op.getAsyncDependencies()) {
             back_candidates.push_back(
