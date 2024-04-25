@@ -46,12 +46,12 @@ config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = os.path.join(config.air_obj_root, 'test')
-air_runtime_lib = os.path.join(config.air_obj_root, "runtime_lib", config.test_arch)
+air_runtime_lib = os.path.join(config.air_obj_root, "runtime_lib", config.runtime_test_target)
 
 config.substitutions.append(('%PYTHON', config.python_executable))
 config.substitutions.append(('%CLANG', "clang++ -fuse-ld=lld -DLIBXAIENGINEV2"))
 config.substitutions.append(('%LIBXAIE_DIR%', config.libxaie_dir))
-config.substitutions.append(('%AIE_RUNTIME_DIR%', os.path.join(config.aie_obj_root, "runtime_lib", config.test_arch)))
+config.substitutions.append(('%AIE_RUNTIME_DIR%', os.path.join(config.aie_obj_root, "runtime_lib", config.runtime_test_target)))
 config.substitutions.append(("%aietools", config.vitis_aietools_dir))
 
 if config.hsa_found:

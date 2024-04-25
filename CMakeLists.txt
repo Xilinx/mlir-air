@@ -167,7 +167,7 @@ foreach(target ${AIR_RUNTIME_TARGETS})
     air_runtime_lib_${target}
     PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
     SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
-    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib/${target}
+    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
     CMAKE_CACHE_ARGS -DCMAKE_MODULE_PATH:STRING=${CMAKE_MODULE_PATH}
     CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${${target}_TOOLCHAIN_FILE}
                -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
@@ -178,6 +178,7 @@ foreach(target ${AIR_RUNTIME_TARGETS})
                -DLibXAIE_ROOT=${LibXAIE_ROOT}
                -Dhsa-runtime64_DIR=${hsa-runtime64_DIR}
                -Dhsakmt_DIR=${hsakmt_DIR}
+               -DAIR_RUNTIME_TARGET=${target}
                -DAIE_DIR=${AIE_DIR}
     BUILD_ALWAYS true
     STEP_TARGETS clean build install test

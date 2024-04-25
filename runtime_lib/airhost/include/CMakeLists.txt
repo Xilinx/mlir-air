@@ -17,11 +17,11 @@ foreach(file ${INSTALLS})
   add_custom_command(
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${file}
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/${file}
-            ${CMAKE_CURRENT_BINARY_DIR}/${file}
+           ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost/include/${file}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${file})
   add_dependencies(copy-runtime-includes copy-runtime-includes-${file})
 endforeach()
 
 # Install too
 install(FILES ${INSTALLS}
-        DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost/include)
+        DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/airhost/include)
