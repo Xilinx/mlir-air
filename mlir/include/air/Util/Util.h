@@ -140,7 +140,7 @@ std::vector<unsigned> getMDVectorFromIterator(std::vector<unsigned> dims,
 void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
 
 // Fold perfectly nested parent loops into wraps and strides list
-void foldForLoopNestAsExtendedSizesAndStrides(
+LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
     SmallVector<Value> &strides, Value memref);
