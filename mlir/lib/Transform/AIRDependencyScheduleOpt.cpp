@@ -3291,6 +3291,7 @@ private:
       auto b_par = dyn_cast<scf::ParallelOp>(b);
       if (a_par == b_par)
         return true;
+      if (a_par.getStep().size() != b_par.getStep().size()) return false;
       for (unsigned i = 0; i < a_par.getLowerBound().size(); i++) {
         std::optional<int64_t> aLbCstOp =
             mlir::getConstantIntValue(a_par.getLowerBound()[i]);
