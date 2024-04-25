@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         build_type: [ Assert, Release ]
-        ubuntu_version: [ 20.04, 22.04 ]
+        ubuntu_version: [ 24.04, 22.04 ]
 
     steps:
       # Clone the repo and its submodules. Do shallow clone to save clone
@@ -49,24 +49,6 @@ jobs:
       - name: Install packages
         run: |
           sudo apt-get install -y ninja-build clang lld
-
-      - name: Upgrade gcc
-        if: matrix.ubuntu_version == '20.04'
-        run: |
-          sudo apt install build-essential manpages-dev software-properties-common
-          sudo add-apt-repository ppa:ubuntu-toolchain-r/test
-          GCC_VERSION=11
-          sudo apt update && sudo apt install gcc-$GCC_VERSION g++-$GCC_VERSION
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90 \
-            --slave /usr/bin/g++ g++ /usr/bin/g++-9 \
-            --slave /usr/bin/gcov gcov /usr/bin/gcov-9 \
-            --slave /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-9 \
-            --slave /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-9
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-$GCC_VERSION 110 \
-            --slave /usr/bin/g++ g++ /usr/bin/g++-$GCC_VERSION \
-            --slave /usr/bin/gcov gcov /usr/bin/gcov-$GCC_VERSION \
-            --slave /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-$GCC_VERSION \
-            --slave /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-$GCC_VERSION
 
       - name: Install libboost
         run: sudo apt-get install -y libboost-all-dev && sudo apt-get clean
