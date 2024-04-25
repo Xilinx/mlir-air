@@ -23,13 +23,13 @@
 // CHECK:  %[[VAL_16:.*]] = aie.lock(%[[VAL_2]], 2) {init = 0 : i32}
 // CHECK:  %[[VAL_17:.*]] = aie.lock(%[[VAL_2]], 1) {init = 1 : i32}
 // CHECK:  %[[VAL_18:.*]] = aie.lock(%[[VAL_2]], 0) {init = 0 : i32}
-// CHECK:  %[[VAL_19:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = "buf6"} : memref<32x32xi32, 1>
-// CHECK:  %[[VAL_20:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = "buf5"} : memref<32x32xi32, 1>
-// CHECK:  %[[VAL_21:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = "buf4"} : memref<32x32xi32, 1>
-// CHECK:  %[[VAL_22:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = "buf3"} : memref<32x32xi32, 1>
-// CHECK:  %[[VAL_23:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = "buf2"} : memref<32x32xi32, 2>
-// CHECK:  %[[VAL_24:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = "buf1"} : memref<32x32xi32, 2>
-// CHECK:  %[[VAL_25:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = "buf0"} : memref<32x32xi32, 2>
+// CHECK:  %[[VAL_19:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xi32, 1>
+// CHECK:  %[[VAL_20:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xi32, 1>
+// CHECK:  %[[VAL_21:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xi32, 1>
+// CHECK:  %[[VAL_22:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xi32, 1>
+// CHECK:  %[[VAL_23:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xi32, 2>
+// CHECK:  %[[VAL_24:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xi32, 2>
+// CHECK:  %[[VAL_25:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK:  %[[VAL_26:.*]] = aie.mem(%[[VAL_2]]) {
 // CHECK:  %[[VAL_27:.*]] = aie.core(%[[VAL_2]]) {
 // CHECK:  aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)

@@ -21,12 +21,12 @@
 // CHECK-COUNT-8:    aie.lock(%[[VAL_5]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_6]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_7]], {{.*}})
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x64xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
-// CHECK-COUNT-20:    aie.buffer({{.*}}) {sym_name = {{.*}}} : memref<32x32xi32, 2>
+// CHECK:    aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<64x64xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<64x128xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<128x64xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<64x128xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<128x64xi32, 1>
+// CHECK-COUNT-20:    aie.buffer({{.*}}) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK:   aie.mem(%[[VAL_7]])
 // CHECK:   aie.core(%[[VAL_7]]) {
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
