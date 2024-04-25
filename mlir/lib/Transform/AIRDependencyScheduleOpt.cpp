@@ -1722,9 +1722,11 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       populateDefaultWrapsAndStrides(rewriter, channel_ops[0].getMemref(),
                                      offsets, wraps, strides);
 
-    foldForLoopNestAsExtendedSizesAndStrides(
+    auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
+    if (res.failed())
+      return failure();
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
@@ -1823,9 +1825,11 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
         rewriter, offsets, wraps, strides,
         air::getTensorVolume(channel_ops[0].getMemref().getType()));
 
-    foldForLoopNestAsExtendedSizesAndStrides(
+    auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
+    if (res.failed())
+      return failure();
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,

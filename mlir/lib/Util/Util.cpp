@@ -903,7 +903,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
 }
 
 // Fold perfectly nested for loops as extra entries in wraps and strides
-void air::foldForLoopNestAsExtendedSizesAndStrides(
+LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
     SmallVector<Value> &strides, Value memref) {
@@ -972,13 +972,22 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
       stepSize = afo.getStepAsInt();
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       stepSize = *mlir::getConstantIntValue(sfo.getStep());
-    Value new_stride = builder.template create<arith::ConstantIndexOp>(
-        loc, (stepSize * ind_var_factor) % getTensorVolume(memref.getType()));
+    int new_stride_value =
+        (stepSize * ind_var_factor) % getTensorVolume(memref.getType());
+    Value new_stride =
+        builder.template create<arith::ConstantIndexOp>(loc, new_stride_value);
+
+    // Check for compliance with DMA BD hardware limitation (<= 1M).
+    if (mlir::ceilDiv(
+            new_stride_value * getElementSizeInBytes(memref.getType()), 4) >
+        0x100000)
+      return failure();
 
     // Insert new dimension into the wraps and strides list.
     wraps.insert(wraps.begin(), new_wrap);
     strides.insert(strides.begin(), new_stride);
   }
+  return success();
 }
 
 // If wrap-and-stride lists are empty, populate them with default data access

@@ -740,9 +740,11 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
           builder.create<arith::ConstantIndexOp>(loc, current_stride));
     }
   }
-  xilinx::air::foldForLoopNestAsExtendedSizesAndStrides(
+  auto res = xilinx::air::foldForLoopNestAsExtendedSizesAndStrides(
       builder, for_op.getOperation(), memcpy_ops[0].getOperation(), offsets,
       wraps, strides, memcpy_ops[0]->getOperand(3));
+  if (res.failed())
+    return failure();
 
   if (offsets.size() > 4 || wraps.size() > 4 || strides.size() > 4)
     return failure();
