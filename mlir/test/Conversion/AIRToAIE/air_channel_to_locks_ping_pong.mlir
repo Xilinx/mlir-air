@@ -15,9 +15,9 @@
 // CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
 // CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 1) {init = 2 : i32}
 // CHECK:         %[[VAL_5:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<32x32xbf16, 1>
-// CHECK:         %[[VAL_9:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_10:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_0]]) {{{.*}}} : memref<32x32xbf16, 1>
+// CHECK:         %[[VAL_9:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_10:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
@@ -107,10 +107,10 @@ func.func @multi_memcpys_over_time() {
 // CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
 // CHECK:         %[[VAL_7:.*]] = aie.lock(%[[VAL_2]], 1) {init = 2 : i32}
 // CHECK:         %[[VAL_8:.*]] = aie.lock(%[[VAL_2]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_11:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_11:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_2]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
@@ -215,10 +215,10 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
 // CHECK:         %[[VAL_7:.*]] = aie.lock(%[[VAL_2]], 1) {init = 2 : i32}
 // CHECK:         %[[VAL_8:.*]] = aie.lock(%[[VAL_2]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_11:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_11:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_2]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
@@ -336,8 +336,8 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
 // CHECK:         %[[VAL_7:.*]] = aie.lock(%[[VAL_1]], 1) {init = 1 : i32}
 // CHECK:         %[[VAL_8:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_11:.*]] = aie.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<1x1x64x32xi32, 1 : i32>
-// CHECK:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<1x1x4x8x4x8xi32, 2 : i32>
+// CHECK:         %[[VAL_11:.*]] = aie.buffer(%[[VAL_0]]) {{{.*}}} : memref<1x1x64x32xi32, 1 : i32>
+// CHECK:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<1x1x4x8x4x8xi32, 2 : i32>
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
