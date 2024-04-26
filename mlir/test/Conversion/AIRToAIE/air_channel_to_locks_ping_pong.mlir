@@ -100,7 +100,6 @@ func.func @multi_memcpys_over_time() {
 
 // core-to-core ping pong
 // CHECK: aie.device
-// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = aie.tile(2, 4)
 // CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1) {init = 2 : i32}
@@ -208,7 +207,6 @@ func.func @core_to_core_ping_pong() {
 
 // core-to-core ping pong, with multi-token scf.for loop
 // CHECK: aie.device
-// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = aie.tile(2, 4)
 // CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1) {init = 2 : i32}

@@ -406,8 +406,6 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
 // CHECK: aie.device(xcve2802)
 // CHECK: %[[tile_2_0:.*]] = aie.tile(2, 0)
 // CHECK: %[[tile_3_0:.*]] = aie.tile(3, 0)
-// CHECK: %[[tile_2_1:.*]] = aie.tile(2, 1)
-// CHECK: %[[tile_3_1:.*]] = aie.tile(3, 1)
 // CHECK: %[[tile_0_3:.*]] = aie.tile(0, 3)
 // CHECK: %[[tile_1_3:.*]] = aie.tile(1, 3)
 // CHECK: %[[tile_0_4:.*]] = aie.tile(0, 4)
