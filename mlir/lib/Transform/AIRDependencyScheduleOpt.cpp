@@ -3003,33 +3003,43 @@ public:
     std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
-        if (clAggressiveMode &&
-            checkIfMergeable(channelOps[i], channelOps[j])) {
+        std::tuple<bool, std::string> checkScfForMergeableRes =
+            checkIfScfForMergeable(channelOps[i], channelOps[j]);
+        if (!std::get<0>(checkScfForMergeableRes))
+          continue;
+        // Fuse air.channels by scf.for loop unpeeling, i.e. recovering any
+        // missing zeroth iterations in scf.for loops.
+        air::ChannelOp chanA = channelOps[i];
+        air::ChannelOp chanB = channelOps[j];
+        sortChannelsByLoopNests(chanA, chanB);
+        mergeChannelOpsByScfFor(chanA, chanB,
+                                std::get<1>(checkScfForMergeableRes));
+        chan_merge_map[chanB] = chanA;
+      }
+    }
+    if (clAggressiveMode) {
+      for (unsigned i = 0; i < channelOps.size() - 1; i++) {
+        for (unsigned j = i + 1; j < channelOps.size(); j++) {
+          if (!checkIfMergeable(channelOps[i], channelOps[j]))
+            continue;
           // Aggressively fuse air.channels by time multiplexing.
           mergeChannels(channelOps[i], channelOps[j]);
           chan_merge_map[channelOps[j]] = channelOps[i];
-        } else if (checkIfScfForMergeable(channelOps[i], channelOps[j])) {
-          // Fuse air.channels by scf.for loop unpeeling, i.e. recovering any
-          // missing zeroth iterations in scf.for loops.
-          air::ChannelOp chanA = channelOps[i];
-          air::ChannelOp chanB = channelOps[j];
-          sortChannelsByLoopNests(chanA, chanB);
-          mergeChannelOpsByScfFor(chanA, chanB);
-          chan_merge_map[chanB] = chanA;
         }
       }
     }
     // Rename symbols
-    for (unsigned i = 0; i < channelOps.size() - 1; i++) {
-      for (unsigned j = i + 1; j < channelOps.size(); j++) {
-        if (chan_merge_map.count(channelOps[j])) {
-          auto error = mlir::SymbolTable::replaceAllSymbolUses(
-              channelOps[j].getOperation(),
-              mlir::SymbolTable::getSymbolName(chan_merge_map[channelOps[j]]),
-              channelOps[j]->getParentOfType<ModuleOp>());
-          // FIXME: what if this fails?
-          (void)error;
-        }
+    // TODO: make this greedy
+    for (unsigned i = 0; i < channelOps.size(); i++) {
+      for (auto chanKey : channelOps) {
+        if (!chan_merge_map.count(chanKey))
+          continue;
+        auto error = mlir::SymbolTable::replaceAllSymbolUses(
+            chanKey.getOperation(),
+            mlir::SymbolTable::getSymbolName(chan_merge_map[chanKey]),
+            chanKey->getParentOfType<ModuleOp>());
+        // FIXME: what if this fails?
+        (void)error;
       }
     }
   }
@@ -3114,10 +3124,14 @@ private:
     return true;
   }
 
-  bool checkIfScfForMergeableImpl(std::vector<Operation *> a_loop_nest,
-                                  std::vector<Operation *> b_loop_nest) {
+  std::tuple<bool, std::string>
+  checkIfScfForMergeableImpl(std::vector<Operation *> a_loop_nest,
+                             std::vector<Operation *> b_loop_nest) {
+    std::tuple<bool, std::string> notMergeable = {false, ""};
+    std::tuple<bool, std::string> mergeableToLB = {true, "LB"};
+    std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
     if (std::abs((int)a_loop_nest.size() - (int)b_loop_nest.size()) != 1)
-      return false;
+      return notMergeable;
     unsigned max_loop_nest_count =
         std::max(a_loop_nest.size(), b_loop_nest.size());
     // Skip over the unequal scf.for loop, and check equality for the rest of
@@ -3133,39 +3147,74 @@ private:
         outermostScfFor = i;
     }
     if (outermostScfFor < 0)
-      return false;
+      return notMergeable;
     SmallVector<unsigned> controlLoopIndices;
     for (unsigned i = 0; i < max_loop_nest_count; i++)
       if (i != outermostScfFor)
         controlLoopIndices.push_back(i);
+    // TODO: Assuming b_loop_nest is before a_loop_nest. Always true? TODO:
+    // formalize using async dep.
     unsigned index = 0;
     if (a_loop_nest.size() > b_loop_nest.size()) {
       for (auto i : controlLoopIndices) {
         if (!areEquivalentControlLoops(a_loop_nest[i], b_loop_nest[index++]))
-          return false;
+          return notMergeable;
       }
-      // Check if the skipped scf.for loop has LB = 1. This is a sign of
-      // peeling, indicating opportunity of merge by unpeeling.
+      // Check if the skipped scf.for loop has LB >= 1. This is a sign of
+      // peeling, indicating opportunity of merge by unpeeling into LB.
       auto outerMostScfFor = dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]);
       assert(outerMostScfFor);
       if (auto constLB = getConstantIntValue(outerMostScfFor.getLowerBound()))
-        if (*constLB != 1)
-          return false;
+        if (*constLB < 1)
+          return notMergeable;
+      return mergeableToLB;
     } else {
       for (auto i : controlLoopIndices) {
         if (!areEquivalentControlLoops(a_loop_nest[index++], b_loop_nest[i]))
-          return false;
+          return notMergeable;
       }
-      // Same as above
+      // Merge by unpeeling into UB.
       auto outerMostScfFor = dyn_cast<scf::ForOp>(b_loop_nest[outermostScfFor]);
       assert(outerMostScfFor);
-      if (auto constLB = getConstantIntValue(outerMostScfFor.getLowerBound()))
-        if (*constLB != 1)
-          return false;
+      return mergeableToUB;
     }
-    return true;
+    return mergeableToLB;
   }
-  bool checkIfScfForMergeable(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+  Value getHierOperandFromHierBlockArgument(BlockArgument arg) {
+    if (!arg)
+      return nullptr;
+    auto hierArgOwner = air::getHierarchyArgOwner(arg);
+    if (!hierArgOwner)
+      return nullptr;
+    for (unsigned i = 0; i < hierArgOwner.getNumKernelOperands(); i++)
+      if (hierArgOwner.getKernelArgument(i) == arg)
+        return hierArgOwner.getKernelOperand(i);
+    return nullptr;
+  }
+  // Check if two values represent the same memref. TODO: Need async dependency
+  // to ensure that the *data* is also the same.
+  bool areTheSameMemref(Value a, Value b) {
+    if (!isa<MemRefType>(a.getType()))
+      return false;
+    if (!isa<MemRefType>(b.getType()))
+      return false;
+    if (a == b)
+      return true;
+    auto aHierOper =
+        getHierOperandFromHierBlockArgument(a.dyn_cast<BlockArgument>());
+    auto bHierOper =
+        getHierOperandFromHierBlockArgument(b.dyn_cast<BlockArgument>());
+    if (!(aHierOper && bHierOper))
+      return false;
+    if (aHierOper == bHierOper)
+      return true;
+    return false;
+  }
+  // Check of two air.channels are mergeable in time, by fusing into a shared
+  // scf.for loop. Returns a tuple of bool of whether mergeable, and string of
+  // fusing into for loop lower bound (LB) or upper bound (UB).
+  std::tuple<bool, std::string> checkIfScfForMergeable(air::ChannelOp chan_a,
+                                                       air::ChannelOp chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
     std::vector<air::ChannelPutOp> b_puts =
@@ -3174,67 +3223,37 @@ private:
         getChannelGetOpThroughSymbol(chan_a);
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
+    std::tuple<bool, std::string> notMergeable = {false, ""};
+    std::tuple<bool, std::string> mergeableToLB = {true, "LB"};
     if (a_puts.size() != b_puts.size())
-      return false;
+      return notMergeable;
     if (a_puts.size() != 1)
-      return false;
+      return notMergeable;
     if (a_gets.size() != b_gets.size())
-      return false;
+      return notMergeable;
     if (a_gets.size() != 1)
-      return false;
-    // Check for equal src and dst memory spaces
-    unsigned aMemrefMemSpace = a_puts[0]
-                                   .getMemref()
-                                   .getType()
-                                   .cast<MemRefType>()
-                                   .getMemorySpaceAsInt();
+      return notMergeable;
+    // Check for identical src and dst memref
+    Value aMemref = a_puts[0].getMemref();
     for (unsigned i = 1; i < a_puts.size(); i++)
-      if (aMemrefMemSpace != a_puts[i]
-                                 .getMemref()
-                                 .getType()
-                                 .cast<MemRefType>()
-                                 .getMemorySpaceAsInt())
-        return false; // Inconsistent memory space for all puts
-    unsigned bMemrefMemSpace = b_puts[0]
-                                   .getMemref()
-                                   .getType()
-                                   .cast<MemRefType>()
-                                   .getMemorySpaceAsInt();
+      if (aMemref != a_puts[i].getMemref())
+        return notMergeable; // Inconsistent memory use for all puts
+    Value bMemref = b_puts[0].getMemref();
     for (unsigned i = 1; i < b_puts.size(); i++)
-      if (bMemrefMemSpace != b_puts[i]
-                                 .getMemref()
-                                 .getType()
-                                 .cast<MemRefType>()
-                                 .getMemorySpaceAsInt())
-        return false; // Inconsistent memory space for all puts
-    if (aMemrefMemSpace != bMemrefMemSpace)
-      return false;
-    aMemrefMemSpace = a_gets[0]
-                          .getMemref()
-                          .getType()
-                          .cast<MemRefType>()
-                          .getMemorySpaceAsInt();
+      if (bMemref != b_puts[i].getMemref())
+        return notMergeable; // Inconsistent memory use for all puts
+    if (!areTheSameMemref(aMemref, bMemref))
+      return notMergeable;
+    aMemref = a_gets[0].getMemref();
     for (unsigned i = 1; i < a_gets.size(); i++)
-      if (aMemrefMemSpace != a_gets[i]
-                                 .getMemref()
-                                 .getType()
-                                 .cast<MemRefType>()
-                                 .getMemorySpaceAsInt())
-        return false; // Inconsistent memory space for all gets
-    bMemrefMemSpace = b_gets[0]
-                          .getMemref()
-                          .getType()
-                          .cast<MemRefType>()
-                          .getMemorySpaceAsInt();
+      if (aMemref != a_gets[i].getMemref())
+        return notMergeable; // Inconsistent memory use for all gets
+    bMemref = b_gets[0].getMemref();
     for (unsigned i = 1; i < b_gets.size(); i++)
-      if (bMemrefMemSpace != b_gets[i]
-                                 .getMemref()
-                                 .getType()
-                                 .cast<MemRefType>()
-                                 .getMemorySpaceAsInt())
-        return false; // Inconsistent memory space for all gets
-    if (aMemrefMemSpace != bMemrefMemSpace)
-      return false;
+      if (bMemref != b_gets[i].getMemref())
+        return notMergeable; // Inconsistent memory use for all gets
+    if (!areTheSameMemref(aMemref, bMemref))
+      return notMergeable;
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
       auto b_put_loop_nest = getParentLoopNest(b_puts[i].getOperation());
@@ -3245,7 +3264,7 @@ private:
       auto b_get_loop_nest = getParentLoopNest(b_gets[i].getOperation());
       return checkIfScfForMergeableImpl(a_get_loop_nest, b_get_loop_nest);
     }
-    return true;
+    return mergeableToLB;
   }
   std::vector<Operation *> getParentLoopNest(Operation *op) {
     std::vector<Operation *> parent_loop_nest;
@@ -3291,7 +3310,8 @@ private:
       auto b_par = dyn_cast<scf::ParallelOp>(b);
       if (a_par == b_par)
         return true;
-      if (a_par.getStep().size() != b_par.getStep().size()) return false;
+      if (a_par.getStep().size() != b_par.getStep().size())
+        return false;
       for (unsigned i = 0; i < a_par.getLowerBound().size(); i++) {
         std::optional<int64_t> aLbCstOp =
             mlir::getConstantIntValue(a_par.getLowerBound()[i]);
@@ -3323,9 +3343,13 @@ private:
     return false;
   }
   void mergeChannelOps(air::ChannelInterface a, air::ChannelInterface b) {
-    OpBuilder builder(a);
+    // fuse a and b under the same loop nest, if a and b are under different
+    // loop nests
+    if (a->getParentRegion() == b->getParentRegion())
+      return;
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
+    OpBuilder builder(a);
     auto new_b = cloneOpAndOperands(builder, remap, b);
     eraseParentLoopIfEmpty(*b);
     auto async_a = dyn_cast<air::AsyncOpInterface>(a.getOperation());
@@ -3333,15 +3357,26 @@ private:
       async_a.addAsyncDependency(
           dyn_cast<air::AsyncOpInterface>(new_b).getAsyncToken());
   }
-  void mergeChannelOpsByScfFor(air::ChannelInterface a,
-                               air::ChannelInterface b) {
+  void mergeChannelOpsByScfFor(air::ChannelInterface a, air::ChannelInterface b,
+                               std::string mergeByLBOrUB) {
     scf::ForOp parentForOp = a->getParentOfType<scf::ForOp>();
     while (parentForOp && parentForOp->getParentOfType<scf::ForOp>()) {
       parentForOp = parentForOp->getParentOfType<scf::ForOp>();
     }
     OpBuilder builder(parentForOp);
-    parentForOp->getOpOperand(0).assign(
-        builder.create<arith::ConstantIndexOp>(parentForOp->getLoc(), 0));
+    if (mergeByLBOrUB == "LB") {
+      int originalLB = *getConstantIntValue(parentForOp.getLowerBound());
+      assert(originalLB > 0);
+      parentForOp->getOpOperand(0).assign(
+          builder.create<arith::ConstantIndexOp>(parentForOp->getLoc(),
+                                                 originalLB - 1));
+    } else if (mergeByLBOrUB == "UB") {
+      int originalUB = *getConstantIntValue(parentForOp.getUpperBound());
+      parentForOp->getOpOperand(1).assign(
+          builder.create<arith::ConstantIndexOp>(parentForOp->getLoc(),
+                                                 originalUB + 1));
+    } else
+      assert(false && "invalid mergeByLBOrUB flag");
     eraseParentLoopIfEmpty(*b);
   }
   void mergeChannels(air::ChannelOp chan_a, air::ChannelOp chan_b) {
@@ -3361,7 +3396,8 @@ private:
       mergeChannelOps(a_gets[i], b_gets[i]);
     }
   }
-  void mergeChannelOpsByScfFor(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+  void mergeChannelOpsByScfFor(air::ChannelOp chan_a, air::ChannelOp chan_b,
+                               std::string mergeByLBOrUB) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
     std::vector<air::ChannelPutOp> b_puts =
@@ -3371,10 +3407,10 @@ private:
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
     if (!b_puts[0]->getParentOfType<air::HerdOp>()) {
-      mergeChannelOpsByScfFor(a_puts[0], b_puts[0]);
+      mergeChannelOpsByScfFor(a_puts[0], b_puts[0], mergeByLBOrUB);
     }
     if (!b_gets[0]->getParentOfType<air::HerdOp>()) {
-      mergeChannelOpsByScfFor(a_gets[0], b_gets[0]);
+      mergeChannelOpsByScfFor(a_gets[0], b_gets[0], mergeByLBOrUB);
     }
   }
   Operation *cloneOpAndOperands(OpBuilder builder, IRMapping remap,

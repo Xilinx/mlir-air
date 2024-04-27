@@ -463,3 +463,230 @@ module {
     return
   }
 }
+
+// -----
+
+// Merging air.channels into both scf.for op's LB and UB (L3->L2).
+
+// CHECK-LABEL: func5
+// CHECK: air.launch
+// CHECK: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// CHECK: air.channel.put{{.*}}@channel_4
+// CHECK: scf.yield
+// CHECK: air.segment @segment_0
+// CHECK: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// CHECK: air.channel.get{{.*}}@channel_4
+// CHECK: scf.yield
+// CHECK: air.segment_terminator
+// CHECK: air.launch_terminator
+// FUSELOOP-LABEL: func5
+// FUSELOOP: air.launch
+// FUSELOOP: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// FUSELOOP: air.channel.put{{.*}}@channel_4
+// FUSELOOP: scf.yield
+// FUSELOOP: air.segment @segment_0
+// FUSELOOP: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// FUSELOOP: air.channel.get{{.*}}@channel_4
+// FUSELOOP: scf.yield
+// FUSELOOP: air.segment_terminator
+// FUSELOOP: air.launch_terminator
+
+#map = affine_map<()[s0] -> (s0 * 64)>
+#map1 = affine_map<()[s0] -> (s0 * 32)>
+module {
+  air.channel @channel_8 [1, 1]
+  air.channel @channel_4 [1, 1]
+  air.channel @channel_0 [1, 1]
+  func.func @func5(%arg0: memref<1024x512xi8>) {
+    %c16 = arith.constant 16 : index
+    %0 = air.launch async (%arg4, %arg5) in (%arg6=%c16, %arg7=%c16) args(%arg8=%arg0) : memref<1024x512xi8> attributes {id = 1 : i32} {
+      %c480 = arith.constant 480 : index
+      %c15 = arith.constant 15 : index
+      %c32 = arith.constant 32 : index
+      %c64 = arith.constant 64 : index
+      %c512 = arith.constant 512 : index
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %async_token, %results = air.execute -> (index) {
+        %6 = affine.apply #map()[%arg4]
+        air.execute_terminator %6 : index
+      }
+      %1 = air.channel.put async [%async_token]  @channel_0[] (%arg8[%results, %c0] [%c64, %c32] [%c512, %c1]) {id = 1 : i32} : (memref<1024x512xi8>)
+      %async_token_0, %results_1 = air.execute -> (index) {
+        %6 = affine.apply #map()[%arg4]
+        air.execute_terminator %6 : index
+      }
+      %2 = air.wait_all async 
+      %3 = scf.for %arg9 = %c1 to %c15 step %c1 iter_args(%arg10 = %2) -> (!air.async.token) {
+        %async_token_4, %results_5 = air.execute [%arg10] -> (index) {
+          %7 = affine.apply #map1()[%arg9]
+          air.execute_terminator %7 : index
+        }
+        %6 = air.channel.put async [%async_token_4, %async_token_0]  @channel_4[] (%arg8[%results_1, %results_5] [%c64, %c32] [%c512, %c1]) {id = 3 : i32} : (memref<1024x512xi8>)
+        scf.yield %6 : !air.async.token
+      }
+      %async_token_2, %results_3 = air.execute -> (index) {
+        %6 = affine.apply #map()[%arg4]
+        air.execute_terminator %6 : index
+      }
+      %4 = air.channel.put async [%async_token_2]  @channel_8[] (%arg8[%results_3, %c480] [%c64, %c32] [%c512, %c1]) {id = 5 : i32} : (memref<1024x512xi8>)
+      %5 = air.segment @segment_0 async  attributes {id = 2 : i32} {
+        %c1_4 = arith.constant 1 : index
+        %c15_5 = arith.constant 15 : index
+        %6 = air.wait_all async 
+        %async_token_6, %results_7 = air.execute -> (memref<1x1x64x32xi8, 1 : i32>) {
+          %alloc = memref.alloc() : memref<1x1x64x32xi8, 1 : i32>
+          air.execute_terminator %alloc : memref<1x1x64x32xi8, 1 : i32>
+        }
+        %7 = air.channel.get async [%6, %async_token_6]  @channel_0[] (%results_7[] [] []) {id = 10 : i32} : (memref<1x1x64x32xi8, 1 : i32>)
+        %8 = air.wait_all async [%async_token_6, %7] 
+        %9 = scf.for %arg9 = %c1_4 to %c15_5 step %c1_4 iter_args(%arg10 = %8) -> (!air.async.token) {
+          %11 = air.channel.get async [%arg10]  @channel_4[] (%results_7[] [] []) {id = 16 : i32} : (memref<1x1x64x32xi8, 1 : i32>)
+          scf.yield %11 : !air.async.token
+        }
+        %10 = air.channel.get async [%9]  @channel_8[] (%results_7[] [] []) {id = 22 : i32} : (memref<1x1x64x32xi8, 1 : i32>)
+        %async_token_8 = air.execute [%10] {
+          memref.dealloc %results_7 : memref<1x1x64x32xi8, 1 : i32>
+        }
+        air.segment_terminator
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
+
+// -----
+
+// Merging air.channels into both scf.for op's LB and UB (L2->L1).
+
+// CHECK-LABEL: func6
+// CHECK: air.segment @segment_0
+// CHECK: air.herd @herd_0
+// CHECK: air.channel.get{{.*}}@channel_6
+// CHECK: air.herd_terminator
+// CHECK: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// CHECK-NEXT: scf.parallel
+// CHECK: air.channel.put{{.*}}@channel_6
+// CHECK: scf.reduce
+// CHECK: scf.yield
+// CHECK: air.herd @herd_0
+// CHECK: scf.for %{{.*}} = %c1{{.*}}to %c15{{.*}}step %c1
+// CHECK: air.channel.get{{.*}}@channel_6
+// CHECK: air.herd_terminator
+// CHECK: air.herd @herd_0
+// CHECK: air.channel.get{{.*}}@channel_6
+// CHECK: air.herd_terminator
+// CHECK: air.segment_terminator
+// FUSELOOP-LABEL: func6
+// FUSELOOP: air.segment @segment_0
+// FUSELOOP: air.herd @herd_0
+// FUSELOOP: air.channel.get{{.*}}@channel_6
+// FUSELOOP: air.herd_terminator
+// FUSELOOP: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// FUSELOOP-NEXT: scf.parallel
+// FUSELOOP: air.channel.put{{.*}}@channel_6
+// FUSELOOP: scf.reduce
+// FUSELOOP: scf.yield
+// FUSELOOP: air.herd @herd_0
+// FUSELOOP: scf.for %{{.*}} = %c1{{.*}}to %c15{{.*}}step %c1
+// FUSELOOP: air.channel.get{{.*}}@channel_6
+// FUSELOOP: air.herd_terminator
+// FUSELOOP: air.herd @herd_0
+// FUSELOOP: air.channel.get{{.*}}@channel_6
+// FUSELOOP: air.herd_terminator
+// FUSELOOP: air.segment_terminator
+
+#map = affine_map<()[s0] -> (s0 * 32)>
+module {
+  air.channel @channel_12 [2, 2]
+  air.channel @channel_6 [2, 2]
+  air.channel @channel_2 [2, 2]
+  func.func @func6() {
+    %0 = air.segment @segment_0 async  attributes {id = 2 : i32} {
+      %c2048 = arith.constant 2048 : index
+      %c8 = arith.constant 8 : index
+      %c128 = arith.constant 128 : index
+      %c4 = arith.constant 4 : index
+      %c32 = arith.constant 32 : index
+      %c0 = arith.constant 0 : index
+      %c2 = arith.constant 2 : index
+      %c1 = arith.constant 1 : index
+      %c15 = arith.constant 15 : index
+      %async_token_6, %results_7 = air.execute -> (memref<1x1x4x8x4x8xi8, 2 : i32>) {
+        %alloc = memref.alloc() : memref<1x1x4x8x4x8xi8, 2 : i32>
+        air.execute_terminator %alloc : memref<1x1x4x8x4x8xi8, 2 : i32>
+      }
+      %async_token_8, %results_9 = air.execute -> (memref<1x1x64x32xi8, 1 : i32>) {
+        %alloc = memref.alloc() : memref<1x1x64x32xi8, 1 : i32>
+        air.execute_terminator %alloc : memref<1x1x64x32xi8, 1 : i32>
+      }
+      %1 = scf.parallel (%arg0, %arg1) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%async_token_8) -> !air.async.token {
+        %async_token_12, %results_13 = air.execute -> (index) {
+          %8 = affine.apply #map()[%arg0]
+          air.execute_terminator %8 : index
+        }
+        %7 = air.channel.put async [%async_token_8, %async_token_12]  @channel_2[%arg0, %arg1] (%results_9[%c0, %c0, %c0, %c0, %results_13, %c0] [%c1, %c1, %c4, %c8, %c4, %c8] [%c2048, %c2048, %c8, %c128, %c32, %c1]) {id = 12 : i32} : (memref<1x1x64x32xi8, 1 : i32>)
+        scf.reduce(%7 : !air.async.token) {
+        ^bb0(%arg2: !air.async.token, %arg3: !air.async.token):
+          %8 = air.wait_all async [%arg2, %arg3] 
+          scf.reduce.return %8 : !air.async.token
+        }
+      }
+      %2 = air.herd @herd_0 async [%async_token_6, %async_token_8]  tile (%arg0, %arg1) in (%arg2=%c2, %arg3=%c2) args(%arg4=%results_7) : memref<1x1x4x8x4x8xi8, 2 : i32> attributes {id = 3 : i32} {
+        %7 = air.wait_all async 
+        %8 = air.channel.get async [%7]  @channel_2[%arg0, %arg1] (%arg4[] [] []) {id = 14 : i32} : (memref<1x1x4x8x4x8xi8, 2 : i32>)
+        air.herd_terminator
+      }
+      %3 = scf.for %arg0 = %c1 to %c15 step %c1 iter_args(%arg1 = %async_token_8) -> (!air.async.token) {
+        %7 = scf.parallel (%arg2, %arg3) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%arg1) -> !air.async.token {
+          %async_token_12, %results_13 = air.execute -> (index) {
+            %9 = affine.apply #map()[%arg2]
+            air.execute_terminator %9 : index
+          }
+          %8 = air.channel.put async [%arg1, %async_token_12]  @channel_6[%arg2, %arg3] (%results_9[%c0, %c0, %c0, %c0, %results_13, %c0] [%c1, %c1, %c4, %c8, %c4, %c8] [%c2048, %c2048, %c8, %c128, %c32, %c1]) {id = 18 : i32} : (memref<1x1x64x32xi8, 1 : i32>)
+          scf.reduce(%8 : !air.async.token) {
+          ^bb0(%arg4: !air.async.token, %arg5: !air.async.token):
+            %9 = air.wait_all async [%arg4, %arg5] 
+            scf.reduce.return %9 : !air.async.token
+          }
+        }
+        scf.yield %7 : !air.async.token
+      }
+      %4 = air.herd @herd_0 async [%2]  tile (%arg0, %arg1) in (%arg2=%c2, %arg3=%c2) args(%arg4=%results_7) : memref<1x1x4x8x4x8xi8, 2 : i32> attributes {id = 4 : i32} {
+        %c1_12 = arith.constant 1 : index
+        %c15_13 = arith.constant 15 : index
+        scf.for %arg5 = %c1_12 to %c15_13 step %c1_12 {
+          %7 = air.wait_all async 
+          %8 = air.channel.get async [%7]  @channel_6[%arg0, %arg1] (%arg4[] [] []) {id = 20 : i32} : (memref<1x1x4x8x4x8xi8, 2 : i32>)
+        }
+        air.herd_terminator
+      }
+      %5 = scf.parallel (%arg0, %arg1) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%2) -> !air.async.token {
+        %async_token_12, %results_13 = air.execute -> (index) {
+          %8 = affine.apply #map()[%arg0]
+          air.execute_terminator %8 : index
+        }
+        %7 = air.channel.put async [%2, %async_token_12]  @channel_12[%arg0, %arg1] (%results_9[%c0, %c0, %c0, %c0, %results_13, %c0] [%c1, %c1, %c4, %c8, %c4, %c8] [%c2048, %c2048, %c8, %c128, %c32, %c1]) {id = 26 : i32} : (memref<1x1x64x32xi8, 1 : i32>)
+        scf.reduce(%7 : !air.async.token) {
+        ^bb0(%arg2: !air.async.token, %arg3: !air.async.token):
+          %8 = air.wait_all async [%arg2, %arg3] 
+          scf.reduce.return %8 : !air.async.token
+        }
+      }
+      %6 = air.herd @herd_0 async [%4]  tile (%arg0, %arg1) in (%arg2=%c2, %arg3=%c2) args(%arg4=%results_7) : memref<1x1x4x8x4x8xi8, 2 : i32> attributes {id = 5 : i32} {
+        %7 = air.wait_all async 
+        %8 = air.channel.get async [%7]  @channel_12[%arg0, %arg1] (%arg4[] [] []) {id = 30 : i32} : (memref<1x1x4x8x4x8xi8, 2 : i32>)
+        air.herd_terminator
+      }
+      %async_token_10 = air.execute {
+        memref.dealloc %results_9 : memref<1x1x64x32xi8, 1 : i32>
+      }
+      %async_token_11 = air.execute [%6] {
+        memref.dealloc %results_7 : memref<1x1x4x8x4x8xi8, 2 : i32>
+      }
+      air.segment_terminator
+    }
+    return
+  }
+}
