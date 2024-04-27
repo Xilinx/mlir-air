@@ -943,9 +943,18 @@ public:
   LogicalResult
   matchAndRewrite(scf::ParallelOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto newOp = rewriter.replaceOpWithNewOp<scf::ParallelOp>(
-        op, adaptor.getLowerBound(), adaptor.getUpperBound(), adaptor.getStep(),
-        adaptor.getInitVals());
+    SmallVector<Value> newInitVals;
+    for (auto initVal : adaptor.getInitVals()) {
+      if (initVal.getType().isa<air::AsyncTokenType>()) {
+        auto cast = rewriter.create<UnrealizedConversionCastOp>(
+            op->getLoc(), airrt::EventType::get(op->getContext()), initVal);
+        newInitVals.push_back(cast.getResult(0));
+      } else
+        newInitVals.push_back(initVal);
+    }
+    auto newOp = rewriter.create<scf::ParallelOp>(
+        op->getLoc(), adaptor.getLowerBound(), adaptor.getUpperBound(),
+        adaptor.getStep(), newInitVals);
     auto body = op.getBody();
     auto newBody = newOp.getBody();
 
@@ -963,26 +972,26 @@ public:
         remap.map(arg, newArg);
       }
     }
-    for (auto &o : body->getOperations()) {
-      if (isa<scf::YieldOp>(o)) {
-        SmallVector<Value> opers;
-        for (int i = 0, e = o.getNumOperands(); i < e; i++) {
-          auto oper = remap.lookupOrDefault(o.getOperand(i));
-          if (oper.getType().isa<air::AsyncTokenType>()) {
-            auto ty = airrt::EventType::get(o.getContext());
-            auto cast = rewriter.create<UnrealizedConversionCastOp>(
-                op->getLoc(), ty, oper);
-            opers.push_back(cast->getResult(0));
-          } else {
-            opers.push_back(oper);
-          }
-        }
-        rewriter.create<scf::YieldOp>(o.getLoc(), opers);
-      } else {
-        rewriter.clone(o, remap);
-      }
-    }
+    for (int i = 0, e = op.getNumReductions(); i < e; i++)
+      replaceAllUsesInRegionWith(op.getInitVals()[i], newOp.getInitVals()[i],
+                                 newOp.getRegion());
+    for (auto &o : body->getOperations())
+      rewriter.clone(o, remap);
 
+    // Cast result types back to air.asyncTokenType using
+    // UnrealizedConversionCastOp.
+    rewriter.setInsertionPointAfter(newOp);
+    SmallVector<Value> newResults;
+    for (auto res : newOp->getResults()) {
+      if (res.getType().isa<airrt::EventType>()) {
+        auto ty = air::AsyncTokenType::get(op->getContext());
+        auto cast =
+            rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), ty, res);
+        newResults.push_back(cast.getResult(0));
+      } else
+        newResults.push_back(res);
+    }
+    rewriter.replaceOp(op, newResults);
     return success();
   }
 };
@@ -1139,8 +1148,8 @@ public:
     });
 
     target.addDynamicallyLegalOp<scf::ParallelOp>([&](scf::ParallelOp op) {
-      for (auto o : op.getInitVals()) {
-        if (o.getType().isa<air::AsyncTokenType>())
+      for (auto v : op.getResults()) {
+        if (v.getType().isa<air::AsyncTokenType>())
           return false;
       }
       return true;
