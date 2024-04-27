@@ -932,6 +932,19 @@ public:
       }
     }
 
+    // Cast result types back to air.asyncTokenType using
+    // UnrealizedConversionCastOp.
+    rewriter.setInsertionPointAfter(newOp);
+    SmallVector<Value> newResults;
+    for (auto res : newOp->getResults()) {
+      if (res.getType().isa<airrt::EventType>()) {
+        auto ty = air::AsyncTokenType::get(op->getContext());
+        auto cast =
+            rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), ty, res);
+        newResults.push_back(cast.getResult(0));
+      } else
+        newResults.push_back(res);
+    }
     return success();
   }
 };
