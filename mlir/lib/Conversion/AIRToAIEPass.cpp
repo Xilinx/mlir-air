@@ -182,7 +182,8 @@ AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
   builder.setInsertionPointAfter(t);
   AIE::BufferOp bufferOp = builder.create<AIE::BufferOp>(
       tile->getLoc(), memrefTy, tile, /*sym_name*/ nullptr,
-      /*address*/ nullptr, /*initial_value*/ nullptr);
+      /*address*/ nullptr, /*initial_value*/ nullptr,
+      /*mem_bank*/ builder.getI32IntegerAttr(0));
 
   std::stringstream ss =
       generateBufferNameInStringStream("buf", BufferId, attr, x, y);
@@ -419,11 +420,14 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
 
     // make the aie.tile
     AIE::TileOp tile = getPhysTileOp(aie_device, phys_x, phys_y);
+
+    // Create a temporary buffer allocated to the memtile. This prevents
+    // an unused memtile from being folded away before the L2 allocation pass.
     auto memrefTy =
         MemRefType::get(SmallVector<int64_t>{1}, builder.getI8Type());
-    builder.create<AIE::BufferOp>(
-        tile->getLoc(), memrefTy, tile, /*sym_name*/ nullptr,
-        /*address*/ nullptr, /*initial_value*/ nullptr);
+    static uint64_t BufferId = 0;
+    allocateBufferOp(BufferId, memrefTy, tile,
+                     builder.getStringAttr("__L2_tmp"));
   }
 }
 
@@ -1129,6 +1133,19 @@ void allocL2Buffers(AIE::DeviceOp m,
                                            bufferToMemtileMap, BufferId);
     (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
   }
+
+  // Remove L2 temporary buffer allocs now that
+  // allocation is complete.
+  SmallVector<AIE::BufferOp> buffers;
+  m.walk([&](AIE::BufferOp buffer) {
+    auto name = buffer.getSymName();
+    if (!name)
+      return;
+    if (name->starts_with("__L2_tmp"))
+      buffers.push_back(buffer);
+  });
+  for (auto b : buffers)
+    b.erase();
 }
 
 struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {

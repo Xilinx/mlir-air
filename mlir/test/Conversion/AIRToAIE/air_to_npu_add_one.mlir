@@ -19,10 +19,10 @@
 // CHECK: %[[VAL8:.*]] = aie.lock(%[[VAL1]], 2) {init = 0 : i32}
 // CHECK: %[[VAL9:.*]] = aie.lock(%[[VAL1]], 1) {init = 1 : i32}
 // CHECK: %[[VAL10:.*]] = aie.lock(%[[VAL1]], 0) {init = 0 : i32}
-// CHECK: %[[VAL11:.*]] = aie.buffer(%[[VAL0]]) {sym_name = {{.*}}} : memref<64xi32, 1>
-// CHECK: %[[VAL12:.*]] = aie.buffer(%[[VAL0]]) {sym_name = {{.*}}} : memref<64xi32, 1>
-// CHECK: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {sym_name = {{.*}}} : memref<64xi32, 2>
-// CHECK: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {sym_name = {{.*}}} : memref<64xi32, 2>
+// CHECK: %[[VAL11:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
+// CHECK: %[[VAL12:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
+// CHECK: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
+// CHECK: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
 // CHECK: aie.mem(%[[VAL1]]) {
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
 // CHECK: ^bb1:
@@ -151,10 +151,10 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK: %[[VAL8:.*]] = aie.lock(%[[VAL1]], 2) {init = 0 : i32}
 // CHECK: %[[VAL9:.*]] = aie.lock(%[[VAL1]], 1) {init = 1 : i32}
 // CHECK: %[[VAL10:.*]] = aie.lock(%[[VAL1]], 0) {init = 0 : i32}
-// CHECK: %[[VAL11:.*]] = aie.buffer(%[[VAL0]]) {sym_name = {{.*}}} : memref<64xi32, 1>
-// CHECK: %[[VAL12:.*]] = aie.buffer(%[[VAL0]]) {sym_name = {{.*}}} : memref<64xi32, 1>
-// CHECK: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {sym_name = {{.*}}} : memref<64xi32, 2>
-// CHECK: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {sym_name = {{.*}}} : memref<64xi32, 2>
+// CHECK: %[[VAL11:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
+// CHECK: %[[VAL12:.*]] = aie.buffer(%[[VAL0]]) {{{.*}}} : memref<64xi32, 1>
+// CHECK: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
+// CHECK: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {{{.*}}} : memref<64xi32, 2>
 // CHECK: aie.mem(%[[VAL1]]) {
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
 // CHECK: ^bb1:

@@ -124,8 +124,8 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 2) {init = 0 : i32}
 // CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 1) {init = 1 : i32}
 // CHECK:         %[[VAL_5:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_6:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
-// CHECK:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<512xi32, 2>
+// CHECK:         %[[VAL_6:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<1024xi32, 2>
+// CHECK:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<512xi32, 2>
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
@@ -202,9 +202,9 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         %[[VAL_18:.*]] = aie.lock(%[[VAL_3]], 2) {init = 0 : i32}
 // CHECK:         %[[VAL_19:.*]] = aie.lock(%[[VAL_3]], 1) {init = 1 : i32}
 // CHECK:         %[[VAL_20:.*]] = aie.lock(%[[VAL_3]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_21:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<1024xi32, 1>
-// CHECK:         %[[VAL_22:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<1024xi32, 1>
-// CHECK:         %[[VAL_23:.*]] = aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
+// CHECK:         %[[VAL_21:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<1024xi32, 1>
+// CHECK:         %[[VAL_22:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<1024xi32, 1>
+// CHECK:         %[[VAL_23:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<1024xi32, 2>
 
 // CHECK:    aie.mem(%[[VAL_3]])  {
 // CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
@@ -406,8 +406,6 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
 // CHECK: aie.device(xcve2802)
 // CHECK: %[[tile_2_0:.*]] = aie.tile(2, 0)
 // CHECK: %[[tile_3_0:.*]] = aie.tile(3, 0)
-// CHECK: %[[tile_2_1:.*]] = aie.tile(2, 1)
-// CHECK: %[[tile_3_1:.*]] = aie.tile(3, 1)
 // CHECK: %[[tile_0_3:.*]] = aie.tile(0, 3)
 // CHECK: %[[tile_1_3:.*]] = aie.tile(1, 3)
 // CHECK: %[[tile_0_4:.*]] = aie.tile(0, 4)
@@ -795,26 +793,26 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
 // CHECK: %[[tile_1_6:.*]] = aie.tile(1, 6)
 // CHECK: %[[tile_2_6:.*]] = aie.tile(2, 6)
 // CHECK: %[[tile_3_6:.*]] = aie.tile(3, 6)
-// CHECK: %[[buf19:.*]] = aie.buffer(%[[tile_2_1]]) {sym_name = "buf19"} : memref<64x256xbf16, 1> 
-// CHECK: %[[buf18:.*]] = aie.buffer(%[[tile_3_1]]) {sym_name = "buf18"} : memref<64x256xbf16, 1> 
-// CHECK: %[[buf17:.*]] = aie.buffer(%[[tile_4_1]]) {sym_name = "buf17"} : memref<64x256xbf16, 1> 
-// CHECK: %[[buf16:.*]] = aie.buffer(%[[tile_5_1]]) {sym_name = "buf16"} : memref<64x256xbf16, 1> 
-// CHECK: %[[buf15:.*]] = aie.buffer(%[[tile_3_6]]) {sym_name = "buf15"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf14:.*]] = aie.buffer(%[[tile_2_6]]) {sym_name = "buf14"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf13:.*]] = aie.buffer(%[[tile_1_6]]) {sym_name = "buf13"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf12:.*]] = aie.buffer(%[[tile_0_6]]) {sym_name = "buf12"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf11:.*]] = aie.buffer(%[[tile_3_5]]) {sym_name = "buf11"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf10:.*]] = aie.buffer(%[[tile_2_5]]) {sym_name = "buf10"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf9:.*]] = aie.buffer(%[[tile_1_5]]) {sym_name = "buf9"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf8:.*]] = aie.buffer(%[[tile_0_5]]) {sym_name = "buf8"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf7:.*]] = aie.buffer(%[[tile_3_4]]) {sym_name = "buf7"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf6:.*]] = aie.buffer(%[[tile_2_4]]) {sym_name = "buf6"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf5:.*]] = aie.buffer(%[[tile_1_4]]) {sym_name = "buf5"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf4:.*]] = aie.buffer(%[[tile_0_4]]) {sym_name = "buf4"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf3:.*]] = aie.buffer(%[[tile_3_3]]) {sym_name = "buf3"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf2:.*]] = aie.buffer(%[[tile_2_3]]) {sym_name = "buf2"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf1:.*]] = aie.buffer(%[[tile_1_3]]) {sym_name = "buf1"} : memref<16x16x4x4xbf16, 2> 
-// CHECK: %[[buf0:.*]] = aie.buffer(%[[tile_0_3]]) {sym_name = "buf0"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf19:.*]] = aie.buffer(%[[tile_2_1]]) {{{.*}}} : memref<64x256xbf16, 1>
+// CHECK: %[[buf18:.*]] = aie.buffer(%[[tile_3_1]]) {{{.*}}} : memref<64x256xbf16, 1>
+// CHECK: %[[buf17:.*]] = aie.buffer(%[[tile_4_1]]) {{{.*}}} : memref<64x256xbf16, 1>
+// CHECK: %[[buf16:.*]] = aie.buffer(%[[tile_5_1]]) {{{.*}}} : memref<64x256xbf16, 1>
+// CHECK: %[[buf15:.*]] = aie.buffer(%[[tile_3_6]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf14:.*]] = aie.buffer(%[[tile_2_6]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf13:.*]] = aie.buffer(%[[tile_1_6]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf12:.*]] = aie.buffer(%[[tile_0_6]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf11:.*]] = aie.buffer(%[[tile_3_5]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf10:.*]] = aie.buffer(%[[tile_2_5]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf9:.*]] = aie.buffer(%[[tile_1_5]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf8:.*]] = aie.buffer(%[[tile_0_5]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf7:.*]] = aie.buffer(%[[tile_3_4]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf6:.*]] = aie.buffer(%[[tile_2_4]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf5:.*]] = aie.buffer(%[[tile_1_4]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf4:.*]] = aie.buffer(%[[tile_0_4]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf3:.*]] = aie.buffer(%[[tile_3_3]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf2:.*]] = aie.buffer(%[[tile_2_3]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf1:.*]] = aie.buffer(%[[tile_1_3]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
+// CHECK: %[[buf0:.*]] = aie.buffer(%[[tile_0_3]]) {{{.*}}} : memref<16x16x4x4xbf16, 2>
 // CHECK: aie.core(%[[tile_3_6]])
 // CHECK: aie.core(%[[tile_2_6]])
 // CHECK: aie.core(%[[tile_1_6]])
