@@ -3112,7 +3112,7 @@ private:
 
   // Check whether puts and gets hit the aggressive mode target memory spaces
   bool hitsMemorySpaceForAggMode(std::vector<air::ChannelPutOp> &puts,
-                                std::vector<air::ChannelGetOp> &gets) {
+                                 std::vector<air::ChannelGetOp> &gets) {
     for (auto put : puts) {
       MemRefType ty = put.getMemref().getType().cast<MemRefType>();
       if (llvm::any_of(targetMemorySpaces, [&](int memSpace) {
