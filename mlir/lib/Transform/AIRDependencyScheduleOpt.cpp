@@ -3111,7 +3111,7 @@ private:
   }
 
   // Check whether puts and gets hit the aggressive mode target memory spaces
-  bool hitsValidMSBasedOnOption(std::vector<air::ChannelPutOp> &puts,
+  bool hitsMemorySpaceForAggMode(std::vector<air::ChannelPutOp> &puts,
                                 std::vector<air::ChannelGetOp> &gets) {
     for (auto put : puts) {
       MemRefType ty = put.getMemref().getType().cast<MemRefType>();
@@ -3149,9 +3149,9 @@ private:
     if (a_gets.size() != b_gets.size())
       return false;
     // Filter out put/get memory space based on aggressive mode option
-    if (!hitsValidMSBasedOnOption(a_puts, a_gets))
+    if (!hitsMemorySpaceForAggMode(a_puts, a_gets))
       return false;
-    if (!hitsValidMSBasedOnOption(b_puts, b_gets))
+    if (!hitsMemorySpaceForAggMode(b_puts, b_gets))
       return false;
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
