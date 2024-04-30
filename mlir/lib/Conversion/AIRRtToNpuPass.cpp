@@ -895,7 +895,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     RewritePatternSet canoPatterns_1(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_1, ctx);
     (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_1));
-    // unrollSCFFors(module);
 
     // Purge all wait ops again after unroll, in case there were loop carried
     // events which couldn't be purged before
