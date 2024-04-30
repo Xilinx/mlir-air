@@ -977,11 +977,16 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     Value new_stride =
         builder.template create<arith::ConstantIndexOp>(loc, new_stride_value);
 
-    // Check for compliance with DMA BD hardware limitation (<= 1M).
+    // Check for compliance with DMA BD hardware limitation (<= 1M). Note that
+    // the exception is when stepSize = previous highest wrap, because in that
+    // case the large stride shall simply get canonicalized away.
     if (mlir::ceilDiv(
             new_stride_value * getElementSizeInBytes(memref.getType()), 4) >
-        0x100000)
-      return failure();
+        0x100000) {
+      if (stepSize != *getConstantIntValue(wraps[0])) {
+        return failure();
+      }
+    }
 
     // Insert new dimension into the wraps and strides list.
     wraps.insert(wraps.begin(), new_wrap);
