@@ -920,7 +920,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       for_loops.push_back(parent);
   }
   for (auto o : for_loops) {
-    unsigned ind_var_factor = 1;
+    uint64_t ind_var_factor = 1;
     for (int i = offsets.size() - 1; i >= 0; i--) {
       Value iv = nullptr;
       int loop_lower_bound = 0;
@@ -972,7 +972,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       stepSize = afo.getStepAsInt();
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       stepSize = *mlir::getConstantIntValue(sfo.getStep());
-    int new_stride_value =
+    int64_t new_stride_value =
         (stepSize * ind_var_factor) % getTensorVolume(memref.getType());
     Value new_stride =
         builder.template create<arith::ConstantIndexOp>(loc, new_stride_value);
