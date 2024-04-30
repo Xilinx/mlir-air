@@ -3063,17 +3063,17 @@ public:
       return;
     for (unsigned i = 0; i < clAggressiveMode.size(); ++i) {
       if (clAggressiveMode[i] == "L1")
-        targetMemorySpaces.push_back((int)air::MemorySpace::L1);
+        targetMemorySpaces.push_back((unsigned)air::MemorySpace::L1);
       else if (clAggressiveMode[i] == "L2")
-        targetMemorySpaces.push_back((int)air::MemorySpace::L2);
+        targetMemorySpaces.push_back((unsigned)air::MemorySpace::L2);
       else if (clAggressiveMode[i] == "L3")
-        targetMemorySpaces.push_back((int)air::MemorySpace::L3);
+        targetMemorySpaces.push_back((unsigned)air::MemorySpace::L3);
       LLVM_DEBUG(llvm::outs() << "clAggressiveMode[" << i
                               << "] = " << clAggressiveMode[i] << "\n");
     }
   }
 
-  SmallVector<int> targetMemorySpaces;
+  SmallVector<unsigned> targetMemorySpaces;
 
 private:
   void sortChannelsByLoopNests(air::ChannelOp &chan_a, air::ChannelOp &chan_b) {
@@ -3115,7 +3115,7 @@ private:
                                  std::vector<air::ChannelGetOp> &gets) {
     for (auto put : puts) {
       MemRefType ty = put.getMemref().getType().cast<MemRefType>();
-      if (llvm::any_of(targetMemorySpaces, [&](int memSpace) {
+      if (llvm::any_of(targetMemorySpaces, [&](unsigned memSpace) {
             return memSpace == ty.getMemorySpaceAsInt();
           })) {
         return true;
@@ -3123,7 +3123,7 @@ private:
     }
     for (auto get : gets) {
       MemRefType ty = get.getMemref().getType().cast<MemRefType>();
-      if (llvm::any_of(targetMemorySpaces, [&](int memSpace) {
+      if (llvm::any_of(targetMemorySpaces, [&](unsigned memSpace) {
             return memSpace == ty.getMemorySpaceAsInt();
           })) {
         return true;
