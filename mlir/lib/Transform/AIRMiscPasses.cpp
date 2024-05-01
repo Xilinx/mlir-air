@@ -1074,10 +1074,8 @@ template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
   }
 }
 
-// Find GCD of a vector of ints. The optional input provides a limit to the GCD
-// result. For example, given that gcdLimit is 4, if the gcd is 7 then the
-// result should be 1; if gcd is 8, then 4; if gcd is 9, then 3.
-int findGCDNoGreaterThan(SmallVector<int> vec, int gcdLimit = 0) {
+// Find GCD of a vector of ints.
+int findGCD(SmallVector<int> vec) {
   int result = vec[0];
   for (unsigned i = 1; i < vec.size(); i++) {
     result = std::gcd(vec[i], result);
@@ -1086,18 +1084,7 @@ int findGCDNoGreaterThan(SmallVector<int> vec, int gcdLimit = 0) {
       return 1;
     }
   }
-  // Apply the max. gcd limit.
-  if (gcdLimit < 1)
-    return result; // Max. gcd limit disabled.
-  else if (gcdLimit == 1)
-    return 1;
-  SmallVector<int> limitedRes;
-  int maxLimitedRes = 1;
-  for (int factor = 1; factor <= gcdLimit; factor++)
-    limitedRes.push_back(std::gcd(factor, result));
-  for (unsigned i = 1; i < limitedRes.size(); i++)
-    maxLimitedRes = std::max(limitedRes[i], limitedRes[i - 1]);
-  return maxLimitedRes;
+  return result;
 }
 
 // Check if an air.channel is single-consumer-single-producer.
@@ -1438,11 +1425,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
             }
           }
         }
-        int scfParStaticTripCount = 1;
-        for (unsigned i = 0; i < ubs_spatial.size(); i++)
-          scfParStaticTripCount *= ubs_spatial[i] - lbs_spatial[i] + 1;
-        targetMemrefsToColTilingFactors[allocOp].push_back(
-            scfParStaticTripCount);
+        // Tiling along the first (x) dimension of scf.parallel only, as one NPU
+        // memtile is located at the bottom of each column.
+        targetMemrefsToColTilingFactors[allocOp].push_back(ubs_spatial[0] -
+                                                           lbs_spatial[0] + 1);
       } else if (auto put = dyn_cast<air::ChannelPutOp>(user)) {
         push_back_if_unique<air::ChannelOp>(
             MM2SChannels, air::getChannelDeclarationThroughSymbol(put));
@@ -1519,12 +1505,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   // Tile memrefs.
   SmallVector<Operation *> erased;
   for (auto allocOp : targetMemrefs) {
-    // TODO: Currently hard-coded NPU memtile count (4) here. Tiling the l2
-    // memref beyond that number wouldn't make sense as it simply leads to extra
-    // hw dma channel utilization.
-    const int L2BufferTilingLimit = 4;
-    int targetColTilingFactor = findGCDNoGreaterThan(
-        targetMemrefsToColTilingFactors[allocOp], L2BufferTilingLimit);
+    int targetColTilingFactor =
+        findGCD(targetMemrefsToColTilingFactors[allocOp]);
     allocOp->setAttr("split",
                      mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
                                             targetColTilingFactor));
