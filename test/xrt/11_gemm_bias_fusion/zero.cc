@@ -16,8 +16,7 @@
 #include <stdlib.h>
 #include <type_traits>
 
-template <typename T, int M, int N>
-void zero_scalar(T *__restrict c) {
+template <typename T, int M, int N> void zero_scalar(T *__restrict c) {
   for (int i = 0; i < M * N; i++) {
     c[i] = 0;
   }

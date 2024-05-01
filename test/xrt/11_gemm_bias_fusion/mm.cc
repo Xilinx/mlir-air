@@ -331,7 +331,7 @@ extern "C" {
 
 #define zero_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,              \
                                mlir_type_out, r, s, t)                         \
-  void linalg_fill_bf16_view1x1x16x16x4x4xbf16as2(ctype_out *c_out) {              \
+  void linalg_fill_bf16_view1x1x16x16x4x4xbf16as2(ctype_out *c_out) {          \
     zero_vectorized<ctype_out, 64, 64, 32>(c_out);                             \
   }
 
