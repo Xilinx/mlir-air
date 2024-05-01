@@ -1021,11 +1021,15 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   let description = [{
     This pass fuses multiple air.channel ops into one. The condition for fusing channels 
     is such that the puts and gets of all candidate channels mush share the same control 
-    loop hierarchy, where every parent loops must have matching loop bounds.
+    loop hierarchy, where every parent loops must have matching loop bounds. The 
+    'aggressive-mode' option, when enabled, will attempt to use as few air.channels as 
+    possible by time-multiplexing air.channel.puts and air.channel.gets to share the same
+    air.channel symbol.
   }];
   let options = [
-    Option<"clAggressiveMode", "aggressive-mode", "bool", /*default=*/"false",
-            "When enabled, will attempt to use as few air.channels as possible">
+    ListOption<"clAggressiveMode", "aggressive-mode", "std::string",
+            "List of memory spaces to enable aggressive channel fusion with. Available options include ['L1', 'L2', 'L3'].",
+            "llvm::cl::ZeroOrMore">
   ];
 }
 

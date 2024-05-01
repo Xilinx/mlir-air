@@ -5,28 +5,38 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-fuse-channels="aggressive-mode=true" --split-input-file | FileCheck %s
-// RUN: air-opt %s -air-fuse-channels="aggressive-mode=false" --split-input-file | FileCheck %s --check-prefix=FUSELOOP
+// RUN: air-opt %s -air-fuse-channels="aggressive-mode=false" --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-fuse-channels="aggressive-mode=L1,L2,L3" --split-input-file | FileCheck %s --check-prefix=AGGRESSIVE
+// RUN: air-opt %s -air-fuse-channels="aggressive-mode=L1" --split-input-file | FileCheck %s --check-prefix=AGGL1
 
 // Have multiple channel put-get pairs share the same symbolic channels.
 // CHECK-LABEL: func0
 // CHECK: air.launch
 // CHECK: air.channel.put @channel_0
-// CHECK: air.channel.put @channel_0
+// CHECK: air.channel.put @channel_1
 // CHECK: air.segment
 // CHECK: air.channel.get @channel_0
-// CHECK: air.channel.get @channel_0
+// CHECK: air.channel.get @channel_1
 // CHECK: air.segment_terminator
 // CHECK: air.launch_terminator
-// FUSELOOP-LABEL: func0
-// FUSELOOP: air.launch
-// FUSELOOP: air.channel.put @channel_0
-// FUSELOOP: air.channel.put @channel_1
-// FUSELOOP: air.segment
-// FUSELOOP: air.channel.get @channel_0
-// FUSELOOP: air.channel.get @channel_1
-// FUSELOOP: air.segment_terminator
-// FUSELOOP: air.launch_terminator
+// AGGRESSIVE-LABEL: func0
+// AGGRESSIVE: air.launch
+// AGGRESSIVE: air.channel.put @channel_0
+// AGGRESSIVE: air.channel.put @channel_0
+// AGGRESSIVE: air.segment
+// AGGRESSIVE: air.channel.get @channel_0
+// AGGRESSIVE: air.channel.get @channel_0
+// AGGRESSIVE: air.segment_terminator
+// AGGRESSIVE: air.launch_terminator
+// AGGL1-LABEL: func0
+// AGGL1: air.launch
+// AGGL1: air.channel.put @channel_0
+// AGGL1: air.channel.put @channel_1
+// AGGL1: air.segment
+// AGGL1: air.channel.get @channel_0
+// AGGL1: air.channel.get @channel_1
+// AGGL1: air.segment_terminator
+// AGGL1: air.launch_terminator
 
 module {
   air.channel @channel_0 [1, 1]
@@ -67,30 +77,45 @@ module {
 // CHECK: air.channel.put @channel_2
 // CHECK: scf.for
 // CHECK: air.channel.put @channel_0
-// CHECK: air.channel.put @channel_0
+// CHECK: air.channel.put @channel_1
 // CHECK: air.herd
 // CHECK: air.channel.get @channel_2
 // CHECK: scf.for
 // CHECK: air.channel.get @channel_0
-// CHECK: air.channel.get @channel_0
+// CHECK: air.channel.get @channel_1
 // CHECK: air.herd_terminator
 // CHECK: air.segment_terminator
 // CHECK: air.launch_terminator
-// FUSELOOP-LABEL: func1
-// FUSELOOP: air.launch
-// FUSELOOP: air.segment
-// FUSELOOP: air.channel.put @channel_2
-// FUSELOOP: scf.for
-// FUSELOOP: air.channel.put @channel_0
-// FUSELOOP: air.channel.put @channel_1
-// FUSELOOP: air.herd
-// FUSELOOP: air.channel.get @channel_2
-// FUSELOOP: scf.for
-// FUSELOOP: air.channel.get @channel_0
-// FUSELOOP: air.channel.get @channel_1
-// FUSELOOP: air.herd_terminator
-// FUSELOOP: air.segment_terminator
-// FUSELOOP: air.launch_terminator
+// AGGRESSIVE-LABEL: func1
+// AGGRESSIVE: air.launch
+// AGGRESSIVE: air.segment
+// AGGRESSIVE: air.channel.put @channel_2
+// AGGRESSIVE: scf.for
+// AGGRESSIVE: air.channel.put @channel_0
+// AGGRESSIVE: air.channel.put @channel_0
+// AGGRESSIVE: air.herd
+// AGGRESSIVE: air.channel.get @channel_2
+// AGGRESSIVE: scf.for
+// AGGRESSIVE: air.channel.get @channel_0
+// AGGRESSIVE: air.channel.get @channel_0
+// AGGRESSIVE: air.herd_terminator
+// AGGRESSIVE: air.segment_terminator
+// AGGRESSIVE: air.launch_terminator
+// AGGL1-LABEL: func1
+// AGGL1: air.launch
+// AGGL1: air.segment
+// AGGL1: air.channel.put @channel_2
+// AGGL1: scf.for
+// AGGL1: air.channel.put @channel_0
+// AGGL1: air.channel.put @channel_0
+// AGGL1: air.herd
+// AGGL1: air.channel.get @channel_2
+// AGGL1: scf.for
+// AGGL1: air.channel.get @channel_0
+// AGGL1: air.channel.get @channel_0
+// AGGL1: air.herd_terminator
+// AGGL1: air.segment_terminator
+// AGGL1: air.launch_terminator
 
 module {
   air.channel @channel_0 [1, 1]
@@ -146,21 +171,30 @@ module {
 // CHECK-LABEL: func2
 // CHECK: air.launch
 // CHECK: air.channel.put{{.*}}@channel_0
-// CHECK: air.channel.put{{.*}}@channel_0
+// CHECK: air.channel.put{{.*}}@channel_1
 // CHECK: air.segment
 // CHECK: air.channel.get{{.*}}@channel_0
-// CHECK: air.channel.get{{.*}}@channel_0
+// CHECK: air.channel.get{{.*}}@channel_1
 // CHECK: air.segment_terminator
 // CHECK: air.launch_terminator
-// FUSELOOP-LABEL: func2
-// FUSELOOP: air.launch
-// FUSELOOP: air.channel.put{{.*}}@channel_0
-// FUSELOOP: air.channel.put{{.*}}@channel_1
-// FUSELOOP: air.segment
-// FUSELOOP: air.channel.get{{.*}}@channel_0
-// FUSELOOP: air.channel.get{{.*}}@channel_1
-// FUSELOOP: air.segment_terminator
-// FUSELOOP: air.launch_terminator
+// AGGRESSIVE-LABEL: func2
+// AGGRESSIVE: air.launch
+// AGGRESSIVE: air.channel.put{{.*}}@channel_0
+// AGGRESSIVE: air.channel.put{{.*}}@channel_0
+// AGGRESSIVE: air.segment
+// AGGRESSIVE: air.channel.get{{.*}}@channel_0
+// AGGRESSIVE: air.channel.get{{.*}}@channel_0
+// AGGRESSIVE: air.segment_terminator
+// AGGRESSIVE: air.launch_terminator
+// AGGL1-LABEL: func2
+// AGGL1: air.launch
+// AGGL1: air.channel.put{{.*}}@channel_0
+// AGGL1: air.channel.put{{.*}}@channel_1
+// AGGL1: air.segment
+// AGGL1: air.channel.get{{.*}}@channel_0
+// AGGL1: air.channel.get{{.*}}@channel_1
+// AGGL1: air.segment_terminator
+// AGGL1: air.launch_terminator
 
 module {
   air.channel @channel_0 [1, 1]
@@ -215,26 +249,37 @@ module {
 
 // CHECK-LABEL: func3
 // CHECK: air.launch
-// CHECK: air.channel.put{{.*}}@channel_1
+// CHECK: air.channel.put{{.*}}@channel_0
 // CHECK: air.channel.put{{.*}}@channel_1
 // CHECK: air.segment @segment_0
 // CHECK: air.herd @herd_0
-// CHECK: air.channel.get{{.*}}@channel_1
+// CHECK: air.channel.get{{.*}}@channel_0
 // CHECK: air.channel.get{{.*}}@channel_1
 // CHECK: air.herd_terminator
 // CHECK: air.segment_terminator
 // CHECK: air.launch_terminator
-// FUSELOOP-LABEL: func3
-// FUSELOOP: air.launch
-// FUSELOOP: air.channel.put{{.*}}@channel_0
-// FUSELOOP: air.channel.put{{.*}}@channel_1
-// FUSELOOP: air.segment @segment_0
-// FUSELOOP: air.herd @herd_0
-// FUSELOOP: air.channel.get{{.*}}@channel_0
-// FUSELOOP: air.channel.get{{.*}}@channel_1
-// FUSELOOP: air.herd_terminator
-// FUSELOOP: air.segment_terminator
-// FUSELOOP: air.launch_terminator
+// AGGRESSIVE-LABEL: func3
+// AGGRESSIVE: air.launch
+// AGGRESSIVE: air.channel.put{{.*}}@channel_1
+// AGGRESSIVE: air.channel.put{{.*}}@channel_1
+// AGGRESSIVE: air.segment @segment_0
+// AGGRESSIVE: air.herd @herd_0
+// AGGRESSIVE: air.channel.get{{.*}}@channel_1
+// AGGRESSIVE: air.channel.get{{.*}}@channel_1
+// AGGRESSIVE: air.herd_terminator
+// AGGRESSIVE: air.segment_terminator
+// AGGRESSIVE: air.launch_terminator
+// AGGL1-LABEL: func3
+// AGGL1: air.launch
+// AGGL1: air.channel.put{{.*}}@channel_1
+// AGGL1: air.channel.put{{.*}}@channel_1
+// AGGL1: air.segment @segment_0
+// AGGL1: air.herd @herd_0
+// AGGL1: air.channel.get{{.*}}@channel_1
+// AGGL1: air.channel.get{{.*}}@channel_1
+// AGGL1: air.herd_terminator
+// AGGL1: air.segment_terminator
+// AGGL1: air.launch_terminator
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {
@@ -321,25 +366,44 @@ module {
 // CHECK: air.herd_terminator
 // CHECK: air.segment_terminator
 // CHECK: air.launch_terminator
-// FUSELOOP-LABEL: func4
-// FUSELOOP: air.launch
-// FUSELOOP: air.segment @segment_0
-// FUSELOOP: air.herd @herd_0
-// FUSELOOP: air.channel.get{{.*}}@channel_2
-// FUSELOOP: air.channel.get{{.*}}@channel_3
-// FUSELOOP: air.herd_terminator
-// FUSELOOP: scf.for
-// FUSELOOP-NEXT: scf.for
-// FUSELOOP: air.channel.put{{.*}}@channel_2
-// FUSELOOP: scf.for
-// FUSELOOP-NEXT: scf.for
-// FUSELOOP: air.channel.put{{.*}}@channel_3
-// FUSELOOP: air.herd @herd_0
-// FUSELOOP: air.channel.get{{.*}}@channel_2
-// FUSELOOP: air.channel.get{{.*}}@channel_3
-// FUSELOOP: air.herd_terminator
-// FUSELOOP: air.segment_terminator
-// FUSELOOP: air.launch_terminator
+// AGGRESSIVE-LABEL: func4
+// AGGRESSIVE: air.launch
+// AGGRESSIVE: air.segment @segment_0
+// AGGRESSIVE: air.herd @herd_0
+// AGGRESSIVE: air.channel.get{{.*}}@channel_2
+// AGGRESSIVE: air.channel.get{{.*}}@channel_3
+// AGGRESSIVE: air.herd_terminator
+// AGGRESSIVE: scf.for
+// AGGRESSIVE-NEXT: scf.for
+// AGGRESSIVE: air.channel.put{{.*}}@channel_2
+// AGGRESSIVE: scf.for
+// AGGRESSIVE-NEXT: scf.for
+// AGGRESSIVE: air.channel.put{{.*}}@channel_3
+// AGGRESSIVE: air.herd @herd_0
+// AGGRESSIVE: air.channel.get{{.*}}@channel_2
+// AGGRESSIVE: air.channel.get{{.*}}@channel_3
+// AGGRESSIVE: air.herd_terminator
+// AGGRESSIVE: air.segment_terminator
+// AGGRESSIVE: air.launch_terminator
+// AGGL1-LABEL: func4
+// AGGL1: air.launch
+// AGGL1: air.segment @segment_0
+// AGGL1: air.herd @herd_0
+// AGGL1: air.channel.get{{.*}}@channel_2
+// AGGL1: air.channel.get{{.*}}@channel_3
+// AGGL1: air.herd_terminator
+// AGGL1: scf.for
+// AGGL1-NEXT: scf.for
+// AGGL1: air.channel.put{{.*}}@channel_2
+// AGGL1: scf.for
+// AGGL1-NEXT: scf.for
+// AGGL1: air.channel.put{{.*}}@channel_3
+// AGGL1: air.herd @herd_0
+// AGGL1: air.channel.get{{.*}}@channel_2
+// AGGL1: air.channel.get{{.*}}@channel_3
+// AGGL1: air.herd_terminator
+// AGGL1: air.segment_terminator
+// AGGL1: air.launch_terminator
 
 #map = affine_map<(d0) -> (d0 * 8)>
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
@@ -479,17 +543,28 @@ module {
 // CHECK: scf.yield
 // CHECK: air.segment_terminator
 // CHECK: air.launch_terminator
-// FUSELOOP-LABEL: func5
-// FUSELOOP: air.launch
-// FUSELOOP: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
-// FUSELOOP: air.channel.put{{.*}}@channel_4
-// FUSELOOP: scf.yield
-// FUSELOOP: air.segment @segment_0
-// FUSELOOP: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
-// FUSELOOP: air.channel.get{{.*}}@channel_4
-// FUSELOOP: scf.yield
-// FUSELOOP: air.segment_terminator
-// FUSELOOP: air.launch_terminator
+// AGGRESSIVE-LABEL: func5
+// AGGRESSIVE: air.launch
+// AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// AGGRESSIVE: air.channel.put{{.*}}@channel_4
+// AGGRESSIVE: scf.yield
+// AGGRESSIVE: air.segment @segment_0
+// AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// AGGRESSIVE: air.channel.get{{.*}}@channel_4
+// AGGRESSIVE: scf.yield
+// AGGRESSIVE: air.segment_terminator
+// AGGRESSIVE: air.launch_terminator
+// AGGL1-LABEL: func5
+// AGGL1: air.launch
+// AGGL1: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// AGGL1: air.channel.put{{.*}}@channel_4
+// AGGL1: scf.yield
+// AGGL1: air.segment @segment_0
+// AGGL1: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// AGGL1: air.channel.get{{.*}}@channel_4
+// AGGL1: scf.yield
+// AGGL1: air.segment_terminator
+// AGGL1: air.launch_terminator
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
@@ -578,24 +653,42 @@ module {
 // CHECK: air.channel.get{{.*}}@channel_6
 // CHECK: air.herd_terminator
 // CHECK: air.segment_terminator
-// FUSELOOP-LABEL: func6
-// FUSELOOP: air.segment @segment_0
-// FUSELOOP: air.herd @herd_0
-// FUSELOOP: air.channel.get{{.*}}@channel_6
-// FUSELOOP: air.herd_terminator
-// FUSELOOP: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
-// FUSELOOP-NEXT: scf.parallel
-// FUSELOOP: air.channel.put{{.*}}@channel_6
-// FUSELOOP: scf.reduce
-// FUSELOOP: scf.yield
-// FUSELOOP: air.herd @herd_0
-// FUSELOOP: scf.for %{{.*}} = %c1{{.*}}to %c15{{.*}}step %c1
-// FUSELOOP: air.channel.get{{.*}}@channel_6
-// FUSELOOP: air.herd_terminator
-// FUSELOOP: air.herd @herd_0
-// FUSELOOP: air.channel.get{{.*}}@channel_6
-// FUSELOOP: air.herd_terminator
-// FUSELOOP: air.segment_terminator
+// AGGRESSIVE-LABEL: func6
+// AGGRESSIVE: air.segment @segment_0
+// AGGRESSIVE: air.herd @herd_0
+// AGGRESSIVE: air.channel.get{{.*}}@channel_6
+// AGGRESSIVE: air.herd_terminator
+// AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// AGGRESSIVE-NEXT: scf.parallel
+// AGGRESSIVE: air.channel.put{{.*}}@channel_6
+// AGGRESSIVE: scf.reduce
+// AGGRESSIVE: scf.yield
+// AGGRESSIVE: air.herd @herd_0
+// AGGRESSIVE: scf.for %{{.*}} = %c1{{.*}}to %c15{{.*}}step %c1
+// AGGRESSIVE: air.channel.get{{.*}}@channel_6
+// AGGRESSIVE: air.herd_terminator
+// AGGRESSIVE: air.herd @herd_0
+// AGGRESSIVE: air.channel.get{{.*}}@channel_6
+// AGGRESSIVE: air.herd_terminator
+// AGGRESSIVE: air.segment_terminator
+// AGGL1-LABEL: func6
+// AGGL1: air.segment @segment_0
+// AGGL1: air.herd @herd_0
+// AGGL1: air.channel.get{{.*}}@channel_6
+// AGGL1: air.herd_terminator
+// AGGL1: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
+// AGGL1-NEXT: scf.parallel
+// AGGL1: air.channel.put{{.*}}@channel_6
+// AGGL1: scf.reduce
+// AGGL1: scf.yield
+// AGGL1: air.herd @herd_0
+// AGGL1: scf.for %{{.*}} = %c1{{.*}}to %c15{{.*}}step %c1
+// AGGL1: air.channel.get{{.*}}@channel_6
+// AGGL1: air.herd_terminator
+// AGGL1: air.herd @herd_0
+// AGGL1: air.channel.get{{.*}}@channel_6
+// AGGL1: air.herd_terminator
+// AGGL1: air.segment_terminator
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {
