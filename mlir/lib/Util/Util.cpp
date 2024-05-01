@@ -920,7 +920,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       for_loops.push_back(parent);
   }
   for (auto o : for_loops) {
-    unsigned ind_var_factor = 1;
+    uint64_t ind_var_factor = 1;
     for (int i = offsets.size() - 1; i >= 0; i--) {
       Value iv = nullptr;
       int loop_lower_bound = 0;
@@ -972,16 +972,21 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       stepSize = afo.getStepAsInt();
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       stepSize = *mlir::getConstantIntValue(sfo.getStep());
-    int new_stride_value =
+    int64_t new_stride_value =
         (stepSize * ind_var_factor) % getTensorVolume(memref.getType());
     Value new_stride =
         builder.template create<arith::ConstantIndexOp>(loc, new_stride_value);
 
-    // Check for compliance with DMA BD hardware limitation (<= 1M).
+    // Check for compliance with DMA BD hardware limitation (<= 1M). Note that
+    // the exception is when stepSize = previous highest wrap, because in that
+    // case the large stride shall simply get canonicalized away.
     if (mlir::ceilDiv(
             new_stride_value * getElementSizeInBytes(memref.getType()), 4) >
-        0x100000)
-      return failure();
+        0x100000) {
+      if (stepSize != *getConstantIntValue(wraps[0])) {
+        return failure();
+      }
+    }
 
     // Insert new dimension into the wraps and strides list.
     wraps.insert(wraps.begin(), new_wrap);

@@ -816,6 +816,9 @@ module {
 // CHECK-LABEL: aie.device(npu)
 // CHECK:  func.func @func18(%[[ARG0:.*]]: memref<8192x32768xi32>)
 // CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][1, 4, 64, 64][0, 64, 32768]) {id = 0 : i64, metadata = @airMemcpyId26} : memref<8192x32768xi32>
+// CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 64, 0][1, 4, 64, 64][0, 64, 32768]) {id = 1 : i64, metadata = @airMemcpyId26} : memref<8192x32768xi32>
+// CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 128, 0][1, 4, 64, 64][0, 64, 32768]) {id = 2 : i64, metadata = @airMemcpyId26} : memref<8192x32768xi32>
+// CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 192, 0][1, 4, 64, 64][0, 64, 32768]) {id = 3 : i64, metadata = @airMemcpyId26} : memref<8192x32768xi32>
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 module {
@@ -844,6 +847,50 @@ module {
         %14 = arith.index_cast %10 : index to i64
         %15 = arith.index_cast %11 : index to i64
         %16 = airrt.dma_memcpy_nd(%c26_i32, %12, %13, %alloc[%c0_i64, %c0_i64, %14, %15], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c32768_i64]) {metadata = @airMemcpyId26} : (i32, i64, i64, memref<8192x32768xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %p = airrt.segment_load "segment_0" : i64
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Big memref.
+
+// CHECK-LABEL: aie.device(npu)
+// CHECK:  func.func @func19(%[[ARG0:.*]]: memref<308x2432xi32>)
+// CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][4, 19, 28, 128][0, 128, 2432]) {id = 0 : i64, metadata = @airMemcpyId26} : memref<308x2432xi32>
+
+#map = affine_map<()[s0] -> (s0 * 64)>
+module {
+  aie.device(npu) {
+    %tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId26(S2MM, 0, 0)
+    memref.global "public" @airMemcpyId26 : memref<64x64xi32, 1>
+  } {sym_name = "segment_0"}
+  func.func @func19() {
+    %c2432_i64 = arith.constant 2432 : i64
+    %c8_i64 = arith.constant 8 : i64
+    %c512_i64 = arith.constant 512 : i64
+    %c128_i64 = arith.constant 128 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c28_i64 = arith.constant 28 : i64
+    %c26_i32 = arith.constant 26 : i32
+    %c19_i64 = arith.constant 19 : i64
+    %c14_i32 = arith.constant 14 : i32
+    %c1_i64 = arith.constant 1 : i64
+    %c0_i64 = arith.constant 0 : i64
+    %alloc = memref.alloc() : memref<308x2432xi32>
+    affine.for %arg3 = 0 to 4 {
+      affine.for %arg4 = 0 to 1 {
+        %10 = affine.apply #map()[%arg3]
+        %11 = affine.apply #map()[%arg4]
+        %12 = arith.index_cast %arg3 : index to i64
+        %13 = arith.index_cast %arg4 : index to i64
+        %14 = arith.index_cast %10 : index to i64
+        %15 = arith.index_cast %11 : index to i64
+        %16 = airrt.dma_memcpy_nd(%c26_i32, %12, %13, %alloc[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c19_i64, %c28_i64, %c128_i64], [%c0_i64, %c128_i64, %c2432_i64]) {metadata = @airMemcpyId26} : (i32, i64, i64, memref<308x2432xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
         %p = airrt.segment_load "segment_0" : i64
       }
     }
