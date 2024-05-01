@@ -246,4 +246,33 @@ module {
     %4 = air.channel.put async @channel_19[%c3, %c0] (%arg0[%c192, %c0] [%c64, %c256] [%c256, %c1]) : (memref<256x256xbf16>)
     return
   }
+
+  // AIE2 hw limitation: stride <= 1M.
+  // CHECK-LABEL: test8
+  // CHECK: scf.for %[[VAL0:.*]] = %c0 to %c512 step %c256 {
+  // CHECK-NEXT: put  @channel_20[%c0, %c0] (%arg0[%[[VAL0]], %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK-NEXT: }
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0, %c0] [%c4, %c64, %c256] [%c1245184, %c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c512, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+
+  func.func @test8(%arg0: memref<2432x9728xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c128 = arith.constant 128 : index
+    %c256 = arith.constant 256 : index
+    %c512 = arith.constant 512 : index
+    %c64 = arith.constant 64 : index
+    %c9728 = arith.constant 9728 : index
+    scf.for %arg2 = %c0 to %c512 step %c256 {
+      air.channel.put @channel_20[%c0, %c0] (%arg0[%arg2, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+    }
+    scf.for %arg2 = %c0 to %c512 step %c128 {
+      air.channel.put @channel_20[%c0, %c0] (%arg0[%arg2, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+    }
+    scf.for %arg2 = %c0 to %c512 step %c64 {
+      air.channel.put @channel_20[%c0, %c0] (%arg0[%arg2, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+    }
+    return
+  }
 }
