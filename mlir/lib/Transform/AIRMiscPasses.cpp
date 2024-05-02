@@ -1425,10 +1425,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
             }
           }
         }
-        for (unsigned i = 0; i < ubs_spatial.size(); i++) {
-          targetMemrefsToColTilingFactors[allocOp].push_back(
-              ubs_spatial[i] - lbs_spatial[i] + 1);
-        }
+        // Tiling along the first (x) dimension of scf.parallel only, as one NPU
+        // memtile is located at the bottom of each column.
+        targetMemrefsToColTilingFactors[allocOp].push_back(ubs_spatial[0] -
+                                                           lbs_spatial[0] + 1);
       } else if (auto put = dyn_cast<air::ChannelPutOp>(user)) {
         push_back_if_unique<air::ChannelOp>(
             MM2SChannels, air::getChannelDeclarationThroughSymbol(put));
@@ -1528,13 +1528,6 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         // loop.
         SmallVector<int, 2> lbs_spatial, ubs_spatial;
         air::getSizesFromSpatialLoop(par, lbs_spatial, ubs_spatial);
-        // TODO: currently hardcoded tiling dimension to be the last
-        // dimension.
-        if (ubs_spatial.back() - lbs_spatial.back() + 1 <
-            targetColTilingFactor) {
-          // Tile the air.channel op by targetColTilingFactor. NYI.
-          assert(false && "NYI");
-        }
         OpBuilder builder(par);
         IRMapping remap;
         (void)air::unrollAIRChannelPutGetInScfParallel(builder, par, user,
