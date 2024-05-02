@@ -1239,3 +1239,69 @@ air::getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
   }
   return new_offsets;
 }
+
+// Given a dimension on wrap-and-stride list, infer the dimension on memref that
+// this pattern spans completely on.
+std::optional<int>
+air::getMemrefDimFromOffsetDim(int dimOnOffset, SmallVector<Value> offsets,
+                               SmallVector<Value> strides,
+                               SmallVector<int> memrefShape) {
+  std::optional<int> output = std::nullopt;
+  if (memrefShape.empty())
+    return std::nullopt;
+  if (offsets.empty())
+    return std::nullopt;
+  assert(dimOnOffset < (int)offsets.size() && "Dimension exceeds offsets rank");
+
+  // Get stride value which corresponds to accessing each memref dimension,
+  // highest dimension first.
+  int memrefRank = memrefShape.size();
+  SmallVector<int> memrefDimStrides(memrefRank, 1);
+  int currentStride = 1;
+  for (int i = memrefRank - 1; i >= 0; i--) {
+    memrefDimStrides[i] = currentStride;
+    currentStride *= memrefShape[i];
+  }
+
+  // Find the dimension on memref shape with given stride value.
+  auto strideVal = getConstantIntValue(strides[dimOnOffset]);
+  assert(strideVal && "Non-static stride value in data access pattern, NYI.");
+  for (unsigned i = 0; i < memrefDimStrides.size(); i++)
+    if (*strideVal == memrefDimStrides[i]) {
+      output = i;
+      return output;
+    }
+  return std::nullopt;
+}
+
+// Given a dimension on memref shape, infer the dimension on wrap-and-stride
+// list that spans on this memref dimension.
+std::optional<int>
+air::getOffsetDimFromMemrefDim(int dimOnMemref, SmallVector<Value> strides,
+                               SmallVector<int> memrefShape) {
+  std::optional<int> output = std::nullopt;
+  if (memrefShape.empty())
+    return std::nullopt;
+  if (strides.empty())
+    return std::nullopt;
+  assert(dimOnMemref < (int)memrefShape.size() &&
+         "Dimension exceeds memref rank");
+
+  // Get stride value which corresponds to accessing the current memref
+  // dimension.
+  int memrefRank = memrefShape.size();
+  int memrefStride = 1;
+  for (int i = memrefRank - 1; i > dimOnMemref; i--)
+    memrefStride *= memrefShape[i];
+
+  // Find the dimension on wrap-and-stride list with given stride value.
+  for (unsigned i = 0; i < strides.size(); i++) {
+    auto strideVal = getConstantIntValue(strides[i]);
+    assert(strideVal && "Non-static stride value in data access pattern, NYI.");
+    if (*strideVal == memrefStride) {
+      output = i;
+      return output;
+    }
+  }
+  return std::nullopt;
+}

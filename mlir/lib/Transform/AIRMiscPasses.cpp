@@ -661,7 +661,6 @@ private:
     auto loc = memcpyOp->getLoc();
     bool opIsUpdated = false;
     for (unsigned i = 0; i < current_shape_expr.size(); i++) {
-      // std::cout << herdDimToDmaOffsetDimMap[i] << " ";
       if (!current_shape_expr[i])
         continue;
       if (!herdDimToDmaOffsetDimMap[i])
@@ -1064,8 +1063,9 @@ private:
   getTargetMemrefAllocs(func::FuncOp func,
                         std::map<memref::AllocOp, SmallVector<int>>
                             &targetMemrefsToColTilingFactors);
-  int getMemrefSplitDim(SmallVector<air::ChannelInterface> putgets,
-                        int memrefRank);
+  std::optional<int>
+  getMemrefSplitDim(SmallVector<air::ChannelInterface> putgets,
+                    SmallVector<int> memrefShape);
 };
 
 template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
@@ -1171,34 +1171,6 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
   return newWaitAll.getAsyncToken();
 }
 
-std::optional<int> getFirstConstantOffsetValue(SmallVector<Value> offsets,
-                                               int memrefRank,
-                                               int &initialDim) {
-  int offsetDim = (int)offsets.size() >= memrefRank
-                      ? offsets.size() - memrefRank + initialDim
-                      : 0;
-  auto offset = getConstantIntValue(offsets[offsetDim]);
-  // Find the first constant offset to use as key for memref splitting.
-  while (!offset && offsetDim < (int)offsets.size()) {
-    offset = getConstantIntValue(offsets[++offsetDim]);
-    initialDim++;
-  }
-  return offset;
-}
-
-int getFirstConstantOffsetValueIndex(SmallVector<Value> offsets, int memrefRank,
-                                     int initialDim = 0) {
-  int offsetDim = (int)offsets.size() >= memrefRank
-                      ? offsets.size() - memrefRank + initialDim
-                      : 0;
-  auto offset = getConstantIntValue(offsets[offsetDim]);
-  // Find the first constant offset to use as key for memref splitting.
-  while (!offset && offsetDim < (int)offsets.size()) {
-    offset = getConstantIntValue(offsets[++offsetDim]);
-  }
-  return offsetDim;
-}
-
 // Partition L2 memref.
 void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     SmallVector<air::ChannelPutOp> &puts, SmallVector<air::ChannelGetOp> &gets,
@@ -1223,8 +1195,13 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
   std::map<int, SmallVector<air::ChannelInterface>> chanOpPartitions;
   SmallVector<int> keys;
   for (auto op : puts) {
-    auto offset = getFirstConstantOffsetValue(
-        op.getOffsets(), air::getTensorShape(ty).size(), dim);
+    auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
+                                                    air::getTensorShape(ty));
+    if (!offsetDim)
+      continue;
+    auto offset = getConstantIntValue(op.getOffsets()[*offsetDim]);
+    if (!offset)
+      continue;
     push_back_if_unique<int>(keys, *offset);
     if (!chanOpPartitions.count(*offset))
       chanOpPartitions[*offset] = SmallVector<air::ChannelInterface>{op};
@@ -1232,8 +1209,13 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       chanOpPartitions[*offset].push_back(op);
   }
   for (auto op : gets) {
-    auto offset = getFirstConstantOffsetValue(
-        op.getOffsets(), air::getTensorShape(ty).size(), dim);
+    auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
+                                                    air::getTensorShape(ty));
+    if (!offsetDim)
+      continue;
+    auto offset = getConstantIntValue(op.getOffsets()[*offsetDim]);
+    if (!offset)
+      continue;
     push_back_if_unique<int>(keys, *offset);
     if (!chanOpPartitions.count(*offset))
       chanOpPartitions[*offset] = SmallVector<air::ChannelInterface>{op};
@@ -1248,12 +1230,12 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       newMemrefShape.push_back(air::getTensorShape(ty)[i]);
     }
     for (auto op : chanOpPartitions[key]) {
-      int offsetDim =
-          op.getOffsets().size() >= air::getTensorShape(ty).size()
-              ? op.getOffsets().size() - air::getTensorShape(ty).size() + dim
-              : 0;
+      auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
+                                                      air::getTensorShape(ty));
+      if (!offsetDim)
+        continue;
       if (op.getSizes().size() == newMemrefShape.size()) {
-        newMemrefShape[dim] = *getConstantIntValue(op.getSizes()[offsetDim]);
+        newMemrefShape[dim] = *getConstantIntValue(op.getSizes()[*offsetDim]);
         break;
       }
     }
@@ -1300,9 +1282,11 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
           op.getIndices().size();
       auto &memrefOpOper = op->getOpOperand(memrefOperandOffset);
       memrefOpOper.assign(newMemref);
-      int offsetDim = getFirstConstantOffsetValueIndex(
-          op.getOffsets(), air::getTensorShape(ty).size(), dim);
-      int offsetOperandOffset = memrefOperandOffset + offsetDim + 1;
+      auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
+                                                      air::getTensorShape(ty));
+      if (!offsetDim)
+        continue;
+      int offsetOperandOffset = memrefOperandOffset + *offsetDim + 1;
       auto &offsetOpOper = op->getOpOperand(offsetOperandOffset);
       offsetOpOper.assign(builder.create<arith::ConstantIndexOp>(loc, 0));
       // Update strides (contiguous, row-major) after memref tiling.
@@ -1342,9 +1326,9 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
 
 // Infer the dimension to which the join / distribute pattern happens, as basis
 // for memref splitting.
-int AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
-    SmallVector<air::ChannelInterface> putgets, int memrefRank) {
-  int split_dim = 0;
+std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
+    SmallVector<air::ChannelInterface> putgets, SmallVector<int> memrefShape) {
+  std::optional<int> memrefDim = std::nullopt;
   for (unsigned i = 0; i < putgets.size() - 1; i++) {
     for (unsigned j = i + 1; j < putgets.size(); j++) {
       if (putgets[i].getOffsets().size() != putgets[j].getOffsets().size())
@@ -1354,16 +1338,16 @@ int AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
             getConstantIntValue(putgets[j].getOffsets()[k])) {
           if (*getConstantIntValue(putgets[i].getOffsets()[k]) !=
               *getConstantIntValue(putgets[j].getOffsets()[k]))
-            split_dim = k;
+            memrefDim = k;
         }
       }
     }
   }
-  // Match offset dims with memref shape.
-  if (split_dim)
-    split_dim = split_dim + memrefRank - putgets[0].getOffsets().size();
-  split_dim = std::max(split_dim, 0);
-  return split_dim;
+  // Match offset dims with memref dims.
+  if (!memrefDim)
+    return std::nullopt;
+  return air::getMemrefDimFromOffsetDim(*memrefDim, putgets[0].getOffsets(),
+                                        putgets[0].getStrides(), memrefShape);
 }
 
 SmallVector<memref::AllocOp>
@@ -1451,12 +1435,12 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       for (auto chanOp : MM2SChannels)
         for (auto put : air::getChannelPutOpThroughSymbol(chanOp))
           putgets.push_back(put);
-      int split_dim = getMemrefSplitDim(
-          putgets, air::getTensorShape(memref.getType()).size());
+      auto split_dim =
+          getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
       if (split_dim)
         allocOp->setAttr(
             "split_dim",
-            IntegerAttr::get(IntegerType::get(ctx, 32), split_dim));
+            IntegerAttr::get(IntegerType::get(ctx, 32), *split_dim));
     }
     if (S2MMChannels.size() > 1) {
       targetMemrefsToColTilingFactors[allocOp].push_back(S2MMChannels.size());
@@ -1465,12 +1449,12 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       for (auto chanOp : MM2SChannels)
         for (auto get : air::getChannelGetOpThroughSymbol(chanOp))
           putgets.push_back(get);
-      int split_dim = getMemrefSplitDim(
-          putgets, air::getTensorShape(memref.getType()).size());
+      auto split_dim =
+          getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
       if (split_dim)
         allocOp->setAttr(
             "split_dim",
-            IntegerAttr::get(IntegerType::get(ctx, 32), split_dim));
+            IntegerAttr::get(IntegerType::get(ctx, 32), *split_dim));
     }
   }
   return targetMemrefs;
