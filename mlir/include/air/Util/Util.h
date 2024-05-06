@@ -65,6 +65,7 @@ void renumberChannelOps(Block *region, std::map<int, int> &reverse_map);
 
 // Return op name as string
 std::string to_string(Operation *op);
+// Return type name as string
 std::string to_string(mlir::Type t);
 
 // Generate a new unique channel name
@@ -202,6 +203,19 @@ SmallVector<int>
 getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
                                 SmallVector<int64_t> new_memref_shape,
                                 SmallVector<Value> offsets);
+
+// Given a dimension on wrap-and-stride list, infer the dimension on memref that
+// this pattern spans completely on.
+std::optional<int> getMemrefDimFromOffsetDim(int dimOnOffset,
+                                             SmallVector<Value> offsets,
+                                             SmallVector<Value> strides,
+                                             SmallVector<int> memrefShape);
+
+// Given a dimension on memref shape, infer the dimension on wrap-and-stride
+// list that spans on this memref dimension.
+std::optional<int> getOffsetDimFromMemrefDim(int dimOnMemref,
+                                             SmallVector<Value> strides,
+                                             SmallVector<int> memrefShape);
 
 } // namespace air
 } // namespace xilinx
