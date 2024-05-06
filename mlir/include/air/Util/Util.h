@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 
@@ -178,6 +179,10 @@ std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 writeAccessPattern(air::ChannelInterface chanOp);
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 writeAccessPattern(memref::SubViewOp subview);
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+writeAccessPattern(mlir::vector::TransferReadOp readOp);
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+writeAccessPattern(mlir::vector::TransferWriteOp writeOp);
 SmallVector<int64_t>
 getDataAccessShapeFromMemcpyOp(Value memref,
                                SmallVector<air::ChannelInterface> chanUsers);

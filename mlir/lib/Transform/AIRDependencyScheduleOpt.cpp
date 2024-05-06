@@ -20,6 +20,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
@@ -3879,11 +3880,15 @@ private:
     for (auto user : memref.getUsers()) {
       if (auto da = dyn_cast<memref::DeallocOp>(user))
         dealloc = da;
-      else if (auto chanOp = dyn_cast<air::ChannelInterface>(user)) {
+      else if (isa<air::ChannelInterface>(user))
         users.push_back(user);
-      } else if (auto subviewOp = dyn_cast<memref::SubViewOp>(user)) {
+      else if (isa<memref::SubViewOp>(user))
         users.push_back(user);
-      } else if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
+      else if (isa<mlir::vector::TransferReadOp>(user))
+        users.push_back(user);
+      else if (isa<mlir::vector::TransferWriteOp>(user))
+        users.push_back(user);
+      else if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
         for (unsigned i = 0; i < herdOp.getNumKernelOperands(); i++) {
           if (herdOp.getKernelOperand(i) == memref) {
             auto memrefInHerd = herdOp.getKernelArgument(i);
@@ -3891,7 +3896,6 @@ private:
               return failure();
           }
         }
-
       } else
         return failure(); // NYI.
     }
