@@ -3747,79 +3747,39 @@ struct ShrinkMemrefSizesByAccessPattern
     if (boundsAreAllOnes)
       return failure(); // Memref access pattern analysis failed
     if (shrinkMemref) {
-      // Start shrinking memref.
+      // Shrink access patterns to memref.
       for (auto user : users) {
-        // Update access patterns to shrunk memref from air.channel puts and
-        // gets.
-        if (!isa<air::ChannelInterface>(user))
-          continue;
         auto chanOp = dyn_cast<air::ChannelInterface>(user);
-        rewriter.setInsertionPoint(chanOp);
-        // Update offsets.
-        auto new_offsets = getUpdatedOffsetsAfterShrinkage(
-            memref_shape, overall_access_bounds, chanOp.getOffsets());
-        int offsetListIdxOffset =
-            dyn_cast<air::AsyncOpInterface>(chanOp.getOperation())
-                .getAsyncDependencies()
-                .size() +
-            chanOp.getIndices().size() + 1;
-        for (unsigned i = offsetListIdxOffset;
-             i < offsetListIdxOffset + chanOp.getOffsets().size(); i++) {
-          if (new_offsets[i - offsetListIdxOffset] < 0)
-            continue;
-          chanOp->getOpOperand(i).assign(
-              rewriter.create<arith::ConstantIndexOp>(
-                  chanOp->getLoc(), new_offsets[i - offsetListIdxOffset]));
-        }
-        // Update strides.
-        auto new_strides = getUpdatedStridesAfterShrinkage(
-            memref_shape, overall_access_bounds, chanOp.getStrides());
-        int strideListIdxOffset = offsetListIdxOffset +
-                                  chanOp.getOffsets().size() +
-                                  chanOp.getSizes().size();
-        for (unsigned i = strideListIdxOffset;
-             i < strideListIdxOffset + chanOp.getStrides().size(); i++) {
-          chanOp->getOpOperand(i).assign(
-              rewriter.create<arith::ConstantIndexOp>(
-                  chanOp->getLoc(), new_strides[i - strideListIdxOffset]));
-        }
+        if (!chanOp)
+          continue;
+        if (updateAccessPatternAfterShrinkage(chanOp, memref_shape,
+                                              overall_access_bounds, rewriter)
+                .failed())
+          return failure();
       }
       for (auto user : users) {
         // Update access patterns to shrunk memref from memref.subview.
-        if (!isa<memref::SubViewOp>(user))
-          continue;
         auto subViewOp = dyn_cast<memref::SubViewOp>(user);
-        auto subview_sizes = subViewOp.getSizes().begin();
-        auto subview_strides = subViewOp.getStrides().begin();
-        auto static_sizes = subViewOp.getStaticSizes();
-        auto static_strides = subViewOp.getStaticStrides();
-        for (unsigned i = 0; i < static_sizes.size(); i++) {
-          if (static_sizes[i] < 0) {
-            if (*getConstantIntValue(*subview_sizes++) !=
-                overall_access_bounds[i])
-              return failure(); // Memref shrinkage attempting to mutate
-                                // memref.subview, NYI.
-          } else {
-            if (static_sizes[i] != overall_access_bounds[i])
-              return failure(); // Memref shrinkage attempting to mutate
-                                // memref.subview, NYI.
-          }
+        if (!subViewOp)
+          continue;
+        if (updateAccessPatternAfterShrinkage(subViewOp, users,
+                                              overall_access_bounds, rewriter)
+                .failed())
+          return failure();
+      }
+      for (auto user : users) {
+        // Update access patterns to shrunk memref from
+        // vector.transfer_read/write.
+        auto transReadOp = dyn_cast<vector::TransferReadOp>(user);
+        auto transWriteOp = dyn_cast<vector::TransferWriteOp>(user);
+        if (transReadOp) {
+          if (updateAccessPatternAfterShrinkage(transReadOp, rewriter).failed())
+            return failure();
+        } else if (transWriteOp) {
+          if (updateAccessPatternAfterShrinkage(transWriteOp, rewriter)
+                  .failed())
+            return failure();
         }
-        for (unsigned i = 0; i < static_strides.size(); i++) {
-          if (static_strides[i] < 0) {
-            if (*getConstantIntValue(*subview_strides++) != 1)
-              return failure(); // Memref shrinkage attempting to mutate
-                                // memref.subview, NYI.
-          } else {
-            if (static_strides[i] != 1)
-              return failure(); // Memref shrinkage attempting to mutate
-                                // memref.subview, NYI.
-          }
-        }
-        subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
-        rewriter.eraseOp(subViewOp);
-        for (auto newUser : subViewOp.getSource().getUsers())
-          push_back_if_unique<Operation *>(users, newUser);
       }
 
       // Replace memref alloc op;
@@ -3917,6 +3877,115 @@ private:
       oldArg.replaceAllUsesWith(newArg);
       herdOp.getBody().front().eraseArgument(herdOp.getNumDims() * 2 + i + 1);
     }
+  }
+
+  // Update access patterns to shrunk memref from air.channel puts and gets.
+  LogicalResult
+  updateAccessPatternAfterShrinkage(air::ChannelInterface chanOp,
+                                    SmallVector<int> memref_shape,
+                                    SmallVector<int64_t> overall_access_bounds,
+                                    PatternRewriter &rewriter) const {
+    rewriter.setInsertionPoint(chanOp);
+    // Update offsets.
+    auto new_offsets = getUpdatedOffsetsAfterShrinkage(
+        memref_shape, overall_access_bounds, chanOp.getOffsets());
+    int offsetListIdxOffset =
+        dyn_cast<air::AsyncOpInterface>(chanOp.getOperation())
+            .getAsyncDependencies()
+            .size() +
+        chanOp.getIndices().size() + 1;
+    for (unsigned i = offsetListIdxOffset;
+         i < offsetListIdxOffset + chanOp.getOffsets().size(); i++) {
+      if (new_offsets[i - offsetListIdxOffset] < 0)
+        continue;
+      chanOp->getOpOperand(i).assign(rewriter.create<arith::ConstantIndexOp>(
+          chanOp->getLoc(), new_offsets[i - offsetListIdxOffset]));
+    }
+    // Update strides.
+    auto new_strides = getUpdatedStridesAfterShrinkage(
+        memref_shape, overall_access_bounds, chanOp.getStrides());
+    int strideListIdxOffset = offsetListIdxOffset + chanOp.getOffsets().size() +
+                              chanOp.getSizes().size();
+    for (unsigned i = strideListIdxOffset;
+         i < strideListIdxOffset + chanOp.getStrides().size(); i++) {
+      chanOp->getOpOperand(i).assign(rewriter.create<arith::ConstantIndexOp>(
+          chanOp->getLoc(), new_strides[i - strideListIdxOffset]));
+    }
+    return success();
+  }
+
+  // Update access patterns to shrunk memref from memref.subview.
+  LogicalResult
+  updateAccessPatternAfterShrinkage(memref::SubViewOp subViewOp,
+                                    SmallVector<Operation *> &users,
+                                    SmallVector<int64_t> overall_access_bounds,
+                                    PatternRewriter &rewriter) const {
+    auto subview_sizes = subViewOp.getSizes().begin();
+    auto subview_strides = subViewOp.getStrides().begin();
+    auto static_sizes = subViewOp.getStaticSizes();
+    auto static_strides = subViewOp.getStaticStrides();
+    for (unsigned i = 0; i < static_sizes.size(); i++) {
+      if (static_sizes[i] < 0) {
+        if (*getConstantIntValue(*subview_sizes++) != overall_access_bounds[i])
+          return failure(); // Memref shrinkage attempting to mutate
+                            // memref.subview, NYI.
+      } else {
+        if (static_sizes[i] != overall_access_bounds[i])
+          return failure(); // Memref shrinkage attempting to mutate
+                            // memref.subview, NYI.
+      }
+    }
+    for (unsigned i = 0; i < static_strides.size(); i++) {
+      if (static_strides[i] < 0) {
+        if (*getConstantIntValue(*subview_strides++) != 1)
+          return failure(); // Memref shrinkage attempting to mutate
+                            // memref.subview, NYI.
+      } else {
+        if (static_strides[i] != 1)
+          return failure(); // Memref shrinkage attempting to mutate
+                            // memref.subview, NYI.
+      }
+    }
+    subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
+    rewriter.eraseOp(subViewOp);
+    for (auto newUser : subViewOp.getSource().getUsers())
+      push_back_if_unique<Operation *>(users, newUser);
+    return success();
+  }
+
+  // Update access patterns to shrunk memref from vector.transfer_read/write.
+  LogicalResult
+  updateAccessPatternAfterShrinkage(SmallVector<Value> indices,
+                                    PatternRewriter &rewriter) const {
+    for (auto index : indices) {
+      if (getConstantIntValue(index))
+        continue;
+      if (!index.getDefiningOp())
+        continue;
+      if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
+        for (auto oper : execOp.getChildOp()->getOperands()) {
+          if (auto herdOp = air::getHerdArgOwner(oper)) {
+            rewriter.setInsertionPointToStart(&herdOp.getBody().front());
+            execOp.getChildOp()->replaceUsesOfWith(
+                oper, rewriter.create<arith::ConstantIndexOp>(
+                          rewriter.getUnknownLoc(), 0));
+          }
+        }
+      }
+    }
+    return success();
+  }
+  LogicalResult
+  updateAccessPatternAfterShrinkage(vector::TransferReadOp transReadOp,
+                                    PatternRewriter &rewriter) const {
+    return updateAccessPatternAfterShrinkage(transReadOp.getIndices(),
+                                             rewriter);
+  }
+  LogicalResult
+  updateAccessPatternAfterShrinkage(vector::TransferWriteOp transWriteOp,
+                                    PatternRewriter &rewriter) const {
+    return updateAccessPatternAfterShrinkage(transWriteOp.getIndices(),
+                                             rewriter);
   }
 };
 
