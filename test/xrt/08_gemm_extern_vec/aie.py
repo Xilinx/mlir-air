@@ -65,14 +65,14 @@ with air.ir.Context() as ctx, Location.unknown():
                 %8 = affine.apply #map2()[%arg4]
                 %subview_4 = memref.subview %alloc[%7, %8] [64, 64] [1, 1] : memref<128x1024xbf16, 1> to memref<64x64xbf16, strided<[1024, 1], offset: ?>, 1>
                 %alloc_5 = memref.alloc() : memref<8x16x4x8xbf16, 2>
-                %expand_shape = memref.expand_shape %subview_4 [[0, 1], [2, 3]] : memref<64x64xbf16, strided<[1024, 1], offset: ?>, 1> into memref<16x4x8x8xbf16, strided<[4096, 1024, 8, 1], offset: ?>, 1>
+                %expand_shape = memref.expand_shape %subview_4 [[0, 1], [2, 3]] output_shape [16, 4, 8, 8] : memref<64x64xbf16, strided<[1024, 1], offset: ?>, 1> into memref<16x4x8x8xbf16, strided<[4096, 1024, 8, 1], offset: ?>, 1>
                 %transpose_6 = memref.transpose %expand_shape (d0, d1, d2, d3) -> (d2, d0, d1, d3) : memref<16x4x8x8xbf16, strided<[4096, 1024, 8, 1], offset: ?>, 1> to memref<8x16x4x8xbf16, strided<[8, 4096, 1024, 1], offset: ?>, 1>
                 air.dma_memcpy_nd (%alloc_5[] [] [], %transpose_6[] [] []) : (memref<8x16x4x8xbf16, 2>, memref<8x16x4x8xbf16, strided<[8, 4096, 1024, 1], offset: ?>, 1>)
                 %9 = affine.apply #map2()[%arg4]
                 %10 = affine.apply #map1()[%arg3]
                 %subview_7 = memref.subview %alloc_0[%9, %10] [64, 64] [1, 1] : memref<1024x128xbf16, 1> to memref<64x64xbf16, strided<[128, 1], offset: ?>, 1>
                 %alloc_8 = memref.alloc() : memref<16x8x8x4xbf16, 2>
-                %expand_shape_9 = memref.expand_shape %subview_7 [[0, 1], [2, 3]] : memref<64x64xbf16, strided<[128, 1], offset: ?>, 1> into memref<8x8x16x4xbf16, strided<[1024, 128, 4, 1], offset: ?>, 1>
+                %expand_shape_9 = memref.expand_shape %subview_7 [[0, 1], [2, 3]] output_shape [8, 8, 16, 4]  : memref<64x64xbf16, strided<[128, 1], offset: ?>, 1> into memref<8x8x16x4xbf16, strided<[1024, 128, 4, 1], offset: ?>, 1>
                 %transpose_10 = memref.transpose %expand_shape_9 (d0, d1, d2, d3) -> (d2, d0, d1, d3) : memref<8x8x16x4xbf16, strided<[1024, 128, 4, 1], offset: ?>, 1> to memref<16x8x8x4xbf16, strided<[4, 1024, 128, 1], offset: ?>, 1>
                 air.dma_memcpy_nd (%alloc_8[] [] [], %transpose_10[] [] []) : (memref<16x8x8x4xbf16, 2>, memref<16x8x8x4xbf16, strided<[4, 1024, 128, 1], offset: ?>, 1>)
                 linalg.generic {indexing_maps = [#map3, #map4, #map5], iterator_types = ["parallel", "parallel", "reduction", "parallel", "parallel", "reduction"], library_call = "matmul_bf16_bf16"} ins(%alloc_5, %alloc_8 : memref<8x16x4x8xbf16, 2>, memref<16x8x8x4xbf16, 2>) outs(%alloc_3 : memref<16x16x4x4xbf16, 2>) {
