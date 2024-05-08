@@ -1100,6 +1100,36 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
   return overall_access_bounds;
 }
 
+void updateAccessPatternByScfForNest(
+    std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+        &pattern,
+    SmallVector<Value> indices, OpBuilder builder) {
+  auto loc = builder.getUnknownLoc();
+  auto updateWrapAndStride = [&](Value index, int i) {
+    if (auto scfForOp = scf::getForInductionVarOwner(index)) {
+      std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
+          loc, *air::getStaticScfForTripCountAsInt(scfForOp));
+      std::get<2>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
+          loc, (*getConstantIntValue(scfForOp.getStep())) *
+                   (*getConstantIntValue(std::get<2>(pattern)[i])));
+
+      scfForOp.getStep();
+    }
+  };
+  int dim = -1;
+  for (auto index : indices) {
+    dim++;
+    if (getConstantIntValue(index))
+      continue;
+    updateWrapAndStride(index, dim);
+    if (!index.getDefiningOp())
+      continue;
+    if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp()))
+      for (auto oper : execOp.getChildOp()->getOperands())
+        updateWrapAndStride(oper, dim);
+  }
+}
+
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 air::writeAccessPattern(air::ChannelInterface chanOp) {
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
@@ -1151,60 +1181,36 @@ air::writeAccessPattern(memref::SubViewOp subview) {
     else
       std::get<2>(pattern).push_back(*subview_strides++);
   }
-  return pattern;
-}
-
-std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeAccessPatternByScfForNest(Value memref, SmallVector<Value> indices,
-                               OpBuilder builder) {
-  auto loc = builder.getUnknownLoc();
-  std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-      pattern;
-  auto memrefTy = memref.getType().cast<MemRefType>();
-  assert(memrefTy && "Not a memref");
-  auto memrefRank = memrefTy.getRank();
-  auto cst0 = builder.create<arith::ConstantIndexOp>(loc, 0);
-  auto cst1 = builder.create<arith::ConstantIndexOp>(loc, 1);
-  for (unsigned i = 0; i < memrefRank; i++) {
-    std::get<0>(pattern).push_back(cst0);
-    std::get<1>(pattern).push_back(cst1);
-    std::get<2>(pattern).push_back(cst1);
-  }
-  auto updateWrapAndStride = [&](Value index, int i) {
-    if (auto scfForOp = scf::getForInductionVarOwner(index)) {
-      auto newSize = builder.create<arith::ConstantIndexOp>(
-          loc, *air::getStaticScfForTripCountAsInt(scfForOp));
-      std::get<1>(pattern)[i] = newSize;
-      std::get<1>(pattern)[i] = scfForOp.getStep();
-    }
-  };
-  int dim = -1;
-  for (auto index : indices) {
-    dim++;
-    if (getConstantIntValue(index))
-      continue;
-    updateWrapAndStride(index, dim);
-    if (!index.getDefiningOp())
-      continue;
-    if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp()))
-      for (auto oper : execOp.getChildOp()->getOperands())
-        updateWrapAndStride(oper, dim);
-  }
+  updateAccessPatternByScfForNest(pattern, std::get<0>(pattern), builder);
   return pattern;
 }
 
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
-  Value memref = readOp.getSource();
   OpBuilder builder(readOp);
-  return writeAccessPatternByScfForNest(memref, readOp.getIndices(), builder);
+  std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+      pattern;
+  auto memrefTy = readOp.getSource().getType().cast<MemRefType>();
+  assert(memrefTy && "Not a memref");
+  populateDefaultWrapsAndStrides(builder, readOp.getSource(),
+                                 std::get<0>(pattern), std::get<1>(pattern),
+                                 std::get<2>(pattern));
+  updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder);
+  return pattern;
 }
 
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
-  Value memref = writeOp.getSource();
   OpBuilder builder(writeOp);
-  return writeAccessPatternByScfForNest(memref, writeOp.getIndices(), builder);
+  std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+      pattern;
+  auto memrefTy = writeOp.getSource().getType().cast<MemRefType>();
+  assert(memrefTy && "Not a memref");
+  populateDefaultWrapsAndStrides(builder, writeOp.getSource(),
+                                 std::get<0>(pattern), std::get<1>(pattern),
+                                 std::get<2>(pattern));
+  updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder);
+  return pattern;
 }
 
 SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(

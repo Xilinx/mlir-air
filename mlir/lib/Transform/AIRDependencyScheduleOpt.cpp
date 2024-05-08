@@ -3754,8 +3754,10 @@ struct ShrinkMemrefSizesByAccessPattern
           continue;
         if (updateAccessPatternAfterShrinkage(chanOp, memref_shape,
                                               overall_access_bounds, rewriter)
-                .failed())
+                .failed()) {
+          alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
           return failure();
+        }
       }
       for (auto user : users) {
         // Update access patterns to shrunk memref from memref.subview.
@@ -3764,8 +3766,10 @@ struct ShrinkMemrefSizesByAccessPattern
           continue;
         if (updateAccessPatternAfterShrinkage(subViewOp, users,
                                               overall_access_bounds, rewriter)
-                .failed())
+                .failed()) {
+          alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
           return failure();
+        }
       }
       for (auto user : users) {
         // Update access patterns to shrunk memref from
@@ -3773,12 +3777,17 @@ struct ShrinkMemrefSizesByAccessPattern
         auto transReadOp = dyn_cast<vector::TransferReadOp>(user);
         auto transWriteOp = dyn_cast<vector::TransferWriteOp>(user);
         if (transReadOp) {
-          if (updateAccessPatternAfterShrinkage(transReadOp, rewriter).failed())
+          if (updateAccessPatternAfterShrinkage(transReadOp, rewriter)
+                  .failed()) {
+            alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
             return failure();
+          }
         } else if (transWriteOp) {
           if (updateAccessPatternAfterShrinkage(transWriteOp, rewriter)
-                  .failed())
+                  .failed()) {
+            alloc->setAttr("shrinkage", rewriter.getBoolAttr(false));
             return failure();
+          }
         }
       }
 
@@ -3859,6 +3868,8 @@ private:
       } else
         return failure(); // NYI.
     }
+    if (users.empty())
+      return failure();
     return success();
   }
 
@@ -3920,37 +3931,59 @@ private:
                                     SmallVector<Operation *> &users,
                                     SmallVector<int64_t> overall_access_bounds,
                                     PatternRewriter &rewriter) const {
+    rewriter.setInsertionPoint(subViewOp);
     auto subview_sizes = subViewOp.getSizes().begin();
     auto subview_strides = subViewOp.getStrides().begin();
     auto static_sizes = subViewOp.getStaticSizes();
     auto static_strides = subViewOp.getStaticStrides();
+    // Get MemRefType after shrinkage.
+    Type elemType =
+        subViewOp.getSource().getType().cast<MemRefType>().getElementType();
+    Attribute memorySpace =
+        subViewOp.getSource().getType().cast<MemRefType>().getMemorySpace();
+    auto shrunkMemrefType =
+        MemRefType::get(overall_access_bounds, elemType, nullptr, memorySpace);
+    MemRefType inferredSubViewOutputTy =
+        memref::SubViewOp::inferResultType(
+            shrunkMemrefType, subViewOp.getStaticOffsets(),
+            subViewOp.getStaticSizes(), subViewOp.getStaticStrides())
+            .cast<MemRefType>();
     for (unsigned i = 0; i < static_sizes.size(); i++) {
       if (static_sizes[i] < 0) {
-        if (*getConstantIntValue(*subview_sizes++) != overall_access_bounds[i])
-          return failure(); // Memref shrinkage attempting to mutate
-                            // memref.subview, NYI.
+        if (*getConstantIntValue(*subview_sizes++) !=
+            overall_access_bounds[i]) {
+          subViewOp.getResult().setType(inferredSubViewOutputTy);
+          return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(),
+                                                   rewriter);
+        }
       } else {
-        if (static_sizes[i] != overall_access_bounds[i])
-          return failure(); // Memref shrinkage attempting to mutate
-                            // memref.subview, NYI.
+        if (static_sizes[i] != overall_access_bounds[i]) {
+          subViewOp.getResult().setType(inferredSubViewOutputTy);
+          return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(),
+                                                   rewriter);
+        }
       }
     }
     for (unsigned i = 0; i < static_strides.size(); i++) {
       if (static_strides[i] < 0) {
-        if (*getConstantIntValue(*subview_strides++) != 1)
-          return failure(); // Memref shrinkage attempting to mutate
-                            // memref.subview, NYI.
+        if (*getConstantIntValue(*subview_strides++) != 1) {
+          subViewOp.getResult().setType(inferredSubViewOutputTy);
+          return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(),
+                                                   rewriter);
+        }
       } else {
-        if (static_strides[i] != 1)
-          return failure(); // Memref shrinkage attempting to mutate
-                            // memref.subview, NYI.
+        if (static_strides[i] != 1) {
+          subViewOp.getResult().setType(inferredSubViewOutputTy);
+          return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(),
+                                                   rewriter);
+        }
       }
     }
     subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
     rewriter.eraseOp(subViewOp);
     for (auto newUser : subViewOp.getSource().getUsers())
       push_back_if_unique<Operation *>(users, newUser);
-    return success();
+    return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(), rewriter);
   }
 
   // Update access patterns to shrunk memref from vector.transfer_read/write.
