@@ -1190,11 +1190,18 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   OpBuilder builder(readOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
+  auto vectorTy = readOp.getVector().getType().cast<VectorType>();
   auto memrefTy = readOp.getSource().getType().cast<MemRefType>();
+  assert(vectorTy && "Not a vector");
   assert(memrefTy && "Not a memref");
+  // Initialize wraps and strides based on the unshrunk memref shape.
   populateDefaultWrapsAndStrides(builder, readOp.getSource(),
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
+  // Update wraps based on vector shape and vector access patterns.
+  for (unsigned i = 0; i < std::get<1>(pattern).size(); i++)
+    std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
+        builder.getUnknownLoc(), vectorTy.getShape()[i]);
   updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder);
   return pattern;
 }
@@ -1205,10 +1212,17 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
   auto memrefTy = writeOp.getSource().getType().cast<MemRefType>();
+  auto vectorTy = writeOp.getVector().getType().cast<VectorType>();
   assert(memrefTy && "Not a memref");
+  assert(vectorTy && "Not a vector");
+  // Initialize wraps and strides based on the unshrunk memref shape.
   populateDefaultWrapsAndStrides(builder, writeOp.getSource(),
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
+  // Update wraps based on vector shape and vector access patterns.
+  for (unsigned i = 0; i < std::get<1>(pattern).size(); i++)
+    std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
+        builder.getUnknownLoc(), vectorTy.getShape()[i]);
   updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder);
   return pattern;
 }
