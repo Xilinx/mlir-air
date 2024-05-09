@@ -60,7 +60,7 @@ struct AIRToAIEConversionOptions {
 
 // get memcpy operation volumn (elements) as int
 int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
-  MemRefType memTy = memref.getType().cast<MemRefType>();
+  MemRefType memTy = llvm::cast<MemRefType>(memref.getType());
   if (sizes.empty())
     return getTensorVolume(memTy);
   else {
@@ -314,7 +314,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
 
       for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
         auto a = h.getKernelArgument(i);
-        auto memrefTy = a.getType().dyn_cast<MemRefType>();
+        auto memrefTy = llvm::dyn_cast<MemRefType>(a.getType());
         if (!memrefTy)
           continue;
 
@@ -509,7 +509,7 @@ void createAIEModulesAndOutlineCores(
       auto oper = h.getKernelOperand(i);
       if (!oper.getDefiningOp())
         continue;
-      auto memrefTy = oper.getType().dyn_cast<MemRefType>();
+      auto memrefTy = llvm::dyn_cast<MemRefType>(oper.getType());
       if (!memrefTy)
         continue;
       if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
@@ -706,7 +706,7 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
       Value v =
           fop.getOperand(block_arg.getArgNumber() - fop.getNumInductionVars() +
                          fop.getNumControlOperands());
-      if (v.getType().isa<xilinx::air::AsyncTokenType>()) {
+      if (llvm::isa<xilinx::air::AsyncTokenType>(v.getType())) {
         block_arg.replaceAllUsesWith(v);
         iter_args_idx.set(block_arg.getArgNumber());
       } else {
@@ -739,7 +739,7 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     // use the new for op's results
     int idx = 0;
     for (auto r : fop.getResults()) {
-      if (r.getType().isa<xilinx::air::AsyncTokenType>())
+      if (llvm::isa<xilinx::air::AsyncTokenType>(r.getType()))
         r.replaceAllUsesWith(
             rewriter
                 .create<xilinx::air::WaitAllOp>(
@@ -758,7 +758,7 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     SmallVector<Value, 4> yield_operands;
     SmallVector<Value, 4> token_operands;
     for (auto o : yield->getOperands()) {
-      if (o.getType().isa<xilinx::air::AsyncTokenType>())
+      if (llvm::isa<xilinx::air::AsyncTokenType>(o.getType()))
         token_operands.push_back(o);
       else
         yield_operands.push_back(o);
@@ -817,7 +817,7 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
 //       auto o = std::get<0>(p); // operand of put
 //       auto r = std::get<1>(p); // result of get
 //       // for each ranked tensor put (yielded) by the tile
-//       if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
+//       if (RankedTensorType tt = llvm::dyn_cast<RankedTensorType>(o.getType())) {
 //         auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType(),
 //         {},
 //                                         (int)air::MemorySpace::L1);
@@ -889,7 +889,7 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
 //       return failure();
 
 //     MemRefType memrefTy = nullptr;
-//     memrefTy = cast.getType().cast<MemRefType>();
+//     memrefTy = llvm::cast<MemRefType>(cast.getType());
 
 //     if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
 //       return failure();
@@ -1072,7 +1072,7 @@ void L2MemrefToMemTileMap(
     std::map<memref::AllocOp, AIE::TileOp> &memrefToMemTileMap) {
   std::vector<memref::AllocOp> allocs;
   m.walk([&](memref::AllocOp alloc) {
-    if (alloc.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
+    if (llvm::cast<MemRefType>(alloc.getMemref().getType()).getMemorySpaceAsInt() ==
         (int)air::MemorySpace::L2) {
       allocs.push_back(alloc);
     }
@@ -1111,7 +1111,7 @@ void L2MemrefToMemTileMap(
   int memtile_id = 0;
   for (auto &bucket : memref_buckets) {
     for (auto bucket_elem : bucket) {
-      MemRefType ty = bucket_elem.getMemref().getType().cast<MemRefType>();
+      MemRefType ty = llvm::cast<MemRefType>(bucket_elem.getMemref().getType());
       auto memref_vol = getElementSizeInBytes(ty) * getTensorVolume(ty);
       memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
       memrefToMemTileMap[bucket_elem] = memtiles[memtile_id];
@@ -1199,7 +1199,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
       // check if this put is linked to a get from another channel
       MemRefType memref =
-          channelPuts[0].getMemref().getType().cast<MemRefType>();
+          llvm::cast<MemRefType>(channelPuts[0].getMemref().getType());
       int mem_space = memref.getMemorySpaceAsInt();
       if (mem_space == (int)air::MemorySpace::L2) {
         if (linksToComplete.find(channelPuts[0].getOperation()) !=
@@ -1239,7 +1239,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       consumers.push_back(consumerTile);
 
       // check if this get is linked to a put from another channel
-      MemRefType memref = get.getMemref().getType().cast<MemRefType>();
+      MemRefType memref = llvm::cast<MemRefType>(get.getMemref().getType());
       int mem_space = memref.getMemorySpaceAsInt();
       if (mem_space == (int)air::MemorySpace::L2) {
         if (linksToComplete.find(get.getOperation()) != linksToComplete.end()) {
@@ -1466,7 +1466,7 @@ void lowerAIRChannels(
 
 // Get owner (scf.parallelop) of channel indices
 scf::ParallelOp getChannelIndicesOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return scf::ParallelOp();
   if (!ivArg.getOwner()) {
@@ -1823,7 +1823,7 @@ public:
         }
         // Substituting index operands, such as strides and offsets, to constant
         // zero for convenience. TODO: generalize this
-        else if (operand.getType().isa<IndexType>()) {
+        else if (llvm::isa<IndexType>(operand.getType())) {
           remap.map(operand, builder.create<arith::ConstantIndexOp>(
                                  builder.getUnknownLoc(), 0));
         }
@@ -1847,7 +1847,7 @@ public:
         auto cloned_alloc = builder.clone(*memalloc, remap);
         clearAsyncDependenciesOfAsyncOp(cloned_alloc);
       } else {
-        MemRefType ty = memref.getType().cast<MemRefType>();
+        MemRefType ty = llvm::cast<MemRefType>(memref.getType());
         auto alloc_op = builder.create<memref::AllocOp>(
             builder.getUnknownLoc(),
             MemRefType::get(ty.getShape(), ty.getElementType(),
@@ -1982,7 +1982,7 @@ public:
     for (auto key : keys) {
       auto memref = chanOpPartitions[key][0].getMemref();
       auto allocOp = memref.getDefiningOp();
-      MemRefType ty = memref.getType().cast<MemRefType>();
+      MemRefType ty = llvm::cast<MemRefType>(memref.getType());
       SmallVector<int64_t> newMemrefShape;
       for (unsigned i = 0; i < air::getTensorShape(ty).size(); i++) {
         newMemrefShape.push_back(air::getTensorShape(ty)[i]);
@@ -2048,7 +2048,7 @@ public:
     std::vector<Value> memrefs;
     d.walk([&](memref::AllocOp allocOp) {
       auto memref = allocOp.getMemref();
-      auto memrefTy = memref.getType().cast<MemRefType>();
+      auto memrefTy = llvm::cast<MemRefType>(memref.getType());
       if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
         // Count the number of unique incoming and outgoing channels.
         std::vector<std::string> uniqueS2MMChannels;
@@ -2406,13 +2406,13 @@ public:
                   tile_side_memcpy.getOperation())) {
             if (isMM2S)
               memref_ty =
-                  tile_side_memcpy.getDstMemref().getType().cast<MemRefType>();
+                  llvm::cast<MemRefType>(tile_side_memcpy.getDstMemref().getType());
             else
               memref_ty =
-                  tile_side_memcpy.getSrcMemref().getType().cast<MemRefType>();
+                  llvm::cast<MemRefType>(tile_side_memcpy.getSrcMemref().getType());
           } else if (auto tile_side_chan = dyn_cast<air::ChannelInterface>(
                          tile_side_memcpy.getOperation())) {
-            memref_ty = tile_side_chan.getMemref().getType().cast<MemRefType>();
+            memref_ty = llvm::cast<MemRefType>(tile_side_chan.getMemref().getType());
           }
 
           builder.create<memref::GlobalOp>(builder.getUnknownLoc(), dma_name,
@@ -2478,13 +2478,13 @@ public:
                   tile_side_memcpy.getOperation())) {
             if (isMM2S)
               memref_ty =
-                  tile_side_memcpy.getDstMemref().getType().cast<MemRefType>();
+                  llvm::cast<MemRefType>(tile_side_memcpy.getDstMemref().getType());
             else
               memref_ty =
-                  tile_side_memcpy.getSrcMemref().getType().cast<MemRefType>();
+                  llvm::cast<MemRefType>(tile_side_memcpy.getSrcMemref().getType());
           } else if (auto tile_side_chan = dyn_cast<air::ChannelInterface>(
                          tile_side_memcpy.getOperation())) {
-            memref_ty = tile_side_chan.getMemref().getType().cast<MemRefType>();
+            memref_ty = llvm::cast<MemRefType>(tile_side_chan.getMemref().getType());
           }
 
           builder.create<memref::GlobalOp>(builder.getUnknownLoc(), dma_name,

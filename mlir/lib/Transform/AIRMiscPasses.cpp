@@ -162,8 +162,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     if (!uniform)
       continue;
 
-    auto src_type = memcpyOp.getSrc().getType().cast<MemRefType>();
-    auto dst_type = memcpyOp.getDst().getType().cast<MemRefType>();
+    auto src_type = llvm::cast<MemRefType>(memcpyOp.getSrc().getType());
+    auto dst_type = llvm::cast<MemRefType>(memcpyOp.getDst().getType());
     auto src_space = src_type.getMemorySpaceAsInt();
     auto dst_space = dst_type.getMemorySpaceAsInt();
 
@@ -1176,7 +1176,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     SmallVector<air::ChannelPutOp> &puts, SmallVector<air::ChannelGetOp> &gets,
     int dim, std::string splitType = "") {
   auto memref = puts.front().getMemref();
-  MemRefType ty = memref.getType().cast<MemRefType>();
+  MemRefType ty = llvm::cast<MemRefType>(memref.getType());
   auto allocOp = memref.getDefiningOp();
   auto loc = allocOp->getLoc();
   Operation *deallocOp = nullptr;

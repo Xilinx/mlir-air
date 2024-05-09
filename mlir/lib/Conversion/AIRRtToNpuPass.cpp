@@ -262,7 +262,7 @@ public:
   matchAndRewrite(affine::AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -279,7 +279,7 @@ public:
   matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -590,7 +590,7 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       auto new_const_stride =
           (const_stride * inner_wrap) %
           air::getTensorVolume(
-              memcpy_op.getMemref().getType().cast<MemRefType>());
+              llvm::cast<MemRefType>(memcpy_op.getMemref().getType()));
       strides.insert(
           strides.begin() + i,
           builder.create<arith::ConstantOp>(
@@ -925,7 +925,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (op->getParentOfType<AIE::CoreOp>())
         return true;
       return (
-          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+          llvm::cast<MemRefType>(op.getMemref().getType()).getMemorySpaceAsInt() !=
           (int)xilinx::air::MemorySpace::L1);
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {

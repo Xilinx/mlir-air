@@ -225,7 +225,7 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
 
   // Infer semaphore lock values using buffer op
   // TODO: What if a buffer memref is read or written by multiple channels?
-  if (!buffer_memref.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(buffer_memref.getType()))
     return std::make_pair(-1, -1);
   int read_counter = 0;
   int write_counter = 0;
@@ -264,7 +264,7 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
   bool isAIE2 = (arch == AIE::AIEArch::AIE2);
   if (!isAIE2)
     return std::make_pair(0, 0);
-  if (!buffer_memref.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(buffer_memref.getType()))
     return std::make_pair(-1, -1);
 
   if (!air_chan)
@@ -653,7 +653,7 @@ ShimDMAAllocator::getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
   auto memref =
       (isMM2S) ? (memcpyOp.getSrcMemref()) : (memcpyOp.getDstMemref());
   assert(memref);
-  MemRefType memrefTy = memref.getType().cast<MemRefType>();
+  MemRefType memrefTy = llvm::cast<MemRefType>(memref.getType());
   // External buffers have memory space L3
   memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(), {},
                              DMAMemorySpaceAsInt);
@@ -876,7 +876,7 @@ void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
   air_flow_op = chan.getOperation();
   S2MM[alloc_id].push_back(memcpyOp.getOperation());
   S2MM_memspace_as_int =
-      memcpyOp.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+      llvm::cast<MemRefType>(memcpyOp.getMemref().getType()).getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
@@ -884,7 +884,7 @@ void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
   air_flow_op = chan.getOperation();
   MM2S.push_back(memcpyOp.getOperation());
   MM2S_memspace_as_int =
-      memcpyOp.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+      llvm::cast<MemRefType>(memcpyOp.getMemref().getType()).getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(
