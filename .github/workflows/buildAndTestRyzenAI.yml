@@ -126,10 +126,14 @@ jobs:
             -DXRT_ROOT=/opt/xilinx/xrt \
             -DENABLE_RUN_XRT_TESTS=ON
           ninja install
+
+          export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random"
           ninja check-air-cpp
           ninja check-air-mlir
           ninja check-air-python
-          export LIT_OPTS="-sv --time-tests --timeout 600 -j5 --show-unsupported --show-excluded"
+
+          export LIT_OPTS="${LIT_OPS} --timeout 600 -j5"
           ninja check-air-e2e
+
           popd
           rm -rf build_assert
