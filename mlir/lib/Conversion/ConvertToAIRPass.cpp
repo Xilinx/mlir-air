@@ -2252,10 +2252,10 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   SmallVector<OpFoldResult> L2Sizes;
   for (unsigned i = 0; i < L2MemrefShape.size(); i++)
     L2Sizes.push_back(builder.getIndexAttr(L2TiledShape[i]));
-  auto subviewOutputType =
-      memref::SubViewOp::inferResultType(llvm::cast<MemRefType>(L2Memref.getType()),
-                                         L2Offsets, L2Sizes, L2Strides)
-          .cast<MemRefType>();
+  auto subviewOutputType = memref::SubViewOp::inferResultType(
+                               llvm::cast<MemRefType>(L2Memref.getType()),
+                               L2Offsets, L2Sizes, L2Strides)
+                               .cast<MemRefType>();
   auto newL2Subview = builder.create<memref::SubViewOp>(
       loc, subviewOutputType, L2Memref, L2Offsets, L2Sizes, L2Strides);
   remap.map(L2Memref, newL2Subview.getResult());
@@ -2768,12 +2768,12 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
   SmallVector<Value, 4> deps;
   SmallVector<Type, 4> tys;
 
-  if (failed(canonicalizeAIRDmaOperands(rewriter, src_offsets, src_sizes,
-                                        src_strides,
-                                        llvm::cast<MemRefType>(src.getType()))) ||
-      failed(canonicalizeAIRDmaOperands(rewriter, dst_offsets, dst_sizes,
-                                        dst_strides,
-                                        llvm::cast<MemRefType>(dst.getType())))) {
+  if (failed(canonicalizeAIRDmaOperands(
+          rewriter, src_offsets, src_sizes, src_strides,
+          llvm::cast<MemRefType>(src.getType()))) ||
+      failed(canonicalizeAIRDmaOperands(
+          rewriter, dst_offsets, dst_sizes, dst_strides,
+          llvm::cast<MemRefType>(dst.getType())))) {
     assert(false);
   }
   auto new_dma = rewriter.create<xilinx::air::DmaMemcpyNdOp>(
@@ -3005,8 +3005,10 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
     target_0.addDynamicallyLegalOp<air::DmaMemcpyNdOp>(
         [&](air::DmaMemcpyNdOp dma) {
-          auto src_type = llvm::dyn_cast<MemRefType>(dma.getSrcMemref().getType());
-          auto dst_type = llvm::dyn_cast<MemRefType>(dma.getDstMemref().getType());
+          auto src_type =
+              llvm::dyn_cast<MemRefType>(dma.getSrcMemref().getType());
+          auto dst_type =
+              llvm::dyn_cast<MemRefType>(dma.getDstMemref().getType());
           if (dma->getParentOfType<air::HerdOp>()) {
             if (src_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1 &&
                 dst_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1)
@@ -3179,11 +3181,11 @@ static void getHerdNames(ModuleOp module) {
                 continue;
               if (!isa<MemRefType>(operJ.getType()))
                 continue;
-              if (llvm::cast<MemRefType>(operI.getType()).getMemorySpaceAsInt() !=
-                  (int)air::MemorySpace::L1)
+              if (llvm::cast<MemRefType>(operI.getType())
+                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
                 continue;
-              if (llvm::cast<MemRefType>(operJ.getType()).getMemorySpaceAsInt() !=
-                  (int)air::MemorySpace::L1)
+              if (llvm::cast<MemRefType>(operJ.getType())
+                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
                 continue;
               if (operI != operJ)
                 continue;

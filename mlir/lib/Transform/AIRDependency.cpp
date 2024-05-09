@@ -1028,7 +1028,8 @@ private:
           if (memcpy.getSrcMemref()) {
             SmallVector<Value, 2> src_indices;
             unsigned numDimsSrc =
-                llvm::cast<MemRefType>(memcpy.getSrcMemref().getType()).getRank();
+                llvm::cast<MemRefType>(memcpy.getSrcMemref().getType())
+                    .getRank();
             if (memcpy.getSrcOffsets().size()) {
               numDimsSrc = memcpy.getSrcOffsets().size();
               for (unsigned i = 0; i < numDimsSrc; i++) {
@@ -1044,7 +1045,8 @@ private:
           }
           if (memcpy.getDstMemref()) {
             unsigned numDimsDst =
-                llvm::cast<MemRefType>(memcpy.getDstMemref().getType()).getRank();
+                llvm::cast<MemRefType>(memcpy.getDstMemref().getType())
+                    .getRank();
             SmallVector<Value, 2> dst_indices;
             if (memcpy.getDstOffsets().size()) {
               numDimsDst = memcpy.getDstOffsets().size();

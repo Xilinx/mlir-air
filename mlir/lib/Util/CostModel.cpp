@@ -45,8 +45,7 @@ static uint64_t getTensorVolume(const ShapedType ty) {
 static uint64_t getTensorVolume(const Type ty) {
   if (auto t = llvm::dyn_cast<ShapedType>(ty)) {
     return getTensorVolume(t);
-  }
-  else {
+  } else {
     return 1;
   }
 }

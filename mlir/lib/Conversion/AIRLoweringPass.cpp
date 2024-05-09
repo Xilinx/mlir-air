@@ -170,7 +170,8 @@ public:
         rewriter.clone(o, remap);
       } else if (auto chanOp = dyn_cast<air::ChannelInterface>(o)) {
         // clone L3 get/put
-        MemRefType memrefTy = llvm::cast<MemRefType>(chanOp.getMemref().getType());
+        MemRefType memrefTy =
+            llvm::cast<MemRefType>(chanOp.getMemref().getType());
         if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
           rewriter.clone(o, remap);
           continue;
@@ -493,7 +494,8 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto loc = thisOp->getLoc();
   auto ctx = thisOp->getContext();
 
-  MemRefType thisMemrefType = llvm::cast<MemRefType>(thisOp.getMemref().getType());
+  MemRefType thisMemrefType =
+      llvm::cast<MemRefType>(thisOp.getMemref().getType());
 
   bool thisOpIsInShim =
       thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
@@ -1147,9 +1149,8 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (
-          llvm::cast<MemRefType>(op.getMemref().getType()).getMemorySpaceAsInt() !=
-          (int)air::MemorySpace::L2);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() != (int)air::MemorySpace::L2);
     });
 
     target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {

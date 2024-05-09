@@ -1196,9 +1196,8 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (
-          llvm::cast<MemRefType>(op.getMemref().getType()).getMemorySpaceAsInt() ==
-          0);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() == 0);
     });
 
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
@@ -1210,23 +1209,21 @@ public:
                   (int)xilinx::air::MemorySpace::L1);
         });
 
-    target.addDynamicallyLegalOp<affine::AffineLoadOp>([&](affine::AffineLoadOp
-                                                               op) {
-      return (
-          llvm::cast<MemRefType>(op.getMemref().getType()).getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
-    });
+    target.addDynamicallyLegalOp<affine::AffineLoadOp>(
+        [&](affine::AffineLoadOp op) {
+          return (llvm::cast<MemRefType>(op.getMemref().getType())
+                      .getMemorySpaceAsInt() !=
+                  (int)xilinx::air::MemorySpace::L1);
+        });
 
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
-      return (
-          llvm::cast<MemRefType>(op.getMemref().getType()).getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
     });
 
     target.addDynamicallyLegalOp<memref::LoadOp>([&](memref::LoadOp op) {
-      return (
-          llvm::cast<MemRefType>(op.getMemref().getType()).getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
     });
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {

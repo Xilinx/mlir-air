@@ -875,16 +875,16 @@ void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
   }
   air_flow_op = chan.getOperation();
   S2MM[alloc_id].push_back(memcpyOp.getOperation());
-  S2MM_memspace_as_int =
-      llvm::cast<MemRefType>(memcpyOp.getMemref().getType()).getMemorySpaceAsInt();
+  S2MM_memspace_as_int = llvm::cast<MemRefType>(memcpyOp.getMemref().getType())
+                             .getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
   auto chan = air::getChannelDeclarationThroughSymbol(memcpyOp);
   air_flow_op = chan.getOperation();
   MM2S.push_back(memcpyOp.getOperation());
-  MM2S_memspace_as_int =
-      llvm::cast<MemRefType>(memcpyOp.getMemref().getType()).getMemorySpaceAsInt();
+  MM2S_memspace_as_int = llvm::cast<MemRefType>(memcpyOp.getMemref().getType())
+                             .getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(

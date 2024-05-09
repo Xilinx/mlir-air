@@ -3937,10 +3937,11 @@ private:
     auto static_sizes = subViewOp.getStaticSizes();
     auto static_strides = subViewOp.getStaticStrides();
     // Get MemRefType after shrinkage.
-    Type elemType =
-        llvm::cast<MemRefType>(subViewOp.getSource().getType()).getElementType();
+    Type elemType = llvm::cast<MemRefType>(subViewOp.getSource().getType())
+                        .getElementType();
     Attribute memorySpace =
-        llvm::cast<MemRefType>(subViewOp.getSource().getType()).getMemorySpace();
+        llvm::cast<MemRefType>(subViewOp.getSource().getType())
+            .getMemorySpace();
     auto shrunkMemrefType =
         MemRefType::get(overall_access_bounds, elemType, nullptr, memorySpace);
     MemRefType inferredSubViewOutputTy =

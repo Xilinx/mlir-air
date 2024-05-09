@@ -817,7 +817,8 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
 //       auto o = std::get<0>(p); // operand of put
 //       auto r = std::get<1>(p); // result of get
 //       // for each ranked tensor put (yielded) by the tile
-//       if (RankedTensorType tt = llvm::dyn_cast<RankedTensorType>(o.getType())) {
+//       if (RankedTensorType tt =
+//       llvm::dyn_cast<RankedTensorType>(o.getType())) {
 //         auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType(),
 //         {},
 //                                         (int)air::MemorySpace::L1);
@@ -1072,8 +1073,8 @@ void L2MemrefToMemTileMap(
     std::map<memref::AllocOp, AIE::TileOp> &memrefToMemTileMap) {
   std::vector<memref::AllocOp> allocs;
   m.walk([&](memref::AllocOp alloc) {
-    if (llvm::cast<MemRefType>(alloc.getMemref().getType()).getMemorySpaceAsInt() ==
-        (int)air::MemorySpace::L2) {
+    if (llvm::cast<MemRefType>(alloc.getMemref().getType())
+            .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       allocs.push_back(alloc);
     }
   });
@@ -2405,14 +2406,15 @@ public:
           if (auto tile_side_dmamemcpy = dyn_cast<air::DmaMemcpyNdOp>(
                   tile_side_memcpy.getOperation())) {
             if (isMM2S)
-              memref_ty =
-                  llvm::cast<MemRefType>(tile_side_memcpy.getDstMemref().getType());
+              memref_ty = llvm::cast<MemRefType>(
+                  tile_side_memcpy.getDstMemref().getType());
             else
-              memref_ty =
-                  llvm::cast<MemRefType>(tile_side_memcpy.getSrcMemref().getType());
+              memref_ty = llvm::cast<MemRefType>(
+                  tile_side_memcpy.getSrcMemref().getType());
           } else if (auto tile_side_chan = dyn_cast<air::ChannelInterface>(
                          tile_side_memcpy.getOperation())) {
-            memref_ty = llvm::cast<MemRefType>(tile_side_chan.getMemref().getType());
+            memref_ty =
+                llvm::cast<MemRefType>(tile_side_chan.getMemref().getType());
           }
 
           builder.create<memref::GlobalOp>(builder.getUnknownLoc(), dma_name,
@@ -2477,14 +2479,15 @@ public:
           if (auto tile_side_dmamemcpy = dyn_cast<air::DmaMemcpyNdOp>(
                   tile_side_memcpy.getOperation())) {
             if (isMM2S)
-              memref_ty =
-                  llvm::cast<MemRefType>(tile_side_memcpy.getDstMemref().getType());
+              memref_ty = llvm::cast<MemRefType>(
+                  tile_side_memcpy.getDstMemref().getType());
             else
-              memref_ty =
-                  llvm::cast<MemRefType>(tile_side_memcpy.getSrcMemref().getType());
+              memref_ty = llvm::cast<MemRefType>(
+                  tile_side_memcpy.getSrcMemref().getType());
           } else if (auto tile_side_chan = dyn_cast<air::ChannelInterface>(
                          tile_side_memcpy.getOperation())) {
-            memref_ty = llvm::cast<MemRefType>(tile_side_chan.getMemref().getType());
+            memref_ty =
+                llvm::cast<MemRefType>(tile_side_chan.getMemref().getType());
           }
 
           builder.create<memref::GlobalOp>(builder.getUnknownLoc(), dma_name,

@@ -802,9 +802,8 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (
-          llvm::cast<MemRefType>(op.getMemref().getType()).getMemorySpaceAsInt() ==
-          0);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() == 0);
     });
 
     RewritePatternSet typeConversionPatterns(context);

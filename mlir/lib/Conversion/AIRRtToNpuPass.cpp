@@ -587,10 +587,9 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
                    builder.create<arith::ConstantOp>(
                        loc, builder.getI64Type(),
                        IntegerAttr::get(builder.getI64Type(), outer_wrap)));
-      auto new_const_stride =
-          (const_stride * inner_wrap) %
-          air::getTensorVolume(
-              llvm::cast<MemRefType>(memcpy_op.getMemref().getType()));
+      auto new_const_stride = (const_stride * inner_wrap) %
+                              air::getTensorVolume(llvm::cast<MemRefType>(
+                                  memcpy_op.getMemref().getType()));
       strides.insert(
           strides.begin() + i,
           builder.create<arith::ConstantOp>(
@@ -924,9 +923,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
       if (op->getParentOfType<AIE::CoreOp>())
         return true;
-      return (
-          llvm::cast<MemRefType>(op.getMemref().getType()).getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
       auto f = op->getParentOfType<func::FuncOp>();

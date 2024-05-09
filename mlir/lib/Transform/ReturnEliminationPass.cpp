@@ -66,8 +66,8 @@ public:
         if (!llvm::isa<MemRefType>(v.getType()))
           llvm_unreachable("function returns non-memref");
         if (!valueMap.count(v)) {
-          valueMap[v] = builder->create<memref::AllocOp>(op->getLoc(),
-                                                 llvm::cast<MemRefType>(v.getType()));
+          valueMap[v] = builder->create<memref::AllocOp>(
+              op->getLoc(), llvm::cast<MemRefType>(v.getType()));
         }
         v.replaceAllUsesWith(valueMap[v]);
         newCallArgs.push_back(valueMap[v]);
