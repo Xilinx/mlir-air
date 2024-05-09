@@ -261,9 +261,8 @@ traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
   // Recursively trace dependency to loop induction vars
   for (auto &elem : loop_dep_history) {
     if (std::get<0>(elem) &&
-        llvm::isa<IndexType>(std::get<0>(elem)
-            .getType()
-            )) { // Only tracing scalar operands
+        llvm::isa<IndexType>(
+            std::get<0>(elem).getType())) { // Only tracing scalar operands
       if (std::get<0>(elem).getDefiningOp() &&
           mlir::dyn_cast<air::AsyncOpInterface>(
               std::get<0>(elem).getDefiningOp())) {

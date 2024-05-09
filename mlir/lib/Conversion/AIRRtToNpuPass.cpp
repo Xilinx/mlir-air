@@ -914,9 +914,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         [&](affine::AffineStoreOp op) {
           if (op->getParentOfType<AIE::CoreOp>())
             return true;
-          return (llvm::cast<MemRefType>(op.getMemref()
-                      .getType()
-                      )
+          return (llvm::cast<MemRefType>(op.getMemref().getType())
                       .getMemorySpaceAsInt() !=
                   (int)xilinx::air::MemorySpace::L1);
         });

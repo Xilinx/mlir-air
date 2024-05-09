@@ -446,8 +446,10 @@ public:
         for (auto &shim_alloc : shim_attr) {
           auto shim_alloc_dict = llvm::cast<DictionaryAttr>(shim_alloc);
           auto id = llvm::cast<IntegerAttr>(shim_alloc_dict.get("id")).getInt();
-          auto row = llvm::cast<IntegerAttr>(shim_alloc_dict.get("row")).getInt();
-          auto col = llvm::cast<IntegerAttr>(shim_alloc_dict.get("col")).getInt();
+          auto row =
+              llvm::cast<IntegerAttr>(shim_alloc_dict.get("row")).getInt();
+          auto col =
+              llvm::cast<IntegerAttr>(shim_alloc_dict.get("col")).getInt();
           auto channel =
               llvm::cast<IntegerAttr>(shim_alloc_dict.get("channel")).getInt();
           auto location =
@@ -1202,9 +1204,7 @@ public:
 
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
         [&](affine::AffineStoreOp op) {
-          return (llvm::cast<MemRefType>(op.getMemref()
-                      .getType()
-                      )
+          return (llvm::cast<MemRefType>(op.getMemref().getType())
                       .getMemorySpaceAsInt() !=
                   (int)xilinx::air::MemorySpace::L1);
         });

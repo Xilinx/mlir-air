@@ -1912,7 +1912,8 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
 
   transformResults.set(llvm::cast<OpResult>(getTiledLinalgOp()), tiled);
   for (const auto &en : llvm::enumerate(loops))
-    transformResults.set(llvm::cast<OpResult>(getLoops()[en.index()]), en.value());
+    transformResults.set(llvm::cast<OpResult>(getLoops()[en.index()]),
+                         en.value());
 
   return DiagnosedSilenceableFailure::success();
 }

@@ -199,8 +199,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     launch_operands.push_back(alloc.getResult());
     launch->setOperands(launch_operands);
     launch.getBody().front().addArgument(alloc.getType(), loc);
-    auto sizeAttr = llvm::cast<::mlir::DenseIntElementsAttr>(launch->getAttr("operand_segment_sizes")
-                        );
+    auto sizeAttr = llvm::cast<::mlir::DenseIntElementsAttr>(
+        launch->getAttr("operand_segment_sizes"));
     const uint32_t *it = &*sizeAttr.value_begin<uint32_t>();
     auto newAttr = DenseIntElementsAttr::get(sizeAttr.getType(),
                                              {it[0], it[1], it[2], it[3] + 1});
@@ -983,8 +983,8 @@ void AIRCollapseHerdPass::runOnOperation() {
     // Determine the current induction value's current loop iteration
     Value iv_1 =
         insideBuilder.create<arith::RemSIOp>(loc, h.getIds()[1], old_upper_b_v);
-    llvm::cast<Value>(h.getIds()[1]).replaceAllUsesExcept(iv_1,
-                                                     iv_1.getDefiningOp());
+    llvm::cast<Value>(h.getIds()[1])
+        .replaceAllUsesExcept(iv_1, iv_1.getDefiningOp());
 
     // Remove the effect of the current induction value to prepare for
     // the next value.
@@ -1358,9 +1358,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   SmallVector<memref::AllocOp> allocOps;
   func.walk([&](memref::AllocOp allocOp) {
     if (allocOp->getParentOfType<air::SegmentOp>() &&
-        llvm::cast<MemRefType>(allocOp.getMemref()
-                .getType()
-                )
+        llvm::cast<MemRefType>(allocOp.getMemref().getType())
                 .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       allocOps.push_back(allocOp);
     }
@@ -1469,9 +1467,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   SmallVector<memref::AllocOp> allocOps;
   func.walk([&](memref::AllocOp allocOp) {
     if (allocOp->getParentOfType<air::SegmentOp>() &&
-        llvm::cast<MemRefType>(allocOp.getMemref()
-                .getType()
-                )
+        llvm::cast<MemRefType>(allocOp.getMemref().getType())
                 .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       allocOps.push_back(allocOp);
     }
