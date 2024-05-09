@@ -3980,9 +3980,9 @@ private:
       }
     }
     subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
-    rewriter.eraseOp(subViewOp);
     for (auto newUser : subViewOp.getSource().getUsers())
       push_back_if_unique<Operation *>(users, newUser);
+    rewriter.eraseOp(subViewOp);
     return success();
   }
 
