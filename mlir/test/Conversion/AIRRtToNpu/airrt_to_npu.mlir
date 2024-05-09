@@ -897,3 +897,36 @@ module {
     return
   }
 }
+
+// -----
+
+// Purge scf.parallel op which contains only no-ops.
+
+// CHECK-LABEL: func20
+// CHECK: return
+module {
+  func.func @func20() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c152 = arith.constant 152 : index
+    %51 = airrt.wait_all : !airrt.event
+    %52 = scf.for %arg3 = %c0 to %c152 step %c1 iter_args(%arg4 = %51) -> (!airrt.event) {
+      %61 = airrt.wait_all : !airrt.event
+      %62 = airrt.wait_all %arg4, %61 : !airrt.event
+      %63 = airrt.wait_all : !airrt.event
+      %64 = airrt.wait_all %arg4, %63 : !airrt.event
+      %65 = scf.parallel (%arg5) = (%c0) to (%c2) step (%c1) init (%arg4) -> !airrt.event {
+        %66 = airrt.wait_all : !airrt.event
+        %67 = airrt.wait_all %arg4, %66 : !airrt.event
+        scf.reduce(%67 : !airrt.event) {
+        ^bb0(%arg6: !airrt.event, %arg7: !airrt.event):
+          %68 = airrt.wait_all %arg6, %arg7 : !airrt.event
+          scf.reduce.return %68 : !airrt.event
+        }
+      }
+      scf.yield %65 : !airrt.event
+    }
+    return
+  }
+}
