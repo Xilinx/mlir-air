@@ -444,14 +444,14 @@ public:
             herd_meta->getAttrOfType<ArrayAttr>("dma_allocations");
         assert(shim_attr);
         for (auto &shim_alloc : shim_attr) {
-          auto shim_alloc_dict = shim_alloc.cast<DictionaryAttr>();
-          auto id = shim_alloc_dict.get("id").cast<IntegerAttr>().getInt();
-          auto row = shim_alloc_dict.get("row").cast<IntegerAttr>().getInt();
-          auto col = shim_alloc_dict.get("col").cast<IntegerAttr>().getInt();
+          auto shim_alloc_dict = llvm::cast<DictionaryAttr>(shim_alloc);
+          auto id = llvm::cast<IntegerAttr>(shim_alloc_dict.get("id")).getInt();
+          auto row = llvm::cast<IntegerAttr>(shim_alloc_dict.get("row")).getInt();
+          auto col = llvm::cast<IntegerAttr>(shim_alloc_dict.get("col")).getInt();
           auto channel =
-              shim_alloc_dict.get("channel").cast<IntegerAttr>().getInt();
+              llvm::cast<IntegerAttr>(shim_alloc_dict.get("channel")).getInt();
           auto location =
-              shim_alloc_dict.get("location").cast<IntegerAttr>().getInt();
+              llvm::cast<IntegerAttr>(shim_alloc_dict.get("location")).getInt();
           cols[id - 1][row][col] = location;
           chans[id - 1][row][col] = channel;
         }
@@ -579,7 +579,7 @@ LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
     operands.push_back(o);
   }
 
-  MemRefType memrefTy = tys[4].cast<MemRefType>();
+  MemRefType memrefTy = llvm::cast<MemRefType>(tys[4]);
   tys[4] = MemRefType::get(
       std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
       memrefTy.getElementType(), memrefTy.getLayout(),
@@ -1202,9 +1202,9 @@ public:
 
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
         [&](affine::AffineStoreOp op) {
-          return (op.getMemref()
+          return (llvm::cast<MemRefType>(op.getMemref()
                       .getType()
-                      .cast<MemRefType>()
+                      )
                       .getMemorySpaceAsInt() !=
                   (int)xilinx::air::MemorySpace::L1);
         });

@@ -38,7 +38,7 @@ transform::GetSegmentForOp::apply(transform::TransformRewriter &rewriter,
     }
     segments.insert(segment);
   }
-  results.set(getResult().cast<OpResult>(), segments.getArrayRef());
+  results.set(llvm::cast<OpResult>(getResult()), segments.getArrayRef());
   return DiagnosedSilenceableFailure::success();
 }
 

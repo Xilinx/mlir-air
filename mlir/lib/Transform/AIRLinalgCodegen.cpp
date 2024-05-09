@@ -962,7 +962,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     b.setInsertionPointToStart(stageBlock);
 
     if (i) {
-      auto ty = tiledOperands[resultIdx].getType().cast<MemRefType>();
+      auto ty = llvm::cast<MemRefType>(tiledOperands[resultIdx].getType());
       auto alloc = b.create<memref::AllocOp>(
           loc, MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
                                (int)air::MemorySpace::L1));
@@ -1882,7 +1882,7 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
             for (OpFoldResult ofr : getMixedSizes()) {
               if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
                 sizes.push_back(b.create<arith::ConstantIndexOp>(
-                    getLoc(), attr.cast<IntegerAttr>().getInt()));
+                    getLoc(), llvm::cast<IntegerAttr>(attr).getInt()));
               } else {
                 sizes.push_back(
                     dynamicSizeProducers[dynamicIdx++][index]->getResult(0));
@@ -1910,9 +1910,9 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
       loops[en2.index()].push_back(en2.value());
   }
 
-  transformResults.set(getTiledLinalgOp().cast<OpResult>(), tiled);
+  transformResults.set(llvm::cast<OpResult>(getTiledLinalgOp()), tiled);
   for (const auto &en : llvm::enumerate(loops))
-    transformResults.set(getLoops()[en.index()].cast<OpResult>(), en.value());
+    transformResults.set(llvm::cast<OpResult>(getLoops()[en.index()]), en.value());
 
   return DiagnosedSilenceableFailure::success();
 }
@@ -2108,7 +2108,7 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   if (!transformed.size())
     return emitDefaultDefiniteFailure(payloadOps[0]);
 
-  results.set(getResult().cast<OpResult>(), transformed.getArrayRef());
+  results.set(llvm::cast<OpResult>(getResult()), transformed.getArrayRef());
   return DiagnosedSilenceableFailure::success();
 }
 
@@ -2233,7 +2233,7 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
       llvm::to_vector(state.getPayloadOps(getProducerOp()));
   // If nothing to fuse, propagate success.
   if (producerOps.empty()) {
-    results.set(getFusedOp().cast<OpResult>(),
+    results.set(llvm::cast<OpResult>(getFusedOp()),
                 SmallVector<mlir::Operation *>{});
     return DiagnosedSilenceableFailure::success();
   }
@@ -2270,7 +2270,7 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
         return containingOp->isAncestor(op);
       });
   if (numUsesInContainingOp == 0) {
-    results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+    results.set(llvm::cast<OpResult>(getFusedOp()), ArrayRef<Operation *>());
     Diagnostic diag(containingOp->getLoc(), DiagnosticSeverity::Remark);
     diag << "producer_op does not have uses in the container";
     return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
@@ -2288,11 +2288,11 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
     fusedOps.push_back(tiled);
     rewriter.eraseOp(producerOp);
 
-    results.set(getFusedOp().cast<OpResult>(), fusedOps);
+    results.set(llvm::cast<OpResult>(getFusedOp()), fusedOps);
     return DiagnosedSilenceableFailure::success();
   }
 
-  results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+  results.set(llvm::cast<OpResult>(getFusedOp()), ArrayRef<Operation *>());
   return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
 }
 

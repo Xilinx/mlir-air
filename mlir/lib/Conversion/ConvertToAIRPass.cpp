@@ -91,10 +91,10 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
     auto loc = subview.getLoc();
 
     // get the strides and offsets from the memref type
-    auto inferredType = memref::SubViewOp::inferResultType(
+    auto inferredType = llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
                             subview.getSourceType(), static_offsets,
                             static_sizes, static_strides)
-                            .cast<MemRefType>();
+                            );
     int64_t offset;
     SmallVector<int64_t, 4> layout_strides;
     auto successStrides =
@@ -164,9 +164,9 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
 
   // get the strides and offsets from the memref type
   auto inferredType =
-      memref::SubViewOp::inferResultType(
+      llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
           subview.getSourceType(), static_offsets, static_sizes, static_strides)
-          .cast<MemRefType>();
+          );
   int64_t offset;
   SmallVector<int64_t, 4> layout_strides;
   auto successStrides =
@@ -2252,10 +2252,10 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   SmallVector<OpFoldResult> L2Sizes;
   for (unsigned i = 0; i < L2MemrefShape.size(); i++)
     L2Sizes.push_back(builder.getIndexAttr(L2TiledShape[i]));
-  auto subviewOutputType = memref::SubViewOp::inferResultType(
+  auto subviewOutputType = llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
                                llvm::cast<MemRefType>(L2Memref.getType()),
                                L2Offsets, L2Sizes, L2Strides)
-                               .cast<MemRefType>();
+                               );
   auto newL2Subview = builder.create<memref::SubViewOp>(
       loc, subviewOutputType, L2Memref, L2Offsets, L2Sizes, L2Strides);
   remap.map(L2Memref, newL2Subview.getResult());
@@ -2711,17 +2711,17 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
       // Check if subview is rank reduced
       if (subviewOp.getSourceType().getRank() > subviewOp.getType().getRank())
         src_memref_ty =
-            memref::SubViewOp::inferRankReducedResultType(
+            llvm::cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
                 subviewOp.getType().getShape(), src_memref_ty,
                 subviewOp.getStaticOffsets(), subviewOp.getStaticSizes(),
                 subviewOp.getStaticStrides())
-                .cast<MemRefType>();
+                );
       else
         src_memref_ty =
-            memref::SubViewOp::inferResultType(
+            llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
                 src_memref_ty, subviewOp.getStaticOffsets(),
                 subviewOp.getStaticSizes(), subviewOp.getStaticStrides())
-                .cast<MemRefType>();
+                );
     }
   }
 
@@ -2742,17 +2742,17 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
     } else if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOp)) {
       if (subviewOp.getSourceType().getRank() > subviewOp.getType().getRank())
         dst_memref_ty =
-            memref::SubViewOp::inferRankReducedResultType(
+            llvm::cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
                 subviewOp.getType().getShape(), dst_memref_ty,
                 subviewOp.getStaticOffsets(), subviewOp.getStaticSizes(),
                 subviewOp.getStaticStrides())
-                .cast<MemRefType>();
+                );
       else
         dst_memref_ty =
-            memref::SubViewOp::inferResultType(
+            llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
                 dst_memref_ty, subviewOp.getStaticOffsets(),
                 subviewOp.getStaticSizes(), subviewOp.getStaticStrides())
-                .cast<MemRefType>();
+                );
     }
   }
 

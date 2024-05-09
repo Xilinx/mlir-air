@@ -525,9 +525,9 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       // Broadcast channel control loop
       assert(theOtherOp->hasAttr("tile"));
       ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
-      auto tile_dict = tiles[0].cast<DictionaryAttr>();
-      auto row = tile_dict.get("row").cast<IntegerAttr>().getInt();
-      auto col = tile_dict.get("col").cast<IntegerAttr>().getInt();
+      auto tile_dict = llvm::cast<DictionaryAttr>(tiles[0]);
+      auto row = llvm::cast<IntegerAttr>(tile_dict.get("row")).getInt();
+      auto col = llvm::cast<IntegerAttr>(tile_dict.get("col")).getInt();
       opers.push_back(builder.create<arith::ConstantOp>(
           loc, i64Ty, IntegerAttr::get(i64Ty, col)));
       opers.push_back(builder.create<arith::ConstantOp>(

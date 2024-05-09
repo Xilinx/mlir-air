@@ -21,13 +21,13 @@ using namespace xilinx;
 
 bool air::isTileInbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt) {
   if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
-    int src_memory_space = memcpyOp.getSrcMemref()
+    int src_memory_space = llvm::cast<MemRefType>(memcpyOp.getSrcMemref()
                                .getType()
-                               .cast<MemRefType>()
+                               )
                                .getMemorySpaceAsInt();
-    int dst_memory_space = memcpyOp.getDstMemref()
+    int dst_memory_space = llvm::cast<MemRefType>(memcpyOp.getDstMemref()
                                .getType()
-                               .cast<MemRefType>()
+                               )
                                .getMemorySpaceAsInt();
     assert(src_memory_space !=
            dst_memory_space); // air.dmaMemcpyNdOp isn't meant to represent
@@ -836,14 +836,14 @@ AIE::BufferOp MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp) {
   // air::DmaMemcpyNdOp is a complete memcpy with both src and dst
   S2MM[0].push_back(memcpyOp.getOperation());
-  S2MM_memspace_as_int = memcpyOp.getDstMemref()
+  S2MM_memspace_as_int = llvm::cast<MemRefType>(memcpyOp.getDstMemref()
                              .getType()
-                             .cast<MemRefType>()
+                             )
                              .getMemorySpaceAsInt();
   MM2S.push_back(memcpyOp.getOperation());
-  MM2S_memspace_as_int = memcpyOp.getSrcMemref()
+  MM2S_memspace_as_int = llvm::cast<MemRefType>(memcpyOp.getSrcMemref()
                              .getType()
-                             .cast<MemRefType>()
+                             )
                              .getMemorySpaceAsInt();
 }
 

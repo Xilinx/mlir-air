@@ -678,9 +678,9 @@ public:
     }
     // if channel is broadcast, add broadcast shape
     if (channelOp->getAttr("broadcast_shape")) {
-      for (auto i : channelOp->getAttr("broadcast_shape").cast<ArrayAttr>()) {
+      for (auto i : llvm::cast<ArrayAttr>(channelOp->getAttr("broadcast_shape"))) {
         operands.push_back(rewriter.create<arith::ConstantIndexOp>(
-            op->getLoc(), i.cast<IntegerAttr>().getInt()));
+            op->getLoc(), llvm::cast<IntegerAttr>(i).getInt()));
       }
     } else {
       // if channel is not broadcast, add 1
