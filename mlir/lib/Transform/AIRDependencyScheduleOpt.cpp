@@ -2117,13 +2117,13 @@ public:
   void getDmaOpLoopDependency(func::FuncOp f) {
     f.walk([&](Operation *op) {
       if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
-        int src_memspace = dma_op.getSrcMemref()
+        int src_memspace = llvm::cast<MemRefType>(dma_op.getSrcMemref()
                                .getType()
-                               .cast<MemRefType>()
+                               )
                                .getMemorySpaceAsInt();
-        int dst_memspace = dma_op.getDstMemref()
+        int dst_memspace = llvm::cast<MemRefType>(dma_op.getDstMemref()
                                .getType()
-                               .cast<MemRefType>()
+                               )
                                .getMemorySpaceAsInt();
         bool isL1Memcpy = (src_memspace == (int)air::MemorySpace::L1) ||
                           (dst_memspace == (int)air::MemorySpace::L1);
@@ -2164,9 +2164,9 @@ public:
       }
       // If not variant wrt herd, then check for fixed row-wise or col-wise
       // offset.
-      int src_memspace = dma_op.getSrcMemref()
+      int src_memspace = llvm::cast<MemRefType>(dma_op.getSrcMemref()
                              .getType()
-                             .cast<MemRefType>()
+                             )
                              .getMemorySpaceAsInt();
       auto externalOffsets = src_memspace == (int)air::MemorySpace::L1
                                  ? dma_op.getDstOffsets()
@@ -3937,18 +3937,17 @@ private:
     auto static_sizes = subViewOp.getStaticSizes();
     auto static_strides = subViewOp.getStaticStrides();
     // Get MemRefType after shrinkage.
-    Type elemType = llvm::cast<MemRefType>(subViewOp.getSource().getType())
-                        .getElementType();
+    Type elemType =
+        llvm::cast<MemRefType>(subViewOp.getSource().getType()).getElementType();
     Attribute memorySpace =
-        llvm::cast<MemRefType>(subViewOp.getSource().getType())
-            .getMemorySpace();
+        llvm::cast<MemRefType>(subViewOp.getSource().getType()).getMemorySpace();
     auto shrunkMemrefType =
         MemRefType::get(overall_access_bounds, elemType, nullptr, memorySpace);
     MemRefType inferredSubViewOutputTy =
-        memref::SubViewOp::inferResultType(
+        llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
             shrunkMemrefType, subViewOp.getStaticOffsets(),
             subViewOp.getStaticSizes(), subViewOp.getStaticStrides())
-            .cast<MemRefType>();
+            );
     for (unsigned i = 0; i < static_sizes.size(); i++) {
       if (static_sizes[i] < 0) {
         if (*getConstantIntValue(*subview_sizes++) !=

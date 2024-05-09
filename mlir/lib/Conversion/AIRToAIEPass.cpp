@@ -1350,7 +1350,7 @@ private:
   template <typename MyOp>
   LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
                                       AIE::AIEObjectFifoType *datatype) const {
-    MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
+    MemRefType memref = llvm::cast<MemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
     *datatype = AIE::AIEObjectFifoType::get(
         MemRefType::get(memref.getShape(), memref.getElementType()));
@@ -1394,7 +1394,7 @@ private:
                        AIE::ObjectFifoCreateOp objFifo,
                        AIE::ObjectFifoPort port,
                        llvm::SmallSet<Operation *, 2> &erased_allocs) const {
-    MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
+    MemRefType memref = cast<MemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
       // add alloc to list of ops to erase
@@ -1428,7 +1428,7 @@ private:
       PatternRewriter &rewriter, MyOp op, AIE::ObjectFifoCreateOp objFifo,
       AIE::ObjectFifoPort port,
       llvm::SmallSet<Operation *, 2> &erased_deallocs) const {
-    MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
+    MemRefType memref = llvm::cast<MemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
       return;
