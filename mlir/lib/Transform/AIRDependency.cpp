@@ -167,7 +167,7 @@ public:
 
         // Create async execute region for arith.muli
         else if (auto arith_op = dyn_cast<arith::MulIOp>(op)) {
-          if (arith_op.getResult().getType().isa<IndexType>()) {
+          if (llvm::isa<IndexType>(arith_op.getResult().getType())) {
             createAsyncExecute(module_builder, op, "arith::muli", ExecuteOpID,
                                arith_op.getResult().getType());
           }
@@ -175,7 +175,7 @@ public:
 
         // Create async execute region for arith.addi
         else if (auto arith_op = dyn_cast<arith::AddIOp>(op)) {
-          if (arith_op.getResult().getType().isa<IndexType>()) {
+          if (llvm::isa<IndexType>(arith_op.getResult().getType())) {
             createAsyncExecute(module_builder, op, "arith::addi", ExecuteOpID,
                                arith_op.getResult().getType());
           }
@@ -198,8 +198,8 @@ public:
         else {
           bool isCandidateExecute = false;
           for (auto operand : op->getOperands()) {
-            if (operand.getType().isa<MemRefType>() ||
-                operand.getType().isa<IndexType>()) {
+            if (llvm::isa<MemRefType>(operand.getType()) ||
+                llvm::isa<IndexType>(operand.getType())) {
               isCandidateExecute = true;
             }
           }
@@ -260,24 +260,24 @@ public:
         // If the sink op is linalg op
         if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
           for (auto ins_value : sink_op_linalgop.getDpsInputs()) {
-            if (ins_value.getType().isa<MemRefType>()) {
+            if (llvm::isa<MemRefType>(ins_value.getType())) {
               unsigned memRefRank =
-                  ins_value.getType().cast<MemRefType>().getRank();
+                  llvm::cast<MemRefType>(ins_value.getType()).getRank();
               partialMemref tile = createPartialMemref(ins_value, memRefRank);
               sink_op_memref_reads.push_back(tile);
-            } else if (ins_value.getType().isa<IndexType>()) {
+            } else if (llvm::isa<IndexType>(ins_value.getType())) {
               sink_op_scalar_ins.push_back(ins_value);
             }
           }
           for (auto outs_value : sink_op_linalgop.getDpsInits()) {
-            if (outs_value.getType().isa<MemRefType>()) {
+            if (llvm::isa<MemRefType>(outs_value.getType())) {
               unsigned memRefRank =
-                  outs_value.getType().cast<MemRefType>().getRank();
+                  llvm::cast<MemRefType>(outs_value.getType()).getRank();
               partialMemref tile = createPartialMemref(outs_value, memRefRank);
               sink_op_memref_reads.push_back(
                   tile); // linalg op both reads and writes the output memref
               sink_op_memref_writes.push_back(tile);
-            } else if (outs_value.getType().isa<IndexType>()) {
+            } else if (llvm::isa<IndexType>(outs_value.getType())) {
               sink_op_scalar_ins.push_back(
                   outs_value); // linalg op both reads and writes the output
                                // memref
@@ -286,13 +286,13 @@ public:
           }
           if (sink_op_linalgop->getNumResults()) {
             for (auto linalg_results : sink_op_linalgop->getResults()) {
-              if (linalg_results.getType().isa<MemRefType>()) {
+              if (llvm::isa<MemRefType>(linalg_results.getType())) {
                 unsigned memRefRank =
-                    linalg_results.getType().cast<MemRefType>().getRank();
+                    llvm::cast<MemRefType>(linalg_results.getType()).getRank();
                 partialMemref tile =
                     createPartialMemref(linalg_results, memRefRank);
                 sink_op_memref_writes.push_back(tile);
-              } else if (linalg_results.getType().isa<IndexType>()) {
+              } else if (llvm::isa<IndexType>(linalg_results.getType())) {
                 sink_op_scalar_outs.push_back(linalg_results);
               }
             }
@@ -302,10 +302,9 @@ public:
         // If the sink op is memref::dealloc
         else if (auto sink_op_memdealloc =
                      dyn_cast<memref::DeallocOp>(sink_op)) {
-          unsigned memRefRank = sink_op_memdealloc.getMemref()
-                                    .getType()
-                                    .cast<MemRefType>()
-                                    .getRank();
+          unsigned memRefRank =
+              llvm::cast<MemRefType>(sink_op_memdealloc.getMemref().getType())
+                  .getRank();
           partialMemref tile =
               createPartialMemref(sink_op_memdealloc.getMemref(), memRefRank);
           sink_op_memref_reads.push_back(tile);
@@ -315,17 +314,15 @@ public:
 
         // If the sink op is memref::copy
         else if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)) {
-          unsigned memRefRankSrc = sink_op_memref_copy.getSource()
-                                       .getType()
-                                       .cast<MemRefType>()
-                                       .getRank();
+          unsigned memRefRankSrc =
+              llvm::cast<MemRefType>(sink_op_memref_copy.getSource().getType())
+                  .getRank();
           partialMemref tileSrc = createPartialMemref(
               sink_op_memref_copy.getSource(), memRefRankSrc);
           sink_op_memref_reads.push_back(tileSrc);
-          unsigned memRefRankDst = sink_op_memref_copy.getTarget()
-                                       .getType()
-                                       .cast<MemRefType>()
-                                       .getRank();
+          unsigned memRefRankDst =
+              llvm::cast<MemRefType>(sink_op_memref_copy.getTarget().getType())
+                  .getRank();
           partialMemref tileDst = createPartialMemref(
               sink_op_memref_copy.getTarget(), memRefRankDst);
           sink_op_memref_reads.push_back(tileDst);
@@ -337,10 +334,9 @@ public:
                      mlir::dyn_cast<xilinx::air::MemcpyInterface>(sink_op)) {
           if (sink_op_memcpy.getSrcMemref()) {
             SmallVector<Value, 2> src_indices;
-            unsigned numDimsSrc = sink_op_memcpy.getSrcMemref()
-                                      .getType()
-                                      .cast<MemRefType>()
-                                      .getRank();
+            unsigned numDimsSrc =
+                llvm::cast<MemRefType>(sink_op_memcpy.getSrcMemref().getType())
+                    .getRank();
             for (unsigned i = 0; i < sink_op_memcpy.getSrcOffsets().size(); i++)
               sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcOffsets()[i]);
             for (unsigned i = 0; i < sink_op_memcpy.getSrcSizes().size(); i++)
@@ -363,10 +359,9 @@ public:
           }
           if (sink_op_memcpy.getDstMemref()) {
             SmallVector<Value, 2> dst_indices;
-            unsigned numDimsDst = sink_op_memcpy.getDstMemref()
-                                      .getType()
-                                      .cast<MemRefType>()
-                                      .getRank();
+            unsigned numDimsDst =
+                llvm::cast<MemRefType>(sink_op_memcpy.getDstMemref().getType())
+                    .getRank();
             for (unsigned i = 0; i < sink_op_memcpy.getDstOffsets().size(); i++)
               sink_op_scalar_outs.push_back(sink_op_memcpy.getDstOffsets()[i]);
             for (unsigned i = 0; i < sink_op_memcpy.getDstSizes().size(); i++)
@@ -415,14 +410,14 @@ public:
         // If the sink op is an unknown op
         else {
           for (auto sink_op_op : sink_op->getOperands()) {
-            if (sink_op_op.getType().isa<MemRefType>()) {
+            if (llvm::isa<MemRefType>(sink_op_op.getType())) {
               unsigned memRefRank =
-                  sink_op_op.getType().cast<MemRefType>().getRank();
+                  llvm::cast<MemRefType>(sink_op_op.getType()).getRank();
               partialMemref tile = createPartialMemref(sink_op_op, memRefRank);
               sink_op_memref_reads.push_back(
                   tile); // Assuming all operands are both read and written to
               sink_op_memref_writes.push_back(tile);
-            } else if (sink_op_op.getType().isa<IndexType>()) {
+            } else if (llvm::isa<IndexType>(sink_op_op.getType())) {
               sink_op_scalar_ins.push_back(
                   sink_op_op); // Assuming all operands are both read and
                                // written to
@@ -431,13 +426,13 @@ public:
           }
           if (sink_op->getNumResults()) {
             for (auto sink_op_results : sink_op->getResults()) {
-              if (sink_op_results.getType().isa<MemRefType>()) {
+              if (llvm::isa<MemRefType>(sink_op_results.getType())) {
                 unsigned memRefRank =
-                    sink_op_results.getType().cast<MemRefType>().getRank();
+                    llvm::cast<MemRefType>(sink_op_results.getType()).getRank();
                 partialMemref tile =
                     createPartialMemref(sink_op_results, memRefRank);
                 sink_op_memref_writes.push_back(tile);
-              } else if (sink_op_results.getType().isa<IndexType>()) {
+              } else if (llvm::isa<IndexType>(sink_op_results.getType())) {
                 sink_op_scalar_outs.push_back(sink_op_results);
               }
             }
@@ -956,7 +951,7 @@ private:
   }
 
   char checkOperandReadOrWrite(mlir::Value operand) {
-    if (!operand.getType().isa<MemRefType>()) {
+    if (!llvm::isa<MemRefType>(operand.getType())) {
       operand.getDefiningOp()->emitOpError(
           "operand being traced is not a memref");
     }
@@ -1002,7 +997,7 @@ private:
   template <typename T>
   void pushDepsAtCurrentScope(mlir::Value operand, T op, char rw = 'n',
                               partialMemref *tile = nullptr) {
-    if (!operand.getType().isa<MemRefType>()) {
+    if (!llvm::isa<MemRefType>(operand.getType())) {
       operand.getDefiningOp()->emitOpError(
           "operand being traced is not a memref");
     }
@@ -1028,7 +1023,8 @@ private:
           if (memcpy.getSrcMemref()) {
             SmallVector<Value, 2> src_indices;
             unsigned numDimsSrc =
-                memcpy.getSrcMemref().getType().cast<MemRefType>().getRank();
+                llvm::cast<MemRefType>(memcpy.getSrcMemref().getType())
+                    .getRank();
             if (memcpy.getSrcOffsets().size()) {
               numDimsSrc = memcpy.getSrcOffsets().size();
               for (unsigned i = 0; i < numDimsSrc; i++) {
@@ -1044,7 +1040,8 @@ private:
           }
           if (memcpy.getDstMemref()) {
             unsigned numDimsDst =
-                memcpy.getDstMemref().getType().cast<MemRefType>().getRank();
+                llvm::cast<MemRefType>(memcpy.getDstMemref().getType())
+                    .getRank();
             SmallVector<Value, 2> dst_indices;
             if (memcpy.getDstOffsets().size()) {
               numDimsDst = memcpy.getDstOffsets().size();

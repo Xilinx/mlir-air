@@ -64,8 +64,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   rewriter.setInsertionPoint(op);
 
   // It must already be a memref
-  auto src_type = src.getType().dyn_cast<MemRefType>();
-  auto dst_type = dst.getType().dyn_cast<MemRefType>();
+  auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
+  auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
   if (!src_type)
     return failure();
 
@@ -91,10 +91,10 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
     auto loc = subview.getLoc();
 
     // get the strides and offsets from the memref type
-    auto inferredType = memref::SubViewOp::inferResultType(
-                            subview.getSourceType(), static_offsets,
-                            static_sizes, static_strides)
-                            .cast<MemRefType>();
+    auto inferredType =
+        llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
+            subview.getSourceType(), static_offsets, static_sizes,
+            static_strides));
     int64_t offset;
     SmallVector<int64_t, 4> layout_strides;
     auto successStrides =
@@ -163,10 +163,8 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
   auto loc = subview.getLoc();
 
   // get the strides and offsets from the memref type
-  auto inferredType =
-      memref::SubViewOp::inferResultType(
-          subview.getSourceType(), static_offsets, static_sizes, static_strides)
-          .cast<MemRefType>();
+  auto inferredType = llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
+      subview.getSourceType(), static_offsets, static_sizes, static_strides));
   int64_t offset;
   SmallVector<int64_t, 4> layout_strides;
   auto successStrides =
@@ -595,8 +593,8 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
     auto dst = op.getOutputs()[0];
 
     // It must already be a memref
-    auto src_type = src.getType().dyn_cast<MemRefType>();
-    auto dst_type = dst.getType().dyn_cast<MemRefType>();
+    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
+    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
     if (!src_type)
       return failure();
 
@@ -722,8 +720,8 @@ void replaceAIRDmaWithAIRChannelPairs(
   auto dst = op.getDstMemref();
   auto ctx = op->getContext();
 
-  auto src_type = src.getType().dyn_cast<MemRefType>();
-  auto dst_type = dst.getType().dyn_cast<MemRefType>();
+  auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
+  auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
   SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
   SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
   SmallVector<Value, 4> src_sizes = op.getSrcSizes();
@@ -947,7 +945,7 @@ void HoistingAffineIf(affine::AffineIfOp op) {
   // Hoist hierarchy op into scf op
   module_builder.setInsertionPoint(hier_op);
   MemRefType externalMemrefTy =
-      externalGetPut[0].getMemref().getType().cast<MemRefType>();
+      llvm::cast<MemRefType>(externalGetPut[0].getMemref().getType());
   if (externalMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
       segment) {
     module_builder.setInsertionPoint(segment);
@@ -1055,8 +1053,8 @@ class AIRDmaToAIRChannelConversion
     auto ctx = op->getContext();
 
     // It must already be a memref
-    auto src_type = src.getType().dyn_cast<MemRefType>();
-    auto dst_type = dst.getType().dyn_cast<MemRefType>();
+    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
+    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
     if (!src_type)
       return failure();
 
@@ -1363,7 +1361,7 @@ LogicalResult AIRDemoteMemrefToAIRHierarchy(
       auto memref =
           isa<air::ExecuteOp>(op) ? op->getResult(1) : op->getResult(0);
       auto token = isa<air::ExecuteOp>(op) ? op->getResult(0) : nullptr;
-      auto memref_type = memref.getType().dyn_cast<MemRefType>();
+      auto memref_type = llvm::dyn_cast<MemRefType>(memref.getType());
 
       if (memref_type.getMemorySpaceAsInt() == hierMemorySpace)
         continue; // Alloc op is already under correct hierarchy
@@ -1447,8 +1445,8 @@ class AIRDemoteDmaToAIRHierarchyConversion
     auto ctx = op->getContext();
 
     // It must already be a memref
-    auto src_type = src.getType().dyn_cast<MemRefType>();
-    auto dst_type = dst.getType().dyn_cast<MemRefType>();
+    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
+    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
     if (!src_type)
       return failure();
 
@@ -2253,9 +2251,9 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   for (unsigned i = 0; i < L2MemrefShape.size(); i++)
     L2Sizes.push_back(builder.getIndexAttr(L2TiledShape[i]));
   auto subviewOutputType =
-      memref::SubViewOp::inferResultType(L2Memref.getType().cast<MemRefType>(),
-                                         L2Offsets, L2Sizes, L2Strides)
-          .cast<MemRefType>();
+      llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
+          llvm::cast<MemRefType>(L2Memref.getType()), L2Offsets, L2Sizes,
+          L2Strides));
   auto newL2Subview = builder.create<memref::SubViewOp>(
       loc, subviewOutputType, L2Memref, L2Offsets, L2Sizes, L2Strides);
   remap.map(L2Memref, newL2Subview.getResult());
@@ -2650,8 +2648,8 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
   auto loc = dmaOp->getLoc();
 
   // It must already be a memref
-  auto src_type = src.getType().dyn_cast<MemRefType>();
-  auto dst_type = dst.getType().dyn_cast<MemRefType>();
+  auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
+  auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
   if (!src_type)
     return failure();
   if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
@@ -2675,7 +2673,7 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
       src = subviewOp.getSource();
     } else if (auto transposeOp =
                    dyn_cast<memref::TransposeOp>(src_ancestor_memref_ops[0])) {
-      src_memref_ty = transposeOp.getIn().getType().cast<MemRefType>();
+      src_memref_ty = llvm::cast<MemRefType>(transposeOp.getIn().getType());
       src = transposeOp.getIn();
     }
   }
@@ -2688,7 +2686,7 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
       dst = subviewOp.getSource();
     } else if (auto transposeOp =
                    dyn_cast<memref::TransposeOp>(dst_ancestor_memref_ops[0])) {
-      dst_memref_ty = transposeOp.getIn().getType().cast<MemRefType>();
+      dst_memref_ty = llvm::cast<MemRefType>(transposeOp.getIn().getType());
       dst = transposeOp.getIn();
     }
   }
@@ -2710,18 +2708,16 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
     } else if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOp)) {
       // Check if subview is rank reduced
       if (subviewOp.getSourceType().getRank() > subviewOp.getType().getRank())
-        src_memref_ty =
+        src_memref_ty = llvm::cast<MemRefType>(
             memref::SubViewOp::inferRankReducedResultType(
                 subviewOp.getType().getShape(), src_memref_ty,
                 subviewOp.getStaticOffsets(), subviewOp.getStaticSizes(),
-                subviewOp.getStaticStrides())
-                .cast<MemRefType>();
+                subviewOp.getStaticStrides()));
       else
         src_memref_ty =
-            memref::SubViewOp::inferResultType(
+            llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
                 src_memref_ty, subviewOp.getStaticOffsets(),
-                subviewOp.getStaticSizes(), subviewOp.getStaticStrides())
-                .cast<MemRefType>();
+                subviewOp.getStaticSizes(), subviewOp.getStaticStrides()));
     }
   }
 
@@ -2741,18 +2737,16 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
       }
     } else if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOp)) {
       if (subviewOp.getSourceType().getRank() > subviewOp.getType().getRank())
-        dst_memref_ty =
+        dst_memref_ty = llvm::cast<MemRefType>(
             memref::SubViewOp::inferRankReducedResultType(
                 subviewOp.getType().getShape(), dst_memref_ty,
                 subviewOp.getStaticOffsets(), subviewOp.getStaticSizes(),
-                subviewOp.getStaticStrides())
-                .cast<MemRefType>();
+                subviewOp.getStaticStrides()));
       else
         dst_memref_ty =
-            memref::SubViewOp::inferResultType(
+            llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
                 dst_memref_ty, subviewOp.getStaticOffsets(),
-                subviewOp.getStaticSizes(), subviewOp.getStaticStrides())
-                .cast<MemRefType>();
+                subviewOp.getStaticSizes(), subviewOp.getStaticStrides()));
     }
   }
 
@@ -2768,12 +2762,12 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
   SmallVector<Value, 4> deps;
   SmallVector<Type, 4> tys;
 
-  if (failed(canonicalizeAIRDmaOperands(rewriter, src_offsets, src_sizes,
-                                        src_strides,
-                                        src.getType().cast<MemRefType>())) ||
-      failed(canonicalizeAIRDmaOperands(rewriter, dst_offsets, dst_sizes,
-                                        dst_strides,
-                                        dst.getType().cast<MemRefType>()))) {
+  if (failed(canonicalizeAIRDmaOperands(
+          rewriter, src_offsets, src_sizes, src_strides,
+          llvm::cast<MemRefType>(src.getType()))) ||
+      failed(canonicalizeAIRDmaOperands(
+          rewriter, dst_offsets, dst_sizes, dst_strides,
+          llvm::cast<MemRefType>(dst.getType())))) {
     assert(false);
   }
   auto new_dma = rewriter.create<xilinx::air::DmaMemcpyNdOp>(
@@ -2816,8 +2810,8 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
                       affine::AffineYieldOp>();
 
     target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
-      auto src_type = co.getSource().getType().dyn_cast<MemRefType>();
-      auto dst_type = co.getTarget().getType().dyn_cast<MemRefType>();
+      auto src_type = llvm::dyn_cast<MemRefType>(co.getSource().getType());
+      auto dst_type = llvm::dyn_cast<MemRefType>(co.getTarget().getType());
       return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
     });
 
@@ -3005,8 +2999,10 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
     target_0.addDynamicallyLegalOp<air::DmaMemcpyNdOp>(
         [&](air::DmaMemcpyNdOp dma) {
-          auto src_type = dma.getSrcMemref().getType().dyn_cast<MemRefType>();
-          auto dst_type = dma.getDstMemref().getType().dyn_cast<MemRefType>();
+          auto src_type =
+              llvm::dyn_cast<MemRefType>(dma.getSrcMemref().getType());
+          auto dst_type =
+              llvm::dyn_cast<MemRefType>(dma.getDstMemref().getType());
           if (dma->getParentOfType<air::HerdOp>()) {
             if (src_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1 &&
                 dst_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1)
@@ -3179,11 +3175,11 @@ static void getHerdNames(ModuleOp module) {
                 continue;
               if (!isa<MemRefType>(operJ.getType()))
                 continue;
-              if (operI.getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-                  (int)air::MemorySpace::L1)
+              if (llvm::cast<MemRefType>(operI.getType())
+                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
                 continue;
-              if (operJ.getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-                  (int)air::MemorySpace::L1)
+              if (llvm::cast<MemRefType>(operJ.getType())
+                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
                 continue;
               if (operI != operJ)
                 continue;
@@ -3288,8 +3284,8 @@ struct ParallelToHerdPass
     // Ensure that air.dma_memcpy_nd ops between L1 and L2 are within at least
     // two parent scf.parallel loops.
     module.walk([&](air::DmaMemcpyNdOp op) {
-      auto srcMemrefTy = op.getSrcMemref().getType().cast<MemRefType>();
-      auto dstMemrefTy = op.getDstMemref().getType().cast<MemRefType>();
+      auto srcMemrefTy = llvm::cast<MemRefType>(op.getSrcMemref().getType());
+      auto dstMemrefTy = llvm::cast<MemRefType>(op.getDstMemref().getType());
       Value L1Memref = nullptr;
       Value L2Memref = nullptr;
       bool SrcIsL1 = false;

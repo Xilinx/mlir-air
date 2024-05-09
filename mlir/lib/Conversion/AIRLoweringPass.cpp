@@ -101,7 +101,7 @@ public:
       rewriter.setInsertionPoint(scfPar);
       SmallVector<Value> deps;
       for (auto &o : operands)
-        if (o.getType().isa<airrt::EventType>())
+        if (llvm::isa<airrt::EventType>(o.getType()))
           deps.push_back(o);
       rewriter.replaceOpWithNewOp<airrt::WaitAllOp>(
           op, airrt::EventType::get(op->getContext()), deps);
@@ -170,7 +170,8 @@ public:
         rewriter.clone(o, remap);
       } else if (auto chanOp = dyn_cast<air::ChannelInterface>(o)) {
         // clone L3 get/put
-        MemRefType memrefTy = chanOp.getMemref().getType().cast<MemRefType>();
+        MemRefType memrefTy =
+            llvm::cast<MemRefType>(chanOp.getMemref().getType());
         if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
           rewriter.clone(o, remap);
           continue;
@@ -190,7 +191,7 @@ public:
 
     SmallVector<Value> deps;
     for (auto &o : operands)
-      if (o.getType().isa<airrt::EventType>())
+      if (llvm::isa<airrt::EventType>(o.getType()))
         deps.push_back(o);
     if (op->getNumResults()) {
       rewriter.setInsertionPoint(op);
@@ -231,7 +232,7 @@ public:
 
     SmallVector<Value, 4> deps;
     for (auto &o : operands)
-      if (o.getType().isa<airrt::EventType>())
+      if (llvm::isa<airrt::EventType>(o.getType()))
         deps.push_back(o);
     if (op->getNumResults()) {
       auto w = rewriter.create<airrt::WaitAllOp>(
@@ -320,7 +321,7 @@ public:
     auto getOp = cast<air::PipelineGetOp>(op);
     SmallVector<Value, 2> gets;
     for (auto r : getOp.getResults()) {
-      if (auto ty = r.getType().dyn_cast<RankedTensorType>())
+      if (auto ty = llvm::dyn_cast<RankedTensorType>(r.getType()))
         gets.push_back(rewriter.create<bufferization::AllocTensorOp>(
             op->getLoc(), ty, ValueRange{}));
       else
@@ -361,14 +362,14 @@ public:
 
     SmallVector<Value, 4> deps;
     for (auto o : adaptor.getOperands())
-      if (o.getType().isa<airrt::EventType>())
+      if (llvm::isa<airrt::EventType>(o.getType()))
         deps.push_back(o);
     if (deps.size())
       rewriter.create<airrt::WaitAllOp>(
           op->getLoc(), airrt::EventType::get(op->getContext()), deps);
 
-    MemRefType src = op.getSrcMemref().getType().cast<MemRefType>();
-    MemRefType dst = op.getDstMemref().getType().cast<MemRefType>();
+    MemRefType src = llvm::cast<MemRefType>(op.getSrcMemref().getType());
+    MemRefType dst = llvm::cast<MemRefType>(op.getDstMemref().getType());
     bool isFromTile = false;
     bool isFullMemcpy = false;
     if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
@@ -493,7 +494,8 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto loc = thisOp->getLoc();
   auto ctx = thisOp->getContext();
 
-  MemRefType thisMemrefType = thisOp.getMemref().getType().cast<MemRefType>();
+  MemRefType thisMemrefType =
+      llvm::cast<MemRefType>(thisOp.getMemref().getType());
 
   bool thisOpIsInShim =
       thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
@@ -523,9 +525,9 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       // Broadcast channel control loop
       assert(theOtherOp->hasAttr("tile"));
       ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
-      auto tile_dict = tiles[0].cast<DictionaryAttr>();
-      auto row = tile_dict.get("row").cast<IntegerAttr>().getInt();
-      auto col = tile_dict.get("col").cast<IntegerAttr>().getInt();
+      auto tile_dict = llvm::cast<DictionaryAttr>(tiles[0]);
+      auto row = llvm::cast<IntegerAttr>(tile_dict.get("row")).getInt();
+      auto col = llvm::cast<IntegerAttr>(tile_dict.get("col")).getInt();
       opers.push_back(builder.create<arith::ConstantOp>(
           loc, i64Ty, IntegerAttr::get(i64Ty, col)));
       opers.push_back(builder.create<arith::ConstantOp>(
@@ -627,7 +629,7 @@ public:
       // Resolve channel op's dependency list
       SmallVector<Value, 4> deps;
       for (auto o : adaptor.getOperands())
-        if (o.getType().isa<xilinx::airrt::EventType>())
+        if (llvm::isa<xilinx::airrt::EventType>(o.getType()))
           deps.push_back(o);
       if (deps.size())
         rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(
@@ -672,7 +674,7 @@ public:
       // Resolve channel op's dependency list
       SmallVector<Value, 4> deps;
       for (auto o : adaptor.getOperands())
-        if (o.getType().isa<xilinx::airrt::EventType>())
+        if (llvm::isa<xilinx::airrt::EventType>(o.getType()))
           deps.push_back(o);
       if (deps.size())
         rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(
@@ -712,7 +714,7 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto dealloc = cast<memref::DeallocOp>(op);
-    auto type = dealloc.getMemref().getType().cast<MemRefType>();
+    auto type = llvm::cast<MemRefType>(dealloc.getMemref().getType());
     if (type.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       rewriter.replaceOpWithNewOp<airrt::DeallocOp>(op, SmallVector<Type>{},
                                                     op->getOperands());
@@ -772,7 +774,7 @@ public:
     SmallVector<Value, 8> operands{adaptor.getOperands()};
     SmallVector<Type, 2> retTys;
     for (auto t : op->getResultTypes()) {
-      if (t.isa<air::AsyncTokenType>()) {
+      if (llvm::isa<air::AsyncTokenType>(t)) {
         retTys.push_back(airrt::EventType::get(op->getContext()));
       } else {
         retTys.push_back(t);
@@ -813,7 +815,7 @@ public:
         SmallVector<Value> opers;
         for (int i = 0, e = o.getNumOperands(); i < e; i++) {
           auto oper = remap.lookupOrDefault(o.getOperand(i));
-          if (oper.getType().isa<air::AsyncTokenType>()) {
+          if (llvm::isa<air::AsyncTokenType>(oper.getType())) {
             auto ty = airrt::EventType::get(o.getContext());
             auto cast = rewriter.create<UnrealizedConversionCastOp>(
                 op->getLoc(), ty, oper);
@@ -838,7 +840,7 @@ public:
     SmallVector<Value, 8> operands{adaptor.getOperands()};
     SmallVector<Type, 2> retTys;
     for (auto t : op->getResultTypes()) {
-      if (t.isa<air::AsyncTokenType>()) {
+      if (llvm::isa<air::AsyncTokenType>(t)) {
         retTys.push_back(airrt::EventType::get(op->getContext()));
       } else {
         retTys.push_back(t);
@@ -859,7 +861,7 @@ public:
 
     SmallVector<Type, 2> retTys;
     for (auto t : op->getResultTypes()) {
-      if (t.isa<air::AsyncTokenType>()) {
+      if (llvm::isa<air::AsyncTokenType>(t)) {
         retTys.push_back(airrt::EventType::get(op->getContext()));
       } else {
         retTys.push_back(t);
@@ -917,7 +919,7 @@ public:
         SmallVector<Value> opers;
         for (int i = 0, e = o.getNumOperands(); i < e; i++) {
           auto oper = remap.lookupOrDefault(o.getOperand(i));
-          if (oper.getType().isa<air::AsyncTokenType>()) {
+          if (llvm::isa<air::AsyncTokenType>(oper.getType())) {
             auto ty = airrt::EventType::get(o.getContext());
             auto cast = rewriter.create<UnrealizedConversionCastOp>(
                 op->getLoc(), ty, oper);
@@ -937,7 +939,7 @@ public:
     rewriter.setInsertionPointAfter(newOp);
     SmallVector<Value> newResults;
     for (auto res : newOp->getResults()) {
-      if (res.getType().isa<airrt::EventType>()) {
+      if (llvm::isa<airrt::EventType>(res.getType())) {
         auto ty = air::AsyncTokenType::get(op->getContext());
         auto cast =
             rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), ty, res);
@@ -958,7 +960,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Value> newInitVals;
     for (auto initVal : adaptor.getInitVals()) {
-      if (initVal.getType().isa<air::AsyncTokenType>()) {
+      if (llvm::isa<air::AsyncTokenType>(initVal.getType())) {
         auto cast = rewriter.create<UnrealizedConversionCastOp>(
             op->getLoc(), airrt::EventType::get(op->getContext()), initVal);
         newInitVals.push_back(cast.getResult(0));
@@ -996,7 +998,7 @@ public:
     rewriter.setInsertionPointAfter(newOp);
     SmallVector<Value> newResults;
     for (auto res : newOp->getResults()) {
-      if (res.getType().isa<airrt::EventType>()) {
+      if (llvm::isa<airrt::EventType>(res.getType())) {
         auto ty = air::AsyncTokenType::get(op->getContext());
         auto cast =
             rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), ty, res);
@@ -1086,7 +1088,7 @@ public:
     TypeConverter converter;
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert !air.async.token to !airrt.event
-      if (auto t = type.dyn_cast<air::AsyncTokenType>())
+      if (auto t = llvm::dyn_cast<air::AsyncTokenType>(type))
         return airrt::EventType::get(context);
       else
         return type;
@@ -1147,14 +1149,13 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (
-          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-          (int)air::MemorySpace::L2);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() != (int)air::MemorySpace::L2);
     });
 
     target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
       for (auto o : op.getRegionIterArgs()) {
-        if (o.getType().isa<air::AsyncTokenType>())
+        if (llvm::isa<air::AsyncTokenType>(o.getType()))
           return false;
       }
       return true;
@@ -1162,7 +1163,7 @@ public:
 
     target.addDynamicallyLegalOp<scf::ParallelOp>([&](scf::ParallelOp op) {
       for (auto v : op.getResults()) {
-        if (v.getType().isa<air::AsyncTokenType>())
+        if (llvm::isa<air::AsyncTokenType>(v.getType()))
           return false;
       }
       return true;
@@ -1170,7 +1171,7 @@ public:
 
     target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
       for (auto v : op.getResults()) {
-        if (v.getType().isa<air::AsyncTokenType>())
+        if (llvm::isa<air::AsyncTokenType>(v.getType()))
           return false;
       }
       return true;
@@ -1178,14 +1179,14 @@ public:
 
     target.addDynamicallyLegalOp<scf::ReduceOp>([&](scf::ReduceOp op) {
       for (auto o : op.getOperands())
-        if (o.getType().isa<air::AsyncTokenType>())
+        if (llvm::isa<air::AsyncTokenType>(o.getType()))
           return false;
       return true;
     });
 
     target.addDynamicallyLegalOp<scf::ReduceReturnOp>(
         [&](scf::ReduceReturnOp op) {
-          if (op.getResult().getType().isa<air::AsyncTokenType>())
+          if (llvm::isa<air::AsyncTokenType>(op.getResult().getType()))
             return false;
           else
             return true;
@@ -1193,7 +1194,7 @@ public:
 
     target.addDynamicallyLegalOp<scf::IfOp>([&](scf::IfOp op) {
       for (auto v : op.getResults()) {
-        if (v.getType().isa<air::AsyncTokenType>())
+        if (llvm::isa<air::AsyncTokenType>(v.getType()))
           return false;
       }
       return true;

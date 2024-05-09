@@ -37,7 +37,7 @@ const StringLiteral air::LinalgTransforms::kLinalgTransformMarker =
 static std::string getMangledType(const Type ty) {
   std::stringstream ret;
 
-  if (const MemRefType mrt = ty.dyn_cast<const MemRefType>()) {
+  if (const MemRefType mrt = llvm::dyn_cast<const MemRefType>(ty)) {
     ret << "M";
     ret << mrt.getMemorySpaceAsInt();
     if (mrt.hasStaticShape()) {
@@ -49,13 +49,13 @@ static std::string getMangledType(const Type ty) {
     }
     const Type elem = mrt.getElementType();
     ret << getMangledType(elem);
-  } else if (FloatType ft = ty.dyn_cast<FloatType>()) {
+  } else if (FloatType ft = llvm::dyn_cast<FloatType>(ty)) {
     ret << "F" << ft.getWidth();
-  } else if (const IntegerType it = ty.dyn_cast<const IntegerType>()) {
+  } else if (const IntegerType it = llvm::dyn_cast<const IntegerType>(ty)) {
     ret << "I" << it.getWidth();
-  } else if (const IndexType it = ty.dyn_cast<const IndexType>()) {
+  } else if (const IndexType it = llvm::dyn_cast<const IndexType>(ty)) {
     ret << "I64";
-  } else if (ty.dyn_cast<air::AsyncTokenType>()) {
+  } else if (llvm::dyn_cast<air::AsyncTokenType>(ty)) {
     ret << "E";
   } else {
     Type t = ty;
@@ -145,7 +145,7 @@ uint64_t air::getTensorVolume(const ShapedType ty) {
 }
 
 uint64_t air::getTensorVolume(const Type ty) {
-  if (auto t = ty.dyn_cast<ShapedType>()) {
+  if (auto t = llvm::dyn_cast<ShapedType>(ty)) {
     return getTensorVolume(t);
   } else {
     return 1;
@@ -162,7 +162,7 @@ SmallVector<int> air::getTensorShape(const ShapedType ty) {
 }
 
 SmallVector<int> air::getTensorShape(const Type ty) {
-  if (auto t = ty.dyn_cast<ShapedType>()) {
+  if (auto t = llvm::dyn_cast<ShapedType>(ty)) {
     return getTensorShape(t);
   } else {
     return SmallVector<int>(1);
@@ -170,7 +170,7 @@ SmallVector<int> air::getTensorShape(const Type ty) {
 }
 
 std::string air::getElementTypeAsString(const mlir::Type ty) {
-  if (auto st = ty.dyn_cast<mlir::ShapedType>()) {
+  if (auto st = llvm::dyn_cast<mlir::ShapedType>(ty)) {
     return to_string(st.getElementType());
   } else {
     return to_string(ty);
@@ -179,7 +179,7 @@ std::string air::getElementTypeAsString(const mlir::Type ty) {
 
 // An incomplete lookup table of common data types
 uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
-  if (auto memrefTy = ty.cast<MemRefType>()) {
+  if (auto memrefTy = llvm::cast<MemRefType>(ty)) {
     return memrefTy.getElementTypeBitWidth() / 8;
   }
   auto typeAsString = getElementTypeAsString(ty);
@@ -201,7 +201,7 @@ uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return scf::ForOp();
   if (!ivArg.getOwner()) {
@@ -225,7 +225,7 @@ scf::ParallelOp air::getParallelRegionInitValsOwner(Operation *op, Value val) {
 
 // Get the parent air.launch_herd op of a tile id
 air::HerdOp air::getHerdArgOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return air::HerdOp();
   if (!ivArg.getOwner()) {
@@ -238,7 +238,7 @@ air::HerdOp air::getHerdArgOwner(Value val) {
 
 // Get the parent air.hierarchy op of a tile id
 air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return air::HierarchyInterface();
   if (!ivArg.getOwner()) {
@@ -365,12 +365,12 @@ std::string air::createChannelName(Operation *scope) {
 
 // Return memory space as string
 std::string air::getMemorySpaceAsString(Value memref) {
-  if (!memref.getType().isa<MemRefType>()) {
+  if (!llvm::isa<MemRefType>(memref.getType())) {
     memref.getDefiningOp()->emitOpError("value returned is not a memref");
     return "";
   }
   auto memory_space_as_int =
-      memref.getType().dyn_cast<MemRefType>().getMemorySpaceAsInt();
+      llvm::dyn_cast<MemRefType>(memref.getType()).getMemorySpaceAsInt();
   std::string memorySpaceStr = "";
   if (memory_space_as_int == (int)air::MemorySpace::L1) {
     memorySpaceStr = "L1";
@@ -1100,7 +1100,7 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
   return overall_access_bounds;
 }
 
-void updateAccessPatternByScfForNest(
+static void updateAccessPatternByScfForNest(
     std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
         &pattern,
     SmallVector<Value> indices, OpBuilder builder) {
@@ -1155,7 +1155,7 @@ air::writeAccessPattern(memref::SubViewOp subview) {
   auto static_strides = subview.getStaticStrides();
   // Get strided layout from subview op's output MemRefType
   if (auto strided = llvm::dyn_cast<StridedLayoutAttr>(
-          subview.getResult().getType().cast<MemRefType>().getLayout()))
+          llvm::cast<MemRefType>(subview.getResult().getType()).getLayout()))
     static_strides = strided.getStrides();
 
   auto loc = subview.getLoc();
@@ -1190,8 +1190,8 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   OpBuilder builder(readOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  auto vectorTy = readOp.getVector().getType().cast<VectorType>();
-  auto memrefTy = readOp.getSource().getType().cast<MemRefType>();
+  auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
+  auto memrefTy = llvm::cast<MemRefType>(readOp.getSource().getType());
   assert(vectorTy && "Not a vector");
   assert(memrefTy && "Not a memref");
   // Initialize wraps and strides based on the unshrunk memref shape.
@@ -1211,8 +1211,8 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   OpBuilder builder(writeOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  auto memrefTy = writeOp.getSource().getType().cast<MemRefType>();
-  auto vectorTy = writeOp.getVector().getType().cast<VectorType>();
+  auto memrefTy = llvm::cast<MemRefType>(writeOp.getSource().getType());
+  auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
   assert(memrefTy && "Not a memref");
   assert(vectorTy && "Not a vector");
   // Initialize wraps and strides based on the unshrunk memref shape.

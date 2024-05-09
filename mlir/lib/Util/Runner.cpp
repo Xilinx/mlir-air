@@ -179,8 +179,8 @@ public:
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'dma' as event type, but op isn't of type "
                "air::DmaMemcpyNdOp";
-      MemRefType srcTy = Op.getSrcMemref().getType().cast<MemRefType>();
-      MemRefType dstTy = Op.getDstMemref().getType().cast<MemRefType>();
+      MemRefType srcTy = llvm::cast<MemRefType>(Op.getSrcMemref().getType());
+      MemRefType dstTy = llvm::cast<MemRefType>(Op.getDstMemref().getType());
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
       // if there is a size mismatch, it's because we're moving a tile of the
@@ -196,12 +196,12 @@ public:
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'channel' as event type, but op isn't of type "
                "air::ChannelGetOp";
-      MemRefType dstTy = getOp.getDst().getType().cast<MemRefType>();
+      MemRefType dstTy = llvm::cast<MemRefType>(getOp.getDst().getType());
       std::vector<air::ChannelPutOp> putOps =
           air::getTheOtherChannelOpThroughSymbol(getOp);
       if (!putOps.size())
         getOp->emitOpError("found no put op for air::ChannelGetOp");
-      MemRefType srcTy = putOps[0].getSrc().getType().cast<MemRefType>();
+      MemRefType srcTy = llvm::cast<MemRefType>(putOps[0].getSrc().getType());
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
       auto srcVolumn = getTransferVolumn(putOps[0]);
@@ -622,7 +622,7 @@ private:
   }
 
   uint64_t getTransferVolumn(air::ChannelInterface op) {
-    MemRefType memTy = op.getMemref().getType().cast<MemRefType>();
+    MemRefType memTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (op.getSizes().empty())
       return getTensorVolume(memTy);
     else

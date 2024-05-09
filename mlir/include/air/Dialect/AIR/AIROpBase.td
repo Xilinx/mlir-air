@@ -88,7 +88,7 @@ def MemorySpace: I32EnumAttr<"MemorySpace", "AIR Memory Space IDs",
 }
 
 def air_AsyncToken : DialectType<
-  air_Dialect, CPred<"$_self.isa<xilinx::air::AsyncTokenType>()">, "async token type">,
+  air_Dialect, CPred<"llvm::isa<xilinx::air::AsyncTokenType>($_self)">, "async token type">,
              BuildableType<"xilinx::air::AsyncTokenType::get($_builder.getContext())">;
 
 def air_AsyncOpInterface : OpInterface<"AsyncOpInterface"> {

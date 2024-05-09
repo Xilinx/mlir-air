@@ -563,7 +563,7 @@ struct AnnotateFrontAndBackOpsInForPattern
     // Check if the for loop is async
     SmallVector<Value> iterTokens;
     for (auto iter_arg : for_op.getRegionIterArgs()) {
-      if (iter_arg.getType().isa<air::AsyncTokenType>()) {
+      if (llvm::isa<air::AsyncTokenType>(iter_arg.getType())) {
         iterTokens.push_back(iter_arg);
       }
     }
@@ -624,7 +624,7 @@ struct AnnotateFrontAndBackOpsInForPattern
     auto yield = for_op.getBody()->getTerminator();
     SmallVector<Value> yielded_tokens;
     for (auto operand : yield->getOperands()) {
-      if (operand.getType().isa<air::AsyncTokenType>()) {
+      if (llvm::isa<air::AsyncTokenType>(operand.getType())) {
         yielded_tokens.push_back(operand);
       }
     }
@@ -722,7 +722,7 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     // Find dealloc
     Operation *dealloc_op = nullptr;
     auto alloc_exec_memref = alloc_exec->getResults()[1];
-    if (!alloc_exec_memref.getType().isa<MemRefType>())
+    if (!llvm::isa<MemRefType>(alloc_exec_memref.getType()))
       alloc_op->emitOpError("the ssa value yielded from execute is not memref");
     for (auto user : alloc_exec_memref.getUsers()) {
       if (isa<memref::DeallocOp>(user)) {
@@ -1239,7 +1239,7 @@ private:
 
   Value getAsyncTokenFromValues(SmallVector<Value> vec) const {
     for (auto v : vec) {
-      if (v.getType().isa<air::AsyncTokenType>()) {
+      if (llvm::isa<air::AsyncTokenType>(v.getType())) {
         return v;
       }
     }
@@ -1307,7 +1307,7 @@ private:
       Value v, SmallVector<Operation *> &alloc_execs) const {
     if (auto exec = v.getDefiningOp<air::ExecuteOp>()) {
       if (exec->hasAttr("unrolled_iteration") && exec->getNumResults() == 2 &&
-          exec->getResult(1).getType().isa<MemRefType>()) {
+          llvm::isa<MemRefType>(exec->getResult(1).getType())) {
         alloc_execs.push_back(exec.getOperation());
         for (auto dep : exec.getAsyncDependencies()) {
           pushToAllocExecsIfHoistedFromLoop(dep, alloc_execs);
@@ -1359,7 +1359,7 @@ private:
   std::vector<Operation *> adjacent_events(Operation *event) const {
     SmallVector<Value, 1> returned_tokens = {};
     for (Value result : event->getResults()) {
-      if (result.getType().isa<air::AsyncTokenType>()) {
+      if (llvm::isa<air::AsyncTokenType>(result.getType())) {
         returned_tokens.push_back(result);
       }
     }
@@ -1533,7 +1533,7 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
     if (apply.getAffineMap().getNumInputs() != 1)
       return failure();
     auto val = apply->getOperand(0);
-    auto ivArg = val.dyn_cast<BlockArgument>();
+    auto ivArg = llvm::dyn_cast<BlockArgument>(val);
     if (!ivArg)
       return failure();
     if (!ivArg.getOwner())
@@ -2051,7 +2051,7 @@ private:
     // Update memref size (divide by factor)
     SmallVector<Value, 1> new_sizes = op.getSizes();
     if (new_sizes.empty()) {
-      auto memTy = op.getMemref().getType().template cast<MemRefType>();
+      auto memTy = llvm::cast<MemRefType>(op.getMemref().getType());
       for (auto d : getTensorShape(memTy)) {
         new_sizes.push_back(
             builder.create<arith::ConstantIndexOp>(par->getLoc(), d));
@@ -2117,14 +2117,12 @@ public:
   void getDmaOpLoopDependency(func::FuncOp f) {
     f.walk([&](Operation *op) {
       if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
-        int src_memspace = dma_op.getSrcMemref()
-                               .getType()
-                               .cast<MemRefType>()
-                               .getMemorySpaceAsInt();
-        int dst_memspace = dma_op.getDstMemref()
-                               .getType()
-                               .cast<MemRefType>()
-                               .getMemorySpaceAsInt();
+        int src_memspace =
+            llvm::cast<MemRefType>(dma_op.getSrcMemref().getType())
+                .getMemorySpaceAsInt();
+        int dst_memspace =
+            llvm::cast<MemRefType>(dma_op.getDstMemref().getType())
+                .getMemorySpaceAsInt();
         bool isL1Memcpy = (src_memspace == (int)air::MemorySpace::L1) ||
                           (dst_memspace == (int)air::MemorySpace::L1);
         if (dma_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
@@ -2164,9 +2162,7 @@ public:
       }
       // If not variant wrt herd, then check for fixed row-wise or col-wise
       // offset.
-      int src_memspace = dma_op.getSrcMemref()
-                             .getType()
-                             .cast<MemRefType>()
+      int src_memspace = llvm::cast<MemRefType>(dma_op.getSrcMemref().getType())
                              .getMemorySpaceAsInt();
       auto externalOffsets = src_memspace == (int)air::MemorySpace::L1
                                  ? dma_op.getDstOffsets()
@@ -3115,7 +3111,7 @@ private:
   bool hitsMemorySpaceForAggMode(std::vector<air::ChannelPutOp> &puts,
                                  std::vector<air::ChannelGetOp> &gets) {
     for (auto put : puts) {
-      MemRefType ty = put.getMemref().getType().cast<MemRefType>();
+      MemRefType ty = llvm::cast<MemRefType>(put.getMemref().getType());
       if (llvm::any_of(targetMemorySpaces, [&](unsigned memSpace) {
             return memSpace == ty.getMemorySpaceAsInt();
           })) {
@@ -3123,7 +3119,7 @@ private:
       }
     }
     for (auto get : gets) {
-      MemRefType ty = get.getMemref().getType().cast<MemRefType>();
+      MemRefType ty = llvm::cast<MemRefType>(get.getMemref().getType());
       if (llvm::any_of(targetMemorySpaces, [&](unsigned memSpace) {
             return memSpace == ty.getMemorySpaceAsInt();
           })) {
@@ -3252,9 +3248,9 @@ private:
     if (a == b)
       return true;
     auto aHierOper =
-        getHierOperandFromHierBlockArgument(a.dyn_cast<BlockArgument>());
+        getHierOperandFromHierBlockArgument(llvm::dyn_cast<BlockArgument>(a));
     auto bHierOper =
-        getHierOperandFromHierBlockArgument(b.dyn_cast<BlockArgument>());
+        getHierOperandFromHierBlockArgument(llvm::dyn_cast<BlockArgument>(b));
     if (!(aHierOper && bHierOper))
       return false;
     if (aHierOper == bHierOper)
@@ -3527,7 +3523,7 @@ private:
           continue;
         if (auto execOp = dyn_cast<air::ExecuteOp>(o))
           if (execOp->getNumResults() == 2 &&
-              execOp->getResult(1).getType().isa<IndexType>())
+              llvm::isa<IndexType>(execOp->getResult(1).getType()))
             continue;
         eventCounter++;
       }
@@ -3545,7 +3541,7 @@ private:
     OpBuilder builder(targetOp);
     SmallVector<Value> depList;
     for (auto operand : targetOp->getOperands()) {
-      if (operand.getType().isa<air::AsyncTokenType>())
+      if (llvm::isa<air::AsyncTokenType>(operand.getType()))
         depList.push_back(operand);
     }
     for (auto res : targetOp->getResults()) {
@@ -3792,9 +3788,9 @@ struct ShrinkMemrefSizesByAccessPattern
       }
 
       // Replace memref alloc op;
-      Type elemType = memref.getType().cast<MemRefType>().getElementType();
+      Type elemType = llvm::cast<MemRefType>(memref.getType()).getElementType();
       Attribute memorySpace =
-          memref.getType().cast<MemRefType>().getMemorySpace();
+          llvm::cast<MemRefType>(memref.getType()).getMemorySpace();
       auto newMemrefType = MemRefType::get(overall_access_bounds, elemType,
                                            nullptr, memorySpace);
       if (auto execOp = dyn_cast<air::ExecuteOp>(alloc->getParentOp())) {
@@ -3937,17 +3933,17 @@ private:
     auto static_sizes = subViewOp.getStaticSizes();
     auto static_strides = subViewOp.getStaticStrides();
     // Get MemRefType after shrinkage.
-    Type elemType =
-        subViewOp.getSource().getType().cast<MemRefType>().getElementType();
+    Type elemType = llvm::cast<MemRefType>(subViewOp.getSource().getType())
+                        .getElementType();
     Attribute memorySpace =
-        subViewOp.getSource().getType().cast<MemRefType>().getMemorySpace();
+        llvm::cast<MemRefType>(subViewOp.getSource().getType())
+            .getMemorySpace();
     auto shrunkMemrefType =
         MemRefType::get(overall_access_bounds, elemType, nullptr, memorySpace);
     MemRefType inferredSubViewOutputTy =
-        memref::SubViewOp::inferResultType(
+        llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
             shrunkMemrefType, subViewOp.getStaticOffsets(),
-            subViewOp.getStaticSizes(), subViewOp.getStaticStrides())
-            .cast<MemRefType>();
+            subViewOp.getStaticSizes(), subViewOp.getStaticStrides()));
     for (unsigned i = 0; i < static_sizes.size(); i++) {
       if (static_sizes[i] < 0) {
         if (*getConstantIntValue(*subview_sizes++) !=

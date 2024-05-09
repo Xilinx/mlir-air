@@ -21,14 +21,12 @@ using namespace xilinx;
 
 bool air::isTileInbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt) {
   if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
-    int src_memory_space = memcpyOp.getSrcMemref()
-                               .getType()
-                               .cast<MemRefType>()
-                               .getMemorySpaceAsInt();
-    int dst_memory_space = memcpyOp.getDstMemref()
-                               .getType()
-                               .cast<MemRefType>()
-                               .getMemorySpaceAsInt();
+    int src_memory_space =
+        llvm::cast<MemRefType>(memcpyOp.getSrcMemref().getType())
+            .getMemorySpaceAsInt();
+    int dst_memory_space =
+        llvm::cast<MemRefType>(memcpyOp.getDstMemref().getType())
+            .getMemorySpaceAsInt();
     assert(src_memory_space !=
            dst_memory_space); // air.dmaMemcpyNdOp isn't meant to represent
                               // core-to-core communication
@@ -225,7 +223,7 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
 
   // Infer semaphore lock values using buffer op
   // TODO: What if a buffer memref is read or written by multiple channels?
-  if (!buffer_memref.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(buffer_memref.getType()))
     return std::make_pair(-1, -1);
   int read_counter = 0;
   int write_counter = 0;
@@ -264,7 +262,7 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
   bool isAIE2 = (arch == AIE::AIEArch::AIE2);
   if (!isAIE2)
     return std::make_pair(0, 0);
-  if (!buffer_memref.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(buffer_memref.getType()))
     return std::make_pair(-1, -1);
 
   if (!air_chan)
@@ -653,7 +651,7 @@ ShimDMAAllocator::getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
   auto memref =
       (isMM2S) ? (memcpyOp.getSrcMemref()) : (memcpyOp.getDstMemref());
   assert(memref);
-  MemRefType memrefTy = memref.getType().cast<MemRefType>();
+  MemRefType memrefTy = llvm::cast<MemRefType>(memref.getType());
   // External buffers have memory space L3
   memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(), {},
                              DMAMemorySpaceAsInt);
@@ -836,15 +834,13 @@ AIE::BufferOp MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp) {
   // air::DmaMemcpyNdOp is a complete memcpy with both src and dst
   S2MM[0].push_back(memcpyOp.getOperation());
-  S2MM_memspace_as_int = memcpyOp.getDstMemref()
-                             .getType()
-                             .cast<MemRefType>()
-                             .getMemorySpaceAsInt();
+  S2MM_memspace_as_int =
+      llvm::cast<MemRefType>(memcpyOp.getDstMemref().getType())
+          .getMemorySpaceAsInt();
   MM2S.push_back(memcpyOp.getOperation());
-  MM2S_memspace_as_int = memcpyOp.getSrcMemref()
-                             .getType()
-                             .cast<MemRefType>()
-                             .getMemorySpaceAsInt();
+  MM2S_memspace_as_int =
+      llvm::cast<MemRefType>(memcpyOp.getSrcMemref().getType())
+          .getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
@@ -875,16 +871,16 @@ void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
   }
   air_flow_op = chan.getOperation();
   S2MM[alloc_id].push_back(memcpyOp.getOperation());
-  S2MM_memspace_as_int =
-      memcpyOp.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+  S2MM_memspace_as_int = llvm::cast<MemRefType>(memcpyOp.getMemref().getType())
+                             .getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
   auto chan = air::getChannelDeclarationThroughSymbol(memcpyOp);
   air_flow_op = chan.getOperation();
   MM2S.push_back(memcpyOp.getOperation());
-  MM2S_memspace_as_int =
-      memcpyOp.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+  MM2S_memspace_as_int = llvm::cast<MemRefType>(memcpyOp.getMemref().getType())
+                             .getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(

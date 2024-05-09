@@ -167,7 +167,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 
 //   LogicalResult matchAndRewrite(memref::DimOp op,
 //                                 PatternRewriter &rewriter) const override {
-//     auto operTy = op.memrefOrTensor().getType().dyn_cast<ShapedType>();
+//     auto operTy = llvm::dyn_cast<ShapedType>(op.memrefOrTensor().getType());
 //     if (!operTy.hasStaticShape())
 //       return failure();
 
@@ -962,7 +962,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     b.setInsertionPointToStart(stageBlock);
 
     if (i) {
-      auto ty = tiledOperands[resultIdx].getType().cast<MemRefType>();
+      auto ty = llvm::cast<MemRefType>(tiledOperands[resultIdx].getType());
       auto alloc = b.create<memref::AllocOp>(
           loc, MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
                                (int)air::MemorySpace::L1));
@@ -1190,7 +1190,7 @@ public:
         affine::makeComposedFoldedMultiResultAffineApply(
             b, loc, shapeSizesToLoopsMap, allShapeSizes);
     for (auto size : shapeSizes) {
-      if (auto v = size.dyn_cast<Value>()) {
+      if (auto v = llvm::dyn_cast<Value>(size)) {
         auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
         if (!c) {
           LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
@@ -1198,8 +1198,8 @@ public:
         }
         tripCounts.push_back(c.value());
       } else {
-        auto a = size.dyn_cast<Attribute>();
-        auto c = a.dyn_cast<IntegerAttr>();
+        auto a = llvm::dyn_cast<Attribute>(size);
+        auto c = llvm::dyn_cast<IntegerAttr>(a);
         if (!c) {
           LLVM_DEBUG(llvm::outs() << "unhandled addr!\n");
           return {};
@@ -1847,7 +1847,7 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
 
     for (Operation *op : dynamicSizeProducers.back()) {
       if (op->getNumResults() == 1 &&
-          op->getResult(0).getType().isa<IndexType>())
+          llvm::isa<IndexType>(op->getResult(0).getType()))
         continue;
       DiagnosedSilenceableFailure diag =
           emitSilenceableError() << "expected sizes to be produced by ops "
@@ -1880,9 +1880,9 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
             sizes.reserve(tileSizes.size());
             unsigned dynamicIdx = 0;
             for (OpFoldResult ofr : getMixedSizes()) {
-              if (auto attr = ofr.dyn_cast<Attribute>()) {
+              if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
                 sizes.push_back(b.create<arith::ConstantIndexOp>(
-                    getLoc(), attr.cast<IntegerAttr>().getInt()));
+                    getLoc(), llvm::cast<IntegerAttr>(attr).getInt()));
               } else {
                 sizes.push_back(
                     dynamicSizeProducers[dynamicIdx++][index]->getResult(0));
@@ -1910,9 +1910,10 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
       loops[en2.index()].push_back(en2.value());
   }
 
-  transformResults.set(getTiledLinalgOp().cast<OpResult>(), tiled);
+  transformResults.set(llvm::cast<OpResult>(getTiledLinalgOp()), tiled);
   for (const auto &en : llvm::enumerate(loops))
-    transformResults.set(getLoops()[en.index()].cast<OpResult>(), en.value());
+    transformResults.set(llvm::cast<OpResult>(getLoops()[en.index()]),
+                         en.value());
 
   return DiagnosedSilenceableFailure::success();
 }
@@ -2108,7 +2109,7 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   if (!transformed.size())
     return emitDefaultDefiniteFailure(payloadOps[0]);
 
-  results.set(getResult().cast<OpResult>(), transformed.getArrayRef());
+  results.set(llvm::cast<OpResult>(getResult()), transformed.getArrayRef());
   return DiagnosedSilenceableFailure::success();
 }
 
@@ -2233,7 +2234,7 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
       llvm::to_vector(state.getPayloadOps(getProducerOp()));
   // If nothing to fuse, propagate success.
   if (producerOps.empty()) {
-    results.set(getFusedOp().cast<OpResult>(),
+    results.set(llvm::cast<OpResult>(getFusedOp()),
                 SmallVector<mlir::Operation *>{});
     return DiagnosedSilenceableFailure::success();
   }
@@ -2270,7 +2271,7 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
         return containingOp->isAncestor(op);
       });
   if (numUsesInContainingOp == 0) {
-    results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+    results.set(llvm::cast<OpResult>(getFusedOp()), ArrayRef<Operation *>());
     Diagnostic diag(containingOp->getLoc(), DiagnosticSeverity::Remark);
     diag << "producer_op does not have uses in the container";
     return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
@@ -2288,11 +2289,11 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
     fusedOps.push_back(tiled);
     rewriter.eraseOp(producerOp);
 
-    results.set(getFusedOp().cast<OpResult>(), fusedOps);
+    results.set(llvm::cast<OpResult>(getFusedOp()), fusedOps);
     return DiagnosedSilenceableFailure::success();
   }
 
-  results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+  results.set(llvm::cast<OpResult>(getFusedOp()), ArrayRef<Operation *>());
   return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
 }
 

@@ -262,7 +262,7 @@ public:
   matchAndRewrite(affine::AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -279,7 +279,7 @@ public:
   matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -587,10 +587,9 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
                    builder.create<arith::ConstantOp>(
                        loc, builder.getI64Type(),
                        IntegerAttr::get(builder.getI64Type(), outer_wrap)));
-      auto new_const_stride =
-          (const_stride * inner_wrap) %
-          air::getTensorVolume(
-              memcpy_op.getMemref().getType().cast<MemRefType>());
+      auto new_const_stride = (const_stride * inner_wrap) %
+                              air::getTensorVolume(llvm::cast<MemRefType>(
+                                  memcpy_op.getMemref().getType()));
       strides.insert(
           strides.begin() + i,
           builder.create<arith::ConstantOp>(
@@ -915,18 +914,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         [&](affine::AffineStoreOp op) {
           if (op->getParentOfType<AIE::CoreOp>())
             return true;
-          return (op.getMemref()
-                      .getType()
-                      .cast<MemRefType>()
+          return (llvm::cast<MemRefType>(op.getMemref().getType())
                       .getMemorySpaceAsInt() !=
                   (int)xilinx::air::MemorySpace::L1);
         });
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
       if (op->getParentOfType<AIE::CoreOp>())
         return true;
-      return (
-          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
       auto f = op->getParentOfType<func::FuncOp>();

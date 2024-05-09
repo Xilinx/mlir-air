@@ -55,14 +55,14 @@ static llvm::cl::opt<int>
                 llvm::cl::init(0));
 
 llvm::json::Value attrToJSON(Attribute &attr) {
-  if (auto a = attr.dyn_cast<StringAttr>()) {
+  if (auto a = llvm::dyn_cast<StringAttr>(attr)) {
     return llvm::json::Value(a.getValue().str());
-  } else if (auto array_attr = attr.dyn_cast<ArrayAttr>()) {
+  } else if (auto array_attr = llvm::dyn_cast<ArrayAttr>(attr)) {
     llvm::json::Array arrayJSON;
     for (auto a : array_attr)
       arrayJSON.push_back(attrToJSON(a));
     return llvm::json::Value(std::move(arrayJSON));
-  } else if (auto dict_attr = attr.dyn_cast<DictionaryAttr>()) {
+  } else if (auto dict_attr = llvm::dyn_cast<DictionaryAttr>(attr)) {
     llvm::json::Object dictJSON;
     for (auto a : dict_attr) {
       auto ident = a.getName();
@@ -70,7 +70,7 @@ llvm::json::Value attrToJSON(Attribute &attr) {
       dictJSON[ident.str()] = attrToJSON(attr);
     }
     return llvm::json::Value(std::move(dictJSON));
-  } else if (auto int_attr = attr.dyn_cast<IntegerAttr>()) {
+  } else if (auto int_attr = llvm::dyn_cast<IntegerAttr>(attr)) {
     return llvm::json::Value(int_attr.getInt());
   } else
     return llvm::json::Value(std::string(""));

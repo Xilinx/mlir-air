@@ -162,8 +162,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     if (!uniform)
       continue;
 
-    auto src_type = memcpyOp.getSrc().getType().cast<MemRefType>();
-    auto dst_type = memcpyOp.getDst().getType().cast<MemRefType>();
+    auto src_type = llvm::cast<MemRefType>(memcpyOp.getSrc().getType());
+    auto dst_type = llvm::cast<MemRefType>(memcpyOp.getDst().getType());
     auto src_space = src_type.getMemorySpaceAsInt();
     auto dst_space = dst_type.getMemorySpaceAsInt();
 
@@ -199,8 +199,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     launch_operands.push_back(alloc.getResult());
     launch->setOperands(launch_operands);
     launch.getBody().front().addArgument(alloc.getType(), loc);
-    auto sizeAttr = launch->getAttr("operand_segment_sizes")
-                        .cast<::mlir::DenseIntElementsAttr>();
+    auto sizeAttr = llvm::cast<::mlir::DenseIntElementsAttr>(
+        launch->getAttr("operand_segment_sizes"));
     const uint32_t *it = &*sizeAttr.value_begin<uint32_t>();
     auto newAttr = DenseIntElementsAttr::get(sizeAttr.getType(),
                                              {it[0], it[1], it[2], it[3] + 1});
@@ -983,8 +983,8 @@ void AIRCollapseHerdPass::runOnOperation() {
     // Determine the current induction value's current loop iteration
     Value iv_1 =
         insideBuilder.create<arith::RemSIOp>(loc, h.getIds()[1], old_upper_b_v);
-    h.getIds()[1].cast<Value>().replaceAllUsesExcept(iv_1,
-                                                     iv_1.getDefiningOp());
+    llvm::cast<Value>(h.getIds()[1])
+        .replaceAllUsesExcept(iv_1, iv_1.getDefiningOp());
 
     // Remove the effect of the current induction value to prepare for
     // the next value.
@@ -1176,7 +1176,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     SmallVector<air::ChannelPutOp> &puts, SmallVector<air::ChannelGetOp> &gets,
     int dim, std::string splitType = "") {
   auto memref = puts.front().getMemref();
-  MemRefType ty = memref.getType().cast<MemRefType>();
+  MemRefType ty = llvm::cast<MemRefType>(memref.getType());
   auto allocOp = memref.getDefiningOp();
   auto loc = allocOp->getLoc();
   Operation *deallocOp = nullptr;
@@ -1358,9 +1358,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   SmallVector<memref::AllocOp> allocOps;
   func.walk([&](memref::AllocOp allocOp) {
     if (allocOp->getParentOfType<air::SegmentOp>() &&
-        allocOp.getMemref()
-                .getType()
-                .cast<MemRefType>()
+        llvm::cast<MemRefType>(allocOp.getMemref().getType())
                 .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       allocOps.push_back(allocOp);
     }
@@ -1469,9 +1467,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   SmallVector<memref::AllocOp> allocOps;
   func.walk([&](memref::AllocOp allocOp) {
     if (allocOp->getParentOfType<air::SegmentOp>() &&
-        allocOp.getMemref()
-                .getType()
-                .cast<MemRefType>()
+        llvm::cast<MemRefType>(allocOp.getMemref().getType())
                 .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       allocOps.push_back(allocOp);
     }
