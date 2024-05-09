@@ -3980,10 +3980,10 @@ private:
       }
     }
     subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
-    rewriter.eraseOp(subViewOp);
     for (auto newUser : subViewOp.getSource().getUsers())
       push_back_if_unique<Operation *>(users, newUser);
-    return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(), rewriter);
+    rewriter.eraseOp(subViewOp);
+    return success();
   }
 
   // Update access patterns to shrunk memref from vector.transfer_read/write.
@@ -3991,9 +3991,11 @@ private:
   updateAccessPatternAfterShrinkage(SmallVector<Value> indices,
                                     PatternRewriter &rewriter) const {
     for (auto index : indices) {
-      if (getConstantIntValue(index))
+      if (!index)
         continue;
       if (!index.getDefiningOp())
+        continue;
+      if (getConstantIntValue(index))
         continue;
       if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
         for (auto oper : execOp.getChildOp()->getOperands()) {
