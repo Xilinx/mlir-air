@@ -871,6 +871,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     moveFuncOpToEndOfDeviceOp(module);
 
     // Purge all wait all ops
+    purgeSCFParContainingOnlyWaitAllOps(module);
     purgeWaitAlls(module);
 
     // Purge airrt.dma x and y fields, as they are obsolete for AIE2.
@@ -1128,6 +1129,38 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             mlir::ceilDiv(ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
         (void)loopUnrollByFactor(for_op, tripCount);
       }
+    }
+  }
+
+  void purgeSCFParContainingOnlyWaitAllOps(ModuleOp module) {
+    SmallVector<scf::ParallelOp> scf_pars;
+    module.walk([&](mlir::func::FuncOp f) {
+      f.walk([&](scf::ParallelOp par_op) { scf_pars.push_back(par_op); });
+    });
+    OpBuilder builder(module);
+    for (auto par_op : scf_pars) {
+      bool containsOnlyWaitAll = true;
+      par_op.walk([&](Operation *o) {
+        if (isa<airrt::WaitAllOp>(o))
+          return;
+        else if (isa<scf::ParallelOp>(o))
+          return;
+        else if (o->mightHaveTrait<OpTrait::IsTerminator>())
+          return;
+        else {
+          containsOnlyWaitAll = false;
+          return;
+        }
+      });
+      if (!containsOnlyWaitAll)
+        assert(false && "found scf.parallel op at this IR, NYI");
+      builder.setInsertionPoint(par_op);
+      auto newWaitAll = builder.create<airrt::WaitAllOp>(
+          par_op->getLoc(), airrt::EventType::get(par_op->getContext()),
+          par_op.getInitVals());
+      for (auto res : par_op->getResults())
+        res.replaceAllUsesWith(newWaitAll->getResult(0));
+      par_op->erase();
     }
   }
 
