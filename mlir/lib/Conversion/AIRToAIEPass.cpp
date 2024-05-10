@@ -2575,6 +2575,24 @@ public:
                                    isAIE2 ? AIE::LockAction::AcquireGreaterEqual
                                           : AIE::LockAction::Acquire,
                                    lockAqValue);
+
+    // check if a buffer is both read from and written to by dma bds. This
+    // pattern indicates RAW dependency that the locks need to respect.
+    auto getReadInRAW = [](air::MemcpyInterface memcpyOpIf, Value alloc) {
+      air::ChannelPutOp readerInRAW = nullptr;
+      if (!isa<AIE::BufferOp>(alloc.getDefiningOp()))
+        return readerInRAW;
+      if (!isa<air::ChannelGetOp>(memcpyOpIf))
+        return readerInRAW;
+      for (auto user : alloc.getUsers()) {
+        if (user->getParentRegion() != memcpyOpIf->getParentRegion())
+          continue;
+        if (auto put = dyn_cast<air::ChannelPutOp>(user))
+          readerInRAW = put;
+      }
+      return readerInRAW;
+    };
+
     // try to find a place to put the unlock. If there are deallocs,
     // replace them with unlock. Otherwise, put them at the end.
     bool need_unlock = true;
@@ -2588,10 +2606,37 @@ public:
         need_unlock = false;
       }
     }
-    if (need_unlock) {
-      auto t = memcpyOpIf->getBlock()->getTerminator();
+    // merge adjacent lock uses, if they have the same lock and action.
+    auto mergePrevLockUse = [&](AIE::UseLockOp prevLockUse,
+                                int64_t &lockRelValue) {
+      if (!prevLockUse)
+        return;
+      if (prevLockUse.getLockOp() != relLockOp)
+        return;
+      if (prevLockUse.getAction() != AIE::LockAction::Release)
+        return;
+      lockRelValue++;
+      prevLockUse->erase();
+      return;
+    };
+
+    auto readInRAW = getReadInRAW(memcpyOpIf, alloc);
+    auto t = memcpyOpIf->getBlock()->getTerminator();
+    if (need_unlock && !readInRAW) {
       builder.setInsertionPoint(t);
       builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp,
+                                     AIE::LockAction::Release, lockRelValue);
+    } else if (need_unlock && readInRAW) {
+      if (t->getPrevNode() && isa<AIE::UseLockOp>(t->getPrevNode())) {
+        auto prevLockUse = dyn_cast<AIE::UseLockOp>(t->getPrevNode());
+        mergePrevLockUse(prevLockUse, lockRelValue);
+      }
+      auto br = dyn_cast<cf::BranchOp>(readInRAW->getBlock()->getTerminator());
+      if (br)
+        builder.setInsertionPointToStart(br.getDest());
+      else
+        builder.setInsertionPointToStart(readInRAW->getBlock());
+      builder.create<AIE::UseLockOp>(builder.getUnknownLoc(), relLockOp,
                                      AIE::LockAction::Release, lockRelValue);
     }
     allocs_to_remap.insert(alloc.getDefiningOp());
@@ -2782,7 +2827,7 @@ public:
       // lock_allocation_list lock_allocs;
       std::unordered_set<Operation *> allocs_to_remap;
 
-      for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
+      for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
         if (alloc.foundAlloc(x, y)) {
           for (auto o : alloc.memcpyOps) {
             assert(o);
@@ -2795,7 +2840,7 @@ public:
           }
         }
       }
-      for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
+      for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
         if (alloc.foundAlloc(x, y)) {
           for (auto o : alloc.memcpyOps) {
             assert(o);
