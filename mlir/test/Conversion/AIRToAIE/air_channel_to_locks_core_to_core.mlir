@@ -9,18 +9,17 @@
 
 // one-to-one communication
 // CHECK: aie.device
-// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = aie.tile(2, 4)
 // CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1)
 // CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0)
 // CHECK:         %[[VAL_5:.*]] = aie.lock(%[[VAL_2]], 1)
 // CHECK:         %[[VAL_6:.*]] = aie.lock(%[[VAL_2]], 0)
-// CHECK:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_2]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb2)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_7]] : memref<32x32xbf16, 2>, 0, 1024)
@@ -37,7 +36,7 @@
 // CHECK:         }
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
-// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2)
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2, repeat_count = 1)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_8]] : memref<32x32xbf16, 2>, 0, 1024)
@@ -92,15 +91,14 @@ func.func @one_to_one() {
 
 // two-to-two parallel dataflow
 // CHECK: aie.device
-// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = aie.tile(3, 3)
 // CHECK:         %[[VAL_3:.*]] = aie.tile(2, 4)
 // CHECK:         %[[VAL_4:.*]] = aie.tile(3, 4)
-// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:         aie.flow(%[[VAL_3]], DMA : 0, %[[VAL_4]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
@@ -141,15 +139,14 @@ func.func @two_to_two() {
 
 // one-to-two core-to-core broadcast
 // CHECK: aie.device
-// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = aie.tile(3, 3)
 // CHECK:         %[[VAL_3:.*]] = aie.tile(2, 4)
 // CHECK:         %[[VAL_4:.*]] = aie.tile(3, 4)
-// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_4]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_15:.*]] = aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_16:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_4]], DMA : 0)

@@ -11,14 +11,29 @@ on:
     types: [assigned, opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  # A PR number if a pull request and otherwise the commit hash. This cancels
+  # queued and in-progress runs for the same PR (presubmit) or commit
+  # (postsubmit).
+  group: ci-build-test-air-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   build-repo:
     name: Build and Test with ROCm runtime
-    runs-on: ubuntu-20.04
-    steps:
-      - name: Configure Environment
-        run: echo "$GITHUB_WORKSPACE/llvm/install/bin" >> $GITHUB_PATH
+    runs-on: ubuntu-${{ matrix.ubuntu_version }}
 
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [ Assert, Release ]
+        ubuntu_version: [ 20.04, 22.04 ]
+
+    steps:
       # Clone the repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get repo
@@ -31,11 +46,13 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Upgrade gcc
-        #if: matrix.ubuntu_version == '20.04'
+      - name: Install packages
         run: |
           sudo apt-get install -y ninja-build clang lld
 
+      - name: Upgrade gcc
+        if: matrix.ubuntu_version == '20.04'
+        run: |
           sudo apt install build-essential manpages-dev software-properties-common
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test
           GCC_VERSION=11
@@ -60,12 +77,11 @@ jobs:
       - name: Get Submodule Hash
         id: get-submodule-hash
         run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-llvm.sh))"
-        shell: bash
 
       - name: Ccache for C++ compilation
         uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
         with:
-          key: ${{ runner.os }}-clangreleaseasserts-${{ steps.get-submodule-hash.outputs.hash }}
+          key: ${{ matrix.build_type }}-${{ runner.os }}-${{ matrix.ubuntu_version }}
           max-size: 1G
 
       - name: Install necessary build tools for the ROCm runtime
@@ -86,7 +102,6 @@ jobs:
       - name: Get ROCm-air-platforms
         id: clone-rocm-air-platforms
         run: utils/clone-rocm-air-platforms.sh
-        shell: bash
 
       - name: Build and Install libxaie
         run: utils/github-clone-build-libxaie.sh
@@ -94,7 +109,6 @@ jobs:
       - name: Get mlir-aie
         id: clone-mlir-aie
         run: utils/clone-mlir-aie.sh
-        shell: bash
 
       - name: Build and Install mlir-aie
         run: |
@@ -121,6 +135,7 @@ jobs:
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
+        if: matrix.build_type == 'Assert'
         run: |
           mkdir build_assert
           pushd build_assert
@@ -152,6 +167,7 @@ jobs:
 
       # Build the repo test target in release mode to build and test.
       - name: Build and test (Release)
+        if: matrix.build_type == 'Release'
         run: |
           mkdir build_release
           pushd build_release

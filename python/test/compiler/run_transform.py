@@ -7,7 +7,7 @@
 from air.ir import *
 from air.dialects import air as airdialect
 from air.dialects import arith, func, linalg
-from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
+from air.compiler.util import run_transform
 
 def run(f):
   print("\nTEST:", f.__name__)
@@ -20,7 +20,6 @@ def run(f):
 @run
 def gemm_module():
     with Context() as ctx, Location.unknown():
-        airdialect.register_dialect(ctx)
         M = 256
         N = 256
         K = 256
@@ -47,5 +46,5 @@ def gemm_module():
         }
         """
         transform_ir = Module.parse(transform_ir_string)
-        run_air_transform(transform_ir, module)
+        run_transform(transform_ir, module)
         print (module)

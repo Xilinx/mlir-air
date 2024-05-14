@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IntegerSet.h"
@@ -36,7 +37,7 @@ const StringLiteral air::LinalgTransforms::kLinalgTransformMarker =
 static std::string getMangledType(const Type ty) {
   std::stringstream ret;
 
-  if (const MemRefType mrt = ty.dyn_cast<const MemRefType>()) {
+  if (const MemRefType mrt = llvm::dyn_cast<const MemRefType>(ty)) {
     ret << "M";
     ret << mrt.getMemorySpaceAsInt();
     if (mrt.hasStaticShape()) {
@@ -48,13 +49,13 @@ static std::string getMangledType(const Type ty) {
     }
     const Type elem = mrt.getElementType();
     ret << getMangledType(elem);
-  } else if (FloatType ft = ty.dyn_cast<FloatType>()) {
+  } else if (FloatType ft = llvm::dyn_cast<FloatType>(ty)) {
     ret << "F" << ft.getWidth();
-  } else if (const IntegerType it = ty.dyn_cast<const IntegerType>()) {
+  } else if (const IntegerType it = llvm::dyn_cast<const IntegerType>(ty)) {
     ret << "I" << it.getWidth();
-  } else if (const IndexType it = ty.dyn_cast<const IndexType>()) {
+  } else if (const IndexType it = llvm::dyn_cast<const IndexType>(ty)) {
     ret << "I64";
-  } else if (ty.dyn_cast<air::AsyncTokenType>()) {
+  } else if (llvm::dyn_cast<air::AsyncTokenType>(ty)) {
     ret << "E";
   } else {
     Type t = ty;
@@ -144,7 +145,7 @@ uint64_t air::getTensorVolume(const ShapedType ty) {
 }
 
 uint64_t air::getTensorVolume(const Type ty) {
-  if (auto t = ty.dyn_cast<ShapedType>()) {
+  if (auto t = llvm::dyn_cast<ShapedType>(ty)) {
     return getTensorVolume(t);
   } else {
     return 1;
@@ -161,7 +162,7 @@ SmallVector<int> air::getTensorShape(const ShapedType ty) {
 }
 
 SmallVector<int> air::getTensorShape(const Type ty) {
-  if (auto t = ty.dyn_cast<ShapedType>()) {
+  if (auto t = llvm::dyn_cast<ShapedType>(ty)) {
     return getTensorShape(t);
   } else {
     return SmallVector<int>(1);
@@ -169,7 +170,7 @@ SmallVector<int> air::getTensorShape(const Type ty) {
 }
 
 std::string air::getElementTypeAsString(const mlir::Type ty) {
-  if (auto st = ty.dyn_cast<mlir::ShapedType>()) {
+  if (auto st = llvm::dyn_cast<mlir::ShapedType>(ty)) {
     return to_string(st.getElementType());
   } else {
     return to_string(ty);
@@ -178,6 +179,9 @@ std::string air::getElementTypeAsString(const mlir::Type ty) {
 
 // An incomplete lookup table of common data types
 uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
+  if (auto memrefTy = llvm::cast<MemRefType>(ty)) {
+    return memrefTy.getElementTypeBitWidth() / 8;
+  }
   auto typeAsString = getElementTypeAsString(ty);
   if (typeAsString == "i32")
     return 4;
@@ -197,7 +201,7 @@ uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return scf::ForOp();
   if (!ivArg.getOwner()) {
@@ -221,7 +225,7 @@ scf::ParallelOp air::getParallelRegionInitValsOwner(Operation *op, Value val) {
 
 // Get the parent air.launch_herd op of a tile id
 air::HerdOp air::getHerdArgOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return air::HerdOp();
   if (!ivArg.getOwner()) {
@@ -234,7 +238,7 @@ air::HerdOp air::getHerdArgOwner(Value val) {
 
 // Get the parent air.hierarchy op of a tile id
 air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return air::HierarchyInterface();
   if (!ivArg.getOwner()) {
@@ -345,14 +349,28 @@ std::string air::to_string(mlir::Type t) {
   return type_str;
 }
 
+// Create channel name as string
+std::string air::createChannelName(Operation *scope) {
+  if (!scope->hasTrait<OpTrait::SymbolTable>()) {
+    scope->emitOpError("has no symbol table trait");
+  }
+  std::string new_cname = "channel_0";
+  std::string cname = "channel";
+  int which_try = 0;
+  while (mlir::SymbolTable::lookupSymbolIn(scope, new_cname))
+    new_cname = cname + "_" + std::to_string(++which_try);
+  cname = new_cname;
+  return cname;
+}
+
 // Return memory space as string
 std::string air::getMemorySpaceAsString(Value memref) {
-  if (!memref.getType().isa<MemRefType>()) {
+  if (!llvm::isa<MemRefType>(memref.getType())) {
     memref.getDefiningOp()->emitOpError("value returned is not a memref");
     return "";
   }
   auto memory_space_as_int =
-      memref.getType().dyn_cast<MemRefType>().getMemorySpaceAsInt();
+      llvm::dyn_cast<MemRefType>(memref.getType()).getMemorySpaceAsInt();
   std::string memorySpaceStr = "";
   if (memory_space_as_int == (int)air::MemorySpace::L1) {
     memorySpaceStr = "L1";
@@ -634,7 +652,8 @@ bool air::positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
     if (affine_if.getThenBlock()->findAncestorOpInBlock(*op)) {
       bool hit = true;
       for (unsigned i = 0; i < lbs_int.size(); i++) {
-        if ((position[i] < lbs_int[i]) || (position[i] > ubs_int[i])) {
+        if ((position[i] < (unsigned)lbs_int[i]) ||
+            (position[i] > (unsigned)ubs_int[i])) {
           hit = false;
         }
       }
@@ -648,7 +667,8 @@ bool air::positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
   // If op isn't in any then blocks in affine.if nest
   bool hit = true;
   for (unsigned i = 0; i < lbs_spatial.size(); i++) {
-    if ((position[i] < lbs_spatial[i]) || (position[i] > ubs_spatial[i])) {
+    if ((position[i] < (unsigned)lbs_spatial[i]) ||
+        (position[i] > (unsigned)ubs_spatial[i])) {
       hit = false;
     }
   }
@@ -803,16 +823,19 @@ void air::getDefiningOpsToOperands(Operation *op,
 LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
                                                  SmallVector<Value> &offsets,
                                                  SmallVector<Value> &sizes,
-                                                 SmallVector<Value> &strides) {
+                                                 SmallVector<Value> &strides,
+                                                 int memref_volume) {
 
+  bool listsHaveChanged = false;
   // Match offsets size with sizes and strides
-  int max_dim_size =
+  auto max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
   if (max_dim_size && offsets.size() < max_dim_size) {
-    for (unsigned i = offsets.size(); i < max_dim_size; i++) {
+    for (auto i = offsets.size(); i < max_dim_size; i++) {
       offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
                                           builder.getUnknownLoc(), 0));
     }
+    listsHaveChanged = true;
   }
 
   SmallVector<int> unit_dims;
@@ -828,44 +851,59 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
     offsets.erase(offsets.begin() + i);
     sizes.erase(sizes.begin() + i);
     strides.erase(strides.begin() + i);
+    listsHaveChanged = true;
   }
 
-  SmallVector<int> redundant_dims;
-  if (!sizes.empty())
+  if (!sizes.empty()) {
     for (int i = sizes.size() - 1; i >= 1; i--) {
-      if (getConstantIntValue(sizes[i]) && getConstantIntValue(sizes[i - 1]) &&
+      if (getConstantIntValue(offsets[i]) &&
+          getConstantIntValue(offsets[i - 1]) &&
+          getConstantIntValue(sizes[i]) && getConstantIntValue(sizes[i - 1]) &&
           getConstantIntValue(strides[i]) &&
           getConstantIntValue(strides[i - 1])) {
+        auto const_offset = *getConstantIntValue(offsets[i]);
+        auto const_offset_next = *getConstantIntValue(offsets[i - 1]);
         auto const_size = *getConstantIntValue(sizes[i]);
         auto const_size_next = *getConstantIntValue(sizes[i - 1]);
         auto const_stride = *getConstantIntValue(strides[i]);
         auto const_stride_next = *getConstantIntValue(strides[i - 1]);
-        // Skip over the first dimension if stride is 1
-        if (const_stride == 1 && i == (int)sizes.size() - 1)
-          continue;
         if (const_stride_next == const_size * const_stride) {
-          redundant_dims.push_back(i - 1);
           sizes[i] = builder.create<arith::ConstantIndexOp>(
               builder.getUnknownLoc(), const_size * const_size_next);
+          offsets[i] = builder.create<arith::ConstantIndexOp>(
+              builder.getUnknownLoc(),
+              const_stride_next * const_offset_next + const_offset);
+          offsets.erase(offsets.begin() + i - 1);
+          sizes.erase(sizes.begin() + i - 1);
+          strides.erase(strides.begin() + i - 1);
+          listsHaveChanged = true;
         }
       }
     }
-
-  for (auto i : redundant_dims) {
-    offsets.erase(offsets.begin() + i);
-    sizes.erase(sizes.begin() + i);
-    strides.erase(strides.begin() + i);
   }
 
-  if (unit_dims.empty() && redundant_dims.empty()) {
+  // If default data access pattern, then clear the offsets, sizes and strides.
+  if (offsets.size() == 1 && sizes.size() == 1 && strides.size() == 1) {
+    if (getConstantIntValue(offsets[0]) && getConstantIntValue(sizes[0]) &&
+        getConstantIntValue(strides[0])) {
+      if (*getConstantIntValue(strides[0]) == 1 &&
+          *getConstantIntValue(sizes[0]) == memref_volume) {
+        offsets.erase(offsets.begin());
+        sizes.erase(sizes.begin());
+        strides.erase(strides.begin());
+        listsHaveChanged = true;
+      }
+    }
+  }
+
+  if (listsHaveChanged)
+    return success();
+  else
     return failure();
-  }
-
-  return success();
 }
 
 // Fold perfectly nested for loops as extra entries in wraps and strides
-void air::foldForLoopNestAsExtendedSizesAndStrides(
+LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
     SmallVector<Value> &strides, Value memref) {
@@ -882,7 +920,7 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
       for_loops.push_back(parent);
   }
   for (auto o : for_loops) {
-    unsigned ind_var_factor = 1;
+    uint64_t ind_var_factor = 1;
     for (int i = offsets.size() - 1; i >= 0; i--) {
       Value iv = nullptr;
       int loop_lower_bound = 0;
@@ -910,9 +948,9 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
       }
       // Index offset taking into account mismatch between memref rank and
       // offset list size difference.
-      int memref_rank = getTensorShape(memref.getType()).size();
+      auto memref_rank = getTensorShape(memref.getType()).size();
       if (memref_rank < offsets.size()) {
-        if (i < offsets.size() - memref_rank)
+        if ((unsigned)i < offsets.size() - memref_rank)
           ind_var_factor *= getTensorVolume(memref.getType());
         else
           ind_var_factor *= getTensorShape(
@@ -934,11 +972,414 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
       stepSize = afo.getStepAsInt();
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       stepSize = *mlir::getConstantIntValue(sfo.getStep());
-    Value new_stride = builder.template create<arith::ConstantIndexOp>(
-        loc, (stepSize * ind_var_factor) % getTensorVolume(memref.getType()));
+    int64_t new_stride_value =
+        (stepSize * ind_var_factor) % getTensorVolume(memref.getType());
+    Value new_stride =
+        builder.template create<arith::ConstantIndexOp>(loc, new_stride_value);
+
+    // Check for compliance with DMA BD hardware limitation (<= 1M). Note that
+    // the exception is when stepSize = previous highest wrap, because in that
+    // case the large stride shall simply get canonicalized away.
+    if (mlir::ceilDiv(
+            new_stride_value * getElementSizeInBytes(memref.getType()), 4) >
+        0x100000) {
+      if (stepSize != *getConstantIntValue(wraps[0])) {
+        return failure();
+      }
+    }
 
     // Insert new dimension into the wraps and strides list.
     wraps.insert(wraps.begin(), new_wrap);
     strides.insert(strides.begin(), new_stride);
   }
+  return success();
+}
+
+// If wrap-and-stride lists are empty, populate them with default data access
+// layout (contiguous, row-major).
+void air::populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
+                                         SmallVector<Value> &offsets,
+                                         SmallVector<Value> &wraps,
+                                         SmallVector<Value> &strides) {
+  auto loc = builder.getUnknownLoc();
+  if (offsets.empty() && wraps.empty() && strides.empty()) {
+    auto memref_shape = getTensorShape(memref.getType());
+    int current_stride = getTensorVolume(memref.getType());
+    for (unsigned i = 0; i < memref_shape.size(); i++) {
+      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, 0));
+      wraps.push_back(
+          builder.create<arith::ConstantIndexOp>(loc, memref_shape[i]));
+      current_stride /= memref_shape[i];
+      strides.push_back(
+          builder.create<arith::ConstantIndexOp>(loc, current_stride));
+    }
+  }
+}
+
+// Check if the wraps and strides imply the default (contiguous, row-major) data
+// access pattern.
+bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
+                                     SmallVector<Value> memcpy_strides,
+                                     Value memref) {
+  if (memcpy_sizes.size() != memcpy_strides.size())
+    return false;
+  // If the sizes and strides were already accessing the memref in default
+  // order, then wraps and strides are not needed
+  if (memcpy_sizes.empty() || memcpy_strides.empty())
+    return true;
+  if (memcpy_sizes.size() == 1 && memcpy_strides.size() == 1) {
+    auto stepsize = mlir::getConstantIntValue(memcpy_strides[0]);
+    if (stepsize && *stepsize == 1)
+      return true;
+  }
+  SmallVector<int> memref_shape = getTensorShape(memref.getType());
+  if (memcpy_sizes.size() != memref_shape.size())
+    return false;
+  unsigned stride_factor = 1;
+  for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
+    auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
+    assert(stepsize && "non-static stride");
+    auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
+    assert(wrap && "non-static wrap");
+    if (*stepsize != stride_factor)
+      return false;
+    if (*wrap != memref_shape[i])
+      return false;
+    stride_factor *= *wrap;
+  }
+  return true;
+}
+
+// Get the memref size along a given dimension, that the access pattern actually
+// covers.
+SmallVector<int64_t>
+air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
+                                             SmallVector<Value> sizes,
+                                             SmallVector<Value> strides) {
+  SmallVector<int64_t> access_bounds(memref_shape.size(), 1);
+  for (int i = sizes.size() - 1; i >= 0; i--) {
+    int current_memref_volume = 1;
+    for (int j = memref_shape.size() - 1; j >= 0; j--) {
+      current_memref_volume *= memref_shape[j];
+      if (mlir::floorDiv(*getConstantIntValue(strides[i]),
+                         current_memref_volume))
+        continue;
+      int64_t bound = mlir::floorDiv(*getConstantIntValue(strides[i]),
+                                     current_memref_volume / memref_shape[j]) *
+                      *getConstantIntValue(sizes[i]);
+      access_bounds[j] = std::max(access_bounds[j], bound);
+    }
+  }
+  return access_bounds;
+}
+
+// Get the overall data access pattern from air.channel ops which access the
+// memref.
+SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
+    Value memref,
+    SmallVector<
+        std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
+        patterns) {
+  auto memref_shape = getTensorShape(memref.getType());
+  SmallVector<int64_t> overall_access_bounds(memref_shape.size(), 1);
+  for (auto pattern : patterns) {
+    SmallVector<int64_t> access_bounds(memref_shape.size(), 1);
+    // Empty offsets list means default data access pattern spaning the entire
+    // memref
+    if (std::get<0>(pattern).empty())
+      for (unsigned i = 0; i < memref_shape.size(); i++)
+        access_bounds[i] = memref_shape[i];
+    else
+      access_bounds = getEffectiveMemrefSizeFromAccessPattern(
+          memref_shape, std::get<1>(pattern), std::get<2>(pattern));
+    // Update overall access bounds.
+    for (unsigned i = 0; i < memref_shape.size(); i++)
+      overall_access_bounds[i] =
+          std::max(overall_access_bounds[i], access_bounds[i]);
+  }
+  return overall_access_bounds;
+}
+
+static void updateAccessPatternByScfForNest(
+    std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+        &pattern,
+    SmallVector<Value> indices, OpBuilder builder) {
+  auto loc = builder.getUnknownLoc();
+  auto updateWrapAndStride = [&](Value index, int i) {
+    if (auto scfForOp = scf::getForInductionVarOwner(index)) {
+      std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
+          loc, *air::getStaticScfForTripCountAsInt(scfForOp));
+      std::get<2>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
+          loc, (*getConstantIntValue(scfForOp.getStep())) *
+                   (*getConstantIntValue(std::get<2>(pattern)[i])));
+
+      scfForOp.getStep();
+    }
+  };
+  int dim = -1;
+  for (auto index : indices) {
+    dim++;
+    if (getConstantIntValue(index))
+      continue;
+    updateWrapAndStride(index, dim);
+    if (!index.getDefiningOp())
+      continue;
+    if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp()))
+      for (auto oper : execOp.getChildOp()->getOperands())
+        updateWrapAndStride(oper, dim);
+  }
+}
+
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+air::writeAccessPattern(air::ChannelInterface chanOp) {
+  std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+      pattern;
+  for (auto offset : chanOp.getOffsets())
+    std::get<0>(pattern).push_back(offset);
+  for (auto size : chanOp.getSizes())
+    std::get<1>(pattern).push_back(size);
+  for (auto stride : chanOp.getStrides())
+    std::get<2>(pattern).push_back(stride);
+  return pattern;
+}
+
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+air::writeAccessPattern(memref::SubViewOp subview) {
+  std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+      pattern;
+  auto subview_offsets = subview.getOffsets().begin();
+  auto subview_sizes = subview.getSizes().begin();
+  auto subview_strides = subview.getStrides().begin();
+  auto static_offsets = subview.getStaticOffsets();
+  auto static_sizes = subview.getStaticSizes();
+  auto static_strides = subview.getStaticStrides();
+  // Get strided layout from subview op's output MemRefType
+  if (auto strided = llvm::dyn_cast<StridedLayoutAttr>(
+          llvm::cast<MemRefType>(subview.getResult().getType()).getLayout()))
+    static_strides = strided.getStrides();
+
+  auto loc = subview.getLoc();
+  OpBuilder builder(subview);
+  for (auto o : static_offsets) {
+    if (o >= 0)
+      std::get<0>(pattern).push_back(
+          builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      std::get<0>(pattern).push_back(*subview_offsets++);
+  }
+  for (auto o : static_sizes) {
+    if (o >= 0)
+      std::get<1>(pattern).push_back(
+          builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      std::get<1>(pattern).push_back(*subview_sizes++);
+  }
+  for (auto o : static_strides) {
+    if (o >= 0)
+      std::get<2>(pattern).push_back(
+          builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      std::get<2>(pattern).push_back(*subview_strides++);
+  }
+  updateAccessPatternByScfForNest(pattern, std::get<0>(pattern), builder);
+  return pattern;
+}
+
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
+  OpBuilder builder(readOp);
+  std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+      pattern;
+  auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
+  auto memrefTy = llvm::cast<MemRefType>(readOp.getSource().getType());
+  assert(vectorTy && "Not a vector");
+  assert(memrefTy && "Not a memref");
+  // Initialize wraps and strides based on the unshrunk memref shape.
+  populateDefaultWrapsAndStrides(builder, readOp.getSource(),
+                                 std::get<0>(pattern), std::get<1>(pattern),
+                                 std::get<2>(pattern));
+  // Update wraps based on vector shape and vector access patterns.
+  for (unsigned i = 0; i < std::get<1>(pattern).size(); i++)
+    std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
+        builder.getUnknownLoc(), vectorTy.getShape()[i]);
+  updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder);
+  return pattern;
+}
+
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
+  OpBuilder builder(writeOp);
+  std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+      pattern;
+  auto memrefTy = llvm::cast<MemRefType>(writeOp.getSource().getType());
+  auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
+  assert(memrefTy && "Not a memref");
+  assert(vectorTy && "Not a vector");
+  // Initialize wraps and strides based on the unshrunk memref shape.
+  populateDefaultWrapsAndStrides(builder, writeOp.getSource(),
+                                 std::get<0>(pattern), std::get<1>(pattern),
+                                 std::get<2>(pattern));
+  // Update wraps based on vector shape and vector access patterns.
+  for (unsigned i = 0; i < std::get<1>(pattern).size(); i++)
+    std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
+        builder.getUnknownLoc(), vectorTy.getShape()[i]);
+  updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder);
+  return pattern;
+}
+
+SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
+    Value memref, SmallVector<air::ChannelInterface> chanUsers) {
+  SmallVector<
+      std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
+      accessPatterns;
+  for (auto chanUser : chanUsers) {
+    accessPatterns.push_back(writeAccessPattern(chanUser));
+  }
+  return getDataAccessShapeFromMemcpyOp(memref, accessPatterns);
+}
+SmallVector<int64_t>
+air::getDataAccessShapeFromMemcpyOp(Value memref,
+                                    SmallVector<Operation *> users) {
+  SmallVector<
+      std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
+      accessPatterns;
+  for (auto user : users) {
+    if (auto chanUser = dyn_cast<air::ChannelInterface>(user))
+      accessPatterns.push_back(writeAccessPattern(chanUser));
+    else if (auto svUser = dyn_cast<memref::SubViewOp>(user))
+      accessPatterns.push_back(writeAccessPattern(svUser));
+    else if (auto vecReadUser = dyn_cast<mlir::vector::TransferReadOp>(user))
+      accessPatterns.push_back(writeAccessPattern(vecReadUser));
+    else if (auto vecWriteUser = dyn_cast<mlir::vector::TransferWriteOp>(user))
+      accessPatterns.push_back(writeAccessPattern(vecWriteUser));
+  }
+  return getDataAccessShapeFromMemcpyOp(memref, accessPatterns);
+}
+
+// Update strides after memref shrinkage. Assuming there is only one dimension
+// being shrunk.
+SmallVector<int>
+air::getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
+                                     SmallVector<int64_t> new_memref_shape,
+                                     SmallVector<Value> strides) {
+  SmallVector<int> new_strides(strides.size(), -1);
+  int shrinkage_volume = 1;
+  int shrinkage_factor = 1;
+  for (int j = old_memref_shape.size() - 1; j >= 0; j--) {
+    shrinkage_volume *= old_memref_shape[j];
+    if (old_memref_shape[j] != new_memref_shape[j]) {
+      shrinkage_factor =
+          mlir::ceilDiv(old_memref_shape[j], new_memref_shape[j]);
+      break;
+    }
+  }
+  for (int i = strides.size() - 1; i >= 0; i--) {
+    if (mlir::floorDiv(*getConstantIntValue(strides[i]), shrinkage_volume))
+      new_strides[i] =
+          mlir::ceilDiv(*getConstantIntValue(strides[i]), shrinkage_factor);
+    else
+      new_strides[i] = *getConstantIntValue(strides[i]);
+  }
+  return new_strides;
+}
+
+// Update offsets after memref shrinkage.
+SmallVector<int>
+air::getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
+                                     SmallVector<int64_t> new_memref_shape,
+                                     SmallVector<Value> offsets) {
+  SmallVector<int> new_offsets(offsets.size(), -1);
+  for (int i = 0; i < (int)offsets.size(); i++) {
+    int memref_idx = i + old_memref_shape.size() - offsets.size();
+    if (memref_idx >= 0) {
+      // Reset offset to zero, if the user air.channel put/get has offset being
+      // variant wrt a parent spatial iteration space (e.g. air.herd,
+      // scf.parallel).
+      if (offsets[i].getDefiningOp()) {
+        if (auto exec = dyn_cast<air::ExecuteOp>(offsets[i].getDefiningOp())) {
+          for (auto oper : exec.getChildOp()->getOperands())
+            if (getHerdArgOwner(oper))
+              new_offsets[i] = 0;
+        }
+      } else {
+        // If offset is some block argument
+        if (getHerdArgOwner(offsets[i]))
+          new_offsets[i] = 0;
+        else if (scf::getParallelForInductionVarOwner(offsets[i]))
+          new_offsets[i] = 0;
+        else if (scf::getForInductionVarOwner(offsets[i]))
+          continue;
+        else
+          assert(false &&
+                 "offset is block argument to an unknown iteration space");
+      }
+    }
+  }
+  return new_offsets;
+}
+
+// Given a dimension on wrap-and-stride list, infer the dimension on memref that
+// this pattern spans completely on.
+std::optional<int>
+air::getMemrefDimFromOffsetDim(int dimOnOffset, SmallVector<Value> offsets,
+                               SmallVector<Value> strides,
+                               SmallVector<int> memrefShape) {
+  std::optional<int> output = std::nullopt;
+  if (memrefShape.empty())
+    return std::nullopt;
+  if (offsets.empty())
+    return std::nullopt;
+  assert(dimOnOffset < (int)offsets.size() && "Dimension exceeds offsets rank");
+
+  // Get stride value which corresponds to accessing each memref dimension,
+  // highest dimension first.
+  int memrefRank = memrefShape.size();
+  SmallVector<int> memrefDimStrides(memrefRank, 1);
+  int currentStride = 1;
+  for (int i = memrefRank - 1; i >= 0; i--) {
+    memrefDimStrides[i] = currentStride;
+    currentStride *= memrefShape[i];
+  }
+
+  // Find the dimension on memref shape with given stride value.
+  auto strideVal = getConstantIntValue(strides[dimOnOffset]);
+  assert(strideVal && "Non-static stride value in data access pattern, NYI.");
+  for (unsigned i = 0; i < memrefDimStrides.size(); i++)
+    if (*strideVal == memrefDimStrides[i]) {
+      output = i;
+      return output;
+    }
+  return std::nullopt;
+}
+
+// Given a dimension on memref shape, infer the dimension on wrap-and-stride
+// list that spans on this memref dimension.
+std::optional<int>
+air::getOffsetDimFromMemrefDim(int dimOnMemref, SmallVector<Value> strides,
+                               SmallVector<int> memrefShape) {
+  std::optional<int> output = std::nullopt;
+  if (memrefShape.empty())
+    return std::nullopt;
+  if (strides.empty())
+    return std::nullopt;
+  assert(dimOnMemref < (int)memrefShape.size() &&
+         "Dimension exceeds memref rank");
+
+  // Get stride value which corresponds to accessing the current memref
+  // dimension.
+  int memrefRank = memrefShape.size();
+  int memrefStride = 1;
+  for (int i = memrefRank - 1; i > dimOnMemref; i--)
+    memrefStride *= memrefShape[i];
+
+  // Find the dimension on wrap-and-stride list with given stride value.
+  for (unsigned i = 0; i < strides.size(); i++) {
+    auto strideVal = getConstantIntValue(strides[i]);
+    assert(strideVal && "Non-static stride value in data access pattern, NYI.");
+    if (*strideVal == memrefStride) {
+      output = i;
+      return output;
+    }
+  }
+  return std::nullopt;
 }

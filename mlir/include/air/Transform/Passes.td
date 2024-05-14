@@ -1021,8 +1021,16 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   let description = [{
     This pass fuses multiple air.channel ops into one. The condition for fusing channels 
     is such that the puts and gets of all candidate channels mush share the same control 
-    loop hierarchy, where every parent loops must have matching loop bounds.
+    loop hierarchy, where every parent loops must have matching loop bounds. The 
+    'aggressive-mode' option, when enabled, will attempt to use as few air.channels as 
+    possible by time-multiplexing air.channel.puts and air.channel.gets to share the same
+    air.channel symbol.
   }];
+  let options = [
+    ListOption<"clAggressiveMode", "aggressive-mode", "std::string",
+            "List of memory spaces to enable aggressive channel fusion with. Available options include ['L1', 'L2', 'L3'].",
+            "llvm::cl::ZeroOrMore">
+  ];
 }
 
 def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "ModuleOp"> {
@@ -1038,7 +1046,10 @@ def AIRSegmentLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";
   let constructor = "xilinx::air::createAIRSegmentLoopFusion()";
   let description = [{
-    This pass performs loop fusion within air.segment op's region.
+    Optimizes the data movement around L2 memories by rearranging and potentially 
+    fusing perfect `scf.for` loop nests of `air.channel.put` and `air.channel.get`, 
+    which access the same L2 memref, into `scf.for` loop nest patterns mappable to a 
+    complex finite-state machine consisting of a multiple of AIE DMA Block Descriptors.
   }];
 }
 
@@ -1056,7 +1067,7 @@ def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "ModuleOp"> {
   let constructor = "xilinx::air::createAIRDependencyCanonicalizePass()";
   let description = [{
     This pass optimizes the dependency graph in air by removing non-dominant
-    dependency edges.
+    dependency edges via performing a transitive reduction on the input graph.
   }];
   let options = [
     Option<"clDumpGraph", "dump-graph", "bool", /*default=*/"false",
@@ -1096,6 +1107,11 @@ def AIRSpecializeDma : Pass<"air-specialize-dma", "ModuleOp"> {
 def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp"> {
   let summary = "Specialize dma operations for broadcast pattern";
   let constructor = "xilinx::air::createAIRSpecializeDmaBroadcast()";
+  let description = [{
+    Specializes `air.dma_memcpy_nd` operations for broadcast patterns within a 
+    computation. This specialization involves transforming data movement operations 
+    into more optimized versions that are aware of the broadcast semantics.
+  }];
 }
 
 def AIRPromoteUniformL1Dma : Pass<"air-promote-dma", "ModuleOp"> {
@@ -1159,6 +1175,15 @@ def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-wit
 def AIRCollapseHerdPass : Pass<"air-collapse-herd", "func::FuncOp"> {
   let summary = "Collapse a multi-dimensional air.herd into a single column.";
   let constructor = "xilinx::air::createAIRCollapseHerdPass()";
+  let options = [
+    Option<"clMaxColSize", "max-col-size", "int", /*default=*/"-1",
+           "The maximum column size after collapse, before collapse is cancelled. Disabled by default.">
+  ];
+  let description = [{
+    The pass attempts to collapse the air.herd to the left, attempting to occupy 
+    complete columns of AIE tiles. The attempt will stop if the number of tiles in 
+    air.herd exceeds the user provided max-col-size option.
+  }];
 }
 
 def AIRUnrollOuterPerfectlyNestedLoopsPass : Pass<"air-unroll-outer-affine-loops", "func::FuncOp"> {
@@ -1168,6 +1193,201 @@ def AIRUnrollOuterPerfectlyNestedLoopsPass : Pass<"air-unroll-outer-affine-loops
     Option<"clDepth", "depth", "int", /*default=*/"1",
            "The number of outermost loops in the loop nest to unroll">,
   ];
+  let description = [{
+    The pass attempts to unroll the outermost dimensions in affine loop nests.
+
+    Example:
+
+    Input:
+    ```mlir
+    func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+      ...
+      affine.for %arg0 = 0 to 4 step 4 {
+        affine.for %arg1 = 0 to 4 step 4 {
+          affine.for %arg2 = affine_map<(d0) -> (d0)>(%arg0) to affine_map<(d0) -> (d0 + 4)>(%arg0) {
+            affine.for %arg3 = affine_map<(d0) -> (d0)>(%arg1) to affine_map<(d0) -> (d0 + 4)>(%arg1) {
+              ...
+              %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref<512x1024xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+              ...
+              %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_13, %c0_i64_13, %69, %70], [%c1_i64_14, %c1_i64_14, %72, %73], [%c0_i64_13, %c0_i64_13, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref<1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+              ...
+              %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_24, %c0_i64_24, %106, %107], [%c1_i64_25, %c1_i64_25, %109, %110], [%c0_i64_24, %c0_i64_24, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref<512x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+              ...
+            }
+          }
+        }
+      } {affine_opt_label = ""}
+      return
+    }
+    ```
+    Output:
+    ```mlir
+    func.func @matmul_512x512_1024xi32__dispatch_0_matmul_512x512x1024_i32() {
+      ...
+      affine.for %arg0 = affine_map<(d0) -> (d0)>(%c0) to affine_map<(d0) -> (d0 + 4)>(%c0) {
+        affine.for %arg1 = affine_map<(d0) -> (d0)>(%c0_0) to affine_map<(d0) -> (d0 + 4)>(%c0_0) {
+          ...
+          %25 = airrt.dma_memcpy_nd(%c17_i32, %15, %16, %0[%c0_i64, %17, %18, %19], [%c1_i64, %22, %23, %24], [%c0_i64, %20, %21]) {metadata = @airMemcpyId19} : (i32, i64, i64, memref<512x1024xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+          ...
+          %74 = airrt.dma_memcpy_nd(%c13_i32, %67, %68, %3[%c0_i64_15, %c0_i64_15, %69, %70], [%c1_i64_16, %c1_i64_16, %72, %73], [%c0_i64_15, %c0_i64_15, %71]) {metadata = @airMemcpyId15} : (i32, i64, i64, memref<1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+          ...
+          %111 = airrt.dma_memcpy_nd(%c78_i32, %104, %105, %6[%c0_i64_26, %c0_i64_26, %106, %107], [%c1_i64_27, %c1_i64_27, %109, %110], [%c0_i64_26, %c0_i64_26, %108]) {metadata = @airMemcpyId78} : (i32, i64, i64, memref<512x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+          ...
+        }
+      }
+      return
+    }
+    ```
+  }];
+}
+
+def AIRSplitL2MemrefForBufferConstraintPass : Pass<"air-split-l2-memref", "func::FuncOp"> {
+  let summary = "Split L2 memref into smaller buffers if it couldn't fit with the buffer harware constraints";
+  let constructor = "xilinx::air::createAIRSplitL2MemrefForBufferConstraintPass()";
+  let description = [{
+    Transforms the input IR by splitting certain L2 memory references (`memrefs`) to adhere to AIE memtile-specific buffer and DMA channel constraints or optimization opportunities.
+
+    Example:
+
+    Input:
+    ```mlir
+    %1 = scf.for %arg7 = %c0_7 to %c1024 step %c256 iter_args(%arg8 = %async_token_8) -> (!air.async.token) {
+      %5 = air.channel.put async [%arg8]  @channel_8[] (%arg5[%results_9, %arg7] [%c128, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref<512x1024xi32>)
+      scf.yield %5 : !air.async.token
+    }
+    ...
+    %4 = air.segment @segment_0 async  attributes {id = 2 : i32} {
+      ...
+      %async_token_22, %results_23 = air.execute -> (memref<128x1024xi32, 1 : i32>) {
+        %alloc = memref.alloc() : memref<128x1024xi32, 1 : i32>
+        air.execute_terminator %alloc : memref<128x1024xi32, 1 : i32>
+      }
+      %7 = scf.for %arg7 = %c0_19 to %c1024_20 step %c256_21 iter_args(%arg8 = %async_token_22) -> (!air.async.token) {
+        %20 = air.channel.get async [%arg8]  @channel_8[] (%results_23[%c0_19, %arg7] [%c128_17, %c256_21] [%c1024_20, %c1_16]) {id = 4 : i32} : (memref<128x1024xi32, 1 : i32>)
+        scf.yield %20 : !air.async.token
+      }
+      ...
+      %9 = scf.for %arg7 = %c0_19 to %c128_17 step %c4_18 iter_args(%arg8 = %async_token_22) -> (!air.async.token) {
+        %async_token_31, %results_32 = air.execute [%arg8] -> (index) {
+          %21 = affine.apply affine_map<()[s0] -> (s0 * 8)>()[%arg7]
+          air.execute_terminator %21 : index
+        }
+        %20 = air.channel.put async [%async_token_31]  @channel_0[] (%results_23[%c0_19, %c0_19, %results_32] [%c4_18, %c32, %c8] [%c8, %c1024_20, %c1_16]) {id = 6 : i32} : (memref<128x1024xi32, 1 : i32>)
+        scf.yield %20 : !air.async.token
+      }
+      %10 = scf.for %arg7 = %c0_19 to %c128_17 step %c4_18 iter_args(%arg8 = %async_token_22) -> (!air.async.token) {
+        %async_token_31, %results_32 = air.execute [%arg8] -> (index) {
+          %21 = affine.apply affine_map<()[s0] -> (s0 * 8)>()[%arg7]
+          air.execute_terminator %21 : index
+        }
+        %20 = air.channel.put async [%async_token_31]  @channel_1[] (%results_23[%c0_19, %c32, %results_32] [%c4_18, %c32, %c8] [%c8, %c1024_20, %c1_16]) {id = 7 : i32} : (memref<128x1024xi32, 1 : i32>)
+        scf.yield %20 : !air.async.token
+      }
+      %11 = scf.for %arg7 = %c0_19 to %c128_17 step %c4_18 iter_args(%arg8 = %async_token_22) -> (!air.async.token) {
+        %async_token_31, %results_32 = air.execute [%arg8] -> (index) {
+          %21 = affine.apply affine_map<()[s0] -> (s0 * 8)>()[%arg7]
+          air.execute_terminator %21 : index
+        }
+        %20 = air.channel.put async [%async_token_31]  @channel_2[] (%results_23[%c0_19, %c64, %results_32] [%c4_18, %c32, %c8] [%c8, %c1024_20, %c1_16]) {id = 8 : i32} : (memref<128x1024xi32, 1 : i32>)
+        scf.yield %20 : !air.async.token
+      }
+      %12 = scf.for %arg7 = %c0_19 to %c128_17 step %c4_18 iter_args(%arg8 = %async_token_22) -> (!air.async.token) {
+        %async_token_31, %results_32 = air.execute [%arg8] -> (index) {
+          %21 = affine.apply affine_map<()[s0] -> (s0 * 8)>()[%arg7]
+          air.execute_terminator %21 : index
+        }
+        %20 = air.channel.put async [%async_token_31]  @channel_3[] (%results_23[%c0_19, %c96, %results_32] [%c4_18, %c32, %c8] [%c8, %c1024_20, %c1_16]) {id = 9 : i32} : (memref<128x1024xi32, 1 : i32>)
+        scf.yield %20 : !air.async.token
+      }
+      ...
+      air.segment_terminator
+    }
+    air.launch_terminator
+  }
+    ```
+    Output:
+    ```mlir
+    %0 = air.launch async [%async_token_0, %async_token_3, %async_token_6] (%arg0, %arg1) in (%arg2=%c4, %arg3=%c4) args(%arg4=%results_5, %arg5=%results, %arg6=%results_2) : memref<512x512xi32>, memref<512x1024xi32>, memref<1024x512xi32> attributes {id = 1 : i32} {
+      ...
+      %5 = scf.for %arg7 = %c0_7 to %c1024 step %c256 iter_args(%arg8 = %async_token_8) -> (!air.async.token) {
+        %21 = air.channel.put async [%arg8]  @channel_12[%c0_7, %c0_7] (%arg5[%1, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref<512x1024xi32>)
+        %22 = air.channel.put async [%arg8]  @channel_12[%c1, %c0_7] (%arg5[%2, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref<512x1024xi32>)
+        %23 = air.channel.put async [%arg8]  @channel_12[%c2, %c0_7] (%arg5[%3, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 3 : i32} : (memref<512x1024xi32>)
+        %24 = air.channel.put async [%arg8]  @channel_12[%c3, %c0_7] (%arg5[%4, %arg7] [%c32, %c256] [%c1024, %c1]) {id = 4 : i32} : (memref<512x1024xi32>)
+        %25 = air.wait_all async [%21, %22, %23, %24] 
+        scf.yield %25 : !air.async.token
+      }
+      ...
+      %20 = air.segment @segment_0 async  attributes {id = 2 : i32} {
+        ...
+        %async_token_53, %results_54 = air.execute -> (memref<32x1024xi32, 1>) {
+          %alloc = memref.alloc() : memref<32x1024xi32, 1>
+          air.execute_terminator %alloc : memref<32x1024xi32, 1>
+        }
+        %async_token_55, %results_56 = air.execute -> (memref<32x1024xi32, 1>) {
+          %alloc = memref.alloc() : memref<32x1024xi32, 1>
+          air.execute_terminator %alloc : memref<32x1024xi32, 1>
+        }
+        %async_token_57, %results_58 = air.execute -> (memref<32x1024xi32, 1>) {
+          %alloc = memref.alloc() : memref<32x1024xi32, 1>
+          air.execute_terminator %alloc : memref<32x1024xi32, 1>
+        }
+        %async_token_59, %results_60 = air.execute -> (memref<32x1024xi32, 1>) {
+          %alloc = memref.alloc() : memref<32x1024xi32, 1>
+          air.execute_terminator %alloc : memref<32x1024xi32, 1>
+        }
+        ...
+        %25 = scf.for %arg7 = %c0_22 to %c1024_23 step %c256_24 iter_args(%arg8 = %24) -> (!air.async.token) {
+          %68 = air.channel.get async [%arg8]  @channel_12[%c0_22, %c0_22] (%results_54[%c0_50, %arg7] [%c32_18, %c256_24] [%c1024_51, %c1_52]) {id = 13 : i32} : (memref<32x1024xi32, 1>)
+          %69 = air.channel.get async [%arg8]  @channel_12[%c1_19, %c0_22] (%results_56[%c0_43, %arg7] [%c32_18, %c256_24] [%c1024_44, %c1_45]) {id = 14 : i32} : (memref<32x1024xi32, 1>)
+          %70 = air.channel.get async [%arg8]  @channel_12[%c2_17, %c0_22] (%results_58[%c0_36, %arg7] [%c32_18, %c256_24] [%c1024_37, %c1_38]) {id = 15 : i32} : (memref<32x1024xi32, 1>)
+          %71 = air.channel.get async [%arg8]  @channel_12[%c3_16, %c0_22] (%results_60[%c0_29, %arg7] [%c32_18, %c256_24] [%c1024_30, %c1_31]) {id = 16 : i32} : (memref<32x1024xi32, 1>)
+          %72 = air.wait_all async [%68, %69, %70, %71] 
+          scf.yield %72 : !air.async.token
+        }
+        ...
+        %31 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %30) -> (!air.async.token) {
+          %async_token_177, %results_178 = air.execute [%arg8] -> (index) {
+            %69 = affine.apply affine_map<()[s0] -> (s0 * 8)>()[%arg7]
+            air.execute_terminator %69 : index
+          }
+          %68 = air.channel.put async [%async_token_177]  @channel_0[] (%results_54[%c0_22, %c0_46, %results_178] [%c4_21, %c32_18, %c8] [%c8_47, %c1024_48, %c1_49]) {id = 21 : i32} : (memref<32x1024xi32, 1>)
+          scf.yield %68 : !air.async.token
+        }
+        %32 = air.wait_all async [%async_token_55] 
+        %33 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %32) -> (!air.async.token) {
+          %async_token_177, %results_178 = air.execute [%arg8] -> (index) {
+            %69 = affine.apply affine_map<()[s0] -> (s0 * 8)>()[%arg7]
+            air.execute_terminator %69 : index
+          }
+          %68 = air.channel.put async [%async_token_177]  @channel_1[] (%results_56[%c0_22, %c0_39, %results_178] [%c4_21, %c32_18, %c8] [%c8_40, %c1024_41, %c1_42]) {id = 22 : i32} : (memref<32x1024xi32, 1>)
+          scf.yield %68 : !air.async.token
+        }
+        %34 = air.wait_all async [%async_token_57] 
+        %35 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %34) -> (!air.async.token) {
+          %async_token_177, %results_178 = air.execute [%arg8] -> (index) {
+            %69 = affine.apply affine_map<()[s0] -> (s0 * 8)>()[%arg7]
+            air.execute_terminator %69 : index
+          }
+          %68 = air.channel.put async [%async_token_177]  @channel_2[] (%results_58[%c0_22, %c0_32, %results_178] [%c4_21, %c32_18, %c8] [%c8_33, %c1024_34, %c1_35]) {id = 23 : i32} : (memref<32x1024xi32, 1>)
+          scf.yield %68 : !air.async.token
+        }
+        %36 = air.wait_all async [%async_token_59] 
+        %37 = scf.for %arg7 = %c0_22 to %c128_20 step %c4_21 iter_args(%arg8 = %36) -> (!air.async.token) {
+          %async_token_177, %results_178 = air.execute [%arg8] -> (index) {
+            %69 = affine.apply affine_map<()[s0] -> (s0 * 8)>()[%arg7]
+            air.execute_terminator %69 : index
+          }
+          %68 = air.channel.put async [%async_token_177]  @channel_3[] (%results_60[%c0_22, %c0_25, %results_178] [%c4_21, %c32_18, %c8] [%c8_26, %c1024_27, %c1_28]) {id = 24 : i32} : (memref<32x1024xi32, 1>)
+          scf.yield %68 : !air.async.token
+        }
+        ...
+        air.segment_terminator
+      }
+      air.launch_terminator
+    }
+    ```
+  }];
 }
 
 #endif // AIR_CONVERSION_PASSES

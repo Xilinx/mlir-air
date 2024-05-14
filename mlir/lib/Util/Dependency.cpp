@@ -11,6 +11,8 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include <sys/stat.h>
 
+#include <iostream>
+
 #define DEBUG_TYPE "air-dependency-util"
 
 using namespace mlir;
@@ -77,8 +79,8 @@ void traceDependentInductionVar(air::DmaMemcpyNdOp dmaNd_op,
 
   // Recursively trace dependency to loop induction vars
   for (auto operand : candidate_scalar_operands) {
-    if (operand &&
-        operand.getType().isa<IndexType>()) { // Only tracing scalar operands
+    if (operand && llvm::isa<IndexType>(
+                       operand.getType())) { // Only tracing scalar operands
       if (operand.getDefiningOp() &&
           mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
         auto ancestor_async_op =
@@ -149,8 +151,8 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
 
   // Recursively trace dependency to loop induction vars
   for (auto operand : op->getOperands()) {
-    if (operand &&
-        operand.getType().isa<IndexType>()) { // Only tracing scalar operands
+    if (operand && llvm::isa<IndexType>(
+                       operand.getType())) { // Only tracing scalar operands
       if (operand.getDefiningOp() &&
           mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
         auto ancestor_async_op =
@@ -175,23 +177,17 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
 }
 
 // Recursively check for dependency to any air.herd induction variables.
-void traceDependentHerdId(air::AsyncOpInterface async_op,
+void traceDependentHerdId(Operation *async_op,
                           SmallVector<Value> &loop_dep_history,
                           SmallVector<Operation *> &op_history) {
+  if (!isAsyncOp(async_op))
+    return;
   // Get child op if async_op is air.execute
   Operation *op = nullptr;
-  if (auto air_region_op = dyn_cast<air::ExecuteOp>(async_op.getOperation())) {
-    if (air_region_op.getBody().front().getOperations().size() != 2) {
-      air_region_op->emitOpError("air::ExecuteOp should have only one child "
-                                 "operation beside the terminator");
-      return;
-    }
-    for (auto &child_op : air_region_op.getBody().front().getOperations()) {
-      if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
-        op = &child_op;
-    }
+  if (auto air_execute_op = dyn_cast<air::ExecuteOp>(async_op)) {
+    op = air_execute_op.getChildOp();
   } else {
-    op = async_op.getOperation();
+    op = async_op;
   }
 
   // Check for immediate dependency to loop induction vars
@@ -208,14 +204,16 @@ void traceDependentHerdId(air::AsyncOpInterface async_op,
 
   // Recursively trace dependency to loop induction vars
   for (auto operand : op->getOperands()) {
-    if (operand &&
-        operand.getType().isa<IndexType>()) { // Only tracing scalar operands
+    if (operand && llvm::isa<IndexType>(
+                       operand.getType())) { // Only tracing scalar operands
       if (operand.getDefiningOp() &&
           mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
-        auto ancestor_async_op =
-            dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-        op_history.push_back(ancestor_async_op.getOperation());
-        traceDependentHerdId(ancestor_async_op, loop_dep_history, op_history);
+        op_history.push_back(operand.getDefiningOp());
+        traceDependentHerdId(operand.getDefiningOp(), loop_dep_history,
+                             op_history);
+      } else if (auto scf_for = scf::getForInductionVarOwner(operand)) {
+        op_history.push_back(scf_for);
+        traceDependentHerdId(scf_for, loop_dep_history, op_history);
       }
     }
   }
@@ -238,7 +236,18 @@ traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
                                                SmallVector<Value>{},
                                                SmallVector<Operation *>{}));
   }
-  for (auto elem : loop_dep_history) {
+  for (unsigned i = 0; i < dmaNd_op.getDstOffsets().size(); i++) {
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstOffsets()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstSizes()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstStrides()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+  }
+  for (auto &elem : loop_dep_history) {
     // If parent loop op is an air.launch_herd
     if (auto hl_op = air::getHerdArgOwner(std::get<0>(elem))) {
       for (auto id : hl_op.getIds()) {
@@ -252,15 +261,13 @@ traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
   // Recursively trace dependency to loop induction vars
   for (auto &elem : loop_dep_history) {
     if (std::get<0>(elem) &&
-        std::get<0>(elem)
-            .getType()
-            .isa<IndexType>()) { // Only tracing scalar operands
+        llvm::isa<IndexType>(
+            std::get<0>(elem).getType())) { // Only tracing scalar operands
       if (std::get<0>(elem).getDefiningOp() &&
           mlir::dyn_cast<air::AsyncOpInterface>(
               std::get<0>(elem).getDefiningOp())) {
-        auto ancestor_async_op =
-            dyn_cast<air::AsyncOpInterface>(std::get<0>(elem).getDefiningOp());
-        std::get<2>(elem).push_back(ancestor_async_op.getOperation());
+        auto ancestor_async_op = std::get<0>(elem).getDefiningOp();
+        std::get<2>(elem).push_back(ancestor_async_op);
         traceDependentHerdId(ancestor_async_op, std::get<1>(elem),
                              std::get<2>(elem));
       }
@@ -310,7 +317,7 @@ void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token) {
   if (!token)
     return;
-  if (!token.getType().isa<air::AsyncTokenType>())
+  if (!llvm::isa<air::AsyncTokenType>(token.getType()))
     return;
   auto dependency_list = op.getAsyncDependencies();
   if (!dependency_list.size())
@@ -333,15 +340,11 @@ void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op) {
 void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op) {
   SmallVector<Value> operands_without_wait_all;
   for (auto iter_oper : op.getInitArgs()) {
-    if (auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp())) {
-      clearAsyncDependenciesOfAsyncOpImpl(wa_op);
-    } else {
-      // Push to vec if unique
-      if (std::find(operands_without_wait_all.begin(),
-                    operands_without_wait_all.end(),
-                    iter_oper) == operands_without_wait_all.end()) {
-        operands_without_wait_all.push_back(iter_oper);
-      }
+    // Push to vec if unique
+    if (std::find(operands_without_wait_all.begin(),
+                  operands_without_wait_all.end(),
+                  iter_oper) == operands_without_wait_all.end()) {
+      operands_without_wait_all.push_back(iter_oper);
     }
   }
   for (auto v : operands_without_wait_all) {
@@ -399,7 +402,7 @@ Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op) {
     return nullptr;
   }
   auto token = op.getInitVals()[0];
-  if (!token.getType().isa<air::AsyncTokenType>()) {
+  if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
     op->emitOpError("init_val is not an async token");
     return nullptr;
   }
@@ -413,7 +416,7 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
       return nullptr;
     }
     auto token = op.getInitArgs()[0];
-    if (!token.getType().isa<air::AsyncTokenType>()) {
+    if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
       op->emitOpError("iter operand is not an async token");
       return nullptr;
     }
@@ -424,7 +427,7 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
       return nullptr;
     }
     auto token = op.getRegionIterArgs()[0];
-    if (!token.getType().isa<air::AsyncTokenType>()) {
+    if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
       op->emitOpError("iter operand is not an async token");
       return nullptr;
     }
@@ -433,6 +436,18 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
     op->emitOpError("unknown string in operand_or_argument");
     return nullptr;
   }
+}
+air::WaitAllOp assignEmptyWaitAllAtScfForIterArg(OpBuilder builder,
+                                                 scf::ForOp &op) {
+  auto checkpoint = builder.saveInsertionPoint();
+  builder.setInsertionPoint(op);
+  air::WaitAllOp sink_wait_all_op = builder.create<air::WaitAllOp>(
+      op->getLoc(), air::AsyncTokenType::get(builder.getContext()),
+      SmallVector<Value>{});
+  op->getOpOperand(op.getNumControlOperands())
+      .assign(sink_wait_all_op.getAsyncToken());
+  builder.restoreInsertionPoint(checkpoint);
+  return sink_wait_all_op;
 }
 
 // Create scf.reduce op to reduce all async tokens in an scf.parallel
@@ -461,6 +476,15 @@ SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ForOp op) {
 SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ParallelOp op) {
   return op.getInitVals();
 }
+SmallVector<Value> getAsyncDependenciesFromOpImpl(affine::AffineIfOp op) {
+  SmallVector<Value> depList;
+  for (auto operand : op->getOperands()) {
+    if (!isa<air::AsyncTokenType>(operand.getType()))
+      continue;
+    depList.push_back(operand);
+  }
+  return depList;
+}
 SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
     return getAsyncDependenciesFromOpImpl(async_op);
@@ -468,13 +492,53 @@ SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
     return getAsyncDependenciesFromOpImpl(for_op);
   else if (auto par_op = dyn_cast<scf::ParallelOp>(op))
     return getAsyncDependenciesFromOpImpl(par_op);
+  else if (auto aif_op = dyn_cast<affine::AffineIfOp>(op))
+    return getAsyncDependenciesFromOpImpl(aif_op);
   else
     return SmallVector<Value>();
 }
 
+// Get returned async token from op
+Value getAsyncTokenFromOpImpl(air::AsyncOpInterface op) {
+  return op.getAsyncToken();
+}
+Value getAsyncTokenFromOpImpl(scf::ForOp op) {
+  for (auto res : op->getResults()) {
+    if (isa<air::AsyncTokenType>(res.getType()))
+      return res;
+  }
+  return nullptr;
+}
+Value getAsyncTokenFromOpImpl(scf::ParallelOp op) {
+  for (auto res : op->getResults()) {
+    if (isa<air::AsyncTokenType>(res.getType()))
+      return res;
+  }
+  return nullptr;
+}
+Value getAsyncTokenFromOpImpl(affine::AffineIfOp op) {
+  for (auto res : op->getResults()) {
+    if (isa<air::AsyncTokenType>(res.getType()))
+      return res;
+  }
+  return nullptr;
+}
+Value getAsyncTokenFromOp(Operation *op) {
+  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
+    return getAsyncTokenFromOpImpl(async_op);
+  else if (auto for_op = dyn_cast<scf::ForOp>(op))
+    return getAsyncTokenFromOpImpl(for_op);
+  else if (auto par_op = dyn_cast<scf::ParallelOp>(op))
+    return getAsyncTokenFromOpImpl(par_op);
+  else if (auto aif_op = dyn_cast<affine::AffineIfOp>(op))
+    return getAsyncTokenFromOpImpl(aif_op);
+  else
+    return nullptr;
+}
+
 // Add async dependency to op if unique
 void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
-  if (!token.getType().isa<air::AsyncTokenType>()) {
+  if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
     op->emitOpError("value is not an async token");
     return;
   }
@@ -565,10 +629,32 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
 
 bool isAsyncOp(Operation *op) {
   for (auto result : op->getResults()) {
-    if (result.getType().isa<air::AsyncTokenType>()) {
+    if (llvm::isa<air::AsyncTokenType>(result.getType())) {
       return true;
     }
   }
+  return false;
+}
+
+bool areAsyncDependent(Operation *a, Operation *b) {
+  SmallVector<Value> dep_a = getAsyncDependenciesFromOp(a);
+  Value token_a = getAsyncTokenFromOp(a);
+  SmallVector<Value> dep_b = getAsyncDependenciesFromOp(b);
+  Value token_b = getAsyncTokenFromOp(b);
+  if (!token_a)
+    return false;
+  if (!token_b)
+    return false;
+  if (dep_a.empty())
+    return false;
+  if (dep_b.empty())
+    return false;
+  for (auto dep : dep_a)
+    if (dep == token_b)
+      return true;
+  for (auto dep : dep_b)
+    if (dep == token_a)
+      return true;
   return false;
 }
 
@@ -578,13 +664,12 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops) {
   auto loc = for_op->getLoc();
   // If target ops are already perfectly nested, then skip
-  auto hasNElements = [](Block *block, unsigned N) {
-    auto op_ptr = block->begin();
-    for (unsigned i = 0; i < N; i++)
-      op_ptr = std::next(op_ptr);
-    return op_ptr != block->end() && &*op_ptr == &block->back();
+  auto hasNChannelOps = [](Block *block, unsigned N) {
+    SmallVector<air::ChannelInterface> chanOps;
+    block->walk([&](air::ChannelInterface op) { chanOps.push_back(op); });
+    return chanOps.size() == N;
   };
-  if (hasNElements(for_op.getBody(), target_ops.size() + 1))
+  if (hasNChannelOps(for_op.getBody(), 1))
     return for_op;
 
   // Preprocess target ops by canonicalizing dependencies in target ops' region.
@@ -605,7 +690,12 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   IRMapping remap;
   auto new_for_op = builder.create<scf::ForOp>(
       loc, for_op.getLowerBound(), for_op.getUpperBound(), for_op.getStep(),
-      for_op.getInitArgs());
+      SmallVector<Value>{builder
+                             .create<air::WaitAllOp>(
+                                 loc,
+                                 air::AsyncTokenType::get(builder.getContext()),
+                                 SmallVector<Value>{})
+                             .getAsyncToken()});
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -614,6 +704,14 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   for (auto op : target_ops) {
     if (op->getParentOp() != for_op.getOperation())
       continue;
+    // Clone operands' defining ops.
+    for (auto operand : op->getOperands()) {
+      if (!operand.getDefiningOp())
+        continue;
+      if (operand.getDefiningOp()->getParentOp() != for_op.getOperation())
+        continue;
+      builder.clone(*operand.getDefiningOp(), remap);
+    }
     auto new_op = builder.clone(*op, remap);
     yield_operands.push_back(new_op->getResult(0));
   }
@@ -664,6 +762,93 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   }
 
   return new_for_op;
+}
+
+// Unroll scf.parallel ops.
+LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
+                                                  scf::ParallelOp par,
+                                                  Operation *originalChanOp,
+                                                  IRMapping remap) {
+  SmallVector<int, 2> lbs_spatial, ubs_spatial;
+  air::getSizesFromSpatialLoop(par.getOperation(), lbs_spatial, ubs_spatial);
+  std::vector<unsigned> par_size;
+  unsigned par_vol = 1;
+  for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+    par_size.push_back(ubs_spatial[i] - lbs_spatial[i] + 1);
+    par_vol *= ubs_spatial[i] - lbs_spatial[i] + 1;
+  }
+  for (unsigned iter = 0; iter < par_vol; iter++) {
+    IRMapping localRemap = remap;
+    std::vector<unsigned> position =
+        air::getMDVectorFromIterator(par_size, iter);
+    SmallVector<Value, 4> emptyVec = {};
+    SmallVector<Type, 4> tys = {};
+    if (auto putget = dyn_cast<air::ChannelInterface>(originalChanOp)) {
+      auto air_chan = getChannelDeclarationThroughSymbol(putget);
+      auto air_chan_size =
+          extractFromIntegerArrayAttr<int64_t>(air_chan.getSize());
+      if (position.size() == putget.getIndices().size()) {
+        for (unsigned i = 0; i < putget.getIndices().size(); i++)
+          localRemap.map(putget.getIndices()[i],
+                         builder.create<arith::ConstantIndexOp>(
+                             builder.getUnknownLoc(), position[i]));
+      } else if (position.size() == 1 &&
+                 std::find(air_chan_size.begin(), air_chan_size.end(),
+                           air_chan.getBundleSize()) != air_chan_size.end()) {
+        auto idx = std::find(air_chan_size.begin(), air_chan_size.end(),
+                             air_chan.getBundleSize()) -
+                   air_chan_size.begin();
+        localRemap.map(putget.getIndices()[idx],
+                       builder.create<arith::ConstantIndexOp>(
+                           builder.getUnknownLoc(), position[0]));
+      } else
+        assert(false && "mismatching dimension counts between loop "
+                        "iteration space and air.channel shape");
+    }
+    // Specialize any affine apply mappings to operand
+    for (auto oper : originalChanOp->getOperands()) {
+      if (oper.getDefiningOp()) {
+        mlir::affine::AffineApplyOp position_apply = nullptr;
+        if (auto apply_op =
+                dyn_cast<mlir::affine::AffineApplyOp>(oper.getDefiningOp()))
+          position_apply = apply_op;
+        else if (auto exec = dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
+          auto child_op = &exec.getBody().front().getOperations().front();
+          if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(child_op))
+            position_apply = apply_op;
+        }
+        if (position_apply) {
+          SmallVector<AffineExpr> const_syms;
+          for (unsigned i = 0; i < par.getInductionVars().size(); i++) {
+            for (auto map_o : position_apply.getMapOperands()) {
+              if (par.getInductionVars()[i] == map_o) {
+                const_syms.push_back(
+                    getAffineConstantExpr(position[i], builder.getContext()));
+              }
+            }
+          }
+          AffineExpr newC = position_apply.getAffineMap().getResult(0);
+          newC = newC.replaceSymbols(const_syms);
+          auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
+              newC, 0, position_apply.getMapOperands().size()));
+          if (expr) {
+            int result = expr.getValue();
+            localRemap.map(oper, builder.create<arith::ConstantIndexOp>(
+                                     builder.getUnknownLoc(), result));
+          }
+        }
+      }
+    }
+    // Clone the immediate child op under scf.parallel.
+    Operation *parent = originalChanOp;
+    assert(par->isProperAncestor(originalChanOp));
+    while (parent->getParentOp() != par) {
+      parent = parent->getParentOp();
+    }
+    auto new_memcpy = builder.clone(*parent, localRemap);
+    clearAsyncDependenciesOfAsyncOp(new_memcpy);
+  }
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -1096,7 +1281,7 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(alloc_child_op.getMemref());
-      auto ty = alloc_child_op.getMemref().getType().cast<MemRefType>();
+      auto ty = llvm::cast<MemRefType>(alloc_child_op.getMemref().getType());
       detailed_description += "(" + memorySpaceStr + ", " +
                               std::to_string(getTensorVolume(ty)) + ", " +
                               getElementTypeAsString(ty) + ")";
@@ -1108,7 +1293,7 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(dealloc_child_op.getMemref());
-      auto ty = dealloc_child_op.getMemref().getType().cast<MemRefType>();
+      auto ty = llvm::cast<MemRefType>(dealloc_child_op.getMemref().getType());
       detailed_description += "(" + memorySpaceStr + ", " +
                               std::to_string(getTensorVolume(ty)) + ", " +
                               getElementTypeAsString(ty) + ")";
@@ -1204,14 +1389,14 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
   std::pair<Graph::VertexId, dependencyGraph *> output;
   if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)) {
     if (front_or_back == "front") {
-      auto execute_front_op = &(*op->getRegions().front().op_begin());
+      auto execute_front_op = execute_op.getChildOp();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_front_op);
       output.first = dep_ctx.op_to_v[entry_pair];
       output.second = dep_ctx.op_to_g[entry_pair];
     } else if (front_or_back == "back") {
       auto execute_end_op =
-          op->getRegions().front().getBlocks().front().getTerminator();
+          execute_op.getBody().getBlocks().front().getTerminator();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_end_op);
       output.first = dep_ctx.op_to_v[entry_pair];
@@ -1667,7 +1852,7 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
   func.walk([&](air::ExecuteOp op) {
     // Check the type of op inside the execute. Only remove ops with no side
     // effects
-    auto child_op = &(*op->getRegions().front().op_begin());
+    auto child_op = op.getChildOp();
     if (dyn_cast<memref::AllocOp>(child_op) ||
         dyn_cast<affine::AffineApplyOp>(child_op)) {
       // The second result is the ssa value yielded from child op inside execute
@@ -1807,7 +1992,7 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
 void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
                                               air::AsyncOpInterface op, char rw,
                                               partialMemref *tile) {
-  if (!operand.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(operand.getType()))
     op->emitOpError("operand being traced is not a memref");
   for (auto &u : operand.getUses()) {
     // If used in MemcpyInterface Op
@@ -1815,9 +2000,10 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
       partialMemref memcpy_src, memcpy_dst;
       if (memcpy.getSrcMemref()) {
         unsigned numDimsSrc =
-            memcpy.getSrcMemref().getType().cast<MemRefType>().getRank();
+            llvm::cast<MemRefType>(memcpy.getSrcMemref().getType()).getRank();
         SmallVector<Value, 2> src_indices;
         if (memcpy.getSrcOffsets().size()) {
+          numDimsSrc = memcpy.getSrcOffsets().size();
           for (unsigned i = 0; i < numDimsSrc; i++) {
             src_indices.push_back(memcpy.getSrcOffsets()[i]);
           }
@@ -1831,9 +2017,10 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
       }
       if (memcpy.getDstMemref()) {
         unsigned numDimsDst =
-            memcpy.getDstMemref().getType().cast<MemRefType>().getRank();
+            llvm::cast<MemRefType>(memcpy.getDstMemref().getType()).getRank();
         SmallVector<Value, 2> dst_indices;
         if (memcpy.getDstOffsets().size()) {
+          numDimsDst = memcpy.getDstOffsets().size();
           for (unsigned i = 0; i < numDimsDst; i++) {
             dst_indices.push_back(memcpy.getDstOffsets()[i]);
           }
@@ -1959,22 +2146,24 @@ void dependencyTracer::getPartialMemrefFromOp(
   if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
     for (auto linalg_ins : sink_op_linalgop.getDpsInputOperands()) {
       auto ins_value = linalg_ins->get();
-      if (ins_value.getType().isa<MemRefType>()) {
-        unsigned memRefRank = ins_value.getType().cast<MemRefType>().getRank();
+      if (llvm::isa<MemRefType>(ins_value.getType())) {
+        unsigned memRefRank =
+            llvm::cast<MemRefType>(ins_value.getType()).getRank();
         partialMemref tile = createPartialMemref(ins_value, memRefRank);
         sink_op_memref_reads.push_back(tile);
-      } else if (ins_value.getType().isa<IndexType>()) {
+      } else if (llvm::isa<IndexType>(ins_value.getType())) {
         sink_op_scalar_ins.push_back(ins_value);
       }
     }
     for (auto outs_value : sink_op_linalgop.getDpsInits()) {
-      if (outs_value.getType().isa<MemRefType>()) {
-        unsigned memRefRank = outs_value.getType().cast<MemRefType>().getRank();
+      if (llvm::isa<MemRefType>(outs_value.getType())) {
+        unsigned memRefRank =
+            llvm::cast<MemRefType>(outs_value.getType()).getRank();
         partialMemref tile = createPartialMemref(outs_value, memRefRank);
         sink_op_memref_reads.push_back(
             tile); // linalg op both reads and writes the output memref
         sink_op_memref_writes.push_back(tile);
-      } else if (outs_value.getType().isa<IndexType>()) {
+      } else if (llvm::isa<IndexType>(outs_value.getType())) {
         sink_op_scalar_ins.push_back(outs_value); // linalg op both reads and
                                                   // writes the output memref
         sink_op_scalar_outs.push_back(outs_value);
@@ -1982,12 +2171,12 @@ void dependencyTracer::getPartialMemrefFromOp(
     }
     if (sink_op_linalgop->getNumResults()) {
       for (auto linalg_results : sink_op_linalgop->getResults()) {
-        if (linalg_results.getType().isa<MemRefType>()) {
+        if (llvm::isa<MemRefType>(linalg_results.getType())) {
           unsigned memRefRank =
-              linalg_results.getType().cast<MemRefType>().getRank();
+              llvm::cast<MemRefType>(linalg_results.getType()).getRank();
           partialMemref tile = createPartialMemref(linalg_results, memRefRank);
           sink_op_memref_writes.push_back(tile);
-        } else if (linalg_results.getType().isa<IndexType>()) {
+        } else if (llvm::isa<IndexType>(linalg_results.getType())) {
           sink_op_scalar_outs.push_back(linalg_results);
         }
       }
@@ -1997,7 +2186,8 @@ void dependencyTracer::getPartialMemrefFromOp(
   // If the sink op is memref::dealloc
   else if (auto sink_op_memdealloc = dyn_cast<memref::DeallocOp>(sink_op)) {
     unsigned memRefRank =
-        sink_op_memdealloc.getMemref().getType().cast<MemRefType>().getRank();
+        llvm::cast<MemRefType>(sink_op_memdealloc.getMemref().getType())
+            .getRank();
     partialMemref tile =
         createPartialMemref(sink_op_memdealloc.getMemref(), memRefRank);
     sink_op_memref_reads.push_back(tile);
@@ -2008,12 +2198,14 @@ void dependencyTracer::getPartialMemrefFromOp(
   // If the sink op is memref::copy
   else if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)) {
     unsigned memRefRankSrc =
-        sink_op_memref_copy.getSource().getType().cast<MemRefType>().getRank();
+        llvm::cast<MemRefType>(sink_op_memref_copy.getSource().getType())
+            .getRank();
     partialMemref tileSrc =
         createPartialMemref(sink_op_memref_copy.getSource(), memRefRankSrc);
     sink_op_memref_reads.push_back(tileSrc);
     unsigned memRefRankDst =
-        sink_op_memref_copy.getTarget().getType().cast<MemRefType>().getRank();
+        llvm::cast<MemRefType>(sink_op_memref_copy.getTarget().getType())
+            .getRank();
     partialMemref tileDst =
         createPartialMemref(sink_op_memref_copy.getTarget(), memRefRankDst);
     sink_op_memref_reads.push_back(tileDst);
@@ -2026,7 +2218,8 @@ void dependencyTracer::getPartialMemrefFromOp(
     if (sink_op_memcpy.getSrcMemref()) {
       SmallVector<Value, 2> src_indices;
       unsigned numDimsSrc =
-          sink_op_memcpy.getSrcMemref().getType().cast<MemRefType>().getRank();
+          llvm::cast<MemRefType>(sink_op_memcpy.getSrcMemref().getType())
+              .getRank();
       for (unsigned i = 0; i < sink_op_memcpy.getSrcOffsets().size(); i++)
         sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcOffsets()[i]);
       for (unsigned i = 0; i < sink_op_memcpy.getSrcSizes().size(); i++)
@@ -2034,6 +2227,7 @@ void dependencyTracer::getPartialMemrefFromOp(
       for (unsigned i = 0; i < sink_op_memcpy.getSrcStrides().size(); i++)
         sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcStrides()[i]);
       if (sink_op_memcpy.getSrcOffsets().size()) {
+        numDimsSrc = sink_op_memcpy.getSrcOffsets().size();
         for (unsigned i = 0; i < numDimsSrc; i++) {
           src_indices.push_back(sink_op_memcpy.getSrcOffsets()[i]);
         }
@@ -2049,7 +2243,8 @@ void dependencyTracer::getPartialMemrefFromOp(
     if (sink_op_memcpy.getDstMemref()) {
       SmallVector<Value, 2> dst_indices;
       unsigned numDimsDst =
-          sink_op_memcpy.getDstMemref().getType().cast<MemRefType>().getRank();
+          llvm::cast<MemRefType>(sink_op_memcpy.getDstMemref().getType())
+              .getRank();
       // air.dmamemcpynd op's scalar operands
       for (unsigned i = 0; i < sink_op_memcpy.getDstOffsets().size(); i++)
         sink_op_scalar_outs.push_back(sink_op_memcpy.getDstOffsets()[i]);
@@ -2058,6 +2253,7 @@ void dependencyTracer::getPartialMemrefFromOp(
       for (unsigned i = 0; i < sink_op_memcpy.getDstStrides().size(); i++)
         sink_op_scalar_outs.push_back(sink_op_memcpy.getDstStrides()[i]);
       if (sink_op_memcpy.getDstOffsets().size()) {
+        numDimsDst = sink_op_memcpy.getDstOffsets().size();
         for (unsigned i = 0; i < numDimsDst; i++) {
           dst_indices.push_back(sink_op_memcpy.getDstOffsets()[i]);
         }
@@ -2097,13 +2293,14 @@ void dependencyTracer::getPartialMemrefFromOp(
   // If the sink op is an unknown op
   else {
     for (auto sink_op_op : sink_op->getOperands()) {
-      if (sink_op_op.getType().isa<MemRefType>()) {
-        unsigned memRefRank = sink_op_op.getType().cast<MemRefType>().getRank();
+      if (llvm::isa<MemRefType>(sink_op_op.getType())) {
+        unsigned memRefRank =
+            llvm::cast<MemRefType>(sink_op_op.getType()).getRank();
         partialMemref tile = createPartialMemref(sink_op_op, memRefRank);
         sink_op_memref_reads.push_back(
             tile); // Assuming all operands are both read and written to
         sink_op_memref_writes.push_back(tile);
-      } else if (sink_op_op.getType().isa<IndexType>()) {
+      } else if (llvm::isa<IndexType>(sink_op_op.getType())) {
         sink_op_scalar_ins.push_back(sink_op_op); // Assuming all operands are
                                                   // both read and written to
         sink_op_scalar_outs.push_back(sink_op_op);
@@ -2111,12 +2308,12 @@ void dependencyTracer::getPartialMemrefFromOp(
     }
     if (sink_op->getNumResults()) {
       for (auto sink_op_results : sink_op->getResults()) {
-        if (sink_op_results.getType().isa<MemRefType>()) {
+        if (llvm::isa<MemRefType>(sink_op_results.getType())) {
           unsigned memRefRank =
-              sink_op_results.getType().cast<MemRefType>().getRank();
+              llvm::cast<MemRefType>(sink_op_results.getType()).getRank();
           partialMemref tile = createPartialMemref(sink_op_results, memRefRank);
           sink_op_memref_writes.push_back(tile);
-        } else if (sink_op_results.getType().isa<IndexType>()) {
+        } else if (llvm::isa<IndexType>(sink_op_results.getType())) {
           sink_op_scalar_outs.push_back(sink_op_results);
         }
       }
@@ -2136,7 +2333,7 @@ void dependencyTracer::addDependencyBetweenOps(Operation *source,
       return;
     }
   }
-  for (auto parent = source->getParentOp(); !isa<mlir::ModuleOp>(parent);
+  for (auto parent = source->getParentOp(); !llvm::isa<mlir::ModuleOp>(parent);
        parent = parent->getParentOp()) {
     if (parent->getBlock() == sink->getBlock() &&
         parent->isBeforeInBlock(sink)) {
@@ -2164,7 +2361,7 @@ bool dependencyTracer::areEqualIndexPartialMemrefs(partialMemref *tile_0,
 }
 
 char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
-  if (!operand.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(operand.getType()))
     operand.getDefiningOp()->emitOpError(
         "operand being traced is not a memref");
   bool foundWriteAccess = false;
@@ -2185,6 +2382,27 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
     return 'r';
   else
     return 'w';
+}
+
+void dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
+  OpBuilder builder(forOp);
+  air::WaitAllOp sink_wait_all_op =
+      assignEmptyWaitAllAtScfForIterArg(builder, forOp);
+  SmallVector<air::AsyncOpInterface> asyncChildOps;
+  forOp.walk([&](air::AsyncOpInterface op) { asyncChildOps.push_back(op); });
+  for (auto op : asyncChildOps) {
+    SmallVector<air::partialMemref, 1> sink_op_memref_reads;
+    SmallVector<air::partialMemref, 1> sink_op_memref_writes;
+    SmallVector<Value, 1> sink_op_scalar_ins;
+    SmallVector<Value, 1> sink_op_scalar_outs;
+    getPartialMemrefFromOp(op.getOperation(), sink_op_memref_reads,
+                           sink_op_memref_writes, sink_op_scalar_ins,
+                           sink_op_scalar_outs);
+    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads,
+                                          sink_wait_all_op, "RAW");
+    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes,
+                                          sink_wait_all_op, "WAW/WAR");
+  }
 }
 
 void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
@@ -2306,15 +2524,6 @@ void dependencyTracer::pushTileIndexAsDep(mlir::Value tile_index,
     // If created by async_region
     if (auto defop = tile_index.getDefiningOp<air::ExecuteOp>()) {
       addAsyncDependencyIfNew(op, defop.getResult(0));
-    }
-    // If created by hierarchy (as loop iter)
-    else if (auto hier = dyn_cast<air::HierarchyInterface>(
-                 tile_index.getParentRegion()->getParentOp())) {
-      for (auto id : hier.getIds()) {
-        if (id == tile_index) {
-          addAsyncDependencyIfNew(op, tile_index);
-        }
-      }
     }
   }
 }

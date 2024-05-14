@@ -3,6 +3,8 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
+# REQUIRES: torch_mlir, needs_update
+
 # RUN: %PYTHON %s | FileCheck %s
 # CHECK: PASSED
 

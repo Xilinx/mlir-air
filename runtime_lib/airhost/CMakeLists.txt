@@ -55,28 +55,15 @@ if (hsa-runtime64_FOUND)
   )
 
   set_target_properties(airhost PROPERTIES
-          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/runtime_lib)
-  install(TARGETS airhost DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
+          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost)
+  set_target_properties(airhost PROPERTIES
+          ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost)
+  install(TARGETS airhost DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/airhost)
 
   set_target_properties(airhost_shared PROPERTIES
-          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/runtime_lib)
-  install(TARGETS airhost_shared DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
+          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost)
+  install(TARGETS airhost_shared DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/airhost)
 
-
-  # Stuff into the build area:
-  add_custom_target(copy-runtime-libs ALL)
-  foreach(file ${INSTALLS})
-  add_custom_target(copy-runtime-libs-${file} ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${file})
-  add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${file}
-                      COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/${file}
-                      ${CMAKE_CURRENT_BINARY_DIR}/${file}
-                      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${file})
-                      add_dependencies(copy-runtime-libs copy-runtime-libs-${file} )
-                      endforeach()
-
-  # Install files
-  set(INSTALLS memory.cpp queue.cpp host.cpp pcie-ernic.cpp pcie-ernic-dev-mem-allocator.cpp network.cpp)
-  install(FILES ${INSTALLS} DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
 endif()
 
 add_subdirectory(include)

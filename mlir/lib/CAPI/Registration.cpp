@@ -13,12 +13,9 @@
 #include "mlir/CAPI/IR.h"
 #include "mlir/InitAllPasses.h"
 
-void airRegisterAllDialects(MlirContext context) {
-  mlir::DialectRegistry registry;
-  xilinx::air::registerAllDialects(registry);
-  unwrap(context)->appendDialectRegistry(registry);
-  // TODO: Don't eagerly load once D88162 is in and clients can do this.
-  unwrap(context)->loadAllAvailableDialects();
+void airRegisterAllDialects(MlirDialectRegistry registry) {
+  auto r = unwrap(registry);
+  xilinx::air::registerAllDialects(*r);
 }
 
 void airRegisterAllPasses() { xilinx::air::registerAllPasses(); }

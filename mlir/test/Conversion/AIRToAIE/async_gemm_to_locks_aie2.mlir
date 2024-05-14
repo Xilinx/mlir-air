@@ -5,12 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-fuse-channels -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) {
 // CHECK:   %[[VAL_0:.*]] = aie.tile(2, 0)
 // CHECK:   %[[VAL_1:.*]] = aie.tile(5, 1)
-// CHECK:   %[[VAL_2:.*]] = aie.tile(6, 1)
 // CHECK:   %[[VAL_3:.*]] = aie.tile(5, 3)
 // CHECK:   %[[VAL_4:.*]] = aie.tile(6, 3)
 // CHECK:   %[[VAL_5:.*]] = aie.tile(5, 4)

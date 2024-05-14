@@ -162,8 +162,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     if (!uniform)
       continue;
 
-    auto src_type = memcpyOp.getSrc().getType().cast<MemRefType>();
-    auto dst_type = memcpyOp.getDst().getType().cast<MemRefType>();
+    auto src_type = llvm::cast<MemRefType>(memcpyOp.getSrc().getType());
+    auto dst_type = llvm::cast<MemRefType>(memcpyOp.getDst().getType());
     auto src_space = src_type.getMemorySpaceAsInt();
     auto dst_space = dst_type.getMemorySpaceAsInt();
 
@@ -199,8 +199,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     launch_operands.push_back(alloc.getResult());
     launch->setOperands(launch_operands);
     launch.getBody().front().addArgument(alloc.getType(), loc);
-    auto sizeAttr = launch->getAttr("operand_segment_sizes")
-                        .cast<::mlir::DenseIntElementsAttr>();
+    auto sizeAttr = llvm::cast<::mlir::DenseIntElementsAttr>(
+        launch->getAttr("operand_segment_sizes"));
     const uint32_t *it = &*sizeAttr.value_begin<uint32_t>();
     auto newAttr = DenseIntElementsAttr::get(sizeAttr.getType(),
                                              {it[0], it[1], it[2], it[3] + 1});
@@ -346,128 +346,127 @@ public:
 
 private:
   void specializeDmaBroadcastWithAffineIf(func::FuncOp f) {
-
-    f.walk([&](air::HerdOp launch) {
-      launch.walk([&](air::DmaMemcpyNdOp memcpyOp) {
-        auto herd_id = launch.getIds();
-        OpBuilder builder(memcpyOp);
-        auto loc = memcpyOp->getLoc();
-        auto broadcast_pattern =
-            memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
-        auto ctx = memcpyOp->getContext();
-        if (broadcast_pattern) {
-          auto is = broadcast_pattern.getValue();
-          auto constraints = is.getConstraints();
-          auto eqFlags = is.getEqFlags();
-
-          unsigned numSegments = 0;
-          // Get symbol range (i.e. segment range)
-          SmallVector<AffineExpr, 1> zero_syms{
-              getAffineConstantExpr(0, ctx),
-          };
-          for (auto c : constraints) {
-            if (c.isSymbolicOrConstant()) {
-              auto newC = c.replaceSymbols(zero_syms);
-              auto expr =
-                  dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
-              if (!expr) {
-                continue;
-              }
-              if (expr.getValue() != 0) {
-                numSegments = expr.getValue() + 1;
-              }
-            }
+    f.walk([&](air::DmaMemcpyNdOp memcpyOp) {
+      auto herdOp = memcpyOp->getParentOfType<air::HerdOp>();
+      if (!herdOp)
+        return;
+      auto herd_id = herdOp.getIds();
+      OpBuilder builder(memcpyOp);
+      auto loc = memcpyOp->getLoc();
+      auto broadcast_pattern =
+          memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
+      auto ctx = memcpyOp->getContext();
+      if (!broadcast_pattern)
+        return;
+      auto is = broadcast_pattern.getValue();
+      auto constraints = is.getConstraints();
+      auto eqFlags = is.getEqFlags();
+      unsigned numSegments = 1;
+      // Get symbol range (i.e. segment range)
+      SmallVector<AffineExpr, 1> zero_syms{
+          getAffineConstantExpr(0, ctx),
+      };
+      for (auto c : constraints) {
+        if (c.isSymbolicOrConstant()) {
+          auto newC = c.replaceSymbols(zero_syms);
+          auto expr =
+              dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
+          if (!expr) {
+            continue;
           }
-          // Walk each set in the patitioning scheme
-          // Specialize each affine set
-          for (unsigned i = 0; i < numSegments; i++) {
-            SmallVector<AffineExpr, 2> newConstraints;
-            SmallVector<bool, 2> newEqflags;
-            SmallVector<AffineExpr, 1> i_syms{
-                getAffineConstantExpr(i, ctx),
-            };
-            SmallVector<AffineExpr, 2> syms{
-                getAffineSymbolExpr(0, ctx),
-                getAffineSymbolExpr(1, ctx),
-            };
-            int c_iter = 0;
-            for (auto c : constraints) {
-              if (!c.isSymbolicOrConstant()) {
-                // Substitute segment id i_syms into inequalities
-                auto newC = c.replaceSymbols(i_syms);
-                // Replace all dims with symbols
-                newC = newC.replaceDims(syms);
-                newConstraints.push_back(newC);
-                newEqflags.push_back(eqFlags[c_iter]);
-              }
-              c_iter++;
-            }
-            auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
-            SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
-            // Duplicate dma ops per spatial segment
-            if (i == 0) {
-              affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
-                  loc, air::AsyncTokenType::get(ctx), int_set, int_set_args,
-                  (i != numSegments - 1));
-              builder.setInsertionPointToStart(aif.getThenBlock());
-              auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-              memcpyOp_cloned->removeAttr("broadcast_pattern");
-              memcpyOp_cloned->setAttr("broadcast_set",
-                                       mlir::IntegerSetAttr::get(int_set));
-              SmallVector<Value, 1> yield_token;
-              yield_token.push_back(
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
-                      .getAsyncToken());
-              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                                    yield_token);
-              if (numSegments != 1) {
-                // If more than 1 spatial segments, then move loc to else
-                // block
-                builder.setInsertionPointToStart(aif.getElseBlock());
-              }
-              // Reconnect dependency graph using the outermost affine.if's
-              // token
-              auto async_memcpyOp =
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
-              async_memcpyOp.getAsyncToken().replaceAllUsesWith(
-                  aif.getResult(0));
-            } else if (i < numSegments - 1) {
-              affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
-                  builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
-                  int_set, int_set_args, (i != numSegments - 1));
-              builder.setInsertionPointToStart(aif.getThenBlock());
-              auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-              memcpyOp_cloned->removeAttr("broadcast_pattern");
-              memcpyOp_cloned->setAttr("broadcast_set",
-                                       mlir::IntegerSetAttr::get(int_set));
-              SmallVector<Value, 1> yield_token;
-              yield_token.push_back(
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
-                      .getAsyncToken());
-              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                                    yield_token);
-              builder.setInsertionPointAfter(aif);
-              SmallVector<Value, 1> parent_block_yield_token = {
-                  aif.getResult(0)};
-              builder.create<affine::AffineYieldOp>(builder.getUnknownLoc(),
-                                                    parent_block_yield_token);
-              builder.setInsertionPointToStart(aif.getElseBlock());
-            } else {
-              auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-              memcpyOp_cloned->removeAttr("broadcast_pattern");
-              memcpyOp_cloned->setAttr("broadcast_set",
-                                       mlir::IntegerSetAttr::get(int_set));
-              SmallVector<Value, 1> yield_token;
-              yield_token.push_back(
-                  dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
-                      .getAsyncToken());
-              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                                    yield_token);
-            }
+          if (expr.getValue() != 0) {
+            numSegments = expr.getValue() + 1;
           }
-          memcpyOp.erase();
         }
-      });
+      }
+      // Walk each set in the patitioning scheme
+      // Specialize each affine set
+      for (unsigned i = 0; i < numSegments; i++) {
+        SmallVector<AffineExpr, 2> newConstraints;
+        SmallVector<bool, 2> newEqflags;
+        SmallVector<AffineExpr, 1> i_syms{
+            getAffineConstantExpr(i, ctx),
+        };
+        SmallVector<AffineExpr, 2> syms{
+            getAffineSymbolExpr(0, ctx),
+            getAffineSymbolExpr(1, ctx),
+        };
+        int c_iter = 0;
+        for (auto c : constraints) {
+          if (!c.isSymbolicOrConstant()) {
+            // Substitute segment id i_syms into inequalities
+            auto newC = c.replaceSymbols(i_syms);
+            // Replace all dims with symbols
+            newC = newC.replaceDims(syms);
+            newConstraints.push_back(newC);
+            newEqflags.push_back(eqFlags[c_iter]);
+          }
+          c_iter++;
+        }
+        auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
+        SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
+        // Duplicate dma ops per spatial segment
+        if (i == 0) {
+          affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
+              loc, air::AsyncTokenType::get(ctx), int_set, int_set_args, true);
+          builder.setInsertionPointToStart(aif.getThenBlock());
+          auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+          memcpyOp_cloned->removeAttr("broadcast_pattern");
+          memcpyOp_cloned->setAttr("broadcast_set",
+                                   mlir::IntegerSetAttr::get(int_set));
+          SmallVector<Value, 1> yield_token;
+          yield_token.push_back(
+              dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
+          builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                yield_token);
+          // Reconnect dependency graph using the outermost affine.if's
+          // token
+          auto async_memcpyOp =
+              dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+          async_memcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
+          builder.setInsertionPointToStart(aif.getElseBlock());
+          // If single segment, then create an empty else block.
+          if (numSegments == 1) {
+            auto waitAllOp = builder.create<air::WaitAllOp>(
+                memcpyOp_cloned->getLoc(),
+                air::AsyncTokenType::get(memcpyOp_cloned->getContext()),
+                memcpyOp.getAsyncDependencies());
+            builder.create<affine::AffineYieldOp>(
+                memcpyOp_cloned->getLoc(),
+                SmallVector<Value>{waitAllOp.getAsyncToken()});
+          }
+        } else if (i < numSegments - 1) {
+          affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
+              builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), int_set,
+              int_set_args, (i != numSegments - 1));
+          builder.setInsertionPointToStart(aif.getThenBlock());
+          auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+          memcpyOp_cloned->removeAttr("broadcast_pattern");
+          memcpyOp_cloned->setAttr("broadcast_set",
+                                   mlir::IntegerSetAttr::get(int_set));
+          SmallVector<Value, 1> yield_token;
+          yield_token.push_back(
+              dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
+          builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                yield_token);
+          builder.setInsertionPointAfter(aif);
+          SmallVector<Value, 1> parent_block_yield_token = {aif.getResult(0)};
+          builder.create<affine::AffineYieldOp>(builder.getUnknownLoc(),
+                                                parent_block_yield_token);
+          builder.setInsertionPointToStart(aif.getElseBlock());
+        } else {
+          auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+          memcpyOp_cloned->removeAttr("broadcast_pattern");
+          memcpyOp_cloned->setAttr("broadcast_set",
+                                   mlir::IntegerSetAttr::get(int_set));
+          SmallVector<Value, 1> yield_token;
+          yield_token.push_back(
+              dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
+          builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                yield_token);
+        }
+      }
+      memcpyOp.erase();
     });
   }
 
@@ -475,97 +474,88 @@ private:
 
     f.walk([&](air::DmaMemcpyNdOp memcpyOp) {
       auto ctx = memcpyOp->getContext();
-      if (auto broadcast_set =
-              memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")) {
-        // Get all ops on the dependency connection between dma and herd launch
-        std::vector<Operation *> op_history;
-        auto loop_dep_history = traceDependentHerdId(memcpyOp);
-        // "loop_dep_history" tuple fields: value, ancestors and producers to
-        // those ancestors.
+      if (!memcpyOp->hasAttr("broadcast_set"))
+        return;
+      auto broadcast_set =
+          memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set");
+      // Get all ops on the dependency connection between dma and herd launch
+      std::vector<Operation *> op_history;
+      auto loop_dep_history = traceDependentHerdId(memcpyOp);
+      // "loop_dep_history" tuple fields: value, ancestors and producers to
+      // those ancestors.
 
-        // Walk constraints in broadcast pattern, and get shape of the broadcast
-        // pattern
-        auto is = broadcast_set.getValue();
-        auto constraints = is.getConstraints();
-        auto eqFlags = is.getEqFlags();
+      // Walk constraints in broadcast pattern, and get shape of the broadcast
+      // pattern
+      auto is = broadcast_set.getValue();
+      auto constraints = is.getConstraints();
+      auto eqFlags = is.getEqFlags();
 
-        // Check which dimension op operates on; initialize current_shape_expr
-        SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
-        for (auto &elem : loop_dep_history) {
-          for (auto v : std::get<1>(elem)) {
-            if (auto hl_op = air::getHerdArgOwner(v)) {
-              for (unsigned j = 0; j < current_shape_expr.size(); j++) {
-                if (v == hl_op.getIds()[j]) {
-                  for (unsigned i = 0; i < constraints.size(); i++) {
-                    auto c = constraints[i];
-                    if (c.isFunctionOfSymbol(j) && eqFlags[i]) {
-                      auto eval = evaluateSymbolEqualityInSet(c, ctx);
-                      current_shape_expr[j] = getAffineConstantExpr(eval, ctx);
-                      op_history.insert(op_history.end(),
-                                        std::get<2>(elem).begin(),
-                                        std::get<2>(elem).end());
-                    }
-                  }
-                }
-              }
+      // Check which dimension op operates on; initialize current_shape_expr
+      SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
+      SmallVector<Value, 2> herdDimToDmaOffsetDimMap = {nullptr, nullptr};
+      for (auto &elem : loop_dep_history) {
+        for (auto v : std::get<1>(elem)) {
+          if (!air::getHerdArgOwner(v))
+            continue;
+          auto hl_op = air::getHerdArgOwner(v);
+          for (unsigned j = 0; j < current_shape_expr.size(); j++) {
+            if (v != hl_op.getIds()[j])
+              continue;
+            for (unsigned i = 0; i < constraints.size(); i++) {
+              auto c = constraints[i];
+              if (!c.isFunctionOfSymbol(j))
+                continue;
+              if (!eqFlags[i])
+                continue;
+              auto eval = evaluateSymbolEqualityInSet(c, ctx);
+              current_shape_expr[j] = getAffineConstantExpr(eval, ctx);
+              herdDimToDmaOffsetDimMap[j] = std::get<0>(elem);
+              op_history.insert(op_history.end(), std::get<2>(elem).begin(),
+                                std::get<2>(elem).end());
             }
           }
         }
-
-        // Evaluate broadcast pattern by propagating expr through scalar
-        // operations in op history, last-in-first-out
-        for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin();
-             i != op_history.rend(); ++i) {
-          if (auto air_region_op = dyn_cast<air::ExecuteOp>(*i)) {
-            assert(air_region_op.getBody().front().getOperations().size() ==
-                       2 &&
-                   "air::ExecuteOp should have only one child operation beside "
-                   "the terminator");
-            // Get current scalar op
-            Operation *op = nullptr;
-            for (auto &child_op :
-                 air_region_op.getBody().front().getOperations()) {
-              if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
-                op = &child_op;
-            }
-            // If the async op is affine.apply
-            if (auto apply_op = dyn_cast<affine::AffineApplyOp>(op)) {
-              auto map = apply_op.getAffineMap();
-              for (unsigned j = 0; j < current_shape_expr.size(); j++) {
-                if (current_shape_expr[j]) {
-                  replaceSymbolAndEvaluateConstantInMap(
-                      map, current_shape_expr[j], ctx);
-                  // Remove dependence from scalar op to memcpyOp if present
-                  auto async_memcpyOp =
-                      dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
-                  eraseAsyncDependencyFromAsyncOp(
-                      async_memcpyOp, air_region_op.getAsyncToken());
-                }
-              }
-            }
-
-            // If the async op is arith op
-            else if (auto arith_op = dyn_cast<arith::AddIOp>(op)) {
-              propagateAFfineConstantExprThroughArithOp<arith::AddIOp>(
-                  arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
-            } else if (auto arith_op = dyn_cast<arith::MulIOp>(op)) {
-              propagateAFfineConstantExprThroughArithOp<arith::MulIOp>(
-                  arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
-            }
-          }
-        }
-
-        // Replace memcpyOp's dependent operand with const
-        auto newMemcpyOp =
-            replaceMemcpyOpWithSimplifiedOperands(memcpyOp, current_shape_expr);
-        auto asyncMemcpyOp =
-            dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
-        auto asyncNewMemcpyOp = dyn_cast<air::AsyncOpInterface>(newMemcpyOp);
-        newMemcpyOp->setAttr("broadcast_set", broadcast_set);
-        asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(
-            asyncNewMemcpyOp.getAsyncToken());
-        memcpyOp->erase();
       }
+
+      // Evaluate broadcast pattern by propagating expr through scalar
+      // operations in op history, last-in-first-out
+      for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin();
+           i != op_history.rend(); ++i) {
+        if (auto exec_op = dyn_cast<air::ExecuteOp>(*i)) {
+          Operation *op = exec_op.getChildOp();
+          // If the async op is affine.apply
+          if (auto apply_op = dyn_cast<affine::AffineApplyOp>(op)) {
+            // Can only propagate affine.apply ops with single operand.
+            if (apply_op.getNumOperands() != 1)
+              return;
+            auto map = apply_op.getAffineMap();
+            for (unsigned j = 0; j < current_shape_expr.size(); j++) {
+              if (current_shape_expr[j]) {
+                replaceSymbolAndEvaluateConstantInMap(
+                    map, current_shape_expr[j], ctx);
+                // Remove dependence from scalar op to memcpyOp if present
+                auto async_memcpyOp =
+                    dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+                eraseAsyncDependencyFromAsyncOp(async_memcpyOp,
+                                                exec_op.getAsyncToken());
+              }
+            }
+          }
+
+          // If the async op is arith op
+          else if (auto arith_op = dyn_cast<arith::AddIOp>(op)) {
+            propagateAffineConstantExprThroughArithOp<arith::AddIOp>(
+                arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
+          } else if (auto arith_op = dyn_cast<arith::MulIOp>(op)) {
+            propagateAffineConstantExprThroughArithOp<arith::MulIOp>(
+                arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
+          }
+        }
+      }
+
+      // Mutate memcpy op.
+      (void)replaceMemcpyOpWithSimplifiedOperands(memcpyOp, current_shape_expr,
+                                                  herdDimToDmaOffsetDimMap);
     });
   }
 
@@ -646,7 +636,7 @@ private:
 
   // Propagate AffineConstantExpr through arith addi/muli op
   template <typename T>
-  void propagateAFfineConstantExprThroughArithOp(
+  void propagateAffineConstantExprThroughArithOp(
       T arith_op, SmallVector<AffineExpr, 2> &current_shape_expr,
       Operation *memcpyOp, MLIRContext *ctx) {
     air::ExecuteOp parent_region_op =
@@ -663,54 +653,32 @@ private:
   }
 
   // Replace memcpyOp's dependent operand with const
-  Operation *replaceMemcpyOpWithSimplifiedOperands(
+  LogicalResult replaceMemcpyOpWithSimplifiedOperands(
       air::DmaMemcpyNdOp &memcpyOp,
-      SmallVector<AffineExpr, 2> current_shape_expr) {
+      SmallVector<AffineExpr, 2> current_shape_expr,
+      SmallVector<Value, 2> herdDimToDmaOffsetDimMap) {
     OpBuilder builder(memcpyOp);
-    builder.setInsertionPoint(memcpyOp);
     auto loc = memcpyOp->getLoc();
-    SmallVector<Value, 1> srcMemrefDimsOrOffsets;
-    if (auto memcpyNdOp =
-            dyn_cast<air::DmaMemcpyNdOp>(memcpyOp.getOperation())) {
-      for (unsigned i = 0; i < current_shape_expr.size(); i++) {
-        if (current_shape_expr[i]) {
-          auto val =
-              dyn_cast<AffineConstantExpr>(current_shape_expr[i]).getValue();
-          auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
-          srcMemrefDimsOrOffsets.push_back(cop);
-        } else {
-          // Offset taking into account mismatch between current_shape_expr size
-          // and offset list size.
-          int md_dma_offset =
-              memcpyNdOp.getSrcOffsets().size() - current_shape_expr.size();
-          srcMemrefDimsOrOffsets.push_back(
-              memcpyNdOp.getSrcOffsets()[md_dma_offset + i]);
-        }
-      }
-      // Replace memcpyOp
-      return replaceMemcpyOp(memcpyNdOp, builder, srcMemrefDimsOrOffsets);
-    } else {
-      assert(false && "Unhandled DmaMemcpyNdOp");
-      return nullptr;
+    bool opIsUpdated = false;
+    for (unsigned i = 0; i < current_shape_expr.size(); i++) {
+      if (!current_shape_expr[i])
+        continue;
+      if (!herdDimToDmaOffsetDimMap[i])
+        continue;
+      int opOperandId = -1;
+      for (unsigned j = 0; j < memcpyOp->getNumOperands(); j++)
+        if (memcpyOp->getOperand(j) == herdDimToDmaOffsetDimMap[i])
+          opOperandId = j;
+      if (opOperandId < 0)
+        continue;
+      auto val = dyn_cast<AffineConstantExpr>(current_shape_expr[i]).getValue();
+      auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
+      memcpyOp->getOpOperand(opOperandId).assign(cop);
+      opIsUpdated = true;
     }
-  }
-
-  // Replace DmaMemcpyNdOp with updated src operands
-  Operation *replaceMemcpyOp(air::DmaMemcpyNdOp op, OpBuilder &builder,
-                             SmallVector<Value, 1> srcMemrefDimsOrOffsets) {
-    auto loc = op->getLoc();
-    // Fill higher dims with zeros if offset rank is lower than size rank.
-    while (srcMemrefDimsOrOffsets.size() < op.getSrcSizes().size()) {
-      srcMemrefDimsOrOffsets.insert(
-          srcMemrefDimsOrOffsets.begin(),
-          builder.create<arith::ConstantIndexOp>(loc, 0));
-    }
-    air::DmaMemcpyNdOp newMemcpyOp = builder.create<air::DmaMemcpyNdOp>(
-        loc, air::AsyncTokenType::get(op->getContext()),
-        op.getAsyncDependencies(), op.getDstMemref(), op.getDstOffsets(),
-        op.getDstSizes(), op.getDstStrides(), op.getSrcMemref(),
-        srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides());
-    return newMemcpyOp.getOperation();
+    if (opIsUpdated)
+      return success();
+    return failure();
   }
 };
 
@@ -954,6 +922,8 @@ class AIRCollapseHerdPass
 public:
   AIRCollapseHerdPass() = default;
   AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
+  AIRCollapseHerdPass(const ::xilinx::air::AIRCollapseHerdPassOptions &options)
+      : AIRCollapseHerdPassBase(options) {}
 
   void runOnOperation() override;
 
@@ -963,8 +933,12 @@ private:
 void AIRCollapseHerdPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();
+  int maximumColumnSize = clMaxColSize;
+  if (clMaxColSize == -1)
+    maximumColumnSize = INT_MAX; // max-col-size disabled.
   func.walk([&](air::HerdOp op) {
-    if (op.getNumCols() != 1 && op.getNumDims() == 2)
+    if (op.getNumCols() != 1 && op.getNumDims() == 2 &&
+        op.getNumRows() * op.getNumCols() <= (unsigned)maximumColumnSize)
       herds.push_back(op);
   });
 
@@ -1009,8 +983,8 @@ void AIRCollapseHerdPass::runOnOperation() {
     // Determine the current induction value's current loop iteration
     Value iv_1 =
         insideBuilder.create<arith::RemSIOp>(loc, h.getIds()[1], old_upper_b_v);
-    h.getIds()[1].cast<Value>().replaceAllUsesExcept(iv_1,
-                                                     iv_1.getDefiningOp());
+    llvm::cast<Value>(h.getIds()[1])
+        .replaceAllUsesExcept(iv_1, iv_1.getDefiningOp());
 
     // Remove the effect of the current induction value to prepare for
     // the next value.
@@ -1070,6 +1044,594 @@ void AIRUnrollOuterPerfectlyNestedLoopsPass::runOnOperation() {
   }
 }
 
+class AIRSplitL2MemrefForBufferConstraintPass
+    : public air::impl::AIRSplitL2MemrefForBufferConstraintPassBase<
+          AIRSplitL2MemrefForBufferConstraintPass> {
+
+public:
+  AIRSplitL2MemrefForBufferConstraintPass() = default;
+  AIRSplitL2MemrefForBufferConstraintPass(
+      const AIRSplitL2MemrefForBufferConstraintPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+  void partitionMemref(SmallVector<air::ChannelPutOp> &puts,
+                       SmallVector<air::ChannelGetOp> &gets, int dim,
+                       std::string splitType);
+  SmallVector<memref::AllocOp>
+  getTargetMemrefAllocs(func::FuncOp func,
+                        std::map<memref::AllocOp, SmallVector<int>>
+                            &targetMemrefsToColTilingFactors);
+  std::optional<int>
+  getMemrefSplitDim(SmallVector<air::ChannelInterface> putgets,
+                    SmallVector<int> memrefShape);
+};
+
+template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
+  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
+    vec.push_back(entry);
+  }
+}
+
+// Find GCD of a vector of ints.
+int findGCD(SmallVector<int> vec) {
+  int result = vec[0];
+  for (unsigned i = 1; i < vec.size(); i++) {
+    result = std::gcd(vec[i], result);
+
+    if (result == 1) {
+      return 1;
+    }
+  }
+  return result;
+}
+
+// Check if an air.channel is single-consumer-single-producer.
+bool hasSinglePutAndGet(air::ChannelOp chan) {
+  auto puts =
+      getChannelPutOpThroughSymbol(chan, chan->getParentOfType<ModuleOp>());
+  auto gets =
+      getChannelGetOpThroughSymbol(chan, chan->getParentOfType<ModuleOp>());
+  return puts.size() == 1 && gets.size() == 1;
+}
+
+// Tile air.channel put/get wrt a memref.
+Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
+                            int originalMemrefSize, int dim,
+                            air::ChannelOp newChanOp, Location loc,
+                            MLIRContext *ctx) {
+  OpBuilder builder(originalChanOp);
+  SmallVector<Value> originalApplyOperands;
+  Operation *affineApplyOp = nullptr;
+  if (!originalChanOp.getOffsets().empty()) {
+    auto offsetDefOp = originalChanOp.getOffsets()[dim].getDefiningOp();
+    if ((offsetDefOp && isa<affine::AffineApplyOp>(offsetDefOp)) ||
+        isa<air::ExecuteOp>(offsetDefOp))
+      affineApplyOp = offsetDefOp;
+  }
+  if (affineApplyOp && isa<affine::AffineApplyOp>(affineApplyOp))
+    originalApplyOperands = affineApplyOp->getOperands();
+  else if (affineApplyOp && isa<air::ExecuteOp>(affineApplyOp)) {
+    auto execOp = dyn_cast<air::ExecuteOp>(affineApplyOp);
+    originalApplyOperands = execOp.getChildOp()->getOperands();
+  } else
+    originalApplyOperands.push_back(
+        builder.create<arith::ConstantIndexOp>(loc, 0));
+  SmallVector<Value> tokens;
+  for (int i = 0; i < factor; i++) {
+    SmallVector<Value> newIndices{
+        builder.create<arith::ConstantIndexOp>(loc, i),
+        builder.create<arith::ConstantIndexOp>(loc, 0)};
+    // Update y offset.
+    // Create affine.apply on induction variable.
+    auto checkpoint = builder.saveInsertionPoint();
+    if (affineApplyOp)
+      builder.setInsertionPoint(affineApplyOp);
+    AffineExpr s0 = builder.getAffineSymbolExpr(0);
+    AffineExpr mul = s0 * originalMemrefSize;
+    AffineExpr add = mul + i * mlir::ceilDiv(originalMemrefSize, factor);
+    auto map = AffineMap::get(0, 1, add);
+    auto newApplyOp =
+        builder.create<affine::AffineApplyOp>(loc, map, originalApplyOperands);
+    if (affineApplyOp)
+      builder.restoreInsertionPoint(checkpoint);
+    SmallVector<Value> newOffsets = originalChanOp.getOffsets();
+    SmallVector<Value> newWraps = originalChanOp.getSizes();
+    SmallVector<Value> newStrides = originalChanOp.getStrides();
+    if (newOffsets.empty() && newWraps.empty())
+      air::populateDefaultWrapsAndStrides(builder, originalChanOp.getMemref(),
+                                          newOffsets, newWraps, newStrides);
+    newOffsets[dim] = newApplyOp.getResult();
+    newWraps[dim] = builder.create<arith::ConstantIndexOp>(
+        loc, mlir::ceilDiv(originalMemrefSize, factor));
+    auto deps = dyn_cast<air::AsyncOpInterface>(originalChanOp.getOperation())
+                    .getAsyncDependencies();
+    SmallVector<Type, 4> tys = {air::AsyncTokenType::get(ctx)};
+    if (isa<air::ChannelGetOp>(originalChanOp)) {
+      auto newGetOp = builder.create<air::ChannelGetOp>(
+          loc, tys, deps, newChanOp.getSymName(), newIndices,
+          originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
+      newGetOp->setAttr("id",
+                        mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                               originalChanOp.getId()));
+      tokens.push_back(newGetOp.getAsyncToken());
+    } else {
+      auto newPutOp = builder.create<air::ChannelPutOp>(
+          loc, tys, deps, newChanOp.getSymName(), newIndices,
+          originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
+      newPutOp->setAttr("id",
+                        mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                               originalChanOp.getId()));
+      tokens.push_back(newPutOp.getAsyncToken());
+    }
+  }
+  auto newWaitAll = builder.create<air::WaitAllOp>(
+      loc, air::AsyncTokenType::get(ctx), tokens);
+  return newWaitAll.getAsyncToken();
+}
+
+// Partition L2 memref.
+void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
+    SmallVector<air::ChannelPutOp> &puts, SmallVector<air::ChannelGetOp> &gets,
+    int dim, std::string splitType = "") {
+  auto memref = puts.front().getMemref();
+  MemRefType ty = llvm::cast<MemRefType>(memref.getType());
+  auto allocOp = memref.getDefiningOp();
+  auto loc = allocOp->getLoc();
+  Operation *deallocOp = nullptr;
+  for (auto user : memref.getUsers()) {
+    if (auto execOp = dyn_cast<air::ExecuteOp>(user->getParentOp())) {
+      if (isa<memref::DeallocOp>(execOp.getChildOp())) {
+        deallocOp = execOp;
+        break;
+      }
+    } else if (isa<memref::DeallocOp>(user)) {
+      deallocOp = user;
+      break;
+    }
+  }
+
+  std::map<int, SmallVector<air::ChannelInterface>> chanOpPartitions;
+  SmallVector<int> keys;
+  for (auto op : puts) {
+    auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
+                                                    air::getTensorShape(ty));
+    if (!offsetDim)
+      continue;
+    auto offset = getConstantIntValue(op.getOffsets()[*offsetDim]);
+    if (!offset)
+      continue;
+    push_back_if_unique<int>(keys, *offset);
+    if (!chanOpPartitions.count(*offset))
+      chanOpPartitions[*offset] = SmallVector<air::ChannelInterface>{op};
+    else
+      chanOpPartitions[*offset].push_back(op);
+  }
+  for (auto op : gets) {
+    auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
+                                                    air::getTensorShape(ty));
+    if (!offsetDim)
+      continue;
+    auto offset = getConstantIntValue(op.getOffsets()[*offsetDim]);
+    if (!offset)
+      continue;
+    push_back_if_unique<int>(keys, *offset);
+    if (!chanOpPartitions.count(*offset))
+      chanOpPartitions[*offset] = SmallVector<air::ChannelInterface>{op};
+    else
+      chanOpPartitions[*offset].push_back(op);
+  }
+  OpBuilder builder(allocOp);
+  SmallVector<scf::ForOp> mutatedScfForOps;
+  for (auto key : keys) {
+    SmallVector<int64_t> newMemrefShape;
+    for (unsigned i = 0; i < air::getTensorShape(ty).size(); i++) {
+      newMemrefShape.push_back(air::getTensorShape(ty)[i]);
+    }
+    for (auto op : chanOpPartitions[key]) {
+      auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
+                                                      air::getTensorShape(ty));
+      if (!offsetDim)
+        continue;
+      if (op.getSizes().size() == newMemrefShape.size()) {
+        newMemrefShape[dim] = *getConstantIntValue(op.getSizes()[*offsetDim]);
+        break;
+      }
+    }
+
+    auto newMemrefType = MemRefType::get(newMemrefShape, ty.getElementType(),
+                                         ty.getLayout().getAffineMap(),
+                                         ty.getMemorySpaceAsInt());
+    Value newMemref = nullptr;
+    // Create new alloc ops.
+    if (isa<air::ExecuteOp>(allocOp)) {
+      auto execOp = builder.create<air::ExecuteOp>(
+          loc, air::AsyncTokenType::get(allocOp->getContext()), newMemrefType,
+          SmallVector<Value>{});
+      Block *async_bb = builder.createBlock(&execOp.getBody());
+      builder.setInsertionPointToStart(async_bb);
+      auto childMemAlloc = builder.create<memref::AllocOp>(loc, newMemrefType);
+      builder.create<xilinx::air::ExecuteTerminatorOp>(
+          loc, childMemAlloc->getResults());
+      newMemref = execOp->getResult(1);
+      builder.setInsertionPoint(execOp);
+    } else
+      newMemref = builder.create<memref::AllocOp>(loc, newMemrefType);
+    // Create new dealloc ops.
+    if (deallocOp) {
+      builder.setInsertionPoint(deallocOp);
+      if (auto execDeallocOp = dyn_cast<air::ExecuteOp>(deallocOp)) {
+        auto execOp = builder.create<air::ExecuteOp>(
+            loc, air::AsyncTokenType::get(deallocOp->getContext()),
+            execDeallocOp.getAsyncDependencies());
+        Block *async_bb = builder.createBlock(&execOp.getBody());
+        builder.setInsertionPointToStart(async_bb);
+        builder.create<memref::DeallocOp>(loc, newMemref);
+        builder.create<xilinx::air::ExecuteTerminatorOp>(loc);
+      } else
+        builder.create<memref::DeallocOp>(loc, newMemref);
+      builder.setInsertionPoint(newMemref.getDefiningOp());
+    }
+    // Mutate air.channel.put/get opoperands.
+    for (auto op : chanOpPartitions[key]) {
+      int memrefOperandOffset =
+          dyn_cast<air::AsyncOpInterface>(op.getOperation())
+              .getAsyncDependencies()
+              .size() +
+          op.getIndices().size();
+      auto &memrefOpOper = op->getOpOperand(memrefOperandOffset);
+      memrefOpOper.assign(newMemref);
+      auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
+                                                      air::getTensorShape(ty));
+      if (!offsetDim)
+        continue;
+      int offsetOperandOffset = memrefOperandOffset + *offsetDim + 1;
+      auto &offsetOpOper = op->getOpOperand(offsetOperandOffset);
+      offsetOpOper.assign(builder.create<arith::ConstantIndexOp>(loc, 0));
+      // Update strides (contiguous, row-major) after memref tiling.
+      SmallVector<int> newStrides;
+      // One dimensional default stride value.
+      if (op.getSizes().size() == 1)
+        newStrides.push_back(1);
+      else
+        newStrides = air::getUpdatedStridesAfterShrinkage(
+            air::getTensorShape(memref.getType()), newMemrefShape,
+            op.getStrides());
+      int firstStrideOperandOffset =
+          memrefOperandOffset + op.getOffsets().size() * 2 + 1;
+      for (unsigned i = 0; i < op.getStrides().size(); i++) {
+        auto &strideOpOper = op->getOpOperand(firstStrideOperandOffset + i);
+        strideOpOper.assign(
+            builder.create<arith::ConstantIndexOp>(loc, newStrides[i]));
+      }
+
+      // Reconnect async dependency of parent scf.for op, if any.
+      if (!isAsyncOp(op))
+        continue;
+      if (!isa<scf::ForOp>(op->getParentOp()))
+        continue;
+      auto parentForOp = dyn_cast<scf::ForOp>(op->getParentOp());
+      push_back_if_unique<scf::ForOp>(mutatedScfForOps, parentForOp);
+    }
+  }
+  // Reconnect async dependency of parent scf.for op, if any.
+  air::dependencyTracer depTracer;
+  for (auto mutatedScfForOp : mutatedScfForOps) {
+    depTracer.traceDependencyFromScfForOp(mutatedScfForOp);
+  }
+  if (deallocOp)
+    deallocOp->erase();
+}
+
+// Infer the dimension to which the join / distribute pattern happens, as basis
+// for memref splitting.
+std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
+    SmallVector<air::ChannelInterface> putgets, SmallVector<int> memrefShape) {
+  std::optional<int> memrefDim = std::nullopt;
+  for (unsigned i = 0; i < putgets.size() - 1; i++) {
+    for (unsigned j = i + 1; j < putgets.size(); j++) {
+      if (putgets[i].getOffsets().size() != putgets[j].getOffsets().size())
+        continue;
+      for (unsigned k = 0; k < putgets[i].getOffsets().size(); k++) {
+        if (getConstantIntValue(putgets[i].getOffsets()[k]) &&
+            getConstantIntValue(putgets[j].getOffsets()[k])) {
+          if (*getConstantIntValue(putgets[i].getOffsets()[k]) !=
+              *getConstantIntValue(putgets[j].getOffsets()[k]))
+            memrefDim = k;
+        }
+      }
+    }
+  }
+  // Match offset dims with memref dims.
+  if (!memrefDim)
+    return std::nullopt;
+  return air::getMemrefDimFromOffsetDim(*memrefDim, putgets[0].getOffsets(),
+                                        putgets[0].getStrides(), memrefShape);
+}
+
+SmallVector<memref::AllocOp>
+AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
+    func::FuncOp func, std::map<memref::AllocOp, SmallVector<int>>
+                           &targetMemrefsToColTilingFactors) {
+  auto ctx = func.getContext();
+  SmallVector<memref::AllocOp> allocOps;
+  func.walk([&](memref::AllocOp allocOp) {
+    if (allocOp->getParentOfType<air::SegmentOp>() &&
+        llvm::cast<MemRefType>(allocOp.getMemref().getType())
+                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+      allocOps.push_back(allocOp);
+    }
+  });
+
+  // Filter out L2 memrefs who shall not fit in memtile due to hw buffer
+  // constraints.
+  SmallVector<memref::AllocOp> targetMemrefs;
+  // Map between the target memref alloc ops and all column-wise tiling factors
+  // per alloc.
+  for (auto allocOp : allocOps) {
+    Value memref = allocOp.getMemref();
+    if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
+      memref = exec->getResult(1);
+    SmallVector<air::ChannelOp> MM2SChannels;
+    SmallVector<air::ChannelOp> S2MMChannels;
+    for (auto user : memref.getUsers()) {
+      if (isa<air::ChannelInterface>(user) &&
+          user->getParentOfType<scf::ParallelOp>()) {
+        auto parentParOp = user->getParentOfType<scf::ParallelOp>();
+        auto chanOp = dyn_cast<air::ChannelInterface>(user);
+        SmallVector<int, 2> lbs_spatial;
+        SmallVector<int, 2> ubs_spatial;
+        air::getSizesFromSpatialLoop(parentParOp, lbs_spatial, ubs_spatial);
+
+        if (!targetMemrefsToColTilingFactors.count(allocOp)) {
+          targetMemrefsToColTilingFactors[allocOp] = SmallVector<int>{};
+          targetMemrefs.push_back(allocOp);
+          allocOp->setAttr("split", BoolAttr::get(ctx, true));
+          allocOp->setAttr("split_type", StringAttr::get(ctx, "scf.parallel"));
+          if (lbs_spatial.size() == 1) {
+            // If scf.parallel has less dims than the memref, i.e. partial
+            // unrolling, then label the dim.
+            int unrollDim = 0;
+            for (auto index : chanOp.getIndices()) {
+              if (auto indexOwner =
+                      scf::getParallelForInductionVarOwner(index)) {
+                if (indexOwner == parentParOp) {
+                  allocOp->setAttr(
+                      "split_dim",
+                      IntegerAttr::get(IntegerType::get(ctx, 32), unrollDim));
+                  break;
+                }
+              }
+              unrollDim++;
+            }
+          }
+        }
+        // Tiling along the first (x) dimension of scf.parallel only, as one NPU
+        // memtile is located at the bottom of each column.
+        targetMemrefsToColTilingFactors[allocOp].push_back(ubs_spatial[0] -
+                                                           lbs_spatial[0] + 1);
+      } else if (auto put = dyn_cast<air::ChannelPutOp>(user)) {
+        push_back_if_unique<air::ChannelOp>(
+            MM2SChannels, air::getChannelDeclarationThroughSymbol(put));
+      } else if (auto get = dyn_cast<air::ChannelGetOp>(user)) {
+        push_back_if_unique<air::ChannelOp>(
+            S2MMChannels, air::getChannelDeclarationThroughSymbol(get));
+      }
+    }
+    if (MM2SChannels.size() <= 1 && S2MMChannels.size() <= 1)
+      continue;
+    if (!targetMemrefsToColTilingFactors.count(allocOp)) {
+      targetMemrefsToColTilingFactors[allocOp] = SmallVector<int>{};
+      targetMemrefs.push_back(allocOp);
+      allocOp->setAttr("split", BoolAttr::get(func.getContext(), true));
+    }
+    if (MM2SChannels.size() > 1) {
+      targetMemrefsToColTilingFactors[allocOp].push_back(MM2SChannels.size());
+      allocOp->setAttr("split_type", StringAttr::get(ctx, "MM2SChannels"));
+      SmallVector<air::ChannelInterface> putgets;
+      for (auto chanOp : MM2SChannels)
+        for (auto put : air::getChannelPutOpThroughSymbol(chanOp))
+          putgets.push_back(put);
+      auto split_dim =
+          getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
+      if (split_dim)
+        allocOp->setAttr(
+            "split_dim",
+            IntegerAttr::get(IntegerType::get(ctx, 32), *split_dim));
+    }
+    if (S2MMChannels.size() > 1) {
+      targetMemrefsToColTilingFactors[allocOp].push_back(S2MMChannels.size());
+      allocOp->setAttr("split_type", StringAttr::get(ctx, "S2MMChannels"));
+      SmallVector<air::ChannelInterface> putgets;
+      for (auto chanOp : MM2SChannels)
+        for (auto get : air::getChannelGetOpThroughSymbol(chanOp))
+          putgets.push_back(get);
+      auto split_dim =
+          getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
+      if (split_dim)
+        allocOp->setAttr(
+            "split_dim",
+            IntegerAttr::get(IntegerType::get(ctx, 32), *split_dim));
+    }
+  }
+  return targetMemrefs;
+}
+
+// Check if each L2 memref shall violate buffer hardware constraint, and if so,
+// attempt to split it (in columns, per NPU device layout).
+void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
+  SmallVector<air::HerdOp> herds;
+  auto func = getOperation();
+  auto ctx = &getContext();
+  SmallVector<memref::AllocOp> allocOps;
+  func.walk([&](memref::AllocOp allocOp) {
+    if (allocOp->getParentOfType<air::SegmentOp>() &&
+        llvm::cast<MemRefType>(allocOp.getMemref().getType())
+                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+      allocOps.push_back(allocOp);
+    }
+  });
+
+  // Map between the target memref alloc ops and all column-wise tiling factors
+  // per alloc.
+  std::map<memref::AllocOp, SmallVector<int>> targetMemrefsToColTilingFactors;
+
+  SmallVector<memref::AllocOp> targetMemrefs =
+      getTargetMemrefAllocs(func, targetMemrefsToColTilingFactors);
+  if (targetMemrefs.empty())
+    return;
+
+  // Tile memrefs.
+  SmallVector<Operation *> erased;
+  for (auto allocOp : targetMemrefs) {
+    int targetColTilingFactor =
+        findGCD(targetMemrefsToColTilingFactors[allocOp]);
+    allocOp->setAttr("split",
+                     mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                            targetColTilingFactor));
+    auto splitTypeAttr = allocOp->getAttrOfType<StringAttr>("split_type");
+    Value memref = isa<air::ExecuteOp>(allocOp->getParentOp())
+                       ? allocOp->getParentOp()->getResult(1)
+                       : dyn_cast<Value>(allocOp.getMemref());
+    for (auto user : memref.getUsers()) {
+      if (!isa<air::ChannelInterface>(user))
+        continue;
+      auto chanUserOp = dyn_cast<air::ChannelInterface>(user);
+      auto chanUserChannelDeclr =
+          air::getChannelDeclarationThroughSymbol(chanUserOp);
+      if (!hasSinglePutAndGet(chanUserChannelDeclr)) {
+        assert(false && "NYI");
+      } else if (auto par = user->getParentOfType<scf::ParallelOp>()) {
+        // Case 1: Parallel access to the memref represented with scf.parallel
+        // op. Data access specialization method: unroll the scf.parallel
+        // loop.
+        SmallVector<int, 2> lbs_spatial, ubs_spatial;
+        air::getSizesFromSpatialLoop(par, lbs_spatial, ubs_spatial);
+        OpBuilder builder(par);
+        IRMapping remap;
+        (void)air::unrollAIRChannelPutGetInScfParallel(builder, par, user,
+                                                       remap);
+        erased.push_back(par);
+      } else if ((isa<air::ChannelPutOp>(user) &&
+                  splitTypeAttr.str() == "MM2SChannels") ||
+                 (isa<air::ChannelGetOp>(user) &&
+                  splitTypeAttr.str() == "S2MMChannels")) {
+        // Case 2: Parallel access to the memref represented with multiple
+        // air.channel put/gets. Data access specialization method:
+        // specializing memref wrt each unique air.channel access. To be
+        // handled below.
+      } else {
+        // Case 3: A single put/get op with default data access pattern
+        // (contiguous, row major) spanning the entire memref. Data access
+        // specialization method: tiling the air.channel op by
+        // targetColTilingFactor.
+        auto loc = chanUserOp->getLoc();
+        auto ctx = chanUserOp->getContext();
+        OpBuilder builder(chanUserOp);
+        builder.setInsertionPointToStart(
+            chanUserOp->getParentOfType<ModuleOp>().getBody());
+        SmallVector<Type, 4> tys = {
+            air::AsyncTokenType::get(chanUserOp->getContext())};
+        auto cname =
+            air::createChannelName(chanUserOp->getParentOfType<ModuleOp>());
+        SmallVector<int64_t, 2> channel_sizes = {targetColTilingFactor, 1};
+        auto new_chan = builder.create<air::ChannelOp>(
+            loc, cname, builder.getI64ArrayAttr(channel_sizes));
+        auto memrefShape = air::getTensorShape(memref.getType());
+
+        int dim = 0;
+        if (allocOp->hasAttr("split_dim"))
+          dim = allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt();
+        for (unsigned i = 0; i < memrefShape.size(); i++) {
+          if (chanUserOp.getOffsets().empty())
+            break;
+          int offsetDim =
+              chanUserOp.getOffsets().size() - memrefShape.size() + i;
+          if (getConstantIntValue(chanUserOp.getOffsets()[offsetDim])) {
+            dim = i;
+            break;
+          }
+        }
+        auto newWaitAll =
+            tileChannelOpByFactor(chanUserOp, targetColTilingFactor,
+                                  memrefShape[dim], dim, new_chan, loc, ctx);
+
+        // Update async dependency.
+        auto old_token =
+            dyn_cast<air::AsyncOpInterface>(chanUserOp.getOperation())
+                .getAsyncToken();
+        old_token.replaceAllUsesWith(newWaitAll);
+
+        // Update the other channel op of the chanUserChannelDeclr.
+        auto theOtherChanOp =
+            air::getTheOtherChannelOpThroughSymbol(chanUserOp);
+        Value newWaitAll1 =
+            tileChannelOpByFactor(theOtherChanOp[0], targetColTilingFactor,
+                                  memrefShape[dim], dim, new_chan, loc, ctx);
+
+        // Update dependency.
+        auto oldToken =
+            dyn_cast<air::AsyncOpInterface>(theOtherChanOp[0].getOperation())
+                .getAsyncToken();
+        oldToken.replaceAllUsesWith(newWaitAll1);
+        erased.push_back(theOtherChanOp[0]);
+        erased.push_back(chanUserOp);
+      }
+    }
+  }
+
+  for (auto e : erased)
+    e->erase();
+
+  auto context = &getContext();
+  RewritePatternSet canoPatterns(context);
+  // Fold constants.
+  mlir::arith::ConstantIndexOp::getCanonicalizationPatterns(canoPatterns,
+                                                            context);
+  (void)applyPatternsAndFoldGreedily(func, std::move(canoPatterns));
+
+  // Split memrefs.
+  allocOps.clear();
+  func.walk([&](memref::AllocOp allocOp) {
+    if (allocOp->hasAttr("split")) {
+      allocOps.push_back(allocOp);
+    }
+  });
+  for (auto allocOp : allocOps) {
+    Value memref = isa<air::ExecuteOp>(allocOp->getParentOp())
+                       ? allocOp->getParentOp()->getResult(1)
+                       : dyn_cast<Value>(allocOp.getMemref());
+    SmallVector<air::ChannelPutOp> puts;
+    SmallVector<air::ChannelGetOp> gets;
+    for (auto user : memref.getUsers()) {
+      if (auto put = dyn_cast<air::ChannelPutOp>(user))
+        puts.push_back(put);
+      else if (auto get = dyn_cast<air::ChannelGetOp>(user))
+        gets.push_back(get);
+    }
+    int dim = 0;
+    if (allocOp->hasAttr("split_dim"))
+      dim = allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt();
+
+    partitionMemref(puts, gets, dim,
+                    allocOp->getAttrOfType<StringAttr>("split_type").str());
+  }
+  for (auto allocOp : allocOps) {
+    if (auto execOp = dyn_cast<air::ExecuteOp>(allocOp->getParentOp())) {
+      OpBuilder builder(execOp);
+      auto waitAllOp = builder.create<air::WaitAllOp>(
+          allocOp->getLoc(), air::AsyncTokenType::get(allocOp->getContext()),
+          execOp.getAsyncDependencies());
+      execOp.getAsyncToken().replaceAllUsesWith(waitAllOp.getAsyncToken());
+      execOp->erase();
+    } else
+      allocOp->erase();
+  }
+
+  air::renumberChannelOps(&func.getBody().front());
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -1119,6 +1681,11 @@ std::unique_ptr<Pass> createAIRCollapseHerdPass() {
   return std::make_unique<AIRCollapseHerdPass>();
 }
 
+std::unique_ptr<Pass>
+createAIRCollapseHerdPass(AIRCollapseHerdPassOptions options) {
+  return std::make_unique<AIRCollapseHerdPass>(options);
+}
+
 std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass() {
   return std::make_unique<AIRUnrollOuterPerfectlyNestedLoopsPass>();
 }
@@ -1126,6 +1693,10 @@ std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass() {
 std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass(
     AIRUnrollOuterPerfectlyNestedLoopsPassOptions options) {
   return std::make_unique<AIRUnrollOuterPerfectlyNestedLoopsPass>(options);
+}
+
+std::unique_ptr<Pass> createAIRSplitL2MemrefForBufferConstraintPass() {
+  return std::make_unique<AIRSplitL2MemrefForBufferConstraintPass>();
 }
 
 } // namespace air

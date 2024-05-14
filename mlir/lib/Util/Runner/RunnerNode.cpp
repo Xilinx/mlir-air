@@ -326,8 +326,8 @@ public:
       return (bool)this->checkResourceFulfillmentForOp(Op);
     } else if (auto Op = dyn_cast<air::ChannelGetOp>(op)) {
       return (bool)this->checkResourceFulfillmentForOp(Op);
-    } else if (isa<air::ExecuteOp>(op)) {
-      auto child_op = &*(op->getRegions().front().getOps().begin());
+    } else if (auto Op = dyn_cast<air::ExecuteOp>(op)) {
+      auto child_op = Op.getChildOp();
       if (name == "AllocOp") {
         auto Op = dyn_cast<memref::AllocOp>(child_op);
         return this->checkResourceFulfillmentForOp(Op);
@@ -655,7 +655,7 @@ private:
     std::vector<resource *> resource_pool;
     double memory_pool = this->getMemoriesPool(resource_pool);
     // Get memory allocation size
-    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
     double memory_allocated = this->getMemoryCostInBytes(ty, Op.getOperation());
     if (memory_allocated <= memory_pool) {
       return true;
@@ -667,7 +667,7 @@ private:
     std::vector<resource *> resource_pool;
     double memory_pool = this->getMemoriesPool(resource_pool, false);
     // Get memory allocation size
-    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
     double memory_deallocated =
         this->getMemoryCostInBytes(ty, Op.getOperation());
     if (memory_deallocated <= memory_pool) {
@@ -719,8 +719,8 @@ private:
                                 Operation *op = nullptr,
                                 std::string name = "") {
     if (op) {
-      if (isa<air::ExecuteOp>(op)) {
-        auto child_op = &*(op->getRegions().front().getOps().begin());
+      if (auto exec_op = dyn_cast<air::ExecuteOp>(op)) {
+        auto child_op = exec_op.getChildOp();
         // Memory allocation/deallocation
         if (name == "AllocOp") {
           auto Op = dyn_cast<memref::AllocOp>(child_op);
@@ -781,7 +781,7 @@ private:
     std::vector<resource *> resource_pool;
     this->getMemoriesPool(resource_pool);
     // Get memory size in bytes
-    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
     double memory_allocated = this->getMemoryCostInBytes(ty, Op.getOperation());
     // Reserve resource
     this->allocateRunnerNodeToAllocateMemory(resource_pool, reserved_resources,
@@ -793,7 +793,7 @@ private:
     std::vector<resource *> resource_pool;
     this->getMemoriesPool(resource_pool, false);
     // Get memory size in bytes
-    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
     double memory_deallocated =
         this->getMemoryCostInBytes(ty, Op.getOperation());
     // Reserve resource

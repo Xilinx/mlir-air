@@ -12,7 +12,7 @@ on:
 jobs:
   build-docs:
     name: Generate Documentation
-    runs-on: ubuntu-20.04    
+    runs-on: ubuntu-22.04    
     
     # Grant GITHUB_TOKEN the permissions required to make a Pages deployment
     permissions:
@@ -33,6 +33,9 @@ jobs:
       - name: Install pip packages
         run: sudo pip install psutil pybind11 numpy
 
+      - name: Install packages
+        run: sudo apt-get install -y ninja-build clang lld
+      
       - name: Install Ninja
         uses: llvm/actions/install-ninja@55d844821959226fab4911f96f37071c1d4c3268
 
@@ -84,8 +87,6 @@ jobs:
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DCMAKE_LINKER=lld \
-            -DCMAKE_C_COMPILER=clang-12 \
-            -DCMAKE_CXX_COMPILER=clang++-12 \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
             -DAIR_BUILD_RUNTIME=OFF
           make docs

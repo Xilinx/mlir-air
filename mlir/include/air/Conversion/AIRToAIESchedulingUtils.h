@@ -45,7 +45,7 @@ std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec);
 bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 
 int64_t get1DOffset(SmallVector<Value> memcpy_offsets,
-                    SmallVector<Value> memcpy_strides, int byte_count_per_elem);
+                    SmallVector<Value> memcpy_strides);
 
 int getRepeatCount(Operation *memcpy_op);
 
@@ -73,10 +73,10 @@ struct allocation_info_t {
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
   bool foundAlloc(air::ChannelOp channel_op);
-  bool foundAlloc(uint32_t col, uint32_t row, air::MemcpyInterface memcpyOp);
-  bool foundAlloc(uint32_t col, uint32_t row, int chan);
-  bool foundAlloc(uint32_t col, uint32_t row);
-  bool foundAlloc(uint32_t col, uint32_t row, air::ChannelOp channel_op);
+  bool foundAlloc(int32_t col, int32_t row, air::MemcpyInterface memcpyOp);
+  bool foundAlloc(int32_t col, int32_t row, int chan);
+  bool foundAlloc(int32_t col, int32_t row);
+  bool foundAlloc(int32_t col, int32_t row, air::ChannelOp channel_op);
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
 };
 

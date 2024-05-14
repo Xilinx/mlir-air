@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-fuse-channels -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) {
 // CHECK:   %[[VAL_0:.*]] = aie.tile(2, 0)
@@ -15,19 +15,21 @@
 // CHECK:   %[[VAL_5:.*]] = aie.tile(6, 3)
 // CHECK:   %[[VAL_6:.*]] = aie.tile(5, 4)
 // CHECK:   %[[VAL_7:.*]] = aie.tile(6, 4)
-// CHECK-COUNT-10:    aie.lock(%[[VAL_2]], {{.*}})
+// CHECK-COUNT-8:    aie.lock(%[[VAL_3]], {{.*}})
+// CHECK-COUNT-2:    aie.lock(%[[VAL_2]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_4]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_5]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_6]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_7]], {{.*}})
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x64xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
-// CHECK-COUNT-20:    aie.buffer({{.*}}) {sym_name = {{.*}}} : memref<32x32xi32, 2>
+// CHECK:    aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<64x64xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<64x128xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<128x64xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<64x128xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<128x64xi32, 1>
+// CHECK-COUNT-20:    aie.buffer({{.*}}) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK:   aie.mem(%[[VAL_7]])
 // CHECK:   aie.core(%[[VAL_7]]) {
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
@@ -41,13 +43,13 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:   } {elf_file = 
 // CHECK:   aie.mem(%[[VAL_6]])
 // CHECK:   aie.core(%[[VAL_6]])
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
@@ -60,13 +62,13 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:   } {elf_file = 
 // CHECK:   aie.mem(%[[VAL_5]])
 // CHECK:   aie.core(%[[VAL_5]])
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
@@ -79,13 +81,13 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:   } {elf_file = 
 // CHECK:   aie.mem(%[[VAL_4]])
 // CHECK:   aie.core(%[[VAL_4]])
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
@@ -98,7 +100,6 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:   } {elf_file = 

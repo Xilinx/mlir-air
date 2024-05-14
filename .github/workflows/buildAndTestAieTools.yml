@@ -86,7 +86,7 @@ jobs:
             apt update
             apt install -y rocm-hip-runtime-dev5.6.0 python3.10-venv \
                            libboost-all-dev pkg-config libelf-dev elfutils \
-                           libdwarf-dev libsysfs-dev clang
+                           libdwarf-dev libsysfs-dev clang libssl-dev
             apt-get clean
 
             cd /
@@ -154,6 +154,8 @@ jobs:
             if [ x"${{ inputs.LIT_FILTER }}" == x"" ]; then
               export LIT_FILTER="${{ inputs.LIT_FILTER }}"
             fi
+
+            export LIT_OPTS="-sv --timeout 300 -j1 --time-tests --order=random"
 
             utils/clone-rocm-air-platforms.sh
             utils/github-clone-build-libxaie.sh

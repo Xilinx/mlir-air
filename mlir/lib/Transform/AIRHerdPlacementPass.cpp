@@ -43,18 +43,23 @@ namespace {
 class Herd {
 
 public:
-  Herd(air::HerdOp herd, int32_t numRows, int32_t numCols, uint32_t number)
-      : herdOp(herd), numRows(numRows), numCols(numCols), number(number) {
-    size = numRows * numCols;
+  Herd(air::HerdOp herd, int32_t numRows, int32_t numCols, uint32_t number) {
+    this->herdOps.push_back(herd);
+    this->numRows = numRows;
+    this->numCols = numCols;
+    this->number = number;
+    this->size = numRows * numCols;
   }
 
-  HerdOp getHerdOp() const { return herdOp; }
+  std::vector<air::HerdOp> getHerdOps() const { return herdOps; }
+  air::HerdOp getHerdOp(int i) const { return herdOps[i]; }
+  void addHerdOp(air::HerdOp h) { herdOps.push_back(h); }
   int32_t getNumRows() const { return numRows; }
   int32_t getNumCols() const { return numCols; }
-  std::string getName() const {
+  std::string getName(int i) const {
     std::string name = "herd";
-    if (auto attr =
-            herdOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    if (auto attr = herdOps[i]->getAttrOfType<StringAttr>(
+            SymbolTable::getSymbolAttrName()))
       name = attr.getValue().str();
     return name;
   }
@@ -66,15 +71,15 @@ public:
   void setLocX(int32_t x) { locX = x; }
   void setLocY(int32_t y) { locY = y; }
 
-  void printHerd() const {
-    llvm::outs() << "name: " << getName() << ", numRows: " << numRows
+  void printHerd(int i) const {
+    llvm::outs() << "name: " << getName(i) << ", numRows: " << numRows
                  << ", number: " << number << ", numCols: " << numCols
                  << ", x_loc: " << locX << ", y_loc: " << locY
                  << ", size: " << size << "\n";
   }
 
 private:
-  air::HerdOp herdOp;
+  std::vector<air::HerdOp> herdOps;
   int32_t numRows;
   int32_t numCols;
   uint32_t number;
@@ -179,6 +184,18 @@ public:
     module.walk([&](air::SegmentOp part) {
       std::vector<std::unique_ptr<Herd>> segmentHerds;
       part.walk([&](air::HerdOp herd) {
+        std::string name;
+        if (auto attr = herd->getAttrOfType<StringAttr>(
+                SymbolTable::getSymbolAttrName())) {
+          name = attr.getValue().str();
+          for (auto &h : segmentHerds) {
+            if (name == h->getName(0)) {
+              // Found herds sharing the same symbolic name
+              h->addHerdOp(herd);
+              return;
+            }
+          }
+        }
         auto herd_size_x = herd.getNumCols();
         auto herd_size_y = herd.getNumRows();
         auto number = segmentHerds.size();
@@ -258,8 +275,9 @@ private:
     if (unplacedHerds.size() != 0) {
       getOperation().emitError("No valid placement found.");
       for (uint32_t i = 0; i < unplacedHerds.size(); i++) {
-        unplacedHerds[i]->getHerdOp()->emitOpError("\nUnplaced herd: ")
-            << unplacedHerds[i]->getName() << "\n";
+        for (uint32_t j = 0; j < unplacedHerds[i]->getHerdOps().size(); j++)
+          unplacedHerds[i]->getHerdOp(j)->emitOpError("\nUnplaced herd: ")
+              << unplacedHerds[i]->getName(j) << "\n";
       }
       return;
     }
@@ -268,15 +286,16 @@ private:
     auto yLocName = xilinx::air::HerdOp::getRowOffsetAttrName();
 
     for (auto &herd : placedHerds) {
-      auto herdOp = herd->getHerdOp();
-      herdOp->setAttr(
-          yLocName,
-          IntegerAttr::get(IntegerType::get(herdOp->getContext(), 64),
-                           herd->getLocY() + segment->getAnchorPointRow()));
-      herdOp->setAttr(
-          xLocName,
-          IntegerAttr::get(IntegerType::get(herdOp->getContext(), 64),
-                           herd->getLocX() + segment->getAnchorPointCol()));
+      for (auto herdOp : herd->getHerdOps()) {
+        herdOp->setAttr(
+            yLocName,
+            IntegerAttr::get(IntegerType::get(herdOp->getContext(), 64),
+                             herd->getLocY() + segment->getAnchorPointRow()));
+        herdOp->setAttr(
+            xLocName,
+            IntegerAttr::get(IntegerType::get(herdOp->getContext(), 64),
+                             herd->getLocX() + segment->getAnchorPointCol()));
+      }
     }
   }
 

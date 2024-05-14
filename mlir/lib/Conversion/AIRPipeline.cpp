@@ -64,7 +64,7 @@ LogicalResult AIRPipeStageConversion::matchAndRewrite(
     // For each output of the pipeline stage, create a buffer + store
     SmallVector<Value, 4> bufs;
     for (auto o : yield.getOperands()) {
-      if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
+      if (RankedTensorType tt = llvm::dyn_cast<RankedTensorType>(o.getType())) {
         auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType());
         rewriter.setInsertionPoint(aif);
         auto buf = rewriter.create<memref::AllocOp>(op->getLoc(), memrefTy);
@@ -83,7 +83,7 @@ LogicalResult AIRPipeStageConversion::matchAndRewrite(
     SmallVector<Value, 4> bufs;
     rewriter.setInsertionPoint(aif);
     for (auto o : yield.getOperands()) {
-      if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
+      if (RankedTensorType tt = llvm::dyn_cast<RankedTensorType>(o.getType())) {
         rewriter.setInsertionPoint(&yield);
         auto idValPlus =
             rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id + 1);

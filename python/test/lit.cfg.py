@@ -7,10 +7,6 @@
 # -*- Python -*-
 
 import os
-import platform
-import re
-import subprocess
-import tempfile
 
 import lit.formats
 import lit.util
@@ -26,9 +22,20 @@ config.name = 'AIRPYTHON'
 
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 config.environment['PYTHONPATH'] \
-    = "{}".format(os.path.join(config.air_obj_root, "python"))
-#os.environ['PYTHONPATH']
-print("Running with PYTHONPATH",config.environment['PYTHONPATH'])
+    = "{}:{}".format(os.path.join(config.air_obj_root, "python"),
+                     os.path.join(config.aie_obj_root, "python"))
+
+try:
+    import torch_mlir
+    torch_mlir_path = os.path.join(torch_mlir.__path__[0], "..")
+    print ("found torch_mlir:", torch_mlir_path)
+    config.environment['PYTHONPATH'] = config.environment['PYTHONPATH'] + ":" + torch_mlir_path
+    config.available_features.add("torch_mlir")
+except:
+    print("torch_mlir not found")
+    pass
+
+print("Running with PYTHONPATH", config.environment['PYTHONPATH'])
 
 # suffixes: A list of file extensions to treat as test files.
 config.suffixes = ['.py']
@@ -52,7 +59,7 @@ llvm_config.use_default_substitutions()
 # excludes: A list of directories to exclude from the testsuite. The 'Inputs'
 # subdirectories contain auxiliary inputs for various tests in their parent
 # directories.
-config.excludes = ['lit.cfg.py', 'torch_mlir_e2e']
+config.excludes = ['lit.cfg.py']
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
