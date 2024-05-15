@@ -25,8 +25,8 @@ def matmul_on_tensors(m, n, k, dtype):
         def forward(lhs, rhs, out):
             zero = arith.ConstantOp(F32Type.get(), 0.0)
             zero_fill = linalg.fill(zero, outs=[out])
-            linalg.matmul(lhs, rhs, outs=[zero_fill])
-            return
+            o = linalg.matmul(lhs, rhs, outs=[zero_fill])
+            return o
 
     return module
 
@@ -207,7 +207,7 @@ with air.ir.Context() as ctx, Location.unknown():
         "builtin.module("
         + ",".join(
             [
-                "air-to-aie{row-offset=2 col-offset=0 device=npu emit-while-loop=true}",
+                "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}",
                 "canonicalize",
             ]
         )

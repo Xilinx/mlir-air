@@ -46,10 +46,10 @@ transform.sequence %arg0 : !transform.any_op failures(propagate) {
     %copy_1 = transform.get_producer_of_operand %padded[0] : (!transform.any_op) -> (!transform.any_op)
     %copy_2 = transform.get_producer_of_operand %padded[1] : (!transform.any_op) -> (!transform.any_op)
     %tiled_copy_1, %tiled_copy_for_loop_1 =
-      transform.structured.tile_using_for %copy_1 [0, 256]
+      transform.structured.tile_using_for %copy_1 tile_sizes [0, 256]
       : (!transform.any_op) -> (!transform.any_op, !transform.op<"scf.for">)
     %tiled_copy_2, %tiled_copy_for_loop_2 =
-      transform.structured.tile_using_for %copy_2 [256, 0]
+      transform.structured.tile_using_for %copy_2 tile_sizes [256, 0]
       : (!transform.any_op) -> (!transform.any_op, !transform.op<"scf.for">)
 
     // Second level tile to forall with tile_sizes.
