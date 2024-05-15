@@ -342,7 +342,7 @@ Example:
 Input:
 ```mlir
 module {
-  aie.device(npu) {
+  aie.device(npu1_1col) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -376,7 +376,7 @@ module {
 Output:
 ```mlir
 module {
-  aie.device(npu) {
+  aie.device(npu1_1col) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
