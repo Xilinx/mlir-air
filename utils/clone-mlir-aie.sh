@@ -25,6 +25,6 @@ pushd $target_dir
 git fetch --depth=1 origin $HASH
 git checkout $HASH
 git submodule update --init
-cd third-party/aie-rt
+cd third_party/aie-rt
 git checkout -b phoenix_v2023.2 origin/phoenix_v2023.2
 popd
