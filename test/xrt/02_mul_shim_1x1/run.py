@@ -99,7 +99,7 @@ def run_test(size, idtype, odtype):
 
         mlir_module = generate_add_module(size, mlir_input_type, mlir_output_type)
 
-        aircc_options = ['--device', 'npu', 'air.mlir', '-xchesscc', '-xbridge', '-o', opts_xclbin]
+        aircc_options = ['--device', 'npu1_1col', 'air.mlir', '-xchesscc', '-xbridge', '-o', opts_xclbin]
         aircc.run(mlir_module, aircc_options)
 
     with open(opts_insts, 'r') as f:
