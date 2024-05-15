@@ -225,7 +225,7 @@ with air.ir.Context() as ctx, Location.unknown():
     
     pipeline = "builtin.module("+",".join([
         'canonicalize', 'cse',
-        'air-to-aie{row-offset=2 col-offset=0 device=npu emit-while-loop=true}',
+        'air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}',
         'canonicalize',
     ])+')'
     pm = air.passmanager.PassManager.parse(pipeline)

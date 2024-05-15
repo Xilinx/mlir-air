@@ -5,9 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu" -canonicalize -cse %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu1_1col" -canonicalize -cse %s | FileCheck %s
 
-// CHECK-LABEL:   aie.device(npu) {
+// CHECK-LABEL:   aie.device(npu1_1col) {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(0, 0)
 // CHECK:  %[[VAL_1:.*]] = aie.tile(0, 1)
 // CHECK:  %[[VAL_2:.*]] = aie.tile(0, 2)
