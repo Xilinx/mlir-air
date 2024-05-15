@@ -50,29 +50,26 @@ jobs:
           key: ${{ runner.os }}-clangreleaseasserts-${{ steps.get-submodule-hash.outputs.hash }}
           max-size: 1G
 
-      - name: Get cmakeModules
-        id: clone-cmakeModules
-        run: git clone --depth 1 https://github.com/Xilinx/cmakeModules.git
-        shell: bash
-
-      - name: Get LLVM
-        id: clone-llvm
-        run: utils/clone-llvm.sh
-        shell: bash
-
-      - name: Rebuild and Install LLVM
-        run: utils/github-build-llvm.sh
+      - name: Build and Install libxaie
+        run: utils/github-clone-build-libxaie.sh
 
       - name: Get mlir-aie
         id: clone-mlir-aie
         run: utils/clone-mlir-aie.sh
-        shell: bash
 
-      - name: Rebuild and Install libxaie
-        run: utils/github-clone-build-libxaie.sh
+      - name: Build and install mlir-aie
+        run: |
+          pushd mlir-aie
+          pip install -r python/requirements.txt
 
-      - name: Rebuild and Install mlir-aie
-        run: utils/github-build-mlir-aie.sh
+          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          pip -q download mlir==$VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          unzip -q mlir-*.whl
+          find mlir -exec touch -a -m -t 201108231405.14 {} \;
+          popd
+
+          utils/github-build-mlir-aie.sh
 
       # Build the repo test target in release mode to build and test.
       - name: Build Docs
@@ -82,9 +79,9 @@ jobs:
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
-            -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
-            -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
-            -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
+            -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
+            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir/ \
+            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DCMAKE_LINKER=lld \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
