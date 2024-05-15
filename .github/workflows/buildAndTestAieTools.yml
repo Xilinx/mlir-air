@@ -109,12 +109,12 @@ jobs:
             pip install -r python/requirements.txt
             pip install joblib
 
-            pushd runtime_lib/xaiengine/aie-rt/driver/src
+            pushd third-party/aie-rt/driver/src
             make -f Makefile.Linux CFLAGS="-D__AIEAMDAIR__"
             popd
             mkdir -p /install/aie-rt/lib
-            cp -a runtime_lib/xaiengine/aie-rt/driver/src/*.so* /install/aie-rt/lib
-            cp -a runtime_lib/xaiengine/aie-rt/driver/include /install/aie-rt
+            cp -a third-party/aie-rt/driver/src/*.so* /install/aie-rt/lib
+            cp -a third-party/aie-rt/driver/include /install/aie-rt
 
             VERSION=$(utils/clone-llvm.sh --get-wheel-version)
             pip -q download mlir==$VERSION \
