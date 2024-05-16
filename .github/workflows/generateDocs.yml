@@ -63,7 +63,7 @@ jobs:
           pip install -r python/requirements.txt
 
           LLVM_VERSION=$(utils/clone-llvm.sh --get-wheel-version)
-          echo "LLVM_PROJECT_COMMIT=${LLVM_VERSION}" | tee -a $GITHUB_OUTPUT
+          echo "LLVM_PROJECT_VERSION=${LLVM_VERSION}" | tee -a $GITHUB_OUTPUT
 
           pip -q download mlir==$LLVM_VERSION \
             -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
@@ -71,7 +71,7 @@ jobs:
           find mlir -exec touch -a -m -t 201108231405.14 {} \;
 
           MLIR_AIE_VERSION=`git rev-parse HEAD`
-          echo "MLIR_AIE_COMMIT"=${MLIR_AIE_VERSION}" | tee -a $GITHUB_OUTPUT
+          echo "MLIR_AIE_COMMIT=${MLIR_AIE_VERSION}" | tee -a $GITHUB_OUTPUT
 
           popd
 
@@ -104,7 +104,7 @@ jobs:
 
       - name: Save LLVM Version
         run: |
-          LLVM_VER="${{ steps.build-aie.LLVM_PROJECT_COMMIT }}
+          LLVM_VER="${{ steps.build-aie.LLVM_PROJECT_VERSION }}
           AIE_VER="${{ steps.build-aie.MLIR_AIE_COMMIT }}
           
           echo "{" > ./build_release/docs/build_info.json
