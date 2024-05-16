@@ -104,8 +104,8 @@ jobs:
 
       - name: Save LLVM Version
         run: |
-          LLVM_VER="${{ steps.build-aie.LLVM_PROJECT_VERSION }}"
-          AIE_VER="${{ steps.build-aie.MLIR_AIE_COMMIT }}"
+          LLVM_VER="${{ steps.build-aie.outputs.LLVM_PROJECT_VERSION }}"
+          AIE_VER="${{ steps.build-aie.outputs.MLIR_AIE_COMMIT }}"
           
           echo "{" > ./build_release/docs/build_info.json
           echo "llvm-version: \"$(LLVM_VER)\"," >> ./build_release/docs/build_info.json
