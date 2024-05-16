@@ -54,19 +54,25 @@ jobs:
         run: utils/github-clone-build-libxaie.sh
 
       - name: Get mlir-aie
-        id: clone-mlir-aie
         run: utils/clone-mlir-aie.sh
 
       - name: Build and install mlir-aie
+        id: build-aie
         run: |
           pushd mlir-aie
           pip install -r python/requirements.txt
 
-          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
-          pip -q download mlir==$VERSION \
+          LLVM_VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          echo "LLVM_PROJECT_COMMIT=${LLVM_VERSION}" | tee -a $GITHUB_OUTPUT
+
+          pip -q download mlir==$LLVM_VERSION \
             -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
           unzip -q mlir-*.whl
           find mlir -exec touch -a -m -t 201108231405.14 {} \;
+
+          MLIR_AIE_VERSION=`git rev-parse HEAD`
+          echo "MLIR_AIE_COMMIT"=${MLIR_AIE_VERSION}" | tee -a $GITHUB_OUTPUT
+
           popd
 
           utils/github-build-mlir-aie.sh
@@ -98,10 +104,13 @@ jobs:
 
       - name: Save LLVM Version
         run: |
-          cd llvm; set VER=`git rev-parse HEAD`
-          echo "{" > ../build_release/docs/build_info.json
-          echo "llvm-version: \"$(VER)\"," >> ../build_release/docs/build_info.json
-          echo "}" > ../build_release/docs/build_info.json
+          LLVM_VER="${{ steps.build-aie.LLVM_PROJECT_COMMIT }}
+          AIE_VER="${{ steps.build-aie.MLIR_AIE_COMMIT }}
+          
+          echo "{" > ./build_release/docs/build_info.json
+          echo "llvm-version: \"$(LLVM_VER)\"," >> ./build_release/docs/build_info.json
+          echo "mlir-aie-version: \"$(AIE_VER)\"," >> ./build_release/docs/build_info.json
+          echo "}" > ./build_release/docs/build_info.json
 
       - name: Publish to github-pages
         uses: peaceiris/actions-gh-pages@v3.6.1
