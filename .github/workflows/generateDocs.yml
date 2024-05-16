@@ -41,13 +41,13 @@ jobs:
 
       - name: Get Submodule Hash
         id: get-submodule-hash
-        run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-llvm.sh))"
+        run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-mlir-aie.sh))"
         shell: bash
 
       - name: Ccache for C++ compilation
         uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
         with:
-          key: ${{ runner.os }}-clangreleaseasserts-${{ steps.get-submodule-hash.outputs.hash }}
+          key: ${{ runner.os }}-generatedocs-${{ steps.get-submodule-hash.outputs.hash }}
           max-size: 1G
 
       - name: Build and Install libxaie
