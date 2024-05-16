@@ -108,8 +108,8 @@ jobs:
           AIE_VER="${{ steps.build-aie.outputs.MLIR_AIE_COMMIT }}"
           
           echo "{" > ./build_release/docs/build_info.json
-          echo "llvm-version: \"$(LLVM_VER)\"," >> ./build_release/docs/build_info.json
-          echo "mlir-aie-version: \"$(AIE_VER)\"," >> ./build_release/docs/build_info.json
+          echo "llvm-version: \"${LLVM_VER}\"," >> ./build_release/docs/build_info.json
+          echo "mlir-aie-version: \"${AIE_VER}\"," >> ./build_release/docs/build_info.json
           echo "}" > ./build_release/docs/build_info.json
 
       - name: Publish to github-pages
