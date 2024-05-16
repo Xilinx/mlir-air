@@ -7,8 +7,6 @@
 import abc
 from typing import TypeVar
 
-import torch
-
 from air.ir import Module
 
 # A type shared between the result of `AirBackend.compile` and the
