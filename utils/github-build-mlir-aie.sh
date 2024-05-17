@@ -24,6 +24,8 @@ pushd $MLIR_AIE_DIR/$BUILD_DIR
 cmake .. \
     -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
     -DAIE_COMPILER=NONE \
     -DAIE_LINKER=NONE \
     -DHOST_COMPILER=NONE \

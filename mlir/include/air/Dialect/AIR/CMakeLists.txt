@@ -2,32 +2,21 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-set(dialect AIR)
-set(dialect_namespace air)
-set(LLVM_TARGET_DEFINITIONS ${dialect}.td)
-
-
-mlir_tablegen(${dialect}.h.inc -gen-op-decls)
-mlir_tablegen(${dialect}.cpp.inc -gen-op-defs)
-mlir_tablegen(${dialect}Types.h.inc -gen-typedef-decls)
-mlir_tablegen(${dialect}Types.cpp.inc -gen-typedef-defs)
-mlir_tablegen(${dialect}Dialect.h.inc -gen-dialect-decls -dialect=${dialect_namespace})
-mlir_tablegen(${dialect}Dialect.cpp.inc -gen-dialect-defs -dialect=${dialect_namespace})
-mlir_tablegen(${dialect}Enums.h.inc -gen-enum-decls)
-mlir_tablegen(${dialect}Enums.cpp.inc -gen-enum-defs)
-add_public_tablegen_target(MLIRAIRIncGen)
+add_mlir_dialect(AIR air)
+add_mlir_doc(AIR AIRDialect ./ -gen-dialect-doc)
 
 set(LLVM_TARGET_DEFINITIONS AIROpBase.td)
 mlir_tablegen(AIROpInterfaces.h.inc -gen-op-interface-decls)
 mlir_tablegen(AIROpInterfaces.cpp.inc -gen-op-interface-defs)
+mlir_tablegen(AIREnums.h.inc -gen-enum-decls)
+mlir_tablegen(AIREnums.cpp.inc -gen-enum-defs)
 add_public_tablegen_target(MLIRAIROpInterfacesIncGen)
-add_dependencies(mlir-generic-headers MLIRAIROpInterfacesIncGen)
-
-add_mlir_doc(AIR AIRDialect ./ -gen-dialect-doc)
+add_dependencies(air-headers MLIRAIROpInterfacesIncGen)
 
 set(LLVM_TARGET_DEFINITIONS AIRTransformOps.td)
 mlir_tablegen(AIRTransformOps.h.inc -gen-op-decls)
 mlir_tablegen(AIRTransformOps.cpp.inc -gen-op-defs)
 add_public_tablegen_target(AIRTransformOpsIncGen)
+add_dependencies(air-headers AIRTransformOpsIncGen)
 
 add_mlir_doc(AIRTransformOps AIRTransformOps ./ -gen-op-doc)

@@ -32,7 +32,7 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 'canonicalize', 'cse'  
 'func.func(air-renumber-dma)'
 'canonicalize', 'cse'  
-['air-to-aie{row-offset=2 col-offset=0 device=npu emit-while-loop=true}'](#air-to-aie)  
+['air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}'](#air-to-aie)  
 'canonicalize'
 ['air-to-std'](#air-to-std)  
 'canonicalize'  
@@ -55,7 +55,7 @@ The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://
 |Memtile DMA BD Optimization    |   <br> <ul><li>`air-isolate-async-dma-loop-nests`</li><li>`func.func(air-loop-fusion)`</li><li>`air-specialize-channel-wrap-and-stride`</li></ul>    |   Lowering L2 control flow program into finite-state machines made of Block Descriptors as states. |
 |Double buffering    |   <br> <ul><li>`air-label-scf-for-to-ping-pong`</li><li>`air-ping-pong-transform{keep-memref-dealloc=true}`</li></ul>    |   Detecting and lowering double buffering opportunities by analyzing data production and consumption patterns to a `memref` within an `scf.for` loop; explicitly represent the multiple asynchronous threads traversing through the loop. |
 |Outline air.herd to aie.tiles    |   <br> <ul><li>`func.func(air-collapse-herd{max-col-size=4})`</li><li>`air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}`</li><li>`func.func(air-renumber-dma)`</li></ul>    |   Reshaping and placing `air.herd` onto `air.segment`; inferring `air.segment` shape and size. |
-|Convert MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=npu emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
+|Convert MLIR-AIR to MLIR-AIE    |   <br> <ul><li>`func.func(air-renumber-dma)`</li><li>`air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}`</li></ul>    |   Converting to MLIR-AIE dialect. Clone the `func.func` op, where one copy lowers to the circuit design to be mapped onto AIE tiles, and the other copy lowers to LX6 control program; outline `air.herd` body into `aie.core` kernel; materialize asynchronous `air.channel.put/get` into dma block descriptors and `aie.lock`. |
 |SHIM DMA BD Optimization    |   <br> <ul><li>`air-to-std`</li><li>`func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})`</li><li>`func.func(air-unroll-outer-affine-loops{depth=2})`</li><li>`airrt-to-npu`</li></ul>    |   Converting the control code via AIRRt and AIEX.NPU dialect to NPU SHIM DMA instruction sequence. |
 ||||||
 
@@ -1247,7 +1247,7 @@ Converts the MLIR-AIR dialect code into AIRRt dialect which represents the runti
 *Input IR:*
 ```
 module {
-  aie.device(npu) {
+  aie.device(npu1_4col) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -1281,7 +1281,7 @@ The input IR contains some `air.channel.put` and `air.channel.get` memory operat
 *Output IR:*
 ```
 module {
-  aie.device(npu) {
+  aie.device(npu1_4col) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -1423,7 +1423,7 @@ Converts the runtime program, described in AIRRt dialect, into instruction seque
 *Input IR:*
 ```
 module {
-  aie.device(npu) {
+  aie.device(npu1_4col) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>
@@ -1458,7 +1458,7 @@ The input IR contains some L3 memory operations (`airrt.dma_memcpy_nd`) optional
 *Output IR:*
 ```
 module {
-  aie.device(npu) {
+  aie.device(npu1_4col) {
     ...
     aie.shim_dma_allocation @airMemcpyId78(S2MM, 0, 0)
     memref.global "public" @airMemcpyId78 : memref<32x128xi32, 1>

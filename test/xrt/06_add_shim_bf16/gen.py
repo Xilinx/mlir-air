@@ -83,7 +83,7 @@ with Context() as ctx, Location.unknown():
     #     f.write(str(mlir_module))
 
     pipeline = "builtin.module(" + ",".join([
-        "air-to-aie{emit-while-loop=true device=npu row-offset=2 col-offset=0 use-objectfifo=false}",
+        "air-to-aie{emit-while-loop=true device=npu1_4col row-offset=2 col-offset=0 use-objectfifo=false}",
         "air-to-std",
         "canonicalize", "cse",
     ]) + ")"

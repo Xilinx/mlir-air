@@ -14,7 +14,7 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=b8d512fa4368f5f9c77b76835323990e73cc099c
+export HASH=aba1887b9750dea8db14fbe16417068f83a6b94c
 target_dir=mlir-aie
 
 if [[ ! -d $target_dir ]]; then
@@ -25,6 +25,6 @@ pushd $target_dir
 git fetch --depth=1 origin $HASH
 git checkout $HASH
 git submodule update --init
-cd runtime_lib/xaiengine/aie-rt
+cd third_party/aie-rt
 git checkout -b phoenix_v2023.2 origin/phoenix_v2023.2
 popd

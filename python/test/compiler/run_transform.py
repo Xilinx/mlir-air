@@ -9,10 +9,12 @@ from air.dialects import air as airdialect
 from air.dialects import arith, func, linalg
 from air.compiler.util import run_transform
 
+
 def run(f):
-  print("\nTEST:", f.__name__)
-  f()
-  return f
+    print("\nTEST:", f.__name__)
+    f()
+    return f
+
 
 # CHECK-LABEL: TEST: gemm_module
 # CHECK: scf.parallel
@@ -26,9 +28,12 @@ def gemm_module():
         dtype = F32Type.get()
         module = Module.create()
         with InsertionPoint(module.body):
+
             @func.FuncOp.from_py_func(
-                MemRefType.get((M, K), dtype), MemRefType.get((K, N), dtype),
-                MemRefType.get((M, N), dtype))
+                MemRefType.get((M, K), dtype),
+                MemRefType.get((K, N), dtype),
+                MemRefType.get((M, N), dtype),
+            )
             def matmul(lhs, rhs, out):
                 zero = arith.ConstantOp(dtype, FloatAttr.get(dtype, 0))
                 linalg.fill(zero, outs=[out])
@@ -47,4 +52,4 @@ def gemm_module():
         """
         transform_ir = Module.parse(transform_ir_string)
         run_transform(transform_ir, module)
-        print (module)
+        print(module)
