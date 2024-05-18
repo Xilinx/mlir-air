@@ -14,30 +14,35 @@ import json
 import tempfile
 import os
 
-__all__ = [
-    "CostModel",
-    "LINALG_TENSOR_TO_MEMREF_PIPELINE",
-    "run_transform"
-]
+__all__ = ["CostModel", "LINALG_TENSOR_TO_MEMREF_PIPELINE", "run_transform"]
 
-LINALG_TENSOR_TO_MEMREF_PIPELINE = "builtin.module(" + ",".join([
-    # Bufferize.
-    "func.func(scf-bufferize)",
-    "func.func(linalg-bufferize)", "cse",
-    "func-bufferize",
-    "arith-bufferize",
-    "func.func(tensor-bufferize)",
-    "func.func(finalizing-bufferize)",
-    "canonicalize",
-    "cse"
-]) + ")"
+LINALG_TENSOR_TO_MEMREF_PIPELINE = (
+    "builtin.module("
+    + ",".join(
+        [
+            # Bufferize.
+            "func.func(scf-bufferize)",
+            "func.func(linalg-bufferize)",
+            "cse",
+            "func-bufferize",
+            "arith-bufferize",
+            "func.func(tensor-bufferize)",
+            "func.func(finalizing-bufferize)",
+            "canonicalize",
+            "cse",
+        ]
+    )
+    + ")"
+)
+
 
 def _convert_module(module):
     if not isinstance(module, air.ir.Module):
-        air_module = air.ir.Module.parse(str(module),air.ir.Context())
+        air_module = air.ir.Module.parse(str(module), air.ir.Context())
     else:
         air_module = module
     return air_module
+
 
 class CostModel:
     def __init__(self):
@@ -56,8 +61,11 @@ class CostModel:
             os.unlink(name)
         return stats
 
+
 class Runner:
-    def __init__(self, json_model, trace_filename=None, sim_granularity="herd", verbose=False):
+    def __init__(
+        self, json_model, trace_filename=None, sim_granularity="herd", verbose=False
+    ):
         self.json_model = json_model
         self.trace_filename = trace_filename
         self.sim_granularity = sim_granularity
@@ -71,14 +79,14 @@ class Runner:
         if trace_filename is None:
             trace_tmpfile = tempfile.NamedTemporaryFile(delete=False)
             trace_filename = trace_tmpfile.name
-        
+
         # the json model can be:
         #  1. json in string form
         #  2. json in python object form
         #  3. the name of a file containing (1)
         json_model = self.json_model
         if type(json_model) == str:
-            if '.json' in json_model:
+            if ".json" in json_model:
                 with open(json_model) as f:
                     json_model = json.loads(f.read())
             else:
@@ -88,7 +96,14 @@ class Runner:
         json_tmpfile.write(str.encode(json.dumps(json_model)))
         json_tmpfile.close()
 
-        runner.run(air_module, json_tmpfile.name, trace_filename, function, self.sim_granularity, self.verbose)
+        runner.run(
+            air_module,
+            json_tmpfile.name,
+            trace_filename,
+            function,
+            self.sim_granularity,
+            self.verbose,
+        )
 
         os.unlink(json_tmpfile.name)
 
@@ -100,4 +115,3 @@ class Runner:
             os.unlink(trace_tmpfile.name)
 
         return return_trace
-

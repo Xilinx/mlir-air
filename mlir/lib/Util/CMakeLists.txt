@@ -10,6 +10,9 @@ add_mlir_library(AIRUtil
   Dependency.cpp
   DirectedAdjacencyMap.cpp
 
+  DEPENDS
+  AIRDialect
+
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRTransforms

@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu})' --split-input-file | FileCheck %s
+// RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu1_1col})' --split-input-file | FileCheck %s
 
 // CHECK: %[[VAL0:.*]] = aie.tile(0, 1)
 // CHECK: %[[VAL1:.*]] = aie.tile(0, 2)
