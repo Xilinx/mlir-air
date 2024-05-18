@@ -640,15 +640,15 @@ func.func @func9(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // Tile / memtile DMA repeat count support.
 // CHECK: aie.device(xcve2802)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 32)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 2>, 0, 8192)
 // CHECK: %[[tileDMA_0_3:.*]] = aie.mem
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 32)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 2>, 0, 8192)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
-// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 32)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 1>, 0, 8192)
-// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2, repeat_count = 32)
+// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2, repeat_count = 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 1>, 0, 8192)
 // CHECK: @func10
 #map = affine_map<()[s0] -> (s0 * 32)>

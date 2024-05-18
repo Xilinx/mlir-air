@@ -2640,8 +2640,8 @@ public:
       }
 
       int repeat_count = 1;
-      // if (p.second.size() == 1)
-      //   repeat_count = air::getRepeatCount(p.second[0]);
+      if (p.second.size() == 1)
+        repeat_count = air::getRepeatCount(p.second[0]);
 
       if (!channel_head) {
         channel_head = start_bb;
