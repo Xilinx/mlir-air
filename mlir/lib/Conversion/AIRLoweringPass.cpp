@@ -230,13 +230,19 @@ public:
       return failure();
     }
 
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(op->getBlock());
-      rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                         herd_name_attr.getValue().str(),
-                                         /* operands */ SmallVector<Value>());
+    // Integer kernel operands are passed as arguments (runtime parameters) to
+    // the herd load op.
+    SmallVector<Value> args;
+    for (int i = operands.size() - herd.getNumKernelOperands(),
+             e = operands.size();
+         i < e; i++) {
+      Value o = operands[i];
+      if (llvm::isa<IntegerType, IndexType, FloatType>(o.getType()))
+        args.push_back(o);
     }
+
+    rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
+                                       herd_name_attr.getValue().str(), args);
 
     SmallVector<Value, 4> deps;
     for (auto &o : operands)
