@@ -186,7 +186,8 @@ int air::getRepeatCount(Operation *memcpy_op) {
       getConstantIntValue(chan_op.getSizes()[0])) {
     auto const_highest_stride = getConstantIntValue(chan_op.getStrides()[0]);
     auto const_highest_size = getConstantIntValue(chan_op.getSizes()[0]);
-    if (*const_highest_stride == 0) {
+    auto const_highest_offset = getConstantIntValue(chan_op.getOffsets()[0]);
+    if (*const_highest_stride == 0 && !const_highest_offset) {
       // Highest dimension data access pattern is repeat.
       return *const_highest_size;
     }
