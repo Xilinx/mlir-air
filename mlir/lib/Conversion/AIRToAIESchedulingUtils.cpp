@@ -108,7 +108,7 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
   return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id, init);
 }
 
-std::stringstream air::generateBufferNameInStringStream(std::string prefix,
+std::stringstream air::generateBufferNameInStringStream(StringRef prefix,
                                                         uint64_t &BufferId,
                                                         mlir::StringAttr attr,
                                                         int x, int y) {
@@ -123,7 +123,7 @@ std::stringstream air::generateBufferNameInStringStream(std::string prefix,
     else
       ss << attr.getValue().str() << BufferId++;
   } else {
-    ss << prefix << BufferId++;
+    ss << prefix.str() << BufferId++;
   }
   return ss;
 }
@@ -1011,7 +1011,8 @@ void air::simpleDMAChannelAllocation(
 }
 
 // If found item in vector, return index; else return -1.
-template <typename T> int air::foundInVector(T item, std::vector<T> vec) {
+template <typename T>
+int air::foundInVector(T item, std::vector<T> vec) {
   auto it = std::find(vec.begin(), vec.end(), item);
   int index = it - vec.begin();
   return index;
