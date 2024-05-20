@@ -25,8 +25,8 @@ module {
     }
     func.func @f() {
         %ret0 = airrt.segment_load "plot" : i64
-        %ret1 = airrt.herd_load "elk" : i64
-        airrt.herd_load "deer" : i64
+        %ret1 = airrt.herd_load "elk" () : () -> i64
+        airrt.herd_load "deer" () : () -> i64
         return
     }
 }

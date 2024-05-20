@@ -95,10 +95,10 @@ def AIRRt_HerdMetadataTerminatorOp
 
 def AIRRt_HerdLoadOp : AIRRt_Op<"herd_load", []> {
     let summary = "load a herd";
-    let arguments = (ins StrAttr:$sym_name);
+    let arguments = (ins StrAttr:$sym_name, Variadic<AnyType>:$rtp);
     let results = (outs I64:$h, Optional<AIRRt_Event>:$event);
     let assemblyFormat = [{
-      $sym_name attr-dict `:` type($h) (`,` type($event)^)?
+      $sym_name ` ``(` $rtp `)` attr-dict `:` functional-type($rtp, results)
     }];
 }
 
