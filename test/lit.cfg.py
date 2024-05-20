@@ -84,7 +84,7 @@ if config.hsa_found:
         )
     )
     if config.enable_run_airhost_tests:
-        config.substitutions.append(("%run_on_board", "sudo flock /tmp/board.lock"))
+        config.substitutions.append(("%run_on_board", "flock /tmp/vck5000.lock"))
     else:
         print("Skipping execution of airhost tests (ENABLE_RUN_AIRHOST_TESTS=OFF)")
         config.substitutions.append(("%run_on_board", "echo"))

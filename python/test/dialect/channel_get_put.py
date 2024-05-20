@@ -26,12 +26,12 @@ def build_module(shape, idtype, odtype):
         with InsertionPoint(module.body):
             memrefTyIn = MemRefType.get(shape, to_type(idtype))
             memrefTyOut = MemRefType.get(shape, to_type(odtype))
-            # CHECK: air.channel @Chan0
-            # CHECK: air.channel @Chan1
-            # CHECK: air.channel @Chan2
-            ChannelOp("Chan0")
-            ChannelOp("Chan1")
-            ChannelOp("Chan2")
+            # CHECK: air.channel @ChanA
+            # CHECK: air.channel @ChanB
+            # CHECK: air.channel @ChanC
+            ChannelOp("ChanA")
+            ChannelOp("ChanB")
+            ChannelOp("ChanC")
 
             @FuncOp.from_py_func(memrefTyIn, memrefTyIn, memrefTyOut)
             def mul(arg0, arg1, arg2):
@@ -54,13 +54,13 @@ def build_module(shape, idtype, odtype):
                                 element_type=to_type(idtype),
                                 memory_space=mem_space,
                             )
-                            tile_a = AllocOp(tile_type, [], [])
-                            tile_b = AllocOp(tile_type, [], [])
-                            tile_c = AllocOp(tile_type, [], [])
                             # CHECK: air.channel.get  @ChanA[] (%{{.*}}[] [] []) : (memref<32xi32, 2 : i32>)
                             # CHECK: air.channel.get  @ChanB[] (%{{.*}}[] [] []) : (memref<32xi32, 2 : i32>)
                             # CHECK: air.channel.put  @ChanC[] (%{{.*}}[] [] []) : (memref<32xi32, 2 : i32>)
                             for _ in for_(shape[0] // 32):
+                                tile_a = AllocOp(tile_type, [], [])
+                                tile_b = AllocOp(tile_type, [], [])
+                                tile_c = AllocOp(tile_type, [], [])
                                 ChannelGet("ChanA", [], tile_a)
                                 ChannelGet("ChanB", [], tile_b)
                                 elemwise_binary(
@@ -70,11 +70,11 @@ def build_module(shape, idtype, odtype):
                                     fun=BinaryFn.mul,
                                     cast=TypeFn.cast_unsigned,
                                 )
+                                DeallocOp(tile_a)
+                                DeallocOp(tile_b)
+                                DeallocOp(tile_c)
                                 ChannelPut("ChanC", [], tile_c)
                                 yield_([])
-                            DeallocOp(tile_a)
-                            DeallocOp(tile_b)
-                            DeallocOp(tile_c)
                             HerdTerminatorOp()
 
                         SegmentTerminatorOp()
