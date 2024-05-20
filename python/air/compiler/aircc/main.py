@@ -373,7 +373,7 @@ def run(mlir_module, args=None):
             "builtin.module(" + pass_pipeline + ")", air_placed_module, opts, air_placed
         )
 
-        air_to_aie_pass = "air-to-aie{emit-while-loop=false"
+        air_to_aie_pass = "air-to-aie{emit-while-loop=true"
         air_to_aie_pass = air_to_aie_pass + f" row-offset={opts.row_offset}"
         air_to_aie_pass = air_to_aie_pass + f" col-offset={opts.col_offset}"
         air_to_aie_pass = air_to_aie_pass + f" device={opts.device}" + "}"
