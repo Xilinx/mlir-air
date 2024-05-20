@@ -436,7 +436,7 @@ module {
     %c2_i32 = arith.constant 2 : i32
     %c7_i32 = arith.constant 7 : i32
     %c64_i64 = arith.constant 64 : i64
-    %p = airrt.herd_load "herd" : i64
+    %p = airrt.herd_load "herd" () : () -> i64
     airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
     return
   }
@@ -1006,8 +1006,8 @@ module {
             %25 = arith.index_cast %20 : index to i64
             %26 = airrt.dma_memcpy_nd(%c31_i32, %22, %c0_i64, %arg0[%c0_i64, %23, %24, %25], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c4096_i64, %c64_i64]) {metadata = @airMemcpyId31} : (i32, i64, i64, memref<2x64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
             affine.for %arg7 = 0 to 1 {
-              %h = airrt.herd_load "herd_0" : i64
-              %h_0 = airrt.herd_load "herd_0" : i64
+              %h = airrt.herd_load "herd_0" () : () -> i64
+              %h_0 = airrt.herd_load "herd_0" () : () -> i64
             }
           }
         }
