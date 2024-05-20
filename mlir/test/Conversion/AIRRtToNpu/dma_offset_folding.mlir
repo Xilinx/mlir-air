@@ -96,6 +96,9 @@ module {
     memref.global "public" @airMemcpyId5 : memref<16x8x8x16xbf16, 1>
   } {sym_name = "forward_0"}
   airrt.module_metadata{
+    airrt.segment_metadata attributes {sym_name = "forward_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
   }
   func.func @forward(%arg0: memref<512x128xbf16>, %arg1: memref<16x8x8x64xbf16>, %arg2: memref<512x512xf32>) -> memref<512x512xf32> {
     %c384_i64 = arith.constant 384 : i64

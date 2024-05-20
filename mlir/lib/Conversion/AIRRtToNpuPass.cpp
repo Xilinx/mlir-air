@@ -226,6 +226,66 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<HerdLoadOp> {
   LogicalResult
   matchAndRewrite(HerdLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+
+    auto module = op->getParentOfType<ModuleOp>();
+
+    // get the size metadata associated with this herd load
+    int64_t size_x = -1;
+    int64_t size_y = -1;
+    int64_t loc_x = -1;
+    int64_t loc_y = -1;
+    module.walk([&](HerdMetadataOp metadata) {
+      // return the first match by name
+      if (metadata.getSymName() != op.getSymName())
+        return WalkResult::advance();
+      auto sxAttr = metadata->getAttrOfType<IntegerAttr>("size_x");
+      auto syAttr = metadata->getAttrOfType<IntegerAttr>("size_y");
+      auto lxAttr = metadata->getAttrOfType<IntegerAttr>("loc_x");
+      auto lyAttr = metadata->getAttrOfType<IntegerAttr>("loc_y");
+      if (sxAttr && syAttr && lxAttr && lyAttr) {
+        size_x = sxAttr.getInt();
+        size_y = syAttr.getInt();
+        loc_x = lxAttr.getInt();
+        loc_y = lyAttr.getInt();
+      } else {
+        metadata.emitWarning(
+            "airrt.herd_metadata missing size_x, size_y, loc_x, or loc_y.");
+      }
+      return WalkResult::interrupt();
+    });
+    if (size_x < 0 || size_y < 0 || loc_x < 0 || loc_y < 0) {
+      op.emitWarning(
+            "airrt.herd_metadata missing or incomplete.");
+      return failure();
+    }
+
+    // for each herd core, emit write_rtp ops for every herd operand
+    // followed by a write32 to the herd lock, setting it to 1.
+    for (int phys_x = loc_x; phys_x < size_x + loc_x; phys_x++) {
+      for (int phys_y = loc_y; phys_y < size_y + loc_y; phys_y++) {
+
+        for (int i = 0, e = op.getNumOperands(); i < e; i++) {
+          Value oper = adaptor.getOperands()[i];
+          if (!llvm::isa<IntegerType, IndexType, FloatType>(oper.getType()))
+            continue;
+
+          std::string name = "__air_herd_rtp_" + std::to_string(phys_x) + "_" +
+                             std::to_string(phys_y);
+          auto constOp =
+              dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
+          if (!constOp)
+            continue;
+          uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
+          rewriter.create<AIEX::NpuWriteRTPOp>(op.getLoc(), name, i, v);
+        }
+        // FIXME: this should depend on the metadata to enable and to get the id
+        if (op.getNumOperands())
+          rewriter.create<AIEX::NpuWrite32Op>(op.getLoc(), 0x0001F000, 0x1,
+                                              nullptr,
+                                              rewriter.getI32IntegerAttr(phys_x),
+                                              rewriter.getI32IntegerAttr(phys_y));
+      }
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -1320,6 +1380,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         auto chan = builder.getI32IntegerAttr(infoOp->getChannelIndex());
         auto col_num = builder.getI32IntegerAttr(1);
         auto row_num = builder.getI32IntegerAttr(1);
+        // FIXME: setting the insertion point to the end is a hack for
+        // RTP POC, so that the sync is after the rtp
+        // writes and the herd lock aquire.
+        // builder.setInsertionPoint(dma->getBlock()->getTerminator());
         builder.setInsertionPointAfter(dma);
         builder.create<AIEX::NpuSyncOp>(dma->getLoc(), col, row, dir, chan,
                                         col_num, row_num);

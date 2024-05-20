@@ -232,13 +232,19 @@ public:
       return failure();
     }
 
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(op->getBlock());
-      rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                         herd_name_attr.getValue().str(),
-                                         /* operands */ SmallVector<Value>());
+    // Integer kernel operands are passed as arguments (runtime parameters) to
+    // the herd load op.
+    SmallVector<Value> args;
+    for (int i = 0, e = herd.getNumKernelOperands(); i < e; i++) {
+      Value o = herd.getKernelOperand(i);
+      if (o.use_empty())
+        continue;
+      if (llvm::isa<IntegerType, IndexType, FloatType>(o.getType()))
+        args.push_back(o);
     }
+
+    rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
+                                       herd_name_attr.getValue().str(), args);
 
     SmallVector<Value, 4> deps;
     for (auto &o : operands)
@@ -854,7 +860,6 @@ public:
 };
 
 LogicalResult ScfParToAffineForConversion(Operation *op) {
-
   func::FuncOp f = dyn_cast<func::FuncOp>(op);
   if (!f)
     return failure();

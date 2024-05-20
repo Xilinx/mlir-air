@@ -27,10 +27,10 @@ AIE::TileOp getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col, int row);
 AIE::TileOp getPhysTileOp(AIE::DeviceOp aie_device, int col, int row);
 
 AIE::LockOp allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
-                           int init = 0, int id = -1);
+                           int init = 0, int id = -1, StringAttr name = nullptr);
 
 std::stringstream
-generateBufferNameInStringStream(std::string prefix, uint64_t &BufferId,
+generateBufferNameInStringStream(StringRef prefix, uint64_t &BufferId,
                                  mlir::StringAttr attr = nullptr, int x = -1,
                                  int y = -1);
 
