@@ -1333,7 +1333,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         SmallVector<Value> offsets = get.getDstOffsets();
         SmallVector<Value> strides = get.getDstStrides();
         int64_t offset =
-            get1DOffset(offsets, strides, getElementSizeInBytes(get.getMemref().getType().cast<MemRefType>()));
+            get1DOffset(offsets, strides);
         addLinkEnd(ctx, buff, /* isInput */ true, numLinkEnds, objFifo, offset);
         // if put: add to output objectFifo vector
       } else if (auto put = dyn_cast<ChannelPutOp>(endOfLink)) {
@@ -1341,7 +1341,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         SmallVector<Value> offsets = put.getSrcOffsets();
         SmallVector<Value> strides = put.getSrcStrides();
         int64_t offset =
-            get1DOffset(offsets, strides, getElementSizeInBytes(put.getMemref().getType().cast<MemRefType>()));
+            get1DOffset(offsets, strides);
         addLinkEnd(ctx, buff, /* isInput */ false, numLinkEnds, objFifo, offset);
       }
       createLink(rewriter, buff);
@@ -1401,7 +1401,7 @@ private:
   // find AIE cores and their tiles based on memory hierarchy levels
   template <typename MyOp>
   LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
-                                      AIE::AIEObjectFifoType *datatype) const {
+                                      std::pair<int, MemRefType> *datatype) const {
     MemRefType memref = llvm::cast<MemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
     // remove mem_space from memref for objFifo datatype
