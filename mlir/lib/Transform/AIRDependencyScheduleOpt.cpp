@@ -3257,6 +3257,20 @@ private:
       return true;
     return false;
   }
+  // Check if two ssa value lists are identical.
+  bool areTheSameSSAValueLists(SmallVector<Value> a, SmallVector<Value> b) {
+    if (a.size() != b.size())
+      return false;
+    for (unsigned i = 0; i < a.size(); i++) {
+      auto constAElem = getConstantIntValue(a[i]);
+      auto constBElem = getConstantIntValue(b[i]);
+      if (constAElem && constBElem)
+        // Unequal constant values
+        if (*constAElem != *constBElem)
+          return false;
+    }
+    return true;
+  }
   // Check of two air.channels are mergeable in time, by fusing into a shared
   // scf.for loop. Returns a tuple of bool of whether mergeable, and string of
   // fusing into for loop lower bound (LB) or upper bound (UB).
@@ -3280,26 +3294,56 @@ private:
       return notMergeable;
     if (a_gets.size() != 1)
       return notMergeable;
-    // Check for identical src and dst memref
+    // Check for identical src and dst memrefs, offset, size and stride lists
     Value aMemref = a_puts[0].getMemref();
+    SmallVector<Value> aOffsets = a_puts[0].getOffsets();
+    SmallVector<Value> aSizes = a_puts[0].getSizes();
+    SmallVector<Value> aStrides = a_puts[0].getStrides();
     for (unsigned i = 1; i < a_puts.size(); i++)
-      if (aMemref != a_puts[i].getMemref())
+      if ((!areTheSameMemref(aMemref, a_puts[i].getMemref())) ||
+          (!areTheSameSSAValueLists(aOffsets, a_puts[i].getOffsets())) ||
+          (!areTheSameSSAValueLists(aSizes, a_puts[i].getSizes())) ||
+          (!areTheSameSSAValueLists(aStrides, a_puts[i].getStrides())))
         return notMergeable; // Inconsistent memory use for all puts
     Value bMemref = b_puts[0].getMemref();
+    SmallVector<Value> bOffsets = b_puts[0].getOffsets();
+    SmallVector<Value> bSizes = b_puts[0].getSizes();
+    SmallVector<Value> bStrides = b_puts[0].getStrides();
     for (unsigned i = 1; i < b_puts.size(); i++)
-      if (bMemref != b_puts[i].getMemref())
+      if ((!areTheSameMemref(bMemref, b_puts[i].getMemref())) ||
+          (!areTheSameSSAValueLists(bOffsets, b_puts[i].getOffsets())) ||
+          (!areTheSameSSAValueLists(bSizes, b_puts[i].getSizes())) ||
+          (!areTheSameSSAValueLists(bStrides, b_puts[i].getStrides())))
         return notMergeable; // Inconsistent memory use for all puts
-    if (!areTheSameMemref(aMemref, bMemref))
+    if ((!areTheSameMemref(aMemref, bMemref)) ||
+        (!areTheSameSSAValueLists(aOffsets, bOffsets)) ||
+        (!areTheSameSSAValueLists(aSizes, bSizes)) ||
+        (!areTheSameSSAValueLists(aStrides, bStrides)))
       return notMergeable;
     aMemref = a_gets[0].getMemref();
+    aOffsets = a_gets[0].getOffsets();
+    aSizes = a_gets[0].getSizes();
+    aStrides = a_gets[0].getStrides();
     for (unsigned i = 1; i < a_gets.size(); i++)
-      if (aMemref != a_gets[i].getMemref())
+      if ((!areTheSameMemref(aMemref, a_gets[i].getMemref())) ||
+          (!areTheSameSSAValueLists(aOffsets, a_gets[i].getOffsets())) ||
+          (!areTheSameSSAValueLists(aSizes, a_gets[i].getSizes())) ||
+          (!areTheSameSSAValueLists(aStrides, a_gets[i].getStrides())))
         return notMergeable; // Inconsistent memory use for all gets
     bMemref = b_gets[0].getMemref();
+    bOffsets = b_gets[0].getOffsets();
+    bSizes = b_gets[0].getSizes();
+    bStrides = b_gets[0].getStrides();
     for (unsigned i = 1; i < b_gets.size(); i++)
-      if (bMemref != b_gets[i].getMemref())
+      if ((!areTheSameMemref(bMemref, b_gets[i].getMemref())) ||
+          (!areTheSameSSAValueLists(bOffsets, b_gets[i].getOffsets())) ||
+          (!areTheSameSSAValueLists(bSizes, b_gets[i].getSizes())) ||
+          (!areTheSameSSAValueLists(bStrides, b_gets[i].getStrides())))
         return notMergeable; // Inconsistent memory use for all gets
-    if (!areTheSameMemref(aMemref, bMemref))
+    if ((!areTheSameMemref(aMemref, bMemref)) ||
+        (!areTheSameSSAValueLists(aOffsets, bOffsets)) ||
+        (!areTheSameSSAValueLists(aSizes, bSizes)) ||
+        (!areTheSameSSAValueLists(aStrides, bStrides)))
       return notMergeable;
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
