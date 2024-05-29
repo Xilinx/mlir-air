@@ -1389,23 +1389,41 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
           targetMemrefs.push_back(allocOp);
           allocOp->setAttr("split", BoolAttr::get(ctx, true));
           allocOp->setAttr("split_type", StringAttr::get(ctx, "scf.parallel"));
-          if (lbs_spatial.size() == 1) {
-            // If scf.parallel has less dims than the memref, i.e. partial
-            // unrolling, then label the dim.
-            int unrollDim = 0;
-            for (auto index : chanOp.getIndices()) {
-              if (auto indexOwner =
-                      scf::getParallelForInductionVarOwner(index)) {
-                if (indexOwner == parentParOp) {
-                  allocOp->setAttr(
-                      "split_dim",
-                      IntegerAttr::get(IntegerType::get(ctx, 32), unrollDim));
-                  break;
-                }
-              }
-              unrollDim++;
+
+          // Label the dimension on memref to be targetted for splitting, by
+          // analyzing the scf.parallel access pattern (as dependence from
+          // offsets to induction variables).
+          int splitDim = -1;
+          for (unsigned i = 0; i < chanOp.getOffsets().size(); i++) {
+            SmallVector<Value, 1> candidateOperands(1, chanOp.getOffsets()[i]);
+            SmallVector<Value, 1> loop_dep_history;
+            std::vector<Operation *> op_history;
+            air::traceDependentInductionVar(candidateOperands, loop_dep_history,
+                                            op_history);
+            for (auto v : loop_dep_history) {
+              if (scf::getParallelForInductionVarOwner(v) != parentParOp)
+                continue;
+              auto memrefDim = air::getMemrefDimFromOffsetDim(
+                  i, chanOp.getOffsets(), chanOp.getStrides(),
+                  air::getTensorShape(memref.getType()));
+              if (!memrefDim)
+                continue;
+              splitDim = *memrefDim;
+              break;
             }
+            if (splitDim >= 0)
+              break;
           }
+
+          if (allocOp->hasAttr("split_dim"))
+            assert(allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt() ==
+                       splitDim &&
+                   "L2 memref tiled inconsistently across multiple data access "
+                   "patterns. Cannot infer L2 memref tiling strategy.");
+          else if (splitDim >= 0)
+            allocOp->setAttr(
+                "split_dim",
+                IntegerAttr::get(IntegerType::get(ctx, 32), splitDim));
         }
         // Tiling along the first (x) dimension of scf.parallel only, as one NPU
         // memtile is located at the bottom of each column.
@@ -1506,8 +1524,6 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         // Case 1: Parallel access to the memref represented with scf.parallel
         // op. Data access specialization method: unroll the scf.parallel
         // loop.
-        SmallVector<int, 2> lbs_spatial, ubs_spatial;
-        air::getSizesFromSpatialLoop(par, lbs_spatial, ubs_spatial);
         OpBuilder builder(par);
         IRMapping remap;
         (void)air::unrollAIRChannelPutGetInScfParallel(builder, par, user,
