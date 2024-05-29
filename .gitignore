@@ -1,6 +1,7 @@
 # make artifacts
-CMakeFiles
-CMakeCache.txt
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
 platforms/scripts/env_config
 platforms/scripts/br_config
 
