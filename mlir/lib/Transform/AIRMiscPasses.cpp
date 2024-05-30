@@ -1087,15 +1087,6 @@ int findGCD(SmallVector<int> vec) {
   return result;
 }
 
-// Check if an air.channel is single-consumer-single-producer.
-bool hasSinglePutAndGet(air::ChannelOp chan) {
-  auto puts =
-      getChannelPutOpThroughSymbol(chan, chan->getParentOfType<ModuleOp>());
-  auto gets =
-      getChannelGetOpThroughSymbol(chan, chan->getParentOfType<ModuleOp>());
-  return puts.size() == 1 && gets.size() == 1;
-}
-
 // Tile air.channel put/get wrt a memref.
 Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
                             int originalMemrefSize, int dim,
@@ -1516,11 +1507,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       if (!isa<air::ChannelInterface>(user))
         continue;
       auto chanUserOp = dyn_cast<air::ChannelInterface>(user);
-      auto chanUserChannelDeclr =
-          air::getChannelDeclarationThroughSymbol(chanUserOp);
-      if (!hasSinglePutAndGet(chanUserChannelDeclr)) {
-        assert(false && "NYI");
-      } else if (auto par = user->getParentOfType<scf::ParallelOp>()) {
+      if (auto par = user->getParentOfType<scf::ParallelOp>()) {
         // Case 1: Parallel access to the memref represented with scf.parallel
         // op. Data access specialization method: unroll the scf.parallel
         // loop.
@@ -1559,19 +1546,12 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         int dim = 0;
         if (allocOp->hasAttr("split_dim"))
           dim = allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt();
-        for (unsigned i = 0; i < memrefShape.size(); i++) {
-          if (chanUserOp.getOffsets().empty())
-            break;
-          int offsetDim =
-              chanUserOp.getOffsets().size() - memrefShape.size() + i;
-          if (getConstantIntValue(chanUserOp.getOffsets()[offsetDim])) {
-            dim = i;
-            break;
-          }
-        }
-        auto newWaitAll =
-            tileChannelOpByFactor(chanUserOp, targetColTilingFactor,
-                                  memrefShape[dim], dim, new_chan, loc, ctx);
+        auto offsetDimOpt = air::getOffsetDimFromMemrefDim(
+            dim, chanUserOp.getStrides(), memrefShape);
+        int offsetDim = offsetDimOpt ? *offsetDimOpt : dim;
+        auto newWaitAll = tileChannelOpByFactor(
+            chanUserOp, targetColTilingFactor, memrefShape[dim], offsetDim,
+            new_chan, loc, ctx);
 
         // Update async dependency.
         auto old_token =
@@ -1582,9 +1562,20 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         // Update the other channel op of the chanUserChannelDeclr.
         auto theOtherChanOp =
             air::getTheOtherChannelOpThroughSymbol(chanUserOp);
-        Value newWaitAll1 =
-            tileChannelOpByFactor(theOtherChanOp[0], targetColTilingFactor,
-                                  memrefShape[dim], dim, new_chan, loc, ctx);
+        auto theOtherMemrefShape =
+            air::getTensorShape(theOtherChanOp[0].getMemref().getType());
+        // Note: if the memref on the other side of the air channel has
+        // different rank, then we assume to tile that memref at first
+        // dimension.
+        if (memrefShape.size() != theOtherMemrefShape.size())
+          dim = 0;
+        auto theotherOffsetDimOpt = air::getOffsetDimFromMemrefDim(
+            dim, theOtherChanOp[0].getStrides(), theOtherMemrefShape);
+        int theotherOffsetDim =
+            theotherOffsetDimOpt ? *theotherOffsetDimOpt : dim;
+        Value newWaitAll1 = tileChannelOpByFactor(
+            theOtherChanOp[0], targetColTilingFactor, memrefShape[dim],
+            theotherOffsetDim, new_chan, loc, ctx);
 
         // Update dependency.
         auto oldToken =
