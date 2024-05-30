@@ -967,31 +967,52 @@ public:
       } else
         newInitVals.push_back(initVal);
     }
-    auto newOp = rewriter.create<scf::ParallelOp>(
-        op->getLoc(), adaptor.getLowerBound(), adaptor.getUpperBound(),
-        adaptor.getStep(), newInitVals);
-    auto body = op.getBody();
-    auto newBody = newOp.getBody();
 
-    rewriter.setInsertionPointToStart(newBody);
-
-    IRMapping remap;
-    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
-      auto arg = body->getArgument(i);
-      auto newArg = newBody->getArgument(i);
-      if (isa<airrt::EventType>(newArg.getType())) {
-        auto cast = rewriter.create<UnrealizedConversionCastOp>(
-            op->getLoc(), arg.getType(), newArg);
-        remap.map(arg, cast.getResult(0));
-      } else {
-        remap.map(arg, newArg);
+    auto hasNElements = [](Block *block, unsigned N) {
+      unsigned counter = 0;
+      for (auto &o : block->getOperations()) {
+        if (o.mightHaveTrait<OpTrait::IsTerminator>())
+          continue;
+        if (isa<air::WaitAllOp>(o))
+          continue;
+        counter++;
       }
+      return counter == N;
+    };
+
+    Operation *newOp = nullptr;
+    auto body = op.getBody();
+    if (hasNElements(body, 0))
+      // If empty scf.parallel body, then replace the scf.parallel with
+      // airrt.wait_all (no-op).
+      newOp = rewriter.create<airrt::WaitAllOp>(
+          op->getLoc(), airrt::EventType::get(op->getContext()), newInitVals);
+    else {
+      auto newParOp = rewriter.create<scf::ParallelOp>(
+          op->getLoc(), adaptor.getLowerBound(), adaptor.getUpperBound(),
+          adaptor.getStep(), newInitVals);
+      newOp = newParOp.getOperation();
+      auto newBody = newParOp.getBody();
+      rewriter.setInsertionPointToStart(newBody);
+      IRMapping remap;
+      for (int i = 0, e = body->getNumArguments(); i < e; i++) {
+        auto arg = body->getArgument(i);
+        auto newArg = newBody->getArgument(i);
+        if (isa<airrt::EventType>(newArg.getType())) {
+          auto cast = rewriter.create<UnrealizedConversionCastOp>(
+              op->getLoc(), arg.getType(), newArg);
+          remap.map(arg, cast.getResult(0));
+        } else {
+          remap.map(arg, newArg);
+        }
+      }
+      for (int i = 0, e = op.getNumReductions(); i < e; i++)
+        replaceAllUsesInRegionWith(op.getInitVals()[i],
+                                   newParOp.getInitVals()[i],
+                                   newParOp.getRegion());
+      for (auto &o : body->getOperations())
+        rewriter.clone(o, remap);
     }
-    for (int i = 0, e = op.getNumReductions(); i < e; i++)
-      replaceAllUsesInRegionWith(op.getInitVals()[i], newOp.getInitVals()[i],
-                                 newOp.getRegion());
-    for (auto &o : body->getOperations())
-      rewriter.clone(o, remap);
 
     // Cast result types back to air.asyncTokenType using
     // UnrealizedConversionCastOp.
