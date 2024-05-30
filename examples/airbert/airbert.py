@@ -81,6 +81,9 @@ qkv = torch.tensor(
     jit_module.forward(x.numpy(), q.numpy(), k.numpy(), v.numpy()))
 print(qkv)
 
+# Unloading the air backend
+del airbackend
+
 if torch.allclose(qkv_ref, qkv):
     print("PASS!")
 else:

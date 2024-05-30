@@ -7,18 +7,18 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie | FileCheck %s
-// CHECK: AIE.core({{.*}}) {
-// CHECK: AIE.useLock({{.*}}, Acquire, 1)
+// CHECK: aie.core({{.*}}) {
+// CHECK: aie.use_lock({{.*}}, Acquire, 0)
+// CHECK: aie.use_lock({{.*}}, Acquire, 1)
 // CHECK: scf.for {{.*}} = {{.*}} to {{.*}} step {{.*}} {
-// CHECK:   AIE.useLock({{.*}}, Acquire, 1)
-// CHECK:   AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:   aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:   aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:   linalg.matmul ins({{.*}}, {{.*}} : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs({{.*}} : memref<32x32xi32, 2>)
-// CHECK:   AIE.useLock({{.*}}, Release, 0)
-// CHECK:   AIE.useLock({{.*}}, Release, 0)
+// CHECK:   aie.use_lock({{.*}}, Release, 0)
+// CHECK:   aie.use_lock({{.*}}, Release, 0)
 // CHECK: }
-// CHECK: AIE.useLock({{.*}}, Acquire, 0)
-// CHECK: AIE.useLock({{.*}}, Release, 1)
-// CHECK: AIE.useLock({{.*}}, Release, 0)
+// CHECK: aie.use_lock({{.*}}, Release, 1)
+// CHECK: aie.use_lock({{.*}}, Release, 0)
 #map = affine_map<()[s0] -> (s0 * 32)>
 #set0 = affine_set<(d0, d1)[s0] : (d0 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 1 >= 0)>
 #set1 = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, s0 >= 0, -s0 + 1 >= 0)>

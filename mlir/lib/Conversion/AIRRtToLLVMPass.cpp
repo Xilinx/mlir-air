@@ -444,14 +444,16 @@ public:
             herd_meta->getAttrOfType<ArrayAttr>("dma_allocations");
         assert(shim_attr);
         for (auto &shim_alloc : shim_attr) {
-          auto shim_alloc_dict = shim_alloc.cast<DictionaryAttr>();
-          auto id = shim_alloc_dict.get("id").cast<IntegerAttr>().getInt();
-          auto row = shim_alloc_dict.get("row").cast<IntegerAttr>().getInt();
-          auto col = shim_alloc_dict.get("col").cast<IntegerAttr>().getInt();
+          auto shim_alloc_dict = llvm::cast<DictionaryAttr>(shim_alloc);
+          auto id = llvm::cast<IntegerAttr>(shim_alloc_dict.get("id")).getInt();
+          auto row =
+              llvm::cast<IntegerAttr>(shim_alloc_dict.get("row")).getInt();
+          auto col =
+              llvm::cast<IntegerAttr>(shim_alloc_dict.get("col")).getInt();
           auto channel =
-              shim_alloc_dict.get("channel").cast<IntegerAttr>().getInt();
+              llvm::cast<IntegerAttr>(shim_alloc_dict.get("channel")).getInt();
           auto location =
-              shim_alloc_dict.get("location").cast<IntegerAttr>().getInt();
+              llvm::cast<IntegerAttr>(shim_alloc_dict.get("location")).getInt();
           cols[id - 1][row][col] = location;
           chans[id - 1][row][col] = channel;
         }
@@ -552,57 +554,6 @@ public:
   }
 };
 
-LogicalResult lowerDmaMemcpy(Operation *op, PatternRewriter &rewriter,
-                             std::string fnName) {
-  auto ctx = op->getContext();
-  auto loc = op->getLoc();
-
-  SmallVector<Type, 6> tys;
-  SmallVector<Type, 1> retTys;
-  SmallVector<Value, 16> operands;
-
-  auto i32Ty = IntegerType::get(ctx, 32);
-  auto signalTy = LLVM::LLVMPointerType::get(ctx);
-  tys.push_back(signalTy);
-  if (op->getNumResults()) {
-    auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
-                                                 rewriter.getI32IntegerAttr(1));
-    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, i32Ty, one, 4);
-    operands.push_back(signal);
-  } else {
-    auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
-    operands.push_back(nullV);
-  }
-
-  for (auto o : op->getOperands()) {
-    tys.push_back(o.getType());
-    operands.push_back(o);
-  }
-
-  MemRefType memrefTy = tys[4].cast<MemRefType>();
-  tys[4] = MemRefType::get(
-      std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
-      memrefTy.getElementType(), memrefTy.getLayout(),
-      memrefTy.getMemorySpace());
-  auto module = op->getParentOfType<ModuleOp>();
-
-  auto fnTy = FunctionType::get(ctx, tys, retTys);
-  auto fn = module.lookupSymbol<func::FuncOp>(fnName);
-  if (!fn) {
-    fn = func::FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
-    fn.setPrivate();
-    module.push_back(fn);
-  }
-  operands[4] = rewriter.create<memref::CastOp>(loc, tys[4], operands[4]);
-  rewriter.create<func::CallOp>(loc, retTys, SymbolRefAttr::get(fn), operands);
-  if (op->getNumResults()) {
-    rewriter.replaceOp(op, operands[0]);
-  } else {
-    rewriter.eraseOp(op);
-  }
-  return success();
-}
-
 LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
                                std::string fnName) {
   auto ctx = op->getContext();
@@ -630,7 +581,7 @@ LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
     operands.push_back(o);
   }
 
-  MemRefType memrefTy = tys[4].cast<MemRefType>();
+  MemRefType memrefTy = llvm::cast<MemRefType>(tys[4]);
   tys[4] = MemRefType::get(
       std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
       memrefTy.getElementType(), memrefTy.getLayout(),
@@ -686,8 +637,8 @@ LogicalResult lowerNdMemcpy(Operation *op, PatternRewriter &rewriter,
     operands.push_back(nullV);
   }
 
-  MemRefType dstMemRefTy = dmaOp.getDst().getType().cast<MemRefType>();
-  MemRefType srcMemRefTy = dmaOp.getSrc().getType().cast<MemRefType>();
+  MemRefType dstMemRefTy = llvm::cast<MemRefType>(dmaOp.getDst().getType());
+  MemRefType srcMemRefTy = llvm::cast<MemRefType>(dmaOp.getSrc().getType());
 
   for (auto o : op->getOperands())
     operands.push_back(o);
@@ -789,7 +740,7 @@ public:
   matchAndRewrite(memref::DeallocOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -808,7 +759,7 @@ public:
   matchAndRewrite(affine::AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -825,7 +776,7 @@ public:
   matchAndRewrite(memref::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -845,7 +796,7 @@ public:
   matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -863,7 +814,7 @@ public:
   matchAndRewrite(affine::AffineLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -888,7 +839,7 @@ public:
 
     auto ctx = op->getContext();
 
-    auto memrefTy = op.getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2)
       return failure();
 
@@ -940,7 +891,7 @@ public:
     SmallVector<Type, 1> retTys;
     auto ctx = op->getContext();
 
-    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
+    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2)
       return failure();
 
@@ -1031,9 +982,9 @@ public:
   matchAndRewrite(scf::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto newOp =
-        rewriter.replaceOpWithNewOp<scf::ReduceOp>(op, adaptor.getOperand());
-    auto body = &op.getRegion().front();
-    auto newBody = &newOp.getRegion().front();
+        rewriter.create<scf::ReduceOp>(op->getLoc(), adaptor.getOperands());
+    auto body = &op.getRegion(0).front();
+    auto newBody = &newOp.getRegion(0).front();
 
     for (int i = 0, e = body->getNumArguments(); i < e; i++) {
       body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
@@ -1042,6 +993,7 @@ public:
     auto &ops = body->getOperations();
     auto &newOps = newBody->getOperations();
     newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -1140,7 +1092,7 @@ public:
 
     auto &ops = body->getOperations();
     auto &newOps = newBody->getOperations();
-    newOps.splice(newOps.begin(), ops, ops.begin(), --ops.end());
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
 
     rewriter.replaceOp(op, newPar.getResults());
     return success();
@@ -1202,12 +1154,12 @@ public:
 
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert L1 memrefs to L3
-      if (auto memref = type.dyn_cast<MemRefType>())
+      if (auto memref = llvm::dyn_cast<MemRefType>(type))
         if (memref.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
           return mlir::MemRefType::get(memref.getShape(),
                                        memref.getElementType(),
                                        memref.getLayout(), 0);
-      if (auto t = type.dyn_cast<xilinx::airrt::EventType>())
+      if (auto t = llvm::dyn_cast<xilinx::airrt::EventType>(type))
         return LLVM::LLVMPointerType::get(context);
       return std::optional<Type>(type);
     });
@@ -1246,37 +1198,32 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (
-          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
-          0);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() == 0);
     });
 
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
         [&](affine::AffineStoreOp op) {
-          return (op.getMemref()
-                      .getType()
-                      .cast<MemRefType>()
+          return (llvm::cast<MemRefType>(op.getMemref().getType())
                       .getMemorySpaceAsInt() !=
                   (int)xilinx::air::MemorySpace::L1);
         });
 
-    target.addDynamicallyLegalOp<affine::AffineLoadOp>([&](affine::AffineLoadOp
-                                                               op) {
-      return (
-          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
-    });
+    target.addDynamicallyLegalOp<affine::AffineLoadOp>(
+        [&](affine::AffineLoadOp op) {
+          return (llvm::cast<MemRefType>(op.getMemref().getType())
+                      .getMemorySpaceAsInt() !=
+                  (int)xilinx::air::MemorySpace::L1);
+        });
 
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
-      return (
-          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
     });
 
     target.addDynamicallyLegalOp<memref::LoadOp>([&](memref::LoadOp op) {
-      return (
-          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
+      return (llvm::cast<MemRefType>(op.getMemref().getType())
+                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
     });
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
@@ -1285,12 +1232,12 @@ public:
 
     target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
       for (auto t : op.getOperandTypes()) {
-        if (auto mty = t.dyn_cast<MemRefType>())
+        if (auto mty = llvm::dyn_cast<MemRefType>(t))
           if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
             return false;
       }
       for (auto t : op.getResultTypes()) {
-        if (auto mty = t.dyn_cast<MemRefType>())
+        if (auto mty = llvm::dyn_cast<MemRefType>(t))
           if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
             return false;
       }
@@ -1299,7 +1246,7 @@ public:
 
     target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
       for (auto o : op.getRegionIterArgs()) {
-        if (o.getType().isa<xilinx::airrt::EventType>())
+        if (llvm::isa<xilinx::airrt::EventType>(o.getType()))
           return false;
       }
       return true;
@@ -1307,7 +1254,7 @@ public:
 
     target.addDynamicallyLegalOp<scf::ParallelOp>([&](scf::ParallelOp op) {
       for (auto o : op.getInitVals()) {
-        if (o.getType().isa<xilinx::airrt::EventType>())
+        if (llvm::isa<xilinx::airrt::EventType>(o.getType()))
           return false;
       }
       return true;
@@ -1315,22 +1262,23 @@ public:
 
     target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
       for (auto v : op.getOperands()) {
-        if (v.getType().isa<xilinx::airrt::EventType>())
+        if (llvm::isa<xilinx::airrt::EventType>(v.getType()))
           return false;
       }
       return true;
     });
 
     target.addDynamicallyLegalOp<scf::ReduceOp>([&](scf::ReduceOp op) {
-      if (op.getOperand().getType().isa<xilinx::airrt::EventType>())
-        return false;
-      else
-        return true;
+      for (auto oper : op.getOperands()) {
+        if (llvm::isa<xilinx::airrt::EventType>(oper.getType()))
+          return false;
+      }
+      return true;
     });
 
     target.addDynamicallyLegalOp<scf::ReduceReturnOp>(
         [&](scf::ReduceReturnOp op) {
-          if (op.getResult().getType().isa<xilinx::airrt::EventType>())
+          if (llvm::isa<xilinx::airrt::EventType>(op.getResult().getType()))
             return false;
           else
             return true;
@@ -1338,7 +1286,7 @@ public:
 
     target.addDynamicallyLegalOp<scf::IfOp>([&](scf::IfOp op) {
       for (auto v : op.getResults()) {
-        if (v.getType().isa<xilinx::airrt::EventType>())
+        if (llvm::isa<xilinx::airrt::EventType>(v.getType()))
           return false;
       }
       return true;

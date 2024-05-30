@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
-#include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Util/CostModel.h"
 #include "air/Util/Outliner.h"
 #include "air/Util/Util.h"
@@ -22,7 +22,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
-#include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
+#include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -167,7 +167,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 
 //   LogicalResult matchAndRewrite(memref::DimOp op,
 //                                 PatternRewriter &rewriter) const override {
-//     auto operTy = op.memrefOrTensor().getType().dyn_cast<ShapedType>();
+//     auto operTy = llvm::dyn_cast<ShapedType>(op.memrefOrTensor().getType());
 //     if (!operTy.hasStaticShape())
 //       return failure();
 
@@ -661,16 +661,11 @@ struct LinalgTransformationFilter {
       ArrayRef<StringAttr> matchDisjunction = {},
       std::optional<StringAttr> replacement = std::nullopt);
 
-  explicit LinalgTransformationFilter(
-      const FilterFunction &f, ArrayRef<StringAttr> matchDisjunction = {},
-      std::optional<StringAttr> replacement = std::nullopt);
-
   LinalgTransformationFilter(LinalgTransformationFilter &&) = default;
   LinalgTransformationFilter(const LinalgTransformationFilter &) = default;
   LogicalResult checkAndNotify(PatternRewriter &rewriter, Operation *op) const;
   void replaceLinalgTransformationFilter(PatternRewriter &rewriter,
                                          Operation *op) const;
-  bool hasReplacementFilter(Operation *op) const;
 
   LinalgTransformationFilter &addFilter(const FilterFunction &f) {
     if (f)
@@ -708,16 +703,6 @@ LinalgTransformationFilter::LinalgTransformationFilter(
     std::optional<StringAttr> replacement)
     : matchDisjunction(matchDisjunction.begin(), matchDisjunction.end()),
       replacement(replacement), matchByDefault(false) {}
-
-LinalgTransformationFilter::LinalgTransformationFilter(
-    const FilterFunction &f, ArrayRef<StringAttr> matchDisjunction,
-    std::optional<StringAttr> replacement)
-    : filters(),
-      matchDisjunction(matchDisjunction.begin(), matchDisjunction.end()),
-      replacement(replacement), matchByDefault(false) {
-  if (f)
-    filters.push_back(f);
-}
 
 LogicalResult
 LinalgTransformationFilter::checkAndNotify(PatternRewriter &rewriter,
@@ -760,14 +745,6 @@ void LinalgTransformationFilter::replaceLinalgTransformationFilter(
   else
     op->removeAttr(
         rewriter.getStringAttr(air::LinalgTransforms::kLinalgTransformMarker));
-}
-
-bool LinalgTransformationFilter::hasReplacementFilter(Operation *op) const {
-  if (!replacement)
-    return false;
-  auto attr = op->getAttr(air::LinalgTransforms::kLinalgTransformMarker)
-                  .dyn_cast<StringAttr>();
-  return attr && attr == *replacement;
 }
 
 RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
@@ -842,14 +819,14 @@ struct PromoteLinalgOpPattern : public RewritePattern {
     // so if the promotion fails, those need to be cleaned up, which doesnt seem
     // to be happening here. So to fail properly, we should be cloning the op
     // and deleting the previous op. This needs more investigation.
-    rewriter.startRootUpdate(op);
+    rewriter.startOpModification(op);
     std::optional<linalg::LinalgOp> promotedOp =
         promoteSubViews(rewriter, cast<linalg::LinalgOp>(op), options);
     if (!promotedOp) {
-      rewriter.cancelRootUpdate(op);
+      rewriter.cancelOpModification(op);
       return op->emitError("subview promotion failed");
     }
-    rewriter.finalizeRootUpdate(op);
+    rewriter.finalizeOpModification(op);
     filter.replaceLinalgTransformationFilter(rewriter, op);
     return success();
   }
@@ -875,178 +852,6 @@ allocBufferCallBack(OpBuilder &b, memref::SubViewOp subView,
 static LogicalResult deallocBufferCallBack(OpBuilder &b, Value buffer) {
   // b.create<memref::DeallocOp>(buffer.getLoc(), buffer);
   return success();
-}
-
-FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
-    PatternRewriter &b, linalg::LinalgOp op,
-    ArrayRef<int64_t> static_tile_sizes, unsigned int pipeline_depth,
-    std::string pipeline_direction, bool promote) {
-
-  OpBuilder::InsertionGuard g(b);
-  b.setInsertionPoint(op);
-  auto loc = op.getLoc();
-
-  if (!(pipeline_direction == "vert" || pipeline_direction == "horiz"))
-    return failure();
-
-  auto iteratorTypes = op.getIteratorTypesArray();
-  if (linalg::isParallelIterator(iteratorTypes.back()))
-    return failure();
-
-  bool isHoriz = pipeline_direction == "horiz";
-  int new_herd_x = isHoriz ? pipeline_depth : 1;
-  int new_herd_y = !isHoriz ? pipeline_depth : 1;
-
-  SmallVector<Value, 2> dims{b.create<arith::ConstantIndexOp>(loc, new_herd_x),
-                             b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
-
-  SmallVector<Value, 4> args;
-  for (auto o : op->getOperands())
-    args.push_back(o);
-
-  auto launch = b.create<air::HerdOp>(loc, dims, args);
-  b.setInsertionPointToStart(&launch.getBody().front());
-
-  auto nLoops = op.getNumLoops();
-  SmallVector<OpFoldResult, 4> tileSizeVector;
-  auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
-  for (auto s : static_tile_sizes)
-    tileSizeVector.push_back(
-        b.create<arith::ConstantIndexOp>(loc, s).getResult());
-  if (tileSizeVector.size() < nLoops)
-    tileSizeVector.append(nLoops - tileSizeVector.size(), zero.getResult());
-
-  auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
-  AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
-  if (!shapeSizesToLoopsMap)
-    return failure();
-  SmallVector<OpFoldResult> sizeBounds =
-      affine::makeComposedFoldedMultiResultAffineApply(
-          b, loc, shapeSizesToLoopsMap, allShapeSizes);
-
-  SmallVector<OpFoldResult> tileIds;
-  for (int i = 0, e = static_tile_sizes.size(); i < e; i++) {
-    tileIds.push_back(b.create<arith::MulIOp>(loc,
-                                              isHoriz ? launch.getIds()[0]
-                                                      : launch.getIds()[1],
-                                              tileSizeVector[i].get<Value>())
-                          .getResult());
-  }
-  SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
-      b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
-  SmallVector<Type, 4> stageResultTypes;
-  unsigned int resultIdx = 0;
-  for (OpOperand &opOperand : op->getOpOperands()) {
-    if (!op.isDpsInit(&opOperand))
-      continue;
-    resultIdx = opOperand.getOperandNumber();
-    auto memrefType = tiledOperands[resultIdx].getType().cast<MemRefType>();
-    auto tensorType = RankedTensorType::get(memrefType.getShape(),
-                                            memrefType.getElementType());
-    stageResultTypes.push_back(tensorType);
-  }
-
-  auto pipe = b.create<air::HerdPipelineOp>(loc);
-  pipe->setAttr("direction",
-                StringAttr::get(op->getContext(), pipeline_direction));
-  Block *pipelineBlock = new Block();
-  pipe.getBody().push_back(pipelineBlock);
-  b.setInsertionPointToStart(pipelineBlock);
-
-  Value firstOutputOperand = tiledOperands[resultIdx];
-  Value inputOperand = nullptr;
-  for (unsigned int i = 0; i < pipeline_depth; i++) {
-    OpBuilder::InsertionGuard pipeline_guard(b);
-    bool last_stage = i == pipeline_depth - 1;
-    bool first_stage = i == 0;
-    SmallVector<Value, 1> opers;
-    if (inputOperand)
-      opers.push_back(inputOperand);
-
-    auto stage = b.create<air::PipelineStageOp>(
-        loc, last_stage ? SmallVector<Type, 1>() : stageResultTypes, opers);
-
-    Block *stageBlock = new Block();
-    stage.getBody().push_back(stageBlock);
-    b.setInsertionPointToStart(stageBlock);
-
-    for (auto o : opers) {
-      auto a = stageBlock->addArgument(o.getType(), loc);
-      if (!a.getType().isa<MemRefType>()) {
-        auto ty = tiledOperands[resultIdx].getType().cast<MemRefType>();
-        tiledOperands[resultIdx] =
-            b.create<bufferization::ToMemrefOp>(
-                 loc, MemRefType::get(ty.getShape(), ty.getElementType()), a)
-                .getResult();
-      }
-    }
-
-    if (last_stage)
-      tiledOperands[resultIdx] = firstOutputOperand;
-
-    linalg::LinalgOp linalgOp = clone(b, op, {}, tiledOperands);
-
-    if (promote) {
-      SmallVector<int64_t, 3> opers_to_promote(linalgOp->getNumOperands() - 1);
-      std::iota(opers_to_promote.begin(), opers_to_promote.end(), 0);
-      if (first_stage || last_stage)
-        opers_to_promote.push_back(linalgOp->getNumOperands() - 1);
-
-      b.setInsertionPoint(linalgOp);
-      auto loc = linalgOp->getLoc();
-      auto defaultCopyCallBack = [loc](OpBuilder &b, Value src,
-                                       Value dst) -> LogicalResult {
-        b.create<memref::CopyOp>(loc, src, dst);
-        return success();
-      };
-      auto emptyCopyCallBack = [](OpBuilder &b, Value src,
-                                  Value dst) -> LogicalResult {
-        return success();
-      };
-      auto options = linalg::LinalgPromotionOptions()
-                         .setOperandsToPromote(opers_to_promote)
-                         .setAllocationDeallocationFns(allocBufferCallBack,
-                                                       deallocBufferCallBack);
-      if (first_stage)
-        options.setCopyInOutFns(defaultCopyCallBack, emptyCopyCallBack);
-      auto res = linalg::promoteSubViews(b, linalgOp, options);
-      if (failed(res))
-        return failure();
-    }
-
-    if (last_stage) {
-      b.setInsertionPointToEnd(stageBlock);
-      b.create<air::PipelineYieldOp>(loc, SmallVector<Value, 1>());
-    } else {
-      auto mref = tiledOperands[resultIdx];
-      if (promote && first_stage) {
-        memref::SubViewOp sv = dyn_cast<memref::SubViewOp>(
-            linalgOp.getDpsInitOperand(0)->get().getDefiningOp());
-        mref = sv.getSource();
-        sv.replaceAllUsesWith(mref);
-      }
-
-      b.setInsertionPointToEnd(stageBlock);
-      auto t = b.create<bufferization::ToTensorOp>(loc, mref);
-      b.create<air::PipelineYieldOp>(loc, t.getResult());
-      inputOperand = stage.getResult(0);
-    }
-    // if (erased) erased.erase();
-  }
-
-  SmallVector<Type, 1> pipeTys;
-  SmallVector<Value, 1> pipeArgs;
-  b.create<air::PipelineTerminatorOp>(loc, pipeTys, pipeArgs);
-
-  b.setInsertionPointToEnd(&launch.getBody().front());
-  b.create<air::HerdTerminatorOp>(loc);
-  int i = 0;
-  for (auto a : args) {
-    replaceAllUsesInRegionWith(a, launch.getKernelArgument(i++),
-                               launch.getBody());
-  }
-
-  return linalg::TiledLinalgOp{op, {launch}, {}};
 }
 
 // Create channel name as string
@@ -1157,7 +962,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     b.setInsertionPointToStart(stageBlock);
 
     if (i) {
-      auto ty = tiledOperands[resultIdx].getType().cast<MemRefType>();
+      auto ty = llvm::cast<MemRefType>(tiledOperands[resultIdx].getType());
       auto alloc = b.create<memref::AllocOp>(
           loc, MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
                                (int)air::MemorySpace::L1));
@@ -1385,7 +1190,7 @@ public:
         affine::makeComposedFoldedMultiResultAffineApply(
             b, loc, shapeSizesToLoopsMap, allShapeSizes);
     for (auto size : shapeSizes) {
-      if (auto v = size.dyn_cast<Value>()) {
+      if (auto v = llvm::dyn_cast<Value>(size)) {
         auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
         if (!c) {
           LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
@@ -1393,8 +1198,8 @@ public:
         }
         tripCounts.push_back(c.value());
       } else {
-        auto a = size.dyn_cast<Attribute>();
-        auto c = a.dyn_cast<IntegerAttr>();
+        auto a = llvm::dyn_cast<Attribute>(size);
+        auto c = llvm::dyn_cast<IntegerAttr>(a);
         if (!c) {
           LLVM_DEBUG(llvm::outs() << "unhandled addr!\n");
           return {};
@@ -2008,7 +1813,7 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
   dynamicSizeProducers.reserve(getDynamicSizes().size());
   paramSizes.reserve(getDynamicSizes().size());
   for (Value transformValue : getDynamicSizes()) {
-    if (isa<ParamType>(transformValue.getType())) {
+    if (isa<TransformParamTypeInterface>(transformValue.getType())) {
       dynamicSizeProducers.push_back({});
       ArrayRef<Attribute> params = state.getParams(transformValue);
       paramSizes.push_back(
@@ -2042,7 +1847,7 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
 
     for (Operation *op : dynamicSizeProducers.back()) {
       if (op->getNumResults() == 1 &&
-          op->getResult(0).getType().isa<IndexType>())
+          llvm::isa<IndexType>(op->getResult(0).getType()))
         continue;
       DiagnosedSilenceableFailure diag =
           emitSilenceableError() << "expected sizes to be produced by ops "
@@ -2075,9 +1880,9 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
             sizes.reserve(tileSizes.size());
             unsigned dynamicIdx = 0;
             for (OpFoldResult ofr : getMixedSizes()) {
-              if (auto attr = ofr.dyn_cast<Attribute>()) {
+              if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
                 sizes.push_back(b.create<arith::ConstantIndexOp>(
-                    getLoc(), attr.cast<IntegerAttr>().getInt()));
+                    getLoc(), llvm::cast<IntegerAttr>(attr).getInt()));
               } else {
                 sizes.push_back(
                     dynamicSizeProducers[dynamicIdx++][index]->getResult(0));
@@ -2094,7 +1899,7 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
     if (failed(maybeTilingResult))
       return DiagnosedSilenceableFailure::definiteFailure();
 
-    if (linalgOp.hasBufferSemantics())
+    if (linalgOp.hasPureBufferSemantics())
       rewriter.eraseOp(linalgOp);
     else
       rewriter.replaceOp(linalgOp,
@@ -2105,9 +1910,10 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
       loops[en2.index()].push_back(en2.value());
   }
 
-  transformResults.set(getTiledLinalgOp().cast<OpResult>(), tiled);
+  transformResults.set(llvm::cast<OpResult>(getTiledLinalgOp()), tiled);
   for (const auto &en : llvm::enumerate(loops))
-    transformResults.set(getLoops()[en.index()].cast<OpResult>(), en.value());
+    transformResults.set(llvm::cast<OpResult>(getLoops()[en.index()]),
+                         en.value());
 
   return DiagnosedSilenceableFailure::success();
 }
@@ -2303,7 +2109,7 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   if (!transformed.size())
     return emitDefaultDefiniteFailure(payloadOps[0]);
 
-  results.set(getResult().cast<OpResult>(), transformed.getArrayRef());
+  results.set(llvm::cast<OpResult>(getResult()), transformed.getArrayRef());
   return DiagnosedSilenceableFailure::success();
 }
 
@@ -2428,7 +2234,7 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
       llvm::to_vector(state.getPayloadOps(getProducerOp()));
   // If nothing to fuse, propagate success.
   if (producerOps.empty()) {
-    results.set(getFusedOp().cast<OpResult>(),
+    results.set(llvm::cast<OpResult>(getFusedOp()),
                 SmallVector<mlir::Operation *>{});
     return DiagnosedSilenceableFailure::success();
   }
@@ -2465,7 +2271,7 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
         return containingOp->isAncestor(op);
       });
   if (numUsesInContainingOp == 0) {
-    results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+    results.set(llvm::cast<OpResult>(getFusedOp()), ArrayRef<Operation *>());
     Diagnostic diag(containingOp->getLoc(), DiagnosticSeverity::Remark);
     diag << "producer_op does not have uses in the container";
     return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
@@ -2483,11 +2289,11 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
     fusedOps.push_back(tiled);
     rewriter.eraseOp(producerOp);
 
-    results.set(getFusedOp().cast<OpResult>(), fusedOps);
+    results.set(llvm::cast<OpResult>(getFusedOp()), fusedOps);
     return DiagnosedSilenceableFailure::success();
   }
 
-  results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+  results.set(llvm::cast<OpResult>(getFusedOp()), ArrayRef<Operation *>());
   return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
 }
 

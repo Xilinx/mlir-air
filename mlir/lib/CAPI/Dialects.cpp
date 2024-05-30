@@ -18,7 +18,7 @@ MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(AIR, air, xilinx::air::airDialect)
 //===---------------------------------------------------------------------===//
 
 bool mlirTypeIsAIRAsyncTokenType(MlirType type) {
-  return unwrap(type).isa<xilinx::air::AsyncTokenType>();
+  return llvm::isa<xilinx::air::AsyncTokenType>(unwrap(type));
 }
 
 MlirType mlirAIRAsyncTokenTypeGet(MlirContext ctx) {

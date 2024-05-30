@@ -34,7 +34,8 @@ generateBufferNameInStringStream(std::string prefix, uint64_t &BufferId,
                                  mlir::StringAttr attr = nullptr, int x = -1,
                                  int y = -1);
 
-AIE::ExternalBufferOp allocateExternalBufferOp(MemRefType memrefTy,
+AIE::ExternalBufferOp allocateExternalBufferOp(uint64_t &BufferId,
+                                               MemRefType memrefTy,
                                                AIE::DeviceOp device,
                                                mlir::StringAttr attr = nullptr,
                                                int x = -1, int y = -1);
@@ -43,8 +44,18 @@ std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec);
 
 bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 
-int64_t get1DOffset(SmallVector<Value> memcpy_sizes,
-                    SmallVector<Value> memcpy_offsets, Value memref);
+int64_t get1DOffset(SmallVector<Value> memcpy_offsets,
+                    SmallVector<Value> memcpy_strides);
+
+int getRepeatCount(Operation *memcpy_op);
+
+std::vector<AIE::BDDimLayoutAttr>
+getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
+                   SmallVector<Value> memcpy_strides, MLIRContext *ctx);
+
+bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
+                                SmallVector<Value> memcpy_strides,
+                                Value memref);
 
 std::pair<int64_t, int64_t> getLockValuePair(AIE::AIEArch arch,
                                              Value buffer_memref);
@@ -62,10 +73,10 @@ struct allocation_info_t {
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
   bool foundAlloc(air::ChannelOp channel_op);
-  bool foundAlloc(uint32_t col, uint32_t row, air::MemcpyInterface memcpyOp);
-  bool foundAlloc(uint32_t col, uint32_t row, int chan);
-  bool foundAlloc(uint32_t col, uint32_t row);
-  bool foundAlloc(uint32_t col, uint32_t row, air::ChannelOp channel_op);
+  bool foundAlloc(int32_t col, int32_t row, air::MemcpyInterface memcpyOp);
+  bool foundAlloc(int32_t col, int32_t row, int chan);
+  bool foundAlloc(int32_t col, int32_t row);
+  bool foundAlloc(int32_t col, int32_t row, air::ChannelOp channel_op);
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
 };
 
@@ -129,7 +140,7 @@ public:
   allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                           int col, int row, int chan);
 
-  AIE::BufferOp getBuffer(int64_t col, int64_t row,
+  AIE::BufferOp getBuffer(uint64_t, int64_t col, int64_t row,
                           air::MemcpyInterface &memcpyOp);
 };
 
@@ -149,7 +160,7 @@ public:
                                        allocation_info_t existing_alloc,
                                        std::vector<Operation *> &dma_ops);
 
-  AIE::ExternalBufferOp getBuffer(int64_t col, int64_t row,
+  AIE::ExternalBufferOp getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
                                   air::MemcpyInterface &memcpyOp);
 
   std::optional<air::allocation_info_t>
@@ -171,7 +182,7 @@ public:
 
   int forecastChannelAlloc(air::MemcpyInterface &memcpyOp);
 
-  AIE::BufferOp getBuffer(int64_t col, int64_t row,
+  AIE::BufferOp getBuffer(uint64_t, int64_t col, int64_t row,
                           air::MemcpyInterface &memcpyOp);
 
   std::optional<air::allocation_info_t>

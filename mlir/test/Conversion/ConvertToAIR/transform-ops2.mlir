@@ -19,7 +19,6 @@ func.func @air_par_to_herd_vert() {
     %alloc = memref.alloc() : memref<1xi32>
     %c = arith.constant 0 : i32
     linalg.fill ins(%c : i32) outs(%alloc : memref<1xi32>)
-    scf.yield
   }
   return
 }

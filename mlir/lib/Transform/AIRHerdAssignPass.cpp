@@ -111,16 +111,6 @@ public:
       }
     }
 
-    for (auto f : module.getOps<func::FuncOp>()) {
-      std::vector<func::CallOp> kernelOps;
-      f.walk([&](Operation *o) {
-        if (auto co = dyn_cast<func::CallOp>(o)) {
-          if (co.getCallee().startswith("acap_conv2d_hw_kernel")) {
-            kernelOps.push_back(co);
-          }
-        }
-      });
-    }
   }
 
 private:

@@ -23,7 +23,7 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 find_package(MLIR REQUIRED CONFIG)
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+find_package(Python3 COMPONENTS Interpreter)
 
 find_package(LibXAIE)
 
@@ -35,7 +35,8 @@ if(NOT AIR_BINARY_DIR)
 find_package(AIR REQUIRED CONFIG)
 endif()
 
-find_package(Vitis)
+find_package(Vitis 2023.2)
+find_package(XRT)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -45,12 +46,10 @@ message(STATUS "Using AIRConfig.cmake in: ${AIR_DIR}")
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
 option(LLVM_BUILD_TOOLS "Build the LLVM tools. If OFF, just generate build targets." ON)
 
-if(${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL aarch64)
-  set(DEFAULT_ENABLE_BOARD_TESTS ON)
-else()
-  set(DEFAULT_ENABLE_BOARD_TESTS OFF)
-endif()
-option(ENABLE_BOARD_TESTS "Enable board tests" ${DEFAULT_ENABLE_BOARD_TESTS})
+# ON: build and run end-to-end tests
+# OFF: build only
+option(ENABLE_RUN_AIRHOST_TESTS "Run end-to-end tests on vck5000 with libairhost" OFF)
+option(ENABLE_RUN_XRT_TESTS "Run end-to-end tests on Ryzen AI with XRT" OFF)
 
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
@@ -75,19 +74,9 @@ include_directories(${PROJECT_BINARY_DIR}/include)
 add_definitions(${LLVM_DEFINITIONS})
 
 set(ENABLE_CHESS_TESTS ON CACHE BOOL "Enable backend tests using xchesscc")
-if(ENABLE_CHESS_TESTS)
-set(CONFIG_ENABLE_CHESS_TESTS 1)
-else()
-set(CONFIG_ENABLE_CHESS_TESTS 0)
-endif()
 
-if(ENABLE_BOARD_TESTS)
-set(CONFIG_ENABLE_BOARD_TESTS 1)
-set(AIR_TEST_LIT_ARGS "-sv -j 1 --timeout 300 --time-tests --order=random")
-else()
-set(CONFIG_ENABLE_BOARD_TESTS 0)
-set(AIR_TEST_LIT_ARGS "-sv -j 24 --timeout 300 --time-tests --order=random")
-endif()
+set(AIR_TEST_LIT_ARGS "-sv --timeout 300 --time-tests --order=random")
+
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
@@ -99,17 +88,17 @@ set(TEST_DEPENDS
   FileCheck count not
   )
 
-add_lit_testsuite(check-air-board "Running the air board regression tests"
+add_lit_testsuite(check-air-e2e "Running the air end-to-end tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
   ARGS ${AIR_TEST_LIT_ARGS}
   )
-set_target_properties(check-air-board PROPERTIES FOLDER "Tests")
+set_target_properties(check-air-e2e PROPERTIES FOLDER "Tests")
 
 add_custom_target(build-check-air)
-add_dependencies(check-air-board build-check-air)
+add_dependencies(check-air-e2e build-check-air)
 
 if(NOT TARGET check-all)
   add_custom_target(check-all)
 endif()
-add_dependencies(check-all check-air-board)
+add_dependencies(check-all check-air-e2e)

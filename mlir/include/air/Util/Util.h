@@ -12,7 +12,9 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 
@@ -47,6 +49,10 @@ template <typename T> T getScfParentOpFromYieldOp(Operation *yield) {
   return dyn_cast_if_present<T>(yield->getParentOp());
 }
 
+std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
+std::optional<int64_t>
+getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);
+
 // Erase a kernel operand from air.hierarchy op
 void eraseAIRHierarchyOperand(HierarchyInterface op, unsigned index);
 
@@ -60,7 +66,11 @@ void renumberChannelOps(Block *region, std::map<int, int> &reverse_map);
 
 // Return op name as string
 std::string to_string(Operation *op);
+// Return type name as string
 std::string to_string(mlir::Type t);
+
+// Generate a new unique channel name
+std::string createChannelName(Operation *scope);
 // Return memory space as string
 std::string getMemorySpaceAsString(Value memref);
 
@@ -127,6 +137,90 @@ unsigned getIteratorFromMDVector(std::vector<unsigned> dims,
 // from an iterator
 std::vector<unsigned> getMDVectorFromIterator(std::vector<unsigned> dims,
                                               unsigned iter);
+
+// Recursively trace back in defining ops
+void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
+
+// Fold perfectly nested parent loops into wraps and strides list
+LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
+    OpBuilder builder, Operation *for_op, Operation *channel_op,
+    SmallVector<Value> &offsets, SmallVector<Value> &wraps,
+    SmallVector<Value> &strides, Value memref);
+
+// Canonicalize wrap and stride lists, by removing redundant dimensions.
+LogicalResult canonicalizeWrapAndStrideList(OpBuilder builder,
+                                            SmallVector<Value> &offsets,
+                                            SmallVector<Value> &sizes,
+                                            SmallVector<Value> &strides,
+                                            int memref_volume);
+
+// If wrap-and-stride lists are empty, populate them with default data access
+// layout (contiguous, row-major).
+void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
+                                    SmallVector<Value> &offsets,
+                                    SmallVector<Value> &wraps,
+                                    SmallVector<Value> &strides);
+
+// Check if the wraps and strides imply the default (contiguous, row-major) data
+// access pattern.
+bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
+                                SmallVector<Value> memcpy_strides,
+                                Value memref);
+// Get the memref size along a given dimension, that the access pattern actually
+// covers.
+SmallVector<int64_t>
+getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
+                                        SmallVector<Value> sizes,
+                                        SmallVector<Value> strides);
+
+// Get the overall data access pattern from air.channel ops which access the
+// memref.
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+writeAccessPattern(air::ChannelInterface chanOp);
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+writeAccessPattern(memref::SubViewOp subview);
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+writeAccessPattern(mlir::vector::TransferReadOp readOp);
+std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
+writeAccessPattern(mlir::vector::TransferWriteOp writeOp);
+SmallVector<int64_t>
+getDataAccessShapeFromMemcpyOp(Value memref,
+                               SmallVector<air::ChannelInterface> chanUsers);
+SmallVector<int64_t>
+getDataAccessShapeFromMemcpyOp(Value memref,
+                               SmallVector<air::ChannelInterface> chanOps);
+SmallVector<int64_t> getDataAccessShapeFromMemcpyOp(
+    Value memref,
+    SmallVector<
+        std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
+        patterns);
+SmallVector<int64_t>
+getDataAccessShapeFromMemcpyOp(Value memref, SmallVector<Operation *> users);
+
+// Update strides after memref shrinkage. Assuming there is only one dimension
+// being shrunk.
+SmallVector<int>
+getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
+                                SmallVector<int64_t> new_memref_shape,
+                                SmallVector<Value> strides);
+// Update offsets after memref shrinkage.
+SmallVector<int>
+getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
+                                SmallVector<int64_t> new_memref_shape,
+                                SmallVector<Value> offsets);
+
+// Given a dimension on wrap-and-stride list, infer the dimension on memref that
+// this pattern spans completely on.
+std::optional<int> getMemrefDimFromOffsetDim(int dimOnOffset,
+                                             SmallVector<Value> offsets,
+                                             SmallVector<Value> strides,
+                                             SmallVector<int> memrefShape);
+
+// Given a dimension on memref shape, infer the dimension on wrap-and-stride
+// list that spans on this memref dimension.
+std::optional<int> getOffsetDimFromMemrefDim(int dimOnMemref,
+                                             SmallVector<Value> strides,
+                                             SmallVector<int> memrefShape);
 
 } // namespace air
 } // namespace xilinx

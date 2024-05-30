@@ -163,13 +163,43 @@ static ParseResult parseAsyncDependencies(
 
 static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
                                    Type asyncTokenType,
-                                   OperandRange asyncDependencies) {
+                                   OperandRange asyncDependenciesUnsorted) {
+
   if (asyncTokenType)
     printer << "async ";
-  if (asyncDependencies.empty())
+  if (asyncDependenciesUnsorted.empty())
     return;
+
+  // The values can be sorted by their order in a basic block, but only if they
+  // all have defining ops in the same basic block. We go through all the
+  // values, and check that they have defining ops in the same block.
+  bool canSort = [&]() {
+    auto v0 = asyncDependenciesUnsorted[0];
+    if (!v0.getDefiningOp())
+      return false;
+    auto block = v0.getDefiningOp()->getBlock();
+    for (auto v : asyncDependenciesUnsorted) {
+      auto op = v.getDefiningOp();
+      if (!op)
+        return false;
+      auto b = op->getBlock();
+      if (b != block)
+        return false;
+    }
+    return true;
+  }();
+
   printer << "[";
-  llvm::interleaveComma(asyncDependencies, printer);
+
+  if (!canSort) {
+    llvm::interleaveComma(asyncDependenciesUnsorted, printer);
+  } else {
+    SmallVector<Value> asyncDependencies(asyncDependenciesUnsorted);
+    llvm::sort(asyncDependencies, [&](Value a, Value b) {
+      return a.getDefiningOp()->isBeforeInBlock(b.getDefiningOp());
+    });
+    llvm::interleaveComma(asyncDependencies, printer);
+  }
   printer << "] ";
 }
 
@@ -1118,6 +1148,12 @@ static LogicalResult FoldExecute(ExecuteOp op, PatternRewriter &rewriter) {
 void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldExecute);
+}
+
+Operation *ExecuteOp::getChildOp() {
+  auto child_op =
+      &getOperation()->getRegion(0).getBlocks().front().getOperations().front();
+  return child_op;
 }
 
 //

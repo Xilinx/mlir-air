@@ -41,6 +41,8 @@ std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopForPingPongPattern();
 
 std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopInAIRSegmentPattern();
 
+std::unique_ptr<mlir::Pass> createAIRSpecializeChannelWrapAndStridePattern();
+
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass();
 
 std::unique_ptr<mlir::Pass> createAIRUnrollChannelByFactorPattern();
@@ -50,8 +52,17 @@ std::unique_ptr<mlir::Pass> createAIREnforceLoopCarriedMemrefDeallocPattern();
 std::unique_ptr<mlir::Pass> createAIRDeAliasMemref();
 
 std::unique_ptr<mlir::Pass> createAIRFuseChannels();
+std::unique_ptr<OperationPass<ModuleOp>>
+createAIRFuseChannels(const AIRFuseChannelsOptions &);
 
 std::unique_ptr<mlir::Pass> createAIRIsolateAsyncDmaLoopNests();
+
+std::unique_ptr<mlir::Pass> createAIRSegmentLoopFusion();
+
+// Populate patterns for canonicalizing index operations on loop index
+// variables. At the moment, only affine.apply computations on induction
+// variables are canonicalized
+void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns);
 
 } // namespace air
 } // namespace xilinx

@@ -20,6 +20,8 @@ namespace xilinx {
 namespace air {
 
 std::unique_ptr<mlir::Pass> createAffineLoopOptPass();
+std::unique_ptr<mlir::Pass>
+createAffineLoopOptPass(AffineLoopOptPassOptions options);
 
 } // namespace air
 } // namespace xilinx

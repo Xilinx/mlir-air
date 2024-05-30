@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-renumber-dma | FileCheck %s
+// RUN: air-opt %s -air-renumber-dma="mode=herd" | FileCheck %s
 // CHECK: id = 1
 // CHECK: id = 2
 // CHECK: id = 3

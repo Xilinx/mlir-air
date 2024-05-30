@@ -12,7 +12,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
-#include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
+#include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 
 using namespace mlir;
 
@@ -38,7 +38,7 @@ transform::GetSegmentForOp::apply(transform::TransformRewriter &rewriter,
     }
     segments.insert(segment);
   }
-  results.set(getResult().cast<OpResult>(), segments.getArrayRef());
+  results.set(llvm::cast<OpResult>(getResult()), segments.getArrayRef());
   return DiagnosedSilenceableFailure::success();
 }
 

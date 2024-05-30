@@ -36,11 +36,6 @@
 #include <sstream>
 #include <vector>
 
-// boost graph
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/copy.hpp>
-#include <boost/graph/graph_traits.hpp>
-
 #include <algorithm>
 #include <numeric>
 #include <string>
@@ -54,7 +49,6 @@
 #define INDEX_WIDTH 32
 
 using namespace mlir;
-using namespace boost;
 
 namespace xilinx {
 namespace air {
@@ -185,8 +179,8 @@ public:
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'dma' as event type, but op isn't of type "
                "air::DmaMemcpyNdOp";
-      MemRefType srcTy = Op.getSrcMemref().getType().cast<MemRefType>();
-      MemRefType dstTy = Op.getDstMemref().getType().cast<MemRefType>();
+      MemRefType srcTy = llvm::cast<MemRefType>(Op.getSrcMemref().getType());
+      MemRefType dstTy = llvm::cast<MemRefType>(Op.getDstMemref().getType());
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
       // if there is a size mismatch, it's because we're moving a tile of the
@@ -202,12 +196,12 @@ public:
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'channel' as event type, but op isn't of type "
                "air::ChannelGetOp";
-      MemRefType dstTy = getOp.getDst().getType().cast<MemRefType>();
+      MemRefType dstTy = llvm::cast<MemRefType>(getOp.getDst().getType());
       std::vector<air::ChannelPutOp> putOps =
           air::getTheOtherChannelOpThroughSymbol(getOp);
       if (!putOps.size())
         getOp->emitOpError("found no put op for air::ChannelGetOp");
-      MemRefType srcTy = putOps[0].getSrc().getType().cast<MemRefType>();
+      MemRefType srcTy = llvm::cast<MemRefType>(putOps[0].getSrc().getType());
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
       auto srcVolumn = getTransferVolumn(putOps[0]);
@@ -225,7 +219,7 @@ public:
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'execute' as event type, but op isn't of type "
                "air::ExecuteOp";
-      auto child_op = &*(c.op->getRegions().front().getOps().begin());
+      auto child_op = dyn_cast<air::ExecuteOp>(c.op).getChildOp();
       if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
         uint64_t compute_op_cost = getComputeCostFromCostModel(d, child_op);
@@ -266,8 +260,8 @@ public:
     // event may change the execution status of other ops on wavefront
     for (int i = c.wavefront.size() - 1; i >= 0; i--) {
       if (G[std::get<0>(c.wavefront[i])].asyncEventType == "terminator") {
-        moveItemToBack<std::tuple<Graph::vertex_descriptor,
-                                  std::vector<resource *>, unsigned>>(
+        moveItemToBack<
+            std::tuple<Graph::VertexId, std::vector<resource *>, unsigned>>(
             c.wavefront, i);
       }
     }
@@ -308,11 +302,11 @@ public:
     Graph &G = c.ctrl_g->g;
 
     // Get candidate vertices to be pushed to wavefront
-    std::vector<Graph::vertex_descriptor> next_vertex_set_candidates =
+    std::vector<Graph::VertexId> next_vertex_set_candidates =
         c.getCandidateVerticesForWavefront();
 
     // Check dependency fulfillment of each candidate
-    std::vector<Graph::vertex_descriptor> next_vertex_set;
+    std::vector<Graph::VertexId> next_vertex_set;
     for (auto it = next_vertex_set_candidates.begin();
          it != next_vertex_set_candidates.end(); ++it) {
       bool dep_fulfilled = true;
@@ -370,7 +364,7 @@ public:
 
   void scheduleFunction(func::FuncOp &toplevel) {
 
-    // Walk the launch op and create a boost graph using dependencyCanonicalizer
+    // Walk the launch op and create a graph using dependencyCanonicalizer
     // intepreter
     canonicalizer.removeDepListRepetition(toplevel);
     hostGraph = dependencyGraph(toplevel, true);
@@ -496,7 +490,7 @@ private:
   unsigned core_dma_slots;
   unsigned herd_slots;
 
-  // Dependency graph constructed as Boost graph
+  // Dependency graph constructed
   dependencyGraph hostGraph;
 
   // Host and segment runnerNodes
@@ -628,7 +622,7 @@ private:
   }
 
   uint64_t getTransferVolumn(air::ChannelInterface op) {
-    MemRefType memTy = op.getMemref().getType().cast<MemRefType>();
+    MemRefType memTy = llvm::cast<MemRefType>(op.getMemref().getType());
     if (op.getSizes().empty())
       return getTensorVolume(memTy);
     else
@@ -658,14 +652,12 @@ private:
     cpuops += "arith.muli;arith.divsi;arith.divsi;arith.addi;arith.subi;"
               "arith.trunci;arith.cmpi;arith.maxi";
     cpuops += "std.select";
-    uint64_t memory_op_count = 0;
     uint64_t compute_op_count = 0;
     for (auto &p : opCounts.map) {
       auto name = std::get<0>(p);
       auto count = std::get<1>(p);
-      if (memops.find(name) != std::string::npos)
-        memory_op_count += count;
-      else if (cpuops.find(name) != std::string::npos)
+      if (memops.find(name) != std::string::npos) {
+      } else if (cpuops.find(name) != std::string::npos)
         compute_op_count += count;
       else if (skip.find(name) == std::string::npos)
         LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
@@ -676,7 +668,6 @@ private:
       double num_cores = 1;              // one because the post-tiling code in
                                          // air.herd's body is for each core
       double ops_per_core_per_cycle = 8; // vector width for this type
-      double cycles_per_second = 1e9;
       double efficiency = 1.0f;
 
       // if kernels exists, assume everthing else exists
@@ -690,7 +681,6 @@ private:
               d.kernels[air::to_string(op)]->datatypes[op_datatype].first;
         }
       }
-      cycles_per_second = d.clock;
 
       double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
       if (ops_per_cycle <= 0)

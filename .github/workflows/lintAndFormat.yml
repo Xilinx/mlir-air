@@ -1,0 +1,188 @@
+name: Lint and Format
+
+on:
+  pull_request:
+    types: [assigned, opened, synchronize, reopened]
+  workflow_dispatch:
+
+env:
+  # Run apt package manager in the CI in non-interactive mode.
+  # Otherwise, on Ubuntu 20.04 the installation of tzdata asking question
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+
+  clang-tidy-pylint:
+
+    name: C/C++ clang-tidy
+
+    runs-on: ubuntu-22.04
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
+          submodules: "true"
+
+      - name: Install clang-tidy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy ninja-build clang libelf-dev
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Get Submodule Hash
+        id: get-submodule-hash
+        run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-mlir-aie.sh))"
+        shell: bash
+
+      - name: Ccache for C++ compilation
+        uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
+        with:
+          key: ${{ runner.os }}-lintformat-${{ steps.get-submodule-hash.outputs.hash }}
+          max-size: 1G
+
+      - name: Build and Install libxaie
+        run: utils/github-clone-build-libxaie.sh
+
+      - name: Get mlir-aie
+        id: clone-mlir-aie
+        run: utils/clone-mlir-aie.sh
+
+      - name: Build and install mlir-aie
+        run: |
+          pushd mlir-aie
+          pip install -r python/requirements.txt
+
+          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          pip -q download mlir==$VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          unzip -q mlir-*.whl
+          find mlir -exec touch -a -m -t 201108231405.14 {} \;
+          popd
+
+          utils/github-build-mlir-aie.sh
+
+      - name: Prepare compile_commands.json
+        run: |
+          mkdir build
+          pushd build
+
+          cmake .. \
+            -GNinja \
+            -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
+            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
+            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
+            -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
+            -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
+            -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
+            -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
+            -DLLVM_EXTERNAL_LIT=$(which lit) \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          
+          ninja air-headers mlir-headers
+          
+          popd
+
+      - name: Analyze
+        id: clang-tidy-fixes
+        run: |
+          git fetch origin main
+          git diff -U0 origin/main | clang-tidy-diff -p1 -path build -export-fixes fixes.yml
+          if [ -f fixes.yml ]; then
+            echo "FIXES=true" | tee $GITHUB_OUTPUT
+          fi
+
+      - name: Upload clang-tidy fixes
+        if: ${{ steps.clang-tidy-fixes.outputs.FIXES }}
+        uses: actions/upload-artifact@v3
+        with:
+          path: fixes.yml
+          name: clang-tidy-fixes.yml
+
+
+  formatting:
+
+    name: Python and C/C++ Check Format
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Get the project repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
+          submodules: "true"
+
+      - name: Install clang-format
+        uses: aminya/setup-cpp@v1
+        with:
+          clangformat: 17.0.1
+
+      - name: Setup Python env
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install black
+        run: pip install black[jupyter]
+
+      - name: Run git-clang-format
+        id: git-clang-format
+        run: |
+          git fetch origin main
+          # git clang-format returns an error if changes made?
+          git clang-format origin/main || true
+          git diff > clang-format.diff
+          cat clang-format.diff
+
+      - name: Upload clang-format
+        uses: actions/upload-artifact@v3
+        with:
+          path: clang-format.diff
+          name: format_diffs
+
+      - name: Check C/C++ format
+        uses: reviewdog/action-suggester@v1
+        with:
+          tool_name: clang-format
+          level: error
+          cleanup: true
+          fail_on_error: true
+
+      - name: Run black format
+        if: success() || failure()
+        id: black-format
+        run: |
+          black . || true
+          git diff > black-format.diff
+          cat black-format.diff
+
+      - name: Upload black-format
+        uses: actions/upload-artifact@v3
+        with:
+          path: black-format.diff
+          name: format_diffs
+
+      - name: Check Python format
+        if: success() || failure()
+        uses: reviewdog/action-suggester@v1
+        with:
+          tool_name: black
+          level: error
+          fail_on_error: true

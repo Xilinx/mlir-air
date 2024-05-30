@@ -30,29 +30,21 @@ Most unit tests check the behavior of individual compilation passes.  In general
 // CHECK: %[[T23:.*]] = AIE.tile(2, 3)
 ```
 
-## On-board Integration Testing
+## On-board Integration Testing (vck5000)
 
-If no board is available, then designs will still be compiled (enabling some minimal testing).  However, on a board, the tests will automatically be run as well.  This is controlled by the cmake `ENABLE_BOARD_TESTS` option, the lit configuration and the `%run_on_board` substitution:
+If no board is available, then designs will still be compiled (enabling some minimal testing).  However, on a board, the tests will automatically be run as well.  This is controlled by the cmake `ENABLE_RUN_AIRHOST_TESTS` option, the lit configuration and the `%run_on_board` substitution:
 ```
-$ cmake -GNinja .. -DCMAKE_MODULE_PATH=/home/xilinx/acdc/cmakeModules/cmakeModulesXilinx/ -DENABLE_BOARD_TESTS=ON
+$ cmake -GNinja .. -DCMAKE_MODULE_PATH=/home/xilinx/acdc/cmakeModules/cmakeModulesXilinx/ -DENABLE_RUN_AIRHOST_TESTS=ON
 ```
 ```
-// RUN: clang ... -o %T/test.elf
-// RUN: %run_on_board %T/test.elf
+// RUN: clang ... -o test.elf
+// RUN: %run_on_board test.elf
 ```
 
-The default for `ENABLE_BOARD_TESTS` is based on the processor architecture you're compiling on.
-When compiling under QEMU, you might have to explicitly disable this CMAKE option.
+When a board is available, `%run_on_board test.elf` becomes `sudo test.elf`, executing the elf file.  If the execution fails (i.e., returns a negative return value), then the test will fail.  If no board is available then `%run_on_board test.elf` becomes `echo test.elf`, to disable running the test.  Note that this mechanism means that the executable must be self-checking and cannot use the common `FileCheck` mechanism to check the output of running `test.elf`.
 
-When a board is available, `%run_on_board` becomes `sudo`, executing the elf file.  If the execution fails (i.e., returns a negative return value), then the test will fail.  If no board is available then `%run_on_board` becomes `echo`.  Note that this mechanism means that the executable must be self-checking and cannot use the common `FileCheck`
-mechanism.
-
-Board tests must also be serialized.  Currently no in-system mechanism is provided to arbitrate access to the AIR platform.  Board tests configure lit (in `lit.cfg.py`) as below, in order to ensure serial access to the AIR platform:
-```
-lit_config.parallelism_groups["board"] = 1
-config.parallelism_group = "board"
-```
+Board tests must also be serialized because they assume exclusive access to the hardware.  Currently tests are serialized by adding `flock /tmp/board.lock` to the `%run_on_board` command line. The complete `%run_on_board <command line>` substitution is `sudo flock /tmp/board.lock <command line>`.
 
 -----
 
-<p align="center">Copyright&copy; 2019-2022 Advanced Micro Devices, Inc.</p>
+<p align="center">Copyright&copy; 2019-2024 Advanced Micro Devices, Inc.</p>

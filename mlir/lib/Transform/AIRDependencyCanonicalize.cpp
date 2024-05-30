@@ -6,14 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependencyCanonicalize.h"
+#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
-using namespace boost;
 
 #define DEBUG_TYPE "air-dependency-canonicalize"
 
@@ -48,7 +47,7 @@ public:
 
       // Transitive reduction
       xilinx::air::dependencyGraph trHostGraph;
-      canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph, g_to_tr);
+      canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph);
 
       // Post processing
       // Update dependency list
@@ -64,8 +63,6 @@ public:
 private:
   xilinx::air::dependencyGraph hostGraph;
   xilinx::air::dependencyContext dep_ctx;
-  xilinx::air::vertex_to_vertex_map_tree
-      g_to_tr; // Map between graph g and graph tr (post-tr graph)
 };
 
 } // namespace

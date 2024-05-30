@@ -8,10 +8,10 @@
 
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
-
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-
 #include <sys/stat.h>
+
+#include <iostream>
 
 #define DEBUG_TYPE "air-dependency-util"
 
@@ -19,6 +19,8 @@ using namespace mlir;
 
 namespace xilinx {
 namespace air {
+
+using Graph = dependencyGraph::Graph;
 
 bool areEqualIndices(mlir::Value index_0, mlir::Value index_1) {
   if (index_0 == nullptr || index_1 == nullptr) {
@@ -77,8 +79,8 @@ void traceDependentInductionVar(air::DmaMemcpyNdOp dmaNd_op,
 
   // Recursively trace dependency to loop induction vars
   for (auto operand : candidate_scalar_operands) {
-    if (operand &&
-        operand.getType().isa<IndexType>()) { // Only tracing scalar operands
+    if (operand && llvm::isa<IndexType>(
+                       operand.getType())) { // Only tracing scalar operands
       if (operand.getDefiningOp() &&
           mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
         auto ancestor_async_op =
@@ -149,8 +151,8 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
 
   // Recursively trace dependency to loop induction vars
   for (auto operand : op->getOperands()) {
-    if (operand &&
-        operand.getType().isa<IndexType>()) { // Only tracing scalar operands
+    if (operand && llvm::isa<IndexType>(
+                       operand.getType())) { // Only tracing scalar operands
       if (operand.getDefiningOp() &&
           mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
         auto ancestor_async_op =
@@ -172,6 +174,107 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
       }
     }
   }
+}
+
+// Recursively check for dependency to any air.herd induction variables.
+void traceDependentHerdId(Operation *async_op,
+                          SmallVector<Value> &loop_dep_history,
+                          SmallVector<Operation *> &op_history) {
+  if (!isAsyncOp(async_op))
+    return;
+  // Get child op if async_op is air.execute
+  Operation *op = nullptr;
+  if (auto air_execute_op = dyn_cast<air::ExecuteOp>(async_op)) {
+    op = air_execute_op.getChildOp();
+  } else {
+    op = async_op;
+  }
+
+  // Check for immediate dependency to loop induction vars
+  for (auto operand : op->getOperands()) {
+    // If parent loop op is an air.launch_herd
+    if (auto hl_op = air::getHerdArgOwner(operand)) {
+      for (auto id : hl_op.getIds()) {
+        if (operand == id) {
+          loop_dep_history.push_back(id);
+        }
+      }
+    }
+  }
+
+  // Recursively trace dependency to loop induction vars
+  for (auto operand : op->getOperands()) {
+    if (operand && llvm::isa<IndexType>(
+                       operand.getType())) { // Only tracing scalar operands
+      if (operand.getDefiningOp() &&
+          mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
+        op_history.push_back(operand.getDefiningOp());
+        traceDependentHerdId(operand.getDefiningOp(), loop_dep_history,
+                             op_history);
+      } else if (auto scf_for = scf::getForInductionVarOwner(operand)) {
+        op_history.push_back(scf_for);
+        traceDependentHerdId(scf_for, loop_dep_history, op_history);
+      }
+    }
+  }
+}
+
+// Recursively check for dependency to air herd op induction vars.
+std::vector<std::tuple<Value, SmallVector<Value>, SmallVector<Operation *>>>
+traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
+  // Tuple fields: value, ancestors and producers to those ancestors.
+  std::vector<std::tuple<Value, SmallVector<Value>, SmallVector<Operation *>>>
+      loop_dep_history;
+  for (unsigned i = 0; i < dmaNd_op.getSrcOffsets().size(); i++) {
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcOffsets()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcSizes()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcStrides()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+  }
+  for (unsigned i = 0; i < dmaNd_op.getDstOffsets().size(); i++) {
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstOffsets()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstSizes()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+    loop_dep_history.push_back(std::make_tuple(dmaNd_op.getDstStrides()[i],
+                                               SmallVector<Value>{},
+                                               SmallVector<Operation *>{}));
+  }
+  for (auto &elem : loop_dep_history) {
+    // If parent loop op is an air.launch_herd
+    if (auto hl_op = air::getHerdArgOwner(std::get<0>(elem))) {
+      for (auto id : hl_op.getIds()) {
+        if (std::get<0>(elem) == id) {
+          std::get<1>(elem).push_back(id);
+        }
+      }
+    }
+  }
+
+  // Recursively trace dependency to loop induction vars
+  for (auto &elem : loop_dep_history) {
+    if (std::get<0>(elem) &&
+        llvm::isa<IndexType>(
+            std::get<0>(elem).getType())) { // Only tracing scalar operands
+      if (std::get<0>(elem).getDefiningOp() &&
+          mlir::dyn_cast<air::AsyncOpInterface>(
+              std::get<0>(elem).getDefiningOp())) {
+        auto ancestor_async_op = std::get<0>(elem).getDefiningOp();
+        std::get<2>(elem).push_back(ancestor_async_op);
+        traceDependentHerdId(ancestor_async_op, std::get<1>(elem),
+                             std::get<2>(elem));
+      }
+    }
+  }
+
+  return loop_dep_history;
 }
 
 // Recursively check for dependency to any control token (scf loop or wait all)
@@ -214,7 +317,7 @@ void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token) {
   if (!token)
     return;
-  if (!token.getType().isa<air::AsyncTokenType>())
+  if (!llvm::isa<air::AsyncTokenType>(token.getType()))
     return;
   auto dependency_list = op.getAsyncDependencies();
   if (!dependency_list.size())
@@ -237,15 +340,11 @@ void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op) {
 void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op) {
   SmallVector<Value> operands_without_wait_all;
   for (auto iter_oper : op.getInitArgs()) {
-    if (auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp())) {
-      clearAsyncDependenciesOfAsyncOpImpl(wa_op);
-    } else {
-      // Push to vec if unique
-      if (std::find(operands_without_wait_all.begin(),
-                    operands_without_wait_all.end(),
-                    iter_oper) == operands_without_wait_all.end()) {
-        operands_without_wait_all.push_back(iter_oper);
-      }
+    // Push to vec if unique
+    if (std::find(operands_without_wait_all.begin(),
+                  operands_without_wait_all.end(),
+                  iter_oper) == operands_without_wait_all.end()) {
+      operands_without_wait_all.push_back(iter_oper);
     }
   }
   for (auto v : operands_without_wait_all) {
@@ -303,7 +402,7 @@ Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op) {
     return nullptr;
   }
   auto token = op.getInitVals()[0];
-  if (!token.getType().isa<air::AsyncTokenType>()) {
+  if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
     op->emitOpError("init_val is not an async token");
     return nullptr;
   }
@@ -317,7 +416,7 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
       return nullptr;
     }
     auto token = op.getInitArgs()[0];
-    if (!token.getType().isa<air::AsyncTokenType>()) {
+    if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
       op->emitOpError("iter operand is not an async token");
       return nullptr;
     }
@@ -328,7 +427,7 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
       return nullptr;
     }
     auto token = op.getRegionIterArgs()[0];
-    if (!token.getType().isa<air::AsyncTokenType>()) {
+    if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
       op->emitOpError("iter operand is not an async token");
       return nullptr;
     }
@@ -338,16 +437,28 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
     return nullptr;
   }
 }
+air::WaitAllOp assignEmptyWaitAllAtScfForIterArg(OpBuilder builder,
+                                                 scf::ForOp &op) {
+  auto checkpoint = builder.saveInsertionPoint();
+  builder.setInsertionPoint(op);
+  air::WaitAllOp sink_wait_all_op = builder.create<air::WaitAllOp>(
+      op->getLoc(), air::AsyncTokenType::get(builder.getContext()),
+      SmallVector<Value>{});
+  op->getOpOperand(op.getNumControlOperands())
+      .assign(sink_wait_all_op.getAsyncToken());
+  builder.restoreInsertionPoint(checkpoint);
+  return sink_wait_all_op;
+}
 
 // Create scf.reduce op to reduce all async tokens in an scf.parallel
 scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
                                                  Location loc, Value token,
                                                  MLIRContext *ctx) {
   auto reduce_op = builder.create<scf::ReduceOp>(loc, token);
-  builder.setInsertionPointToStart(&reduce_op.getRegion().front());
+  builder.setInsertionPointToStart(&reduce_op.getRegion(0).front());
   SmallVector<Value, 4> reduce_tokens;
-  reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(0));
-  reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(1));
+  reduce_tokens.push_back(reduce_op.getRegion(0).front().getArgument(0));
+  reduce_tokens.push_back(reduce_op.getRegion(0).front().getArgument(1));
   auto reduce_res = builder.create<xilinx::air::WaitAllOp>(
       builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), reduce_tokens);
   builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(),
@@ -365,6 +476,15 @@ SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ForOp op) {
 SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ParallelOp op) {
   return op.getInitVals();
 }
+SmallVector<Value> getAsyncDependenciesFromOpImpl(affine::AffineIfOp op) {
+  SmallVector<Value> depList;
+  for (auto operand : op->getOperands()) {
+    if (!isa<air::AsyncTokenType>(operand.getType()))
+      continue;
+    depList.push_back(operand);
+  }
+  return depList;
+}
 SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
     return getAsyncDependenciesFromOpImpl(async_op);
@@ -372,13 +492,53 @@ SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
     return getAsyncDependenciesFromOpImpl(for_op);
   else if (auto par_op = dyn_cast<scf::ParallelOp>(op))
     return getAsyncDependenciesFromOpImpl(par_op);
+  else if (auto aif_op = dyn_cast<affine::AffineIfOp>(op))
+    return getAsyncDependenciesFromOpImpl(aif_op);
   else
     return SmallVector<Value>();
 }
 
+// Get returned async token from op
+Value getAsyncTokenFromOpImpl(air::AsyncOpInterface op) {
+  return op.getAsyncToken();
+}
+Value getAsyncTokenFromOpImpl(scf::ForOp op) {
+  for (auto res : op->getResults()) {
+    if (isa<air::AsyncTokenType>(res.getType()))
+      return res;
+  }
+  return nullptr;
+}
+Value getAsyncTokenFromOpImpl(scf::ParallelOp op) {
+  for (auto res : op->getResults()) {
+    if (isa<air::AsyncTokenType>(res.getType()))
+      return res;
+  }
+  return nullptr;
+}
+Value getAsyncTokenFromOpImpl(affine::AffineIfOp op) {
+  for (auto res : op->getResults()) {
+    if (isa<air::AsyncTokenType>(res.getType()))
+      return res;
+  }
+  return nullptr;
+}
+Value getAsyncTokenFromOp(Operation *op) {
+  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
+    return getAsyncTokenFromOpImpl(async_op);
+  else if (auto for_op = dyn_cast<scf::ForOp>(op))
+    return getAsyncTokenFromOpImpl(for_op);
+  else if (auto par_op = dyn_cast<scf::ParallelOp>(op))
+    return getAsyncTokenFromOpImpl(par_op);
+  else if (auto aif_op = dyn_cast<affine::AffineIfOp>(op))
+    return getAsyncTokenFromOpImpl(aif_op);
+  else
+    return nullptr;
+}
+
 // Add async dependency to op if unique
 void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
-  if (!token.getType().isa<air::AsyncTokenType>()) {
+  if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
     op->emitOpError("value is not an async token");
     return;
   }
@@ -469,10 +629,32 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
 
 bool isAsyncOp(Operation *op) {
   for (auto result : op->getResults()) {
-    if (result.getType().isa<air::AsyncTokenType>()) {
+    if (llvm::isa<air::AsyncTokenType>(result.getType())) {
       return true;
     }
   }
+  return false;
+}
+
+bool areAsyncDependent(Operation *a, Operation *b) {
+  SmallVector<Value> dep_a = getAsyncDependenciesFromOp(a);
+  Value token_a = getAsyncTokenFromOp(a);
+  SmallVector<Value> dep_b = getAsyncDependenciesFromOp(b);
+  Value token_b = getAsyncTokenFromOp(b);
+  if (!token_a)
+    return false;
+  if (!token_b)
+    return false;
+  if (dep_a.empty())
+    return false;
+  if (dep_b.empty())
+    return false;
+  for (auto dep : dep_a)
+    if (dep == token_b)
+      return true;
+  for (auto dep : dep_b)
+    if (dep == token_a)
+      return true;
   return false;
 }
 
@@ -480,15 +662,14 @@ bool isAsyncOp(Operation *op) {
 // for loop to a new for loop located at the same scope.
 scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops) {
-
+  auto loc = for_op->getLoc();
   // If target ops are already perfectly nested, then skip
-  auto hasNElements = [](Block *block, unsigned N) {
-    auto op_ptr = block->begin();
-    for (unsigned i = 0; i < N; i++)
-      op_ptr = std::next(op_ptr);
-    return op_ptr != block->end() && &*op_ptr == &block->back();
+  auto hasNChannelOps = [](Block *block, unsigned N) {
+    SmallVector<air::ChannelInterface> chanOps;
+    block->walk([&](air::ChannelInterface op) { chanOps.push_back(op); });
+    return chanOps.size() == N;
   };
-  if (hasNElements(for_op.getBody(), target_ops.size() + 1))
+  if (hasNChannelOps(for_op.getBody(), 1))
     return for_op;
 
   // Preprocess target ops by canonicalizing dependencies in target ops' region.
@@ -508,8 +689,13 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   builder.setInsertionPoint(for_op);
   IRMapping remap;
   auto new_for_op = builder.create<scf::ForOp>(
-      for_op.getLoc(), for_op.getLowerBound(), for_op.getUpperBound(),
-      for_op.getStep(), for_op.getInitArgs());
+      loc, for_op.getLowerBound(), for_op.getUpperBound(), for_op.getStep(),
+      SmallVector<Value>{builder
+                             .create<air::WaitAllOp>(
+                                 loc,
+                                 air::AsyncTokenType::get(builder.getContext()),
+                                 SmallVector<Value>{})
+                             .getAsyncToken()});
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -518,17 +704,24 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   for (auto op : target_ops) {
     if (op->getParentOp() != for_op.getOperation())
       continue;
+    // Clone operands' defining ops.
+    for (auto operand : op->getOperands()) {
+      if (!operand.getDefiningOp())
+        continue;
+      if (operand.getDefiningOp()->getParentOp() != for_op.getOperation())
+        continue;
+      builder.clone(*operand.getDefiningOp(), remap);
+    }
     auto new_op = builder.clone(*op, remap);
     yield_operands.push_back(new_op->getResult(0));
   }
   builder.create<scf::YieldOp>(
-      new_for_op.getLoc(),
-      SmallVector<Value>{builder
-                             .create<air::WaitAllOp>(
-                                 new_for_op.getLoc(),
-                                 air::AsyncTokenType::get(builder.getContext()),
-                                 yield_operands)
-                             ->getResult(0)});
+      loc, SmallVector<Value>{
+               builder
+                   .create<air::WaitAllOp>(
+                       loc, air::AsyncTokenType::get(builder.getContext()),
+                       yield_operands)
+                   ->getResult(0)});
 
   // Update dependency to hoisted ops
   for (auto herd : new_for_op.getOps<air::HerdOp>()) {
@@ -538,13 +731,26 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   }
   for (auto erase_op : target_ops) {
     // Reconnect returned tokens.
-    for (auto user : erase_op->getResult(0).getUsers()) {
-      if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
-        eraseAsyncDependencyFromAsyncOp(async_user, erase_op->getResult(0));
-        for (auto dep : getAsyncDependenciesFromOp(erase_op)) {
-          if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument")) {
-            air::addAsyncDependencyIfNew(user, dep);
+    builder.setInsertionPoint(erase_op);
+    for (auto res : erase_op->getResults()) {
+      if (!isa<air::AsyncTokenType>(res.getType()))
+        continue;
+      for (auto &u : res.getUses()) {
+        if (auto async_user = dyn_cast<air::AsyncOpInterface>(u.getOwner())) {
+          eraseAsyncDependencyFromAsyncOp(async_user, res);
+          for (auto dep : getAsyncDependenciesFromOp(erase_op)) {
+            if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument")) {
+              air::addAsyncDependencyIfNew(u.getOwner(), dep);
+            }
           }
+        } else {
+          // User op doesn't have air::AsyncOpInterface. Replace uses with newly
+          // generated air.wait_all op.
+          u.assign(builder
+                       .create<air::WaitAllOp>(
+                           loc, air::AsyncTokenType::get(builder.getContext()),
+                           getAsyncDependenciesFromOp(erase_op))
+                       .getAsyncToken());
         }
       }
     }
@@ -558,8 +764,95 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   return new_for_op;
 }
 
+// Unroll scf.parallel ops.
+LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
+                                                  scf::ParallelOp par,
+                                                  Operation *originalChanOp,
+                                                  IRMapping remap) {
+  SmallVector<int, 2> lbs_spatial, ubs_spatial;
+  air::getSizesFromSpatialLoop(par.getOperation(), lbs_spatial, ubs_spatial);
+  std::vector<unsigned> par_size;
+  unsigned par_vol = 1;
+  for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+    par_size.push_back(ubs_spatial[i] - lbs_spatial[i] + 1);
+    par_vol *= ubs_spatial[i] - lbs_spatial[i] + 1;
+  }
+  for (unsigned iter = 0; iter < par_vol; iter++) {
+    IRMapping localRemap = remap;
+    std::vector<unsigned> position =
+        air::getMDVectorFromIterator(par_size, iter);
+    SmallVector<Value, 4> emptyVec = {};
+    SmallVector<Type, 4> tys = {};
+    if (auto putget = dyn_cast<air::ChannelInterface>(originalChanOp)) {
+      auto air_chan = getChannelDeclarationThroughSymbol(putget);
+      auto air_chan_size =
+          extractFromIntegerArrayAttr<int64_t>(air_chan.getSize());
+      if (position.size() == putget.getIndices().size()) {
+        for (unsigned i = 0; i < putget.getIndices().size(); i++)
+          localRemap.map(putget.getIndices()[i],
+                         builder.create<arith::ConstantIndexOp>(
+                             builder.getUnknownLoc(), position[i]));
+      } else if (position.size() == 1 &&
+                 std::find(air_chan_size.begin(), air_chan_size.end(),
+                           air_chan.getBundleSize()) != air_chan_size.end()) {
+        auto idx = std::find(air_chan_size.begin(), air_chan_size.end(),
+                             air_chan.getBundleSize()) -
+                   air_chan_size.begin();
+        localRemap.map(putget.getIndices()[idx],
+                       builder.create<arith::ConstantIndexOp>(
+                           builder.getUnknownLoc(), position[0]));
+      } else
+        assert(false && "mismatching dimension counts between loop "
+                        "iteration space and air.channel shape");
+    }
+    // Specialize any affine apply mappings to operand
+    for (auto oper : originalChanOp->getOperands()) {
+      if (oper.getDefiningOp()) {
+        mlir::affine::AffineApplyOp position_apply = nullptr;
+        if (auto apply_op =
+                dyn_cast<mlir::affine::AffineApplyOp>(oper.getDefiningOp()))
+          position_apply = apply_op;
+        else if (auto exec = dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
+          auto child_op = &exec.getBody().front().getOperations().front();
+          if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(child_op))
+            position_apply = apply_op;
+        }
+        if (position_apply) {
+          SmallVector<AffineExpr> const_syms;
+          for (unsigned i = 0; i < par.getInductionVars().size(); i++) {
+            for (auto map_o : position_apply.getMapOperands()) {
+              if (par.getInductionVars()[i] == map_o) {
+                const_syms.push_back(
+                    getAffineConstantExpr(position[i], builder.getContext()));
+              }
+            }
+          }
+          AffineExpr newC = position_apply.getAffineMap().getResult(0);
+          newC = newC.replaceSymbols(const_syms);
+          auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
+              newC, 0, position_apply.getMapOperands().size()));
+          if (expr) {
+            int result = expr.getValue();
+            localRemap.map(oper, builder.create<arith::ConstantIndexOp>(
+                                     builder.getUnknownLoc(), result));
+          }
+        }
+      }
+    }
+    // Clone the immediate child op under scf.parallel.
+    Operation *parent = originalChanOp;
+    assert(par->isProperAncestor(originalChanOp));
+    while (parent->getParentOp() != par) {
+      parent = parent->getParentOp();
+    }
+    auto new_memcpy = builder.clone(*parent, localRemap);
+    clearAsyncDependenciesOfAsyncOp(new_memcpy);
+  }
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
-// Dependency graph as a Boost graph object
+// Dependency graph
 //===----------------------------------------------------------------------===//
 
 void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
@@ -650,167 +943,6 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
   }
 }
 
-void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
-    func::FuncOp &toplevel, dependencyGraph &global_graph,
-    dependencyContext &dep_ctx, bool dump_dot, std::string dump_dir) {
-  // Create FlatGraph
-  FlatGraph flat_g;
-  std::vector<vertex_to_flat_vertex_map> maps;
-
-  // Copy vertices and edges to flat graph
-  vertex_to_flat_vertex_map map;
-  copyFromDependencyGraphToFlatGraph(global_graph.g, global_graph.position,
-                                     flat_g, map, true);
-  maps.push_back(map);
-  for (auto &G_l : global_graph.subgraphs) {
-    vertex_to_flat_vertex_map map_l;
-    copyFromDependencyGraphToFlatGraph(G_l.g, G_l.position, flat_g, map_l);
-    maps.push_back(map_l);
-    for (auto &G_p : G_l.subgraphs) {
-      vertex_to_flat_vertex_map map_p;
-      copyFromDependencyGraphToFlatGraph(G_p.g, G_p.position, flat_g, map_p);
-      maps.push_back(map_p);
-      for (auto &G_h : G_p.subgraphs) {
-        vertex_to_flat_vertex_map map_h;
-        copyFromDependencyGraphToFlatGraph(G_h.g, G_h.position, flat_g, map_h);
-        maps.push_back(map_h);
-      }
-    }
-  }
-
-  // AIR channel dependency edges, overlayed as a (non-cluster) subgraph
-  ChannelMap channel_map;
-  unsigned index = 0;
-  collectAIRChannelPutAndGetInGraph(global_graph.g, global_graph.position,
-                                    maps[index++], channel_map);
-  for (auto &G_l : global_graph.subgraphs) {
-    collectAIRChannelPutAndGetInGraph(G_l.g, G_l.position, maps[index++],
-                                      channel_map);
-    for (auto &G_p : G_l.subgraphs) {
-      collectAIRChannelPutAndGetInGraph(G_p.g, G_p.position, maps[index++],
-                                        channel_map);
-      for (auto &G_h : G_p.subgraphs) {
-        collectAIRChannelPutAndGetInGraph(G_h.g, G_h.position, maps[index++],
-                                          channel_map);
-      }
-    }
-  }
-  FlatGraph &flat_subg_chan = flat_g.create_subgraph();
-  for (auto &map : channel_map) {
-    for (auto a_entry : map.second.first) {
-      auto a = add_vertex(a_entry, flat_subg_chan);
-      for (auto b_entry : map.second.second) {
-        auto b = add_vertex(b_entry, flat_subg_chan);
-        add_edge(a, b, flat_subg_chan);
-      }
-    }
-  }
-
-  // Create subgraphs
-  boost::get_property(flat_g, boost::graph_name) = "host";
-  index = 1;
-  unsigned idx_l = 0;
-  unsigned idx_p = 0;
-  unsigned idx_h = 0;
-
-  auto vp = getVerticesWithAffineIf(global_graph.g, global_graph.position);
-  for (auto vit : vp) {
-    if (global_graph.g[vit].asyncEventName == "LaunchOp") {
-      auto G_l = *global_graph.g[vit].nextDependencyGraphs[0];
-      FlatGraph &flat_subg_l = flat_g.create_subgraph();
-      updateSubgraphFromDependencyGraphAsGraphVizCluster(
-          G_l, flat_subg_l, maps[index], index, idx_l, "launch");
-      // Connect parent graph's herarchy node with "start" of launch subgraph
-      add_edge(maps[0][vit], maps[index][G_l.start_vertex], flat_g);
-
-      auto map_idx_launch = index++;
-      auto vp_l = getVerticesWithAffineIf(G_l.g, G_l.position);
-      for (auto vit_l : vp_l) {
-        if (G_l.g[vit_l].asyncEventName == "SegmentOp") {
-          auto G_p = *G_l.g[vit_l].nextDependencyGraphs[0];
-          FlatGraph &flat_subg_p = flat_subg_l.create_subgraph();
-          updateSubgraphFromDependencyGraphAsGraphVizCluster(
-              G_p, flat_subg_p, maps[index], index, idx_p, "segment");
-          // Connect parent graph's herarchy node with "start" of segment
-          // subgraph
-          add_edge(maps[map_idx_launch][vit_l], maps[index][G_p.start_vertex],
-                   flat_g);
-
-          auto map_idx_segment = index++;
-          auto vp_p = getVerticesWithAffineIf(G_p.g, G_p.position);
-          for (auto vit_p : vp_p) {
-            if (G_p.g[vit_p].asyncEventName == "HerdOp") {
-              for (auto G_h_ptr : G_p.g[vit_p].nextDependencyGraphs) {
-                auto G_h = *G_h_ptr;
-                FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
-                updateSubgraphFromDependencyGraphAsGraphVizCluster(
-                    G_h, flat_subg_h, maps[index], index, idx_h, "herd");
-                // Connect parent graph's herarchy node with "start" of herd
-                // subgraph
-                add_edge(maps[map_idx_segment][vit_p],
-                         maps[index++][G_h.start_vertex], flat_g);
-              }
-            }
-          }
-        } else if (G_l.g[vit_l].asyncEventName == "HerdOp") {
-          for (auto G_h_ptr : G_l.g[vit_l].nextDependencyGraphs) {
-            auto G_h = *G_h_ptr;
-            FlatGraph &flat_subg_h = flat_subg_l.create_subgraph();
-            updateSubgraphFromDependencyGraphAsGraphVizCluster(
-                G_h, flat_subg_h, maps[index], index, idx_h, "herd");
-            // Connect parent graph's herarchy node with "start" of herd
-            // subgraph
-            add_edge(maps[map_idx_launch][vit_l],
-                     maps[index++][G_h.start_vertex], flat_g);
-          }
-        }
-      }
-    } else if (global_graph.g[vit].asyncEventName == "SegmentOp") {
-      auto G_p = *global_graph.g[vit].nextDependencyGraphs[0];
-      FlatGraph &flat_subg_p = flat_g.create_subgraph();
-      updateSubgraphFromDependencyGraphAsGraphVizCluster(
-          G_p, flat_subg_p, maps[index], index, idx_p, "segment");
-      // Connect parent graph's herarchy node with "start" of segment subgraph
-      add_edge(maps[0][vit], maps[index][G_p.start_vertex], flat_g);
-
-      auto map_idx_segment = index++;
-      auto vp_p = getVerticesWithAffineIf(G_p.g, G_p.position);
-      for (auto vit_p : vp_p) {
-        if (G_p.g[vit_p].asyncEventName == "HerdOp") {
-          for (auto G_h_ptr : G_p.g[vit_p].nextDependencyGraphs) {
-            auto G_h = *G_h_ptr;
-            FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
-            updateSubgraphFromDependencyGraphAsGraphVizCluster(
-                G_h, flat_subg_h, maps[index], index, idx_h, "herd");
-            // Connect parent graph's herarchy node with "start" of herd
-            // subgraph
-            add_edge(maps[map_idx_segment][vit_p],
-                     maps[index++][G_h.start_vertex], flat_g);
-          }
-        }
-      }
-    } else if (global_graph.g[vit].asyncEventName == "HerdOp") {
-      for (auto G_h_ptr : global_graph.g[vit].nextDependencyGraphs) {
-        auto G_h = *G_h_ptr;
-        FlatGraph &flat_subg_h = flat_g.create_subgraph();
-        updateSubgraphFromDependencyGraphAsGraphVizCluster(
-            G_h, flat_subg_h, maps[index], index, idx_h, "herd");
-        // Connect parent graph's herarchy node with "start" of herd subgraph
-        add_edge(maps[0][vit], maps[index++][G_h.start_vertex], flat_g);
-      }
-    }
-  }
-}
-
-void dependencyCanonicalizer::
-    updateSubgraphFromDependencyGraphAsGraphVizCluster(
-        dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map,
-        unsigned global_idx, unsigned &subg_idx, std::string hier_name) {
-  updateSubgraphFromDependencyGraph(G.g, G.position, flat_subg, map, true);
-  boost::get_property(flat_subg, boost::graph_name) =
-      "cluster" + std::to_string(global_idx);
-}
-
 void dependencyCanonicalizer::addVerticesInHerd(
     std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd,
     dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
@@ -896,7 +1028,7 @@ void dependencyCanonicalizer::addVerticesInLaunch(
   });
 }
 
-Graph::vertex_descriptor
+Graph::VertexId
 dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
                                               dependencyContext &dep_ctx) {
   if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
@@ -918,22 +1050,22 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
   } else if (auto hier_op =
                  mlir::dyn_cast<xilinx::air::HierarchyInterface>(op)) {
     return addVertexFromHierarchyOp(hier_op, G, dep_ctx);
-  } else if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
-    return addVertexFromTerminatorOp(op, G, dep_ctx);
   } else if (auto reduce_op = dyn_cast<scf::ReduceOp>(op)) {
     return addVertexFromReduceOp(reduce_op, G, dep_ctx);
+  } else if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
+    return addVertexFromTerminatorOp(op, G, dep_ctx);
   } else
     return 0;
 }
 
 // Create graph vertex from op
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromOp(
     Operation *op, uint64_t &id, std::string event_type, std::string event_name,
     graphNodeProperties properties, dependencyGraph *G,
     dependencyContext &dep_ctx, Operation *pointer_op) {
   op->setAttr("id", mlir::IntegerAttr::get(
                         mlir::IntegerType::get(op->getContext(), 32), ++id));
-  auto v = add_vertex(G->g);
+  auto v = G->g.addVertex();
   G->g[v].asyncEventName = event_name;
   G->g[v].asyncEventType = event_type;
   G->g[v].color = properties.color;
@@ -951,7 +1083,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOp(
   return v;
 }
 
-Graph::vertex_descriptor
+Graph::VertexId
 dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyNdOp op,
                                             dependencyGraph *G,
                                             dependencyContext &dep_ctx) {
@@ -964,7 +1096,7 @@ dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyNdOp op,
   }
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
     xilinx::air::ChannelInterface op, dependencyGraph *G,
     dependencyContext &dep_ctx) {
   if (auto channel_put =
@@ -1045,7 +1177,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
   }
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromHierarchyOp(
     xilinx::air::HierarchyInterface op, dependencyGraph *G,
     dependencyContext &dep_ctx) {
   std::string detailed_description = "";
@@ -1082,7 +1214,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
   }
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromTerminatorOp(
     Operation *op, dependencyGraph *G, dependencyContext &dep_ctx) {
   std::string detailed_description = "";
   if (dyn_cast<xilinx::air::LaunchTerminatorOp>(op)) {
@@ -1119,17 +1251,17 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
 
 // Note: in the current scf parallel spec, reduce op takes the role of yielding
 // the ssa value. Hence, here we parse reduce op as a terminator.
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromReduceOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromReduceOp(
     Operation *op, dependencyGraph *G, dependencyContext &dep_ctx) {
   return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator", "ScfReduceOp",
                          graphNodeProperties("control"), G, dep_ctx);
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
     xilinx::air::ExecuteOp op, dependencyGraph *G, dependencyContext &dep_ctx) {
   int iter_count = 0;
-  Graph::vertex_descriptor v_prev = 0;
-  Graph::vertex_descriptor v = 0;
+  Graph::VertexId v_prev = 0;
+  Graph::VertexId v = 0;
   Operation *pointer_op = op;
   for (auto &child_op : op->getRegions().front().getOps()) {
     if (auto linalg_child_op = dyn_cast<linalg::LinalgOp>(child_op)) {
@@ -1149,7 +1281,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(alloc_child_op.getMemref());
-      auto ty = alloc_child_op.getMemref().getType().cast<MemRefType>();
+      auto ty = llvm::cast<MemRefType>(alloc_child_op.getMemref().getType());
       detailed_description += "(" + memorySpaceStr + ", " +
                               std::to_string(getTensorVolume(ty)) + ", " +
                               getElementTypeAsString(ty) + ")";
@@ -1161,7 +1293,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(dealloc_child_op.getMemref());
-      auto ty = dealloc_child_op.getMemref().getType().cast<MemRefType>();
+      auto ty = llvm::cast<MemRefType>(dealloc_child_op.getMemref().getType());
       detailed_description += "(" + memorySpaceStr + ", " +
                               std::to_string(getTensorVolume(ty)) + ", " +
                               getElementTypeAsString(ty) + ")";
@@ -1183,7 +1315,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
     }
     // Make connections within execute
     if (iter_count > 0) {
-      add_edge(v_prev, v, G->g);
+      G->g.addEdge(v_prev, v);
       pointer_op = nullptr;
     }
     v_prev = v;
@@ -1192,7 +1324,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
   return v;
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromWaitAllOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromWaitAllOp(
     xilinx::air::WaitAllOp op, dependencyGraph *G, dependencyContext &dep_ctx) {
   // Note: disabled parsing wait_all op inside of reduce op
   for (auto u : op.getAsyncToken().getUsers()) {
@@ -1250,21 +1382,21 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
 // Get vertex descriptor from op
 // "front_or_back": if op is an air.execute, then "front" returns the first op
 // in region, while "back" returns the terminator in region.
-std::pair<Graph::vertex_descriptor, dependencyGraph *>
+std::pair<Graph::VertexId, dependencyGraph *>
 dependencyCanonicalizer::getVertexFromOp(Operation *op,
                                          dependencyContext dep_ctx,
                                          std::string front_or_back) {
-  std::pair<Graph::vertex_descriptor, dependencyGraph *> output;
+  std::pair<Graph::VertexId, dependencyGraph *> output;
   if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)) {
     if (front_or_back == "front") {
-      auto execute_front_op = &(*op->getRegions().front().op_begin());
+      auto execute_front_op = execute_op.getChildOp();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_front_op);
       output.first = dep_ctx.op_to_v[entry_pair];
       output.second = dep_ctx.op_to_g[entry_pair];
     } else if (front_or_back == "back") {
       auto execute_end_op =
-          op->getRegions().front().getBlocks().front().getTerminator();
+          execute_op.getBody().getBlocks().front().getTerminator();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_end_op);
       output.first = dep_ctx.op_to_v[entry_pair];
@@ -1281,114 +1413,36 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
   return output;
 }
 
-// Copy vertices and edges from dependencyGraph to FlatGraph
-void dependencyCanonicalizer::copyFromDependencyGraphToFlatGraph(
-    Graph g_src, std::vector<unsigned> position, FlatGraph &g_dst,
-    vertex_to_flat_vertex_map &map, bool copyEdges) {
-  // Copy vertices
-  auto vp = getVerticesWithAffineIf(g_src, position);
-  for (auto vit : vp) {
-    auto new_v = add_vertex(g_dst);
-    map.insert(std::make_pair(vit, new_v));
-  }
-  if (copyEdges) {
-    // Copy edges
-    for (auto vit : vp) {
-      for (auto it = out_edges(vit, g_src).first;
-           it != out_edges(vit, g_src).second; it++) {
-        auto target_it = target(*it, g_src);
-        if (std::count(vp.begin(), vp.end(), target_it)) {
-          add_edge(map[vit], map[target_it], g_dst);
-        }
-      }
-    }
-  }
-}
-
 // Create a vector of vertices which remain after affine.if filtering, if
 // showing cores
-std::vector<Graph::vertex_descriptor>
-dependencyCanonicalizer::getVerticesWithAffineIf(
-    Graph g, std::vector<unsigned> position) {
-  std::vector<Graph::vertex_descriptor> output;
-  auto vp = boost::vertices(g);
+std::vector<Graph::VertexId> dependencyCanonicalizer::getVerticesWithAffineIf(
+    const Graph &g, const std::vector<unsigned> &position) {
+  std::vector<Graph::VertexId> output;
+  auto vp = g.getVertices();
   if (position.size()) {
-    for (auto v = vp.first; v != vp.second; ++v) {
-      if (!g[*v].op) {
-        output.push_back(*v);
-      } else if (!g[*v].op->getParentOfType<affine::AffineIfOp>()) {
-        output.push_back(*v);
-      } else if (positionHitsAffineIfCondition(g[*v].op, position)) {
-        output.push_back(*v);
+    for (auto v : vp) {
+      if (!g[v].op) {
+        output.push_back(v);
+      } else if (!g[v].op->getParentOfType<affine::AffineIfOp>()) {
+        output.push_back(v);
+      } else if (positionHitsAffineIfCondition(g[v].op, position)) {
+        output.push_back(v);
       }
     }
   } else {
-    for (auto v = vp.first; v != vp.second; ++v) {
-      output.push_back(*v);
+    for (auto v : vp) {
+      output.push_back(v);
     }
   }
   return output;
 }
 
-// Update subgraph in FlatGraph from dependencyGraph
-void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
-    Graph subg_src, std::vector<unsigned> position, FlatGraph &subg_dst,
-    vertex_to_flat_vertex_map map, bool copyEdges) {
-  // Update vertices
-  vertex_to_flat_vertex_map subg_map;
-  auto vp = getVerticesWithAffineIf(subg_src, position);
-  for (auto vit : vp) {
-    auto new_v = add_vertex(map[vit], subg_dst);
-    subg_map.insert(std::make_pair(vit, new_v));
-  }
-  if (copyEdges) {
-    // Update edges
-    for (auto vit : vp) {
-      for (auto it = out_edges(vit, subg_src).first;
-           it != out_edges(vit, subg_src).second; it++) {
-        auto target_it = target(*it, subg_src);
-        if (std::count(vp.begin(), vp.end(), target_it)) {
-          add_edge(subg_map[vit], subg_map[target_it], subg_dst);
-        }
-      }
-    }
-  }
-}
-
-// Collect air.channel put and get pairs
-void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(
-    Graph g, std::vector<unsigned> position, vertex_to_flat_vertex_map map,
-    ChannelMap &channel_map) {
-  // Search for air.channel put/get
-  auto vp = getVerticesWithAffineIf(g, position);
-  for (auto vit : vp) {
-    if (g[vit].asyncEventType == "channel") {
-      auto channel_op = dyn_cast<air::ChannelInterface>(g[vit].op);
-      auto chan_name = channel_op.getChanName().str();
-      if (channel_map.find(chan_name) == channel_map.end()) {
-        // If key not found, then create map entry with given key
-        channel_map.insert(std::make_pair(
-            chan_name,
-            std::make_pair(std::vector<FlatGraph::vertex_descriptor>(),
-                           std::vector<FlatGraph::vertex_descriptor>())));
-      }
-      if (dyn_cast<air::ChannelPutOp>(g[vit].op)) {
-        channel_map[chan_name].first.push_back(map[vit]);
-      } else if (dyn_cast<air::ChannelGetOp>(g[vit].op)) {
-        channel_map[chan_name].second.push_back(map[vit]);
-      } else {
-        channel_op->emitOpError("unknown air.channel op type");
-      }
-    }
-  }
-}
-
-// Trace dependency of every op in a boost graph
+// Trace dependency of every op in a graph
 void dependencyCanonicalizer::parseDependencyEdgesInGraph(
     Graph &g, dependencyContext dep_ctx) {
-  auto vp = boost::vertices(g);
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    auto op = g[*vit].op;
+  auto vp = g.getVertices();
+  for (auto vit : vp) {
+    auto op = g[vit].op;
     if (!op)
       continue;
     connectOpToItsDepListImpls(op, g, dep_ctx);
@@ -1444,8 +1498,8 @@ void dependencyCanonicalizer::connectOpToItsDepList(
       if (src_vector.size()) {
         for (auto src_op : src_vector) {
           auto src_v = getVertexFromOp(src_op, dep_ctx, "back").first;
-          if (!edge(src_v, dst_v, g).second) {
-            add_edge(src_v, dst_v, g);
+          if (!g.hasEdge(src_v, dst_v)) {
+            g.addEdge(src_v, dst_v);
           }
         }
       }
@@ -1530,19 +1584,19 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
 
 // Connects launch, segment and herd terminators
 void dependencyCanonicalizer::connectTerminatorInGraph(Graph &g) {
-  auto vp = boost::vertices(g);
-  Graph::vertex_descriptor terminator_v = 0;
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if (g[*vit].asyncEventType == "hierarchy_terminator") {
-      terminator_v = *vit;
+  Graph::VertexId terminator_v = 0;
+  for (auto vit : g.getVertices()) {
+    if (g[vit].asyncEventType == "hierarchy_terminator") {
+      terminator_v = vit;
     }
   }
   if (terminator_v == 0)
     return;
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if ((terminator_v != *vit) && !out_degree(*vit, g) &&
-        (g[*vit].asyncEventType != "start")) {
-      add_edge(*vit, terminator_v, g);
+
+  for (auto vit : g.getVertices()) {
+    if ((terminator_v != vit) && !g.outDegree(vit) &&
+        (g[vit].asyncEventType != "start")) {
+      g.addEdge(vit, terminator_v);
     }
   }
 }
@@ -1551,10 +1605,10 @@ void dependencyCanonicalizer::connectTerminatorInGraph(Graph &g) {
 void dependencyCanonicalizer::connectStartNodeInCommandGraph(
     dependencyGraph &G) {
   auto v = G.start_vertex;
-  auto vp = boost::vertices(G.g);
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if ((v != *vit) && !in_degree(*vit, G.g)) {
-      add_edge(v, *vit, G.g);
+  auto vp = G.g.getVertices();
+  for (auto vit : vp) {
+    if ((v != vit) && !G.g.inDegree(vit)) {
+      G.g.addEdge(v, vit);
     }
   }
 }
@@ -1562,10 +1616,10 @@ void dependencyCanonicalizer::connectStartNodeInCommandGraph(
 // Adds pointer from command graph to launch, segment and herd terminators
 void dependencyCanonicalizer::updatePointerFromGraphToHierarchyTerminator(
     dependencyGraph &G) {
-  auto vp = boost::vertices(G.g);
-  for (auto v = vp.first; v != vp.second; ++v) {
-    if (G.g[*v].asyncEventType == "hierarchy_terminator") {
-      G.terminator_vertex = *v;
+  auto vp = G.g.getVertices();
+  for (auto v : vp) {
+    if (G.g[v].asyncEventType == "hierarchy_terminator") {
+      G.terminator_vertex = v;
       return;
     }
   }
@@ -1574,10 +1628,9 @@ void dependencyCanonicalizer::updatePointerFromGraphToHierarchyTerminator(
 // Adds pointer from hierarchy terminator to parent command graph
 void dependencyCanonicalizer::updatePointerFromHierarchyTerminatorToGraph(
     dependencyGraph &G, dependencyGraph &subG) {
-  auto vp = boost::vertices(subG.g);
-  for (auto v = vp.first; v != vp.second; ++v) {
-    if (subG.g[*v].asyncEventType == "hierarchy_terminator") {
-      subG.g[*v].nextDependencyGraphs.push_back(&G);
+  for (auto v : subG.g.getVertices()) {
+    if (subG.g[v].asyncEventType == "hierarchy_terminator") {
+      subG.g[v].nextDependencyGraphs.push_back(&G);
       return;
     }
   }
@@ -1587,29 +1640,31 @@ void dependencyCanonicalizer::updatePointerFromHierarchyTerminatorToGraph(
 void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
     dependencyGraph &G) {
   unsigned idx = 0;
-  std::vector<vertex_iterator> hier_vs;
-  auto vp = boost::vertices(G.g);
-  for (auto v = vp.first; v != vp.second; ++v) {
-    if (G.g[*v].asyncEventType == "hierarchy") {
+  std::vector<Graph::VertexId> hier_vs;
+  auto vp = G.g.getVertices();
+  for (auto v : vp) {
+    if (G.g[v].asyncEventType == "hierarchy") {
       hier_vs.push_back(v);
     }
   }
+
   for (auto v : hier_vs) {
+
     // If expand cores in herd
     if (G.subgraphs[idx].position.size()) {
-      if (!isa<air::HerdOp>(G.g[*v].op))
-        G.g[*v].op->emitOpError("found non-herd op with core id");
-      auto hier = dyn_cast<air::HierarchyInterface>(G.g[*v].op);
+      if (!isa<air::HerdOp>(G.g[v].op))
+        G.g[v].op->emitOpError("found non-herd op with core id");
+      auto hier = dyn_cast<air::HierarchyInterface>(G.g[v].op);
       for (unsigned i = 0; i < getTripCountInHierarchyOp(hier); i++) {
-        G.g[*v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
-        if (G.g[*v].op != G.subgraphs[idx].hierarchyOp)
-          G.g[*v].op->emitOpError("mismatch between graph and hierarchy op");
+        G.g[v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
+        if (G.g[v].op != G.subgraphs[idx].hierarchyOp)
+          G.g[v].op->emitOpError("mismatch between graph and hierarchy op");
         idx++;
       }
     } else {
-      G.g[*v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
-      if (G.g[*v].op != G.subgraphs[idx].hierarchyOp)
-        G.g[*v].op->emitOpError("mismatch between graph and hierarchy op");
+      G.g[v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
+      if (G.g[v].op != G.subgraphs[idx].hierarchyOp)
+        G.g[v].op->emitOpError("mismatch between graph and hierarchy op");
       idx++;
     }
   }
@@ -1617,28 +1672,21 @@ void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
 
 // Perform transitive reduction to canonicalize the dependency graph
 void dependencyCanonicalizer::canonicalizeGraphs(
-    dependencyGraph &global_graph, dependencyGraph &tr_graph,
-    vertex_to_vertex_map_tree &g_to_tr, bool dump_dot, std::string dump_dir) {
+    const dependencyGraph &global_graph, dependencyGraph &tr_graph) {
 
   // Construct empty post-canonicalization dependency graph, tr_graph
   for (auto &launchGraph : global_graph.subgraphs) {
+
     tr_graph.subgraphs.push_back(dependencyGraph(launchGraph.hierarchyOp));
     dependencyGraph *current_launch_graph = &(tr_graph.subgraphs.back());
-    g_to_tr.submaps.push_back(vertex_to_vertex_map_tree());
-    vertex_to_vertex_map_tree *current_launch_g_to_tr =
-        &(g_to_tr.submaps.back());
     for (auto &segmentGraph : launchGraph.subgraphs) {
       current_launch_graph->subgraphs.push_back(
           dependencyGraph(segmentGraph.hierarchyOp));
       dependencyGraph *current_segment_graph =
           &(current_launch_graph->subgraphs.back());
-      current_launch_g_to_tr->submaps.push_back(vertex_to_vertex_map_tree());
-      vertex_to_vertex_map_tree *current_segment_g_to_tr =
-          &(current_launch_g_to_tr->submaps.back());
       for (auto &herdGraph : segmentGraph.subgraphs) {
         current_segment_graph->subgraphs.push_back(
             dependencyGraph(herdGraph.hierarchyOp));
-        current_segment_g_to_tr->submaps.push_back(vertex_to_vertex_map_tree());
       }
     }
   }
@@ -1647,75 +1695,37 @@ void dependencyCanonicalizer::canonicalizeGraphs(
   auto global_size = global_graph.subgraphs.size();
   if (global_size != tr_graph.subgraphs.size())
     global_graph.hierarchyOp->emitOpError("graph tree size mismatch");
-  if (global_size != g_to_tr.submaps.size())
-    global_graph.hierarchyOp->emitOpError(
-        "graph tree size and map size mismatch");
-  boostTransitiveReductionImpl(global_graph.g, tr_graph.g, g_to_tr.a_to_b,
-                               g_to_tr.b_to_a);
+  transitiveReductionImpl(global_graph.g, tr_graph.g);
   for (unsigned i = 0; i < global_size; i++) {
     auto &launchGraph = global_graph.subgraphs[i];
     auto &trLaunchGraph = tr_graph.subgraphs[i];
     auto launch_size = launchGraph.subgraphs.size();
-    auto launchMap = g_to_tr.submaps[i];
     if (launch_size != trLaunchGraph.subgraphs.size())
       launchGraph.hierarchyOp->emitOpError("graph tree size mismatch");
-    if (launch_size != launchMap.submaps.size())
-      launchGraph.hierarchyOp->emitOpError(
-          "graph tree size and map size mismatch");
-    boostTransitiveReductionImpl(launchGraph.g, trLaunchGraph.g,
-                                 launchMap.a_to_b, launchMap.b_to_a);
+    transitiveReductionImpl(launchGraph.g, trLaunchGraph.g);
     for (unsigned j = 0; j < launch_size; j++) {
       auto &segmentGraph = launchGraph.subgraphs[j];
       auto &trSegmentGraph = trLaunchGraph.subgraphs[j];
       auto segment_size = segmentGraph.subgraphs.size();
-      auto segmentMap = launchMap.submaps[j];
       if (segment_size != trSegmentGraph.subgraphs.size())
         segmentGraph.hierarchyOp->emitOpError("graph tree size mismatch");
-      if (segment_size != segmentMap.submaps.size())
-        segmentGraph.hierarchyOp->emitOpError(
-            "graph tree size and map size mismatch");
-      boostTransitiveReductionImpl(segmentGraph.g, trSegmentGraph.g,
-                                   segmentMap.a_to_b, segmentMap.b_to_a);
+      transitiveReductionImpl(segmentGraph.g, trSegmentGraph.g);
       for (unsigned k = 0; k < segment_size; k++) {
         auto &herdGraph = segmentGraph.subgraphs[k];
         auto &trHerdGraph = trSegmentGraph.subgraphs[k];
-        auto herdMap = segmentMap.submaps[k];
-        boostTransitiveReductionImpl(herdGraph.g, trHerdGraph.g, herdMap.a_to_b,
-                                     herdMap.b_to_a);
+        transitiveReductionImpl(herdGraph.g, trHerdGraph.g);
       }
     }
   }
 }
 
-void dependencyCanonicalizer::boostTransitiveReductionImpl(
-    Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR,
-    vertex_to_vertex_map &g_to_tr, vertex_to_vertex_map &tr_to_g) {
-
-  std::vector<size_t> id_map(num_vertices(asyncExecuteGraph));
-  std::iota(id_map.begin(), id_map.end(), 0u);
-
-  boost::transitive_reduction(asyncExecuteGraph, asyncExecuteGraphTR,
-                              boost::make_assoc_property_map(g_to_tr),
-                              id_map.data());
-
-  for (vertex_to_vertex_map::iterator i = g_to_tr.begin(); i != g_to_tr.end();
-       ++i) {
-    // Copy over graph properties
-    asyncExecuteGraphTR[i->second].asyncEventName =
-        asyncExecuteGraph[i->first].asyncEventName;
-    asyncExecuteGraphTR[i->second].asyncEventType =
-        asyncExecuteGraph[i->first].asyncEventType;
-    asyncExecuteGraphTR[i->second].color = asyncExecuteGraph[i->first].color;
-    asyncExecuteGraphTR[i->second].shape = asyncExecuteGraph[i->first].shape;
-    asyncExecuteGraphTR[i->second].operationId =
-        asyncExecuteGraph[i->first].operationId;
-    asyncExecuteGraphTR[i->second].op = asyncExecuteGraph[i->first].op;
-    // Build reverse map tr_to_g, for convenient vertex mapping
-    tr_to_g[i->second] = i->first;
-  }
+void dependencyCanonicalizer::transitiveReductionImpl(
+    const Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR) {
+  asyncExecuteGraphTR = asyncExecuteGraph;
+  asyncExecuteGraphTR.applyTransitiveReduction();
 }
 
-// Update dependency list based on transformed boost graph
+// Update dependency list based on transformed graph
 void dependencyCanonicalizer::updateDepList(func::FuncOp func,
                                             dependencyGraph &global_graph) {
 
@@ -1755,9 +1765,9 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
 }
 
 void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
-  auto vp = boost::vertices(graph.g);
-  for (auto dstTRVertex = vp.first; dstTRVertex != vp.second; ++dstTRVertex) {
-    auto op = graph.g[*dstTRVertex].op;
+  auto vp = graph.g.getVertices();
+  for (auto dstTRVertex : vp) {
+    auto op = graph.g[dstTRVertex].op;
     if (!op)
       continue;
     auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
@@ -1769,18 +1779,16 @@ void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
 
 void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
     dependencyGraph &graph) {
-  auto vp = boost::vertices(graph.g);
-  for (auto dstTRVertex = vp.first; dstTRVertex != vp.second; ++dstTRVertex) {
-    auto op = graph.g[*dstTRVertex].op;
+  auto vp = graph.g.getVertices();
+  for (auto dstTRVertex : vp) {
+    auto op = graph.g[dstTRVertex].op;
     if (!op)
       continue;
     auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
     if (!async_op)
       continue;
-    auto incoming_deps = in_edges(*dstTRVertex, graph.g);
-    for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second;
-         it++) {
-      auto TRVertex = source(*it, graph.g);
+    auto incoming_deps = graph.g.inverseAdjacentVertices(dstTRVertex);
+    for (auto TRVertex : incoming_deps) {
       auto src_op = graph.g[TRVertex].op;
       if (src_op && op != src_op) { // Avoid dep to itself
         if (graph.g[TRVertex].asyncEventType == "for_loop") {
@@ -1844,7 +1852,7 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
   func.walk([&](air::ExecuteOp op) {
     // Check the type of op inside the execute. Only remove ops with no side
     // effects
-    auto child_op = &(*op->getRegions().front().op_begin());
+    auto child_op = op.getChildOp();
     if (dyn_cast<memref::AllocOp>(child_op) ||
         dyn_cast<affine::AffineApplyOp>(child_op)) {
       // The second result is the ssa value yielded from child op inside execute
@@ -1858,11 +1866,14 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
   });
 
   for (auto op : erased_ops) {
-    for (auto user : op.getAsyncToken().getUsers()) {
-      if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
-        eraseAsyncDependencyFromAsyncOp(async_user, op.getAsyncToken());
-      }
-    }
+    OpBuilder builder(op);
+    auto new_token =
+        builder
+            .create<air::WaitAllOp>(
+                op->getLoc(), air::AsyncTokenType::get(builder.getContext()),
+                op.getAsyncDependencies())
+            .getAsyncToken();
+    op.getAsyncToken().replaceAllUsesWith(new_token);
     if (!op.getAsyncToken().use_empty())
       op->emitOpError("returned async token still has uses");
     op->erase();
@@ -1981,7 +1992,7 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
 void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
                                               air::AsyncOpInterface op, char rw,
                                               partialMemref *tile) {
-  if (!operand.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(operand.getType()))
     op->emitOpError("operand being traced is not a memref");
   for (auto &u : operand.getUses()) {
     // If used in MemcpyInterface Op
@@ -1989,9 +2000,10 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
       partialMemref memcpy_src, memcpy_dst;
       if (memcpy.getSrcMemref()) {
         unsigned numDimsSrc =
-            memcpy.getSrcMemref().getType().cast<MemRefType>().getRank();
+            llvm::cast<MemRefType>(memcpy.getSrcMemref().getType()).getRank();
         SmallVector<Value, 2> src_indices;
         if (memcpy.getSrcOffsets().size()) {
+          numDimsSrc = memcpy.getSrcOffsets().size();
           for (unsigned i = 0; i < numDimsSrc; i++) {
             src_indices.push_back(memcpy.getSrcOffsets()[i]);
           }
@@ -2005,9 +2017,10 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
       }
       if (memcpy.getDstMemref()) {
         unsigned numDimsDst =
-            memcpy.getDstMemref().getType().cast<MemRefType>().getRank();
+            llvm::cast<MemRefType>(memcpy.getDstMemref().getType()).getRank();
         SmallVector<Value, 2> dst_indices;
         if (memcpy.getDstOffsets().size()) {
+          numDimsDst = memcpy.getDstOffsets().size();
           for (unsigned i = 0; i < numDimsDst; i++) {
             dst_indices.push_back(memcpy.getDstOffsets()[i]);
           }
@@ -2133,22 +2146,24 @@ void dependencyTracer::getPartialMemrefFromOp(
   if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
     for (auto linalg_ins : sink_op_linalgop.getDpsInputOperands()) {
       auto ins_value = linalg_ins->get();
-      if (ins_value.getType().isa<MemRefType>()) {
-        unsigned memRefRank = ins_value.getType().cast<MemRefType>().getRank();
+      if (llvm::isa<MemRefType>(ins_value.getType())) {
+        unsigned memRefRank =
+            llvm::cast<MemRefType>(ins_value.getType()).getRank();
         partialMemref tile = createPartialMemref(ins_value, memRefRank);
         sink_op_memref_reads.push_back(tile);
-      } else if (ins_value.getType().isa<IndexType>()) {
+      } else if (llvm::isa<IndexType>(ins_value.getType())) {
         sink_op_scalar_ins.push_back(ins_value);
       }
     }
     for (auto outs_value : sink_op_linalgop.getDpsInits()) {
-      if (outs_value.getType().isa<MemRefType>()) {
-        unsigned memRefRank = outs_value.getType().cast<MemRefType>().getRank();
+      if (llvm::isa<MemRefType>(outs_value.getType())) {
+        unsigned memRefRank =
+            llvm::cast<MemRefType>(outs_value.getType()).getRank();
         partialMemref tile = createPartialMemref(outs_value, memRefRank);
         sink_op_memref_reads.push_back(
             tile); // linalg op both reads and writes the output memref
         sink_op_memref_writes.push_back(tile);
-      } else if (outs_value.getType().isa<IndexType>()) {
+      } else if (llvm::isa<IndexType>(outs_value.getType())) {
         sink_op_scalar_ins.push_back(outs_value); // linalg op both reads and
                                                   // writes the output memref
         sink_op_scalar_outs.push_back(outs_value);
@@ -2156,12 +2171,12 @@ void dependencyTracer::getPartialMemrefFromOp(
     }
     if (sink_op_linalgop->getNumResults()) {
       for (auto linalg_results : sink_op_linalgop->getResults()) {
-        if (linalg_results.getType().isa<MemRefType>()) {
+        if (llvm::isa<MemRefType>(linalg_results.getType())) {
           unsigned memRefRank =
-              linalg_results.getType().cast<MemRefType>().getRank();
+              llvm::cast<MemRefType>(linalg_results.getType()).getRank();
           partialMemref tile = createPartialMemref(linalg_results, memRefRank);
           sink_op_memref_writes.push_back(tile);
-        } else if (linalg_results.getType().isa<IndexType>()) {
+        } else if (llvm::isa<IndexType>(linalg_results.getType())) {
           sink_op_scalar_outs.push_back(linalg_results);
         }
       }
@@ -2171,7 +2186,8 @@ void dependencyTracer::getPartialMemrefFromOp(
   // If the sink op is memref::dealloc
   else if (auto sink_op_memdealloc = dyn_cast<memref::DeallocOp>(sink_op)) {
     unsigned memRefRank =
-        sink_op_memdealloc.getMemref().getType().cast<MemRefType>().getRank();
+        llvm::cast<MemRefType>(sink_op_memdealloc.getMemref().getType())
+            .getRank();
     partialMemref tile =
         createPartialMemref(sink_op_memdealloc.getMemref(), memRefRank);
     sink_op_memref_reads.push_back(tile);
@@ -2182,12 +2198,14 @@ void dependencyTracer::getPartialMemrefFromOp(
   // If the sink op is memref::copy
   else if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)) {
     unsigned memRefRankSrc =
-        sink_op_memref_copy.getSource().getType().cast<MemRefType>().getRank();
+        llvm::cast<MemRefType>(sink_op_memref_copy.getSource().getType())
+            .getRank();
     partialMemref tileSrc =
         createPartialMemref(sink_op_memref_copy.getSource(), memRefRankSrc);
     sink_op_memref_reads.push_back(tileSrc);
     unsigned memRefRankDst =
-        sink_op_memref_copy.getTarget().getType().cast<MemRefType>().getRank();
+        llvm::cast<MemRefType>(sink_op_memref_copy.getTarget().getType())
+            .getRank();
     partialMemref tileDst =
         createPartialMemref(sink_op_memref_copy.getTarget(), memRefRankDst);
     sink_op_memref_reads.push_back(tileDst);
@@ -2200,7 +2218,8 @@ void dependencyTracer::getPartialMemrefFromOp(
     if (sink_op_memcpy.getSrcMemref()) {
       SmallVector<Value, 2> src_indices;
       unsigned numDimsSrc =
-          sink_op_memcpy.getSrcMemref().getType().cast<MemRefType>().getRank();
+          llvm::cast<MemRefType>(sink_op_memcpy.getSrcMemref().getType())
+              .getRank();
       for (unsigned i = 0; i < sink_op_memcpy.getSrcOffsets().size(); i++)
         sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcOffsets()[i]);
       for (unsigned i = 0; i < sink_op_memcpy.getSrcSizes().size(); i++)
@@ -2208,6 +2227,7 @@ void dependencyTracer::getPartialMemrefFromOp(
       for (unsigned i = 0; i < sink_op_memcpy.getSrcStrides().size(); i++)
         sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcStrides()[i]);
       if (sink_op_memcpy.getSrcOffsets().size()) {
+        numDimsSrc = sink_op_memcpy.getSrcOffsets().size();
         for (unsigned i = 0; i < numDimsSrc; i++) {
           src_indices.push_back(sink_op_memcpy.getSrcOffsets()[i]);
         }
@@ -2223,7 +2243,8 @@ void dependencyTracer::getPartialMemrefFromOp(
     if (sink_op_memcpy.getDstMemref()) {
       SmallVector<Value, 2> dst_indices;
       unsigned numDimsDst =
-          sink_op_memcpy.getDstMemref().getType().cast<MemRefType>().getRank();
+          llvm::cast<MemRefType>(sink_op_memcpy.getDstMemref().getType())
+              .getRank();
       // air.dmamemcpynd op's scalar operands
       for (unsigned i = 0; i < sink_op_memcpy.getDstOffsets().size(); i++)
         sink_op_scalar_outs.push_back(sink_op_memcpy.getDstOffsets()[i]);
@@ -2232,6 +2253,7 @@ void dependencyTracer::getPartialMemrefFromOp(
       for (unsigned i = 0; i < sink_op_memcpy.getDstStrides().size(); i++)
         sink_op_scalar_outs.push_back(sink_op_memcpy.getDstStrides()[i]);
       if (sink_op_memcpy.getDstOffsets().size()) {
+        numDimsDst = sink_op_memcpy.getDstOffsets().size();
         for (unsigned i = 0; i < numDimsDst; i++) {
           dst_indices.push_back(sink_op_memcpy.getDstOffsets()[i]);
         }
@@ -2271,13 +2293,14 @@ void dependencyTracer::getPartialMemrefFromOp(
   // If the sink op is an unknown op
   else {
     for (auto sink_op_op : sink_op->getOperands()) {
-      if (sink_op_op.getType().isa<MemRefType>()) {
-        unsigned memRefRank = sink_op_op.getType().cast<MemRefType>().getRank();
+      if (llvm::isa<MemRefType>(sink_op_op.getType())) {
+        unsigned memRefRank =
+            llvm::cast<MemRefType>(sink_op_op.getType()).getRank();
         partialMemref tile = createPartialMemref(sink_op_op, memRefRank);
         sink_op_memref_reads.push_back(
             tile); // Assuming all operands are both read and written to
         sink_op_memref_writes.push_back(tile);
-      } else if (sink_op_op.getType().isa<IndexType>()) {
+      } else if (llvm::isa<IndexType>(sink_op_op.getType())) {
         sink_op_scalar_ins.push_back(sink_op_op); // Assuming all operands are
                                                   // both read and written to
         sink_op_scalar_outs.push_back(sink_op_op);
@@ -2285,12 +2308,12 @@ void dependencyTracer::getPartialMemrefFromOp(
     }
     if (sink_op->getNumResults()) {
       for (auto sink_op_results : sink_op->getResults()) {
-        if (sink_op_results.getType().isa<MemRefType>()) {
+        if (llvm::isa<MemRefType>(sink_op_results.getType())) {
           unsigned memRefRank =
-              sink_op_results.getType().cast<MemRefType>().getRank();
+              llvm::cast<MemRefType>(sink_op_results.getType()).getRank();
           partialMemref tile = createPartialMemref(sink_op_results, memRefRank);
           sink_op_memref_writes.push_back(tile);
-        } else if (sink_op_results.getType().isa<IndexType>()) {
+        } else if (llvm::isa<IndexType>(sink_op_results.getType())) {
           sink_op_scalar_outs.push_back(sink_op_results);
         }
       }
@@ -2310,7 +2333,7 @@ void dependencyTracer::addDependencyBetweenOps(Operation *source,
       return;
     }
   }
-  for (auto parent = source->getParentOp(); !isa<mlir::ModuleOp>(parent);
+  for (auto parent = source->getParentOp(); !llvm::isa<mlir::ModuleOp>(parent);
        parent = parent->getParentOp()) {
     if (parent->getBlock() == sink->getBlock() &&
         parent->isBeforeInBlock(sink)) {
@@ -2338,7 +2361,7 @@ bool dependencyTracer::areEqualIndexPartialMemrefs(partialMemref *tile_0,
 }
 
 char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
-  if (!operand.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(operand.getType()))
     operand.getDefiningOp()->emitOpError(
         "operand being traced is not a memref");
   bool foundWriteAccess = false;
@@ -2359,6 +2382,27 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
     return 'r';
   else
     return 'w';
+}
+
+void dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
+  OpBuilder builder(forOp);
+  air::WaitAllOp sink_wait_all_op =
+      assignEmptyWaitAllAtScfForIterArg(builder, forOp);
+  SmallVector<air::AsyncOpInterface> asyncChildOps;
+  forOp.walk([&](air::AsyncOpInterface op) { asyncChildOps.push_back(op); });
+  for (auto op : asyncChildOps) {
+    SmallVector<air::partialMemref, 1> sink_op_memref_reads;
+    SmallVector<air::partialMemref, 1> sink_op_memref_writes;
+    SmallVector<Value, 1> sink_op_scalar_ins;
+    SmallVector<Value, 1> sink_op_scalar_outs;
+    getPartialMemrefFromOp(op.getOperation(), sink_op_memref_reads,
+                           sink_op_memref_writes, sink_op_scalar_ins,
+                           sink_op_scalar_outs);
+    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads,
+                                          sink_wait_all_op, "RAW");
+    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes,
+                                          sink_wait_all_op, "WAW/WAR");
+  }
 }
 
 void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
@@ -2403,8 +2447,10 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
     }
     if (reduce_ops.size() != 1)
       scf_par->emitOpError("number of reduce ops is not one");
+    if (reduce_ops[0].getNumOperands() != 1)
+      scf_par->emitOpError("number of reduce operands is not one");
     auto reduce_wait_all =
-        dyn_cast<air::WaitAllOp>(reduce_ops[0].getOperand().getDefiningOp());
+        dyn_cast<air::WaitAllOp>(reduce_ops[0].getOperand(0).getDefiningOp());
     if (!reduce_wait_all)
       scf_par->emitOpError("reduce op is not dependent on any air::WaitAllOp");
 
@@ -2425,9 +2471,17 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
         dyn_cast<scf::YieldOp>(scf_for.getBody()->getTerminator());
     auto yield_wait_all =
         dyn_cast<air::WaitAllOp>(scf_for_yield.getOperand(0).getDefiningOp());
-    if (!yield_wait_all)
-      scf_for->emitOpError(
-          "scf::YieldOp is not dependent on any air::WaitAllOp");
+    if (!yield_wait_all) {
+      OpBuilder b_yield(scf_for_yield);
+      yield_wait_all = b_yield.create<air::WaitAllOp>(
+          scf_for_yield->getLoc(),
+          air::AsyncTokenType::get(scf_for_yield->getContext()),
+          SmallVector<Value>{scf_for_yield.getOperand(0)});
+      b_yield.create<scf::YieldOp>(
+          scf_for_yield->getLoc(),
+          SmallVector<Value>{yield_wait_all.getAsyncToken()});
+      scf_for_yield->erase();
+    }
 
     // Connect op's async token to scf reduce
     addAsyncDependencyIfNew(yield_wait_all, op->getResult(0));
@@ -2470,15 +2524,6 @@ void dependencyTracer::pushTileIndexAsDep(mlir::Value tile_index,
     // If created by async_region
     if (auto defop = tile_index.getDefiningOp<air::ExecuteOp>()) {
       addAsyncDependencyIfNew(op, defop.getResult(0));
-    }
-    // If created by hierarchy (as loop iter)
-    else if (auto hier = dyn_cast<air::HierarchyInterface>(
-                 tile_index.getParentRegion()->getParentOp())) {
-      for (auto id : hier.getIds()) {
-        if (id == tile_index) {
-          addAsyncDependencyIfNew(op, tile_index);
-        }
-      }
     }
   }
 }

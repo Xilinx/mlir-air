@@ -26,7 +26,7 @@ func.func @memcpy_nd(%arg0: memref<4096xi32>) {
     // CHECK: %[[EVENT3:.*]], %[[EVENT4:.*]] = air.execute
     %c1_0 = arith.constant 1 : index
     air.dma_memcpy_nd (%1[] [] [], %arg3[%0] [%c32] [%c1_0]) {id = 1 : i32} : (memref<32xi32, 2>, memref<4096xi32>)
-    // CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT3]]{{.*}}, {{.*}}%[[EVENT1]]{{.*}}]
+    // CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT1]]{{.*}}, {{.*}}%[[EVENT3]]{{.*}}]
     air.dma_memcpy_nd (%arg3[%0] [%c32] [%c1_0], %1[] [] []) {id = 2 : i32} : (memref<4096xi32>, memref<32xi32, 2>)
     // CHECK: %[[EVENT6:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT5]]{{.*}}]
     memref.dealloc %1 : memref<32xi32, 2>

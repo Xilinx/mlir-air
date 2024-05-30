@@ -63,11 +63,11 @@ public:
                                       callOp.arg_operand_end()};
 
       for (auto v : callOp.getResults()) {
-        if (!v.getType().isa<MemRefType>())
+        if (!llvm::isa<MemRefType>(v.getType()))
           llvm_unreachable("function returns non-memref");
         if (!valueMap.count(v)) {
-          valueMap[v] = builder->create<memref::AllocOp>(op->getLoc(),
-                                                 v.getType().cast<MemRefType>());
+          valueMap[v] = builder->create<memref::AllocOp>(
+              op->getLoc(), llvm::cast<MemRefType>(v.getType()));
         }
         v.replaceAllUsesWith(valueMap[v]);
         newCallArgs.push_back(valueMap[v]);
@@ -94,9 +94,9 @@ public:
     }
 
     for (Value v : op->getOperands()) {
-      if (!v.getType().isa<MemRefType>())
+      if (!llvm::isa<MemRefType>(v.getType()))
         continue;
-      if (v.isa<BlockArgument>())
+      if (llvm::isa<BlockArgument>(v))
         continue;
       if (v.getDefiningOp())
         runOn(v.getDefiningOp());
@@ -150,7 +150,7 @@ public:
         valueMap[v] = BB.addArgument(v.getType(), retOp->getLoc());
 
       for (Value v : operands) {
-        if (!v.getType().isa<MemRefType>())
+        if (!llvm::isa<MemRefType>(v.getType()))
           llvm_unreachable("graph function returns non-memref");
         if (v.getDefiningOp())
           runOn(v.getDefiningOp());
@@ -159,7 +159,7 @@ public:
       for (auto oi=BB.rbegin(),oe=BB.rend(); oi!=oe; ++oi) {
         Operation *o = &*oi;
         for (Value v : o->getResults()) {
-          if (v.getType().isa<MemRefType>()) {
+          if (llvm::isa<MemRefType>(v.getType())) {
             runOn(o);
             break;
           }

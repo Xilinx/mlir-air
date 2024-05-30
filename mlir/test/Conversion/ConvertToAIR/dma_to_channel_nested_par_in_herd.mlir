@@ -28,10 +28,8 @@ module {
 // CHECK: scf.yield
 // CHECK: scf.reduce
 // CHECK: scf.reduce.return
-// CHECK: scf.yield
 // CHECK: scf.reduce
 // CHECK: scf.reduce.return
-// CHECK: scf.yield
 // CHECK: %[[EVENT4:.*]] = scf.parallel{{.*}}init
 // CHECK: %[[EVENT5:.*]] = scf.parallel{{.*}}init
 // CHECK: %[[EVENT6:.*]] = scf.for{{.*}}iter_args
@@ -39,19 +37,15 @@ module {
 // CHECK: scf.yield
 // CHECK: scf.reduce
 // CHECK: scf.reduce.return
-// CHECK: scf.yield
 // CHECK: scf.reduce
 // CHECK: scf.reduce.return
-// CHECK: scf.yield
 // CHECK: %[[EVENT8:.*]] = scf.parallel{{.*}}init
 // CHECK: %[[EVENT9:.*]] = scf.parallel{{.*}}init
 // CHECK: %[[EVENT10:.*]] = air.channel.get async{{.*}}@channel_2
 // CHECK: scf.reduce
 // CHECK: scf.reduce.return
-// CHECK: scf.yield
 // CHECK: scf.reduce
 // CHECK: scf.reduce.return
-// CHECK: scf.yield
 // CHECK: %[[EVENT11:.*]] = air.herd async
     %0 = air.herd async [%async_token]  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0, %arg8=%arg1, %arg9=%results) : memref<512x512xi32>, memref<512x512xi32>, memref<512x512xi32> attributes {id = 1 : i32} {
       %c1 = arith.constant 1 : index
@@ -110,14 +104,12 @@ module {
 // CHECK: %[[EVENT16:.*]] = air.channel.put async{{.*}}@channel_2
         %5 = air.dma_memcpy_nd async [%4] (%arg9[%results_6, %results_8] [%c32, %c32] [%c512, %c1], %results_10[] [] []) {id = 3 : i32} : (memref<512x512xi32>, memref<32x32xi32, 2>)
 // CHECK: scf.reduce
-        scf.reduce(%5)  : !air.async.token {
+        scf.reduce(%5 : !air.async.token) {
         ^bb0(%arg12: !air.async.token, %arg13: !air.async.token):
           %6 = air.wait_all async [%arg12, %arg13] 
 // CHECK: scf.reduce.return
           scf.reduce.return %6 : !air.async.token
         }
-// CHECK: scf.yield
-        scf.yield
       }
       air.herd_terminator
     }

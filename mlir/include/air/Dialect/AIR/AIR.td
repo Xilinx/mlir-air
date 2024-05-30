@@ -390,34 +390,6 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
   let hasCanonicalizer = 1;
 }
 
-def air_AllocOp: air_Op<"alloc", [air_AsyncOpInterface]> {
-  let summary = "alloc operator";
-  let arguments = (
-    ins Variadic<air_AsyncToken>:$async_dependencies
-  );
-  let results = (outs Optional<air_AsyncToken>:$async_token, AnyMemRef:$result);
-  let assemblyFormat = [{
-    custom<AsyncDependencies>(type($async_token), $async_dependencies) attr-dict `:` type($result)
-  }];
-  let description = [{
-    Allocate memory
-  }];
-}
-
-def air_DeallocOp: air_Op<"dealloc", [air_AsyncOpInterface]> {
-  let summary = "dealloc operator";
-  let arguments = (
-    ins Variadic<air_AsyncToken>:$async_dependencies, AnyMemRef:$memref
-  );
-  let results = (outs Optional<air_AsyncToken>:$async_token);
-  let assemblyFormat = [{
-    custom<AsyncDependencies>(type($async_token), $async_dependencies) $memref attr-dict `:` type($memref)
-  }];
-  let description = [{
-    Deallocate memory
-  }];
-}
-
 // AIR channel
 
 def air_ChannelOp : air_Op<"channel", [Symbol]>,
@@ -454,21 +426,21 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
       int broadcastNum = 1;
       if (isBroadcast())
         for (auto bShape : getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape")) {
-          auto attr = bShape.dyn_cast<IntegerAttr>().getInt();
+          auto attr = llvm::dyn_cast<IntegerAttr>(bShape).getInt();
           broadcastNum *= attr;
         }
       return broadcastNum;
     }
     int getBufferResources() {
       if(auto attr = getOperation()->getAttrOfType<IntegerAttr>("buffer_resources"))
-        return attr.dyn_cast<IntegerAttr>().getInt();
+        return llvm::dyn_cast<IntegerAttr>(attr).getInt();
       else
         return 1;
     }
     int getBundleSize() {
       int size = 1;
       for (auto i : getSize())
-        size *= i.dyn_cast<IntegerAttr>().getInt();
+        size *= llvm::dyn_cast<IntegerAttr>(i).getInt();
       return size;
     }
   }];
@@ -576,11 +548,16 @@ def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTer
     the region must be executed sequentially.
   }];
 
+  // Note: async_dependencies are printed in sorted order for ops which have
+  // custom assembly formats. We can consider giving ExecuteOp custom
+  // printer/parser too.
   let assemblyFormat = [{
     (` ``[` $async_dependencies^ `]`)?
     (`->` `(` type($results)^ `)`)? regions attr-dict
   }];
+
   let extraClassDeclaration = [{
+    Operation * getChildOp();
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();

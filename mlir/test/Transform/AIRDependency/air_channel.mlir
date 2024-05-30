@@ -16,16 +16,21 @@
 #map1 = affine_map<()[s0] -> (s0 * 32)>
 #map2 = affine_map<(d0, d1) -> (d0, d1)>
 module attributes {torch.debug_module_name = "mmult"} {
+  air.channel @channel_1 [1]
+  air.channel @channel_2 [1]
+  air.channel @channel_3 [1]
+  air.channel @channel_4 [1]
+  air.channel @channel_5 [2, 2]
+  air.channel @channel_6 [2, 2]
+  air.channel @channel_7 [2, 2]
+  air.channel @channel_8 [2, 2]
   func.func @forward(%arg0: memref<24576x1024xbf16>, %arg1: memref<1024x1024xbf16>) -> memref<24576x1024xbf16> {
     %c16 = arith.constant 16 : index
     %c384 = arith.constant 384 : index
     %cst = arith.constant 0.000000e+00 : bf16
     %1 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
     air.launch (%arg2, %arg3) in (%arg4=%c384, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1, %arg8=%1) : memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16> {
-      air.channel @channel_1 [1]
-      air.channel @channel_2 [1]
-      air.channel @channel_3 [1]
-      air.channel @channel_4 [1]
+
       %c0_new = arith.constant 0 : index
       %c1_new = arith.constant 1 : index
       %c1024_new = arith.constant 1024 : index
@@ -46,10 +51,7 @@ module attributes {torch.debug_module_name = "mmult"} {
       air.channel.put @channel_3[] (%arg8[%17, %18] [%c64_new, %c64_new] [%c1024_new, %c1_new]) : (memref<24576x1024xbf16>)
       
       air.segment  args(%arg9=%arg2, %arg10=%arg3, %arg11=%arg4, %arg12=%arg5, %arg13=%arg6, %arg14=%arg7) : index, index, index, index, memref<24576x1024xbf16>, memref<1024x1024xbf16> {
-        air.channel @channel_5 [2, 2]
-        air.channel @channel_6 [2, 2]
-        air.channel @channel_7 [2, 2]
-        air.channel @channel_8 [2, 2]
+
         %c1 = arith.constant 1 : index
         %c2 = arith.constant 2 : index
         %c0 = arith.constant 0 : index

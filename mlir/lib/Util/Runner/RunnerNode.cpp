@@ -11,6 +11,8 @@
 namespace xilinx {
 namespace air {
 
+using Graph = dependencyGraph::Graph;
+
 class runnerNode {
 
 public:
@@ -23,29 +25,27 @@ public:
   // Each entry is an std::tuple. First element is vertex, second element is
   // vector of resoruces consumed, and third element is thread id.
   // TODO: Replace thread id with id which better reflects resource slots.
-  std::vector<
-      std::tuple<Graph::vertex_descriptor, std::vector<resource *>, unsigned>>
+  std::vector<std::tuple<Graph::VertexId, std::vector<resource *>, unsigned>>
       wavefront;
   // A vector of vertices processed by the current runner node
-  std::vector<Graph::vertex_descriptor> processed_vertices;
+  std::vector<Graph::VertexId> processed_vertices;
   // An incomplete vector of vertices as candidates to wavefront
-  std::vector<Graph::vertex_descriptor> latent_wavefront_candidates;
+  std::vector<Graph::VertexId> latent_wavefront_candidates;
   // Sub runner nodes to the current runner node
   std::vector<runnerNode> sub_runner_nodes;
   // Resource hierarchies which are allocated to this runner node
   std::vector<resourceHierarchy *> resource_hiers;
 
-  // Get a pool of vertices as candidates to be pushed to wavefront. This avoids
-  // having to check every vertex in the graphs for dependency and resource
-  // fulfillment.
-  std::vector<Graph::vertex_descriptor> getCandidateVerticesForWavefront() {
+  // Get a pool of vertices as candidates to be pushed to wavefront. This
+  // avoids having to check every vertex in the graphs for dependency and
+  // resource fulfillment.
+  std::vector<Graph::VertexId> getCandidateVerticesForWavefront() {
     // Get candidate vertices to be pushed to wavefront
-    std::vector<Graph::vertex_descriptor> next_vertex_set_candidates;
+    std::vector<Graph::VertexId> next_vertex_set_candidates;
     // Get all adj. vertices to the procssed vertices as candidates
     this->findAdjacentVerticesToProcessed(next_vertex_set_candidates);
     for (auto v : this->latent_wavefront_candidates) {
-      push_back_if_unique<Graph::vertex_descriptor>(next_vertex_set_candidates,
-                                                    v);
+      push_back_if_unique<Graph::VertexId>(next_vertex_set_candidates, v);
     }
     // Remove candidate vertices already on wavefront
     this->removeRepeatedVertices(
@@ -61,7 +61,7 @@ public:
   }
 
   // Push runner "start" signal into wavefront
-  void pushStartToWavefront(Graph::vertex_descriptor v) {
+  void pushStartToWavefront(Graph::VertexId v) {
     std::vector<resource *> reserved_resources;
     // Allocate resources to this runner
     this->consumeResourceHiersWhenRunnerStarts(reserved_resources);
@@ -74,7 +74,7 @@ public:
   }
 
   // Push an entry to wavefront
-  void pushToWavefront(Graph::vertex_descriptor v, unsigned core_id = 0) {
+  void pushToWavefront(Graph::VertexId v, unsigned core_id = 0) {
     std::vector<resource *> reserved_resources;
     // Allocate resources to this event
     this->consumeOrReleaseResources(reserved_resources, v);
@@ -135,7 +135,7 @@ public:
   }
 
   // Execute an mlir op in runner node
-  void executeOpImpls(Graph::vertex_descriptor it, uint64_t time) {
+  void executeOpImpls(Graph::VertexId it, uint64_t time) {
     Graph G = this->ctrl_g->g;
     auto node = G[it];
     if (node.asyncEventType == "start") {
@@ -164,11 +164,10 @@ public:
 
   // Recursively reset all vertices in for loop body
   // "push_to_latent_wavefront_candidates" is a flag to indicate whether to push
-  // vertices adjacent to the resetted vertices to the "wavefront candidate
-  // vertices".
+  // vertices adjacent to the resetted vertices to the "wavefront
+  // candidate vertices".
   void resetGraphBetweenTwoVertices(
-      Graph::vertex_descriptor start_v, Graph::vertex_descriptor end_v,
-      Graph &G, uint64_t time,
+      Graph::VertexId start_v, Graph::VertexId end_v, Graph &G, uint64_t time,
       bool push_to_latent_wavefront_candidates = false) {
 
     this->resetVertex(start_v, G, time);
@@ -176,7 +175,7 @@ public:
     if (start_v == end_v)
       return;
 
-    SmallVector<Graph::vertex_descriptor, 1> vertices;
+    SmallVector<Graph::VertexId, 1> vertices;
     if (this->hasPath(start_v, end_v, G, vertices)) {
       for (auto v : vertices) {
         this->resetVertex(v, G, time, push_to_latent_wavefront_candidates);
@@ -212,13 +211,13 @@ public:
   }
 
   // Consume tokens upon op execution
-  void consumeLoopYieldedTokens(Graph::vertex_descriptor it) {
+  void consumeLoopYieldedTokens(Graph::VertexId it) {
 
     Graph &G = this->ctrl_g->g;
-    auto inv_adj_set = boost::inv_adjacent_vertices(it, G);
-    for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
-         ++inv_adj_v) {
-      if (G[*inv_adj_v].asyncEventType == "for_loop") {
+
+    auto inv_adj_set = G.inverseAdjacentVertices(it);
+    for (auto &inv_adj_v : inv_adj_set) {
+      if (G[inv_adj_v].asyncEventType == "for_loop") {
         int th = this->tokenCountThresholdForExecution(
             G[it].op); // Consume all iter_arg tokens
         this->runner_assertion(
@@ -256,8 +255,8 @@ public:
   }
 
   // Remove a vertex from a vector of vertices
-  void removeVertexFromVertices(std::vector<Graph::vertex_descriptor> &vector,
-                                Graph::vertex_descriptor a) {
+  void removeVertexFromVertices(std::vector<Graph::VertexId> &vector,
+                                Graph::VertexId a) {
     if (vector.size()) {
       for (auto it = vector.begin(); it != vector.end(); ++it) {
         if (*it == a) {
@@ -269,7 +268,7 @@ public:
   }
 
   void buildVertexDependencyList(
-      Graph::vertex_descriptor v,
+      Graph::VertexId v,
       std::vector<std::pair<dependencyNodeEntry, std::string>> &dep_list) {
     Graph G = this->ctrl_g->g;
     // If current vertex is ChannelGet, then add implicit ChannelPut vertex to
@@ -277,22 +276,23 @@ public:
     if (air::ChannelGetOp channel_get = dyn_cast<air::ChannelGetOp>(G[v].op)) {
       dep_list.push_back(std::make_pair(G[v], "sym"));
     }
-    auto inv_adj_set = boost::inv_adjacent_vertices(v, G);
-    for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
-         ++inv_adj_v) {
+    auto inv_adj_set = G.inverseAdjacentVertices(v);
+    for (auto inv_adj_v : inv_adj_set) {
+
+      // auto &node = G[inv_adj_v];
       // If dependent on a hierarchy op, then push its terminator into dep_list
       // instead
-      if (G[*inv_adj_v].asyncEventType == "hierarchy") {
-        for (auto sub_g : G[*inv_adj_v].nextDependencyGraphs) {
+      if (G[inv_adj_v].asyncEventType == "hierarchy") {
+        for (auto sub_g : G[inv_adj_v].nextDependencyGraphs) {
           auto terminator_v = sub_g->terminator_vertex;
           auto &terminator_node = sub_g->g[terminator_v];
           dep_list.push_back(std::make_pair(terminator_node, "ssa"));
         }
-      } else if (G[*inv_adj_v].asyncEventType == "for_loop") {
-        pushToDepListIfAffineIfHit(dep_list, G[*inv_adj_v],
+      } else if (G[inv_adj_v].asyncEventType == "for_loop") {
+        pushToDepListIfAffineIfHit(dep_list, G[inv_adj_v],
                                    this->ctrl_g->position, "ssa_loop_yield");
       } else {
-        pushToDepListIfAffineIfHit(dep_list, G[*inv_adj_v],
+        pushToDepListIfAffineIfHit(dep_list, G[inv_adj_v],
                                    this->ctrl_g->position, "ssa");
       }
     }
@@ -326,8 +326,8 @@ public:
       return (bool)this->checkResourceFulfillmentForOp(Op);
     } else if (auto Op = dyn_cast<air::ChannelGetOp>(op)) {
       return (bool)this->checkResourceFulfillmentForOp(Op);
-    } else if (isa<air::ExecuteOp>(op)) {
-      auto child_op = &*(op->getRegions().front().getOps().begin());
+    } else if (auto Op = dyn_cast<air::ExecuteOp>(op)) {
+      auto child_op = Op.getChildOp();
       if (name == "AllocOp") {
         auto Op = dyn_cast<memref::AllocOp>(child_op);
         return this->checkResourceFulfillmentForOp(Op);
@@ -621,7 +621,7 @@ private:
     this->allocateEventToResourcesImpls(reserved_resources);
   }
   void consumeOrReleaseResources(std::vector<resource *> &reserved_resources,
-                                 Graph::vertex_descriptor v) {
+                                 Graph::VertexId v) {
     Graph &G = this->ctrl_g->g;
     this->allocateEventToResourcesImpls(reserved_resources, G[v].op,
                                         G[v].asyncEventName);
@@ -655,7 +655,7 @@ private:
     std::vector<resource *> resource_pool;
     double memory_pool = this->getMemoriesPool(resource_pool);
     // Get memory allocation size
-    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
     double memory_allocated = this->getMemoryCostInBytes(ty, Op.getOperation());
     if (memory_allocated <= memory_pool) {
       return true;
@@ -667,7 +667,7 @@ private:
     std::vector<resource *> resource_pool;
     double memory_pool = this->getMemoriesPool(resource_pool, false);
     // Get memory allocation size
-    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
     double memory_deallocated =
         this->getMemoryCostInBytes(ty, Op.getOperation());
     if (memory_deallocated <= memory_pool) {
@@ -719,8 +719,8 @@ private:
                                 Operation *op = nullptr,
                                 std::string name = "") {
     if (op) {
-      if (isa<air::ExecuteOp>(op)) {
-        auto child_op = &*(op->getRegions().front().getOps().begin());
+      if (auto exec_op = dyn_cast<air::ExecuteOp>(op)) {
+        auto child_op = exec_op.getChildOp();
         // Memory allocation/deallocation
         if (name == "AllocOp") {
           auto Op = dyn_cast<memref::AllocOp>(child_op);
@@ -781,7 +781,7 @@ private:
     std::vector<resource *> resource_pool;
     this->getMemoriesPool(resource_pool);
     // Get memory size in bytes
-    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
     double memory_allocated = this->getMemoryCostInBytes(ty, Op.getOperation());
     // Reserve resource
     this->allocateRunnerNodeToAllocateMemory(resource_pool, reserved_resources,
@@ -793,7 +793,7 @@ private:
     std::vector<resource *> resource_pool;
     this->getMemoriesPool(resource_pool, false);
     // Get memory size in bytes
-    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
     double memory_deallocated =
         this->getMemoryCostInBytes(ty, Op.getOperation());
     // Reserve resource
@@ -1000,7 +1000,7 @@ private:
   }
 
   void executeOp(xilinx::air::HierarchyInterface op, uint64_t time,
-                 runnerNode *sub_runner_node, Graph::vertex_descriptor it) {
+                 runnerNode *sub_runner_node, Graph::VertexId it) {
     // Initialize sub runner and sub graph prior to execution
     auto sub_start_v = sub_runner_node->ctrl_g->start_vertex;
     sub_runner_node->resetGraph(time);
@@ -1020,7 +1020,7 @@ private:
   }
 
   void executeOp(scf::YieldOp op, uint64_t time, scf::ForOp for_op,
-                 Graph::vertex_descriptor it) {
+                 Graph::VertexId it) {
     Graph &G = this->ctrl_g->g;
 
     // Get async tokens ready to iterate at scf.yield
@@ -1029,7 +1029,6 @@ private:
     this->getReadyTokensAtScfYield(token_ids, op, time, G);
 
     // For loop trip counter
-    bool trip_count_fulfilled = false;
     for (auto &count_entry : this->loop_trip_count) {
       if (std::get<0>(count_entry) ==
           (unsigned)getIdAttr(for_op.getOperation())) {
@@ -1064,7 +1063,6 @@ private:
 
     if (allAsyncTokensFulfilled) {
       this->processed_vertices.push_back(it);
-      trip_count_fulfilled = true;
     } else {
       // If trip count unfulfilled, then iterate.
       // Clear start_time and end_time of all ops in loop body.
@@ -1077,8 +1075,8 @@ private:
             next_iter_token != nullptr,
             "token for next loop interation not successfully obtained");
 
-        // Search for vertices corresponding to the next-iteration incarnations
-        // of this token
+        // Search for vertices corresponding to the next-iteration
+        // incarnations of this token
         auto for_v = this->canonicalizer
                          .getVertexFromOp(for_op.getOperation(),
                                           *(this->dep_ctx), "front")
@@ -1086,11 +1084,11 @@ private:
 
         // To start the next loop iteration:
         // reset graph wrt this token
-        std::vector<Graph::vertex_descriptor> reset_vertices_start;
+        std::vector<Graph::VertexId> reset_vertices_start;
         // Get vertices adjacent to the next-iteration-incarnation of this
         // yielded token
-        this->getVerticesAdjToNextIterToken(reset_vertices_start, G, for_v,
-                                            next_iter_token);
+        this->verticesAdjToNextIterToken(reset_vertices_start, G, for_v,
+                                         next_iter_token);
         // Get vertex inversely adjacent to this yielded token
         auto reset_vertices_end = this->getVertexInvAdjToLoopYieldedToken(
             op->getOperands()[token_ids[i]]);
@@ -1109,39 +1107,34 @@ private:
     }
   }
 
-  void executeOp(scf::ForOp op, Graph::vertex_descriptor it) {
-    // Get for loop trip count
-    auto lb = op.getLowerBound().getDefiningOp();
-    int64_t lbv = cast<arith::ConstantIndexOp>(lb).value();
-    auto ub = op.getUpperBound().getDefiningOp();
-    int64_t ubv = cast<arith::ConstantIndexOp>(ub).value();
-    auto step = op.getStep().getDefiningOp();
-    int64_t stepv = cast<arith::ConstantIndexOp>(step).value();
-
-    // (ubv - lbv) / stepv, fast round up
-    int64_t trip_count = (ubv - lbv + stepv - 1) / stepv;
+  void executeOp(scf::ForOp op, Graph::VertexId it) {
+    // // Get for loop trip count
+    auto trip_count = getStaticScfForTripCountAsInt(op);
+    if (!trip_count)
+      this->runner_assertion(
+          false, "non-static scf.for loop bound currently unsupported");
 
     // Update for loop trip count per async token
     for (unsigned i = 0; i < op.getRegionIterArgs().size(); i++) {
       this->loop_trip_count.push_back(
-          std::make_tuple(getIdAttr(op.getOperation()), i, trip_count));
+          std::make_tuple(getIdAttr(op.getOperation()), i, *trip_count));
     }
 
     // Release the locks for all async tokens adjacent to scf.for, to initiate
     // the first iteration.
     Graph &G = this->ctrl_g->g;
-    auto adj_set = boost::adjacent_vertices(it, G);
-    for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-      G[*adj_v].token_count +=
-          this->tokenCountThresholdForExecution(G[*adj_v].op) *
+    auto adj_set = G.adjacentVertices(it);
+    for (auto adj_v : adj_set) {
+      G[adj_v].token_count +=
+          this->tokenCountThresholdForExecution(G[adj_v].op) *
           this->tokenSpatialFactorForDependency(
-              G[*adj_v].op); // Lock number = number of dependent iter_args
+              G[adj_v].op); // Lock number = number of dependent iter_args
     }
 
     this->processed_vertices.push_back(it);
   }
 
-  void executeOp(air::ChannelPutOp op, Graph::vertex_descriptor it) {
+  void executeOp(air::ChannelPutOp op, Graph::VertexId it) {
 
     // Get launch runner node
     auto launch_runner = this;
@@ -1163,7 +1156,7 @@ private:
       this->runner_assertion(false, "unknown channel.put op");
   }
 
-  void executeOp(air::ChannelGetOp op, Graph::vertex_descriptor it) {
+  void executeOp(air::ChannelGetOp op, Graph::VertexId it) {
 
     // Get launch runner node
     auto launch_runner = this;
@@ -1255,9 +1248,7 @@ private:
     }
   }
 
-  void executeOp(Graph::vertex_descriptor it) {
-    this->processed_vertices.push_back(it);
-  }
+  void executeOp(Graph::VertexId it) { this->processed_vertices.push_back(it); }
 
   // Adds pointer between runner node and command graph
   void addPointerBetweenSubRunnerNodeAndSubCommandGraph() {
@@ -1269,7 +1260,7 @@ private:
 
   // Reset a vertex in dependency graph. Vertices adj. to recently resetted
   // vertices could be potential candidates to be pushed to wavefront.
-  void resetVertex(Graph::vertex_descriptor v, Graph &G, uint64_t time,
+  void resetVertex(Graph::VertexId v, Graph &G, uint64_t time,
                    bool push_to_latent_wavefront_candidates = false) {
 
     // Remove start_v from processed_vertices
@@ -1286,27 +1277,27 @@ private:
 
     // Push adj. vertices to latent wavefront candidates
     if (push_to_latent_wavefront_candidates) {
-      auto adj_set = boost::adjacent_vertices(v, G);
-      for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-        if (!isa<scf::YieldOp>(G[*adj_v].op) && !G[*adj_v].is_started()) {
-          push_back_if_unique<Graph::vertex_descriptor>(
-              this->latent_wavefront_candidates, *adj_v);
+      auto adj_set = G.adjacentVertices(v);
+      for (auto adj_v : adj_set) {
+        if (!isa<scf::YieldOp>(G[adj_v].op) && !G[adj_v].is_started()) {
+          push_back_if_unique<Graph::VertexId>(
+              this->latent_wavefront_candidates, adj_v);
         }
       }
     }
   }
 
-  bool hasPath(Graph::vertex_descriptor start_v, Graph::vertex_descriptor end_v,
-               Graph &G, SmallVector<Graph::vertex_descriptor, 1> &vec) {
+  bool hasPath(Graph::VertexId start_v, Graph::VertexId end_v, Graph &G,
+               SmallVector<Graph::VertexId, 1> &vec) {
 
     vec.push_back(start_v);
     if (start_v == end_v)
       return true;
     int pathCount = 0;
-    auto adj_set = boost::adjacent_vertices(start_v, G);
-    for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-      SmallVector<Graph::vertex_descriptor, 1> tmp_vec;
-      if (this->hasPath(*adj_v, end_v, G, tmp_vec)) {
+    auto adj_set = G.adjacentVertices(start_v);
+    for (auto adj_v : adj_set) {
+      SmallVector<Graph::VertexId, 1> tmp_vec;
+      if (this->hasPath(adj_v, end_v, G, tmp_vec)) {
         pathCount++;
         // Concatenate
         vec.insert(vec.end(), tmp_vec.begin(), tmp_vec.end());
@@ -1343,30 +1334,29 @@ private:
     }
   }
 
-  // Get vertices adjacent to the next-iteration-incarnation of a yielded async
-  // token
-  void
-  getVerticesAdjToNextIterToken(std::vector<Graph::vertex_descriptor> &adj_vs,
-                                Graph &G, Graph::vertex_descriptor v,
-                                Value next_iter_token) {
-    auto adj_set = boost::adjacent_vertices(v, G);
-    for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-      auto adj_op = G[*adj_v].op;
+  // Get vertices adjacent to the next-iteration-incarnation of a yielded
+  // async token
+  void verticesAdjToNextIterToken(std::vector<Graph::VertexId> &adj_vs,
+                                  Graph &G, Graph::VertexId v,
+                                  Value next_iter_token) {
+    auto adj_set = G.adjacentVertices(v);
+    for (auto adj_v : adj_set) {
+      auto adj_op = G[adj_v].op;
       this->runner_assertion(
           adj_op, "scf.for op has no adjacent op in dependency graph");
       for (auto d : adj_op->getOperands()) {
         if (d == next_iter_token) {
-          adj_vs.push_back(*adj_v);
+          adj_vs.push_back(adj_v);
         }
       }
     }
   }
 
   // Get vertex inversely adjacent to this yielded token
-  Graph::vertex_descriptor getVertexInvAdjToLoopYieldedToken(Value token) {
+  Graph::VertexId getVertexInvAdjToLoopYieldedToken(Value token) {
     // If vertex is air.execute, then return the terminator using "back" flag
     auto token_op = token.getDefiningOp();
-    Graph::vertex_descriptor reset_vertices_end;
+    Graph::VertexId reset_vertices_end;
     if (isa<air::ExecuteOp>(token_op)) {
       reset_vertices_end =
           canonicalizer.getVertexFromOp(token_op, *(this->dep_ctx), "back")
@@ -1837,55 +1827,55 @@ private:
   }
 
   // Get a vector of first elements from a vector of tuples
-  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfTuples(
-      std::vector<std::tuple<Graph::vertex_descriptor, std::vector<resource *>,
-                             unsigned>>
+  std::vector<Graph::VertexId> getVectorOfFirstFromVectorOfTuples(
+      std::vector<
+          std::tuple<Graph::VertexId, std::vector<resource *>, unsigned>>
           tuples) {
-    std::vector<Graph::vertex_descriptor> items;
+    std::vector<Graph::VertexId> items;
     std::transform(
         tuples.begin(), tuples.end(), std::back_inserter(items),
-        [](const std::tuple<Graph::vertex_descriptor, std::vector<resource *>,
-                            unsigned> &p) { return std::get<0>(p); });
+        [](const std::tuple<Graph::VertexId, std::vector<resource *>, unsigned>
+               &p) { return std::get<0>(p); });
     return items;
   }
 
   // Find all vertices adjacent to given vertices in graph
   void findAdjacentVerticesToProcessed(
-      std::vector<Graph::vertex_descriptor> &adjacent_vertices) {
+      std::vector<Graph::VertexId> &adjacentVertices) {
     Graph G = this->ctrl_g->g;
     for (auto v : this->processed_vertices) {
-      auto adj_set = boost::adjacent_vertices(v, G);
-      for (auto v1 = adj_set.first; v1 != adj_set.second; ++v1) {
+      auto adj_set = G.adjacentVertices(v);
+      for (auto v1 : adj_set) {
         bool found_duplicate = false;
-        for (auto v2 : adjacent_vertices) {
-          if (*v1 == v2) {
+        for (auto v2 : adjacentVertices) {
+          if (v1 == v2) {
             found_duplicate = true;
           }
         }
-        bool is_in_vertices = false;
+        bool is_in_getVertices = false;
         for (auto v3 : this->processed_vertices) {
-          if (*v1 == v3) {
-            is_in_vertices = true;
+          if (v1 == v3) {
+            is_in_getVertices = true;
           }
         }
-        if (!found_duplicate && !is_in_vertices) {
-          adjacent_vertices.push_back(*v1);
+        if (!found_duplicate && !is_in_getVertices) {
+          adjacentVertices.push_back(v1);
         }
       }
     }
   }
 
   // Remove vertices in vector a which already exist in vector b
-  void removeRepeatedVertices(std::vector<Graph::vertex_descriptor> &a,
-                              std::vector<Graph::vertex_descriptor> b) {
+  void removeRepeatedVertices(std::vector<Graph::VertexId> &a,
+                              std::vector<Graph::VertexId> b) {
     for (auto v : b) {
       this->removeVertexFromVertices(a, v);
     }
   }
 
   // Remove ops in affine.if which aren't running on this core
-  void removeOpsFilteredOutByAffineIf(
-      std::vector<Graph::vertex_descriptor> &candidates) {
+  void
+  removeOpsFilteredOutByAffineIf(std::vector<Graph::VertexId> &candidates) {
     Graph &G = this->ctrl_g->g;
     for (auto it = candidates.begin(); it != candidates.end(); ++it) {
       auto op = G[*it].op;

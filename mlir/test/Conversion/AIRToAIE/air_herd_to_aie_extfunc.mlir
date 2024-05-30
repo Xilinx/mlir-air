@@ -11,13 +11,13 @@ module {
 
 func.func @foo(%arg0: i32) {
   %cst1 = arith.constant 1 : index
-  // CHECK: AIE.device
-  // CHECK: %[[VAL_0:.*]] = AIE.tile(1, 1)
-  // CHECK: %[[VAL_1:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = "buf0"} : memref<1024xi32, 2>
-  // CHECK: AIE.core(%[[VAL_0]])  {
+  // CHECK: aie.device
+  // CHECK: %[[VAL_0:.*]] = aie.tile(1, 1)
+  // CHECK: %[[VAL_1:.*]] = aie.buffer(%[[VAL_0]]) {{{.*}}} : memref<1024xi32, 2>
+  // CHECK: aie.core(%[[VAL_0]])  {
   // CHECK:   call @beefmaker_kernel(%[[VAL_1]]) : (memref<1024xi32, 2>) -> ()
-  // CHECK:   AIE.end
-  // CHECK: } {elf_file = "segment_0_core_1_1.elf", link_with = "beefmaker.o"}
+  // CHECK:   aie.end
+  // CHECK: } {elf_file = "herd_0_core_1_1.elf", link_with = "beefmaker.o"}
   air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) attributes {link_with="beefmaker.o"} {
     %src0 = memref.alloc() : memref<1024xi32, 2>
     func.call @beefmaker_kernel(%src0) : (memref<1024xi32, 2>) -> ()

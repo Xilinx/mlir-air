@@ -36,6 +36,7 @@ declare_mlir_dialect_python_bindings(
     dialects/air.py
     dialects/_air_ops_ext.py
   DIALECT_NAME air
+  GEN_ENUM_BINDINGS_TD_FILE "dialects/AirBinding.td"
 )
 
 declare_mlir_dialect_extension_python_bindings(
@@ -52,7 +53,7 @@ declare_mlir_dialect_extension_python_bindings(
 ################################################################################
 
 declare_mlir_python_extension(AirPythonExtensions.MLIR
-  MODULE_NAME _airMlir
+  MODULE_NAME _air
   ADD_TO_PARENT AirPythonExtensions
   ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}
   SOURCES
@@ -63,17 +64,21 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
     LLVMSupport
 )
 
-declare_mlir_python_extension(AirPythonExtensions.AIRRt
-  MODULE_NAME _airRt
-  ADD_TO_PARENT AirPythonExtensions
-  ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}
-  SOURCES
-    AirHostModule.cpp
-  EMBED_CAPI_LINK_LIBS
-    AIRCAPI
-  PRIVATE_LINK_LIBS
-    LLVMSupport
-)
+# Only building this if we are building the hsa runtime, as it requires hsa.h
+if(hsa-runtime64_FOUND)
+  message(STATUS "Building python bindings because we are building the runtime")
+  declare_mlir_python_extension(AirPythonExtensions.AIRRt
+    MODULE_NAME _airRt
+    ADD_TO_PARENT AirPythonExtensions
+    ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}
+    SOURCES
+      AirHostModule.cpp
+    EMBED_CAPI_LINK_LIBS
+      AIRCAPI
+    PRIVATE_LINK_LIBS
+      LLVMSupport
+  )
+endif()
 
 add_mlir_python_common_capi_library(AirAggregateCAPI
   INSTALL_COMPONENT AirPythonModules
@@ -112,11 +117,18 @@ add_mlir_python_modules(AirPythonModules
     AirAggregateCAPI
 )
 
+include_directories(
+  ${AIE_INCLUDE_DIRS}/../runtime_lib
+  ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
+)
+
+# Only include this if we are building the hsa runtime
+if(hsa-runtime64_FOUND)
   include_directories(
-    ${AIE_INCLUDE_DIRS}/../runtime_lib
-    ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
+    ${hsa-runtime64_DIR}/../../../include
   )
-  
+endif()
+
 add_dependencies(AirPythonModules AirBackendPythonModules)
 add_subdirectory(air/backend)
 

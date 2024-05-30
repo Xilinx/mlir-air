@@ -11,12 +11,12 @@ module {
 
 func.func @foo(%arg0: i32) {
   %cst1 = arith.constant 1 : index
-  // CHECK-LABEL: AIE.device
-  // CHECK: %[[VAR1:.*]] = AIE.tile(1, 1)
-  // CHECK: %[[BUF1:.*]] = AIE.buffer(%[[VAR1]]) {sym_name = {{.*}}} : memref<1xi32, 2>
-  // CHECK: %[[BUF2:.*]] = AIE.buffer(%[[VAR1]]) {sym_name = {{.*}}} : memref<1xi32, 2>
-  // CHECK: %[[BUF3:.*]] = AIE.buffer(%[[VAR1]]) {sym_name = {{.*}}} : memref<1xi32, 2>
-  // CHECK: %[[VAR2:.*]] = AIE.core(%[[VAR1]])  {
+  // CHECK-LABEL: aie.device
+  // CHECK: %[[VAR1:.*]] = aie.tile(1, 1)
+  // CHECK: %[[BUF1:.*]] = aie.buffer(%[[VAR1]]) {{{.*}}} : memref<1xi32, 2>
+  // CHECK: %[[BUF2:.*]] = aie.buffer(%[[VAR1]]) {{{.*}}} : memref<1xi32, 2>
+  // CHECK: %[[BUF3:.*]] = aie.buffer(%[[VAR1]]) {{{.*}}} : memref<1xi32, 2>
+  // CHECK: %[[VAR2:.*]] = aie.core(%[[VAR1]])  {
   air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) {
     %src0 = memref.alloc() : memref<1xi32, 2>
     %src1 = memref.alloc() : memref<1xi32, 2>
@@ -31,7 +31,7 @@ func.func @foo(%arg0: i32) {
     memref.store %2, %dst0[%zero] : memref<1xi32, 2>
     air.herd_terminator
   }
-  // CHECK: sym_name = "segment_0"
+  // CHECK: sym_name = "herd_0"
   return
 }
 

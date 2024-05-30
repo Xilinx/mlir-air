@@ -29,17 +29,6 @@
 using namespace llvm;
 using namespace mlir;
 
-namespace test {
-void registerTestDialect(DialectRegistry &);
-void registerTestTransformDialectExtension(DialectRegistry &);
-} // namespace test
-
-namespace mlir {
-namespace test {
-void registerTestTransformDialectInterpreterPass();
-}
-} // namespace mlir
-
 int main(int argc, char **argv) {
 
   DialectRegistry registry;
@@ -51,10 +40,6 @@ int main(int argc, char **argv) {
 
   registerAllPasses();
   xilinx::air::registerAllPasses();
-
-  mlir::test::registerTestTransformDialectInterpreterPass();
-  ::test::registerTestDialect(registry);
-  ::test::registerTestTransformDialectExtension(registry);
 
   return failed(
       MlirOptMain(argc, argv, "MLIR-AIR modular optimizer driver\n", registry));

@@ -60,7 +60,6 @@ module attributes {torch.debug_module_name = "Conv2D"}  {
           memref.dealloc %11 : memref<32768xi8>
         }
       }
-      scf.yield
     }
     return
   }

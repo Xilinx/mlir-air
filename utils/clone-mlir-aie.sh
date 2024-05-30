@@ -14,11 +14,17 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=abbcb9a05a37e33217db8a0771594b81e3c4b95f
+export HASH=aba1887b9750dea8db14fbe16417068f83a6b94c
+target_dir=mlir-aie
 
-git clone --depth 1 https://github.com/Xilinx/mlir-aie.git mlir-aie
-pushd mlir-aie
+if [[ ! -d $target_dir ]]; then
+  git clone --depth 1 https://github.com/Xilinx/mlir-aie.git $target_dir
+fi
+
+pushd $target_dir
 git fetch --depth=1 origin $HASH
 git checkout $HASH
 git submodule update --init
+cd third_party/aie-rt
+git checkout -b phoenix_v2023.2 origin/phoenix_v2023.2
 popd

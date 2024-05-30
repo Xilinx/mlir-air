@@ -41,10 +41,10 @@ set(PEANO_INSTALL_DIR
 include(ExternalProject)
 
 find_package(MLIR REQUIRED CONFIG)
-find_package(Boost REQUIRED)
 find_package(AIE REQUIRED)
 find_package(LibXAIE)
-find_package(Boost REQUIRED)
+find_package(XRT)
+find_package(hsa-runtime64)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -104,11 +104,39 @@ include_directories(${AIE_INCLUDE_DIRS})
 
 include_directories(${PROJECT_SOURCE_DIR}/mlir/include)
 include_directories(${PROJECT_BINARY_DIR}/mlir/include)
-include_directories(${Boost_INCLUDE_DIRS})
 
 add_definitions(${LLVM_DEFINITIONS})
 
+## flags duplicated from mlir-aie
+add_flag_if_supported("-Werror=sign-compare" WERROR_SIGN_COMPARE)
+add_flag_if_supported("-Werror=unused" WERROR_USED)
+# What happens when you have a non-void function with no return?
+# No `ret` instruction is generated and so execution of that function just
+# proceeds as if it doesn't have a care in the world (right into whatever comes next).
+# https://godbolt.org/z/Wr9nzv6ns
+add_flag_if_supported("-Werror=return-type" WERROR_RETURN_TYPE)
+## Stolen from MLIR
+# Forbid implicit function declaration: this may lead to subtle bugs and we
+# don't have a reason to support this.
+add_flag_if_supported("-Werror=implicit-function-declaration" WERROR_IMPLICIT_FUNCTION_DECLARATION)
+# Forbid mismatch between declaration and definition for class vs struct. This is
+# harmless on Unix systems, but it'll be a ticking bomb for MSVC/Windows systems
+# where it creeps into the ABI.
+add_flag_if_supported("-Werror=mismatched-tags" WERROR_MISMATCHED_TAGS)
+# Silence a false positive GCC -Wunused-but-set-parameter warning in constexpr
+# cases, by marking SelectedCase as used. See
+# https://gcc.gnu.org/bugzilla/show_bug.cgi?id=85827 for details. The issue is
+# fixed in GCC 10.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "10.0")
+  add_flag_if_supported("-Wno-unused-but-set-parameter" WNO_UNUSED_BUT_SET_PARAMETER)
+endif()
+
 add_custom_target(check-all)
+
+# Make sure we generate the headers
+add_custom_target(air-headers)
+set_target_properties(air-headers PROPERTIES FOLDER "Misc")
+add_dependencies(air-headers mlir-headers)
 
 # Make sure we build the docs
 add_custom_target(docs ALL)
@@ -144,7 +172,7 @@ foreach(target ${AIR_RUNTIME_TARGETS})
     air_runtime_lib_${target}
     PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
     SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
-    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib/${target}
+    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
     CMAKE_CACHE_ARGS -DCMAKE_MODULE_PATH:STRING=${CMAKE_MODULE_PATH}
     CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${${target}_TOOLCHAIN_FILE}
                -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
@@ -153,6 +181,9 @@ foreach(target ${AIR_RUNTIME_TARGETS})
                -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
                -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
                -DLibXAIE_ROOT=${LibXAIE_ROOT}
+               -Dhsa-runtime64_DIR=${hsa-runtime64_DIR}
+               -Dhsakmt_DIR=${hsakmt_DIR}
+               -DAIR_RUNTIME_TARGET=${target}
                -DAIE_DIR=${AIE_DIR}
     BUILD_ALWAYS true
     STEP_TARGETS clean build install test
@@ -164,28 +195,15 @@ foreach(target ${AIR_RUNTIME_TARGETS})
     TEST_EXCLUDE_FROM_MAIN true)
 endforeach()
 
-if(NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
-  install(
-    DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/runtime_lib/airhost/include
-    DESTINATION include/..
-    COMPONENT runtime_lib-headers
-    FILES_MATCHING
-    PATTERN "*.h"
-    PATTERN "*.hpp")
-
-  if(NOT LLVM_ENABLE_IDE)
-    add_llvm_install_targets(install-runtime_lib-headers DEPENDS
-                             runtime_lib-headers COMPONENT runtime_lib-headers)
-  endif()
-endif()
-
 add_subdirectory(python)
 if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
   message(
-    "Skipping tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
+    "Skipping e2e tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
   )
-elseif(NOT LibXAIE_FOUND)
-  message("Skipping tests: LibXAIE not found.")
+elseif(NOT hsa-runtime64_FOUND AND NOT XRT_FOUND)
+  message(
+    "Skipping e2e tests because cmake did not find hsa-runtime64 or XRT."
+  )
 else()
   add_subdirectory(test)
 endif()

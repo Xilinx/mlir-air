@@ -10,7 +10,7 @@
 #define AIR_TRANSFORM_OPS
 
 include "mlir/Dialect/Transform/IR/TransformDialect.td"
-include "mlir/Dialect/Transform/IR/TransformInterfaces.td"
+include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.td"
 include "mlir/Dialect/PDL/IR/PDLTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/OpBase.td"
@@ -89,7 +89,8 @@ def ParToLaunchOp : Op<Transform_Dialect, "air.par_to_launch",
     Returns the new `air.launch` operation.
   }];
   let arguments =
-    (ins PDL_Operation:$target);
+    (ins PDL_Operation:$target,
+     DefaultValuedAttr<BoolAttr, "false">:$has_air_segment);
   let results = (outs PDL_Operation:$result);
   let assemblyFormat = "$target attr-dict";
 

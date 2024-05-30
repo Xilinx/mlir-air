@@ -10,6 +10,8 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/MathExtras.h"
+#include "llvm/ADT/SmallSet.h"
+#include <mutex>
 #include <set>
 
 #define DEBUG_TYPE "air-to-aie-scheduling-utils"
@@ -19,14 +21,12 @@ using namespace xilinx;
 
 bool air::isTileInbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt) {
   if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
-    int src_memory_space = memcpyOp.getSrcMemref()
-                               .getType()
-                               .cast<MemRefType>()
-                               .getMemorySpaceAsInt();
-    int dst_memory_space = memcpyOp.getDstMemref()
-                               .getType()
-                               .cast<MemRefType>()
-                               .getMemorySpaceAsInt();
+    int src_memory_space =
+        llvm::cast<MemRefType>(memcpyOp.getSrcMemref().getType())
+            .getMemorySpaceAsInt();
+    int dst_memory_space =
+        llvm::cast<MemRefType>(memcpyOp.getDstMemref().getType())
+            .getMemorySpaceAsInt();
     assert(src_memory_space !=
            dst_memory_space); // air.dmaMemcpyNdOp isn't meant to represent
                               // core-to-core communication
@@ -126,12 +126,11 @@ std::stringstream air::generateBufferNameInStringStream(std::string prefix,
   return ss;
 }
 
-AIE::ExternalBufferOp air::allocateExternalBufferOp(MemRefType memrefTy,
+AIE::ExternalBufferOp air::allocateExternalBufferOp(uint64_t &BufferId,
+                                                    MemRefType memrefTy,
                                                     AIE::DeviceOp device,
                                                     mlir::StringAttr attr,
                                                     int x, int y) {
-
-  static uint64_t BufferId = 0;
 
   auto builder = OpBuilder::atBlockBegin(device.getBody());
   AIE::ExternalBufferOp bufferOp = builder.create<AIE::ExternalBufferOp>(
@@ -154,28 +153,67 @@ bool air::areIdenticalVectors(std::vector<unsigned> &a,
   return a == b;
 }
 
-int64_t air::get1DOffset(SmallVector<Value> memcpy_sizes,
-                         SmallVector<Value> memcpy_offsets, Value memref) {
-  if (memcpy_sizes.empty() || memcpy_offsets.empty())
+int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
+                         SmallVector<Value> memcpy_strides) {
+  if (memcpy_offsets.empty())
     return 0;
-  assert(memcpy_sizes.size() == memcpy_offsets.size());
-  SmallVector<int> memref_shape = getTensorShape(memref.getType());
-  assert(memcpy_sizes.size() == memref_shape.size());
-  std::vector<unsigned> range;
-  std::vector<unsigned> iter;
-  for (int i = 0; i < memcpy_sizes.size(); i++) {
-    std::optional<int64_t> cstSizeOp =
-        mlir::getConstantIntValue(memcpy_sizes[i]);
-    range.push_back((unsigned)mlir::ceilDiv(memref_shape[i], *cstSizeOp));
-    std::optional<int64_t> cstOffsetOp =
-        mlir::getConstantIntValue(memcpy_offsets[i]);
-    iter.push_back((unsigned)mlir::ceilDiv(*cstOffsetOp, *cstSizeOp));
+
+  int64_t one_d_offset = 0;
+  for (int i = memcpy_offsets.size() - 1; i >= 0; i--) {
+    auto offset = mlir::getConstantIntValue(memcpy_offsets[i]);
+    if (!offset)
+      assert(false && "non-static offset in memcpy op");
+    if ((unsigned)i == memcpy_offsets.size() - 1)
+      one_d_offset += *offset;
+    else {
+      if (auto stride_i = mlir::getConstantIntValue(memcpy_strides[i])) {
+        one_d_offset += (*offset) * (*stride_i);
+      } else
+        assert(false && "non-static size in memcpy op");
+    }
   }
-  unsigned one_d_iter = getIteratorFromMDVector(range, iter);
-  unsigned vol = 1;
-  for (int i = 0; i < memcpy_sizes.size(); i++)
-    vol *= *mlir::getConstantIntValue(memcpy_sizes[i]);
-  return vol * one_d_iter * getElementSizeInBytes(memref.getType());
+  return one_d_offset;
+}
+
+// Get the repeat_count value from an air::ChannelPut/GetOp.
+int air::getRepeatCount(Operation *memcpy_op) {
+  auto chan_op = dyn_cast<air::ChannelInterface>(memcpy_op);
+  if (!chan_op)
+    return 1;
+  if (chan_op.getStrides().empty() || chan_op.getSizes().empty())
+    return 1;
+  if (getConstantIntValue(chan_op.getStrides()[0]) &&
+      getConstantIntValue(chan_op.getSizes()[0])) {
+    auto const_highest_stride = getConstantIntValue(chan_op.getStrides()[0]);
+    auto const_highest_size = getConstantIntValue(chan_op.getSizes()[0]);
+    auto const_highest_offset = getConstantIntValue(chan_op.getOffsets()[0]);
+    if (*const_highest_stride == 0 && !const_highest_offset) {
+      // Highest dimension data access pattern is repeat.
+      return *const_highest_size;
+    }
+  }
+  return 1;
+}
+
+std::vector<AIE::BDDimLayoutAttr>
+air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
+                        SmallVector<Value> memcpy_strides, MLIRContext *ctx) {
+  if (memcpy_sizes.empty() || memcpy_strides.empty())
+    return std::vector<AIE::BDDimLayoutAttr>{};
+  assert(memcpy_sizes.size() == memcpy_strides.size() &&
+         "unequal sizes between wrap list and stride list");
+  std::vector<AIE::BDDimLayoutAttr> output = {};
+  for (unsigned i = 0; i < memcpy_sizes.size(); i++) {
+    auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
+    assert(stepsize && "non-static stride");
+    int stepsize_v = *stepsize;
+    auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
+    assert(wrap && "non-static wrap");
+    int wrap_v = *wrap;
+    auto tuple = AIE::BDDimLayoutAttr::get(ctx, wrap_v, stepsize_v);
+    output.push_back(tuple);
+  }
+  return output;
 }
 
 std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
@@ -186,7 +224,7 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
 
   // Infer semaphore lock values using buffer op
   // TODO: What if a buffer memref is read or written by multiple channels?
-  if (!buffer_memref.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(buffer_memref.getType()))
     return std::make_pair(-1, -1);
   int read_counter = 0;
   int write_counter = 0;
@@ -225,38 +263,44 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
   bool isAIE2 = (arch == AIE::AIEArch::AIE2);
   if (!isAIE2)
     return std::make_pair(0, 0);
-  if (!buffer_memref.getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(buffer_memref.getType()))
     return std::make_pair(-1, -1);
 
   if (!air_chan)
     return getLockValuePair(arch, buffer_memref);
 
-  // Infer semaphore lock values using air.channel
-  int read_counter = 0;
-  int write_counter = 0;
+  // Infer semaphore lock values using air.channel. This method enables
+  // ping-pong compute-communication overlap.
+  llvm::SmallSet<Operation *, 2> unique_write_buffers;
+  llvm::SmallSet<Operation *, 2> unique_read_buffers;
   for (auto get : getChannelGetOpThroughSymbol(air_chan)) {
     if (isa<AIE::ExternalBufferOp>(buffer_memref.getDefiningOp())) {
       // Shim DMA locks
-      write_counter = 1;
+      unique_write_buffers.clear();
+      unique_write_buffers.insert(buffer_memref.getDefiningOp());
+      break;
     } else if (auto core_op = get->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
           buffer_memref.getDefiningOp()->getOperand(0)) {
-        write_counter++;
+        unique_write_buffers.insert(get.getMemref().getDefiningOp());
       }
     }
   }
   for (auto put : getChannelPutOpThroughSymbol(air_chan)) {
     if (isa<AIE::ExternalBufferOp>(buffer_memref.getDefiningOp())) {
       // Shim DMA locks
-      read_counter = 1;
+      unique_read_buffers.clear();
+      unique_read_buffers.insert(buffer_memref.getDefiningOp());
+      break;
     } else if (auto core_op = put->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
           buffer_memref.getDefiningOp()->getOperand(0)) {
-        read_counter++;
+        unique_read_buffers.insert(put.getMemref().getDefiningOp());
       }
     }
   }
-  return std::make_pair(read_counter, write_counter);
+  return std::make_pair(unique_read_buffers.size(),
+                        unique_write_buffers.size());
 }
 
 // allocation_info_t impl.
@@ -275,7 +319,7 @@ bool allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
   }
   return false;
 }
-bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row,
+bool allocation_info_t::foundAlloc(int32_t col, int32_t row,
                                    air::MemcpyInterface memcpyOp) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow())
     for (auto o : memcpyOps)
@@ -283,13 +327,13 @@ bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row,
         return true;
   return false;
 }
-bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row, int chan) {
+bool allocation_info_t::foundAlloc(int32_t col, int32_t row, int chan) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow() &&
       chan == dma_channel.channel)
     return true;
   return false;
 }
-bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row) {
+bool allocation_info_t::foundAlloc(int32_t col, int32_t row) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow())
     return true;
   return false;
@@ -301,7 +345,7 @@ bool allocation_info_t::foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel) {
   else
     return false;
 }
-bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row,
+bool allocation_info_t::foundAlloc(int32_t col, int32_t row,
                                    air::ChannelOp channel_op) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow() && channel_op) {
     for (auto o : memcpyOps) {
@@ -518,7 +562,7 @@ TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int col,
   return DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
 
-AIE::BufferOp TileDMAAllocator::getBuffer(int64_t col, int64_t row,
+AIE::BufferOp TileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
                                           air::MemcpyInterface &memcpyOp) {
   Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt)
                      ? (memcpyOp.getDstMemref())
@@ -601,19 +645,19 @@ ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
 }
 
 AIE::ExternalBufferOp
-ShimDMAAllocator::getBuffer(int64_t col, int64_t row,
+ShimDMAAllocator::getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
                             air::MemcpyInterface &memcpyOp) {
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   // Allocate external buffers
   auto memref =
       (isMM2S) ? (memcpyOp.getSrcMemref()) : (memcpyOp.getDstMemref());
   assert(memref);
-  MemRefType memrefTy = memref.getType().cast<MemRefType>();
+  MemRefType memrefTy = llvm::cast<MemRefType>(memref.getType());
   // External buffers have memory space L3
   memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(), {},
                              DMAMemorySpaceAsInt);
   AIE::ExternalBufferOp bufferOp = allocateExternalBufferOp(
-      memrefTy, device,
+      BufferId, memrefTy, device,
       memcpyOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
       col, row);
   return bufferOp;
@@ -675,7 +719,8 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
-  AIE::BufferOp buffer = getBuffer(-1, -1, memcpyOp);
+  const int dummy{0};
+  AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
   auto tile = buffer.getTileOp();
   assert(tile);
 
@@ -702,7 +747,8 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
-  AIE::BufferOp buffer = getBuffer(-1, -1, memcpyOp);
+  const int dummy{0};
+  AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
   auto tile = buffer.getTileOp();
   assert(tile);
 
@@ -757,7 +803,8 @@ int MemTileDMAAllocator::forecastChannelAlloc(air::MemcpyInterface &memcpyOp) {
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
-  AIE::BufferOp buffer = getBuffer(-1, -1, memcpyOp);
+  const int dummy{0};
+  AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
   auto tile = buffer.getTileOp();
 
   // Search for existing dma channel allocation
@@ -774,13 +821,12 @@ int MemTileDMAAllocator::forecastChannelAlloc(air::MemcpyInterface &memcpyOp) {
   return num_allocs % memtile_dma_channels;
 }
 
-AIE::BufferOp MemTileDMAAllocator::getBuffer(int64_t col, int64_t row,
+AIE::BufferOp MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
                                              air::MemcpyInterface &memcpyOp) {
   Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt)
                      ? (memcpyOp.getDstMemref())
                      : (memcpyOp.getSrcMemref());
   AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
-  assert(bufferOp);
   return bufferOp;
 }
 
@@ -789,15 +835,13 @@ AIE::BufferOp MemTileDMAAllocator::getBuffer(int64_t col, int64_t row,
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp) {
   // air::DmaMemcpyNdOp is a complete memcpy with both src and dst
   S2MM[0].push_back(memcpyOp.getOperation());
-  S2MM_memspace_as_int = memcpyOp.getDstMemref()
-                             .getType()
-                             .cast<MemRefType>()
-                             .getMemorySpaceAsInt();
+  S2MM_memspace_as_int =
+      llvm::cast<MemRefType>(memcpyOp.getDstMemref().getType())
+          .getMemorySpaceAsInt();
   MM2S.push_back(memcpyOp.getOperation());
-  MM2S_memspace_as_int = memcpyOp.getSrcMemref()
-                             .getType()
-                             .cast<MemRefType>()
-                             .getMemorySpaceAsInt();
+  MM2S_memspace_as_int =
+      llvm::cast<MemRefType>(memcpyOp.getSrcMemref().getType())
+          .getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
@@ -828,16 +872,16 @@ void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
   }
   air_flow_op = chan.getOperation();
   S2MM[alloc_id].push_back(memcpyOp.getOperation());
-  S2MM_memspace_as_int =
-      memcpyOp.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+  S2MM_memspace_as_int = llvm::cast<MemRefType>(memcpyOp.getMemref().getType())
+                             .getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
   auto chan = air::getChannelDeclarationThroughSymbol(memcpyOp);
   air_flow_op = chan.getOperation();
   MM2S.push_back(memcpyOp.getOperation());
-  MM2S_memspace_as_int =
-      memcpyOp.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+  MM2S_memspace_as_int = llvm::cast<MemRefType>(memcpyOp.getMemref().getType())
+                             .getMemorySpaceAsInt();
 }
 
 void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(
