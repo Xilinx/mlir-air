@@ -48,24 +48,20 @@ bool areEqualIndices(mlir::Value index_0, mlir::Value index_1) {
   }
 }
 
-// Recursively check for dependency to loop induction vars arising from dma src
-void traceDependentInductionVar(air::DmaMemcpyNdOp dmaNd_op,
+void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history) {
-  // Check for immediate dependency to loop induction vars
-  SmallVector<Value, 1> candidate_scalar_operands;
-  for (unsigned i = 0; i < dmaNd_op.getSrcOffsets().size(); i++) {
-    candidate_scalar_operands.push_back(dmaNd_op.getSrcOffsets()[i]);
-    candidate_scalar_operands.push_back(dmaNd_op.getSrcSizes()[i]);
-    candidate_scalar_operands.push_back(dmaNd_op.getSrcStrides()[i]);
-  }
   for (auto operand : candidate_scalar_operands) {
     // If parent loop op is an scf.for
     if (auto for_op = mlir::scf::getForInductionVarOwner(operand)) {
       loop_dep_history.push_back(for_op.getInductionVar());
     }
-    // TODO: Assuming that src.parallel won't exist under herd launch
     // If parent loop op is an scf.parallel
+    if (auto par_op = mlir::scf::getParallelForInductionVarOwner(operand)) {
+      for (auto ind_var : par_op.getInductionVars())
+        if (ind_var == operand)
+          loop_dep_history.push_back(ind_var);
+    }
 
     // If parent loop op is an air.launch_herd
     if (auto hl_op = getHerdArgOwner(operand)) {
@@ -104,6 +100,30 @@ void traceDependentInductionVar(air::DmaMemcpyNdOp dmaNd_op,
   }
 }
 
+// Recursively check for dependency to loop induction vars arising from dma
+void traceDependentInductionVar(air::MemcpyInterface memcpyif_op,
+                                SmallVector<Value, 1> &loop_dep_history,
+                                std::vector<Operation *> &op_history) {
+  // Check for immediate dependency to loop induction vars
+  SmallVector<Value, 1> candidate_scalar_operands;
+  if (memcpyif_op.getSrcMemref()) {
+    for (unsigned i = 0; i < memcpyif_op.getSrcOffsets().size(); i++) {
+      candidate_scalar_operands.push_back(memcpyif_op.getSrcOffsets()[i]);
+      candidate_scalar_operands.push_back(memcpyif_op.getSrcSizes()[i]);
+      candidate_scalar_operands.push_back(memcpyif_op.getSrcStrides()[i]);
+    }
+  }
+  if (memcpyif_op.getDstMemref()) {
+    for (unsigned i = 0; i < memcpyif_op.getDstOffsets().size(); i++) {
+      candidate_scalar_operands.push_back(memcpyif_op.getDstOffsets()[i]);
+      candidate_scalar_operands.push_back(memcpyif_op.getDstSizes()[i]);
+      candidate_scalar_operands.push_back(memcpyif_op.getDstStrides()[i]);
+    }
+  }
+  traceDependentInductionVar(candidate_scalar_operands, loop_dep_history,
+                             op_history);
+}
+
 // Recursively check for dependency to any loop induction vars
 void traceDependentInductionVar(air::AsyncOpInterface async_op,
                                 SmallVector<Value, 1> &loop_dep_history,
@@ -123,57 +143,7 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
   } else {
     op = async_op.getOperation();
   }
-
-  // Check for immediate dependency to loop induction vars
-  for (auto operand : op->getOperands()) {
-    // If parent loop op is an scf.for
-    if (auto for_op = mlir::scf::getForInductionVarOwner(operand)) {
-      loop_dep_history.push_back(for_op.getInductionVar());
-    }
-    // If parent loop op is an scf.parallel
-    if (auto parallel_op =
-            mlir::scf::getParallelForInductionVarOwner(operand)) {
-      for (auto induction_var : parallel_op.getInductionVars()) {
-        if (operand == induction_var) {
-          loop_dep_history.push_back(induction_var);
-        }
-      }
-    }
-    // If parent loop op is an air.launch_herd
-    if (auto hl_op = getHerdArgOwner(operand)) {
-      for (auto id : hl_op.getIds()) {
-        if (operand == id) {
-          loop_dep_history.push_back(id);
-        }
-      }
-    }
-  }
-
-  // Recursively trace dependency to loop induction vars
-  for (auto operand : op->getOperands()) {
-    if (operand && llvm::isa<IndexType>(
-                       operand.getType())) { // Only tracing scalar operands
-      if (operand.getDefiningOp() &&
-          mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
-        auto ancestor_async_op =
-            dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-        op_history.push_back(ancestor_async_op.getOperation());
-        traceDependentInductionVar(ancestor_async_op, loop_dep_history,
-                                   op_history);
-      } else {
-        // Trace dependency through a for loop
-        if (auto for_op = getForRegionIterArgsOwner(operand)) {
-          for (auto iter_arg : for_op.getInitArgs()) {
-            if (operand == iter_arg) {
-              loop_dep_history.push_back(iter_arg);
-            }
-          }
-        }
-        // Trace dependency through a parallel loop
-        // TODO: decide if parallel should exist in herd launch
-      }
-    }
-  }
+  traceDependentInductionVar(op->getOperands(), loop_dep_history, op_history);
 }
 
 // Recursively check for dependency to any air.herd induction variables.

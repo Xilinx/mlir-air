@@ -1087,15 +1087,6 @@ int findGCD(SmallVector<int> vec) {
   return result;
 }
 
-// Check if an air.channel is single-consumer-single-producer.
-bool hasSinglePutAndGet(air::ChannelOp chan) {
-  auto puts =
-      getChannelPutOpThroughSymbol(chan, chan->getParentOfType<ModuleOp>());
-  auto gets =
-      getChannelGetOpThroughSymbol(chan, chan->getParentOfType<ModuleOp>());
-  return puts.size() == 1 && gets.size() == 1;
-}
-
 // Tile air.channel put/get wrt a memref.
 Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
                             int originalMemrefSize, int dim,
@@ -1389,23 +1380,41 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
           targetMemrefs.push_back(allocOp);
           allocOp->setAttr("split", BoolAttr::get(ctx, true));
           allocOp->setAttr("split_type", StringAttr::get(ctx, "scf.parallel"));
-          if (lbs_spatial.size() == 1) {
-            // If scf.parallel has less dims than the memref, i.e. partial
-            // unrolling, then label the dim.
-            int unrollDim = 0;
-            for (auto index : chanOp.getIndices()) {
-              if (auto indexOwner =
-                      scf::getParallelForInductionVarOwner(index)) {
-                if (indexOwner == parentParOp) {
-                  allocOp->setAttr(
-                      "split_dim",
-                      IntegerAttr::get(IntegerType::get(ctx, 32), unrollDim));
-                  break;
-                }
-              }
-              unrollDim++;
+
+          // Label the dimension on memref to be targetted for splitting, by
+          // analyzing the scf.parallel access pattern (as dependence from
+          // offsets to induction variables).
+          int splitDim = -1;
+          for (unsigned i = 0; i < chanOp.getOffsets().size(); i++) {
+            SmallVector<Value, 1> candidateOperands(1, chanOp.getOffsets()[i]);
+            SmallVector<Value, 1> loop_dep_history;
+            std::vector<Operation *> op_history;
+            air::traceDependentInductionVar(candidateOperands, loop_dep_history,
+                                            op_history);
+            for (auto v : loop_dep_history) {
+              if (scf::getParallelForInductionVarOwner(v) != parentParOp)
+                continue;
+              auto memrefDim = air::getMemrefDimFromOffsetDim(
+                  i, chanOp.getOffsets(), chanOp.getStrides(),
+                  air::getTensorShape(memref.getType()));
+              if (!memrefDim)
+                continue;
+              splitDim = *memrefDim;
+              break;
             }
+            if (splitDim >= 0)
+              break;
           }
+
+          if (allocOp->hasAttr("split_dim"))
+            assert(allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt() ==
+                       splitDim &&
+                   "L2 memref tiled inconsistently across multiple data access "
+                   "patterns. Cannot infer L2 memref tiling strategy.");
+          else if (splitDim >= 0)
+            allocOp->setAttr(
+                "split_dim",
+                IntegerAttr::get(IntegerType::get(ctx, 32), splitDim));
         }
         // Tiling along the first (x) dimension of scf.parallel only, as one NPU
         // memtile is located at the bottom of each column.
@@ -1498,16 +1507,10 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       if (!isa<air::ChannelInterface>(user))
         continue;
       auto chanUserOp = dyn_cast<air::ChannelInterface>(user);
-      auto chanUserChannelDeclr =
-          air::getChannelDeclarationThroughSymbol(chanUserOp);
-      if (!hasSinglePutAndGet(chanUserChannelDeclr)) {
-        assert(false && "NYI");
-      } else if (auto par = user->getParentOfType<scf::ParallelOp>()) {
+      if (auto par = user->getParentOfType<scf::ParallelOp>()) {
         // Case 1: Parallel access to the memref represented with scf.parallel
         // op. Data access specialization method: unroll the scf.parallel
         // loop.
-        SmallVector<int, 2> lbs_spatial, ubs_spatial;
-        air::getSizesFromSpatialLoop(par, lbs_spatial, ubs_spatial);
         OpBuilder builder(par);
         IRMapping remap;
         (void)air::unrollAIRChannelPutGetInScfParallel(builder, par, user,
@@ -1543,19 +1546,12 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         int dim = 0;
         if (allocOp->hasAttr("split_dim"))
           dim = allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt();
-        for (unsigned i = 0; i < memrefShape.size(); i++) {
-          if (chanUserOp.getOffsets().empty())
-            break;
-          int offsetDim =
-              chanUserOp.getOffsets().size() - memrefShape.size() + i;
-          if (getConstantIntValue(chanUserOp.getOffsets()[offsetDim])) {
-            dim = i;
-            break;
-          }
-        }
-        auto newWaitAll =
-            tileChannelOpByFactor(chanUserOp, targetColTilingFactor,
-                                  memrefShape[dim], dim, new_chan, loc, ctx);
+        auto offsetDimOpt = air::getOffsetDimFromMemrefDim(
+            dim, chanUserOp.getStrides(), memrefShape);
+        int offsetDim = offsetDimOpt ? *offsetDimOpt : dim;
+        auto newWaitAll = tileChannelOpByFactor(
+            chanUserOp, targetColTilingFactor, memrefShape[dim], offsetDim,
+            new_chan, loc, ctx);
 
         // Update async dependency.
         auto old_token =
@@ -1566,9 +1562,17 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         // Update the other channel op of the chanUserChannelDeclr.
         auto theOtherChanOp =
             air::getTheOtherChannelOpThroughSymbol(chanUserOp);
-        Value newWaitAll1 =
-            tileChannelOpByFactor(theOtherChanOp[0], targetColTilingFactor,
-                                  memrefShape[dim], dim, new_chan, loc, ctx);
+        // Note: if the memref on the other side of the air channel has
+        // different rank, then we check if ranks can be matched after leading
+        // singleton dimensions are removed. If the ranks still do not match,
+        // then the behaviour is unstable.
+        int numLeadingSingletonDims = 0;
+        for (auto memrefDim : memrefShape)
+          if (memrefDim == 1)
+            numLeadingSingletonDims++;
+        Value newWaitAll1 = tileChannelOpByFactor(
+            theOtherChanOp[0], targetColTilingFactor, memrefShape[dim],
+            dim - numLeadingSingletonDims, new_chan, loc, ctx);
 
         // Update dependency.
         auto oldToken =

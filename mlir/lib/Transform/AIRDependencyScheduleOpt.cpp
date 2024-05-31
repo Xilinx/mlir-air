@@ -1540,6 +1540,9 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       return failure();
     if (apply.getResult().use_empty())
       return failure();
+    if (auto exec_apply = dyn_cast<air::ExecuteOp>(apply->getParentOp()))
+      if (exec_apply->getResult(1).use_empty())
+        return failure();
     auto *containingOp = ivArg.getOwner()->getParentOp();
 
     // Apply affine map to loop step and bound
@@ -1667,10 +1670,15 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     // Check if the loop is the outermost loop in a perfect loop nest
     auto hasNElements = [](Block *block, unsigned N) {
-      auto op_ptr = block->begin();
-      for (unsigned i = 0; i < N; i++)
-        op_ptr = std::next(op_ptr);
-      return op_ptr != block->end() && &*op_ptr == &block->back();
+      unsigned counter = 0;
+      for (auto &o : block->getOperations()) {
+        if (o.mightHaveTrait<OpTrait::IsTerminator>())
+          continue;
+        if (isa<air::WaitAllOp>(o))
+          continue;
+        counter++;
+      }
+      return counter == N;
     };
     if (auto parent_for = dyn_cast<scf::ForOp>(for_op->getParentOp()))
       if (hasNElements(parent_for.getBody(), 1))
@@ -1776,10 +1784,15 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
 
     // Check if the loop is the outermost loop in a perfect loop nest
     auto hasNElements = [](Block *block, unsigned N) {
-      auto op_ptr = block->begin();
-      for (unsigned i = 0; i < N; i++)
-        op_ptr = std::next(op_ptr);
-      return op_ptr != block->end() && &*op_ptr == &block->back();
+      unsigned counter = 0;
+      for (auto &o : block->getOperations()) {
+        if (o.mightHaveTrait<OpTrait::IsTerminator>())
+          continue;
+        if (isa<air::WaitAllOp>(o))
+          continue;
+        counter++;
+      }
+      return counter == N;
     };
     if (auto parent_for = dyn_cast<affine::AffineForOp>(for_op->getParentOp()))
       if (hasNElements(parent_for.getBody(), 1))
@@ -2115,24 +2128,22 @@ struct BroadcastDetection {
 public:
   // Trace dma ops' dependency to loop induction variables
   void getDmaOpLoopDependency(func::FuncOp f) {
-    f.walk([&](Operation *op) {
-      if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
-        int src_memspace =
-            llvm::cast<MemRefType>(dma_op.getSrcMemref().getType())
-                .getMemorySpaceAsInt();
-        int dst_memspace =
-            llvm::cast<MemRefType>(dma_op.getDstMemref().getType())
-                .getMemorySpaceAsInt();
-        bool isL1Memcpy = (src_memspace == (int)air::MemorySpace::L1) ||
-                          (dst_memspace == (int)air::MemorySpace::L1);
-        if (dma_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
-          // Start recursively tracing for loop induction variables
-          dma_op_history.push_back(dma_op);
-          SmallVector<Value, 1> loop_dep_history;
-          std::vector<Operation *> op_history;
-          traceDependentInductionVar(dma_op, loop_dep_history, op_history);
-          dma_op_loop_dep_history.push_back(loop_dep_history);
-        }
+    f.walk([&](MemcpyInterface memcpyif_op) {
+      int src_memspace =
+          llvm::cast<MemRefType>(memcpyif_op.getSrcMemref().getType())
+              .getMemorySpaceAsInt();
+      int dst_memspace =
+          llvm::cast<MemRefType>(memcpyif_op.getDstMemref().getType())
+              .getMemorySpaceAsInt();
+      bool isL1Memcpy = (src_memspace == (int)air::MemorySpace::L1) ||
+                        (dst_memspace == (int)air::MemorySpace::L1);
+      if (memcpyif_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
+        // Start recursively tracing for loop induction variables
+        dma_op_history.push_back(memcpyif_op);
+        SmallVector<Value, 1> loop_dep_history;
+        std::vector<Operation *> op_history;
+        traceDependentInductionVar(memcpyif_op, loop_dep_history, op_history);
+        dma_op_loop_dep_history.push_back(loop_dep_history);
       }
     });
   }
@@ -2222,7 +2233,7 @@ public:
 
 private:
   // DMA dependency to loop induction variables
-  std::vector<air::DmaMemcpyNdOp> dma_op_history;
+  std::vector<MemcpyInterface> dma_op_history;
   SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
 };
 
