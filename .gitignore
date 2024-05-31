@@ -18,7 +18,9 @@ vck5000_aie_base_graph_hw.ltx
 vck5000_aie_base_graph_hw.xsa.link_summary
 Work
 build
+build-xrt
 install
+install-xrt
 platform_repo
 myproj
 sw_comp
@@ -26,6 +28,7 @@ sd_card
 sysroot
 components
 air_project
+sandbox
 
 # build results
 libadf.a
