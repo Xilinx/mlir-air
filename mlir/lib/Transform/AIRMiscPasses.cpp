@@ -1562,20 +1562,17 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         // Update the other channel op of the chanUserChannelDeclr.
         auto theOtherChanOp =
             air::getTheOtherChannelOpThroughSymbol(chanUserOp);
-        auto theOtherMemrefShape =
-            air::getTensorShape(theOtherChanOp[0].getMemref().getType());
         // Note: if the memref on the other side of the air channel has
-        // different rank, then we assume to tile that memref at first
-        // dimension.
-        if (memrefShape.size() != theOtherMemrefShape.size())
-          dim = 0;
-        auto theotherOffsetDimOpt = air::getOffsetDimFromMemrefDim(
-            dim, theOtherChanOp[0].getStrides(), theOtherMemrefShape);
-        int theotherOffsetDim =
-            theotherOffsetDimOpt ? *theotherOffsetDimOpt : dim;
+        // different rank, then we check if ranks can be matched after leading
+        // singleton dimensions are removed. If the ranks still do not match,
+        // then the behaviour is unstable.
+        int numLeadingSingletonDims = 0;
+        for (auto memrefDim : memrefShape)
+          if (memrefDim == 1)
+            numLeadingSingletonDims++;
         Value newWaitAll1 = tileChannelOpByFactor(
             theOtherChanOp[0], targetColTilingFactor, memrefShape[dim],
-            theotherOffsetDim, new_chan, loc, ctx);
+            dim - numLeadingSingletonDims, new_chan, loc, ctx);
 
         // Update dependency.
         auto oldToken =
