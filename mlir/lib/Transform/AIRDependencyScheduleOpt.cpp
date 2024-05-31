@@ -1540,6 +1540,9 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       return failure();
     if (apply.getResult().use_empty())
       return failure();
+    if (auto exec_apply = dyn_cast<air::ExecuteOp>(apply->getParentOp()))
+      if (exec_apply->getResult(1).use_empty())
+        return failure();
     auto *containingOp = ivArg.getOwner()->getParentOp();
 
     // Apply affine map to loop step and bound
@@ -1667,10 +1670,15 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     // Check if the loop is the outermost loop in a perfect loop nest
     auto hasNElements = [](Block *block, unsigned N) {
-      auto op_ptr = block->begin();
-      for (unsigned i = 0; i < N; i++)
-        op_ptr = std::next(op_ptr);
-      return op_ptr != block->end() && &*op_ptr == &block->back();
+      unsigned counter = 0;
+      for (auto &o : block->getOperations()) {
+        if (o.mightHaveTrait<OpTrait::IsTerminator>())
+          continue;
+        if (isa<air::WaitAllOp>(o))
+          continue;
+        counter++;
+      }
+      return counter == N;
     };
     if (auto parent_for = dyn_cast<scf::ForOp>(for_op->getParentOp()))
       if (hasNElements(parent_for.getBody(), 1))
@@ -1776,10 +1784,15 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
 
     // Check if the loop is the outermost loop in a perfect loop nest
     auto hasNElements = [](Block *block, unsigned N) {
-      auto op_ptr = block->begin();
-      for (unsigned i = 0; i < N; i++)
-        op_ptr = std::next(op_ptr);
-      return op_ptr != block->end() && &*op_ptr == &block->back();
+      unsigned counter = 0;
+      for (auto &o : block->getOperations()) {
+        if (o.mightHaveTrait<OpTrait::IsTerminator>())
+          continue;
+        if (isa<air::WaitAllOp>(o))
+          continue;
+        counter++;
+      }
+      return counter == N;
     };
     if (auto parent_for = dyn_cast<affine::AffineForOp>(for_op->getParentOp()))
       if (hasNElements(parent_for.getBody(), 1))
