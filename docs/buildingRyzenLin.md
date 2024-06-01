@@ -73,7 +73,7 @@ source sandbox/bin/activate
 Some tests for MLIR-AIR are provided. Run them as demonstrated below:
 
 ```bash
-cd $MY_SHARE/mlir-air/build-xrt
+cd mlir-air/build-xrt
 ninja install
 ninja check-air-cpp
 ninja check-air-mlir
