@@ -1195,7 +1195,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
     AIE::BDDimLayoutArrayAttr dimensionsToStream =
         AIE::BDDimLayoutArrayAttr::get(channel->getContext(), {});
-    ;
 
     // put/get come in pairs, if one is missing then it's L3
     Value producerTile;
@@ -1257,7 +1256,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     std::vector<AIE::BDDimLayoutArrayAttr> dimsFromStreamPerConsumer;
 
     // put/get come in pairs, if one is missing then it's L3
-    std::vector<Value> consumers;
+    std::set<AIE::TileOp> consumers;
     Value consumerTile;
     if (channelGets.size() > 1 && !channel.isBroadcast())
       return channel.emitOpError("has multiple gets but no broadcast shape");
@@ -1268,7 +1267,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           findChannelPutGetTile<ChannelGetOp>(get, &consumerTile, &datatype);
       if (res.failed())
         return res;
-      consumers.push_back(consumerTile);
+      consumers.insert(consumerTile.getDefiningOp<AIE::TileOp>());
 
       setChannelBufferResources(rewriter, channel, get.getOperation());
 
@@ -1311,8 +1310,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       consumerTile = shimTileAlloc.getShimTile(
           device, (int)air::MemorySpace::L1, (int)air::MemorySpace::L3,
           channel.getName().str());
-      consumers.push_back(consumerTile);
+      consumers.insert(consumerTile.getDefiningOp<AIE::TileOp>());
     }
+    if ((int)consumers.size() != expectedGets)
+      return channel.emitOpError(
+          "number of channel gets does not match broadcast shape");
 
     if (datatype.first == (int)air::MemorySpace::L3)
       return channel.emitOpError(
@@ -1327,8 +1329,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     if (dimsFromStreamPerConsumer.size() > 0)
       dimensionsFromStreamPerConsumer = AIE::BDDimLayoutArrayArrayAttr::get(
           channel->getContext(), ArrayRef(dimsFromStreamPerConsumer));
+    std::vector<Value> consumerTiles;
+    for (auto tile : consumers)
+      consumerTiles.push_back(tile);
     AIE::ObjectFifoCreateOp objFifo = createObjectFifo(
-        rewriter, datatype.second, producerTile, consumers,
+        rewriter, datatype.second, producerTile, consumerTiles,
         channel.getBufferResources(), "air_" + channel.getName().str(),
         dimensionsToStream, dimensionsFromStreamPerConsumer);
 
