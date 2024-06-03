@@ -39,7 +39,10 @@ namespace air {
 //===----------------------------------------------------------------------===//
 
 bool areEqualIndices(mlir::Value index_0, mlir::Value index_1);
-void traceDependentInductionVar(air::DmaMemcpyNdOp async_op,
+void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
+                                SmallVector<Value, 1> &loop_dep_history,
+                                std::vector<Operation *> &op_history);
+void traceDependentInductionVar(air::MemcpyInterface memcpyif_op,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history);
 void traceDependentInductionVar(air::AsyncOpInterface async_op,
@@ -365,7 +368,8 @@ public:
 
 private:
   // Trace the defining op of sink op, RAW
-  template <typename T> void traceDefiningOpAsDep(Value operand, T op) {
+  template <typename T>
+  void traceDefiningOpAsDep(Value operand, T op) {
     // Check memref deps
     if (auto defop = operand.getDefiningOp<air::ExecuteOp>()) {
       // addNewAsyncDepToGraph<T>(defop.getResult(0), op);
