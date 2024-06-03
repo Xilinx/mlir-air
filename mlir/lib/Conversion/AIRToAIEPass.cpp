@@ -1193,7 +1193,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     Operation *endOfLink = nullptr; // one end of a LinkOp (i.e., a put or get)
     int numLinkEnds = 0; // # ends in this link (i.e., # users of AIE.BufferOp)
 
-    AIE::BDDimLayoutArrayAttr dimensionsToStream = AIE::BDDimLayoutArrayAttr::get(channel->getContext(), {});;
+    AIE::BDDimLayoutArrayAttr dimensionsToStream =
+        AIE::BDDimLayoutArrayAttr::get(channel->getContext(), {});
+    ;
 
     // put/get come in pairs, if one is missing then it's L3
     Value producerTile;
@@ -1206,7 +1208,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       if (res.failed())
         return res;
 
-      setChannelBufferResources(rewriter, channel, channelPuts[0].getOperation());
+      setChannelBufferResources(rewriter, channel,
+                                channelPuts[0].getOperation());
 
       // check if this put is linked to a get from another channel
       MemRefType memrefType =
@@ -1222,11 +1225,12 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       // get data layout transformation on channel put
       auto ndcpy = cast<air::MemcpyInterface>(channelPuts[0].getOperation());
       SmallVector<Value> sizes = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-                                    ? ndcpy.getDstSizes()
-                                    : ndcpy.getSrcSizes();
-      SmallVector<Value> strides = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-                                      ? ndcpy.getDstStrides()
-                                      : ndcpy.getSrcStrides();
+                                     ? ndcpy.getDstSizes()
+                                     : ndcpy.getSrcSizes();
+      SmallVector<Value> strides =
+          isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+              ? ndcpy.getDstStrides()
+              : ndcpy.getSrcStrides();
       if (!strides.empty() && !sizes.empty())
         if (auto const_highest_stride = getConstantIntValue(strides[0]))
           if (*const_highest_stride == 0) {
@@ -1238,7 +1242,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       auto wraps_and_strides =
           AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
       bool useDefaultDataAccessPattern =
-          isAIE2 ? isDefaultDataAccessPattern(sizes, strides, channelPuts[0].getMemref()) : true;
+          isAIE2 ? isDefaultDataAccessPattern(sizes, strides,
+                                              channelPuts[0].getMemref())
+                 : true;
       if (!wraps_and_strides.getValue().empty() && !useDefaultDataAccessPattern)
         dimensionsToStream = wraps_and_strides;
     } else {
@@ -1278,11 +1284,12 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       // get data layout transformation on channel get
       auto ndcpy = cast<air::MemcpyInterface>(get.getOperation());
       SmallVector<Value> sizes = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-                                    ? ndcpy.getDstSizes()
-                                    : ndcpy.getSrcSizes();
-      SmallVector<Value> strides = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-                                      ? ndcpy.getDstStrides()
-                                      : ndcpy.getSrcStrides();
+                                     ? ndcpy.getDstSizes()
+                                     : ndcpy.getSrcSizes();
+      SmallVector<Value> strides =
+          isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+              ? ndcpy.getDstStrides()
+              : ndcpy.getSrcStrides();
       if (!strides.empty() && !sizes.empty())
         if (auto const_highest_stride = getConstantIntValue(strides[0]))
           if (*const_highest_stride == 0) {
@@ -1294,7 +1301,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       auto wraps_and_strides =
           AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
       bool useDefaultDataAccessPattern =
-          isAIE2 ? isDefaultDataAccessPattern(sizes, strides, get.getMemref()) : true;
+          isAIE2 ? isDefaultDataAccessPattern(sizes, strides, get.getMemref())
+                 : true;
       if (!wraps_and_strides.getValue().empty() && !useDefaultDataAccessPattern)
         dimsFromStreamPerConsumer.push_back(wraps_and_strides);
     }
@@ -1314,11 +1322,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
     AIE::BDDimLayoutArrayAttr emptyDims =
         AIE::BDDimLayoutArrayAttr::get(channel->getContext(), {});
-    auto dimensionsFromStreamPerConsumer =
-        AIE::BDDimLayoutArrayArrayAttr::get(channel->getContext(), ArrayRef(emptyDims));
+    auto dimensionsFromStreamPerConsumer = AIE::BDDimLayoutArrayArrayAttr::get(
+        channel->getContext(), ArrayRef(emptyDims));
     if (dimsFromStreamPerConsumer.size() > 0)
-      dimensionsFromStreamPerConsumer = 
-          AIE::BDDimLayoutArrayArrayAttr::get(channel->getContext(), ArrayRef(dimsFromStreamPerConsumer));
+      dimensionsFromStreamPerConsumer = AIE::BDDimLayoutArrayArrayAttr::get(
+          channel->getContext(), ArrayRef(dimsFromStreamPerConsumer));
     AIE::ObjectFifoCreateOp objFifo = createObjectFifo(
         rewriter, datatype.second, producerTile, consumers,
         channel.getBufferResources(), "air_" + channel.getName().str(),
@@ -1332,17 +1340,16 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         buff = dyn_cast<AIE::BufferOp>(get.getMemref().getDefiningOp());
         SmallVector<Value> offsets = get.getDstOffsets();
         SmallVector<Value> strides = get.getDstStrides();
-        int64_t offset =
-            get1DOffset(offsets, strides);
+        int64_t offset = get1DOffset(offsets, strides);
         addLinkEnd(ctx, buff, /* isInput */ true, numLinkEnds, objFifo, offset);
         // if put: add to output objectFifo vector
       } else if (auto put = dyn_cast<ChannelPutOp>(endOfLink)) {
         buff = dyn_cast<AIE::BufferOp>(put.getMemref().getDefiningOp());
         SmallVector<Value> offsets = put.getSrcOffsets();
         SmallVector<Value> strides = put.getSrcStrides();
-        int64_t offset =
-            get1DOffset(offsets, strides);
-        addLinkEnd(ctx, buff, /* isInput */ false, numLinkEnds, objFifo, offset);
+        int64_t offset = get1DOffset(offsets, strides);
+        addLinkEnd(ctx, buff, /* isInput */ false, numLinkEnds, objFifo,
+                   offset);
       }
       createLink(rewriter, buff);
     }
@@ -1400,8 +1407,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 private:
   // find AIE cores and their tiles based on memory hierarchy levels
   template <typename MyOp>
-  LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
-                                      std::pair<int, MemRefType> *datatype) const {
+  LogicalResult
+  findChannelPutGetTile(MyOp op, Value *tile,
+                        std::pair<int, MemRefType> *datatype) const {
     MemRefType memref = llvm::cast<MemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
     // remove mem_space from memref for objFifo datatype
@@ -1432,8 +1440,7 @@ private:
   }
 
   void setChannelBufferResources(PatternRewriter &rewriter,
-                                 air::ChannelOp channel,
-                                 Operation* op) const {
+                                 air::ChannelOp channel, Operation *op) const {
     if (channel->hasAttr("buffer_resources"))
       return;
     auto for_op = op->getParentOfType<scf::ForOp>();
@@ -1445,16 +1452,16 @@ private:
     }
   }
 
-  AIE::ObjectFifoCreateOp createObjectFifo(PatternRewriter &rewriter,
-                                           MemRefType datatype, Value prodTile,
-                                           const std::vector<Value> &consTile,
-                                           int depth, StringRef name,
-                                           AIE::BDDimLayoutArrayAttr dimensionsToStream,
-                                           AIE::BDDimLayoutArrayArrayAttr dimensionsFromStreamPerConsumer) const {
+  AIE::ObjectFifoCreateOp createObjectFifo(
+      PatternRewriter &rewriter, MemRefType datatype, Value prodTile,
+      const std::vector<Value> &consTile, int depth, StringRef name,
+      AIE::BDDimLayoutArrayAttr dimensionsToStream,
+      AIE::BDDimLayoutArrayArrayAttr dimensionsFromStreamPerConsumer) const {
     return rewriter.create<AIE::ObjectFifoCreateOp>(
         rewriter.getUnknownLoc(), rewriter.getStringAttr(name), prodTile,
         consTile, rewriter.getIntegerAttr(rewriter.getI32Type(), depth),
-        AIE::AIEObjectFifoType::get(datatype), dimensionsToStream, dimensionsFromStreamPerConsumer);
+        AIE::AIEObjectFifoType::get(datatype), dimensionsToStream,
+        dimensionsFromStreamPerConsumer);
   }
 
   template <typename MyOp>
@@ -1561,7 +1568,7 @@ private:
           {SymbolRefAttr::get(ctx, objFifo.name()), offset});
   }
 
-  static bool sortLinkObjectFifos(std::pair<Attribute, int64_t> op0, 
+  static bool sortLinkObjectFifos(std::pair<Attribute, int64_t> op0,
                                   std::pair<Attribute, int64_t> op1) {
     return op0.second < op1.second;
   }
