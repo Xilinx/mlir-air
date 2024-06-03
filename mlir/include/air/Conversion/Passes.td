@@ -14,7 +14,7 @@ include "mlir/Pass/PassBase.td"
 def ParallelToHerd : Pass<"air-par-to-herd", "ModuleOp"> {
   let summary = "Convert parallel loops to air.herd";
   let constructor = "xilinx::air::createParallelToHerdPass()";
-  let description =  [{
+  let description = [{
     This pass converts parallel loop operations to air `herd` operations. The
     parallel loops can be `scf.parallel` or `affine.parallel` operations with 1
     or 2 dimensional iteration spaces. The iteration space of the parallel loop
@@ -22,23 +22,25 @@ def ParallelToHerd : Pass<"air-par-to-herd", "ModuleOp"> {
     `herd`. If nested parallel loops are present then the `depth` option can
     to used to specify which loop depth to convert.
   }];
-  let options = [
-    Option<"clAssignDepth", "depth", "int",
-          /*default=*/"-1",
-          "Given a nest of parallel for loops, which depth to map to air.herd">,
-    Option<"clFirstDim", "first-dim", "int",
-          /*default=*/"0",
-          "Which herd dimension to map to first. Can be zero or one. If set to "
-          "zero, the 0th dimension of the scf.parallel will be mapped to the x "
-          "dimension of the herd. If set to one, the 0th dimension of the "
-          "scf.parallel will be mapped to the y dimension of the herd.">
-  ];
+  let options =
+      [Option<"clAssignDepth", "depth", "int",
+              /*default=*/"-1",
+              "Given a nest of parallel for loops, which depth to map to "
+              "air.herd">,
+       Option<"clFirstDim", "first-dim", "int",
+              /*default=*/"0",
+              "Which herd dimension to map to first. Can be zero or one. If "
+              "set to "
+              "zero, the 0th dimension of the scf.parallel will be mapped to "
+              "the x "
+              "dimension of the herd. If set to one, the 0th dimension of the "
+              "scf.parallel will be mapped to the y dimension of the herd.">];
 }
 
 def ParallelToLaunch : Pass<"air-par-to-launch", "ModuleOp"> {
   let summary = "Convert parallel loops to air.launch";
   let constructor = "xilinx::air::createParallelToLaunchPass()";
-  let description =  [{
+  let description = [{
     This pass converts parallel loop operations to air `launch` operations. The
     parallel loops can be `scf.parallel` or `affine.parallel` operations. The
     iteration space of the parallel loops will be normalized and will become the
@@ -47,20 +49,21 @@ def ParallelToLaunch : Pass<"air-par-to-launch", "ModuleOp"> {
     An air `segment` operation can optionally be inserted at the top level of
     the generated `launch` operations with the `has-air-segment` option.
   }];
-  let options = [
-    Option<"clAssignDepth", "depth", "int",
-          /*default=*/"-1",
-          "Given a nest of parallel for loops, which depth to map to air.launch">,
-    Option<"clHasSegment", "has-air-segment", "bool", /*default=*/"false",
-           "Whether to create an air.segment op in generated air.launch "
-           "regions">,
+  let options =
+      [Option<"clAssignDepth", "depth", "int",
+              /*default=*/"-1",
+              "Given a nest of parallel for loops, which depth to map to "
+              "air.launch">,
+       Option<"clHasSegment", "has-air-segment", "bool", /*default=*/"false",
+              "Whether to create an air.segment op in generated air.launch "
+              "regions">,
   ];
 }
 
 def CopyToDma : Pass<"air-copy-to-dma", "ModuleOp"> {
   let summary = "Convert memcpy to air.dma_memcpy_nd";
   let constructor = "xilinx::air::createCopyToDmaPass()";
-  let description =  [{
+  let description = [{
     Converts memory operations to optimize data transfer through Direct Memory 
     Access (DMA) operations.
   }];
@@ -69,7 +72,7 @@ def CopyToDma : Pass<"air-copy-to-dma", "ModuleOp"> {
 def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
   let summary = "Convert air.dma_memcpy_nd to air.channel";
   let constructor = "xilinx::air::createDmaToChannelPass()";
-  let description =  [{
+  let description = [{
     Transforms direct memory access (DMA) operations into channel-based 
     communications, consisting of a series of channel put and get operations 
     via shared channel constructs.
@@ -215,45 +218,49 @@ def AIRLinalgToFunc : Pass<"air-linalg-to-func", "ModuleOp"> {
                 "function calls";
   let constructor = "xilinx::air::createAIRLinalgToFuncPass()";
   let dependentDialects = ["func::FuncDialect", "memref::MemRefDialect"];
-  let options = [
-    Option<"clLinkWith", "link-with", "std::string",
-          /*default=*/"\"\"",
-           "Path to the object file containing the functions that will be "
-           "called in place of the linalg operations.">
-  ];
+  let options = [Option<
+      "clLinkWith", "link-with", "std::string",
+      /*default=*/"\"\"",
+      "Path to the object file containing the functions that will be "
+      "called in place of the linalg operations.">];
 }
 
 def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
   let summary = "Lower air.launch_herd to AIE dialect";
   let constructor = "xilinx::air::createAIRToAIEPass()";
-  let options = [
-    Option<"clRowOffset", "row-offset", "unsigned", /*default=*/"1",
-           "The default start row for any herds without 'y_loc' attribute.">,
-    Option<"clColOffset", "col-offset", "unsigned", /*default=*/"1",
+  let options =
+      [Option<"clRowOffset", "row-offset", "unsigned", /*default=*/"1",
+              "The default start row for any herds without 'y_loc' attribute.">,
+       Option<
+           "clColOffset", "col-offset", "unsigned", /*default=*/"1",
            "The default start column for any herds without 'x_loc' attribute.">,
-    Option<"clEmitWhileLoop", "emit-while-loop", "bool",
+       Option<
+           "clEmitWhileLoop", "emit-while-loop", "bool",
            /*default=*/"false",
            "Emit a while(1) around the herd code in generated AIR.core ops.">,
-    Option<"clEmitHerdLock", "emit-herd-lock", "bool",
+       Option<
+           "clEmitHerdLock", "emit-herd-lock", "bool",
            /*default=*/"false",
            "Acquire and release a lock at the start and end of herd execution. "
            "The default is to acquire lock 0 with value zero and release it "
            "with value 0. "
            "There is currently no way to override the default behavior.">,
-    Option<"clTestPatterns", "test-patterns", "std::string",
-          /*default=*/"\"\"",
-           "Test the given patterns.">,
-    Option<"clDevice", "device", "std::string",
-          /*default=*/"\"xcvc1902\"",
-           "AIE device to target.">,
-    Option<"clUseObjFifo", "use-objectfifo", "bool",
-           /*default=*/"false",
-           "Choose whether to lower data movement ops to aie.objectFifo, or "
-           "directly to aie.locks.">,
-    Option<"clGenerateShimDMA", "generate-shim-dma", "bool",
+       Option<"clTestPatterns", "test-patterns", "std::string",
+              /*default=*/"\"\"", "Test the given patterns.">,
+       Option<"clDevice", "device", "std::string",
+              /*default=*/"\"xcvc1902\"", "AIE device to target.">,
+       Option<"clUseObjFifo", "use-objectfifo", "bool",
+              /*default=*/"false",
+              "Choose whether to lower data movement ops to aie.objectFifo, or "
+              "directly to aie.locks.">,
+       Option<
+           "clGenerateShimDMA", "generate-shim-dma", "bool",
            /*default=*/"false",
            "Choose whether to schedule shim data movement via generating AIE "
            " shim DMA program, or AIR runtime.">,
+       Option<"clTraceSize", "trace-size", "unsigned", /*default=*/"0",
+              "Create packet routed traces for cores and memtiles"
+              "The default generates no trace.">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE
@@ -361,7 +368,7 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
 def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
   let summary = "Lower AIRRt dialect to LLVM dialect";
   let constructor = "xilinx::airrt::createAIRRtToLLVMPass()";
-  let description =  [{
+  let description = [{
     This pass lowers AIRRt dialect to function calls and data structures
     matching those found in air_host.h.
 
@@ -376,7 +383,7 @@ def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
 def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
   let summary = "Lower AIRRt dialect to AIEX.npu dialect";
   let constructor = "xilinx::airrt::createAIRRtToNpuPass()";
-  let description =  [{
+  let description = [{
     Converts the runtime program, described in AIRRt dialect, into 
     instruction sequence specific to the SHIM DMA controllers on Ryzen AI 
     platform.
@@ -452,38 +459,42 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
     ```
 
   }];
-  let options = [];
+  let options = [Option<"clTraceSize", "trace-size", "unsigned",
+                        /*default=*/"0",
+                        "Trace buffer size for cores and memtiles (in bytes)">,
+                 Option<"clTraceOffset", "trace-offset", "unsigned",
+                        /*default=*/"0",
+                        "Trace buffer offset appended to ddr_id=2">];
   let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
 }
 
 def AIRSplitDevices : Pass<"air-split-devices", "ModuleOp"> {
   let summary = "Split the input into one output per aie.device op";
   let constructor = "xilinx::air::createAIRSplitDevicesPass()";
-  let options = [
-    Option<"clOutputPrefix", "output-prefix", "std::string",
-          /*default=*/"\"-\"",
-           "File name prefix for split AIE modules. "
-           "Set to \'-\' for stdout (default).">,
+  let options = [Option<"clOutputPrefix", "output-prefix", "std::string",
+                        /*default=*/"\"-\"",
+                        "File name prefix for split AIE modules. "
+                        "Set to \'-\' for stdout (default).">,
   ];
 }
 
 def AIRPipelineToAffine : Pass<"air-pipeline-to-affine", "ModuleOp"> {
   let summary = "Lower air.pipeline stages to affine.if";
   let constructor = "xilinx::air::createAIRPipelineToAffinePass()";
-  let description =  [{
+  let description = [{
     Lower air.pipeline stages to affine.if
   }];
-  let options = [
-    Option<"clLoweringType", "lowering-type", "std::string", 
-          /*default=*/"\"buffers\"",
-          "Type of lowering to use for core-to-core communication. Can be 'buffer' or 'getput'">
-  ];
+  let options = [Option<"clLoweringType", "lowering-type", "std::string",
+                        /*default=*/"\"buffers\"",
+                        "Type of lowering to use for core-to-core "
+                        "communication. Can be 'buffer' or 'getput'">];
 }
 
-def InsertEmptyLaunchOverHerd : Pass<"air-insert-launch-and-segment-around-herd", "ModuleOp"> {
+def InsertEmptyLaunchOverHerd
+    : Pass<"air-insert-launch-and-segment-around-herd", "ModuleOp"> {
   let summary = "Insert segment and launch ops around herd op";
   let constructor = "xilinx::air::createInsertEmptyLaunchOverHerdPass()";
-  let description =  [{
+  let description = [{
     This pass inserts launch and segment operations around herd op, if a herd op 
     does not have a parent launch or segment operation.
   }];
