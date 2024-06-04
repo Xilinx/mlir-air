@@ -20,6 +20,9 @@ build/final.xclbin: build/air.mlir
 	mkdir -p ${@D}
 	cd build && aircc.py -xbridge -o ${@F} --tmpdir tmp --device npu1_1col --host-target x86_64 $(<:%=../%)
 
+build/final.py.xclbin: build/air.mlir
+	mkdir -p ${@D}
+	cd build && python3 build.py $(<:%=../%)
 
 ${targetname}.exe: ${srcdir}/test.cpp
 	rm -rf _build
@@ -34,6 +37,9 @@ endif
 
 run: ${targetname}.exe build/final.xclbin build/final.insts.txt 
 	${powershell} ./$< -x build/final.xclbin -i build/final.insts.txt -k MLIR_AIE
+
+run_py: build/final.xclbin build/final.insts.txt 
+	${powershell} python3 ${srcdir}/test.py build/final.xclbin build/final.insts.txt 
 
 clean:
 	rm -rf build _build tmp ${targetname}.exe
