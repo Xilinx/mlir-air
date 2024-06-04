@@ -3249,7 +3249,13 @@ static void getSegmentNames(ModuleOp module) {
         std::string name;
         do {
           std::stringstream ss;
-          ss << "segment_" << id++;
+          assert(
+              f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()) &&
+              "enclosing function of air.sgement op expected to have a symbol "
+              "name");
+          ss << f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+                    .str()
+             << "_" << id++;
           name = ss.str();
         } while (std::find(seg_syms.begin(), seg_syms.end(), name) !=
                  seg_syms.end());

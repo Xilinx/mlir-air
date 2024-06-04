@@ -38,7 +38,7 @@ func.func @f1()  {
 // CHECK-LABEL: func.func @f2
 // CHECK: %[[VAL_0:.*]] = arith.constant 2 : index
 // CHECK: air.launch (%[[VAL_1:.*]], %[[VAL_2:.*]]) in (%[[VAL_3:.*]]=%[[VAL_0]], %[[VAL_4:.*]]=%[[VAL_0]]) {
-// CHECK:   air.segment @segment_2  args(%[[VAL_5:.*]]=%[[VAL_1]], %[[VAL_6:.*]]=%[[VAL_2]], %[[VAL_7:.*]]=%[[VAL_3]], %[[VAL_8:.*]]=%[[VAL_4]]) : index, index, index, index
+// CHECK:   air.segment @f2_0  args(%[[VAL_5:.*]]=%[[VAL_1]], %[[VAL_6:.*]]=%[[VAL_2]], %[[VAL_7:.*]]=%[[VAL_3]], %[[VAL_8:.*]]=%[[VAL_4]]) : index, index, index, index
 func.func @f2()  {
   %c0 = arith.constant 0 : index
   %c32 = arith.constant 32 : index
@@ -51,7 +51,7 @@ func.func @f2()  {
 
 // CHECK-LABEL: func.func @f3
 // CHECK: air.launch
-// CHECK:   air.segment @segment_3
+// CHECK:   air.segment @f3_0
 // CHECK:     memref.alloc() : memref<1x1x64x128xbf16, 1 : i32>
 // CHECK:     memref.alloc() : memref<1x1x16x8x8x4xbf16, 2 : i32>
 // CHECK:     air.dma_memcpy_nd
