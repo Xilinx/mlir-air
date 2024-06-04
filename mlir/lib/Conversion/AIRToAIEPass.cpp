@@ -1183,9 +1183,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
 
-    channel->print(llvm::outs());
-    llvm::outs() << "channelPuts" << channelPuts.size() << "\n";
-    llvm::outs() << "channelGets" << channelGets.size() << "\n";
+    // channel->print(llvm::outs());
+    // llvm::outs() << "channelPuts" << channelPuts.size() << "\n";
+    // llvm::outs() << "channelGets" << channelGets.size() << "\n";
 
     // variables to track LinkOp, i.e., a put and get using the same
     // AIE.BufferOp
@@ -1419,8 +1419,8 @@ private:
     int mem_space = memref.getMemorySpaceAsInt();
     // remove mem_space from memref for objFifo datatype
     if (datatype->first != (int)air::MemorySpace::L1) {
-      *datatype = {mem_space,
-                   MemRefType::get(memref.getShape(), memref.getElementType())};
+      *datatype = {mem_space, memref};
+                   //MemRefType::get(memref.getShape(), memref.getElementType())};
     }
     if (mem_space == (int)air::MemorySpace::L1) {
       AIE::CoreOp core = op->template getParentOfType<AIE::CoreOp>();
@@ -1584,19 +1584,30 @@ private:
     auto output_pairs = linkEnds[buff].output_ofs_with_offsets;
     std::vector<Attribute> input_ofs;
     std::vector<Attribute> output_ofs;
-    std::sort(input_pairs.begin(), input_pairs.end(), sortLinkObjectFifos);
-    std::sort(output_pairs.begin(), output_pairs.end(), sortLinkObjectFifos);
+    //std::sort(input_pairs.begin(), input_pairs.end(), sortLinkObjectFifos);
+    //std::sort(output_pairs.begin(), output_pairs.end(), sortLinkObjectFifos);
     // retrieve only objectFifo symbol ref attributes
-    for (auto p : input_pairs)
+    std::vector<Value> srcOffsets;
+    std::vector<Value> dstOffsets;
+    for (auto p : input_pairs) {
       input_ofs.push_back(p.first);
-    for (auto p : output_pairs)
+      auto offset = rewriter.create<arith::ConstantOp>(
+          rewriter.getUnknownLoc(), rewriter.getIndexAttr(p.second));
+      srcOffsets.push_back(offset->getResult(0));
+    }
+    for (auto p : output_pairs) {
       output_ofs.push_back(p.first);
+      auto offset = rewriter.create<arith::ConstantOp>(
+          rewriter.getUnknownLoc(), rewriter.getIndexAttr(p.second));
+      dstOffsets.push_back(offset->getResult(0));
+    }
     // check if all ends have been found
     // if yes, create ObjectFifoLinkOp
     if ((int)input_ofs.size() + (int)output_ofs.size() == numEnds) {
       rewriter.create<AIE::ObjectFifoLinkOp>(
           rewriter.getUnknownLoc(), rewriter.getArrayAttr(ArrayRef(input_ofs)),
-          rewriter.getArrayAttr(ArrayRef(output_ofs)));
+          rewriter.getArrayAttr(ArrayRef(output_ofs)),
+          srcOffsets, dstOffsets);
     }
   }
 
