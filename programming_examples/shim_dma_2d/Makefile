@@ -41,5 +41,9 @@ run: ${targetname}.exe build/final.xclbin build/final.insts.txt
 run_py: build/final.xclbin build/final.insts.txt 
 	${powershell} python3 ${srcdir}/test.py build/final.xclbin build/final.insts.txt 
 
+pyworkflow:
+	mkdir -p pybuild
+	cd pybuild && ${powershell} python3 ${srcdir}/run.py 
+
 clean:
-	rm -rf build _build tmp ${targetname}.exe
+	rm -rf build _build pybuild tmp ${targetname}.exe

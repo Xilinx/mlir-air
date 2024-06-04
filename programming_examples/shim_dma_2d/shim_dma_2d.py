@@ -8,7 +8,6 @@ from air.dialects.func import FuncOp, ReturnOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.scf import for_, yield_
 
-
 range_ = for_
 
 
@@ -81,5 +80,6 @@ def build_module():  # try to add input arguments without the Insertion Pont fro
         return module
 
 
-module = build_module()
-print(module)
+if __name__ == "__main__":
+    module = build_module()
+    print(module)

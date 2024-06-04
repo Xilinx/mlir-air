@@ -1,7 +1,7 @@
 # make artifacts
-**/CMakeFiles/
-**/CMakeCache.txt
-**/cmake_install.cmake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
 platforms/scripts/env_config
 platforms/scripts/br_config
 
@@ -27,6 +27,7 @@ sd_card
 sysroot
 components
 air_project
+__pycache__/
 
 # build results
 libadf.a

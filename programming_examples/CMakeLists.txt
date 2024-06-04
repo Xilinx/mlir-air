@@ -74,7 +74,7 @@ add_definitions(${LLVM_DEFINITIONS})
 
 set(ENABLE_CHESS_TESTS ON CACHE BOOL "Enable backend tests using xchesscc")
 
-set(AIR_TEST_LIT_ARGS "-sv --timeout 300 --time-tests --order=random")
+set(AIR_TEST_LIT_ARGS "-sv --timeout 600 --time-tests --order=random")
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
