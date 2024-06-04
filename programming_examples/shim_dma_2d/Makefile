@@ -18,7 +18,7 @@ build/air.mlir: ${srcdir}/${targetname}.py
 
 build/final.xclbin: build/air.mlir
 	mkdir -p ${@D}
-	cd build && aircc.py -xbridge -o ${@F} --tmpdir tmp --device npu1_1col --host-target x86_64 $(<:%=../%)
+	cd build && aircc.py -xbridge -o ${@F} --tmpdir tmp --device npu1_1col --host-target x86_64 --experimental-passes $(<:%=../%)
 
 build/final.py.xclbin: build/air.mlir
 	mkdir -p ${@D}
