@@ -25,11 +25,11 @@
 #include "hsa/hsa.h"
 #include "hsa/hsa_ext_amd.h"
 
-namespace air::segments::segment_0 {
+namespace air::segments::graph_0 {
 void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t *, int, int32_t);
 uint32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t *, int);
-}; // namespace air::segments::segment_0
-using namespace air::segments::segment_0;
+}; // namespace air::segments::graph_0
+using namespace air::segments::graph_0;
 
 int main(int argc, char *argv[]) {
   uint64_t row = 2;
