@@ -22,7 +22,7 @@ from lit.llvm.subst import FindTool
 # Configuration file for the 'lit' test runner.
 
 # name: The name of this test suite.
-config.name = "AIR_PYTHON_EXAMPLES"
+config.name = "AIR_PROGRAMMING_EXAMPLES"
 
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 config.environment["PYTHONPATH"] = "{}:{}:{}".format(

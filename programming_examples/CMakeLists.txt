@@ -87,9 +87,9 @@ set(TEST_DEPENDS
   FileCheck count not
   )
 
-add_lit_testsuite(check-air-python-examples "Running the air python example tests"
+add_lit_testsuite(check-programming-examples "Running the air programming examples"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
   ARGS ${AIR_TEST_LIT_ARGS}
   )
-set_target_properties(check-air-python-examples PROPERTIES FOLDER "Tests")
+set_target_properties(check-programming-examples PROPERTIES FOLDER "Tests")

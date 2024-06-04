@@ -30,7 +30,9 @@ else()
     set(XRT_LIB_DIR C:/Technical/xrtNPUfromDLL CACHE STRING "Path to xrt_coreutil.lib")
 endif()
 
-set(TARGET_NAME passthrough CACHE STRING "Target to be built")
+get_filename_component(ProjectId ${CMAKE_CURRENT_SOURCE_DIR} NAME)
+string(REPLACE " " "_" ProjectId ${ProjectId})
+set(TARGET_NAME ${ProjectId} CACHE STRING "Target to be built")
 
 SET (ProjectName ${TARGET_NAME})
 SET (currentTarget ${TARGET_NAME})

@@ -10,9 +10,9 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 all: build/final.xclbin
 
-targetname = passthrough
+targetname := $(shell basename ${srcdir})
 
-build/air.mlir: ${srcdir}/2d_shim_dma.py
+build/air.mlir: ${srcdir}/${targetname}.py
 	mkdir -p ${@D}
 	python3 $< > $@
 
