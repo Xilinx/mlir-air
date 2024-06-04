@@ -31,7 +31,7 @@
 #define NUM_3D (IMAGE_WIDTH / TILE_WIDTH)
 #define NUM_4D (IMAGE_HEIGHT / TILE_HEIGHT)
 
-namespace air::segments::segment_0 {
+namespace air::segments::graph_0 {
 void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t *, int, int32_t);
 void mlir_aie_write_buffer_scratch_0_1(aie_libxaie_ctx_t *, int, int32_t);
 void mlir_aie_write_buffer_scratch_0_2(aie_libxaie_ctx_t *, int, int32_t);
@@ -64,8 +64,8 @@ void mlir_aie_write_buffer_scratch_7_0(aie_libxaie_ctx_t *, int, int32_t);
 void mlir_aie_write_buffer_scratch_7_1(aie_libxaie_ctx_t *, int, int32_t);
 void mlir_aie_write_buffer_scratch_7_2(aie_libxaie_ctx_t *, int, int32_t);
 void mlir_aie_write_buffer_scratch_7_3(aie_libxaie_ctx_t *, int, int32_t);
-}; // namespace air::segments::segment_0
-using namespace air::segments::segment_0;
+}; // namespace air::segments::graph_0
+using namespace air::segments::graph_0;
 
 int main(int argc, char *argv[]) {
 
