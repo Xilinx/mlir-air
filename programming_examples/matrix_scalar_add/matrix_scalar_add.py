@@ -3,6 +3,7 @@
 
 from air.ir import *
 from air.dialects.air import *
+from air.dialects import arith
 from air.dialects.affine import load, store
 from air.dialects.func import FuncOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
@@ -68,8 +69,11 @@ def build_module():
                             # Copy the input tile into the output file
                             for j in range_(TILE_HEIGHT):
                                 for i in range_(TILE_WIDTH):
-                                    val = load(tile_in, [i, j])
-                                    store(val, tile_out, [i, j])
+                                    val0 = load(tile_in, [i, j])
+                                    val1 = arith.addi(
+                                        val0, arith.ConstantOp(T.i32(), 1)
+                                    )
+                                    store(val1, tile_out, [i, j])
                                     yield_([])
                                 yield_([])
 

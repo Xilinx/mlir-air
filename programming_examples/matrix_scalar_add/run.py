@@ -48,7 +48,7 @@ def main():
 
         if row < TILE_HEIGHT and col < TILE_WIDTH:
             # value should have been updated
-            if not (rb == 0x1000 + i):
+            if not (rb == 0x1000 + i + 1):
                 print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
                 errors += 1
         else:
