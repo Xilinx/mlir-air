@@ -34,11 +34,11 @@
 #define TILE_3D 2
 #define TILE_SIZE (TILE_1D * TILE_2D * TILE_3D)
 
-namespace air::segments::segment_0 {
+namespace air::segments::graph_0 {
 int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t *, int);
 void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t *, int, int32_t);
-}; // namespace air::segments::segment_0
-using namespace air::segments::segment_0;
+}; // namespace air::segments::graph_0
+using namespace air::segments::graph_0;
 
 int main(int argc, char *argv[]) {
 
