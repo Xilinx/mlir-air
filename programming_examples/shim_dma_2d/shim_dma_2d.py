@@ -10,51 +10,83 @@ from air.dialects.scf import for_, yield_
 
 range_ = for_
 
+IMAGE_WIDTH = 32
+IMAGE_HEIGHT = 16
+IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
 
-def build_module():  # try to add input arguments without the Insertion Pont from the module
+TILE_WIDTH = 16
+TILE_HEIGHT = 8
+TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]
+
+
+def build_module():
     with Context() as ctx, Location.unknown():
         module = Module.create()
         with InsertionPoint(module.body):
-            memrefTyIn = MemRefType.get([32, 16], T.i32())
+            memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
 
-            @FuncOp.from_py_func(memrefTyIn, memrefTyIn)
+            # We will send the image worth of data in and out
+            @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
             def copy(arg0, arg1):
+
+                # The arguments are the input and output
                 @launch(operands=[arg0, arg1])
                 def launch_body(a, b):
+
+                    # The arguments are still the input and the output
                     @segment(name="seg", operands=[a, b])
                     def segment_body(arg2, arg3):
-                        @herd(name="copyherd", sizes=[1, 1], operands=[arg2, arg3])
+
+                        # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
+                        # We just need one compute core, so we ask for a 1x1 herd
+                        @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
                         def herd_body(tx, ty, sx, sy, a, b):
+
+                            # We want to store our data in L1 memory
                             mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+
+                            # This is the type definition of the tile
                             tile_type = MemRefType.get(
-                                shape=[16, 8],
+                                shape=TILE_SIZE,
                                 element_type=T.i32(),
                                 memory_space=mem_space,
                             )
-                            buf0 = AllocOp(tile_type, [], [])
-                            buf1 = AllocOp(tile_type, [], [])
+
+                            # We must allocate a buffer of the tile size for the input/output
+                            tile_in = AllocOp(tile_type, [], [])
+                            tile_out = AllocOp(tile_type, [], [])
+
+                            # Copy a tile from the input image (a) into the L1 memory region (buf0)
                             dma_memcpy_nd(
-                                buf0,
+                                tile_in,
                                 a,
                                 src_offsets=[0, 0],
-                                src_sizes=[8, 16],
+                                src_sizes=[TILE_HEIGHT, TILE_WIDTH],
                                 src_strides=[32, 1],
                             )
-                            for j in range_(8):
-                                for i in range_(16):
-                                    val = load(buf0, [i, j])
-                                    store(val, buf1, [i, j])
+
+                            # Copy the input tile into the output file
+                            for j in range_(TILE_HEIGHT):
+                                for i in range_(TILE_WIDTH):
+                                    val = load(tile_in, [i, j])
+                                    store(val, tile_out, [i, j])
                                     yield_([])
                                 yield_([])
+
+                            # Copy the output tile into the output
                             dma_memcpy_nd(
                                 b,
-                                buf1,
+                                tile_out,
                                 dst_offsets=[0, 0],
-                                dst_sizes=[8, 16],
+                                dst_sizes=[TILE_HEIGHT, TILE_WIDTH],
                                 dst_strides=[32, 1],
                             )
-                            DeallocOp(buf0)
-                            DeallocOp(buf1)
+
+                            # Deallocate our L1 buffers
+                            DeallocOp(tile_in)
+                            DeallocOp(tile_out)
+
+                            # We are done - terminate all layers
                             HerdTerminatorOp()
 
                         SegmentTerminatorOp()

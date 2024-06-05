@@ -8,17 +8,9 @@ import air.backend.xrt as xrt_backend
 import os
 import os.path
 import filelock
-from shim_dma_2d import build_module
+from shim_dma_2d import *
 
 KERNEL_NAME = "MLIR_AIE"
-
-IMAGE_WIDTH = 32
-IMAGE_HEIGHT = 16
-IMAGE_SIZE = (IMAGE_WIDTH, IMAGE_HEIGHT)
-
-TILE_WIDTH = 16
-TILE_HEIGHT = 8
-TILE_SIZE = (TILE_WIDTH, TILE_HEIGHT)
 
 INOUT_DATATYPE = np.uint32
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
