@@ -57,33 +57,30 @@ def build_module():
                                 memory_space=mem_space,
                             )
 
-                            # Process one tile at a time until we are done
-                            for _ in range_(1):
-                                # We must allocate a buffer of the tile size for the input/output
-                                tile_in = AllocOp(tile_type, [], [])
-                                tile_out = AllocOp(tile_type, [], [])
+                            # We must allocate a buffer of the tile size for the input/output
+                            tile_in = AllocOp(tile_type, [], [])
+                            tile_out = AllocOp(tile_type, [], [])
 
-                                # Input a tile
-                                ChannelGet("ChanIn", [], tile_in)
+                            # Input a tile
+                            ChannelGet("ChanIn", [], tile_in)
 
-                                # Copy the input tile into the output file while adding one
-                                for j in range_(TILE_HEIGHT):
-                                    for i in range_(TILE_WIDTH):
-                                        val0 = load(tile_in, [i, j])
-                                        val1 = arith.addi(
-                                            val0, arith.ConstantOp(T.i32(), 1)
-                                        )
-                                        store(val1, tile_out, [i, j])
-                                        yield_([])
+                            # Copy the input tile into the output file while adding one
+                            for j in range_(TILE_HEIGHT):
+                                for i in range_(TILE_WIDTH):
+                                    val0 = load(tile_in, [i, j])
+                                    val1 = arith.addi(
+                                        val0, arith.ConstantOp(T.i32(), 1)
+                                    )
+                                    store(val1, tile_out, [i, j])
                                     yield_([])
-
-                                # Output the incremented tile
-                                ChannelPut("ChanOut", [], tile_out)
-
-                                # Deallocate our L1 buffers
-                                DeallocOp(tile_in)
-                                DeallocOp(tile_out)
                                 yield_([])
+
+                            # Output the incremented tile
+                            ChannelPut("ChanOut", [], tile_out)
+
+                            # Deallocate our L1 buffers
+                            DeallocOp(tile_in)
+                            DeallocOp(tile_out)
 
                             # We are done - terminate all layers
                             HerdTerminatorOp()
