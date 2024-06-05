@@ -4,7 +4,7 @@
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.affine import load, store
-from air.dialects.func import FuncOp, ReturnOp
+from air.dialects.func import FuncOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.scf import for_, yield_
 
@@ -39,7 +39,7 @@ def build_module():  # try to add input arguments without the Insertion Pont fro
                                 src_offsets=[0, 0],
                                 src_sizes=[8, 16],
                                 src_strides=[32, 1],
-                            )  # needs a wrapper
+                            )
                             for j in range_(8):
                                 for i in range_(16):
                                     val = load(buf0, [i, j])
@@ -52,7 +52,7 @@ def build_module():  # try to add input arguments without the Insertion Pont fro
                                 dst_offsets=[0, 0],
                                 dst_sizes=[8, 16],
                                 dst_strides=[32, 1],
-                            )  # needs a wrapper
+                            )
                             DeallocOp(buf0)
                             DeallocOp(buf1)
                             HerdTerminatorOp()
