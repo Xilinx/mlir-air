@@ -59,7 +59,7 @@ To build MLIR-AIR provide the paths to llvm, cmakeMoudles, and xrt (here, we ass
 
 To setup your environment after building:
 ```bash
-source utils/env_setup.sh install/ mlir-aie/install/ llvm/install/
+source utils/env_setup.sh install-xrt/ mlir-aie/install/ llvm/install/
 ```
 
 Note that if you are starting a new enviroment (say be creating a new terminal sometime after building), restore your environment with:
