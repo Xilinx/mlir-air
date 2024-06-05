@@ -5,3 +5,7 @@ These programming examples are provided so that application programmers can lear
 ## [shim_dma_2d](shim_dma_2d)
 
 This example demonstrates how data may be moved using shim DMA operations.
+
+## [matrix_scalar_add](matrix_scalar_add)
+
+TODO
