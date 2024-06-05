@@ -845,6 +845,15 @@ void replaceAIRDmaWithAIRChannelPairs(
     externalGetPut = dyn_cast<air::ChannelInterface>(external.getOperation());
   }
 
+  if (!internalGetPut) {
+    op->emitOpError("has unexpected memref memory space at internal-side");
+    return;
+  }
+  if (!externalGetPut) {
+    op->emitOpError("has unexpected memref memory space at external-side");
+    return;
+  }
+
   // Replace all uses to dma token with internal put/get token
   if (auto op_token = op.getAsyncToken()) {
     auto asyncInternalGetPut =
