@@ -1,4 +1,4 @@
-# shim_dma_2d
+# 2-Dimensional Shim DMA Passthrough
 
 This example demonstrates how data may be moved using shim DMA operations. In this example, a 2-dimensional block of data (referred to in test code as an *image*) is set to have some specific values. The upper corner of the image (referred to in test code as the *tile*) is transferred to a compute core using DMA. The compute core then reads and outputs all the data in the tile. The tile is read back into an output image. When run, the output image is checked to verify that the tile region shows the values from the input image (showing the data transfer was successful) while the remainder of the output image is checked to ensure it retains the original output image values (showing the data is written to the correct tile region in the output image).
 
