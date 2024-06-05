@@ -25,6 +25,8 @@ def build_module():
         module = Module.create()
         with InsertionPoint(module.body):
             memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+            ChannelOp("ChanIn")
+            ChannelOp("ChanOut")
 
             # We will send the image worth of data in and out
             @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -33,6 +35,8 @@ def build_module():
                 # The arguments are the input and output
                 @launch(operands=[arg0, arg1])
                 def launch_body(a, b):
+                    ChannelPut("ChanIn", [], a)
+                    ChannelGet("ChanOut", [], b)
 
                     # The arguments are still the input and the output
                     @segment(name="seg", operands=[a, b])
@@ -53,42 +57,33 @@ def build_module():
                                 memory_space=mem_space,
                             )
 
-                            # We must allocate a buffer of the tile size for the input/output
-                            tile_in = AllocOp(tile_type, [], [])
-                            tile_out = AllocOp(tile_type, [], [])
+                            # Process one tile at a time until we are done
+                            for _ in for_(1):
+                                # We must allocate a buffer of the tile size for the input/output
+                                tile_in = AllocOp(tile_type, [], [])
+                                tile_out = AllocOp(tile_type, [], [])
 
-                            # Copy a tile from the input image (a) into the L1 memory region (buf0)
-                            dma_memcpy_nd(
-                                tile_in,
-                                a,
-                                src_offsets=[0, 0],
-                                src_sizes=[TILE_HEIGHT, TILE_WIDTH],
-                                src_strides=[32, 1],
-                            )
+                                # Input a tile
+                                ChannelGet("ChanIn", [], tile_in)
 
-                            # Copy the input tile into the output file
-                            for j in range_(TILE_HEIGHT):
-                                for i in range_(TILE_WIDTH):
-                                    val0 = load(tile_in, [i, j])
-                                    val1 = arith.addi(
-                                        val0, arith.ConstantOp(T.i32(), 1)
-                                    )
-                                    store(val1, tile_out, [i, j])
+                                # Copy the input tile into the output file while adding one
+                                for j in range_(TILE_HEIGHT):
+                                    for i in range_(TILE_WIDTH):
+                                        val0 = load(tile_in, [i, j])
+                                        val1 = arith.addi(
+                                            val0, arith.ConstantOp(T.i32(), 1)
+                                        )
+                                        store(val1, tile_out, [i, j])
+                                        yield_([])
                                     yield_([])
+
+                                # Output the incremented tile
+                                ChannelPut("ChanOut", [], tile_out)
+
+                                # Deallocate our L1 buffers
+                                DeallocOp(tile_in)
+                                DeallocOp(tile_out)
                                 yield_([])
-
-                            # Copy the output tile into the output
-                            dma_memcpy_nd(
-                                b,
-                                tile_out,
-                                dst_offsets=[0, 0],
-                                dst_sizes=[TILE_HEIGHT, TILE_WIDTH],
-                                dst_strides=[32, 1],
-                            )
-
-                            # Deallocate our L1 buffers
-                            DeallocOp(tile_in)
-                            DeallocOp(tile_out)
 
                             # We are done - terminate all layers
                             HerdTerminatorOp()

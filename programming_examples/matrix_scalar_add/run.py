@@ -38,7 +38,7 @@ def main():
 
     backend.unload()
 
-    # check output, should have the top left filled in
+    # check output, should have all values incremented
     errors = 0
     for i in range(INOUT_SIZE):
         rb = output_b[i]
@@ -46,22 +46,10 @@ def main():
         row = i / IMAGE_WIDTH
         col = i % IMAGE_WIDTH
 
-        if row < TILE_HEIGHT and col < TILE_WIDTH:
-            # value should have been updated
-            if not (rb == 0x1000 + i + 1):
-                print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
-                errors += 1
-        else:
-            # value should stay unchanged
-            if rb != 0x00DEFACED:
-                print(
-                    f"IM {i} [{col}, {row}] should be 0xdefaced, is 0x{rb:x}\n",
-                    i,
-                    col,
-                    row,
-                    rb,
-                )
-                errors += 1
+        # value should have been updated
+        if not (rb == 0x1000 + i + 1):
+            print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
+            errors += 1
 
     if errors == 0:
         print("PASS!")
