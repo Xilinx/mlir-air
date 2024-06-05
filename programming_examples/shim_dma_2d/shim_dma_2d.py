@@ -33,23 +33,12 @@ def build_module():  # try to add input arguments without the Insertion Pont fro
                             )
                             buf0 = AllocOp(tile_type, [], [])
                             buf1 = AllocOp(tile_type, [], [])
-                            idx_ty = IndexType.get()
-                            c0 = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 0))
-                            c1 = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 1))
-                            c8 = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 8))
-                            c16 = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 16))
-                            c32 = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 32))
                             dma_memcpy_nd(
-                                None,
-                                [],
                                 buf0,
-                                [],
-                                [],
-                                [],
                                 a,
-                                [c0, c0],
-                                [c8, c16],
-                                [c32, c1],
+                                src_offsets=[0, 0],
+                                src_sizes=[8, 16],
+                                src_strides=[32, 1],
                             )  # needs a wrapper
                             for j in range_(8):
                                 for i in range_(16):
@@ -58,16 +47,11 @@ def build_module():  # try to add input arguments without the Insertion Pont fro
                                     yield_([])
                                 yield_([])
                             dma_memcpy_nd(
-                                None,
-                                [],
                                 b,
-                                [c0, c0],
-                                [c8, c16],
-                                [c32, c1],
                                 buf1,
-                                [],
-                                [],
-                                [],
+                                dst_offsets=[0, 0],
+                                dst_sizes=[8, 16],
+                                dst_strides=[32, 1],
                             )  # needs a wrapper
                             DeallocOp(buf0)
                             DeallocOp(buf1)
