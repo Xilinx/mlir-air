@@ -145,40 +145,25 @@ with air.ir.Context() as ctx, Location.unknown():
     ################################################
 
     air_async_module = Module.parse(str(air_module))
-    if trace_size > 0:
-        pipeline = (
-            "builtin.module("
-            + ",".join(
-                [
-                    # "func.func(air-collapse-herd)",
-                    "canonicalize",
-                    "cse",
-                    "air-place-herds{num-rows=2 num-cols=2 row-anchor=2 col-anchor=1}",
-                    "canonicalize",
-                    "cse",
-                    "func.func(air-renumber-dma)",
-                    "func.func(convert-linalg-to-loops)",
-                ]
-            )
-            + ")"
+    col_anchor = 1 if trace_size > 0 else 0
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "func.func(air-collapse-herd)",
+                "canonicalize",
+                "cse",
+                "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor="
+                + str(col_anchor)
+                + "}",
+                "canonicalize",
+                "cse",
+                "func.func(air-renumber-dma)",
+                "func.func(convert-linalg-to-loops)",
+            ]
         )
-    else:
-        pipeline = (
-            "builtin.module("
-            + ",".join(
-                [
-                    "func.func(air-collapse-herd)",
-                    "canonicalize",
-                    "cse",
-                    "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor=0}",
-                    "canonicalize",
-                    "cse",
-                    "func.func(air-renumber-dma)",
-                    "func.func(convert-linalg-to-loops)",
-                ]
-            )
-            + ")"
-        )
+        + ")"
+    )
 
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
