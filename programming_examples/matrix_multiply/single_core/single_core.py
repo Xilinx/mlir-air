@@ -25,27 +25,31 @@ def build_module():
         module = Module.create()
         with InsertionPoint(module.body):
             memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
-            ChannelOp("ChanIn")
-            ChannelOp("ChanOut")
+            ChannelOp("ChanA")
+            ChannelOp("ChanB")
+            ChannelOp("ChanC")
 
             # We will send the image worth of data in and out
-            @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-            def copy(arg0, arg1):
+            @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut, memrefTyInOut)
+            def copy(arg0, arg1, arg2):
 
                 # The arguments are the input and output
-                @launch(operands=[arg0, arg1])
-                def launch_body(a, b):
-                    ChannelPut("ChanIn", [], a)
-                    ChannelGet("ChanOut", [], b)
+                @launch(operands=[arg0, arg1, arg2])
+                def launch_body(a, b, c):
+                    ChannelPut("ChanA", [], a)
+                    ChannelPut("ChanB", [], b)
+                    ChannelGet("ChanC", [], c)
 
                     # The arguments are still the input and the output
-                    @segment(name="seg", operands=[a, b])
-                    def segment_body(arg2, arg3):
+                    @segment(name="seg", operands=[a, b, c])
+                    def segment_body(arg2, arg3, arg4):
 
                         # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                         # We just need one compute core, so we ask for a 1x1 herd
-                        @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
-                        def herd_body(tx, ty, sx, sy, a, b):
+                        @herd(
+                            name="xaddherd", sizes=[1, 1], operands=[arg2, arg3, arg4]
+                        )
+                        def herd_body(tx, ty, sx, sy, a, b, c):
 
                             # We want to store our data in L1 memory
                             mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -58,31 +62,33 @@ def build_module():
                             )
 
                             # Process one tile at a time until we are done
-                            for _ in for_(1):
+                            for _ in for_(IMAGE_HEIGHT // IMAGE_WIDTH):
                                 # We must allocate a buffer of the tile size for the input/output
-                                tile_in = AllocOp(tile_type, [], [])
-                                tile_out = AllocOp(tile_type, [], [])
+                                tile_a = AllocOp(tile_type, [], [])
+                                tile_b = AllocOp(tile_type, [], [])
+                                tile_c = AllocOp(tile_type, [], [])
 
                                 # Input a tile
-                                ChannelGet("ChanIn", [], tile_in)
+                                ChannelGet("ChanA", [], tile_a)
+                                ChannelGet("ChanB", [], tile_b)
 
                                 # Copy the input tile into the output file while adding one
                                 for j in range_(TILE_HEIGHT):
                                     for i in range_(TILE_WIDTH):
-                                        val0 = load(tile_in, [i, j])
-                                        val1 = arith.addi(
-                                            val0, arith.ConstantOp(T.i32(), 1)
-                                        )
-                                        store(val1, tile_out, [i, j])
+                                        val_a = load(tile_a, [i, j])
+                                        val_b = load(tile_a, [i, j])
+                                        val_c = arith.addi(val_a, val_b)
+                                        store(val_c, tile_c, [i, j])
                                         yield_([])
                                     yield_([])
 
                                 # Output the incremented tile
-                                ChannelPut("ChanOut", [], tile_out)
+                                ChannelPut("ChanC", [], tile_c)
 
                                 # Deallocate our L1 buffers
-                                DeallocOp(tile_in)
-                                DeallocOp(tile_out)
+                                DeallocOp(tile_a)
+                                DeallocOp(tile_b)
+                                DeallocOp(tile_c)
                                 yield_([])
 
                             # We are done - terminate all layers

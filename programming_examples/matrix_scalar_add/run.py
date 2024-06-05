@@ -24,19 +24,22 @@ def main():
     mlir_module = build_module()
 
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
-    output_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
+    input_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     for i in range(INOUT_SIZE):
         input_a[i] = i + 0x1000
-        output_b[i] = 0x00DEFACED
+        input_b[i] = 0x00DEFACED
 
-    backend = xrt_backend.XRTBackend(verbose=verbose, experimental_passes=True)
+    backend = xrt_backend.XRTBackend(verbose=verbose)
+    print(input_b)
 
     # run the module
     with filelock.FileLock("/tmp/npu.lock"):
-        mul = backend.compile_and_load(mlir_module)
-        (_, output_b) = mul(input_a, output_b)
+        addone = backend.compile_and_load(mlir_module)
+        (_, output_b) = addone(input_a, input_b)
 
     backend.unload()
+
+    print(output_b)
 
     # check output, should have all values incremented
     errors = 0

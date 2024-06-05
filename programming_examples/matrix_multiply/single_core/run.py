@@ -24,30 +24,32 @@ def main():
     mlir_module = build_module()
 
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
-    output_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
+    input_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
+    output_c = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     for i in range(INOUT_SIZE):
         input_a[i] = i + 0x1000
-        output_b[i] = 0x00DEFACED
+        input_b[i] = i
+        output_c[i] = 0x00DEFACED
 
     backend = xrt_backend.XRTBackend(verbose=verbose, experimental_passes=True)
 
     # run the module
     with filelock.FileLock("/tmp/npu.lock"):
         mul = backend.compile_and_load(mlir_module)
-        (_, output_b) = mul(input_a, output_b)
+        (_, _, output_b) = mul(input_a, input_b, output_c)
 
     backend.unload()
 
     # check output, should have all values incremented
     errors = 0
     for i in range(INOUT_SIZE):
-        rb = output_b[i]
+        rb = output_c[i]
 
         row = i / IMAGE_WIDTH
         col = i % IMAGE_WIDTH
 
         # value should have been updated
-        if not (rb == 0x1000 + i + 1):
+        if not (rb == 0x1000 + i * 2):
             print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
             errors += 1
 

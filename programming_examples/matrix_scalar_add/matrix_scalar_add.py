@@ -30,7 +30,7 @@ def build_module():
 
             # We will send the image worth of data in and out
             @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-            def copy(arg0, arg1):
+            def addone(arg0, arg1):
 
                 # The arguments are the input and output
                 @launch(operands=[arg0, arg1])
@@ -39,13 +39,13 @@ def build_module():
                     ChannelGet("ChanOut", [], b)
 
                     # The arguments are still the input and the output
-                    @segment(name="seg", operands=[a, b])
-                    def segment_body(arg2, arg3):
+                    @segment(name="seg")
+                    def segment_body():
 
                         # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                         # We just need one compute core, so we ask for a 1x1 herd
-                        @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
-                        def herd_body(tx, ty, sx, sy, a, b):
+                        @herd(name="addherd", sizes=[1, 1])
+                        def herd_body(tx, ty, sx, sy):
 
                             # We want to store our data in L1 memory
                             mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -58,7 +58,7 @@ def build_module():
                             )
 
                             # Process one tile at a time until we are done
-                            for _ in for_(1):
+                            for _ in range_(1):
                                 # We must allocate a buffer of the tile size for the input/output
                                 tile_in = AllocOp(tile_type, [], [])
                                 tile_out = AllocOp(tile_type, [], [])
