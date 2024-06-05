@@ -1,34 +1,41 @@
 # shim_dma_2d
 
-This example demonstrates how data may be moved using shim DMA operations. Specifically, in this example a 2-dimensional block of data (sometimes referred to in the code as an *image*) is set to have some specific values.
+This example demonstrates how data may be moved using shim DMA operations. In this example, a 2-dimensional block of data (referred to in test code as an *image*) is set to have some specific values. The data is transferred to a compute core using DMA. The compute core then modifies all data in an upper corner (referred to in test code as the *tile*) of the image. When run, the output is checked to verify that the tile reflects the new values while the remainder of the image retains the original values.
 
-It was transferred to a compute core using DMA. The compute core then modifies an upper corner of the data (sometimes referred to in code as the *tile*).
+The logic in this example is defined in [shim_dma_2d.py](shim_dma_2d.py), and uses Python AIR bindings to generate AIR MLIR.
 
-The logic in this example is defined in [shim_dma_2d.py](shim_dma_2d.py).
+## Running and Testing
 
-For illustrative purposes, there are 3 ways to run and test this example.
+For illustrative purposes, we provide three different ways to run and test this example. The three approaches are functionally equivalent but the implementation of each approach differs. The general workflow of each is:
+* Build
+  * The AIR Python bindings are used to generate AIR MLIR (generally a file called ```air.mlir```)
+  * The AIR MLIR code is transformed and compiled by ```aircc.py```, which may be invoked either on the command line or through a python wrapper. ```aircc.py``` calls ```air-opt``` to run pipelines of passes over the initial AIR MLIR. For more control, there also exist mechanisms (not shown in this example) to customize the passes used. For the curious reader, most of the tests in [```/test/xrt```](/test/xrt) take this approach.
+  * The final step is to produce the ```xclbin``` binary which contains one or more kernels that are capable of running on an NPU.
+* Test
+  * Setup input/output regions
+  * Extract the compatible kernel from the ```xclbin``` and load the kernel on the device
+  * Run the kernel on the NPU
+  * Check that the output(s) contain the expected data
 
-## Run and test with AIR utility functions
+### Method 1: Run and test with AIR utility functions
 
-This is the cleanest and simplest method of running MLIR-AIR code on NPUs, and uses code in the [run.py](run.py) file.
-
+This is the cleanest and simplest method of specifying a workflow to run AIR MLIR on an NPU, and uses code in the [run.py](run.py) file. The utility functions greatly simplify setting up input/output data and allow ```aircc.py``` to use a default set of pipelines and passes. For this example, ```aircc.py``` is configured with ```--experimental```, which adds some additional experimental passes to the pipeline with the goal of increased efficiency.
 ```bash
 make pyworkflow
 ```
 
-## Generate MLIR-AIR with python, compile on the command line, and run with python
+### Method 2: Generate AIR MLIR with python, compile on the command line, and run with python
 
-This method uses the [test.py](test.py) file. This file is included for better understanding of what the utility functions avialable by the XRT air backend do behind the scenes.
+This method uses the [test.py](test.py) file. While method 1 may be more user-friendly, this method is included as a frame of reference to understand the processes and steps that are abstracted by the AIR XRT backend utility functions used in method 1.
 
 ```bash
 make
 make run_py
 ```
 
-## Generate MLIR with python, compile on the command line, and run with C++
+### Method 3: Generate AIR MLIR with python, compile on the command line, and run with C++
 
-This method uses the [test.cpp](test.cpp) file. While python is very clean, this example is used to show how C++ may be used.
-
+This method uses the [test.cpp](test.cpp) file. While Method 1 may be more user-friendly, this method is used to show how C++ may be used.
 ```bash
 make
 make run
