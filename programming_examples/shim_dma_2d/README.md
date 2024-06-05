@@ -1,6 +1,6 @@
 # shim_dma_2d
 
-This example demonstrates how data may be moved using shim DMA operations. In this example, a 2-dimensional block of data (referred to in test code as an *image*) is set to have some specific values. The data is transferred to a compute core using DMA. The compute core then modifies all data in an upper corner (referred to in test code as the *tile*) of the image. When run, the output is checked to verify that the tile reflects the new values while the remainder of the image retains the original values.
+This example demonstrates how data may be moved using shim DMA operations. In this example, a 2-dimensional block of data (referred to in test code as an *image*) is set to have some specific values. The upper corner of the image (referred to in test code as the *tile*) is transferred to a compute core using DMA. The compute core then reads and outputs all the data in the tile. The tile is read back into an output image. When run, the output image is checked to verify that the tile region shows the values from the input image (showing the data transfer was successful) while the remainder of the output image is checked to ensure it retains the original output image values (showing the data is written to the correct tile region in the output image).
 
 The logic in this example is defined in [shim_dma_2d.py](shim_dma_2d.py), and uses Python AIR bindings to generate AIR MLIR.
 
