@@ -9,11 +9,13 @@ To enable this feature,
 
 Trace can then be generated for all compute tiles (cores) and memtiles, unless there is a routing congestion when the build might fail.
 
-`trace-size` defines the buffer size allocated to hold the trace data, represented in bytes. Currenly, this value is chosen by the user empirically, depending on the number of cores traced and how frequent the event might be triggered.
+`trace-size` defines the buffer size allocated to hold the trace data, represented in bytes. Currently, this value is chosen by the user empirically, depending on the number of cores traced and how frequent the event might be triggered.
 
 `trace-offset` defines the offset when the trace data are appended to the output. It might be inferred from the code in the future. In addition, it is for now hard coded that the trace data are dumped to `ddr_id = 2`.
 
 One such example is provided in `test/xrt/01_air_to_npu`, where the traces can be automatically added by changing `trace-size` to `32768` in `aie.py`.
+
+Currently, in this pariticular example and when trace is enabled, the entire column of core tiles is shifted to the right by one and all trace data comes out via the second column's shim tile. This is a workaround for the congestion that the `South` port is running out and the bottom row of core tiles (i.e. the 2nd row of the whole array) cannot be routed as `Trace->South->West/East`, once it hits the switchbox of memtile.
 
 ## air-to-aie
 Inside this pass, the packet flows are inserted when `trace-size > 0`. The source of the flow is `channel = 0` of the trace port and the destination is `channel = 1` of the shim tile in the same column. 
