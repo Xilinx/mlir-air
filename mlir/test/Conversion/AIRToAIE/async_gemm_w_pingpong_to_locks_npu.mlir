@@ -17,10 +17,10 @@
 // CHECK:   %[[tile_1_3:.*]] = aie.tile(1, 3)
 // CHECK-COUNT-8:    aie.lock(%[[tile_1_1]], {{.*}})
 // CHECK-COUNT-2:    aie.lock(%[[tile_0_1]], {{.*}})
-// CHECK-COUNT-8:    aie.lock(%[[tile_0_2]], {{.*}})
-// CHECK-COUNT-8:    aie.lock(%[[tile_1_2]], {{.*}})
-// CHECK-COUNT-8:    aie.lock(%[[tile_0_3]], {{.*}})
-// CHECK-COUNT-8:    aie.lock(%[[tile_1_3]], {{.*}})
+// CHECK-COUNT-6:    aie.lock(%[[tile_0_2]], {{.*}})
+// CHECK-COUNT-6:    aie.lock(%[[tile_1_2]], {{.*}})
+// CHECK-COUNT-6:    aie.lock(%[[tile_0_3]], {{.*}})
+// CHECK-COUNT-6:    aie.lock(%[[tile_1_3]], {{.*}})
 // CHECK:    aie.buffer(%[[tile_0_1]]) {{{.*}}} : memref<64x64xi32, 1>
 // CHECK:    aie.buffer(%[[tile_1_1]]) {{{.*}}} : memref<64x128xi32, 1>
 // CHECK:    aie.buffer(%[[tile_1_1]]) {{{.*}}} : memref<128x64xi32, 1>
@@ -39,13 +39,9 @@
 // CHECK:    aie.flow(%[[tile_0_3]], DMA : 0, %[[tile_0_1]], DMA : 3)
 // CHECK:    aie.flow(%[[tile_1_3]], DMA : 0, %[[tile_0_1]], DMA : 4)
 // CHECK:    aie.flow(%[[tile_1_1]], DMA : 0, %[[tile_0_2]], DMA : 1)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 0, %[[tile_0_3]], DMA : 1)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 1, %[[tile_1_2]], DMA : 1)
+// CHECK:    aie.flow(%[[tile_1_1]], DMA : 0, %[[tile_1_2]], DMA : 1)
+// CHECK:    aie.flow(%[[tile_1_1]], DMA : 1, %[[tile_0_3]], DMA : 1)
 // CHECK:    aie.flow(%[[tile_1_1]], DMA : 1, %[[tile_1_3]], DMA : 1)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 2, %[[tile_0_2]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 2, %[[tile_1_2]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 3, %[[tile_0_3]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_1_1]], DMA : 3, %[[tile_1_3]], DMA : 0)
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
