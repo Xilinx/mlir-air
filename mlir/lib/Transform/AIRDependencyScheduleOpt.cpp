@@ -3009,6 +3009,24 @@ public:
     init_options();
     if (channelOps.empty())
       return;
+    // Rename symbols
+    // TODO: make this greedy
+    auto renameSymbols =
+        [](std::vector<air::ChannelOp> &channelOps,
+           std::map<air::ChannelOp, air::ChannelOp> chan_merge_map) {
+          for (unsigned i = 0; i < channelOps.size(); i++) {
+            for (auto chanKey : channelOps) {
+              if (!chan_merge_map.count(chanKey))
+                continue;
+              auto error = mlir::SymbolTable::replaceAllSymbolUses(
+                  chanKey.getOperation(),
+                  mlir::SymbolTable::getSymbolName(chan_merge_map[chanKey]),
+                  chanKey->getParentOfType<ModuleOp>());
+              // FIXME: what if this fails?
+              (void)error;
+            }
+          }
+        };
     std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
@@ -3026,6 +3044,7 @@ public:
         chan_merge_map[chanB] = chanA;
       }
     }
+    renameSymbols(channelOps, chan_merge_map);
     if (!targetMemorySpaces.empty()) {
       for (unsigned i = 0; i < channelOps.size() - 1; i++) {
         for (unsigned j = i + 1; j < channelOps.size(); j++) {
@@ -3037,20 +3056,7 @@ public:
         }
       }
     }
-    // Rename symbols
-    // TODO: make this greedy
-    for (unsigned i = 0; i < channelOps.size(); i++) {
-      for (auto chanKey : channelOps) {
-        if (!chan_merge_map.count(chanKey))
-          continue;
-        auto error = mlir::SymbolTable::replaceAllSymbolUses(
-            chanKey.getOperation(),
-            mlir::SymbolTable::getSymbolName(chan_merge_map[chanKey]),
-            chanKey->getParentOfType<ModuleOp>());
-        // FIXME: what if this fails?
-        (void)error;
-      }
-    }
+    renameSymbols(channelOps, chan_merge_map);
   }
 
   void runOnOperation() override {
@@ -3183,8 +3189,8 @@ private:
   }
 
   std::tuple<bool, std::string>
-  checkIfScfForMergeableImpl(std::vector<Operation *> a_loop_nest,
-                             std::vector<Operation *> b_loop_nest) {
+  checkIfScfForMergeableImpl(std::vector<Block *> a_loop_nest,
+                             std::vector<Block *> b_loop_nest) {
     std::tuple<bool, std::string> notMergeable = {false, ""};
     std::tuple<bool, std::string> mergeableToLB = {true, "LB"};
     std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
@@ -3194,20 +3200,22 @@ private:
         std::max(a_loop_nest.size(), b_loop_nest.size());
     // Skip over the unequal scf.for loop, and check equality for the rest of
     // the loops first.
-    unsigned outermostScfFor = -1;
+    int outermostScfFor = -1;
     for (unsigned i = 0; i < max_loop_nest_count; i++) {
       unsigned scfForCount = 0;
-      if ((i < a_loop_nest.size()) && isa<scf::ForOp>(a_loop_nest[i]))
+      if ((i < a_loop_nest.size()) &&
+          isa<scf::ForOp>(a_loop_nest[i]->getParentOp()))
         scfForCount++;
-      if ((i < b_loop_nest.size()) && isa<scf::ForOp>(b_loop_nest[i]))
+      if ((i < b_loop_nest.size()) &&
+          isa<scf::ForOp>(b_loop_nest[i]->getParentOp()))
         scfForCount++;
       if (scfForCount == 1)
-        outermostScfFor = i;
+        outermostScfFor = (int)i;
     }
     if (outermostScfFor < 0)
       return notMergeable;
     SmallVector<unsigned> controlLoopIndices;
-    for (unsigned i = 0; i < max_loop_nest_count; i++)
+    for (int i = 0; i < (int)max_loop_nest_count; i++)
       if (i != outermostScfFor)
         controlLoopIndices.push_back(i);
     // TODO: Assuming b_loop_nest is before a_loop_nest. Always true? TODO:
@@ -3220,7 +3228,8 @@ private:
       }
       // Check if the skipped scf.for loop has LB >= 1. This is a sign of
       // peeling, indicating opportunity of merge by unpeeling into LB.
-      auto outerMostScfFor = dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]);
+      auto outerMostScfFor =
+          dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]->getParentOp());
       assert(outerMostScfFor);
       if (auto constLB = getConstantIntValue(outerMostScfFor.getLowerBound()))
         if (*constLB < 1)
@@ -3232,7 +3241,8 @@ private:
           return notMergeable;
       }
       // Merge by unpeeling into UB.
-      auto outerMostScfFor = dyn_cast<scf::ForOp>(b_loop_nest[outermostScfFor]);
+      auto outerMostScfFor =
+          dyn_cast<scf::ForOp>(b_loop_nest[outermostScfFor]->getParentOp());
       assert(outerMostScfFor);
       return mergeableToUB;
     }
@@ -3297,6 +3307,7 @@ private:
         getChannelGetOpThroughSymbol(chan_b);
     std::tuple<bool, std::string> notMergeable = {false, ""};
     std::tuple<bool, std::string> mergeableToLB = {true, "LB"};
+    std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
     if (a_puts.size() != b_puts.size())
       return notMergeable;
     if (a_puts.size() != 1)
@@ -3356,35 +3367,65 @@ private:
         (!areTheSameSSAValueLists(aSizes, bSizes)) ||
         (!areTheSameSSAValueLists(aStrides, bStrides)))
       return notMergeable;
+    std::vector<std::tuple<bool, std::string>> putResults;
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
       auto b_put_loop_nest = getParentLoopNest(b_puts[i].getOperation());
-      return checkIfScfForMergeableImpl(a_put_loop_nest, b_put_loop_nest);
+      putResults.push_back(
+          checkIfScfForMergeableImpl(a_put_loop_nest, b_put_loop_nest));
     }
+    std::vector<std::tuple<bool, std::string>> getResults;
     for (unsigned i = 0; i < a_gets.size(); i++) {
       auto a_get_loop_nest = getParentLoopNest(a_gets[i].getOperation());
       auto b_get_loop_nest = getParentLoopNest(b_gets[i].getOperation());
-      return checkIfScfForMergeableImpl(a_get_loop_nest, b_get_loop_nest);
+      getResults.push_back(
+          checkIfScfForMergeableImpl(a_get_loop_nest, b_get_loop_nest));
     }
+    bool overallUBMergeable = true;
+    for (auto putRes : putResults) {
+      if (!std::get<0>(putRes))
+        return notMergeable;
+      if (std::get<1>(putRes) == "LB")
+        overallUBMergeable = false;
+    }
+    for (auto getRes : getResults) {
+      if (!std::get<0>(getRes))
+        return notMergeable;
+      if (std::get<1>(getRes) == "LB")
+        overallUBMergeable = false;
+    }
+    if (overallUBMergeable)
+      return mergeableToUB;
     return mergeableToLB;
   }
-  std::vector<Operation *> getParentLoopNest(Operation *op) {
-    std::vector<Operation *> parent_loop_nest;
+  std::vector<Block *> getParentLoopNest(Operation *op) {
+    std::vector<Block *> parent_loop_nest;
     Operation *parent = op;
     while (parent) {
-      if (isa<scf::ForOp>(parent))
-        parent_loop_nest.push_back(parent);
-      else if (isa<scf::ParallelOp>(parent))
-        parent_loop_nest.push_back(parent);
-      else if (isa<air::HierarchyInterface>(parent))
-        parent_loop_nest.push_back(parent);
-      else if (isa<affine::AffineIfOp>(parent))
-        parent_loop_nest.push_back(parent);
+      if (auto forOp = dyn_cast<scf::ForOp>(parent))
+        parent_loop_nest.push_back(forOp.getBody());
+      else if (auto parOp = dyn_cast<scf::ParallelOp>(parent))
+        parent_loop_nest.push_back(parOp.getBody());
+      else if (auto hierOp = dyn_cast<air::HierarchyInterface>(parent))
+        parent_loop_nest.push_back(&hierOp->getRegion(0).front());
+      else if (auto aifOp = dyn_cast<affine::AffineIfOp>(parent)) {
+        if (aifOp.getThenBlock()->findAncestorOpInBlock(*op))
+          parent_loop_nest.push_back(aifOp.getThenBlock());
+        else if (aifOp.hasElse() &&
+                 aifOp.getElseBlock()->findAncestorOpInBlock(*op))
+          parent_loop_nest.push_back(aifOp.getElseBlock());
+      }
       parent = parent->getParentOp();
     }
     return parent_loop_nest;
   }
-  bool areEquivalentControlLoops(Operation *a, Operation *b) {
+  bool areEquivalentControlLoops(Block *aBlock, Block *bBlock) {
+    Operation *a = aBlock->getParentOp();
+    Operation *b = bBlock->getParentOp();
+    if (!a)
+      return false;
+    if (!b)
+      return false;
     if (isa<scf::ForOp>(a) && isa<scf::ForOp>(b)) {
       auto a_for = dyn_cast<scf::ForOp>(a);
       auto b_for = dyn_cast<scf::ForOp>(b);
@@ -3437,11 +3478,27 @@ private:
       }
       return true;
     } else if (isa<air::HierarchyInterface>(a) &&
-               isa<air::HierarchyInterface>(a)) {
+               isa<air::HierarchyInterface>(b)) {
       if (a == b)
         return true;
-    } else if (isa<affine::AffineIfOp>(a) || isa<affine::AffineIfOp>(b))
-      return false;
+      auto aHierSym =
+          a->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+      auto bHierSym =
+          b->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+      if (aHierSym && bHierSym && aHierSym.str() == bHierSym.str())
+        return true;
+    } else if (isa<affine::AffineIfOp>(a) || isa<affine::AffineIfOp>(b)) {
+      if (a == b)
+        return false; // Sharing the same affine.if means spatially parallel
+                      // ops. Cannot merge by for loop (i.e. in time).
+      auto aIf = dyn_cast<affine::AffineIfOp>(a);
+      auto bIf = dyn_cast<affine::AffineIfOp>(b);
+      if (aBlock == aIf.getThenBlock() && bBlock == bIf.getThenBlock())
+        return true;
+      if (aIf.hasElse() && bIf.hasElse() && aBlock == aIf.getElseBlock() &&
+          bBlock == bIf.getElseBlock())
+        return true;
+    }
     return false;
   }
   void mergeChannelOps(air::ChannelInterface a, air::ChannelInterface b) {
@@ -3550,16 +3607,18 @@ private:
     if (a_loop_nest.size() != b_loop_nest.size())
       return;
     for (unsigned i = 0; i < a_loop_nest.size(); i++) {
-      if (auto a_for = dyn_cast<scf::ForOp>(a_loop_nest[i])) {
-        if (auto b_for = dyn_cast<scf::ForOp>(b_loop_nest[i])) {
+      if (auto a_for = dyn_cast<scf::ForOp>(a_loop_nest[i]->getParentOp())) {
+        if (auto b_for = dyn_cast<scf::ForOp>(b_loop_nest[i]->getParentOp())) {
           for (unsigned j = 0; j < a_for.getBody()->getNumArguments(); j++) {
             remap.map(b_for.getBody()->getArgument(j),
                       a_for.getBody()->getArgument(j));
           }
         }
       }
-      if (auto a_par = dyn_cast<scf::ParallelOp>(a_loop_nest[i])) {
-        if (auto b_par = dyn_cast<scf::ParallelOp>(b_loop_nest[i])) {
+      if (auto a_par =
+              dyn_cast<scf::ParallelOp>(a_loop_nest[i]->getParentOp())) {
+        if (auto b_par =
+                dyn_cast<scf::ParallelOp>(b_loop_nest[i]->getParentOp())) {
           for (unsigned j = 0; j < a_par.getBody()->getNumArguments(); j++) {
             remap.map(b_par.getBody()->getArgument(j),
                       a_par.getBody()->getArgument(j));
