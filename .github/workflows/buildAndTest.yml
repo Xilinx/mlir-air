@@ -76,7 +76,7 @@ jobs:
 
       - name: Get Submodule Hash
         id: get-submodule-hash
-        run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-llvm.sh))"
+        run: echo "::set-output name=hash::$(md5sum $(echo utils/mlir-aie.sh))"
 
       - name: Ccache for C++ compilation
         uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
