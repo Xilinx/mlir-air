@@ -3028,7 +3028,7 @@ public:
     }
 
     // Create packet flows
-    int flowID = 0;
+    int flowID = 0; // todo: check any existing?
     for (auto srcTile : device.getOps<AIE::TileOp>()) {
       int srcColIndex = srcTile.colIndex();
       int srcRowIndex = srcTile.rowIndex();

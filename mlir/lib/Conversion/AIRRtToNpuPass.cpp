@@ -1270,7 +1270,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         continue;
 
       auto &target_model = d.getTargetModel();
-      int bdID = 15; // check dma
+      std::map<int, int> chanToIdMap;
       builder.setInsertionPointToStart(&f.front());
       for (auto pktFlow : d.getOps<AIE::PacketFlowOp>()) {
         Region &r = pktFlow.getPorts();
@@ -1279,6 +1279,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         AIE::Port sourcePort, destPort;
         AIE::TileOp srcTile, destTile;
 
+        // find all packet flow with trace port as source
         for (Operation &Op : b.getOperations()) {
           if (auto pktSrc = dyn_cast<AIE::PacketSourceOp>(Op)) {
             srcTile = dyn_cast<AIE::TileOp>(pktSrc.getTile().getDefiningOp());
@@ -1305,14 +1306,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           pkt_type = 3;
         else if (sourcePort.channel == 1)
           pkt_type = 1;
-        if (bdID < 4) // todo: check dma
-          assert(false && "run out of bd_id");
         int buff_size = trace_size / target_model.columns();
-        int buff_offset = trace_offset; // todo: check dma?
+        int buff_offset = trace_offset; // todo: get from func args?
         buff_offset += dstColIndex * buff_size;
 
         // configure tile trace
         if (target_model.isCoreTile(srcColIndex, srcRowIndex)) {
+          // event boardcast to sync timer
           builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
                                              srcColIndex, srcRowIndex, 0x34000,
                                              122 << 8);
@@ -1322,18 +1322,23 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
                                              srcColIndex, srcRowIndex, 0x340D4,
                                              pkt_type << 12 | flowID);
+          // configure events to monitor
+          // todo: allow user to specify?
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x340E0,
               (1 << 24) | (33 << 16) | (34 << 8) | 37);
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x340E4,
               (44 << 24) | (45 << 16) | (75 << 8) | 79);
+          // configure ports to monitor
+          // todo: allow user to specify?
           builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
                                              srcColIndex, srcRowIndex, 0x3FF00,
                                              (1 << 8) | ((1 << 5) | 1));
           // builder.create<AIEX::NpuWrite32Op>(
           //     builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x3FF04, 0);
         } else if (target_model.isMemTile(srcColIndex, srcRowIndex)) {
+          // event boardcast to sync timer
           builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
                                              srcColIndex, srcRowIndex, 0x94000,
                                              157 << 8);
@@ -1343,12 +1348,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
                                              srcColIndex, srcRowIndex, 0x940D4,
                                              pkt_type << 12 | flowID);
+          // configure events to monitor
+          // todo: allow user to specify?
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x940E0,
               (1 << 24) | (80 << 16) | (84 << 8) | 88);
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x940E4,
               (92 << 24) | (96 << 16) | (100 << 8) | 104);
+          // configure ports to monitor
+          // todo: allow user to specify?
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0xB0F00,
               ((1 << 21) | (2 << 16)) | ((1 << 13) | (1 << 8)) | (1 << 5));
@@ -1358,8 +1367,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         }
 
         // configure shim tile
+        if (chanToIdMap.count(dstColIndex) == 0)
+          chanToIdMap[dstColIndex] = 15;
+        int bdID = chanToIdMap[dstColIndex];
+        int ddr_id = 2; // todo: let user specify
+        assert(bdID >= 4 && "run out of bd_id");
         builder.create<AIEX::NpuWriteBdExShimTileOp>(
-            builder.getUnknownLoc(), dstColIndex, 1, 2, bdID, buff_size,
+            builder.getUnknownLoc(), dstColIndex, 1, ddr_id, bdID, buff_size,
             buff_offset, 1, 0, flowID, pkt_type, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             1, 0, 0, 0, 0, 0);
         int address;
