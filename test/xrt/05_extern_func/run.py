@@ -31,7 +31,7 @@ device.register_xclbin(xclbin)
 context = xrt.hw_context(device, xclbin.get_uuid())
 kernel = xrt.kernel(context, xkernel.get_name())
 
-bo_instr = xrt.bo(device, len(instr_v)*4, xrt.bo.cacheable, kernel.group_id(1))
+bo_instr = xrt.bo(device, len(instr_v) * 4, xrt.bo.cacheable, kernel.group_id(1))
 bo_c = xrt.bo(device, out_size_bytes, xrt.bo.host_only, kernel.group_id(3))
 
 bo_instr.write(instr_v, 0)
