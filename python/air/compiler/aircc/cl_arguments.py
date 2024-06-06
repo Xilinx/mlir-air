@@ -91,6 +91,14 @@ def parse_args(args=None):
         default="xcvc1902",
         help="Target AIE device",
     )
+    parser.add_argument(
+        "-e",
+        "--experimental-passes",
+        dest="experimental_passes",
+        default=False,
+        action="store_true",
+        help="Whether to run experimental passes or not. This will only change the behavior for this program for npu devices",
+    )
 
     opts = parser.parse_args(args)
     return opts

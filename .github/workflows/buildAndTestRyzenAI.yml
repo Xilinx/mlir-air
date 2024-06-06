@@ -137,6 +137,7 @@ jobs:
 
           export LIT_OPTS="${LIT_OPS} --timeout 600 -j5"
           ninja check-air-e2e
+          ninja check-programming-examples
 
           popd
           rm -rf build_assert
