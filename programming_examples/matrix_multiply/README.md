@@ -1,4 +1,0 @@
-# Matrix Multiply
-
-TODO
-
