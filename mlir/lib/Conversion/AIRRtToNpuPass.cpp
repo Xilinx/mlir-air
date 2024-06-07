@@ -1087,34 +1087,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
-  void getOperandsFromAIRRtDma(airrt::DmaMemcpyNdOp op,
-                               SmallVector<uint32_t, 4> &offsets,
-                               SmallVector<uint32_t, 4> &lengths,
-                               SmallVector<uint32_t, 3> &strides) {
-    if (auto c = op.getOffset0().getDefiningOp<arith::ConstantIntOp>())
-      offsets[0] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getOffset1().getDefiningOp<arith::ConstantIntOp>())
-      offsets[1] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getOffset2().getDefiningOp<arith::ConstantIntOp>())
-      offsets[2] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getOffset3().getDefiningOp<arith::ConstantIntOp>())
-      offsets[3] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getLength0().getDefiningOp<arith::ConstantIntOp>())
-      lengths[0] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getLength1().getDefiningOp<arith::ConstantIntOp>())
-      lengths[1] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getLength2().getDefiningOp<arith::ConstantIntOp>())
-      lengths[2] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getLength3().getDefiningOp<arith::ConstantIntOp>())
-      lengths[3] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getStride1().getDefiningOp<arith::ConstantIntOp>())
-      strides[0] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getStride2().getDefiningOp<arith::ConstantIntOp>())
-      strides[1] = static_cast<uint32_t>(c.value());
-    if (auto c = op.getStride3().getDefiningOp<arith::ConstantIntOp>())
-      strides[2] = static_cast<uint32_t>(c.value());
-  }
-
   void unrollSCFFors(ModuleOp module) {
     SmallVector<scf::ForOp> scf_fors;
     module.walk([&](mlir::func::FuncOp f) {
@@ -1312,60 +1284,63 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         int buff_offset = trace_offset; // todo: get from func args?
         buff_offset += dstColIndex * buff_size;
 
+        auto col = builder.getIntegerAttr(builder.getI32Type(), dstColIndex);
+        auto row = builder.getIntegerAttr(builder.getI32Type(), dstRowIndex);
+
         // configure tile trace
         if (target_model.isCoreTile(srcColIndex, srcRowIndex)) {
           // event boardcast to sync timer
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             srcColIndex, srcRowIndex, 0x34000,
-                                             122 << 8);
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             srcColIndex, srcRowIndex, 0x340D0,
-                                             122 << 16);
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             srcColIndex, srcRowIndex, 0x340D4,
-                                             pkt_type << 12 | flowID);
+          constexpr uint32_t timer_control = 0x34000;
+          constexpr uint32_t trace_control0 = 0x340D0;
+          constexpr uint32_t trace_control1 = 0x340D4;
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), timer_control,
+                                             122 << 8, col, row);
+          // Trace_Control0
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), trace_control0,
+                                             122 << 16, col, row);
+          // Trace_Control1
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), trace_control1,
+                                             pkt_type << 12 | flowID, col, row);
           // configure events to monitor
           // todo: allow user to specify?
+          constexpr uint32_t trace_event0 = 0x340E0;
+          constexpr uint32_t trace_event1 = 0x340E0;
           builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x340E0,
-              (1 << 24) | (33 << 16) | (34 << 8) | 37);
+              builder.getUnknownLoc(), trace_event0,
+              (1 << 24) | (33 << 16) | (34 << 8) | 37, col, row);
           builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x340E4,
-              (44 << 24) | (45 << 16) | (75 << 8) | 79);
+              builder.getUnknownLoc(), trace_event1,
+              (44 << 24) | (45 << 16) | (75 << 8) | 79, col, row);
           // configure ports to monitor
           // todo: allow user to specify?
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             srcColIndex, srcRowIndex, 0x3FF00,
-                                             (1 << 8) | ((1 << 5) | 1));
-          // builder.create<AIEX::NpuWrite32Op>(
-          //     builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x3FF04, 0);
-        } else if (target_model.isMemTile(srcColIndex, srcRowIndex)) {
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x3FF00,
+                                             (1 << 8) | ((1 << 5) | 1), col,
+                                             row);
+        } else if (target_model.isMemTile(dstColIndex, srcRowIndex)) {
           // event boardcast to sync timer
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             srcColIndex, srcRowIndex, 0x94000,
-                                             157 << 8);
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             srcColIndex, srcRowIndex, 0x940D0,
-                                             157 << 16);
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             srcColIndex, srcRowIndex, 0x940D4,
-                                             pkt_type << 12 | flowID);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x94000,
+                                             157 << 8, col, row);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x940D0,
+                                             157 << 16, col, row);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x940D4,
+                                             pkt_type << 12 | flowID, col, row);
           // configure events to monitor
           // todo: allow user to specify?
           builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x940E0,
-              (1 << 24) | (80 << 16) | (84 << 8) | 88);
+              builder.getUnknownLoc(), 0x940E0,
+              (1 << 24) | (80 << 16) | (84 << 8) | 88, col, row);
           builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x940E4,
-              (92 << 24) | (96 << 16) | (100 << 8) | 104);
+              builder.getUnknownLoc(), 0x940E4,
+              (92 << 24) | (96 << 16) | (100 << 8) | 104, col, row);
           // configure ports to monitor
           // todo: allow user to specify?
           builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0xB0F00,
-              ((1 << 21) | (2 << 16)) | ((1 << 13) | (1 << 8)) | (1 << 5));
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             srcColIndex, srcRowIndex, 0xB0F04,
-                                             (3 << 16) | (2 << 8) | 1);
+              builder.getUnknownLoc(), 0xB0F00,
+              ((1 << 21) | (2 << 16)) | ((1 << 13) | (1 << 8)) | (1 << 5), col,
+              row);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0xB0F04,
+                                             (3 << 16) | (2 << 8) | 1, col,
+                                             row);
         }
 
         // configure shim tile
@@ -1374,10 +1349,19 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         int &bdID = chanToIdMap[dstColIndex];
         int ddr_id = 2; // todo: let user specify
         assert(bdID >= 4 && "run out of bd_id");
-        builder.create<AIEX::NpuWriteBdExShimTileOp>(
-            builder.getUnknownLoc(), dstColIndex, 1, ddr_id, bdID, buff_size,
-            buff_offset, 1, 0, flowID, pkt_type, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            1, 0, 0, 0, 0, 0);
+
+        builder.create<AIEX::NpuWriteBdOp>(
+            builder.getUnknownLoc(), dstColIndex, ddr_id, bdID, buff_size,
+            buff_offset, /*enable_packet*/ 1, /*out_of_order_id*/ 0,
+            /*packet_id*/ flowID, pkt_type,
+            /* d0_size */ 0, /* d0_stride */ 0, /* d1_size */ 0,
+            /* d1_stride */ 0, /* d2_stride */ 0,
+            /* iteration_current */ 0, /* iteration_size */ 0,
+            /* iteration_stride */ 0, /* next_bd */ 0, dstRowIndex,
+            /* use_next_bd */ 0,
+            /* valid_bd */ 1, /* lock_rel_val */ 0, /* lock_rel_id */ 0,
+            /* lock_acq_enable */ 0, /* lock_acq_val */ 0, /* lock_acq_id */ 0);
+
         int address;
         if (destPort.channel == 0)
           address = 0x1D204;
@@ -1385,17 +1369,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           address = 0x1D20C;
         else
           assert(false && "unknown trace dest");
-        builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), dstColIndex,
-                                           dstRowIndex, address, bdID--);
+        builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), address,
+                                           bdID--, col, row);
       }
 
       // broadcast event to sync timer
-      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0, 0, 0x34000,
-                                         127 << 8);
-      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0, 0, 0x3404C,
-                                         127);
-      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0, 0, 0x34008,
-                                         127);
+      auto zero = builder.getIntegerAttr(builder.getI32Type(), 0);
+      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x34000,
+                                         127 << 8, zero, zero);
+      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x3404C, 127,
+                                         zero, zero);
+      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x34008, 127,
+                                         zero, zero);
     }
   }
 
