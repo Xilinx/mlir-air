@@ -46,6 +46,8 @@
 #include <string>
 #include <vector>
 
+#include <iostream>
+
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
@@ -2335,7 +2337,7 @@ class AIRHoistDmaInAccumPattern
 
 public:
   AIRHoistDmaInAccumPattern() = default;
-  AIRHoistDmaInAccumPattern(const AIRHoistDmaInAccumPattern &pass){};
+  AIRHoistDmaInAccumPattern(const AIRHoistDmaInAccumPattern &pass) {};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2361,7 +2363,7 @@ class AIRBroadcastDetection
 
 public:
   AIRBroadcastDetection() = default;
-  AIRBroadcastDetection(const AIRBroadcastDetection &pass){};
+  AIRBroadcastDetection(const AIRBroadcastDetection &pass) {};
 
   void runOnOperation() override {
     BroadcastDetection proc;
@@ -2381,7 +2383,7 @@ class AIRPruneLinalgGenericInputDma
 
 public:
   AIRPruneLinalgGenericInputDma() = default;
-  AIRPruneLinalgGenericInputDma(const AIRPruneLinalgGenericInputDma &pass){};
+  AIRPruneLinalgGenericInputDma(const AIRPruneLinalgGenericInputDma &pass) {};
 
   void runOnOperation() override {
     PruneLinalgGenericInputDma proc;
@@ -2402,7 +2404,7 @@ class AIRAnnotateFrontAndBackOpsInForPattern
 public:
   AIRAnnotateFrontAndBackOpsInForPattern() = default;
   AIRAnnotateFrontAndBackOpsInForPattern(
-      const AIRAnnotateFrontAndBackOpsInForPattern &pass){};
+      const AIRAnnotateFrontAndBackOpsInForPattern &pass) {};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2428,7 +2430,7 @@ class AIRHoistMemallocInForPattern
 
 public:
   AIRHoistMemallocInForPattern() = default;
-  AIRHoistMemallocInForPattern(const AIRHoistMemallocInForPattern &pass){};
+  AIRHoistMemallocInForPattern(const AIRHoistMemallocInForPattern &pass) {};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2455,7 +2457,7 @@ class AIRConstructPingPongDependencyPattern
 public:
   AIRConstructPingPongDependencyPattern() = default;
   AIRConstructPingPongDependencyPattern(
-      const AIRConstructPingPongDependencyPattern &pass){};
+      const AIRConstructPingPongDependencyPattern &pass) {};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2482,7 +2484,7 @@ class AIRUnrollLoopForPipeliningPattern
 public:
   AIRUnrollLoopForPipeliningPattern() = default;
   AIRUnrollLoopForPipeliningPattern(
-      const AIRUnrollLoopForPipeliningPattern &pass){};
+      const AIRUnrollLoopForPipeliningPattern &pass) {};
 
   void runOnOperation() override {
     auto module = getOperation();
@@ -2509,7 +2511,7 @@ class AIRHoistOpsNotUsingPingPongPattern
 public:
   AIRHoistOpsNotUsingPingPongPattern() = default;
   AIRHoistOpsNotUsingPingPongPattern(
-      const AIRHoistOpsNotUsingPingPongPattern &pass){};
+      const AIRHoistOpsNotUsingPingPongPattern &pass) {};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2536,7 +2538,7 @@ class AIRPingPongTransformationPattern
 public:
   AIRPingPongTransformationPattern() = default;
   AIRPingPongTransformationPattern(
-      const AIRPingPongTransformationPattern &pass){};
+      const AIRPingPongTransformationPattern &pass) {};
   AIRPingPongTransformationPattern(
       const AIRPingPongTransformationPatternOptions &options)
       : AIRPingPongTransformationPatternBase(options) {}
@@ -2626,7 +2628,7 @@ class AIRLabelScfForLoopForPingPongPattern
 public:
   AIRLabelScfForLoopForPingPongPattern() = default;
   AIRLabelScfForLoopForPingPongPattern(
-      const AIRLabelScfForLoopForPingPongPattern &pass){};
+      const AIRLabelScfForLoopForPingPongPattern &pass) {};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2653,7 +2655,7 @@ class AIRLabelScfForLoopInAIRSegmentPattern
 public:
   AIRLabelScfForLoopInAIRSegmentPattern() = default;
   AIRLabelScfForLoopInAIRSegmentPattern(
-      const AIRLabelScfForLoopInAIRSegmentPattern &pass){};
+      const AIRLabelScfForLoopInAIRSegmentPattern &pass) {};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2680,7 +2682,7 @@ class AIRSpecializeChannelWrapAndStridePattern
 public:
   AIRSpecializeChannelWrapAndStridePattern() = default;
   AIRSpecializeChannelWrapAndStridePattern(
-      const AIRSpecializeChannelWrapAndStridePattern &pass){};
+      const AIRSpecializeChannelWrapAndStridePattern &pass) {};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2714,8 +2716,8 @@ class AIRUnrollChannelByFactorPattern
 
 public:
   AIRUnrollChannelByFactorPattern() = default;
-  AIRUnrollChannelByFactorPattern(
-      const AIRUnrollChannelByFactorPattern &pass){};
+  AIRUnrollChannelByFactorPattern(const AIRUnrollChannelByFactorPattern &pass) {
+  };
 
   void runOnOperation() override {
     auto module = getOperation();
@@ -3031,17 +3033,24 @@ public:
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
         std::tuple<bool, std::string> checkScfForMergeableRes =
-            checkIfScfForMergeable(channelOps[i], channelOps[j]);
+            checkIfTemporalMergeable(channelOps[i], channelOps[j]);
         if (!std::get<0>(checkScfForMergeableRes))
           continue;
-        // Fuse air.channels by scf.for loop unpeeling, i.e. recovering any
-        // missing zeroth iterations in scf.for loops.
         air::ChannelOp chanA = channelOps[i];
         air::ChannelOp chanB = channelOps[j];
-        sortChannelsByLoopNests(chanA, chanB);
-        mergeChannelOpsByScfFor(chanA, chanB,
-                                std::get<1>(checkScfForMergeableRes));
-        chan_merge_map[chanB] = chanA;
+        if (std::get<1>(checkScfForMergeableRes) == "LB" ||
+            std::get<1>(checkScfForMergeableRes) == "UB") {
+          // Fuse air.channels by scf.for loop unpeeling, i.e. recovering any
+          // missing zeroth/last iterations in scf.for loops.
+          sortChannelsByLoopNests(chanA, chanB);
+          mergeChannelOpsTemporally(chanA, chanB,
+                                    std::get<1>(checkScfForMergeableRes));
+          chan_merge_map[chanB] = chanA;
+        } else if (std::get<1>(checkScfForMergeableRes) == "NFL") {
+          // Fuse air.channels temporally, if there isn't any for loop to fuse
+          // into.
+          chan_merge_map[chanB] = chanA;
+        }
       }
     }
     renameSymbols(channelOps, chan_merge_map);
@@ -3189,8 +3198,8 @@ private:
   }
 
   std::tuple<bool, std::string>
-  checkIfScfForMergeableImpl(std::vector<Block *> a_loop_nest,
-                             std::vector<Block *> b_loop_nest) {
+  checkIfTemporalMergeableByScfForImpl(std::vector<Block *> a_loop_nest,
+                                       std::vector<Block *> b_loop_nest) {
     std::tuple<bool, std::string> notMergeable = {false, ""};
     std::tuple<bool, std::string> mergeableToLB = {true, "LB"};
     std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
@@ -3248,6 +3257,24 @@ private:
     }
     return mergeableToLB;
   }
+  std::tuple<bool, std::string>
+  checkIfTemporalMergeableImpl(std::vector<Block *> a_loop_nest,
+                               std::vector<Block *> b_loop_nest) {
+    std::tuple<bool, std::string> notMergeable = {false, ""};
+    std::tuple<bool, std::string> mergeableToLB = {true, "LB"};
+    std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
+    std::tuple<bool, std::string> mergeableNoForLoop = {true, "NFL"};
+    if (std::abs((int)a_loop_nest.size() - (int)b_loop_nest.size()) == 1)
+      return checkIfTemporalMergeableByScfForImpl(a_loop_nest, b_loop_nest);
+    else if (a_loop_nest.size() != b_loop_nest.size())
+      return notMergeable;
+
+    for (unsigned i = 0; i < a_loop_nest.size(); i++) {
+      if (!areEquivalentControlLoops(a_loop_nest[i], b_loop_nest[i]))
+        return notMergeable;
+    }
+    return mergeableNoForLoop;
+  }
   Value getHierOperandFromHierBlockArgument(BlockArgument arg) {
     if (!arg)
       return nullptr;
@@ -3294,9 +3321,10 @@ private:
   }
   // Check of two air.channels are mergeable in time, by fusing into a shared
   // scf.for loop. Returns a tuple of bool of whether mergeable, and string of
-  // fusing into for loop lower bound (LB) or upper bound (UB).
-  std::tuple<bool, std::string> checkIfScfForMergeable(air::ChannelOp chan_a,
-                                                       air::ChannelOp chan_b) {
+  // fusing into for loop lower bound (LB) or upper bound (UB), or fuse with no
+  // for loop (NFL).
+  std::tuple<bool, std::string>
+  checkIfTemporalMergeable(air::ChannelOp chan_a, air::ChannelOp chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
     std::vector<air::ChannelPutOp> b_puts =
@@ -3308,6 +3336,7 @@ private:
     std::tuple<bool, std::string> notMergeable = {false, ""};
     std::tuple<bool, std::string> mergeableToLB = {true, "LB"};
     std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
+    std::tuple<bool, std::string> mergeableNoForLoop = {true, "NFL"};
     if (a_puts.size() != b_puts.size())
       return notMergeable;
     if (a_puts.size() != 1)
@@ -3372,31 +3401,39 @@ private:
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
       auto b_put_loop_nest = getParentLoopNest(b_puts[i].getOperation());
       putResults.push_back(
-          checkIfScfForMergeableImpl(a_put_loop_nest, b_put_loop_nest));
+          checkIfTemporalMergeableImpl(a_put_loop_nest, b_put_loop_nest));
     }
     std::vector<std::tuple<bool, std::string>> getResults;
     for (unsigned i = 0; i < a_gets.size(); i++) {
       auto a_get_loop_nest = getParentLoopNest(a_gets[i].getOperation());
       auto b_get_loop_nest = getParentLoopNest(b_gets[i].getOperation());
       getResults.push_back(
-          checkIfScfForMergeableImpl(a_get_loop_nest, b_get_loop_nest));
+          checkIfTemporalMergeableImpl(a_get_loop_nest, b_get_loop_nest));
     }
     bool overallUBMergeable = true;
+    bool overallLBMergeable = true;
+    bool overallNFLMergeable = true;
     for (auto putRes : putResults) {
       if (!std::get<0>(putRes))
         return notMergeable;
-      if (std::get<1>(putRes) == "LB")
-        overallUBMergeable = false;
+      overallUBMergeable &= (std::get<1>(putRes) == "UB");
+      overallLBMergeable &= (std::get<1>(putRes) == "LB");
+      overallNFLMergeable &= (std::get<1>(putRes) == "NFL");
     }
     for (auto getRes : getResults) {
       if (!std::get<0>(getRes))
         return notMergeable;
-      if (std::get<1>(getRes) == "LB")
-        overallUBMergeable = false;
+      overallUBMergeable &= (std::get<1>(getRes) == "UB");
+      overallLBMergeable &= (std::get<1>(getRes) == "LB");
+      overallNFLMergeable &= (std::get<1>(getRes) == "NFL");
     }
-    if (overallUBMergeable)
+    if (overallNFLMergeable)
+      return mergeableNoForLoop;
+    else if (overallLBMergeable)
+      return mergeableToLB;
+    else if (overallUBMergeable)
       return mergeableToUB;
-    return mergeableToLB;
+    return notMergeable;
   }
   std::vector<Block *> getParentLoopNest(Operation *op) {
     std::vector<Block *> parent_loop_nest;
@@ -3516,8 +3553,9 @@ private:
       async_a.addAsyncDependency(
           dyn_cast<air::AsyncOpInterface>(new_b).getAsyncToken());
   }
-  void mergeChannelOpsByScfFor(air::ChannelInterface a, air::ChannelInterface b,
-                               std::string mergeByLBOrUB) {
+  void mergeChannelOpsTemporally(air::ChannelInterface a,
+                                 air::ChannelInterface b,
+                                 std::string mergeByLBOrUB) {
     scf::ForOp parentForOp = a->getParentOfType<scf::ForOp>();
     while (parentForOp && parentForOp->getParentOfType<scf::ForOp>()) {
       parentForOp = parentForOp->getParentOfType<scf::ForOp>();
@@ -3555,8 +3593,8 @@ private:
       mergeChannelOps(a_gets[i], b_gets[i]);
     }
   }
-  void mergeChannelOpsByScfFor(air::ChannelOp chan_a, air::ChannelOp chan_b,
-                               std::string mergeByLBOrUB) {
+  void mergeChannelOpsTemporally(air::ChannelOp chan_a, air::ChannelOp chan_b,
+                                 std::string mergeByLBOrUB) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
     std::vector<air::ChannelPutOp> b_puts =
@@ -3566,10 +3604,10 @@ private:
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
     if (!b_puts[0]->getParentOfType<air::HerdOp>()) {
-      mergeChannelOpsByScfFor(a_puts[0], b_puts[0], mergeByLBOrUB);
+      mergeChannelOpsTemporally(a_puts[0], b_puts[0], mergeByLBOrUB);
     }
     if (!b_gets[0]->getParentOfType<air::HerdOp>()) {
-      mergeChannelOpsByScfFor(a_gets[0], b_gets[0], mergeByLBOrUB);
+      mergeChannelOpsTemporally(a_gets[0], b_gets[0], mergeByLBOrUB);
     }
   }
   Operation *cloneOpAndOperands(OpBuilder builder, IRMapping remap,
