@@ -1283,9 +1283,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         int buff_size = trace_size / target_model.columns();
         int buff_offset = trace_offset; // todo: get from func args?
         buff_offset += dstColIndex * buff_size;
-
-        auto col = builder.getIntegerAttr(builder.getI32Type(), dstColIndex);
-        auto row = builder.getIntegerAttr(builder.getI32Type(), dstRowIndex);
+        auto col = builder.getIntegerAttr(builder.getI32Type(), srcColIndex);
+        auto row = builder.getIntegerAttr(builder.getI32Type(), srcRowIndex);
 
         // configure tile trace
         if (target_model.isCoreTile(srcColIndex, srcRowIndex)) {
@@ -1305,7 +1304,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           // configure events to monitor
           // todo: allow user to specify?
           constexpr uint32_t trace_event0 = 0x340E0;
-          constexpr uint32_t trace_event1 = 0x340E0;
+          constexpr uint32_t trace_event1 = 0x340E4;
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), trace_event0,
               (1 << 24) | (33 << 16) | (34 << 8) | 37, col, row);
@@ -1347,7 +1346,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // configure shim tile
         if (chanToIdMap.count(dstColIndex) == 0)
           chanToIdMap[dstColIndex] = 15;
-        int &bdID = chanToIdMap[dstColIndex];
+        int bdID = chanToIdMap[dstColIndex];
         int ddr_id = 2; // todo: let user specify
         assert(bdID >= 4 && "run out of bd_id");
 
@@ -1370,8 +1369,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           address = 0x1D20C;
         else
           assert(false && "unknown trace dest");
-        builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), address,
-                                           bdID--, col, row);
+        builder.create<AIEX::NpuWrite32Op>(
+            builder.getUnknownLoc(), address, bdID,
+            builder.getIntegerAttr(builder.getI32Type(), dstColIndex),
+            builder.getIntegerAttr(builder.getI32Type(), dstRowIndex));
+        chanToIdMap[dstColIndex]--;
       }
 
       // broadcast event to sync timer
