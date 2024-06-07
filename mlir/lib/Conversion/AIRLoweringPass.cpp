@@ -79,33 +79,40 @@ public:
     auto scfPar =
         rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
 
+    IRMapping remap;
+
     // map launch iteration space to scf.parallel ivs
     for (auto p : llvm::zip(launch.getIds(), scfPar.getInductionVars()))
-      rewriter.replaceAllUsesWith(std::get<0>(p), std::get<1>(p));
+      remap.map(std::get<0>(p), std::get<1>(p));
 
     // map launch size to scf.parallel upper bounds
     for (auto p : llvm::zip(launch.getSizeOperands(), scfPar.getUpperBound()))
-      if (std::get<0>(p) != std::get<1>(p))
-        std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+      remap.map(std::get<0>(p), std::get<1>(p));
 
-    int i = 0;
-    for (auto arg : launch.getKernelArguments())
-      arg.replaceAllUsesWith(launch.getKernelOperand(i++));
+    // remap isolated from above launch operands
+    auto launchOperands =
+        operands.drop_front(operands.size() - launch.getNumKernelOperands());
+    for (auto p : llvm::zip(launch.getKernelArguments(), launchOperands))
+      remap.map(std::get<0>(p), std::get<1>(p));
 
-    auto &body = launch.getBody().front().getOperations();
-    scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
-                                             body.begin(), --body.end());
+    // clone the body
+    rewriter.setInsertionPointToStart(scfPar.getBody());
+    auto &launchOps = launch.getBody().front().getOperations();
+    for (auto bi = launchOps.begin(), be = --launchOps.end(); bi != be; ++bi)
+      rewriter.clone(*bi, remap);
 
+    // replace output events with airrt.wait_all
     if (op->getNumResults()) {
-      rewriter.setInsertionPoint(scfPar);
       SmallVector<Value> deps;
       for (auto &o : operands)
         if (llvm::isa<airrt::EventType>(o.getType()))
           deps.push_back(o);
+      rewriter.setInsertionPointAfter(scfPar);
       rewriter.replaceOpWithNewOp<airrt::WaitAllOp>(
           op, airrt::EventType::get(op->getContext()), deps);
     } else
       rewriter.eraseOp(launch);
+
     return success();
   }
 };
@@ -162,6 +169,8 @@ public:
                            segment.getNumDims() + i++];
       remap.map(arg, oper);
     }
+
+    // clone the body
     rewriter.setInsertionPointToStart(scfPar.getBody());
     for (auto &o : segment.getBody().front().getOperations()) {
       if (!isa<air::ChannelGetOp, air::ChannelPutOp, air::SegmentTerminatorOp>(
@@ -188,15 +197,14 @@ public:
       }
     }
 
-    SmallVector<Value> deps;
-    for (auto &o : operands)
-      if (llvm::isa<airrt::EventType>(o.getType()))
-        deps.push_back(o);
     if (op->getNumResults()) {
-      rewriter.setInsertionPoint(op);
-      auto w = rewriter.create<airrt::WaitAllOp>(
-          op->getLoc(), airrt::EventType::get(op->getContext()), deps);
-      rewriter.replaceOp(op, w);
+      SmallVector<Value> deps;
+      for (auto &o : operands)
+        if (llvm::isa<airrt::EventType>(o.getType()))
+          deps.push_back(o);
+      rewriter.setInsertionPointAfter(scfPar);
+      rewriter.replaceOpWithNewOp<airrt::WaitAllOp>(
+          op, airrt::EventType::get(op->getContext()), deps);
     } else {
       rewriter.eraseOp(op);
     }
@@ -240,9 +248,9 @@ public:
     }
 
     // If the herd doesn't contain a dma op, then it can be deleted
-    SmallVector<Operation *> herdOps;
-    herd.walk([&](air::DmaMemcpyNdOp op) { herdOps.push_back(op); });
-    if (!herdOps.size()) {
+    SmallVector<air::DmaMemcpyNdOp> dmaOps;
+    herd.walk([&](air::DmaMemcpyNdOp op) { dmaOps.push_back(op); });
+    if (!dmaOps.size()) {
       rewriter.eraseOp(op);
       return success();
     }
@@ -253,25 +261,29 @@ public:
 
     auto outer =
         rewriter.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_x);
-    auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-    auto inner = outer_builder.create<affine::AffineForOp>(herd.getLoc(), 0,
-                                                           herd_size_y);
+    rewriter.setInsertionPointToStart(outer.getBody());
+    auto inner =
+        rewriter.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_y);
 
     outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
     inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
 
-    rewriter.replaceAllUsesWith(herd.getSize()[0], herd_size[0]);
-    rewriter.replaceAllUsesWith(herd.getSize()[1], herd_size[1]);
-    rewriter.replaceAllUsesWith(herd.getIds()[0], outer.getInductionVar());
-    rewriter.replaceAllUsesWith(herd.getIds()[1], inner.getInductionVar());
+    IRMapping remap;
+    remap.map(herd.getSize()[0], herd_size[0]);
+    remap.map(herd.getSize()[1], herd_size[1]);
+    remap.map(herd.getIds()[0], outer.getInductionVar());
+    remap.map(herd.getIds()[1], inner.getInductionVar());
 
-    int i = 0;
-    for (auto arg : herd.getKernelArguments())
-      arg.replaceAllUsesWith(herd.getKernelOperand(i++));
+    // remap isolated from above herd operands
+    auto herdOperands =
+        operands.drop_front(operands.size() - herd.getNumKernelOperands());
+    for (auto p : llvm::zip(herd.getKernelArguments(), herdOperands))
+      remap.map(std::get<0>(p), std::get<1>(p));
 
-    auto &body = herd.getBody().front().getOperations();
-    inner.getBody()->getOperations().splice(inner.getBody()->begin(), body,
-                                            body.begin(), --body.end());
+    rewriter.setInsertionPointToStart(inner.getBody());
+    for (auto &o : herd.getBody().front().getOperations())
+      if (!isa<air::HerdTerminatorOp>(o))
+        rewriter.clone(o, remap);
 
     rewriter.eraseOp(op);
     return success();
