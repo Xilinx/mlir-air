@@ -166,6 +166,67 @@ class ChannelPut(ChannelPutOp):
         )
 
 
+class DmaMemcpyNd(DmaMemcpyNdOp):
+    """Specialize DmaMemcpyNdOp class constructor to take python integers"""
+
+    def __init__(
+        self,
+        dst,
+        src,
+        async_dependencies=[],
+        async_token=None,
+        dst_offsets=[],
+        dst_sizes=[],
+        dst_strides=[],
+        src_offsets=[],
+        src_sizes=[],
+        src_strides=[],
+    ):
+        iTy = IndexType.get()
+
+        dst_offsets_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in dst_offsets
+        ]
+        dst_sizes_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in dst_sizes
+        ]
+        dst_strides_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in dst_strides
+        ]
+
+        src_offsets_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in src_offsets
+        ]
+        src_sizes_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in src_sizes
+        ]
+        src_strides_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in src_strides
+        ]
+
+        super().__init__(
+            async_token=async_token,
+            async_dependencies=async_dependencies,
+            dst=dst,
+            dst_offsets=dst_offsets_typed,
+            dst_sizes=dst_sizes_typed,
+            dst_strides=dst_strides_typed,
+            src=src,
+            src_offsets=src_offsets_typed,
+            src_sizes=src_sizes_typed,
+            src_strides=src_strides_typed,
+        )
+
+
+dma_memcpy_nd = DmaMemcpyNd
+
+
 herd = region_op(Herd)
 launch = region_op(Launch)
 segment = region_op(Segment)

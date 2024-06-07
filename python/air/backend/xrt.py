@@ -31,12 +31,14 @@ class XRTBackend(AirBackend):
         xclbin="air.xclbin",
         kernel="MLIR_AIE",
         insts="air.insts.txt",
+        experimental_passes=False,
     ):
         super().__init__()
         self.opts_xclbin = xclbin
         self.opts_kernel = kernel
         self.opts_insts = insts
         self.verbose = verbose
+        self.experimental_passes = False
 
     def __del__(self):
         self.unload()
@@ -75,6 +77,9 @@ class XRTBackend(AirBackend):
 
             if self.verbose:
                 aircc_options = aircc_options + ["-v"]
+
+            if self.experimental_passes:
+                aircc_options += ["--experimental-passes"]
 
             aircc.run(air_module, aircc_options)
 

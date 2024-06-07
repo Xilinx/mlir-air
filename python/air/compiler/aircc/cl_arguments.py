@@ -54,6 +54,18 @@ def parse_args(args=None):
         dest="num_cols",
         help="Default number of rows for generated segments",
     )
+    parser.add_argument(
+        "-trace-size",
+        dest="trace_size",
+        default=0,
+        help="Create packet routed traces for cores and memtiles",
+    )
+    parser.add_argument(
+        "-trace-offset",
+        dest="trace_offset",
+        default=0,
+        help="Trace buffer offset appended to output",
+    )
     parser.add_argument("-cc", dest="cc", default="clang", help="Compiler to use")
     parser.add_argument(
         "--sysroot", metavar="sysroot", default="", help="sysroot for cross-compilation"
@@ -90,6 +102,14 @@ def parse_args(args=None):
         metavar="target_device",
         default="xcvc1902",
         help="Target AIE device",
+    )
+    parser.add_argument(
+        "-e",
+        "--experimental-passes",
+        dest="experimental_passes",
+        default=False,
+        action="store_true",
+        help="Whether to run experimental passes or not. This will only change the behavior for this program for npu devices",
     )
 
     opts = parser.parse_args(args)
