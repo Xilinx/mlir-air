@@ -1293,13 +1293,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           constexpr uint32_t timer_control = 0x34000;
           constexpr uint32_t trace_control0 = 0x340D0;
           constexpr uint32_t trace_control1 = 0x340D4;
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), timer_control,
-                                             122 << 8, col, row);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             timer_control, 122 << 8, col, row);
           // Trace_Control0
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), trace_control0,
-                                             122 << 16, col, row);
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), trace_control0, 122 << 16, col, row);
           // Trace_Control1
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), trace_control1,
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             trace_control1,
                                              pkt_type << 12 | flowID, col, row);
           // configure events to monitor
           // todo: allow user to specify?
