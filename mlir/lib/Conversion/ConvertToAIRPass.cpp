@@ -845,6 +845,15 @@ void replaceAIRDmaWithAIRChannelPairs(
     externalGetPut = dyn_cast<air::ChannelInterface>(external.getOperation());
   }
 
+  if (!internalGetPut) {
+    op->emitOpError("has unexpected memref memory space at internal-side");
+    return;
+  }
+  if (!externalGetPut) {
+    op->emitOpError("has unexpected memref memory space at external-side");
+    return;
+  }
+
   // Replace all uses to dma token with internal put/get token
   if (auto op_token = op.getAsyncToken()) {
     auto asyncInternalGetPut =
@@ -3249,7 +3258,13 @@ static void getSegmentNames(ModuleOp module) {
         std::string name;
         do {
           std::stringstream ss;
-          ss << "segment_" << id++;
+          assert(
+              f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()) &&
+              "enclosing function of air.sgement op expected to have a symbol "
+              "name");
+          ss << f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+                    .str()
+             << "_" << id++;
           name = ss.str();
         } while (std::find(seg_syms.begin(), seg_syms.end(), name) !=
                  seg_syms.end());

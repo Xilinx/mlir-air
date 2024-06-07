@@ -99,11 +99,11 @@ endif()
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 
-link_directories(${AIE_BINARY_DIR}/lib)
-include_directories(${AIE_INCLUDE_DIRS})
-
 include_directories(${PROJECT_SOURCE_DIR}/mlir/include)
 include_directories(${PROJECT_BINARY_DIR}/mlir/include)
+
+link_directories(${AIE_BINARY_DIR}/lib)
+include_directories(${AIE_INCLUDE_DIRS})
 
 add_definitions(${LLVM_DEFINITIONS})
 
@@ -210,3 +210,4 @@ endif()
 add_subdirectory(tools)
 add_subdirectory(mlir)
 add_subdirectory(cmake/modules)
+add_subdirectory(programming_examples)

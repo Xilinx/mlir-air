@@ -1,3 +1,7 @@
+PyYAML>=5.3.1, <=6.0.1
+aiofiles
+filelock==3.13.1
+lit
 joblib
 ipykernel
 psutil
