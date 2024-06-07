@@ -46,8 +46,6 @@
 #include <string>
 #include <vector>
 
-#include <iostream>
-
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
@@ -2337,7 +2335,7 @@ class AIRHoistDmaInAccumPattern
 
 public:
   AIRHoistDmaInAccumPattern() = default;
-  AIRHoistDmaInAccumPattern(const AIRHoistDmaInAccumPattern &pass) {};
+  AIRHoistDmaInAccumPattern(const AIRHoistDmaInAccumPattern &pass){};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2363,7 +2361,7 @@ class AIRBroadcastDetection
 
 public:
   AIRBroadcastDetection() = default;
-  AIRBroadcastDetection(const AIRBroadcastDetection &pass) {};
+  AIRBroadcastDetection(const AIRBroadcastDetection &pass){};
 
   void runOnOperation() override {
     BroadcastDetection proc;
@@ -2383,7 +2381,7 @@ class AIRPruneLinalgGenericInputDma
 
 public:
   AIRPruneLinalgGenericInputDma() = default;
-  AIRPruneLinalgGenericInputDma(const AIRPruneLinalgGenericInputDma &pass) {};
+  AIRPruneLinalgGenericInputDma(const AIRPruneLinalgGenericInputDma &pass){};
 
   void runOnOperation() override {
     PruneLinalgGenericInputDma proc;
@@ -2404,7 +2402,7 @@ class AIRAnnotateFrontAndBackOpsInForPattern
 public:
   AIRAnnotateFrontAndBackOpsInForPattern() = default;
   AIRAnnotateFrontAndBackOpsInForPattern(
-      const AIRAnnotateFrontAndBackOpsInForPattern &pass) {};
+      const AIRAnnotateFrontAndBackOpsInForPattern &pass){};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2430,7 +2428,7 @@ class AIRHoistMemallocInForPattern
 
 public:
   AIRHoistMemallocInForPattern() = default;
-  AIRHoistMemallocInForPattern(const AIRHoistMemallocInForPattern &pass) {};
+  AIRHoistMemallocInForPattern(const AIRHoistMemallocInForPattern &pass){};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2457,7 +2455,7 @@ class AIRConstructPingPongDependencyPattern
 public:
   AIRConstructPingPongDependencyPattern() = default;
   AIRConstructPingPongDependencyPattern(
-      const AIRConstructPingPongDependencyPattern &pass) {};
+      const AIRConstructPingPongDependencyPattern &pass){};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2484,7 +2482,7 @@ class AIRUnrollLoopForPipeliningPattern
 public:
   AIRUnrollLoopForPipeliningPattern() = default;
   AIRUnrollLoopForPipeliningPattern(
-      const AIRUnrollLoopForPipeliningPattern &pass) {};
+      const AIRUnrollLoopForPipeliningPattern &pass){};
 
   void runOnOperation() override {
     auto module = getOperation();
@@ -2511,7 +2509,7 @@ class AIRHoistOpsNotUsingPingPongPattern
 public:
   AIRHoistOpsNotUsingPingPongPattern() = default;
   AIRHoistOpsNotUsingPingPongPattern(
-      const AIRHoistOpsNotUsingPingPongPattern &pass) {};
+      const AIRHoistOpsNotUsingPingPongPattern &pass){};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2538,7 +2536,7 @@ class AIRPingPongTransformationPattern
 public:
   AIRPingPongTransformationPattern() = default;
   AIRPingPongTransformationPattern(
-      const AIRPingPongTransformationPattern &pass) {};
+      const AIRPingPongTransformationPattern &pass){};
   AIRPingPongTransformationPattern(
       const AIRPingPongTransformationPatternOptions &options)
       : AIRPingPongTransformationPatternBase(options) {}
@@ -2628,7 +2626,7 @@ class AIRLabelScfForLoopForPingPongPattern
 public:
   AIRLabelScfForLoopForPingPongPattern() = default;
   AIRLabelScfForLoopForPingPongPattern(
-      const AIRLabelScfForLoopForPingPongPattern &pass) {};
+      const AIRLabelScfForLoopForPingPongPattern &pass){};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2655,7 +2653,7 @@ class AIRLabelScfForLoopInAIRSegmentPattern
 public:
   AIRLabelScfForLoopInAIRSegmentPattern() = default;
   AIRLabelScfForLoopInAIRSegmentPattern(
-      const AIRLabelScfForLoopInAIRSegmentPattern &pass) {};
+      const AIRLabelScfForLoopInAIRSegmentPattern &pass){};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2682,7 +2680,7 @@ class AIRSpecializeChannelWrapAndStridePattern
 public:
   AIRSpecializeChannelWrapAndStridePattern() = default;
   AIRSpecializeChannelWrapAndStridePattern(
-      const AIRSpecializeChannelWrapAndStridePattern &pass) {};
+      const AIRSpecializeChannelWrapAndStridePattern &pass){};
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -2716,8 +2714,8 @@ class AIRUnrollChannelByFactorPattern
 
 public:
   AIRUnrollChannelByFactorPattern() = default;
-  AIRUnrollChannelByFactorPattern(const AIRUnrollChannelByFactorPattern &pass) {
-  };
+  AIRUnrollChannelByFactorPattern(
+      const AIRUnrollChannelByFactorPattern &pass){};
 
   void runOnOperation() override {
     auto module = getOperation();
