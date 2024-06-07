@@ -4,7 +4,7 @@
 
 To enable this feature, 
 
-* provide the `trace-size` option to the `air-to-aie` pass, and
+* provide the `insert-trace-packet-flow=true` option to the `air-to-aie` pass, and
 * specify the `trace-size`, `trace-offset` options to the `airrt-to-npu` pass. 
 
 Trace can then be generated for all compute tiles (cores) and memtiles, unless there is a routing congestion when the build might fail.
@@ -13,12 +13,13 @@ Trace can then be generated for all compute tiles (cores) and memtiles, unless t
 
 `trace-offset` defines the offset when the trace data are appended to the output. It might be inferred from the code in the future. In addition, it is for now hard coded that the trace data are dumped to `ddr_id = 2`.
 
-One such example is provided in `test/xrt/01_air_to_npu`, where the traces can be automatically added by changing `trace-size` to `32768` in `aie.py`.
+One such example is provided in `test/xrt/01_air_to_npu`, and the generated trace file can be further processed through [parse_trace.py](https://github.com/Xilinx/mlir-aie/blob/main/programming_examples/utils/parse_trace.py).
+
 
 Currently, in this pariticular example and when trace is enabled, the entire column of core tiles is shifted to the right by one and all trace data comes out via the second column's shim tile. This is a workaround for the congestion that the `South` port is running out and the bottom row of core tiles (i.e. the 2nd row of the whole array) cannot be routed as `Trace->South->West/East`, once it hits the switchbox of memtile.
 
 ## air-to-aie
-Inside this pass, the packet flows are inserted when `trace-size > 0`. The source of the flow is `channel = 0` of the trace port and the destination is `channel = 1` of the shim tile in the same column. 
+Inside this pass, the packet flows are inserted when `insert-trace-packet-flow=true`. The source of the flow is `channel = 0` of the trace port and the destination is `channel = 1` of the shim tile in the same column. 
 
 One possible future improvement can be allowing user to specify which channel/shim tile to use, or having an allocation algorithm in place. In addition, the current assumption is everything else apart from the trace are using circult-switch connections, without detecting any potential conflict in the packet id.
 

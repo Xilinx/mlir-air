@@ -376,7 +376,10 @@ def run(mlir_module, args=None):
         air_to_aie_pass = "air-to-aie{emit-while-loop=true"
         air_to_aie_pass = air_to_aie_pass + f" row-offset={opts.row_offset}"
         air_to_aie_pass = air_to_aie_pass + f" col-offset={opts.col_offset}"
-        air_to_aie_pass = air_to_aie_pass + f" device={opts.device}" + "}"
+        air_to_aie_pass = air_to_aie_pass + f" device={opts.device}"
+        if opts.trace_size > 0:
+            air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
+        air_to_aie_pass = air_to_aie_pass + "}"
         pass_pipeline = ",".join([air_to_aie_pass])
 
         air_to_aie_file = opts.tmpdir + "/aie." + air_mlir_filename
@@ -389,6 +392,12 @@ def run(mlir_module, args=None):
         )
 
         if "npu" in opts.device:
+            airrt_to_npu_pass = "airrt-to-npu{"
+            airrt_to_npu_pass = airrt_to_npu_pass + f" trace-size={opts.trace_size}"
+            airrt_to_npu_pass = (
+                airrt_to_npu_pass + f" trace-offset={opts.trace_offset}" + "}"
+            )
+
             air_to_npu_file = opts.tmpdir + "/npu." + air_mlir_filename
             air_to_npu_module = Module.parse(str(air_to_aie_module))
             air_to_npu_passes = (
@@ -402,7 +411,7 @@ def run(mlir_module, args=None):
                         "affine-expand-index-ops",
                         "canonicalize",
                         "cse",
-                        "airrt-to-npu",
+                        airrt_to_npu_pass,
                         "canonicalize",
                         "cse",
                     ]

@@ -54,6 +54,18 @@ def parse_args(args=None):
         dest="num_cols",
         help="Default number of rows for generated segments",
     )
+    parser.add_argument(
+        "-trace-size",
+        dest="trace_size",
+        default=0,
+        help="Create packet routed traces for cores and memtiles",
+    )
+    parser.add_argument(
+        "-trace-offset",
+        dest="trace_offset",
+        default=0,
+        help="Trace buffer offset appended to output",
+    )
     parser.add_argument("-cc", dest="cc", default="clang", help="Compiler to use")
     parser.add_argument(
         "--sysroot", metavar="sysroot", default="", help="sysroot for cross-compilation"

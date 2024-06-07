@@ -254,10 +254,9 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
            /*default=*/"false",
            "Choose whether to schedule shim data movement via generating AIE "
            " shim DMA program, or AIR runtime.">,
-    Option<"clTraceSize", "trace-size", "unsigned", 
-          /*default=*/"0",
-          "Create packet routed traces for cores and memtiles"
-          "The default generates no trace.">,
+    Option<"clInsertTracePacketFlow", "insert-trace-packet-flow", "bool", 
+          /*default=*/"false",
+          "Create packet routed traces for cores and memtiles">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE

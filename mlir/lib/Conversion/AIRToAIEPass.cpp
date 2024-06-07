@@ -55,7 +55,7 @@ struct AIRToAIEConversionOptions {
   bool emit_while;
   bool emit_herd_lock;
   bool generate_shim_dma;
-  int64_t trace_size;
+  bool insert_trace_packet_flow;
   AIE::AIEDevice device;
 };
 
@@ -3089,7 +3089,7 @@ public:
           /*.emit_while = */ clEmitWhileLoop,
           /*.emit_herd_lock = */ clEmitHerdLock,
           /*.generate_shim_dma = */ clGenerateShimDMA,
-          /*.trace_size = */ clTraceSize,
+          /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
           /*.device = */ *device};
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
@@ -3116,6 +3116,8 @@ public:
           renumberChannelOps(&d.getBodyRegion().front(),
                              chan_renumber_reverse_map);
         }
+        if (options.insert_trace_packet_flow)
+          createTracePacketFlow(d);
       }
     }
 
@@ -3187,7 +3189,7 @@ public:
         /* .emit_while = */ clEmitWhileLoop,
         /* .emit_herd_lock = */ clEmitHerdLock,
         /* .generate_shim_dma = */ clGenerateShimDMA,
-        /*.trace_size = */ clTraceSize,
+        /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
         /* .device = */ *device};
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
@@ -3253,7 +3255,7 @@ public:
       lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc, options);
 
       // lowerPipelineGetPut(device, tileToHerdMap);
-      if (options.trace_size > 0)
+      if (options.insert_trace_packet_flow)
         createTracePacketFlow(device);
 
       SmallVector<air::HerdOp, 4> herds;

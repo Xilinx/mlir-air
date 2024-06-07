@@ -5,10 +5,8 @@ from air.ir import *
 import air.passmanager
 from air.dialects import air as airdialect
 from air.compiler.util import run_transform
+import argparse
 import sys
-
-trace_size = 0  # 32768
-trace_offset = 65536
 
 
 def matmul_on_tensors(m, n, k, dtype):
@@ -27,6 +25,24 @@ def matmul_on_tensors(m, n, k, dtype):
 
     return module
 
+
+parser = argparse.ArgumentParser(prog="aie.py")
+parser.add_argument(
+    "--trace-size",
+    dest="trace_size",
+    default=32768,
+    type=int,
+    help="Create packet routed traces for cores and memtiles",
+)
+parser.add_argument(
+    "--trace-offset",
+    dest="trace_offset",
+    default=65536,
+    type=int,
+    help="Trace buffer offset appended to output",
+)
+
+opts = parser.parse_args()
 
 with air.ir.Context() as ctx, Location.unknown():
     air_module = matmul_on_tensors(128, 128, 256, IntegerType.get_signless(width=32))
@@ -145,7 +161,7 @@ with air.ir.Context() as ctx, Location.unknown():
     ################################################
 
     air_async_module = Module.parse(str(air_module))
-    col_anchor = 1 if trace_size > 0 else 0
+    col_anchor = 1 if opts.trace_size > 0 else 0
     pipeline = (
         "builtin.module("
         + ",".join(
@@ -174,13 +190,17 @@ with air.ir.Context() as ctx, Location.unknown():
     # ## MLIR-AIR to MLIR-AIE
     # ################################################
 
+    air_to_aie_pass = (
+        "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true"
+    )
+    if opts.trace_size > 0:
+        air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
+    air_to_aie_pass = air_to_aie_pass + "}"
     pipeline = (
         "builtin.module("
         + ",".join(
             [
-                "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true "
-                + f"trace-size={trace_size}"
-                + "}",
+                air_to_aie_pass,
                 "canonicalize",
             ]
         )
@@ -201,7 +221,7 @@ with air.ir.Context() as ctx, Location.unknown():
             [
                 "air-to-std",
                 "airrt-to-npu{"
-                + f"trace-offset={trace_offset} trace-size={trace_size}"
+                + f"trace-offset={opts.trace_offset} trace-size={opts.trace_size}"
                 + "}",
                 "canonicalize",
             ]
