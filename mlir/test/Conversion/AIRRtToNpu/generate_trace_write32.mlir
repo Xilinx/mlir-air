@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -airrt-to-npu='trace-offset=65536 trace-size=32768'  | FileCheck %s
+// RUN: air-opt %s -airrt-to-npu='trace-offset=65536 trace-size=65536' | FileCheck %s
 module {
   aie.device(npu1_4col) {
     %tile_0_0 = aie.tile(0, 0)
