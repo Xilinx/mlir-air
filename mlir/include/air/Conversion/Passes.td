@@ -254,6 +254,9 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
            /*default=*/"false",
            "Choose whether to schedule shim data movement via generating AIE "
            " shim DMA program, or AIR runtime.">,
+    Option<"clInsertTracePacketFlow", "insert-trace-packet-flow", "bool", 
+          /*default=*/"false",
+          "Create packet routed traces for cores and memtiles">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE
@@ -452,7 +455,14 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
     ```
 
   }];
-  let options = [];
+  let options = [
+    Option<"clTraceSize", "trace-size", "unsigned",
+          /*default=*/"0",
+          "Trace buffer size for cores and memtiles (in bytes)">,
+    Option<"clTraceOffset", "trace-offset", "unsigned",
+          /*default=*/"0",
+          "Trace buffer offset appended to ddr_id=2">
+  ];
   let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
 }
 

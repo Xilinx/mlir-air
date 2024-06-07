@@ -5,32 +5,59 @@ from air.ir import *
 import air.passmanager
 from air.dialects import air as airdialect
 from air.compiler.util import run_transform
+import argparse
 import sys
+
+
 def matmul_on_tensors(m, n, k, dtype):
     module = Module.create()
     with InsertionPoint(module.body):
+
         @func.FuncOp.from_py_func(
-            MemRefType.get((m, k), dtype), MemRefType.get((k, n), dtype))
+            MemRefType.get((m, k), dtype), MemRefType.get((k, n), dtype)
+        )
         def forward(lhs, rhs):
             out = memref.AllocOp(MemRefType.get((m, n), dtype), [], [])
             zero = arith.ConstantOp(dtype, 0)
             zero_fill = linalg.fill(zero, outs=[out])
             linalg.matmul(lhs, rhs, outs=[out])
             return out
+
     return module
 
+
+parser = argparse.ArgumentParser(prog="aie.py")
+parser.add_argument(
+    "--trace-size",
+    dest="trace_size",
+    default=65536,
+    type=int,
+    help="Create packet routed traces for cores and memtiles",
+)
+parser.add_argument(
+    "--trace-offset",
+    dest="trace_offset",
+    default=65536,
+    type=int,
+    help="Trace buffer offset appended to output",
+)
+
+opts = parser.parse_args()
+
 with air.ir.Context() as ctx, Location.unknown():
-    air_module = matmul_on_tensors(128, 128, 256, IntegerType.get_signless(width = 32))
-    
+    air_module = matmul_on_tensors(128, 128, 256, IntegerType.get_signless(width=32))
+
     ################################################
     ## Tiling
     ################################################
 
-    pm = air.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+    pm = air.passmanager.PassManager.parse(
+        air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE
+    )
     pm.run(air_module.operation)
-    with open('air_input.mlir', 'w') as f:
+    with open("air_input.mlir", "w") as f:
         f.write(str(air_module))
-    
+
     transform_ir_string = """
     transform.with_pdl_patterns {
     ^bb0(%arg0: !pdl.operation):
@@ -54,99 +81,154 @@ with air.ir.Context() as ctx, Location.unknown():
     """
     transform_ir = Module.parse(transform_ir_string)
     run_transform(transform_ir, air_module)
-    
-    with open('air_tiled.mlir', 'w') as f:
+
+    with open("air_tiled.mlir", "w") as f:
         f.write(str(air_module))
-    
+
     ################################################
     ## Binding scf.paralell to air hierarchies
     ################################################
 
-    pipeline = "builtin.module("+",".join([
-        "buffer-results-to-out-params",
-        "air-par-to-herd{depth=1}",
-        "air-par-to-launch{has-air-segment=true}",
-        "air-copy-to-dma",
-        "canonicalize", "cse",
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "buffer-results-to-out-params",
+                "air-par-to-herd{depth=1}",
+                "air-par-to-launch{has-air-segment=true}",
+                "air-copy-to-dma",
+                "canonicalize",
+                "cse",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
-    # with open('air_sync.mlir', 'w') as f:
-    #     f.write(str(air_module))
-    
+    with open("air_sync.mlir", "w") as f:
+        f.write(str(air_module))
+
     ################################################
     ## Extract event dependency and optimize schedule
     ################################################
 
-    pipeline = "builtin.module("+",".join([
-        "air-dependency",
-        "air-dependency-schedule-opt",
-        "air-specialize-dma-broadcast",
-        "air-dma-to-channel",
-        "canonicalize", "cse",
-        "air-dependency-canonicalize",
-        "canonicalize", "cse",
-        "air-label-scf-for-to-ping-pong",
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "air-dependency",
+                "air-dependency-schedule-opt",
+                "air-specialize-dma-broadcast",
+                "air-dma-to-channel",
+                "canonicalize",
+                "cse",
+                "air-dependency-canonicalize",
+                "canonicalize",
+                "cse",
+                "air-label-scf-for-to-ping-pong",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
     # Not sure why parsing the ir solves the segmentation fault...
     air_module = Module.parse(str(air_module))
-    pipeline = "builtin.module("+",".join([
-        "air-ping-pong-transform{keep-memref-dealloc=true}",
-        "air-dealias-memref",
-        "canonicalize", "cse",
-        "air-isolate-async-dma-loop-nests",
-        "air-specialize-channel-wrap-and-stride",
-        "canonicalize", "cse",
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "air-ping-pong-transform{keep-memref-dealloc=true}",
+                "air-dealias-memref",
+                "canonicalize",
+                "cse",
+                "air-isolate-async-dma-loop-nests",
+                "air-specialize-channel-wrap-and-stride",
+                "canonicalize",
+                "cse",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    # with open('aircc_input.mlir', 'w') as f:
-    #     f.write(str(air_module))
-    
+    with open("aircc_input.mlir", "w") as f:
+        f.write(str(air_module))
+
     ################################################
     ## Place herd to segment
     ################################################
 
     air_async_module = Module.parse(str(air_module))
-    pipeline = "builtin.module("+",".join([
-        "func.func(air-collapse-herd)",
-        'canonicalize', 'cse',
-        "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor=0}",
-        'canonicalize', 'cse',
-        'func.func(air-renumber-dma)',
-        'func.func(convert-linalg-to-loops)',
-    ])+')'
+    col_anchor = 1 if opts.trace_size > 0 else 0
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "func.func(air-collapse-herd)",
+                "canonicalize",
+                "cse",
+                "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor="
+                + str(col_anchor)
+                + "}",
+                "canonicalize",
+                "cse",
+                "func.func(air-renumber-dma)",
+                "func.func(convert-linalg-to-loops)",
+            ]
+        )
+        + ")"
+    )
+
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    # with open('air_placed.mlir', 'w') as f:
-    #     f.write(str(air_module))
-    
+    with open("air_placed.mlir", "w") as f:
+        f.write(str(air_module))
+
     # ################################################
     # ## MLIR-AIR to MLIR-AIE
     # ################################################
-    
-    pipeline = "builtin.module("+",".join([
-        'air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}',
-        'canonicalize',
-    ])+')'
+
+    air_to_aie_pass = (
+        "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true"
+    )
+    if opts.trace_size > 0:
+        air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
+    air_to_aie_pass = air_to_aie_pass + "}"
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                air_to_aie_pass,
+                "canonicalize",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    # with open('aircc_decomp_aiecc.mlir', 'w') as f:
-    #     f.write(str(air_module))
-    
+    with open("aircc_decomp_aiecc.mlir", "w") as f:
+        f.write(str(air_module))
+
     ################################################
     ## MLIR-AIR runtime lowering
     ################################################
 
-    pipeline = "builtin.module("+",".join([
-      'air-to-std',
-      'airrt-to-npu',
-      'canonicalize',
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "air-to-std",
+                "airrt-to-npu{"
+                + f"trace-offset={opts.trace_offset} trace-size={opts.trace_size}"
+                + "}",
+                "canonicalize",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    with open('aie.mlir', 'w') as f:
+    with open("aie.mlir", "w") as f:
         f.write(str(air_module))
