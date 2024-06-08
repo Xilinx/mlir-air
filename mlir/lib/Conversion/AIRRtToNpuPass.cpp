@@ -1271,6 +1271,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
       auto &target_model = d.getTargetModel();
       std::map<int, int> chanToIdMap;
+      if (f.getBody().empty())
+        continue;
       builder.setInsertionPointToStart(&f.front());
       for (auto pktFlow : d.getOps<AIE::PacketFlowOp>()) {
         Region &r = pktFlow.getPorts();
