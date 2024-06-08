@@ -1230,6 +1230,48 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
+  // Each element of 'port' is a {Port_N_Master_Slave, Port_N_ID} pair. They
+  // will be read sequentially to select up to 8 stream switch ports to monitor,
+  // using the select register at address {col, row, offset}.
+  void insertNpuWriteStreamSwitchEventSel(
+      OpBuilder &builder, std::vector<std::pair<uint8_t, uint8_t>> &ports,
+      uint32_t offset, IntegerAttr col, IntegerAttr row) {
+    uint32_t v0 = 0;
+    for (unsigned i = 0; i < std::min(ports.size(), 4UL); i++) {
+      v0 |= (ports[i].second << (i * 8));
+      v0 |= (ports[i].first << ((i * 8) + 5));
+    }
+    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0, col,
+                                       row);
+    uint32_t v1 = 0;
+    for (unsigned i = 4; i < std::min(ports.size(), 8UL); i++) {
+      v1 |= (ports[i].second << (i * 8));
+      v1 |= (ports[i].first << ((i * 8) + 5));
+    }
+    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset + 0x4,
+                                       v1, col, row);
+  }
+
+  // up to 8 events (up to 64 bits) will be written to the 8 event slots (bytes)
+  // at address {col, row, offset}
+  void insertNpuWriteTraceEvents(OpBuilder &builder,
+                                 SmallVectorImpl<uint32_t> &events,
+                                 uint32_t offset, IntegerAttr col,
+                                 IntegerAttr row) {
+    uint32_t v0 = 0;
+    for (unsigned i = 0; i < std::min(events.size(), 4UL); i++)
+      v0 |= ((events[i] & 0xff) << (i * 8));
+    uint32_t v1 = 0;
+    for (unsigned i = 4; i < std::min(events.size(), 8UL); i++)
+      v1 |= ((events[i] & 0xff) << (i * 8));
+
+    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0, col,
+                                       row);
+    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset + 0x4,
+                                       v1, col, row);
+  }
+
+  // configure events to monitor
   void insertNpuWrite32ForTrace(ModuleOp module, int64_t trace_size,
                                 int64_t trace_offset) {
     SmallVector<mlir::func::FuncOp> funcOps;
@@ -1289,58 +1331,69 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // configure tile trace
         if (target_model.isCoreTile(srcColIndex, srcRowIndex)) {
           // event boardcast to sync timer
-          constexpr uint32_t timer_control = 0x34000;
-          constexpr uint32_t trace_control0 = 0x340D0;
-          constexpr uint32_t trace_control1 = 0x340D4;
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             timer_control, 122 << 8, col, row);
-          // Trace_Control0
+          uint32_t core_reg_timer_control = 0x34000;
+          uint32_t core_reg_trace_control0 = 0x340D0;
+          uint32_t core_reg_trace_control1 = 0x340D4;
+          uint32_t core_event_broadcast_15 = 122;
           builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), trace_control0, 122 << 16, col, row);
-          // Trace_Control1
+              builder.getUnknownLoc(), core_reg_timer_control,
+              core_event_broadcast_15 << 8, col, row);
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), core_reg_trace_control0,
+              core_event_broadcast_15 << 16, col, row);
           builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             trace_control1,
+                                             core_reg_trace_control1,
                                              pkt_type << 12 | flowID, col, row);
+
           // configure events to monitor
           // todo: allow user to specify?
-          constexpr uint32_t trace_event0 = 0x340E0;
-          constexpr uint32_t trace_event1 = 0x340E4;
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), trace_event0,
-              (1 << 24) | (33 << 16) | (34 << 8) | 37, col, row);
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), trace_event1,
-              (44 << 24) | (45 << 16) | (75 << 8) | 79, col, row);
+          // INSTR_VECTOR, INSTR_EVENT_1, INSTR_EVENT_0, true,
+          // PORT_RUNNING_1 PORT_RUNNING_0, LOCK_RELEASE_REQ,LOCK_ACQUIRE_REQ
+          SmallVector<uint32_t> trace_events = {37, 34, 33, 1, 79, 75, 45, 44};
+          uint32_t core_reg_trace_event0 = 0x340E0;
+          insertNpuWriteTraceEvents(builder, trace_events,
+                                    core_reg_trace_event0, col, row);
+
           // configure ports to monitor
           // todo: allow user to specify?
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x3FF00,
-                                             (1 << 8) | ((1 << 5) | 1), col,
-                                             row);
+          // {Port_N_Master_Slave, Port_N_ID}
+          std::vector<std::pair<uint8_t, uint8_t>> ports{{1, 1}, {0, 1}};
+          uint32_t core_reg_strm_sw_event_sel_0 = 0x3FF00;
+          insertNpuWriteStreamSwitchEventSel(
+              builder, ports, core_reg_strm_sw_event_sel_0, col, row);
+
         } else if (target_model.isMemTile(dstColIndex, srcRowIndex)) {
           // event boardcast to sync timer
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x94000,
-                                             157 << 8, col, row);
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x940D0,
-                                             157 << 16, col, row);
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x940D4,
+          uint32_t mem_reg_timer_control = 0x94000;
+          uint32_t mem_reg_trace_control0 = 0x940D0;
+          uint32_t mem_reg_trace_control1 = 0x940D4;
+          uint32_t mem_event_broadcast_15 = 157;
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), mem_reg_timer_control,
+              mem_event_broadcast_15 << 8, col, row);
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), mem_reg_trace_control0,
+              mem_event_broadcast_15 << 16, col, row);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             mem_reg_trace_control1,
                                              pkt_type << 12 | flowID, col, row);
+
           // configure events to monitor
           // todo: allow user to specify?
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), 0x940E0,
-              (1 << 24) | (80 << 16) | (84 << 8) | 88, col, row);
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), 0x940E4,
-              (92 << 24) | (96 << 16) | (100 << 8) | 104, col, row);
-          // configure ports to monitor
-          // todo: allow user to specify?
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), 0xB0F00,
-              ((1 << 21) | (2 << 16)) | ((1 << 13) | (1 << 8)) | (1 << 5), col,
-              row);
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0xB0F04,
-                                             (3 << 16) | (2 << 8) | 1, col,
-                                             row);
+          // PORT_RUNNING_2, PORT_RUNNING_1, PORT_RUNNING_0, true,
+          // PORT_RUNNING_6, PORT_RUNNING_5, PORT_RUNNING_4, PORT_RUNNING_3
+          SmallVector<uint32_t> trace_events = {88,  84,  80, 1,
+                                                104, 100, 96, 92};
+          uint32_t mem_reg_trace_event0 = 0x940E0;
+          insertNpuWriteTraceEvents(builder, trace_events, mem_reg_trace_event0,
+                                    col, row);
+
+          // {Port_N_Master_Slave, Port_N_ID}
+          std::vector<std::pair<uint8_t, uint8_t>> ports{
+              {1, 0}, {1, 1}, {1, 2}, {0, 0}, {0, 1}, {0, 2}, {0, 3}};
+          uint32_t mem_reg_strm_sw_event_sel_0 = 0xB0F00;
+          insertNpuWriteStreamSwitchEventSel(
+              builder, ports, mem_reg_strm_sw_event_sel_0, col, row);
         }
 
         // configure shim tile
