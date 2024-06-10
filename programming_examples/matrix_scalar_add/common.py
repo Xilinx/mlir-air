@@ -1,0 +1,10 @@
+# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+IMAGE_WIDTH = 32
+IMAGE_HEIGHT = 16
+IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
+
+TILE_WIDTH = 16
+TILE_HEIGHT = 8
+TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]

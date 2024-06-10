@@ -137,11 +137,11 @@ class ChannelPut(ChannelPutOp):
     def __init__(
         self,
         chan_name,
-        indices,
+        indices, # Use the channel to describe 
         src,
-        src_offsets=[],
+        src_offsets=[], # Try w/ 0,0 first (should be first block)
         src_sizes=[],
-        src_strides=[],
+        src_strides=[], # Tile size []
         async_token=None,
         async_dependencies=[],
         loc=None,

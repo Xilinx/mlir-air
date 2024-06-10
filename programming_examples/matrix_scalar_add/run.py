@@ -8,7 +8,12 @@ import air.backend.xrt as xrt_backend
 import os
 import os.path
 import filelock
-from matrix_scalar_add import *
+import argparse
+
+from common import *
+import matrix_scalar_add_implicit
+import matrix_scalar_add_channel
+import matrix_scalar_add_launch
 
 KERNEL_NAME = "MLIR_AIE"
 
@@ -20,7 +25,7 @@ INOUT_SIZE_BYTES = INOUT_SIZE * INOUT_ELEM_SIZE
 verbose = False
 
 
-def main():
+def main(build_module):
     mlir_module = build_module()
 
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
@@ -63,4 +68,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Builds, runs, and tests the matrix_scalar_add example",
+    )
+
+    parser.add_argument(
+        "tile_method", type=str, choices=["implicit", "channel", "launch"]
+    )
+    args = parser.parse_args()
+
+    if args.tile_method == "implicit":
+        build_module = matrix_scalar_add_implicit.build_module
+    elif args.tile_method == "channel":
+        build_module = matrix_scalar_add_channel.build_module
+    else:
+        build_module = matrix_scalar_add_launch.build_module
+    main(build_module)

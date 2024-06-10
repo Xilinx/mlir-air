@@ -9,16 +9,9 @@ from air.dialects.func import FuncOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.scf import for_, yield_
 
+from common import *
+
 range_ = for_
-
-IMAGE_WIDTH = 32
-IMAGE_HEIGHT = 16
-IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
-
-TILE_WIDTH = 16
-TILE_HEIGHT = 8
-TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]
-
 
 def build_module():
     with Context() as ctx, Location.unknown():

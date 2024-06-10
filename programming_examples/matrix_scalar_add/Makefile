@@ -8,13 +8,19 @@
 
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-all: pyworkflow
-
 targetname := $(shell basename ${srcdir})
 
-pyworkflow:
+implicit:
 	mkdir -p build
-	cd build && ${powershell} python3 ${srcdir}/run.py 
+	cd build && ${powershell} python3 ${srcdir}/run.py implicit
+
+channel:
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/run.py channel
+
+launch:
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/run.py launch
 
 clean:
 	rm -rf build

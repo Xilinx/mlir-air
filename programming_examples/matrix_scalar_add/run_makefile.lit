@@ -4,5 +4,9 @@
  // REQUIRES: ryzen_ai
  //
  // RUN: make -f %S/Makefile clean
- // RUN: make -f %S/Makefile | FileCheck %s
+ // RUN: make -f %S/Makefile implicit | FileCheck %s
+ // RUN: make -f %S/Makefile clean
+ // RUN: make -f %S/Makefile launch | FileCheck %s
+ // RUN: make -f %S/Makefile clean
+ // RUN: make -f %S/Makefile channel | FileCheck %s
  // CHECK: PASS!
