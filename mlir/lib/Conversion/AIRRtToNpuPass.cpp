@@ -1371,7 +1371,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         // configure shim tile
         if (chanToIdMap.count(dstColIndex) == 0)
           chanToIdMap[dstColIndex] = 15;
-        int& bdID = chanToIdMap[dstColIndex];
+        int &bdID = chanToIdMap[dstColIndex];
         int ddr_id = 2; // todo: let user specify
         assert(bdID >= 4 && "run out of bd_id");
         builder.create<AIEX::NpuWriteBdExShimTileOp>(
