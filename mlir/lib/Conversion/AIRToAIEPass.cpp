@@ -55,6 +55,7 @@ struct AIRToAIEConversionOptions {
   bool emit_while;
   bool emit_herd_lock;
   bool generate_shim_dma;
+  bool insert_trace_packet_flow;
   AIE::AIEDevice device;
 };
 
@@ -431,7 +432,8 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
   }
 }
 
-template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
+template <typename T>
+void push_back_if_unique(std::vector<T> &vec, T entry) {
   if (std::find(vec.begin(), vec.end(), entry) == vec.end())
     vec.push_back(entry);
 }
@@ -3013,6 +3015,55 @@ public:
     }
   }
 
+  void createTracePacketFlow(AIE::DeviceOp device) {
+    OpBuilder builder(device);
+    const auto &target_model = device.getTargetModel();
+
+    // Collect existing TileOps
+    DenseMap<AIE::TileID, AIE::TileOp> tiles;
+    for (auto tile : device.getOps<AIE::TileOp>()) {
+      int colIndex = tile.colIndex();
+      int rowIndex = tile.rowIndex();
+      tiles[{colIndex, rowIndex}] = tile;
+    }
+
+    // Create packet flows
+    int flowID = 0; // todo: check any existing?
+    for (auto srcTile : device.getOps<AIE::TileOp>()) {
+      int srcColIndex = srcTile.colIndex();
+      int srcRowIndex = srcTile.rowIndex();
+      AIE::TileOp destTile;
+
+      if (target_model.isCoreTile(srcColIndex, srcRowIndex) ||
+          target_model.isMemTile(srcColIndex, srcRowIndex)) {
+        int destColIndex = srcColIndex; // todo: allocation?
+        int destRowIndex = 0;
+        if (!tiles[{destColIndex, destRowIndex}]) {
+          builder.setInsertionPointToStart(device.getBody());
+          destTile = builder.create<AIE::TileOp>(builder.getUnknownLoc(),
+                                                 destColIndex, destRowIndex);
+          tiles[{destColIndex, destRowIndex}] = destTile;
+        } else {
+          destTile = tiles[{destColIndex, destRowIndex}];
+        }
+        int destChan = 1; // todo: allocation?
+
+        builder.setInsertionPointToEnd(device.getBody());
+        auto keep_pkt_header = builder.getBoolAttr(true);
+        AIE::PacketFlowOp pktFlow = builder.create<AIE::PacketFlowOp>(
+            builder.getUnknownLoc(), flowID++, keep_pkt_header);
+        Region &r_pktFlow = pktFlow.getPorts();
+        Block *b_pktFlow = builder.createBlock(&r_pktFlow);
+        builder.setInsertionPointToStart(b_pktFlow);
+        builder.create<AIE::PacketSourceOp>(builder.getUnknownLoc(), srcTile,
+                                            AIE::WireBundle::Trace, 0);
+        builder.create<AIE::PacketDestOp>(builder.getUnknownLoc(), destTile,
+                                          AIE::WireBundle::DMA, destChan);
+        builder.create<AIE::EndOp>(builder.getUnknownLoc());
+      }
+    }
+  }
+
   void runTestPatterns() {
 
     auto m = getOperation();
@@ -3038,6 +3089,7 @@ public:
           /*.emit_while = */ clEmitWhileLoop,
           /*.emit_herd_lock = */ clEmitHerdLock,
           /*.generate_shim_dma = */ clGenerateShimDMA,
+          /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
           /*.device = */ *device};
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
@@ -3064,6 +3116,8 @@ public:
           renumberChannelOps(&d.getBodyRegion().front(),
                              chan_renumber_reverse_map);
         }
+        if (options.insert_trace_packet_flow)
+          createTracePacketFlow(d);
       }
     }
 
@@ -3135,6 +3189,7 @@ public:
         /* .emit_while = */ clEmitWhileLoop,
         /* .emit_herd_lock = */ clEmitHerdLock,
         /* .generate_shim_dma = */ clGenerateShimDMA,
+        /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
         /* .device = */ *device};
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
@@ -3200,6 +3255,8 @@ public:
       lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc, options);
 
       // lowerPipelineGetPut(device, tileToHerdMap);
+      if (options.insert_trace_packet_flow)
+        createTracePacketFlow(device);
 
       SmallVector<air::HerdOp, 4> herds;
       SmallVector<air::SegmentOp, 4> segs;
@@ -3486,6 +3543,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /* .emit_while = */ false,
                                        /* .emit_herd_lock = */ false,
                                        /* .generate_shim_dma = */ false,
+                                       /*.trace_size = */ 0,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
   p.walk([&](xilinx::air::HerdOp h) {

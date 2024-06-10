@@ -72,6 +72,15 @@ void mm_out(std::vector<T> a, std::vector<T> b, std::vector<T> &r) {
   }
 }
 
+void write_out_trace(char *traceOutPtr, size_t trace_size, std::string path) {
+  std::ofstream fout(path);
+  uint32_t *traceOut = (uint32_t *)traceOutPtr;
+  for (int i = 0; i < trace_size / sizeof(traceOut[0]); i++) {
+    fout << std::setfill('0') << std::setw(8) << std::hex << (int)traceOut[i];
+    fout << std::endl;
+  }
+}
+
 int main(int argc, const char *argv[]) {
 
   // Program arguments parsing
@@ -84,7 +93,11 @@ int main(int argc, const char *argv[]) {
       "verbosity,v", po::value<int>()->default_value(0),
       "the verbosity of the output")(
       "instr,i", po::value<std::string>()->required(),
-      "path of file containing userspace instructions to be sent to the LX6");
+      "path of file containing userspace instructions to be sent to the LX6")(
+      "trace_sz,t", po::value<int>()->default_value(0),
+      "size of trace buffer (in bytes)")(
+      "trace_file", po::value<std::string>()->default_value("trace.txt"),
+      "where to store trace output");
   po::variables_map vm;
 
   try {
@@ -100,6 +113,8 @@ int main(int argc, const char *argv[]) {
     std::cerr << "Usage:\n" << desc << "\n";
     return 1;
   }
+
+  int trace_size = vm["trace_sz"].as<int>();
 
   check_arg_file_exists(vm, "xclbin");
   check_arg_file_exists(vm, "instr");
@@ -157,8 +172,8 @@ int main(int argc, const char *argv[]) {
       xrt::bo(device, A_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(2));
   auto bo_b =
       xrt::bo(device, B_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
-  auto bo_c =
-      xrt::bo(device, C_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
+  auto bo_c = xrt::bo(device, C_SIZE + trace_size, XRT_BO_FLAGS_HOST_ONLY,
+                      kernel.group_id(4));
 
   if (verbosity >= 1)
     std::cout << "Writing data into buffer objects.\n";
@@ -173,10 +188,7 @@ int main(int argc, const char *argv[]) {
     BVec.push_back(rand() % UINT16_MAX);
   memcpy(bufB, BVec.data(), (BVec.size() * sizeof(B_DATATYPE)));
   C_DATATYPE *bufC = bo_c.map<C_DATATYPE *>();
-  std::vector<C_DATATYPE> CVec;
-  for (int i = 0; i < C_VOLUME; i++)
-    CVec.push_back(0);
-  memcpy(bufC, CVec.data(), (CVec.size() * sizeof(C_DATATYPE)));
+  memset(bufC, 0, C_SIZE + trace_size);
 
   void *bufInstr = bo_instr.map<void *>();
   memcpy(bufInstr, instr_v.data(), instr_v.size() * sizeof(int));
@@ -212,6 +224,11 @@ int main(int argc, const char *argv[]) {
                   << std::to_string(bufOut[i]) << "\n";
       }
     }
+  }
+
+  if (trace_size > 0) {
+    write_out_trace(((char *)bufC) + C_SIZE, trace_size,
+                    vm["trace_file"].as<std::string>());
   }
 
   if (!errors) {

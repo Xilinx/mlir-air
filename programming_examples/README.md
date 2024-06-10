@@ -9,7 +9,3 @@ This example provides logic to add one to every element of a matrix using tiling
 ## [2-Dimensional Shim DMA Passthrough](shim_dma_2d)
 
 This example demonstrates how data may be moved using shim DMA operations. It also includes extra tooling that illustrates different ways to compile, build, run, and test code defined as MLIR-AIR Python bindings on an NPU.
-
-## [Matrix Multiply](matrix_scalar_add)
-
-TODO

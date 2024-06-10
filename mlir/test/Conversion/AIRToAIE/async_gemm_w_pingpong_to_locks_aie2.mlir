@@ -17,10 +17,10 @@
 // CHECK:   %[[VAL_7:.*]] = aie.tile(6, 4)
 // CHECK-COUNT-8:    aie.lock(%[[VAL_3]], {{.*}})
 // CHECK-COUNT-2:    aie.lock(%[[VAL_2]], {{.*}})
-// CHECK-COUNT-8:    aie.lock(%[[VAL_4]], {{.*}})
-// CHECK-COUNT-8:    aie.lock(%[[VAL_5]], {{.*}})
-// CHECK-COUNT-8:    aie.lock(%[[VAL_6]], {{.*}})
-// CHECK-COUNT-8:    aie.lock(%[[VAL_7]], {{.*}})
+// CHECK-COUNT-6:    aie.lock(%[[VAL_4]], {{.*}})
+// CHECK-COUNT-6:    aie.lock(%[[VAL_5]], {{.*}})
+// CHECK-COUNT-6:    aie.lock(%[[VAL_6]], {{.*}})
+// CHECK-COUNT-6:    aie.lock(%[[VAL_7]], {{.*}})
 // CHECK:    aie.buffer(%[[VAL_2]]) {{{.*}}} : memref<64x64xi32, 1>
 // CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<64x128xi32, 1>
 // CHECK:    aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<128x64xi32, 1>

@@ -36,6 +36,7 @@ using namespace xilinx;
 using namespace xilinx::airrt;
 
 namespace {
+#define GEN_PASS_DECL_AIRRTTONPU
 #define GEN_PASS_DEF_AIRRTTONPU
 #include "air/Conversion/Passes.h.inc"
 
@@ -53,6 +54,7 @@ namespace {
 // %1 = unrealized_conversion_cast %0
 // %2 = memref.assume_alignment %1
 //
+
 struct RelocateAssumeAlignmentOp
     : public mlir::OpRewritePattern<memref::AssumeAlignmentOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -452,7 +454,8 @@ void hoistTargetOpsToNewAffineFor(OpBuilder builder, affine::AffineForOp for_op,
   }
 }
 
-template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
+template <typename T>
+void push_back_if_unique(SmallVector<T> &vec, T entry) {
   if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
     vec.push_back(entry);
   }
@@ -967,6 +970,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Renumber npu dma ops
     renumberNpuDmaOps(module.getBody());
+
+    // Configure the tile trace units and the shimDMA
+    if (clTraceSize > 0)
+      insertNpuWrite32ForTrace(module, clTraceSize, clTraceOffset);
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -1248,6 +1255,147 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           }
         }
       });
+    }
+  }
+
+  void insertNpuWrite32ForTrace(ModuleOp module, int64_t trace_size,
+                                int64_t trace_offset) {
+    SmallVector<mlir::func::FuncOp> funcOps;
+    module.walk([&](mlir::func::FuncOp f) { funcOps.push_back(f); });
+
+    for (auto f : funcOps) {
+      OpBuilder builder(f);
+      auto d = f->getParentOfType<AIE::DeviceOp>();
+      if (!d)
+        continue;
+
+      auto &target_model = d.getTargetModel();
+      std::map<int, int> chanToIdMap;
+      if (f.getBody().empty())
+        continue;
+      builder.setInsertionPointToStart(&f.front());
+      for (auto pktFlow : d.getOps<AIE::PacketFlowOp>()) {
+        Region &r = pktFlow.getPorts();
+        Block &b = r.front();
+        int flowID = pktFlow.IDInt();
+        AIE::Port sourcePort, destPort;
+        AIE::TileOp srcTile, destTile;
+
+        // find all packet flow with trace port as source
+        for (Operation &Op : b.getOperations()) {
+          if (auto pktSrc = dyn_cast<AIE::PacketSourceOp>(Op)) {
+            srcTile = dyn_cast<AIE::TileOp>(pktSrc.getTile().getDefiningOp());
+            sourcePort = pktSrc.port();
+          } else if (auto pktDest = dyn_cast<AIE::PacketDestOp>(Op)) {
+            destTile = dyn_cast<AIE::TileOp>(pktDest.getTile().getDefiningOp());
+            destPort = pktDest.port();
+          }
+        }
+        if (sourcePort.bundle != AIE::WireBundle::Trace)
+          continue;
+
+        int srcColIndex = srcTile.colIndex();
+        int srcRowIndex = srcTile.rowIndex();
+        int dstColIndex = destTile.colIndex();
+        int dstRowIndex = destTile.rowIndex();
+        assert((target_model.isCoreTile(srcColIndex, srcRowIndex) ||
+                target_model.isMemTile(srcColIndex, srcRowIndex)) &&
+               "unsupported trace src");
+        assert(target_model.isShimNOCTile(dstColIndex, dstRowIndex) &&
+               "unsupported trace dest");
+        int pkt_type = 0;
+        if (target_model.isMemTile(srcColIndex, srcRowIndex))
+          pkt_type = 3;
+        else if (sourcePort.channel == 1)
+          pkt_type = 1;
+        int buff_size = trace_size / target_model.columns();
+        int buff_offset = trace_offset; // todo: get from func args?
+        buff_offset += dstColIndex * buff_size;
+
+        // configure tile trace
+        if (target_model.isCoreTile(srcColIndex, srcRowIndex)) {
+          // event boardcast to sync timer
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             srcColIndex, srcRowIndex, 0x34000,
+                                             122 << 8);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             srcColIndex, srcRowIndex, 0x340D0,
+                                             122 << 16);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             srcColIndex, srcRowIndex, 0x340D4,
+                                             pkt_type << 12 | flowID);
+          // configure events to monitor
+          // todo: allow user to specify?
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x340E0,
+              (1 << 24) | (33 << 16) | (34 << 8) | 37);
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x340E4,
+              (44 << 24) | (45 << 16) | (75 << 8) | 79);
+          // configure ports to monitor
+          // todo: allow user to specify?
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             srcColIndex, srcRowIndex, 0x3FF00,
+                                             (1 << 8) | ((1 << 5) | 1));
+          // builder.create<AIEX::NpuWrite32Op>(
+          //     builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x3FF04, 0);
+        } else if (target_model.isMemTile(srcColIndex, srcRowIndex)) {
+          // event boardcast to sync timer
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             srcColIndex, srcRowIndex, 0x94000,
+                                             157 << 8);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             srcColIndex, srcRowIndex, 0x940D0,
+                                             157 << 16);
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             srcColIndex, srcRowIndex, 0x940D4,
+                                             pkt_type << 12 | flowID);
+          // configure events to monitor
+          // todo: allow user to specify?
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x940E0,
+              (1 << 24) | (80 << 16) | (84 << 8) | 88);
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0x940E4,
+              (92 << 24) | (96 << 16) | (100 << 8) | 104);
+          // configure ports to monitor
+          // todo: allow user to specify?
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), srcColIndex, srcRowIndex, 0xB0F00,
+              ((1 << 21) | (2 << 16)) | ((1 << 13) | (1 << 8)) | (1 << 5));
+          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
+                                             srcColIndex, srcRowIndex, 0xB0F04,
+                                             (3 << 16) | (2 << 8) | 1);
+        }
+
+        // configure shim tile
+        if (chanToIdMap.count(dstColIndex) == 0)
+          chanToIdMap[dstColIndex] = 15;
+        int bdID = chanToIdMap[dstColIndex];
+        int ddr_id = 2; // todo: let user specify
+        assert(bdID >= 4 && "run out of bd_id");
+        builder.create<AIEX::NpuWriteBdExShimTileOp>(
+            builder.getUnknownLoc(), dstColIndex, 1, ddr_id, bdID, buff_size,
+            buff_offset, 1, 0, flowID, pkt_type, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1, 0, 0, 0, 0, 0);
+        int address;
+        if (destPort.channel == 0)
+          address = 0x1D204;
+        else if (destPort.channel == 1)
+          address = 0x1D20C;
+        else
+          assert(false && "unknown trace dest");
+        builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), dstColIndex,
+                                           dstRowIndex, address, bdID--);
+      }
+
+      // broadcast event to sync timer
+      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0, 0, 0x34000,
+                                         127 << 8);
+      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0, 0, 0x3404C,
+                                         127);
+      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0, 0, 0x34008,
+                                         127);
     }
   }
 
