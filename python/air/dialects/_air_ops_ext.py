@@ -235,7 +235,7 @@ def air_module(module_function):
         with Context() as ctx, Location.unknown():
             module = Module.create()
             with InsertionPoint(module.body):
-                module_function()
+                module_function(*args, **kwargs)
         return module
 
     return air_module_wrapper
