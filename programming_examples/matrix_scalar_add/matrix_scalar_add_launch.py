@@ -13,6 +13,7 @@ from common import *
 
 range_ = for_
 
+
 def build_module():
     with Context() as ctx, Location.unknown():
         module = Module.create()
@@ -28,8 +29,8 @@ def build_module():
                 # The arguments are the input and output
                 @launch(operands=[arg0, arg1])
                 def launch_body(a, b):
-                    ChannelPut("ChanIn", [], a)
-                    ChannelGet("ChanOut", [], b)
+                    ChannelPut("ChanIn", a)
+                    ChannelGet("ChanOut", b)
 
                     # The arguments are still the input and the output
                     @segment(name="seg")
@@ -55,7 +56,7 @@ def build_module():
                             tile_out = AllocOp(tile_type, [], [])
 
                             # Input a tile
-                            ChannelGet("ChanIn", [], tile_in)
+                            ChannelGet("ChanIn", tile_in)
 
                             # Copy the input tile into the output file while adding one
                             for j in range_(TILE_HEIGHT):
@@ -69,7 +70,7 @@ def build_module():
                                 yield_([])
 
                             # Output the incremented tile
-                            ChannelPut("ChanOut", [], tile_out)
+                            ChannelPut("ChanOut", tile_out)
 
                             # Deallocate our L1 buffers
                             DeallocOp(tile_in)

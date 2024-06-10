@@ -104,30 +104,42 @@ class ChannelGet(ChannelGetOp):
     def __init__(
         self,
         chan_name,
-        indices,
         dst,
         dst_offsets=[],
         dst_sizes=[],
         dst_strides=[],
+        indices=[],
         async_token=None,
         async_dependencies=[],
         loc=None,
         ip=None,
     ):
         iTy = IndexType.get()
-        indices = [
+        indices_typed = [
             arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
             for i in indices
+        ]
+        dst_offsets_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in dst_offsets
+        ]
+        dst_sizes_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in dst_sizes
+        ]
+        dst_strides_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in dst_strides
         ]
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
             chan_name=chan_name,
-            indices=indices,
+            indices=indices_typed,
             dst=dst,
-            dst_offsets=dst_offsets,
-            dst_sizes=dst_sizes,
-            dst_strides=dst_strides,
+            dst_offsets=dst_offsets_typed,
+            dst_sizes=dst_sizes_typed,
+            dst_strides=dst_strides_typed,
             loc=loc,
             ip=ip,
         )
@@ -137,30 +149,43 @@ class ChannelPut(ChannelPutOp):
     def __init__(
         self,
         chan_name,
-        indices,  # Use the channel to describe
         src,
         src_offsets=[],  # Try w/ 0,0 first (should be first block)
         src_sizes=[],
         src_strides=[],  # Tile size []
+        indices=[],  # Use the channel to describe
         async_token=None,
         async_dependencies=[],
         loc=None,
         ip=None,
     ):
         iTy = IndexType.get()
-        indices = [
+        indices_typed = [
             arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
             for i in indices
         ]
+        src_offsets_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in src_offsets
+        ]
+        src_sizes_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in src_sizes
+        ]
+        src_strides_typed = [
+            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
+            for i in src_strides
+        ]
+
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
             chan_name=chan_name,
-            indices=indices,
+            indices=indices_typed,
             src=src,
-            src_offsets=src_offsets,
-            src_sizes=src_sizes,
-            src_strides=src_strides,
+            src_offsets=src_offsets_typed,
+            src_sizes=src_sizes_typed,
+            src_strides=src_strides_typed,
             loc=loc,
             ip=ip,
         )

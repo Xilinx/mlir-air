@@ -87,12 +87,17 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
             def mul(arg0, arg1, arg2):
                 @launch(sizes=[l3_shape[0] // l2_shape[0]], operands=[arg0, arg1, arg2])
                 def launch_body(i, s, a, b, c):
-                    one = arith.ConstantOp.create_index(1)
                     m = arith.ConstantOp.create_index(l2_shape[0])
                     o = arith.MulIOp(m, i)
-                    ChannelPut("ChanL2A", [], a, [o], [m], [one])
-                    ChannelPut("ChanL2B", [], b, [o], [m], [one])
-                    ChannelGet("ChanL2C", [], c, [o], [m], [one])
+                    ChannelPut(
+                        "ChanL2A", a, src_offsets=[o], src_strides=[m], src_sizes=[1]
+                    )
+                    ChannelPut(
+                        "ChanL2B", b, src_offsets=[o], src_strides=[m], src_sizes=[1]
+                    )
+                    ChannelGet(
+                        "ChanL2C", c, dst_offsets=[o], dst_strides=[m], dst_sizes=[1]
+                    )
 
                     @segment(name="segment_0")
                     def segment_body():
@@ -102,10 +107,10 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                             l2_tile_c = AllocOp(l2_otile_type, [], [])
 
                             # get from L2, put to L1
-                            ChannelGet("ChanL2A", [], l2_tile_a)
-                            ChannelPut("ChanL1A", [], l2_tile_a)
-                            ChannelGet("ChanL2B", [], l2_tile_b)
-                            ChannelPut("ChanL1B", [], l2_tile_b)
+                            ChannelGet("ChanL2A", l2_tile_a)
+                            ChannelPut("ChanL1A", l2_tile_a)
+                            ChannelGet("ChanL2B", l2_tile_b)
+                            ChannelPut("ChanL1B", l2_tile_b)
 
                             @herd(name="herd_0", sizes=[1, 1])
                             def herd_body(x, y, sx, sy):
@@ -113,8 +118,8 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                                     l1_tile_a = AllocOp(l1_itile_type, [], [])
                                     l1_tile_b = AllocOp(l1_itile_type, [], [])
                                     l1_tile_c = AllocOp(l1_otile_type, [], [])
-                                    ChannelGet("ChanL1A", [], l1_tile_a)
-                                    ChannelGet("ChanL1B", [], l1_tile_b)
+                                    ChannelGet("ChanL1A", l1_tile_a)
+                                    ChannelGet("ChanL1B", l1_tile_b)
                                     elemwise_binary(
                                         l1_tile_a,
                                         l1_tile_b,
@@ -122,7 +127,7 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                                         fun=BinaryFn.mul,
                                         cast=TypeFn.cast_unsigned,
                                     )
-                                    ChannelPut("ChanL1C", [], l1_tile_c)
+                                    ChannelPut("ChanL1C", l1_tile_c)
                                     DeallocOp(l1_tile_a)
                                     DeallocOp(l1_tile_b)
                                     DeallocOp(l1_tile_c)
@@ -130,8 +135,8 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                                 HerdTerminatorOp()
 
                             # get from L1, put to L2
-                            ChannelGet("ChanL1C", [], l2_tile_c)
-                            ChannelPut("ChanL2C", [], l2_tile_c)
+                            ChannelGet("ChanL1C", l2_tile_c)
+                            ChannelPut("ChanL2C", l2_tile_c)
 
                             DeallocOp(l2_tile_a)
                             DeallocOp(l2_tile_b)
