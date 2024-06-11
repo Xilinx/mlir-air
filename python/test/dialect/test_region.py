@@ -35,9 +35,3 @@ def test_herd():
             def herd_body(x, y, sx, sy):
                 AddIOp(x, y)
                 AddIOp(sx, sy)
-                HerdTerminatorOp()
-                return
-
-            SegmentTerminatorOp()
-
-        LaunchTerminatorOp()

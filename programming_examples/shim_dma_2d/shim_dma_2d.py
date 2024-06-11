@@ -84,13 +84,6 @@ def build_module():
                     DeallocOp(tile_in)
                     DeallocOp(tile_out)
 
-                    # We are done - terminate all layers
-                    HerdTerminatorOp()
-
-                SegmentTerminatorOp()
-
-            LaunchTerminatorOp()
-
 
 if __name__ == "__main__":
     module = build_module()

@@ -241,6 +241,6 @@ def module_builder(module_function):
     return module_builder_wrapper
 
 
-herd = region_op(Herd)
-launch = region_op(Launch)
-segment = region_op(Segment)
+herd = region_op(Herd, terminator=lambda *_args: HerdTerminatorOp())
+launch = region_op(Launch, terminator=lambda *_args: LaunchTerminatorOp())
+segment = region_op(Segment, terminator=lambda *_args: SegmentTerminatorOp())
