@@ -5,7 +5,7 @@
 
 from air.ir import *
 from air.dialects.air import *
-from air.dialects.func import FuncOp, ReturnOp
+from air.dialects.func import FuncOp
 from air.dialects.linalg import elemwise_binary
 from air.dialects.linalg.opdsl.lang import BinaryFn, TypeFn
 from air.dialects.memref import AllocOp, DeallocOp
@@ -20,7 +20,7 @@ def to_type(dtype):
     return None
 
 
-@air_module
+@module_builder
 def build_module(shape, idtype, odtype):
     memrefTyIn = MemRefType.get(shape, to_type(idtype))
     memrefTyOut = MemRefType.get(shape, to_type(odtype))

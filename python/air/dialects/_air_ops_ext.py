@@ -229,16 +229,16 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
 dma_memcpy_nd = DmaMemcpyNd
 
 
-def air_module(module_function):
+def module_builder(module_function):
     @functools.wraps(module_function)
-    def air_module_wrapper(*args, **kwargs):
+    def module_builder_wrapper(*args, **kwargs):
         with Context() as ctx, Location.unknown():
             module = Module.create()
             with InsertionPoint(module.body):
                 module_function(*args, **kwargs)
         return module
 
-    return air_module_wrapper
+    return module_builder_wrapper
 
 
 herd = region_op(Herd)

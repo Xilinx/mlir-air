@@ -19,7 +19,7 @@ TILE_HEIGHT = 8
 TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]
 
 
-@air_module
+@module_builder
 def build_module():
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
 

@@ -6,7 +6,6 @@
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.arith import AddIOp
-from air.dialects.func import FuncOp, ReturnOp
 
 
 def constructAndPrintInFunc(f):
@@ -23,7 +22,7 @@ def constructAndPrintInFunc(f):
 # CHECK: arith.addi %[[X]], %[[Y]]
 # CHECK: arith.addi %[[SX]], %[[SY]]
 @constructAndPrintInFunc
-@air_module
+@module_builder
 def test_herd():
     @launch
     def launch_body():

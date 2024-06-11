@@ -8,21 +8,20 @@
 
 from air.ir import *
 from air.dialects.air import *
+from air.dialects import func
 from air.dialects.arith import ConstantOp
-from air.dialects.func import FuncOp, ReturnOp
 
 
 def constructAndPrintInFunc(f):
     print("\nTEST:", f.__name__)
-    with Context() as ctx, Location.unknown():
-        module = Module.create()
-        with InsertionPoint(module.body):
-            ftype = FunctionType.get([], [])
-            fop = FuncOp(f.__name__, ftype)
-            bb = fop.add_entry_block()
-            with InsertionPoint(bb):
-                f()
-                ReturnOp([])
+
+    @module_builder
+    def build_module():
+        @func.FuncOp.from_py_func()
+        def build_function():
+            f()
+
+    module = build_module()
     print(module)
 
 
