@@ -712,9 +712,9 @@ func.func @func10(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 0, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
-// CHECK:   memref<32x256xbf16, 1>, 0, 8192, [<size = 1, stride = 32>, <size = 32, stride = 256>, <size = 256, stride = 1>])
+// CHECK:   memref<32x256xbf16, 1>, 0, 8192)
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2, repeat_count = 1)
-// CHECK:   memref<32x256xbf16, 1>, 0, 8192, [<size = 1, stride = 32>, <size = 32, stride = 256>, <size = 256, stride = 1>])
+// CHECK:   memref<32x256xbf16, 1>, 0, 8192)
 // CHECK: @func11
 #map = affine_map<()[s0] -> (s0 * 32)>
 air.channel @channel_1 [2, 1]
@@ -829,30 +829,30 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
 // CHECK: aie.core(%[[tile_2_3]])
 // CHECK: aie.core(%[[tile_1_3]])
 // CHECK: aie.core(%[[tile_0_3]])
-// CHECK: aie.flow(%[[tile_5_1]], DMA : 0, %[[tile_2_0]], DMA : 0)
-// CHECK: aie.flow(%[[tile_4_1]], DMA : 0, %[[tile_2_0]], DMA : 1)
-// CHECK: aie.flow(%[[tile_3_1]], DMA : 0, %[[tile_3_0]], DMA : 0)
-// CHECK: aie.flow(%[[tile_2_1]], DMA : 0, %[[tile_3_0]], DMA : 1)
-// CHECK: aie.flow(%[[tile_0_3]], DMA : 0, %[[tile_5_1]], DMA : 0)
-// CHECK: aie.flow(%[[tile_1_3]], DMA : 0, %[[tile_4_1]], DMA : 0)
-// CHECK: aie.flow(%[[tile_2_3]], DMA : 0, %[[tile_3_1]], DMA : 0)
-// CHECK: aie.flow(%[[tile_3_3]], DMA : 0, %[[tile_2_1]], DMA : 0)
-// CHECK: aie.flow(%[[tile_0_4]], DMA : 0, %[[tile_5_1]], DMA : 1)
-// CHECK: aie.flow(%[[tile_1_4]], DMA : 0, %[[tile_4_1]], DMA : 1)
-// CHECK: aie.flow(%[[tile_2_4]], DMA : 0, %[[tile_3_1]], DMA : 1)
-// CHECK: aie.flow(%[[tile_3_4]], DMA : 0, %[[tile_2_1]], DMA : 1)
-// CHECK: aie.flow(%[[tile_0_5]], DMA : 0, %[[tile_5_1]], DMA : 2)
-// CHECK: aie.flow(%[[tile_1_5]], DMA : 0, %[[tile_4_1]], DMA : 2)
-// CHECK: aie.flow(%[[tile_2_5]], DMA : 0, %[[tile_3_1]], DMA : 2)
-// CHECK: aie.flow(%[[tile_3_5]], DMA : 0, %[[tile_2_1]], DMA : 2)
-// CHECK: aie.flow(%[[tile_0_6]], DMA : 0, %[[tile_5_1]], DMA : 3)
-// CHECK: aie.flow(%[[tile_1_6]], DMA : 0, %[[tile_4_1]], DMA : 3)
-// CHECK: aie.flow(%[[tile_2_6]], DMA : 0, %[[tile_3_1]], DMA : 3)
-// CHECK: aie.flow(%[[tile_3_6]], DMA : 0, %[[tile_2_1]], DMA : 3)
-// CHECK: aie.memtile_dma(%[[tile_5_1]])
-// CHECK: aie.memtile_dma(%[[tile_4_1]])
-// CHECK: aie.memtile_dma(%[[tile_3_1]])
+// CHECK: aie.flow(%[[tile_2_1]], DMA : 0, %[[tile_2_0]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_1]], DMA : 0, %[[tile_2_0]], DMA : 1)
+// CHECK: aie.flow(%[[tile_4_1]], DMA : 0, %[[tile_3_0]], DMA : 0)
+// CHECK: aie.flow(%[[tile_5_1]], DMA : 0, %[[tile_3_0]], DMA : 1)
+// CHECK: aie.flow(%[[tile_0_3]], DMA : 0, %[[tile_2_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_0_4]], DMA : 0, %[[tile_2_1]], DMA : 1)
+// CHECK: aie.flow(%[[tile_0_5]], DMA : 0, %[[tile_2_1]], DMA : 2)
+// CHECK: aie.flow(%[[tile_0_6]], DMA : 0, %[[tile_2_1]], DMA : 3)
+// CHECK: aie.flow(%[[tile_1_3]], DMA : 0, %[[tile_3_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_1_4]], DMA : 0, %[[tile_3_1]], DMA : 1)
+// CHECK: aie.flow(%[[tile_1_5]], DMA : 0, %[[tile_3_1]], DMA : 2)
+// CHECK: aie.flow(%[[tile_1_6]], DMA : 0, %[[tile_3_1]], DMA : 3)
+// CHECK: aie.flow(%[[tile_2_3]], DMA : 0, %[[tile_3_1]], DMA : 4)
+// CHECK: aie.flow(%[[tile_2_4]], DMA : 0, %[[tile_3_1]], DMA : 5)
+// CHECK: aie.flow(%[[tile_2_5]], DMA : 0, %[[tile_3_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_2_6]], DMA : 0, %[[tile_3_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_3]], DMA : 0, %[[tile_3_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_4]], DMA : 0, %[[tile_3_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_5]], DMA : 0, %[[tile_3_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_6]], DMA : 0, %[[tile_3_1]], DMA : 0)
 // CHECK: aie.memtile_dma(%[[tile_2_1]])
+// CHECK: aie.memtile_dma(%[[tile_3_1]])
+// CHECK: aie.memtile_dma(%[[tile_4_1]])
+// CHECK: aie.memtile_dma(%[[tile_5_1]])
 // CHECK: @func12
 
 #map = affine_map<()[s0] -> (s0 * 256)>
@@ -861,7 +861,10 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
 #map3 = affine_map<()[s0] -> (s0 * 256 + 192)>
 #map4 = affine_map<()[s0] -> (s0 * 64)>
 module {
-  air.channel @channel_12 [4, 1]
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
+  air.channel @channel_2 [1, 1]
+  air.channel @channel_3 [1, 1]
   air.channel @channel_10 [4, 4]
   func.func @func12(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c2 = arith.constant 2 : index
@@ -878,13 +881,13 @@ module {
         air.execute_terminator %11 : index
       }
       %1 = affine.apply #map()[%arg3]
-      %2 = air.channel.get async [%async_token]  @channel_12[%c0, %c0] (%arg7[%1, %results] [%c64, %c256] [%c512, %c1]) {id = 3 : i32} : (memref<512x512xbf16>)
+      %2 = air.channel.get async [%async_token]  @channel_0[] (%arg7[%1, %results] [%c64, %c256] [%c512, %c1]) {id = 3 : i32} : (memref<512x512xbf16>)
       %3 = affine.apply #map1()[%arg3]
-      %4 = air.channel.get async [%async_token]  @channel_12[%c1, %c0] (%arg7[%3, %results] [%c64, %c256] [%c512, %c1]) {id = 4 : i32} : (memref<512x512xbf16>)
+      %4 = air.channel.get async [%async_token]  @channel_1[] (%arg7[%3, %results] [%c64, %c256] [%c512, %c1]) {id = 4 : i32} : (memref<512x512xbf16>)
       %5 = affine.apply #map2()[%arg3]
-      %6 = air.channel.get async [%async_token]  @channel_12[%c2_0, %c0] (%arg7[%5, %results] [%c64, %c256] [%c512, %c1]) {id = 5 : i32} : (memref<512x512xbf16>)
+      %6 = air.channel.get async [%async_token]  @channel_2[] (%arg7[%5, %results] [%c64, %c256] [%c512, %c1]) {id = 5 : i32} : (memref<512x512xbf16>)
       %7 = affine.apply #map3()[%arg3]
-      %8 = air.channel.get async [%async_token]  @channel_12[%c3, %c0] (%arg7[%7, %results] [%c64, %c256] [%c512, %c1]) {id = 6 : i32} : (memref<512x512xbf16>)
+      %8 = air.channel.get async [%async_token]  @channel_3[] (%arg7[%7, %results] [%c64, %c256] [%c512, %c1]) {id = 6 : i32} : (memref<512x512xbf16>)
       %9 = air.wait_all async [%2, %4, %6, %8] 
       %10 = air.segment @segment_0 async  attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 4 : i64, y_loc = 3 : i64, y_size = 4 : i64} {
         %c3_1 = arith.constant 3 : index
@@ -896,27 +899,40 @@ module {
         %c4 = arith.constant 4 : index
         %c0_5 = arith.constant 0 : index
         %c256_6 = arith.constant 256 : index
-        %async_token_7, %results_8 = air.execute -> (memref<256x256xbf16, 1>) {
-          %alloc = memref.alloc() : memref<256x256xbf16, 1>
-          air.execute_terminator %alloc : memref<256x256xbf16, 1>
+        %async_token_4, %results_5 = air.execute -> (memref<64x256xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x256xbf16, 1>
+          air.execute_terminator %alloc : memref<64x256xbf16, 1>
         }
-        %11 = scf.parallel (%arg8, %arg9) = (%c0_5, %c0_5) to (%c4, %c4) step (%c1_4, %c1_4) init (%async_token_7) -> !air.async.token {
-          %async_token_10, %results_11 = air.execute -> (index) {
-            %19 = affine.apply #map4()[%arg8]
-            air.execute_terminator %19 : index
-          }
-          %async_token_12, %results_13 = air.execute -> (index) {
-            %19 = affine.apply #map4()[%arg9]
-            air.execute_terminator %19 : index
-          }
-          %18 = air.channel.get async [%async_token_7, %async_token_12, %async_token_10]  @channel_10[%arg8, %arg9] (%results_8[%results_11, %results_13] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<256x256xbf16, 1>)
-          scf.reduce(%18 : !air.async.token) {
-          ^bb0(%arg10: !air.async.token, %arg11: !air.async.token):
-            %19 = air.wait_all async [%arg10, %arg11] 
-            scf.reduce.return %19 : !air.async.token
-          }
+        %async_token_5, %results_6 = air.execute -> (memref<64x256xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x256xbf16, 1>
+          air.execute_terminator %alloc : memref<64x256xbf16, 1>
         }
-        %12 = air.herd @herd_0 async [%async_token_7]  tile (%arg8, %arg9) in (%arg10=%c4, %arg11=%c4) attributes {id = 3 : i32, link_with = "mm.o", x_loc = 0 : i64, y_loc = 3 : i64} {
+        %async_token_6, %results_7 = air.execute -> (memref<64x256xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x256xbf16, 1>
+          air.execute_terminator %alloc : memref<64x256xbf16, 1>
+        }
+        %async_token_7, %results_8 = air.execute -> (memref<64x256xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x256xbf16, 1>
+          air.execute_terminator %alloc : memref<64x256xbf16, 1>
+        }
+        %18 = air.channel.get async [%async_token_4]  @channel_10[%c0_5, %c0_5] (%results_5[%c0_5, %c0_5] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %20 = air.channel.get async [%async_token_4]  @channel_10[%c0_5, %c1_4] (%results_5[%c0_5, %c64_3] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %21 = air.channel.get async [%async_token_4]  @channel_10[%c0_5, %c2_2] (%results_5[%c0_5, %c128] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %22 = air.channel.get async [%async_token_4]  @channel_10[%c0_5, %c3_1] (%results_5[%c0_5, %c192] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %23 = air.channel.get async [%async_token_5]  @channel_10[%c1_4, %c0_5] (%results_6[%c0_5, %c0_5] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %24 = air.channel.get async [%async_token_5]  @channel_10[%c1_4, %c1_4] (%results_6[%c0_5, %c64_3] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %25 = air.channel.get async [%async_token_5]  @channel_10[%c1_4, %c2_2] (%results_6[%c0_5, %c128] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %26 = air.channel.get async [%async_token_5]  @channel_10[%c1_4, %c3_1] (%results_6[%c0_5, %c192] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %27 = air.channel.get async [%async_token_6]  @channel_10[%c2_2, %c0_5] (%results_6[%c0_5, %c0_5] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %28 = air.channel.get async [%async_token_6]  @channel_10[%c2_2, %c1_4] (%results_6[%c0_5, %c64_3] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %29 = air.channel.get async [%async_token_6]  @channel_10[%c2_2, %c2_2] (%results_6[%c0_5, %c128] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %30 = air.channel.get async [%async_token_6]  @channel_10[%c2_2, %c3_1] (%results_6[%c0_5, %c192] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %31 = air.channel.get async [%async_token_7]  @channel_10[%c3_1, %c0_5] (%results_6[%c0_5, %c0_5] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %32 = air.channel.get async [%async_token_7]  @channel_10[%c3_1, %c1_4] (%results_6[%c0_5, %c64_3] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %33 = air.channel.get async [%async_token_7]  @channel_10[%c3_1, %c2_2] (%results_6[%c0_5, %c128] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %34 = air.channel.get async [%async_token_7]  @channel_10[%c3_1, %c3_1] (%results_6[%c0_5, %c192] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<64x256xbf16, 1>)
+        %async_token_8 = air.wait_all async [%async_token_4, %async_token_5, %async_token_6, %async_token_7]
+        %12 = air.herd @herd_0 async [%async_token_8]  tile (%arg8, %arg9) in (%arg10=%c4, %arg11=%c4) attributes {id = 3 : i32, link_with = "mm.o", x_loc = 0 : i64, y_loc = 3 : i64} {
           %c64_10 = arith.constant 64 : index
           %c256_11 = arith.constant 256 : index
           %c4_12 = arith.constant 4 : index
@@ -927,19 +943,28 @@ module {
             %alloc = memref.alloc() : memref<16x16x4x4xbf16, 2>
             air.execute_terminator %alloc : memref<16x16x4x4xbf16, 2>
           }
-          %18 = air.channel.put async [%async_token_15]  @channel_10[%arg8, %arg9] (%results_16[%c0_14, %c0_14, %c0_14] [%c64_10, %c16, %c4_12] [%c4_12, %c256_11, %c1_13]) {id = 44 : i32} : (memref<16x16x4x4xbf16, 2>)
-          %async_token_17 = air.execute [%18] {
+          %35 = air.channel.put async [%async_token_15]  @channel_10[%arg8, %arg9] (%results_16[%c0_14, %c0_14, %c0_14] [%c64_10, %c16, %c4_12] [%c4_12, %c256_11, %c1_13]) {id = 44 : i32} : (memref<16x16x4x4xbf16, 2>)
+          %async_token_17 = air.execute [%35] {
             memref.dealloc %results_16 : memref<16x16x4x4xbf16, 2>
           }
           air.herd_terminator
         }
-        %13 = air.channel.put async [%12]  @channel_12[%c0_5, %c0_5] (%results_8[%c0_5, %c0_5] [%c64_3, %c256_6] [%c256_6, %c1_4]) {id = 45 : i32} : (memref<256x256xbf16, 1>)
-        %14 = air.channel.put async [%12]  @channel_12[%c1_4, %c0_5] (%results_8[%c64_3, %c0_5] [%c64_3, %c256_6] [%c256_6, %c1_4]) {id = 46 : i32} : (memref<256x256xbf16, 1>)
-        %15 = air.channel.put async [%12]  @channel_12[%c2_2, %c0_5] (%results_8[%c128, %c0_5] [%c64_3, %c256_6] [%c256_6, %c1_4]) {id = 47 : i32} : (memref<256x256xbf16, 1>)
-        %16 = air.channel.put async [%12]  @channel_12[%c3_1, %c0_5] (%results_8[%c192, %c0_5] [%c64_3, %c256_6] [%c256_6, %c1_4]) {id = 48 : i32} : (memref<256x256xbf16, 1>)
+        %13 = air.channel.put async [%12]  @channel_0[] (%results_5[] [] []) {id = 45 : i32} : (memref<64x256xbf16, 1>)
+        %14 = air.channel.put async [%12]  @channel_1[] (%results_6[] [] []) {id = 46 : i32} : (memref<64x256xbf16, 1>)
+        %15 = air.channel.put async [%12]  @channel_2[] (%results_7[] [] []) {id = 47 : i32} : (memref<64x256xbf16, 1>)
+        %16 = air.channel.put async [%12]  @channel_3[] (%results_8[] [] []) {id = 48 : i32} : (memref<64x256xbf16, 1>)
         %17 = air.wait_all async [%13, %14, %15, %16] 
         %async_token_9 = air.execute [%17] {
-          memref.dealloc %results_8 : memref<256x256xbf16, 1>
+          memref.dealloc %results_5 : memref<64x256xbf16, 1>
+        }
+        %async_token_10 = air.execute [%17] {
+          memref.dealloc %results_6 : memref<64x256xbf16, 1>
+        }
+        %async_token_11 = air.execute [%17] {
+          memref.dealloc %results_7 : memref<64x256xbf16, 1>
+        }
+        %async_token_12 = air.execute [%17] {
+          memref.dealloc %results_8 : memref<64x256xbf16, 1>
         }
         air.segment_terminator
       }
@@ -948,4 +973,3 @@ module {
     return
   }
 }
-
