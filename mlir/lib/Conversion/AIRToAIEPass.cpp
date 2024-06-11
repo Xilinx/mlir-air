@@ -1613,9 +1613,16 @@ private:
       deps = put.getAsyncDependencies();
     }
     SmallVector<Value, 4> indices = {};
+    // Canonicalize wrap and stride lists after specialization
+    SmallVector<Value> offsets = put.getSrcOffsets();
+    SmallVector<Value> wraps = put.getSrcSizes();
+    SmallVector<Value> strides = put.getSrcStrides();
+    (void)canonicalizeWrapAndStrideList(
+        builder, offsets, wraps, strides,
+        air::getTensorVolume(put.getSrc().getType()));
     auto new_put = builder.create<air::ChannelPutOp>(
         put->getLoc(), tys, deps, chan.getSymName(), indices, put.getSrc(),
-        put.getSrcOffsets(), put.getSrcSizes(), put.getSrcStrides());
+        offsets, wraps, strides);
     new_put->setAttr(
         "id",
         IntegerAttr::get(IntegerType::get(put->getContext(), 32), put.getId()));
@@ -1632,9 +1639,16 @@ private:
       deps = get.getAsyncDependencies();
     }
     SmallVector<Value, 4> indices = {};
+    // Canonicalize wrap and stride lists after specialization
+    SmallVector<Value> offsets = get.getDstOffsets();
+    SmallVector<Value> wraps = get.getDstSizes();
+    SmallVector<Value> strides = get.getDstStrides();
+    (void)canonicalizeWrapAndStrideList(
+        builder, offsets, wraps, strides,
+        air::getTensorVolume(get.getDst().getType()));
     auto new_get = builder.create<air::ChannelGetOp>(
         get->getLoc(), tys, deps, chan.getSymName(), indices, get.getDst(),
-        get.getDstOffsets(), get.getDstSizes(), get.getDstStrides());
+        offsets, wraps, strides);
     new_get->setAttr(
         "id",
         IntegerAttr::get(IntegerType::get(get->getContext(), 32), get.getId()));
