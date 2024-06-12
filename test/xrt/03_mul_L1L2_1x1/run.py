@@ -123,7 +123,6 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                             DeallocOp(l1_tile_b)
                             DeallocOp(l1_tile_c)
                             yield_([])
-                        HerdTerminatorOp()
 
                     # get from L1, put to L2
                     ChannelGet("ChanL1C", [], l2_tile_c)
@@ -133,9 +132,6 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                     DeallocOp(l2_tile_b)
                     DeallocOp(l2_tile_c)
                     yield_([])
-                SegmentTerminatorOp()
-
-            LaunchTerminatorOp()
 
 
 def run_test(size, idtype, odtype):

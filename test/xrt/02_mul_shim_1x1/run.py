@@ -93,11 +93,6 @@ def build_module(shape, idtype, odtype, tile_size):
                         DeallocOp(tile_b)
                         DeallocOp(tile_c)
                         yield_([])
-                    HerdTerminatorOp()
-
-                SegmentTerminatorOp()
-
-            LaunchTerminatorOp()
 
 
 def run_test(size, idtype, odtype):

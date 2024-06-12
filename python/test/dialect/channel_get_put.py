@@ -73,11 +73,6 @@ def build_module(shape, idtype, odtype):
                         DeallocOp(tile_c)
                         ChannelPut("ChanC", [], tile_c)
                         yield_([])
-                    HerdTerminatorOp()
-
-                SegmentTerminatorOp()
-
-            LaunchTerminatorOp()
 
 
 module = build_module([1024], np.int32, np.int32)
