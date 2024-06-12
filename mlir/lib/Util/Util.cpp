@@ -838,71 +838,85 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
     listsHaveChanged = true;
   }
 
+  // Erase dims; recalculate offsets if needed.
+  auto eraseWrapNStrideDim = [](OpBuilder builder, SmallVector<int> erase_dims,
+                                SmallVector<Value> &offsets,
+                                SmallVector<Value> &sizes,
+                                SmallVector<Value> &strides) {
+    bool erased = false;
+    for (auto i : erase_dims) {
+      auto const_offset = getConstantIntValue(offsets[i]);
+      if (const_offset && *const_offset == 0) {
+        offsets.erase(offsets.begin() + i);
+        sizes.erase(sizes.begin() + i);
+        strides.erase(strides.begin() + i);
+        erased = true;
+        continue;
+      }
+      // Propagate any non-zero offset to the next dimension
+      if (offsets.begin() + i + 1 == offsets.end())
+        continue;
+      auto const_stride = getConstantIntValue(strides[i]);
+      assert(const_stride && "non-static stride, NYI.");
+      auto const_offset_next = getConstantIntValue(offsets[i + 1]);
+      if (!const_offset_next)
+        continue;
+      auto const_stride_next = getConstantIntValue(strides[i + 1]);
+      assert(const_stride_next && "non-static stride, NYI.");
+      if (const_offset) {
+        offsets[i + 1] = builder.create<arith::ConstantIndexOp>(
+            builder.getUnknownLoc(),
+            (*const_stride) * (*const_offset) / (*const_stride_next) +
+                (*const_offset_next));
+      } else {
+        // Get affine.apply which produces the offset ssa
+        Operation *offset_producer = offsets[i].getDefiningOp();
+        if (!offset_producer)
+          continue;
+        if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
+          offset_producer = exec.getChildOp();
+        auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
+        assert(affine_apply && "ssa offset not produced by affine.apply, NYI.");
+        // Compose affine map
+        auto offset_expr = getAffineSymbolExpr(0, builder.getContext());
+        auto stride_expr =
+            getAffineConstantExpr(*const_stride, builder.getContext());
+        auto next_stride_expr =
+            getAffineConstantExpr(*const_stride_next, builder.getContext());
+        offset_expr = offset_expr * stride_expr;
+        offset_expr = offset_expr.ceilDiv(next_stride_expr);
+        offset_expr = offset_expr + getAffineConstantExpr(*const_offset_next,
+                                                          builder.getContext());
+        SmallVector<AffineExpr, 8> symReplacements(
+            affine_apply.getAffineMap().getResults().begin(),
+            affine_apply.getAffineMap().getResults().end());
+        offset_expr = offset_expr.replaceDimsAndSymbols({}, symReplacements);
+        auto next_offset_map = AffineMap::get(0, 1, offset_expr);
+        affine_apply.setMap(next_offset_map);
+        offsets[i + 1] = offsets[i];
+      }
+      offsets.erase(offsets.begin() + i);
+      sizes.erase(sizes.begin() + i);
+      strides.erase(strides.begin() + i);
+      erased = true;
+    }
+    return erased;
+  };
+
   // Canonicalize dimensions with size = 1
-  SmallVector<int> unit_dims;
+  SmallVector<int> erase_dims;
   for (int i = sizes.size() - 1; i >= 0; i--) {
     auto const_size = getConstantIntValue(sizes[i]);
     if (!const_size)
       continue;
     if (*const_size != 1)
       continue;
-    unit_dims.push_back(i);
+    erase_dims.push_back(i);
   }
-  for (auto i : unit_dims) {
-    auto const_offset = getConstantIntValue(offsets[i]);
-    if (const_offset && *const_offset == 0) {
-      offsets.erase(offsets.begin() + i);
-      sizes.erase(sizes.begin() + i);
-      strides.erase(strides.begin() + i);
-      listsHaveChanged = true;
-      continue;
-    }
-    // Propagate any non-zero offset to the next dimension
-    if (offsets.begin() + i + 1 == offsets.end())
-      continue;
-    auto const_stride = getConstantIntValue(strides[i]);
-    assert(const_stride && "non-static stride, NYI.");
-    auto const_offset_next = getConstantIntValue(offsets[i + 1]);
-    if (!const_offset_next)
-      continue;
-    auto const_stride_next = getConstantIntValue(strides[i + 1]);
-    assert(const_stride_next && "non-static stride, NYI.");
-    if (const_offset) {
-      offsets[i + 1] = builder.create<arith::ConstantIndexOp>(
-          builder.getUnknownLoc(),
-          (*const_stride) * (*const_offset) / (*const_stride_next) +
-              (*const_offset_next));
-    } else {
-      // Get affine.apply which produces the offset ssa
-      Operation *offset_producer = offsets[i].getDefiningOp();
-      if (!offset_producer)
-        continue;
-      if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
-        offset_producer = exec.getChildOp();
-      auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
-      assert(affine_apply && "ssa offset not produced by affine.apply, NYI.");
-      // Compose affine map
-      auto next_offset_expr = getAffineSymbolExpr(0, builder.getContext());
-      auto stride_expr =
-          getAffineConstantExpr(*const_stride, builder.getContext());
-      auto next_stride_expr =
-          getAffineConstantExpr(*const_stride_next, builder.getContext());
-      next_offset_expr = next_offset_expr * stride_expr;
-      next_offset_expr = next_offset_expr.ceilDiv(next_stride_expr);
-      SmallVector<AffineExpr, 8> symReplacements(
-          affine_apply.getAffineMap().getResults().begin(),
-          affine_apply.getAffineMap().getResults().end());
-      next_offset_expr =
-          next_offset_expr.replaceDimsAndSymbols({}, symReplacements);
-      auto next_offset_map = AffineMap::get(0, 1, next_offset_expr);
-      affine_apply.setMap(next_offset_map);
-      offsets[i + 1] = offsets[i];
-    }
-    offsets.erase(offsets.begin() + i);
-    sizes.erase(sizes.begin() + i);
-    strides.erase(strides.begin() + i);
-    listsHaveChanged = true;
-  }
+
+  listsHaveChanged |=
+      eraseWrapNStrideDim(builder, erase_dims, offsets, sizes, strides);
+  erase_dims.clear();
 
   // Canonicalize adjacent dimensions
   if (!sizes.empty()) {
