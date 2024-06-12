@@ -6,6 +6,7 @@
 
 # RUN: %PYTHON %s | FileCheck %s
 from air.ir import *
+from air.dialects.air import module_builder
 from air.dialects import func
 from air.dialects import linalg
 
@@ -27,17 +28,17 @@ def run(f):
 # CHECK:    "writes": 512
 @run
 def matmul_on_buffers_test():
-    with Context() as ctx, Location.unknown():
-        module = Module.create()
+    @module_builder
+    def my_module():
         f32 = F32Type.get()
-        with InsertionPoint(module.body):
 
-            @func.FuncOp.from_py_func(
-                MemRefType.get((4, 16), f32),
-                MemRefType.get((16, 8), f32),
-                MemRefType.get((4, 8), f32),
-            )
-            def matmul_on_buffers(lhs, rhs, out):
-                linalg.matmul(lhs, rhs, outs=[out])
+        @func.FuncOp.from_py_func(
+            MemRefType.get((4, 16), f32),
+            MemRefType.get((16, 8), f32),
+            MemRefType.get((4, 8), f32),
+        )
+        def matmul_on_buffers(lhs, rhs, out):
+            linalg.matmul(lhs, rhs, outs=[out])
 
-        print(CostModel().op_stats(module.operation))
+    module = my_module()
+    print(CostModel().op_stats(module.operation))

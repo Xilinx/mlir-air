@@ -4,6 +4,8 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
+import functools
+
 from ..ir import *
 from ._air_ops_gen import *
 from . import arith
@@ -227,6 +229,18 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
 dma_memcpy_nd = DmaMemcpyNd
 
 
-herd = region_op(Herd)
-launch = region_op(Launch)
-segment = region_op(Segment)
+def module_builder(module_function):
+    @functools.wraps(module_function)
+    def module_builder_wrapper(*args, **kwargs):
+        with Context() as ctx, Location.unknown():
+            module = Module.create()
+            with InsertionPoint(module.body):
+                module_function(*args, **kwargs)
+        return module
+
+    return module_builder_wrapper
+
+
+herd = region_op(Herd, terminator=lambda *_args: HerdTerminatorOp())
+launch = region_op(Launch, terminator=lambda *_args: LaunchTerminatorOp())
+segment = region_op(Segment, terminator=lambda *_args: SegmentTerminatorOp())
