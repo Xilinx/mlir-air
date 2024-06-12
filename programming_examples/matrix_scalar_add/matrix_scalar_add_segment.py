@@ -32,7 +32,13 @@ def build_module():
                     ChannelGet("ChanOut", b)
 
                     # The arguments are still the input and the output
-                    @segment(name="seg", sizes=[IMAGE_SIZE[0] // TILE_SIZE[0], IMAGE_SIZE[1] // TILE_SIZE[1]])
+                    @segment(
+                        name="seg",
+                        sizes=[
+                            IMAGE_SIZE[0] // TILE_SIZE[0],
+                            IMAGE_SIZE[1] // TILE_SIZE[1],
+                        ],
+                    )
                     def segment_body(s0, s1, s2, s3):
 
                         # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.

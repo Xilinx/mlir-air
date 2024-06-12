@@ -36,7 +36,13 @@ def build_module():
                     def segment_body():
 
                         # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                        @herd(name="addherd", sizes=[IMAGE_SIZE[0] // TILE_SIZE[0], IMAGE_SIZE[1] // TILE_SIZE[1]])
+                        @herd(
+                            name="addherd",
+                            sizes=[
+                                IMAGE_SIZE[0] // TILE_SIZE[0],
+                                IMAGE_SIZE[1] // TILE_SIZE[1],
+                            ],
+                        )
                         def herd_body(tx, ty, sx, sy):
 
                             # We want to store our data in L1 memory

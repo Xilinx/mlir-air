@@ -76,7 +76,9 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "tile_method", type=str, choices=["implicit", "channel", "launch", "herd", "segment"]
+        "tile_method",
+        type=str,
+        choices=["implicit", "channel", "launch", "herd", "segment"],
     )
     args = parser.parse_args()
 
