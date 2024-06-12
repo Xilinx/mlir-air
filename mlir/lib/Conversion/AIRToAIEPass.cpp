@@ -463,6 +463,9 @@ struct CanonicalizeChannelPutWrapsAndStridesPattern
     new_put->setAttr(
         "id",
         IntegerAttr::get(IntegerType::get(op->getContext(), 32), op.getId()));
+    assert(op->getNumResults() == new_put->getNumResults());
+    for (unsigned i = 0; i < op->getNumResults(); i++)
+      op->getResult(i).replaceAllUsesWith(new_put->getResult(i));
     rewriter.eraseOp(op);
     return success();
   }
@@ -493,6 +496,9 @@ struct CanonicalizeChannelGetWrapsAndStridesPattern
     new_get->setAttr(
         "id",
         IntegerAttr::get(IntegerType::get(op->getContext(), 32), op.getId()));
+    assert(op->getNumResults() == new_get->getNumResults());
+    for (unsigned i = 0; i < op->getNumResults(); i++)
+      op->getResult(i).replaceAllUsesWith(new_get->getResult(i));
     rewriter.eraseOp(op);
     return success();
   }
