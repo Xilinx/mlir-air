@@ -9,7 +9,6 @@ from air.dialects.air import *
 from air.dialects.func import FuncOp, ReturnOp
 from air.dialects.linalg import elemwise_binary
 from air.dialects.linalg.opdsl.lang import BinaryFn, TypeFn
-from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.scf import for_, yield_
 from air.ir import *
 
@@ -79,9 +78,9 @@ def build_module(shape, idtype, odtype, tile_size):
                                 memory_space=mem_space,
                             )
                             for _ in for_(shape[0] // tile_size):
-                                tile_a = AllocOp(itile_type, [], [])
-                                tile_b = AllocOp(itile_type, [], [])
-                                tile_c = AllocOp(otile_type, [], [])
+                                tile_a = Alloc(itile_type)
+                                tile_b = Alloc(itile_type)
+                                tile_c = Alloc(otile_type)
                                 ChannelGet("ChanA", tile_a)
                                 ChannelGet("ChanB", tile_b)
                                 elemwise_binary(
@@ -92,9 +91,9 @@ def build_module(shape, idtype, odtype, tile_size):
                                     cast=TypeFn.cast_unsigned,
                                 )
                                 ChannelPut("ChanC", tile_c)
-                                DeallocOp(tile_a)
-                                DeallocOp(tile_b)
-                                DeallocOp(tile_c)
+                                Dealloc(tile_a)
+                                Dealloc(tile_b)
+                                Dealloc(tile_c)
                                 yield_([])
                             HerdTerminatorOp()
 

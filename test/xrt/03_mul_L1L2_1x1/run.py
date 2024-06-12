@@ -9,7 +9,6 @@ from air.dialects.air import *
 from air.dialects.func import FuncOp, ReturnOp
 from air.dialects.linalg import elemwise_binary
 from air.dialects.linalg.opdsl.lang import BinaryFn, TypeFn
-from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.scf import for_, yield_
 from aie.dialects.arith import ConstantOp
 from air.ir import *
@@ -102,9 +101,9 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                     @segment(name="segment_0")
                     def segment_body():
                         for _ in for_(l3_shape[0] // l2_shape[0]):
-                            l2_tile_a = AllocOp(l2_itile_type, [], [])
-                            l2_tile_b = AllocOp(l2_itile_type, [], [])
-                            l2_tile_c = AllocOp(l2_otile_type, [], [])
+                            l2_tile_a = Alloc(l2_itile_type)
+                            l2_tile_b = Alloc(l2_itile_type)
+                            l2_tile_c = Alloc(l2_otile_type)
 
                             # get from L2, put to L1
                             ChannelGet("ChanL2A", l2_tile_a)
@@ -115,9 +114,9 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                             @herd(name="herd_0", sizes=[1, 1])
                             def herd_body(x, y, sx, sy):
                                 for _ in for_(l2_shape[0] // l1_shape[0]):
-                                    l1_tile_a = AllocOp(l1_itile_type, [], [])
-                                    l1_tile_b = AllocOp(l1_itile_type, [], [])
-                                    l1_tile_c = AllocOp(l1_otile_type, [], [])
+                                    l1_tile_a = Alloc(l1_itile_type)
+                                    l1_tile_b = Alloc(l1_itile_type)
+                                    l1_tile_c = Alloc(l1_otile_type)
                                     ChannelGet("ChanL1A", l1_tile_a)
                                     ChannelGet("ChanL1B", l1_tile_b)
                                     elemwise_binary(
@@ -128,9 +127,9 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                                         cast=TypeFn.cast_unsigned,
                                     )
                                     ChannelPut("ChanL1C", l1_tile_c)
-                                    DeallocOp(l1_tile_a)
-                                    DeallocOp(l1_tile_b)
-                                    DeallocOp(l1_tile_c)
+                                    Dealloc(l1_tile_a)
+                                    Dealloc(l1_tile_b)
+                                    Dealloc(l1_tile_c)
                                     yield_([])
                                 HerdTerminatorOp()
 
@@ -138,9 +137,9 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
                             ChannelGet("ChanL1C", l2_tile_c)
                             ChannelPut("ChanL2C", l2_tile_c)
 
-                            DeallocOp(l2_tile_a)
-                            DeallocOp(l2_tile_b)
-                            DeallocOp(l2_tile_c)
+                            Dealloc(l2_tile_a)
+                            Dealloc(l2_tile_b)
+                            Dealloc(l2_tile_c)
                             yield_([])
                         SegmentTerminatorOp()
 

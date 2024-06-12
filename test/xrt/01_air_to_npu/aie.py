@@ -1,6 +1,7 @@
 import air
 import air.compiler.util
 from air.dialects import linalg, tensor, arith, func, memref
+from air.dialects.air import Alloc
 from air.ir import *
 import air.passmanager
 from air.dialects import air as airdialect
@@ -17,7 +18,7 @@ def matmul_on_tensors(m, n, k, dtype):
             MemRefType.get((m, k), dtype), MemRefType.get((k, n), dtype)
         )
         def forward(lhs, rhs):
-            out = memref.AllocOp(MemRefType.get((m, n), dtype), [], [])
+            out = Alloc(MemRefType.get((m, n), dtype))
             zero = arith.ConstantOp(dtype, 0)
             zero_fill = linalg.fill(zero, outs=[out])
             linalg.matmul(lhs, rhs, outs=[out])
