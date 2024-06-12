@@ -84,15 +84,9 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
         def launch_body(i, s, a, b, c):
             m = arith.ConstantOp.create_index(l2_shape[0])
             o = arith.MulIOp(m, i)
-            ChannelPut(
-                "ChanL2A", a, src_offsets=[o], src_strides=[m], src_sizes=[1]
-            )
-            ChannelPut(
-                "ChanL2B", b, src_offsets=[o], src_strides=[m], src_sizes=[1]
-            )
-            ChannelGet(
-                "ChanL2C", c, dst_offsets=[o], dst_strides=[m], dst_sizes=[1]
-            )
+            ChannelPut("ChanL2A", a, src_offsets=[o], src_strides=[m], src_sizes=[1])
+            ChannelPut("ChanL2B", b, src_offsets=[o], src_strides=[m], src_sizes=[1])
+            ChannelGet("ChanL2C", c, dst_offsets=[o], dst_strides=[m], dst_sizes=[1])
 
             @segment(name="segment_0")
             def segment_body():

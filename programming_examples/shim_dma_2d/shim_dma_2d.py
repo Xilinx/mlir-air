@@ -82,7 +82,6 @@ def build_module():
                     # Deallocate our L1 buffers
                     Dealloc(tile_in)
                     Dealloc(tile_out)
-    return module
 
 
 if __name__ == "__main__":
