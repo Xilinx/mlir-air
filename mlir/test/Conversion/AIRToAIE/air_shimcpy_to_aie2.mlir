@@ -973,3 +973,85 @@ module {
     return
   }
 }
+
+// -----
+
+// Wrap-and-stride list canonicalization during herd outlining.
+// CHECK: aie.device(xcve2802)
+// CHECK: %[[tile_2_0:.*]] = aie.tile(2, 0)
+// CHECK: %[[tile_2_1:.*]] = aie.tile(2, 1)
+// CHECK: %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK:  %[[VAL_0:.*]] = aie.mem(%[[tile_2_3]]) {
+// CHECK:    %[[VAL_1:.*]] = aie.dma_start(MM2S, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:  ^bb1:
+// CHECK:    aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:    aie.dma_bd(%{{.*}} : memref<1x1x16x16x4x4xf32, 2 : i32>, 0, 4096, [<size = 64, stride = 4>, <size = 16, stride = 256>, <size = 4, stride = 1>])
+// CHECK:    aie.use_lock(%{{.*}}, Release, 1)
+// CHECK:    aie.next_bd ^bb1
+// CHECK:  ^bb2:
+// CHECK:    aie.end
+// CHECK:  }
+// CHECK: @func13
+
+#map = affine_map<()[s0] -> (s0 * 64)>
+#map1 = affine_map<()[s0] -> (s0 * 16)>
+module {
+  air.channel @channel_9 [1, 1]
+  air.channel @channel_8 [1, 1]
+  func.func @func13(%arg0: memref<64x64xf32>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg1, %arg2) in (%arg3=%c1, %arg4=%c1) args(%arg5=%arg0) : memref<64x64xf32> attributes {id = 1 : i32} {
+      %c64 = arith.constant 64 : index
+      %c1_0 = arith.constant 1 : index
+      %async_token, %results = air.execute -> (index) {
+        %3 = affine.apply #map()[%arg1]
+        air.execute_terminator %3 : index
+      }
+      %async_token_1, %results_2 = air.execute -> (index) {
+        %3 = affine.apply #map()[%arg2]
+        air.execute_terminator %3 : index
+      }
+      %1 = air.channel.get async [%async_token, %async_token_1]  @channel_9[] (%arg5[%results, %results_2] [%c64, %c64] [%c64, %c1_0]) {id = 5 : i32} : (memref<64x64xf32>)
+      %2 = air.segment @segment0 async  {
+        %c0 = arith.constant 0 : index
+        %c1_3 = arith.constant 1 : index
+        %async_token_4, %results_5 = air.execute -> (memref<1x1x64x64xf32, 1 : i32>) {
+          %alloc = memref.alloc() : memref<1x1x64x64xf32, 1 : i32>
+          air.execute_terminator %alloc : memref<1x1x64x64xf32, 1 : i32>
+        }
+        %async_token_6, %results_7 = air.execute -> (memref<1x1x16x16x4x4xf32, 2 : i32>) {
+          %alloc = memref.alloc() : memref<1x1x16x16x4x4xf32, 2 : i32>
+          air.execute_terminator %alloc : memref<1x1x16x16x4x4xf32, 2 : i32>
+        }
+        %3 = air.channel.get async  @channel_8[%c0, %c0] (%results_5[] [] []) {id = 16 : i32} : (memref<1x1x64x64xf32, 1 : i32>)
+        %4 = air.herd @herd_0 async [%async_token_4]  tile (%arg6, %arg7) in (%arg8=%c1_3, %arg9=%c1_3) args(%arg10=%results_7) : memref<1x1x16x16x4x4xf32, 2 : i32> {
+          %c4 = arith.constant 4 : index
+          %c16 = arith.constant 16 : index
+          %c1_10 = arith.constant 1 : index
+          %c256 = arith.constant 256 : index
+          %c0_11 = arith.constant 0 : index
+          %async_token_12, %results_13 = air.execute -> (index) {
+            %7 = affine.apply #map1()[%arg6]
+            air.execute_terminator %7 : index
+          }
+          %async_token_14, %results_15 = air.execute -> (index) {
+            %7 = affine.apply #map1()[%arg7]
+            air.execute_terminator %7 : index
+          }
+          %6 = air.channel.put async  @channel_8[%arg6, %arg7] (%arg10[%results_13, %c0_11, %results_15, %c0_11] [%c16, %c4, %c16, %c4] [%c16, %c4, %c256, %c1_10]) {id = 19 : i32} : (memref<1x1x16x16x4x4xf32, 2 : i32>)
+          air.herd_terminator
+        }
+        %5 = air.channel.put async [%4]  @channel_9[] (%results_5[] [] []) {id = 20 : i32} : (memref<1x1x64x64xf32, 1 : i32>)
+        %async_token_8 = air.execute [%4] {
+          memref.dealloc %results_7 : memref<1x1x16x16x4x4xf32, 2 : i32>
+        }
+        %async_token_9 = air.execute [%4] {
+          memref.dealloc %results_5 : memref<1x1x64x64xf32, 1 : i32>
+        }
+        air.segment_terminator
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
