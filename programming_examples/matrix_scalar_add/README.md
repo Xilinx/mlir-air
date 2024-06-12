@@ -22,14 +22,14 @@ For illustrative purposes, we provide five different ways specify data tiling in
 
 #### ```channel```: Tiling using channel sizes, offsets, and strides
 
-This example uses channel *sizes*, *offsets*, and *strides* to explicitly loop over the image worth of data to read, increment, and write to one tile at a time. The entirety of the work is done by one launch which manages one segment which manages one herd which manages one core. This is the only example that explicitly uses only one core to do all of the processing.
+This example ([matrix_scalar_add_channel.py](matrix_scalar_add_channel.py)) uses channel *sizes*, *offsets*, and *strides* to explicitly loop over the image worth of data to read, increment, and write to one tile at a time. The entirety of the work is done by one launch which manages one segment which manages one herd which manages one core. This is the only example that explicitly uses only one core to do all of the processing.
 ```bash
 make clean && make channel
 ```
 
 #### ```herd```: Tiling using a herd managing multiple cores
 
-This example uses herds and the internal logic of channels to process all the tiles. Here, there is one launch and one segment and one herd, but a herd of a larger size: one core per tile to process in the image.
+This example ([matrix_scalar_add_herd.py](matrix_scalar_add_herd.py)) uses herds and the internal logic of channels to process all the tiles. Here, there is one launch and one segment and one herd, but a herd of a larger size: one core per tile to process in the image.
 
 TODO: is this example correct? Do we need to specify the offsets, etc. to make sure we aren't doing extra work?
 
@@ -39,7 +39,7 @@ make clean && make herd
 
 #### ```segment```: Tiling using multiple segments
 
-This example uses segments and the internal logic of channels to process all the tiles. Here, there is one launch and several segments: one segment per tile. Each segment consists of a single herd and each of those herds manages a single core which processes one tile. The structure of this example is very similar to the herd example.
+This example ([matrix_scalar_add_segment.py](matrix_scalar_add_segment.py))  uses segments and the internal logic of channels to process all the tiles. Here, there is one launch and several segments: one segment per tile. Each segment consists of a single herd and each of those herds manages a single core which processes one tile. The structure of this example is very similar to the herd example.
 
 TODO: is this example correct? Do we need to specify the offsets, etc. to make sure we aren't doing extra work?
 
@@ -49,7 +49,7 @@ make clean && make segment
 
 #### ```launch```: Tiling using multiple launches
 
-This example uses launches and channel sizes, strides, and offsets. Each launch only reads/writes a single tile from the input/output. Each launch then manages a single segment, herd, and core, and that core processes the single tile of data.
+This example ([matrix_scalar_add_launch.py](matrix_scalar_add_launch.py)) uses launches and channel sizes, strides, and offsets. Each launch only reads/writes a single tile from the input/output. Each launch then manages a single segment, herd, and core, and that core processes the single tile of data.
 
 ```bash
 make clean && make launch
@@ -57,7 +57,7 @@ make clean && make launch
 
 #### ```implicit```: Tiling using channels and data sizes
 
-This example demonstrates the power of the channel abstraction. Here, we provide no explicit instructions on how to iterate through the tiles or index into the input/output data. We simply specify the input/output channels with input/output of type ```i32 x IMAGE_SIZE```. Then, we use the channels on the core to only read/write ```i32 x TILE_SIZE```. mlir-air is able to infer by the difference between data types that we want to read/write all the data, so logic is added without the writer explicitly signalling for it to happen.
+This example ([matrix_scalar_add_implicit.py](matrix_scalar_add_implicit.py)) demonstrates the power of the channel abstraction. Here, we provide no explicit instructions on how to iterate through the tiles or index into the input/output data. We simply specify the input/output channels with input/output of type ```i32 x IMAGE_SIZE```. Then, we use the channels on the core to only read/write ```i32 x TILE_SIZE```. mlir-air is able to infer by the difference between data types that we want to read/write all the data, so logic is added without the writer explicitly signalling for it to happen.
 
 ```bash
 make clean && make implicit
