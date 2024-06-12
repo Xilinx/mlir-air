@@ -26,10 +26,32 @@ def build_module():
             def addone(arg0, arg1):
 
                 # The arguments are the input and output
-                @launch(operands=[arg0, arg1])
-                def launch_body(a, b):
-                    ChannelPut("ChanIn", a)
-                    ChannelGet("ChanOut", b)
+                @launch(
+                    sizes=[
+                        IMAGE_SIZE[0] // TILE_SIZE[0],
+                        IMAGE_SIZE[1] // TILE_SIZE[1],
+                    ],
+                    operands=[arg0, arg1],
+                )
+                def launch_body(i0, _s0, i1, _s1, a, b):
+                    m0 = arith.ConstantOp.create_index(TILE_SIZE[0])
+                    m1 = arith.ConstantOp.create_index(TILE_SIZE[1])
+                    o0 = arith.MulIOp(m0, i0)
+                    o1 = arith.MulIOp(m1, i1)
+                    ChannelPut(
+                        "ChanIn",
+                        a,
+                        src_offsets=[o0, o1],
+                        src_strides=[m0, m1],
+                        src_sizes=[1, 1],
+                    )
+                    ChannelGet(
+                        "ChanOut",
+                        b,
+                        dst_offsets=[o0, o1],
+                        dst_strides=[m0, m1],
+                        dst_sizes=[1, 1],
+                    )
 
                     # The arguments are still the input and the output
                     @segment(name="seg")
