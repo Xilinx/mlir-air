@@ -4,6 +4,8 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
+import functools
+
 from ..ir import *
 from ._air_ops_gen import *
 from . import arith
@@ -12,6 +14,13 @@ from ..extras.meta import region_op
 
 from air.dialects.memref import AllocOp, DeallocOp
 from ..extras import types as T
+
+
+def int_to_index(i):
+    """
+    Utility function to convert python int types to index types
+    """
+    return arith.ConstantOp.create_index(i) if isinstance(i, int) else i
 
 
 class Alloc(AllocOp):
@@ -46,8 +55,7 @@ class Launch(LaunchOp):
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        sizes = [arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) for i in sizes]
+        sizes = list(map(int_to_index, sizes))
         if name is not None:
             print(name)
             _ods_context = _ods_get_default_loc_context(loc)
@@ -76,8 +84,7 @@ class Segment(SegmentOp):
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        sizes = [arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) for i in sizes]
+        sizes = list(map(int_to_index, sizes))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
@@ -103,11 +110,7 @@ class Herd(HerdOp):
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        sizes = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in sizes
-        ]
+        sizes = list(map(int_to_index, sizes))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
@@ -133,23 +136,10 @@ class ChannelGet(ChannelGetOp):
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        indices_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in indices
-        ]
-        dst_offsets_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in dst_offsets
-        ]
-        dst_sizes_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in dst_sizes
-        ]
-        dst_strides_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in dst_strides
-        ]
+        indices_typed = list(map(int_to_index, indices))
+        dst_offsets_typed = list(map(int_to_index, dst_offsets))
+        dst_sizes_typed = list(map(int_to_index, dst_sizes))
+        dst_strides_typed = list(map(int_to_index, dst_strides))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
@@ -178,24 +168,10 @@ class ChannelPut(ChannelPutOp):
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        indices_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in indices
-        ]
-        src_offsets_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in src_offsets
-        ]
-        src_sizes_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in src_sizes
-        ]
-        src_strides_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in src_strides
-        ]
-
+        indices_typed = list(map(int_to_index, indices))
+        src_offsets_typed = list(map(int_to_index, src_offsets))
+        src_sizes_typed = list(map(int_to_index, src_sizes))
+        src_strides_typed = list(map(int_to_index, src_strides))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
@@ -226,33 +202,13 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         src_sizes=[],
         src_strides=[],
     ):
-        iTy = IndexType.get()
+        dst_offsets_typed = list(map(int_to_index, dst_offsets))
+        dst_sizes_typed = list(map(int_to_index, dst_sizes))
+        dst_strides_typed = list(map(int_to_index, dst_strides))
 
-        dst_offsets_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in dst_offsets
-        ]
-        dst_sizes_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in dst_sizes
-        ]
-        dst_strides_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in dst_strides
-        ]
-
-        src_offsets_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in src_offsets
-        ]
-        src_sizes_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in src_sizes
-        ]
-        src_strides_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in src_strides
-        ]
+        src_offsets_typed = list(map(int_to_index, src_offsets))
+        src_sizes_typed = list(map(int_to_index, src_sizes))
+        src_strides_typed = list(map(int_to_index, src_strides))
 
         super().__init__(
             async_token=async_token,

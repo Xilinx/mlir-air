@@ -50,30 +50,53 @@ def build_module():
                                 memory_space=mem_space,
                             )
 
-                            # We must allocate a buffer of the tile size for the input/output
-                            tile_in = Alloc(tile_type)
-                            tile_out = Alloc(tile_type)
+                            # Double forloop so we have one offset per file dimension, [t0, t1]
+                            for t0 in range_(IMAGE_SIZE[0] // TILE_SIZE[0]):
+                                for t1 in range_(IMAGE_SIZE[1] // TILE_SIZE[1]):
+                                    # We must allocate a buffer of the tile size for the input/output
+                                    tile_in = Alloc(tile_type)
+                                    tile_out = Alloc(tile_type)
 
-                            # Input a tile
-                            ChannelGet("ChanIn", tile_in)
+                                    # Calculate offsets
+                                    m0 = arith.ConstantOp.create_index(TILE_SIZE[0])
+                                    m1 = arith.ConstantOp.create_index(TILE_SIZE[1])
+                                    o0 = arith.MulIOp(m0, t0)
+                                    o1 = arith.MulIOp(m1, t1)
 
-                            # Copy the input tile into the output file while adding one
-                            for j in range_(TILE_HEIGHT):
-                                for i in range_(TILE_WIDTH):
-                                    val0 = load(tile_in, [i, j])
-                                    val1 = arith.addi(
-                                        val0, arith.ConstantOp(T.i32(), 1)
+                                    # Input a tile
+                                    ChannelGet(
+                                        "ChanIn",
+                                        tile_in,
+                                        dst_offsets=[o0, o1],
+                                        dst_strides=[m0, m1],
+                                        dst_sizes=[1, 1],
                                     )
-                                    store(val1, tile_out, [i, j])
+
+                                    # Copy the input tile into the output file while adding one
+                                    for j in range_(TILE_HEIGHT):
+                                        for i in range_(TILE_WIDTH):
+                                            val0 = load(tile_in, [i, j])
+                                            val1 = arith.addi(
+                                                val0, arith.ConstantOp(T.i32(), 1)
+                                            )
+                                            store(val1, tile_out, [i, j])
+                                            yield_([])
+                                        yield_([])
+
+                                    # Output the incremented tile
+                                    ChannelPut(
+                                        "ChanOut",
+                                        tile_out,
+                                        src_offsets=[o0, o1],
+                                        src_strides=[m0, m1],
+                                        src_sizes=[1, 1],
+                                    )
+
+                                    # Deallocate our L1 buffers
+                                    Dealloc(tile_in)
+                                    Dealloc(tile_out)
                                     yield_([])
                                 yield_([])
-
-                            # Output the incremented tile
-                            ChannelPut("ChanOut", tile_out)
-
-                            # Deallocate our L1 buffers
-                            Dealloc(tile_in)
-                            Dealloc(tile_out)
 
                             # We are done - terminate all layers
                             HerdTerminatorOp()
