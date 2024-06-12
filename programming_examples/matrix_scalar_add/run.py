@@ -14,6 +14,8 @@ from common import *
 import matrix_scalar_add_implicit
 import matrix_scalar_add_channel
 import matrix_scalar_add_launch
+import matrix_scalar_add_herd
+import matrix_scalar_add_segment
 
 KERNEL_NAME = "MLIR_AIE"
 
@@ -74,7 +76,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "tile_method", type=str, choices=["implicit", "channel", "launch"]
+        "tile_method", type=str, choices=["implicit", "channel", "launch", "herd", "segment"]
     )
     args = parser.parse_args()
 
@@ -82,6 +84,10 @@ if __name__ == "__main__":
         build_module = matrix_scalar_add_implicit.build_module
     elif args.tile_method == "channel":
         build_module = matrix_scalar_add_channel.build_module
-    else:
+    elif args.tile_method == "launch":
         build_module = matrix_scalar_add_launch.build_module
+    elif args.tile_method == "herd":
+        build_module = matrix_scalar_add_herd.build_module
+    else:
+        build_module = matrix_scalar_add_segment.build_module
     main(build_module)

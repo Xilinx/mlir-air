@@ -22,5 +22,14 @@ launch:
 	mkdir -p build
 	cd build && ${powershell} python3 ${srcdir}/run.py launch
 
+herd:
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/run.py herd
+
+segment:
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/run.py segment
+
+
 clean:
 	rm -rf build

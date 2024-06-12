@@ -50,7 +50,7 @@ def build_module():
                                 memory_space=mem_space,
                             )
 
-                            # Double forloop so we have one offset per file dimension, [t0, t1]
+                            # Double forloop so we have one offset per tile dimension, [t0, t1]
                             for t0 in range_(IMAGE_SIZE[0] // TILE_SIZE[0]):
                                 for t1 in range_(IMAGE_SIZE[1] // TILE_SIZE[1]):
                                     # We must allocate a buffer of the tile size for the input/output
@@ -72,7 +72,7 @@ def build_module():
                                         dst_sizes=[1, 1],
                                     )
 
-                                    # Copy the input tile into the output file while adding one
+                                    # Copy the input tile into the output tile while adding one
                                     for j in range_(TILE_HEIGHT):
                                         for i in range_(TILE_WIDTH):
                                             val0 = load(tile_in, [i, j])

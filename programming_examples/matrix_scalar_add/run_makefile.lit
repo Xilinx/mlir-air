@@ -9,4 +9,8 @@
  // RUN: make -f %S/Makefile launch | FileCheck %s
  // RUN: make -f %S/Makefile clean
  // RUN: make -f %S/Makefile channel | FileCheck %s
+  // RUN: make -f %S/Makefile clean
+ // RUN: make -f %S/Makefile herd | FileCheck %s
+  // RUN: make -f %S/Makefile clean
+ // RUN: make -f %S/Makefile segment | FileCheck %s
  // CHECK: PASS!
