@@ -4,9 +4,8 @@
 from air.ir import *
 from air.dialects.air import *
 from air.dialects import arith
-from air.dialects.affine import load, store
+from air.dialects.memref import load, store
 from air.dialects.func import FuncOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.scf import for_, yield_
 
 from common import *
@@ -52,8 +51,8 @@ def build_module():
                             )
 
                             # We must allocate a buffer of the tile size for the input/output
-                            tile_in = AllocOp(tile_type, [], [])
-                            tile_out = AllocOp(tile_type, [], [])
+                            tile_in = Alloc(tile_type)
+                            tile_out = Alloc(tile_type)
 
                             # Input a tile
                             ChannelGet("ChanIn", tile_in)
@@ -73,8 +72,8 @@ def build_module():
                             ChannelPut("ChanOut", tile_out)
 
                             # Deallocate our L1 buffers
-                            DeallocOp(tile_in)
-                            DeallocOp(tile_out)
+                            Dealloc(tile_in)
+                            Dealloc(tile_out)
 
                             # We are done - terminate all layers
                             HerdTerminatorOp()

@@ -3,9 +3,8 @@
 
 from air.ir import *
 from air.dialects.air import *
-from air.dialects.affine import load, store
-from air.dialects.func import FuncOp
 from air.dialects.memref import load, store
+from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 
 range_ = for_
