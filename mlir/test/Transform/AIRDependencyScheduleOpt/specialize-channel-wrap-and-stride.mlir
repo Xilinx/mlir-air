@@ -275,4 +275,30 @@ module {
     }
     return
   }
+
+  // Offset propagation with wrap-and-stride canonicalization.
+  // CHECK-LABEL: test9
+  // CHECK: %[[VAL0:.*]] = affine.apply #map()[%arg1]
+  // CHECK: put  @channel_21[] (%arg0[%c0, %c0, %[[VAL0]], %c0] [%c8, %c2, %c32, %c32] [%c32, %c8192, %c256, %c1]) : (memref<128x256xi32>)
+  // CHECK: air.channel.put  @channel_22[] (%arg2[%c256, %c0, %c0] [%c8, %c32, %c4] [%c4, %c32, %c1]) : (memref<1x2x32x32xi32, 1 : i32>)
+  // CHECK: air.channel.put  @channel_23[] (%arg3[%c128, %c0, %c0] [%c4, %c32, %c8] [%c8, %c32, %c1]) : (memref<2x1x32x32xi32, 1 : i32>)
+
+  func.func @test9(%arg0: memref<128x256xi32>, %arg1: index, %arg2: memref<1x2x32x32xi32, 1 : i32>, %arg3: memref<2x1x32x32xi32, 1 : i32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c4 = arith.constant 4 : index
+    %c8 = arith.constant 8 : index
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %c256 = arith.constant 256 : index
+    %c1024 = arith.constant 1024 : index
+    %c2048 = arith.constant 2048 : index
+    %c8192 = arith.constant 8192 : index
+    %results = affine.apply #map()[%arg1]
+    air.channel.put  @channel_21[] (%arg0[%c0, %c0, %results, %c0, %c0] [%c8, %c2, %c1, %c32, %c32] [%c32, %c8192, %c32, %c256, %c1]) : (memref<128x256xi32>)
+    air.channel.put  @channel_22[] (%arg2[%c0, %c1, %c0, %c0, %c0, %c0] [%c1, %c1, %c8, %c4, %c8, %c4] [%c2048, %c1024, %c4, %c256, %c32, %c1]) : (memref<1x2x32x32xi32, 1 : i32>)
+    air.channel.put  @channel_23[] (%arg3[%c1, %c0, %c0, %c0, %c0, %c0] [%c1, %c1, %c4, %c8, %c4, %c8] [%c1024, %c1024, %c8, %c128, %c32, %c1]) : (memref<2x1x32x32xi32, 1 : i32>)
+    return
+  }
 }
