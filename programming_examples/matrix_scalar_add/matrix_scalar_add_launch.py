@@ -18,6 +18,9 @@ def build_module():
         module = Module.create()
         with InsertionPoint(module.body):
             memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+
+            # Create two channels which will send/receive the
+            # input/output data respectively
             ChannelOp("ChanIn")
             ChannelOp("ChanOut")
 
@@ -33,32 +36,36 @@ def build_module():
                     ],
                     operands=[arg0, arg1],
                 )
-                def launch_body(i0, _s0, i1, _s1, a, b):
-                    m0 = arith.ConstantOp.create_index(TILE_SIZE[0])
-                    m1 = arith.ConstantOp.create_index(TILE_SIZE[1])
-                    o0 = arith.MulIOp(m0, i0)
-                    o1 = arith.MulIOp(m1, i1)
+                def launch_body(tile_index0, _s0, tile_index1, _s1, a, b):
+
+                    # Calculate the offset into the channel data, which is based on which tile index
+                    # we are at using tile_index0 and tile_index1 (provided in the launch context).
+                    # tile_index0 and tile_index1 are dynamic so we have to use specialized
+                    # operations do to calculations on them
+                    tile_size0 = arith.ConstantOp.create_index(TILE_SIZE[0])
+                    tile_size1 = arith.ConstantOp.create_index(TILE_SIZE[1])
+                    offset0 = arith.MulIOp(tile_size0, tile_index0)
+                    offset1 = arith.MulIOp(tile_size1, tile_index1)
                     ChannelPut(
                         "ChanIn",
                         a,
-                        src_offsets=[o0, o1],
-                        src_strides=[m0, m1],
+                        src_offsets=[offset0, offset1],
+                        src_strides=[tile_size0, tile_size1],
                         src_sizes=[1, 1],
                     )
                     ChannelGet(
                         "ChanOut",
                         b,
-                        dst_offsets=[o0, o1],
-                        dst_strides=[m0, m1],
+                        dst_offsets=[offset0, offset1],
+                        dst_strides=[tile_size0, tile_size1],
                         dst_sizes=[1, 1],
                     )
 
-                    # The arguments are still the input and the output
                     @segment(name="seg")
                     def segment_body():
 
-                        # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                        # We just need one compute core, so we ask for a 1x1 herd
+                        # The herd sizes correspond to the dimensions of the
+                        # contiguous block of cores we are hoping to get.
                         @herd(name="addherd", sizes=[1, 1])
                         def herd_body(tx, ty, sx, sy):
 
@@ -79,14 +86,20 @@ def build_module():
                             # Input a tile
                             ChannelGet("ChanIn", tile_in)
 
-                            # Copy the input tile into the output file while adding one
+                            # Copy the input tile into the output tile while adding one, one
+                            # i32 values at a time.
                             for j in range_(TILE_HEIGHT):
                                 for i in range_(TILE_WIDTH):
-                                    val0 = load(tile_in, [i, j])
-                                    val1 = arith.addi(
-                                        val0, arith.ConstantOp(T.i32(), 1)
+                                    # Load the input value from tile_in
+                                    val_in = load(tile_in, [i, j])
+
+                                    # Compute the output value
+                                    val_out = arith.addi(
+                                        val_in, arith.ConstantOp(T.i32(), 1)
                                     )
-                                    store(val1, tile_out, [i, j])
+
+                                    # Store the output value in tile_out
+                                    store(val_out, tile_out, [i, j])
                                     yield_([])
                                 yield_([])
 

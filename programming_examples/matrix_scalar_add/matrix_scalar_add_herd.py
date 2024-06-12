@@ -18,6 +18,9 @@ def build_module():
         module = Module.create()
         with InsertionPoint(module.body):
             memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+
+            # Create two channels which will send/receive the
+            # input/output data respectively
             ChannelOp("ChanIn")
             ChannelOp("ChanOut")
 
@@ -28,17 +31,21 @@ def build_module():
                 # The arguments are the input and output
                 @launch(operands=[arg0, arg1])
                 def launch_body(a, b):
+
+                    # Read/write the data regions represented by the parameters
+                    # into/out of the respective channels.
                     ChannelPut("ChanIn", a)
                     ChannelGet("ChanOut", b)
 
-                    # The arguments are still the input and the output
                     @segment(name="seg")
                     def segment_body():
 
-                        # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
+                        # The herd sizes correspond to the dimensions of the
+                        # contiguous block of cores we are hoping to get.
                         @herd(
                             name="addherd",
                             sizes=[
+                                # In this case, we map our data tiles to cores directly.
                                 IMAGE_SIZE[0] // TILE_SIZE[0],
                                 IMAGE_SIZE[1] // TILE_SIZE[1],
                             ],
@@ -62,14 +69,20 @@ def build_module():
                             # Input a tile
                             ChannelGet("ChanIn", tile_in)
 
-                            # Copy the input tile into the output file while adding one
+                            # Copy the input tile into the output tile while adding one, one
+                            # i32 values at a time.
                             for j in range_(TILE_HEIGHT):
                                 for i in range_(TILE_WIDTH):
-                                    val0 = load(tile_in, [i, j])
-                                    val1 = arith.addi(
-                                        val0, arith.ConstantOp(T.i32(), 1)
+                                    # Load the input value from tile_in
+                                    val_in = load(tile_in, [i, j])
+
+                                    # Compute the output value
+                                    val_out = arith.addi(
+                                        val_in, arith.ConstantOp(T.i32(), 1)
                                     )
-                                    store(val1, tile_out, [i, j])
+
+                                    # Store the output value in tile_out
+                                    store(val_out, tile_out, [i, j])
                                     yield_([])
                                 yield_([])
 
