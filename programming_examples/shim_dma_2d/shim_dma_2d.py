@@ -5,7 +5,7 @@ from air.ir import *
 from air.dialects.air import *
 from air.dialects.affine import load, store
 from air.dialects.func import FuncOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store
+from air.dialects.memref import load, store
 from air.dialects.scf import for_, yield_
 
 range_ = for_
@@ -53,8 +53,8 @@ def build_module():
                             )
 
                             # We must allocate a buffer of the tile size for the input/output
-                            tile_in = AllocOp(tile_type, [], [])
-                            tile_out = AllocOp(tile_type, [], [])
+                            tile_in = Alloc(tile_type)
+                            tile_out = Alloc(tile_type)
 
                             # Copy a tile from the input image (a) into the L1 memory region (buf0)
                             dma_memcpy_nd(
@@ -83,8 +83,8 @@ def build_module():
                             )
 
                             # Deallocate our L1 buffers
-                            DeallocOp(tile_in)
-                            DeallocOp(tile_out)
+                            Dealloc(tile_in)
+                            Dealloc(tile_out)
 
                             # We are done - terminate all layers
                             HerdTerminatorOp()

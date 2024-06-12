@@ -10,7 +10,26 @@ from . import arith
 from ._ods_common import get_default_loc_context as _ods_get_default_loc_context
 from ..extras.meta import region_op
 
+from air.dialects.memref import AllocOp, DeallocOp
 from ..extras import types as T
+
+
+class Alloc(AllocOp):
+    """Specialization for AllocOp class."""
+
+    def __init__(
+        self,
+        memref,
+        dynamicSizes=[],
+        symbolOperands=[],
+        *args,
+        **kwargs,
+    ):
+        super().__init__(memref, dynamicSizes, symbolOperands, *args, **kwargs)
+
+
+# This is included to keep Alloc/Dealloc symmetrically named operations
+Dealloc = DeallocOp
 
 
 class Launch(LaunchOp):
