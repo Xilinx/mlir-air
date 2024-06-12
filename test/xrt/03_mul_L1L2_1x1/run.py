@@ -4,14 +4,12 @@
 # RUN: %PYTHON %s | FileCheck %s
 
 import air.backend.xrt as xrt_backend
-import air.compiler.aircc.main as aircc
 from air.dialects.air import *
-from air.dialects.func import FuncOp, ReturnOp
+from air.dialects.func import FuncOp
 from air.dialects.linalg import elemwise_binary
 from air.dialects.linalg.opdsl.lang import BinaryFn, TypeFn
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.scf import for_, yield_
-from aie.dialects.arith import ConstantOp
 from air.ir import *
 
 import numpy as np
@@ -46,108 +44,104 @@ def to_type(dtype):
     return None
 
 
+@module_builder
 def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
-    with Context() as ctx, Location.unknown():
-        module = Module.create()
-        with InsertionPoint(module.body):
-            memrefTyIn = MemRefType.get(l3_shape, to_type(idtype))
-            memrefTyOut = MemRefType.get(l3_shape, to_type(odtype))
+    memrefTyIn = MemRefType.get(l3_shape, to_type(idtype))
+    memrefTyOut = MemRefType.get(l3_shape, to_type(odtype))
 
-            l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-            l1_itile_type = MemRefType.get(
-                shape=l1_shape,
-                element_type=to_type(idtype),
-                memory_space=l1_mem_space,
-            )
-            l1_otile_type = MemRefType.get(
-                shape=l1_shape,
-                element_type=to_type(odtype),
-                memory_space=l1_mem_space,
-            )
-            l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
-            l2_itile_type = MemRefType.get(
-                shape=l2_shape,
-                element_type=to_type(idtype),
-                memory_space=l2_mem_space,
-            )
-            l2_otile_type = MemRefType.get(
-                shape=l2_shape,
-                element_type=to_type(odtype),
-                memory_space=l2_mem_space,
-            )
+    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    l1_itile_type = MemRefType.get(
+        shape=l1_shape,
+        element_type=to_type(idtype),
+        memory_space=l1_mem_space,
+    )
+    l1_otile_type = MemRefType.get(
+        shape=l1_shape,
+        element_type=to_type(odtype),
+        memory_space=l1_mem_space,
+    )
+    l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
+    l2_itile_type = MemRefType.get(
+        shape=l2_shape,
+        element_type=to_type(idtype),
+        memory_space=l2_mem_space,
+    )
+    l2_otile_type = MemRefType.get(
+        shape=l2_shape,
+        element_type=to_type(odtype),
+        memory_space=l2_mem_space,
+    )
 
-            ChannelOp("ChanL2A")
-            ChannelOp("ChanL2B")
-            ChannelOp("ChanL2C")
-            ChannelOp("ChanL1A")
-            ChannelOp("ChanL1B")
-            ChannelOp("ChanL1C")
+    ChannelOp("ChanL2A")
+    ChannelOp("ChanL2B")
+    ChannelOp("ChanL2C")
+    ChannelOp("ChanL1A")
+    ChannelOp("ChanL1B")
+    ChannelOp("ChanL1C")
 
-            @FuncOp.from_py_func(memrefTyIn, memrefTyIn, memrefTyOut)
-            def mul(arg0, arg1, arg2):
-                @launch(sizes=[l3_shape[0] // l2_shape[0]], operands=[arg0, arg1, arg2])
-                def launch_body(i, s, a, b, c):
-                    one = arith.ConstantOp.create_index(1)
-                    m = arith.ConstantOp.create_index(l2_shape[0])
-                    o = arith.MulIOp(m, i)
-                    ChannelPut("ChanL2A", [], a, [o], [m], [one])
-                    ChannelPut("ChanL2B", [], b, [o], [m], [one])
-                    ChannelGet("ChanL2C", [], c, [o], [m], [one])
+    @FuncOp.from_py_func(memrefTyIn, memrefTyIn, memrefTyOut)
+    def mul(arg0, arg1, arg2):
+        @launch(sizes=[l3_shape[0] // l2_shape[0]], operands=[arg0, arg1, arg2])
+        def launch_body(i, s, a, b, c):
+            one = arith.ConstantOp.create_index(1)
+            m = arith.ConstantOp.create_index(l2_shape[0])
+            o = arith.MulIOp(m, i)
+            ChannelPut("ChanL2A", [], a, [o], [m], [one])
+            ChannelPut("ChanL2B", [], b, [o], [m], [one])
+            ChannelGet("ChanL2C", [], c, [o], [m], [one])
 
-                    @segment(name="segment_0")
-                    def segment_body():
-                        for _ in for_(l3_shape[0] // l2_shape[0]):
-                            l2_tile_a = AllocOp(l2_itile_type, [], [])
-                            l2_tile_b = AllocOp(l2_itile_type, [], [])
-                            l2_tile_c = AllocOp(l2_otile_type, [], [])
+            @segment(name="segment_0")
+            def segment_body():
+                for _ in for_(l3_shape[0] // l2_shape[0]):
+                    l2_tile_a = AllocOp(l2_itile_type, [], [])
+                    l2_tile_b = AllocOp(l2_itile_type, [], [])
+                    l2_tile_c = AllocOp(l2_otile_type, [], [])
 
-                            # get from L2, put to L1
-                            ChannelGet("ChanL2A", [], l2_tile_a)
-                            ChannelPut("ChanL1A", [], l2_tile_a)
-                            ChannelGet("ChanL2B", [], l2_tile_b)
-                            ChannelPut("ChanL1B", [], l2_tile_b)
+                    # get from L2, put to L1
+                    ChannelGet("ChanL2A", [], l2_tile_a)
+                    ChannelPut("ChanL1A", [], l2_tile_a)
+                    ChannelGet("ChanL2B", [], l2_tile_b)
+                    ChannelPut("ChanL1B", [], l2_tile_b)
 
-                            @herd(name="herd_0", sizes=[1, 1])
-                            def herd_body(x, y, sx, sy):
-                                for _ in for_(l2_shape[0] // l1_shape[0]):
-                                    l1_tile_a = AllocOp(l1_itile_type, [], [])
-                                    l1_tile_b = AllocOp(l1_itile_type, [], [])
-                                    l1_tile_c = AllocOp(l1_otile_type, [], [])
-                                    ChannelGet("ChanL1A", [], l1_tile_a)
-                                    ChannelGet("ChanL1B", [], l1_tile_b)
-                                    elemwise_binary(
-                                        l1_tile_a,
-                                        l1_tile_b,
-                                        outs=[l1_tile_c],
-                                        fun=BinaryFn.mul,
-                                        cast=TypeFn.cast_unsigned,
-                                    )
-                                    ChannelPut("ChanL1C", [], l1_tile_c)
-                                    DeallocOp(l1_tile_a)
-                                    DeallocOp(l1_tile_b)
-                                    DeallocOp(l1_tile_c)
-                                    yield_([])
-                                HerdTerminatorOp()
-
-                            # get from L1, put to L2
-                            ChannelGet("ChanL1C", [], l2_tile_c)
-                            ChannelPut("ChanL2C", [], l2_tile_c)
-
-                            DeallocOp(l2_tile_a)
-                            DeallocOp(l2_tile_b)
-                            DeallocOp(l2_tile_c)
+                    @herd(name="herd_0", sizes=[1, 1])
+                    def herd_body(x, y, sx, sy):
+                        for _ in for_(l2_shape[0] // l1_shape[0]):
+                            l1_tile_a = AllocOp(l1_itile_type, [], [])
+                            l1_tile_b = AllocOp(l1_itile_type, [], [])
+                            l1_tile_c = AllocOp(l1_otile_type, [], [])
+                            ChannelGet("ChanL1A", [], l1_tile_a)
+                            ChannelGet("ChanL1B", [], l1_tile_b)
+                            elemwise_binary(
+                                l1_tile_a,
+                                l1_tile_b,
+                                outs=[l1_tile_c],
+                                fun=BinaryFn.mul,
+                                cast=TypeFn.cast_unsigned,
+                            )
+                            ChannelPut("ChanL1C", [], l1_tile_c)
+                            DeallocOp(l1_tile_a)
+                            DeallocOp(l1_tile_b)
+                            DeallocOp(l1_tile_c)
                             yield_([])
-                        SegmentTerminatorOp()
+                        HerdTerminatorOp()
 
-                    LaunchTerminatorOp()
+                    # get from L1, put to L2
+                    ChannelGet("ChanL1C", [], l2_tile_c)
+                    ChannelPut("ChanL2C", [], l2_tile_c)
 
-        print(module)
-        return module
+                    DeallocOp(l2_tile_a)
+                    DeallocOp(l2_tile_b)
+                    DeallocOp(l2_tile_c)
+                    yield_([])
+                SegmentTerminatorOp()
+
+            LaunchTerminatorOp()
 
 
 def run_test(size, idtype, odtype):
 
     mlir_module = build_module(idtype, odtype, size, [1024], [64])
+    print(mlir_module)
     input_a = (np.random.rand(*size) * 127).astype(idtype).reshape(size)
     input_b = (np.random.rand(*size) * 127).astype(idtype).reshape(size)
     ref = (input_a * input_b).astype(odtype)

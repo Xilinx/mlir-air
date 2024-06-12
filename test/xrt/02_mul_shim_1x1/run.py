@@ -4,9 +4,8 @@
 # RUN: %PYTHON %s | FileCheck %s
 
 import air.backend.xrt as xrt_backend
-import air.compiler.aircc.main as aircc
 from air.dialects.air import *
-from air.dialects.func import FuncOp, ReturnOp
+from air.dialects.func import FuncOp
 from air.dialects.linalg import elemwise_binary
 from air.dialects.linalg.opdsl.lang import BinaryFn, TypeFn
 from air.dialects.memref import AllocOp, DeallocOp
@@ -45,64 +44,60 @@ def to_type(dtype):
     return None
 
 
+@module_builder
 def build_module(shape, idtype, odtype, tile_size):
-    with Context() as ctx, Location.unknown():
-        module = Module.create()
-        with InsertionPoint(module.body):
-            memrefTyIn = MemRefType.get(shape, to_type(idtype))
-            memrefTyOut = MemRefType.get(shape, to_type(odtype))
-            ChannelOp("ChanA")
-            ChannelOp("ChanB")
-            ChannelOp("ChanC")
+    memrefTyIn = MemRefType.get(shape, to_type(idtype))
+    memrefTyOut = MemRefType.get(shape, to_type(odtype))
+    ChannelOp("ChanA")
+    ChannelOp("ChanB")
+    ChannelOp("ChanC")
 
-            @FuncOp.from_py_func(memrefTyIn, memrefTyIn, memrefTyOut)
-            def mul(arg0, arg1, arg2):
-                @launch(operands=[arg0, arg1, arg2])
-                def launch_body(a, b, c):
-                    ChannelPut("ChanA", [], a)
-                    ChannelPut("ChanB", [], b)
-                    ChannelGet("ChanC", [], c)
+    @FuncOp.from_py_func(memrefTyIn, memrefTyIn, memrefTyOut)
+    def mul(arg0, arg1, arg2):
+        @launch(operands=[arg0, arg1, arg2])
+        def launch_body(a, b, c):
+            ChannelPut("ChanA", [], a)
+            ChannelPut("ChanB", [], b)
+            ChannelGet("ChanC", [], c)
 
-                    @segment(name="segment_0")
-                    def segment_body():
-                        @herd(name="herd_0", sizes=[1, 1])
-                        def herd_body(x, y, sx, sy):
-                            mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-                            itile_type = MemRefType.get(
-                                shape=[tile_size],
-                                element_type=to_type(idtype),
-                                memory_space=mem_space,
-                            )
-                            otile_type = MemRefType.get(
-                                shape=[tile_size],
-                                element_type=to_type(odtype),
-                                memory_space=mem_space,
-                            )
-                            for _ in for_(shape[0] // tile_size):
-                                tile_a = AllocOp(itile_type, [], [])
-                                tile_b = AllocOp(itile_type, [], [])
-                                tile_c = AllocOp(otile_type, [], [])
-                                ChannelGet("ChanA", [], tile_a)
-                                ChannelGet("ChanB", [], tile_b)
-                                elemwise_binary(
-                                    tile_a,
-                                    tile_b,
-                                    outs=[tile_c],
-                                    fun=BinaryFn.mul,
-                                    cast=TypeFn.cast_unsigned,
-                                )
-                                ChannelPut("ChanC", [], tile_c)
-                                DeallocOp(tile_a)
-                                DeallocOp(tile_b)
-                                DeallocOp(tile_c)
-                                yield_([])
-                            HerdTerminatorOp()
+            @segment(name="segment_0")
+            def segment_body():
+                @herd(name="herd_0", sizes=[1, 1])
+                def herd_body(x, y, sx, sy):
+                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                    itile_type = MemRefType.get(
+                        shape=[tile_size],
+                        element_type=to_type(idtype),
+                        memory_space=mem_space,
+                    )
+                    otile_type = MemRefType.get(
+                        shape=[tile_size],
+                        element_type=to_type(odtype),
+                        memory_space=mem_space,
+                    )
+                    for _ in for_(shape[0] // tile_size):
+                        tile_a = AllocOp(itile_type, [], [])
+                        tile_b = AllocOp(itile_type, [], [])
+                        tile_c = AllocOp(otile_type, [], [])
+                        ChannelGet("ChanA", [], tile_a)
+                        ChannelGet("ChanB", [], tile_b)
+                        elemwise_binary(
+                            tile_a,
+                            tile_b,
+                            outs=[tile_c],
+                            fun=BinaryFn.mul,
+                            cast=TypeFn.cast_unsigned,
+                        )
+                        ChannelPut("ChanC", [], tile_c)
+                        DeallocOp(tile_a)
+                        DeallocOp(tile_b)
+                        DeallocOp(tile_c)
+                        yield_([])
+                    HerdTerminatorOp()
 
-                        SegmentTerminatorOp()
+                SegmentTerminatorOp()
 
-                    LaunchTerminatorOp()
-
-        return module
+            LaunchTerminatorOp()
 
 
 def run_test(size, idtype, odtype):
