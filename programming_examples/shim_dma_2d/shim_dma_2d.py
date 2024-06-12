@@ -24,7 +24,7 @@ def build_module():
         with InsertionPoint(module.body):
             memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
 
-            # We will send the image worth of data in and out
+            # We will send an image worth of data in and out
             @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
             def copy(arg0, arg1):
 
@@ -55,7 +55,7 @@ def build_module():
                             tile_in = Alloc(tile_type)
                             tile_out = Alloc(tile_type)
 
-                            # Copy a tile from the input image (a) into the L1 memory region (buf0)
+                            # Copy a tile from the input image (a) into the L1 memory region (tile_in)
                             dma_memcpy_nd(
                                 tile_in,
                                 a,
@@ -64,7 +64,7 @@ def build_module():
                                 src_strides=[32, 1],
                             )
 
-                            # Copy the input tile into the output file
+                            # Copy the input tile into the output tile
                             for j in range_(TILE_HEIGHT):
                                 for i in range_(TILE_WIDTH):
                                     val = load(tile_in, [i, j])
@@ -72,7 +72,7 @@ def build_module():
                                     yield_([])
                                 yield_([])
 
-                            # Copy the output tile into the output
+                            # Copy the output tile into the output (b)
                             dma_memcpy_nd(
                                 b,
                                 tile_out,
