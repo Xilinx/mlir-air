@@ -4080,8 +4080,10 @@ private:
     rewriter.setInsertionPoint(subViewOp);
     auto subview_sizes = subViewOp.getSizes().begin();
     auto subview_strides = subViewOp.getStrides().begin();
+    auto subview_offsets = subViewOp.getOffsets().begin();
     auto static_sizes = subViewOp.getStaticSizes();
     auto static_strides = subViewOp.getStaticStrides();
+    auto static_offsets = subViewOp.getStaticOffsets();
     // Get MemRefType after shrinkage.
     Type elemType = llvm::cast<MemRefType>(subViewOp.getSource().getType())
                         .getElementType();
@@ -4094,45 +4096,173 @@ private:
         llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
             shrunkMemrefType, subViewOp.getStaticOffsets(),
             subViewOp.getStaticSizes(), subViewOp.getStaticStrides()));
+    // Case 1: static size mismatches the shrunk shape.
     for (unsigned i = 0; i < static_sizes.size(); i++) {
       if (static_sizes[i] < 0) {
         if (*getConstantIntValue(*subview_sizes++) !=
             overall_access_bounds[i]) {
           subViewOp.getResult().setType(inferredSubViewOutputTy);
-          return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(),
-                                                   rewriter);
+          if (static_offsets[i] >= 0)
+            continue;
+          if (auto updatedOffset =
+                  getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
+            subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
         }
       } else {
         if (static_sizes[i] != overall_access_bounds[i]) {
           subViewOp.getResult().setType(inferredSubViewOutputTy);
-          return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(),
-                                                   rewriter);
+          if (static_offsets[i] >= 0)
+            continue;
+          if (auto updatedOffset =
+                  getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
+            subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
         }
       }
     }
+    // Case 2: static strides aren't ones.
+    subview_offsets = subViewOp.getOffsets().begin();
+    static_offsets = subViewOp.getStaticOffsets();
     for (unsigned i = 0; i < static_strides.size(); i++) {
       if (static_strides[i] < 0) {
         if (*getConstantIntValue(*subview_strides++) != 1) {
           subViewOp.getResult().setType(inferredSubViewOutputTy);
-          return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(),
-                                                   rewriter);
+          if (static_offsets[i] >= 0)
+            continue;
+          if (auto updatedOffset =
+                  getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
+            subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
         }
       } else {
         if (static_strides[i] != 1) {
           subViewOp.getResult().setType(inferredSubViewOutputTy);
-          return updateAccessPatternAfterShrinkage(subViewOp.getOffsets(),
-                                                   rewriter);
+          if (static_offsets[i] >= 0)
+            continue;
+          if (auto updatedOffset =
+                  getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
+            subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
         }
       }
     }
-    subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
-    for (auto newUser : subViewOp.getSource().getUsers())
-      push_back_if_unique<Operation *>(users, newUser);
-    rewriter.eraseOp(subViewOp);
+    // Case 3: offset at dimension where output stride accesses beyond memref
+    // volume.
+    subview_offsets = subViewOp.getOffsets().begin();
+    static_offsets = subViewOp.getStaticOffsets();
+    auto outputStrides =
+        llvm::cast<StridedLayoutAttr>(inferredSubViewOutputTy.getLayout())
+            .getStrides();
+    auto memrefVolume = air::getTensorVolume(inferredSubViewOutputTy);
+    for (unsigned i = 0; i < outputStrides.size(); i++) {
+      if (outputStrides[i] >= (int)memrefVolume) {
+        subViewOp.getResult().setType(inferredSubViewOutputTy);
+        if (static_offsets[i] >= 0)
+          continue;
+        if (auto updatedOffset =
+                getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
+          subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
+      }
+    }
+
+    // Case 4: offset are directly or indirectly herd induction variables.
+    subview_offsets = subViewOp.getOffsets().begin();
+    for (unsigned i = 0; i < static_offsets.size(); i++) {
+      if (static_offsets[i] >= 0)
+        continue;
+      if (getConstantIntValue(*subview_offsets))
+        continue;
+      // SSA offset.
+      bool offsetIsHerdIndVar = false;
+      if (getHerdArgOwner(*subview_offsets))
+        offsetIsHerdIndVar = true;
+      if (!(*subview_offsets).getDefiningOp())
+        continue;
+      if (auto exec_to_herd_iv =
+              dyn_cast<air::ExecuteOp>((*subview_offsets).getDefiningOp())) {
+        for (auto oper : exec_to_herd_iv.getChildOp()->getOperands())
+          if (getHerdArgOwner(oper))
+            offsetIsHerdIndVar = true;
+      }
+      if (offsetIsHerdIndVar)
+        if (auto updatedOffset =
+                getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
+          subViewOp->replaceUsesOfWith(*subview_offsets, updatedOffset);
+      subview_offsets++;
+    }
+
+    // Drop memref.subview, if it isn't doing anything useful.
+    auto allOffsetsAreZeros = [&]() {
+      subview_offsets = subViewOp.getOffsets().begin();
+      static_offsets = subViewOp.getStaticOffsets();
+      for (unsigned i = 0; i < static_offsets.size(); i++) {
+        if (static_offsets[i] > 0)
+          return false;
+        else if (static_offsets[i] == 0)
+          continue;
+        if (!getConstantIntValue(*subview_offsets)) {
+          if (!(*subview_offsets).getDefiningOp())
+            return false;
+          if (auto exec = dyn_cast<air::ExecuteOp>(
+                  (*subview_offsets).getDefiningOp())) {
+            for (auto oper : exec.getChildOp()->getOperands()) {
+              if (!getConstantIntValue(oper))
+                return false;
+              if (*getConstantIntValue(oper) != 0)
+                return false;
+            }
+          } else
+            return false;
+        } else if (*getConstantIntValue(*subview_offsets) != 0)
+          return false;
+        subview_offsets++;
+      }
+      return true;
+    };
+    auto allStridesAreOnes = [&]() {
+      subview_strides = subViewOp.getStrides().begin();
+      for (unsigned i = 0; i < static_strides.size(); i++) {
+        if (static_strides[i] > 0 && static_strides[i] != 1)
+          return false;
+        else if (static_strides[i] < 0) {
+          if (!getConstantIntValue(*subview_strides))
+            return false;
+          if (*getConstantIntValue(*subview_strides++) != 1)
+            return false;
+        }
+      }
+      return true;
+    };
+    auto memrefVolumeUnchanged = [&]() {
+      int subviewVolume = 1;
+      for (auto s : static_sizes)
+        subviewVolume *= s;
+      return subviewVolume ==
+             (int)air::getTensorVolume(subViewOp.getResult().getType());
+    };
+
+    if (allOffsetsAreZeros() && allStridesAreOnes() &&
+        memrefVolumeUnchanged()) {
+      subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
+      for (auto newUser : subViewOp.getSource().getUsers())
+        push_back_if_unique<Operation *>(users, newUser);
+      rewriter.eraseOp(subViewOp);
+    }
     return success();
   }
 
   // Update access patterns to shrunk memref from vector.transfer_read/write.
+  LogicalResult
+  updateAccessPatternAfterShrinkage(vector::TransferReadOp transReadOp,
+                                    PatternRewriter &rewriter) const {
+    return updateAccessPatternAfterShrinkage(transReadOp.getIndices(),
+                                             rewriter);
+  }
+  LogicalResult
+  updateAccessPatternAfterShrinkage(vector::TransferWriteOp transWriteOp,
+                                    PatternRewriter &rewriter) const {
+    return updateAccessPatternAfterShrinkage(transWriteOp.getIndices(),
+                                             rewriter);
+  }
+
+  // Update access patterns to shrunk memref implementation.
   LogicalResult
   updateAccessPatternAfterShrinkage(SmallVector<Value> indices,
                                     PatternRewriter &rewriter) const {
@@ -4156,17 +4286,29 @@ private:
     }
     return success();
   }
-  LogicalResult
-  updateAccessPatternAfterShrinkage(vector::TransferReadOp transReadOp,
-                                    PatternRewriter &rewriter) const {
-    return updateAccessPatternAfterShrinkage(transReadOp.getIndices(),
-                                             rewriter);
-  }
-  LogicalResult
-  updateAccessPatternAfterShrinkage(vector::TransferWriteOp transWriteOp,
-                                    PatternRewriter &rewriter) const {
-    return updateAccessPatternAfterShrinkage(transWriteOp.getIndices(),
-                                             rewriter);
+  Value getUpdatedOffsetAfterShrinkage(Value index,
+                                       PatternRewriter &rewriter) const {
+    if (!index)
+      return nullptr;
+    if (getConstantIntValue(index))
+      return nullptr;
+    if (index.getDefiningOp()) {
+      if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
+        for (auto oper : execOp.getChildOp()->getOperands()) {
+          if (auto herdOp = air::getHerdArgOwner(oper)) {
+            rewriter.setInsertionPointToStart(&herdOp.getBody().front());
+            execOp.getChildOp()->replaceUsesOfWith(
+                oper, rewriter.create<arith::ConstantIndexOp>(
+                          rewriter.getUnknownLoc(), 0));
+          }
+        }
+      }
+    } else if (auto herdOp = air::getHerdArgOwner(index)) {
+      rewriter.setInsertionPointToStart(&herdOp.getBody().front());
+      return rewriter.create<arith::ConstantIndexOp>(rewriter.getUnknownLoc(),
+                                                     0);
+    }
+    return nullptr;
   }
 };
 
@@ -4417,24 +4559,37 @@ public:
       if (op->hasAttr("shrinkage"))
         shrunkMemallocs.push_back(op);
     });
+
+    // Find indirect funcCall users of memref.
+    auto getFuncCallIndirUser = [](Operation *u,
+                                   SmallVector<func::CallOp> &funcCalls) {
+      if (auto funcCall = dyn_cast<func::CallOp>(u))
+        funcCalls.push_back(funcCall);
+      else if (auto subview = dyn_cast<memref::SubViewOp>(u)) {
+        for (auto subViewUser : subview.getResult().getUsers())
+          if (auto funcCall = dyn_cast<func::CallOp>(subViewUser))
+            funcCalls.push_back(funcCall);
+      }
+    };
+
+    SmallVector<func::CallOp> funcCalls;
     for (auto alloc : shrunkMemallocs) {
       Value memref = alloc.getMemref();
       if (auto exec = dyn_cast<air::ExecuteOp>(alloc->getParentOp()))
         memref = exec.getResult(1);
       for (auto user : memref.getUsers()) {
-        if (auto funcCall = dyn_cast<func::CallOp>(user))
-          updateFuncOpInputTypesFromCall(funcCall);
-        // Diving into isolatedFromAbove air.herd body
-        else if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
+        getFuncCallIndirUser(user, funcCalls);
+        if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
           if (!getHerdArgumentFromHerdOperand(herdOp, memref))
             continue;
           auto herdArg = getHerdArgumentFromHerdOperand(herdOp, memref);
           for (auto userInHerd : herdArg.getUsers())
-            if (auto funcCall = dyn_cast<func::CallOp>(userInHerd))
-              updateFuncOpInputTypesFromCall(funcCall);
+            getFuncCallIndirUser(userInHerd, funcCalls);
         }
       }
     }
+    for (auto funcCall : funcCalls)
+      updateFuncOpInputTypesFromCall(funcCall);
   }
 
   void runOnOperation() override {
