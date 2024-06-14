@@ -2672,39 +2672,71 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
   SmallVector<Value, 4> src_strides, dst_strides;
   SmallVector<Value, 4> src_sizes, dst_sizes;
   SmallVector<Value, 4> empty;
+  auto constZero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
 
   MemRefType src_memref_ty;
   if (!src_ancestor_memref_ops.empty()) {
     if (auto subviewOp =
             dyn_cast<memref::SubViewOp>(src_ancestor_memref_ops[0])) {
+      // Init. offsets
       extractOffsetsFromSubview(subviewOp, rewriter, src_offsets);
+      // Init. memref type
       src_memref_ty = subviewOp.getSourceType();
       src = subviewOp.getSource();
     } else if (auto transposeOp =
                    dyn_cast<memref::TransposeOp>(src_ancestor_memref_ops[0])) {
+      // Init. memref type
       src_memref_ty = llvm::cast<MemRefType>(transposeOp.getIn().getType());
       src = transposeOp.getIn();
+      // Init. offsets
+      src_offsets.clear();
+      for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++)
+        src_offsets.push_back(constZero);
     }
   }
   MemRefType dst_memref_ty;
   if (!dst_ancestor_memref_ops.empty()) {
     if (auto subviewOp =
             dyn_cast<memref::SubViewOp>(dst_ancestor_memref_ops[0])) {
+      // Init. offsets
       extractOffsetsFromSubview(subviewOp, rewriter, dst_offsets);
+      // Init. memref type
       dst_memref_ty = subviewOp.getSourceType();
       dst = subviewOp.getSource();
     } else if (auto transposeOp =
                    dyn_cast<memref::TransposeOp>(dst_ancestor_memref_ops[0])) {
+      // Init. memref type
       dst_memref_ty = llvm::cast<MemRefType>(transposeOp.getIn().getType());
       dst = transposeOp.getIn();
+      // Init. offsets
+      dst_offsets.clear();
+      for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++)
+        dst_offsets.push_back(constZero);
     }
   }
 
   for (auto memrefOp : src_ancestor_memref_ops) {
     if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOp)) {
+      // Init. memref type
       src_memref_ty =
           inferTransposeResultType(src_memref_ty, transposeOp.getPermutation());
+      // Init. offsets
+      if (transposeOp.getPermutation().getNumInputs() != src_offsets.size())
+        continue;
+      src_offsets =
+          applyPermutationMap<Value>(transposeOp.getPermutation(), src_offsets);
     } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(memrefOp)) {
+      // Init. offsets
+      for (int i = (int)expandShapeOp.getReassociationIndices().size() - 1;
+           i >= 0; i--) {
+        if (expandShapeOp.getReassociationIndices()[i].size() <= 1)
+          continue;
+        for (unsigned j = 1;
+             j < expandShapeOp.getReassociationIndices()[i].size(); j++)
+          src_offsets.insert(src_offsets.begin() + i,
+                             rewriter.create<arith::ConstantIndexOp>(loc, 0));
+      }
+      // Init. memref type
       FailureOr<MemRefType> compute_expand =
           memref::ExpandShapeOp::computeExpandedType(
               src_memref_ty, expandShapeOp.getResultType().getShape(),
@@ -2732,9 +2764,26 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
 
   for (auto memrefOp : dst_ancestor_memref_ops) {
     if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOp)) {
+      // Init. memref type
       dst_memref_ty =
           inferTransposeResultType(dst_memref_ty, transposeOp.getPermutation());
+      // Init. offsets
+      if (transposeOp.getPermutation().getNumInputs() != dst_offsets.size())
+        continue;
+      dst_offsets =
+          applyPermutationMap<Value>(transposeOp.getPermutation(), dst_offsets);
     } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(memrefOp)) {
+      // Init. offsets
+      for (int i = (int)expandShapeOp.getReassociationIndices().size() - 1;
+           i >= 0; i--) {
+        if (expandShapeOp.getReassociationIndices()[i].size() <= 1)
+          continue;
+        for (unsigned j = 1;
+             j < expandShapeOp.getReassociationIndices()[i].size(); j++)
+          dst_offsets.insert(dst_offsets.begin() + i,
+                             rewriter.create<arith::ConstantIndexOp>(loc, 0));
+      }
+      // Init. memref type
       FailureOr<MemRefType> compute_expand =
           memref::ExpandShapeOp::computeExpandedType(
               dst_memref_ty, expandShapeOp.getResultType().getShape(),

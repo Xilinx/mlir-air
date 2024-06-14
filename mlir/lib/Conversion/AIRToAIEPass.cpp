@@ -438,6 +438,72 @@ void push_back_if_unique(std::vector<T> &vec, T entry) {
     vec.push_back(entry);
 }
 
+struct CanonicalizeChannelPutWrapsAndStridesPattern
+    : public OpRewritePattern<air::ChannelPutOp> {
+  using OpRewritePattern<air::ChannelPutOp>::OpRewritePattern;
+
+  CanonicalizeChannelPutWrapsAndStridesPattern(MLIRContext *ctx)
+      : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::ChannelPutOp op,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<Value> offsets = op.getOffsets();
+    SmallVector<Value> wraps = op.getSizes();
+    SmallVector<Value> strides = op.getStrides();
+    if (canonicalizeWrapAndStrideList(
+            rewriter, offsets, wraps, strides,
+            air::getTensorVolume(op.getMemref().getType()))
+            .failed())
+      return failure();
+    auto new_put = rewriter.create<air::ChannelPutOp>(
+        op->getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
+        op.getChanName(), op.getIndices(), op.getMemref(), offsets, wraps,
+        strides);
+    new_put->setAttr(
+        "id",
+        IntegerAttr::get(IntegerType::get(op->getContext(), 32), op.getId()));
+    assert(op->getNumResults() == new_put->getNumResults());
+    for (unsigned i = 0; i < op->getNumResults(); i++)
+      op->getResult(i).replaceAllUsesWith(new_put->getResult(i));
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct CanonicalizeChannelGetWrapsAndStridesPattern
+    : public OpRewritePattern<air::ChannelGetOp> {
+  using OpRewritePattern<air::ChannelGetOp>::OpRewritePattern;
+
+  CanonicalizeChannelGetWrapsAndStridesPattern(MLIRContext *ctx)
+      : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::ChannelGetOp op,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<Value> offsets = op.getOffsets();
+    SmallVector<Value> wraps = op.getSizes();
+    SmallVector<Value> strides = op.getStrides();
+    if (canonicalizeWrapAndStrideList(
+            rewriter, offsets, wraps, strides,
+            air::getTensorVolume(op.getMemref().getType()))
+            .failed())
+      return failure();
+    auto new_get = rewriter.create<air::ChannelGetOp>(
+        op->getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
+        op.getChanName(), op.getIndices(), op.getMemref(), offsets, wraps,
+        strides);
+    new_get->setAttr(
+        "id",
+        IntegerAttr::get(IntegerType::get(op->getContext(), 32), op.getId()));
+    assert(op->getNumResults() == new_get->getNumResults());
+    for (unsigned i = 0; i < op->getNumResults(); i++)
+      op->getResult(i).replaceAllUsesWith(new_get->getResult(i));
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 void createAIEModulesAndOutlineCores(
     ModuleOp module,
     std::vector<std::pair<AIE::DeviceOp, xilinx::air::HerdOp>> &aie_modules,
@@ -685,7 +751,9 @@ struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
 void lowerAirExecute(AIE::DeviceOp d) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<LowerAIRExecutePattern>(ctx);
+  patterns.insert<LowerAIRExecutePattern,
+                  CanonicalizeChannelPutWrapsAndStridesPattern,
+                  CanonicalizeChannelGetWrapsAndStridesPattern>(ctx);
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
 }
 
@@ -1613,9 +1681,16 @@ private:
       deps = put.getAsyncDependencies();
     }
     SmallVector<Value, 4> indices = {};
+    // Canonicalize wrap and stride lists after specialization
+    SmallVector<Value> offsets = put.getSrcOffsets();
+    SmallVector<Value> wraps = put.getSrcSizes();
+    SmallVector<Value> strides = put.getSrcStrides();
+    (void)canonicalizeWrapAndStrideList(
+        builder, offsets, wraps, strides,
+        air::getTensorVolume(put.getSrc().getType()));
     auto new_put = builder.create<air::ChannelPutOp>(
         put->getLoc(), tys, deps, chan.getSymName(), indices, put.getSrc(),
-        put.getSrcOffsets(), put.getSrcSizes(), put.getSrcStrides());
+        offsets, wraps, strides);
     new_put->setAttr(
         "id",
         IntegerAttr::get(IntegerType::get(put->getContext(), 32), put.getId()));
@@ -1632,9 +1707,16 @@ private:
       deps = get.getAsyncDependencies();
     }
     SmallVector<Value, 4> indices = {};
+    // Canonicalize wrap and stride lists after specialization
+    SmallVector<Value> offsets = get.getDstOffsets();
+    SmallVector<Value> wraps = get.getDstSizes();
+    SmallVector<Value> strides = get.getDstStrides();
+    (void)canonicalizeWrapAndStrideList(
+        builder, offsets, wraps, strides,
+        air::getTensorVolume(get.getDst().getType()));
     auto new_get = builder.create<air::ChannelGetOp>(
         get->getLoc(), tys, deps, chan.getSymName(), indices, get.getDst(),
-        get.getDstOffsets(), get.getDstSizes(), get.getDstStrides());
+        offsets, wraps, strides);
     new_get->setAttr(
         "id",
         IntegerAttr::get(IntegerType::get(get->getContext(), 32), get.getId()));
