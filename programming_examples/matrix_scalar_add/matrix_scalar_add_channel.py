@@ -83,12 +83,12 @@ def build_module():
                                     offset1,
                                 ],
                                 # amount of data to read in each dimension per operation
-                                dst_strides=[
+                                dst_sizes=[
                                     tile_size0,
                                     tile_size1,
                                 ],
                                 # number of operations/sections to read
-                                dst_sizes=[
+                                dst_strides=[
                                     1,
                                     1,
                                 ],
@@ -117,8 +117,8 @@ def build_module():
                                 "ChanOut",
                                 tile_out,
                                 src_offsets=[offset0, offset1],
-                                src_strides=[tile_size0, tile_size1],
-                                src_sizes=[1, 1],
+                                src_sizes=[tile_size0, tile_size1],
+                                src_strides=[1, 1],
                             )
 
                             # Deallocate our L1 buffers

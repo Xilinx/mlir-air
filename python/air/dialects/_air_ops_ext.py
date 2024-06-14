@@ -159,10 +159,10 @@ class ChannelPut(ChannelPutOp):
         self,
         chan_name,
         src,
-        src_offsets=[],  # Try w/ 0,0 first (should be first block)
+        src_offsets=[],
         src_sizes=[],
-        src_strides=[],  # Tile size []
-        indices=[],  # Use the channel to describe
+        src_strides=[],
+        indices=[],
         async_token=None,
         async_dependencies=[],
         loc=None,

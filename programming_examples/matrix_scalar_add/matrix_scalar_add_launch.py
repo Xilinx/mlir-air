@@ -48,15 +48,15 @@ def build_module():
                 "ChanIn",
                 a,
                 src_offsets=[offset0, offset1],
-                src_strides=[tile_size0, tile_size1],
-                src_sizes=[1, 1],
+                src_sizes=[tile_size0, tile_size1],
+                src_strides=[1, 1],
             )
             ChannelGet(
                 "ChanOut",
                 b,
                 dst_offsets=[offset0, offset1],
-                dst_strides=[tile_size0, tile_size1],
-                dst_sizes=[1, 1],
+                dst_sizes=[tile_size0, tile_size1],
+                dst_strides=[1, 1],
             )
 
             @segment(name="seg")
