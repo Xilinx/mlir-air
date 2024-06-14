@@ -513,21 +513,21 @@ void isolateAIRRtDmaLoopNests(ModuleOp module) {
 }
 
 // AIE2 hardware constraints.
-const int AIE2_WRAP_UPPER_BOUND = 1024;
+const std::vector<int> AIE2_WRAP_UPPER_BOUNDS = {64, 1024, 1024, 1024};
+const int AIE2_STRIDE_UPPER_BOUND = 1048576;
 const int AIE2_DIM_COUNT = 4;
 
 bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   SmallVector<Value> wrap_list;
-  wrap_list.push_back(dma.getLength0());
-  wrap_list.push_back(dma.getLength1());
-  wrap_list.push_back(dma.getLength2());
   wrap_list.push_back(dma.getLength3());
-  for (auto wrap : wrap_list) {
-    if (auto const_val = getConstantIntValue(wrap)) {
+  wrap_list.push_back(dma.getLength2());
+  wrap_list.push_back(dma.getLength1());
+  wrap_list.push_back(dma.getLength0());
+  for (unsigned i = 0; i < wrap_list.size(); i++) {
+    if (auto const_val = getConstantIntValue(wrap_list[i])) {
       // Detected wrap that goes beyond the AIE2 hardware limit.
-      if (*const_val >= AIE2_WRAP_UPPER_BOUND) {
+      if (*const_val >= AIE2_WRAP_UPPER_BOUNDS[i])
         return true;
-      }
     } else
       assert(false && "has non-static wrap");
   }
@@ -579,10 +579,20 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
-    if (const_wrap >= AIE2_WRAP_UPPER_BOUND) {
-      // Found dimension with illegal wrap. Tiling.
-      int outer_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUND - 1);
-      int inner_wrap = mlir::ceilDiv(const_wrap, outer_wrap);
+    if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
+      // Found dimension with illegal wrap. Tiling. (Prefers smaller outer wrap
+      // values, as long as stride fits)
+      int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
+      int b_wrap = mlir::ceilDiv(const_wrap, a_wrap);
+      int new_a_stride =
+          (const_stride * a_wrap) % air::getTensorVolume(llvm::cast<MemRefType>(
+                                        memcpy_op.getMemref().getType()));
+      int inner_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
+                           ? (b_wrap)
+                           : (a_wrap);
+      int outer_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
+                           ? (a_wrap)
+                           : (b_wrap);
       wraps[i] = builder.create<arith::ConstantOp>(
           loc, builder.getI64Type(),
           IntegerAttr::get(builder.getI64Type(), inner_wrap));
