@@ -4252,40 +4252,21 @@ private:
   LogicalResult
   updateAccessPatternAfterShrinkage(vector::TransferReadOp transReadOp,
                                     PatternRewriter &rewriter) const {
-    return updateAccessPatternAfterShrinkage(transReadOp.getIndices(),
-                                             rewriter);
+    for (auto index : transReadOp.getIndices())
+      if (auto updatedOffset = getUpdatedOffsetAfterShrinkage(index, rewriter))
+        transReadOp->replaceUsesOfWith(index, updatedOffset);
+    return success();
   }
   LogicalResult
   updateAccessPatternAfterShrinkage(vector::TransferWriteOp transWriteOp,
                                     PatternRewriter &rewriter) const {
-    return updateAccessPatternAfterShrinkage(transWriteOp.getIndices(),
-                                             rewriter);
+    for (auto index : transWriteOp.getIndices())
+      if (auto updatedOffset = getUpdatedOffsetAfterShrinkage(index, rewriter))
+        transWriteOp->replaceUsesOfWith(index, updatedOffset);
+    return success();
   }
 
   // Update access patterns to shrunk memref implementation.
-  LogicalResult
-  updateAccessPatternAfterShrinkage(SmallVector<Value> indices,
-                                    PatternRewriter &rewriter) const {
-    for (auto index : indices) {
-      if (!index)
-        continue;
-      if (!index.getDefiningOp())
-        continue;
-      if (getConstantIntValue(index))
-        continue;
-      if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
-        for (auto oper : execOp.getChildOp()->getOperands()) {
-          if (auto herdOp = air::getHerdArgOwner(oper)) {
-            rewriter.setInsertionPointToStart(&herdOp.getBody().front());
-            execOp.getChildOp()->replaceUsesOfWith(
-                oper, rewriter.create<arith::ConstantIndexOp>(
-                          rewriter.getUnknownLoc(), 0));
-          }
-        }
-      }
-    }
-    return success();
-  }
   Value getUpdatedOffsetAfterShrinkage(Value index,
                                        PatternRewriter &rewriter) const {
     if (!index)
