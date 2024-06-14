@@ -21,14 +21,7 @@ LINALG_TENSOR_TO_MEMREF_PIPELINE = (
     + ",".join(
         [
             # Bufferize.
-            "func.func(scf-bufferize)",
-            "func.func(linalg-bufferize)",
-            "cse",
-            "func-bufferize",
-            "arith-bufferize",
-            "func.func(tensor-bufferize)",
-            "func.func(finalizing-bufferize)",
-            "canonicalize",
+            "one-shot-bufferize{copy-before-write bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map}",
             "cse",
         ]
     )

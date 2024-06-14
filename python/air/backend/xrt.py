@@ -118,7 +118,7 @@ class XRTBackend(AirBackend):
             self.device,
             len(self.instr_v) * 4,
             xrt.bo.cacheable,
-            self.kernel.group_id(0),
+            self.kernel.group_id(1),
         )
         self.bo_instr.write(self.instr_v, 0)
 
@@ -133,7 +133,7 @@ class XRTBackend(AirBackend):
                 raise ValueError("Too many arguments")
             sizes_in_bytes = [a.size * a.itemsize for a in args]
             bos = [
-                xrt.bo(self.device, s, xrt.bo.host_only, self.kernel.group_id(i + 2))
+                xrt.bo(self.device, s, xrt.bo.host_only, self.kernel.group_id(i + 3))
                 for i, s in enumerate(sizes_in_bytes)
             ]
 
@@ -142,7 +142,7 @@ class XRTBackend(AirBackend):
                 bos[i].write(a, 0)
                 bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
-            h = self.kernel(self.bo_instr, len(self.instr_v), *bos)
+            h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
             h.wait()
 
             for i, a in enumerate(args):
