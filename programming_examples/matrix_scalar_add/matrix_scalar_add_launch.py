@@ -48,14 +48,14 @@ def build_module():
                 "ChanIn",
                 a,
                 src_offsets=[offset0, offset1],
-                src_sizes=[tile_size0, tile_size1],
+                src_sizes=TILE_SIZE,
                 src_strides=[1, 1],
             )
             ChannelGet(
                 "ChanOut",
                 b,
                 dst_offsets=[offset0, offset1],
-                dst_sizes=[tile_size0, tile_size1],
+                dst_sizes=TILE_SIZE,
                 dst_strides=[1, 1],
             )
 
