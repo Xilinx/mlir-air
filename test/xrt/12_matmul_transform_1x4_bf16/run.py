@@ -44,10 +44,10 @@ device.register_xclbin(xclbin)
 context = xrt.hw_context(device, xclbin.get_uuid())
 kernel = xrt.kernel(context, xkernel.get_name())
 
-bo_instr = xrt.bo(device, len(instr_v) * 4, xrt.bo.cacheable, kernel.group_id(0))
-bo_a = xrt.bo(device, in_a_size_bytes, xrt.bo.host_only, kernel.group_id(2))
-bo_b = xrt.bo(device, in_b_size_bytes, xrt.bo.host_only, kernel.group_id(3))
-bo_c = xrt.bo(device, out_size_bytes, xrt.bo.host_only, kernel.group_id(4))
+bo_instr = xrt.bo(device, len(instr_v) * 4, xrt.bo.cacheable, kernel.group_id(1))
+bo_a = xrt.bo(device, in_a_size_bytes, xrt.bo.host_only, kernel.group_id(3))
+bo_b = xrt.bo(device, in_b_size_bytes, xrt.bo.host_only, kernel.group_id(4))
+bo_c = xrt.bo(device, out_size_bytes, xrt.bo.host_only, kernel.group_id(5))
 
 bo_instr.write(instr_v, 0)
 bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
@@ -67,7 +67,8 @@ npu_total_time = 0
 for i in range(0, niter):
 
     start = time.time()
-    h = kernel(bo_instr, len(instr_v), bo_a, bo_b, bo_c)
+    opcode = 3
+    h = kernel(opcode, bo_instr, len(instr_v), bo_a, bo_b, bo_c)
     h.wait()
     stop = time.time()
 

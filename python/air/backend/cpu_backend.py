@@ -66,14 +66,9 @@ REF_BACKEND_LOWERING_PIPELINE = (
             # Other backends are likely to benefit more.
             "func.func(linalg-fuse-elementwise-ops)",
             # Bufferize.
-            "func.func(scf-bufferize)",
             "func.func(tm-tensor-bufferize)",
-            "func.func(empty-tensor-to-alloc-tensor)",
-            "func.func(linalg-bufferize)",
-            "func-bufferize",
-            "arith-bufferize",
+            "one-shot-bufferize{copy-before-write bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map}",
             "refback-mlprogram-bufferize",
-            "func.func(tensor-bufferize)",
             "func.func(finalizing-bufferize)",
             # "func.func(buffer-deallocation)",
             # Munge to make it ExecutionEngine compatible.

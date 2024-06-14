@@ -166,15 +166,15 @@ int main(int argc, const char *argv[]) {
   auto kernel = xrt::kernel(context, kernelName);
 
   auto bo_instr = xrt::bo(device, instr_v.size() * sizeof(int),
-                          XCL_BO_FLAGS_CACHEABLE, kernel.group_id(0));
+                          XCL_BO_FLAGS_CACHEABLE, kernel.group_id(1));
   auto bo_a =
-      xrt::bo(device, A_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(2));
+      xrt::bo(device, A_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
   auto bo_b =
-      xrt::bo(device, B_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
+      xrt::bo(device, B_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
   auto bo_bias =
-      xrt::bo(device, BIAS_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
+      xrt::bo(device, BIAS_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
   auto bo_c =
-      xrt::bo(device, C_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
+      xrt::bo(device, C_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(6));
 
   if (verbosity >= 1)
     std::cout << "Writing data into buffer objects.\n";
@@ -210,7 +210,9 @@ int main(int argc, const char *argv[]) {
 
   if (verbosity >= 1)
     std::cout << "Running Kernel.\n";
-  auto run = kernel(bo_instr, instr_v.size(), bo_a, bo_b, bo_bias, bo_c);
+  unsigned int opcode = 3;
+  auto run =
+      kernel(opcode, bo_instr, instr_v.size(), bo_a, bo_b, bo_bias, bo_c);
   run.wait();
 
   bo_c.sync(XCL_BO_SYNC_BO_FROM_DEVICE);

@@ -67,9 +67,9 @@ def main():
     context = xrt.hw_context(device, xclbin.get_uuid())
     kernel = xrt.kernel(context, xkernel.get_name())
 
-    bo_instr = xrt.bo(device, len(instr_v) * 4, xrt.bo.cacheable, kernel.group_id(0))
-    bo_in = xrt.bo(device, INOUT_SIZE_BYTES, xrt.bo.host_only, kernel.group_id(2))
-    bo_out = xrt.bo(device, INOUT_SIZE_BYTES, xrt.bo.host_only, kernel.group_id(2))
+    bo_instr = xrt.bo(device, len(instr_v) * 4, xrt.bo.cacheable, kernel.group_id(1))
+    bo_in = xrt.bo(device, INOUT_SIZE_BYTES, xrt.bo.host_only, kernel.group_id(3))
+    bo_out = xrt.bo(device, INOUT_SIZE_BYTES, xrt.bo.host_only, kernel.group_id(4))
 
     bo_instr.write(instr_v, 0)
     bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
@@ -85,7 +85,7 @@ def main():
     bo_out.write(output_a, 0)
     bo_out.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
-    h = kernel(bo_instr, len(instr_v), bo_in, bo_out)
+    h = kernel(3, bo_instr, len(instr_v), bo_in, bo_out)
     h.wait()
 
     bo_out.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
