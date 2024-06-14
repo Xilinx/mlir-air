@@ -11,7 +11,6 @@ import filelock
 import argparse
 
 from common import *
-import matrix_scalar_add_implicit
 import matrix_scalar_add_channel
 import matrix_scalar_add_launch
 import matrix_scalar_add_herd
@@ -78,13 +77,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "tile_method",
         type=str,
-        choices=["implicit", "channel", "launch", "herd", "segment"],
+        choices=["channel", "launch", "herd", "segment"],
     )
     args = parser.parse_args()
 
-    if args.tile_method == "implicit":
-        build_module = matrix_scalar_add_implicit.build_module
-    elif args.tile_method == "channel":
+    if args.tile_method == "channel":
         build_module = matrix_scalar_add_channel.build_module
     elif args.tile_method == "launch":
         build_module = matrix_scalar_add_launch.build_module

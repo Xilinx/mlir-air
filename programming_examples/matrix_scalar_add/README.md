@@ -18,7 +18,7 @@ The fundamental abstractions of mlir-air, and the ones used in this example, are
 
 ## Running and Testing
 
-For illustrative purposes, we provide five different ways specify data tiling in this example: ```channel```, ```herd```, ```segment```, ```launch```, and ```implicit```.
+For illustrative purposes, we provide four different ways specify data tiling in this example: ```channel```, ```herd```, ```segment```, and ```launch```.
 
 #### ```channel```: Tiling using channel sizes, offsets, and strides
 
@@ -55,22 +55,10 @@ This example ([matrix_scalar_add_launch.py](matrix_scalar_add_launch.py)) uses l
 make clean && make launch
 ```
 
-#### ```implicit```: Tiling using channels and data sizes
-
-This example ([matrix_scalar_add_implicit.py](matrix_scalar_add_implicit.py)) demonstrates the power of the channel abstraction. Here, we provide no explicit instructions on how to iterate through the tiles or index into the input/output data. We simply specify the input/output channels with input/output of type ```i32 x IMAGE_SIZE```. Then, we use the channels on the core to only read/write ```i32 x TILE_SIZE```. mlir-air is able to infer by the difference between data types that we want to read/write all the data, so logic is added without the writer explicitly signalling for it to happen.
-
-```bash
-make clean && make implicit
-```
-
 ## Recommended Exercises
-* Look at the mlir produced by the implicit example. What air abstractions are used to implement the implicit loops?
+* Generate the mlir from any example and compare the differences between the generated mlir of each example:
   ```bash
-  python matrix_scala_add_implicit.py > implicit.mlir
-  ```
-* Generate the mlir from any example and compare the differences between the generated MLIR of each example:
-  ```bash
-  python matrix_scala_add_[channel|herd|segment|launch|implicit].py
+  python matrix_scala_add_[channel|herd|segment|launch].py
   ```
 * Pick one of the programs and modify it so only the first value in each tile is incremented
 

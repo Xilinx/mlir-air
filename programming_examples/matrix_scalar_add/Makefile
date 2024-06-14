@@ -10,10 +10,6 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 targetname := $(shell basename ${srcdir})
 
-implicit:
-	mkdir -p build
-	cd build && ${powershell} python3 ${srcdir}/run.py implicit
-
 channel:
 	mkdir -p build
 	cd build && ${powershell} python3 ${srcdir}/run.py channel
