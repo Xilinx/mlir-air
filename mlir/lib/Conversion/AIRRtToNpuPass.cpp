@@ -1244,10 +1244,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0, col,
                                        row);
     uint32_t v1 = 0;
-    for (unsigned i = 4; i < std::min(ports.size(), 8UL); i++) {
-      v1 |= (ports[i].second << (i * 8));
-      v1 |= (ports[i].first << ((i * 8) + 5));
-    }
+    if (ports.size() > 4)
+      for (unsigned i = 4; i < std::min(ports.size(), 8UL); i++) {
+        v1 |= (ports[i].second << ((i - 4) * 8));
+        v1 |= (ports[i].first << (((i - 4) * 8) + 5));
+      }
     builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset + 0x4,
                                        v1, col, row);
   }
@@ -1262,8 +1263,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     for (unsigned i = 0; i < std::min(events.size(), 4UL); i++)
       v0 |= ((events[i] & 0xff) << (i * 8));
     uint32_t v1 = 0;
-    for (unsigned i = 4; i < std::min(events.size(), 8UL); i++)
-      v1 |= ((events[i] & 0xff) << (i * 8));
+    if (events.size() > 4)
+      for (unsigned i = 4; i < std::min(events.size(), 8UL); i++)
+        v1 |= ((events[i] & 0xff) << ((i - 4) * 8));
 
     builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0, col,
                                        row);

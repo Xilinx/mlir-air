@@ -49,7 +49,7 @@ module {
 // CHECK:      aiex.npu.writebd {bd_id = 14 : i32, buffer_length = 16384 : i32, buffer_offset = 65536 : i32, column = 0 : i32
 // CHECK-SAME: ddr_id = 2 : i32, enable_packet = 1 : i32
 // CHECK-SAME: packet_id = 1 : i32, packet_type = 0 : i32
-// CHECK:      aiex.npu.write32 {address = 119308 : ui32, column = 0 : i32, row = 0 : i32, value = 15 : ui32}
+// CHECK:      aiex.npu.write32 {address = 119308 : ui32, column = 0 : i32, row = 0 : i32, value = 14 : ui32}
 // CHECK:      aiex.npu.write32 {address = 212992 : ui32, column = 0 : i32, row = 0 : i32, value = 32512 : ui32}
 // CHECK:      aiex.npu.write32 {address = 213068 : ui32, column = 0 : i32, row = 0 : i32, value = 127 : ui32}
 // CHECK:      aiex.npu.write32 {address = 213000 : ui32, column = 0 : i32, row = 0 : i32, value = 127 : ui32}
