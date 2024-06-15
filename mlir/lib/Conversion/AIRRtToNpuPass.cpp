@@ -567,6 +567,7 @@ int findLargestFactor(int num, int max) {
 
 void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
+  auto ctx = memcpy_op->getContext();
   auto oper_begin = memcpy_op.getOperands().begin();
   SmallVector<Value> offsets(oper_begin + 4, oper_begin + 8);
   SmallVector<Value> wraps(oper_begin + 8, oper_begin + 12);
@@ -619,20 +620,35 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   // Unroll highest dimensions of wrap and stride, if the new dimension count
   // goes beyond 4.
   SmallVector<affine::AffineForOp> for_loop_nest;
+  Value inner_affine_for_iv = nullptr;
   if (wraps.size() > AIE2_DIM_COUNT) {
     affine::AffineForOp inner_affine_for = nullptr;
     while (wraps.size() > AIE2_DIM_COUNT) {
       auto const_offset = *getConstantIntValue(offsets[0]);
+      auto const_lowest_offset = *getConstantIntValue(offsets.back());
       auto const_wrap = *getConstantIntValue(wraps[0]);
       auto const_stride = *getConstantIntValue(strides[0]);
 
       // Convert the outer dimension into an affine.for loop.
-      auto const_upper_bound = const_offset + const_wrap * const_stride;
+      int const_lower_bound = const_offset * const_stride + const_lowest_offset;
+      auto const_upper_bound = const_offset * const_stride +
+                               const_wrap * const_stride + const_lowest_offset;
       auto new_for_op =
-          (const_stride)
+          (inner_affine_for_iv)
               ? (builder.create<affine::AffineForOp>(
-                    loc, const_offset, const_upper_bound, const_stride))
-              : (builder.create<affine::AffineForOp>(loc, 0, const_wrap));
+                    loc,
+                    SmallVector<Value>{builder.create<arith::AddIOp>(
+                        loc, inner_affine_for_iv,
+                        builder.create<arith::ConstantIndexOp>(
+                            loc, const_lower_bound))},
+                    AffineMap::get(ctx),
+                    SmallVector<Value>{builder.create<arith::AddIOp>(
+                        loc, inner_affine_for_iv,
+                        builder.create<arith::ConstantIndexOp>(
+                            loc, const_upper_bound))},
+                    AffineMap::get(ctx), const_stride))
+              : (builder.create<affine::AffineForOp>(
+                    loc, const_lower_bound, const_upper_bound, const_stride));
       for_loop_nest.push_back(new_for_op);
       inner_affine_for = new_for_op;
 
@@ -640,8 +656,10 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       offsets.erase(offsets.begin());
       wraps.erase(wraps.begin());
       strides.erase(strides.begin());
+
+      builder.setInsertionPointToStart(inner_affine_for.getBody());
+      inner_affine_for_iv = inner_affine_for.getInductionVar();
     }
-    builder.setInsertionPointToStart(inner_affine_for.getBody());
   }
 
   // Stride field implicit last element one, pop.
@@ -651,8 +669,20 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   SmallVector<Value> new_opers;
   SmallVector<Type> tys;
   auto old_opers = memcpy_op.getOperands();
+  // Insert
   new_opers.insert(new_opers.end(), old_opers.begin(), old_opers.begin() + 4);
-  new_opers.insert(new_opers.end(), offsets.begin(), offsets.end());
+  if (inner_affine_for_iv) {
+    // Innermost tiled affine.for loop induction variable as lowest offset, if
+    // original rank exceeds hw limit.
+    new_opers.insert(new_opers.end(), offsets.begin(), offsets.end() - 1);
+    auto new_inner_offset = builder.create<arith::AddIOp>(
+        loc,
+        builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64),
+                                           inner_affine_for_iv),
+        offsets.back());
+    new_opers.push_back(new_inner_offset);
+  } else
+    new_opers.insert(new_opers.end(), offsets.begin(), offsets.end());
   new_opers.insert(new_opers.end(), wraps.begin(), wraps.end());
   new_opers.insert(new_opers.end(), strides.begin(), strides.end());
   builder.create<airrt::DmaMemcpyNdOp>(loc, tys, new_opers,
@@ -918,6 +948,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Enforce AIE2 hardware constraint: wrap size limit within [0, 1023].
     enforceAIE2WrapLimit(module);
+
+    // Simplify arith ops (from airrt)
+    RewritePatternSet canoPatterns_3(ctx);
+    arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_3, ctx);
+    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_3));
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
