@@ -630,9 +630,14 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       auto const_stride = *getConstantIntValue(strides[0]);
 
       // Convert the outer dimension into an affine.for loop.
-      int const_lower_bound = const_offset * const_stride + const_lowest_offset;
-      auto const_upper_bound = const_offset * const_stride +
-                               const_wrap * const_stride + const_lowest_offset;
+      int const_lower_bound =
+          const_stride ? (const_offset * const_stride + const_lowest_offset)
+                       : 0;
+      auto const_upper_bound =
+          const_stride ? (const_offset * const_stride +
+                          const_wrap * const_stride + const_lowest_offset)
+                       : const_wrap;
+      int const_step = const_stride ? const_stride : 1;
       auto new_for_op =
           (inner_affine_for_iv)
               ? (builder.create<affine::AffineForOp>(
@@ -646,9 +651,9 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
                         loc, inner_affine_for_iv,
                         builder.create<arith::ConstantIndexOp>(
                             loc, const_upper_bound))},
-                    AffineMap::get(ctx), const_stride))
+                    AffineMap::get(ctx), const_step))
               : (builder.create<affine::AffineForOp>(
-                    loc, const_lower_bound, const_upper_bound, const_stride));
+                    loc, const_lower_bound, const_upper_bound, const_step));
       for_loop_nest.push_back(new_for_op);
       inner_affine_for = new_for_op;
 
