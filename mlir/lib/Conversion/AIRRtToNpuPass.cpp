@@ -663,7 +663,8 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       strides.erase(strides.begin());
 
       builder.setInsertionPointToStart(inner_affine_for.getBody());
-      inner_affine_for_iv = inner_affine_for.getInductionVar();
+      if (const_stride)
+        inner_affine_for_iv = inner_affine_for.getInductionVar();
     }
   }
 
