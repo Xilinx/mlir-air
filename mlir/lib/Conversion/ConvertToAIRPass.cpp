@@ -2196,10 +2196,10 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   // Generate memref subview op leading the tiling of the L2 memref
   SmallVector<int64_t> tilingFactors;
   for (unsigned i = 0; i < newTilingPar.getStep().size(); i++) {
-    auto factor =
-        mlir::ceilDiv(*getConstantIntValue(newTilingPar.getUpperBound()[i]) -
-                          *getConstantIntValue(newTilingPar.getLowerBound()[i]),
-                      *getConstantIntValue(newTilingPar.getStep()[i]));
+    auto factor = llvm::divideCeilSigned(
+        *getConstantIntValue(newTilingPar.getUpperBound()[i]) -
+            *getConstantIntValue(newTilingPar.getLowerBound()[i]),
+        *getConstantIntValue(newTilingPar.getStep()[i]));
     tilingFactors.push_back(factor);
   }
   Attribute zeroIdxAttr = builder.getIndexAttr(0);
@@ -2212,8 +2212,8 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   for (unsigned i = 0; i < L2MemrefShape.size(); i++) {
     int stepSizeInInt = *getConstantIntValue(newTilingPar.getStep()[dimIndex]);
     if (L2MemrefShape[i] >= tilingFactors[dimIndex] * stepSizeInInt) {
-      int applyFactor = mlir::ceilDiv(L2MemrefShape[i],
-                                      tilingFactors[dimIndex] * stepSizeInInt);
+      int applyFactor = llvm::divideCeilSigned(
+          L2MemrefShape[i], tilingFactors[dimIndex] * stepSizeInInt);
       AffineExpr d0 = builder.getAffineDimExpr(0);
       AffineExpr mul = d0 * applyFactor;
       auto map = AffineMap::get(1, 0, mul);
@@ -2221,7 +2221,7 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
           loc, map, newTilingPar.getInductionVars()[dimIndex]);
       L2Offsets[i] = new_iv;
       L2TiledShape[i] =
-          mlir::ceilDiv(L2MemrefShape[i], tilingFactors[dimIndex]);
+          llvm::divideCeilSigned(L2MemrefShape[i], tilingFactors[dimIndex]);
       dimIndex++;
     }
     if (dimIndex >= 2)
