@@ -27,7 +27,7 @@ def main():
     output_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     for i in range(INOUT_SIZE):
         input_a[i] = i + 0x1000
-        output_b[i] = 0x00DEFACED
+        output_b[i] = 0x0DEFACED
 
     backend = xrt_backend.XRTBackend(verbose=verbose, experimental_passes=True)
 
@@ -37,6 +37,13 @@ def main():
         (_, output_b) = mul(input_a, output_b)
 
     backend.unload()
+
+    for i in range(IMAGE_HEIGHT):
+        row = output_b[i * IMAGE_WIDTH : (i + 1) * IMAGE_WIDTH]
+        for val in row:
+            val = val & 0xFFFF
+            print(f"{val:04x}", end=" ")
+        print("")
 
     # check output, should have the top left filled in
     errors = 0
@@ -49,11 +56,12 @@ def main():
         if row < TILE_HEIGHT and col < TILE_WIDTH:
             # value should have been updated
             if not (rb == 0x1000 + i):
-                print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
+                # print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
                 errors += 1
         else:
             # value should stay unchanged
             if rb != 0x00DEFACED:
+                """
                 print(
                     f"IM {i} [{col}, {row}] should be 0xdefaced, is 0x{rb:x}\n",
                     i,
@@ -61,6 +69,7 @@ def main():
                     row,
                     rb,
                 )
+                """
                 errors += 1
 
     if errors == 0:

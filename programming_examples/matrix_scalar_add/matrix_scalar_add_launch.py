@@ -34,29 +34,26 @@ def build_module():
             ],
             operands=[arg0, arg1],
         )
-        def launch_body(tile_index0, _s0, tile_index1, _s1, a, b):
+        def launch_body(
+            launch_index_x, launch_index_y, _launch_size_x, _launch_size_y, a, b
+        ):
+            m = arith.ConstantOp.create_index(IMAGE_HEIGHT)
+            o_x = arith.MulIOp(m, launch_index_x)
+            o_y = arith.MulIOp(m, launch_index_y)
 
-            # Calculate the offset into the channel data, which is based on which tile index
-            # we are at using tile_index0 and tile_index1 (provided in the launch context).
-            # tile_index0 and tile_index1 are dynamic so we have to use specialized
-            # operations do to calculations on them
-            tile_size0 = arith.ConstantOp.create_index(TILE_SIZE[0])
-            tile_size1 = arith.ConstantOp.create_index(TILE_SIZE[1])
-            offset0 = arith.MulIOp(tile_size0, tile_index0)
-            offset1 = arith.MulIOp(tile_size1, tile_index1)
             ChannelPut(
                 "ChanIn",
                 a,
-                src_offsets=[offset0, offset1],
-                src_sizes=TILE_SIZE,
-                src_strides=[1, 1],
+                src_offsets=[o_x, o_y],
+                src_sizes=[TILE_HEIGHT, TILE_WIDTH],
+                src_strides=[IMAGE_WIDTH, 1],
             )
             ChannelGet(
                 "ChanOut",
                 b,
-                dst_offsets=[offset0, offset1],
-                dst_sizes=TILE_SIZE,
-                dst_strides=[1, 1],
+                dst_offsets=[o_x, o_y],
+                dst_sizes=[TILE_HEIGHT, TILE_WIDTH],
+                dst_strides=[IMAGE_WIDTH, 1],
             )
 
             @segment(name="seg")

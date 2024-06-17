@@ -36,7 +36,13 @@ def main(build_module):
         input_b[i] = 0x00DEFACED
 
     backend = xrt_backend.XRTBackend(verbose=verbose)
-    print(input_b)
+
+    for i in range(IMAGE_HEIGHT):
+        row = input_b[i * IMAGE_WIDTH : (i + 1) * IMAGE_WIDTH]
+        for val in row:
+            val = val & 0xFFFF
+            print(f"{val:04x}", end=" ")
+        print("")
 
     # run the module
     with filelock.FileLock("/tmp/npu.lock"):
@@ -45,7 +51,12 @@ def main(build_module):
 
     backend.unload()
 
-    print(output_b)
+    for i in range(IMAGE_HEIGHT):
+        row = output_b[i * IMAGE_WIDTH : (i + 1) * IMAGE_WIDTH]
+        for val in row:
+            val = val & 0xFFFF
+            print(f"{val:04x}", end=" ")
+        print("")
 
     # check output, should have all values incremented
     errors = 0
@@ -57,7 +68,7 @@ def main(build_module):
 
         # value should have been updated
         if not (rb == 0x1000 + i + 1):
-            print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
+            # print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
             errors += 1
 
     if errors == 0:

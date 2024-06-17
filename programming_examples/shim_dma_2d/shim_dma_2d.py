@@ -59,7 +59,7 @@ def build_module():
                         a,
                         src_offsets=[0, 0],
                         src_sizes=[TILE_HEIGHT, TILE_WIDTH],
-                        src_strides=[32, 1],
+                        src_strides=[IMAGE_WIDTH, 1],
                     )
 
                     # Copy the input tile into the output tile
@@ -76,7 +76,7 @@ def build_module():
                         tile_out,
                         dst_offsets=[0, 0],
                         dst_sizes=[TILE_HEIGHT, TILE_WIDTH],
-                        dst_strides=[32, 1],
+                        dst_strides=[IMAGE_WIDTH, 1],
                     )
 
                     # Deallocate our L1 buffers
