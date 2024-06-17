@@ -513,21 +513,21 @@ void isolateAIRRtDmaLoopNests(ModuleOp module) {
 }
 
 // AIE2 hardware constraints.
-const int AIE2_WRAP_UPPER_BOUND = 1024;
+const std::vector<int> AIE2_WRAP_UPPER_BOUNDS = {64, 1024, 1024, 1024};
+const int AIE2_STRIDE_UPPER_BOUND = 1048576;
 const int AIE2_DIM_COUNT = 4;
 
 bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
   SmallVector<Value> wrap_list;
-  wrap_list.push_back(dma.getLength0());
-  wrap_list.push_back(dma.getLength1());
-  wrap_list.push_back(dma.getLength2());
   wrap_list.push_back(dma.getLength3());
-  for (auto wrap : wrap_list) {
-    if (auto const_val = getConstantIntValue(wrap)) {
+  wrap_list.push_back(dma.getLength2());
+  wrap_list.push_back(dma.getLength1());
+  wrap_list.push_back(dma.getLength0());
+  for (unsigned i = 0; i < wrap_list.size(); i++) {
+    if (auto const_val = getConstantIntValue(wrap_list[i])) {
       // Detected wrap that goes beyond the AIE2 hardware limit.
-      if (*const_val >= AIE2_WRAP_UPPER_BOUND) {
+      if (*const_val >= AIE2_WRAP_UPPER_BOUNDS[i])
         return true;
-      }
     } else
       assert(false && "has non-static wrap");
   }
@@ -567,6 +567,7 @@ int findLargestFactor(int num, int max) {
 
 void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto loc = memcpy_op->getLoc();
+  auto ctx = memcpy_op->getContext();
   auto oper_begin = memcpy_op.getOperands().begin();
   SmallVector<Value> offsets(oper_begin + 4, oper_begin + 8);
   SmallVector<Value> wraps(oper_begin + 8, oper_begin + 12);
@@ -579,10 +580,20 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
-    if (const_wrap >= AIE2_WRAP_UPPER_BOUND) {
-      // Found dimension with illegal wrap. Tiling.
-      int outer_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUND - 1);
-      int inner_wrap = mlir::ceilDiv(const_wrap, outer_wrap);
+    if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
+      // Found dimension with illegal wrap. Tiling. (Prefers smaller outer wrap
+      // values, as long as stride fits)
+      int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
+      int b_wrap = mlir::ceilDiv(const_wrap, a_wrap);
+      int new_a_stride =
+          (const_stride * a_wrap) % air::getTensorVolume(llvm::cast<MemRefType>(
+                                        memcpy_op.getMemref().getType()));
+      int inner_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
+                           ? (b_wrap)
+                           : (a_wrap);
+      int outer_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
+                           ? (a_wrap)
+                           : (b_wrap);
       wraps[i] = builder.create<arith::ConstantOp>(
           loc, builder.getI64Type(),
           IntegerAttr::get(builder.getI64Type(), inner_wrap));
@@ -609,20 +620,40 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   // Unroll highest dimensions of wrap and stride, if the new dimension count
   // goes beyond 4.
   SmallVector<affine::AffineForOp> for_loop_nest;
+  Value inner_affine_for_iv = nullptr;
   if (wraps.size() > AIE2_DIM_COUNT) {
     affine::AffineForOp inner_affine_for = nullptr;
     while (wraps.size() > AIE2_DIM_COUNT) {
       auto const_offset = *getConstantIntValue(offsets[0]);
+      auto const_lowest_offset = *getConstantIntValue(offsets.back());
       auto const_wrap = *getConstantIntValue(wraps[0]);
       auto const_stride = *getConstantIntValue(strides[0]);
 
       // Convert the outer dimension into an affine.for loop.
-      auto const_upper_bound = const_offset + const_wrap * const_stride;
+      int const_lower_bound =
+          const_stride ? (const_offset * const_stride + const_lowest_offset)
+                       : 0;
+      auto const_upper_bound =
+          const_stride ? (const_offset * const_stride +
+                          const_wrap * const_stride + const_lowest_offset)
+                       : const_wrap;
+      int const_step = const_stride ? const_stride : 1;
       auto new_for_op =
-          (const_stride)
+          (inner_affine_for_iv)
               ? (builder.create<affine::AffineForOp>(
-                    loc, const_offset, const_upper_bound, const_stride))
-              : (builder.create<affine::AffineForOp>(loc, 0, const_wrap));
+                    loc,
+                    SmallVector<Value>{builder.create<arith::AddIOp>(
+                        loc, inner_affine_for_iv,
+                        builder.create<arith::ConstantIndexOp>(
+                            loc, const_lower_bound))},
+                    AffineMap::get(ctx),
+                    SmallVector<Value>{builder.create<arith::AddIOp>(
+                        loc, inner_affine_for_iv,
+                        builder.create<arith::ConstantIndexOp>(
+                            loc, const_upper_bound))},
+                    AffineMap::get(ctx), const_step))
+              : (builder.create<affine::AffineForOp>(
+                    loc, const_lower_bound, const_upper_bound, const_step));
       for_loop_nest.push_back(new_for_op);
       inner_affine_for = new_for_op;
 
@@ -630,8 +661,11 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       offsets.erase(offsets.begin());
       wraps.erase(wraps.begin());
       strides.erase(strides.begin());
+
+      builder.setInsertionPointToStart(inner_affine_for.getBody());
+      if (const_stride)
+        inner_affine_for_iv = inner_affine_for.getInductionVar();
     }
-    builder.setInsertionPointToStart(inner_affine_for.getBody());
   }
 
   // Stride field implicit last element one, pop.
@@ -641,8 +675,20 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   SmallVector<Value> new_opers;
   SmallVector<Type> tys;
   auto old_opers = memcpy_op.getOperands();
+  // Insert
   new_opers.insert(new_opers.end(), old_opers.begin(), old_opers.begin() + 4);
-  new_opers.insert(new_opers.end(), offsets.begin(), offsets.end());
+  if (inner_affine_for_iv) {
+    // Innermost tiled affine.for loop induction variable as lowest offset, if
+    // original rank exceeds hw limit.
+    new_opers.insert(new_opers.end(), offsets.begin(), offsets.end() - 1);
+    auto new_inner_offset = builder.create<arith::AddIOp>(
+        loc,
+        builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64),
+                                           inner_affine_for_iv),
+        offsets.back());
+    new_opers.push_back(new_inner_offset);
+  } else
+    new_opers.insert(new_opers.end(), offsets.begin(), offsets.end());
   new_opers.insert(new_opers.end(), wraps.begin(), wraps.end());
   new_opers.insert(new_opers.end(), strides.begin(), strides.end());
   builder.create<airrt::DmaMemcpyNdOp>(loc, tys, new_opers,
@@ -908,6 +954,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Enforce AIE2 hardware constraint: wrap size limit within [0, 1023].
     enforceAIE2WrapLimit(module);
+
+    // Simplify arith ops (from airrt)
+    RewritePatternSet canoPatterns_3(ctx);
+    arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_3, ctx);
+    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_3));
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
