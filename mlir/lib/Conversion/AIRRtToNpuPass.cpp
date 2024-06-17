@@ -1453,12 +1453,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (chanToIdMap.count(dstColIndex) == 0)
           chanToIdMap[dstColIndex] = 15;
         int bdID = chanToIdMap[dstColIndex];
-        int ddr_id = 2; // todo: let user specify
         assert(bdID >= 4 && "run out of bd_id");
 
         builder.create<AIEX::NpuWriteBdOp>(
-            builder.getUnknownLoc(), dstColIndex, ddr_id, bdID, buff_size,
-            buff_offset, /*enable_packet*/ 1, /*out_of_order_id*/ 0,
+            builder.getUnknownLoc(), dstColIndex, bdID, buff_size, buff_offset,
+            /*enable_packet*/ 1, /*out_of_order_id*/ 0,
             /*packet_id*/ flowID, pkt_type,
             /* d0_size */ 0, /* d0_stride */ 0, /* d1_size */ 0,
             /* d1_stride */ 0, /* d2_stride */ 0,
