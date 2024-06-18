@@ -76,8 +76,6 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
     return failure();
 
-  auto rank = src_type.getShape().size();
-
   SmallVector<Value, 4> src_offsets, dst_offsets;
   SmallVector<Value, 4> src_strides, dst_strides;
   SmallVector<Value, 4> src_sizes, dst_sizes;
@@ -592,8 +590,6 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
 
     if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
       return failure();
-
-    auto rank = src_type.getShape().size();
 
     SmallVector<Value, 4> src_offsets, dst_offsets;
     SmallVector<Value, 4> src_strides, dst_strides;
