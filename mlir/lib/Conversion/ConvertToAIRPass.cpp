@@ -118,23 +118,11 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
 
   if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
     extractOperandsFromSubview(subview, src_offsets, src_sizes, src_strides);
-
-    if (src_sizes.size() != rank)
-      return failure();
-    if (src_strides.size() != rank)
-      return failure();
-
     src = subview.getSource();
   }
 
   if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
     extractOperandsFromSubview(subview, dst_offsets, dst_sizes, dst_strides);
-
-    if (dst_sizes.size() != rank)
-      return failure();
-    if (dst_strides.size() != rank)
-      return failure();
-
     dst = subview.getSource();
   }
 
@@ -614,24 +602,12 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
     if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
       extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
                                  src_strides);
-
-      if (src_sizes.size() != rank)
-        return failure();
-      if (src_strides.size() != rank)
-        return failure();
-
       src = subview.getSource();
     }
 
     if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
       extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
                                  dst_strides);
-
-      if (dst_sizes.size() != rank)
-        return failure();
-      if (dst_strides.size() != rank)
-        return failure();
-
       dst = subview.getSource();
     }
 
