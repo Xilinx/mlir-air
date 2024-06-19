@@ -843,6 +843,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
                                 SmallVector<Value> &offsets,
                                 SmallVector<Value> &sizes,
                                 SmallVector<Value> &strides) {
+    auto original_insert_point = builder.saveInsertionPoint();
     bool erased = false;
     for (auto i : erase_dims) {
       auto const_offset = getConstantIntValue(offsets[i]);
@@ -871,8 +872,23 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
       } else {
         // Get affine.apply which produces the offset ssa
         Operation *offset_producer = offsets[i].getDefiningOp();
-        if (!offset_producer)
-          continue;
+        if (offset_producer && isa<arith::IndexCastOp>(offset_producer)) {
+          auto castOp = dyn_cast<arith::IndexCastOp>(offset_producer);
+          offsets[i] = castOp.getIn();
+          offset_producer = castOp.getIn().getDefiningOp();
+        }
+        if (!offset_producer) {
+          if (!affine::getForInductionVarOwner(offsets[i]))
+            continue;
+          auto afo = affine::getForInductionVarOwner(offsets[i]);
+          builder.setInsertionPointToStart(afo.getBody());
+          // Create a new affine.apply on affine.for ind. vars, as handle for
+          // subsequent offset composition.
+          auto sym0_expr = getAffineSymbolExpr(0, builder.getContext());
+          auto iv_map = AffineMap::get(0, 1, sym0_expr);
+          offset_producer = builder.create<affine::AffineApplyOp>(
+              builder.getUnknownLoc(), iv_map, offsets[i]);
+        }
         if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
           offset_producer = exec.getChildOp();
         auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
@@ -900,6 +916,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
       strides.erase(strides.begin() + i);
       erased = true;
     }
+    builder.restoreInsertionPoint(original_insert_point);
     return erased;
   };
 
