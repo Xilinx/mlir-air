@@ -546,8 +546,8 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       opers.push_back(builder.create<arith::ConstantOp>(
           loc, i64Ty, IntegerAttr::get(i64Ty, 0)));
     else
-      assert(false && "lowering of air.launch with more than 2 dimensions is "
-                      "currently unsupported");
+      opers.push_back(builder.create<arith::ConstantOp>(
+          loc, i64Ty, IntegerAttr::get(i64Ty, 0)));
   }
 
   opers.push_back(thisOp.getMemref());
@@ -1054,22 +1054,22 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
           dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value());
 
     OpBuilder builder(scf_par);
-    auto outer =
-        builder.create<affine::AffineForOp>(scf_par.getLoc(), 0, par_sizes[0]);
-    affine::AffineForOp inner = nullptr;
-    if (par_sizes.size() == 2) {
-      auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-      inner = outer_builder.create<affine::AffineForOp>(scf_par.getLoc(), 0,
-                                                        par_sizes[1]);
-    } else
-      inner = outer;
-
-    builder.setInsertionPointToStart(inner.getBody());
-    IRMapping remap;
-    remap.map(scf_par.getInductionVars()[0], outer.getInductionVar());
-    if (par_sizes.size() == 2) {
-      remap.map(scf_par.getInductionVars()[1], inner.getInductionVar());
+    SmallVector<affine::AffineForOp> loops;
+    for (unsigned i = 0; i < par_sizes.size(); i++) {
+      if (i == 0)
+        loops.push_back(builder.create<affine::AffineForOp>(scf_par.getLoc(), 0,
+                                                            par_sizes[0]));
+      else {
+        auto inner_builder = OpBuilder::atBlockBegin(loops[i - 1].getBody());
+        loops.push_back(inner_builder.create<affine::AffineForOp>(
+            scf_par.getLoc(), 0, par_sizes[i]));
+      }
     }
+
+    builder.setInsertionPointToStart(loops.back().getBody());
+    IRMapping remap;
+    for (unsigned i = 0; i < par_sizes.size(); i++)
+      remap.map(scf_par.getInductionVars()[i], loops[i].getInductionVar());
     for (auto &o : scf_par.getBody()->getOperations()) {
       if (!isa<scf::ReduceOp>(o) && !isa<scf::YieldOp>(o) &&
           !isa<scf::ParallelOp>(o)) {
