@@ -1296,7 +1296,8 @@ Value insertArgToHierOpImpl(OpBuilder &builder, T op, SmallVector<Value> vec) {
     remap.map(vec[i], newOp.getKernelArgument(op.getNumKernelOperands() + i));
 
   for (Operation &o : op.getRegion().front().getOperations())
-    builder.clone(o, remap);
+    if (!isa<air::HerdTerminatorOp>(o))
+      builder.clone(o, remap);
 
   int res_idx = 0;
   for (auto r : op.getResults())
@@ -1674,8 +1675,6 @@ public:
     rewriter.setInsertionPointToStart(&launch.getRegion().front());
     replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
                                           launch.getRegion());
-    auto builder = OpBuilder::atBlockEnd(&bb);
-    builder.create<air::HerdTerminatorOp>(loc);
 
     int i = 0;
     auto kernel_args = launch.getKernelArguments();
@@ -1836,15 +1835,9 @@ void InsertEmptyLaunchOverHerd(air::HerdOp op) {
   }
 
   builder.setInsertionPointToStart(&herdOp.getRegion().front());
-  for (auto &o : op.getBody().front().getOperations()) {
-    builder.clone(o, remap);
-  }
-
-  // Terminators
-  builder.setInsertionPointToEnd(&segment.getRegion().front());
-  builder.create<air::SegmentTerminatorOp>(builder.getUnknownLoc());
-  builder.setInsertionPointToEnd(&launch.getRegion().front());
-  builder.create<air::LaunchTerminatorOp>(builder.getUnknownLoc());
+  for (auto &o : op.getBody().front().getOperations())
+    if (!isa<air::HerdTerminatorOp>(o))
+      builder.clone(o, remap);
 
   // Copy over herd name
   if (auto attr =
@@ -1975,8 +1968,6 @@ public:
     rewriter.setInsertionPointToStart(&herdOp.getRegion().front());
     replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
                                           herdOp.getRegion());
-    auto builder = OpBuilder::atBlockEnd(&bb);
-    builder.create<air::HerdTerminatorOp>(loc);
 
     int i = 0;
     auto kernel_args = herdOp.getKernelArguments();
@@ -2093,8 +2084,6 @@ public:
     rewriter.setInsertionPointToStart(&herdOp.getRegion().front());
     replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
                                           herdOp.getRegion());
-    auto builder = OpBuilder::atBlockEnd(&bb);
-    builder.create<air::HerdTerminatorOp>(loc);
 
     int i = 0;
     auto kernel_args = herdOp.getKernelArguments();
@@ -2276,8 +2265,6 @@ air::SegmentOp generateEmptySegmentOp(OpBuilder &rewriter, T op,
   auto &body = op.getBody()->getOperations();
   bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
   rewriter.setInsertionPointToStart(&segment.getRegion().front());
-  auto builder = OpBuilder::atBlockEnd(&bb);
-  builder.template create<air::SegmentTerminatorOp>(builder.getUnknownLoc());
 
   return segment;
 }
@@ -2373,9 +2360,6 @@ public:
       for (Value v : args)
         replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
     }
-
-    OpBuilder builder = OpBuilder::atBlockEnd(&launch.getBody().front());
-    builder.create<air::LaunchTerminatorOp>(builder.getUnknownLoc());
 
     if (op != parOp)
       op.erase();
@@ -2479,9 +2463,6 @@ public:
       for (Value v : args)
         replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
     }
-
-    OpBuilder builder = OpBuilder::atBlockEnd(&launch.getBody().front());
-    builder.create<air::LaunchTerminatorOp>(loc);
 
     if (op != forOp)
       op.erase();

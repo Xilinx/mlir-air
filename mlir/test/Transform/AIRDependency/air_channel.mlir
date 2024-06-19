@@ -117,7 +117,6 @@ module attributes {torch.debug_module_name = "mmult"} {
             air.channel.put @channel_8[%arg17, %arg18] (%12[] [] []) : (memref<32x32xbf16, 2>)
 // CHECK: %[[EVENT31:.*]] = air.execute [%[[EVENT30]]]
             memref.dealloc %12 : memref<32x32xbf16, 2>
-            air.herd_terminator
           }
           scf.parallel (%arg17, %arg18) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
             %20 = affine.apply #map1()[%arg17]
@@ -132,13 +131,10 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: %[[EVENT34:.*]] = air.channel.put async{{.*}}@channel_4[]
         air.channel.put @channel_4[] (%19[] [] []) : (memref<64x64xbf16, 1>)
         memref.dealloc %19 : memref<64x64xbf16, 1>
-        air.segment_terminator
       }
 
 // CHECK: %[[EVENT35:.*]] = air.channel.get async{{.*}}@channel_4[]
       air.channel.get @channel_4[] (%arg8[%17, %18] [%c64_new, %c64_new] [%c1024_new, %c1_new]) : (memref<24576x1024xbf16>)
-      
-      air.launch_terminator
     }
     return %1 : memref<24576x1024xbf16>
   }

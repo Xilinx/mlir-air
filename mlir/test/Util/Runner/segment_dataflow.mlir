@@ -111,7 +111,6 @@ module {
           }
           scf.yield %async_token_13 : !air.async.token
         }
-        air.segment_terminator
       }
       %8 = air.wait_all async 
       %9 = scf.for %arg15 = %c0 to %c1024 step %c256 iter_args(%arg16 = %8) -> (!air.async.token) {
@@ -177,7 +176,6 @@ module {
           }
           scf.yield %async_token_17 : !air.async.token
         }
-        air.segment_terminator
       }
       %13 = air.wait_all async 
       %14 = scf.for %arg15 = %c0 to %c1024 step %c256 iter_args(%arg16 = %13) -> (!air.async.token) {
@@ -248,9 +246,7 @@ module {
           }
           scf.yield %async_token_17 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return %results_5 : memref<1024x1024xbf16>
   }

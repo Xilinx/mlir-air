@@ -22,6 +22,5 @@ module {
   air.launch (%tx, %ty) in (%size_x = %c1, %size_y = %c2) attributes {foo = "bar"} {
     %alloc = memref.alloc() : memref<16x8xi32>
     air.channel.get  @channel_0[] (%alloc[] [] []) : (memref<16x8xi32>)
-    air.launch_terminator
   }
 }

@@ -39,15 +39,12 @@ module  {
           // CHECK: %[[EVENT8:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT7]]{{.*}}]
           memref.dealloc %3 : memref<128xi32, 1>
           // CHECK: %[[EVENT9:.*]] = air.execute [{{.*}}%[[EVENT8]]{{.*}}]
-          air.herd_terminator
         }
         memref.dealloc %2 : memref<256xi32, 2>
         // CHECK: %[[EVENT10:.*]] = air.execute [{{.*}}%[[EVENT6]]{{.*}}]
-        air.segment_terminator
       }
       memref.dealloc %1 : memref<512xi32, 3>
       // CHECK: %[[EVENT11:.*]] = air.execute [{{.*}}%[[EVENT3]]{{.*}}]
-      air.launch_terminator
     }
     return
   }

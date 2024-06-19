@@ -73,14 +73,12 @@ module {
         %async_token_12 = air.execute [%9] {
           memref.dealloc %results_9 : memref<64xi32, 2>
         } {id = 7 : i32}
-        air.herd_terminator
       }
       %6 = air.channel.get async  @channel_2[] (%results[] [] []) {id = 6 : i32} : (memref<64xi32, 1>)
       %7 = air.channel.put async [%6]  @channel_3[] (%results[] [] []) {id = 7 : i32} : (memref<64xi32, 1>)
       %async_token_2 = air.execute [%7] {
         memref.dealloc %results : memref<64xi32, 1>
       } {id = 2 : i32}
-      air.segment_terminator
     }
     %2 = air.channel.get async  @channel_3[] (%arg1[] [] []) {id = 8 : i32} : (memref<64xi32>)
     return

@@ -45,11 +45,8 @@ module {
           air.channel.put  @channel_1[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c0_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
           memref.dealloc %alloc_8 : memref<16x8xi32, 2>
           memref.dealloc %alloc : memref<16x8xi32, 2>
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -114,11 +111,8 @@ module {
           air.channel.put  @channel_3[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c0_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
           memref.dealloc %alloc_8 : memref<16x8xi32, 2>
           memref.dealloc %alloc : memref<16x8xi32, 2>
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -192,11 +186,8 @@ module {
           }
           memref.dealloc %alloc_10 : memref<16x8xi32, 2>
           memref.dealloc %alloc : memref<16x8xi32, 2>
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -239,14 +230,11 @@ module {
           %async_token_7 = air.execute [%async_token_5] {
             memref.dealloc %results_6 : memref<32xf32, 2>
           }
-          air.herd_terminator
         }
         %async_token_4 = air.execute [%4] {
           memref.dealloc %results_3 : memref<64xf32, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

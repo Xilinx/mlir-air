@@ -183,7 +183,6 @@ module attributes {torch.debug_module_name = "mmult"} {
             %async_token_41 = air.execute [%12#1] {
               memref.dealloc %results_36 : memref<32x32xf32, 2>
             } {id = 21 : i32}
-            air.herd_terminator
           }
           %async_token_18 = air.execute [%7] {
             memref.dealloc %results_15 : memref<128x128xf32, 1>
@@ -197,9 +196,7 @@ module attributes {torch.debug_module_name = "mmult"} {
         %async_token_13 = air.execute [%2] {
           memref.dealloc %results_12 : memref<128x128xf32, 1>
         } {id = 24 : i32}
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return %results_8 : memref<512x512xf32>
   }

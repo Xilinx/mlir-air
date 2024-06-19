@@ -129,7 +129,6 @@ func.func @scf2()  {
 //       CHECK:    air.herd @herd_0
 //  CHECK-SAME:        attributes {link_with = "/path/to/mm_microkernel.o"} {
 //       CHECK:       func.call @matmul_i32_i32
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    return
 //       CHECK:  }
@@ -163,7 +162,6 @@ module {
 //  CHECK-SAME:       {
 //       CHECK:           func.call @matmul_scalar_i32_i32
 //       CHECK:       }
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    return
 //       CHECK:  }
@@ -193,13 +191,10 @@ module {
 // CHECK-LABEL: module {
 //       CHECK:  func.func @shared_herd_name(
 //       CHECK:    air.herd @herd_0
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    air.herd @herd_0
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    air.herd @herd_0
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    return
 //       CHECK:  }
@@ -245,10 +240,8 @@ module {
 // CHECK-LABEL: module {
 //       CHECK:  func.func @unique_herd_name(
 //       CHECK:    air.herd @herd_0
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    air.herd @herd_1
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    return
 //       CHECK:  }
@@ -295,7 +288,6 @@ module {
 //       CHECK:       %[[VAL_0:.*]] = affine.apply
 //       CHECK:       %[[VAL_1:.*]] = affine.apply
 //       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_0]], %[[VAL_1]], 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    air.herd @herd_0
 //       CHECK:       %[[VAL_0:.*]] = affine.apply
@@ -305,7 +297,6 @@ module {
 //       CHECK:       %[[VAL_3:.*]] = affine.apply
 //       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_2]], %[[VAL_3]]] [1, 1, 64, 64] [1, 1, 1, 1] : memref<1x1x128x128xbf16, 1 : i32> to memref<1x1x64x64xbf16, strided<[16384, 16384, 128, 1], offset: ?>, 1 : i32>
 //       CHECK:       air.dma_memcpy_nd {{.*}} : (memref<1x1x64x64xbf16, strided<[16384, 16384, 128, 1], offset: ?>, 1 : i32>, memref<1x1x16x4x16x4xbf16, strided<[16384, 16384, 16, 4, 512, 1], offset: ?>, 2 : i32>)
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    return
 //       CHECK:  }

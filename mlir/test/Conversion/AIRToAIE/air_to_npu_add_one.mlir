@@ -124,13 +124,11 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
       air.channel.put @channel_2[%tx, %ty] (%buf1[] [] []) {id = 5 : i32} : (memref<64xi32, 2>)
       memref.dealloc %buf0 : memref<64xi32, 2>
       memref.dealloc %buf1 : memref<64xi32, 2>
-      air.herd_terminator
     }
     %memtile1 = memref.alloc() : memref<64xi32, 1>
     air.channel.get @channel_2[] (%memtile1[] [] []) {id = 6 : i32} : (memref<64xi32, 1>)
     air.channel.put @channel_3[] (%memtile1[] [] []) {id = 7 : i32} : (memref<64xi32, 1>)
     memref.dealloc %memtile1 : memref<64xi32, 1>
-    air.segment_terminator
   }
   air.channel.get @channel_3[] (%arg1[] [] []) {id = 8 : i32} : (memref<64xi32>)
   return
@@ -274,7 +272,6 @@ module {
         %async_token_12 = air.execute [%9] {
           memref.dealloc %results_9 : memref<64xi32, 2>
         } {id = 7 : i32}
-        air.herd_terminator
       }
       %async_token_3, %results_4 = air.execute -> (memref<64xi32, 1>) {
         %alloc = memref.alloc() : memref<64xi32, 1>
@@ -285,7 +282,6 @@ module {
       %async_token_5 = air.execute [%7] {
         memref.dealloc %results_4 : memref<64xi32, 1>
       } {id = 9 : i32}
-      air.segment_terminator
     }
     %2 = air.channel.get async  @channel_3[] (%arg1[] [] []) {id = 8 : i32} : (memref<64xi32>)
     return

@@ -118,7 +118,6 @@ module {
           %async_token_19 = air.execute [%11] {
             memref.dealloc %results_18 : memref<32x32xbf16, 2>
           } {id = 14 : i32}
-          air.herd_terminator
         }
         %6 = air.dma_memcpy_nd async [%5] (%results[%arg3, %arg4] [%c64, %c64] [%c512, %c1], %results_6[] [] []) {id = 10 : i32} : (memref<512x512xbf16>, memref<64x64xbf16, 1>)
         %async_token_7 = air.execute [%5] {

@@ -48,7 +48,6 @@ module attributes {torch.debug_module_name = "mmult"} {
       %asyncToken_4 = air.execute [%4, %5] {
         memref.dealloc %6 : memref<32x32xi32, 2>
       } {id = 15 : i32}
-      air.herd_terminator
     }
     memref.copy %1, %arg2 : memref<64x64xi32> to memref<64x64xi32>
     return

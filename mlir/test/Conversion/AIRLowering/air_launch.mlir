@@ -37,7 +37,6 @@ func.func @launch_1() {
   %e0 = air.wait_all async
   %e1 = air.wait_all async [%e0]
   %t = air.launch async [%e0, %e1] () in () {
-    air.launch_terminator
   }
   return
 }

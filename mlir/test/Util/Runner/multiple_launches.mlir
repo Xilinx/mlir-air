@@ -30,11 +30,8 @@ module {
           %async_token_5 = air.execute [%async_token_3] {
             memref.dealloc %results_4 : memref<32x32xbf16, 2>
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     %3 = air.launch async [%0] (%arg4, %arg5) in (%arg6=%c2, %arg7=%c2) args(%arg8=%arg0, %arg9=%arg1) : memref<256x1024xbf16>, memref<1024x1024xbf16> attributes {id = 7 : i32} {
       %4 = air.segment async  args(%arg15=%arg4, %arg16=%arg5, %arg17=%arg6, %arg18=%arg7, %arg19=%arg8, %arg20=%arg9) : index, index, index, index, memref<256x1024xbf16>, memref<1024x1024xbf16> attributes {x_loc = 0 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
@@ -47,11 +44,8 @@ module {
           %async_token_5 = air.execute [%async_token_3] {
             memref.dealloc %results_4 : memref<32x32xbf16, 2>
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return %results_2 : memref<256x1024xbf16>
   }

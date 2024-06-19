@@ -131,7 +131,6 @@ module {
             %async_token_24 = air.execute [%12] {
               memref.dealloc %results_23 : memref<16x16xbf16, 2>
             }
-            air.herd_terminator
           }
           %async_token_13 = air.execute [%8] {
             memref.dealloc %results_10 : memref<64x64xbf16, 1>
@@ -145,9 +144,7 @@ module {
         %async_token_8 = air.execute [%5] {
           memref.dealloc %results_7 : memref<64x64xbf16, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

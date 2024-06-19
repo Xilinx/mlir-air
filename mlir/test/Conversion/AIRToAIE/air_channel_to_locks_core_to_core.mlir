@@ -78,11 +78,8 @@ func.func @one_to_one() {
         %async_token_8 = air.execute [%3] {
           memref.dealloc %results_7 : memref<32x32xbf16, 2>
         }
-        air.herd_terminator
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -126,11 +123,8 @@ func.func @two_to_two() {
         %async_token_8 = air.execute [%3] {
           memref.dealloc %results_7 : memref<32x32xbf16, 2>
         }
-        air.herd_terminator
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -185,11 +179,8 @@ func.func @one_to_two() {
         %async_token_8 = air.execute [%3] {
           memref.dealloc %results_7 : memref<32x32xbf16, 2>
         }
-        air.herd_terminator
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }

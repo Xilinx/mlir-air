@@ -33,13 +33,10 @@ module {
         }
         %4 = scf.for %arg10 = %c0 to %c512 step %c64 iter_args(%arg11 = %3) -> (!air.async.token) {
           %2 = air.herd @herd_0 async tile (%arg21, %arg22) in (%arg23=%c4, %arg24=%c4) {
-            air.herd_terminator
           }
           scf.yield %2 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

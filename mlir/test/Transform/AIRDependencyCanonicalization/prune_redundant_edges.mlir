@@ -47,19 +47,16 @@ module {
             memref.dealloc %valOut_10 : memref<128xi32, 2>
             air.execute_terminator
           } {id = 4 : i32}
-          air.herd_terminator
         }
         %asyncToken_7 = air.execute [%4, %asyncToken_5, %3] {
           memref.dealloc %valOut_6 : memref<256xi32, 1>
           air.execute_terminator
         } {id = 5 : i32}
-        air.segment_terminator
       }
       %asyncToken_2 = air.execute [%2, %1] {
         memref.dealloc %valOut : memref<512xi32>
         air.execute_terminator
       } {id = 6 : i32}
-      air.launch_terminator
     }
     return
   }

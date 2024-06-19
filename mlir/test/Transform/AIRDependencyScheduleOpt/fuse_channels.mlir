@@ -17,8 +17,6 @@
 // CHECK: air.segment
 // CHECK: air.channel.get @channel_0
 // CHECK: air.channel.get @channel_1
-// CHECK: air.segment_terminator
-// CHECK: air.launch_terminator
 // AGGRESSIVE-LABEL: func0
 // AGGRESSIVE: air.launch
 // AGGRESSIVE: air.channel.put @channel_0
@@ -26,8 +24,6 @@
 // AGGRESSIVE: air.segment
 // AGGRESSIVE: air.channel.get @channel_0
 // AGGRESSIVE: air.channel.get @channel_0
-// AGGRESSIVE: air.segment_terminator
-// AGGRESSIVE: air.launch_terminator
 // AGGL1-LABEL: func0
 // AGGL1: air.launch
 // AGGL1: air.channel.put @channel_0
@@ -35,8 +31,6 @@
 // AGGL1: air.segment
 // AGGL1: air.channel.get @channel_0
 // AGGL1: air.channel.get @channel_1
-// AGGL1: air.segment_terminator
-// AGGL1: air.launch_terminator
 
 module {
   air.channel @channel_0 [1, 1]
@@ -55,15 +49,12 @@ module {
         air.channel.get @channel_0[] (%alloc_2[] [] []) : (memref<4x4xi32, 1>)
         air.channel.get @channel_1[] (%alloc_3[] [] []) : (memref<4x4xi32, 1>)
         air.herd @herd_0 tile (%arg12, %arg13) in (%arg14=%c2, %arg15=%c2) {
-          air.herd_terminator
         }
         memref.dealloc %alloc_2 : memref<4x4xi32, 1>
         memref.dealloc %alloc_3 : memref<4x4xi32, 1>
-        air.segment_terminator
       }
       memref.dealloc %alloc_0 : memref<4x4xi32>
       memref.dealloc %alloc_1 : memref<4x4xi32>
-      air.launch_terminator
     }
     return
   }
@@ -83,9 +74,6 @@ module {
 // CHECK: scf.for
 // CHECK: air.channel.get @channel_0
 // CHECK: air.channel.get @channel_1
-// CHECK: air.herd_terminator
-// CHECK: air.segment_terminator
-// CHECK: air.launch_terminator
 // AGGRESSIVE-LABEL: func1
 // AGGRESSIVE: air.launch
 // AGGRESSIVE: air.segment
@@ -98,9 +86,6 @@ module {
 // AGGRESSIVE: scf.for
 // AGGRESSIVE: air.channel.get @channel_0
 // AGGRESSIVE: air.channel.get @channel_0
-// AGGRESSIVE: air.herd_terminator
-// AGGRESSIVE: air.segment_terminator
-// AGGRESSIVE: air.launch_terminator
 // AGGL1-LABEL: func1
 // AGGL1: air.launch
 // AGGL1: air.segment
@@ -113,9 +98,6 @@ module {
 // AGGL1: scf.for
 // AGGL1: air.channel.get @channel_0
 // AGGL1: air.channel.get @channel_0
-// AGGL1: air.herd_terminator
-// AGGL1: air.segment_terminator
-// AGGL1: air.launch_terminator
 
 module {
   air.channel @channel_0 [1, 1]
@@ -156,11 +138,8 @@ module {
             memref.dealloc %alloc_6 : memref<4x4xi32, 2>
           }
           memref.dealloc %alloc_4 : memref<4x4xi32, 2>
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -175,8 +154,6 @@ module {
 // CHECK: air.segment
 // CHECK: air.channel.get{{.*}}@channel_0
 // CHECK: air.channel.get{{.*}}@channel_1
-// CHECK: air.segment_terminator
-// CHECK: air.launch_terminator
 // AGGRESSIVE-LABEL: func2
 // AGGRESSIVE: air.launch
 // AGGRESSIVE: air.channel.put{{.*}}@channel_0
@@ -184,8 +161,6 @@ module {
 // AGGRESSIVE: air.segment
 // AGGRESSIVE: air.channel.get{{.*}}@channel_0
 // AGGRESSIVE: air.channel.get{{.*}}@channel_0
-// AGGRESSIVE: air.segment_terminator
-// AGGRESSIVE: air.launch_terminator
 // AGGL1-LABEL: func2
 // AGGL1: air.launch
 // AGGL1: air.channel.put{{.*}}@channel_0
@@ -193,8 +168,6 @@ module {
 // AGGL1: air.segment
 // AGGL1: air.channel.get{{.*}}@channel_0
 // AGGL1: air.channel.get{{.*}}@channel_1
-// AGGL1: air.segment_terminator
-// AGGL1: air.launch_terminator
 
 module {
   air.channel @channel_0 [1, 1]
@@ -231,7 +204,6 @@ module {
         %async_token_9 = air.execute [%5] {
           memref.dealloc %results_7 : memref<4x4xi32, 1>
         }
-        air.segment_terminator
       }
       %async_token_2 = air.execute [%1] {
         memref.dealloc %results : memref<4x4xi32>
@@ -239,7 +211,6 @@ module {
       %async_token_3 = air.execute [%2] {
         memref.dealloc %results_1 : memref<4x4xi32>
       }
-      air.launch_terminator
     }
     return
   }
@@ -255,9 +226,6 @@ module {
 // CHECK: air.herd @herd_0
 // CHECK: air.channel.get{{.*}}@channel_0
 // CHECK: air.channel.get{{.*}}@channel_1
-// CHECK: air.herd_terminator
-// CHECK: air.segment_terminator
-// CHECK: air.launch_terminator
 // AGGRESSIVE-LABEL: func3
 // AGGRESSIVE: air.launch
 // AGGRESSIVE: air.channel.put{{.*}}@channel_1
@@ -266,9 +234,6 @@ module {
 // AGGRESSIVE: air.herd @herd_0
 // AGGRESSIVE: air.channel.get{{.*}}@channel_1
 // AGGRESSIVE: air.channel.get{{.*}}@channel_1
-// AGGRESSIVE: air.herd_terminator
-// AGGRESSIVE: air.segment_terminator
-// AGGRESSIVE: air.launch_terminator
 // AGGL1-LABEL: func3
 // AGGL1: air.launch
 // AGGL1: air.channel.put{{.*}}@channel_1
@@ -277,9 +242,6 @@ module {
 // AGGL1: air.herd @herd_0
 // AGGL1: air.channel.get{{.*}}@channel_1
 // AGGL1: air.channel.get{{.*}}@channel_1
-// AGGL1: air.herd_terminator
-// AGGL1: air.segment_terminator
-// AGGL1: air.launch_terminator
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {
@@ -335,11 +297,8 @@ module {
             memref.dealloc %alloc : memref<32x32xi32, 2>
             memref.dealloc %alloc_5 : memref<32x32xi32, 2>
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -353,7 +312,6 @@ module {
 // CHECK: air.herd @herd_0
 // CHECK: air.channel.get{{.*}}@channel_2
 // CHECK: air.channel.get{{.*}}@channel_3
-// CHECK: air.herd_terminator
 // CHECK: scf.for
 // CHECK-NEXT: scf.for
 // CHECK: air.channel.put{{.*}}@channel_2
@@ -363,16 +321,12 @@ module {
 // CHECK: air.herd @herd_0
 // CHECK: air.channel.get{{.*}}@channel_2
 // CHECK: air.channel.get{{.*}}@channel_3
-// CHECK: air.herd_terminator
-// CHECK: air.segment_terminator
-// CHECK: air.launch_terminator
 // AGGRESSIVE-LABEL: func4
 // AGGRESSIVE: air.launch
 // AGGRESSIVE: air.segment @segment_0
 // AGGRESSIVE: air.herd @herd_0
 // AGGRESSIVE: air.channel.get{{.*}}@channel_2
 // AGGRESSIVE: air.channel.get{{.*}}@channel_3
-// AGGRESSIVE: air.herd_terminator
 // AGGRESSIVE: scf.for
 // AGGRESSIVE-NEXT: scf.for
 // AGGRESSIVE: air.channel.put{{.*}}@channel_2
@@ -382,16 +336,12 @@ module {
 // AGGRESSIVE: air.herd @herd_0
 // AGGRESSIVE: air.channel.get{{.*}}@channel_2
 // AGGRESSIVE: air.channel.get{{.*}}@channel_3
-// AGGRESSIVE: air.herd_terminator
-// AGGRESSIVE: air.segment_terminator
-// AGGRESSIVE: air.launch_terminator
 // AGGL1-LABEL: func4
 // AGGL1: air.launch
 // AGGL1: air.segment @segment_0
 // AGGL1: air.herd @herd_0
 // AGGL1: air.channel.get{{.*}}@channel_2
 // AGGL1: air.channel.get{{.*}}@channel_3
-// AGGL1: air.herd_terminator
 // AGGL1: scf.for
 // AGGL1-NEXT: scf.for
 // AGGL1: air.channel.put{{.*}}@channel_2
@@ -401,9 +351,6 @@ module {
 // AGGL1: air.herd @herd_0
 // AGGL1: air.channel.get{{.*}}@channel_2
 // AGGL1: air.channel.get{{.*}}@channel_3
-// AGGL1: air.herd_terminator
-// AGGL1: air.segment_terminator
-// AGGL1: air.launch_terminator
 
 #map = affine_map<(d0) -> (d0 * 8)>
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
@@ -467,7 +414,6 @@ module {
             }
             scf.yield %14 : !air.async.token
           }
-          air.herd_terminator
         }
         %7 = air.wait_all async 
         %8 = scf.for %arg11 = %c1 to %c8_4 step %c1 iter_args(%arg12 = %7) -> (!air.async.token) {
@@ -512,11 +458,8 @@ module {
               scf.yield %14 : !air.async.token
             }
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     %async_token_2 = air.execute [%0] {
       memref.dealloc %results_1 : memref<2x1x32x256xi32, 1>
@@ -541,8 +484,6 @@ module {
 // CHECK: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
 // CHECK: air.channel.get{{.*}}@channel_4
 // CHECK: scf.yield
-// CHECK: air.segment_terminator
-// CHECK: air.launch_terminator
 // AGGRESSIVE-LABEL: func5
 // AGGRESSIVE: air.launch
 // AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
@@ -552,8 +493,6 @@ module {
 // AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
 // AGGRESSIVE: air.channel.get{{.*}}@channel_4
 // AGGRESSIVE: scf.yield
-// AGGRESSIVE: air.segment_terminator
-// AGGRESSIVE: air.launch_terminator
 // AGGL1-LABEL: func5
 // AGGL1: air.launch
 // AGGL1: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
@@ -563,8 +502,6 @@ module {
 // AGGL1: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
 // AGGL1: air.channel.get{{.*}}@channel_4
 // AGGL1: scf.yield
-// AGGL1: air.segment_terminator
-// AGGL1: air.launch_terminator
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
@@ -623,9 +560,7 @@ module {
         %async_token_8 = air.execute [%10] {
           memref.dealloc %results_7 : memref<1x1x64x32xi8, 1 : i32>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -639,7 +574,6 @@ module {
 // CHECK: air.segment @segment_0
 // CHECK: air.herd @herd_0
 // CHECK: air.channel.get{{.*}}@channel_6
-// CHECK: air.herd_terminator
 // CHECK: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
 // CHECK-NEXT: scf.parallel
 // CHECK: air.channel.put{{.*}}@channel_6
@@ -648,16 +582,12 @@ module {
 // CHECK: air.herd @herd_0
 // CHECK: scf.for %{{.*}} = %c1{{.*}}to %c15{{.*}}step %c1
 // CHECK: air.channel.get{{.*}}@channel_6
-// CHECK: air.herd_terminator
 // CHECK: air.herd @herd_0
 // CHECK: air.channel.get{{.*}}@channel_6
-// CHECK: air.herd_terminator
-// CHECK: air.segment_terminator
 // AGGRESSIVE-LABEL: func6
 // AGGRESSIVE: air.segment @segment_0
 // AGGRESSIVE: air.herd @herd_0
 // AGGRESSIVE: air.channel.get{{.*}}@channel_6
-// AGGRESSIVE: air.herd_terminator
 // AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
 // AGGRESSIVE-NEXT: scf.parallel
 // AGGRESSIVE: air.channel.put{{.*}}@channel_6
@@ -666,16 +596,12 @@ module {
 // AGGRESSIVE: air.herd @herd_0
 // AGGRESSIVE: scf.for %{{.*}} = %c1{{.*}}to %c15{{.*}}step %c1
 // AGGRESSIVE: air.channel.get{{.*}}@channel_6
-// AGGRESSIVE: air.herd_terminator
 // AGGRESSIVE: air.herd @herd_0
 // AGGRESSIVE: air.channel.get{{.*}}@channel_6
-// AGGRESSIVE: air.herd_terminator
-// AGGRESSIVE: air.segment_terminator
 // AGGL1-LABEL: func6
 // AGGL1: air.segment @segment_0
 // AGGL1: air.herd @herd_0
 // AGGL1: air.channel.get{{.*}}@channel_6
-// AGGL1: air.herd_terminator
 // AGGL1: scf.for %{{.*}} = %c0{{.*}}to %c16{{.*}}step %c1{{.*}}iter_args
 // AGGL1-NEXT: scf.parallel
 // AGGL1: air.channel.put{{.*}}@channel_6
@@ -684,11 +610,8 @@ module {
 // AGGL1: air.herd @herd_0
 // AGGL1: scf.for %{{.*}} = %c1{{.*}}to %c15{{.*}}step %c1
 // AGGL1: air.channel.get{{.*}}@channel_6
-// AGGL1: air.herd_terminator
 // AGGL1: air.herd @herd_0
 // AGGL1: air.channel.get{{.*}}@channel_6
-// AGGL1: air.herd_terminator
-// AGGL1: air.segment_terminator
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {
@@ -729,7 +652,6 @@ module {
       %2 = air.herd @herd_0 async [%async_token_6, %async_token_8]  tile (%arg0, %arg1) in (%arg2=%c2, %arg3=%c2) args(%arg4=%results_7) : memref<1x1x4x8x4x8xi8, 2 : i32> attributes {id = 3 : i32} {
         %7 = air.wait_all async 
         %8 = air.channel.get async [%7]  @channel_2[%arg0, %arg1] (%arg4[] [] []) {id = 14 : i32} : (memref<1x1x4x8x4x8xi8, 2 : i32>)
-        air.herd_terminator
       }
       %3 = scf.for %arg0 = %c1 to %c15 step %c1 iter_args(%arg1 = %async_token_8) -> (!air.async.token) {
         %7 = scf.parallel (%arg2, %arg3) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%arg1) -> !air.async.token {
@@ -753,7 +675,6 @@ module {
           %7 = air.wait_all async 
           %8 = air.channel.get async [%7]  @channel_6[%arg0, %arg1] (%arg4[] [] []) {id = 20 : i32} : (memref<1x1x4x8x4x8xi8, 2 : i32>)
         }
-        air.herd_terminator
       }
       %5 = scf.parallel (%arg0, %arg1) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%2) -> !air.async.token {
         %async_token_12, %results_13 = air.execute -> (index) {
@@ -770,7 +691,6 @@ module {
       %6 = air.herd @herd_0 async [%4]  tile (%arg0, %arg1) in (%arg2=%c2, %arg3=%c2) args(%arg4=%results_7) : memref<1x1x4x8x4x8xi8, 2 : i32> attributes {id = 5 : i32} {
         %7 = air.wait_all async 
         %8 = air.channel.get async [%7]  @channel_12[%arg0, %arg1] (%arg4[] [] []) {id = 30 : i32} : (memref<1x1x4x8x4x8xi8, 2 : i32>)
-        air.herd_terminator
       }
       %async_token_10 = air.execute {
         memref.dealloc %results_9 : memref<1x1x64x32xi8, 1 : i32>
@@ -778,7 +698,6 @@ module {
       %async_token_11 = air.execute [%6] {
         memref.dealloc %results_7 : memref<1x1x4x8x4x8xi8, 2 : i32>
       }
-      air.segment_terminator
     }
     return
   }
@@ -796,7 +715,6 @@ module {
 // CHECK: scf.for %{{.*}} = %c0{{.*}}to %c64{{.*}}step %c1{{.*}}{
 // CHECK-NEXT: air.channel.put{{.*}}@channel_7{{.*}} : (memref<1x1x32x64xi32, 1 : i32>)
 // CHECK-NEXT: }
-// CHECK: air.segment_terminator
 // AGGRESSIVE-LABEL: func7
 // AGGRESSIVE: air.segment @segment_0
 // AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}}to %c64{{.*}}step %c1{{.*}}{
@@ -805,7 +723,6 @@ module {
 // AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}}to %c64{{.*}}step %c1{{.*}}{
 // AGGRESSIVE-NEXT: air.channel.put{{.*}}@channel_7{{.*}} : (memref<1x1x32x64xi32, 1 : i32>)
 // AGGRESSIVE-NEXT: }
-// AGGRESSIVE: air.segment_terminator
 // AGGL1-LABEL: func7
 // AGGL1: air.segment @segment_0
 // AGGL1: scf.for %{{.*}} = %c0{{.*}}to %c64{{.*}}step %c1{{.*}}{
@@ -814,7 +731,6 @@ module {
 // AGGL1: scf.for %{{.*}} = %c0{{.*}}to %c64{{.*}}step %c1{{.*}}{
 // AGGL1-NEXT: air.channel.put{{.*}}@channel_7{{.*}} : (memref<1x1x32x64xi32, 1 : i32>)
 // AGGL1-NEXT: }
-// AGGL1: air.segment_terminator
 
 #set = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 module {
@@ -856,7 +772,6 @@ module {
             %10 = air.channel.get async  @channel_3[%arg7, %arg8] (%arg11[] [] []) {id = 17 : i32} : (memref<1x1x8x4x8x4xi32, 2 : i32>)
             affine.yield %10 : !air.async.token
           }
-          air.herd_terminator
         }
         scf.for %arg7 = %c1 to %c63 step %c1 {
           %9 = air.channel.put async [%async_token_1]  @channel_6[] (%results_2[%c0, %c0, %c0, %c0, %c0, %c0] [%c1, %c1, %c8, %c4, %c8, %c4] [%c2048, %c2048, %c4, %c512, %c64, %c1]) {id = 22 : i32} : (memref<1x1x32x64xi32, 1 : i32>)
@@ -876,7 +791,6 @@ module {
               affine.yield %10 : !air.async.token
             }
           }
-          air.herd_terminator
         }
         %6 = air.channel.put async [%5]  @channel_10[] (%results_2[%c0, %c0, %c0, %c0, %c0, %c0] [%c1, %c1, %c8, %c4, %c8, %c4] [%c2048, %c2048, %c4, %c512, %c64, %c1]) {id = 32 : i32} : (memref<1x1x32x64xi32, 1 : i32>)
         %7 = air.channel.put async [%5]  @channel_11[] (%results_2[%c0, %c0, %c0, %c0, %c0, %c32_0] [%c1, %c1, %c8, %c4, %c8, %c4] [%c2048, %c2048, %c4, %c512, %c64, %c1]) {id = 33 : i32} : (memref<1x1x32x64xi32, 1 : i32>)
@@ -888,14 +802,11 @@ module {
             %10 = air.channel.get async  @channel_11[%arg7, %arg8] (%arg11[] [] []) {id = 38 : i32} : (memref<1x1x8x4x8x4xi32, 2 : i32>)
             affine.yield %10 : !air.async.token
           }
-          air.herd_terminator
         }
         %async_token_3 = air.execute [%8] {
           memref.dealloc %results_2 : memref<1x1x32x64xi32, 1 : i32>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -916,7 +827,6 @@ module {
 // CHECK-NEXT: else
 // CHECK-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
 // CHECK-NEXT: affine.yield
-// CHECK: air.herd_terminator
 // CHECK: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
 // CHECK: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
 // CHECK: air.herd @herd_0
@@ -926,8 +836,6 @@ module {
 // CHECK-NEXT: else
 // CHECK-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
 // CHECK-NEXT: affine.yield
-// CHECK: air.herd_terminator
-// CHECK: air.segment_terminator
 // AGGRESSIVE-LABEL: func8
 // AGGRESSIVE: air.segment @segment_0
 // AGGRESSIVE: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
@@ -939,7 +847,6 @@ module {
 // AGGRESSIVE-NEXT: else
 // AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
 // AGGRESSIVE-NEXT: affine.yield
-// AGGRESSIVE: air.herd_terminator
 // AGGRESSIVE: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
 // AGGRESSIVE: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
 // AGGRESSIVE: air.herd @herd_0
@@ -949,8 +856,6 @@ module {
 // AGGRESSIVE-NEXT: else
 // AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
 // AGGRESSIVE-NEXT: affine.yield
-// AGGRESSIVE: air.herd_terminator
-// AGGRESSIVE: air.segment_terminator
 // AGGL1-LABEL: func8
 // AGGL1: air.segment @segment_0
 // AGGL1: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
@@ -962,7 +867,6 @@ module {
 // AGGL1-NEXT: else
 // AGGL1-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
 // AGGL1-NEXT: affine.yield
-// AGGL1: air.herd_terminator
 // AGGL1: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
 // AGGL1: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
 // AGGL1: air.herd @herd_0
@@ -972,8 +876,6 @@ module {
 // AGGL1-NEXT: else
 // AGGL1-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
 // AGGL1-NEXT: affine.yield
-// AGGL1: air.herd_terminator
-// AGGL1: air.segment_terminator
 
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
 module {
@@ -1011,7 +913,6 @@ module {
             %9 = air.channel.get async  @channel_1[%arg7, %arg8] (%arg11[] [] []) {id = 13 : i32} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
             affine.yield %9 : !air.async.token
           }
-          air.herd_terminator
         }
         %5 = air.channel.put async [%4]  @channel_2[] (%results_2[%c0, %c0, %c0, %c0, %c0, %c0] [%c1_0, %c1_0, %c4, %c8, %c4, %c8] [%c2048, %c2048, %c8, %c128, %c32, %c1_0]) {id = 18 : i32} : (memref<1x1x64x32xi32, 1 : i32>)
         %6 = air.channel.put async [%4]  @channel_3[] (%results_2[%c0, %c0, %c0, %c0, %c32, %c0] [%c1_0, %c1_0, %c4, %c8, %c4, %c8] [%c2048, %c2048, %c8, %c128, %c32, %c1_0]) {id = 19 : i32} : (memref<1x1x64x32xi32, 1 : i32>)
@@ -1023,7 +924,6 @@ module {
             %9 = air.channel.get async  @channel_3[%arg7, %arg8] (%arg11[] [] []) {id = 24 : i32} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
             affine.yield %9 : !air.async.token
           }
-          air.herd_terminator
         }
         %async_token_3 = air.execute [%7] {
           memref.dealloc %results_2 : memref<1x1x64x32xi32, 1 : i32>
@@ -1031,9 +931,7 @@ module {
         %async_token_4 = air.execute [%7] {
           memref.dealloc %results : memref<1x1x4x8x4x8xi32, 2 : i32>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

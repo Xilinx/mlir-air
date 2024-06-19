@@ -46,7 +46,6 @@ module {
             }
             scf.yield %6 : !air.async.token
           }
-          air.herd_terminator
         }
         %3 = air.herd @herd_1 async  tile (%arg4, %arg5) in (%arg6=%c1_0, %arg7=%c2) attributes {id = 4 : i32, x_loc = 0 : i64, y_loc = 1 : i64} {
           %c0 = arith.constant 0 : index
@@ -79,11 +78,8 @@ module {
           %async_token_4 = air.execute [%4] {
             memref.dealloc %results : memref<1x32x32x3xbf16, 2>
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

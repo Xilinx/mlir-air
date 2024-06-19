@@ -89,7 +89,6 @@ func.func @func0() {
           %8 = air.wait_all async [%6, %7] 
           scf.yield %8 : !air.async.token
         }
-        air.herd_terminator
       }
       scf.yield %3 : !air.async.token
     }
@@ -177,11 +176,8 @@ func.func @func1() {
           %7 = air.wait_all async [%5, %6]  {id = 1 : i32}
           scf.yield %7 : !air.async.token
         }
-        air.herd_terminator
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -245,14 +241,11 @@ module {
             %7 = air.wait_all async [%arg11, %5]  {id = 1 : i32}
             scf.yield %7 : !air.async.token
           }
-          air.herd_terminator
         }
         %async_token_3 = air.execute [%2] {
           memref.dealloc %results : memref<8x2048xi32, 1 : i32>
         } {id = 10 : i32}
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -314,7 +307,6 @@ module {
               %7 = air.dma_memcpy_nd async [%arg16, %async_token_13] (%arg14[] [] [], %arg13[%c0, %c0, %c0, %arg10, %results_14, %c0] [%c1_11, %c1_11, %c4, %c4, %c8_12, %c8_12] [%c16384, %c8192, %c8_12, %c256, %c32, %c1_11]) {broadcast_pattern = #set, id = 1 : i32} : (memref<1x1x4x4x8x8xi32, 2>, memref<1x2x256x32xi32, 1>)
               scf.yield %7 : !air.async.token
             }
-            air.herd_terminator
           }
           %4 = air.wait_all async [%arg8, %3]  {id = 5 : i32}
           scf.yield %4 : !air.async.token
@@ -325,9 +317,7 @@ module {
         %async_token_10 = air.execute [%2] {
           memref.dealloc %results : memref<1x1x4x4x8x8xi32, 2>
         } {id = 12 : i32}
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

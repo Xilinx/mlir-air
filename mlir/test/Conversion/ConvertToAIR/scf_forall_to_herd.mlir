@@ -60,7 +60,6 @@ func.func @scf2()  {
 //       CHECK:    air.herd @herd_0
 //  CHECK-SAME:        attributes {link_with = "/path/to/mm_microkernel.o"} {
 //       CHECK:       func.call @matmul_i32_i32
-//       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    return
 //       CHECK:  }

@@ -51,7 +51,6 @@ module {
       memref.dealloc %2 : memref<64x64xbf16, 2>
       memref.dealloc %3 : memref<64x1xbf16, 2>
       memref.dealloc %4 : memref<64x1xi64, 2>
-      air.herd_terminator
     }
     return
   }

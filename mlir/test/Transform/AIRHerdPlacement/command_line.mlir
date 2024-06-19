@@ -64,7 +64,6 @@ func.func @test_herd_attr() -> () {
 // CHECK-LABEL: test_two_herd_cl
 // CHECK: air.herd
 // CHECK-SAME: attributes {x_loc = 6 : i64, y_loc = 4 : i64}
-// CHECK: air.herd_terminator
 // CHECK: air.herd
 // CHECK-SAME: attributes {x_loc = 6 : i64, y_loc = 4 : i64}
 func.func @test_two_herd_cl() -> () {
@@ -82,7 +81,6 @@ func.func @test_two_herd_cl() -> () {
 // CHECK-LABEL: test_two_herd_cl_2
 // CHECK: air.herd
 // CHECK-SAME: attributes {x_loc = 6 : i64, y_loc = 4 : i64}
-// CHECK: air.herd_terminator
 // CHECK: air.herd
 // CHECK-SAME: attributes {x_loc = 9 : i64, y_loc = 4 : i64}
 func.func @test_two_herd_cl_2() -> () {

@@ -27,7 +27,6 @@ func.func @memcpy_nd(%arg0: memref<4096xi32>) {
     air.dma_memcpy_nd (%1[] [] [], %arg5[%0] [%c32] [%c1_0]) {id = 1 : i32} : (memref<32xi32, 2>, memref<4096xi32>)
     air.dma_memcpy_nd (%arg5[%0] [%c32] [%c1_0], %1[] [] []) {id = 2 : i32} : (memref<4096xi32>, memref<32xi32, 2>)
     memref.dealloc %1 : memref<32xi32, 2>
-    air.herd_terminator
   }
   return
 }

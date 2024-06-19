@@ -45,7 +45,6 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     %buf0 = memref.alloc() : memref<1024xi32, 2>
     air.dma_memcpy_nd (%buf0[] [] [], %ext0[%c0] [%c1024] [%c1]) : (memref<1024xi32, 2>, memref<1024xi32>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
-    air.herd_terminator
   }
   return
 }
@@ -109,7 +108,6 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     air.dma_memcpy_nd (%ext0[%c0] [%c512] [%c1], %buf1[] [] []) {id = 2 : i32} : (memref<1024xi32>, memref<512xi32, 2>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
     memref.dealloc %buf1 : memref<512xi32, 2>
-    air.herd_terminator
   }
   return
 }
@@ -181,7 +179,6 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     air.channel.put @channel_1[%tx, %ty] (%buf1[] [] []) {id = 3 : i32} : (memref<512xi32, 2>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
     memref.dealloc %buf1 : memref<512xi32, 2>
-    air.herd_terminator
   }
   air.channel.get @channel_1[] (%arg1[%c0] [%c512] [%c1]) {id = 4 : i32} : (memref<1024xi32>)
   return
@@ -295,13 +292,11 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
       air.channel.get @channel_3[%tx, %ty] (%buf0[] [] []) {id = 4 : i32} : (memref<1024xi32, 2>)
       air.channel.put @channel_4[%tx, %ty] (%buf0[] [] []) {id = 5 : i32} : (memref<1024xi32, 2>)
       memref.dealloc %buf0 : memref<1024xi32, 2>
-      air.herd_terminator
     }
     %memtile1 = memref.alloc() : memref<1024xi32, 1>
     air.channel.get @channel_4[] (%memtile1[] [] []) {id = 6 : i32} : (memref<1024xi32, 1>)
     air.channel.put @channel_5[] (%memtile1[] [] []) {id = 7 : i32} : (memref<1024xi32, 1>)
     memref.dealloc %memtile1 : memref<1024xi32, 1>
-    air.segment_terminator
   }
   air.channel.get @channel_5[] (%arg1[] [] []) {id = 8 : i32} : (memref<1024xi32>)
   return
@@ -393,9 +388,7 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
       %token_9 = air.execute [%aif1] {
         memref.dealloc %buf1 : memref<512xi32, 2>
       }
-      air.herd_terminator
     }
-    air.segment_terminator
   }
   return
 }
@@ -464,11 +457,8 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
         %async_token_45 = air.execute [%27] {
           memref.dealloc %results_35 : memref<4x4xi32, 2>
         }
-        air.herd_terminator
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -516,7 +506,6 @@ func.func @func7(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
       %results_35 = memref.alloc() : memref<4x4xi32, 2>
       air.channel.put @channel_2[%arg6, %arg7] (%results_35[] [] []) {id = 14 : i32} : (memref<4x4xi32, 2>)
       memref.dealloc %results_35 : memref<4x4xi32, 2>
-      air.herd_terminator
     }
     %buf0 = memref.alloc() : memref<4x4xi32, 1>
     %buf1 = memref.alloc() : memref<8x16xi32, 1>
@@ -525,7 +514,6 @@ func.func @func7(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
     air.channel.get @channel_2[] (%buf1[%c0, %c0] [%c4, %c4] [%c16, %c1]) {id = 4 : i32} : (memref<8x16xi32, 1>)
     memref.dealloc %buf0 : memref<4x4xi32, 1>
     memref.dealloc %buf1 : memref<8x16xi32, 1>
-    air.segment_terminator
   }
   air.channel.get @channel_1[] (%arg1[] [] []) {id = 4 : i32} : (memref<16x8xi32>)
   return
@@ -561,12 +549,10 @@ func.func @func8(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
       %results_35 = memref.alloc() : memref<32x32xi32, 2>
       air.channel.get @channel_0[%arg6, %arg7] (%results_35[] [] []) {id = 14 : i32} : (memref<32x32xi32, 2>)
       memref.dealloc %results_35 : memref<32x32xi32, 2>
-      air.herd_terminator
     }
     %buf0 = memref.alloc() : memref<64x256xi32, 1>
     air.channel.put @channel_0[] (%buf0[%c0, %c32, %c0] [%c8, %c32, %c32] [%c32, %c256, %c1]) : (memref<64x256xi32, 1>)
     memref.dealloc %buf0 : memref<64x256xi32, 1>
-    air.segment_terminator
   }
   return
 }
@@ -623,14 +609,11 @@ func.func @func9(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
         %async_token_5 = air.execute [%5] {
           memref.dealloc %results_4 : memref<32xf32, 2>
         }
-        air.herd_terminator
       }
       %async_token_1 = air.execute [%3] {
         memref.dealloc %results : memref<64xf32, 1>
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -688,14 +671,11 @@ func.func @func10(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
         %async_token_5 = air.execute [%5] {
           memref.dealloc %results_4 : memref<32x256xi32, 2>
         }
-        air.herd_terminator
       }
       %async_token_1 = air.execute [%3] {
         memref.dealloc %results : memref<32x256xi32, 1>
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -755,14 +735,11 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
         %async_token_5 = air.execute [%5] {
           memref.dealloc %results_4 : memref<32x256xbf16, 2>
         }
-        air.herd_terminator
       }
       %async_token_1 = air.execute [%3] {
         memref.dealloc %results : memref<32x256xbf16, 1>
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -947,7 +924,6 @@ module {
           %async_token_17 = air.execute [%35] {
             memref.dealloc %results_16 : memref<16x16x4x4xbf16, 2>
           }
-          air.herd_terminator
         }
         %13 = air.channel.put async [%12]  @channel_0[] (%results_5[] [] []) {id = 45 : i32} : (memref<64x256xbf16, 1>)
         %14 = air.channel.put async [%12]  @channel_1[] (%results_6[] [] []) {id = 46 : i32} : (memref<64x256xbf16, 1>)
@@ -966,9 +942,7 @@ module {
         %async_token_12 = air.execute [%17] {
           memref.dealloc %results_8 : memref<64x256xbf16, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -1039,7 +1013,6 @@ module {
             air.execute_terminator %7 : index
           }
           %6 = air.channel.put async  @channel_8[%arg6, %arg7] (%arg10[%results_13, %c0_11, %results_15, %c0_11] [%c16, %c4, %c16, %c4] [%c16, %c4, %c256, %c1_10]) {id = 19 : i32} : (memref<1x1x16x16x4x4xf32, 2 : i32>)
-          air.herd_terminator
         }
         %5 = air.channel.put async [%4]  @channel_9[] (%results_5[] [] []) {id = 20 : i32} : (memref<1x1x64x64xf32, 1 : i32>)
         %async_token_8 = air.execute [%4] {
@@ -1048,9 +1021,7 @@ module {
         %async_token_9 = air.execute [%4] {
           memref.dealloc %results_5 : memref<1x1x64x64xf32, 1 : i32>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

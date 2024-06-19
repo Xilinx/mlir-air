@@ -23,7 +23,6 @@ func.func @foo(%arg0: i32) {
     %2 = arith.addi %0, %1 :  i32
     %dst0 = memref.alloc() : memref<1xi32, 2>
     memref.store %2, %dst0[%zero] : memref<1xi32, 2>
-    air.herd_terminator
   }
   return
 }

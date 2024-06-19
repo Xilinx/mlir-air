@@ -48,7 +48,6 @@ module attributes {torch.debug_module_name = "mmult"} {
           memref.dealloc %6 : memref<32x32xf32, 2>
           memref.dealloc %7 : memref<32x32xf32, 2>
           memref.dealloc %8 : memref<32x32xf32, 2>
-          air.herd_terminator
         }
       }
     }

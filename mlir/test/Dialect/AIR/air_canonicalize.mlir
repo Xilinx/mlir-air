@@ -10,28 +10,24 @@
 
 // CHECK-LABEL: func.func @herd
 // CHECK: air.herd tile ({{.*}}, {{.*}}) in ({{.*}}={{.*}}, {{.*}}={{.*}}) {
-// CHECK-NEXT:   air.herd_terminator
 func.func @herd(%arg0: i32) {
   %cst2 = arith.constant 2 : index
   air.herd tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args (%op0=%arg0, %op1=%arg0, %op2=%arg0, %op3=%arg0) : i32, i32, i32, i32 attributes { } {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
-    air.herd_terminator
   }
   return
 }
 
 // CHECK-LABEL: func.func @herd_async
 // CHECK: air.herd async [{{.*}}] tile ({{.*}}, {{.*}}) in ({{.*}}={{.*}}, {{.*}}={{.*}}) attributes {attr_name = "attrValue"} {
-// CHECK-NEXT:   air.herd_terminator
 func.func @herd_async(%arg0: i32, %e0 : !air.async.token) {
   %cst2 = arith.constant 2 : index
   %e1 = air.herd async [%e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args (%op0=%arg0, %op1=%arg0, %op2=%arg0, %op3=%arg0) : i32, i32, i32, i32 attributes { attr_name="attrValue" } {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
-    air.herd_terminator
   }
   air.wait_all [%e1]
   return
@@ -53,7 +49,6 @@ func.func @herd_async_1() {
   %e0 = air.wait_all async [%t0, %t1]
   %e1 = air.herd async [%t0, %t1, %e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args (%op0=%results) : memref<1xi32> {
     %d0 = air.dma_memcpy_nd async (%op0[] [] [], %op0[] [] []) : (memref<1xi32>, memref<1xi32>)
-    air.herd_terminator
   }
   air.wait_all [%e1]
   return
@@ -67,7 +62,6 @@ func.func @herd_async_2() {
   %t1 = air.wait_all async [%t0]
   %e0 = air.wait_all async [%t0, %t1]
   %e1 = air.herd async [%t0, %t1, %e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
-    air.herd_terminator
   }
   air.wait_all [%e1]
   return

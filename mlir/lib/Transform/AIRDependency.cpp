@@ -776,7 +776,6 @@ private:
                                                     air::HierarchyInterface op,
                                                     uint64_t &HierarchyOpID) {
     builder.setInsertionPoint(op);
-    auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     SmallVector<Value, 4> args;
     SmallVector<Value, 4> constants;
@@ -793,9 +792,6 @@ private:
       auto new_launch = createAsyncHierarchy<air::LaunchOp>(
           builder, launch, HierarchyOpID, deps, args, constants);
       new_op = new_launch.getOperation();
-      auto &bb = new_launch.getBody().front();
-      builder.setInsertionPointToEnd(&bb);
-      builder.create<air::LaunchTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
       auto v = asyncExecuteGraph.addVertex();
       asyncExecuteGraph[v].asyncEventName = "air::launch";
@@ -809,9 +805,6 @@ private:
       auto new_segment = createAsyncHierarchy<air::SegmentOp>(
           builder, segment, HierarchyOpID, deps, args, constants);
       new_op = new_segment.getOperation();
-      auto &bb = new_segment.getBody().front();
-      builder.setInsertionPointToEnd(&bb);
-      builder.create<air::SegmentTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
       auto v = asyncExecuteGraph.addVertex();
       asyncExecuteGraph[v].asyncEventName = "air::segment";
@@ -825,9 +818,6 @@ private:
       auto new_herd = createAsyncHierarchy<air::HerdOp>(
           builder, herd, HierarchyOpID, deps, args, constants);
       new_op = new_herd.getOperation();
-      auto &bb = new_herd.getBody().front();
-      builder.setInsertionPointToEnd(&bb);
-      builder.create<air::HerdTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
       auto v = asyncExecuteGraph.addVertex();
       asyncExecuteGraph[v].asyncEventName = "air::herd";

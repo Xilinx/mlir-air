@@ -163,7 +163,6 @@ module {
           %async_token_42 = air.execute [%29] {
             memref.dealloc %results_34 : memref<32x32xi32, 2>
           }
-          air.herd_terminator
         }
         %async_token_29 = air.execute [%16] {
           memref.dealloc %results_26 : memref<32x32xi32, 1>
@@ -179,9 +178,7 @@ module {
         %async_token_32 = air.execute [%24] {
           memref.dealloc %results_24 : memref<32x32xi32, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     %async_token_4 = air.execute [%0] {
       memref.copy %results_2, %arg2 : memref<32x32xi32> to memref<32x32xi32>

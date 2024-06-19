@@ -86,7 +86,6 @@ module attributes {torch.debug_module_name = "mmult"} {
           linalg.yield %8 : i32
         }
       }
-      air.herd_terminator
     }
     return
   }

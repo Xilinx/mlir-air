@@ -16,7 +16,6 @@ func.func @launch(%arg0: i32) {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
-    air.herd_terminator
   }
   return
 }
@@ -30,7 +29,6 @@ func.func @launch_async(%arg0: i32) {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
-    air.herd_terminator
   }
   air.wait_all [%e0]
   return
@@ -44,7 +42,6 @@ func.func @launch_emptyargs(%arg0: i32) {
   %e1 = air.herd async [%e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args () {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
-    air.herd_terminator
   }
   air.wait_all [%e0]
   return
@@ -58,7 +55,6 @@ func.func @launch_noargs(%arg0: i32) {
   %e1 = air.herd async [%e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
-    air.herd_terminator
   }
   air.wait_all [%e0]
   return

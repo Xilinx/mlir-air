@@ -45,7 +45,6 @@ module {
           air.dma_memcpy_nd (%7[] [] [], %arg15[%arg18, %3] [%c64, %c64] [%c1024, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
           air.dma_memcpy_nd (%8[] [] [], %arg16[%4, %3] [%c64, %c64] [%c1024, %c1]) {id = 3 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.herd  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) {
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%4, %3] [%c64, %c64] [%c1024, %c1], %8[] [] []) {id = 4 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %6 : memref<64x64xbf16, 1>
@@ -61,16 +60,13 @@ module {
           air.dma_memcpy_nd (%7[] [] [], %arg15[%arg18, %3] [%c64, %c64] [%c1024, %c1]) {id = 6 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
           air.dma_memcpy_nd (%8[] [] [], %arg16[%5, %3] [%c64, %c64] [%c1024, %c1]) {id = 7 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.herd  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) {
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%5, %3] [%c64, %c64] [%c1024, %c1], %8[] [] []) {id = 8 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %6 : memref<64x64xbf16, 1>
           memref.dealloc %7 : memref<64x64xbf16, 1>
           memref.dealloc %8 : memref<64x64xbf16, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
