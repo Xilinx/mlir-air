@@ -244,15 +244,15 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       builder.setInsertionPointAfter(t);
 
       // make the aie.core for the tile core
+      auto herd_name =
+          aie_device
+              ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+              .getValue()
+              .str();
       auto core = tile.getCoreOp();
       if (!core) {
         core = builder.create<AIE::CoreOp>(hloc, tile);
         tileToHerdMap[tile] = h;
-        auto herd_name =
-            aie_device
-                ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
-                .getValue()
-                .str();
         core->setAttr(
             "elf_file",
             StringAttr::get(ctx, herd_name + "_core_" + std::to_string(phys_x) +
@@ -283,8 +283,14 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       }
 
       Value herd_lock = nullptr;
-      if (options.emit_herd_lock)
-        herd_lock = allocateLockOp(aie_device, tile, /*init=*/0, /*id=*/0);
+      if (options.emit_herd_lock) {
+        StringAttr name =
+            builder.getStringAttr("__air_herd_lock_" + std::to_string(phys_x) +
+                                  "_" + std::to_string(phys_y));
+        // herd lock is always lock zero
+        herd_lock =
+            allocateLockOp(aie_device, tile, /*init=*/0, /*id=*/0, name);
+      }
 
       assert((h.getBody().getBlocks().size() == 1) &&
              "Launch body can only contain one Block");
@@ -334,6 +340,18 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       remap.map(h.getSize()[1],
                 core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_y));
 
+      if (options.emit_herd_lock) {
+        if (aie_device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
+          core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
+                                              herd_lock,
+                                              AIE::LockAction::Acquire, 0);
+        } else if (aie_device.getTargetModel().getTargetArch() ==
+                   AIE::AIEArch::AIE2) {
+          core_builder.create<AIE::UseLockOp>(
+              core_builder.getUnknownLoc(), herd_lock,
+              AIE::LockAction::AcquireGreaterEqual, 1);
+        }
+      }
       if (options.emit_herd_lock) {
         if (aie_device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
           core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
@@ -418,21 +436,23 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         remap.map(karg, m);
       }
 
-      if (options.emit_herd_lock)
-        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
-                                            herd_lock, AIE::LockAction::Acquire,
-                                            0);
-
       Region &r = h.getRegion();
       r.cloneInto(&core.getBody(), remap);
 
       Block *launch_bb = remap.lookup(&r.front());
       core_builder.create<cf::BranchOp>(hloc, launch_bb);
       core_builder.setInsertionPoint(launch_bb->getTerminator());
-      if (options.emit_herd_lock)
-        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
-                                            herd_lock, AIE::LockAction::Release,
-                                            0);
+      if (options.emit_herd_lock) {
+        if (aie_device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
+          core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
+                                              herd_lock,
+                                              AIE::LockAction::Release, 0);
+        } else if (aie_device.getTargetModel().getTargetArch() ==
+                   AIE::AIEArch::AIE2) {
+          // we could release something, but we don't have to a way to observe
+          // it yet in NPU
+        }
+      }
 
       if (options.emit_while) {
         auto entry_bb_br = dyn_cast<cf::BranchOp>(entry_bb->getTerminator());
