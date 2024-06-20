@@ -1717,7 +1717,6 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
   SmallVector<Value, 4> new_ub;
   SmallVector<Value, 4> new_lb;
 
-  auto builder = OpBuilder::atBlockBegin(parOp.getBody());
   while (step != parOp.getStep().end()) {
     auto iv = *ivs++;
     Value sv = *step++;
@@ -1736,13 +1735,17 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
     new_ub.push_back(rewriter.create<arith::ConstantIndexOp>(loc, new_ub_int));
     new_lb.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
     new_step.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
-    AffineExpr d0 = builder.getAffineDimExpr(0);
+    AffineExpr d0 = rewriter.getAffineDimExpr(0);
     AffineExpr mul = d0 * sv.getDefiningOp<arith::ConstantIndexOp>().value();
     AffineExpr add = mul + lbv.getDefiningOp<arith::ConstantIndexOp>().value();
-    auto map = AffineMap::get(1, 0, add);
-    auto new_iv = builder.create<affine::AffineApplyOp>(loc, map, iv);
-    SmallPtrSet<Operation *, 1> keep{new_iv};
-    iv.replaceAllUsesExcept(new_iv.getResult(), keep);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(parOp.getBody());
+      auto map = AffineMap::get(1, 0, add);
+      auto new_iv = rewriter.create<affine::AffineApplyOp>(loc, map, iv);
+      SmallPtrSet<Operation *, 1> keep{new_iv};
+      iv.replaceAllUsesExcept(new_iv.getResult(), keep);
+    }
   }
 
   parOp.getLowerBoundMutable().assign(new_lb);
@@ -1904,7 +1907,7 @@ public:
 
     if (failed(normalizeScfParallel(op, rewriter)))
       return failure();
-
+    //op.dump();
     auto loc = op.getLoc();
 
     if (op.getNumLoops() > 2) {
