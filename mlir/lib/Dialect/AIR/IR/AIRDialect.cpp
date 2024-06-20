@@ -242,7 +242,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
-  ensureTerminator(*r, builder, result.location);
+  LaunchOp::ensureTerminator(*r, builder, result.location);
 }
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
@@ -396,7 +396,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   Region *body = result.addRegion();
 
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  ensureTerminator(*body, parser.getBuilder(), result.location);
+  LaunchOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
@@ -498,7 +498,7 @@ void SegmentOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
-  ensureTerminator(*r, builder, result.location);
+  SegmentOp::ensureTerminator(*r, builder, result.location);
 }
 
 void SegmentOp::build(OpBuilder &builder, OperationState &result,
@@ -656,7 +656,7 @@ ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Region *body = result.addRegion();
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  ensureTerminator(*body, parser.getBuilder(), result.location);
+  SegmentOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
@@ -758,7 +758,7 @@ void HerdOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
-  ensureTerminator(*r, builder, result.location);
+  HerdOp::ensureTerminator(*r, builder, result.location);
 }
 
 void HerdOp::build(OpBuilder &builder, OperationState &result, ValueRange sizes,
@@ -915,7 +915,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   Region *body = result.addRegion();
 
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  ensureTerminator(*body, parser.getBuilder(), result.location);
+  HerdOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
