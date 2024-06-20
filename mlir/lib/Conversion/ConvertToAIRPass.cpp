@@ -1693,7 +1693,6 @@ private:
 
 LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
                                    PatternRewriter &rewriter) {
-  auto loc = parOp.getLoc();
 
   // everything must be a constant
   for (auto step : parOp.getStep())
@@ -1708,21 +1707,15 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
       return parOp->emitOpError(
           "failed to normalize: upper bound is not a constant");
 
-  auto ivs = parOp.getInductionVars().begin();
-  auto step = parOp.getStep().begin();
-  auto lowerBound = parOp.getLowerBound().begin();
-  auto upperBound = parOp.getUpperBound().begin();
+  SmallVector<Value> new_step;
+  SmallVector<Value> new_ub;
+  SmallVector<Value> new_lb;
 
-  SmallVector<Value, 4> new_step;
-  SmallVector<Value, 4> new_ub;
-  SmallVector<Value, 4> new_lb;
-
-  auto builder = OpBuilder::atBlockBegin(parOp.getBody());
-  while (step != parOp.getStep().end()) {
-    auto iv = *ivs++;
-    Value sv = *step++;
-    Value lbv = *lowerBound++;
-    Value ubv = *upperBound++;
+  for (unsigned i = 0; i < parOp.getNumLoops(); i++) {
+    Value iv = parOp.getInductionVars()[i];
+    Value sv = parOp.getStep()[i];
+    Value lbv = parOp.getLowerBound()[i];
+    Value ubv = parOp.getUpperBound()[i];
     auto s = sv.getDefiningOp<arith::ConstantIndexOp>().value();
     auto lb = lbv.getDefiningOp<arith::ConstantIndexOp>().value();
     auto ub = ubv.getDefiningOp<arith::ConstantIndexOp>().value();
@@ -1733,16 +1726,21 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
              << "failed to normalize: step '" << s
              << "' does not evenly divide range '" << (ub - lb) << "'";
 
+    auto loc = parOp.getLoc();
     new_ub.push_back(rewriter.create<arith::ConstantIndexOp>(loc, new_ub_int));
     new_lb.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
     new_step.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
-    AffineExpr d0 = builder.getAffineDimExpr(0);
-    AffineExpr mul = d0 * sv.getDefiningOp<arith::ConstantIndexOp>().value();
-    AffineExpr add = mul + lbv.getDefiningOp<arith::ConstantIndexOp>().value();
-    auto map = AffineMap::get(1, 0, add);
-    auto new_iv = builder.create<affine::AffineApplyOp>(loc, map, iv);
-    SmallPtrSet<Operation *, 1> keep{new_iv};
-    iv.replaceAllUsesExcept(new_iv.getResult(), keep);
+    AffineExpr d0 = rewriter.getAffineDimExpr(0);
+    AffineExpr mul = d0 * s;
+    AffineExpr add = mul + lb;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(parOp.getBody());
+      auto map = AffineMap::get(1, 0, add);
+      auto new_iv = rewriter.create<affine::AffineApplyOp>(loc, map, iv);
+      SmallPtrSet<Operation *, 1> keep{new_iv};
+      iv.replaceAllUsesExcept(new_iv.getResult(), keep);
+    }
   }
 
   parOp.getLowerBoundMutable().assign(new_lb);
@@ -2196,10 +2194,10 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   // Generate memref subview op leading the tiling of the L2 memref
   SmallVector<int64_t> tilingFactors;
   for (unsigned i = 0; i < newTilingPar.getStep().size(); i++) {
-    auto factor =
-        mlir::ceilDiv(*getConstantIntValue(newTilingPar.getUpperBound()[i]) -
-                          *getConstantIntValue(newTilingPar.getLowerBound()[i]),
-                      *getConstantIntValue(newTilingPar.getStep()[i]));
+    auto factor = llvm::divideCeilSigned(
+        *getConstantIntValue(newTilingPar.getUpperBound()[i]) -
+            *getConstantIntValue(newTilingPar.getLowerBound()[i]),
+        *getConstantIntValue(newTilingPar.getStep()[i]));
     tilingFactors.push_back(factor);
   }
   Attribute zeroIdxAttr = builder.getIndexAttr(0);
@@ -2212,8 +2210,8 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   for (unsigned i = 0; i < L2MemrefShape.size(); i++) {
     int stepSizeInInt = *getConstantIntValue(newTilingPar.getStep()[dimIndex]);
     if (L2MemrefShape[i] >= tilingFactors[dimIndex] * stepSizeInInt) {
-      int applyFactor = mlir::ceilDiv(L2MemrefShape[i],
-                                      tilingFactors[dimIndex] * stepSizeInInt);
+      int applyFactor = llvm::divideCeilSigned(
+          L2MemrefShape[i], tilingFactors[dimIndex] * stepSizeInInt);
       AffineExpr d0 = builder.getAffineDimExpr(0);
       AffineExpr mul = d0 * applyFactor;
       auto map = AffineMap::get(1, 0, mul);
@@ -2221,7 +2219,7 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
           loc, map, newTilingPar.getInductionVars()[dimIndex]);
       L2Offsets[i] = new_iv;
       L2TiledShape[i] =
-          mlir::ceilDiv(L2MemrefShape[i], tilingFactors[dimIndex]);
+          llvm::divideCeilSigned(L2MemrefShape[i], tilingFactors[dimIndex]);
       dimIndex++;
     }
     if (dimIndex >= 2)

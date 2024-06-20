@@ -101,7 +101,7 @@ func.func @scf1()  {
 // CHECK: scf.parallel (%[[VAL_3:.*]], %[[VAL_4:.*]]) = (%[[VAL_1]], %[[VAL_1]]) to (%[[VAL_0]], %[[VAL_2]]) step (%[[VAL_0]], %[[VAL_0]]) {
 // CHECK:   %[[VAL_5:.*]] = arith.constant 3 : index
 // CHECK:   %[[VAL_6:.*]] = arith.constant 4 : index
-// CHECK:   air.herd @herd_0  tile (%[[VAL_7:.*]], %[[VAL_8:.*]]) in (%[[VAL_9:.*]]=%[[VAL_5]], %[[VAL_10:.*]]=%[[VAL_6]]) args(%[[VAL_11:.*]]=%[[VAL_3]], %[[VAL_12:.*]]=%[[VAL_4]]) : index, index
+// CHECK:   air.herd @herd_0  tile (%[[VAL_7:.*]], %[[VAL_8:.*]]) in (%[[VAL_9:.*]]=%[[VAL_5]], %[[VAL_10:.*]]=%[[VAL_6]]) args(%[[VAL_11:.*]]=%[[VAL_4]], %[[VAL_12:.*]]=%[[VAL_3]]) : index, index
 func.func @scf2()  {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -110,6 +110,8 @@ func.func @scf2()  {
   %c4 = arith.constant 4 : index
   scf.parallel (%a,%b,%x,%y) = (%c0,%c0,%c0,%c0) to (%c1,%c2,%c3,%c4) step (%c1,%c1,%c1,%c1) {
     %2 = arith.muli %x, %y : index
+    %3 = arith.muli %2, %a : index
+    %4 = arith.muli %3, %b : index
   }
   return
 }
@@ -292,13 +294,13 @@ module {
 //       CHECK:    air.herd @herd_0
 //       CHECK:       %[[VAL_0:.*]] = affine.apply
 //       CHECK:       %[[VAL_1:.*]] = affine.apply
-//       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_1]], %[[VAL_0]], 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+//       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_0]], %[[VAL_1]], 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
 //       CHECK:       air.herd_terminator
 //       CHECK:    }
 //       CHECK:    air.herd @herd_0
 //       CHECK:       %[[VAL_0:.*]] = affine.apply
 //       CHECK:       %[[VAL_1:.*]] = affine.apply
-//       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_1]], %[[VAL_0]], 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
+//       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_0]], %[[VAL_1]], 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
 //       CHECK:       %[[VAL_2:.*]] = affine.apply
 //       CHECK:       %[[VAL_3:.*]] = affine.apply
 //       CHECK:       memref.subview %{{.*}}[0, 0, %[[VAL_2]], %[[VAL_3]]] [1, 1, 64, 64] [1, 1, 1, 1] : memref<1x1x128x128xbf16, 1 : i32> to memref<1x1x64x64xbf16, strided<[16384, 16384, 128, 1], offset: ?>, 1 : i32>

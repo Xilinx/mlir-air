@@ -18,7 +18,6 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
 
-#include "mlir/Support/MathExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -260,7 +259,7 @@ std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
   std::optional<int64_t> StepCstOp =
       mlir::getConstantIntValue(for_op.getStep());
   if (LbCstOp && UbCstOp && StepCstOp)
-    output = mlir::ceilDiv((*UbCstOp - *LbCstOp), *StepCstOp);
+    output = llvm::divideCeilSigned((*UbCstOp - *LbCstOp), *StepCstOp);
   return output;
 }
 
@@ -269,7 +268,7 @@ std::optional<int64_t>
 air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
   std::optional<int64_t> output = std::nullopt;
   if (for_op.hasConstantBounds()) {
-    output = mlir::ceilDiv(
+    output = llvm::divideCeilSigned(
         (for_op.getConstantUpperBound() - for_op.getConstantLowerBound()),
         for_op.getStepAsInt());
   }
@@ -587,9 +586,10 @@ void air::getSizesFromSpatialLoop(Operation *spatial_loop,
           scf_par.getUpperBound()[i].getDefiningOp<arith::ConstantIndexOp>();
       auto stepCstOp =
           scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
-      lbs_spatial.push_back(mlir::ceilDiv(lbCstOp.value(), stepCstOp.value()));
-      ubs_spatial.push_back(mlir::ceilDiv(ubCstOp.value(), stepCstOp.value()) -
-                            1);
+      lbs_spatial.push_back(
+          llvm::divideCeilSigned(lbCstOp.value(), stepCstOp.value()));
+      ubs_spatial.push_back(
+          llvm::divideCeilSigned(ubCstOp.value(), stepCstOp.value()) - 1);
     }
   } else if (auto hier = dyn_cast<air::HierarchyInterface>(spatial_loop)) {
     for (unsigned i = 0; i < hier.getSizeOperands().size(); i++) {
@@ -1045,7 +1045,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     // Check for compliance with DMA BD hardware limitation (<= 1M). Note that
     // the exception is when stepSize = previous highest wrap, because in that
     // case the large stride shall simply get canonicalized away.
-    if (mlir::ceilDiv(
+    if (llvm::divideCeilSigned(
             new_stride_value * getElementSizeInBytes(memref.getType()), 4) >
         0x100000) {
       if (stepSize != *getConstantIntValue(wraps[0])) {
@@ -1126,12 +1126,13 @@ air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
     int current_memref_volume = 1;
     for (int j = memref_shape.size() - 1; j >= 0; j--) {
       current_memref_volume *= memref_shape[j];
-      if (mlir::floorDiv(*getConstantIntValue(strides[i]),
-                         current_memref_volume))
+      if (llvm::divideFloorSigned(*getConstantIntValue(strides[i]),
+                                  current_memref_volume))
         continue;
-      int64_t bound = mlir::floorDiv(*getConstantIntValue(strides[i]),
-                                     current_memref_volume / memref_shape[j]) *
-                      *getConstantIntValue(sizes[i]);
+      int64_t bound =
+          llvm::divideFloorSigned(*getConstantIntValue(strides[i]),
+                                  current_memref_volume / memref_shape[j]) *
+          *getConstantIntValue(sizes[i]);
       access_bounds[j] = std::max(access_bounds[j], bound);
     }
   }
@@ -1334,14 +1335,15 @@ air::getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
     shrinkage_volume *= old_memref_shape[j];
     if (old_memref_shape[j] != new_memref_shape[j]) {
       shrinkage_factor =
-          mlir::ceilDiv(old_memref_shape[j], new_memref_shape[j]);
+          llvm::divideCeilSigned(old_memref_shape[j], new_memref_shape[j]);
       break;
     }
   }
   for (int i = strides.size() - 1; i >= 0; i--) {
-    if (mlir::floorDiv(*getConstantIntValue(strides[i]), shrinkage_volume))
-      new_strides[i] =
-          mlir::ceilDiv(*getConstantIntValue(strides[i]), shrinkage_factor);
+    if (llvm::divideFloorSigned(*getConstantIntValue(strides[i]),
+                                shrinkage_volume))
+      new_strides[i] = llvm::divideCeilSigned(*getConstantIntValue(strides[i]),
+                                              shrinkage_factor);
     else
       new_strides[i] = *getConstantIntValue(strides[i]);
   }
