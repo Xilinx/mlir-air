@@ -6,5 +6,9 @@ single-core-dma:
 	mkdir -p build
 	cd build && ${powershell} python3 ${srcdir}/run.py single-core-dma
 
+multi-core-dma:
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/run.py multi-core-dma
+
 clean:
 	rm -rf build __pycache__
