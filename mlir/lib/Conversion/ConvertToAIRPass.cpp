@@ -1693,7 +1693,6 @@ private:
 
 LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
                                    PatternRewriter &rewriter) {
-  auto loc = parOp.getLoc();
 
   // everything must be a constant
   for (auto step : parOp.getStep())
@@ -1708,20 +1707,15 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
       return parOp->emitOpError(
           "failed to normalize: upper bound is not a constant");
 
-  auto ivs = parOp.getInductionVars().begin();
-  auto step = parOp.getStep().begin();
-  auto lowerBound = parOp.getLowerBound().begin();
-  auto upperBound = parOp.getUpperBound().begin();
+  SmallVector<Value> new_step;
+  SmallVector<Value> new_ub;
+  SmallVector<Value> new_lb;
 
-  SmallVector<Value, 4> new_step;
-  SmallVector<Value, 4> new_ub;
-  SmallVector<Value, 4> new_lb;
-
-  while (step != parOp.getStep().end()) {
-    auto iv = *ivs++;
-    Value sv = *step++;
-    Value lbv = *lowerBound++;
-    Value ubv = *upperBound++;
+  for (unsigned i = 0; i < parOp.getNumLoops(); i++) {
+    Value iv = parOp.getInductionVars()[i];
+    Value sv = parOp.getStep()[i];
+    Value lbv = parOp.getLowerBound()[i];
+    Value ubv = parOp.getUpperBound()[i];
     auto s = sv.getDefiningOp<arith::ConstantIndexOp>().value();
     auto lb = lbv.getDefiningOp<arith::ConstantIndexOp>().value();
     auto ub = ubv.getDefiningOp<arith::ConstantIndexOp>().value();
@@ -1732,12 +1726,13 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
              << "failed to normalize: step '" << s
              << "' does not evenly divide range '" << (ub - lb) << "'";
 
+    auto loc = parOp.getLoc();
     new_ub.push_back(rewriter.create<arith::ConstantIndexOp>(loc, new_ub_int));
     new_lb.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
     new_step.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
     AffineExpr d0 = rewriter.getAffineDimExpr(0);
-    AffineExpr mul = d0 * sv.getDefiningOp<arith::ConstantIndexOp>().value();
-    AffineExpr add = mul + lbv.getDefiningOp<arith::ConstantIndexOp>().value();
+    AffineExpr mul = d0 * s;
+    AffineExpr add = mul + lb;
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(parOp.getBody());
