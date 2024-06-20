@@ -1907,7 +1907,7 @@ public:
 
     if (failed(normalizeScfParallel(op, rewriter)))
       return failure();
-    //op.dump();
+
     auto loc = op.getLoc();
 
     if (op.getNumLoops() > 2) {
