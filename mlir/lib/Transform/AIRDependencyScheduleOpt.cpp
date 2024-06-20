@@ -2187,15 +2187,20 @@ public:
           isVariantWrtHerdCols = true;
       }
 
-      if (!hl_op)
-        continue;
+      if (!hl_op) {
+        // If dma op is completely independent of the parent herd induction
+        // vars, then it is broadcastable either row or column wise.
+        hl_op = dma_op->getParentOfType<air::HerdOp>();
+        isVariantWrtHerdRows = false;
+        isVariantWrtHerdCols = false;
+      }
+
       auto numColsOp = dyn_cast<arith::ConstantIndexOp>(
           hl_op.getSizeOperands()[1].getDefiningOp());
       auto numCols = numColsOp.value();
       auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(
           hl_op.getSizeOperands()[0].getDefiningOp());
       auto numRows = numRowsOp.value();
-
       if (isVariantWrtHerdRows && !isVariantWrtHerdCols) {
         if (numCols > 1) {
           SmallVector<AffineExpr, 5> constraints{
@@ -2208,7 +2213,7 @@ public:
           dma_op->setAttr("broadcast_pattern",
                           mlir::IntegerSetAttr::get(int_set));
         }
-      } else if (hl_op && !isVariantWrtHerdRows && isVariantWrtHerdCols) {
+      } else if (!isVariantWrtHerdRows && isVariantWrtHerdCols) {
         if (numRows > 1) {
           SmallVector<AffineExpr, 5> constraints{
               getAffineDimExpr(0, ctx), numRows - 1 - getAffineDimExpr(0, ctx),
@@ -2216,6 +2221,30 @@ public:
               getAffineSymbolExpr(0, ctx),
               numCols - 1 - getAffineSymbolExpr(0, ctx)};
           SmallVector<bool, 5> eqflags{false, false, true, false, false};
+          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+          dma_op->setAttr("broadcast_pattern",
+                          mlir::IntegerSetAttr::get(int_set));
+        }
+      } else if (!isVariantWrtHerdRows && !isVariantWrtHerdCols) {
+        // If a dma op is independent of herd induction vars, then we only
+        // broadcast it along either rows or columns, not both.
+        if (numRows > 1 && numCols == 1) {
+          SmallVector<AffineExpr, 5> constraints{
+              getAffineDimExpr(0, ctx), numRows - 1 - getAffineDimExpr(0, ctx),
+              getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
+              getAffineSymbolExpr(0, ctx),
+              numCols - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{false, false, true, false, false};
+          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+          dma_op->setAttr("broadcast_pattern",
+                          mlir::IntegerSetAttr::get(int_set));
+        } else if (numRows == 1 && numCols > 1) {
+          SmallVector<AffineExpr, 5> constraints{
+              getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
+              getAffineDimExpr(1, ctx), numCols - 1 - getAffineDimExpr(1, ctx),
+              getAffineSymbolExpr(0, ctx),
+              numRows - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{true, false, false, false, false};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                           mlir::IntegerSetAttr::get(int_set));
