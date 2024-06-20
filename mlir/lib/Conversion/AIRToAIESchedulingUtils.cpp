@@ -77,7 +77,7 @@ AIE::TileOp air::getPhysTileOp(AIE::DeviceOp aie_device, int col, int row) {
 }
 
 AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
-                                int init, int id) {
+                                int init, int id, StringAttr name) {
   AIE::LockOp lock = nullptr;
   std::set<int> ids;
   aie_device.walk([&](AIE::LockOp l) {
@@ -105,7 +105,10 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
   while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
     t = t->getNextNode();
   b.setInsertionPointAfter(t);
-  return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id, init);
+  auto lockOp = b.create<AIE::LockOp>(tile.getLoc(), tile, new_id, init);
+  if (name)
+    lockOp->setAttr(SymbolTable::getSymbolAttrName(), name);
+  return lockOp;
 }
 
 std::stringstream air::generateBufferNameInStringStream(StringRef prefix,
