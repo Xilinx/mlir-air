@@ -663,7 +663,7 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
               mlir::getConstantIntValue(v.getRhs())) {
             int lhs = *mlir::getConstantIntValue(v.getLhs());
             int rhs = *mlir::getConstantIntValue(v.getRhs());
-            operands.push_back(mlir::mod(lhs, rhs));
+            operands.push_back(llvm::mod(lhs, rhs));
           } else
             return failure();
         } else if (auto v = dyn_cast<arith::DivSIOp>(o.getDefiningOp())) {
@@ -671,7 +671,7 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
               mlir::getConstantIntValue(v.getRhs())) {
             int lhs = *mlir::getConstantIntValue(v.getLhs());
             int rhs = *mlir::getConstantIntValue(v.getRhs());
-            operands.push_back(mlir::floorDiv(lhs, rhs));
+            operands.push_back(llvm::divideFloorSigned(lhs, rhs));
           } else
             return failure();
         } else

@@ -1121,7 +1121,8 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
       builder.setInsertionPoint(affineApplyOp);
     AffineExpr s0 = builder.getAffineSymbolExpr(0);
     AffineExpr mul = s0 * originalMemrefSize;
-    AffineExpr add = mul + i * mlir::ceilDiv(originalMemrefSize, factor);
+    AffineExpr add =
+        mul + i * llvm::divideCeilSigned(originalMemrefSize, factor);
     auto map = AffineMap::get(0, 1, add);
     auto newApplyOp =
         builder.create<affine::AffineApplyOp>(loc, map, originalApplyOperands);
@@ -1135,7 +1136,7 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
                                           newOffsets, newWraps, newStrides);
     newOffsets[dim] = newApplyOp.getResult();
     newWraps[dim] = builder.create<arith::ConstantIndexOp>(
-        loc, mlir::ceilDiv(originalMemrefSize, factor));
+        loc, llvm::divideCeilSigned(originalMemrefSize, factor));
     auto deps = dyn_cast<air::AsyncOpInterface>(originalChanOp.getOperation())
                     .getAsyncDependencies();
     SmallVector<Type, 4> tys = {air::AsyncTokenType::get(ctx)};
