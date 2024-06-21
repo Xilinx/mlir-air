@@ -33,9 +33,8 @@ def main(build_module):
         input_a[i] = i + 0x1000
         input_b[i] = 0x00DEFACED
 
-    # TODO(hunhoffe): need to omit the emit while loop option
     # TODO(hunhoffe): need to figure out why it fails with experimental_passes=True
-    backend = xrt_backend.XRTBackend(verbose=verbose)
+    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
 
     for i in range(IMAGE_HEIGHT):
         row = input_b[i * IMAGE_WIDTH : (i + 1) * IMAGE_WIDTH]

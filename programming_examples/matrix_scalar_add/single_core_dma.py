@@ -47,7 +47,7 @@ def build_module():
                     for tile_index0 in range_(IMAGE_HEIGHT // TILE_HEIGHT):
                         for tile_index1 in range_(IMAGE_WIDTH // TILE_WIDTH):
 
-                            # We must allocate a buffer of the tile size for the input/output
+                            # We must allocate a buffer of tile size for the input/output
                             tile_in = AllocOp(tile_type, [], [])
                             tile_out = AllocOp(tile_type, [], [])
 
@@ -55,10 +55,7 @@ def build_module():
                             tile_size0 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
                             tile_size1 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
 
-                            # Calculate the offset into the channel data, which is based on which tile index
-                            # we are at using our loop vars.
-                            # tile_index0 and tile_index1 are dynamic so we have to use specialized
-                            # operations do to calculations on them rather than using python ints
+                            # Calculate the offset into the channel data, which is based on our loop vars
                             offset0 = arith.MulIOp(tile_size0, tile_index0)
                             offset1 = arith.MulIOp(tile_size1, tile_index1)
 
@@ -87,7 +84,7 @@ def build_module():
                                     yield_([])
                                 yield_([])
 
-                            # Copy the output tile into the output (b)
+                            # Copy the output tile into the output
                             dma_memcpy_nd(
                                 b,
                                 tile_out,

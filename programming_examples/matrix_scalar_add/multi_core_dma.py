@@ -16,15 +16,6 @@ from data_config import *
 @module_builder
 def build_module():
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
-    scaled_index_map = AffineMap.get(
-        0,
-        1,
-        [
-            AffineExpr.get_mul(
-                AffineSymbolExpr.get(0), AffineConstantExpr.get(IMAGE_HEIGHT)
-            )
-        ],
-    )
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -39,13 +30,23 @@ def build_module():
             def segment_body(arg2, arg3):
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                # We just need one compute core, so we ask for a 1x1 herd
+                # We are hoping to map each tile to a different compute core.
                 @herd(
                     name="xaddherd",
                     sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
                     operands=[arg2, arg3],
                 )
                 def herd_body(tx, ty, sx, sy, a, b):
+                    scaled_index_map = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(IMAGE_HEIGHT),
+                            )
+                        ],
+                    )
                     offset0 = affine_apply(scaled_index_map, [tx])
                     offset1 = affine_apply(scaled_index_map, [ty])
 
@@ -59,7 +60,7 @@ def build_module():
                         memory_space=mem_space,
                     )
 
-                    # We must allocate a buffer of the tile size for the input/output
+                    # We must allocate a buffer of tile size for the input/output
                     tile_in = AllocOp(tile_type, [], [])
                     tile_out = AllocOp(tile_type, [], [])
 
@@ -75,8 +76,13 @@ def build_module():
                     # Access every value in the tile
                     for j in range_(TILE_HEIGHT):
                         for i in range_(TILE_WIDTH):
+                            # Load the input value from tile_in
                             val_in = load(tile_in, [i, j])
+
+                            # Compute the output value
                             val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
+
+                            # Store the output value in tile_out
                             store(val_out, tile_out, [i, j])
                             yield_([])
                         yield_([])

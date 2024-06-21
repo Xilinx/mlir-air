@@ -36,7 +36,7 @@ def build_module():
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
+                @herd(name="copyherd", sizes=[1, 1], operands=[arg2, arg3])
                 def herd_body(tx, ty, sx, sy, a, b):
 
                     # We want to store our data in L1 memory
@@ -49,7 +49,7 @@ def build_module():
                         memory_space=mem_space,
                     )
 
-                    # We must allocate a buffer of the tile size for the input/output
+                    # We must allocate a buffer of tile size for the input/output
                     tile_in = AllocOp(tile_type, [], [])
                     tile_out = AllocOp(tile_type, [], [])
 
@@ -65,7 +65,10 @@ def build_module():
                     # Access every value in the tile
                     for j in range_(TILE_HEIGHT):
                         for i in range_(TILE_WIDTH):
+                            # Load the input value from tile_in
                             val = load(tile_in, [i, j])
+
+                            # Store the output value in tile_out
                             store(val, tile_out, [i, j])
                             yield_([])
                         yield_([])
