@@ -3,9 +3,8 @@
 
 from air.ir import *
 from air.dialects.air import *
-from air.dialects.affine import load, store
-from air.dialects.func import FuncOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
+from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 
 range_ = for_
@@ -23,7 +22,7 @@ TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]
 def build_module():
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
 
-    # We will send the image worth of data in and out
+    # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
     def copy(arg0, arg1):
 
@@ -54,16 +53,16 @@ def build_module():
                     tile_in = AllocOp(tile_type, [], [])
                     tile_out = AllocOp(tile_type, [], [])
 
-                    # Copy a tile from the input image (a) into the L1 memory region (buf0)
+                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
                     dma_memcpy_nd(
                         tile_in,
                         a,
                         src_offsets=[0, 0],
                         src_sizes=[TILE_HEIGHT, TILE_WIDTH],
-                        src_strides=[32, 1],
+                        src_strides=[IMAGE_WIDTH, 1],
                     )
 
-                    # Copy the input tile into the output file
+                    # Access every value in the tile
                     for j in range_(TILE_HEIGHT):
                         for i in range_(TILE_WIDTH):
                             val = load(tile_in, [i, j])
@@ -77,7 +76,7 @@ def build_module():
                         tile_out,
                         dst_offsets=[0, 0],
                         dst_sizes=[TILE_HEIGHT, TILE_WIDTH],
-                        dst_strides=[32, 1],
+                        dst_strides=[IMAGE_WIDTH, 1],
                     )
 
                     # Deallocate our L1 buffers

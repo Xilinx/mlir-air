@@ -95,5 +95,5 @@ if __name__ == "__main__":
     if args.tile_method == "single-core-dma":
         build_module = single_core_dma.build_module
     elif args.tile_method == "multi-core-dma":
-        build_module = single_core_dma.build_module
+        build_module = multi_core_dma.build_module
     main(build_module)

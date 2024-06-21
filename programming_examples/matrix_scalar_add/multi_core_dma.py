@@ -6,6 +6,7 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
+from air.dialects.affine import apply as affine_apply
 
 range_ = for_
 
@@ -15,6 +16,15 @@ from data_config import *
 @module_builder
 def build_module():
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+    scaled_index_map = AffineMap.get(
+        0,
+        1,
+        [
+            AffineExpr.get_mul(
+                AffineSymbolExpr.get(0), AffineConstantExpr.get(IMAGE_HEIGHT)
+            )
+        ],
+    )
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -30,8 +40,14 @@ def build_module():
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
-                def herd_body(tile_index0, tile_index1, sx, sy, a, b):
+                @herd(
+                    name="xaddherd",
+                    sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
+                    operands=[arg2, arg3],
+                )
+                def herd_body(tx, ty, sx, sy, a, b):
+                    offset0 = affine_apply(scaled_index_map, [tx])
+                    offset1 = affine_apply(scaled_index_map, [ty])
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -47,17 +63,6 @@ def build_module():
                     tile_in = AllocOp(tile_type, [], [])
                     tile_out = AllocOp(tile_type, [], [])
 
-                    # Convert the type of the tile size variable to the Index type
-                    tile_size0 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
-                    tile_size1 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
-
-                    # Calculate the offset into the channel data, which is based on which tile index
-                    # we are at using our loop vars.
-                    # tile_index0 and tile_index1 are dynamic so we have to use specialized
-                    # operations do to calculations on them rather than using python ints
-                    offset0 = arith.MulIOp(tile_size0, tile_index0)
-                    offset1 = arith.MulIOp(tile_size1, tile_index1)
-
                     # Copy a tile from the input image (a) into the L1 memory region (tile_in)
                     dma_memcpy_nd(
                         tile_in,
@@ -70,20 +75,13 @@ def build_module():
                     # Access every value in the tile
                     for j in range_(TILE_HEIGHT):
                         for i in range_(TILE_WIDTH):
-                            # Load the input value from tile_in
                             val_in = load(tile_in, [i, j])
-
-                            # Compute the output value
-                            val_out = arith.addi(
-                                val_in, arith.ConstantOp(T.i32(), 1)
-                            )
-
-                            # Store the output value in tile_out
+                            val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
                             store(val_out, tile_out, [i, j])
                             yield_([])
                         yield_([])
 
-                    # Copy the output tile into the output (b)
+                    # Copy the output tile into the output
                     dma_memcpy_nd(
                         b,
                         tile_out,
