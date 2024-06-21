@@ -60,9 +60,7 @@ module {
           }
           scf.yield %async_token_1 : !air.async.token
         } {unroll = 2 : i32}
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -117,9 +115,7 @@ module {
           }
           scf.yield %async_token_dealloc_200 : !air.async.token
         } {unroll = 2 : i32}
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

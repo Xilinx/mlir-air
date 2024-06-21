@@ -67,14 +67,11 @@ func.func @test1() {
           }
           scf.yield %async_token_10 : !air.async.token
         }
-        air.herd_terminator
       }
       %async_token_1 = air.execute [%3] {
         memref.dealloc %results : memref<32x32xbf16, 1>
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }

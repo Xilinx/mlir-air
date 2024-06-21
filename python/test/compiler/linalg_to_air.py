@@ -34,7 +34,6 @@ def run(f):
 # CHECK: air.dma_memcpy_nd ({{.*}}) {id = 5 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32, 1>
 # CHECK: air.dma_memcpy_nd ({{.*}}) {id = 6 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32, 1>
 # CHECK: air.dma_memcpy_nd ({{.*}}) {id = 7 : i32} : (memref<64x64xi32, 1>, memref<32x32xi32, 2>
-# CHECK: air.herd_terminator
 # CHECK: air.dma_memcpy_nd ({{.*}}) {id = 8 : i32} : (memref<128x128xi32>, memref<64x64xi32, 1>
 @run
 def matmul_l1_l2_2x2():

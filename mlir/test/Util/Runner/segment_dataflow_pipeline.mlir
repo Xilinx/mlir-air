@@ -40,7 +40,6 @@ module {
           }
           scf.yield %async_token_0 : !air.async.token
         }
-        air.segment_terminator
       }
       %2 = air.segment async  attributes {id = 4 : i32, x_loc = 4 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
         %c512 = arith.constant 512 : index
@@ -104,7 +103,6 @@ module {
           }
           scf.yield %async_token_7 : !air.async.token
         }
-        air.segment_terminator
       }
       %3 = air.segment async  attributes {id = 6 : i32, x_loc = 8 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
         %c512 = arith.constant 512 : index
@@ -167,9 +165,7 @@ module {
           }
           scf.yield %async_token_7 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

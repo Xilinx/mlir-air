@@ -40,11 +40,8 @@ func.func @unroll_by_two(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xb
           }
           scf.yield %async_token_5 : !air.async.token
         } {unroll = 2 : i32}
-        air.herd_terminator
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }

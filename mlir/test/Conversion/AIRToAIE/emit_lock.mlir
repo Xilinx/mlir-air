@@ -21,7 +21,6 @@ func.func @func1() -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) {
-    air.herd_terminator
   }
   return
 }

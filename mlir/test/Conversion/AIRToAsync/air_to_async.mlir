@@ -116,7 +116,6 @@ func.func @herd_1(%arg0: i32, %arg1: i32) -> () {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
-    air.herd_terminator
   }
   air.wait_all [%e2]
   return
@@ -187,7 +186,6 @@ func.func @scf_par(%arg0: memref<256x256xf32>) {
       memref.copy %subview, %alloc : memref<32x32xf32, strided<[256, 1], offset: ?>> to memref<32x32xf32, 2>
       memref.dealloc %alloc : memref<32x32xf32, 2>
     }
-    air.herd_terminator
   }
   return
 }

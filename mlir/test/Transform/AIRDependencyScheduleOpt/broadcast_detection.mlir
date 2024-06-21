@@ -52,7 +52,6 @@ func.func @matmul(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg
           memref.dealloc %7 : memref<32x32xbf16, 2>
           memref.dealloc %8 : memref<32x32xbf16, 2>
         }
-        air.herd_terminator
       }
       air.dma_memcpy_nd (%0[%arg3, %arg4] [%c64, %c64] [%c512, %c1], %3[] [] []) {id = 8 : i32} : (memref<512x512xbf16>, memref<64x64xbf16, 1>)
       memref.dealloc %1 : memref<64x64xbf16, 1>
@@ -97,11 +96,8 @@ module {
             }
             memref.dealloc %alloc : memref<256x64xbf16, 1>
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -152,13 +148,10 @@ module {
             memref.dealloc %alloc_12 : memref<4x2x4x8xi32, 2 : i32>
             memref.dealloc %alloc_13 : memref<8x4x8x4xi32, 2 : i32>
           }
-          air.herd_terminator
         }
         memref.dealloc %alloc : memref<8x2048xi32, 1 : i32>
         memref.dealloc %alloc_2 : memref<2048x64xi32, 1 : i32>
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

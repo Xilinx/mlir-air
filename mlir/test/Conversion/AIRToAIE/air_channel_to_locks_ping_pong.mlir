@@ -87,11 +87,8 @@ func.func @multi_memcpys_over_time() {
         %async_token_7 = air.execute [%5] {
           memref.dealloc %results_5 : memref<32x32xbf16, 2>
         }
-        air.herd_terminator
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -194,11 +191,8 @@ func.func @core_to_core_ping_pong() {
         %async_token_9 = air.execute [%3] {
           memref.dealloc %results_7 : memref<32x32xbf16, 2>
         }
-        air.herd_terminator
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -315,11 +309,8 @@ func.func @core_to_core_ping_pong() {
           }
           affine.yield %4#2 : !air.async.token
         }
-        air.herd_terminator
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -393,7 +384,6 @@ func.func @not_really_ping_pong() {
       }
       %7 = air.herd @herd_0 async  tile (%arg7, %arg8) in (%arg9=%c1_24, %arg10=%c1_24) args(%arg11=%results_32) : memref<1x1x4x8x4x8xi32, 2 : i32> attributes {id = 3 : i32, x_loc = 0 : i64, y_loc = 3 : i64} {
         %23 = air.channel.get async  @channel_2[] (%arg11[] [] []) {id = 4 : i32} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-        air.herd_terminator
       }
       %async_token_39, %results_40 = air.execute -> (memref<1x1x64x32xi32, 1 : i32>) {
         %alloc = memref.alloc() : memref<1x1x64x32xi32, 1 : i32>
@@ -412,14 +402,11 @@ func.func @not_really_ping_pong() {
         scf.for %arg14 = %c1_52 to %c5_51 step %c1_52 {
           %23 = air.channel.get async  @channel_2[] (%arg11[] [] []) {id = 26 : i32} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
         }
-        air.herd_terminator
       }
       %async_token_47 = air.execute {
         memref.dealloc %results_32 : memref<1x1x4x8x4x8xi32, 2 : i32>
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }

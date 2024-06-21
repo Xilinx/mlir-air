@@ -79,16 +79,13 @@ module attributes {torch.debug_module_name = "model"} {
           air.dma_memcpy_nd (%arg19[%7, %8] [%c32, %c32] [%c64_1, %c1_0], %10[] [] []) {id = 7 : i32} : (memref<64x64xbf16, 1>, memref<32x32xbf16, 2>)
           memref.dealloc %9 : memref<32x32xbf16, 2>
           memref.dealloc %10 : memref<32x32xbf16, 2>
-          air.herd_terminator
         }
         air.dma_memcpy_nd (%arg14[%arg9, %arg10] [%c64_2, %c64_2] [%c1024_0, %c1_1], %new_1[] [] []) {id = 8 : i32} : (memref<64x64xbf16, 1>, memref<64x64xbf16, 1>)
         memref.dealloc %new_0 : memref<64x64xbf16, 1>
         memref.dealloc %new_1 : memref<64x64xbf16, 1>
-        air.segment_terminator
       }
       memref.dealloc %5 : memref<64x64xbf16, 1>
       memref.dealloc %6 : memref<64x64xbf16, 1>
-      air.launch_terminator
     }
     return
   }

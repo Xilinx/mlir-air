@@ -29,7 +29,6 @@ module {
           %1 = affine.apply #map()[%arg8]
           %subview = memref.subview %arg11[0, 0, %1, %0, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
           linalg.fill ins(%cst : bf16) outs(%subview : memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>)
-          air.herd_terminator
         }
         scf.for %arg7 = %c1 to %c16 step %c1 {
           air.herd @herd_0  tile (%arg8, %arg9) in (%arg10=%c2, %arg11=%c2) args(%arg12=%alloc) : memref<1x1x32x32x4x4xbf16, 2 : i32> {
@@ -38,7 +37,6 @@ module {
             %1 = affine.apply #map()[%arg9]
             %subview = memref.subview %arg12[0, 0, %1, %0, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x32x32x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>
             linalg.fill ins(%cst : bf16) outs(%subview : memref<1x1x16x16x4x4xbf16, strided<[16384, 16384, 512, 16, 4, 1], offset: ?>, 2 : i32>)
-            air.herd_terminator
           }
         }
         air.herd @herd_0  tile (%arg7, %arg8) in (%arg9=%c2, %arg10=%c2) args(%arg11=%alloc, %arg12=%alloc_0) : memref<1x1x32x32x4x4xbf16, 2 : i32>, memref<1x1x128x128xbf16, 1 : i32> {
@@ -50,13 +48,10 @@ module {
           %3 = affine.apply #map1()[%arg8]
           %subview_1 = memref.subview %arg12[0, 0, %2, %3] [1, 1, 64, 64] [1, 1, 1, 1] : memref<1x1x128x128xbf16, 1 : i32> to memref<1x1x64x64xbf16, strided<[16384, 16384, 128, 1], offset: ?>, 1 : i32>
           air.dma_memcpy_nd (%subview_1[] [] [], %transpose[] [] []) : (memref<1x1x64x64xbf16, strided<[16384, 16384, 128, 1], offset: ?>, 1 : i32>, memref<1x1x16x4x16x4xbf16, strided<[16384, 16384, 16, 4, 512, 1], offset: ?>, 2 : i32>)
-          air.herd_terminator
         }
         memref.dealloc %alloc_0 : memref<1x1x128x128xbf16, 1 : i32>
         memref.dealloc %alloc : memref<1x1x32x32x4x4xbf16, 2 : i32>
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

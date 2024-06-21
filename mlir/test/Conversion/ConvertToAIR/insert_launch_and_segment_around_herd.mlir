@@ -17,7 +17,6 @@ func.func @herd(%arg0: i32) {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
-    air.herd_terminator
   }
   return
 }
@@ -35,13 +34,11 @@ func.func @two_herds(%arg0: i32) {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
-    air.herd_terminator
   }
   air.herd @herd_1 tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args (%op0=%arg0, %op1=%arg0) : i32, i32 attributes { } {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
-    air.herd_terminator
   }
   return
 }
@@ -56,7 +53,6 @@ func.func @async_herd(%arg0: i32) {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
-    air.herd_terminator
   }
   return
 }

@@ -31,7 +31,6 @@ func.func @memcpy_nd(%arg0: memref<4096xi32>) {
     // CHECK: %[[EVENT6:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT5]]{{.*}}]
     memref.dealloc %1 : memref<32xi32, 2>
     // CHECK: %[[EVENT7:.*]] = air.execute [{{.*}}%[[EVENT6]]{{.*}}]
-    air.herd_terminator
   }
   return
 }

@@ -69,7 +69,6 @@ module attributes {torch.debug_module_name = "mmult"}  {
         memref.dealloc %8 : memref<32x32xi32, 2>
         memref.dealloc %9 : memref<32x32xi32, 2>
       }
-      air.herd_terminator
     }
     air.dma_memcpy_nd (%1[%c0, %c0] [%c64, %c64] [%c64, %c1], %4[] [] []) {id = 8 : i32} : (memref<64x64xi32>, memref<64x64xi32, 1>)
     memref.dealloc %2 : memref<64x64xi32, 1>

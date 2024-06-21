@@ -239,7 +239,6 @@ module {
               }
               scf.yield %25 : !air.async.token
             }
-            air.herd_terminator
           }
           %18 = air.channel.put async [%17]  @channel_7[] (%results_23[] [] []) {id = 16 : i32} : (memref<64x64xi32, 1>)
           %async_token_24 = air.execute [%10] {
@@ -254,9 +253,7 @@ module {
           %19 = air.wait_all async [%16, %15, %14, %18, %13] 
           scf.yield %19 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

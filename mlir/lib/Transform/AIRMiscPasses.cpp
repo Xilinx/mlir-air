@@ -785,7 +785,6 @@ void AIRFuseParallelHerdPass::runOnOperation() {
       b.clone(o, remap);
     }
   }
-  b.create<air::HerdTerminatorOp>(parOp.getLoc());
 
   b.setInsertionPointToStart(&newLaunchOp.getBody().front());
   for (auto c : constants) {

@@ -34,11 +34,8 @@ module {
             air.execute_terminator %6 : memref<128xi32, 1>
           } {id = 3 : i32}
           %5 = air.dma_memcpy_nd async [%asyncToken_9] (%valOut_10[] [] [], %arg15[%c0_8] [%c0_8] [%c0_8]) {id = 43 : i32} : (memref<128xi32, 1>, memref<256xi32, 2>)
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

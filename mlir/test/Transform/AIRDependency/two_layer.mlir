@@ -47,7 +47,6 @@ module attributes {torch.debug_module_name = "MMult_Mult"} {
         memref.dealloc %6 : memref<32x64xf32, 2>
         memref.dealloc %7 : memref<16x64xf32, 2>
       }
-      air.herd_terminator
     }
     air.herd  tile (%arg4, %arg5) in (%arg6=%c8, %arg7=%c1) args(%arg8=%arg0, %arg9=%2, %arg10=%0) : memref<128x128xf32>, memref<128x128xf32>, memref<128x128xf32> attributes {sym_name = "herd_1"} {
       %c1_0 = arith.constant 1 : index
@@ -70,7 +69,6 @@ module attributes {torch.debug_module_name = "MMult_Mult"} {
       memref.dealloc %4 : memref<16x128xf32, 2>
       memref.dealloc %5 : memref<16x128xf32, 2>
       memref.dealloc %6 : memref<16x128xf32, 2>
-      air.herd_terminator
     }
     memref.copy %0, %arg3 : memref<128x128xf32> to memref<128x128xf32>
     return

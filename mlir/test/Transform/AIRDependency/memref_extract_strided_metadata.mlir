@@ -22,7 +22,6 @@ module {
       %alloc_1 = memref.alloc() : memref<16x16x4x4xbf16, 2 : i32>
       %base_buffer, %offset, %sizes:4, %strides:4 = memref.extract_strided_metadata %alloc_1 : memref<16x16x4x4xbf16, 2 : i32> -> memref<bf16, 2 : i32>, index, index, index, index, index, index, index, index, index
       func.call @zero_bf16(%base_buffer, %offset) : (memref<bf16, 2 : i32>, index) -> ()
-      air.herd_terminator
     }
     return
   }

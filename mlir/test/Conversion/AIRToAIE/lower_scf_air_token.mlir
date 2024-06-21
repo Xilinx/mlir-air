@@ -27,7 +27,6 @@ module attributes {torch.debug_module_name = "mmult"} {
         scf.yield %2 : !air.async.token
       }
       air.wait_all [%1] 
-      air.herd_terminator
     }
     return
   }

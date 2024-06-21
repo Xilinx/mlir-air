@@ -25,8 +25,6 @@ module {
   // CHECK: scf.for{{.*}}iter_args(%[[EVENT1:.*]] = %[[EVENT0]])
   // CHECK: air.herd
   // CHECK: air.channel.get async{{.*}}@channel_0
-  // CHECK: air.herd_terminator
-  // CHECK: air.segment_terminator
 
   func.func @test0(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<1024x1024xbf16>, %arg3: memref<1024x1024xbf16>) {
     %c1 = arith.constant 1 : index
@@ -54,13 +52,10 @@ module {
               air.execute_terminator %alloc : memref<4x4xi32, 2>
             }
             %5 = air.channel.get async [%async_token_27]  @channel_0[%arg21, %arg22] (%results_28[] [] []) : (memref<4x4xi32, 2>)
-            air.herd_terminator
           }
           scf.yield %2 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

@@ -34,7 +34,6 @@
 // CHECK:         }
 // CHECK:         memref.copy %[[VAL_15]], %[[VAL_9]] : memref<f32, 2> to memref<f32>
 // CHECK:       }
-// CHECK:       air.herd_terminator
 // CHECK:     }
 // CHECK:     return %[[VAL_3]] : memref<f32>
 #map = affine_map<(d0) -> (d0)>

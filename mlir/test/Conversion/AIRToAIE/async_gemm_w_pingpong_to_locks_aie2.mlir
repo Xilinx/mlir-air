@@ -266,7 +266,6 @@ module {
             %async_token_43 = air.execute [%20] {
               memref.dealloc %results_34 : memref<32x32xi32, 2>
             }
-            air.herd_terminator
           }
           %14 = scf.parallel (%arg12, %arg13) = (%c0_16, %c0_16) to (%c2_15, %c2_15) step (%c1_13, %c1_13) init (%arg11) -> !air.async.token {
             %async_token_30, %results_31 = air.execute -> (index) {
@@ -385,9 +384,7 @@ module {
         %async_token_29 = air.execute [%12] {
           memref.dealloc %results_20 : memref<64x64xi32, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

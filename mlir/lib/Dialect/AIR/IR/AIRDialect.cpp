@@ -104,8 +104,9 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
   for (int i : newOperandsIdx)
     remap.map(op.getKernelArgument(i), newOp.getKernelArgument(newIdx++));
 
-  for (Operation &o : op.getRegion().front().getOperations())
-    rewriter.clone(o, remap);
+  auto &ops = op.getBody().front().getOperations();
+  for (auto oi = ops.begin(), oe = --ops.end(); oi != oe; ++oi)
+    rewriter.clone(*oi, remap);
 
   rewriter.replaceOp(op, newOp->getResults());
   return success();
@@ -241,6 +242,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
+  LaunchOp::ensureTerminator(*r, builder, result.location);
 }
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
@@ -309,7 +311,8 @@ void LaunchOp::print(OpAsmPrinter &p) {
   }
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
 }
 
 ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -393,7 +396,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   Region *body = result.addRegion();
 
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  ensureTerminator(*body, parser.getBuilder(), result.location);
+  LaunchOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
@@ -495,6 +498,7 @@ void SegmentOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
+  SegmentOp::ensureTerminator(*r, builder, result.location);
 }
 
 void SegmentOp::build(OpBuilder &builder, OperationState &result,
@@ -565,7 +569,8 @@ void SegmentOp::print(OpAsmPrinter &p) {
   }
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
 }
 
 ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -651,7 +656,7 @@ ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Region *body = result.addRegion();
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  ensureTerminator(*body, parser.getBuilder(), result.location);
+  SegmentOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
@@ -753,6 +758,7 @@ void HerdOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
+  HerdOp::ensureTerminator(*r, builder, result.location);
 }
 
 void HerdOp::build(OpBuilder &builder, OperationState &result, ValueRange sizes,
@@ -821,7 +827,8 @@ void HerdOp::print(OpAsmPrinter &p) {
   }
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
 }
 
 ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -908,7 +915,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   Region *body = result.addRegion();
 
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  ensureTerminator(*body, parser.getBuilder(), result.location);
+  HerdOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)

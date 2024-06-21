@@ -20,7 +20,6 @@ func.func @test(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
 
   // CHECK: air.launch (%{{.*}}, %{{.*}}) in (%{{.*}}=%c1, %{{.*}}=%c2) attributes {foo = "bar"} {
   air.launch (%tx, %ty) in (%size_x = %c1, %size_y = %c2) attributes {foo = "bar"} {
-    air.launch_terminator
   }
 
   // CHECK: air.launch (%{{.*}}, %{{.*}}, %{{.*}}) in (%{{.*}}=%c2, %{{.*}}=%c3, %{{.*}}=%c4) {
@@ -29,7 +28,6 @@ func.func @test(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
 
   // CHECK: air.launch async (%{{.*}}) in (%{{.*}}=%c1)
   %t0 = air.launch async (%tx) in (%size_x = %c1) {
-    air.launch_terminator
   }
 
   // CHECK: %{{.*}} = air.launch async [%{{.*}}] (%{{.*}}) in (%{{.*}}=%c2)
@@ -38,7 +36,6 @@ func.func @test(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
 
   // CHECK: air.launch [%{{.*}}, %{{.*}}] (%{{.*}}) in (%{{.*}}=%c3)
   air.launch [%t0, %t1] (%tx) in (%size_x = %c3) {
-    air.launch_terminator
   }
 
   // CHECK: air.launch @memcpy_nd (%{{.*}}, %{{.*}}) in (%{{.*}}=%c4, %{{.*}}=%c1) args(%{{.*}}=%{{.*}}) : memref<16x16xf32> {
@@ -46,7 +43,6 @@ func.func @test(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
     %1 = memref.alloc() : memref<16x16xf32>
     air.dma_memcpy_nd (%1[] [] [], %arg4[] [] []) {id = 1 : i32} : (memref<16x16xf32>, memref<16x16xf32>)
     memref.dealloc %1 : memref<16x16xf32>
-    air.launch_terminator
   }
 
   // CHECK: air.launch @mylaunch () in ()

@@ -854,10 +854,8 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
     auto newHerdOp = rewriter.create<air::HerdOp>(
         loc, forRegionIterOperands, herdOp.getSizeOperands(), herdOperands,
         true, herdOp->getAttrs());
-    auto builder = OpBuilder::atBlockEnd(&newHerdOp.getBody().front());
-    auto newHerdTerm = builder.create<air::HerdTerminatorOp>(loc);
-    outerMostLoop->moveBefore(newHerdTerm);
-    builder.setInsertionPointToStart(&newHerdOp.getBody().front());
+    outerMostLoop->moveBefore(newHerdOp.getBody().front().getTerminator());
+    OpBuilder builder(outerMostLoop);
 
     // Replace uses of tokens and consts in for loop nest.
     for (auto val : forRegionIterOperands) {

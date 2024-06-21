@@ -80,7 +80,6 @@ module  {
         }
         air.pipeline.terminator
       }
-      air.herd_terminator
     }
     return
   }

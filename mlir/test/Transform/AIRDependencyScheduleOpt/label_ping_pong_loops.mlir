@@ -33,11 +33,8 @@ module {
             }
             scf.yield %async_token_5 : !air.async.token
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

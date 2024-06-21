@@ -26,7 +26,6 @@ func.func @f0(%arg0: memref<128xf32>, %arg1: memref<128xf32>) -> memref<128xf32>
       air.dma_memcpy_nd (%arg7[%arg8] [%c32] [%c1_0], %alloc_1[] [] []) : (memref<128xf32>, memref<32xf32, 2>)
       memref.dealloc %alloc_1 : memref<32xf32, 2>
     }
-    air.herd_terminator
   }
   return %alloc : memref<128xf32>
 }
