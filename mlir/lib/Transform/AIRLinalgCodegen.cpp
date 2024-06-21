@@ -2156,8 +2156,8 @@ generateResultTileValue(Operation *op, Operation *forOp, OpBuilder &b,
   SmallVector<OpFoldResult> sizeBounds =
       affine::makeComposedFoldedMultiResultAffineApply(
           b, loc, shapeSizesToLoopsMap, allShapeSizes);
-  SmallVector<OpFoldResult, 2> ivs =
-      cast<scf::ParallelOp>(forOp).getInductionVars();
+  SmallVector<Value> vec = cast<scf::ParallelOp>(forOp).getInductionVars();
+  SmallVector<OpFoldResult> ivs{vec.begin(), vec.end()};
   SmallVector<Value> tiledOperands = linalg::makeTiledShapes(
       b, op->getLoc(), linalgOp, args, ivs, sizes, sizeBounds, true);
 

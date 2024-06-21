@@ -7,10 +7,12 @@
 
 #include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Util/Util.h"
+
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/Support/MathExtras.h"
+
 #include "llvm/ADT/SmallSet.h"
+
 #include <mutex>
 #include <set>
 
@@ -252,9 +254,11 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
   if (!read_counter || !write_counter)
     return std::make_pair(1, 1);
   if (read_counter >= write_counter)
-    return std::make_pair(mlir::ceilDiv(read_counter, write_counter), 1);
+    return std::make_pair(llvm::divideCeilSigned(read_counter, write_counter),
+                          1);
   else
-    return std::make_pair(1, mlir::ceilDiv(write_counter, read_counter));
+    return std::make_pair(1,
+                          llvm::divideCeilSigned(write_counter, read_counter));
 }
 
 std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,

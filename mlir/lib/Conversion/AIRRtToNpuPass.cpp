@@ -23,7 +23,6 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
-#include "mlir/Support/MathExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -584,7 +583,7 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       // Found dimension with illegal wrap. Tiling. (Prefers smaller outer wrap
       // values, as long as stride fits)
       int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
-      int b_wrap = mlir::ceilDiv(const_wrap, a_wrap);
+      int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
       int new_a_stride =
           (const_stride * a_wrap) % air::getTensorVolume(llvm::cast<MemRefType>(
                                         memcpy_op.getMemref().getType()));
@@ -900,9 +899,9 @@ void specializeAffineForInAIRRtDmaWrapAndStride(ModuleOp module) {
   // unroll_outer_dim isn't empty, then unroll the existing dimension in the
   // repeat dim and repopulate that dimension with a true repeat dimension.
   for (auto o : unroll_outer_dim) {
-    int64_t tripCount =
-        mlir::ceilDiv(o.getConstantUpperBound() - o.getConstantLowerBound(),
-                      o.getStepAsInt());
+    int64_t tripCount = llvm::divideCeilSigned(o.getConstantUpperBound() -
+                                                   o.getConstantLowerBound(),
+                                               o.getStepAsInt());
     (void)loopUnrollByFactor(o, tripCount);
   }
   specialzeAllAffineFors(funcOps, erased, unroll_outer_dim);
@@ -1131,9 +1130,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     SmallVector<affine::AffineForOp> afos;
     affine_for_op.walk([&](affine::AffineForOp afo) { afos.push_back(afo); });
     for (auto afo : afos) {
-      int64_t tripCount = mlir::ceilDiv(afo.getConstantUpperBound() -
-                                            afo.getConstantLowerBound(),
-                                        afo.getStepAsInt());
+      int64_t tripCount = llvm::divideCeilSigned(
+          afo.getConstantUpperBound() - afo.getConstantLowerBound(),
+          afo.getStepAsInt());
       (void)loopUnrollByFactor(afo, tripCount);
     }
   }
@@ -1151,8 +1150,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       std::optional<int64_t> stepCstOp =
           mlir::getConstantIntValue(for_op.getStep());
       if (lbCstOp && ubCstOp && stepCstOp) {
-        int64_t tripCount =
-            mlir::ceilDiv(ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
+        int64_t tripCount = llvm::divideCeilSigned(
+            ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
         (void)loopUnrollByFactor(for_op, tripCount);
       }
     }

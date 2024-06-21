@@ -511,8 +511,8 @@ private:
     auto num_cols = op.getNumCols();
     if (num_rows) {
       if (num_cols) {
-        usage_count *= mlir::ceilDiv(*num_rows, du_size_x);
-        usage_count *= mlir::ceilDiv(*num_cols, du_size_y);
+        usage_count *= llvm::divideCeilSigned(*num_rows, du_size_x);
+        usage_count *= llvm::divideCeilSigned(*num_cols, du_size_y);
         return usage_count;
       } else {
         op->emitOpError("Segment has no placed AIE cores");
@@ -1195,7 +1195,8 @@ private:
     unsigned put_to_deallocate = 0;
     unsigned get_to_deallocate = 0;
     if (put_reserved_count * bcast_factor > get_reserved_count) {
-      put_to_deallocate = mlir::floorDiv(get_reserved_count, bcast_factor);
+      put_to_deallocate =
+          llvm::divideFloorSigned(get_reserved_count, bcast_factor);
     } else {
       put_to_deallocate = put_reserved_count;
     }
@@ -1512,8 +1513,8 @@ private:
                              .getDefiningOp<arith::ConstantIndexOp>();
           auto stepCstOp =
               scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
-          int64_t tripCount = mlir::ceilDiv(ubCstOp.value() - lbCstOp.value(),
-                                            stepCstOp.value());
+          int64_t tripCount = llvm::divideCeilSigned(
+              ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
           output *= tripCount;
         }
       } else if (auto hier = dyn_cast<air::HierarchyInterface>(parent)) {
@@ -1577,8 +1578,8 @@ private:
                              .getDefiningOp<arith::ConstantIndexOp>();
           auto stepCstOp =
               scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
-          int64_t tripCount = mlir::ceilDiv(ubCstOp.value() - lbCstOp.value(),
-                                            stepCstOp.value());
+          int64_t tripCount = llvm::divideCeilSigned(
+              ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
           output *= tripCount;
         }
       } else if (auto hier = dyn_cast<air::HierarchyInterface>(parent)) {
@@ -1626,8 +1627,8 @@ private:
                              .getDefiningOp<arith::ConstantIndexOp>();
           auto stepCstOp =
               scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
-          int64_t tripCount = mlir::ceilDiv(ubCstOp.value() - lbCstOp.value(),
-                                            stepCstOp.value());
+          int64_t tripCount = llvm::divideCeilSigned(
+              ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
           output *= tripCount;
         }
       } else if (isa<air::HierarchyInterface>(parent) &&

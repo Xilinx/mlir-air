@@ -35,7 +35,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 
-#include "mlir/Support/MathExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -1557,7 +1556,7 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
           apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getLowerBound()),
           ctx);
       assert(new_ub && new_lb);
-      int newStepInInt = mlir::ceilDiv(*new_ub - *new_lb, tripCount);
+      int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
       if (auto exec = dyn_cast<air::ExecuteOp>(apply->getParentOp())) {
         rewriter.setInsertionPoint(exec);
@@ -1581,7 +1580,7 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       auto new_lb = evaluateConstantInMap(apply.getAffineMap(),
                                           afo.getConstantLowerBound(), ctx);
       assert(new_ub && new_lb);
-      int newStepInInt = mlir::ceilDiv(*new_ub - *new_lb, tripCount);
+      int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
       rewriter.setInsertionPoint(afo);
       apply.getResult().replaceAllUsesWith(afo.getInductionVar());
@@ -2073,7 +2072,7 @@ private:
     auto size_op = new_sizes[dim].getDefiningOp();
     if (size_op && isa<arith::ConstantIndexOp>(size_op)) {
       auto val = dyn_cast<arith::ConstantIndexOp>(size_op).value();
-      val = mlir::ceilDiv(val, factor);
+      val = llvm::divideCeilSigned(val, factor);
       new_sizes[dim] =
           builder.create<arith::ConstantIndexOp>(par->getLoc(), val);
     } else {
@@ -4407,7 +4406,7 @@ public:
       if (band_lb == lb && band_ub == ub && band_step == step) {
         equalIterationForOps.push_back(perfectlyNestedForBands[i]);
       } else if (band_lb == lb && band_ub == ub &&
-                 mlir::mod(std::max(band_step, step),
+                 llvm::mod(std::max(band_step, step),
                            std::min(band_step, step)) == 0) {
         // If scf.for loops are not identical, but tilable to having identical
         // roots.
@@ -4651,7 +4650,7 @@ private:
 
     int effective_access_size = getEffectiveMemrefSizeFromAccessPattern(
         memref_shape, sizes, strides)[induction_var_dim];
-    effective_access_size *= mlir::ceilDiv(original_step, tiled_step);
+    effective_access_size *= llvm::divideCeilSigned(original_step, tiled_step);
     if (effective_access_size > original_step)
       return scf::ForOp(); // Loop iteration access out of bound.
 
