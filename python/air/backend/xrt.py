@@ -32,13 +32,15 @@ class XRTBackend(AirBackend):
         kernel="MLIR_AIE",
         insts="air.insts.txt",
         experimental_passes=False,
+        omit_while_true_loop=False,
     ):
         super().__init__()
         self.opts_xclbin = xclbin
         self.opts_kernel = kernel
         self.opts_insts = insts
         self.verbose = verbose
-        self.experimental_passes = False
+        self.experimental_passes = experimental_passes
+        self.omit_while_true_loop = omit_while_true_loop
 
     def __del__(self):
         self.unload()
@@ -80,6 +82,9 @@ class XRTBackend(AirBackend):
 
             if self.experimental_passes:
                 aircc_options += ["--experimental-passes"]
+
+            if self.omit_while_true_loop:
+                aircc_options += ["--omit-while-true-loop"]
 
             aircc.run(air_module, aircc_options)
 
