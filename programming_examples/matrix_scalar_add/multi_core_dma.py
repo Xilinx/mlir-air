@@ -47,8 +47,19 @@ def build_module():
                             )
                         ],
                     )
+                    create_tile_index = AffineMap.get(
+                        0,
+                        2,
+                        [
+                            AffineExpr.get_add(
+                                AffineSymbolExpr.get(0),
+                                AffineSymbolExpr.get(1),
+                            )
+                        ]
+                    )
                     offset0 = affine_apply(scaled_index_map, [tx])
                     offset1 = affine_apply(scaled_index_map, [ty])
+                    compute_tile_id = affine_apply(create_tile_index, [offset0, ty])
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -80,10 +91,10 @@ def build_module():
                             val_in = load(tile_in, [i, j])
 
                             # Compute the output value
-                            val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
+                            #val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
 
                             # Store the output value in tile_out
-                            store(val_out, tile_out, [i, j])
+                            store(arith.index_cast(T.i32(), compute_tile_id), tile_out, [i, j])
                             yield_([])
                         yield_([])
 
