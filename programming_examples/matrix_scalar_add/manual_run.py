@@ -38,7 +38,7 @@ if __name__ == "__main__":
 
     # run the module
     with filelock.FileLock("/tmp/npu.lock"):
-        addone = backend.load()
+        addone = backend.load(None)
         (_, output_b) = addone(input_a, input_b)
 
     backend.unload()
