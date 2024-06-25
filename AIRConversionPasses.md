@@ -132,16 +132,6 @@ the generated `launch` operations with the `has-air-segment` option.
 -depth           : Given a nest of parallel for loops, which depth to map to air.launch
 -has-air-segment : Whether to create an air.segment op in generated air.launch regions
 ```
-### `-air-pipeline-to-affine`
-
-_Lower air.pipeline stages to affine.if_
-
-Lower air.pipeline stages to affine.if
-
-#### Options
-```
--lowering-type : Type of lowering to use for core-to-core communication. Can be 'buffer' or 'getput'
-```
 ### `-air-split-devices`
 
 _Split the input into one output per aie.device op_

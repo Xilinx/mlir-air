@@ -867,10 +867,6 @@ output:
 -row-anchor : Anchoring row number of segments
 -col-anchor : Anchoring column number of segments
 ```
-### `-air-promote-dma`
-
-_Promote uniform dma operations_
-
 ### `-air-prune-linalg-generic-input-dma`
 
 _Detect and prune redundant DMA into linalg generic_
@@ -979,10 +975,6 @@ _Specialize air.channel op in perfect loop nest with wraps and strides_
 
 This pass specialize air.channel op in perfect loop nest with wraps and strides, for
 efficient mapping to hardware buffer descriptors.
-### `-air-specialize-dma`
-
-_Specialize dma operations_
-
 ### `-air-specialize-dma-broadcast`
 
 _Specialize dma operations for broadcast pattern_
