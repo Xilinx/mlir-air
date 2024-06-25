@@ -4,8 +4,12 @@
 
 add_mlir_library(
   AIRTransformPasses
-  AffineLoopOptPass.cpp
   AIRAutomaticTilingPass.cpp
+  AIRDependency.cpp
+  AIRDependencyCanonicalize.cpp
+  AIRDependencyParseGraph.cpp
+  AIRDependencyScheduleOpt.cpp
+  AIRDmaToChannel.cpp
   AIRHerdAssignPass.cpp
   AIRHerdPlacementPass.cpp
   AIRLinalgCodegen.cpp
@@ -17,10 +21,7 @@ add_mlir_library(
   AIRRegularizeLoopPass.cpp
   AIRTilingUtils.cpp
   AIRTransformInterpreter.cpp
-  AIRDependency.cpp
-  AIRDependencyScheduleOpt.cpp
-  AIRDependencyCanonicalize.cpp
-  AIRDependencyParseGraph.cpp
+  AffineLoopOptPass.cpp
   Passes.cpp
   ReturnEliminationPass.cpp
 
