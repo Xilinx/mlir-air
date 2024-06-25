@@ -1002,7 +1002,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       for_loops.push_back(parent);
   }
   for (auto o : for_loops) {
-    uint64_t ind_var_factor = 1;
+    uint64_t ind_var_factor = 0;
     for (int i = offsets.size() - 1; i >= 0; i--) {
       Value iv = nullptr;
       int loop_lower_bound = 0;
@@ -1019,27 +1019,16 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
         // Replace for loop induction vars in offsets with zero
         offsets[i] = builder.template create<arith::ConstantIndexOp>(
             loc, loop_lower_bound);
+        ind_var_factor = *getConstantIntValue(strides[i]);
         break;
       } else if (iv && offsets[i].getDefiningOp()) {
         if (isa<arith::IndexCastOp>(offsets[i].getDefiningOp()) &&
             offsets[i].getDefiningOp()->getOperand(0) == iv) {
           offsets[i] = builder.template create<arith::ConstantIndexOp>(
               loc, loop_lower_bound);
+          ind_var_factor = *getConstantIntValue(strides[i]);
           break;
         };
-      }
-      // Index offset taking into account mismatch between memref rank and
-      // offset list size difference.
-      auto memref_rank = getTensorShape(memref.getType()).size();
-      if (memref_rank < offsets.size()) {
-        if ((unsigned)i < offsets.size() - memref_rank)
-          ind_var_factor *= getTensorVolume(memref.getType());
-        else
-          ind_var_factor *= getTensorShape(
-              memref.getType())[i + memref_rank - offsets.size()];
-      } else {
-        ind_var_factor *=
-            getTensorShape(memref.getType())[i + memref_rank - offsets.size()];
       }
     }
     int trip_count = -1;
@@ -1071,6 +1060,8 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     }
 
     // Insert new dimension into the wraps and strides list.
+    offsets.insert(offsets.begin(),
+                   builder.template create<arith::ConstantIndexOp>(loc, 0));
     wraps.insert(wraps.begin(), new_wrap);
     strides.insert(strides.begin(), new_stride);
   }
