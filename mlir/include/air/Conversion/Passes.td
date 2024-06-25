@@ -477,19 +477,6 @@ def AIRSplitDevices : Pass<"air-split-devices", "ModuleOp"> {
   ];
 }
 
-def AIRPipelineToAffine : Pass<"air-pipeline-to-affine", "ModuleOp"> {
-  let summary = "Lower air.pipeline stages to affine.if";
-  let constructor = "xilinx::air::createAIRPipelineToAffinePass()";
-  let description =  [{
-    Lower air.pipeline stages to affine.if
-  }];
-  let options = [
-    Option<"clLoweringType", "lowering-type", "std::string", 
-          /*default=*/"\"buffers\"",
-          "Type of lowering to use for core-to-core communication. Can be 'buffer' or 'getput'">
-  ];
-}
-
 def InsertEmptyLaunchOverHerd : Pass<"air-insert-launch-and-segment-around-herd", "ModuleOp"> {
   let summary = "Insert segment and launch ops around herd op";
   let constructor = "xilinx::air::createInsertEmptyLaunchOverHerdPass()";
