@@ -68,6 +68,7 @@ namespace air {
 #define GEN_PASS_DEF_AFFINELOOPOPTPASS
 #define GEN_PASS_DEF_AIRSEGMENTLOOPFUSION
 #define GEN_PASS_DEF_AIRSPLITL2MEMREFFORBUFFERCONSTRAINTPASS
+#define GEN_PASS_DEF_DMATOCHANNEL
 #include "air/Transform/Passes.h.inc"
 
 } // namespace air

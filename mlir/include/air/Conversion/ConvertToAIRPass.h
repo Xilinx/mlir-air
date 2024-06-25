@@ -26,7 +26,6 @@ std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createParallelToLaunchPass(const ParallelToLaunchOptions &options);
 
 std::unique_ptr<mlir::Pass> createCopyToDmaPass();
-std::unique_ptr<mlir::Pass> createDmaToChannelPass();
 std::unique_ptr<mlir::Pass> createInsertEmptyLaunchOverHerdPass();
 
 } // namespace air
