@@ -1099,11 +1099,6 @@ def AIRExamplePass : Pass<"air-example-pass", "ModuleOp"> {
   let constructor = "xilinx::air::createAIRExamplePass()";
 }
 
-def AIRSpecializeDma : Pass<"air-specialize-dma", "ModuleOp"> {
-  let summary = "Specialize dma operations";
-  let constructor = "xilinx::air::createAIRSpecializeDma()";
-}
-
 def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp"> {
   let summary = "Specialize dma operations for broadcast pattern";
   let constructor = "xilinx::air::createAIRSpecializeDmaBroadcast()";
@@ -1112,11 +1107,6 @@ def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp">
     computation. This specialization involves transforming data movement operations 
     into more optimized versions that are aware of the broadcast semantics.
   }];
-}
-
-def AIRPromoteUniformL1Dma : Pass<"air-promote-dma", "ModuleOp"> {
-  let summary = "promote uniform dma operations";
-  let constructor = "xilinx::air::createAIRPromoteUniformL1Dma()";
 }
 
 def AIRLinalgNamePass : Pass<"air-linalg-name", "ModuleOp"> {
