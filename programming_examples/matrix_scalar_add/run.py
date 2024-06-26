@@ -14,6 +14,7 @@ from data_config import *
 import single_core_dma
 import multi_core_dma
 import single_core_channel
+import multi_core_channel
 
 KERNEL_NAME = "MLIR_AIE"
 
@@ -96,7 +97,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "tile_method",
         type=str,
-        choices=["single-core-dma", "multi-core-dma", "single-core-channel"],
+        choices=[
+            "single-core-dma",
+            "multi-core-dma",
+            "single-core-channel",
+            "multi-core-channel",
+        ],
     )
     args = parser.parse_args()
 
@@ -106,4 +112,6 @@ if __name__ == "__main__":
         build_module = multi_core_dma.build_module
     elif args.tile_method == "single-core-channel":
         build_module = single_core_channel.build_module
+    elif args.tile_method == "multi-core-channel":
+        build_module = multi_core_channel.build_module
     main(build_module)
