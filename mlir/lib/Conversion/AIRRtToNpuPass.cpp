@@ -137,22 +137,32 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
           .getResult();
     };
     SmallVector<Value> offsets;
-    SmallVector<int64_t> staticOffsets;
-    if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
-      staticOffsets.push_back(*const_int);
-    else
+    SmallVector<int64_t>
+        staticOffsets; // Note: for static offsets we compose one single offset
+                       // at the last dimension.
+    int64_t overallStaticOffset = 0;
+    if (auto const_int = getConstantIntValue(adaptor.getOffset3())) {
+      overallStaticOffset +=
+          *getConstantIntValue(adaptor.getStride3()) * (*const_int);
+      staticOffsets.push_back(0);
+    } else
       offsets.push_back(adaptor.getOffset3());
-    if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
-      staticOffsets.push_back(*const_int);
-    else
+    if (auto const_int = getConstantIntValue(adaptor.getOffset2())) {
+      overallStaticOffset +=
+          *getConstantIntValue(adaptor.getStride2()) * (*const_int);
+      staticOffsets.push_back(0);
+    } else
       offsets.push_back(adaptor.getOffset2());
-    if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
-      staticOffsets.push_back(*const_int);
-    else
+    if (auto const_int = getConstantIntValue(adaptor.getOffset1())) {
+      overallStaticOffset +=
+          *getConstantIntValue(adaptor.getStride1()) * (*const_int);
+      staticOffsets.push_back(0);
+    } else
       offsets.push_back(adaptor.getOffset1());
-    if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
-      staticOffsets.push_back(*const_int / div);
-    else
+    if (auto const_int = getConstantIntValue(adaptor.getOffset0())) {
+      overallStaticOffset += *const_int;
+      staticOffsets.push_back(overallStaticOffset / div);
+    } else
       offsets.push_back(divOp(adaptor.getOffset0()));
     SmallVector<Value> sizes;
     SmallVector<int64_t> staticSizes;

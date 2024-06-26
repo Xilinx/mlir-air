@@ -453,16 +453,15 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto i64Ty = builder.getI64Type();
   auto zero =
       builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
-  auto one =
-      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 1));
+  auto zero_idx = builder.create<arith::ConstantIndexOp>(loc, 0);
+  auto one_idx = builder.create<arith::ConstantIndexOp>(loc, 1);
 
   auto idTy = IntegerType::get(ctx, 32);
   // Get op id of the internal put/get op
   if (auto id_attr = theOtherOp->getAttrOfType<IntegerAttr>("id")) {
     opers.push_back(builder.create<arith::ConstantOp>(loc, idTy, id_attr));
   } else {
-    opers.push_back(builder.create<arith::ConstantOp>(
-        loc, idTy, IntegerAttr::get(idTy, 0)));
+    opers.push_back(zero);
   }
 
   scf::ParallelOp launch = thisOp->getParentOfType<scf::ParallelOp>();
@@ -489,45 +488,71 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       opers.push_back(builder.create<arith::IndexCastOp>(
           loc, IntegerType::get(ctx, 64), launch.getInductionVars()[1]));
     else if (launch.getNumLoops() == 1)
-      opers.push_back(builder.create<arith::ConstantOp>(
-          loc, i64Ty, IntegerAttr::get(i64Ty, 0)));
+      opers.push_back(zero);
     else
-      opers.push_back(builder.create<arith::ConstantOp>(
-          loc, i64Ty, IntegerAttr::get(i64Ty, 0)));
+      opers.push_back(zero);
   }
 
   opers.push_back(thisOp.getMemref());
 
-  SmallVector<Value, 4> offsets(4, zero);
-  SmallVector<Value, 4> lengths(4, one);
-  SmallVector<Value, 3> strides(3, zero);
+  SmallVector<Value> offsets = thisOp.getOffsets();
+  SmallVector<Value> wraps = thisOp.getSizes();
+  SmallVector<Value> strides = thisOp.getStrides();
 
-  int idx = 4 - thisOp.getOffsets().size();
-  for (auto o : thisOp.getOffsets()) {
-    offsets[idx++] =
-        builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64), o);
+  auto memrefType = thisOp.getMemref().getType();
+
+  // If empty offsets/sizes/strides, then populate the lists with default
+  // values.
+  if (offsets.empty() && wraps.empty() && strides.empty()) {
+    offsets.push_back(zero_idx);
+    auto memref_volume = air::getTensorVolume(memrefType);
+    wraps.push_back(builder.create<arith::ConstantIndexOp>(loc, memref_volume));
+    strides.push_back(one_idx);
+  }
+  // Stride field implicit last element one
+  auto lastStrideConst = getConstantIntValue(strides.back());
+  assert(lastStrideConst && "the last stride is not static");
+  // If the last dimension's stride value is not 1, then for AIE2 we use the
+  // second dimension of shim dma bd to implement the last dimension.
+  if (*lastStrideConst != 1) {
+    offsets.push_back(zero_idx);
+    wraps.push_back(one_idx);
+    strides.push_back(one_idx);
   }
 
-  idx = 4 - thisOp.getStrides().size();
-  auto op_strides = thisOp.getStrides();
-  if (op_strides.size())
-    for (auto o : op_strides.drop_back())
-      strides[idx++] =
-          builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64), o);
-  idx =
-      4 - std::max(thisOp.getSizes().size(), (size_t)thisMemrefType.getRank());
-  // If sizes field is empty, then infer sizes from memref shape
-  if (thisOp.getSizes().empty())
-    for (auto d : air::getTensorShape(thisMemrefType))
-      lengths[idx++] = builder.create<arith::ConstantOp>(
-          loc, i64Ty, IntegerAttr::get(i64Ty, d));
-  else
-    for (auto o : thisOp.getSizes())
-      lengths[idx++] =
-          builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64), o);
+  strides.pop_back();
+  while (offsets.size() < 4) {
+    offsets.insert(offsets.begin(), zero_idx);
+  }
+  while (wraps.size() < 4) {
+    wraps.insert(wraps.begin(), one_idx);
+  }
+  while (strides.size() < 3) {
+    strides.insert(strides.begin(), zero_idx);
+  }
+
+  for (unsigned i = 0; i < offsets.size(); i++)
+    offsets[i] = builder.create<arith::IndexCastOp>(
+        loc, IntegerType::get(ctx, 64), offsets[i]);
+
+  // In aiex.npu ops, stride value 0 means 1; only the highest dimension stride
+  // value 0 really means repeat.
+  for (unsigned i = 0; i < strides.size(); i++) {
+    auto constStride = getConstantIntValue(strides[i]);
+    assert(constStride && "stride is not static");
+    if (i > 0 && *constStride == 1)
+      strides[i] = zero;
+    else
+      strides[i] = builder.create<arith::IndexCastOp>(
+          loc, IntegerType::get(ctx, 64), strides[i]);
+  }
+
+  for (unsigned i = 0; i < wraps.size(); i++)
+    wraps[i] = builder.create<arith::IndexCastOp>(
+        loc, IntegerType::get(ctx, 64), wraps[i]);
 
   opers.append(offsets);
-  opers.append(lengths);
+  opers.append(wraps);
   opers.append(strides);
 
   SmallVector<Type, 1> tys;
