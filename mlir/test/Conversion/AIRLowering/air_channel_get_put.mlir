@@ -24,25 +24,26 @@ module {
       %c32 = arith.constant 32 : index
       %c1 = arith.constant 1 : index
       %c0 = arith.constant 0 : index
-      %0 = air.channel.put async  @channel_0[%c0, %c0] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 1 : i32} : (memref<32x16xi32>)
-      %1 = air.channel.get async  @channel_1[%c0, %c0] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 2 : i32} : (memref<32x16xi32>)
+      %0 = air.channel.put async  @channel_0[%c0, %c0] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c1]) {id = 1 : i32} : (memref<32x16xi32>)
+      %1 = air.channel.get async  @channel_1[%c0, %c0] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c1]) {id = 2 : i32} : (memref<32x16xi32>)
       air.segment @segment_0 {
         %c1_0 = arith.constant 1 : index
         air.herd @herd_0  tile (%arg10, %arg11) in (%arg12=%c1_0, %arg13=%c1_0) {
           %c0_4 = arith.constant 0 : index
+          %c1_4 = arith.constant 1 : index
           %c32_5 = arith.constant 32 : index
           %c16_6 = arith.constant 16 : index
           %c8_7 = arith.constant 8 : index
           %alloc = memref.alloc() {sym_name = "scratch"} : memref<16x8xi32, 2>
           %alloc_8 = memref.alloc() {sym_name = "scratch_copy"} : memref<16x8xi32, 2>
-          air.channel.get  @channel_0[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c0_4]) {id = 3 : i32} : (memref<16x8xi32, 2>)
+          air.channel.get  @channel_0[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c1_4]) {id = 3 : i32} : (memref<16x8xi32, 2>)
           affine.for %arg18 = 0 to 8 {
             affine.for %arg19 = 0 to 16 {
               %2 = affine.load %alloc[%arg19, %arg18] : memref<16x8xi32, 2>
               affine.store %2, %alloc_8[%arg19, %arg18] : memref<16x8xi32, 2>
             }
           }
-          air.channel.put  @channel_1[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c0_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
+          air.channel.put  @channel_1[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c1_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
           memref.dealloc %alloc_8 : memref<16x8xi32, 2>
           memref.dealloc %alloc : memref<16x8xi32, 2>
         }
@@ -76,7 +77,7 @@ module {
       %c0 = arith.constant 0 : index
       %0 = air.wait_all async 
       %1 = scf.parallel (%a2, %a3) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%0) -> !air.async.token {
-        %3 = air.channel.put async  @channel_2[%a2, %a3] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 1 : i32} : (memref<32x16xi32>)
+        %3 = air.channel.put async  @channel_2[%a2, %a3] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c1]) {id = 1 : i32} : (memref<32x16xi32>)
         scf.reduce(%3 : !air.async.token) {
         ^bb0(%a4: !air.async.token, %a5: !air.async.token):
           %4 = air.wait_all async [%a4, %a5] 
@@ -84,7 +85,7 @@ module {
         }
       }
       %2 = scf.parallel (%a2, %a3) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%0) -> !air.async.token {
-        %3 = air.channel.get async  @channel_3[%a2, %a3] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 2 : i32} : (memref<32x16xi32>)
+        %3 = air.channel.get async  @channel_3[%a2, %a3] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c1]) {id = 2 : i32} : (memref<32x16xi32>)
         scf.reduce(%3 : !air.async.token) {
         ^bb0(%a4: !air.async.token, %a5: !air.async.token):
           %4 = air.wait_all async [%a4, %a5] 
@@ -96,19 +97,20 @@ module {
         %c2_3 = arith.constant 2 : index
         air.herd @herd_0  tile (%arg10, %arg11) in (%arg12=%c2_2, %arg13=%c2_3) args(%arg14=%arg6, %arg15=%arg7, %arg16=%arg8, %arg17=%arg9) : index, index, index, index {
           %c0_4 = arith.constant 0 : index
+          %c1_4 = arith.constant 1 : index
           %c32_5 = arith.constant 32 : index
           %c16_6 = arith.constant 16 : index
           %c8_7 = arith.constant 8 : index
           %alloc = memref.alloc() {sym_name = "scratch"} : memref<16x8xi32, 2>
           %alloc_8 = memref.alloc() {sym_name = "scratch_copy"} : memref<16x8xi32, 2>
-          air.channel.get  @channel_2[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c0_4]) {id = 3 : i32} : (memref<16x8xi32, 2>)
+          air.channel.get  @channel_2[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c1_4]) {id = 3 : i32} : (memref<16x8xi32, 2>)
           affine.for %arg18 = 0 to 8 {
             affine.for %arg19 = 0 to 16 {
               %3 = affine.load %alloc[%arg19, %arg18] : memref<16x8xi32, 2>
               affine.store %3, %alloc_8[%arg19, %arg18] : memref<16x8xi32, 2>
             }
           }
-          air.channel.put  @channel_3[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c0_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
+          air.channel.put  @channel_3[%arg10, %arg11] (%alloc_8[%c0_4, %c0_4] [%c8_7, %c16_6] [%c32_5, %c1_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
           memref.dealloc %alloc_8 : memref<16x8xi32, 2>
           memref.dealloc %alloc : memref<16x8xi32, 2>
         }
@@ -144,7 +146,7 @@ module {
       %c0 = arith.constant 0 : index
       %0 = air.wait_all async 
       %1 = scf.parallel (%a2, %a3) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%0) -> !air.async.token {
-        %3 = air.channel.put async  @channel_4[%a2, %a3] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 1 : i32} : (memref<32x16xi32>)
+        %3 = air.channel.put async  @channel_4[%a2, %a3] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c1]) {id = 1 : i32} : (memref<32x16xi32>)
         scf.reduce(%3 : !air.async.token) {
         ^bb0(%a4: !air.async.token, %a5: !air.async.token):
           %4 = air.wait_all async [%a4, %a5] 
@@ -153,7 +155,7 @@ module {
       }
       %2 = scf.parallel (%a2, %a3) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%0) -> !air.async.token {
         %3 = scf.for %a4 = %c0 to %c2 step %c1 iter_args(%a5 = %0) -> (!air.async.token) {
-          %4 = air.channel.get async [%a5]  @channel_5[%a2, %a3] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 2 : i32} : (memref<32x16xi32>)
+          %4 = air.channel.get async [%a5]  @channel_5[%a2, %a3] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c1]) {id = 2 : i32} : (memref<32x16xi32>)
           scf.yield %4 : !air.async.token
         }
         scf.reduce(%3 : !air.async.token) {
@@ -174,7 +176,7 @@ module {
           %c8_9 = arith.constant 8 : index
           %alloc = memref.alloc() {sym_name = "scratch"} : memref<16x8xi32, 2>
           %alloc_10 = memref.alloc() {sym_name = "scratch_copy"} : memref<16x8xi32, 2>
-          air.channel.get  @channel_4[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c8_9, %c16_8] [%c32_7, %c0_4]) {id = 3 : i32} : (memref<16x8xi32, 2>)
+          air.channel.get  @channel_4[%arg10, %arg11] (%alloc[%c0_4, %c0_4] [%c8_9, %c16_8] [%c32_7, %c1_6]) {id = 3 : i32} : (memref<16x8xi32, 2>)
           affine.for %arg18 = 0 to 8 {
             affine.for %arg19 = 0 to 16 {
               %3 = affine.load %alloc[%arg19, %arg18] : memref<16x8xi32, 2>
@@ -182,7 +184,7 @@ module {
             }
           }
           scf.for %arg18 = %c0_4 to %c2_5 step %c1_6 {
-            air.channel.put  @channel_5[%arg10, %arg11] (%alloc_10[%c0_4, %c0_4] [%c8_9, %c16_8] [%c32_7, %c0_4]) {id = 4 : i32} : (memref<16x8xi32, 2>)
+            air.channel.put  @channel_5[%arg10, %arg11] (%alloc_10[%c0_4, %c0_4] [%c8_9, %c16_8] [%c32_7, %c1_6]) {id = 4 : i32} : (memref<16x8xi32, 2>)
           }
           memref.dealloc %alloc_10 : memref<16x8xi32, 2>
           memref.dealloc %alloc : memref<16x8xi32, 2>

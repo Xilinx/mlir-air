@@ -230,3 +230,56 @@ module {
     return
   }
 }
+
+// -----
+
+// Convolution.
+
+// CHECK-DAG: %[[CST_64:.*]] = arith.constant 64 : i64
+// CHECK-DAG: %[[CST_1:.*]] = arith.constant 1 : i64
+// CHECK-DAG: %[[CST_1152:.*]] = arith.constant 1152 : i64
+// CHECK-DAG: %[[CST_18:.*]] = arith.constant 18 : i32
+// CHECK-DAG: %[[CST_5:.*]] = arith.constant 5 : i32
+// CHECK-DAG: %[[CST_4:.*]] = arith.constant 4 : i32
+// CHECK-DAG: %[[CST_0:.*]] = arith.constant 0 : i64
+// CHECK: affine.for %[[VAL_0:.*]] = 0 to 2 {
+// CHECK:   %[[VAL_1:.*]] = arith.index_cast %[[VAL_0]] : index to i64
+// CHECK:   airrt.dma_memcpy_nd(%[[CST_4]], %0, %[[CST_0]], %arg0[%[[CST_0]], %[[CST_0]], %0, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_1152]]], [%[[CST_0]], %[[CST_0]], %[[CST_1152]]]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<2x6x6x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK:   airrt.dma_memcpy_nd(%[[CST_5]], %0, %[[CST_0]], %arg1[%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_1152]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {metadata = @airMemcpyId5} : (i32, i64, i64, memref<3x3x32x4xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK:   airrt.dma_memcpy_nd(%[[CST_18]], %0, %[[CST_0]], %arg2[%[[CST_0]], %[[CST_0]], %0, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_64]]]) {metadata = @airMemcpyId18} : (i32, i64, i64, memref<2x4x4x4xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+
+module {
+  air.channel @channel_5 [1, 1]
+  air.channel @channel_2 [1, 1]
+  air.channel @channel_1 [1, 1]
+  func.func @func3(%arg0: memref<2x6x6x32xi32>, %arg1: memref<3x3x32x4xi32>, %arg2: memref<2x4x4x4xi32>) {
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async (%arg3) in (%arg4=%c2) args(%arg5=%arg0, %arg6=%arg2, %arg7=%arg1) : memref<2x6x6x32xi32>, memref<2x4x4x4xi32>, memref<3x3x32x4xi32> attributes {id = 1 : i32} {
+      %c64 = arith.constant 64 : index
+      %c1152 = arith.constant 1152 : index
+      %c1 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %1 = air.channel.put async  @channel_1[] (%arg5[%arg3, %c0] [%c1, %c1152] [%c1152, %c1]) {id = 1 : i32, metadata = @airMemcpyId4} : (memref<2x6x6x32xi32>)
+      %2 = air.channel.put async  @channel_2[] (%arg7[] [] []) {id = 2 : i32, metadata = @airMemcpyId5} : (memref<3x3x32x4xi32>)
+      %3 = air.channel.get async  @channel_5[] (%arg6[%arg3, %c0] [%c1, %c64] [%c64, %c1]) {id = 3 : i32, metadata = @airMemcpyId18} : (memref<2x4x4x4xi32>)
+      %4 = air.segment @conv async  attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 1 : i64, y_loc = 2 : i64, y_size = 4 : i64} {
+        %async_token, %results = air.execute -> (memref<1x6x6x32xi32, 1>) {
+          %alloc = memref.alloc() : memref<1x6x6x32xi32, 1>
+          air.execute_terminator %alloc : memref<1x6x6x32xi32, 1>
+        }
+        %5 = air.channel.get async [%async_token]  @channel_1[] (%results[] [] []) {id = 4 : i32} : (memref<1x6x6x32xi32, 1>)
+        %async_token_0, %results_1 = air.execute -> (memref<3x3x32x4xi32, 1>) {
+          %alloc = memref.alloc() : memref<3x3x32x4xi32, 1>
+          air.execute_terminator %alloc : memref<3x3x32x4xi32, 1>
+        }
+        %6 = air.channel.get async [%async_token_0]  @channel_2[] (%results_1[] [] []) {id = 5 : i32} : (memref<3x3x32x4xi32, 1>)
+        %async_token_2, %results_3 = air.execute -> (memref<1x4x4x4xi32, 1>) {
+          %alloc = memref.alloc() : memref<1x4x4x4xi32, 1>
+          air.execute_terminator %alloc : memref<1x4x4x4xi32, 1>
+        }
+        %7 = air.channel.put async [%async_token_2]  @channel_5[] (%results_3[] [] []) {id = 18 : i32} : (memref<1x4x4x4xi32, 1>)
+      }
+    }
+    return
+  }
+}
