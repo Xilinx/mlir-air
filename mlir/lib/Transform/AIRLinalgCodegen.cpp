@@ -1042,8 +1042,6 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     // if (erased) erased.erase();
   }
 
-  b.setInsertionPointToEnd(&herd.getBody().front());
-  b.create<air::HerdTerminatorOp>(loc);
   int i = 0;
   for (auto a : args) {
     replaceAllUsesInRegionWith(a, herd.getKernelArgument(i++), herd.getBody());
@@ -2156,8 +2154,8 @@ generateResultTileValue(Operation *op, Operation *forOp, OpBuilder &b,
   SmallVector<OpFoldResult> sizeBounds =
       affine::makeComposedFoldedMultiResultAffineApply(
           b, loc, shapeSizesToLoopsMap, allShapeSizes);
-  SmallVector<OpFoldResult, 2> ivs =
-      cast<scf::ParallelOp>(forOp).getInductionVars();
+  SmallVector<Value> vec = cast<scf::ParallelOp>(forOp).getInductionVars();
+  SmallVector<OpFoldResult> ivs{vec.begin(), vec.end()};
   SmallVector<Value> tiledOperands = linalg::makeTiledShapes(
       b, op->getLoc(), linalgOp, args, ivs, sizes, sizeBounds, true);
 

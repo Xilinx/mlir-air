@@ -21,7 +21,6 @@ func.func @launch(%arg0: i32) {
     %buf1 = memref.alloc() : memref<10xindex,2>
     memref.dealloc %buf0 : memref<10xindex,2>
     memref.dealloc %buf1 : memref<10xindex,2>
-    air.herd_terminator
   }
   return
 }

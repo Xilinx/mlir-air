@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Conversion/AIRLoweringPass.h"
-#include "air/Conversion/AIRPipeline.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -279,59 +278,6 @@ public:
   }
 };
 
-class AIRPipelineConversion : public ConversionPattern {
-public:
-  explicit AIRPipelineConversion(MLIRContext *context)
-      : ConversionPattern(air::HerdPipelineOp::getOperationName(), 1, context) {
-  }
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto pipeOp = cast<air::HerdPipelineOp>(op);
-    Block &bb = pipeOp.getBody().front();
-    rewriter.eraseOp(pipeOp.getBody().back().getTerminator());
-    bb.getOperations().splice(Block::iterator(op), bb.getOperations());
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-class AIRPipelinePutConversion : public ConversionPattern {
-public:
-  explicit AIRPipelinePutConversion(MLIRContext *context)
-      : ConversionPattern(air::PipelinePutOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-class AIRPipelineGetConversion : public ConversionPattern {
-public:
-  explicit AIRPipelineGetConversion(MLIRContext *context)
-      : ConversionPattern(air::PipelineGetOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto getOp = cast<air::PipelineGetOp>(op);
-    SmallVector<Value, 2> gets;
-    for (auto r : getOp.getResults()) {
-      if (auto ty = llvm::dyn_cast<RankedTensorType>(r.getType()))
-        gets.push_back(rewriter.create<bufferization::AllocTensorOp>(
-            op->getLoc(), ty, ValueRange{}));
-      else
-        return failure();
-    }
-    rewriter.replaceOp(op, gets);
-    return success();
-  }
-};
-
 class AIRWaitAllToAIRRtConversion : public OpConversionPattern<air::WaitAllOp> {
 public:
   using OpConversionPattern<air::WaitAllOp>::OpConversionPattern;
@@ -546,8 +492,8 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       opers.push_back(builder.create<arith::ConstantOp>(
           loc, i64Ty, IntegerAttr::get(i64Ty, 0)));
     else
-      assert(false && "lowering of air.launch with more than 2 dimensions is "
-                      "currently unsupported");
+      opers.push_back(builder.create<arith::ConstantOp>(
+          loc, i64Ty, IntegerAttr::get(i64Ty, 0)));
   }
 
   opers.push_back(thisOp.getMemref());
@@ -1054,22 +1000,22 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
           dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value());
 
     OpBuilder builder(scf_par);
-    auto outer =
-        builder.create<affine::AffineForOp>(scf_par.getLoc(), 0, par_sizes[0]);
-    affine::AffineForOp inner = nullptr;
-    if (par_sizes.size() == 2) {
-      auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-      inner = outer_builder.create<affine::AffineForOp>(scf_par.getLoc(), 0,
-                                                        par_sizes[1]);
-    } else
-      inner = outer;
-
-    builder.setInsertionPointToStart(inner.getBody());
-    IRMapping remap;
-    remap.map(scf_par.getInductionVars()[0], outer.getInductionVar());
-    if (par_sizes.size() == 2) {
-      remap.map(scf_par.getInductionVars()[1], inner.getInductionVar());
+    SmallVector<affine::AffineForOp> loops;
+    for (unsigned i = 0; i < par_sizes.size(); i++) {
+      if (i == 0)
+        loops.push_back(builder.create<affine::AffineForOp>(scf_par.getLoc(), 0,
+                                                            par_sizes[0]));
+      else {
+        auto inner_builder = OpBuilder::atBlockBegin(loops[i - 1].getBody());
+        loops.push_back(inner_builder.create<affine::AffineForOp>(
+            scf_par.getLoc(), 0, par_sizes[i]));
+      }
     }
+
+    builder.setInsertionPointToStart(loops.back().getBody());
+    IRMapping remap;
+    for (unsigned i = 0; i < par_sizes.size(); i++)
+      remap.map(scf_par.getInductionVars()[i], loops[i].getInductionVar());
     for (auto &o : scf_par.getBody()->getOperations()) {
       if (!isa<scf::ReduceOp>(o) && !isa<scf::YieldOp>(o) &&
           !isa<scf::ParallelOp>(o)) {
@@ -1133,32 +1079,6 @@ public:
     // AIR ExecuteOp conversion
     if (failed(lowerAirExecute(module))) {
       emitError(UnknownLoc::get(context), "error lowering air.execute\n");
-      signalPassFailure();
-    }
-
-    // Replace the PipelineStageOps first, followed by the
-    // HerdPipelineOps, then run the rest of the patterns.
-    // This avoids creating invalid intermediate code with respect
-    // to the herd->pipeline->stages nesting requirements.
-
-    // PipelineStageOp conversion
-    RewritePatternSet air_pipe_stage_patterns(context);
-    air_pipe_stage_patterns.insert<air::AIRPipeStageConversion>(
-        context, air::AIRPipeStageConversion::LoweringType::AllocBuffer);
-    if (failed(applyPartialConversion(module, target,
-                                      std::move(air_pipe_stage_patterns)))) {
-      emitError(UnknownLoc::get(context),
-                "error lowering air.pipeline.stage\n");
-      signalPassFailure();
-    }
-
-    // HerdPipelineOp conversion
-    RewritePatternSet air_pipe_patterns(context);
-    air_pipe_patterns.insert<AIRPipelineConversion, AIRPipelineGetConversion,
-                             AIRPipelinePutConversion>(context);
-    if (failed(applyPartialConversion(module, target,
-                                      std::move(air_pipe_patterns)))) {
-      emitError(UnknownLoc::get(context), "error lowering air.pipeline\n");
       signalPassFailure();
     }
 
@@ -1528,62 +1448,6 @@ private:
   }
 };
 
-class AIRPipelineToAffinePass
-    : public air::impl::AIRPipelineToAffineBase<AIRPipelineToAffinePass> {
-
-public:
-  AIRPipelineToAffinePass() = default;
-  AIRPipelineToAffinePass(const AIRPipelineToAffinePass &pass) {}
-
-  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<affine::AffineDialect>();
-  }
-
-  void runOnOperation() override {
-    auto module = getOperation();
-    auto context = module.getContext();
-
-    ConversionTarget target(*context);
-
-    target.addLegalDialect<
-        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
-        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
-        memref::MemRefDialect, bufferization::BufferizationDialect,
-        airrt::AIRRtDialect, air::airDialect>();
-
-    target.addIllegalOp<air::PipelineStageOp, air::PipelineYieldOp>();
-
-    // PipelineStageOp conversion
-    RewritePatternSet air_pipe_stage_patterns(context);
-    auto loweringType =
-        air::AIRPipeStageConversion::LoweringType::PipelineGetPut;
-    if (clLoweringType == "buffer")
-      loweringType = air::AIRPipeStageConversion::LoweringType::AllocBuffer;
-    air_pipe_stage_patterns.insert<air::AIRPipeStageConversion>(context,
-                                                                loweringType);
-    if (failed(applyPartialConversion(module, target,
-                                      std::move(air_pipe_stage_patterns)))) {
-      emitError(UnknownLoc::get(context),
-                "error lowering air.pipeline.stage\n");
-      signalPassFailure();
-    }
-
-    SmallVector<Operation *, 8> pipelines;
-    module.walk([&](air::HerdPipelineOp p) { pipelines.push_back(p); });
-
-    for (auto p : pipelines) {
-      auto pipeOp = cast<air::HerdPipelineOp>(p);
-      OpBuilder b(p);
-      Block &bb = pipeOp.getBody().front();
-      IRMapping remap;
-      bb.getTerminator()->erase();
-      for (auto &o : bb)
-        b.clone(o, remap);
-      p->erase();
-    }
-  }
-};
-
 } // namespace
 
 namespace xilinx {
@@ -1591,10 +1455,6 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRLoweringPass() {
   return std::make_unique<AIRLoweringPass>();
-}
-
-std::unique_ptr<mlir::Pass> createAIRPipelineToAffinePass() {
-  return std::make_unique<AIRPipelineToAffinePass>();
 }
 
 } // namespace air

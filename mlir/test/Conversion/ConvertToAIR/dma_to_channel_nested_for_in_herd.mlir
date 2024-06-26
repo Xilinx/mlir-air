@@ -62,7 +62,6 @@ module {
             }
         }
       }
-      air.herd_terminator
     }
     return %alloc_0 : memref<64x64xi32>
   }
@@ -148,7 +147,6 @@ module {
         }
         scf.yield %3 : !air.async.token
       }
-      air.herd_terminator
     }
     return %results_2 : memref<64x64xi32>
   }
@@ -199,11 +197,8 @@ module {
             %11 = air.wait_all async [%7]
             scf.yield %11 : !air.async.token
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -254,14 +249,11 @@ module {
             %4 = air.dma_memcpy_nd async [%arg18] (%arg16[] [] [], %arg15[%results_10, %arg17] [%c32_6, %c256] [%c2048, %c1]) {id = 1 : i32} : (memref<32x256xi32, 1>, memref<2048x2048xi32>)
             scf.yield %4 : !air.async.token
           }
-          air.herd_terminator
         }
         %async_token_5 = air.execute [%2] {
           memref.dealloc %results_4 : memref<32x256xi32, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     %async_token_0 = air.execute [%async_token] {
       memref.copy %results, %arg2 : memref<2048x2048xi32> to memref<2048x2048xi32>

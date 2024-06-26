@@ -255,7 +255,6 @@ module {
       %async_token_14 = air.execute [%14] {
         memref.dealloc %results_5 : memref<32x32xi32, 2>
       }
-      air.herd_terminator
     }
     return
   }

@@ -118,11 +118,8 @@ module {
           %async_token_25 = air.execute [%14] {
             memref.dealloc %results_24 : memref<32x32xi8, 2>
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return %results_2 : memref<32x32xi32>
   }

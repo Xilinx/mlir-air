@@ -84,7 +84,6 @@ module {
               %10 = air.wait_all async [%9]  {id = 1 : i32}
               scf.yield %10 : !air.async.token
             }
-            air.herd_terminator
           }
           %async_token_2 = air.execute [%5] {
             memref.dealloc %results_1 : memref<64x64xbf16, 1>
@@ -92,9 +91,7 @@ module {
           %6 = air.wait_all async [%5]  {id = 3 : i32}
           scf.yield %6 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

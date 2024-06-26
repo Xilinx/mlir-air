@@ -18,7 +18,6 @@ func.func @get_segment_for_op(%arg0: i32, %arg1: i32) {
     %c1 = arith.constant 1 : index
     air.herd tile (%x, %y) in (%sx=%c1, %sy=%c1) args (%op0=%arg2, %op1=%arg3) : i32, i32 attributes { } {
       %2 = arith.addi %op0, %op1 : i32
-      air.herd_terminator
     }
   }
   return

@@ -52,7 +52,6 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     %buf0 = memref.alloc() : memref<1024xi32, 2>
     air.dma_memcpy_nd (%buf0[] [] [], %ext0[%c0] [%c1024] [%c1]) : (memref<1024xi32, 2>, memref<1024xi32>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
-    air.herd_terminator
   }
   return
 }
@@ -132,7 +131,6 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     air.dma_memcpy_nd (%buf1[] [] [], %ext0[%c0] [%c512] [%c1]) {id = 2 : i32} : (memref<512xi32, 2>, memref<1024xi32>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
     memref.dealloc %buf1 : memref<512xi32, 2>
-    air.herd_terminator
   }
   return
 }
@@ -216,7 +214,6 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     air.channel.put @channel_1[%tx, %ty] (%buf1[] [] []) {id = 3 : i32} : (memref<512xi32, 2>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
     memref.dealloc %buf1 : memref<512xi32, 2>
-    air.herd_terminator
   }
   air.channel.get @channel_1[] (%arg1[%c0] [%c512] [%c1]) {id = 4 : i32} : (memref<1024xi32>)
   return

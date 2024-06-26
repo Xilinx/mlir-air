@@ -19,7 +19,6 @@ func.func @test(%arg0: memref<1024xi32>) {
     air.dma_memcpy_nd (%alloc[] [] [], %arg5[%c0] [%c0_1] [%c0_0]) : (memref<1024xi32, 2>, memref<1024xi32>)
     air.channel.get  @channel_0[] (%alloc[%c0] [%c0_1] [%c0_0]) : (memref<1024xi32, 2>)
     memref.dealloc %alloc : memref<1024xi32, 2>
-    air.herd_terminator
   }
   return
 }

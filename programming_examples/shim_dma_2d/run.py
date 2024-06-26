@@ -29,7 +29,9 @@ def main():
         input_a[i] = i + 0x1000
         output_b[i] = 0x0DEFACED
 
-    backend = xrt_backend.XRTBackend(verbose=verbose, experimental_passes=True)
+    backend = xrt_backend.XRTBackend(
+        verbose=verbose, experimental_passes=True, omit_while_true_loop=True
+    )
 
     # run the module
     with filelock.FileLock("/tmp/npu.lock"):

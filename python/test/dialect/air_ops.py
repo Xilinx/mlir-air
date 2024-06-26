@@ -28,7 +28,6 @@ def constructAndPrintInFunc(f):
 # CHECK-LABEL: TEST: launchOp
 # CHECK: air.launch @pyLaunch () in () {
 # CHECK:   %{{.*}} = arith.constant 1 : index
-# CHECK:   air.launch_terminator
 @constructAndPrintInFunc
 def launchOp():
     l = Launch("pyLaunch")
@@ -41,7 +40,6 @@ def launchOp():
 # CHECK-LABEL: TEST: segmentOp
 # CHECK: air.segment @pySegment {
 # CHECK:   %{{.*}} = arith.constant 1 : index
-# CHECK:   air.segment_terminator
 @constructAndPrintInFunc
 def segmentOp():
     s = Segment("pySegment")
@@ -56,7 +54,6 @@ def segmentOp():
 # CHECK: %[[C1:.*]] = arith.constant 2 : index
 # CHECK: air.herd @pyHerd tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[C0]], %{{.*}}=%[[C1]]) {
 # CHECK:   %{{.*}} = arith.constant 1 : index
-# CHECK:   air.herd_terminator
 @constructAndPrintInFunc
 def herdOp():
     H = Herd("pyHerd", [2, 2])

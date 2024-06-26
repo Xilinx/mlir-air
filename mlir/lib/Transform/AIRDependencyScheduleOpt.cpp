@@ -35,7 +35,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 
-#include "mlir/Support/MathExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -855,10 +854,8 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
     auto newHerdOp = rewriter.create<air::HerdOp>(
         loc, forRegionIterOperands, herdOp.getSizeOperands(), herdOperands,
         true, herdOp->getAttrs());
-    auto builder = OpBuilder::atBlockEnd(&newHerdOp.getBody().front());
-    auto newHerdTerm = builder.create<air::HerdTerminatorOp>(loc);
-    outerMostLoop->moveBefore(newHerdTerm);
-    builder.setInsertionPointToStart(&newHerdOp.getBody().front());
+    outerMostLoop->moveBefore(newHerdOp.getBody().front().getTerminator());
+    OpBuilder builder(outerMostLoop);
 
     // Replace uses of tokens and consts in for loop nest.
     for (auto val : forRegionIterOperands) {
@@ -1521,6 +1518,109 @@ struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
 private:
 };
 
+struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
+  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ParallelOp par,
+                                PatternRewriter &rewriter) const override {
+
+    auto loc = rewriter.getUnknownLoc();
+
+    for (auto lb : par.getLowerBound()) {
+      auto constLB = getConstantIntValue(lb);
+      assert(constLB && "non-static scf.parallel lb, NYI");
+      assert(*constLB == 0 && "non-zero scf.parallel lb, NYI");
+    }
+
+    // Get parallel loop trip count.
+    SmallVector<int, 2> lbs_spatial, ubs_spatial;
+    air::getSizesFromSpatialLoop(par.getOperation(), lbs_spatial, ubs_spatial);
+    std::vector<unsigned> par_size;
+    unsigned par_vol = 1;
+    for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+      par_size.push_back(ubs_spatial[i] - lbs_spatial[i] + 1);
+      par_vol *= ubs_spatial[i] - lbs_spatial[i] + 1;
+    }
+
+    // Collect yielded tokens.
+    SmallVector<Value> yieldedTokens;
+
+    // Walk all iterations. Assumption: LB starts from 0.
+    for (unsigned iter = 0; iter < par_vol; iter++) {
+      IRMapping remap;
+      std::vector<unsigned> position =
+          air::getMDVectorFromIterator(par_size, iter);
+      // Create arith.const ops per position
+      SmallVector<Value> positionVals;
+      for (unsigned i = 0; i < position.size(); i++) {
+        positionVals.push_back(
+            rewriter.create<arith::ConstantIndexOp>(loc, position[i]));
+        remap.map(par.getInductionVars()[i], positionVals[i]);
+      }
+
+      // Splice
+      for (auto &op : par.getBody()->getOperations()) {
+        if (op.mightHaveTrait<OpTrait::IsTerminator>()) {
+          if (auto yieldOp = dyn_cast<scf::YieldOp>(op)) {
+            SmallVector<Value> tokens;
+            for (auto yieldOper : yieldOp->getOperands())
+              if (isa<air::AsyncTokenType>(yieldOper.getType()))
+                tokens.push_back(yieldOper);
+            auto newWaitAll = rewriter.create<air::WaitAllOp>(
+                loc, air::AsyncTokenType::get(rewriter.getContext()), tokens);
+            yieldedTokens.push_back(newWaitAll.getAsyncToken());
+          }
+          continue;
+        }
+        rewriter.clone(op, remap);
+      }
+    }
+
+    // Scf.parallel returned token
+    if (par->getNumResults()) {
+      auto newWaitAll = rewriter.create<air::WaitAllOp>(
+          loc, air::AsyncTokenType::get(rewriter.getContext()), yieldedTokens);
+      par->getResult(0).replaceAllUsesWith(newWaitAll.getAsyncToken());
+    }
+
+    rewriter.eraseOp(par);
+    return success();
+  }
+
+private:
+};
+
+struct CanonicalizeAIRExecute : public OpRewritePattern<air::ExecuteOp> {
+  using OpRewritePattern<air::ExecuteOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(air::ExecuteOp exec,
+                                PatternRewriter &rewriter) const override {
+
+    auto childOp = exec.getChildOp();
+    assert(childOp && "air.execute op has no child op");
+    // Canonicalize air.execute with empty region.
+    if (!childOp->mightHaveTrait<OpTrait::IsTerminator>())
+      return failure();
+    exec.getAsyncToken().replaceAllUsesWith(
+        rewriter
+            .create<air::WaitAllOp>(
+                exec->getLoc(), air::AsyncTokenType::get(rewriter.getContext()),
+                exec.getAsyncDependencies())
+            .getAsyncToken());
+
+    if (childOp->getNumOperands() != 1)
+      return failure();
+    assert(childOp->getNumOperands() == 1 &&
+           "air.execute_terminator doesn't have exactly one operand, NYI");
+    exec.getResult(1).replaceAllUsesWith(childOp->getOperand(0));
+
+    rewriter.eraseOp(exec);
+    return success();
+  }
+
+private:
+};
+
 struct CanonicalizeAffineApplyOnLoopInductionVar
     : public OpRewritePattern<affine::AffineApplyOp> {
   using OpRewritePattern<affine::AffineApplyOp>::OpRewritePattern;
@@ -1557,7 +1657,7 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
           apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getLowerBound()),
           ctx);
       assert(new_ub && new_lb);
-      int newStepInInt = mlir::ceilDiv(*new_ub - *new_lb, tripCount);
+      int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
       if (auto exec = dyn_cast<air::ExecuteOp>(apply->getParentOp())) {
         rewriter.setInsertionPoint(exec);
@@ -1581,7 +1681,7 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       auto new_lb = evaluateConstantInMap(apply.getAffineMap(),
                                           afo.getConstantLowerBound(), ctx);
       assert(new_ub && new_lb);
-      int newStepInInt = mlir::ceilDiv(*new_ub - *new_lb, tripCount);
+      int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
       rewriter.setInsertionPoint(afo);
       apply.getResult().replaceAllUsesWith(afo.getInductionVar());
@@ -2073,7 +2173,7 @@ private:
     auto size_op = new_sizes[dim].getDefiningOp();
     if (size_op && isa<arith::ConstantIndexOp>(size_op)) {
       auto val = dyn_cast<arith::ConstantIndexOp>(size_op).value();
-      val = mlir::ceilDiv(val, factor);
+      val = llvm::divideCeilSigned(val, factor);
       new_sizes[dim] =
           builder.create<arith::ConstantIndexOp>(par->getLoc(), val);
     } else {
@@ -2187,15 +2287,20 @@ public:
           isVariantWrtHerdCols = true;
       }
 
-      if (!hl_op)
-        continue;
+      if (!hl_op) {
+        // If dma op is completely independent of the parent herd induction
+        // vars, then it is broadcastable either row or column wise.
+        hl_op = dma_op->getParentOfType<air::HerdOp>();
+        isVariantWrtHerdRows = false;
+        isVariantWrtHerdCols = false;
+      }
+
       auto numColsOp = dyn_cast<arith::ConstantIndexOp>(
           hl_op.getSizeOperands()[1].getDefiningOp());
       auto numCols = numColsOp.value();
       auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(
           hl_op.getSizeOperands()[0].getDefiningOp());
       auto numRows = numRowsOp.value();
-
       if (isVariantWrtHerdRows && !isVariantWrtHerdCols) {
         if (numCols > 1) {
           SmallVector<AffineExpr, 5> constraints{
@@ -2208,7 +2313,7 @@ public:
           dma_op->setAttr("broadcast_pattern",
                           mlir::IntegerSetAttr::get(int_set));
         }
-      } else if (hl_op && !isVariantWrtHerdRows && isVariantWrtHerdCols) {
+      } else if (!isVariantWrtHerdRows && isVariantWrtHerdCols) {
         if (numRows > 1) {
           SmallVector<AffineExpr, 5> constraints{
               getAffineDimExpr(0, ctx), numRows - 1 - getAffineDimExpr(0, ctx),
@@ -2216,6 +2321,30 @@ public:
               getAffineSymbolExpr(0, ctx),
               numCols - 1 - getAffineSymbolExpr(0, ctx)};
           SmallVector<bool, 5> eqflags{false, false, true, false, false};
+          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+          dma_op->setAttr("broadcast_pattern",
+                          mlir::IntegerSetAttr::get(int_set));
+        }
+      } else if (!isVariantWrtHerdRows && !isVariantWrtHerdCols) {
+        // If a dma op is independent of herd induction vars, then we only
+        // broadcast it along either rows or columns, not both.
+        if (numRows > 1 && numCols == 1) {
+          SmallVector<AffineExpr, 5> constraints{
+              getAffineDimExpr(0, ctx), numRows - 1 - getAffineDimExpr(0, ctx),
+              getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
+              getAffineSymbolExpr(0, ctx),
+              numCols - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{false, false, true, false, false};
+          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+          dma_op->setAttr("broadcast_pattern",
+                          mlir::IntegerSetAttr::get(int_set));
+        } else if (numRows == 1 && numCols > 1) {
+          SmallVector<AffineExpr, 5> constraints{
+              getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
+              getAffineDimExpr(1, ctx), numCols - 1 - getAffineDimExpr(1, ctx),
+              getAffineSymbolExpr(0, ctx),
+              numRows - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{true, false, false, false, false};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                           mlir::IntegerSetAttr::get(int_set));
@@ -2685,9 +2814,13 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar,
+    patterns.insert<UnrollScfParallel, CanonicalizeAIRExecute,
+                    CanonicalizeAffineApplyOnLoopInductionVar,
                     AIRSpecializeChannelWrapAndStrideInScfFor,
                     AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
+    // Canonicalize constant operands in affine.apply.
+    mlir::affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
+    air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
 
     // Canonicalize wrap and stride list to remove redundant dimensions
@@ -4378,7 +4511,7 @@ public:
       if (band_lb == lb && band_ub == ub && band_step == step) {
         equalIterationForOps.push_back(perfectlyNestedForBands[i]);
       } else if (band_lb == lb && band_ub == ub &&
-                 mlir::mod(std::max(band_step, step),
+                 llvm::mod(std::max(band_step, step),
                            std::min(band_step, step)) == 0) {
         // If scf.for loops are not identical, but tilable to having identical
         // roots.
@@ -4622,7 +4755,7 @@ private:
 
     int effective_access_size = getEffectiveMemrefSizeFromAccessPattern(
         memref_shape, sizes, strides)[induction_var_dim];
-    effective_access_size *= mlir::ceilDiv(original_step, tiled_step);
+    effective_access_size *= llvm::divideCeilSigned(original_step, tiled_step);
     if (effective_access_size > original_step)
       return scf::ForOp(); // Loop iteration access out of bound.
 

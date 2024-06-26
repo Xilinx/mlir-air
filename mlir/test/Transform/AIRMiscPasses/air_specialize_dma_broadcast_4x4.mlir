@@ -113,7 +113,6 @@ module {
         memref.dealloc %valOut_18 : memref<32x32xbf16, 2>
         air.execute_terminator
       } {id = 14 : i32}
-      air.herd_terminator
     }
     return
   }

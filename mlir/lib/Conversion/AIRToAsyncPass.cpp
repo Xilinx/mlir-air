@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "air/Conversion/AIRPipeline.h"
+#include "air/Conversion/PassDetail.h"
+
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -119,24 +120,6 @@ public:
       t.replaceAllUsesWith(herdExeOp.getResult(0));
     rewriter.eraseOp(op);
 
-    return success();
-  }
-};
-
-class AIRPipelineConversion : public ConversionPattern {
-public:
-  explicit AIRPipelineConversion(MLIRContext *context)
-      : ConversionPattern(air::HerdPipelineOp::getOperationName(), 1, context) {
-  }
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto pipeOp = cast<air::HerdPipelineOp>(op);
-    Block &bb = pipeOp.getBody().front();
-    rewriter.eraseOp(pipeOp.getBody().back().getTerminator());
-    bb.getOperations().splice(Block::iterator(op), bb.getOperations());
-    rewriter.eraseOp(op);
     return success();
   }
 };

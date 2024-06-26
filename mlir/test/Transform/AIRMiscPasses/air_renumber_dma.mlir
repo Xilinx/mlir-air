@@ -63,7 +63,6 @@ module {
         memref.dealloc %22 : memref<32x32xf32, 2>
         memref.dealloc %23 : memref<32x32xf32, 2>
       }
-      air.herd_terminator
     }
     %2 = memref.alloc() {alignment = 128 : i64} : memref<64x64xf32>
     linalg.fill ins(%cst : f32) outs(%2 : memref<64x64xf32>)
@@ -90,7 +89,6 @@ module {
         memref.dealloc %22 : memref<32x32xf32, 2>
         memref.dealloc %23 : memref<32x32xf32, 2>
       }
-      air.herd_terminator
     }
     %4 = memref.alloc() {alignment = 128 : i64} : memref<64x64xf32>
     linalg.fill ins(%cst : f32) outs(%4 : memref<64x64xf32>)
@@ -116,7 +114,6 @@ module {
         memref.dealloc %22 : memref<32x32xf32, 2>
         memref.dealloc %23 : memref<32x32xf32, 2>
       }
-      air.herd_terminator
     }
     %6 = memref.alloc() {alignment = 128 : i64} : memref<64x1xi64>
     linalg.fill ins(%c0_i64 : i64) outs(%6 : memref<64x1xi64>)
@@ -151,7 +148,6 @@ module {
       memref.dealloc %20 : memref<64x64xf32, 2>
       memref.dealloc %21 : memref<64x1xf32, 2>
       memref.dealloc %22 : memref<64x1xi64, 2>
-      air.herd_terminator
     }
 
     return %8 : memref<64x1xf32>

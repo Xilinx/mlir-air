@@ -50,7 +50,6 @@ func.func @test(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %ar
           }
           scf.yield %6 : !air.async.token
         } {unroll = 2 : i32}
-        air.herd_terminator
       }
       %7 = scf.for %arg10 = %c0_1 to %c512_1 step %c64_1 iter_args(%arg11 = %async_token_1) -> (!air.async.token) {
         %8 = air.channel.get async [%arg11]  @channel_1[] (%results_2[][][]) : (memref<32x32xbf16, 1>)
@@ -59,9 +58,7 @@ func.func @test(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %ar
       %async_token_2 = air.execute [%7] {
         memref.dealloc %results_2 : memref<32x32xbf16, 1>
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }

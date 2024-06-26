@@ -80,7 +80,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
               memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
             }
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%1, %0] [%c64, %c64] [%c1024, %c1], %alloc_4[] [] []) {id = 8 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -115,7 +114,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
               memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
             }
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%2, %0] [%c64, %c64] [%c1024, %c1], %alloc_4[] [] []) {id = 16 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -150,7 +148,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
               memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
             }
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%3, %0] [%c64, %c64] [%c1024, %c1], %alloc_4[] [] []) {id = 24 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -185,7 +182,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
               memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
             }
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%4, %0] [%c64, %c64] [%c1024, %c1], %alloc_4[] [] []) {id = 32 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -220,7 +216,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
               memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
             }
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%5, %0] [%c64, %c64] [%c1024, %c1], %alloc_4[] [] []) {id = 40 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -255,7 +250,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
               memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
             }
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%6, %0] [%c64, %c64] [%c1024, %c1], %alloc_4[] [] []) {id = 48 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -290,7 +284,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
               memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
             }
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%7, %0] [%c64, %c64] [%c1024, %c1], %alloc_4[] [] []) {id = 56 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -325,7 +318,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
               memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
             }
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg16[%8, %0] [%c64, %c64] [%c1024, %c1], %alloc_4[] [] []) {id = 64 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -365,7 +357,6 @@ module attributes {torch.debug_module_name = "mmult"} {
             air.dma_memcpy_nd (%arg24[%11, %12] [%c32, %c32] [%c64_5, %c1_4], %alloc_10[] [] []) {id = 69 : i32} : (memref<64x64xbf16, 1>, memref<32x32xbf16, 2>)
             memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
             memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg17[%10, %0] [%c64, %c64] [%c1024, %c1], %alloc_3[] [] []) {id = 70 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -404,7 +395,6 @@ module attributes {torch.debug_module_name = "mmult"} {
             air.dma_memcpy_nd (%arg24[%11, %12] [%c32, %c32] [%c64_5, %c1_4], %alloc_10[] [] []) {id = 75 : i32} : (memref<64x64xbf16, 1>, memref<32x32xbf16, 2>)
             memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
             memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg17[%10, %0] [%c64, %c64] [%c1024, %c1], %alloc_3[] [] []) {id = 76 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -443,7 +433,6 @@ module attributes {torch.debug_module_name = "mmult"} {
             air.dma_memcpy_nd (%arg24[%11, %12] [%c32, %c32] [%c64_5, %c1_4], %alloc_10[] [] []) {id = 81 : i32} : (memref<64x64xbf16, 1>, memref<32x32xbf16, 2>)
             memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
             memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg17[%10, %0] [%c64, %c64] [%c1024, %c1], %alloc_3[] [] []) {id = 82 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
@@ -482,15 +471,12 @@ module attributes {torch.debug_module_name = "mmult"} {
             air.dma_memcpy_nd (%arg24[%11, %12] [%c32, %c32] [%c64_5, %c1_4], %alloc_10[] [] []) {id = 87 : i32} : (memref<64x64xbf16, 1>, memref<32x32xbf16, 2>)
             memref.dealloc %alloc_9 : memref<32x32xbf16, 2>
             memref.dealloc %alloc_10 : memref<32x32xbf16, 2>
-            air.herd_terminator
           }
           air.dma_memcpy_nd (%arg17[%10, %0] [%c64, %c64] [%c1024, %c1], %alloc_3[] [] []) {id = 88 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
           memref.dealloc %alloc_3 : memref<64x64xbf16, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return %alloc_1 : memref<24576x1024xbf16>
   }

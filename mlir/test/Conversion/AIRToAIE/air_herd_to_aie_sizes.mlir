@@ -19,7 +19,6 @@ func.func @launch(%arg0: i32) {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     memref.store %0, %buf[%1] : memref<1024xindex,2>
-    air.herd_terminator
   }
   return
 }

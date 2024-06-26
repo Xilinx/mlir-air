@@ -7,6 +7,6 @@ ipykernel
 psutil
 rich
 pybind11
-numpy
+numpy<2
 cmake
 bfloat16

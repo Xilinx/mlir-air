@@ -33,7 +33,6 @@
 // CHECK: air.herd @herd_0
 // CHECK: scf.for
 // CHECK: scf.yield
-// CHECK: air.herd_terminator
 
 // CHECK: %[[EVENT0:.*]]:4 = scf.for
 // CHECK: air.channel.get{{.*}}@channel_1
@@ -43,10 +42,6 @@
 // CHECK: air.channel.get{{.*}}@channel_1
 // CHECK: air.channel.put{{.*}}@channel_0
 // CHECK: scf.yield
-
-// CHECK: air.segment_terminator
-
-// CHECK: air.launch_terminator
 
 module {
   air.channel @channel_3 [2, 2]
@@ -100,7 +95,6 @@ module {
             %async_token_46 = air.execute [%18] {
               memref.dealloc %results_42 : memref<32x32xi32, 2>
             }
-            air.herd_terminator
           }
           %12 = scf.parallel (%arg9, %arg10) = (%c0_23, %c0_23) to (%c2, %c2) step (%c1_22, %c1_22) init (%arg8) -> !air.async.token {
             %15 = air.channel.put async [%arg8]  @channel_2[%arg9, %arg10] (%results_27[] [] []) {id = 12 : i32} : (memref<32x32xi32, 1>)
@@ -164,9 +158,7 @@ module {
         %async_token_36 = air.execute [%10] {
           memref.dealloc %results_27 : memref<32x32xi32, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -196,9 +188,6 @@ module {
 // CHECK: scf.for {{.*}} = %[[CST0]] to %[[CST512]] step %[[CST64]] iter_args
 // CHECK: scf.yield
 // CHECK: air.channel.put{{.*}}@channel_0
-// CHECK: air.herd_terminator
-// CHECK: air.segment_terminator
-// CHECK: air.launch_terminator
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {
@@ -231,7 +220,6 @@ module {
             %async_token_4 = air.execute [%6] {
               memref.dealloc %results_2 : memref<32x32xi32, 2>
             }
-            air.herd_terminator
           }
           %4 = scf.parallel (%arg6, %arg7) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%arg5) -> !air.async.token {
             %async_token_1, %results_2 = air.execute -> (index) {
@@ -252,9 +240,7 @@ module {
           %5 = air.wait_all async [%3, %4] 
           scf.yield %5 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -274,10 +260,6 @@ module {
 // CHECK: scf.for %{{.*}} = %c0 to %c256 step %c64 iter_args(%{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (!air.async.token, !air.async.token, !air.async.token, !air.async.token) {
 // CHECK: scf.yield %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 // CHECK: scf.yield %{{.*}} : !air.async.token
-
-// CHECK: air.herd_terminator
-// CHECK: air.segment_terminator
-// CHECK: air.launch_terminator
 
 module {
   func.func @func2() {
@@ -339,11 +321,8 @@ module {
           %async_token_3 = air.execute [%4] {
             memref.dealloc %results_2 : memref<32x32xi32, 2>
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -460,9 +439,7 @@ module {
         %async_token_17 = air.execute [%5] {
           memref.dealloc %results : memref<64x1024xbf16, 1>
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

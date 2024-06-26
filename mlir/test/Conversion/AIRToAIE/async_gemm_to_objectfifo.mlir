@@ -143,7 +143,6 @@ module {
         }
         scf.yield %12 : !air.async.token
       } {unroll = 2 : i32}
-      air.herd_terminator
     }
     return
   }

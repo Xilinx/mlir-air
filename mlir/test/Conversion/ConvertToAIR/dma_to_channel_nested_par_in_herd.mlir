@@ -111,7 +111,6 @@ module {
           scf.reduce.return %6 : !air.async.token
         }
       }
-      air.herd_terminator
     }
     %async_token_0 = air.execute [%0] {
       memref.copy %results, %arg2 : memref<512x512xi32> to memref<512x512xi32>

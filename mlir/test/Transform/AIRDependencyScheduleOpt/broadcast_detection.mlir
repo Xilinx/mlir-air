@@ -52,7 +52,6 @@ func.func @matmul(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg
           memref.dealloc %7 : memref<32x32xbf16, 2>
           memref.dealloc %8 : memref<32x32xbf16, 2>
         }
-        air.herd_terminator
       }
       air.dma_memcpy_nd (%0[%arg3, %arg4] [%c64, %c64] [%c512, %c1], %3[] [] []) {id = 8 : i32} : (memref<512x512xbf16>, memref<64x64xbf16, 1>)
       memref.dealloc %1 : memref<64x64xbf16, 1>
@@ -97,11 +96,8 @@ module {
             }
             memref.dealloc %alloc : memref<256x64xbf16, 1>
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }
@@ -152,10 +148,47 @@ module {
             memref.dealloc %alloc_12 : memref<4x2x4x8xi32, 2 : i32>
             memref.dealloc %alloc_13 : memref<8x4x8x4xi32, 2 : i32>
           }
-          air.herd_terminator
         }
         memref.dealloc %alloc : memref<8x2048xi32, 1 : i32>
         memref.dealloc %alloc_2 : memref<2048x64xi32, 1 : i32>
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// CHECK: [[$SET0:#set[0-9]*]] = affine_set<(d0, d1)[s0] : (d0 >= 0, -d0 + 3 >= 0, d1 - s0 == 0, s0 >= 0, -s0 >= 0)>
+// CHECK-LABEL: func.func @func2
+// CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd {{.*}}broadcast_pattern = [[$SET0]]{{.*}} : (memref<4x8x3x3xi32, 2>, memref<4x32x3x3xi32, 1>)
+
+module {
+  func.func @func2() {
+    %c2 = arith.constant 2 : index
+    %c16 = arith.constant 16 : index
+    %c3 = arith.constant 3 : index
+    air.launch (%arg0, %arg1, %arg2, %arg3) in (%arg4=%c2, %arg5=%c16, %arg6=%c3, %arg7=%c3) {
+      air.segment @segment_0  {
+        %c1 = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %alloc = memref.alloc() : memref<4x32x3x3xi32, 1>
+        air.herd @herd_0  tile (%arg8, %arg9) in (%arg10=%c4, %arg11=%c1) args(%arg12=%alloc) : memref<4x32x3x3xi32, 1> {
+          %c9 = arith.constant 9 : index
+          %c288 = arith.constant 288 : index
+          %c4_0 = arith.constant 4 : index
+          %c3_1 = arith.constant 3 : index
+          %c1_2 = arith.constant 1 : index
+          %c0 = arith.constant 0 : index
+          %c32 = arith.constant 32 : index
+          %c8 = arith.constant 8 : index
+          scf.for %arg13 = %c0 to %c32 step %c8 {
+            %alloc_3 = memref.alloc() : memref<4x8x3x3xi32, 2>
+            air.dma_memcpy_nd (%alloc_3[] [] [], %arg12[%c0, %arg13, %c0, %c0] [%c4_0, %c8, %c3_1, %c3_1] [%c288, %c9, %c3_1, %c1_2]) {id = 4 : i32} : (memref<4x8x3x3xi32, 2>, memref<4x32x3x3xi32, 1>)
+            memref.dealloc %alloc_3 : memref<4x8x3x3xi32, 2>
+          }
+          air.herd_terminator
+        }
         air.segment_terminator
       }
       air.launch_terminator

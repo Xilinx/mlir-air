@@ -104,8 +104,9 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
   for (int i : newOperandsIdx)
     remap.map(op.getKernelArgument(i), newOp.getKernelArgument(newIdx++));
 
-  for (Operation &o : op.getRegion().front().getOperations())
-    rewriter.clone(o, remap);
+  auto &ops = op.getBody().front().getOperations();
+  for (auto oi = ops.begin(), oe = --ops.end(); oi != oe; ++oi)
+    rewriter.clone(*oi, remap);
 
   rewriter.replaceOp(op, newOp->getResults());
   return success();
@@ -241,6 +242,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
+  LaunchOp::ensureTerminator(*r, builder, result.location);
 }
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
@@ -309,7 +311,8 @@ void LaunchOp::print(OpAsmPrinter &p) {
   }
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
 }
 
 ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -393,7 +396,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   Region *body = result.addRegion();
 
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  ensureTerminator(*body, parser.getBuilder(), result.location);
+  LaunchOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
@@ -495,6 +498,7 @@ void SegmentOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
+  SegmentOp::ensureTerminator(*r, builder, result.location);
 }
 
 void SegmentOp::build(OpBuilder &builder, OperationState &result,
@@ -565,7 +569,8 @@ void SegmentOp::print(OpAsmPrinter &p) {
   }
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
 }
 
 ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -651,7 +656,7 @@ ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Region *body = result.addRegion();
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  ensureTerminator(*body, parser.getBuilder(), result.location);
+  SegmentOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
@@ -753,6 +758,7 @@ void HerdOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
+  HerdOp::ensureTerminator(*r, builder, result.location);
 }
 
 void HerdOp::build(OpBuilder &builder, OperationState &result, ValueRange sizes,
@@ -821,7 +827,8 @@ void HerdOp::print(OpAsmPrinter &p) {
   }
   if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
 }
 
 ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -908,7 +915,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   Region *body = result.addRegion();
 
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  ensureTerminator(*body, parser.getBuilder(), result.location);
+  HerdOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
@@ -980,110 +987,6 @@ uint64_t HerdOp::getNumCols() {
 uint64_t HerdOp::getNumRows() {
   auto rows = getSizeOperands()[1].getDefiningOp();
   return cast<arith::ConstantIndexOp>(rows).value();
-}
-
-//
-// HerdPipelineOp
-//
-
-LogicalResult HerdPipelineOp::verify() {
-  auto direction = (*this)->getAttrOfType<StringAttr>("direction");
-  if (!direction)
-    return emitOpError() << "expects 'direction' attribute";
-
-  return success();
-}
-
-SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
-  SmallVector<PipelineStageOp, 8> stages;
-  for (auto &o : getBody().front().getOperations()) {
-    if (auto stage = dyn_cast<PipelineStageOp>(o))
-      stages.push_back(stage);
-  }
-  return stages;
-}
-
-//
-// PipelineStageOp
-//
-
-ParseResult PipelineStageOp::parse(OpAsmParser &parser,
-                                   OperationState &result) {
-
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
-  SmallVector<OpAsmParser::Argument, 4> kernelArguments;
-  SmallVector<Type, 4> types;
-  if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
-      return failure();
-    if (parser.parseColonTypeList(types))
-      return failure();
-  }
-
-  for (int i = 0, e = kernelOperands.size(); i < e; i++) {
-    kernelArguments[i].type = types[i];
-    if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
-      return failure();
-  }
-
-  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
-    return failure();
-
-  Region *body = result.addRegion();
-  if (parser.parseRegion(*body, kernelArguments, false))
-    return failure();
-
-  SmallVector<Type, 4> retTypes;
-  if (parser.parseOptionalColon())
-    return success();
-
-  if (parser.parseTypeList(retTypes))
-    return failure();
-
-  result.addTypes(retTypes);
-  return success();
-}
-
-void PipelineStageOp::print(OpAsmPrinter &p) {
-
-  if (getNumOperands()) {
-    auto args = getBody().front().getArguments();
-    p << " args(";
-    for (int i = 0, e = getNumOperands(); i < e; i++) {
-      if (i)
-        p << ", ";
-      p << args[i] << "=";
-      p << getOperand(i);
-    }
-    p << ") : ";
-    for (int i = 0, e = getNumOperands(); i < e; i++) {
-      if (i)
-        p << ", ";
-      p << getOperand(i).getType();
-    }
-  }
-
-  p << " ";
-  if ((*this)->getAttrs().size()) {
-    p << "attributes ";
-    p.printOptionalAttrDict((*this)->getAttrs());
-    p << " ";
-  }
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
-
-  if ((*this)->getNumResults())
-    p << " : ";
-  for (Type type : (*this)->getResultTypes())
-    p.printType(type);
-}
-
-unsigned PipelineStageOp::getStageId() {
-  auto stages = getOperation()->getParentOfType<HerdPipelineOp>().getStages();
-  for (unsigned idx = 0; idx < stages.size(); idx++)
-    if (stages[idx] == *this)
-      return idx;
-  llvm_unreachable("Could not find stage in parent");
-  return -1;
 }
 
 //

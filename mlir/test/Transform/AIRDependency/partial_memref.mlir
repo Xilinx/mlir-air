@@ -14,7 +14,6 @@
 // CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd async [
 // CHECK-NOT: %[[EVENT1:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT0]]
 // CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT0]]
-// CHECK: air.herd_terminator
 
 #map0 = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 512)>
@@ -34,7 +33,6 @@ module {
       air.dma_memcpy_nd (%3[%1, %arg1] [%c16, %c32] [%c128, %c1], %arg4[%1, %arg1] [%c16, %c32] [%c128, %c1]) {id = 1 : i32} : (memref<128x128xf32, 2>, memref<128x128xf32, 2>)
       air.dma_memcpy_nd (%3[%2, %arg1] [%c16, %c32] [%c128, %c1], %arg4[%1, %arg1] [%c16, %c32] [%c128, %c1]) {id = 2 : i32} : (memref<128x128xf32, 2>, memref<128x128xf32, 2>)
       air.dma_memcpy_nd (%3[%1, %arg1] [%c16, %c32] [%c128, %c1], %arg4[%1, %arg1] [%c16, %c32] [%c128, %c1]) {id = 3 : i32} : (memref<128x128xf32, 2>, memref<128x128xf32, 2>)
-      air.herd_terminator
     }
     return
   }

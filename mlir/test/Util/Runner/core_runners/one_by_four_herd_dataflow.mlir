@@ -182,12 +182,9 @@ module {
             }
             affine.yield %6 : !air.async.token
           }
-          air.herd_terminator
         }
         %4 = air.channel.get async [%3]  @channel_4[] (%results_6[%c0, %c0] [%c32, %c32] [%c128, %c1_4]) : (memref<128x128xbf16, 1>)
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return %results_2 : memref<256x1024xbf16>
   }

@@ -104,15 +104,12 @@ module {
                 }
                 affine.yield %14 : !air.async.token
               }
-              air.herd_terminator
             }
             scf.yield %12 : !air.async.token
           }
           scf.yield %6 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return %results_2 : memref<256x1024xbf16>
   }

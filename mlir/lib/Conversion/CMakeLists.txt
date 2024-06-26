@@ -10,7 +10,6 @@ add_mlir_library(
   AIRToAIEPass.cpp
   AIRToAIESchedulingUtils.cpp
   AIRToAsyncPass.cpp
-  AIRPipeline.cpp
   AIRRtToNpuPass.cpp
   Passes.cpp
 

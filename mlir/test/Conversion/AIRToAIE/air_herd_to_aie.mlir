@@ -29,7 +29,6 @@ func.func @foo(%arg0: i32) {
     %dst0 = memref.alloc() : memref<1xi32, 2>
     // CHECK: memref.store {{.*}}, %[[BUF3]]
     memref.store %2, %dst0[%zero] : memref<1xi32, 2>
-    air.herd_terminator
   }
   // CHECK: sym_name = "herd_0"
   return

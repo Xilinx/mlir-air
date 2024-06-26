@@ -104,12 +104,18 @@ def parse_args(args=None):
         help="Target AIE device",
     )
     parser.add_argument(
-        "-e",
         "--experimental-passes",
         dest="experimental_passes",
         default=False,
         action="store_true",
         help="Whether to run experimental passes or not. This will only change the behavior for this program for npu devices",
+    )
+    parser.add_argument(
+        "--omit-while-true-loop",
+        dest="omit_while_true_loop",
+        default=False,
+        action="store_true",
+        help="By default, aircc may output a while(true) loop around per-core logic. If this option is specified, a while(true) loop will not be added.",
     )
 
     opts = parser.parse_args(args)

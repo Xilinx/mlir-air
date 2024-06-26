@@ -89,7 +89,6 @@ module {
               %async_token_11 = air.execute [%7] {
                 memref.dealloc %results_11 : memref<32x32xbf16, 2>
               }
-              air.herd_terminator
             }
             %async_token_12 = air.execute [%6] {
               memref.dealloc %results_6 : memref<128x128xbf16, 1>
@@ -98,9 +97,7 @@ module {
           }
           scf.yield %4 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return %results_2 : memref<256x1024xbf16>
   }

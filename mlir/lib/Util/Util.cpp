@@ -18,7 +18,6 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
 
-#include "mlir/Support/MathExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -260,7 +259,7 @@ std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
   std::optional<int64_t> StepCstOp =
       mlir::getConstantIntValue(for_op.getStep());
   if (LbCstOp && UbCstOp && StepCstOp)
-    output = mlir::ceilDiv((*UbCstOp - *LbCstOp), *StepCstOp);
+    output = llvm::divideCeilSigned((*UbCstOp - *LbCstOp), *StepCstOp);
   return output;
 }
 
@@ -269,7 +268,7 @@ std::optional<int64_t>
 air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
   std::optional<int64_t> output = std::nullopt;
   if (for_op.hasConstantBounds()) {
-    output = mlir::ceilDiv(
+    output = llvm::divideCeilSigned(
         (for_op.getConstantUpperBound() - for_op.getConstantLowerBound()),
         for_op.getStepAsInt());
   }
@@ -587,9 +586,10 @@ void air::getSizesFromSpatialLoop(Operation *spatial_loop,
           scf_par.getUpperBound()[i].getDefiningOp<arith::ConstantIndexOp>();
       auto stepCstOp =
           scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
-      lbs_spatial.push_back(mlir::ceilDiv(lbCstOp.value(), stepCstOp.value()));
-      ubs_spatial.push_back(mlir::ceilDiv(ubCstOp.value(), stepCstOp.value()) -
-                            1);
+      lbs_spatial.push_back(
+          llvm::divideCeilSigned(lbCstOp.value(), stepCstOp.value()));
+      ubs_spatial.push_back(
+          llvm::divideCeilSigned(ubCstOp.value(), stepCstOp.value()) - 1);
     }
   } else if (auto hier = dyn_cast<air::HierarchyInterface>(spatial_loop)) {
     for (unsigned i = 0; i < hier.getSizeOperands().size(); i++) {
@@ -843,6 +843,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
                                 SmallVector<Value> &offsets,
                                 SmallVector<Value> &sizes,
                                 SmallVector<Value> &strides) {
+    auto original_insert_point = builder.saveInsertionPoint();
     bool erased = false;
     for (auto i : erase_dims) {
       auto const_offset = getConstantIntValue(offsets[i]);
@@ -871,8 +872,23 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
       } else {
         // Get affine.apply which produces the offset ssa
         Operation *offset_producer = offsets[i].getDefiningOp();
-        if (!offset_producer)
-          continue;
+        if (offset_producer && isa<arith::IndexCastOp>(offset_producer)) {
+          auto castOp = dyn_cast<arith::IndexCastOp>(offset_producer);
+          offsets[i] = castOp.getIn();
+          offset_producer = castOp.getIn().getDefiningOp();
+        }
+        if (!offset_producer) {
+          if (!affine::getForInductionVarOwner(offsets[i]))
+            continue;
+          auto afo = affine::getForInductionVarOwner(offsets[i]);
+          builder.setInsertionPointToStart(afo.getBody());
+          // Create a new affine.apply on affine.for ind. vars, as handle for
+          // subsequent offset composition.
+          auto sym0_expr = getAffineSymbolExpr(0, builder.getContext());
+          auto iv_map = AffineMap::get(0, 1, sym0_expr);
+          offset_producer = builder.create<affine::AffineApplyOp>(
+              builder.getUnknownLoc(), iv_map, offsets[i]);
+        }
         if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
           offset_producer = exec.getChildOp();
         auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
@@ -900,6 +916,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
       strides.erase(strides.begin() + i);
       erased = true;
     }
+    builder.restoreInsertionPoint(original_insert_point);
     return erased;
   };
 
@@ -985,7 +1002,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       for_loops.push_back(parent);
   }
   for (auto o : for_loops) {
-    uint64_t ind_var_factor = 1;
+    uint64_t ind_var_factor = 0;
     for (int i = offsets.size() - 1; i >= 0; i--) {
       Value iv = nullptr;
       int loop_lower_bound = 0;
@@ -1002,27 +1019,16 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
         // Replace for loop induction vars in offsets with zero
         offsets[i] = builder.template create<arith::ConstantIndexOp>(
             loc, loop_lower_bound);
+        ind_var_factor = *getConstantIntValue(strides[i]);
         break;
       } else if (iv && offsets[i].getDefiningOp()) {
         if (isa<arith::IndexCastOp>(offsets[i].getDefiningOp()) &&
             offsets[i].getDefiningOp()->getOperand(0) == iv) {
           offsets[i] = builder.template create<arith::ConstantIndexOp>(
               loc, loop_lower_bound);
+          ind_var_factor = *getConstantIntValue(strides[i]);
           break;
         };
-      }
-      // Index offset taking into account mismatch between memref rank and
-      // offset list size difference.
-      auto memref_rank = getTensorShape(memref.getType()).size();
-      if (memref_rank < offsets.size()) {
-        if ((unsigned)i < offsets.size() - memref_rank)
-          ind_var_factor *= getTensorVolume(memref.getType());
-        else
-          ind_var_factor *= getTensorShape(
-              memref.getType())[i + memref_rank - offsets.size()];
-      } else {
-        ind_var_factor *=
-            getTensorShape(memref.getType())[i + memref_rank - offsets.size()];
       }
     }
     int trip_count = -1;
@@ -1045,7 +1051,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     // Check for compliance with DMA BD hardware limitation (<= 1M). Note that
     // the exception is when stepSize = previous highest wrap, because in that
     // case the large stride shall simply get canonicalized away.
-    if (mlir::ceilDiv(
+    if (llvm::divideCeilSigned(
             new_stride_value * getElementSizeInBytes(memref.getType()), 4) >
         0x100000) {
       if (stepSize != *getConstantIntValue(wraps[0])) {
@@ -1054,6 +1060,8 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     }
 
     // Insert new dimension into the wraps and strides list.
+    offsets.insert(offsets.begin(),
+                   builder.template create<arith::ConstantIndexOp>(loc, 0));
     wraps.insert(wraps.begin(), new_wrap);
     strides.insert(strides.begin(), new_stride);
   }
@@ -1126,12 +1134,13 @@ air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
     int current_memref_volume = 1;
     for (int j = memref_shape.size() - 1; j >= 0; j--) {
       current_memref_volume *= memref_shape[j];
-      if (mlir::floorDiv(*getConstantIntValue(strides[i]),
-                         current_memref_volume))
+      if (llvm::divideFloorSigned(*getConstantIntValue(strides[i]),
+                                  current_memref_volume))
         continue;
-      int64_t bound = mlir::floorDiv(*getConstantIntValue(strides[i]),
-                                     current_memref_volume / memref_shape[j]) *
-                      *getConstantIntValue(sizes[i]);
+      int64_t bound =
+          llvm::divideFloorSigned(*getConstantIntValue(strides[i]),
+                                  current_memref_volume / memref_shape[j]) *
+          *getConstantIntValue(sizes[i]);
       access_bounds[j] = std::max(access_bounds[j], bound);
     }
   }
@@ -1334,14 +1343,15 @@ air::getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
     shrinkage_volume *= old_memref_shape[j];
     if (old_memref_shape[j] != new_memref_shape[j]) {
       shrinkage_factor =
-          mlir::ceilDiv(old_memref_shape[j], new_memref_shape[j]);
+          llvm::divideCeilSigned(old_memref_shape[j], new_memref_shape[j]);
       break;
     }
   }
   for (int i = strides.size() - 1; i >= 0; i--) {
-    if (mlir::floorDiv(*getConstantIntValue(strides[i]), shrinkage_volume))
-      new_strides[i] =
-          mlir::ceilDiv(*getConstantIntValue(strides[i]), shrinkage_factor);
+    if (llvm::divideFloorSigned(*getConstantIntValue(strides[i]),
+                                shrinkage_volume))
+      new_strides[i] = llvm::divideCeilSigned(*getConstantIntValue(strides[i]),
+                                              shrinkage_factor);
     else
       new_strides[i] = *getConstantIntValue(strides[i]);
   }

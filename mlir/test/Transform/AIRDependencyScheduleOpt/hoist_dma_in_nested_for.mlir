@@ -70,7 +70,6 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: scf.yield
                 }
 // CHECK: scf.yield
-                air.herd_terminator
               }
               air.dma_memcpy_nd (%arg12[%arg13, %arg14] [%c128, %c128] [%c1024, %c1_0], %alloc_2[] [] []) {id = 8 : i32} : (memref<256x1024xbf16>, memref<128x128xbf16, 1>)
               memref.dealloc %alloc : memref<128x128xbf16, 1>
@@ -83,9 +82,7 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: scf.yield
         }
 // CHECK: scf.yield
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

@@ -100,7 +100,6 @@ module attributes {torch.debug_module_name = "MMult_Mult"} {
         %8 = air.wait_all async [%async_token_24, %async_token_25, %async_token_26] 
         scf.yield %8 : !air.async.token
       }
-      air.herd_terminator
     }
     return
   }

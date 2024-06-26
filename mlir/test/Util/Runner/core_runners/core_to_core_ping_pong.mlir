@@ -81,11 +81,8 @@ module {
             }
             affine.yield %4 : !air.async.token
           }
-          air.herd_terminator
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

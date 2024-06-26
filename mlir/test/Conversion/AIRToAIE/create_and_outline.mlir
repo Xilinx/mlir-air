@@ -57,10 +57,8 @@ module attributes {torch.debug_module_name = "mmult"} {
           memref.dealloc %5 : memref<32x32xi32, 2>
           memref.dealloc %6 : memref<32x32xi32, 2>
         }
-        air.herd_terminator
       }
       memref.copy %1, %arg2 : memref<64x64xi32> to memref<64x64xi32>
-      air.segment_terminator
     }
     return
   }
@@ -79,7 +77,6 @@ func.func @f1() -> () {
   air.herd tile(%tx, %ty) in (%size_x = %cst4, %size_y = %cst1) {
     %src0 = memref.alloc() : memref<1xi32, 2>
     air.channel.put @channel_0[] (%src0[] [] []) : (memref<1xi32, 2>)
-    air.herd_terminator
   }
   return
 }
@@ -122,15 +119,12 @@ func.func @f2() -> () {
       %src0 = memref.alloc() : memref<1xi32, 2>
       air.channel.put @channel_1[] (%src0[] [] []) : (memref<1xi32, 2>)
       memref.dealloc %src0 : memref<1xi32, 2>
-      air.herd_terminator
     }
     air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) attributes {x_loc = 0 : i64, y_loc = 2 : i64} {
       %src0 = memref.alloc() : memref<1xi32, 2>
       air.channel.put @channel_1[] (%src0[] [] []) : (memref<1xi32, 2>)
       memref.dealloc %src0 : memref<1xi32, 2>
-      air.herd_terminator
     }
-    air.segment_terminator
   }
   return
 }

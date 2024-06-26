@@ -25,7 +25,6 @@ module {
       %base_buffer = memref.alloc() : memref<i32, 2 : i32>
       %c0_11 = arith.constant 0 : index
       func.call @matmul_scalar_i32_i32(%base_buffer_lhs, %c0_11, %base_buffer_rhs, %c0_11, %base_buffer, %c0_11) : (memref<i32, 2 : i32>, index, memref<i32, 2 : i32>, index, memref<i32, 2 : i32>, index) -> ()
-      air.herd_terminator
     }
     return
   }

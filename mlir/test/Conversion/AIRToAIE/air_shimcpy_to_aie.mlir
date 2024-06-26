@@ -44,7 +44,6 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     %buf0 = memref.alloc() : memref<1024xi32, 2>
     air.dma_memcpy_nd (%buf0[] [] [], %ext0[%c0] [%c1024] [%c1]) {id = 1 : i32} : (memref<1024xi32, 2>, memref<1024xi32>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
-    air.herd_terminator
   }
   return
 }
@@ -102,7 +101,6 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     air.dma_memcpy_nd (%buf1[] [] [], %ext0[%c0] [%c512] [%c1]) {id = 2 : i32} : (memref<512xi32, 2>, memref<1024xi32>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
     memref.dealloc %buf1 : memref<512xi32, 2>
-    air.herd_terminator
   }
   return
 }
@@ -164,7 +162,6 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     air.channel.put @channel_1[%tx, %ty] (%buf1[] [] []) {id = 3 : i32} : (memref<512xi32, 2>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
     memref.dealloc %buf1 : memref<512xi32, 2>
-    air.herd_terminator
   }
   air.channel.get @channel_1[] (%arg1[%c0] [%c512] [%c1]) {id = 4 : i32} : (memref<1024xi32>)
   return
@@ -227,7 +224,6 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     air.channel.get @channel_3[%tx, %ty] (%buf1[] [] []) {id = 4 : i32} : (memref<512xi32, 2>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
     memref.dealloc %buf1 : memref<512xi32, 2>
-    air.herd_terminator
   }
   return
 }
@@ -300,7 +296,6 @@ func.func @func5(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     %token_8 = air.execute [%token_6] {
       memref.dealloc %buf1 : memref<512xi32, 2>
     }
-    air.herd_terminator
   }
   return
 }
@@ -378,7 +373,6 @@ func.func @func6(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     %token_8 = air.execute [%aif1] {
       memref.dealloc %buf1 : memref<512xi32, 2>
     }
-    air.herd_terminator
   }
   return
 }
@@ -498,7 +492,6 @@ func.func @func7(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>, %arg2 : mem
     %token_13 = air.execute [%token_12] {
       memref.dealloc %buf0 : memref<1024xi32, 2>
     }
-    air.herd_terminator
   }
   return
 }
@@ -554,7 +547,6 @@ module {
       air.dma_memcpy_nd (%arg7[%c8, %c0] [%c8, %c16] [%c32, %c1_1], %alloc_0[%c0, %c0] [%c8, %c16] [%c32, %c1_1]) {id = 2 : i32} : (memref<32x16xi32>, memref<16x8xi32, 2>)
       memref.dealloc %alloc_0 : memref<16x8xi32, 2>
       memref.dealloc %alloc : memref<16x8xi32, 2>
-      air.herd_terminator
     }
     return
   }

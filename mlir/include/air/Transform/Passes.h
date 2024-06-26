@@ -14,6 +14,7 @@
 #include "air/Transform/AIRDependencyCanonicalize.h"
 #include "air/Transform/AIRDependencyParseGraph.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
+#include "air/Transform/AIRDmaToChannel.h"
 #include "air/Transform/AIRHerdAssignPass.h"
 #include "air/Transform/AIRHerdPlacementPass.h"
 #include "air/Transform/AIRLinalgCodegen.h"

@@ -56,7 +56,6 @@ module {
             memref.dealloc %7 : memref<32x32xbf16, 2>
             memref.dealloc %8 : memref<32x32xbf16, 2>
           }
-          air.herd_terminator
         }
         air.dma_memcpy_nd (%0[%arg3, %arg4] [%c64, %c64] [%c512, %c1], %3[] [] []) {id = 8 : i32} : (memref<512x512xbf16>, memref<64x64xbf16, 1>)
         memref.dealloc %1 : memref<64x64xbf16, 1>

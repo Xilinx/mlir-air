@@ -131,9 +131,7 @@ func.func @scf_for_par(%arg0: memref<1024x512xi8>, %arg1: memref<512x1024xi8>, %
         }
         scf.yield %29 : !air.async.token
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }

@@ -60,7 +60,6 @@ func.func @channel_put_get(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024
         %async_token_9 = air.execute [%6] {
           memref.dealloc %results_5 : memref<32x32xbf16, 2>
         } {unrolled_iteration = 1 : i32}
-        air.herd_terminator
       }
       %4 = scf.for %arg16 = %c0 to %c512 step %c64 iter_args(%arg17 = %async_token) -> (!air.async.token) {
         %5 = air.channel.get async [%arg17]  @channel_1[] (%results[] [] []) : (memref<32x32xbf16, 1>)
@@ -69,9 +68,7 @@ func.func @channel_put_get(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024
       %async_token_1 = air.execute [%4] {
         memref.dealloc %results : memref<32x32xbf16, 1>
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -155,7 +152,6 @@ func.func @affine_if(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>
         %async_token_9 = air.execute [%6] {
           memref.dealloc %results_5 : memref<32x32xbf16, 2>
         } {unrolled_iteration = 1 : i32}
-        air.herd_terminator
       }
       %4 = scf.for %arg16 = %c0 to %c512 step %c64 iter_args(%arg17 = %async_token) -> (!air.async.token) {
         %5 = air.channel.get async [%arg17]  @channel_4[] (%results[] [] []) : (memref<32x32xbf16, 1>)
@@ -164,9 +160,7 @@ func.func @affine_if(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>
       %async_token_1 = air.execute [%4] {
         memref.dealloc %results : memref<32x32xbf16, 1>
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -220,7 +214,6 @@ func.func @scf_for() {
         }
         scf.yield %async_token_0 : !air.async.token
       }
-      air.segment_terminator
     }
     %2 = air.segment async  attributes {id = 4 : i32, x_loc = 4 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
       %c512 = arith.constant 512 : index
@@ -284,7 +277,6 @@ func.func @scf_for() {
         }
         scf.yield %async_token_7 : !air.async.token
       }
-      air.segment_terminator
     }
     %3 = air.segment async  attributes {id = 6 : i32, x_loc = 8 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
       %c512 = arith.constant 512 : index
@@ -347,9 +339,7 @@ func.func @scf_for() {
         }
         scf.yield %async_token_7 : !air.async.token
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -403,7 +393,6 @@ func.func @scf_parallel() {
         }
         scf.yield %async_token_0 : !air.async.token
       }
-      air.segment_terminator
     }
     %2 = air.segment async  attributes {id = 4 : i32, x_loc = 4 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
       %c512 = arith.constant 512 : index
@@ -475,7 +464,6 @@ func.func @scf_parallel() {
         }
         scf.yield %async_token_7 : !air.async.token
       }
-      air.segment_terminator
     }
     %3 = air.segment async  attributes {id = 6 : i32, x_loc = 8 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
       %c512 = arith.constant 512 : index
@@ -546,9 +534,7 @@ func.func @scf_parallel() {
         }
         scf.yield %async_token_7 : !air.async.token
       }
-      air.segment_terminator
     }
-    air.launch_terminator
   }
   return
 }
@@ -632,9 +618,7 @@ module {
         %async_token_10 = air.execute [%5] {
           memref.dealloc %results_6 : memref<1x256x112x4xi8, 1>
         } {unrolled_iteration = 1 : i32}
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return
   }

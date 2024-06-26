@@ -59,9 +59,7 @@ module {
           %5 = air.wait_all async [%arg11, %4] 
           scf.yield %5 : !air.async.token
         }
-        air.segment_terminator
       }
-      air.launch_terminator
     }
     return %results_2 : memref<256x1024xbf16>
   }
