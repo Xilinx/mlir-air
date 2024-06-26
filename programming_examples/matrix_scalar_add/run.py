@@ -15,6 +15,7 @@ import single_core_dma
 import multi_core_dma
 import single_core_channel
 import multi_core_channel
+import multi_launch_channel
 
 KERNEL_NAME = "MLIR_AIE"
 
@@ -102,6 +103,7 @@ if __name__ == "__main__":
             "multi-core-dma",
             "single-core-channel",
             "multi-core-channel",
+            "multi-launch-channel",
         ],
     )
     args = parser.parse_args()
@@ -114,4 +116,6 @@ if __name__ == "__main__":
         build_module = single_core_channel.build_module
     elif args.tile_method == "multi-core-channel":
         build_module = multi_core_channel.build_module
+    elif args.tile_method == "multi-launch-channel":
+        build_module = multi_launch_channel.build_module
     main(build_module)

@@ -156,6 +156,7 @@ def build_module():
                             val_in = load(tile_in, [i, j])
 
                             # Compute the output value
+                            # TODO(hunhoffe): is there any guarantee it will get a tiles worth of data that corresponds to the tile id?
                             val_out = arith.addi(
                                 val_in, arith.index_cast(T.i32(), compute_tile_id)
                             )

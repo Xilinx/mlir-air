@@ -18,5 +18,9 @@ multi-core-channel:
 	mkdir -p build
 	cd build && ${powershell} python3 ${srcdir}/run.py multi-core-channel
 
+multi-launch-channel:
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/run.py multi-launch-channel
+
 clean:
 	rm -rf build __pycache__
