@@ -28,8 +28,6 @@ def build_module():
         # The arguments are the input and output
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
-            # ChannelPut("ChanIn", [], a)
-            # ChannelGet("ChanOut", [], b)
 
             # Transform data into contiguous tiles
             for tile_index0 in range_(IMAGE_HEIGHT // TILE_HEIGHT):
@@ -128,19 +126,17 @@ def build_module():
                         # Access every value in the tile
                         for j in range_(TILE_HEIGHT):
                             for i in range_(TILE_WIDTH):
-                                """
                                 # Load the input value from tile_in
                                 val_in = load(tile_in, [i, j])
 
                                 # Compute the output value
                                 val_out = arith.addi(
-                                    val_in, arith.ConstantOp(T.i32(), 1)
+                                    val_in, arith.index_cast(T.i32(), tile_num)
                                 )
-                                """
 
                                 # Store the output value in tile_out
                                 store(
-                                    arith.index_cast(T.i32(), tile_num),
+                                    val_out,
                                     tile_out,
                                     [i, j],
                                 )

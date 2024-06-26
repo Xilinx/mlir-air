@@ -55,7 +55,7 @@ def build_module():
                                 AffineSymbolExpr.get(0),
                                 AffineSymbolExpr.get(1),
                             )
-                        ]
+                        ],
                     )
                     offset0 = affine_apply(scaled_index_map, [tx])
                     offset1 = affine_apply(scaled_index_map, [ty])
@@ -91,10 +91,16 @@ def build_module():
                             val_in = load(tile_in, [i, j])
 
                             # Compute the output value
-                            #val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
+                            val_out = arith.addi(
+                                val_in, arith.index_cast(T.i32(), compute_tile_id)
+                            )
 
                             # Store the output value in tile_out
-                            store(arith.index_cast(T.i32(), compute_tile_id), tile_out, [i, j])
+                            store(
+                                val_out,
+                                tile_out,
+                                [i, j],
+                            )
                             yield_([])
                         yield_([])
 

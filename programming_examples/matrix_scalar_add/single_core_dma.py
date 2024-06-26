@@ -58,6 +58,13 @@ def build_module():
                             # Calculate the offset into the channel data, which is based on our loop vars
                             offset0 = arith.MulIOp(tile_size0, tile_index0)
                             offset1 = arith.MulIOp(tile_size1, tile_index1)
+                            tile_num = arith.MulIOp(
+                                tile_index0,
+                                arith.ConstantOp.create_index(
+                                    IMAGE_HEIGHT // TILE_HEIGHT
+                                ),
+                            )
+                            tile_num = arith.AddIOp(tile_num, tile_index1)
 
                             # Copy a tile from the input image (a) into the L1 memory region (tile_in)
                             dma_memcpy_nd(
@@ -76,7 +83,7 @@ def build_module():
 
                                     # Compute the output value
                                     val_out = arith.addi(
-                                        val_in, arith.ConstantOp(T.i32(), 1)
+                                        val_in, arith.index_cast(T.i32(), tile_num)
                                     )
 
                                     # Store the output value in tile_out

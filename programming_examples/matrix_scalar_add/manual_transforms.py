@@ -35,12 +35,12 @@ if __name__ == "__main__":
         "builtin.module("
         + ",".join(
             [
-                #"buffer-results-to-out-params",
-                #"air-par-to-herd{depth=1}",
-                #"air-par-to-launch{has-air-segment=true}",
-                #"air-copy-to-dma",
-                #"canonicalize",
-                #"cse",
+                # "buffer-results-to-out-params",
+                # "air-par-to-herd{depth=1}",
+                # "air-par-to-launch{has-air-segment=true}",
+                # "air-copy-to-dma",
+                # "canonicalize",
+                # "cse",
             ]
         )
         + ")"
@@ -59,16 +59,16 @@ if __name__ == "__main__":
         "builtin.module("
         + ",".join(
             [
-                #"air-dependency",
-                #"air-dependency-schedule-opt",
-                #"air-specialize-dma-broadcast",
-                #"air-dma-to-channel",
-                #"canonicalize",
-                #"cse",
-                #"air-dependency-canonicalize",
-                #"canonicalize",
-                #"cse",
-                #"air-label-scf-for-to-ping-pong",
+                # "air-dependency",
+                # "air-dependency-schedule-opt",
+                # "air-specialize-dma-broadcast",
+                # "air-dma-to-channel",
+                # "canonicalize",
+                # "cse",
+                # "air-dependency-canonicalize",
+                # "canonicalize",
+                # "cse",
+                # "air-label-scf-for-to-ping-pong",
             ]
         )
         + ")"
@@ -81,14 +81,14 @@ if __name__ == "__main__":
         "builtin.module("
         + ",".join(
             [
-                #"air-ping-pong-transform{keep-memref-dealloc=true}",
-                #"air-dealias-memref",
-                #"canonicalize",
-                #"cse",
-                #"air-isolate-async-dma-loop-nests",
-                #"air-specialize-channel-wrap-and-stride",
-                #"canonicalize",
-                #"cse",
+                # "air-ping-pong-transform{keep-memref-dealloc=true}",
+                # "air-dealias-memref",
+                # "canonicalize",
+                # "cse",
+                # "air-isolate-async-dma-loop-nests",
+                # "air-specialize-channel-wrap-and-stride",
+                # "canonicalize",
+                # "cse",
             ]
         )
         + ")"
@@ -108,14 +108,14 @@ if __name__ == "__main__":
         "builtin.module("
         + ",".join(
             [
-                #"func.func(air-collapse-herd)",
-                #"canonicalize",
-                #"cse",
+                # "func.func(air-collapse-herd)",
+                # "canonicalize",
+                # "cse",
                 "air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}",
                 "canonicalize",
                 "cse",
                 "func.func(air-renumber-dma)",
-                #"func.func(convert-linalg-to-loops)",
+                # "func.func(convert-linalg-to-loops)",
             ]
         )
         + ")"
@@ -158,8 +158,7 @@ if __name__ == "__main__":
         + ",".join(
             [
                 "air-to-std",
-                "airrt-to-npu{"
-                + "}",
+                "airrt-to-npu{" + "}",
                 "canonicalize",
             ]
         )

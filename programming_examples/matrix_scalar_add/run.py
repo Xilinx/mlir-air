@@ -63,12 +63,20 @@ def main(build_module):
     for i in range(INOUT_SIZE):
         rb = output_b[i]
 
-        row = i / IMAGE_WIDTH
+        row = i // IMAGE_WIDTH
         col = i % IMAGE_WIDTH
+        tile_num = (row // TILE_HEIGHT) * (IMAGE_HEIGHT // TILE_HEIGHT) + (
+            col // TILE_WIDTH
+        )
 
         # value should have been updated
-        if not (rb == 0x1000 + i + 1):
-            # print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
+        expected_value = 0x1000 + i + tile_num
+        if not (rb == expected_value):
+            """
+            print(
+                f"IM {i} [{col}, {row}] should be 0x{expected_value:x}, is 0x{rb:x}\n"
+            )
+            """
             errors += 1
 
     if errors == 0:
