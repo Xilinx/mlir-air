@@ -453,8 +453,6 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto i64Ty = builder.getI64Type();
   auto zero =
       builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
-  auto one =
-      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 1));
   auto zero_idx = builder.create<arith::ConstantIndexOp>(loc, 0);
   auto one_idx = builder.create<arith::ConstantIndexOp>(loc, 1);
 
