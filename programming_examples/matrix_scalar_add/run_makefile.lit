@@ -7,4 +7,6 @@
  // RUN: make -f %S/Makefile single-core-dma | FileCheck %s
  // RUN: make -f %S/Makefile clean
  // RUN: make -f %S/Makefile multi-core-dma | FileCheck %s
+ // RUN: make -f %S/Makefile clean
+ // RUN: make -f %S/Makefile single-core-channel | FileCheck %s
  // CHECK: PASS!

@@ -25,7 +25,9 @@ if __name__ == "__main__":
         input_a[i] = i + 0x1000
         input_b[i] = 0x00DEFACED
 
-    backend = xrt_backend.XRTBackend(verbose=verbose, xclbin="aie.xclbin", insts="insts.txt")
+    backend = xrt_backend.XRTBackend(
+        verbose=verbose, xclbin="aie.xclbin", insts="insts.txt"
+    )
 
     print("=========================== INPUT START ===========================")
     for i in range(IMAGE_HEIGHT):
