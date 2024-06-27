@@ -512,13 +512,6 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   // Stride field implicit last element one
   auto lastStrideConst = getConstantIntValue(strides.back());
   assert(lastStrideConst && "the last stride is not static");
-  // If the last dimension's stride value is not 1, then for AIE2 we use the
-  // second dimension of shim dma bd to implement the last dimension.
-  if (*lastStrideConst != 1) {
-    offsets.push_back(zero_idx);
-    wraps.push_back(one_idx);
-    strides.push_back(one_idx);
-  }
 
   strides.pop_back();
   while (offsets.size() < 4) {
@@ -535,17 +528,9 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     offsets[i] = builder.create<arith::IndexCastOp>(
         loc, IntegerType::get(ctx, 64), offsets[i]);
 
-  // In aiex.npu ops, stride value 0 means 1; only the highest dimension stride
-  // value 0 really means repeat.
-  for (unsigned i = 0; i < strides.size(); i++) {
-    auto constStride = getConstantIntValue(strides[i]);
-    assert(constStride && "stride is not static");
-    if (i > 0 && *constStride == 1)
-      strides[i] = zero;
-    else
-      strides[i] = builder.create<arith::IndexCastOp>(
-          loc, IntegerType::get(ctx, 64), strides[i]);
-  }
+  for (unsigned i = 0; i < strides.size(); i++)
+    strides[i] = builder.create<arith::IndexCastOp>(
+        loc, IntegerType::get(ctx, 64), strides[i]);
 
   for (unsigned i = 0; i < wraps.size(); i++)
     wraps[i] = builder.create<arith::IndexCastOp>(
