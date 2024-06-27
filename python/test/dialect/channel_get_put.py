@@ -38,9 +38,9 @@ def build_module(shape, idtype, odtype):
             # CHECK: air.channel.put  @ChanA[] (%{{.*}}[] [] []) : (memref<1024xi32>)
             # CHECK: air.channel.put  @ChanB[] (%{{.*}}[] [] []) : (memref<1024xi32>)
             # CHECK: air.channel.get  @ChanC[] (%{{.*}}[] [] []) : (memref<1024xi32>)
-            ChannelPut("ChanA", [], a)
-            ChannelPut("ChanB", [], b)
-            ChannelGet("ChanC", [], c)
+            ChannelPut("ChanA", a)
+            ChannelPut("ChanB", b)
+            ChannelGet("ChanC", c)
 
             @segment(name="segment_0")
             def segment_body():
@@ -59,8 +59,8 @@ def build_module(shape, idtype, odtype):
                         tile_a = AllocOp(tile_type, [], [])
                         tile_b = AllocOp(tile_type, [], [])
                         tile_c = AllocOp(tile_type, [], [])
-                        ChannelGet("ChanA", [], tile_a)
-                        ChannelGet("ChanB", [], tile_b)
+                        ChannelGet("ChanA", tile_a)
+                        ChannelGet("ChanB", tile_b)
                         elemwise_binary(
                             tile_a,
                             tile_b,
@@ -71,7 +71,7 @@ def build_module(shape, idtype, odtype):
                         DeallocOp(tile_a)
                         DeallocOp(tile_b)
                         DeallocOp(tile_c)
-                        ChannelPut("ChanC", [], tile_c)
+                        ChannelPut("ChanC", tile_c)
                         yield_([])
 
 

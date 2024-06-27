@@ -15,6 +15,13 @@ from ..extras.meta import region_op
 from ..extras import types as T
 
 
+def pyint_to_index(i):
+    """
+    Utility function to convert python int types to index types
+    """
+    return arith.ConstantOp.create_index(i) if isinstance(i, int) else i
+
+
 class Launch(LaunchOp):
     """Specialization for LaunchOp class."""
 
@@ -29,8 +36,7 @@ class Launch(LaunchOp):
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        sizes = [arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) for i in sizes]
+        sizes = list(map(pyint_to_index, sizes))
         if name is not None:
             print(name)
             _ods_context = _ods_get_default_loc_context(loc)
@@ -59,8 +65,7 @@ class Segment(SegmentOp):
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        sizes = [arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) for i in sizes]
+        sizes = list(map(pyint_to_index, sizes))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
@@ -86,11 +91,7 @@ class Herd(HerdOp):
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        sizes = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in sizes
-        ]
+        sizes = list(map(pyint_to_index, sizes))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
@@ -106,30 +107,29 @@ class ChannelGet(ChannelGetOp):
     def __init__(
         self,
         chan_name,
-        indices,
         dst,
         dst_offsets=[],
         dst_sizes=[],
         dst_strides=[],
+        indices=[],
         async_token=None,
         async_dependencies=[],
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        indices = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in indices
-        ]
+        indices_typed = list(map(pyint_to_index, indices))
+        dst_offsets_typed = list(map(pyint_to_index, dst_offsets))
+        dst_sizes_typed = list(map(pyint_to_index, dst_sizes))
+        dst_strides_typed = list(map(pyint_to_index, dst_strides))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
             chan_name=chan_name,
-            indices=indices,
+            indices=indices_typed,
             dst=dst,
-            dst_offsets=dst_offsets,
-            dst_sizes=dst_sizes,
-            dst_strides=dst_strides,
+            dst_offsets=dst_offsets_typed,
+            dst_sizes=dst_sizes_typed,
+            dst_strides=dst_strides_typed,
             loc=loc,
             ip=ip,
         )
@@ -139,30 +139,29 @@ class ChannelPut(ChannelPutOp):
     def __init__(
         self,
         chan_name,
-        indices,
         src,
         src_offsets=[],
         src_sizes=[],
         src_strides=[],
+        indices=[],
         async_token=None,
         async_dependencies=[],
         loc=None,
         ip=None,
     ):
-        iTy = IndexType.get()
-        indices = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in indices
-        ]
+        indices_typed = list(map(pyint_to_index, indices))
+        src_offsets_typed = list(map(pyint_to_index, src_offsets))
+        src_sizes_typed = list(map(pyint_to_index, src_sizes))
+        src_strides_typed = list(map(pyint_to_index, src_strides))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
             chan_name=chan_name,
-            indices=indices,
+            indices=indices_typed,
             src=src,
-            src_offsets=src_offsets,
-            src_sizes=src_sizes,
-            src_strides=src_strides,
+            src_offsets=src_offsets_typed,
+            src_sizes=src_sizes_typed,
+            src_strides=src_strides_typed,
             loc=loc,
             ip=ip,
         )
@@ -184,33 +183,13 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         src_sizes=[],
         src_strides=[],
     ):
-        iTy = IndexType.get()
+        dst_offsets_typed = list(map(pyint_to_index, dst_offsets))
+        dst_sizes_typed = list(map(pyint_to_index, dst_sizes))
+        dst_strides_typed = list(map(pyint_to_index, dst_strides))
 
-        dst_offsets_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in dst_offsets
-        ]
-        dst_sizes_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in dst_sizes
-        ]
-        dst_strides_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in dst_strides
-        ]
-
-        src_offsets_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in src_offsets
-        ]
-        src_sizes_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in src_sizes
-        ]
-        src_strides_typed = [
-            arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i
-            for i in src_strides
-        ]
+        src_offsets_typed = list(map(pyint_to_index, src_offsets))
+        src_sizes_typed = list(map(pyint_to_index, src_sizes))
+        src_strides_typed = list(map(pyint_to_index, src_strides))
 
         super().__init__(
             async_token=async_token,
