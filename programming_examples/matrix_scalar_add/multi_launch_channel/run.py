@@ -32,3 +32,4 @@ if __name__ == "__main__":
         action="store_true",
     )
     args = parser.parse_args()
+    test_main(build_module, verbose=True)
