@@ -1,5 +1,7 @@
 # Build Step-By-Step
 
+First, change the class in `manual_transforms.py` to be the class we'd like to build from.
+
 ```bash
 mkdir manual_build
 cd manual_build

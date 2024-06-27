@@ -1,5 +1,18 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+import sys
+from pathlib import Path  # if you haven't already done so
+
+# Python paths are a bit complex. Taking solution from : https://stackoverflow.com/questions/16981921/relative-imports-in-python-3
+file = Path(__file__).resolve()
+parent, root = file.parent, file.parents[1]
+sys.path.append(str(root))
+
+# Additionally remove the current file's directory from sys.path
+try:
+    sys.path.remove(str(parent))
+except ValueError:  # Already removed
+    pass
 
 from air.ir import *
 from air.dialects.air import *
@@ -10,7 +23,7 @@ from air.dialects.affine import apply as affine_apply
 
 range_ = for_
 
-from data_config import *
+from common import *
 
 
 @module_builder
@@ -90,52 +103,56 @@ def build_module():
                 @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
                 def herd_body(tx, ty, sx, sy, a, b):
 
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                    # Loop over columns and rows of tiles
+                    for tile_num in range_(
+                        (IMAGE_WIDTH // TILE_WIDTH) * (IMAGE_HEIGHT // TILE_HEIGHT)
+                    ):
 
-                    # This is the type definition of the tile
-                    tile_type = MemRefType.get(
-                        shape=TILE_SIZE,
-                        element_type=T.i32(),
-                        memory_space=mem_space,
-                    )
+                        # We want to store our data in L1 memory
+                        mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
 
-                    # We must allocate a buffer of tile size for the input/output
-                    tile_in = AllocOp(tile_type, [], [])
-                    tile_out = AllocOp(tile_type, [], [])
+                        # This is the type definition of the tile
+                        tile_type = MemRefType.get(
+                            shape=TILE_SIZE,
+                            element_type=T.i32(),
+                            memory_space=mem_space,
+                        )
 
-                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                    ChannelGet("ChanIn", [], tile_in)
+                        # We must allocate a buffer of tile size for the input/output
+                        tile_in = AllocOp(tile_type, [], [])
+                        tile_out = AllocOp(tile_type, [], [])
 
-                    # Access every value in the tile
-                    for j in range_(TILE_HEIGHT):
-                        for i in range_(TILE_WIDTH):
-                            # Load the input value from tile_in
-                            val_in = load(tile_in, [i, j])
+                        # Copy a tile from the input image (a) into the L1 memory region (tile_in)
+                        ChannelGet("ChanIn", [], tile_in)
 
-                            # Compute the output value TODO(hunhoffe): this is not correct, not sure how to percolate launch info here
-                            val_out = arith.addi(
-                                val_in,
-                                arith.ConstantOp(
-                                    T.i32(), 1
-                                ),  # arith.index_cast(T.i32(), tile_num)
-                            )
+                        # Access every value in the tile
+                        for j in range_(TILE_HEIGHT):
+                            for i in range_(TILE_WIDTH):
+                                # Load the input value from tile_in
+                                val_in = load(tile_in, [i, j])
 
-                            # Store the output value in tile_out
-                            store(
-                                val_out,
-                                tile_out,
-                                [i, j],
-                            )
+                                # Compute the output value TODO(hunhoffe): this is not correct, not sure how to percolate launch info here
+                                val_out = arith.addi(
+                                    val_in, arith.index_cast(T.i32(), tile_num)
+                                )
+
+                                # Store the output value in tile_out
+                                store(
+                                    val_out,
+                                    tile_out,
+                                    [i, j],
+                                )
+                                yield_([])
                             yield_([])
+
+                        # Copy the output tile into the output
+                        ChannelPut("ChanOut", [], tile_out)
+
+                        # Deallocate our L1 buffers
+                        DeallocOp(tile_in)
+                        DeallocOp(tile_out)
+
                         yield_([])
-
-                    # Copy the output tile into the output
-                    ChannelPut("ChanOut", [], tile_out)
-
-                    # Deallocate our L1 buffers
-                    DeallocOp(tile_in)
-                    DeallocOp(tile_out)
 
 
 if __name__ == "__main__":
