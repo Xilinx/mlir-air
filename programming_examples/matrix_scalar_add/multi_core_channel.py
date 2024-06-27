@@ -59,21 +59,6 @@ def build_module():
                             arith.ConstantOp.create_index(1),
                         ],
                     )
-                    yield_([])
-                yield_([])
-
-            for tile_index0 in range_(IMAGE_HEIGHT // TILE_HEIGHT):
-                for tile_index1 in range_(IMAGE_WIDTH // TILE_WIDTH):
-                    # Convert the type of the tile size variable to the Index type
-                    tile_size0 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
-                    tile_size1 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
-
-                    # Calculate the offset into the channel data, which is based on which tile index
-                    # we are at using tile_index0 and tile_index1 (our loop vars).
-                    # tile_index0 and tile_index1 are dynamic so we have to use specialized
-                    # operations do to calculations on them
-                    offset0 = arith.MulIOp(tile_size0, tile_index0)
-                    offset1 = arith.MulIOp(tile_size1, tile_index1)
 
                     # Write data back out to the channel tile by tile
                     ChannelGet(
