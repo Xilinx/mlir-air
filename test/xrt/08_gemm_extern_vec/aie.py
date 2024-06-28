@@ -13,11 +13,11 @@ from air.compiler.util import run_transform
 import sys
 
 with air.ir.Context() as ctx, Location.unknown():
-    
+
     ################################################
     ## Tiling
     ################################################
-    
+
     air_tiled_ir_string = """
     #map = affine_map<()[s0] -> (s0 * 128)>
     #map1 = affine_map<()[s0] -> (s0 * 64)>
@@ -100,91 +100,134 @@ with air.ir.Context() as ctx, Location.unknown():
     }
     """
     air_module = Module.parse(air_tiled_ir_string)
-    
+
     ################################################
     ## Binding scf.paralell to air hierarchies
     ################################################
 
-    pipeline = "builtin.module("+",".join([
-        "buffer-results-to-out-params",
-        "air-linalg-to-func{link-with=mm.o}",
-        "air-par-to-herd{depth=1}",
-        "air-par-to-launch{has-air-segment=true}",
-        "air-copy-to-dma",
-        "canonicalize", "cse",
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "buffer-results-to-out-params",
+                "air-linalg-to-func{link-with=mm.o}",
+                "air-par-to-herd{depth=1}",
+                "air-par-to-launch{has-air-segment=true}",
+                "air-copy-to-dma",
+                "canonicalize",
+                "cse",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    
+
     ###############################################
     # Extract event dependency and optimize schedule
     ###############################################
 
-    pipeline = "builtin.module("+",".join([
-        "air-dependency",
-        "air-dependency-schedule-opt",
-        "air-specialize-dma-broadcast",
-        "air-dma-to-channel",
-        "canonicalize", "cse",
-        "air-dependency-canonicalize",
-        "canonicalize", "cse",
-        "func.func(air-loop-fusion)",
-        "air-label-scf-for-to-ping-pong",
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "air-dependency",
+                "air-dependency-schedule-opt",
+                "air-specialize-dma-broadcast",
+                "air-dma-to-channel",
+                "canonicalize",
+                "cse",
+                "air-dependency-canonicalize",
+                "canonicalize",
+                "cse",
+                "func.func(air-loop-fusion)",
+                "air-label-scf-for-to-ping-pong",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
     # Not sure why parsing the ir solves the segmentation fault...
     air_module = Module.parse(str(air_module))
-    pipeline = "builtin.module("+",".join([
-        "air-ping-pong-transform{keep-memref-dealloc=true}",
-        "canonicalize", "cse",
-        "air-specialize-channel-wrap-and-stride",
-        "canonicalize", "cse",
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "air-ping-pong-transform{keep-memref-dealloc=true}",
+                "canonicalize",
+                "cse",
+                "air-specialize-channel-wrap-and-stride",
+                "canonicalize",
+                "cse",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    
+
     ################################################
     ## Place herd to segment
     ################################################
 
     air_async_module = Module.parse(str(air_module))
-    pipeline = "builtin.module("+",".join([
-        "func.func(air-collapse-herd)",
-        'canonicalize', 'cse',
-        "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor=0}",
-        'canonicalize', 'cse',
-        'func.func(air-renumber-dma)',
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "func.func(air-collapse-herd)",
+                "canonicalize",
+                "cse",
+                "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor=0}",
+                "canonicalize",
+                "cse",
+                "func.func(air-renumber-dma)",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    
+
     ################################################
     ## MLIR-AIR to MLIR-AIE
     ################################################
-    
-    pipeline = "builtin.module("+",".join([
-        'air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}',
-        'canonicalize',
-    ])+')'
+
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}",
+                "canonicalize",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    
+
     ################################################
     ## MLIR-AIR runtime lowering
     ################################################
 
-    pipeline = "builtin.module("+",".join([
-      'air-to-std',
-      'canonicalize',
-      'symbol-dce',
-      'func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})',
-      'func.func(air-unroll-outer-affine-loops{depth=2})',
-      'affine-expand-index-ops',
-      'airrt-to-npu',
-      'canonicalize',
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "air-to-std",
+                "canonicalize",
+                "symbol-dce",
+                "func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})",
+                "func.func(air-unroll-outer-affine-loops{depth=2})",
+                "affine-expand-index-ops",
+                "airrt-to-npu",
+                "canonicalize",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    with open('aie.mlir', 'w') as f:
+    with open("aie.mlir", "w") as f:
         f.write(str(air_module))
