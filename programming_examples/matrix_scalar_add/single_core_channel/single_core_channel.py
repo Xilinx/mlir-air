@@ -59,33 +59,19 @@ def build_module():
                     # Put data into the channel tile by tile
                     ChannelPut(
                         "ChanIn",
-                        [],
                         a,
-                        src_offsets=[offset0, offset1],
-                        src_sizes=[
-                            arith.ConstantOp.create_index(TILE_HEIGHT),
-                            arith.ConstantOp.create_index(TILE_WIDTH),
-                        ],
-                        src_strides=[
-                            arith.ConstantOp.create_index(IMAGE_WIDTH),
-                            arith.ConstantOp.create_index(1),
-                        ],
+                        offsets=[offset0, offset1],
+                        sizes=[TILE_HEIGHT, TILE_WIDTH],
+                        strides=[IMAGE_WIDTH, 1],
                     )
 
                     # Write data back out to the channel tile by tile
                     ChannelGet(
                         "ChanOut",
-                        [],
                         b,
-                        dst_offsets=[offset0, offset1],
-                        dst_sizes=[
-                            arith.ConstantOp.create_index(TILE_HEIGHT),
-                            arith.ConstantOp.create_index(TILE_WIDTH),
-                        ],
-                        dst_strides=[
-                            arith.ConstantOp.create_index(IMAGE_WIDTH),
-                            arith.ConstantOp.create_index(1),
-                        ],
+                        offsets=[offset0, offset1],
+                        sizes=[TILE_HEIGHT, TILE_WIDTH],
+                        strides=[IMAGE_WIDTH, 1],
                     )
                     yield_([])
                 yield_([])
@@ -119,7 +105,7 @@ def build_module():
                         tile_out = AllocOp(tile_type, [], [])
 
                         # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                        ChannelGet("ChanIn", [], tile_in)
+                        ChannelGet("ChanIn", tile_in)
 
                         # Access every value in the tile
                         for j in range_(TILE_HEIGHT):
@@ -142,7 +128,7 @@ def build_module():
                             yield_([])
 
                         # Copy the output tile into the output
-                        ChannelPut("ChanOut", [], tile_out)
+                        ChannelPut("ChanOut", tile_out)
 
                         # Deallocate our L1 buffers
                         DeallocOp(tile_in)
