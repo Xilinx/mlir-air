@@ -108,9 +108,9 @@ class ChannelGet(ChannelGetOp):
         self,
         chan_name,
         dst,
-        dst_offsets=[],
-        dst_sizes=[],
-        dst_strides=[],
+        offsets=[],
+        sizes=[],
+        strides=[],
         indices=[],
         async_token=None,
         async_dependencies=[],
@@ -118,9 +118,9 @@ class ChannelGet(ChannelGetOp):
         ip=None,
     ):
         indices_typed = list(map(pyint_to_index, indices))
-        dst_offsets_typed = list(map(pyint_to_index, dst_offsets))
-        dst_sizes_typed = list(map(pyint_to_index, dst_sizes))
-        dst_strides_typed = list(map(pyint_to_index, dst_strides))
+        dst_offsets_typed = list(map(pyint_to_index, offsets))
+        dst_sizes_typed = list(map(pyint_to_index, sizes))
+        dst_strides_typed = list(map(pyint_to_index, strides))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
@@ -140,9 +140,9 @@ class ChannelPut(ChannelPutOp):
         self,
         chan_name,
         src,
-        src_offsets=[],
-        src_sizes=[],
-        src_strides=[],
+        offsets=[],
+        sizes=[],
+        strides=[],
         indices=[],
         async_token=None,
         async_dependencies=[],
@@ -150,18 +150,18 @@ class ChannelPut(ChannelPutOp):
         ip=None,
     ):
         indices_typed = list(map(pyint_to_index, indices))
-        src_offsets_typed = list(map(pyint_to_index, src_offsets))
-        src_sizes_typed = list(map(pyint_to_index, src_sizes))
-        src_strides_typed = list(map(pyint_to_index, src_strides))
+        offsets_typed = list(map(pyint_to_index, offsets))
+        sizes_typed = list(map(pyint_to_index, sizes))
+        strides_typed = list(map(pyint_to_index, strides))
         super().__init__(
             async_token=async_token,
             async_dependencies=async_dependencies,
             chan_name=chan_name,
             indices=indices_typed,
             src=src,
-            src_offsets=src_offsets_typed,
-            src_sizes=src_sizes_typed,
-            src_strides=src_strides_typed,
+            src_offsets=offsets_typed,
+            src_sizes=sizes_typed,
+            src_strides=strides_typed,
             loc=loc,
             ip=ip,
         )
