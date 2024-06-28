@@ -13,7 +13,7 @@ from air.compiler.util import run_transform
 import sys
 
 with air.ir.Context() as ctx, Location.unknown():
-    
+
     ################################################
     ## Tiling
     ################################################
@@ -162,90 +162,130 @@ with air.ir.Context() as ctx, Location.unknown():
       }
     }
     """
-    
+
     air_module = Module.parse(air_tiled_ir_string)
-    
+
     ################################################
     ## Binding scf.paralell to air hierarchies
     ################################################
 
-    pipeline = "builtin.module("+",".join([
-        "buffer-results-to-out-params",
-        "air-par-to-herd{depth=1}",
-        "air-par-to-launch{has-air-segment=true}",
-        "air-copy-to-dma",
-        "canonicalize", "cse",
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "buffer-results-to-out-params",
+                "air-par-to-herd{depth=1}",
+                "air-par-to-launch{has-air-segment=true}",
+                "air-copy-to-dma",
+                "canonicalize",
+                "cse",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    
+
     ###############################################
     # Extract event dependency and optimize schedule
     ###############################################
 
-    pipeline = "builtin.module("+",".join([
-        "air-dependency",
-        "air-dma-to-channel",
-        "canonicalize", "cse",
-        "air-dependency-canonicalize",
-        "canonicalize", "cse",
-        "air-isolate-async-dma-loop-nests",
-        "canonicalize", "cse",
-        "air-fuse-channels{aggressive-mode=L1}",
-        "canonicalize", "cse",
-        "func.func(air-loop-fusion)",
-        "air-label-scf-for-to-ping-pong",
-        "air-ping-pong-transform{keep-memref-dealloc=true}",
-        "canonicalize", "cse",
-        "air-specialize-channel-wrap-and-stride",
-        "canonicalize", "cse",
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "air-dependency",
+                "air-dma-to-channel",
+                "canonicalize",
+                "cse",
+                "air-dependency-canonicalize",
+                "canonicalize",
+                "cse",
+                "air-isolate-async-dma-loop-nests",
+                "canonicalize",
+                "cse",
+                "air-fuse-channels{aggressive-mode=L1}",
+                "canonicalize",
+                "cse",
+                "func.func(air-loop-fusion)",
+                "air-label-scf-for-to-ping-pong",
+                "air-ping-pong-transform{keep-memref-dealloc=true}",
+                "canonicalize",
+                "cse",
+                "air-specialize-channel-wrap-and-stride",
+                "canonicalize",
+                "cse",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    
+
     ################################################
     ## Place herd to segment
     ################################################
 
     air_async_module = Module.parse(str(air_module))
-    pipeline = "builtin.module("+",".join([
-        "func.func(air-collapse-herd{max-col-size=4})",
-        'canonicalize', 'cse',
-        "air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}",
-        'canonicalize', 'cse',
-        'func.func(air-renumber-dma)',
-        'func.func(convert-linalg-to-loops)',
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "func.func(air-collapse-herd{max-col-size=4})",
+                "canonicalize",
+                "cse",
+                "air-place-herds{num-rows=4 num-cols=4 row-anchor=2 col-anchor=0}",
+                "canonicalize",
+                "cse",
+                "func.func(air-renumber-dma)",
+                "func.func(convert-linalg-to-loops)",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    
+
     ################################################
     ## MLIR-AIR to MLIR-AIE
     ################################################
-    
-    pipeline = "builtin.module("+",".join([
-        'canonicalize', 'cse',
-        'air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}',
-        'canonicalize',
-    ])+')'
+
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "canonicalize",
+                "cse",
+                "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}",
+                "canonicalize",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    
+
     ################################################
     ## MLIR-AIR runtime lowering
     ################################################
 
-    pipeline = "builtin.module("+",".join([
-      'air-to-std',
-      'canonicalize',
-      'symbol-dce',
-      'func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})',
-      'func.func(air-unroll-outer-affine-loops{depth=2})',
-      'affine-expand-index-ops',
-      'airrt-to-npu',
-      'canonicalize',
-    ])+')'
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "air-to-std",
+                "canonicalize",
+                "symbol-dce",
+                "func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})",
+                "func.func(air-unroll-outer-affine-loops{depth=2})",
+                "affine-expand-index-ops",
+                "airrt-to-npu",
+                "canonicalize",
+            ]
+        )
+        + ")"
+    )
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    with open('aie.mlir', 'w') as f:
+    with open("aie.mlir", "w") as f:
         f.write(str(air_module))

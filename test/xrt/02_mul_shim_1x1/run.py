@@ -56,9 +56,9 @@ def build_module(shape, idtype, odtype, tile_size):
     def mul(arg0, arg1, arg2):
         @launch(operands=[arg0, arg1, arg2])
         def launch_body(a, b, c):
-            ChannelPut("ChanA", [], a)
-            ChannelPut("ChanB", [], b)
-            ChannelGet("ChanC", [], c)
+            ChannelPut("ChanA", a)
+            ChannelPut("ChanB", b)
+            ChannelGet("ChanC", c)
 
             @segment(name="segment_0")
             def segment_body():
@@ -79,8 +79,8 @@ def build_module(shape, idtype, odtype, tile_size):
                         tile_a = AllocOp(itile_type, [], [])
                         tile_b = AllocOp(itile_type, [], [])
                         tile_c = AllocOp(otile_type, [], [])
-                        ChannelGet("ChanA", [], tile_a)
-                        ChannelGet("ChanB", [], tile_b)
+                        ChannelGet("ChanA", tile_a)
+                        ChannelGet("ChanB", tile_b)
                         elemwise_binary(
                             tile_a,
                             tile_b,
@@ -88,7 +88,7 @@ def build_module(shape, idtype, odtype, tile_size):
                             fun=BinaryFn.mul,
                             cast=TypeFn.cast_unsigned,
                         )
-                        ChannelPut("ChanC", [], tile_c)
+                        ChannelPut("ChanC", tile_c)
                         DeallocOp(tile_a)
                         DeallocOp(tile_b)
                         DeallocOp(tile_c)
