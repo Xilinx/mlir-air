@@ -10,13 +10,13 @@ out_size = 1024
 
 out_size_bytes = out_size * 4
 
-with open('insts.txt', 'r') as f:
-    instr_text = f.read().split('\n')
-    instr_text = [l for l in instr_text if l != '']
-    instr_v = np.array([int(i,16) for i in instr_text], dtype=np.uint32)
+with open("insts.txt", "r") as f:
+    instr_text = f.read().split("\n")
+    instr_text = [l for l in instr_text if l != ""]
+    instr_v = np.array([int(i, 16) for i in instr_text], dtype=np.uint32)
 
-opts_xclbin = 'aie.xclbin'
-opts_kernel = 'MLIR_AIE'
+opts_xclbin = "aie.xclbin"
+opts_kernel = "MLIR_AIE"
 
 device = xrt.device(0)
 xclbin = xrt.xclbin(opts_xclbin)
@@ -46,14 +46,14 @@ output_buffer = bo_c.read(out_size_bytes, 0).view(np.uint32)
 
 errors = 0
 for i in range(0, 1024, 4):
-    err = output_buffer[i+0] != 0xdeadbeef
-    err = output_buffer[i+1] != 0xcafecafe
-    err = output_buffer[i+2] != 0x000decaf
-    err = output_buffer[i+3] != 0x5a1ad000 + i
+    err = output_buffer[i + 0] != 0xDEADBEEF
+    err = output_buffer[i + 1] != 0xCAFECAFE
+    err = output_buffer[i + 2] != 0x000DECAF
+    err = output_buffer[i + 3] != 0x5A1AD000 + i
     if err:
         errors = errors + 1
         print("error at", i)
-        print([hex(d) for d in output_buffer[i:i+4]])
+        print([hex(d) for d in output_buffer[i : i + 4]])
 
 if not errors:
     print("PASS!")
