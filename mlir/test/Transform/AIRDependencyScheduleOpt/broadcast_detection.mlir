@@ -196,3 +196,45 @@ module {
     return
   }
 }
+
+// -----
+
+// 2D broadcasting to all cores in a herd.
+
+// CHECK: [[$SET0:#set[0-9]*]] = affine_set<(d0, d1)[s0] : (d0 >= 0, -d0 + 1 >= 0, d1 >= 0, -d1 + 3 >= 0, s0 >= 0, -s0 >= 0)>
+// CHECK-LABEL: func.func @func3
+// CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd {{.*}}broadcast_pattern = [[$SET0]]{{.*}} : (memref<1x1x8x4xi32, 2 : i32>, memref<3x3x32x4xi32, 1 : i32>)
+
+module {
+  func.func @func3() {
+    %c3 = arith.constant 3 : index
+    %c16 = arith.constant 16 : index
+    air.launch (%arg3, %arg4, %arg5) in (%arg6=%c3, %arg7=%c3, %arg8=%c16) {
+      air.segment @segment_0  {
+        %c4 = arith.constant 4 : index
+        %c2 = arith.constant 2 : index
+        %alloc = memref.alloc() : memref<3x3x32x4xi32, 1 : i32>
+        air.herd @herd_0  tile (%arg9, %arg10) in (%arg11=%c2, %arg12=%c4) args(%arg13=%alloc) : memref<3x3x32x4xi32, 1 : i32> {
+          %c128 = arith.constant 128 : index
+          %c384 = arith.constant 384 : index
+          %c4_0 = arith.constant 4 : index
+          %c0 = arith.constant 0 : index
+          %c32 = arith.constant 32 : index
+          %c8 = arith.constant 8 : index
+          %c3_1 = arith.constant 3 : index
+          %c1 = arith.constant 1 : index
+          scf.for %arg14 = %c0 to %c3_1 step %c1 {
+            scf.for %arg15 = %c0 to %c3_1 step %c1 {
+              scf.for %arg16 = %c0 to %c32 step %c8 {
+                %alloc_2 = memref.alloc() : memref<1x1x8x4xi32, 2 : i32>
+                air.dma_memcpy_nd (%alloc_2[] [] [], %arg13[%arg14, %arg15, %arg16, %c0] [%c1, %c1, %c8, %c4_0] [%c384, %c128, %c4_0, %c1]) : (memref<1x1x8x4xi32, 2 : i32>, memref<3x3x32x4xi32, 1 : i32>)
+              }
+            }
+          }
+        }
+        memref.dealloc %alloc : memref<3x3x32x4xi32, 1 : i32>
+      }
+    }
+    return
+  }
+}
