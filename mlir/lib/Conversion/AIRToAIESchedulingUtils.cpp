@@ -868,7 +868,6 @@ void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
           indices_uint[dim] = 0;
         }
       }
-      assert(indices_uint[0] != 1 || indices_uint[1] != 1);
       if (areIdenticalVectors(indices_uint, position)) {
         alloc_id = iter;
       }
