@@ -50,5 +50,12 @@ class AirBackend(abc.ABC):
 
 
 class AirBackendError(Exception):
+    """An exception thrown by AIR backends"""
+
     def __init__(self, message):
+        """
+        Constructor for the AirBackendError
+        Args:
+            message: the reason for the exception
+        """
         super().__init__(message)

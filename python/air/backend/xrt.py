@@ -17,25 +17,29 @@ import os
 
 
 class XRTCompileArtifact:
+    """A class encompassing information on the artifacts produced by compilation for the NPU/XRT"""
+
     def __init__(
         self,
         xclbin,
         kernel,
         insts,
     ):
+        """
+        Constructor for an XRTCompileArtifact
+
+        Args:
+            xclbin: xclbin file name/path
+            kernel: kernel name
+            insts: instruction file name/path
+        """
         self.xclbin = xclbin
         self.kernel = kernel
         self.insts = insts
 
 
 class XRTBackend(AirBackend):
-    """Main entry-point for the xrt based AIR backend.
-
-    Args:
-      verbose: verbose output
-      experimental_passes: configure aircc to run additional experimental passes
-      omit_while_true_loop: configure aircc to comit the while true loop it traditionally emits.
-    """
+    """Main entry-point for the xrt based AIR backend."""
 
     def __init__(
         self,
@@ -43,6 +47,13 @@ class XRTBackend(AirBackend):
         experimental_passes=False,
         omit_while_true_loop=False,
     ):
+        """Constructor for XRTBackend
+
+        Args:
+            verbose: verbose output
+            experimental_passes: configure aircc to run additional experimental passes
+            omit_while_true_loop: configure aircc to comit the while true loop it traditionally emits.
+        """
         super().__init__()
         self.verbose = verbose
         self.experimental_passes = experimental_passes
@@ -61,17 +72,15 @@ class XRTBackend(AirBackend):
     ):
         """Compiles an AIR module for the NPU / XRT Runtime with aircc.
 
-        The module is expected to be AIR dialect IR. Unless 'pipeline' is
-        specified, the the input IR is passed directly to aircc. If 'pipeline'
-        is specified, it is passed to aircc as the 'pipeline' command line options.
+        The module is expected to be AIR dialect IR. The input IR is passed directly to aircc.
 
         Args:
-          air_module: The MLIR module consisting of funcs in the AIR dialect.
-          xclbin: xclbin filename to use
-          kernel: kernel name to use
-          insts: instruction filename to use
+            air_module: The MLIR module consisting of funcs in the AIR dialect.
+            xclbin: xclbin filename to use
+            kernel: kernel name to use
+            insts: instruction filename to use
         Returns:
-          An XRTCompile object
+            An XRTCompileArtifact object
         """
         if self.currently_loaded:
             raise AirBackendError(
@@ -112,10 +121,14 @@ class XRTBackend(AirBackend):
     def load(self, artifact: XRTCompileArtifact):
         """Load a compiled artifact into the air runtime.
 
+        Args:
+            artifact: The result of calling compile with XRTBackend on an MLIR-AIR module.
+
         Returns: A callable that can be used to invoke the loaded module.
             The callable takes a list of numpy arrays. Each numpy array is
             assumed to be an input/output tensor. The callable also returns a
-            list of numpy arrays, one for each tensor."""
+            list of numpy arrays, one for each tensor.
+        """
         if self.currently_loaded:
             raise AirBackendError(
                 "Cannot use XRTBackend to compile while the artifact is currently loaded. Call unload() first."
@@ -195,17 +208,26 @@ class XRTBackend(AirBackend):
         return invoker
 
     def compile_and_load(self, module):
-        """Compile and load a module in one step."""
+        """
+        Compile and load a module in one step.
+
+        Args:
+            air_module: The MLIR module consisting of funcs in the AIR dialect.
+
+        Returns: A callable that can be used to invoke the loaded module.
+            The callable takes a list of numpy arrays. Each numpy array is
+            assumed to be an input/output tensor. The callable also returns a
+            list of numpy arrays, one for each tensor.
+        """
         c = self.compile(module)
         return self.load(c)
 
     def unload(self):
         """Unload any loaded module and shutdown the air runtime."""
-        if self.currently_loaded:
-            self.kernel = None
-            self.context = None
-            self.xclbin = None
-            self.device = None
-            self.bo_instr = None
-            self.instr_v = None
-            self.currently_loaded = False
+        self.kernel = None
+        self.context = None
+        self.xclbin = None
+        self.device = None
+        self.bo_instr = None
+        self.instr_v = None
+        self.currently_loaded = False
