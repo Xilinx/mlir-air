@@ -2326,8 +2326,8 @@ public:
                           mlir::IntegerSetAttr::get(int_set));
         }
       } else if (!isVariantWrtHerdRows && !isVariantWrtHerdCols) {
-        // If a dma op is independent of herd induction vars, then we only
-        // broadcast it along either rows or columns, not both.
+        // If a dma op is independent of herd induction vars, then we broadcast
+        // it to every core in the herd.
         if (numRows > 1 && numCols == 1) {
           SmallVector<AffineExpr, 5> constraints{
               getAffineDimExpr(0, ctx), numRows - 1 - getAffineDimExpr(0, ctx),
@@ -2345,6 +2345,20 @@ public:
               getAffineSymbolExpr(0, ctx),
               numRows - 1 - getAffineSymbolExpr(0, ctx)};
           SmallVector<bool, 5> eqflags{true, false, false, false, false};
+          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+          dma_op->setAttr("broadcast_pattern",
+                          mlir::IntegerSetAttr::get(int_set));
+        } else {
+          // Broadcast to a 2d array of cores
+          SmallVector<AffineExpr, 6> constraints{
+              getAffineDimExpr(0, ctx),
+              numRows - 1 - getAffineDimExpr(0, ctx),
+              getAffineDimExpr(1, ctx),
+              numCols - 1 - getAffineDimExpr(1, ctx),
+              getAffineSymbolExpr(0, ctx),
+              -getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{false, false, false,
+                                       false, false, false};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                           mlir::IntegerSetAttr::get(int_set));
