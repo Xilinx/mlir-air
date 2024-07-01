@@ -6,60 +6,86 @@
 import air.ir
 import air.passmanager
 
-from .abc import AirBackend
+from .abc import AirBackend, AirBackendError
 
 import air.compiler.util
 import air.compiler.aircc.main as aircc
 
 import numpy as np
 import pyxrt as xrt
+import os
+
+
+class XRTCompileArtifact:
+    """A class encompassing information on the artifacts produced by compilation for the NPU/XRT"""
+
+    def __init__(
+        self,
+        xclbin,
+        kernel,
+        insts,
+    ):
+        """
+        Constructor for an XRTCompileArtifact
+
+        Args:
+            xclbin: xclbin file name/path
+            kernel: kernel name
+            insts: instruction file name/path
+        """
+        self.xclbin = xclbin
+        self.kernel = kernel
+        self.insts = insts
 
 
 class XRTBackend(AirBackend):
-    """Main entry-point for the xrt based AIR backend.
-
-    Args:
-      verbose: verbose
-      xclbin: xclbin filename to use
-      kernel: kernel name to use
-      insts: instruction filename to use
-    """
+    """Main entry-point for the xrt based AIR backend."""
 
     def __init__(
         self,
         verbose=False,
-        xclbin="air.xclbin",
-        kernel="MLIR_AIE",
-        insts="air.insts.txt",
         experimental_passes=False,
         omit_while_true_loop=False,
     ):
+        """Constructor for XRTBackend
+
+        Args:
+            verbose: verbose output
+            experimental_passes: configure aircc to run additional experimental passes
+            omit_while_true_loop: configure aircc to comit the while true loop it traditionally emits.
+        """
         super().__init__()
-        self.opts_xclbin = xclbin
-        self.opts_kernel = kernel
-        self.opts_insts = insts
         self.verbose = verbose
         self.experimental_passes = experimental_passes
         self.omit_while_true_loop = omit_while_true_loop
+        self.currently_loaded = False
 
     def __del__(self):
         self.unload()
 
-    def compile(self, air_module: air.ir.Module, pipeline=None):
+    def compile(
+        self,
+        air_module: air.ir.Module,
+        xclbin="air.xclbin",
+        kernel="MLIR_AIE",
+        insts="air.insts.txt",
+    ):
         """Compiles an AIR module for the NPU / XRT Runtime with aircc.
 
-        The module is expected to be AIR dialect IR. Unless 'pipeline' is
-        specified, the the input IR is passed directly to aircc. If 'pipeline'
-        is specified, it is passed to aircc as the 'pipeline' command line options.
+        The module is expected to be AIR dialect IR. The input IR is passed directly to aircc.
 
         Args:
-          air_module: The MLIR module consisting of funcs in the AIR dialect.
-          pipeline: aircc optimization pipeline to use.
-          verbose: verbose
+            air_module: The MLIR module consisting of funcs in the AIR dialect.
+            xclbin: xclbin filename to use
+            kernel: kernel name to use
+            insts: instruction filename to use
         Returns:
-          An opaque, backend specific compiled artifact object that can be
-          passed to `load`.
+            An XRTCompileArtifact object
         """
+        if self.currently_loaded:
+            raise AirBackendError(
+                "Cannot use XRTBackend to compile while the artifact is currently loaded. Call unload() first."
+            )
 
         with air.ir.Context():
 
@@ -74,7 +100,9 @@ class XRTBackend(AirBackend):
                 "-xchesscc",
                 "-xbridge",
                 "-o",
-                self.opts_xclbin,
+                xclbin,
+                "-i",
+                insts,
             ]
 
             if self.verbose:
@@ -88,33 +116,51 @@ class XRTBackend(AirBackend):
 
             aircc.run(air_module, aircc_options)
 
-        return air_module
+        return XRTCompileArtifact(xclbin, kernel, insts)
 
-    def load(self, module):
+    def load(self, artifact: XRTCompileArtifact):
         """Load a compiled artifact into the air runtime.
+
+        Args:
+            artifact: The result of calling compile with XRTBackend on an MLIR-AIR module.
 
         Returns: A callable that can be used to invoke the loaded module.
             The callable takes a list of numpy arrays. Each numpy array is
             assumed to be an input/output tensor. The callable also returns a
-            list of numpy arrays, one for each tensor."""
+            list of numpy arrays, one for each tensor.
+        """
+        if self.currently_loaded:
+            raise AirBackendError(
+                "Cannot use XRTBackend to compile while the artifact is currently loaded. Call unload() first."
+            )
+
+        if not os.path.isfile(artifact.xclbin):
+            raise AirBackendError(
+                f"Cannot load XRTCompileArtifact because {artifact.xclbin} xclbin file does not exist"
+            )
+        if not os.path.isfile(artifact.insts):
+            raise AirBackendError(
+                f"Cannot load XRTCompileArtifact because {artifact.insts} insts file does not exist"
+            )
 
         # create the device, xclbin and context
         self.device = xrt.device(0)
-        self.xclbin = xrt.xclbin(self.opts_xclbin)
+        self.xclbin = xrt.xclbin(artifact.xclbin)
         self.device.register_xclbin(self.xclbin)
         self.context = xrt.hw_context(self.device, self.xclbin.get_uuid())
 
         # find and load the kernel
         kernels = self.xclbin.get_kernels()
         try:
-            xkernel = [k for k in kernels if self.opts_kernel in k.get_name()][0]
+            xkernel = [k for k in kernels if artifact.kernel in k.get_name()][0]
         except:
-            print(f"Kernel '{self.opts_kernel}' not found in '{self.opts_xclbin}'")
-            exit(-1)
+            raise AirBackendError(
+                f"Kernel '{artifact.kernel}' not found in '{self.xclbin}'"
+            )
         self.kernel = xrt.kernel(self.context, xkernel.get_name())
 
         # load the instructions as a numpy array
-        with open(self.opts_insts, "r") as f:
+        with open(artifact.insts, "r") as f:
             instr_text = f.read().split("\n")
             instr_text = [l for l in instr_text if l != ""]
             self.instr_v = np.array([int(i, 16) for i in instr_text], dtype=np.uint32)
@@ -162,7 +208,17 @@ class XRTBackend(AirBackend):
         return invoker
 
     def compile_and_load(self, module):
-        """Compile and load a module in one step."""
+        """
+        Compile and load a module in one step.
+
+        Args:
+            air_module: The MLIR module consisting of funcs in the AIR dialect.
+
+        Returns: A callable that can be used to invoke the loaded module.
+            The callable takes a list of numpy arrays. Each numpy array is
+            assumed to be an input/output tensor. The callable also returns a
+            list of numpy arrays, one for each tensor.
+        """
         c = self.compile(module)
         return self.load(c)
 
@@ -174,3 +230,4 @@ class XRTBackend(AirBackend):
         self.device = None
         self.bo_instr = None
         self.instr_v = None
+        self.currently_loaded = False
