@@ -1248,8 +1248,11 @@ air::writeAccessPattern(memref::SubViewOp subview) {
     else
       std::get<1>(pattern).push_back(*subview_sizes++);
   }
-  assert(static_sizes.size() >= static_strides.size() &&
-         "only support standard and rank-reduced memref.subview");
+  if (static_sizes.size() < static_strides.size()) {
+    subview->emitOpError(
+        "isn't standard or rank-reduced memref.subview. Not supported.");
+    return pattern;
+  }
   // If rank-reduced memref.subview, then pad strides with 1s.
   for (unsigned i = 0; i < static_sizes.size() - static_strides.size(); i++)
     std::get<2>(pattern).push_back(
