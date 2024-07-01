@@ -76,6 +76,7 @@ def build_module():
             offset0 = affine_apply(scaled_index_map, [tile_index0])
             offset1 = affine_apply(scaled_index_map, [tile_index1])
             launch_tile_id = affine_apply(create_tile_index, [offset0, tile_index1])
+            launch_tile_id_idx = arith.index_cast(T.i32(), launch_tile_id)
 
             # Put data into the channel tile by tile
             ChannelPut(
@@ -96,16 +97,16 @@ def build_module():
             )
 
             # The arguments are still the input and the output
-            @segment(name="seg", operands=[launch_tile_id])
-            def segment_body(segment_tile_id):
-                herd_tile_id = affine_apply(identity_map, [segment_tile_id])
+            @segment(name="seg", operands=[launch_tile_id_idx])
+            def segment_body(segment_tile_id_idx):
+                # herd_tile_id_idx = affine_apply(identity_map, [segment_tile_id_idx])
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="xaddherd", sizes=[1, 1], operands=[herd_tile_id])
+                @herd(name="xaddherd", sizes=[1, 1], operands=[segment_tile_id_idx])
                 def herd_body(tx, ty, sx, sy, my_tile_id):
 
-                    tile_id = affine_apply(identity_map, [my_tile_id])
+                    # tile_id = affine_apply(identity_map, [my_tile_id])
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -131,9 +132,7 @@ def build_module():
                             val_in = load(tile_in, [i, j])
 
                             # Compute the output value TODO(hunhoffe): this is not correct, not sure how to percolate launch info here
-                            val_out = arith.addi(
-                                val_in, arith.index_cast(T.i32(), tile_id)
-                            )
+                            val_out = arith.addi(val_in, my_tile_id)
 
                             # Store the output value in tile_out
                             store(
