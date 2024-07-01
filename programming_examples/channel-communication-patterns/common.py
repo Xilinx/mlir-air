@@ -30,8 +30,8 @@ def test_main(build_module, verbose=False):
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     input_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     for i in range(INOUT_SIZE):
-        input_a[i] = i + 0x1000
-        input_b[i] = 0x00DEFACED
+        input_a[i] = 0x2
+        input_b[i] = 0x00C0FFEE
 
     # TODO(hunhoffe): need to figure out why single-core-dma fails with experimental_passes=True
     backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
@@ -58,7 +58,7 @@ def test_main(build_module, verbose=False):
         col = i % IMAGE_WIDTH
 
         # value should have been updated
-        expected_value = 0x1000 + i + 0x11
+        expected_value = 0x2 * 0x2 + 1
         if not (rb == expected_value):
             """
             print(
