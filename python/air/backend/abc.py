@@ -47,3 +47,8 @@ class AirBackend(abc.ABC):
         See the description of `Invoker` for the requirements on the returned
         type.
         """
+
+
+class AirBackendError(Exception):
+    def __init__(self, message):
+        super().__init__(message)
