@@ -48,7 +48,7 @@ def build_module():
     ChannelOp("ChanOut")
 
     # Create a channel we will use to pass data between works in two herds
-    ChannelOp("WorkerToWorker")
+    ChannelOp("Herd2Herd")
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -84,7 +84,7 @@ def build_module():
                         cast=TypeFn.cast_unsigned,
                     )
 
-                    ChannelPut("WorkerToWorker", image_out)
+                    ChannelPut("Herd2Herd", image_out)
 
                     DeallocOp(image_in)
                     DeallocOp(image_out)
@@ -96,7 +96,7 @@ def build_module():
                     image_in = AllocOp(image_type_l1, [], [])
                     image_out = AllocOp(image_type_l1, [], [])
 
-                    ChannelGet("WorkerToWorker", image_in)
+                    ChannelGet("Herd2Herd", image_in)
 
                     # Access every value in the image
                     for j in range_(IMAGE_HEIGHT):

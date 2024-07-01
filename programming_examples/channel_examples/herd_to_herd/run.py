@@ -17,13 +17,13 @@ try:
 except ValueError:  # Already removed
     pass
 
-from worker_to_worker.worker_to_worker import build_module
+from herd_to_herd.herd_to_herd import build_module
 from common import test_main
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the channel_communication_patterns/worker_to_worker example",
+        description="Builds, runs, and tests the channel_examples/herd_to_herd example",
     )
 
     parser.add_argument(

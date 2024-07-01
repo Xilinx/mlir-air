@@ -4,7 +4,7 @@ targetname := $(shell basename ${srcdir})
 
 run:
 	mkdir -p build
-	cd build && ${powershell} python3 ${srcdir}/run.py -v
+	cd build && ${powershell} python3 ${srcdir}/run.py
 
 clean:
 	rm -rf build __pycache__
