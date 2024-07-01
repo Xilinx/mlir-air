@@ -30,6 +30,14 @@ from common import *
 def build_module():
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
 
+    identity_map = AffineMap.get(
+        0,
+        1,
+        [
+            AffineSymbolExpr.get(0),
+        ],
+    )
+
     # Create two channels which will send/receive the
     # input/output data respectively
     ChannelOp("ChanIn")
@@ -55,8 +63,19 @@ def build_module():
                     )
                 ],
             )
+            create_tile_index = AffineMap.get(
+                0,
+                2,
+                [
+                    AffineExpr.get_add(
+                        AffineSymbolExpr.get(0),
+                        AffineSymbolExpr.get(1),
+                    )
+                ],
+            )
             offset0 = affine_apply(scaled_index_map, [tile_index0])
             offset1 = affine_apply(scaled_index_map, [tile_index1])
+            launch_tile_id = affine_apply(create_tile_index, [offset0, tile_index1])
 
             # Put data into the channel tile by tile
             ChannelPut(
@@ -77,64 +96,60 @@ def build_module():
             )
 
             # The arguments are still the input and the output
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg2, arg3):
+            @segment(name="seg", operands=[launch_tile_id])
+            def segment_body(segment_tile_id):
+                herd_tile_id = affine_apply(identity_map, [segment_tile_id])
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
-                def herd_body(tx, ty, sx, sy, a, b):
+                @herd(name="xaddherd", sizes=[1, 1], operands=[herd_tile_id])
+                def herd_body(tx, ty, sx, sy, my_tile_id):
 
-                    # Loop over columns and rows of tiles
-                    for tile_num in range_(
-                        (IMAGE_WIDTH // TILE_WIDTH) * (IMAGE_HEIGHT // TILE_HEIGHT)
-                    ):
+                    tile_id = affine_apply(identity_map, [my_tile_id])
 
-                        # We want to store our data in L1 memory
-                        mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                    # We want to store our data in L1 memory
+                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
 
-                        # This is the type definition of the tile
-                        tile_type = MemRefType.get(
-                            shape=TILE_SIZE,
-                            element_type=T.i32(),
-                            memory_space=mem_space,
-                        )
+                    # This is the type definition of the tile
+                    tile_type = MemRefType.get(
+                        shape=TILE_SIZE,
+                        element_type=T.i32(),
+                        memory_space=mem_space,
+                    )
 
-                        # We must allocate a buffer of tile size for the input/output
-                        tile_in = AllocOp(tile_type, [], [])
-                        tile_out = AllocOp(tile_type, [], [])
+                    # We must allocate a buffer of tile size for the input/output
+                    tile_in = AllocOp(tile_type, [], [])
+                    tile_out = AllocOp(tile_type, [], [])
 
-                        # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                        ChannelGet("ChanIn", tile_in)
+                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
+                    ChannelGet("ChanIn", tile_in)
 
-                        # Access every value in the tile
-                        for j in range_(TILE_HEIGHT):
-                            for i in range_(TILE_WIDTH):
-                                # Load the input value from tile_in
-                                val_in = load(tile_in, [i, j])
+                    # Access every value in the tile
+                    for j in range_(TILE_HEIGHT):
+                        for i in range_(TILE_WIDTH):
+                            # Load the input value from tile_in
+                            val_in = load(tile_in, [i, j])
 
-                                # Compute the output value TODO(hunhoffe): this is not correct, not sure how to percolate launch info here
-                                val_out = arith.addi(
-                                    val_in, arith.index_cast(T.i32(), tile_num)
-                                )
+                            # Compute the output value TODO(hunhoffe): this is not correct, not sure how to percolate launch info here
+                            val_out = arith.addi(
+                                val_in, arith.index_cast(T.i32(), tile_id)
+                            )
 
-                                # Store the output value in tile_out
-                                store(
-                                    val_out,
-                                    tile_out,
-                                    [i, j],
-                                )
-                                yield_([])
+                            # Store the output value in tile_out
+                            store(
+                                val_out,
+                                tile_out,
+                                [i, j],
+                            )
                             yield_([])
-
-                        # Copy the output tile into the output
-                        ChannelPut("ChanOut", tile_out)
-
-                        # Deallocate our L1 buffers
-                        DeallocOp(tile_in)
-                        DeallocOp(tile_out)
-
                         yield_([])
+
+                    # Copy the output tile into the output
+                    ChannelPut("ChanOut", tile_out)
+
+                    # Deallocate our L1 buffers
+                    DeallocOp(tile_in)
+                    DeallocOp(tile_out)
 
 
 if __name__ == "__main__":
