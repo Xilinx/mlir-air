@@ -553,32 +553,29 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   return airrtOp;
 }
 
-class AIRChannelPutToAIRRtConversion
-    : public OpConversionPattern<xilinx::air::ChannelPutOp> {
+template <typename OpT>
+class AIRChannelGetPutToAIRRtConversion : public OpConversionPattern<OpT> {
 public:
-  using OpConversionPattern<xilinx::air::ChannelPutOp>::OpConversionPattern;
+  using OpConversionPattern<OpT>::OpConversionPattern;
+  using OpAdaptor = typename OpT::Adaptor;
 
   LogicalResult
-  matchAndRewrite(xilinx::air::ChannelPutOp op, OpAdaptor adaptor,
+  matchAndRewrite(OpT op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto ctx = op->getContext();
 
-    if (op->getParentOfType<air::HerdOp>())
+    if (llvm::isa<air::HerdOp>(op->getParentOp()))
       return failure();
 
-    if (op->getParentOfType<AIE::CoreOp>())
+    if (llvm::isa<AIE::CoreOp>(op->getParentOp()))
       return failure();
 
-    // Get src and dst memref types
-    auto getOps = getTheOtherChannelOpThroughSymbol(op);
-    if (getOps.empty()) {
-      op->emitOpError("failed to find the 'put' side of this air.channel");
-      return failure();
-    }
-    auto getOp = getOps[0];
+    auto otherOps = getTheOtherChannelOpThroughSymbol(op);
+    if (otherOps.empty())
+      return op->emitOpError("failed to find the other side of air.channel");
+    auto otherOp = otherOps[0];
 
     Operation *airrtOp =
-        AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, getOp);
+        AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, otherOp);
 
     if (airrtOp) {
       rewriter.replaceOp(op, airrtOp);
@@ -593,56 +590,7 @@ public:
           deps.push_back(o);
       if (deps.size())
         rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(
-            op, xilinx::airrt::EventType::get(ctx), deps);
-      return success();
-    }
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-class AIRChannelGetToAIRRtConversion
-    : public OpConversionPattern<xilinx::air::ChannelGetOp> {
-public:
-  using OpConversionPattern<xilinx::air::ChannelGetOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(xilinx::air::ChannelGetOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto ctx = op->getContext();
-
-    if (op->getParentOfType<air::HerdOp>())
-      return failure();
-
-    if (op->getParentOfType<AIE::CoreOp>())
-      return failure();
-
-    // Get src and dst memref types
-    auto putOps = getTheOtherChannelOpThroughSymbol(op);
-    if (putOps.empty()) {
-      op->emitOpError("failed to find the 'get' side of this air.channel");
-      return failure();
-    }
-    auto putOp = putOps[0];
-
-    Operation *airrtOp =
-        AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, putOp);
-
-    if (airrtOp) {
-      rewriter.replaceOp(op, airrtOp);
-      return success();
-    }
-
-    if (op->getNumResults()) {
-      // Resolve channel op's dependency list
-      SmallVector<Value, 4> deps;
-      for (auto o : adaptor.getOperands())
-        if (llvm::isa<xilinx::airrt::EventType>(o.getType()))
-          deps.push_back(o);
-      if (deps.size())
-        rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(
-            op, xilinx::airrt::EventType::get(ctx), deps);
+            op, xilinx::airrt::EventType::get(op->getContext()), deps);
       return success();
     }
 
@@ -1063,12 +1011,14 @@ public:
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);
-    air_patterns
-        .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
-             ScfParOpConversion, ScfReduceReturnOpConversion,
-             ScfReduceOpConversion, AIRDmaMemcpyNdToAIRRtConversion,
-             AIRWaitAllToAIRRtConversion, AIRChannelPutToAIRRtConversion,
-             AIRChannelGetToAIRRtConversion>(converter, context);
+
+    air_patterns.add<
+        ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
+        ScfParOpConversion, ScfReduceReturnOpConversion, ScfReduceOpConversion,
+        AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion,
+        AIRChannelGetPutToAIRRtConversion<air::ChannelGetOp>,
+        AIRChannelGetPutToAIRRtConversion<air::ChannelPutOp>>(converter,
+                                                              context);
 
     if (failed(
             applyPartialConversion(module, target, std::move(air_patterns)))) {
