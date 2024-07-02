@@ -2328,7 +2328,9 @@ public:
       } else if (!isVariantWrtHerdRows && !isVariantWrtHerdCols) {
         // If a dma op is independent of herd induction vars, then we broadcast
         // it to every core in the herd.
-        if (numRows > 1 && numCols == 1) {
+        if (numRows == 1 && numCols == 1)
+          continue;
+        else if (numRows > 1 && numCols == 1) {
           SmallVector<AffineExpr, 5> constraints{
               getAffineDimExpr(0, ctx), numRows - 1 - getAffineDimExpr(0, ctx),
               getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
