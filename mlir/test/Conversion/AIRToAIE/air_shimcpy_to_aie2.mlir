@@ -1026,3 +1026,57 @@ module {
     return
   }
 }
+
+// -----
+
+// Unrolled bundle of channels from shim accessing directly to herd.
+// CHECK: aie.device(xcve2802)
+// CHECK: %[[tile_2_0:.*]] = aie.tile(2, 0)
+// CHECK: %[[tile_3_0:.*]] = aie.tile(3, 0)
+// CHECK: %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK: %[[tile_3_3:.*]] = aie.tile(3, 3)
+// CHECK: %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK: %[[tile_3_4:.*]] = aie.tile(3, 4)
+// CHECK: aie.flow(%[[tile_2_0]], DMA : 0, %[[tile_2_3]], DMA : 0)
+// CHECK: aie.flow(%[[tile_2_0]], DMA : 1, %[[tile_3_3]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_0]], DMA : 0, %[[tile_2_4]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_0]], DMA : 1, %[[tile_3_4]], DMA : 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId9(MM2S, 0, 2)
+// CHECK: memref.global "public" @airMemcpyId9 : memref<16x8xi32, 2 : i32>
+// CHECK: aie.shim_dma_allocation @airMemcpyId9_1(MM2S, 1, 2)
+// CHECK: memref.global "public" @airMemcpyId9_1 : memref<16x8xi32, 2 : i32>
+// CHECK: aie.shim_dma_allocation @airMemcpyId9_2(MM2S, 0, 3)
+// CHECK: memref.global "public" @airMemcpyId9_2 : memref<16x8xi32, 2 : i32>
+// CHECK: aie.shim_dma_allocation @airMemcpyId9_3(MM2S, 1, 3)
+// CHECK: memref.global "public" @airMemcpyId9_3 : memref<16x8xi32, 2 : i32>
+// CHECK: func.func @func14
+// CHECK: air.channel.put  @channel_0{{.*}} metadata = @airMemcpyId9} : (memref<32x16xi32>)
+// CHECK: air.channel.put  @channel_0{{.*}} metadata = @airMemcpyId9_1} : (memref<32x16xi32>)
+// CHECK: air.channel.put  @channel_0{{.*}} metadata = @airMemcpyId9_2} : (memref<32x16xi32>)
+// CHECK: air.channel.put  @channel_0{{.*}} metadata = @airMemcpyId9_3} : (memref<32x16xi32>)
+
+module {
+  air.channel @channel_0 [2, 2]
+  func.func @func14(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
+    air.launch () in () args(%arg2=%arg0) : memref<32x16xi32> {
+      %c8 = arith.constant 8 : index
+      %c16 = arith.constant 16 : index
+      %c32 = arith.constant 32 : index
+      %c1 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      air.channel.put  @channel_0[%c0, %c0] (%arg2[%c0, %c0] [%c8, %c16] [%c32, %c1]) {id = 1 : i32} : (memref<32x16xi32>)
+      air.channel.put  @channel_0[%c1, %c0] (%arg2[%c16, %c0] [%c8, %c16] [%c32, %c1]) {id = 2 : i32} : (memref<32x16xi32>)
+      air.channel.put  @channel_0[%c0, %c1] (%arg2[%c0, %c16] [%c8, %c16] [%c32, %c1]) {id = 3 : i32} : (memref<32x16xi32>)
+      air.channel.put  @channel_0[%c1, %c1] (%arg2[%c16, %c16] [%c8, %c16] [%c32, %c1]) {id = 4 : i32} : (memref<32x16xi32>)
+      air.segment @seg  {
+        %c2 = arith.constant 2 : index
+        air.herd @xaddherd  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) {
+          %alloc = memref.alloc() : memref<16x8xi32, 2 : i32>
+          air.channel.get  @channel_0[%arg3, %arg4] (%alloc[] [] []) {id = 9 : i32} : (memref<16x8xi32, 2 : i32>)
+          memref.dealloc %alloc : memref<16x8xi32, 2 : i32>
+        }
+      }
+    }
+    return
+  }
+}
