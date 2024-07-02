@@ -22,6 +22,12 @@ def parse_args(args=None):
     )
     parser.add_argument("-o", dest="output_file", default="", help="Output filename")
     parser.add_argument(
+        "-i",
+        dest="insts_file",
+        default="",
+        help="Output insts file name. Only used for compilation on an NPU.",
+    )
+    parser.add_argument(
         "--tmpdir",
         metavar="tmpdir",
         default="air_project",

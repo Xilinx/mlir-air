@@ -446,12 +446,14 @@ def run(mlir_module, args=None):
                 + ")"
             )
             run_passes(air_to_npu_passes, air_to_npu_module, opts, air_to_npu_file)
+            xclbin_file = "aie.xclbin"
             if opts.output_file:
                 xclbin_file = opts.output_file
-                insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.txt"
+            if opts.insts_file:
+                insts_file = opts.insts_file
             else:
-                xclbin_file = "aie.xclbin"
-                insts_file = "aie.insts.txt"
+                assert xclbin_file.endswith(".xclbin")
+                insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.txt"
             aiecc_options = (["-v"] if opts.verbose else []) + [
                 "--no-aiesim",
                 "--xchesscc" if opts.xchesscc else "--no-xchesscc",
