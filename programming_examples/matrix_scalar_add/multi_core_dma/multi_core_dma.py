@@ -50,16 +50,6 @@ def build_module():
                     operands=[arg2, arg3],
                 )
                 def herd_body(tx, ty, sx, sy, a, b):
-                    scaled_index_map_height = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(TILE_HEIGHT),
-                            )
-                        ],
-                    )
                     scaled_index_map_width = AffineMap.get(
                         0,
                         1,
@@ -70,7 +60,7 @@ def build_module():
                             )
                         ],
                     )
-                    create_tile_index_hight = AffineMap.get(
+                    create_tile_index_height = AffineMap.get(
                         0,
                         1,
                         [
@@ -92,9 +82,9 @@ def build_module():
                     )
                     offset0 = affine_apply(scaled_index_map_width, [tx])
                     offset1 = affine_apply(scaled_index_map_width, [ty])
-                    tile_index_hight = affine_apply(create_tile_index_hight, [tx])
+                    tile_index_height = affine_apply(create_tile_index_height, [tx])
                     compute_tile_id = affine_apply(
-                        create_tile_index, [tile_index_hight, ty]
+                        create_tile_index, [tile_index_height, ty]
                     )
 
                     # We want to store our data in L1 memory
@@ -132,11 +122,7 @@ def build_module():
                             )
 
                             # Store the output value in tile_out
-                            store(
-                                val_out,
-                                tile_out,
-                                [i, j],
-                            )
+                            store(val_out, tile_out, [i, j])
                             yield_([])
                         yield_([])
 
