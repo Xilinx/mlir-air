@@ -9,14 +9,6 @@ IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
 IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
 
-TILE_WIDTH = 16
-TILE_HEIGHT = 8
-TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]
-
-assert IMAGE_WIDTH % TILE_WIDTH == 0
-assert IMAGE_HEIGHT % TILE_HEIGHT == 0
-
-
 INOUT_DATATYPE = np.uint32
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
 INOUT_SIZE = IMAGE_SIZE[0] * IMAGE_SIZE[1]
@@ -38,8 +30,8 @@ def test_main(build_module, verbose=False):
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     input_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     for i in range(INOUT_SIZE):
-        input_a[i] = i + 0x1000
-        input_b[i] = 0x00DEFACED
+        input_a[i] = 0x2
+        input_b[i] = 0x00C0FFEE
 
     # TODO(hunhoffe): need to figure out why single-core-dma fails with experimental_passes=True
     backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
@@ -64,12 +56,9 @@ def test_main(build_module, verbose=False):
 
         row = i // IMAGE_WIDTH
         col = i % IMAGE_WIDTH
-        tile_num = (row // TILE_HEIGHT) * (IMAGE_HEIGHT // TILE_HEIGHT) + (
-            col // TILE_WIDTH
-        )
 
         # value should have been updated
-        expected_value = 0x1000 + i + tile_num
+        expected_value = 0x2 * 0x2 + 1
         if not (rb == expected_value):
             """
             print(
