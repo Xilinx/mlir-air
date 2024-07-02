@@ -2226,32 +2226,56 @@ public:
   void annotateMetadataPerShimAIRChannel(air::ChannelInterface chan_o,
                                          MemRefType memref_ty,
                                          StringAttr dma_name_attr) {
-    auto originalIndices = chan_o.getIndices();
-    SmallVector<int> subChannelIndices;
-    for (auto index : originalIndices) {
-      if (auto const_index = getConstantIntValue(index))
-        subChannelIndices.push_back(*const_index);
-    }
+    auto ctx = chan_o->getContext();
+    auto internalIndices = chan_o.getIndices();
+
+    int subChannelIdx = 0;
     for (auto the_other_chan_o : getTheOtherChannelOpThroughSymbol(chan_o)) {
       if (the_other_chan_o->hasAttr("metadata"))
         continue;
-      // If they are sub-channels, then check for sub-channel indices.
-      if (!originalIndices.empty() &&
-          originalIndices.size() == the_other_chan_o.getIndices().size()) {
-        bool allEqual = true;
-        for (unsigned i = 0; i < subChannelIndices.size(); i++) {
-          if (subChannelIndices[i] !=
-              *getConstantIntValue(the_other_chan_o.getIndices()[i]))
-            allEqual = false;
+      // Many on shim, one on air.hierarchy.
+      if (!internalIndices.empty() &&
+          internalIndices.size() == the_other_chan_o.getIndices().size()) {
+        // Check if the two end points of the connection match
+        bool matchingSubChannel = true;
+        for (unsigned i = 0; i < internalIndices.size(); i++) {
+          Value internalIdx = internalIndices[i];
+          Value externalIdx = the_other_chan_o.getIndices()[i];
+          auto constInternalIdx = getConstantIntValue(internalIdx);
+          auto constExternalIdx = getConstantIntValue(externalIdx);
+          if (constInternalIdx && constExternalIdx) {
+            if (*constInternalIdx != *constExternalIdx)
+              matchingSubChannel = false;
+          } else if (constInternalIdx && !constExternalIdx) {
+            if (!scf::getParallelForInductionVarOwner(externalIdx))
+              matchingSubChannel = false;
+          } else if (!constInternalIdx && constExternalIdx) {
+            if (!air::getHerdArgOwner(internalIdx))
+              matchingSubChannel = false;
+          } else {
+            if (!scf::getParallelForInductionVarOwner(externalIdx))
+              matchingSubChannel = false;
+            if (!air::getHerdArgOwner(internalIdx))
+              matchingSubChannel = false;
+          }
         }
-        if (allEqual)
-          the_other_chan_o->setAttr(
-              "metadata", FlatSymbolRefAttr::get(the_other_chan_o->getContext(),
-                                                 dma_name_attr));
-      } else
-        the_other_chan_o->setAttr(
-            "metadata", FlatSymbolRefAttr::get(the_other_chan_o->getContext(),
-                                               dma_name_attr));
+        if (matchingSubChannel) {
+          if (subChannelIdx) {
+            the_other_chan_o->setAttr(
+                "metadata",
+                FlatSymbolRefAttr::get(
+                    ctx, mlir::StringAttr::get(
+                             ctx, dma_name_attr.str() + "_" +
+                                      std::to_string(subChannelIdx))));
+          } else {
+            the_other_chan_o->setAttr(
+                "metadata", FlatSymbolRefAttr::get(ctx, dma_name_attr));
+          }
+          subChannelIdx++;
+        }
+      } else // One on shim, one on air.hierarchy.
+        the_other_chan_o->setAttr("metadata",
+                                  FlatSymbolRefAttr::get(ctx, dma_name_attr));
     }
   }
 
