@@ -186,6 +186,7 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
       staticStrides.push_back(*const_int / div);
     else
       strides.push_back(divOp(adaptor.getStride1()));
+    staticStrides.push_back(1);
 
     StringRef metadata;
     if (op->hasAttr("metadata"))
