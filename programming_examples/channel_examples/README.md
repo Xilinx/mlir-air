@@ -13,4 +13,13 @@ cd herd_to_herd
 make clean && make
 ```
 
+#### ```channel-size```: Use the channel size argument
+
+This example ([channel_size/herd_to_herd.py](channel_size/herd_to_herd.py)) keeps the same structure as the `herd-to-herd` example but uses `CHANNEL_SIZE` channels to communicate partial blocks of the input image between the producer and the consumer herds. The `ChannelOp` `size` argument is a convenience method for creating multiple channels; the `ChannelPut`/`ChannelGet` `indices` argument allows you to access a specific channel in that grouping.
+
+```bash
+cd channel_size
+make clean && make
+```
+
 #### WIP: more examples!
