@@ -33,8 +33,8 @@ def build_module():
 
     # Create two channels which will send/receive the
     # input/output data respectively
-    ChannelOp("ChanIn")
-    ChannelOp("ChanOut")
+    ChannelOp("ChanIn", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
+    ChannelOp("ChanOut", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -62,6 +62,7 @@ def build_module():
                     ChannelPut(
                         "ChanIn",
                         a,
+                        indices=[1, 1],
                         offsets=[offset0, offset1],
                         sizes=[TILE_HEIGHT, TILE_WIDTH],
                         strides=[IMAGE_WIDTH, 1],
@@ -71,6 +72,7 @@ def build_module():
                     ChannelGet(
                         "ChanOut",
                         b,
+                        indices=[1, 1],
                         offsets=[offset0, offset1],
                         sizes=[TILE_HEIGHT, TILE_WIDTH],
                         strides=[IMAGE_WIDTH, 1],
@@ -144,6 +146,7 @@ def build_module():
                     ChannelGet(
                         "ChanIn",
                         tile_in,
+                        indices=[1, 1],
                     )
 
                     # Access every value in the tile
@@ -171,6 +174,7 @@ def build_module():
                     ChannelPut(
                         "ChanOut",
                         tile_out,
+                        indices=[1, 1],
                     )
 
                     # Deallocate our L1 buffers
