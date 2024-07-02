@@ -26,8 +26,7 @@ from common import *
 
 
 def get_unique_name(preface, w, h):
-    print(f"{preface}{w:02}{h:02}")
-    return f"{preface}:{w:02}{h:02}"
+    return f"{preface}{w:02}{h:02}"
 
 
 @module_builder
