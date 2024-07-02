@@ -46,17 +46,37 @@ def build_module():
                 # We are hoping to map each tile to a different compute core.
                 @herd(
                     name="xaddherd",
-                    sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
+                    sizes=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT],
                     operands=[arg2, arg3],
                 )
                 def herd_body(tx, ty, sx, sy, a, b):
-                    scaled_index_map = AffineMap.get(
+                    scaled_index_map_height = AffineMap.get(
                         0,
                         1,
                         [
                             AffineExpr.get_mul(
                                 AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(IMAGE_HEIGHT),
+                                AffineConstantExpr.get(TILE_HEIGHT),
+                            )
+                        ],
+                    )
+                    scaled_index_map_width = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(TILE_WIDTH),
+                            )
+                        ],
+                    )
+                    create_tile_index_hight = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(IMAGE_HEIGHT // TILE_HEIGHT),
                             )
                         ],
                     )
@@ -70,9 +90,12 @@ def build_module():
                             )
                         ],
                     )
-                    offset0 = affine_apply(scaled_index_map, [tx])
-                    offset1 = affine_apply(scaled_index_map, [ty])
-                    compute_tile_id = affine_apply(create_tile_index, [offset0, ty])
+                    offset0 = affine_apply(scaled_index_map_width, [tx])
+                    offset1 = affine_apply(scaled_index_map_width, [ty])
+                    tile_index_hight = affine_apply(create_tile_index_hight, [tx])
+                    compute_tile_id = affine_apply(
+                        create_tile_index, [tile_index_hight, ty]
+                    )
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)

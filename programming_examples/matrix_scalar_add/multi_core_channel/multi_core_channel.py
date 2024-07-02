@@ -100,6 +100,16 @@ def build_module():
                             )
                         ],
                     )
+                    create_tile_index_hight = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(IMAGE_HEIGHT // TILE_HEIGHT),
+                            )
+                        ],
+                    )
                     create_tile_index = AffineMap.get(
                         0,
                         2,
@@ -110,8 +120,11 @@ def build_module():
                             )
                         ],
                     )
-                    offset0 = affine_apply(scaled_index_map, [tx])
-                    compute_tile_id = affine_apply(create_tile_index, [offset0, ty])
+                    # offset0 = affine_apply(scaled_index_map, [tx])
+                    tile_index_hight = affine_apply(create_tile_index_hight, [tx])
+                    compute_tile_id = affine_apply(
+                        create_tile_index, [tile_index_hight, ty]
+                    )
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -157,7 +170,7 @@ def build_module():
                     # Copy the output tile into the output
                     ChannelPut(
                         "ChanOut",
-                        tile_in,
+                        tile_out,
                     )
 
                     # Deallocate our L1 buffers
