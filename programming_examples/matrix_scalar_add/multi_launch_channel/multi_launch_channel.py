@@ -19,16 +19,25 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.dialects.affine import apply as affine_apply
 
 range_ = for_
 
 from common import *
 
 
+def get_unique_name(preface, w, h):
+    print(f"{preface}{w:02}{h:02}")
+    return f"{preface}:{w:02}{h:02}"
+
+
 @module_builder
 def build_module():
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+
+    for w in range(IMAGE_WIDTH // TILE_WIDTH):
+        for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
+            ChannelOp(get_unique_name("ChanIn", w, h))
+            ChannelOp(get_unique_name("ChanOut", w, h))
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -38,22 +47,15 @@ def build_module():
         # (e.g., python vars during this code generation phase)
         for w in range(IMAGE_WIDTH // TILE_WIDTH):
             for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                ChannelOp(
-                    "ChanIn",
-                    size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
-                )
-                ChannelOp(
-                    "ChanOut",
-                    size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
-                )
+                segment_name = get_unique_name("seg", w, h)
+                herd_name = get_unique_name("herd", w, h)
 
                 @launch(operands=[arg0, arg1])
                 def launch_body(a, b):
                     # Put data into the channel tile by tile
                     ChannelPut(
-                        "ChanIn",
+                        get_unique_name("ChanIn", w, h),
                         a,
-                        indices=[w, h],
                         offsets=[w * IMAGE_HEIGHT, h * IMAGE_HEIGHT],
                         sizes=[TILE_HEIGHT, TILE_WIDTH],
                         strides=[IMAGE_WIDTH, 1],
@@ -61,18 +63,17 @@ def build_module():
 
                     # Write data back out to the channel tile by tile
                     ChannelGet(
-                        "ChanOut",
+                        get_unique_name("ChanOut", w, h),
                         b,
-                        indices=[w, h],
                         offsets=[w * IMAGE_HEIGHT, h * IMAGE_HEIGHT],
                         sizes=[TILE_HEIGHT, TILE_WIDTH],
                         strides=[IMAGE_WIDTH, 1],
                     )
 
-                    @segment(name="seg")
+                    @segment(name=segment_name)
                     def segment_body():
 
-                        @herd(name="xaddherd")
+                        @herd(name=herd_name)
                         def herd_body(_tx, _ty, _sx, _sy):
                             # We want to store our data in L1 memory
                             mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -89,7 +90,7 @@ def build_module():
                             tile_out = AllocOp(tile_type, [], [])
 
                             # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                            ChannelGet("ChanIn", tile_in, indices=[w, h])
+                            ChannelGet(get_unique_name("ChanIn", w, h), tile_in)
 
                             # Access every value in the tile
                             for j in range_(TILE_HEIGHT):
@@ -115,7 +116,7 @@ def build_module():
                                 yield_([])
 
                             # Copy the output tile into the output
-                            ChannelPut("ChanOut", tile_out, indices=[w, h])
+                            ChannelPut(get_unique_name("ChanOut", w, h), tile_out)
 
                             # Deallocate our L1 buffers
                             DeallocOp(tile_in)
