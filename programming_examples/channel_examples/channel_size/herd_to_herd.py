@@ -27,15 +27,18 @@ range_ = for_
 
 from common import *
 
-CHANNEL_SIZE = [1, 2]
+CHANNEL_SIZE = [1, 1]
 NUM_CHANNELS = CHANNEL_SIZE[0] * CHANNEL_SIZE[1]
-assert IMAGE_SIZE[0] // CHANNEL_SIZE[0] == 0
-assert IMAGE_SIZE[1] // CHANNEL_SIZE[1] == 0
+assert IMAGE_SIZE[0] % CHANNEL_SIZE[0] == 0
+assert IMAGE_SIZE[1] % CHANNEL_SIZE[1] == 0
 
 PARTIAL_IMAGE_SIZE = [
     IMAGE_SIZE[0] // CHANNEL_SIZE[0],
     IMAGE_SIZE[1] // CHANNEL_SIZE[1],
 ]
+assert (IMAGE_SIZE[0] * IMAGE_SIZE[1]) % (
+    PARTIAL_IMAGE_SIZE[0] * PARTIAL_IMAGE_SIZE[1]
+) == 0
 
 
 @module_builder
@@ -117,6 +120,14 @@ def build_module():
                             partial_image_in = AllocOp(partial_image_type_l1, [], [])
                             partial_image_out = AllocOp(partial_image_type_l1, [], [])
 
+                            data_block_num = arith.MulIOp(
+                                channel_index0,
+                                arith.ConstantOp.create_index(CHANNEL_SIZE[0]),
+                            )
+                            data_block_num = arith.AddIOp(
+                                data_block_num, channel_index1
+                            )
+
                             ChannelGet(
                                 "Herd2Herd",
                                 partial_image_in,
@@ -135,13 +146,8 @@ def build_module():
                                         val_in, arith.ConstantOp(T.i32(), 1)
                                     )
                                     """
-
                                     # TODO: for debugging, temporarily just set it to a current channel number
-                                    val_out = arith.ConstantOp(
-                                        T.i32(),
-                                        channel_index0 * CHANNEL_SIZE[0]
-                                        + channel_index1,
-                                    )
+                                    val_out = arith.index_cast(T.i32(), data_block_num)
 
                                     # Store the output value
                                     store(val_out, partial_image_out, [i, j])

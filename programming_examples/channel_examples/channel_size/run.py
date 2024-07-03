@@ -17,7 +17,7 @@ try:
 except ValueError:  # Already removed
     pass
 
-from herd_to_herd.herd_to_herd import build_module
+from channel_size.herd_to_herd import build_module
 from common import test_main
 
 if __name__ == "__main__":
