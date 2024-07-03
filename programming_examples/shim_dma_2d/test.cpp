@@ -1,3 +1,5 @@
+// Copyright (C) 2024, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
 #include <boost/program_options.hpp>
 #include <cstdint>
 #include <fstream>
