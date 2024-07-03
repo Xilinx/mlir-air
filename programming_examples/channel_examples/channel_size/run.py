@@ -3,17 +3,16 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 import argparse
-
-from herd_to_herd import build_module
-
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: MIT
-
 import numpy as np
 import air.backend.xrt as xrt_backend
 import filelock
 
-from herd_to_herd import *
+from channel_size import *
+
+INOUT_DATATYPE = np.uint32
+INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
+INOUT_SIZE = IMAGE_SIZE[0] * IMAGE_SIZE[1]
+INOUT_SIZE_BYTES = INOUT_SIZE * INOUT_ELEM_SIZE
 
 
 def print_matrix(matrix_array):
@@ -31,8 +30,8 @@ def test_main(build_module, verbose=False):
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     input_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     for i in range(INOUT_SIZE):
-        input_a[i] = 0x2
-        input_b[i] = 0x00C0FFEE
+        input_a[i] = i + 0x1000
+        input_b[i] = 0x00DEFACED
 
     # TODO(hunhoffe): need to figure out why single-core-dma fails with experimental_passes=True
     backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
@@ -57,9 +56,12 @@ def test_main(build_module, verbose=False):
 
         row = i // IMAGE_WIDTH
         col = i % IMAGE_WIDTH
+        tile_num = (row // TILE_HEIGHT) * (IMAGE_HEIGHT // TILE_HEIGHT) + (
+            col // TILE_WIDTH
+        )
 
         # value should have been updated
-        expected_value = 0x2 * 0x2 + 1
+        expected_value = 0x1000 + i + tile_num
         if not (rb == expected_value):
             """
             print(
