@@ -1282,9 +1282,13 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
   // Update wraps based on vector shape and vector access patterns.
-  for (unsigned i = 0; i < std::get<1>(pattern).size(); i++)
+  unsigned rankOffset =
+      vectorTy.getShape().size() >= std::get<1>(pattern).size()
+          ? 0
+          : std::get<1>(pattern).size() - vectorTy.getShape().size();
+  for (unsigned i = rankOffset; i < std::get<1>(pattern).size(); i++)
     std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
-        builder.getUnknownLoc(), vectorTy.getShape()[i]);
+        builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
   updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder);
   return pattern;
 }
@@ -1303,9 +1307,13 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
   // Update wraps based on vector shape and vector access patterns.
-  for (unsigned i = 0; i < std::get<1>(pattern).size(); i++)
+  unsigned rankOffset =
+      vectorTy.getShape().size() >= std::get<1>(pattern).size()
+          ? 0
+          : std::get<1>(pattern).size() - vectorTy.getShape().size();
+  for (unsigned i = rankOffset; i < std::get<1>(pattern).size(); i++)
     std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
-        builder.getUnknownLoc(), vectorTy.getShape()[i]);
+        builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
   updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder);
   return pattern;
 }
