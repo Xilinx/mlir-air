@@ -77,13 +77,13 @@ def build_module():
                 yield_([])
 
             # The arguments are still the input and the output
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg2, arg3):
+            @segment(name="seg")
+            def segment_body():
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
-                def herd_body(tx, ty, sx, sy, a, b):
+                @herd(name="xaddherd", sizes=[1, 1])
+                def herd_body(_tx, _ty, _sx, _sy):
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
