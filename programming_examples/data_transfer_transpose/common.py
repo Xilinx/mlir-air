@@ -26,7 +26,11 @@ def test_main(build_module, m, k, verbose=False, experimental_passes=False):
     actual_output_matrix = np.zeros(matrix_shape_t, dtype=matrix_dtype)
     assert expected_output_matrix.shape == actual_output_matrix.shape
 
-    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True, experimental_passes=experimental_passes)
+    backend = xrt_backend.XRTBackend(
+        verbose=verbose,
+        omit_while_true_loop=True,
+        experimental_passes=experimental_passes,
+    )
 
     if verbose:
         print(input_matrix)

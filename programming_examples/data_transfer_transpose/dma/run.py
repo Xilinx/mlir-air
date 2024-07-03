@@ -44,4 +44,6 @@ if __name__ == "__main__":
         help="The matrix to transpose will be of size M x K, this parameter sets the k value",
     )
     args = parser.parse_args()
-    test_main(build_module, m=args.m, k=args.k, verbose=args.verbose, experimental_passes=True)
+    test_main(
+        build_module, m=args.m, k=args.k, verbose=args.verbose, experimental_passes=True
+    )
