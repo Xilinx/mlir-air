@@ -105,7 +105,6 @@ add_mlir_python_modules(AirMLIRPythonModules
     AirPythonExtensions
   COMMON_CAPI_LINK_LIBS
     AirAggregateCAPI
-    AIRCAPI
   )
 
 add_mlir_python_modules(AirPythonModules
