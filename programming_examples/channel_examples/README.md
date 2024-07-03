@@ -15,7 +15,7 @@ make clean && make
 
 #### ```channel-size```: Use the channel size argument
 
-This example ([channel_size/herd_to_herd.py](channel_size/herd_to_herd.py)) keeps the same structure as the `herd-to-herd` example but uses `CHANNEL_SIZE` channels to communicate partial blocks of the input image between the producer and the consumer herds. The `ChannelOp` `size` argument is a convenience method for creating multiple channels; the `ChannelPut`/`ChannelGet` `indices` argument allows you to access a specific channel in that grouping.
+This example ([channel_size/channel_size.py](channel_size/channel_size.py)) keeps the same structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) example, only instead of using a separately defined channel for each tile/core, a bundle of channels is created (using the `ChannelOp` `size` parameter) and indexed into (the `ChannelGet` and `ChannelPut` `indices` parameter).
 
 ```bash
 cd channel_size
