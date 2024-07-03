@@ -28,6 +28,7 @@ EXPERIMENTAL_PASSES = [
     "air-dependency",
     "air-dependency-schedule-opt",
     "air-specialize-dma-broadcast",
+    "air-dma-to-channel",
     "canonicalize",
     "cse",
     "air-dependency-canonicalize",
