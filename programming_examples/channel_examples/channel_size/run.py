@@ -33,7 +33,6 @@ def test_main(build_module, verbose=False):
         input_a[i] = i + 0x1000
         input_b[i] = 0x00DEFACED
 
-    # TODO(hunhoffe): need to figure out why single-core-dma fails with experimental_passes=True
     backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
 
     if verbose:
@@ -53,15 +52,12 @@ def test_main(build_module, verbose=False):
     errors = 0
     for i in range(INOUT_SIZE):
         rb = output_b[i]
+        expected_value = input_a[i]
 
         row = i // IMAGE_WIDTH
         col = i % IMAGE_WIDTH
-        tile_num = (row // TILE_HEIGHT) * (IMAGE_HEIGHT // TILE_HEIGHT) + (
-            col // TILE_WIDTH
-        )
 
         # value should have been updated
-        expected_value = 0x1000 + i + tile_num
         if not (rb == expected_value):
             """
             print(

@@ -6,7 +6,6 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.dialects.affine import apply as affine_apply
 
 range_ = for_
 
@@ -83,28 +82,6 @@ def build_module():
                     sizes=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT],
                 )
                 def herd_body(th, tw, _sx, _sy):
-                    create_tile_index_height = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(IMAGE_HEIGHT // TILE_HEIGHT),
-                            )
-                        ],
-                    )
-                    create_tile_index = AffineMap.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineSymbolExpr.get(1),
-                            )
-                        ],
-                    )
-                    tile_index_height = affine_apply(create_tile_index_height, [th])
-                    tile_id = affine_apply(create_tile_index, [tile_index_height, tw])
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -127,16 +104,10 @@ def build_module():
                     for j in range_(TILE_HEIGHT):
                         for i in range_(TILE_WIDTH):
                             # Load the input value from tile_in
-                            val_in = load(tile_in, [i, j])
-
-                            # Compute the output value
-                            val_out = arith.addi(
-                                val_in,
-                                arith.index_cast(T.i32(), tile_id),
-                            )
+                            val = load(tile_in, [i, j])
 
                             # Store the output value in tile_out
-                            store(val_out, tile_out, [i, j])
+                            store(val, tile_out, [i, j])
                             yield_([])
                         yield_([])
 
