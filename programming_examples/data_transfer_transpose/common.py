@@ -10,7 +10,7 @@ import filelock
 # INOUT_SIZE_BYTES = INOUT_SIZE * INOUT_ELEM_SIZE
 
 
-def test_main(build_module, m, k, verbose=False):
+def test_main(build_module, m, k, verbose=False, experimental_passes=False):
     mlir_module = build_module(m, k)
 
     matrix_shape = (m, k)
@@ -26,7 +26,7 @@ def test_main(build_module, m, k, verbose=False):
     actual_output_matrix = np.zeros(matrix_shape_t, dtype=matrix_dtype)
     assert expected_output_matrix.shape == actual_output_matrix.shape
 
-    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
+    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True, experimental_passes=experimental_passes)
 
     if verbose:
         print(input_matrix)
