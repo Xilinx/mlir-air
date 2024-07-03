@@ -1,18 +1,5 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import sys
-from pathlib import Path  # if you haven't already done so
-
-# Python paths are a bit complex. Taking solution from : https://stackoverflow.com/questions/16981921/relative-imports-in-python-3
-file = Path(__file__).resolve()
-parent, root = file.parent, file.parents[1]
-sys.path.append(str(root))
-
-# Additionally remove the current file's directory from sys.path
-try:
-    sys.path.remove(str(parent))
-except ValueError:  # Already removed
-    pass
 
 from air.ir import *
 from air.dialects.air import *
@@ -24,8 +11,14 @@ from air.dialects.scf import for_, yield_
 
 range_ = for_
 
+IMAGE_WIDTH = 1
+IMAGE_HEIGHT = 32
+IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
 
-from common import *
+INOUT_DATATYPE = np.uint32
+INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
+INOUT_SIZE = IMAGE_SIZE[0] * IMAGE_SIZE[1]
+INOUT_SIZE_BYTES = INOUT_SIZE * INOUT_ELEM_SIZE
 
 CHANNEL_SIZE = [1, 1]
 NUM_CHANNELS = CHANNEL_SIZE[0] * CHANNEL_SIZE[1]
@@ -33,12 +26,12 @@ assert IMAGE_SIZE[0] % CHANNEL_SIZE[0] == 0
 assert IMAGE_SIZE[1] % CHANNEL_SIZE[1] == 0
 
 PARTIAL_IMAGE_SIZE = [
-    IMAGE_SIZE[0] // CHANNEL_SIZE[0],
-    IMAGE_SIZE[1] // CHANNEL_SIZE[1],
+    1,
+    (IMAGE_SIZE[0] * IMAGE_SIZE[1]) // NUM_CHANNELS,
 ]
-assert (IMAGE_SIZE[0] * IMAGE_SIZE[1]) % (
-    PARTIAL_IMAGE_SIZE[0] * PARTIAL_IMAGE_SIZE[1]
-) == 0
+assert NUM_CHANNELS * PARTIAL_IMAGE_SIZE[0] * PARTIAL_IMAGE_SIZE[1] == (
+    IMAGE_SIZE[0] * IMAGE_SIZE[1]
+)
 
 
 @module_builder
@@ -147,7 +140,7 @@ def build_module():
                                     )
                                     """
                                     # TODO: for debugging, temporarily just set it to a current channel number
-                                    val_out = arith.index_cast(T.i32(), data_block_num)
+                                    val_out = arith.index_cast(T.i32(), channel_index1)
 
                                     # Store the output value
                                     store(val_out, partial_image_out, [i, j])

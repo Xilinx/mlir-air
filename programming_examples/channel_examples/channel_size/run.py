@@ -3,22 +3,78 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 import argparse
-import sys
-from pathlib import Path  # if you haven't already done so
 
-# Python paths are a bit complex. Taking solution from : https://stackoverflow.com/questions/16981921/relative-imports-in-python-3
-file = Path(__file__).resolve()
-parent, root = file.parent, file.parents[1]
-sys.path.append(str(root))
+from herd_to_herd import build_module
 
-# Additionally remove the current file's directory from sys.path
-try:
-    sys.path.remove(str(parent))
-except ValueError:  # Already removed
-    pass
+# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
 
-from channel_size.herd_to_herd import build_module
-from common import test_main
+import numpy as np
+import air.backend.xrt as xrt_backend
+import filelock
+
+from herd_to_herd import *
+
+
+def print_matrix(matrix_array):
+    for i in range(IMAGE_HEIGHT):
+        row = matrix_array[i * IMAGE_WIDTH : (i + 1) * IMAGE_WIDTH]
+        for val in row:
+            val = val & 0xFFFF
+            print(f"{val:04x}", end=" ")
+        print("")
+
+
+def test_main(build_module, verbose=False):
+    mlir_module = build_module()
+
+    input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
+    input_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
+    for i in range(INOUT_SIZE):
+        input_a[i] = 0x2
+        input_b[i] = 0x00C0FFEE
+
+    # TODO(hunhoffe): need to figure out why single-core-dma fails with experimental_passes=True
+    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
+
+    if verbose:
+        print_matrix(input_b)
+
+    # run the module
+    with filelock.FileLock("/tmp/npu.lock"):
+        addone = backend.compile_and_load(mlir_module)
+        (_, output_b) = addone(input_a, input_b)
+
+    backend.unload()
+
+    if verbose:
+        print_matrix(output_b)
+
+    # check output, should have all values incremented
+    errors = 0
+    for i in range(INOUT_SIZE):
+        rb = output_b[i]
+
+        row = i // IMAGE_WIDTH
+        col = i % IMAGE_WIDTH
+
+        # value should have been updated
+        expected_value = 0x2 * 0x2 + 1
+        if not (rb == expected_value):
+            """
+            print(
+                f"IM {i} [{col}, {row}] should be 0x{expected_value:x}, is 0x{rb:x}\n"
+            )
+            """
+            errors += 1
+
+    if errors == 0:
+        print("PASS!")
+        exit(0)
+    else:
+        print("failed. errors=", errors)
+        exit(-1)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
