@@ -107,7 +107,7 @@ public:
       for (auto &o : operands)
         if (llvm::isa<airrt::EventType>(o.getType()))
           deps.push_back(o);
-      rewriter.setInsertionPointAfter(scfPar);
+      rewriter.setInsertionPoint(scfPar);
       rewriter.replaceOpWithNewOp<airrt::WaitAllOp>(
           op, airrt::EventType::get(op->getContext()), deps);
     } else
