@@ -571,6 +571,10 @@ public:
 
     // Get src and dst memref types
     auto getOps = getTheOtherChannelOpThroughSymbol(op);
+    if (getOps.empty()) {
+      op->emitOpError("failed to find the 'put' side of this air.channel");
+      return failure();
+    }
     auto getOp = getOps[0];
 
     Operation *airrtOp =
@@ -616,6 +620,10 @@ public:
 
     // Get src and dst memref types
     auto putOps = getTheOtherChannelOpThroughSymbol(op);
+    if (putOps.empty()) {
+      op->emitOpError("failed to find the 'get' side of this air.channel");
+      return failure();
+    }
     auto putOp = putOps[0];
 
     Operation *airrtOp =
@@ -727,16 +735,7 @@ public:
   LogicalResult
   matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    SmallVector<Value, 8> operands{adaptor.getOperands()};
-    SmallVector<Type, 2> retTys;
-    for (auto t : op->getResultTypes()) {
-      if (llvm::isa<air::AsyncTokenType>(t)) {
-        retTys.push_back(airrt::EventType::get(op->getContext()));
-      } else {
-        retTys.push_back(t);
-      }
-    }
-    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, retTys, operands);
+    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, adaptor.getOperands());
     return success();
   }
 };
@@ -793,7 +792,6 @@ public:
   LogicalResult
   matchAndRewrite(scf::ReduceReturnOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    SmallVector<Value, 8> operands{adaptor.getOperands()};
     SmallVector<Type, 2> retTys;
     for (auto t : op->getResultTypes()) {
       if (llvm::isa<air::AsyncTokenType>(t)) {
@@ -802,7 +800,8 @@ public:
         retTys.push_back(t);
       }
     }
-    rewriter.replaceOpWithNewOp<scf::ReduceReturnOp>(op, retTys, operands);
+    rewriter.replaceOpWithNewOp<scf::ReduceReturnOp>(op, retTys,
+                                                     adaptor.getOperands());
     return success();
   }
 };
@@ -851,58 +850,19 @@ public:
   LogicalResult
   matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto newOp = rewriter.replaceOpWithNewOp<scf::ForOp>(
-        op, adaptor.getLowerBound(), adaptor.getUpperBound(), adaptor.getStep(),
-        adaptor.getInitArgs());
-    auto body = op.getBody();
-    auto newBody = newOp.getBody();
-    rewriter.setInsertionPointToStart(newBody);
+    scf::ForOp newOp =
+        dyn_cast<scf::ForOp>(rewriter.cloneWithoutRegions(*op.getOperation()));
+    rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(),
+                                newOp.getRegion().end());
 
-    IRMapping remap;
-    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
-      auto arg = body->getArgument(i);
-      auto newArg = newBody->getArgument(i);
-      if (isa<airrt::EventType>(newArg.getType())) {
-        auto cast = rewriter.create<UnrealizedConversionCastOp>(
-            op->getLoc(), arg.getType(), newArg);
-        remap.map(arg, cast.getResult(0));
-      } else {
-        remap.map(arg, newArg);
-      }
-    }
-    for (auto &o : body->getOperations()) {
-      if (isa<scf::YieldOp>(o)) {
-        SmallVector<Value> opers;
-        for (int i = 0, e = o.getNumOperands(); i < e; i++) {
-          auto oper = remap.lookupOrDefault(o.getOperand(i));
-          if (llvm::isa<air::AsyncTokenType>(oper.getType())) {
-            auto ty = airrt::EventType::get(o.getContext());
-            auto cast = rewriter.create<UnrealizedConversionCastOp>(
-                op->getLoc(), ty, oper);
-            opers.push_back(cast->getResult(0));
-          } else {
-            opers.push_back(oper);
-          }
-        }
-        rewriter.create<scf::YieldOp>(o.getLoc(), opers);
-      } else {
-        rewriter.clone(o, remap);
-      }
-    }
+    // Set operands and update block argument and result types.
+    newOp->setOperands(adaptor.getOperands());
+    if (failed(rewriter.convertRegionTypes(&newOp.getRegion(), *typeConverter)))
+      return failure();
+    for (auto result : newOp.getResults())
+      result.setType(typeConverter->convertType(result.getType()));
 
-    // Cast result types back to air.asyncTokenType using
-    // UnrealizedConversionCastOp.
-    rewriter.setInsertionPointAfter(newOp);
-    SmallVector<Value> newResults;
-    for (auto res : newOp->getResults()) {
-      if (llvm::isa<airrt::EventType>(res.getType())) {
-        auto ty = air::AsyncTokenType::get(op->getContext());
-        auto cast =
-            rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), ty, res);
-        newResults.push_back(cast.getResult(0));
-      } else
-        newResults.push_back(res);
-    }
+    rewriter.replaceOp(op, newOp.getResults());
     return success();
   }
 };
@@ -914,76 +874,19 @@ public:
   LogicalResult
   matchAndRewrite(scf::ParallelOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    SmallVector<Value> newInitVals;
-    for (auto initVal : adaptor.getInitVals()) {
-      if (llvm::isa<air::AsyncTokenType>(initVal.getType())) {
-        auto cast = rewriter.create<UnrealizedConversionCastOp>(
-            op->getLoc(), airrt::EventType::get(op->getContext()), initVal);
-        newInitVals.push_back(cast.getResult(0));
-      } else
-        newInitVals.push_back(initVal);
-    }
+    scf::ParallelOp newOp = dyn_cast<scf::ParallelOp>(
+        rewriter.cloneWithoutRegions(*op.getOperation()));
+    rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(),
+                                newOp.getRegion().end());
 
-    auto hasNElements = [](Block *block, unsigned N) {
-      unsigned counter = 0;
-      for (auto &o : block->getOperations()) {
-        if (o.mightHaveTrait<OpTrait::IsTerminator>())
-          continue;
-        if (isa<air::WaitAllOp>(o))
-          continue;
-        counter++;
-      }
-      return counter == N;
-    };
+    // Set operands and update block argument and result types.
+    newOp->setOperands(adaptor.getOperands());
+    if (failed(rewriter.convertRegionTypes(&newOp.getRegion(), *typeConverter)))
+      return failure();
+    for (auto result : newOp.getResults())
+      result.setType(typeConverter->convertType(result.getType()));
 
-    Operation *newOp = nullptr;
-    auto body = op.getBody();
-    if (hasNElements(body, 0))
-      // If empty scf.parallel body, then replace the scf.parallel with
-      // airrt.wait_all (no-op).
-      newOp = rewriter.create<airrt::WaitAllOp>(
-          op->getLoc(), airrt::EventType::get(op->getContext()), newInitVals);
-    else {
-      auto newParOp = rewriter.create<scf::ParallelOp>(
-          op->getLoc(), adaptor.getLowerBound(), adaptor.getUpperBound(),
-          adaptor.getStep(), newInitVals);
-      newOp = newParOp.getOperation();
-      auto newBody = newParOp.getBody();
-      rewriter.setInsertionPointToStart(newBody);
-      IRMapping remap;
-      for (int i = 0, e = body->getNumArguments(); i < e; i++) {
-        auto arg = body->getArgument(i);
-        auto newArg = newBody->getArgument(i);
-        if (isa<airrt::EventType>(newArg.getType())) {
-          auto cast = rewriter.create<UnrealizedConversionCastOp>(
-              op->getLoc(), arg.getType(), newArg);
-          remap.map(arg, cast.getResult(0));
-        } else {
-          remap.map(arg, newArg);
-        }
-      }
-      for (int i = 0, e = op.getNumReductions(); i < e; i++)
-        replaceAllUsesInRegionWith(op.getInitVals()[i],
-                                   newParOp.getInitVals()[i],
-                                   newParOp.getRegion());
-      for (auto &o : body->getOperations())
-        rewriter.clone(o, remap);
-    }
-
-    // Cast result types back to air.asyncTokenType using
-    // UnrealizedConversionCastOp.
-    rewriter.setInsertionPointAfter(newOp);
-    SmallVector<Value> newResults;
-    for (auto res : newOp->getResults()) {
-      if (llvm::isa<airrt::EventType>(res.getType())) {
-        auto ty = air::AsyncTokenType::get(op->getContext());
-        auto cast =
-            rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), ty, res);
-        newResults.push_back(cast.getResult(0));
-      } else
-        newResults.push_back(res);
-    }
-    rewriter.replaceOp(op, newResults);
+    rewriter.replaceOp(op, newOp.getResults());
     return success();
   }
 };
@@ -1150,34 +1053,25 @@ public:
       }
       return true;
     });
+    target.addIllegalOp<air::WaitAllOp>();
     target.addLegalOp<UnrealizedConversionCastOp>();
 
-    air_patterns.add<
-        ScfYieldOpConversion, ScfIfOpConversion, ScfParOpConversion,
-        ScfReduceReturnOpConversion, ScfReduceOpConversion, ScfForOpConversion,
-        L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
-        AIRLaunchConversion, AIRSegmentConversion, AIRHerdConversion>(context);
+    air_patterns
+        .add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
+             AIRLaunchConversion, AIRSegmentConversion, AIRHerdConversion>(
+            context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);
-
     air_patterns
-        .add<AIRDmaMemcpyNdToAIRRtConversion, AIRChannelPutToAIRRtConversion,
-             AIRChannelGetToAIRRtConversion, AIRWaitAllToAIRRtConversion>(
-            converter, context);
+        .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
+             ScfParOpConversion, ScfReduceReturnOpConversion,
+             ScfReduceOpConversion, AIRDmaMemcpyNdToAIRRtConversion,
+             AIRWaitAllToAIRRtConversion, AIRChannelPutToAIRRtConversion,
+             AIRChannelGetToAIRRtConversion>(converter, context);
 
     if (failed(
             applyPartialConversion(module, target, std::move(air_patterns)))) {
-      emitError(UnknownLoc::get(context), "error lowering air dialect\n");
-      signalPassFailure();
-    }
-
-    RewritePatternSet cast_patterns(context);
-    populateReconcileUnrealizedCastsPatterns(cast_patterns);
-    ConversionTarget cast_target(getContext());
-    cast_target.addIllegalOp<UnrealizedConversionCastOp>();
-    if (failed(applyPartialConversion(module, cast_target,
-                                      std::move(cast_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
       signalPassFailure();
     }
