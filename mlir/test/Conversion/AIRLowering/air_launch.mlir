@@ -8,20 +8,15 @@
 // RUN: air-opt -air-to-std %s | FileCheck %s
 
 // CHECK-LABEL:   func.func @launch_0(
-// CHECK-SAME:                        %[[VAL_0:.*]]: memref<16xf16>,
-// CHECK-SAME:                        %[[VAL_1:.*]]: memref<16xf16>) {
-// CHECK:           %[[VAL_2:.*]] = arith.constant 2 : index
-// CHECK:           %[[VAL_3:.*]] = arith.constant 4 : index
-// CHECK:           %[[VAL_4:.*]] = arith.constant 0 : index
-// CHECK:           %[[VAL_5:.*]] = arith.constant 1 : index
-// CHECK:           affine.for %[[VAL_6:.*]] = 0 to 4 {
-// CHECK:             air.dma_memcpy_nd (%[[VAL_1]][] [] [], %[[VAL_0]][] [] []) : (memref<16xf16>, memref<16xf16>)
+// CHECK-SAME:               %{{.*}}: memref<16xf16>,
+// CHECK-SAME:               %{{.*}}: memref<16xf16>) {
+// CHECK:       affine.for %{{.*}} = 0 to 4 {
+// CHECK:       affine.for %{{.*}} = 0 to 2 {
+// CHECK:       affine.for %{{.*}} = 0 to 2 {
 func.func @launch_0(%arg0: memref<16xf16>, %arg1: memref<16xf16>) {
   %c2 = arith.constant 2 : index
   %c4 = arith.constant 4 : index
   air.launch (%arg2, %arg3, %arg4) in (%arg5=%c4, %arg6=%c2, %arg7=%c2) args(%arg8=%arg0, %arg9=%arg1) : memref<16xf16>, memref<16xf16> {
-    air.dma_memcpy_nd (%arg9[] [] [], %arg8[] [] []) : (memref<16xf16>, memref<16xf16>)
-    air.launch_terminator
   }
   return
 }
