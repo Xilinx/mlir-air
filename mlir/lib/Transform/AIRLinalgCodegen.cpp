@@ -1991,9 +1991,9 @@ void transform::LinalgTileOp::print(OpAsmPrinter &p) {
 
 void transform::LinalgTileOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  consumesHandle(getTarget(), effects);
-  onlyReadsHandle(getDynamicSizes(), effects);
-  producesHandle(getTiledLinalgOp(), effects);
+  consumesHandle(getTargetMutable(), effects);
+  onlyReadsHandle(getDynamicSizesMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
   producesHandle(getLoops(), effects);
   modifiesPayload(effects);
 }
@@ -2113,8 +2113,8 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
 
 void transform::LinalgPromoteOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  onlyReadsHandle(getTarget(), effects);
-  producesHandle(getResult(), effects);
+  onlyReadsHandle(getTargetMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
   modifiesPayload(effects);
 }
 
@@ -2132,9 +2132,9 @@ void transform::FuseIntoContainingMemrefOp::build(OpBuilder &builder,
 
 void transform::FuseIntoContainingMemrefOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  consumesHandle(getProducerOp(), effects);
-  onlyReadsHandle(getContainingOp(), effects);
-  producesHandle(getFusedOp(), effects);
+  consumesHandle(getProducerOpMutable(), effects);
+  onlyReadsHandle(getContainingOpMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
   modifiesPayload(effects);
 }
 

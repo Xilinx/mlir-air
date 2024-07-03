@@ -1076,16 +1076,6 @@ public:
       signalPassFailure();
     }
 
-    RewritePatternSet cast_patterns(context);
-    populateReconcileUnrealizedCastsPatterns(cast_patterns);
-    ConversionTarget cast_target(getContext());
-    cast_target.addIllegalOp<UnrealizedConversionCastOp>();
-    if (failed(applyPartialConversion(module, cast_target,
-                                      std::move(cast_patterns)))) {
-      emitError(UnknownLoc::get(context), "error lowering air dialect\n");
-      signalPassFailure();
-    }
-
     // If scf parallel loops containing memcpy ops exist in the same scope as
     // herd load, then attempt to serialize the asynchronous control programs.
     module.walk([&](func::FuncOp f) {
