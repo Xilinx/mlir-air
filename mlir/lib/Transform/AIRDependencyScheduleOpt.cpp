@@ -2228,20 +2228,23 @@ struct BroadcastDetection {
 public:
   // Trace dma ops' dependency to loop induction variables
   void getDmaOpLoopDependency(func::FuncOp f) {
-    f.walk([&](MemcpyInterface memcpyif_op) {
-      int src_memspace =
-          llvm::cast<MemRefType>(memcpyif_op.getSrcMemref().getType())
-              .getMemorySpaceAsInt();
-      int dst_memspace =
-          llvm::cast<MemRefType>(memcpyif_op.getDstMemref().getType())
-              .getMemorySpaceAsInt();
+    f.walk([&](air::DmaMemcpyNdOp dma_op) {
+      int src_memspace = -1;
+      int dst_memspace = -1;
+      if (dma_op.getSrcMemref())
+        src_memspace = llvm::cast<MemRefType>(dma_op.getSrcMemref().getType())
+                           .getMemorySpaceAsInt();
+      if (dma_op.getDstMemref())
+        dst_memspace = llvm::cast<MemRefType>(dma_op.getDstMemref().getType())
+                           .getMemorySpaceAsInt();
       bool isL1Memcpy = (src_memspace == (int)air::MemorySpace::L1) ||
                         (dst_memspace == (int)air::MemorySpace::L1);
-      if (memcpyif_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
+      if (dma_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
         // Start recursively tracing for loop induction variables
-        dma_op_history.push_back(memcpyif_op);
+        dma_op_history.push_back(dma_op);
         SmallVector<Value, 1> loop_dep_history;
         std::vector<Operation *> op_history;
+        auto memcpyif_op = dyn_cast<MemcpyInterface>(dma_op.getOperation());
         traceDependentInductionVar(memcpyif_op, loop_dep_history, op_history);
         dma_op_loop_dep_history.push_back(loop_dep_history);
       }
