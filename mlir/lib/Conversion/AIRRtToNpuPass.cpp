@@ -1098,13 +1098,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
   void unrollAffineFors(ModuleOp module) {
     // Taking into account for loop nests
-    SmallVector<affine::AffineForOp> afos;
     module.walk([&](mlir::func::FuncOp f) {
+      SmallVector<affine::AffineForOp> afos;
       for (auto op : f.getOps<affine::AffineForOp>()) {
         afos.push_back(op);
       }
       for (auto op : afos) {
-        unrollAffineFors(op);
+        unrollAffineFor(op);
         // Renumber unrolled memcpy ops
         int unrolled_op_id = 0;
         f.walk([&](airrt::DmaMemcpyNdOp dma) {
@@ -1127,15 +1127,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     });
   }
 
-  void unrollAffineFors(affine::AffineForOp affine_for_op) {
+  void unrollAffineFor(affine::AffineForOp affine_for_op) {
     SmallVector<affine::AffineForOp> afos;
     affine_for_op.walk([&](affine::AffineForOp afo) { afos.push_back(afo); });
-    for (auto afo : afos) {
-      int64_t tripCount = llvm::divideCeilSigned(
-          afo.getConstantUpperBound() - afo.getConstantLowerBound(),
-          afo.getStepAsInt());
-      (void)loopUnrollByFactor(afo, tripCount);
-    }
+    for (auto afo : afos)
+      (void)loopUnrollFull(afo);
   }
 
   void unrollSCFFors(ModuleOp module) {
