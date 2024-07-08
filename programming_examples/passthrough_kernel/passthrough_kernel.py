@@ -4,14 +4,47 @@
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects.func import FuncOp
+from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
+from air.dialects.arith import constant
 
 range_ = for_
 
 IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
 IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
+
+def external_func(name, inputs, outputs=None, visibility="private"):
+    if outputs is None:
+        outputs = []
+    my_func = FuncOp(
+        name=name, type=FunctionType.get(inputs, outputs), visibility=visibility
+    )
+    return my_func
+
+
+# Wrapper for func CallOp.
+class call(CallOp):
+    """Specialize CallOp class constructor to take python integers"""
+
+    def __init__(self, calleeOrResults, inputs=[], input_types=[]):
+        attrInputs = []
+        
+        for (i, itype) in zip(inputs, input_types):
+            if isinstance(i, int):
+                attrInputs.append(constant(itype, i))
+            else:
+                attrInputs.append(i)
+        if isinstance(calleeOrResults, FuncOp):
+            super().__init__(
+                calleeOrResults=calleeOrResults, argumentsOrCallee=attrInputs,
+            )
+        else:
+            super().__init__(
+                calleeOrResults=input_types,
+                argumentsOrCallee=FlatSymbolRefAttr.get(calleeOrResults),
+                arguments=attrInputs,
+            )
 
 
 @module_builder
@@ -40,11 +73,12 @@ def build_module():
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                    lineWidthInBytes = 4096 // 4
 
                     # This is the type definition of the image
                     image_type = MemRefType.get(
-                        shape=IMAGE_SIZE,
-                        element_type=T.i32(),
+                        shape=[lineWidthInBytes],
+                        element_type=T.ui8(),
                         memory_space=mem_space,
                     )
 
@@ -52,11 +86,12 @@ def build_module():
                     image_in = AllocOp(image_type, [], [])
                     image_out = AllocOp(image_type, [], [])
 
-                    passthrough_func = external_func(
-                        f"row_wise_bias_add_f32_f32",
-                        inputs=[memrefTyInOut, memrefTyInOut],
+                    # AIE Core Function declarations
+                    memRef_ty = T.memref(lineWidthInBytes, T.ui8())
+                    passThroughLineFunc = external_func(
+                        "passThroughLine", inputs=[memRef_ty, memRef_ty, T.i32()]
                     )
-                    call(passthrough_func, [image_in, image_out])
+                    call(passThroughLineFunc, [image_in, image_out, lineWidthInBytes])
 
                     """
                     # Access every value in the image
