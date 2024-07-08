@@ -33,4 +33,4 @@ if __name__ == "__main__":
         action="store_true",
     )
     args = parser.parse_args()
-    test_main(build_module, experimental_passes=False, verbose=args.verbose)
+    test_main(build_module, experimental_passes=True, verbose=args.verbose)
