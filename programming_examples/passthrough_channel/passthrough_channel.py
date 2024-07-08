@@ -29,8 +29,8 @@ def build_module():
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
 
-            # ChannelPut("ChanIn", a)
-            # ChannelGet("ChanOut", b)
+            ChannelPut("ChanIn", a)
+            ChannelGet("ChanOut", b)
 
             # The arguments are still the input and the output
             @segment(name="seg")
@@ -39,7 +39,7 @@ def build_module():
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
                 @herd(name="copyherd", sizes=[1, 1])
-                def herd_body(_tx, _ty, _sx, _sy):
+                def herd_body(tx, ty, sx, sy):
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -55,7 +55,6 @@ def build_module():
                     image_in = AllocOp(image_type, [], [])
                     image_out = AllocOp(image_type, [], [])
 
-                    """
                     # Place the input image (a) into the L1 memory region
                     ChannelGet("ChanIn", image_in)
 
@@ -72,7 +71,6 @@ def build_module():
 
                     # Copy the output image into the output
                     ChannelPut("ChanOut", image_out)
-                    """
 
                     # Deallocate our L1 buffers
                     DeallocOp(image_in)
