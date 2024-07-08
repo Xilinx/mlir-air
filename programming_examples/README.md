@@ -6,10 +6,14 @@ These programming examples are provided so that application programmers can lear
 
 This example demonstrates how data may be moved using shim DMA operations. It also includes extra infrastructure that illustrates different ways to compile, build, run, and test programs written using the mlir-air python bindings.
 
+## [Channel Examples](channel_examples)
+
+This is a collection of simple examples that illustrate how to use channels.
+
 ## [Matrix Scalar Addition](matrix_scalar_add)
 
 This example provides logic to divide in input 2D matrix into *tiles* of data, and add a value to every element in every tile. It includes some description of the fundamental concepts of mlir-air, including *launches*, *herds*, and *channels*.
 
-## [Channel Examples](channel_examples)
+## [Data Transfer Transpose](data_transfer_transpose)
 
-This is a collection of simple examples that illustrate how to use channels.
+Transposes a matrix with using either Channels or `dma_memcpy_nd`.

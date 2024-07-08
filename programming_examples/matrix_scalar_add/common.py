@@ -32,7 +32,7 @@ def print_matrix(matrix_array):
         print("")
 
 
-def test_main(build_module, verbose=False):
+def test_main(build_module, experimental_passes, verbose=False):
     mlir_module = build_module()
 
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
@@ -41,8 +41,11 @@ def test_main(build_module, verbose=False):
         input_a[i] = i + 0x1000
         input_b[i] = 0x00DEFACED
 
-    # TODO(hunhoffe): need to figure out why single-core-dma fails with experimental_passes=True
-    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
+    backend = xrt_backend.XRTBackend(
+        verbose=verbose,
+        omit_while_true_loop=True,
+        experimental_passes=experimental_passes,
+    )
 
     if verbose:
         print_matrix(input_b)
