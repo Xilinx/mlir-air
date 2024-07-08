@@ -8,7 +8,7 @@ import air.backend.xrt as xrt_backend
 import os
 import os.path
 import filelock
-from passthrough_dma import *
+from passthrough_channel import *
 
 KERNEL_NAME = "MLIR_AIE"
 
