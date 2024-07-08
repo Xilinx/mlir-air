@@ -21,10 +21,6 @@ assert IMAGE_WIDTH % TILE_WIDTH == 0
 assert IMAGE_HEIGHT % TILE_HEIGHT == 0
 
 
-def format_name(prefix, index_0, index_1):
-    return f"{prefix}{index_0:02}{index_1:02}"
-
-
 @module_builder
 def build_module():
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
