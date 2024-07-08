@@ -1,6 +1,7 @@
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# run.py -*- Python -*-
+#
+# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
-
 import argparse
 import numpy as np
 import air.backend.xrt as xrt_backend
@@ -23,7 +24,7 @@ def print_matrix(matrix_array):
         print("")
 
 
-def test_main(build_module, experimental_passes, verbose=False):
+def test_main(build_module, verbose=False):
     mlir_module = build_module()
 
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
@@ -32,11 +33,7 @@ def test_main(build_module, experimental_passes, verbose=False):
         input_a[i] = i + 0x1000
         input_b[i] = 0x00DEFACED
 
-    backend = xrt_backend.XRTBackend(
-        verbose=verbose,
-        omit_while_true_loop=True,
-        experimental_passes=experimental_passes,
-    )
+    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
 
     if verbose:
         print_matrix(input_b)
@@ -55,15 +52,12 @@ def test_main(build_module, experimental_passes, verbose=False):
     errors = 0
     for i in range(INOUT_SIZE):
         rb = output_b[i]
+        expected_value = input_a[i]
 
         row = i // IMAGE_WIDTH
         col = i % IMAGE_WIDTH
-        tile_num = (row // TILE_HEIGHT) * (IMAGE_HEIGHT // TILE_HEIGHT) + (
-            col // TILE_WIDTH
-        )
 
         # value should have been updated
-        expected_value = 0x1000 + i + tile_num
         if not (rb == expected_value):
             """
             print(
@@ -92,4 +86,4 @@ if __name__ == "__main__":
         action="store_true",
     )
     args = parser.parse_args()
-    test_main(build_module, verbose=args.verbose, experimental_passes=False)
+    test_main(build_module, verbose=args.verbose)
