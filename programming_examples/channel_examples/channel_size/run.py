@@ -1,13 +1,13 @@
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# run.py -*- Python -*-
+#
+# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
-
+import argparse
 import numpy as np
 import air.backend.xrt as xrt_backend
 import filelock
 
-IMAGE_WIDTH = 32
-IMAGE_HEIGHT = 16
-IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
+from channel_size import *
 
 INOUT_DATATYPE = np.uint32
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
@@ -30,10 +30,9 @@ def test_main(build_module, verbose=False):
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     input_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     for i in range(INOUT_SIZE):
-        input_a[i] = 0x2
-        input_b[i] = 0x00C0FFEE
+        input_a[i] = i + 0x1000
+        input_b[i] = 0x00DEFACED
 
-    # TODO(hunhoffe): need to figure out why single-core-dma fails with experimental_passes=True
     backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
 
     if verbose:
@@ -53,12 +52,12 @@ def test_main(build_module, verbose=False):
     errors = 0
     for i in range(INOUT_SIZE):
         rb = output_b[i]
+        expected_value = input_a[i]
 
         row = i // IMAGE_WIDTH
         col = i % IMAGE_WIDTH
 
         # value should have been updated
-        expected_value = 0x2 * 0x2 + 1
         if not (rb == expected_value):
             """
             print(
@@ -73,3 +72,18 @@ def test_main(build_module, verbose=False):
     else:
         print("failed. errors=", errors)
         exit(-1)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Builds, runs, and tests the channel_examples/herd_to_herd example",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+    )
+    args = parser.parse_args()
+    test_main(build_module, verbose=args.verbose)
