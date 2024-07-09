@@ -6,6 +6,14 @@ targetname := $(shell basename ${srcdir})
 
 include ${srcdir}/../../makefile-common
 
+# mlir-aie dir should be one up from the install dir, if it is defined
+# if it is not defined, assume it's been cloned in ../mlir-aie
+ifeq (${MLIR_AIE_INSTALL_DIR},)
+	MLIR_AIE_DIR := $(shell realpath $(srcdir)/../../../mlir-aie)
+else
+	MLIR_AIE_DIR := $(shell realpath ${MLIR_AIE_INSTALL_DIR}/../)
+endif
+
 targetname = passThroughKernel
 VPATH := ${MLIR_AIE_DIR}/aie_kernels/generic
 

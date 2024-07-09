@@ -12,15 +12,6 @@ CHESS_FLAGS = -P ${VITIS_AIE_INCLUDE_DIR}
 
 CHESSCCWRAP2_FLAGS = aie2 -I ${VITIS_AIETOOLS_DIR}/include 
 
-# mlir-aie dir should be one up from the install dir, if it is defined
-# if it is not defined, assume it's been cloned in ../mlir-aie
-ifeq ($(MLIR_AIE_INSTALL_DIR),)
-	MLIR_AIR_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
-	MLIR_AIE_DIR := $(shell realpath $(MLIR_AIR_DIR)/../../mlir-aie)
-else
-	MLIR_AIE_DIR := $(shell realpath $(MLIR_AIE_INSTALL_DIR)/../)
-endif
-
 TEST_POWERSHELL := $(shell command -v powershell.exe >/dev/null 2>&1 && echo yes || echo no)
 ifeq ($(TEST_POWERSHELL),yes)
 	powershell = powershell.exe
