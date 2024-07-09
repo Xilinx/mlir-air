@@ -10,9 +10,7 @@ from air.dialects.arith import constant
 
 range_ = for_
 
-VECTOR_SIZE = 4096
 NUM_VECTORS = 4
-assert VECTOR_SIZE % NUM_VECTORS == 0
 
 
 def external_func(name, inputs, outputs=None, visibility="private"):
@@ -52,12 +50,14 @@ class call(CallOp):
 
 
 @module_builder
-def build_module():
+def build_module(vector_size):
+    assert vector_size % NUM_VECTORS == 0
+
     # chop input in 4 sub-tensors
-    lineWidthInBytes = VECTOR_SIZE // NUM_VECTORS
+    lineWidthInBytes = vector_size // NUM_VECTORS
 
     # Type and method of input/output
-    memrefTyInOut = T.memref(VECTOR_SIZE, T.ui8())
+    memrefTyInOut = T.memref(vector_size, T.ui8())
     ChannelOp("ChanIn")
     ChannelOp("ChanOut")
 

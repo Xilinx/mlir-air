@@ -3,6 +3,7 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
+import argparse
 import numpy as np
 import air.backend.xrt as xrt_backend
 import os
@@ -14,23 +15,21 @@ KERNEL_NAME = "MLIR_AIE"
 
 INOUT_DATATYPE = np.uint8
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
-INOUT_SIZE = VECTOR_SIZE
-INOUT_SIZE_BYTES = INOUT_SIZE * INOUT_ELEM_SIZE
-
-verbose = False
 
 
-def main():
-    mlir_module = build_module()
+def main(vector_size, verbose=False, experimental_passes=False):
+    mlir_module = build_module(vector_size)
 
-    input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
-    output_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
-    for i in range(INOUT_SIZE):
+    input_a = np.arange(1, vector_size + 1, dtype=INOUT_DATATYPE)
+    output_b = np.arange(1, vector_size + 1, dtype=INOUT_DATATYPE)
+    for i in range(vector_size):
         input_a[i] = i % 0xFF
         output_b[i] = 0xFF
 
     backend = xrt_backend.XRTBackend(
-        verbose=verbose, experimental_passes=True, omit_while_true_loop=True
+        verbose=verbose,
+        experimental_passes=experimental_passes,
+        omit_while_true_loop=True,
     )
 
     # run the module
@@ -42,7 +41,7 @@ def main():
 
     # check output, should have the top left filled in
     errors = 0
-    for i in range(INOUT_SIZE):
+    for i in range(vector_size):
         rb = output_b[i]
 
         expected_value = i % 0xFF
@@ -59,4 +58,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Builds, runs, and tests the passthrough/kernel example",
+    )
+    parser.add_argument(
+        "vector_size",
+        type=int,
+        default=4096,
+        help="The size (in bytes) of the data vector to passthrough",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+    )
+    args = parser.parse_args()
+    main(args.vector_size, experimental_passes=True, verbose=args.verbose)
