@@ -1,5 +1,5 @@
 // (c) Copyright 2024 Advanced Micro Devices, Inc.
- // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+ // SPDX-License-Identifier: MIT
  //
  // REQUIRES: ryzen_ai
  //
