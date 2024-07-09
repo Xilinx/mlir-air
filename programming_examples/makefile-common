@@ -1,3 +1,6 @@
+# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 # VITIS related variables
 VITIS_ROOT ?= $(shell realpath $(dir $(shell which vitis))/../)
 VITIS_AIETOOLS_DIR ?= ${VITIS_ROOT}/aietools

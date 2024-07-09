@@ -1,23 +1,17 @@
-# run.py -*- Python -*-
-#
-# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-import argparse
 import numpy as np
 import air.backend.xrt as xrt_backend
-import os
-import os.path
 import filelock
-from passthrough_kernel import *
 
-KERNEL_NAME = "MLIR_AIE"
+NUM_VECTORS = 4
 
 INOUT_DATATYPE = np.uint8
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
 
 
-def main(vector_size, verbose=False, experimental_passes=False):
+def test_main(build_module, vector_size, verbose=False, experimental_passes=False):
     mlir_module = build_module(vector_size)
 
     input_a = np.arange(1, vector_size + 1, dtype=INOUT_DATATYPE)
@@ -55,23 +49,3 @@ def main(vector_size, verbose=False, experimental_passes=False):
     else:
         print("failed. errors=", errors)
         exit(-1)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough/kernel example",
-    )
-    parser.add_argument(
-        "vector_size",
-        type=int,
-        default=4096,
-        help="The size (in bytes) of the data vector to passthrough",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    args = parser.parse_args()
-    main(args.vector_size, experimental_passes=True, verbose=args.verbose)
