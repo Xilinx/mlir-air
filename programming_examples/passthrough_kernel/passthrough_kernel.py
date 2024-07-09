@@ -22,6 +22,7 @@ def external_func(name, inputs, outputs=None, visibility="private"):
         name=name, type=FunctionType.get(inputs, outputs), visibility=visibility
     )
     my_func.operation.attributes["link_with"] = StringAttr.get("passThrough.cc.o")
+    my_func.operation.attributes["llvm.emit_c_interface"] = UnitAttr.get()
     return my_func
 
 
