@@ -12,7 +12,7 @@ PASSTHROUGH_SIZE = ${data_size}
 
 all: run
 
-build/passThrough.cc.o: passThrough.cc
+build/passThrough.cc.o: ${VPATH}/passThrough.cc
 	mkdir -p ${@D}
 	cd ${@D} && xchesscc_wrapper ${CHESSCCWRAP2_FLAGS} -DBIT_WIDTH=8 -c $< -o ${@F}
 
@@ -21,4 +21,4 @@ run: build/passThrough.cc.o
 	cd build && ${powershell} python3 ${srcdir}/run.py ${data_size}
 
 clean:
-	rm -rf build __pycache__
+	rm -rf ${srcdir}/build ${srcdir}/__pycache__
