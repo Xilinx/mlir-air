@@ -87,6 +87,7 @@ class Herd(HerdOp):
         async_token=None,
         async_dependencies=[],
         operands=[],
+        link_with=None,
         attributes={},
         loc=None,
         ip=None,
@@ -98,6 +99,7 @@ class Herd(HerdOp):
             sizes=sizes,
             herd_operands=operands,
             sym_name=name,
+            link_with=link_with,
         )
         operand_types = [s.type for s in sizes] * 2 + [o.type for o in operands]
         self.regions[0].blocks.append(*operand_types)

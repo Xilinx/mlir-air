@@ -91,7 +91,7 @@ def build_module():
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="copyherd", sizes=[1, 1])
+                @herd(name="copyherd", sizes=[1, 1], link_with="passThrough.cc.o")
                 def herd_body(tx, ty, sx, sy):
 
                     for i in range_(NUM_VECTORS):
