@@ -4,49 +4,12 @@
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp
-from air.dialects.func import FuncOp, CallOp
+from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.dialects.arith import constant
 
 range_ = for_
 
 NUM_VECTORS = 4
-
-
-def external_func(name, inputs, outputs=None, visibility="private"):
-    if outputs is None:
-        outputs = []
-    my_func = FuncOp(
-        name=name, type=FunctionType.get(inputs, outputs), visibility=visibility
-    )
-    my_func.operation.attributes["link_with"] = StringAttr.get("passThrough.cc.o")
-    my_func.operation.attributes["llvm.emit_c_interface"] = UnitAttr.get()
-    return my_func
-
-
-# Wrapper for func CallOp.
-class call(CallOp):
-    """Specialize CallOp class constructor to take python integers"""
-
-    def __init__(self, calleeOrResults, inputs=[], input_types=[]):
-        attrInputs = []
-
-        for i, itype in zip(inputs, input_types):
-            if isinstance(i, int):
-                attrInputs.append(constant(itype, i))
-            else:
-                attrInputs.append(i)
-        if isinstance(calleeOrResults, FuncOp):
-            super().__init__(
-                calleeOrResults=calleeOrResults,
-                argumentsOrCallee=attrInputs,
-            )
-        else:
-            super().__init__(
-                calleeOrResults=input_types,
-                argumentsOrCallee=FlatSymbolRefAttr.get(calleeOrResults),
-                arguments=attrInputs,
-            )
 
 
 @module_builder
