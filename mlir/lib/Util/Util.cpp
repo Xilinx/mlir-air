@@ -944,17 +944,18 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
           getConstantIntValue(strides[i]) &&
           getConstantIntValue(strides[i - 1])) {
         auto const_offset = *getConstantIntValue(offsets[i]);
-        auto const_offset_next = *getConstantIntValue(offsets[i - 1]);
+        auto const_offset_prev = *getConstantIntValue(offsets[i - 1]);
         auto const_size = *getConstantIntValue(sizes[i]);
-        auto const_size_next = *getConstantIntValue(sizes[i - 1]);
+        auto const_size_prev = *getConstantIntValue(sizes[i - 1]);
         auto const_stride = *getConstantIntValue(strides[i]);
-        auto const_stride_next = *getConstantIntValue(strides[i - 1]);
-        if (const_stride_next == const_size * const_stride) {
+        auto const_stride_prev = *getConstantIntValue(strides[i - 1]);
+        if (const_stride_prev == const_size * const_stride) {
           sizes[i] = builder.create<arith::ConstantIndexOp>(
-              builder.getUnknownLoc(), const_size * const_size_next);
+              builder.getUnknownLoc(), const_size * const_size_prev);
           offsets[i] = builder.create<arith::ConstantIndexOp>(
               builder.getUnknownLoc(),
-              const_stride_next * const_offset_next + const_offset);
+              const_stride_prev * const_offset_prev / const_stride +
+                  const_offset);
           offsets.erase(offsets.begin() + i - 1);
           sizes.erase(sizes.begin() + i - 1);
           strides.erase(strides.begin() + i - 1);
