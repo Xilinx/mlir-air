@@ -3,16 +3,17 @@
 
 from air.ir import *
 from air.dialects.air import *
-from air.dialects.memref import AllocOp, DeallocOp, load, store
+from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
 from air.dialects.arith import constant
 
 range_ = for_
 
-IMAGE_WIDTH = 32
-IMAGE_HEIGHT = 16
-IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
+VECTOR_SIZE = 4096
+NUM_VECTORS = 4
+assert VECTOR_SIZE % NUM_VECTORS == 0
+
 
 def external_func(name, inputs, outputs=None, visibility="private"):
     if outputs is None:
@@ -20,6 +21,7 @@ def external_func(name, inputs, outputs=None, visibility="private"):
     my_func = FuncOp(
         name=name, type=FunctionType.get(inputs, outputs), visibility=visibility
     )
+    my_func.operation.attributes["link_with"] = StringAttr.get("passThrough.cc.o")
     return my_func
 
 
@@ -29,15 +31,16 @@ class call(CallOp):
 
     def __init__(self, calleeOrResults, inputs=[], input_types=[]):
         attrInputs = []
-        
-        for (i, itype) in zip(inputs, input_types):
+
+        for i, itype in zip(inputs, input_types):
             if isinstance(i, int):
                 attrInputs.append(constant(itype, i))
             else:
                 attrInputs.append(i)
         if isinstance(calleeOrResults, FuncOp):
             super().__init__(
-                calleeOrResults=calleeOrResults, argumentsOrCallee=attrInputs,
+                calleeOrResults=calleeOrResults,
+                argumentsOrCallee=attrInputs,
             )
         else:
             super().__init__(
@@ -49,10 +52,27 @@ class call(CallOp):
 
 @module_builder
 def build_module():
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+    # chop input in 4 sub-tensors
+    lineWidthInBytes = VECTOR_SIZE // NUM_VECTORS
 
+    # Type and method of input/output
+    memrefTyInOut = T.memref(VECTOR_SIZE, T.ui8())
     ChannelOp("ChanIn")
     ChannelOp("ChanOut")
+
+    # We want to store our data in L1 memory
+    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+
+    # This is the type definition of the image
+    tensor_type = MemRefType.get(
+        shape=[lineWidthInBytes],
+        element_type=T.ui8(),
+        memory_space=mem_space,
+    )
+
+    passThroughLine = external_func(
+        "passThroughLine", inputs=[tensor_type, tensor_type, T.i32()]
+    )
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -61,54 +81,37 @@ def build_module():
         # The arguments are the input and output
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
+            ChannelPut("ChanIn", a)
+            ChannelGet("ChanOut", b)
 
             # The arguments are still the input and the output
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg0, arg1):
+            @segment(name="seg")
+            def segment_body():
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="copyherd", sizes=[1, 1], operands=[arg0, arg1])
-                def herd_body(tx, ty, sx, sy, a, b):
+                @herd(name="copyherd", sizes=[1, 1])
+                def herd_body(tx, ty, sx, sy):
 
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-                    lineWidthInBytes = 4096 // 4
+                    for i in range_(NUM_VECTORS):
+                        # We must allocate a buffer of image size for the input/output
+                        tensor_in = AllocOp(tensor_type, [], [])
+                        tensor_out = AllocOp(tensor_type, [], [])
 
-                    # This is the type definition of the image
-                    image_type = MemRefType.get(
-                        shape=[lineWidthInBytes],
-                        element_type=T.ui8(),
-                        memory_space=mem_space,
-                    )
+                        ChannelGet("ChanIn", tensor_in)
 
-                    # We must allocate a buffer of image size for the input/output
-                    image_in = AllocOp(image_type, [], [])
-                    image_out = AllocOp(image_type, [], [])
+                        call(
+                            passThroughLine,
+                            inputs=[tensor_in, tensor_out, lineWidthInBytes],
+                            input_types=[tensor_type, tensor_type, T.i32()],
+                        )
 
-                    # AIE Core Function declarations
-                    memRef_ty = T.memref(lineWidthInBytes, T.ui8())
-                    passThroughLineFunc = external_func(
-                        "passThroughLine", inputs=[memRef_ty, memRef_ty, T.i32()]
-                    )
-                    call(passThroughLineFunc, [image_in, image_out, lineWidthInBytes])
+                        ChannelPut("ChanOut", tensor_out)
 
-                    """
-                    # Access every value in the image
-                    for j in range_(IMAGE_HEIGHT):
-                        for i in range_(IMAGE_WIDTH):
-                            # Load the input value
-                            val = load(image_in, [i, j])
-
-                            # Store the output value
-                            store(val, image_out, [i, j])
-                            yield_([])
+                        # Deallocate our L1 buffers
+                        DeallocOp(tensor_in)
+                        DeallocOp(tensor_out)
                         yield_([])
-                    """
-
-                    # Deallocate our L1 buffers
-                    DeallocOp(image_in)
-                    DeallocOp(image_out)
 
 
 if __name__ == "__main__":

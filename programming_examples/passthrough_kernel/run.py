@@ -12,9 +12,9 @@ from passthrough_kernel import *
 
 KERNEL_NAME = "MLIR_AIE"
 
-INOUT_DATATYPE = np.uint32
+INOUT_DATATYPE = np.uint8
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
-INOUT_SIZE = IMAGE_SIZE[0] * IMAGE_SIZE[1]
+INOUT_SIZE = VECTOR_SIZE
 INOUT_SIZE_BYTES = INOUT_SIZE * INOUT_ELEM_SIZE
 
 verbose = False
@@ -26,8 +26,8 @@ def main():
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     output_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     for i in range(INOUT_SIZE):
-        input_a[i] = i + 0x1000
-        output_b[i] = 0x00DEFACED
+        input_a[i] = i % 0xFF
+        output_b[i] = 0xFF
 
     backend = xrt_backend.XRTBackend(
         verbose=verbose, experimental_passes=True, omit_while_true_loop=True
@@ -45,11 +45,9 @@ def main():
     for i in range(INOUT_SIZE):
         rb = output_b[i]
 
-        row = i / IMAGE_WIDTH
-        col = i % IMAGE_WIDTH
-
-        if not (rb == 0x1000 + i):
-            print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
+        expected_value = i % 0xFF
+        if rb != expected_value:
+            print(f"IM {i} should be 0x{expected_value:x}, is 0x{rb:x}\n")
             errors += 1
 
     if errors == 0:
