@@ -6,6 +6,10 @@ These programming examples are provided so that application programmers can lear
 
 This example demonstrates how data may be moved using shim DMA operations. It also includes extra infrastructure that illustrates different ways to compile, build, run, and test programs written using the mlir-air python bindings.
 
+## [Passthrough Examples](passthrough)
+
+Three examples that copy data from the input to the output (a data passthrough). The data movement is done through either DMA or Channels, and there is a simple example of calling a an external function which performs a vectorized memcopy.
+
 ## [Channel Examples](channel_examples)
 
 This is a collection of simple examples that illustrate how to use channels.
