@@ -67,6 +67,7 @@ module {
   // CHECK: put @channel_3[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
   // CHECK: put @channel_4[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
   // CHECK: get @channel_5[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]) : (memref<128x128xf32>)
+  // CHECK: put @channel_5[] (%alloc_0[%c0, %c18, %c0] [%c4, %c18, %c8] [%c8, %c32, %c1]) : (memref<1x6x6x32xi8, 1>)
 
   func.func @test1(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
     %c0 = arith.constant 0 : index
@@ -92,6 +93,15 @@ module {
       scf.for %arg3 = %c0 to %c128 step %c32 {
         air.channel.get  @channel_5[%c0, %c0] (%arg1[%arg2, %arg3] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
       }
+    }
+    %c3 = arith.constant 3 : index
+    %c6 = arith.constant 6 : index
+    %c8 = arith.constant 8 : index
+    %c192 = arith.constant 192 : index
+    %c1152 = arith.constant 1152 : index
+    %alloc_0 = memref.alloc() : memref<1x6x6x32xi8, 1>
+    scf.for %arg2 = %c0 to %c32 step %c8 {
+      air.channel.put @channel_5[] (%alloc_0[%c0, %c3, %c0, %arg2] [%c1, %c3, %c6, %c8] [%c1152, %c192, %c32, %c1]) : (memref<1x6x6x32xi8, 1>)
     }
     return %alloc : memref<128xf32>
   }
