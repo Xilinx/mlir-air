@@ -83,25 +83,18 @@ def build_module():
                 def herd_body(th, tw, _sx, _sy):
 
                     # We want to store our data in L1 memory
-                    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-                    tile_type_l1 = MemRefType.get(
+                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                    tile_type = MemRefType.get(
                         shape=TILE_SIZE,
                         element_type=T.i32(),
-                        memory_space=mem_space_l1,
-                    )
-
-                    mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L2)
-                    tile_type_l2 = MemRefType.get(
-                        shape=TILE_SIZE,
-                        element_type=T.i32(),
-                        memory_space=mem_space_l2,
+                        memory_space=mem_space,
                     )
 
                     # We must allocate a buffer of tile size for the input/output
-                    tile_in = AllocOp(tile_type_l1, [], [])
-                    tile_out = AllocOp(tile_type_l1, [], [])
-                    tile_in2 = AllocOp(tile_type_l2, [], [])
-                    tile_out2 = AllocOp(tile_type_l2, [], [])
+                    tile_in = AllocOp(tile_type, [], [])
+                    tile_out = AllocOp(tile_type, [], [])
+                    tile_in2 = AllocOp(tile_type, [], [])
+                    tile_out2 = AllocOp(tile_type, [], [])
 
                     # Copy a tile from the input image (a) into the L1 memory region (tile_in)
                     ChannelGet("ChanIn", tile_in, indices=[tw, th])

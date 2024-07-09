@@ -22,4 +22,15 @@ cd channel_size
 make clean && make
 ```
 
+#### WIP: ```worker-to-self```:
+
+This example ([worker_to_self/worker_to_self.py](worker_to_self/worker_to_self.py)) is a work-in-progress data passthrough example using the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only the sole worker in the herd does some extra shuffling between input and output by putting the current data tile into a channel and then getting it from the same channel.
+
+WARNING: This example currently fails because it is assumed channel gets/parts are not from the same memory region, and this example breaks this assumption.
+
+```bash
+cd channel_size
+make clean && make
+```
+
 #### WIP: more examples!
