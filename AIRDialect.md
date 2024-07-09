@@ -328,6 +328,7 @@ Interfaces: `air_AsyncOpInterface`, `air_HierarchyInterface`
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+<tr><td><code>link_with</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
 </table>
 
 #### Operands:
