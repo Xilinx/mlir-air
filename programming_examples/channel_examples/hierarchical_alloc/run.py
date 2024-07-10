@@ -50,13 +50,14 @@ def test_main(build_module, verbose=False):
     if verbose:
         print_matrix(output_b)
 
-    # check output, should have all values incremented
+    # check output
     errors = 0
+    reference_output = np.array([3, 2, 3, 3])
     for i in range(INOUT_SIZE):
         rb = output_b[i]
+        expected_value = reference_output[i]
 
         # value should have been updated
-        expected_value = i + 3
         if not (rb == expected_value):
             if verbose:
                 print(f"IM {i} should be 0x{expected_value:x}, is 0x{rb:x}\n")

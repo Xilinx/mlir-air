@@ -9,8 +9,8 @@ from air.dialects.scf import for_, yield_
 
 range_ = for_
 
-IMAGE_WIDTH = 32
-IMAGE_HEIGHT = 16
+IMAGE_WIDTH = 1
+IMAGE_HEIGHT = 4
 IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
 
 
@@ -51,19 +51,20 @@ def build_module():
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
             image_in_l3 = AllocOp(image_type_l3, [], [])
-            # Access every value in the image
-            for j in range_(IMAGE_HEIGHT):
-                for i in range_(IMAGE_WIDTH):
-                    # Load the input value
-                    val_in = load(a, [i, j])
 
-                    # Calculate the output value
-                    val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
+            # Do some data manipulation instead of a straight copy
+            # 0, 1, 2, 3 -> 1, 1, 2, 2
+            c0 = arith.constant(T.index(), 0)
+            c1 = arith.constant(T.index(), 1)
+            c2 = arith.constant(T.index(), 2)
+            c3 = arith.constant(T.index(), 3)
+            val1 = load(a, [c0, c1])
+            store(val1, image_in_l3, [c0, c0])
+            store(val1, image_in_l3, [c0, c1])
+            val2 = load(a, [c0, c2])
+            store(val2, image_in_l3, [c0, c2])
+            store(val2, image_in_l3, [c0, c3])
 
-                    # Store the output value
-                    store(val_out, image_in_l3, [i, j])
-                    yield_([])
-                yield_([])
             ChannelPut("ChanInL2", image_in_l3)
             DeallocOp(image_in_l3)
 
@@ -73,20 +74,22 @@ def build_module():
             def segment_body():
                 image_in_l2a = AllocOp(image_type_l2, [], [])
                 image_in_l2b = AllocOp(image_type_l2, [], [])
+
                 ChannelGet("ChanInL2", image_in_l2a)
-                # Access every value in the image
-                for j in range_(IMAGE_HEIGHT):
-                    for i in range_(IMAGE_WIDTH):
-                        # Load the input value
-                        val_in = load(image_in_l2a, [i, j])
 
-                        # Calculate the output value
-                        val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
+                # Do some data manipulation instead of a straight copy
+                # 1, 1, 2, 2 -> 2, 1, 2, 2
+                c0 = arith.constant(T.index(), 0)
+                c1 = arith.constant(T.index(), 1)
+                c2 = arith.constant(T.index(), 2)
+                c3 = arith.constant(T.index(), 3)
+                val1 = load(image_in_l2a, [c0, c0])
+                store(val1, image_in_l2b, [c0, c1])
+                val2 = load(image_in_l2a, [c0, c0])
+                store(val1, image_in_l2b, [c0, c0])
+                store(val2, image_in_l2b, [c0, c2])
+                store(val1, image_in_l2b, [c0, c3])
 
-                        # Store the output value
-                        store(val_out, image_in_l2b, [i, j])
-                        yield_([])
-                    yield_([])
                 ChannelPut("ChanInL1", image_in_l2b)
                 DeallocOp(image_in_l2a)
                 DeallocOp(image_in_l2b)
@@ -112,6 +115,7 @@ def build_module():
                             val_in = load(image_in, [i, j])
 
                             # Calculate the output value
+                            # 2, 1, 2, 2 -> 3, 2, 3, 3
                             val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
 
                             # Store the output value
