@@ -22,6 +22,24 @@ cd channel_size
 make clean && make
 ```
 
+#### ```hierarchical```: Use channels for sending data from Launch to Segment to Herd and back again
+
+This example ([hierarchical/hierarchical.py](hierarchical/hierarchical.py)) is a data passthrough example that uses a channel to send data from Launch to Segment (L3->L2 memory) and then from Segment to Herd (L2->L1 memory). The data is then sent back on an analogous path.
+
+```bash
+cd hierarchical
+make clean && make
+```
+
+#### WIP: ```hierarchical-alloc```: Use channels for sending data from Launch to Segment to Herd and back again
+
+This example ([hierarchical_alloc/hierarchical_alloc.py](hierarchical_alloc/hierarchical_alloc.py)) is a data passthrough example that uses a channel to send data from Launch to Segment (L3->L2 memory) and then from Segment to Herd (L2->L1 memory). The data is then sent back on an analogous path. In contrast to the `hierarchical` example,in `hierarchical-alloc`, the Launch and Segment explicitly alloc and modify the L3/L2 memory explicitly. 
+
+```bash
+cd hierarchical
+make clean && make
+```
+
 #### WIP: ```worker-to-self```:
 
 This example ([worker_to_self/worker_to_self.py](worker_to_self/worker_to_self.py)) is a work-in-progress data passthrough example using the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only the sole worker in the herd does some extra shuffling between input and output by putting the current data tile into a channel and then getting it from the same channel.
