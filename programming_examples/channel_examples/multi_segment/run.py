@@ -11,23 +11,23 @@ from multi_segment import *
 
 INOUT_DATATYPE = np.uint32
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
-OUT_SIZE = VECTOR_OUT_SIZE[0] * VECTOR_OUT_SIZE[1]
-OUT_SIZE_BYTES = OUT_SIZE * INOUT_ELEM_SIZE
-IN_SIZE = VECTOR_SIZE[0] * VECTOR_SIZE[1]
-IN_SIZE_BYTES = IN_SIZE * INOUT_ELEM_SIZE
+INOUT_SIZE = VECTOR_SIZE[0] * VECTOR_SIZE[1]
+INOUT_SIZE_BYTES = INOUT_SIZE * INOUT_ELEM_SIZE
 
 
 def test_main(build_module, verbose=False):
     mlir_module = build_module()
 
-    input_a = np.arange(1, IN_SIZE + 1, dtype=INOUT_DATATYPE)
-    input_b = np.arange(1, IN_SIZE + 1, dtype=INOUT_DATATYPE)
-    input_c = np.arange(1, OUT_SIZE + 1, dtype=INOUT_DATATYPE)
-    for i in range(IN_SIZE):
+    input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
+    input_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
+    input_c = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
+    input_d = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
+    for i in range(INOUT_SIZE):
         input_a[i] = 0x2
         input_b[i] = 0x3
-    for i in range(OUT_SIZE):
+    for i in range(INOUT_SIZE):
         input_c[i] = 0x00C0FFEE
+        input_d[i] = 0x0000CAFE
 
     backend = xrt_backend.XRTBackend(
         verbose=verbose, experimental_passes=True, omit_while_true_loop=True
@@ -40,27 +40,36 @@ def test_main(build_module, verbose=False):
     # run the module
     with filelock.FileLock("/tmp/npu.lock"):
         addone = backend.compile_and_load(mlir_module)
-        (_, _, output_c) = addone(input_a, input_b, input_c)
+        (_, _, output_c, output_d) = addone(input_a, input_b, input_c, input_d)
 
     backend.unload()
 
     if verbose:
         print(output_c)
+        print(output_d)
 
     # check output, should have all values incremented
     errors = 0
-    for i in range(OUT_SIZE):
+    for i in range(INOUT_SIZE):
         rb = output_c[i]
 
         # value should have been updated
-        if i < VECTOR_LEN:
-            expected_value = 5
-        else:
-            expected_value = 6
-        if not (rb == expected_value):
+        if not (rb == 5):
             """
             print(
-                f"IM {i} should be 0x{expected_value:x}, is 0x{rb:x}\n"
+                f"C - IM {i} should be 0x{expected_value:x}, is 0x{rb:x}\n"
+            )
+            """
+            errors += 1
+
+    for i in range(INOUT_SIZE):
+        rb = output_d[i]
+
+        # value should have been updated
+        if not (rb == 6):
+            """
+            print(
+                f"D - IM {i} should be 0x{expected_value:x}, is 0x{rb:x}\n"
             )
             """
             errors += 1

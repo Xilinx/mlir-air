@@ -11,13 +11,11 @@ range_ = for_
 
 VECTOR_LEN = 32
 VECTOR_SIZE = [VECTOR_LEN, 1]
-VECTOR_OUT_SIZE = [VECTOR_LEN * 2, 1]
 
 
 @module_builder
 def build_module():
-    memrefTyIn = MemRefType.get(VECTOR_SIZE, T.i32())
-    memrefTyOut = MemRefType.get(VECTOR_OUT_SIZE, T.i32())
+    memrefTyInOut = MemRefType.get(VECTOR_SIZE, T.i32())
 
     # We want to store our data in L1 memory
     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -34,18 +32,19 @@ def build_module():
     ChannelOp("ChanInA")
     ChannelOp("ChanInB")
     ChannelOp("ChanOutC")
+    ChannelOp("ChanOutD")
 
     # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyIn, memrefTyIn, memrefTyOut)
-    def copy(arg0, arg1, arg2):
+    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut, memrefTyInOut, memrefTyInOut)
+    def copy(arg0, arg1, arg2, arg3):
 
         # The arguments are the input and output
-        @launch(operands=[arg0, arg1, arg2])
-        def launch_body(a, b, c):
+        @launch(operands=[arg0, arg1, arg2, arg3])
+        def launch_body(a, b, c, d):
             ChannelPut("ChanInA", a)
             ChannelPut("ChanInB", b)
-
             ChannelGet("ChanOutC", c)
+            ChannelGet("ChanOutD", d)
 
             @segment(name="seg")
             def segment_body():
@@ -76,7 +75,7 @@ def build_module():
                         yield_([])
 
                     ChannelPut("ChanOutC", image_out_a)
-                    ChannelPut("ChanOutC", image_out_b)
+                    ChannelPut("ChanOutD", image_out_b)
 
                     DeallocOp(image_in_a)
                     DeallocOp(image_in_b)
