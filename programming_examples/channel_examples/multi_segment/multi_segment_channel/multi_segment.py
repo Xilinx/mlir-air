@@ -1,5 +1,18 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+import sys
+from pathlib import Path  # if you haven't already done so
+
+# Python paths are a bit complex. Taking solution from : https://stackoverflow.com/questions/16981921/relative-imports-in-python-3
+file = Path(__file__).resolve()
+parent, root = file.parent, file.parents[1]
+sys.path.append(str(root))
+
+# Additionally remove the current file's directory from sys.path
+try:
+    sys.path.remove(str(parent))
+except ValueError:  # Already removed
+    pass
 
 from air.ir import *
 from air.dialects.air import *
@@ -9,8 +22,7 @@ from air.dialects.scf import for_, yield_
 
 range_ = for_
 
-VECTOR_LEN = 32
-VECTOR_SIZE = [VECTOR_LEN, 1]
+from common import *
 
 
 @module_builder
@@ -46,7 +58,7 @@ def build_module():
             ChannelGet("ChanOutC", c)
             ChannelGet("ChanOutD", d)
 
-            @segment(name="seg")
+            @segment(name="seg1")
             def segment_body():
 
                 @herd(name="addherd1", sizes=[1, 1])
@@ -68,6 +80,9 @@ def build_module():
                     ChannelPut("ChanOutC", image_out_a)
                     DeallocOp(image_in_a)
                     DeallocOp(image_out_a)
+
+            @segment(name="seg2")
+            def segment_body():
 
                 @herd(name="addherd2", sizes=[1, 1])
                 def herd_body(tx, ty, sx, sy):

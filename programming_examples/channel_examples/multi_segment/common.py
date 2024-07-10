@@ -2,12 +2,12 @@
 #
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
-import argparse
 import numpy as np
 import air.backend.xrt as xrt_backend
 import filelock
 
-from multi_segment import *
+VECTOR_LEN = 32
+VECTOR_SIZE = [VECTOR_LEN, 1]
 
 INOUT_DATATYPE = np.uint32
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
@@ -80,18 +80,3 @@ def test_main(build_module, verbose=False):
     else:
         print("failed. errors=", errors)
         exit(-1)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the herd-to-herd multi-segment example",
-    )
-
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    args = parser.parse_args()
-    test_main(build_module, verbose=args.verbose)
