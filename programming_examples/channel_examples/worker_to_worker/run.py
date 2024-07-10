@@ -7,7 +7,7 @@ import numpy as np
 import air.backend.xrt as xrt_backend
 import filelock
 
-from channel_size import *
+from worker_to_worker import *
 
 INOUT_DATATYPE = np.uint32
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
@@ -33,9 +33,7 @@ def test_main(build_module, verbose=False):
         input_a[i] = i + 0x1000
         input_b[i] = 0x00DEFACED
 
-    backend = xrt_backend.XRTBackend(
-        verbose=verbose, experimental_passes=True, omit_while_true_loop=True
-    )
+    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
 
     if verbose:
         print_matrix(input_b)
@@ -56,12 +54,11 @@ def test_main(build_module, verbose=False):
         rb = output_b[i]
         expected_value = input_a[i]
 
-        row = i // IMAGE_WIDTH
-        col = i % IMAGE_WIDTH
-
         # value should have been updated
         if not (rb == expected_value):
             """
+            row = i // IMAGE_WIDTH
+            col = i % IMAGE_WIDTH
             print(
                 f"IM {i} [{col}, {row}] should be 0x{expected_value:x}, is 0x{rb:x}\n"
             )
@@ -79,7 +76,7 @@ def test_main(build_module, verbose=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the channel_examples/herd_to_herd example",
+        description="Builds, runs, and tests the channel_examples/worker_to_worker example",
     )
 
     parser.add_argument(
