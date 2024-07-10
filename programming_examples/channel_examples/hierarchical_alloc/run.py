@@ -7,7 +7,7 @@ import numpy as np
 import air.backend.xrt as xrt_backend
 import filelock
 
-from hierarchical import *
+from hierarchical_alloc import *
 
 INOUT_DATATYPE = np.uint32
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
@@ -56,7 +56,7 @@ def test_main(build_module, verbose=False):
         rb = output_b[i]
 
         # value should have been updated
-        expected_value = i + 1
+        expected_value = i + 3
         if not (rb == expected_value):
             if verbose:
                 print(f"IM {i} should be 0x{expected_value:x}, is 0x{rb:x}\n")
@@ -73,7 +73,7 @@ def test_main(build_module, verbose=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the channel_examples/hierarchical example",
+        description="Builds, runs, and tests the channel_examples/hierarchical_alloc example",
     )
 
     parser.add_argument(

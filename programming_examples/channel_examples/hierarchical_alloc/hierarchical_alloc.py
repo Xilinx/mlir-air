@@ -20,6 +20,7 @@ def build_module():
 
     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
     mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L2)
+    mem_space_l3 = IntegerAttr.get(T.i32(), MemorySpace.L3)
 
     image_type_l1 = MemRefType.get(
         shape=IMAGE_SIZE,
@@ -30,6 +31,11 @@ def build_module():
         shape=IMAGE_SIZE,
         element_type=T.i32(),
         memory_space=mem_space_l2,
+    )
+    image_type_l3 = MemRefType.get(
+        shape=IMAGE_SIZE,
+        element_type=T.i32(),
+        memory_space=mem_space_l3,
     )
 
     ChannelOp("ChanInL2")
@@ -44,16 +50,46 @@ def build_module():
         # The arguments are the input and output
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
+            image_in_l3 = AllocOp(image_type_l3, [], [])
+            # Access every value in the image
+            for j in range_(IMAGE_HEIGHT):
+                for i in range_(IMAGE_WIDTH):
+                    # Load the input value
+                    val_in = load(a, [i, j])
 
-            ChannelPut("ChanInL2", a)
+                    # Calculate the output value
+                    val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
+
+                    # Store the output value
+                    store(val_out, image_in_l3, [i, j])
+                    yield_([])
+                yield_([])
+            ChannelPut("ChanInL2", image_in_l3)
+            DeallocOp(image_in_l3)
+
             ChannelGet("ChanOutL2", b)
 
             @segment(name="seg")
             def segment_body():
-                image_in_l2 = AllocOp(image_type_l2, [], [])
-                ChannelGet("ChanInL2", image_in_l2)
-                ChannelPut("ChanInL1", image_in_l2)
-                DeallocOp(image_in_l2)
+                image_in_l2a = AllocOp(image_type_l2, [], [])
+                image_in_l2b = AllocOp(image_type_l2, [], [])
+                ChannelGet("ChanInL2", image_in_l2a)
+                # Access every value in the image
+                for j in range_(IMAGE_HEIGHT):
+                    for i in range_(IMAGE_WIDTH):
+                        # Load the input value
+                        val_in = load(image_in_l2a, [i, j])
+
+                        # Calculate the output value
+                        val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
+
+                        # Store the output value
+                        store(val_out, image_in_l2b, [i, j])
+                        yield_([])
+                    yield_([])
+                ChannelPut("ChanInL1", image_in_l2b)
+                DeallocOp(image_in_l2a)
+                DeallocOp(image_in_l2b)
 
                 image_out_l2 = AllocOp(image_type_l2, [], [])
                 ChannelGet("ChanOutL1", image_out_l2)
