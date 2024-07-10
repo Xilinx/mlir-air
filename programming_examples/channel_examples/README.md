@@ -29,8 +29,19 @@ This example ([worker_to_self/worker_to_self.py](worker_to_self/worker_to_self.p
 WARNING: This example currently fails because it is assumed channel gets/parts are not from the same memory region, and this example breaks this assumption.
 
 ```bash
-cd channel_size
+cd worker_to_self
 make clean && make
 ```
+
+#### WIP: ```worker-to-worker```:
+
+This example ([worker_to_worker/worker_to_worker.py](worker_to_worker/worker_to_worker.py)) is a work-in-progress data passthrough example using the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only the each worker trades a tile of input data to another worker in the herd by sending it via channel.
+
+WARNING: This example currently fails for unknown reasons.
+
+```bash
+cd worker_to_worker
+make clean && make
+``
 
 #### WIP: more examples!
