@@ -121,11 +121,11 @@ def build_module():
 
                     # We must allocate a buffer of tile size for the input/output
                     tile_in = AllocOp(tile_type, [], [])
-                    tile_out = AllocOp(tile_type, [], [])
                     tile_in2 = AllocOp(tile_type, [], [])
+                    tile_out = AllocOp(tile_type, [], [])
                     tile_out2 = AllocOp(tile_type, [], [])
 
-                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
+                    # Copy a tile from the input image
                     ChannelGet("ChanIn", tile_in, indices=[tw, th])
 
                     # Access every value in the tile
@@ -156,7 +156,8 @@ def build_module():
                             yield_([])
                         yield_([])
 
-                    ChannelGet("ChanOut", tile_out2, indices=[tw, th])
+                    # Send the output tile to the output
+                    ChannelPut("ChanOut", tile_out, indices=[tw, th])
 
                     # Deallocate our L1 buffers
                     DeallocOp(tile_in)

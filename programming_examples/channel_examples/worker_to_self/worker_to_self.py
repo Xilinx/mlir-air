@@ -16,12 +16,22 @@ IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
 
 @module_builder
 def build_module():
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
 
-    # Create an input/output channel pair per worker
+    # Type and method of input/output
+    memrefTyInOut = T.MemRefType.get(IMAGE_SIZE, T.i32())
     ChannelOp("ChanIn")
     ChannelOp("ChanOut")
-    # ChannelOp("ToSelf")
+    ChannelOp("ToSelf")
+
+    # We want to store our data in L1 memory
+    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+
+    # This is the type definition of the image
+    image_type = MemRefType.get(
+        shape=IMAGE_SIZE,
+        element_type=T.i32(),
+        memory_space=mem_space,
+    )
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -30,7 +40,6 @@ def build_module():
         # The arguments are the input and output
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
-
             ChannelPut("ChanIn", a)
             ChannelGet("ChanOut", b)
 
@@ -38,62 +47,51 @@ def build_module():
             @segment(name="seg")
             def segment_body():
 
-                @herd(name="xaddherd", sizes=[1, 1])
-                def herd_body(_th, _tw, _sx, _sy):
+                # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
+                # We just need one compute core, so we ask for a 1x1 herd
+                @herd(name="copyherd", sizes=[1, 1])
+                def herd_body(tx, ty, sx, sy):
 
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                    # We must allocate a buffer of image size for the input/output
+                    tensor_in = AllocOp(image_type, [], [])
+                    tensor_out = AllocOp(image_type, [], [])
+                    tensor_in2 = AllocOp(image_type, [], [])
+                    tensor_out2 = AllocOp(image_type, [], [])
 
-                    image_type = MemRefType.get(
-                        shape=IMAGE_SIZE,
-                        element_type=T.i32(),
-                        memory_space=mem_space,
-                    )
+                    ChannelGet("ChanIn", tensor_in)
 
-                    # We must allocate a buffer of tile size for the input/output
-                    image_in = AllocOp(image_type, [], [])
-                    image_out = AllocOp(image_type, [], [])
-                    # image_in2 = AllocOp(image_type, [], [])
-                    # image_out2 = AllocOp(image_type, [], [])
-
-                    # Copy a tile from the input image (a) into the L1 memory region (image_in)
-                    ChannelGet("ChanIn", image_in)
-
-                    # Access every value in the time
-                    for j in range_(IMAGE_HEIGHT):
-                        for i in range_(IMAGE_WIDTH):
-                            # Load the input value from image_in
-                            val = load(image_in, [i, j])
-
-                            # Store the output value in image_out
-                            store(val, image_out, [i, j])
-                            yield_([])
-                        yield_([])
-
-                    # Channel to self
-                    # ChannelPut("ToSelf", image_out)
-                    # ChannelGet("ToSelf", image_in2)
-
-                    """
                     # Access every value in the tile
                     for j in range_(IMAGE_HEIGHT):
                         for i in range_(IMAGE_WIDTH):
-                            # Load the input value from image_in
-                            val = load(image_in2, [i, j])
+                            # Load the input value from tile_in
+                            val = load(tensor_in, [i, j])
 
-                            # Store the output value in image_out
-                            store(val, image_out2, [i, j])
+                            # Store the output value in tile_out
+                            store(val, tensor_out, [i, j])
                             yield_([])
                         yield_([])
-                    """
 
-                    ChannelGet("ChanOut", image_out)
+                    ChannelPut("ToSelf", tensor_out)
+                    ChannelGet("ToSelf", tensor_in2)
+
+                    # Access every value in the tile
+                    for j in range_(IMAGE_HEIGHT):
+                        for i in range_(IMAGE_WIDTH):
+                            # Load the input value from tile_in
+                            val = load(tensor_in2, [i, j])
+
+                            # Store the output value in tile_out
+                            store(val, tensor_out2, [i, j])
+                            yield_([])
+                        yield_([])
+
+                    ChannelPut("ChanOut", tensor_out2)
 
                     # Deallocate our L1 buffers
-                    DeallocOp(image_in)
-                    DeallocOp(image_out)
-                    # DeallocOp(image_in2)
-                    # DeallocOp(image_out2)
+                    DeallocOp(tensor_in)
+                    DeallocOp(tensor_out)
+                    DeallocOp(tensor_in2)
+                    DeallocOp(tensor_out2)
 
 
 if __name__ == "__main__":
