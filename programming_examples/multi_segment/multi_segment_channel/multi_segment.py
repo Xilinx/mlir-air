@@ -39,8 +39,6 @@ def build_module():
         memory_space=mem_space_l1,
     )
 
-    # Create two channels which will send/receive the
-    # input/output data respectively
     ChannelOp("ChanInA")
     ChannelOp("ChanInB")
     ChannelOp("ChanOutC")
