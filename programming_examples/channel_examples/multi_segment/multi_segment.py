@@ -49,37 +49,45 @@ def build_module():
             @segment(name="seg")
             def segment_body():
 
-                @herd(name="addherd", sizes=[1, 1])
+                @herd(name="addherd1", sizes=[1, 1])
                 def herd_body(tx, ty, sx, sy):
 
                     image_in_a = AllocOp(image_type_l1, [], [])
-                    image_in_b = AllocOp(image_type_l1, [], [])
                     image_out_a = AllocOp(image_type_l1, [], [])
-                    image_out_b = AllocOp(image_type_l1, [], [])
 
                     ChannelGet("ChanInA", image_in_a)
-                    ChannelGet("ChanInB", image_in_b)
 
                     # Access every value in the tile
                     c0 = arith.ConstantOp.create_index(0)
                     for j in range_(VECTOR_LEN):
                         val_a = load(image_in_a, [c0, j])
-                        val_b = load(image_in_b, [c0, j])
-
-                        val_outa = arith.addi(val_a, val_b)
+                        val_outa = arith.addi(val_a, arith.constant(T.i32(), 10))
                         store(val_outa, image_out_a, [c0, j])
-
-                        val_outb = arith.muli(val_a, val_b)
-                        store(val_outb, image_out_b, [c0, j])
-
                         yield_([])
 
                     ChannelPut("ChanOutC", image_out_a)
+                    DeallocOp(image_in_a)
+                    DeallocOp(image_out_a)
+
+                @herd(name="addherd2", sizes=[1, 1])
+                def herd_body(tx, ty, sx, sy):
+
+                    image_in_b = AllocOp(image_type_l1, [], [])
+                    image_out_b = AllocOp(image_type_l1, [], [])
+
+                    ChannelGet("ChanInB", image_in_b)
+
+                    # Access every value in the tile
+                    c0 = arith.ConstantOp.create_index(0)
+                    for j in range_(VECTOR_LEN):
+                        val_b = load(image_in_b, [c0, j])
+                        val_outb = arith.addi(arith.constant(T.i32(), 10), val_b)
+                        store(val_outb, image_out_b, [c0, j])
+                        yield_([])
+
                     ChannelPut("ChanOutD", image_out_b)
 
-                    DeallocOp(image_in_a)
                     DeallocOp(image_in_b)
-                    DeallocOp(image_out_a)
                     DeallocOp(image_out_b)
 
 

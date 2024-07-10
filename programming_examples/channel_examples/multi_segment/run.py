@@ -54,7 +54,7 @@ def test_main(build_module, verbose=False):
         rb = output_c[i]
 
         # value should have been updated
-        if not (rb == 5):
+        if not (rb == 12):
             """
             print(
                 f"C - IM {i} should be 0x{expected_value:x}, is 0x{rb:x}\n"
@@ -66,7 +66,7 @@ def test_main(build_module, verbose=False):
         rb = output_d[i]
 
         # value should have been updated
-        if not (rb == 6):
+        if not (rb == 13):
             """
             print(
                 f"D - IM {i} should be 0x{expected_value:x}, is 0x{rb:x}\n"
