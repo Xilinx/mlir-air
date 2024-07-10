@@ -33,9 +33,7 @@ def test_main(build_module, verbose=False):
         input_a[i] = i + 0x1000
         input_b[i] = 0x00DEFACED
 
-    backend = xrt_backend.XRTBackend(
-        verbose=verbose, experimental_passes=True, omit_while_true_loop=True
-    )
+    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
 
     if verbose:
         print_matrix(input_b)

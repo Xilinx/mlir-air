@@ -21,7 +21,7 @@ def build_module():
     # Create an input/output channel pair per worker
     ChannelOp("ChanIn")
     ChannelOp("ChanOut")
-    ChannelOp("ToSelf")
+    # ChannelOp("ToSelf")
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -43,6 +43,7 @@ def build_module():
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+
                     image_type = MemRefType.get(
                         shape=IMAGE_SIZE,
                         element_type=T.i32(),
@@ -52,8 +53,8 @@ def build_module():
                     # We must allocate a buffer of tile size for the input/output
                     image_in = AllocOp(image_type, [], [])
                     image_out = AllocOp(image_type, [], [])
-                    image_in2 = AllocOp(image_type, [], [])
-                    image_out2 = AllocOp(image_type, [], [])
+                    # image_in2 = AllocOp(image_type, [], [])
+                    # image_out2 = AllocOp(image_type, [], [])
 
                     # Copy a tile from the input image (a) into the L1 memory region (image_in)
                     ChannelGet("ChanIn", image_in)
@@ -73,6 +74,7 @@ def build_module():
                     # ChannelPut("ToSelf", image_out)
                     # ChannelGet("ToSelf", image_in2)
 
+                    """
                     # Access every value in the tile
                     for j in range_(IMAGE_HEIGHT):
                         for i in range_(IMAGE_WIDTH):
@@ -83,14 +85,15 @@ def build_module():
                             store(val, image_out2, [i, j])
                             yield_([])
                         yield_([])
+                    """
 
-                    ChannelGet("ChanOut", image_out2)
+                    ChannelGet("ChanOut", image_out)
 
                     # Deallocate our L1 buffers
                     DeallocOp(image_in)
                     DeallocOp(image_out)
-                    DeallocOp(image_in2)
-                    DeallocOp(image_out2)
+                    # DeallocOp(image_in2)
+                    # DeallocOp(image_out2)
 
 
 if __name__ == "__main__":
