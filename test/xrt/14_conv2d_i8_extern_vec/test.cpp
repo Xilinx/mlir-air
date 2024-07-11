@@ -1,3 +1,13 @@
+//===- test.cpp -------------------------------------------000---*- C++ -*-===//
+//
+// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: MIT
+//
+// Copyright (C) 2024, Advanced Micro Devices, Inc.
+//
+//===----------------------------------------------------------------------===//
+
 #include <boost/program_options.hpp>
 #include <chrono>
 #include <cstdint>
