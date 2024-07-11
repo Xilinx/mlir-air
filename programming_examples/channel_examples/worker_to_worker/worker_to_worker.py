@@ -6,6 +6,7 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
+from air.dialects.affine import apply as affine_apply
 
 range_ = for_
 
@@ -28,6 +29,9 @@ def build_module():
     # Create an input/output channel pair per worker
     ChannelOp("ChanIn", size=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT])
     ChannelOp("ChanOut", size=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT])
+    ChannelOp(
+        "SwitchTiles", size=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT]
+    )
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -78,11 +82,37 @@ def build_module():
                     sizes=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT],
                 )
                 def herd_body(th, tw, _sx, _sy):
+                    height_next = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mod(
+                                AffineExpr.get_add(
+                                    AffineSymbolExpr.get(0),
+                                    AffineConstantExpr.get(1),
+                                ),
+                                IMAGE_HEIGHT // TILE_HEIGHT,
+                            )
+                        ],
+                    )
+                    width_next = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mod(
+                                AffineExpr.get_add(
+                                    AffineSymbolExpr.get(0),
+                                    AffineConstantExpr.get(1),
+                                ),
+                                IMAGE_WIDTH // TILE_WIDTH,
+                            )
+                        ],
+                    )
+                    tw_next = affine_apply(width_next, [tw])
+                    th_next = affine_apply(height_next, [th])
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
-                    # This is the type definition of the tile
                     tile_type = MemRefType.get(
                         shape=TILE_SIZE,
                         element_type=T.i32(),
@@ -91,9 +121,11 @@ def build_module():
 
                     # We must allocate a buffer of tile size for the input/output
                     tile_in = AllocOp(tile_type, [], [])
+                    tile_in2 = AllocOp(tile_type, [], [])
                     tile_out = AllocOp(tile_type, [], [])
+                    tile_out2 = AllocOp(tile_type, [], [])
 
-                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
+                    # Copy a tile from the input image
                     ChannelGet("ChanIn", tile_in, indices=[tw, th])
 
                     # Access every value in the tile
@@ -107,12 +139,31 @@ def build_module():
                             yield_([])
                         yield_([])
 
-                    # Copy the output tile into the output
+                    # Copy the output tile into a channel for another worker to get
+                    ChannelPut("SwitchTiles", tile_out, indices=[tw, th])
+
+                    # Get an output tile from another worker
+                    ChannelGet("SwitchTiles", tile_in2, indices=[tw_next, th_next])
+
+                    # Access every value in the tile
+                    for j in range_(TILE_HEIGHT):
+                        for i in range_(TILE_WIDTH):
+                            # Load the input value from tile_in
+                            val = load(tile_in2, [i, j])
+
+                            # Store the output value in tile_out
+                            store(val, tile_out2, [i, j])
+                            yield_([])
+                        yield_([])
+
+                    # Send the output tile to the output
                     ChannelPut("ChanOut", tile_out, indices=[tw, th])
 
                     # Deallocate our L1 buffers
                     DeallocOp(tile_in)
                     DeallocOp(tile_out)
+                    DeallocOp(tile_in2)
+                    DeallocOp(tile_out2)
 
 
 if __name__ == "__main__":

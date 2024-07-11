@@ -13,6 +13,7 @@ from ._ods_common import get_default_loc_context as _ods_get_default_loc_context
 from ..extras.meta import region_op
 
 from ..extras import types as T
+from .func import FuncOp, CallOp
 
 
 def pyint_to_index(i):
@@ -87,6 +88,7 @@ class Herd(HerdOp):
         async_token=None,
         async_dependencies=[],
         operands=[],
+        link_with=None,
         attributes={},
         loc=None,
         ip=None,
@@ -98,6 +100,7 @@ class Herd(HerdOp):
             sizes=sizes,
             herd_operands=operands,
             sym_name=name,
+            link_with=link_with,
         )
         operand_types = [s.type for s in sizes] * 2 + [o.type for o in operands]
         self.regions[0].blocks.append(*operand_types)
@@ -223,3 +226,36 @@ def module_builder(module_function):
 herd = region_op(Herd, terminator=lambda *_args: HerdTerminatorOp())
 launch = region_op(Launch, terminator=lambda *_args: LaunchTerminatorOp())
 segment = region_op(Segment, terminator=lambda *_args: SegmentTerminatorOp())
+
+
+def external_func(name, inputs, outputs=None, visibility="private"):
+    if outputs is None:
+        outputs = []
+    return FuncOp(
+        name=name, type=FunctionType.get(inputs, outputs), visibility=visibility
+    )
+
+
+# Wrapper for func CallOp.
+class call(CallOp):
+    """Specialize CallOp class constructor to take python integers"""
+
+    def __init__(self, calleeOrResults, inputs=[], input_types=[]):
+        attrInputs = []
+
+        for i, itype in zip(inputs, input_types):
+            if isinstance(i, int):
+                attrInputs.append(arith.constant(itype, i))
+            else:
+                attrInputs.append(i)
+        if isinstance(calleeOrResults, FuncOp):
+            super().__init__(
+                calleeOrResults=calleeOrResults,
+                argumentsOrCallee=attrInputs,
+            )
+        else:
+            super().__init__(
+                calleeOrResults=input_types,
+                argumentsOrCallee=FlatSymbolRefAttr.get(calleeOrResults),
+                arguments=attrInputs,
+            )
