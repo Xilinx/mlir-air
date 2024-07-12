@@ -7,7 +7,7 @@ import numpy as np
 import air.backend.xrt as xrt_backend
 import filelock
 
-from herd_to_herd import *
+from hierarchical import *
 
 INOUT_DATATYPE = np.uint32
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
@@ -30,10 +30,12 @@ def test_main(build_module, verbose=False):
     input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     input_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
     for i in range(INOUT_SIZE):
-        input_a[i] = 0x2
+        input_a[i] = i
         input_b[i] = 0x00C0FFEE
 
-    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
+    backend = xrt_backend.XRTBackend(
+        verbose=verbose, experimental_passes=True, omit_while_true_loop=True
+    )
 
     if verbose:
         print_matrix(input_b)
@@ -53,17 +55,11 @@ def test_main(build_module, verbose=False):
     for i in range(INOUT_SIZE):
         rb = output_b[i]
 
-        row = i // IMAGE_WIDTH
-        col = i % IMAGE_WIDTH
-
         # value should have been updated
-        expected_value = 0x2 * 0x2 + 1
+        expected_value = i + 1
         if not (rb == expected_value):
-            """
-            print(
-                f"IM {i} [{col}, {row}] should be 0x{expected_value:x}, is 0x{rb:x}\n"
-            )
-            """
+            if verbose:
+                print(f"IM {i} should be 0x{expected_value:x}, is 0x{rb:x}\n")
             errors += 1
 
     if errors == 0:
@@ -77,7 +73,7 @@ def test_main(build_module, verbose=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the channel_examples/herd_to_herd example",
+        description="Builds, runs, and tests the channel_examples/hierarchical example",
     )
 
     parser.add_argument(
