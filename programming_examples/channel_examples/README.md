@@ -4,12 +4,23 @@ This example focuses on one of the key abstractions of air: *channels*. This is 
 
 ## Running and Testing
 
-#### ```herd-to-herd```: Using a channel to pass data between herds
+#### ```herd-to-herd```: Using a channel to pass data between herd.
 
-This example ([herd_to_herd/herd_to_herd.py](herd_to_herd/herd_to_herd.py)) defines two `herd`s within the same `launch` + `segment`. There is a *producer herd*, which writes data to a `Herd2Herd` channel, and a *consumer herd*, which reads data form the `Herd2Herd` channel.
+There are two part of this example: two herds within one segment (single segment), and one herd per segment for two segments (multi-segment)
+
+The single segment example example ([herd_to_herd/single_segment/herd_to_herd.py](herd_to_herd/single_segment/herd_to_herd.py)) defines two `herd`s within the same `launch` + `segment`. There is a *producer herd*, which writes data to a `Herd2Herd` channel, and a *consumer herd*, which reads data form the `Herd2Herd` channel.
 
 ```bash
-cd herd_to_herd
+cd herd_to_herd/single_segment
+make clean && make
+```
+
+The multi-segment example ([herd_to_herd/multi_segment/herd_to_herd.py](herd_to_herd/multi_segment/herd_to_herd.py)) defines two `segment`s, each with one `herd`, within the same `launch`. There is a *producer_segment* with a *producer herd*, which writes data to a `Herd2Herd` channel, and a *consumer_segment* with a *consumer herd*, which reads data form the `Herd2Herd` channel.
+
+Warning: The multi-segment example is a work in progress!
+
+```bash
+cd herd_to_herd/multi_segment
 make clean && make
 ```
 
