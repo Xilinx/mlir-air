@@ -70,7 +70,35 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
   return failure();
 }
 
+static LogicalResult FoldAlloc(AllocOp op, PatternRewriter &rewriter) {
+  auto memref = op.getResult();
+  if (!llvm::range_size(memref.getUsers())) {
+    rewriter.eraseOp(op);
+    return success();
+  }
+  return failure();
+}
+
+static LogicalResult FoldDealloc(DeallocOp op, PatternRewriter &rewriter) {
+  auto memref = op.getOperand();
+  if (llvm::range_size(memref.getUsers()) == 1) {
+    rewriter.eraseOp(op);
+    return success();
+  }
+  return failure();
+}
+
 void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldWaitAll);
+}
+
+void AllocOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                          MLIRContext *context) {
+  patterns.add(FoldAlloc);
+}
+
+void DeallocOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                            MLIRContext *context) {
+  patterns.add(FoldDealloc);
 }
