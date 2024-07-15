@@ -21,3 +21,9 @@ This example provides logic to divide in input 2D matrix into *tiles* of data, a
 ## [Data Transfer Transpose](data_transfer_transpose)
 
 Transposes a matrix with using either Channels or `dma_memcpy_nd`.
+
+## [WIP: Multi-Segment Examples](multi_segment)
+
+This is a collection of simple examples that illustrate how to use multiple segments. 
+
+Warning: This example is a work-in-progress.
