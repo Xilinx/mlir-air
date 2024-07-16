@@ -77,9 +77,6 @@ def build_module():
                     dma_memcpy_nd(
                         tile_in_l1,
                         my_l2_tile,
-                        src_offsets=[0, 0],
-                        src_sizes=[TILE_HEIGHT, TILE_WIDTH],
-                        src_strides=[IMAGE_WIDTH, 1],
                     )
 
                     # Access every value in the tile
