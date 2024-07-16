@@ -30,7 +30,7 @@ def build_module():
         memory_space=mem_space_l1,
     )
 
-    mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L2)
     image_type_l2 = MemRefType.get(
         shape=IMAGE_SIZE,
         element_type=T.i32(),
@@ -52,22 +52,16 @@ def build_module():
             def segment_body():
 
                 tensor_in_l2 = AllocOp(image_type_l2, [], [])
-                tensor_out_l2 = AllocOp(image_type_l2, [], [])
-
                 ChannelGet("ChanIn", tensor_in_l2)
-                ChannelPut("ChanOut", tensor_out_l2)
-
-                DeallocOp(tensor_in_l2)
-                DeallocOp(tensor_out_l2)
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
                 @herd(
                     name="copyherd",
                     sizes=[1, 1],
-                    operands=[tensor_in_l2, tensor_out_l2],
+                    operands=[tensor_in_l2],
                 )
-                def herd_body(tx, ty, sx, sy, tensor_in_l2, tensor_out_l2):
+                def herd_body(tx, ty, sx, sy, tensor_in_l2):
 
                     # We must allocate a buffer of image size for the input/output
                     tensor_in_l1 = AllocOp(image_type_l1, [], [])
@@ -87,12 +81,13 @@ def build_module():
                             yield_([])
                         yield_([])
 
-                    ChannelPut("ToSelf", tensor_out_l1)
-                    ChannelGet("ToSelf", tensor_out_l2)
+                    ChannelPut("ChanOut", tensor_out_l1)
 
                     # Deallocate our L1 buffers
                     DeallocOp(tensor_in_l1)
                     DeallocOp(tensor_out_l1)
+
+                DeallocOp(tensor_in_l2)
 
 
 if __name__ == "__main__":
