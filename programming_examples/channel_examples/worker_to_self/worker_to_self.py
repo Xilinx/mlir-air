@@ -23,14 +23,18 @@ def build_module():
     ChannelOp("ChanOut")
     ChannelOp("ToSelf")
 
-    # We want to store our data in L1 memory
-    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
-    # This is the type definition of the image
-    image_type = MemRefType.get(
+    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    image_type_l1 = MemRefType.get(
         shape=IMAGE_SIZE,
         element_type=T.i32(),
-        memory_space=mem_space,
+        memory_space=mem_space_l1,
+    )
+
+    mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    image_type_l2 = MemRefType.get(
+        shape=IMAGE_SIZE,
+        element_type=T.i32(),
+        memory_space=mem_space_l2,
     )
 
     # We will send an image worth of data in and out
@@ -47,51 +51,48 @@ def build_module():
             @segment(name="seg")
             def segment_body():
 
+                tensor_in_l2 = AllocOp(image_type_l2, [], [])
+                tensor_out_l2 = AllocOp(image_type_l2, [], [])
+
+                ChannelGet("ChanIn", tensor_in_l2)
+                ChannelPut("ChanOut", tensor_out_l2)
+
+                DeallocOp(tensor_in_l2)
+                DeallocOp(tensor_out_l2)
+
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="copyherd", sizes=[1, 1])
-                def herd_body(tx, ty, sx, sy):
+                @herd(
+                    name="copyherd",
+                    sizes=[1, 1],
+                    operands=[tensor_in_l2, tensor_out_l2],
+                )
+                def herd_body(tx, ty, sx, sy, tensor_in_l2, tensor_out_l2):
 
                     # We must allocate a buffer of image size for the input/output
-                    tensor_in = AllocOp(image_type, [], [])
-                    tensor_out = AllocOp(image_type, [], [])
-                    tensor_in2 = AllocOp(image_type, [], [])
-                    tensor_out2 = AllocOp(image_type, [], [])
+                    tensor_in_l1 = AllocOp(image_type_l1, [], [])
+                    tensor_out_l1 = AllocOp(image_type_l1, [], [])
 
-                    ChannelGet("ChanIn", tensor_in)
-
-                    # Access every value in the tile
-                    for j in range_(IMAGE_HEIGHT):
-                        for i in range_(IMAGE_WIDTH):
-                            # Load the input value from tile_in
-                            val = load(tensor_in, [i, j])
-
-                            # Store the output value in tile_out
-                            store(val, tensor_out, [i, j])
-                            yield_([])
-                        yield_([])
-
-                    ChannelPut("ToSelf", tensor_out)
-                    ChannelGet("ToSelf", tensor_in2)
+                    ChannelPut("ToSelf", tensor_in_l2)
+                    ChannelGet("ToSelf", tensor_in_l1)
 
                     # Access every value in the tile
                     for j in range_(IMAGE_HEIGHT):
                         for i in range_(IMAGE_WIDTH):
                             # Load the input value from tile_in
-                            val = load(tensor_in2, [i, j])
+                            val = load(tensor_in_l1, [i, j])
 
                             # Store the output value in tile_out
-                            store(val, tensor_out2, [i, j])
+                            store(val, tensor_out_l1, [i, j])
                             yield_([])
                         yield_([])
 
-                    ChannelPut("ChanOut", tensor_out2)
+                    ChannelPut("ToSelf", tensor_out_l1)
+                    ChannelGet("ToSelf", tensor_out_l2)
 
                     # Deallocate our L1 buffers
-                    DeallocOp(tensor_in)
-                    DeallocOp(tensor_out)
-                    DeallocOp(tensor_in2)
-                    DeallocOp(tensor_out2)
+                    DeallocOp(tensor_in_l1)
+                    DeallocOp(tensor_out_l1)
 
 
 if __name__ == "__main__":
