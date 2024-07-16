@@ -32,3 +32,11 @@ func.func @wait_all_1(%e0 : !airrt.event, %e1 : !airrt.event, %e2 : !airrt.event
   %7 = airrt.wait_all %6 : !airrt.event
   return %7 : !airrt.event
 }
+
+// CHECK-LABEL: alloc_dealloc
+// CHECK-NEXT: return
+func.func @alloc_dealloc() {
+  %0 = airrt.alloc : memref<1x4x4x16xi32, 1>
+  airrt.dealloc %0 : memref<1x4x4x16xi32, 1>
+  return
+}

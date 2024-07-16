@@ -189,6 +189,7 @@ def AIRRt_AllocOp: AIRRt_Op<"alloc", []> {
   let description = [{
     AIRRt Allocation Op
   }];
+  let hasCanonicalizer  = 1;
 }
 
 def AIRRt_DeallocOp: AIRRt_Op<"dealloc", []> {
@@ -201,6 +202,7 @@ def AIRRt_DeallocOp: AIRRt_Op<"dealloc", []> {
   let description = [{
     AIRRt Deallocation Op
   }];
+  let hasCanonicalizer  = 1;
 }
 
 def AIRRt_WaitAllOp : AIRRt_Op<"wait_all", []> {

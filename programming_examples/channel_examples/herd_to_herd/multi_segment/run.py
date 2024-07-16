@@ -33,8 +33,9 @@ def test_main(build_module, verbose=False):
         input_a[i] = 0x2
         input_b[i] = 0x00C0FFEE
 
-    # TODO(hunhoffe): need to figure out why single-core-dma fails with experimental_passes=True
-    backend = xrt_backend.XRTBackend(verbose=verbose, omit_while_true_loop=True)
+    backend = xrt_backend.XRTBackend(
+        verbose=verbose, experimental_passes=True, omit_while_true_loop=True
+    )
 
     if verbose:
         print_matrix(input_b)
@@ -78,7 +79,7 @@ def test_main(build_module, verbose=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the channel_examples/herd_to_herd example",
+        description="Builds, runs, and tests the herd-to-herd multi-segment example",
     )
 
     parser.add_argument(
