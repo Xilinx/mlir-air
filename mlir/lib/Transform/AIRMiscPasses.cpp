@@ -49,7 +49,7 @@ class AIRExamplePass : public air::impl::AIRExamplePassBase<AIRExamplePass> {
 
 public:
   AIRExamplePass() = default;
-  AIRExamplePass(const AIRExamplePass &pass){};
+  AIRExamplePass(const AIRExamplePass &pass) {};
 
   void runOnOperation() override;
 
@@ -63,7 +63,7 @@ class AIRLinalgNamePass
 
 public:
   AIRLinalgNamePass() = default;
-  AIRLinalgNamePass(const AIRLinalgNamePass &pass){};
+  AIRLinalgNamePass(const AIRLinalgNamePass &pass) {};
 
   void runOnOperation() override;
 
@@ -92,7 +92,7 @@ class AIRRemoveLinalgNamePass
 
 public:
   AIRRemoveLinalgNamePass() = default;
-  AIRRemoveLinalgNamePass(const AIRRemoveLinalgNamePass &pass){};
+  AIRRemoveLinalgNamePass(const AIRRemoveLinalgNamePass &pass) {};
 
   void runOnOperation() override;
 
@@ -118,7 +118,7 @@ class AIRSpecializeDmaBroadcast
 
 public:
   AIRSpecializeDmaBroadcast() = default;
-  AIRSpecializeDmaBroadcast(const AIRSpecializeDmaBroadcast &pass){};
+  AIRSpecializeDmaBroadcast(const AIRSpecializeDmaBroadcast &pass) {};
 
   void runOnOperation() override {
     auto module = getOperation();
@@ -481,7 +481,7 @@ class AIRFuseParallelHerdPass
 
 public:
   AIRFuseParallelHerdPass() = default;
-  AIRFuseParallelHerdPass(const AIRFuseParallelHerdPass &pass){};
+  AIRFuseParallelHerdPass(const AIRFuseParallelHerdPass &pass) {};
 
   void runOnOperation() override;
 
@@ -599,7 +599,7 @@ class AIRRenumberDmaIdPass
 
 public:
   AIRRenumberDmaIdPass() = default;
-  AIRRenumberDmaIdPass(const AIRRenumberDmaIdPass &pass){};
+  AIRRenumberDmaIdPass(const AIRRenumberDmaIdPass &pass) {};
 
   void runOnOperation() override;
 
@@ -644,7 +644,7 @@ class AIRLowerHerdParallelPass
 
 public:
   AIRLowerHerdParallelPass() = default;
-  AIRLowerHerdParallelPass(const AIRLowerHerdParallelPass &pass){};
+  AIRLowerHerdParallelPass(const AIRLowerHerdParallelPass &pass) {};
 
   void runOnOperation() override;
 
@@ -666,7 +666,7 @@ class AIRLabelBroadcastChannelWithTilePass
 public:
   AIRLabelBroadcastChannelWithTilePass() = default;
   AIRLabelBroadcastChannelWithTilePass(
-      const AIRLabelBroadcastChannelWithTilePass &pass){};
+      const AIRLabelBroadcastChannelWithTilePass &pass) {};
 
   void runOnOperation() override;
 
@@ -714,7 +714,7 @@ class AIRCollapseHerdPass
 
 public:
   AIRCollapseHerdPass() = default;
-  AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
+  AIRCollapseHerdPass(const AIRCollapseHerdPass &pass) {};
   AIRCollapseHerdPass(const ::xilinx::air::AIRCollapseHerdPassOptions &options)
       : AIRCollapseHerdPassBase(options) {}
 
@@ -801,7 +801,7 @@ class AIRUnrollOuterPerfectlyNestedLoopsPass
 public:
   AIRUnrollOuterPerfectlyNestedLoopsPass() = default;
   AIRUnrollOuterPerfectlyNestedLoopsPass(
-      const AIRUnrollOuterPerfectlyNestedLoopsPass &pass){};
+      const AIRUnrollOuterPerfectlyNestedLoopsPass &pass) {};
   AIRUnrollOuterPerfectlyNestedLoopsPass(
       const ::xilinx::air::AIRUnrollOuterPerfectlyNestedLoopsPassOptions
           &options)
@@ -844,7 +844,7 @@ class AIRSplitL2MemrefForBufferConstraintPass
 public:
   AIRSplitL2MemrefForBufferConstraintPass() = default;
   AIRSplitL2MemrefForBufferConstraintPass(
-      const AIRSplitL2MemrefForBufferConstraintPass &pass){};
+      const AIRSplitL2MemrefForBufferConstraintPass &pass) {};
 
   void runOnOperation() override;
 
@@ -861,7 +861,8 @@ private:
                     SmallVector<int> memrefShape);
 };
 
-template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
+template <typename T>
+void push_back_if_unique(SmallVector<T> &vec, T entry) {
   if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
     vec.push_back(entry);
   }
@@ -1360,13 +1361,31 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         // different rank, then we check if ranks can be matched after leading
         // singleton dimensions are removed. If the ranks still do not match,
         // then the behaviour is unstable.
-        int numLeadingSingletonDims = 0;
-        for (auto memrefDim : memrefShape)
+        int numLeadingSingletonDimDiff = 0;
+        for (auto memrefDim : memrefShape) {
           if (memrefDim == 1)
-            numLeadingSingletonDims++;
+            numLeadingSingletonDimDiff++;
+          else
+            break;
+        }
+        for (auto memrefDim :
+             air::getTensorShape(theOtherChanOp[0].getMemref().getType())) {
+          if (memrefDim == 1)
+            numLeadingSingletonDimDiff--;
+          else
+            break;
+        }
+        if (dim - numLeadingSingletonDimDiff < 0) {
+          chanUserOp->emitOpError(
+              "Failed to split data access pattern along dimension ")
+              << std::to_string(dim)
+              << " due to dimension misalignment with channel op at the other "
+                 "side.";
+          return;
+        }
         Value newWaitAll1 = tileChannelOpByFactor(
             theOtherChanOp[0], targetColTilingFactor, memrefShape[dim],
-            dim - numLeadingSingletonDims, new_chan, loc, ctx);
+            dim - numLeadingSingletonDimDiff, new_chan, loc, ctx);
 
         // Update dependency.
         auto oldToken =
