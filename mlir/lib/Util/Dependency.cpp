@@ -783,20 +783,24 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
                 dyn_cast<mlir::affine::AffineApplyOp>(oper.getDefiningOp()))
           position_apply = apply_op;
         else if (auto exec = dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
-          auto child_op = &exec.getBody().front().getOperations().front();
-          if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(child_op))
+          if (auto apply_op =
+                  dyn_cast<mlir::affine::AffineApplyOp>(exec.getChildOp()))
             position_apply = apply_op;
         }
         if (position_apply) {
+          bool positionApplyIsVariantWrtPar = false;
           SmallVector<AffineExpr> const_syms;
           for (unsigned i = 0; i < par.getInductionVars().size(); i++) {
             for (auto map_o : position_apply.getMapOperands()) {
               if (par.getInductionVars()[i] == map_o) {
                 const_syms.push_back(
                     getAffineConstantExpr(position[i], builder.getContext()));
+                positionApplyIsVariantWrtPar = true;
               }
             }
           }
+          if (!positionApplyIsVariantWrtPar)
+            continue;
           AffineExpr newC = position_apply.getAffineMap().getResult(0);
           newC = newC.replaceSymbols(const_syms);
           auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
