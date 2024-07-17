@@ -23,6 +23,29 @@ def pyint_to_index(i):
     return arith.ConstantOp.create_index(i) if isinstance(i, int) else i
 
 
+def get_region_operand_types(operands):
+    """
+    Utility function to get the type of arguments given to region ops.
+    """
+    operand_types = []
+    for o in operands:
+        if isinstance(o, Value):
+            operand_types.append(o.type)
+        elif isinstance(o, OpView):
+            if len(o.results.types) != 1:
+                raise AttributeError(
+                    f"Operation given to a region op as a parameter ({o}) has more "
+                    "than one return type ({o.results.types}), which would lead to a mismatch "
+                    "between number of operands and number of operand types"
+                )
+            operand_types += o.results.types
+        else:
+            raise AttributeError(
+                f"Argument {o} is not a Value or an Operation: {type(o).mro()}"
+            )
+    return operand_types
+
+
 class Launch(LaunchOp):
     """Specialization for LaunchOp class."""
 
@@ -48,7 +71,7 @@ class Launch(LaunchOp):
             launch_operands=operands,
             sym_name=name,
         )
-        operand_types = [s.type for s in sizes] * 2 + [o.type for o in operands]
+        operand_types = [s.type for s in sizes] * 2 + get_region_operand_types(operands)
         self.regions[0].blocks.append(*operand_types)
 
 
@@ -74,7 +97,7 @@ class Segment(SegmentOp):
             segment_operands=operands,
             sym_name=name,
         )
-        operand_types = [s.type for s in sizes] * 2 + [o.type for o in operands]
+        operand_types = [s.type for s in sizes] * 2 + get_region_operand_types(operands)
         self.regions[0].blocks.append(*operand_types)
 
 
@@ -102,7 +125,7 @@ class Herd(HerdOp):
             sym_name=name,
             link_with=link_with,
         )
-        operand_types = [s.type for s in sizes] * 2 + [o.type for o in operands]
+        operand_types = [s.type for s in sizes] * 2 + get_region_operand_types(operands)
         self.regions[0].blocks.append(*operand_types)
 
 
