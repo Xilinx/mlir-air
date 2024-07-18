@@ -1778,6 +1778,8 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
         continue;
       if (!ivArg.getOwner())
         continue;
+      if (!val.hasOneUse())
+        continue;
       if (op.getResult().use_empty())
         continue;
       if (auto exec_muli = dyn_cast<air::ExecuteOp>(op->getParentOp()))
@@ -1864,6 +1866,8 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
       if (!ivArg)
         continue;
       if (!ivArg.getOwner())
+        continue;
+      if (!val.hasOneUse())
         continue;
       if (op.getResult().use_empty())
         continue;
