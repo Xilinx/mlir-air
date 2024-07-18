@@ -45,18 +45,28 @@ def build_module():
             operands=[arg0, arg1],
         )
         def launch_body(tile_index0, tile_index1, _launch_size_x, _launch_size_y, a, b):
-            scaled_index_map = AffineMap.get(
+            scaled_index_map_height = AffineMap.get(
                 0,
                 1,
                 [
                     AffineExpr.get_mul(
                         AffineSymbolExpr.get(0),
-                        AffineConstantExpr.get(IMAGE_HEIGHT),
+                        AffineConstantExpr.get(TILE_HEIGHT),
                     )
                 ],
             )
-            offset0 = affine_apply(scaled_index_map, [tile_index0])
-            offset1 = affine_apply(scaled_index_map, [tile_index1])
+            scaled_index_map_width = AffineMap.get(
+                0,
+                1,
+                [
+                    AffineExpr.get_mul(
+                        AffineSymbolExpr.get(0),
+                        AffineConstantExpr.get(TILE_WIDTH),
+                    )
+                ],
+            )
+            offset0 = affine_apply(scaled_index_map_height, [tile_index0])
+            offset1 = affine_apply(scaled_index_map_width, [tile_index1])
 
             # Put data into the channel tile by tile
             ChannelPut(
@@ -111,7 +121,7 @@ def build_module():
                         for j in range_(TILE_HEIGHT):
                             for i in range_(TILE_WIDTH):
                                 # Load the input value from tile_in
-                                val_in = load(tile_in, [i, j])
+                                val_in = load(tile_in, [j, i])
 
                                 # Compute the output value TODO(hunhoffe): this is not correct, not sure how to percolate launch info here
                                 val_out = arith.addi(
@@ -122,7 +132,7 @@ def build_module():
                                 store(
                                     val_out,
                                     tile_out,
-                                    [i, j],
+                                    [j, i],
                                 )
                                 yield_([])
                             yield_([])

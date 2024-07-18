@@ -5,13 +5,13 @@ import numpy as np
 import air.backend.xrt as xrt_backend
 import filelock
 
-IMAGE_WIDTH = 32
-IMAGE_HEIGHT = 16
-IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
+IMAGE_WIDTH = 16
+IMAGE_HEIGHT = 32
+IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
-TILE_WIDTH = 16
-TILE_HEIGHT = 8
-TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]
+TILE_WIDTH = 8
+TILE_HEIGHT = 16
+TILE_SIZE = [TILE_HEIGHT, TILE_WIDTH]
 
 assert IMAGE_WIDTH % TILE_WIDTH == 0
 assert IMAGE_HEIGHT % TILE_HEIGHT == 0
@@ -67,7 +67,7 @@ def test_main(build_module, experimental_passes, verbose=False):
 
         row = i // IMAGE_WIDTH
         col = i % IMAGE_WIDTH
-        tile_num = (row // TILE_HEIGHT) * (IMAGE_HEIGHT // TILE_HEIGHT) + (
+        tile_num = (row // TILE_HEIGHT) * (IMAGE_WIDTH // TILE_WIDTH) + (
             col // TILE_WIDTH
         )
 

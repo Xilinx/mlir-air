@@ -46,10 +46,20 @@ def build_module():
                 # We are hoping to map each tile to a different compute core.
                 @herd(
                     name="xaddherd",
-                    sizes=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT],
+                    sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
                     operands=[arg2, arg3],
                 )
                 def herd_body(tx, ty, sx, sy, a, b):
+                    scaled_index_map_height = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(TILE_HEIGHT),
+                            )
+                        ],
+                    )
                     scaled_index_map_width = AffineMap.get(
                         0,
                         1,
@@ -66,7 +76,7 @@ def build_module():
                         [
                             AffineExpr.get_mul(
                                 AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(IMAGE_HEIGHT // TILE_HEIGHT),
+                                AffineConstantExpr.get(IMAGE_WIDTH // TILE_WIDTH),
                             )
                         ],
                     )
@@ -80,7 +90,7 @@ def build_module():
                             )
                         ],
                     )
-                    offset0 = affine_apply(scaled_index_map_width, [tx])
+                    offset0 = affine_apply(scaled_index_map_height, [tx])
                     offset1 = affine_apply(scaled_index_map_width, [ty])
                     tile_index_height = affine_apply(create_tile_index_height, [tx])
                     compute_tile_id = affine_apply(
@@ -114,7 +124,7 @@ def build_module():
                     for j in range_(TILE_HEIGHT):
                         for i in range_(TILE_WIDTH):
                             # Load the input value from tile_in
-                            val_in = load(tile_in, [i, j])
+                            val_in = load(tile_in, [j, i])
 
                             # Compute the output value
                             val_out = arith.addi(
@@ -122,7 +132,7 @@ def build_module():
                             )
 
                             # Store the output value in tile_out
-                            store(val_out, tile_out, [i, j])
+                            store(val_out, tile_out, [j, i])
                             yield_([])
                         yield_([])
 
