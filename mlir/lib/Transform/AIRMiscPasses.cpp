@@ -1360,13 +1360,31 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         // different rank, then we check if ranks can be matched after leading
         // singleton dimensions are removed. If the ranks still do not match,
         // then the behaviour is unstable.
-        int numLeadingSingletonDims = 0;
-        for (auto memrefDim : memrefShape)
+        int numLeadingSingletonDimDiff = 0;
+        for (auto memrefDim : memrefShape) {
           if (memrefDim == 1)
-            numLeadingSingletonDims++;
+            numLeadingSingletonDimDiff++;
+          else
+            break;
+        }
+        for (auto memrefDim :
+             air::getTensorShape(theOtherChanOp[0].getMemref().getType())) {
+          if (memrefDim == 1)
+            numLeadingSingletonDimDiff--;
+          else
+            break;
+        }
+        if (dim - numLeadingSingletonDimDiff < 0) {
+          chanUserOp->emitOpError(
+              "Failed to split data access pattern along dimension ")
+              << std::to_string(dim)
+              << " due to dimension misalignment with channel op at the other "
+                 "side.";
+          return;
+        }
         Value newWaitAll1 = tileChannelOpByFactor(
             theOtherChanOp[0], targetColTilingFactor, memrefShape[dim],
-            dim - numLeadingSingletonDims, new_chan, loc, ctx);
+            dim - numLeadingSingletonDimDiff, new_chan, loc, ctx);
 
         // Update dependency.
         auto oldToken =
