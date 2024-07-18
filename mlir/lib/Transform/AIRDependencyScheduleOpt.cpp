@@ -1772,11 +1772,12 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     auto hasNElements = [](Block *block, unsigned N) {
       unsigned counter = 0;
       for (auto &o : block->getOperations()) {
-        if (o.mightHaveTrait<OpTrait::IsTerminator>())
-          continue;
-        if (isa<air::WaitAllOp>(o))
-          continue;
-        counter++;
+        if (isa<air::ChannelInterface>(o))
+          counter++;
+        else if (isa<LoopLikeOpInterface>(o))
+          counter++;
+        else if (isa<mlir::linalg::LinalgOp>(o))
+          counter++;
       }
       return counter == N;
     };
@@ -1785,10 +1786,6 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         return failure();
 
     if (!hasNElements(for_op.getBody(), 1))
-      return failure();
-    if (isa<air::ChannelInterface>(for_op.getBody()->begin())) {
-    } else if (isa<scf::ForOp>(for_op.getBody()->begin())) {
-    } else
       return failure();
 
     // Check if the loop nest contains exactly one channel op
@@ -1812,10 +1809,6 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     for (auto o : for_loops) {
       // Check for perfect loop nest containing only air.channel ops
       if (!hasNElements(o.getBody(), 1))
-        return failure();
-      if (isa<air::ChannelInterface>(o.getBody()->begin())) {
-      } else if (isa<scf::ForOp>(o.getBody()->begin())) {
-      } else
         return failure();
       if (!getStaticScfForTripCountAsInt(o))
         return failure();
@@ -1886,11 +1879,12 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
     auto hasNElements = [](Block *block, unsigned N) {
       unsigned counter = 0;
       for (auto &o : block->getOperations()) {
-        if (o.mightHaveTrait<OpTrait::IsTerminator>())
-          continue;
-        if (isa<air::WaitAllOp>(o))
-          continue;
-        counter++;
+        if (isa<air::ChannelInterface>(o))
+          counter++;
+        else if (isa<LoopLikeOpInterface>(o))
+          counter++;
+        else if (isa<mlir::linalg::LinalgOp>(o))
+          counter++;
       }
       return counter == N;
     };
@@ -1899,10 +1893,6 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
         return failure();
 
     if (!hasNElements(for_op.getBody(), 1))
-      return failure();
-    if (isa<air::ChannelInterface>(for_op.getBody()->begin())) {
-    } else if (isa<affine::AffineForOp>(for_op.getBody()->begin())) {
-    } else
       return failure();
 
     // Check if the loop nest contains exactly one channel op
@@ -1926,10 +1916,6 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
     for (auto o : for_loops) {
       // Check for perfect loop nest containing only air.channel ops
       if (!hasNElements(o.getBody(), 1))
-        return failure();
-      if (isa<air::ChannelInterface>(o.getBody()->begin())) {
-      } else if (isa<affine::AffineForOp>(o.getBody()->begin())) {
-      } else
         return failure();
       if (!getStaticAffineForTripCountAsInt(o))
         return failure();
@@ -2832,14 +2818,18 @@ public:
 
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
-    RewritePatternSet patterns(&getContext());
-    patterns.insert<UnrollScfParallel, CanonicalizeAIRExecute,
-                    CanonicalizeAffineApplyOnLoopInductionVar,
-                    AIRSpecializeChannelWrapAndStrideInScfFor,
-                    AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
+    RewritePatternSet preproc_patterns(&getContext());
+    preproc_patterns.insert<UnrollScfParallel, CanonicalizeAIRExecute,
+                            CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
     // Canonicalize constant operands in affine.apply.
-    mlir::affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
-    air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
+    mlir::affine::AffineApplyOp::getCanonicalizationPatterns(preproc_patterns,
+                                                             ctx);
+    air::WaitAllOp::getCanonicalizationPatterns(preproc_patterns, ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(preproc_patterns));
+
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor,
+                    AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
 
     // Canonicalize wrap and stride list to remove redundant dimensions
