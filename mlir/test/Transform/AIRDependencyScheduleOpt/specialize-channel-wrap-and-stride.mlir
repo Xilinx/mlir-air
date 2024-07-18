@@ -415,4 +415,39 @@ module {
     return
   }
 
+  // Arith.muli and addi folding into loops.
+  // CHECK-LABEL: test12
+  
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_27[%c0, %c0] (%{{.*}}[%c0, %c0, %c8] [%c2, %c2, %c128] [%c8, %c16, %c1]) : (memref<32x16xi32>)
+
+  func.func @test12(%arg0: memref<32x16xi32>) {
+    %0 = air.launch async () in () args(%arg2=%arg0) : memref<32x16xi32> {
+      %1 = air.segment @seg async  args(%arg3=%arg2) : memref<32x16xi32> {
+        %c2 = arith.constant 2 : index
+        %c16 = arith.constant 16 : index
+        %c8 = arith.constant 8 : index
+        %c32 = arith.constant 32 : index
+        %c1 = arith.constant 1 : index
+        %c0 = arith.constant 0 : index
+        %2 = air.wait_all async 
+        %3 = scf.for %arg4 = %c0 to %c2 step %c1 iter_args(%arg5 = %2) -> (!air.async.token) {
+          %4 = scf.for %arg6 = %c0 to %c2 step %c1 iter_args(%arg7 = %arg5) -> (!air.async.token) {
+            %async_token, %results = air.execute [%arg7] -> (index) {
+              %6 = arith.addi %arg4, %c1 : index
+              air.execute_terminator %6 : index
+            }
+            %async_token_0, %results_1 = air.execute [%arg7] -> (index) {
+              %6 = arith.muli %arg6, %c16 : index
+              air.execute_terminator %6 : index
+            }
+            %5 = air.channel.put async [%async_token_0, %async_token, %arg7]  @channel_27[%c0, %c0] (%arg3[%results, %results_1] [%c16, %c8] [%c8, %c1]) : (memref<32x16xi32>)
+            scf.yield %5 : !air.async.token
+          }
+          scf.yield %4 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+
 }
