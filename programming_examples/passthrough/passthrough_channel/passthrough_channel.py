@@ -8,55 +8,54 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
 INOUT_DATATYPE = np.uint8
-INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
 
 
 @module_builder
 def build_module(vector_size, num_subvectors):
     assert vector_size % num_subvectors == 0
-
-    # chop input in 4 sub-tensors
-    lineWidthInBytes = vector_size // num_subvectors
+    xrt_dtype = type_mapper(INOUT_DATATYPE)
 
     # Type and method of input/output
-    memrefTyInOut = T.memref(vector_size, T.ui8())
+    memrefTyInOut = T.memref(vector_size, xrt_dtype)
     ChannelOp("ChanIn")
     ChannelOp("ChanOut")
 
-    # We want to store our data in L1 memory
-    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    # The compute core splits input into subvectors for processing
+    lineWidthInBytes = vector_size // num_subvectors
 
-    # This is the type definition of the image
+    # Memref type definition used by the compute core and external function
+    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
     tensor_type = MemRefType.get(
         shape=[lineWidthInBytes],
-        element_type=T.ui8(),
+        element_type=xrt_dtype,
         memory_space=mem_space,
     )
 
-    # We will send an image worth of data in and out
+    # Function definition of the external function we will call
+    passThroughLine = external_func(
+        "passThroughLine", inputs=[tensor_type, tensor_type, T.i32()]
+    )
+
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
     def copy(arg0, arg1):
 
-        # The arguments are the input and output
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
             ChannelPut("ChanIn", a)
             ChannelGet("ChanOut", b)
 
-            # The arguments are still the input and the output
             @segment(name="seg")
             def segment_body():
 
-                # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                # We just need one compute core, so we ask for a 1x1 herd
                 @herd(name="copyherd", sizes=[1, 1])
-                def herd_body(tx, ty, sx, sy):
+                def herd_body(_tx, _ty, _sx, _sy):
 
+                    # Process each subvector individually
                     for _i in range_(num_subvectors):
                         # We must allocate a buffer of image size for the input/output
                         tensor_in = AllocOp(tensor_type, [], [])
