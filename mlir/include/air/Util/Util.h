@@ -222,6 +222,13 @@ std::optional<int> getOffsetDimFromMemrefDim(int dimOnMemref,
                                              SmallVector<Value> strides,
                                              SmallVector<int> memrefShape);
 
+// Evaluate the affine expression of affine map on a sparse vector of constant
+// ints.
+std::optional<int64_t>
+evaluateConstantsInMap(AffineMap map,
+                       SmallVector<std::optional<int64_t>> const_inputs,
+                       MLIRContext *ctx);
+
 } // namespace air
 } // namespace xilinx
 
