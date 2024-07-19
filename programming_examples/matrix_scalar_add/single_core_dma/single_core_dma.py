@@ -65,8 +65,8 @@ def build_module():
                             tile_out = AllocOp(tile_type, [], [])
 
                             # Convert the type of the tile size variable to the Index type
-                            tile_size0 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
-                            tile_size1 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
+                            tile_size0 = arith.ConstantOp.create_index(TILE_HEIGHT)
+                            tile_size1 = arith.ConstantOp.create_index(TILE_WIDTH)
 
                             # Calculate the offset into the channel data, which is based on our loop vars
                             offset0 = arith.MulIOp(tile_size0, tile_index0)
@@ -74,7 +74,7 @@ def build_module():
                             tile_num = arith.MulIOp(
                                 tile_index0,
                                 arith.ConstantOp.create_index(
-                                    IMAGE_HEIGHT // TILE_HEIGHT
+                                    IMAGE_WIDTH // TILE_WIDTH
                                 ),
                             )
                             tile_num = arith.AddIOp(tile_num, tile_index1)
@@ -92,7 +92,7 @@ def build_module():
                             for j in range_(TILE_HEIGHT):
                                 for i in range_(TILE_WIDTH):
                                     # Load the input value from tile_in
-                                    val_in = load(tile_in, [i, j])
+                                    val_in = load(tile_in, [j, i])
 
                                     # Compute the output value
                                     val_out = arith.addi(
@@ -100,7 +100,7 @@ def build_module():
                                     )
 
                                     # Store the output value in tile_out
-                                    store(val_out, tile_out, [i, j])
+                                    store(val_out, tile_out, [j, i])
                                     yield_([])
                                 yield_([])
 
