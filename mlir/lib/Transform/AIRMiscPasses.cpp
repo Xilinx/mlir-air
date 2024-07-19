@@ -883,8 +883,8 @@ int findGCD(SmallVector<int> vec) {
 // Tile air.channel put/get wrt a memref.
 Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
                             int originalMemrefSize, int dim,
-                            air::ChannelOp newChanOp, Location loc,
-                            MLIRContext *ctx) {
+                            memref::AllocOp allocOp, air::ChannelOp newChanOp,
+                            Location loc, MLIRContext *ctx) {
   OpBuilder builder(originalChanOp);
   SmallVector<Value> originalApplyOperands;
   Operation *affineApplyOp = nullptr;
@@ -912,11 +912,21 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
     auto checkpoint = builder.saveInsertionPoint();
     if (affineApplyOp)
       builder.setInsertionPoint(affineApplyOp);
+    // Generate default affine.map assuming non-overlapping data access pattern.
     AffineExpr s0 = builder.getAffineSymbolExpr(0);
     AffineExpr mul = s0 * originalMemrefSize;
     AffineExpr add =
         mul + i * llvm::divideCeilSigned(originalMemrefSize, factor);
     auto map = AffineMap::get(0, 1, add);
+    // If allocOp has "affine_map" attribute set, then use that map instead
+    // (potentially overlapping access pattern).
+    if (allocOp->hasAttr("affine_map")) {
+      auto original_map =
+          allocOp->getAttrOfType<AffineMapAttr>("affine_map").getAffineMap();
+      if (original_map.getNumInputs() == 2)
+        map = original_map.replace(getAffineSymbolExpr(1, ctx),
+                                   getAffineConstantExpr(i, ctx), 0, 1);
+    }
     auto newApplyOp =
         builder.create<affine::AffineApplyOp>(loc, map, originalApplyOperands);
     if (affineApplyOp)
@@ -956,6 +966,26 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
   return newWaitAll.getAsyncToken();
 }
 
+// Get scf.for op whose iv (indirectly) produces the val.
+scf::ForOp getScfForFromVal(Value val) {
+  if (!val)
+    return scf::ForOp();
+  if (auto res = scf::getForInductionVarOwner(val))
+    return res;
+  auto defOp = val.getDefiningOp();
+  if (!defOp)
+    return scf::ForOp();
+  if (auto exec = dyn_cast<air::ExecuteOp>(defOp)) {
+    auto exec_child = exec.getChildOp();
+    if (!exec_child)
+      return scf::ForOp();
+    for (auto oper : exec_child->getOperands())
+      if (auto res = scf::getForInductionVarOwner(oper))
+        return res;
+  }
+  return scf::ForOp();
+}
+
 // Partition L2 memref.
 void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     SmallVector<air::ChannelPutOp> &puts, SmallVector<air::ChannelGetOp> &gets,
@@ -964,6 +994,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
   MemRefType ty = llvm::cast<MemRefType>(memref.getType());
   auto allocOp = memref.getDefiningOp();
   auto loc = allocOp->getLoc();
+  auto ctx = allocOp->getContext();
   Operation *deallocOp = nullptr;
   for (auto user : memref.getUsers()) {
     if (auto execOp = dyn_cast<air::ExecuteOp>(user->getParentOp())) {
@@ -979,34 +1010,63 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
 
   std::map<int, SmallVector<air::ChannelInterface>> chanOpPartitions;
   SmallVector<int> keys;
-  for (auto op : puts) {
-    auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
-                                                    air::getTensorShape(ty));
-    if (!offsetDim)
-      continue;
-    auto offset = getConstantIntValue(op.getOffsets()[*offsetDim]);
-    if (!offset)
-      continue;
-    push_back_if_unique<int>(keys, *offset);
-    if (!chanOpPartitions.count(*offset))
-      chanOpPartitions[*offset] = SmallVector<air::ChannelInterface>{op};
-    else
-      chanOpPartitions[*offset].push_back(op);
-  }
-  for (auto op : gets) {
-    auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
-                                                    air::getTensorShape(ty));
-    if (!offsetDim)
-      continue;
-    auto offset = getConstantIntValue(op.getOffsets()[*offsetDim]);
-    if (!offset)
-      continue;
-    push_back_if_unique<int>(keys, *offset);
-    if (!chanOpPartitions.count(*offset))
-      chanOpPartitions[*offset] = SmallVector<air::ChannelInterface>{op};
-    else
-      chanOpPartitions[*offset].push_back(op);
-  }
+
+  // Get map of channel ops
+  auto getChanOpPartitionsMap =
+      [ctx, dim,
+       ty](std::map<int, SmallVector<air::ChannelInterface>> &chanOpPartitions,
+           SmallVector<int> &keys, air::ChannelInterface op) {
+        auto offsetDim = air::getOffsetDimFromMemrefDim(
+            dim, op.getStrides(), air::getTensorShape(ty));
+        if (!offsetDim)
+          return;
+        auto offset = getConstantIntValue(op.getOffsets()[*offsetDim]);
+        int offset_key = -1;
+        if (offset)
+          offset_key = *offset; // Const offset.
+        else { // Variadic offset (induction variable to an scf.for).
+          auto forOp = getScfForFromVal(op.getOffsets()[*offsetDim]);
+          if (!forOp)
+            return;
+          auto iv = forOp.getInductionVar();
+          if (!iv.hasOneUse())
+            return;
+          auto lb = getConstantIntValue(forOp.getLowerBound());
+          if (!lb)
+            return;
+          Operation *oneUser = nullptr;
+          for (auto user : iv.getUsers())
+            oneUser = user;
+          if (auto apply = dyn_cast<affine::AffineApplyOp>(oneUser)) {
+            SmallVector<std::optional<int64_t>> const_ints;
+            for (auto oper : apply->getOperands()) {
+              if (auto constVal = getConstantIntValue(oper))
+                const_ints.push_back(constVal);
+              else
+                const_ints.push_back(lb);
+            }
+            auto key_opt = air::evaluateConstantsInMap(apply.getAffineMap(),
+                                                       const_ints, ctx);
+            if (!key_opt)
+              return;
+            offset_key = *key_opt;
+          } else
+            offset_key = *lb;
+        }
+        if (offset_key < 0)
+          return;
+        push_back_if_unique<int>(keys, offset_key);
+        if (!chanOpPartitions.count(offset_key))
+          chanOpPartitions[offset_key] = SmallVector<air::ChannelInterface>{op};
+        else
+          chanOpPartitions[offset_key].push_back(op);
+      };
+
+  for (auto op : puts)
+    getChanOpPartitionsMap(chanOpPartitions, keys, op);
+  for (auto op : gets)
+    getChanOpPartitionsMap(chanOpPartitions, keys, op);
+
   OpBuilder builder(allocOp);
   SmallVector<scf::ForOp> mutatedScfForOps;
   for (auto key : keys) {
@@ -1019,10 +1079,22 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
                                                       air::getTensorShape(ty));
       if (!offsetDim)
         continue;
-      if (op.getSizes().size() == newMemrefShape.size()) {
+      if (op.getSizes().size() != newMemrefShape.size())
+        continue;
+      auto offset = getConstantIntValue(op.getOffsets()[*offsetDim]);
+      if (offset)
         newMemrefShape[dim] = *getConstantIntValue(op.getSizes()[*offsetDim]);
-        break;
+      else {
+        auto forOp = getScfForFromVal(op.getOffsets()[*offsetDim]);
+        if (!forOp)
+          continue;
+        auto trip_count = air::getStaticScfForTripCountAsInt(forOp);
+        if (!trip_count)
+          continue;
+        newMemrefShape[dim] =
+            *getConstantIntValue(op.getSizes()[*offsetDim]) * (*trip_count);
       }
+      break;
     }
 
     auto newMemrefType = MemRefType::get(newMemrefShape, ty.getElementType(),
@@ -1031,9 +1103,9 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     Value newMemref = nullptr;
     // Create new alloc ops.
     if (isa<air::ExecuteOp>(allocOp)) {
-      auto execOp = builder.create<air::ExecuteOp>(
-          loc, air::AsyncTokenType::get(allocOp->getContext()), newMemrefType,
-          SmallVector<Value>{});
+      auto execOp =
+          builder.create<air::ExecuteOp>(loc, air::AsyncTokenType::get(ctx),
+                                         newMemrefType, SmallVector<Value>{});
       Block *async_bb = builder.createBlock(&execOp.getBody());
       builder.setInsertionPointToStart(async_bb);
       auto childMemAlloc = builder.create<memref::AllocOp>(loc, newMemrefType);
@@ -1048,7 +1120,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       builder.setInsertionPoint(deallocOp);
       if (auto execDeallocOp = dyn_cast<air::ExecuteOp>(deallocOp)) {
         auto execOp = builder.create<air::ExecuteOp>(
-            loc, air::AsyncTokenType::get(deallocOp->getContext()),
+            loc, air::AsyncTokenType::get(ctx),
             execDeallocOp.getAsyncDependencies());
         Block *async_bb = builder.createBlock(&execOp.getBody());
         builder.setInsertionPointToStart(async_bb);
@@ -1073,7 +1145,24 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         continue;
       int offsetOperandOffset = memrefOperandOffset + *offsetDim + 1;
       auto &offsetOpOper = op->getOpOperand(offsetOperandOffset);
-      offsetOpOper.assign(builder.create<arith::ConstantIndexOp>(loc, 0));
+
+      // Const offset. Reset offset to 0.
+      if (getConstantIntValue(op.getOffsets()[*offsetDim]))
+        offsetOpOper.assign(builder.create<arith::ConstantIndexOp>(loc, 0));
+      // Variadic offset. Reset const operands of apply to 0.
+      else {
+        auto defOp = op.getOffsets()[*offsetDim].getDefiningOp();
+        affine::AffineApplyOp apply = dyn_cast<affine::AffineApplyOp>(defOp);
+        air::ExecuteOp exec = dyn_cast<air::ExecuteOp>(defOp);
+        if (exec && isa<affine::AffineApplyOp>(exec.getChildOp()))
+          apply = dyn_cast<affine::AffineApplyOp>(exec.getChildOp());
+        assert(apply && "Apply op not found. NYI.");
+        for (auto oper : apply->getOperands())
+          if (getConstantIntValue(oper))
+            apply->replaceUsesOfWith(
+                oper, builder.create<arith::ConstantIndexOp>(loc, 0));
+      }
+
       // Update strides (contiguous, row-major) after memref tiling.
       SmallVector<int> newStrides;
       // One dimensional default stride value.
@@ -1209,6 +1298,21 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
             allocOp->setAttr(
                 "split_dim",
                 IntegerAttr::get(IntegerType::get(ctx, 32), splitDim));
+
+          // If there is an affine.apply operating on offsets[split_dim], then
+          // log the affine.map.
+          auto offsetDefOp = chanOp.getOffsets()[splitDim].getDefiningOp();
+          if (offsetDefOp) {
+            affine::AffineApplyOp apply =
+                dyn_cast<affine::AffineApplyOp>(offsetDefOp);
+            if (auto exec = dyn_cast<air::ExecuteOp>(offsetDefOp))
+              if (auto exec_child_apply =
+                      dyn_cast<affine::AffineApplyOp>(exec.getChildOp()))
+                apply = exec_child_apply;
+            if (apply)
+              allocOp->setAttr("affine_map",
+                               AffineMapAttr::get(apply.getAffineMap()));
+          }
         }
         // Tiling along the first (x) dimension of scf.parallel only, as one NPU
         // memtile is located at the bottom of each column.
@@ -1345,7 +1449,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         int offsetDim = offsetDimOpt ? *offsetDimOpt : dim;
         auto newWaitAll = tileChannelOpByFactor(
             chanUserOp, targetColTilingFactor, memrefShape[dim], offsetDim,
-            new_chan, loc, ctx);
+            allocOp, new_chan, loc, ctx);
 
         // Update async dependency.
         auto old_token =
@@ -1384,7 +1488,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         }
         Value newWaitAll1 = tileChannelOpByFactor(
             theOtherChanOp[0], targetColTilingFactor, memrefShape[dim],
-            dim - numLeadingSingletonDimDiff, new_chan, loc, ctx);
+            dim - numLeadingSingletonDimDiff, allocOp, new_chan, loc, ctx);
 
         // Update dependency.
         auto oldToken =
