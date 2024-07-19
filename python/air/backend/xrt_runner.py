@@ -5,8 +5,38 @@
 
 import numpy as np
 from .xrt import XRTBackend
+from air.dialects.air import *
 import filelock
 from typing import List
+from collections import defaultdict
+
+TYPE_MAP_DICT = defaultdict(
+    lambda: None,
+    {
+        np.uint8: T.ui8,
+        # TODO: add more mappings here
+    },
+)
+
+
+def type_mapper(np_dtype):
+    """
+    This function is meant to run within a module context (e.g., with a function wrapped with @build_module)
+    args:
+        np_dtype: the numpy data type to map
+    return:
+        The data type to run on the npu
+    """
+    xrt_dtype = TYPE_MAP_DICT[np_dtype]()
+
+    if xrt_dtype is None:
+        raise AirBackendError(f"numpy data type {np_dtype} has no default mapping")
+    elif xrt_dtype.width / 8 != np.dtype(np_dtype).itemsize:
+        # This is a sanity check on the TYPE_MAP_DICT rather than a check on the user input
+        raise AirBackendError(
+            f"Python data type has width {xrt_dtype.width / 8} but numpy data type has width {np.dtype(np_dtype).itemsize}"
+        )
+    return xrt_dtype
 
 
 class XRTRunner:
