@@ -51,8 +51,8 @@ def build_module():
             # Transfer one tile of data per worker
             for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
                 for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = IMAGE_HEIGHT * h
-                    offset1 = IMAGE_HEIGHT * w
+                    offset0 = TILE_HEIGHT * h
+                    offset1 = TILE_WIDTH * w
 
                     # Put data into the channel tile by tile
                     ChannelPut(
@@ -66,8 +66,8 @@ def build_module():
             # Transfer one tile of data per worker
             for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
                 for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = IMAGE_HEIGHT * h
-                    offset1 = IMAGE_HEIGHT * w
+                    offset0 = TILE_HEIGHT * h
+                    offset1 = TILE_WIDTH * w
 
                     # Write data back out to the channel tile by tile
                     ChannelGet(
@@ -109,7 +109,7 @@ def build_module():
                             for j in range_(TILE_HEIGHT):
                                 for i in range_(TILE_WIDTH):
                                     # Load the input value from tile_in
-                                    val_in = load(tile_in, [i, j])
+                                    val_in = load(tile_in, [j, i])
 
                                     # Compute the output value
                                     val_out = arith.addi(
@@ -121,7 +121,7 @@ def build_module():
                                     )
 
                                     # Store the output value in tile_out
-                                    store(val_out, tile_out, [i, j])
+                                    store(val_out, tile_out, [j, i])
                                     yield_([])
                                 yield_([])
 

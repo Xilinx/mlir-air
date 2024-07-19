@@ -46,8 +46,8 @@ def build_module():
             for tile_index0 in range_(IMAGE_HEIGHT // TILE_HEIGHT):
                 for tile_index1 in range_(IMAGE_WIDTH // TILE_WIDTH):
                     # Convert the type of the tile size variable to the Index type
-                    tile_size0 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
-                    tile_size1 = arith.ConstantOp.create_index(IMAGE_HEIGHT)
+                    tile_size0 = arith.ConstantOp.create_index(TILE_HEIGHT)
+                    tile_size1 = arith.ConstantOp.create_index(TILE_WIDTH)
 
                     # Calculate the offset into the channel data, which is based on which tile index
                     # we are at using tile_index0 and tile_index1 (our loop vars).
@@ -111,7 +111,7 @@ def build_module():
                         for j in range_(TILE_HEIGHT):
                             for i in range_(TILE_WIDTH):
                                 # Load the input value from tile_in
-                                val_in = load(tile_in, [i, j])
+                                val_in = load(tile_in, [j, i])
 
                                 # Compute the output value
                                 val_out = arith.addi(
@@ -122,7 +122,7 @@ def build_module():
                                 store(
                                     val_out,
                                     tile_out,
-                                    [i, j],
+                                    [j, i],
                                 )
                                 yield_([])
                             yield_([])
