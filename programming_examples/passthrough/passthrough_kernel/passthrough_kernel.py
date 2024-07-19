@@ -111,8 +111,8 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(1, args.vector_size + 1, dtype=INOUT_DATATYPE)
-    output_b = np.arange(1, args.vector_size + 1, dtype=INOUT_DATATYPE)
+    input_a = np.zeros(shape=(args.vector_size), dtype=INOUT_DATATYPE)
+    output_b = np.zeros(shape=(args.vector_size), dtype=INOUT_DATATYPE)
     for i in range(args.vector_size):
         input_a[i] = i % 0xFF
         output_b[i] = i % 0xFF

@@ -20,13 +20,13 @@ VPATH := ${MLIR_AIE_DIR}/aie_kernels/generic
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/passthrough_kernel.py -p
+	${powershell} python3 ${srcdir}/passthrough_dma.py -p
 
-build/passThrough.cc.o: ${VPATH}/passThrough.cc
-	mkdir -p ${@D}
-	cd ${@D} && xchesscc_wrapper ${CHESSCCWRAP2_FLAGS} -DBIT_WIDTH=8 -c $< -o ${@F}
+${srcdir}/build/passThrough.cc.o: ${VPATH}/passThrough.cc
+	mkdir -p ${srcdir}/build
+	cd ${srcdir}/build && xchesscc_wrapper ${CHESSCCWRAP2_FLAGS} -DBIT_WIDTH=8 -c $< -o ${@F}
 
-run: build/passThrough.cc.o
+run: ${srcdir}/build/passThrough.cc.o
 	mkdir -p ${srcdir}/build
 	cd ${srcdir}/build && ${powershell} python3 ${srcdir}/passthrough_kernel.py
 

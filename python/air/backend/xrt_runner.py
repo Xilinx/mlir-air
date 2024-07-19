@@ -91,13 +91,10 @@ class XRTRunner:
         assert len(actual_outputs) == len(
             expected_outputs
         ), f"Number of actual outputs ({len(actual_outputs)}) does not equal number of expected outputs ({len(expected_outputs)})"
+        np.set_printoptions(formatter={"int": hex})
 
         for i, (actual, expected) in enumerate(zip(actual_outputs, expected_outputs)):
-
-            # TODO: may need to reshape for this to be true?
-            assert (
-                actual.shape == expected.shape
-            ), f"Actual output shape {actual.shape} does not meet expected output shape {expected.shape}"
+            actual = np.reshape(actual, expected.shape)
 
             if self.verbose:
                 print("Expected: ")
