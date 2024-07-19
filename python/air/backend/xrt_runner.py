@@ -37,10 +37,10 @@ class XRTRunner:
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs
-        inputs += [np.empty((0, 0)) for _o in expected_outputs]
+        expanded_inputs = inputs + expected_outputs
         with filelock.FileLock("/tmp/npu.lock"):
             module_function = backend.compile_and_load(mlir_module)
-            actual_outputs = module_function(*inputs)
+            actual_outputs = module_function(*expanded_inputs)
 
         backend.unload()
 
@@ -58,30 +58,30 @@ class XRTRunner:
     def _check_outputs(
         self, actual_outputs: List[np.ndarray], expected_outputs: List[np.ndarray]
     ):
-        assert (
-            len(actual_outputs) == len(expected_outputs),
-            "Number of actual outputs does not equal number of expected outputs",
-        )
+        assert len(actual_outputs) == len(
+            expected_outputs
+        ), f"Number of actual outputs ({len(actual_outputs)}) does not equal number of expected outputs ({len(expected_outputs)})"
 
         for i, (actual, expected) in enumerate(zip(actual_outputs, expected_outputs)):
 
-            # TODO: may need to reshape??
+            # TODO: may need to reshape for this to be true?
             assert (
-                actual.size() == expected.size(),
-                f"Actual output size {actual.size()} does not meet expected output size {expected.size()}",
-            )
+                actual.shape == expected.shape
+            ), f"Actual output shape {actual.shape} does not meet expected output shape {expected.shape}"
 
-            if not np.ndarray.array_equal(actual, expected):
-                print(f"ERROR: Output {i} does not meet expected output.")
+            if self.verbose:
                 print("Expected: ")
-                if len(expected.size()) == 2:
+                if len(expected.shape) == 2:
                     print(np.asmatrix(expected))
                 else:
                     print(expected)
                 print("Actual: ")
-                if len(actual.size()) == 2:
+                if len(actual.shape) == 2:
                     print(np.asmatrix(actual))
                 else:
                     print(actual)
+
+            if not np.array_equal(actual, expected):
+                print(f"ERROR: Output {i} does not meet expected output.")
                 return False
         return True
