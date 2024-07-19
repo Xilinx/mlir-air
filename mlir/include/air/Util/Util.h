@@ -45,8 +45,7 @@ HerdOp getHerdArgOwner(Value val);
 // Get the parent air.hierarchy op of a tile id
 HierarchyInterface getHierarchyArgOwner(Value val);
 // Get the scf parent op from scf.yield op
-template <typename T>
-T getScfParentOpFromYieldOp(Operation *yield) {
+template <typename T> T getScfParentOpFromYieldOp(Operation *yield) {
   return dyn_cast_if_present<T>(yield->getParentOp());
 }
 
