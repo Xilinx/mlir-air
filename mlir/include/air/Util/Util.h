@@ -45,7 +45,8 @@ HerdOp getHerdArgOwner(Value val);
 // Get the parent air.hierarchy op of a tile id
 HierarchyInterface getHierarchyArgOwner(Value val);
 // Get the scf parent op from scf.yield op
-template <typename T> T getScfParentOpFromYieldOp(Operation *yield) {
+template <typename T>
+T getScfParentOpFromYieldOp(Operation *yield) {
   return dyn_cast_if_present<T>(yield->getParentOp());
 }
 
@@ -221,6 +222,13 @@ std::optional<int> getMemrefDimFromOffsetDim(int dimOnOffset,
 std::optional<int> getOffsetDimFromMemrefDim(int dimOnMemref,
                                              SmallVector<Value> strides,
                                              SmallVector<int> memrefShape);
+
+// Evaluate the affine expression of affine map on a sparse vector of constant
+// ints.
+std::optional<int64_t>
+evaluateConstantsInMap(AffineMap map,
+                       SmallVector<std::optional<int64_t>> const_inputs,
+                       MLIRContext *ctx);
 
 } // namespace air
 } // namespace xilinx
