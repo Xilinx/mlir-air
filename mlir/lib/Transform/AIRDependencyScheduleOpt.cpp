@@ -1697,11 +1697,15 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       if (!getStaticScfForTripCountAsInt(sfo))
         return failure();
       int tripCount = *getStaticScfForTripCountAsInt(sfo);
-      auto new_ub = evaluateConstantInMap(
-          apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getUpperBound()),
+      auto new_ub = air::evaluateConstantsInMap(
+          apply.getAffineMap(),
+          SmallVector<std::optional<int64_t>>{
+              *mlir::getConstantIntValue(sfo.getUpperBound())},
           ctx);
-      auto new_lb = evaluateConstantInMap(
-          apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getLowerBound()),
+      auto new_lb = air::evaluateConstantsInMap(
+          apply.getAffineMap(),
+          SmallVector<std::optional<int64_t>>{
+              *mlir::getConstantIntValue(sfo.getLowerBound())},
           ctx);
       assert(new_ub && new_lb);
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
@@ -1723,10 +1727,14 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       if (!afo.hasConstantBounds())
         return failure();
       int tripCount = *getStaticAffineForTripCountAsInt(afo);
-      auto new_ub = evaluateConstantInMap(apply.getAffineMap(),
-                                          afo.getConstantUpperBound(), ctx);
-      auto new_lb = evaluateConstantInMap(apply.getAffineMap(),
-                                          afo.getConstantLowerBound(), ctx);
+      auto new_ub = air::evaluateConstantsInMap(
+          apply.getAffineMap(),
+          SmallVector<std::optional<int64_t>>{afo.getConstantUpperBound()},
+          ctx);
+      auto new_lb = air::evaluateConstantsInMap(
+          apply.getAffineMap(),
+          SmallVector<std::optional<int64_t>>{afo.getConstantLowerBound()},
+          ctx);
       assert(new_ub && new_lb);
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
@@ -1743,19 +1751,6 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
   }
 
 private:
-  // Evaluate the affine expression of affine map on a constant affine
-  // expression. Only works with affine maps with a single input.
-  std::optional<int64_t> evaluateConstantInMap(AffineMap map,
-                                               int64_t const_input,
-                                               MLIRContext *ctx) const {
-    std::optional<int64_t> output = std::nullopt;
-    if (map.getNumInputs() != 1)
-      return output;
-    auto c = getAffineConstantExpr(const_input, ctx);
-    auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
-    output = simplifyAffineMap(newmap).getSingleConstantResult();
-    return output;
-  }
 };
 
 // Fold arith.muli op operating on loop induction variable into loop bounds.

@@ -1511,3 +1511,26 @@ air::getOffsetDimFromMemrefDim(int dimOnMemref, SmallVector<Value> strides,
   }
   return std::nullopt;
 }
+
+// Evaluate the affine expression of affine map on a sparse vector of constant
+// ints.
+std::optional<int64_t>
+air::evaluateConstantsInMap(AffineMap map,
+                            SmallVector<std::optional<int64_t>> const_inputs,
+                            MLIRContext *ctx) {
+  std::optional<int64_t> output = std::nullopt;
+  if (map.getNumInputs() != const_inputs.size())
+    return output;
+  auto newmap = map;
+  for (unsigned i = 0; i < map.getNumSymbols(); i++) {
+    if (!const_inputs[i])
+      continue;
+    auto c = getAffineConstantExpr(*const_inputs[i], ctx);
+    newmap =
+        newmap.replace(getAffineSymbolExpr(i, ctx), c, 0, map.getNumSymbols());
+  }
+  // auto c = getAffineConstantExpr(const_input, ctx);
+  // auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
+  output = simplifyAffineMap(newmap).getSingleConstantResult();
+  return output;
+}
