@@ -1685,6 +1685,8 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       return failure();
     if (!ivArg.getOwner())
       return failure();
+    if (!val.hasOneUse())
+      return failure();
     if (apply.getResult().use_empty())
       return failure();
     if (auto exec_apply = dyn_cast<air::ExecuteOp>(apply->getParentOp()))
