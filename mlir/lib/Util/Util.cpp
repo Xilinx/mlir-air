@@ -860,7 +860,6 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       continue;
     auto const_stride_next = getConstantIntValue(strides[i + 1]);
     assert(const_stride_next && "non-static stride, NYI.");
-    erased |= multiplyAdjWraps(builder, i, sizes);
     if (const_offset) {
       offsets[i + 1] = builder.create<arith::ConstantIndexOp>(
           builder.getUnknownLoc(),
@@ -890,6 +889,8 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
         offset_producer = exec.getChildOp();
       auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
       assert(affine_apply && "ssa offset not produced by affine.apply, NYI.");
+      if (affine_apply->getNumOperands() > 1)
+        continue;
       // Compose affine map
       auto offset_expr = getAffineSymbolExpr(0, builder.getContext());
       auto stride_expr =
@@ -908,6 +909,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       affine_apply.setMap(next_offset_map);
       offsets[i + 1] = offsets[i];
     }
+    erased |= multiplyAdjWraps(builder, i, sizes);
     offsets.erase(offsets.begin() + i);
     sizes.erase(sizes.begin() + i);
     strides.erase(strides.begin() + i);
@@ -1010,34 +1012,27 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     else if (isa<affine::AffineForOp>(parent))
       for_loops.push_back(parent);
   }
+
+  // First traversal inserting new dimensions from loops
   for (auto o : for_loops) {
     uint64_t ind_var_factor = 0;
     for (int i = offsets.size() - 1; i >= 0; i--) {
       Value iv = nullptr;
-      int loop_lower_bound = 0;
-      if (auto afo = dyn_cast<affine::AffineForOp>(o)) {
+      if (auto afo = dyn_cast<affine::AffineForOp>(o))
         iv = afo.getInductionVar();
-        loop_lower_bound = afo.getConstantLowerBound();
-      } else if (auto sfo = dyn_cast<scf::ForOp>(o)) {
+      else if (auto sfo = dyn_cast<scf::ForOp>(o))
         iv = sfo.getInductionVar();
-        if (auto cst_lower_bound =
-                mlir::getConstantIntValue(sfo.getLowerBound()))
-          loop_lower_bound = *cst_lower_bound;
-      }
       if (iv && offsets[i] == iv) {
-        // Replace for loop induction vars in offsets with zero
-        offsets[i] = builder.template create<arith::ConstantIndexOp>(
-            loc, loop_lower_bound);
         ind_var_factor = *getConstantIntValue(strides[i]);
         break;
       } else if (iv && offsets[i].getDefiningOp()) {
-        if (isa<arith::IndexCastOp>(offsets[i].getDefiningOp()) &&
-            offsets[i].getDefiningOp()->getOperand(0) == iv) {
-          offsets[i] = builder.template create<arith::ConstantIndexOp>(
-              loc, loop_lower_bound);
+        Operation *iv_consumer = offsets[i].getDefiningOp();
+        if (auto exec = dyn_cast<air::ExecuteOp>(iv_consumer))
+          iv_consumer = exec.getChildOp();
+        if (llvm::is_contained(iv_consumer->getOperands(), iv)) {
           ind_var_factor = *getConstantIntValue(strides[i]);
           break;
-        };
+        }
       }
     }
     int trip_count = -1;
@@ -1073,6 +1068,38 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
                    builder.template create<arith::ConstantIndexOp>(loc, 0));
     wraps.insert(wraps.begin(), new_wrap);
     strides.insert(strides.begin(), new_stride);
+  }
+
+  // Second traversal updating existing offsets
+  for (auto o : for_loops) {
+    for (int i = offsets.size() - 1; i >= 0; i--) {
+      Value iv = nullptr;
+      int loop_lower_bound = 0;
+      if (auto afo = dyn_cast<affine::AffineForOp>(o)) {
+        iv = afo.getInductionVar();
+        loop_lower_bound = afo.getConstantLowerBound();
+      } else if (auto sfo = dyn_cast<scf::ForOp>(o)) {
+        iv = sfo.getInductionVar();
+        if (auto cst_lower_bound =
+                mlir::getConstantIntValue(sfo.getLowerBound()))
+          loop_lower_bound = *cst_lower_bound;
+      }
+      if (iv && offsets[i] == iv) {
+        // Replace offset with for loop lower bound
+        offsets[i] = builder.template create<arith::ConstantIndexOp>(
+            loc, loop_lower_bound);
+        break;
+      } else if (iv && offsets[i].getDefiningOp()) {
+        Operation *iv_consumer = offsets[i].getDefiningOp();
+        if (auto exec = dyn_cast<air::ExecuteOp>(iv_consumer))
+          iv_consumer = exec.getChildOp();
+        if (llvm::is_contained(iv_consumer->getOperands(), iv)) {
+          offsets[i] = builder.template create<arith::ConstantIndexOp>(
+              loc, loop_lower_bound);
+          break;
+        }
+      }
+    }
   }
   return success();
 }
