@@ -76,7 +76,7 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                                 tile_in,
                                 a,
                                 src_offsets=[offset0, offset1],
-                                src_sizes=[tile_height, tile_width],
+                                src_sizes=tile_size,
                                 src_strides=[image_width, 1],
                             )
 
@@ -101,7 +101,7 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                                 b,
                                 tile_out,
                                 dst_offsets=[offset0, offset1],
-                                dst_sizes=[tile_height, tile_width],
+                                dst_sizes=tile_size,
                                 dst_strides=[image_width, 1],
                             )
 

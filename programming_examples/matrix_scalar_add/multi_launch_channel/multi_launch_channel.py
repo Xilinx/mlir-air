@@ -66,7 +66,7 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                 "ChanIn",
                 a,
                 offsets=[offset0, offset1],
-                sizes=[tile_height, tile_width],
+                sizes=tile_size,
                 strides=[image_width, 1],
             )
 
@@ -75,7 +75,7 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                 "ChanOut",
                 b,
                 offsets=[offset0, offset1],
-                sizes=[tile_height, tile_width],
+                sizes=tile_size,
                 strides=[image_width, 1],
             )
 
