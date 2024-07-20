@@ -954,8 +954,12 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
                                           newOffsets, newWraps, newStrides);
     newOffsets[dim] = newApplyOp.getResult();
     // Get post-splitting size at split_dim from allocOp attributes.
-    newWraps[dim] = builder.create<arith::ConstantIndexOp>(
-        loc, allocOp->getAttrOfType<IntegerAttr>("split_dim_size").getInt());
+    if (allocOp->hasAttr("split_dim_size"))
+      newWraps[dim] = builder.create<arith::ConstantIndexOp>(
+          loc, allocOp->getAttrOfType<IntegerAttr>("split_dim_size").getInt());
+    else
+      newWraps[dim] = builder.create<arith::ConstantIndexOp>(
+          loc, llvm::divideCeilSigned(originalMemrefSize, factor));
     auto deps = dyn_cast<air::AsyncOpInterface>(originalChanOp.getOperation())
                     .getAsyncDependencies();
     SmallVector<Type, 4> tys = {air::AsyncTokenType::get(ctx)};
@@ -1009,8 +1013,10 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
   auto memref = puts.front().getMemref();
   MemRefType ty = llvm::cast<MemRefType>(memref.getType());
   // allocOp attributes:
-  int split_dim_size =
-      allocOp->getAttrOfType<IntegerAttr>("split_dim_size").getInt();
+  int split_dim_size = -1;
+  if (allocOp->hasAttr("split_dim_size"))
+    split_dim_size =
+        allocOp->getAttrOfType<IntegerAttr>("split_dim_size").getInt();
   if (isa<air::ExecuteOp>(allocOp->getParentOp()))
     allocOp = allocOp->getParentOp();
   auto loc = allocOp->getLoc();
@@ -1103,7 +1109,23 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         continue;
 
       // Get post-splitting size at split_dim from allocOp attributes.
-      newMemrefShape[dim] = split_dim_size;
+      if (split_dim_size >= 0)
+        newMemrefShape[dim] = split_dim_size;
+      else {
+        auto offset = getConstantIntValue(op.getOffsets()[*offsetDim]);
+        if (offset)
+          newMemrefShape[dim] = *getConstantIntValue(op.getSizes()[*offsetDim]);
+        else {
+          auto forOp = getScfForFromVal(op.getOffsets()[*offsetDim]);
+          if (!forOp)
+            continue;
+          auto trip_count = air::getStaticScfForTripCountAsInt(forOp);
+          if (!trip_count)
+            continue;
+          newMemrefShape[dim] =
+              *getConstantIntValue(op.getSizes()[*offsetDim]) * (*trip_count);
+        }
+      }
       break;
     }
 
@@ -1369,16 +1391,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
           putgets.push_back(put);
       auto split_dim =
           getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
-      if (split_dim) {
+      if (split_dim)
         allocOp->setAttr(
             "split_dim",
             IntegerAttr::get(IntegerType::get(ctx, 32), *split_dim));
-        allocOp->setAttr(
-            "split_dim_size",
-            IntegerAttr::get(
-                IntegerType::get(ctx, 32),
-                *getConstantIntValue(putgets[0].getSizes()[*split_dim])));
-      }
     }
     if (S2MMChannels.size() > 1) {
       targetMemrefsToColTilingFactors[allocOp].push_back(S2MMChannels.size());
@@ -1389,16 +1405,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
           putgets.push_back(get);
       auto split_dim =
           getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
-      if (split_dim) {
+      if (split_dim)
         allocOp->setAttr(
             "split_dim",
             IntegerAttr::get(IntegerType::get(ctx, 32), *split_dim));
-        allocOp->setAttr(
-            "split_dim_size",
-            IntegerAttr::get(
-                IntegerType::get(ctx, 32),
-                *getConstantIntValue(putgets[0].getSizes()[*split_dim])));
-      }
     }
   }
   return targetMemrefs;
