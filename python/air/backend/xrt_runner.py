@@ -14,6 +14,7 @@ TYPE_MAP_DICT = defaultdict(
     lambda: None,
     {
         np.uint8: T.ui8,
+        np.uint32: T.i32,
         # TODO: add more mappings here
     },
 )
@@ -67,7 +68,9 @@ class XRTRunner:
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs
-        expanded_inputs = inputs + expected_outputs
+        expanded_inputs = inputs + [
+            np.zeros(o.shape, o.dtype) for o in expected_outputs
+        ]
         with filelock.FileLock("/tmp/npu.lock"):
             module_function = backend.compile_and_load(mlir_module)
             actual_outputs = module_function(*expanded_inputs)
