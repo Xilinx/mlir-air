@@ -25,8 +25,8 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
 
     # Create two channels which will send/receive the
     # input/output data respectively
-    ChannelOp("ChanIn")
-    ChannelOp("ChanOut")
+    ChannelOp("ChanIn", size=[image_height // tile_height, image_width // tile_width])
+    ChannelOp("ChanOut", size=[image_height // tile_height, image_width // tile_width])
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -68,6 +68,7 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                 offsets=[offset0, offset1],
                 sizes=tile_size,
                 strides=[image_width, 1],
+                indices=[tile_index0, tile_index1],
             )
 
             # Write data back out to the channel tile by tile
@@ -76,64 +77,84 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                 b,
                 offsets=[offset0, offset1],
                 sizes=tile_size,
-                strides=[image_width, 1],
+                indices=[tile_index0, tile_index1],
             )
 
             # The arguments are still the input and the output
-            @segment(name="seg", operands=[a, b])
-            def segment_body(arg2, arg3):
+            @segment(name="seg", operands=[tile_index0, tile_index1])
+            def segment_body(launch_index0, launch_index1):
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
-                def herd_body(tx, ty, sx, sy, a, b):
+                @herd(
+                    name="xaddherd",
+                    sizes=[1, 1],
+                    operands=[launch_index0, launch_index1],
+                )
+                def herd_body(tx, ty, sx, sy, index0, index1):
+                    create_tile_index_height = AffineMap.get(
+                        0,
+                        1,
+                        [
+                            AffineExpr.get_mul(
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(image_width // tile_width),
+                            )
+                        ],
+                    )
+                    create_tile_index = AffineMap.get(
+                        0,
+                        2,
+                        [
+                            AffineExpr.get_add(
+                                AffineSymbolExpr.get(0),
+                                AffineSymbolExpr.get(1),
+                            )
+                        ],
+                    )
+                    tile_index_height = affine_apply(create_tile_index_height, [index0])
+                    tile_num = affine_apply(
+                        create_tile_index, [tile_index_height, index1]
+                    )
 
-                    # Loop over columns and rows of tiles
-                    for tile_num in range_(
-                        (image_width // tile_width) * (image_height // tile_height)
-                    ):
+                    # We want to store our data in L1 memory
+                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
 
-                        # We want to store our data in L1 memory
-                        mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                    # This is the type definition of the tile
+                    tile_type = MemRefType.get(
+                        shape=tile_size,
+                        element_type=xrt_dtype,
+                        memory_space=mem_space,
+                    )
 
-                        # This is the type definition of the tile
-                        tile_type = MemRefType.get(
-                            shape=tile_size,
-                            element_type=xrt_dtype,
-                            memory_space=mem_space,
-                        )
+                    # We must allocate a buffer of tile size for the input/output
+                    tile_in = AllocOp(tile_type, [], [])
+                    tile_out = AllocOp(tile_type, [], [])
 
-                        # We must allocate a buffer of tile size for the input/output
-                        tile_in = AllocOp(tile_type, [], [])
-                        tile_out = AllocOp(tile_type, [], [])
+                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
+                    ChannelGet("ChanIn", tile_in, indices=[index0, index1])
 
-                        # Copy a tile from the input image (a) into the L1 memory region (tile_in)
-                        ChannelGet("ChanIn", tile_in)
+                    # Access every value in the tile
+                    for j in range_(tile_height):
+                        for i in range_(tile_width):
+                            # Load the input value from tile_in
+                            val_in = load(tile_in, [j, i])
 
-                        # Access every value in the tile
-                        for j in range_(tile_height):
-                            for i in range_(tile_width):
-                                # Load the input value from tile_in
-                                val_in = load(tile_in, [j, i])
+                            val_out = arith.addi(
+                                val_in, arith.index_cast(xrt_dtype, tile_num)
+                            )
 
-                                # Compute the output value TODO(hunhoffe): this is not correct, not sure how to percolate launch info here
-                                val_out = arith.addi(
-                                    val_in, arith.index_cast(xrt_dtype, tile_num)
-                                )
-
-                                # Store the output value in tile_out
-                                store(val_out, tile_out, [j, i])
-                                yield_([])
+                            # Store the output value in tile_out
+                            store(val_out, tile_out, [j, i])
                             yield_([])
-
-                        # Copy the output tile into the output
-                        ChannelPut("ChanOut", tile_out)
-
-                        # Deallocate our L1 buffers
-                        DeallocOp(tile_in)
-                        DeallocOp(tile_out)
-
                         yield_([])
+
+                    # Copy the output tile into the output
+                    ChannelPut("ChanOut", tile_out, indices=[index0, index1])
+
+                    # Deallocate our L1 buffers
+                    DeallocOp(tile_in)
+                    DeallocOp(tile_out)
 
 
 if __name__ == "__main__":
