@@ -1348,19 +1348,20 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
 
           // Infer the size at splitDim for both overlapping and non-overlapping
           // access pattern.
-          allocOp->setAttr("split_dim_size",
-                           IntegerAttr::get(IntegerType::get(ctx, 32),
-                                            *getConstantIntValue(
-                                                chanOp.getSizes()[splitDim])));
-          auto constOffset = getConstantIntValue(chanOp.getOffsets()[splitDim]);
+          auto offsetDimOpt = air::getOffsetDimFromMemrefDim(
+              splitDim, chanOp.getStrides(),
+              air::getTensorShape(memref.getType()));
+          auto constOffset =
+              getConstantIntValue(chanOp.getOffsets()[*offsetDimOpt]);
           if (!constOffset)
-            if (auto forOp = getScfForFromVal(chanOp.getOffsets()[splitDim]))
+            if (auto forOp =
+                    getScfForFromVal(chanOp.getOffsets()[*offsetDimOpt]))
               if (auto trip_count = air::getStaticScfForTripCountAsInt(forOp))
                 allocOp->setAttr(
                     "split_dim_size",
                     IntegerAttr::get(
                         IntegerType::get(ctx, 32),
-                        *getConstantIntValue(chanOp.getSizes()[splitDim]) *
+                        *getConstantIntValue(chanOp.getSizes()[*offsetDimOpt]) *
                             (*trip_count)));
         }
         // Tiling along the first (x) dimension of scf.parallel only, as one NPU
