@@ -101,10 +101,10 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                         ChannelGet("ChanIn", tile_in)
 
                         # Access every value in the tile
-                        for j in range_(tile_height):
-                            for i in range_(tile_width):
+                        for i in range_(tile_height):
+                            for j in range_(tile_width):
                                 # Load the input value from tile_in
-                                val_in = load(tile_in, [j, i])
+                                val_in = load(tile_in, [i, j])
 
                                 # Compute the output value
                                 val_out = arith.addi(
@@ -112,11 +112,7 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                                 )
 
                                 # Store the output value in tile_out
-                                store(
-                                    val_out,
-                                    tile_out,
-                                    [j, i],
-                                )
+                                store(val_out, tile_out, [i, j])
                                 yield_([])
                             yield_([])
 
