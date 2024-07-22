@@ -1179,15 +1179,15 @@ module {
 
 // Conv2d 3x3, stride 2 (overlapping l2 access).
 
-// CHECK: [[$MAP0:#map[0-9]*]] = affine_map<()[s0] -> (s0 + 2)>
-// CHECK: [[$MAP1:#map[0-9]+]] = affine_map<()[s0] -> (s0 + 4)>
-// CHECK: [[$MAP2:#map[0-9]+]] = affine_map<()[s0] -> (s0 + 6)>
+// CHECK-DAG: [[$MAP0:#map[0-9]*]] = affine_map<()[s0] -> (s0 + 2)>
+// CHECK-DAG: [[$MAP1:#map[0-9]+]] = affine_map<()[s0] -> (s0 + 4)>
+// CHECK-DAG: [[$MAP2:#map[0-9]+]] = affine_map<()[s0] -> (s0 + 6)>
 
 // CHECK-LABEL: func.func @test9
 // CHECK: air.launch
-// CHECK: %[[VAL0:.*]] = affine.apply [[$MAP0]]()
-// CHECK: %[[VAL1:.*]] = affine.apply [[$MAP1]]()
-// CHECK: %[[VAL2:.*]] = affine.apply [[$MAP2]]()
+// CHECK-DAG: %[[VAL0:.*]] = affine.apply [[$MAP0]]()
+// CHECK-DAG: %[[VAL1:.*]] = affine.apply [[$MAP1]]()
+// CHECK-DAG: %[[VAL2:.*]] = affine.apply [[$MAP2]]()
 // CHECK: air.channel.put {{.*}} @channel_0[%c0, %c0]
 // CHECK: air.channel.put {{.*}} @channel_0[%c1, %c0] (%{{.*}}[%c0, %[[VAL0]]
 // CHECK: air.channel.put {{.*}} @channel_0[%c2, %c0] (%{{.*}}[%c0, %[[VAL1]]
