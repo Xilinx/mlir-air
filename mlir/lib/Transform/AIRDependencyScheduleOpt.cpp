@@ -4772,6 +4772,8 @@ public:
       for (unsigned i = 0; i < alloc_dealloc_execs.size(); i++)
         if (e == alloc_dealloc_execs[i].first)
           alloc_dealloc_execs.erase(alloc_dealloc_execs.begin() + i);
+    if (fusableForOps.empty())
+      return failure();
 
     // Loop fusion.
     for (auto forOp : fusableForOps) {
