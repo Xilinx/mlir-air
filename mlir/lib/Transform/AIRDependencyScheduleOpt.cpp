@@ -4727,6 +4727,17 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
 
     // Folding memref.alloc / dealloc ops into fused loop.
     SmallVector<scf::ForOp> fusableForOps;
+    for (auto execOpPair : alloc_dealloc_execs) {
+      air::ExecuteOp alloc_exec = execOpPair.first;
+      for (auto token_user : alloc_exec.getAsyncToken().getUsers())
+        if (llvm::any_of(equalIterationForOps, [&](scf::ForOp fusableForOp) {
+              return fusableForOp == token_user;
+            }))
+          fusableForOps.push_back(dyn_cast<scf::ForOp>(token_user));
+    }
+    if (fusableForOps.empty())
+      return failure();
+
     rewriter.setInsertionPoint(equalIterationForOps[0]);
     auto new_loop_op_init_arg =
         rewriter
@@ -4744,14 +4755,11 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     for (auto execOpPair : alloc_dealloc_execs) {
       bool canMove = false;
       air::ExecuteOp alloc_exec = execOpPair.first;
-      for (auto token_user : alloc_exec.getAsyncToken().getUsers()) {
+      for (auto token_user : alloc_exec.getAsyncToken().getUsers())
         if (llvm::any_of(equalIterationForOps, [&](scf::ForOp fusableForOp) {
               return fusableForOp == token_user;
-            })) {
-          fusableForOps.push_back(dyn_cast<scf::ForOp>(token_user));
+            }))
           canMove = true;
-        }
-      }
       if (canMove) {
         rewriter.setInsertionPointToEnd(new_loop_op.getBody());
         auto new_alloc_exec = rewriter.clone(*alloc_exec, remap);
@@ -4766,8 +4774,6 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
       for (unsigned i = 0; i < alloc_dealloc_execs.size(); i++)
         if (e == alloc_dealloc_execs[i].first)
           alloc_dealloc_execs.erase(alloc_dealloc_execs.begin() + i);
-    if (fusableForOps.empty())
-      return failure();
 
     // Loop fusion.
     for (auto forOp : fusableForOps) {
