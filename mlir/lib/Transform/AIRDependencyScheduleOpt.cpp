@@ -4647,7 +4647,7 @@ public:
     registry.insert<scf::SCFDialect, air::airDialect>();
   }
 
-  void runOnSegment(air::SegmentOp op) {
+  LogicalResult runOnSegment(air::SegmentOp op) {
     auto loc = op->getLoc();
     // Get memref.alloc ops.
     SmallVector<air::ExecuteOp> memalloc_execs;
@@ -4700,9 +4700,9 @@ public:
         perfectlyNestedForBands.push_back(forOp);
     }
     if (perfectlyNestedForBands.empty())
-      return;
+      return failure();
     if (alloc_dealloc_execs.empty())
-      return;
+      return failure();
 
     // From the loop bands, get fusable scf.for for loop bands.
     SmallVector<scf::ForOp> equalIterationForOps;
@@ -4729,7 +4729,7 @@ public:
       }
     }
     if (equalIterationForOps.empty())
-      return;
+      return failure();
 
     // Folding memref.alloc / dealloc ops into fused loop.
     SmallVector<scf::ForOp> fusableForOps;
@@ -4862,6 +4862,8 @@ public:
       replaceAsyncOpWithWaitAll(builder, dealloc);
       dealloc->erase();
     }
+
+    return success();
   }
 
   void runPreProcPatterns(func::FuncOp funcOp) {
@@ -4920,9 +4922,10 @@ public:
     runPreProcPatterns(func);
     SmallVector<air::SegmentOp> segs;
     func.walk([&](air::SegmentOp op) { segs.push_back(op); });
-    for (auto seg : segs) {
-      runOnSegment(seg);
-    }
+    for (auto seg : segs)
+      while (runOnSegment(seg).succeeded()) {
+        continue;
+      }
     runPostProcPatterns(func);
     func.walk([&](memref::AllocOp op) { op->removeAttr("shrinkage"); });
   }
