@@ -1,3 +1,4 @@
+.github/                @eddierichter-amd @erwei-xilinx @fifield @jgmelber
 cmake/                  @erwei-xilinx @fifield
 docs/                   @eddierichter-amd @erwei-xilinx @fifield @jgmelber
 mlir/                   @erwei-xilinx @fifield
