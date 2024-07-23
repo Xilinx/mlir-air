@@ -753,14 +753,6 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
     return failure();
 
   // Fold for loops into channel op's wrap and stride fields
-  SmallVector<affine::AffineForOp> for_loops;
-  Operation *parent = memcpy_ops[0].getOperation();
-  while (parent != for_op.getOperation()) {
-    parent = parent->getParentOp();
-    if (auto for_op_in_nest = dyn_cast<affine::AffineForOp>(parent))
-      for_loops.push_back(for_op_in_nest);
-  }
-
   auto memref = memcpy_ops[0]->getOperand(3);
   auto memref_shape = xilinx::air::getTensorShape(memref.getType());
   auto oper_begin = memcpy_ops[0].getOperands().begin();
@@ -850,14 +842,21 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   opers.insert(opers.end(), strides.begin(), strides.end());
 
   // index_cast
+  IRMapping indexOperMap;
   for (unsigned i = 0; i < opers.size(); i++) {
     if (opers[i].getDefiningOp() &&
         isa<arith::ConstantIndexOp>(opers[i].getDefiningOp())) {
+      opers[i] =
+          builder.clone(*opers[i].getDefiningOp(), indexOperMap)->getResult(0);
       opers[i] = builder.create<arith::IndexCastOp>(
           loc, IntegerType::get(ctx, 64), opers[i]);
     } else if (opers[i].getDefiningOp() &&
                isa<arith::IndexCastOp>(opers[i].getDefiningOp())) {
-      opers[i] = builder.clone(*opers[i].getDefiningOp())->getResult(0);
+      auto castOp = dyn_cast<arith::IndexCastOp>(opers[i].getDefiningOp());
+      if (castOp.getOperand().getDefiningOp() &&
+          isa<arith::ConstantOp>(castOp.getOperand().getDefiningOp()))
+        builder.clone(*castOp.getOperand().getDefiningOp(), indexOperMap);
+      opers[i] = builder.clone(*castOp, indexOperMap)->getResult(0);
     }
   }
   auto new_dma = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
