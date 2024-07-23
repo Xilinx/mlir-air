@@ -1,0 +1,12 @@
+cmake/                  @erwei-xilinx @fifield
+docs/                   @eddierichter-amd @erwei-xilinx @fifield @jgmelber
+mlir/                   @erwei-xilinx @fifield
+programming_examples/   @jgmelber
+python/                 @fifield @jgmelber
+runtime_lib/aircpu/     @fifield
+runtime_lib/airhost/    @eddierichter-amd
+runtime_lib/test/       @eddierichter-amd
+test/xrt/               @erwei-xilinx @fifield
+test/airhost/           @eddierichter-amd @fifield
+tools/                  @erwei-xilinx @fifield
+utils/                  @erwei-xilinx @fifield
