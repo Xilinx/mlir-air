@@ -707,8 +707,10 @@ private:
 struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
-  HoistMemallocInForPattern(MLIRContext *ctx, bool keepMemrefDealloc)
-      : OpRewritePattern(ctx), keepMemrefDealloc(keepMemrefDealloc) {}
+  HoistMemallocInForPattern(MLIRContext *ctx, bool keepMemrefDealloc,
+                            bool hoistToHierRegion)
+      : OpRewritePattern(ctx), keepMemrefDealloc(keepMemrefDealloc),
+        hoistToHierRegion(hoistToHierRegion) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc_op,
                                 PatternRewriter &rewriter) const override {
@@ -769,11 +771,17 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     if (!keepMemrefDealloc)
       dealloc_exec->moveAfter(for_op);
 
+    if (!hoistToHierRegion) {
+      // Erase alloc hoisting attr
+      alloc_op->removeAttr("hoist_alloc");
+    }
+
     return success();
   }
 
 private:
   bool keepMemrefDealloc;
+  bool hoistToHierRegion;
 
   void skipOverOpInDependencyGraph(OpBuilder &builder, Operation *op,
                                    mlir::Region &region) const {
@@ -2762,7 +2770,8 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc);
+    patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc,
+                                               /*hoistToHierRegion*/ false);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -2887,7 +2896,8 @@ public:
   void runHoistMemallocPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc);
+    patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc,
+                                               /*hoistToHierRegion*/ false);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -4155,15 +4165,17 @@ public:
 
         // If necessary, hoist allocs out of the loops, too.
         RewritePatternSet patterns(f.getContext());
-        patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
+        patterns.insert<HoistMemallocInForPattern>(f.getContext(),
+                                                   /*keepMemrefDealloc*/ false,
+                                                   /*hoistToHierRegion*/ true);
         (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
 
         // Hoist ops out of each scf.for.
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
           for (auto op : pair.second) {
-            (void)hoistTargetOpsToNewSCFFor(
-                builder, pair.first, SmallVector<Operation *>{op});
+            (void)hoistTargetOpsToNewSCFFor(builder, pair.first,
+                                            SmallVector<Operation *>{op});
           }
         }
       }
@@ -4176,8 +4188,8 @@ public:
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
           for (auto op : pair.second) {
-            (void)hoistTargetOpsToNewSCFFor(
-                builder, pair.first, SmallVector<Operation *>{op});
+            (void)hoistTargetOpsToNewSCFFor(builder, pair.first,
+                                            SmallVector<Operation *>{op});
           }
         }
       }
@@ -4194,10 +4206,13 @@ public:
       // Redo async dependency tracing.
       air::dependencyTracer depTracer;
       f.walk([&](scf::ForOp forOp) {
-        if (forOp->getParentOfType<air::HerdOp>()) return;
+        if (forOp->getParentOfType<air::HerdOp>())
+          return;
         SmallVector<air::HierarchyInterface> childHierOps;
-        forOp.walk([&](air::HierarchyInterface h) { childHierOps.push_back(h); });
-        if (!childHierOps.empty()) return;
+        forOp.walk(
+            [&](air::HierarchyInterface h) { childHierOps.push_back(h); });
+        if (!childHierOps.empty())
+          return;
         depTracer.traceDependencyFromScfForOp(forOp);
       });
     }
