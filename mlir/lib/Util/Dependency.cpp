@@ -583,10 +583,8 @@ void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
   }
 }
 void addAsyncDependencyIfNew(Operation *op, Value token) {
-  if (!isAsyncOp(op)) {
-    op->emitOpError("op does not have async interface");
+  if (!isAsyncOp(op))
     return;
-  }
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
     addAsyncDependencyIfNewImpl(async_op, token);
   } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
