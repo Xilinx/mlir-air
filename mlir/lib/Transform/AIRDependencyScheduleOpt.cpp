@@ -4163,8 +4163,8 @@ public:
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
           for (auto op : pair.second) {
-            (void)hoistTargetOpsToNewSCFFor(
-                builder, pair.first, SmallVector<Operation *>{op});
+            (void)hoistTargetOpsToNewSCFFor(builder, pair.first,
+                                            SmallVector<Operation *>{op});
           }
         }
       }
@@ -4177,8 +4177,8 @@ public:
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
           for (auto op : pair.second) {
-            (void)hoistTargetOpsToNewSCFFor(
-                builder, pair.first, SmallVector<Operation *>{op});
+            (void)hoistTargetOpsToNewSCFFor(builder, pair.first,
+                                            SmallVector<Operation *>{op});
           }
         }
       }
