@@ -4143,6 +4143,7 @@ public:
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
 
     // Identify scf.for ops and target child ops for hoisting.
+    SmallVector<scf::ForOp> newForOps;
     for (auto f : funcOps) {
       SmallVector<Region *> regions;
       for (auto hier_op : air_hier_ops)
@@ -4163,8 +4164,10 @@ public:
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
           for (auto op : pair.second) {
-            (void)hoistTargetOpsToNewSCFFor(builder, pair.first,
-                                            SmallVector<Operation *>{op});
+            auto newForOp = hoistTargetOpsToNewSCFFor(
+                builder, pair.first, SmallVector<Operation *>{op});
+            if (newForOp)
+              newForOps.push_back(newForOp);
           }
         }
       }
@@ -4177,8 +4180,10 @@ public:
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
           for (auto op : pair.second) {
-            (void)hoistTargetOpsToNewSCFFor(builder, pair.first,
-                                            SmallVector<Operation *>{op});
+            auto newForOp = hoistTargetOpsToNewSCFFor(
+                builder, pair.first, SmallVector<Operation *>{op});
+            if (newForOp)
+              newForOps.push_back(newForOp);
           }
         }
       }
@@ -4191,6 +4196,12 @@ public:
 
       // Clear "hoist_alloc" attr.
       f.walk([&](Operation *o) { o->removeAttr("hoist_alloc"); });
+
+      // Redo async dependency tracing.
+      air::dependencyTracer depTracer;
+      for (auto newForOp : newForOps) {
+        depTracer.traceDependencyFromScfForOp(newForOp);
+      }
     }
   }
 
@@ -4653,9 +4664,6 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
   LogicalResult matchAndRewrite(air::SegmentOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
-    // Get memref.alloc ops.
-    SmallVector<air::ExecuteOp> memalloc_execs;
-    SmallVector<air::ExecuteOp> memdealloc_execs;
     // Map from air.execute op containing alloc to air.execute op containing
     // dealloc.
     std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> alloc_dealloc_execs;
@@ -4747,6 +4755,8 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     }
     if (fusableForOps.empty())
       return failure();
+    if (fusableForOps.size() == 1)
+      return failure(); // Only one candidate for loop found, nothing to fuse.
 
     rewriter.setInsertionPoint(equalIterationForOps[0]);
     auto new_loop_op_init_arg =
@@ -4842,6 +4852,10 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
       Operation *put_parent = putOp;
       while (put_parent->getParentOp() != new_loop_op) {
         put_parent = put_parent->getParentOp();
+      }
+      if (!getOp) {
+        putOp->emitOpError("has no channel.get to consume data.");
+        return;
       }
       Operation *get_parent = getOp;
       while (get_parent->getParentOp() != new_loop_op) {
