@@ -4087,8 +4087,6 @@ public:
         for (auto op : target_ops_map[for_op]) {
           if (areAsyncDependent(op, parent)) {
             target_ops_map.erase(for_op);
-            parent->setAttr("antagonist",
-                            mlir::BoolAttr::get(parent->getContext(), true));
             return;
           }
         }
@@ -4143,7 +4141,7 @@ public:
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
 
     // Identify scf.for ops and target child ops for hoisting.
-    SmallVector<scf::ForOp> newForOps;
+    // SmallVector<scf::ForOp> newForOps;
     for (auto f : funcOps) {
       SmallVector<Region *> regions;
       for (auto hier_op : air_hier_ops)
@@ -4164,10 +4162,8 @@ public:
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
           for (auto op : pair.second) {
-            auto newForOp = hoistTargetOpsToNewSCFFor(
+            (void)hoistTargetOpsToNewSCFFor(
                 builder, pair.first, SmallVector<Operation *>{op});
-            if (newForOp)
-              newForOps.push_back(newForOp);
           }
         }
       }
@@ -4180,10 +4176,8 @@ public:
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
           for (auto op : pair.second) {
-            auto newForOp = hoistTargetOpsToNewSCFFor(
+            (void)hoistTargetOpsToNewSCFFor(
                 builder, pair.first, SmallVector<Operation *>{op});
-            if (newForOp)
-              newForOps.push_back(newForOp);
           }
         }
       }
@@ -4199,9 +4193,13 @@ public:
 
       // Redo async dependency tracing.
       air::dependencyTracer depTracer;
-      for (auto newForOp : newForOps) {
-        depTracer.traceDependencyFromScfForOp(newForOp);
-      }
+      f.walk([&](scf::ForOp forOp) {
+        if (forOp->getParentOfType<air::HerdOp>()) return;
+        SmallVector<air::HierarchyInterface> childHierOps;
+        forOp.walk([&](air::HierarchyInterface h) { childHierOps.push_back(h); });
+        if (!childHierOps.empty()) return;
+        depTracer.traceDependencyFromScfForOp(forOp);
+      });
     }
   }
 
