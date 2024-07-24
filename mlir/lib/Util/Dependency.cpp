@@ -676,6 +676,13 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
       continue;
     // Clone operands' defining ops.
     for (auto operand : op->getOperands()) {
+      if (isa<air::AsyncTokenType>(operand.getType())) {
+        // Reconnect deps to loop induction vars.
+        if (!remap.contains(operand))
+          remap.map(operand,
+                    getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
+        continue;
+      }
       if (!operand.getDefiningOp())
         continue;
       if (operand.getDefiningOp()->getParentOp() != for_op.getOperation())

@@ -769,9 +769,6 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     if (!keepMemrefDealloc)
       dealloc_exec->moveAfter(for_op);
 
-    // Erase alloc hoisting attr
-    alloc_op->removeAttr("hoist_alloc");
-
     return success();
   }
 
@@ -4061,79 +4058,75 @@ public:
   }
 
   void identifyTargetSCFForAndOps(
-      func::FuncOp f, std::vector<air::HierarchyInterface> hierOps,
+      Region *region,
       std::map<scf::ForOp, SmallVector<Operation *>> &target_ops_map) {
-    for (auto hier_op : hierOps) {
-      // Identify the target for loops and their target child ops
-      for (auto for_op : hier_op->getRegion(0).getOps<scf::ForOp>()) {
-        for_op.walk([&](air::MemcpyInterface memcpyOp) {
-          // Get for_op's immediate child op
-          if (!dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation())
-                   .getAsyncToken())
-            return; // This pass requires an async IR.
-          int for_op_token_count = 0;
-          for (auto v : for_op->getResults())
-            if (isa<air::AsyncTokenType>(v.getType()))
-              for_op_token_count++;
-          if (for_op_token_count > 1)
-            return; // This for op has more than one loop-carried dep token,
-                    // suggesting pipelining pattern. Will be handelled by
-                    // -air-unroll-loop-for-pipelining-pattern instead.
-          Operation *parent = memcpyOp.getOperation();
-          while (parent->getParentOp() != for_op.getOperation()) {
-            parent = parent->getParentOp();
-          }
-          if (isa<air::HierarchyInterface>(parent))
+    // Identify the target for loops and their target child ops
+    for (auto for_op : region->getOps<scf::ForOp>()) {
+      for_op.walk([&](air::MemcpyInterface memcpyOp) {
+        // Get for_op's immediate child op
+        if (!dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation())
+                 .getAsyncToken())
+          return; // This pass requires an async IR.
+        int for_op_token_count = 0;
+        for (auto v : for_op->getResults())
+          if (isa<air::AsyncTokenType>(v.getType()))
+            for_op_token_count++;
+        if (for_op_token_count > 1)
+          return; // This for op has more than one loop-carried dep token,
+                  // suggesting pipelining pattern. Will be handelled by
+                  // -air-unroll-loop-for-pipelining-pattern instead.
+        Operation *parent = memcpyOp.getOperation();
+        while (parent->getParentOp() != for_op.getOperation()) {
+          parent = parent->getParentOp();
+        }
+        if (isa<air::HierarchyInterface>(parent))
+          return;
+        if (isa<affine::AffineIfOp>(parent))
+          return;
+        // Check if for loop is splittable by tracing air dependency.
+        for (auto op : target_ops_map[for_op]) {
+          if (areAsyncDependent(op, parent)) {
+            target_ops_map.erase(for_op);
+            parent->setAttr("antagonist",
+                            mlir::BoolAttr::get(parent->getContext(), true));
             return;
-          if (isa<affine::AffineIfOp>(parent))
-            return;
-          // Check if for loop is splittable by tracing air dependency.
-          for (auto op : target_ops_map[for_op]) {
-            if (areAsyncDependent(op, parent)) {
-              target_ops_map.erase(for_op);
-              return;
-            }
           }
-          push_back_if_unique<Operation *>(target_ops_map[for_op], parent);
-          // Check if any memref.alloc needs to be hoisted.
-          if (memcpyOp.getSrcMemref() &&
-              !memcpyOp.getSrcMemref().getDefiningOp())
-            return;
-          if (memcpyOp.getSrcMemref() &&
-              for_op->isProperAncestor(
-                  memcpyOp.getSrcMemref().getDefiningOp())) {
-            Operation *memref_def = memcpyOp.getSrcMemref().getDefiningOp();
-            if (auto exec = dyn_cast<air::ExecuteOp>(memref_def))
-              memref_def = exec.getBody()
-                               .getBlocks()
-                               .front()
-                               .getTerminator()
-                               ->getOperand(0)
-                               .getDefiningOp();
-            memref_def->setAttr(
-                "hoist_alloc",
-                mlir::BoolAttr::get(memref_def->getContext(), true));
-          }
-          if (memcpyOp.getDstMemref() &&
-              !memcpyOp.getDstMemref().getDefiningOp())
-            return;
-          if (memcpyOp.getDstMemref() &&
-              for_op->isProperAncestor(
-                  memcpyOp.getDstMemref().getDefiningOp())) {
-            Operation *memref_def = memcpyOp.getDstMemref().getDefiningOp();
-            if (auto exec = dyn_cast<air::ExecuteOp>(memref_def))
-              memref_def = exec.getBody()
-                               .getBlocks()
-                               .front()
-                               .getTerminator()
-                               ->getOperand(0)
-                               .getDefiningOp();
-            memref_def->setAttr(
-                "hoist_alloc",
-                mlir::BoolAttr::get(memref_def->getContext(), true));
-          }
-        });
-      }
+        }
+        push_back_if_unique<Operation *>(target_ops_map[for_op], parent);
+        // Check if any memref.alloc needs to be hoisted.
+        if (memcpyOp.getSrcMemref() && !memcpyOp.getSrcMemref().getDefiningOp())
+          return;
+        if (memcpyOp.getSrcMemref() &&
+            for_op->isProperAncestor(memcpyOp.getSrcMemref().getDefiningOp())) {
+          Operation *memref_def = memcpyOp.getSrcMemref().getDefiningOp();
+          if (auto exec = dyn_cast<air::ExecuteOp>(memref_def))
+            memref_def = exec.getBody()
+                             .getBlocks()
+                             .front()
+                             .getTerminator()
+                             ->getOperand(0)
+                             .getDefiningOp();
+          memref_def->setAttr(
+              "hoist_alloc",
+              mlir::BoolAttr::get(memref_def->getContext(), true));
+        }
+        if (memcpyOp.getDstMemref() && !memcpyOp.getDstMemref().getDefiningOp())
+          return;
+        if (memcpyOp.getDstMemref() &&
+            for_op->isProperAncestor(memcpyOp.getDstMemref().getDefiningOp())) {
+          Operation *memref_def = memcpyOp.getDstMemref().getDefiningOp();
+          if (auto exec = dyn_cast<air::ExecuteOp>(memref_def))
+            memref_def = exec.getBody()
+                             .getBlocks()
+                             .front()
+                             .getTerminator()
+                             ->getOperand(0)
+                             .getDefiningOp();
+          memref_def->setAttr(
+              "hoist_alloc",
+              mlir::BoolAttr::get(memref_def->getContext(), true));
+        }
+      });
     }
   }
 
@@ -4150,37 +4143,54 @@ public:
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
 
     // Identify scf.for ops and target child ops for hoisting.
-    std::map<scf::ForOp, SmallVector<Operation *>> target_ops_map;
     for (auto f : funcOps) {
-      identifyTargetSCFForAndOps(f, air_hier_ops, target_ops_map);
-      // If necessary, hoist allocs out of the loops, too.
-      RewritePatternSet patterns(f.getContext());
-      patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
-      (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
-    }
+      SmallVector<Region *> regions;
+      for (auto hier_op : air_hier_ops)
+        hier_op->walk([&](scf::ForOp forOp) {
+          if (forOp->getParentOfType<air::HierarchyInterface>() == hier_op)
+            regions.push_back(&forOp.getRegion());
+        });
+      for (auto region : regions) {
+        std::map<scf::ForOp, SmallVector<Operation *>> target_ops_map;
+        identifyTargetSCFForAndOps(region, target_ops_map);
 
-    // Hoist ops out of each scf.for.
-    for (auto pair : target_ops_map) {
-      OpBuilder builder(pair.first);
-      for (auto op : pair.second) {
-        auto newForOp = hoistTargetOpsToNewSCFFor(builder, pair.first,
-                                                  SmallVector<Operation *>{op});
-        if (!newForOp)
-          continue;
-        // Redo async dependency tracing.
-        air::dependencyTracer depTracer;
-        depTracer.traceDependencyFromScfForOp(newForOp);
+        // If necessary, hoist allocs out of the loops, too.
+        RewritePatternSet patterns(f.getContext());
+        patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
+        (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
+
+        // Hoist ops out of each scf.for.
+        for (auto pair : target_ops_map) {
+          OpBuilder builder(pair.first);
+          for (auto op : pair.second) {
+            auto newForOp = hoistTargetOpsToNewSCFFor(
+                builder, pair.first, SmallVector<Operation *>{op});
+          }
+        }
       }
-    }
+      for (auto hier_op : air_hier_ops) {
+        std::map<scf::ForOp, SmallVector<Operation *>> target_ops_map;
+        auto region = &hier_op->getRegion(0);
+        identifyTargetSCFForAndOps(region, target_ops_map);
 
-    // Post processing, hoisting air.herd ops out of perfectly nested scf.for
-    // loop.
-    for (auto f : funcOps) {
+        // Hoist ops out of each scf.for.
+        for (auto pair : target_ops_map) {
+          OpBuilder builder(pair.first);
+          for (auto op : pair.second) {
+            auto newForOp = hoistTargetOpsToNewSCFFor(
+                builder, pair.first, SmallVector<Operation *>{op});
+          }
+        }
+      }
+
       RewritePatternSet patterns_1(f.getContext());
       patterns_1
           .insert<HoistAIRHerdInForPattern, HoistAIRChannelInAccumPattern>(
               f.getContext(), false);
       (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
+
+      // Clear "hoist_alloc" attr.
+      f.walk([&](Operation *o) { o->removeAttr("hoist_alloc"); });
     }
   }
 
