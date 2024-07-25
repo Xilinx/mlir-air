@@ -826,16 +826,24 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
     auto loc = herdOp->getLoc();
     auto ctx = herdOp->getContext();
     auto hasNElements = [](Block *block, unsigned N) {
-      auto op_ptr = block->begin();
-      for (unsigned i = 0; i < N; i++)
-        op_ptr = std::next(op_ptr);
-      return op_ptr != block->end() && &*op_ptr == &block->back();
+      unsigned counter = 0;
+      for (auto &o : block->getOperations()) {
+        if (isa<air::ChannelInterface>(o))
+          counter++;
+        else if (isa<air::HierarchyInterface>(o))
+          counter++;
+        else if (isa<LoopLikeOpInterface>(o))
+          counter++;
+        else if (isa<mlir::linalg::LinalgOp>(o))
+          counter++;
+      }
+      return counter == N;
     };
     SmallVector<scf::ForOp> for_loop_nest;
     Operation *parent = herdOp->getParentOp();
     while (parent && !isa<air::SegmentOp>(parent)) {
       if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-        if (hasNElements(forOp.getBody(), 2))
+        if (hasNElements(forOp.getBody(), 1))
           for_loop_nest.push_back(forOp);
         else
           return failure(); // Herd is not in perfectly nested loop.
@@ -4069,7 +4077,8 @@ public:
 
   void identifyTargetSCFForAndOps(
       Region *region,
-      std::map<scf::ForOp, SmallVector<Operation *>> &target_ops_map) {
+      std::map<scf::ForOp, SmallVector<SmallVector<Operation *>>>
+          &target_ops_map) {
     // Identify the target for loops and their target child ops
     for (auto for_op : region->getOps<scf::ForOp>()) {
       for_op.walk([&](air::MemcpyInterface memcpyOp) {
@@ -4094,13 +4103,29 @@ public:
         if (isa<affine::AffineIfOp>(parent))
           return;
         // Check if for loop is splittable by tracing air dependency.
-        for (auto op : target_ops_map[for_op]) {
-          if (areAsyncDependent(op, parent)) {
-            target_ops_map.erase(for_op);
-            return;
+        bool pushDependentOp = false;
+        for (auto vec : target_ops_map[for_op]) {
+          for (auto op : vec) {
+            if (areAsyncDependent(op, parent)) {
+              vec.push_back(parent);
+              pushDependentOp = true;
+              break;
+            }
           }
+          push_back_if_unique<Operation *>(vec, parent);
         }
-        push_back_if_unique<Operation *>(target_ops_map[for_op], parent);
+        if (!pushDependentOp) {
+          bool isUnique = true;
+          SmallVector<Operation *> newVec{parent};
+          for (auto vec : target_ops_map[for_op]) {
+            if (std::find(vec.begin(), vec.end(), parent) != vec.end()) {
+              isUnique = false;
+              break;
+            }
+          }
+          if (isUnique)
+            target_ops_map[for_op].push_back(newVec);
+        }
         // Check if any memref.alloc needs to be hoisted.
         if (memcpyOp.getSrcMemref() && !memcpyOp.getSrcMemref().getDefiningOp())
           return;
@@ -4151,7 +4176,6 @@ public:
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
 
     // Identify scf.for ops and target child ops for hoisting.
-    // SmallVector<scf::ForOp> newForOps;
     for (auto f : funcOps) {
       SmallVector<Region *> regions;
       for (auto hier_op : air_hier_ops)
@@ -4160,7 +4184,8 @@ public:
             regions.push_back(&forOp.getRegion());
         });
       for (auto region : regions) {
-        std::map<scf::ForOp, SmallVector<Operation *>> target_ops_map;
+        std::map<scf::ForOp, SmallVector<SmallVector<Operation *>>>
+            target_ops_map;
         identifyTargetSCFForAndOps(region, target_ops_map);
 
         // If necessary, hoist allocs out of the loops, too.
@@ -4170,27 +4195,23 @@ public:
                                                    /*hoistToHierRegion*/ true);
         (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
 
-        // Hoist ops out of each scf.for.
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
-          for (auto op : pair.second) {
-            (void)hoistTargetOpsToNewSCFFor(builder, pair.first,
-                                            SmallVector<Operation *>{op});
-          }
+          for (auto opVec : pair.second)
+            (void)hoistTargetOpsToNewSCFFor(builder, pair.first, opVec);
         }
       }
       for (auto hier_op : air_hier_ops) {
-        std::map<scf::ForOp, SmallVector<Operation *>> target_ops_map;
+        std::map<scf::ForOp, SmallVector<SmallVector<Operation *>>>
+            target_ops_map;
         auto region = &hier_op->getRegion(0);
         identifyTargetSCFForAndOps(region, target_ops_map);
 
         // Hoist ops out of each scf.for.
         for (auto pair : target_ops_map) {
           OpBuilder builder(pair.first);
-          for (auto op : pair.second) {
-            (void)hoistTargetOpsToNewSCFFor(builder, pair.first,
-                                            SmallVector<Operation *>{op});
-          }
+          for (auto opVec : pair.second)
+            (void)hoistTargetOpsToNewSCFFor(builder, pair.first, opVec);
         }
       }
 
@@ -4215,6 +4236,12 @@ public:
           return;
         depTracer.traceDependencyFromScfForOp(forOp);
       });
+
+      // Post-processing, canonicalize air async wait alls.
+      RewritePatternSet cano_patterns(f.getContext());
+      air::WaitAllOp::getCanonicalizationPatterns(cano_patterns,
+                                                  f.getContext());
+      (void)applyPatternsAndFoldGreedily(f, std::move(cano_patterns));
     }
   }
 
