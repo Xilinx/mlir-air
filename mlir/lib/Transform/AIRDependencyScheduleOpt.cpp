@@ -3883,12 +3883,13 @@ private:
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder builder(a);
+    builder.setInsertionPoint(a->getBlock()->getTerminator());
     auto new_b = cloneOpAndOperands(builder, remap, b);
     eraseParentLoopIfEmpty(*b);
-    auto async_a = dyn_cast<air::AsyncOpInterface>(a.getOperation());
-    if (async_a.getAsyncToken())
-      async_a.addAsyncDependency(
-          dyn_cast<air::AsyncOpInterface>(new_b).getAsyncToken());
+    auto async_b = dyn_cast<air::AsyncOpInterface>(new_b);
+    if (async_b.getAsyncToken())
+      async_b.addAsyncDependency(
+          dyn_cast<air::AsyncOpInterface>(a.getOperation()).getAsyncToken());
   }
   void mergeChannelOpsTemporally(air::ChannelInterface a,
                                  air::ChannelInterface b,
@@ -3923,12 +3924,10 @@ private:
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
     // Interleave puts and gets
-    for (unsigned i = 0; i < a_puts.size(); i++) {
+    for (unsigned i = 0; i < a_puts.size(); i++)
       mergeChannelOps(a_puts[i], b_puts[i]);
-    }
-    for (unsigned i = 0; i < a_gets.size(); i++) {
+    for (unsigned i = 0; i < a_gets.size(); i++)
       mergeChannelOps(a_gets[i], b_gets[i]);
-    }
   }
   void mergeChannelOpsTemporally(air::ChannelOp chan_a, air::ChannelOp chan_b,
                                  std::string mergeByLBOrUB) {
