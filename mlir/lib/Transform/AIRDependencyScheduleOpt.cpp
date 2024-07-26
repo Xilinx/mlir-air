@@ -3706,10 +3706,7 @@ private:
           (!areTheSameSSAValueLists(bSizes, b_puts[i].getSizes())) ||
           (!areTheSameSSAValueLists(bStrides, b_puts[i].getStrides())))
         return notMergeable; // Inconsistent memory use for all puts
-    if ((!areTheSameMemref(aMemref, bMemref)) ||
-        (!areTheSameSSAValueLists(aOffsets, bOffsets)) ||
-        (!areTheSameSSAValueLists(aSizes, bSizes)) ||
-        (!areTheSameSSAValueLists(aStrides, bStrides)))
+    if ((!areTheSameMemref(aMemref, bMemref)))
       return notMergeable;
     aMemref = a_gets[0].getMemref();
     aOffsets = a_gets[0].getOffsets();
