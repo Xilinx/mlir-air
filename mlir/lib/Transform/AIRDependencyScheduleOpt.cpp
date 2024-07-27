@@ -3389,6 +3389,12 @@ public:
         } else if (std::get<1>(checkScfForMergeableRes) == "NFL") {
           // Fuse air.channels temporally, if there isn't any for loop to fuse
           // into.
+          createDummyForOpsAroundOps<air::ChannelPutOp>(
+              getChannelPutOpThroughSymbol(chanA));
+          createDummyForOpsAroundOps<air::ChannelGetOp>(
+              getChannelGetOpThroughSymbol(chanA));
+          mergeChannelOpsTemporally(chanA, chanB, "UB");
+          // Fuse both channel ops into the loop
           chan_merge_map[chanB] = chanA;
         }
       }
@@ -3439,6 +3445,44 @@ public:
   SmallVector<unsigned> targetMemorySpaces;
 
 private:
+  // Create single-iteration for loops around a vector of operations of type T.
+  template <typename T>
+  void createDummyForOpsAroundOps(std::vector<T> ops) {
+    for (auto t_o : ops) {
+      Operation *op = t_o.getOperation();
+      OpBuilder builder(op);
+      IRMapping remap;
+      auto loc = op->getLoc();
+      auto ctx = op->getContext();
+      auto zeroIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
+      auto oneIdx = builder.create<arith::ConstantIndexOp>(loc, 1);
+      auto newForOp = scf::ForOp();
+
+      if (air::getAsyncTokenFromOp(op)) {
+        newForOp = builder.create<scf::ForOp>(
+            loc, zeroIdx, oneIdx, oneIdx,
+            builder
+                .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                        air::getAsyncDependenciesFromOp(op))
+                .getAsyncToken());
+        for (auto dep : air::getAsyncDependenciesFromOp(op))
+          remap.map(dep, newForOp.getRegionIterArgs()[0]);
+      } else
+        newForOp = builder.create<scf::ForOp>(loc, zeroIdx, oneIdx, oneIdx);
+      builder.setInsertionPointToStart(newForOp.getBody());
+      auto newOp = dyn_cast<T>(builder.clone(*op, remap));
+
+      if (auto oldAsyncToken = air::getAsyncTokenFromOp(op)) {
+        builder.create<scf::YieldOp>(loc, newOp.getAsyncToken());
+        oldAsyncToken.replaceAllUsesWith(newForOp->getResult(0));
+      } else
+        builder.create<scf::YieldOp>(loc);
+    }
+    for (auto e : ops)
+      e->erase();
+    return;
+  }
+
   void sortChannelsByLoopNests(air::ChannelOp &chan_a, air::ChannelOp &chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
