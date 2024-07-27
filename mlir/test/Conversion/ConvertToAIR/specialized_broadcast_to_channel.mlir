@@ -13,8 +13,8 @@
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
 #set1 = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0, -s1 + 1 >= 0)>
 module {
-// CHECK: air.channel @channel_1 [1, 1] {broadcast_shape = [1, 2]}
 // CHECK: air.channel @channel_0 [1, 1] {broadcast_shape = [1, 2]}
+// CHECK: air.channel @channel_1 [1, 1] {broadcast_shape = [1, 2]}
   func.func @mmult(%arg0: memref<512x512xbf16>) {
     %c8 = arith.constant 8 : index
     %0 = air.launch async (%arg1, %arg2) in (%arg3=%c8, %arg4=%c8) args(%arg5=%arg0) : memref<512x512xbf16> attributes {id = 3 : i32} {
