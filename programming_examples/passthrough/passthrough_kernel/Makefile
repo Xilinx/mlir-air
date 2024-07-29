@@ -20,7 +20,7 @@ VPATH := ${MLIR_AIE_DIR}/aie_kernels/generic
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/passthrough_dma.py -p
+	${powershell} python3 ${srcdir}/passthrough_kernel.py -p
 
 ${srcdir}/build/passThrough.cc.o: ${VPATH}/passThrough.cc
 	mkdir -p ${srcdir}/build
