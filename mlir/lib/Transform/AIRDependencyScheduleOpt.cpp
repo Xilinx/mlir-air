@@ -34,6 +34,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallSet.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -4729,7 +4730,13 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
       return counter == N;
     };
     for (auto forOp : op.getOps<scf::ForOp>()) {
-      if (hasNElements(forOp.getBody(), 1) &&
+      // Conditions for candicate scf.for op for fusion: (1) has at most 1
+      // unique channels operating in the block, (2) is either perfectly nested,
+      // or contains only channel ops, (3) is static for loop.
+      if (getNumUniqueChannelsInBlock(forOp.getBody()) <= 1 &&
+          hasNElements(
+              forOp.getBody(),
+              std::max(getNumChannelPutsGetsInBlock(forOp.getBody()), 1)) &&
           air::getStaticScfForTripCountAsInt(forOp))
         perfectlyNestedForBands.push_back(forOp);
     }
@@ -4909,6 +4916,25 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
   }
 
 private:
+  // Get the number of air.channel.puts/gets in block.
+  int getNumChannelPutsGetsInBlock(Block *block) const {
+    int count = 0;
+    for (auto &o : block->getOperations())
+      if (auto chanOp = dyn_cast<air::ChannelInterface>(o))
+        count++;
+    return count;
+  }
+
+  // Get the total number of unique air.channels that all air.channel.puts/gets
+  // in block operate on.
+  int getNumUniqueChannelsInBlock(Block *block) const {
+    llvm::SmallSet<std::string, 1> chanNamesInBlock;
+    for (auto &o : block->getOperations())
+      if (auto chanOp = dyn_cast<air::ChannelInterface>(o))
+        chanNamesInBlock.insert(chanOp.getChanName().str());
+    return chanNamesInBlock.size();
+  }
+
   // Scf.for loop tiling. This simple tiling implementation generates a new
   // inner scf.for loop which starts from the original loop's lower bound. It
   // may change the meaning of the original scf.for loop, therefore it requires
@@ -5017,7 +5043,9 @@ public:
   void runPreProcPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
+    patterns
+        .insert<CanonicalizeAffineApplyOnLoopInductionVar, UnrollScfParallel>(
+            ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
