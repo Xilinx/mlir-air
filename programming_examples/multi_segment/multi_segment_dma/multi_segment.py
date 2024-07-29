@@ -1,28 +1,21 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import sys
-from pathlib import Path  # if you haven't already done so
-
-# Python paths are a bit complex. Taking solution from : https://stackoverflow.com/questions/16981921/relative-imports-in-python-3
-file = Path(__file__).resolve()
-parent, root = file.parent, file.parents[1]
-sys.path.append(str(root))
-
-# Additionally remove the current file's directory from sys.path
-try:
-    sys.path.remove(str(parent))
-except ValueError:  # Already removed
-    pass
+import argparse
+import numpy as np
 
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
+from air.backend.xrt_runner import XRTRunner
 
 range_ = for_
 
-from common import *
+VECTOR_LEN = 32
+VECTOR_SIZE = [VECTOR_LEN, 1]
+
+INOUT_DATATYPE = np.uint32
 
 
 @module_builder
@@ -46,7 +39,6 @@ def build_module():
         # The arguments are the input and output
         @launch(operands=[arg0, arg1, arg2, arg3])
         def launch_body(a, b, c, d):
-
             @segment(name="seg1", operands=[a, c])
             def segment_body(arg0, arg2):
 
@@ -96,5 +88,37 @@ def build_module():
 
 
 if __name__ == "__main__":
-    module = build_module()
-    print(module)
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Builds, runs, and tests the segment_alloc example",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-p",
+        "--print-module-only",
+        action="store_true",
+    )
+    args = parser.parse_args()
+
+    mlir_module = build_module()
+    if args.print_module_only:
+        print(mlir_module)
+        exit(0)
+
+    input_a = np.full(VECTOR_SIZE, 2, dtype=INOUT_DATATYPE)
+    input_b = np.full(VECTOR_SIZE, 3, dtype=INOUT_DATATYPE)
+    output_c = np.full(VECTOR_SIZE, 12, dtype=INOUT_DATATYPE)
+    output_d = np.full(VECTOR_SIZE, 13, dtype=INOUT_DATATYPE)
+
+    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
+    exit(
+        runner.run_test(
+            mlir_module,
+            inputs=[input_a, input_b],
+            expected_outputs=[output_c, output_d],
+        )
+    )
