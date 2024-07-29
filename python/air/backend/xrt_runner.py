@@ -9,6 +9,7 @@ from air.dialects.air import *
 import filelock
 from typing import List
 from collections import defaultdict
+from bfloat16 import bfloat16
 
 TYPE_MAP_DICT = defaultdict(
     lambda: None,
@@ -18,17 +19,16 @@ TYPE_MAP_DICT = defaultdict(
         np.int16: T.i16,
         np.int32: T.i32,
         np.int64: T.i64,
-        
         # Unsigned Integer Types
         np.uint8: T.ui8,
         np.uint16: T.ui16,
         np.uint32: T.ui32,
         np.uint64: T.ui64,
-
         # Floating point types
         np.float16: T.f16,
         np.float32: T.f32,
         np.float64: T.f64,
+        bfloat16: T.bf16,
     },
 )
 
