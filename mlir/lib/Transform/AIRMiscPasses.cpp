@@ -49,21 +49,21 @@ class AIRExamplePass : public air::impl::AIRExamplePassBase<AIRExamplePass> {
 
 public:
   AIRExamplePass() = default;
-  AIRExamplePass(const AIRExamplePass &pass) {};
+  AIRExamplePass(const AIRExamplePass &pass){};
 
   void runOnOperation() override;
 
 private:
 };
 
-void AIRExamplePass::runOnOperation() {}
+void AIRExamplePass::runOnOperation(){}
 
 class AIRLinalgNamePass
     : public air::impl::AIRLinalgNamePassBase<AIRLinalgNamePass> {
 
 public:
   AIRLinalgNamePass() = default;
-  AIRLinalgNamePass(const AIRLinalgNamePass &pass) {};
+  AIRLinalgNamePass(const AIRLinalgNamePass &pass){};
 
   void runOnOperation() override;
 
@@ -92,7 +92,7 @@ class AIRRemoveLinalgNamePass
 
 public:
   AIRRemoveLinalgNamePass() = default;
-  AIRRemoveLinalgNamePass(const AIRRemoveLinalgNamePass &pass) {};
+  AIRRemoveLinalgNamePass(const AIRRemoveLinalgNamePass &pass){};
 
   void runOnOperation() override;
 
@@ -118,7 +118,7 @@ class AIRSpecializeDmaBroadcast
 
 public:
   AIRSpecializeDmaBroadcast() = default;
-  AIRSpecializeDmaBroadcast(const AIRSpecializeDmaBroadcast &pass) {};
+  AIRSpecializeDmaBroadcast(const AIRSpecializeDmaBroadcast &pass){};
 
   void runOnOperation() override {
     auto module = getOperation();
@@ -481,7 +481,7 @@ class AIRFuseParallelHerdPass
 
 public:
   AIRFuseParallelHerdPass() = default;
-  AIRFuseParallelHerdPass(const AIRFuseParallelHerdPass &pass) {};
+  AIRFuseParallelHerdPass(const AIRFuseParallelHerdPass &pass){};
 
   void runOnOperation() override;
 
@@ -599,7 +599,7 @@ class AIRRenumberDmaIdPass
 
 public:
   AIRRenumberDmaIdPass() = default;
-  AIRRenumberDmaIdPass(const AIRRenumberDmaIdPass &pass) {};
+  AIRRenumberDmaIdPass(const AIRRenumberDmaIdPass &pass){};
 
   void runOnOperation() override;
 
@@ -644,7 +644,7 @@ class AIRLowerHerdParallelPass
 
 public:
   AIRLowerHerdParallelPass() = default;
-  AIRLowerHerdParallelPass(const AIRLowerHerdParallelPass &pass) {};
+  AIRLowerHerdParallelPass(const AIRLowerHerdParallelPass &pass){};
 
   void runOnOperation() override;
 
@@ -666,7 +666,7 @@ class AIRLabelBroadcastChannelWithTilePass
 public:
   AIRLabelBroadcastChannelWithTilePass() = default;
   AIRLabelBroadcastChannelWithTilePass(
-      const AIRLabelBroadcastChannelWithTilePass &pass) {};
+      const AIRLabelBroadcastChannelWithTilePass &pass){};
 
   void runOnOperation() override;
 
@@ -714,9 +714,9 @@ class AIRCollapseHerdPass
 
 public:
   AIRCollapseHerdPass() = default;
-  AIRCollapseHerdPass(const AIRCollapseHerdPass &pass) {};
+  AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
   AIRCollapseHerdPass(const ::xilinx::air::AIRCollapseHerdPassOptions &options)
-      : AIRCollapseHerdPassBase(options) {}
+      : AIRCollapseHerdPassBase(options){}
 
   void runOnOperation() override;
 
@@ -801,11 +801,11 @@ class AIRUnrollOuterPerfectlyNestedLoopsPass
 public:
   AIRUnrollOuterPerfectlyNestedLoopsPass() = default;
   AIRUnrollOuterPerfectlyNestedLoopsPass(
-      const AIRUnrollOuterPerfectlyNestedLoopsPass &pass) {};
+      const AIRUnrollOuterPerfectlyNestedLoopsPass &pass){};
   AIRUnrollOuterPerfectlyNestedLoopsPass(
       const ::xilinx::air::AIRUnrollOuterPerfectlyNestedLoopsPassOptions
           &options)
-      : AIRUnrollOuterPerfectlyNestedLoopsPassBase(options) {}
+      : AIRUnrollOuterPerfectlyNestedLoopsPassBase(options){}
 
   void runOnOperation() override;
 
@@ -844,7 +844,7 @@ class AIRSplitL2MemrefForBufferConstraintPass
 public:
   AIRSplitL2MemrefForBufferConstraintPass() = default;
   AIRSplitL2MemrefForBufferConstraintPass(
-      const AIRSplitL2MemrefForBufferConstraintPass &pass) {};
+      const AIRSplitL2MemrefForBufferConstraintPass &pass){};
 
   void runOnOperation() override;
 
