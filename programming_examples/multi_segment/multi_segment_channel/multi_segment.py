@@ -99,7 +99,7 @@ def build_module():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the segment_alloc example",
+        description="Builds, runs, and tests the multi segment channel example",
     )
     parser.add_argument(
         "-v",
