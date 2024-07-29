@@ -8,7 +8,7 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
@@ -28,7 +28,8 @@ INOUT_DATATYPE = np.int32
 
 @module_builder
 def build_module():
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
 
     # Create an input/output channel pair per worker
     ChannelOp("ChanIn", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
@@ -90,7 +91,7 @@ def build_module():
                     # This is the type definition of the tile
                     tile_type = MemRefType.get(
                         shape=TILE_SIZE,
-                        element_type=T.i32(),
+                        element_type=xrt_dtype,
                         memory_space=mem_space,
                     )
 

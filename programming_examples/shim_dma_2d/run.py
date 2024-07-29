@@ -7,7 +7,7 @@ import numpy as np
 from air.backend.xrt_runner import XRTRunner
 from shim_dma_2d import *
 
-INOUT_DATATYPE = np.uint32
+INOUT_DATATYPE = np.int32
 VERBOSE = False
 
 

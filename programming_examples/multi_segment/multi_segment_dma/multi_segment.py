@@ -8,19 +8,20 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
 VECTOR_LEN = 32
 VECTOR_SIZE = [VECTOR_LEN, 1]
 
-INOUT_DATATYPE = np.uint32
+INOUT_DATATYPE = np.int32
 
 
 @module_builder
 def build_module():
-    memrefTyInOut = MemRefType.get(VECTOR_SIZE, T.i32())
+    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    memrefTyInOut = MemRefType.get(VECTOR_SIZE, xrt_dtype)
 
     # We want to store our data in L1 memory
     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -28,7 +29,7 @@ def build_module():
     # This is the type definition of the tile
     image_type_l1 = MemRefType.get(
         shape=VECTOR_SIZE,
-        element_type=T.i32(),
+        element_type=xrt_dtype,
         memory_space=mem_space_l1,
     )
 
@@ -54,7 +55,7 @@ def build_module():
                     c0 = arith.ConstantOp.create_index(0)
                     for j in range_(VECTOR_LEN):
                         val_a = load(image_in_a, [c0, j])
-                        val_outa = arith.addi(val_a, arith.constant(T.i32(), 10))
+                        val_outa = arith.addi(val_a, arith.constant(xrt_dtype, 10))
                         store(val_outa, image_out_a, [c0, j])
                         yield_([])
 
@@ -77,7 +78,7 @@ def build_module():
                     c0 = arith.ConstantOp.create_index(0)
                     for j in range_(VECTOR_LEN):
                         val_b = load(image_in_b, [c0, j])
-                        val_outb = arith.addi(arith.constant(T.i32(), 10), val_b)
+                        val_outb = arith.addi(arith.constant(xrt_dtype, 10), val_b)
                         store(val_outb, image_out_b, [c0, j])
                         yield_([])
 

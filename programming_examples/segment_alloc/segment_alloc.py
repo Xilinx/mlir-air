@@ -8,7 +8,7 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
@@ -23,12 +23,13 @@ TILE_SIZE = [TILE_HEIGHT, TILE_WIDTH]
 assert IMAGE_HEIGHT % TILE_HEIGHT == 0
 assert IMAGE_WIDTH % TILE_WIDTH == 0
 
-INOUT_DATATYPE = np.uint32
+INOUT_DATATYPE = np.int32
 
 
 @module_builder
 def build_module():
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -47,7 +48,7 @@ def build_module():
                 # This is the type definition of the tile
                 tile_type_l2 = MemRefType.get(
                     shape=TILE_SIZE,
-                    element_type=T.i32(),
+                    element_type=xrt_dtype,
                     memory_space=mem_space_l2,
                 )
 
@@ -65,7 +66,7 @@ def build_module():
                     # This is the type definition of the tile
                     tile_type_l1 = MemRefType.get(
                         shape=TILE_SIZE,
-                        element_type=T.i32(),
+                        element_type=xrt_dtype,
                         memory_space=mem_space_l1,
                     )
 
