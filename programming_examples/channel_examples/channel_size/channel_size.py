@@ -12,7 +12,7 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
-IMAGE_WIDTH = 32
+IMAGE_WIDTH = 48
 IMAGE_HEIGHT = 16
 IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
@@ -53,7 +53,7 @@ def build_module():
                     ChannelPut(
                         "ChanIn",
                         a,
-                        indices=[w, h],
+                        indices=[h, w],
                         offsets=[offset0, offset1],
                         sizes=TILE_SIZE,
                         strides=[IMAGE_WIDTH, 1],
@@ -69,7 +69,7 @@ def build_module():
                     ChannelGet(
                         "ChanOut",
                         b,
-                        indices=[w, h],
+                        indices=[h, w],
                         offsets=[offset0, offset1],
                         sizes=TILE_SIZE,
                         strides=[IMAGE_WIDTH, 1],

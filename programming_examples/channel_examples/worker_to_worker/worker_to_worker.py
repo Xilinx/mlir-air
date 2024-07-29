@@ -1,5 +1,7 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+import argparse
+import numpy as np
 
 from air.ir import *
 from air.dialects.air import *
@@ -7,30 +9,34 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.dialects.affine import apply as affine_apply
+from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
-IMAGE_WIDTH = 32
+IMAGE_WIDTH = 48
 IMAGE_HEIGHT = 16
-IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
+IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
 TILE_WIDTH = 16
 TILE_HEIGHT = 8
-TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]
+TILE_SIZE = [TILE_HEIGHT, TILE_WIDTH]
 
-assert IMAGE_WIDTH % TILE_WIDTH == 0
 assert IMAGE_HEIGHT % TILE_HEIGHT == 0
+assert IMAGE_WIDTH % TILE_WIDTH == 0
+
+INOUT_DATATYPE = np.int32
 
 
 @module_builder
 def build_module():
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
 
     # Create an input/output channel pair per worker
-    ChannelOp("ChanIn", size=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT])
-    ChannelOp("ChanOut", size=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT])
+    ChannelOp("ChanIn", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
+    ChannelOp("ChanOut", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
     ChannelOp(
-        "SwitchTiles", size=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT]
+        "SwitchTiles", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH]
     )
 
     # We will send an image worth of data in and out
@@ -44,32 +50,32 @@ def build_module():
             # Transfer one tile of data per worker
             for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
                 for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = IMAGE_HEIGHT * h
-                    offset1 = IMAGE_HEIGHT * w
+                    offset0 = TILE_HEIGHT * h
+                    offset1 = TILE_WIDTH * w
 
                     # Put data into the channel tile by tile
                     ChannelPut(
                         "ChanIn",
                         a,
-                        indices=[w, h],
+                        indices=[h, w],
                         offsets=[offset0, offset1],
-                        sizes=[TILE_HEIGHT, TILE_WIDTH],
+                        sizes=TILE_SIZE,
                         strides=[IMAGE_WIDTH, 1],
                     )
 
             # Transfer one tile of data per worker
             for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
                 for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = IMAGE_HEIGHT * h
-                    offset1 = IMAGE_HEIGHT * w
+                    offset0 = TILE_HEIGHT * h
+                    offset1 = TILE_WIDTH * w
 
                     # Write data back out to the channel tile by tile
                     ChannelGet(
                         "ChanOut",
                         b,
-                        indices=[w, h],
+                        indices=[h, w],
                         offsets=[offset0, offset1],
-                        sizes=[TILE_HEIGHT, TILE_WIDTH],
+                        sizes=TILE_SIZE,
                         strides=[IMAGE_WIDTH, 1],
                     )
 
@@ -79,7 +85,7 @@ def build_module():
 
                 @herd(
                     name="xaddherd",
-                    sizes=[IMAGE_WIDTH // TILE_WIDTH, IMAGE_HEIGHT // TILE_HEIGHT],
+                    sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
                 )
                 def herd_body(th, tw, _sx, _sy):
                     height_next = AffineMap.get(
@@ -115,7 +121,7 @@ def build_module():
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
                     tile_type = MemRefType.get(
                         shape=TILE_SIZE,
-                        element_type=T.i32(),
+                        element_type=xrt_dtype,
                         memory_space=mem_space,
                     )
 
@@ -126,11 +132,11 @@ def build_module():
                     tile_out2 = AllocOp(tile_type, [], [])
 
                     # Copy a tile from the input image
-                    ChannelGet("ChanIn", tile_in, indices=[tw, th])
+                    ChannelGet("ChanIn", tile_in, indices=[th, tw])
 
                     # Access every value in the tile
-                    for j in range_(TILE_HEIGHT):
-                        for i in range_(TILE_WIDTH):
+                    for i in range_(TILE_HEIGHT):
+                        for j in range_(TILE_WIDTH):
                             # Load the input value from tile_in
                             val = load(tile_in, [i, j])
 
@@ -140,14 +146,14 @@ def build_module():
                         yield_([])
 
                     # Copy the output tile into a channel for another worker to get
-                    ChannelPut("SwitchTiles", tile_out, indices=[tw, th])
+                    ChannelPut("SwitchTiles", tile_out, indices=[th, tw])
 
                     # Get an output tile from another worker
-                    ChannelGet("SwitchTiles", tile_in2, indices=[tw_next, th_next])
+                    ChannelGet("SwitchTiles", tile_in2, indices=[th_next, tw_next])
 
                     # Access every value in the tile
-                    for j in range_(TILE_HEIGHT):
-                        for i in range_(TILE_WIDTH):
+                    for i in range_(TILE_HEIGHT):
+                        for j in range_(TILE_WIDTH):
                             # Load the input value from tile_in
                             val = load(tile_in2, [i, j])
 
@@ -157,7 +163,7 @@ def build_module():
                         yield_([])
 
                     # Send the output tile to the output
-                    ChannelPut("ChanOut", tile_out, indices=[tw, th])
+                    ChannelPut("ChanOut", tile_out, indices=[th, tw])
 
                     # Deallocate our L1 buffers
                     DeallocOp(tile_in)
@@ -167,5 +173,35 @@ def build_module():
 
 
 if __name__ == "__main__":
-    module = build_module()
-    print(module)
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Builds, runs, and tests the channel worker_to_worker example",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-p",
+        "--print-module-only",
+        action="store_true",
+    )
+    args = parser.parse_args()
+
+    mlir_module = build_module()
+    if args.print_module_only:
+        print(mlir_module)
+        exit(0)
+
+    input_matrix = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
+    # TODO: this check is not fully correct, should show how data is transferred explicitly
+    # Will probably want to use different input to implement a more rigorous check.
+    output_matrix = input_matrix.copy()
+
+    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
+    exit(
+        runner.run_test(
+            mlir_module, inputs=[input_matrix], expected_outputs=[output_matrix]
+        )
+    )
