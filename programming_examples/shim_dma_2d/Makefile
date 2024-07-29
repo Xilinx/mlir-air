@@ -41,4 +41,4 @@ pyworkflow:
 	cd ${srcdir}/pybuild && ${powershell} python3 ${srcdir}/run.py 
 
 clean:
-	rm -rf ${srcdir}/build ${srcdir}/_build ${srcdir}/pybuild tmp ${targetname}.exe
+	rm -rf ${srcdir}/build ${srcdir}/_build ${srcdir}/pybuild tmp ${srcdir}/${targetname}.exe

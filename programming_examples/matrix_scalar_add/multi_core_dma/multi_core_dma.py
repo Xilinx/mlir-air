@@ -149,7 +149,7 @@ if __name__ == "__main__":
     IMAGE_HEIGHT = 32
     TILE_WIDTH = 8
     TILE_HEIGHT = 16
-    INOUT_DATATYPE = np.uint32
+    INOUT_DATATYPE = np.int32
 
     parser = argparse.ArgumentParser(
         prog="run.py",
