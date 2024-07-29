@@ -147,11 +147,6 @@ public:
           createAsyncExecute(module_builder, op, "func::call", ExecuteOpID);
 
         // Create async execute region for memref.alloc
-        else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op))
-          createAsyncExecute(module_builder, op, "memref::alloc", ExecuteOpID,
-                             memalloc_op.getMemref().getType());
-
-        // Create async execute region for memref.alloc
         else if (auto memcast_op = dyn_cast<memref::CastOp>(op))
           createAsyncExecute(module_builder, op, "memref::cast", ExecuteOpID,
                              memcast_op.getDest().getType());
@@ -193,6 +188,18 @@ public:
                                     HierarchyOpID);
         }
 
+        // Create async execute region for memref.alloc
+        else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op)) {
+          // Alloc can be used to specify shapes for operations such 
+          // as reshape ops. If this alloc is used to specify shape of 
+          // a reshap op, ignore this operation.
+          assert(memalloc_op->getNumResults() == 1 && 
+                 "Number of results of alloc op == 1");
+          if (!alloc_for_reshape(memalloc_op->getOpResult(0)))
+            createAsyncExecute(module_builder, op, "memref::alloc", ExecuteOpID,
+                               memalloc_op.getMemref().getType());
+        }
+
         // Create async execute region for an unknown op which has memref or
         // index-type operands
         else {
@@ -201,6 +208,17 @@ public:
             if (llvm::isa<MemRefType>(operand.getType()) ||
                 llvm::isa<IndexType>(operand.getType())) {
               isCandidateExecute = true;
+            }
+          }
+          // If a memref store is storing to an alloca for shape, 
+          // it must not be executed.
+          if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
+            if (auto memalloc_op = dyn_cast<memref::AllocOp>(
+                    storeOp.getMemRef().getDefiningOp())) {
+              assert(memalloc_op->getNumResults() == 1 && 
+                     "Number of results of alloc op == 1");
+              if (alloc_for_reshape(memalloc_op->getOpResult(0)))
+                isCandidateExecute = false;
             }
           }
           // No air execute for loop ops
@@ -589,6 +607,29 @@ private:
   uint64_t HierarchyOpID;
   uint64_t WaitAllOpID;
   uint64_t ChannelOpID;
+
+  //===----------------------------------------------------------------------===//
+  // Handling lingering reshape-related ops
+  //===----------------------------------------------------------------------===//
+
+  bool alloc_for_reshape(mlir::Value val) {
+    for (auto user : val.getUsers()) {
+      // If one of the user is a herd, segment or a launch op,
+      // explore the hierarchy further.
+      if (auto hier_op = dyn_cast<xilinx::air::HierarchyInterface>(user)) {
+        for (int i = 0, e = hier_op.getNumKernelOperands(); i < e; i++) {
+          if (hier_op.getKernelOperand(i) == val) {
+            if (alloc_for_reshape(hier_op.getKernelArgument(i)))
+              return true;
+          }
+        }
+      } else if (auto reshape = dyn_cast<memref::ReshapeOp>(user)) {
+        if (reshape.getShape() == val)
+          return true;
+      }
+    }
+    return false;
+  }
 
   //===----------------------------------------------------------------------===//
   // Creating async events
