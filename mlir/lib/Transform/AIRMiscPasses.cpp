@@ -1644,9 +1644,6 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   }
 
   air::renumberChannelOps(&func.getBody().front());
-
-  llvm::errs() << "\n\nAFTER SPLITTING L2 MEMREF MODULE:\n";
-  func->getParentOp()->dump();
 }
 
 } // anonymous namespace
