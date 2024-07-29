@@ -6,7 +6,7 @@ targetname := $(shell basename ${srcdir})
 
 run:
 	mkdir -p build
-	cd build && ${powershell} python3 ${srcdir}/run.py
+	cd build && ${powershell} python3 ${srcdir}/segment_alloc.py
 
 clean:
 	rm -rf build __pycache__
