@@ -4681,11 +4681,12 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     auto hasNElements = [](Block *block, unsigned N) {
       unsigned counter = 0;
       for (auto &o : block->getOperations()) {
-        if (o.mightHaveTrait<OpTrait::IsTerminator>())
-          continue;
-        if (isa<air::WaitAllOp>(o))
-          continue;
-        counter++;
+        if (isa<air::ChannelInterface>(o))
+          counter++;
+        else if (isa<LoopLikeOpInterface>(o))
+          counter++;
+        else if (isa<mlir::linalg::LinalgOp>(o))
+          counter++;
       }
       return counter == N;
     };
