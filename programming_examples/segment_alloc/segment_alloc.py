@@ -11,11 +11,14 @@ range_ = for_
 
 IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
-IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
+IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
 TILE_WIDTH = 16
 TILE_HEIGHT = 8
-TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]
+TILE_SIZE = [TILE_HEIGHT, TILE_WIDTH]
+
+assert IMAGE_HEIGHT % TILE_HEIGHT == 0
+assert IMAGE_WIDTH % TILE_WIDTH == 0
 
 
 @module_builder
@@ -69,7 +72,7 @@ def build_module():
                         my_l2_tile,
                         a,
                         src_offsets=[0, 0],
-                        src_sizes=[TILE_HEIGHT, TILE_WIDTH],
+                        src_sizes=TILE_SIZE,
                         src_strides=[IMAGE_WIDTH, 1],
                     )
 
@@ -80,8 +83,8 @@ def build_module():
                     )
 
                     # Access every value in the tile
-                    for j in range_(TILE_HEIGHT):
-                        for i in range_(TILE_WIDTH):
+                    for i in range_(TILE_HEIGHT):
+                        for j in range_(TILE_WIDTH):
                             # Load the input value from tile_in
                             val = load(tile_in_l1, [i, j])
 
@@ -95,7 +98,7 @@ def build_module():
                         b,
                         tile_out_l1,
                         dst_offsets=[0, 0],
-                        dst_sizes=[TILE_HEIGHT, TILE_WIDTH],
+                        dst_sizes=TILE_SIZE,
                         dst_strides=[IMAGE_WIDTH, 1],
                     )
 
