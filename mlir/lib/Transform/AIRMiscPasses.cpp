@@ -1517,8 +1517,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         auto adjustedDimIdx = dim;
         if (wraps.size() != memrefShape.size()) {
           // Make sure that the number of rank-reducing dimensions and/or
-          // the number of leading singleton dimensions must be equal to 
-          // the difference between the number of wraps and the shape of 
+          // the number of leading singleton dimensions must be equal to
+          // the difference between the number of wraps and the shape of
           // the memref of the original channel.
           int numSingletonDimDiff = 0;
           for (auto wrap : wraps) {
@@ -1554,10 +1554,10 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
                   adjustedDimIdx++;
               else
                   orgDim++;
-              wrapIdx++;                    
-              continue;  
+              wrapIdx++;
+              continue;
             }
-            if (memrefShape[orgDim] == 1) {                
+            if (memrefShape[orgDim] == 1) {
               orgDim++;
               continue;
             }
@@ -1572,7 +1572,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
                 "Failed to split data access pattern along dimension ")
                 << std::to_string(orgDim)
                 << " due to dimension misalignment with channel op at "
-                    "the other side.";   
+                    "the other side.";
             return;
           }
         }
