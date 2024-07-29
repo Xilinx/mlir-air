@@ -190,10 +190,10 @@ public:
 
         // Create async execute region for memref.alloc
         else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op)) {
-          // Alloc can be used to specify shapes for operations such 
-          // as reshape ops. If this alloc is used to specify shape of 
+          // Alloc can be used to specify shapes for operations such
+          // as reshape ops. If this alloc is used to specify shape of
           // a reshap op, ignore this operation.
-          assert(memalloc_op->getNumResults() == 1 && 
+          assert(memalloc_op->getNumResults() == 1 &&
                  "Number of results of alloc op == 1");
           if (!alloc_for_reshape(memalloc_op->getOpResult(0)))
             createAsyncExecute(module_builder, op, "memref::alloc", ExecuteOpID,
@@ -210,12 +210,12 @@ public:
               isCandidateExecute = true;
             }
           }
-          // If a memref store is storing to an alloca for shape, 
+          // If a memref store is storing to an alloca for shape,
           // it must not be executed.
           if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
             if (auto memalloc_op = dyn_cast<memref::AllocOp>(
                     storeOp.getMemRef().getDefiningOp())) {
-              assert(memalloc_op->getNumResults() == 1 && 
+              assert(memalloc_op->getNumResults() == 1 &&
                      "Number of results of alloc op == 1");
               if (alloc_for_reshape(memalloc_op->getOpResult(0)))
                 isCandidateExecute = false;
