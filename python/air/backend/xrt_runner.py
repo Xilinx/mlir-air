@@ -13,9 +13,22 @@ from collections import defaultdict
 TYPE_MAP_DICT = defaultdict(
     lambda: None,
     {
+        # Integer types
+        np.int8: T.i8,
+        np.int16: T.i16,
+        np.int32: T.i32,
+        np.int64: T.i64,
+        
+        # Unsigned Integer Types
         np.uint8: T.ui8,
-        np.uint32: T.i32,
-        # TODO: add more mappings here
+        np.uint16: T.ui16,
+        np.uint32: T.ui32,
+        np.uint64: T.ui64,
+
+        # Floating point types
+        np.float16: T.f16,
+        np.float32: T.f32,
+        np.float64: T.f64,
     },
 )
 
