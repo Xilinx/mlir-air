@@ -56,7 +56,7 @@ public:
 private:
 };
 
-void AIRExamplePass::runOnOperation(){}
+void AIRExamplePass::runOnOperation() {}
 
 class AIRLinalgNamePass
     : public air::impl::AIRLinalgNamePassBase<AIRLinalgNamePass> {
@@ -716,7 +716,7 @@ public:
   AIRCollapseHerdPass() = default;
   AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
   AIRCollapseHerdPass(const ::xilinx::air::AIRCollapseHerdPassOptions &options)
-      : AIRCollapseHerdPassBase(options){}
+      : AIRCollapseHerdPassBase(options) {}
 
   void runOnOperation() override;
 
@@ -805,7 +805,7 @@ public:
   AIRUnrollOuterPerfectlyNestedLoopsPass(
       const ::xilinx::air::AIRUnrollOuterPerfectlyNestedLoopsPassOptions
           &options)
-      : AIRUnrollOuterPerfectlyNestedLoopsPassBase(options){}
+      : AIRUnrollOuterPerfectlyNestedLoopsPassBase(options) {}
 
   void runOnOperation() override;
 
