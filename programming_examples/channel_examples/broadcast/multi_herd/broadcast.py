@@ -15,6 +15,8 @@ IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
 INOUT_DATATYPE = np.int32
 
+OUTPUT_HERD_NAMES = ["ChanOutB", "ChanOutC", "ChanOutD"]
+
 
 @module_builder
 def build_module():
@@ -29,9 +31,8 @@ def build_module():
     )
 
     ChannelOp("ChanIn")
-    ChannelOp("ChanOut0")
-    ChannelOp("ChanOut1")
-    ChannelOp("ChanOut2")
+    for name in OUTPUT_HERD_NAMES:
+        ChannelOp(name)
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut, memrefTyInOut, memrefTyInOut)
@@ -42,9 +43,9 @@ def build_module():
         def launch_body(a, b, c, d):
 
             ChannelPut("ChanIn", a)
-            ChannelGet("ChanOut0", b)
-            ChannelGet("ChanOut1", c)
-            ChannelGet("ChanOut2", d)
+            ChannelGet(OUTPUT_HERD_NAMES[0], b)
+            ChannelGet(OUTPUT_HERD_NAMES[1], c)
+            ChannelGet(OUTPUT_HERD_NAMES[2], d)
 
             @segment(name="seg")
             def segment_body():
@@ -76,7 +77,7 @@ def build_module():
                                 yield_([])
                             yield_([])
 
-                        ChannelPut("ChanOut" + str(herd_num), image_out)
+                        ChannelPut(OUTPUT_HERD_NAMES[herd_num], image_out)
 
                         DeallocOp(image_in)
                         DeallocOp(image_out)
