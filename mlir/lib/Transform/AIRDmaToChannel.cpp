@@ -371,7 +371,10 @@ static air::ChannelOp
 createChannelOpWithBCast(OpBuilder builder, ModuleOp module, std::string cname,
                          Location loc, SmallVector<int64_t, 2> bcast_sizes) {
   auto insertionCheckpoint = builder.saveInsertionPoint();
-  builder.setInsertionPointToStart(module.getBody());
+  Operation *o = &module.getBody()->front();
+  while (dyn_cast_or_null<air::ChannelOp>(o))
+    o = o->getNextNode();
+  builder.setInsertionPoint(o);
 
   auto channel_op = builder.create<air::ChannelOp>(
       loc, cname, builder.getI64ArrayAttr(bcast_sizes));

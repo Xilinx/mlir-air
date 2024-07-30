@@ -13,9 +13,9 @@
 // CHECK: [[$MAP1:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 256 + 64)>
 // CHECK: [[$MAP2:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 256 + 128)>
 // CHECK: [[$MAP3:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 256 + 192)>
-// CHECK: air.channel @channel_2 [4, 1]
 // CHECK: air.channel @channel_1 [1, 1]
 // CHECK: air.channel @channel_0 [4, 4]
+// CHECK: air.channel @channel_2 [4, 1]
 // CHECK-LABEL: func.func @test0
 // CHECK: air.launch
 // CHECK-DAG: %[[CST3:.*]] = arith.constant 3 : index

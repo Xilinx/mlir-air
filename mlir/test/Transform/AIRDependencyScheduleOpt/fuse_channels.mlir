@@ -814,68 +814,74 @@ module {
 
 // -----
 
-// Fusing air.channels when there are no scf.for loops to merge into.
+// Fusing air.channels when there are no scf.for loops (NFL) to merge into.
 
 // CHECK-LABEL: func8
 // CHECK: air.segment @segment_0
-// CHECK: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
-// CHECK: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
 // CHECK: air.herd @herd_0
 // CHECK: affine.if
-// CHECK-NEXT: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// CHECK-NEXT: affine.yield
-// CHECK-NEXT: else
-// CHECK-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// CHECK-NEXT: affine.yield
-// CHECK: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
-// CHECK: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
+// CHECK: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// CHECK: affine.yield
+// CHECK: else
+// CHECK: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// CHECK: affine.yield
+// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// CHECK-NEXT: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
+// CHECK-NEXT: scf.yield
+// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// CHECK-NEXT: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
+// CHECK-NEXT: scf.yield
 // CHECK: air.herd @herd_0
 // CHECK: affine.if
-// CHECK-NEXT: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// CHECK-NEXT: affine.yield
-// CHECK-NEXT: else
-// CHECK-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// CHECK-NEXT: affine.yield
+// CHECK: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// CHECK: affine.yield
+// CHECK: else
+// CHECK: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// CHECK: affine.yield
 // AGGRESSIVE-LABEL: func8
 // AGGRESSIVE: air.segment @segment_0
-// AGGRESSIVE: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
-// AGGRESSIVE: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
 // AGGRESSIVE: air.herd @herd_0
 // AGGRESSIVE: affine.if
-// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// AGGRESSIVE-NEXT: affine.yield
-// AGGRESSIVE-NEXT: else
-// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// AGGRESSIVE-NEXT: affine.yield
-// AGGRESSIVE: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
-// AGGRESSIVE: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
+// AGGRESSIVE: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// AGGRESSIVE: affine.yield
+// AGGRESSIVE: else
+// AGGRESSIVE: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// AGGRESSIVE: affine.yield
+// AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// AGGRESSIVE-NEXT: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
+// AGGRESSIVE-NEXT: scf.yield
+// AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// AGGRESSIVE-NEXT: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
+// AGGRESSIVE-NEXT: scf.yield
 // AGGRESSIVE: air.herd @herd_0
 // AGGRESSIVE: affine.if
-// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// AGGRESSIVE-NEXT: affine.yield
-// AGGRESSIVE-NEXT: else
-// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// AGGRESSIVE-NEXT: affine.yield
+// AGGRESSIVE: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// AGGRESSIVE: affine.yield
+// AGGRESSIVE: else
+// AGGRESSIVE: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// AGGRESSIVE: affine.yield
 // AGGL1-LABEL: func8
 // AGGL1: air.segment @segment_0
-// AGGL1: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
-// AGGL1: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
 // AGGL1: air.herd @herd_0
 // AGGL1: affine.if
-// AGGL1-NEXT: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// AGGL1-NEXT: affine.yield
-// AGGL1-NEXT: else
-// AGGL1-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// AGGL1-NEXT: affine.yield
-// AGGL1: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
-// AGGL1: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
+// AGGL1: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// AGGL1: affine.yield
+// AGGL1: else
+// AGGL1: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// AGGL1: affine.yield
+// AGGL1: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// AGGL1-NEXT: air.channel.put{{.*}}@channel_2{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
+// AGGL1-NEXT: scf.yield
+// AGGL1: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// AGGL1-NEXT: air.channel.put{{.*}}@channel_3{{.*}} : (memref<1x1x64x32xi32, 1 : i32>)
+// AGGL1-NEXT: scf.yield
 // AGGL1: air.herd @herd_0
 // AGGL1: affine.if
-// AGGL1-NEXT: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// AGGL1-NEXT: affine.yield
-// AGGL1-NEXT: else
-// AGGL1-NEXT: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
-// AGGL1-NEXT: affine.yield
+// AGGL1: air.channel.get{{.*}}@channel_2{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// AGGL1: affine.yield
+// AGGL1: else
+// AGGL1: air.channel.get{{.*}}@channel_3{{.*}} : (memref<1x1x4x8x4x8xi32, 2 : i32>)
+// AGGL1: affine.yield
 
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
 module {
@@ -930,6 +936,114 @@ module {
         }
         %async_token_4 = air.execute [%7] {
           memref.dealloc %results : memref<1x1x4x8x4x8xi32, 2 : i32>
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// No-for-loop (NFL) mode: avoid fusing into a new for loop if differing data access pattern.
+// Note: see L3-side channel puts in example below not being fused into a new for loop.
+
+// CHECK-LABEL: func9
+// CHECK: air.launch
+// CHECK: air.channel.put{{.*}}@channel_4{{.*}} : (memref<512x256xi8>)
+// CHECK: air.channel.put{{.*}}@channel_5{{.*}} : (memref<256x32xi8>)
+// CHECK: air.channel.put{{.*}}@channel_4{{.*}} : (memref<512x256xi8>)
+// CHECK: air.channel.put{{.*}}@channel_5{{.*}} : (memref<256x32xi8>)
+// CHECK: air.segment @segment_0
+// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// CHECK-NEXT: air.channel.get{{.*}}@channel_4{{.*}} : (memref<2x1x128x128xi8, 1 : i32>)
+// CHECK-NEXT: scf.yield
+// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// CHECK-NEXT: air.channel.get{{.*}}@channel_5{{.*}} : (memref<1x2x128x16xi8, 1 : i32>)
+// CHECK-NEXT: scf.yield
+// AGGRESSIVE: air.launch
+// AGGRESSIVE: air.channel.put{{.*}}@channel_5{{.*}} : (memref<512x256xi8>)
+// AGGRESSIVE: air.channel.put{{.*}}@channel_5{{.*}} : (memref<256x32xi8>)
+// AGGRESSIVE: air.channel.put{{.*}}@channel_5{{.*}} : (memref<512x256xi8>)
+// AGGRESSIVE: air.channel.put{{.*}}@channel_5{{.*}} : (memref<256x32xi8>)
+// AGGRESSIVE: air.segment @segment_0
+// AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_5{{.*}} : (memref<1x2x128x16xi8, 1 : i32>)
+// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_5{{.*}} : (memref<2x1x128x128xi8, 1 : i32>)
+// AGGRESSIVE-NEXT: scf.yield
+// AGGL1: air.launch
+// AGGL1: air.channel.put{{.*}}@channel_4{{.*}} : (memref<512x256xi8>)
+// AGGL1: air.channel.put{{.*}}@channel_5{{.*}} : (memref<256x32xi8>)
+// AGGL1: air.channel.put{{.*}}@channel_4{{.*}} : (memref<512x256xi8>)
+// AGGL1: air.channel.put{{.*}}@channel_5{{.*}} : (memref<256x32xi8>)
+// AGGL1: air.segment @segment_0
+// AGGL1: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// AGGL1-NEXT: air.channel.get{{.*}}@channel_4{{.*}} : (memref<2x1x128x128xi8, 1 : i32>)
+// AGGL1-NEXT: scf.yield
+// AGGL1: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
+// AGGL1-NEXT: air.channel.get{{.*}}@channel_5{{.*}} : (memref<1x2x128x16xi8, 1 : i32>)
+// AGGL1-NEXT: scf.yield
+
+#map = affine_map<()[s0] -> (s0 * 256)>
+#map1 = affine_map<()[s0] -> (s0 * 32)>
+module {
+  air.channel @channel_5 [1, 1]
+  air.channel @channel_4 [1, 1]
+  air.channel @channel_1 [1, 1]
+  air.channel @channel_0 [1, 1]
+  func.func @func9(%arg0: memref<512x256xi8>, %arg1: memref<256x32xi8>, %arg2: memref<512x32xi32>, %arg3: memref<512x32xi32>) {
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async (%arg4, %arg5) in (%arg6=%c2, %arg7=%c1) args(%arg8=%arg0, %arg9=%arg1) : memref<512x256xi8>, memref<256x32xi8> attributes {id = 1 : i32} {
+      %c4096 = arith.constant 4096 : index
+      %c16 = arith.constant 16 : index
+      %c32 = arith.constant 32 : index
+      %c1_0 = arith.constant 1 : index
+      %c256 = arith.constant 256 : index
+      %c128 = arith.constant 128 : index
+      %c32768 = arith.constant 32768 : index
+      %c0 = arith.constant 0 : index
+      %c2_1 = arith.constant 2 : index
+      %async_token, %results = air.execute -> (index) {
+        %6 = affine.apply #map()[%arg4]
+        air.execute_terminator %6 : index
+      }
+      %1 = air.channel.put async [%async_token]  @channel_0[] (%arg8[%c0, %c0, %results, %c0] [%c2_1, %c1_0, %c128, %c128] [%c32768, %c128, %c256, %c1_0]) {id = 1 : i32} : (memref<512x256xi8>)
+      %async_token_2, %results_3 = air.execute -> (index) {
+        %6 = affine.apply #map1()[%arg5]
+        air.execute_terminator %6 : index
+      }
+      %2 = air.channel.put async [%async_token_2]  @channel_1[] (%arg9[%c0, %c0, %c0, %results_3] [%c1_0, %c2_1, %c128, %c16] [%c4096, %c16, %c32, %c1_0]) {id = 2 : i32} : (memref<256x32xi8>)
+      %async_token_4, %results_5 = air.execute -> (index) {
+        %6 = affine.apply #map()[%arg4]
+        air.execute_terminator %6 : index
+      }
+      %3 = air.channel.put async [%async_token_4]  @channel_4[] (%arg8[%c0, %c0, %results_5, %c128] [%c2_1, %c1_0, %c128, %c128] [%c32768, %c128, %c256, %c1_0]) {id = 3 : i32} : (memref<512x256xi8>)
+      %async_token_6, %results_7 = air.execute -> (index) {
+        %6 = affine.apply #map1()[%arg5]
+        air.execute_terminator %6 : index
+      }
+      %4 = air.channel.put async [%async_token_6]  @channel_5[] (%arg9[%c0, %c0, %c128, %results_7] [%c1_0, %c2_1, %c128, %c16] [%c4096, %c16, %c32, %c1_0]) {id = 4 : i32} : (memref<256x32xi8>)
+      %5 = air.segment @segment_0 async  attributes {id = 2 : i32} {
+        %6 = air.wait_all async 
+        %7 = air.wait_all async 
+        %async_token_8, %results_9 = air.execute -> (memref<1x2x128x16xi8, 1 : i32>) {
+          %alloc = memref.alloc() : memref<1x2x128x16xi8, 1 : i32>
+          air.execute_terminator %alloc : memref<1x2x128x16xi8, 1 : i32>
+        }
+        %async_token_10, %results_11 = air.execute -> (memref<2x1x128x128xi8, 1 : i32>) {
+          %alloc = memref.alloc() : memref<2x1x128x128xi8, 1 : i32>
+          air.execute_terminator %alloc : memref<2x1x128x128xi8, 1 : i32>
+        }
+        %8 = air.channel.get async [%7, %async_token_10]  @channel_0[] (%results_11[] [] []) {id = 7 : i32} : (memref<2x1x128x128xi8, 1 : i32>)
+        %9 = air.channel.get async [%6, %async_token_8]  @channel_1[] (%results_9[] [] []) {id = 8 : i32} : (memref<1x2x128x16xi8, 1 : i32>)
+        %10 = air.channel.get async [%8]  @channel_4[] (%results_11[] [] []) {id = 13 : i32} : (memref<2x1x128x128xi8, 1 : i32>)
+        %11 = air.channel.get async [%9]  @channel_5[] (%results_9[] [] []) {id = 14 : i32} : (memref<1x2x128x16xi8, 1 : i32>)
+        %async_token_12 = air.execute [%10] {
+          memref.dealloc %results_11 : memref<2x1x128x128xi8, 1 : i32>
+        }
+        %async_token_13 = air.execute [%11] {
+          memref.dealloc %results_9 : memref<1x2x128x16xi8, 1 : i32>
         }
       }
     }

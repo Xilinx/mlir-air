@@ -11,9 +11,9 @@
 #set = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, -d1 + 1 >= 0, s0 >= 0, -s0 + 1 >= 0)>
 #set1 = affine_set<(d0, d1)[s0] : (d0 >= 0, -d0 + 1 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 1 >= 0)>
 module {
-// CHECK: air.channel @channel_2 [2, 2]
-// CHECK: air.channel @channel_1 [1, 2] {broadcast_shape = [2, 2]}
 // CHECK: air.channel @channel_0 [2, 1] {broadcast_shape = [2, 2]}
+// CHECK: air.channel @channel_1 [1, 2] {broadcast_shape = [2, 2]}
+// CHECK: air.channel @channel_2 [2, 2]
 // CHECK-LABEL: func.func @mmult
   func.func @mmult(%arg0: memref<512x512xi32>, %arg1: memref<512x512xi32>, %arg2: memref<512x512xi32>) {
     %c2 = arith.constant 2 : index
