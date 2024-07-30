@@ -6,7 +6,6 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.dialects.affine import apply as affine_apply
 
 range_ = for_
 
@@ -48,7 +47,7 @@ def build_module():
             @segment(name="seg")
             def segment_body():
 
-                @herd(name="addherd", sizes=[1, 3])
+                @herd(name="broadcastherd", sizes=[1, 3])
                 def herd_body(tx, ty, _sx, _sy):
 
                     # We must allocate a buffer of image size for the input/output
