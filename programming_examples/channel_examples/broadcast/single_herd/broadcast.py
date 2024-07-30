@@ -30,7 +30,7 @@ def build_module():
     )
 
     ChannelOp("ChanIn")
-    ChannelOp("ChanOut")
+    ChannelOp("ChanOut", size=[1, 3])
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut, memrefTyInOut, memrefTyInOut)
@@ -41,13 +41,15 @@ def build_module():
         def launch_body(a, b, c, d):
 
             ChannelPut("ChanIn", a)
-            ChannelGet("ChanOut", b)
+            ChannelGet("ChanOut", b, indices=[0, 0])
+            ChannelGet("ChanOut", c, indices=[0, 1])
+            ChannelGet("ChanOut", d, indices=[0, 2])
 
             @segment(name="seg")
             def segment_body():
 
-                @herd(name="addherd", sizes=[1, 1])
-                def herd_body(_tx, _ty, _sx, _sy):
+                @herd(name="addherd", sizes=[1, 3])
+                def herd_body(tx, ty, _sx, _sy):
 
                     # We must allocate a buffer of image size for the input/output
                     image_in = AllocOp(image_type_l1, [], [])
@@ -62,18 +64,20 @@ def build_module():
                             val_in = load(image_in, [i, j])
 
                             # Calculate the output value
-                            val_out = arith.addi(val_in, arith.ConstantOp(xrt_dtype, 1))
+                            # TODO: change from constant to value
+                            val_out = arith.addi(
+                                val_in, arith.ConstantOp(T.i32(), 3)
+                            )  # arith.index_cast(T.i32(), ty))
 
                             # Store the output value
                             store(val_out, image_out, [i, j])
                             yield_([])
                         yield_([])
 
-                    ChannelPut("ChanOut", image_out)
+                    ChannelPut("ChanOut", image_out, indices=[tx, ty])
 
                     DeallocOp(image_in)
                     DeallocOp(image_out)
-
 
 
 if __name__ == "__main__":

@@ -42,12 +42,21 @@ def test_main(build_module, verbose=False):
     # run the module
     with filelock.FileLock("/tmp/npu.lock"):
         broadcast = backend.compile_and_load(mlir_module)
-        (_, output_b, output_c, output_d) = broadcast(input_a, input_b, input_c, input_d)
+        (_, output_b, output_c, output_d) = broadcast(
+            input_a, input_b, input_c, input_d
+        )
 
     backend.unload()
 
     if verbose:
+        print("OUTPUT B")
         print_matrix(output_b)
+        print("")
+        print("OUTPUT C")
+        print_matrix(output_c)
+        print("")
+        print("OUTPUT D")
+        print_matrix(output_d)
 
     # check output, should have all values incremented
     errors = 0
@@ -82,4 +91,4 @@ if __name__ == "__main__":
         action="store_true",
     )
     args = parser.parse_args()
-    test_main(build_module, verbose=args.verbose)
+    test_main(build_module, verbose=True)
