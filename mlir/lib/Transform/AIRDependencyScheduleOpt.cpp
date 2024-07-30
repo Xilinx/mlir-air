@@ -4775,13 +4775,18 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
 
     // Folding memref.alloc / dealloc ops into fused loop.
     SmallVector<scf::ForOp> fusableForOps;
-    for (auto execOpPair : alloc_dealloc_execs) {
-      air::ExecuteOp alloc_exec = execOpPair.first;
-      for (auto token_user : alloc_exec.getAsyncToken().getUsers())
-        if (llvm::any_of(equalIterationForOps, [&](scf::ForOp fusableForOp) {
-              return fusableForOp == token_user;
-            }))
-          fusableForOps.push_back(dyn_cast<scf::ForOp>(token_user));
+    for (auto forOp : equalIterationForOps) {
+      for (auto ia : forOp.getInitArgs()) {
+        auto iaDefOp = ia.getDefiningOp();
+        if (!iaDefOp)
+          continue;
+        if (llvm::any_of(
+                alloc_dealloc_execs,
+                [&](std::pair<air::ExecuteOp, air::ExecuteOp> exec_pair) {
+                  return exec_pair.first == iaDefOp;
+                }))
+          fusableForOps.push_back(forOp);
+      }
     }
     if (fusableForOps.empty())
       return failure();
