@@ -729,6 +729,10 @@ void HerdOp::build(OpBuilder &builder, OperationState &result,
                    ValueRange launchOperands, bool isAsync,
                    ArrayRef<NamedAttribute> attrs) {
 
+  while (sizes.size() < 2) {
+    sizes.addOperands(BlockValue(1));
+  }
+
   result.addOperands(asyncDependencies);
   if (isAsync)
     result.addTypes(AsyncTokenType::get(builder.getContext()));
@@ -980,13 +984,21 @@ unsigned HerdOp::getNumDims() {
 }
 
 uint64_t HerdOp::getNumCols() {
-  auto cols = getSizeOperands()[0].getDefiningOp();
-  return cast<arith::ConstantIndexOp>(cols).value();
+  auto cols = 1;
+  if (getNumDims() >= 1) {
+    auto col_op = getSizeOperands()[0].getDefiningOp();
+    cols = cast<arith::ConstantIndexOp>(col_op).value();
+  }
+  return cols;
 }
 
 uint64_t HerdOp::getNumRows() {
-  auto rows = getSizeOperands()[1].getDefiningOp();
-  return cast<arith::ConstantIndexOp>(rows).value();
+  uint64_t rows = 1;
+  if (getNumDims() >= 2) {
+    auto row_op = getSizeOperands()[1].getDefiningOp();
+    rows = cast<arith::ConstantIndexOp>(row_op).value();
+  }
+  return rows;
 }
 
 //
