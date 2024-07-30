@@ -3391,9 +3391,9 @@ public:
           // Fuse air.channels temporally, if there isn't any for loop to fuse
           // into.
           createDummyForOpsAroundOps<air::ChannelPutOp>(
-              getChannelPutOpThroughSymbol(chanA));
+              getChannelPutsFusableByFor(chanA, chanB));
           createDummyForOpsAroundOps<air::ChannelGetOp>(
-              getChannelGetOpThroughSymbol(chanA));
+              getChannelGetsFusableByFor(chanA, chanB));
           mergeChannelOpsTemporally(chanA, chanB, "UB");
           // Fuse both channel ops into the loop
           chan_merge_map[chanB] = chanA;
@@ -3446,6 +3446,48 @@ public:
   SmallVector<unsigned> targetMemorySpaces;
 
 private:
+  // Get a vector of channel ops which can be fused using a new for loop.
+  template <typename T>
+  bool areConsistentMemoryAccessPattern(std::vector<T> a_vec,
+                                        std::vector<T> b_vec) {
+    Value memref = a_vec[0].getMemref();
+    SmallVector<Value> offsets = a_vec[0].getOffsets();
+    SmallVector<Value> sizes = a_vec[0].getSizes();
+    SmallVector<Value> strides = a_vec[0].getStrides();
+    for (unsigned i = 1; i < a_vec.size(); i++)
+      if ((!areTheSameMemref(memref, a_vec[i].getMemref())) ||
+          (!areTheSameSSAValueLists(offsets, a_vec[i].getOffsets())) ||
+          (!areTheSameSSAValueLists(sizes, a_vec[i].getSizes())) ||
+          (!areTheSameSSAValueLists(strides, a_vec[i].getStrides())))
+        return false; // Inconsistent memory use for all puts
+    for (unsigned i = 0; i < b_vec.size(); i++)
+      if ((!areTheSameMemref(memref, b_vec[i].getMemref())) ||
+          (!areTheSameSSAValueLists(offsets, b_vec[i].getOffsets())) ||
+          (!areTheSameSSAValueLists(sizes, b_vec[i].getSizes())) ||
+          (!areTheSameSSAValueLists(strides, b_vec[i].getStrides())))
+        return false; // Inconsistent memory use between a puts and b puts
+    return true;
+  }
+  std::vector<air::ChannelPutOp>
+  getChannelPutsFusableByFor(air::ChannelOp chanA, air::ChannelOp chanB) {
+    std::vector<air::ChannelPutOp> a_puts = getChannelPutOpThroughSymbol(chanA);
+    std::vector<air::ChannelPutOp> b_puts = getChannelPutOpThroughSymbol(chanB);
+
+    if (areConsistentMemoryAccessPattern<air::ChannelPutOp>(a_puts, b_puts))
+      return a_puts;
+    else
+      return std::vector<air::ChannelPutOp>{};
+  }
+  std::vector<air::ChannelGetOp>
+  getChannelGetsFusableByFor(air::ChannelOp chanA, air::ChannelOp chanB) {
+    std::vector<air::ChannelGetOp> a_gets = getChannelGetOpThroughSymbol(chanA);
+    std::vector<air::ChannelGetOp> b_gets = getChannelGetOpThroughSymbol(chanB);
+
+    if (areConsistentMemoryAccessPattern<air::ChannelGetOp>(a_gets, b_gets))
+      return a_gets;
+    else
+      return std::vector<air::ChannelGetOp>{};
+  }
   // Create single-iteration for loops around a vector of operations of type T.
   template <typename T>
   void createDummyForOpsAroundOps(std::vector<T> ops) {
@@ -3940,6 +3982,8 @@ private:
                                  air::ChannelInterface b,
                                  std::string mergeByLBOrUB) {
     scf::ForOp parentForOp = a->getParentOfType<scf::ForOp>();
+    if (!parentForOp)
+      return;
     while (parentForOp && parentForOp->getParentOfType<scf::ForOp>()) {
       parentForOp = parentForOp->getParentOfType<scf::ForOp>();
     }
