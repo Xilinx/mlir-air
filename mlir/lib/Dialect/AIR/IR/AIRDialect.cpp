@@ -965,7 +965,7 @@ Value HerdOp::getKernelOperand(unsigned i) {
 }
 
 ArrayRef<BlockArgument> HerdOp::getKernelArguments() {
-  return getBody().front().getArguments().drop_front(getAsyncDependencies().size() + getNumDims());
+  return getBody().front().getArguments().drop_front(getNumDims() * 2);
 }
 
 BlockArgument HerdOp::getKernelArgument(unsigned i) {
