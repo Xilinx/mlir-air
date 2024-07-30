@@ -3654,18 +3654,18 @@ private:
     for (int i = 0; i < (int)max_loop_nest_count; i++)
       if (i != outermostScfFor)
         controlLoopIndices.push_back(i);
-    // TODO: Assuming b_loop_nest is before a_loop_nest. Always true? TODO:
+    // TODO: Assuming a_loop_nest is before b_loop_nest. Always true? TODO:
     // formalize using async dep.
     unsigned index = 0;
-    if (a_loop_nest.size() > b_loop_nest.size()) {
+    if (a_loop_nest.size() < b_loop_nest.size()) {
       for (auto i : controlLoopIndices) {
-        if (!areEquivalentControlLoops(a_loop_nest[i], b_loop_nest[index++]))
+        if (!areEquivalentControlLoops(a_loop_nest[index++], b_loop_nest[i]))
           return notMergeable;
       }
       // Check if the skipped scf.for loop has LB >= 1. This is a sign of
       // peeling, indicating opportunity of merge by unpeeling into LB.
       auto outerMostScfFor =
-          dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]->getParentOp());
+          dyn_cast<scf::ForOp>(b_loop_nest[outermostScfFor]->getParentOp());
       assert(outerMostScfFor);
       if (auto constLB = getConstantIntValue(outerMostScfFor.getLowerBound()))
         if (*constLB < 1)
@@ -3673,12 +3673,12 @@ private:
       return mergeableToLB;
     } else {
       for (auto i : controlLoopIndices) {
-        if (!areEquivalentControlLoops(a_loop_nest[index++], b_loop_nest[i]))
+        if (!areEquivalentControlLoops(a_loop_nest[i], b_loop_nest[index++]))
           return notMergeable;
       }
       // Merge by unpeeling into UB.
       auto outerMostScfFor =
-          dyn_cast<scf::ForOp>(b_loop_nest[outermostScfFor]->getParentOp());
+          dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]->getParentOp());
       assert(outerMostScfFor);
       return mergeableToUB;
     }
