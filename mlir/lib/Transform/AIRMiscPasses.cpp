@@ -861,7 +861,8 @@ private:
                     SmallVector<int> memrefShape);
 };
 
-template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
+template <typename T>
+void push_back_if_unique(SmallVector<T> &vec, T entry) {
   if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
     vec.push_back(entry);
   }
@@ -1513,35 +1514,79 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         // Update the other channel op of the chanUserChannelDeclr.
         auto theOtherChanOp =
             air::getTheOtherChannelOpThroughSymbol(chanUserOp);
-        // Note: if the memref on the other side of the air channel has
-        // different rank, then we check if ranks can be matched after leading
-        // singleton dimensions are removed. If the ranks still do not match,
-        // then the behaviour is unstable.
-        int numLeadingSingletonDimDiff = 0;
-        for (auto memrefDim : memrefShape) {
-          if (memrefDim == 1)
-            numLeadingSingletonDimDiff++;
-          else
-            break;
+
+        // Account for cases where rank reduction results from at least
+        // of the dimensions being equal to one.
+        auto wraps = theOtherChanOp[0].getSizes();
+        auto adjustedDimIdx = dim;
+        if (wraps.size() != memrefShape.size()) {
+          // Make sure that the number of rank-reducing dimensions and/or
+          // the number of leading singleton dimensions must be equal to
+          // the difference between the number of wraps and the shape of
+          // the memref of the original channel.
+          int numSingletonDimDiff = 0;
+          for (auto wrap : wraps) {
+            if (*getConstantIntValue(wrap) == 1)
+              numSingletonDimDiff++;
+          }
+          for (auto shapeDim : memrefShape) {
+            if (shapeDim == 1)
+              numSingletonDimDiff--;
+          }
+          if (numSingletonDimDiff != (int)(wraps.size() - memrefShape.size())) {
+            chanUserOp->emitOpError(
+                "Failed to split data access pattern along dimension ")
+                << std::to_string(dim)
+                << " due to dimension misalignment with channel op at the "
+                   "other "
+                   "side.";
+            return;
+          }
+          // Now let's figure out number of rank-reducing dimensions (of size 1)
+          // before 'dim' to compute the appropriate index into
+          // wraps/offsets/strides of the channel op on the other side of the
+          // segment.
+          auto otherShape =
+              air::getTensorShape(theOtherChanOp[0].getMemref().getType());
+          auto orgDim = 0;
+          auto wrapIdx = 0;
+          // The dimension index is computed below
+          adjustedDimIdx = 0;
+          while (orgDim != dim) {
+            auto wrapVal = *getConstantIntValue(wraps[wrapIdx]);
+            if (wrapVal == 1) {
+              // If the memrefShape dimension size is not equal to
+              // the wrap size, this is probably rank-reduced dimension.
+              if (memrefShape[orgDim] != 1)
+                adjustedDimIdx++;
+              else
+                orgDim++;
+              wrapIdx++;
+              continue;
+            }
+            if (memrefShape[orgDim] == 1) {
+              orgDim++;
+              continue;
+            }
+            if (memrefShape[orgDim] == wrapVal ||
+                memrefShape[orgDim] == otherShape[wrapIdx]) {
+              orgDim++;
+              adjustedDimIdx++;
+              wrapIdx++;
+              continue;
+            }
+            chanUserOp->emitOpError(
+                "Failed to split data access pattern along dimension ")
+                << std::to_string(orgDim)
+                << " due to dimension misalignment with channel op at "
+                   "the other side.";
+            return;
+          }
         }
-        for (auto memrefDim :
-             air::getTensorShape(theOtherChanOp[0].getMemref().getType())) {
-          if (memrefDim == 1)
-            numLeadingSingletonDimDiff--;
-          else
-            break;
-        }
-        if (dim - numLeadingSingletonDimDiff < 0) {
-          chanUserOp->emitOpError(
-              "Failed to split data access pattern along dimension ")
-              << std::to_string(dim)
-              << " due to dimension misalignment with channel op at the other "
-                 "side.";
-          return;
-        }
+
         Value newWaitAll1 = tileChannelOpByFactor(
             theOtherChanOp[0], targetColTilingFactor, memrefShape[dim],
-            dim - numLeadingSingletonDimDiff, allocOp, new_chan, loc, ctx);
+            adjustedDimIdx, allocOp, new_chan, loc, ctx);
 
         // Update dependency.
         auto oldToken =
