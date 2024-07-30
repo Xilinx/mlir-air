@@ -1481,8 +1481,11 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         auto loc = chanUserOp->getLoc();
         auto ctx = chanUserOp->getContext();
         OpBuilder builder(chanUserOp);
-        builder.setInsertionPointToStart(
-            chanUserOp->getParentOfType<ModuleOp>().getBody());
+        Operation *o =
+            &chanUserOp->getParentOfType<ModuleOp>().getBody()->front();
+        while (dyn_cast_or_null<air::ChannelOp>(o))
+          o = o->getNextNode();
+        builder.setInsertionPoint(o);
         SmallVector<Type, 4> tys = {
             air::AsyncTokenType::get(chanUserOp->getContext())};
         auto cname =

@@ -34,6 +34,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallSet.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -3389,6 +3390,12 @@ public:
         } else if (std::get<1>(checkScfForMergeableRes) == "NFL") {
           // Fuse air.channels temporally, if there isn't any for loop to fuse
           // into.
+          createDummyForOpsAroundOps<air::ChannelPutOp>(
+              getChannelPutsFusableByFor(chanA, chanB));
+          createDummyForOpsAroundOps<air::ChannelGetOp>(
+              getChannelGetsFusableByFor(chanA, chanB));
+          mergeChannelOpsTemporally(chanA, chanB, "UB");
+          // Fuse both channel ops into the loop
           chan_merge_map[chanB] = chanA;
         }
       }
@@ -3439,6 +3446,86 @@ public:
   SmallVector<unsigned> targetMemorySpaces;
 
 private:
+  // Get a vector of channel ops which can be fused using a new for loop.
+  template <typename T>
+  bool areConsistentMemoryAccessPattern(std::vector<T> a_vec,
+                                        std::vector<T> b_vec) {
+    Value memref = a_vec[0].getMemref();
+    SmallVector<Value> offsets = a_vec[0].getOffsets();
+    SmallVector<Value> sizes = a_vec[0].getSizes();
+    SmallVector<Value> strides = a_vec[0].getStrides();
+    for (unsigned i = 1; i < a_vec.size(); i++)
+      if ((!areTheSameMemref(memref, a_vec[i].getMemref())) ||
+          (!areTheSameSSAValueLists(offsets, a_vec[i].getOffsets())) ||
+          (!areTheSameSSAValueLists(sizes, a_vec[i].getSizes())) ||
+          (!areTheSameSSAValueLists(strides, a_vec[i].getStrides())))
+        return false; // Inconsistent memory use for all puts
+    for (unsigned i = 0; i < b_vec.size(); i++)
+      if ((!areTheSameMemref(memref, b_vec[i].getMemref())) ||
+          (!areTheSameSSAValueLists(offsets, b_vec[i].getOffsets())) ||
+          (!areTheSameSSAValueLists(sizes, b_vec[i].getSizes())) ||
+          (!areTheSameSSAValueLists(strides, b_vec[i].getStrides())))
+        return false; // Inconsistent memory use between a puts and b puts
+    return true;
+  }
+  std::vector<air::ChannelPutOp>
+  getChannelPutsFusableByFor(air::ChannelOp chanA, air::ChannelOp chanB) {
+    std::vector<air::ChannelPutOp> a_puts = getChannelPutOpThroughSymbol(chanA);
+    std::vector<air::ChannelPutOp> b_puts = getChannelPutOpThroughSymbol(chanB);
+
+    if (areConsistentMemoryAccessPattern<air::ChannelPutOp>(a_puts, b_puts))
+      return a_puts;
+    else
+      return std::vector<air::ChannelPutOp>{};
+  }
+  std::vector<air::ChannelGetOp>
+  getChannelGetsFusableByFor(air::ChannelOp chanA, air::ChannelOp chanB) {
+    std::vector<air::ChannelGetOp> a_gets = getChannelGetOpThroughSymbol(chanA);
+    std::vector<air::ChannelGetOp> b_gets = getChannelGetOpThroughSymbol(chanB);
+
+    if (areConsistentMemoryAccessPattern<air::ChannelGetOp>(a_gets, b_gets))
+      return a_gets;
+    else
+      return std::vector<air::ChannelGetOp>{};
+  }
+  // Create single-iteration for loops around a vector of operations of type T.
+  template <typename T>
+  void createDummyForOpsAroundOps(std::vector<T> ops) {
+    for (auto t_o : ops) {
+      Operation *op = t_o.getOperation();
+      OpBuilder builder(op);
+      IRMapping remap;
+      auto loc = op->getLoc();
+      auto ctx = op->getContext();
+      auto zeroIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
+      auto oneIdx = builder.create<arith::ConstantIndexOp>(loc, 1);
+      auto newForOp = scf::ForOp();
+
+      if (air::getAsyncTokenFromOp(op)) {
+        newForOp = builder.create<scf::ForOp>(
+            loc, zeroIdx, oneIdx, oneIdx,
+            builder
+                .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                        air::getAsyncDependenciesFromOp(op))
+                .getAsyncToken());
+        for (auto dep : air::getAsyncDependenciesFromOp(op))
+          remap.map(dep, newForOp.getRegionIterArgs()[0]);
+      } else
+        newForOp = builder.create<scf::ForOp>(loc, zeroIdx, oneIdx, oneIdx);
+      builder.setInsertionPointToStart(newForOp.getBody());
+      auto newOp = dyn_cast<T>(builder.clone(*op, remap));
+
+      if (auto oldAsyncToken = air::getAsyncTokenFromOp(op)) {
+        builder.create<scf::YieldOp>(loc, newOp.getAsyncToken());
+        oldAsyncToken.replaceAllUsesWith(newForOp->getResult(0));
+      } else
+        builder.create<scf::YieldOp>(loc);
+    }
+    for (auto e : ops)
+      e->erase();
+    return;
+  }
+
   void sortChannelsByLoopNests(air::ChannelOp &chan_a, air::ChannelOp &chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
@@ -3567,18 +3654,18 @@ private:
     for (int i = 0; i < (int)max_loop_nest_count; i++)
       if (i != outermostScfFor)
         controlLoopIndices.push_back(i);
-    // TODO: Assuming b_loop_nest is before a_loop_nest. Always true? TODO:
+    // TODO: Assuming a_loop_nest is before b_loop_nest. Always true? TODO:
     // formalize using async dep.
     unsigned index = 0;
-    if (a_loop_nest.size() > b_loop_nest.size()) {
+    if (a_loop_nest.size() < b_loop_nest.size()) {
       for (auto i : controlLoopIndices) {
-        if (!areEquivalentControlLoops(a_loop_nest[i], b_loop_nest[index++]))
+        if (!areEquivalentControlLoops(a_loop_nest[index++], b_loop_nest[i]))
           return notMergeable;
       }
       // Check if the skipped scf.for loop has LB >= 1. This is a sign of
       // peeling, indicating opportunity of merge by unpeeling into LB.
       auto outerMostScfFor =
-          dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]->getParentOp());
+          dyn_cast<scf::ForOp>(b_loop_nest[outermostScfFor]->getParentOp());
       assert(outerMostScfFor);
       if (auto constLB = getConstantIntValue(outerMostScfFor.getLowerBound()))
         if (*constLB < 1)
@@ -3586,12 +3673,12 @@ private:
       return mergeableToLB;
     } else {
       for (auto i : controlLoopIndices) {
-        if (!areEquivalentControlLoops(a_loop_nest[index++], b_loop_nest[i]))
+        if (!areEquivalentControlLoops(a_loop_nest[i], b_loop_nest[index++]))
           return notMergeable;
       }
       // Merge by unpeeling into UB.
       auto outerMostScfFor =
-          dyn_cast<scf::ForOp>(b_loop_nest[outermostScfFor]->getParentOp());
+          dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]->getParentOp());
       assert(outerMostScfFor);
       return mergeableToUB;
     }
@@ -3706,10 +3793,7 @@ private:
           (!areTheSameSSAValueLists(bSizes, b_puts[i].getSizes())) ||
           (!areTheSameSSAValueLists(bStrides, b_puts[i].getStrides())))
         return notMergeable; // Inconsistent memory use for all puts
-    if ((!areTheSameMemref(aMemref, bMemref)) ||
-        (!areTheSameSSAValueLists(aOffsets, bOffsets)) ||
-        (!areTheSameSSAValueLists(aSizes, bSizes)) ||
-        (!areTheSameSSAValueLists(aStrides, bStrides)))
+    if ((!areTheSameMemref(aMemref, bMemref)))
       return notMergeable;
     aMemref = a_gets[0].getMemref();
     aOffsets = a_gets[0].getOffsets();
@@ -3886,17 +3970,20 @@ private:
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder builder(a);
+    builder.setInsertionPoint(a->getBlock()->getTerminator());
     auto new_b = cloneOpAndOperands(builder, remap, b);
     eraseParentLoopIfEmpty(*b);
-    auto async_a = dyn_cast<air::AsyncOpInterface>(a.getOperation());
-    if (async_a.getAsyncToken())
-      async_a.addAsyncDependency(
-          dyn_cast<air::AsyncOpInterface>(new_b).getAsyncToken());
+    auto async_b = dyn_cast<air::AsyncOpInterface>(new_b);
+    if (async_b.getAsyncToken())
+      async_b.addAsyncDependency(
+          dyn_cast<air::AsyncOpInterface>(a.getOperation()).getAsyncToken());
   }
   void mergeChannelOpsTemporally(air::ChannelInterface a,
                                  air::ChannelInterface b,
                                  std::string mergeByLBOrUB) {
     scf::ForOp parentForOp = a->getParentOfType<scf::ForOp>();
+    if (!parentForOp)
+      return;
     while (parentForOp && parentForOp->getParentOfType<scf::ForOp>()) {
       parentForOp = parentForOp->getParentOfType<scf::ForOp>();
     }
@@ -3926,12 +4013,10 @@ private:
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
     // Interleave puts and gets
-    for (unsigned i = 0; i < a_puts.size(); i++) {
+    for (unsigned i = 0; i < a_puts.size(); i++)
       mergeChannelOps(a_puts[i], b_puts[i]);
-    }
-    for (unsigned i = 0; i < a_gets.size(); i++) {
+    for (unsigned i = 0; i < a_gets.size(); i++)
       mergeChannelOps(a_gets[i], b_gets[i]);
-    }
   }
   void mergeChannelOpsTemporally(air::ChannelOp chan_a, air::ChannelOp chan_b,
                                  std::string mergeByLBOrUB) {
@@ -4680,16 +4765,23 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     auto hasNElements = [](Block *block, unsigned N) {
       unsigned counter = 0;
       for (auto &o : block->getOperations()) {
-        if (o.mightHaveTrait<OpTrait::IsTerminator>())
-          continue;
-        if (isa<air::WaitAllOp>(o))
-          continue;
-        counter++;
+        if (isa<air::ChannelInterface>(o))
+          counter++;
+        else if (isa<LoopLikeOpInterface>(o))
+          counter++;
+        else if (isa<mlir::linalg::LinalgOp>(o))
+          counter++;
       }
       return counter == N;
     };
     for (auto forOp : op.getOps<scf::ForOp>()) {
-      if (hasNElements(forOp.getBody(), 1) &&
+      // Conditions for candicate scf.for op for fusion: (1) has at most 1
+      // unique channels operating in the block, (2) is either perfectly nested,
+      // or contains only channel ops, (3) is static for loop.
+      if (getNumUniqueChannelsInBlock(forOp.getBody()) <= 1 &&
+          hasNElements(
+              forOp.getBody(),
+              std::max(getNumChannelPutsGetsInBlock(forOp.getBody()), 1)) &&
           air::getStaticScfForTripCountAsInt(forOp))
         perfectlyNestedForBands.push_back(forOp);
     }
@@ -4727,13 +4819,18 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
 
     // Folding memref.alloc / dealloc ops into fused loop.
     SmallVector<scf::ForOp> fusableForOps;
-    for (auto execOpPair : alloc_dealloc_execs) {
-      air::ExecuteOp alloc_exec = execOpPair.first;
-      for (auto token_user : alloc_exec.getAsyncToken().getUsers())
-        if (llvm::any_of(equalIterationForOps, [&](scf::ForOp fusableForOp) {
-              return fusableForOp == token_user;
-            }))
-          fusableForOps.push_back(dyn_cast<scf::ForOp>(token_user));
+    for (auto forOp : equalIterationForOps) {
+      for (auto ia : forOp.getInitArgs()) {
+        auto iaDefOp = ia.getDefiningOp();
+        if (!iaDefOp)
+          continue;
+        if (llvm::any_of(
+                alloc_dealloc_execs,
+                [&](std::pair<air::ExecuteOp, air::ExecuteOp> exec_pair) {
+                  return exec_pair.first == iaDefOp;
+                }))
+          fusableForOps.push_back(forOp);
+      }
     }
     if (fusableForOps.empty())
       return failure();
@@ -4869,6 +4966,25 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
   }
 
 private:
+  // Get the number of air.channel.puts/gets in block.
+  int getNumChannelPutsGetsInBlock(Block *block) const {
+    int count = 0;
+    for (auto &o : block->getOperations())
+      if (auto chanOp = dyn_cast<air::ChannelInterface>(o))
+        count++;
+    return count;
+  }
+
+  // Get the total number of unique air.channels that all air.channel.puts/gets
+  // in block operate on.
+  int getNumUniqueChannelsInBlock(Block *block) const {
+    llvm::SmallSet<std::string, 1> chanNamesInBlock;
+    for (auto &o : block->getOperations())
+      if (auto chanOp = dyn_cast<air::ChannelInterface>(o))
+        chanNamesInBlock.insert(chanOp.getChanName().str());
+    return chanNamesInBlock.size();
+  }
+
   // Scf.for loop tiling. This simple tiling implementation generates a new
   // inner scf.for loop which starts from the original loop's lower bound. It
   // may change the meaning of the original scf.for loop, therefore it requires
@@ -4977,7 +5093,9 @@ public:
   void runPreProcPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
+    patterns
+        .insert<CanonicalizeAffineApplyOnLoopInductionVar, UnrollScfParallel>(
+            ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
