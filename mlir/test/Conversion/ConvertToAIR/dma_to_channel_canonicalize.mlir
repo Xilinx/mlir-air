@@ -9,8 +9,8 @@
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {
-// CHECK: air.channel @channel_1 [2, 2]
 // CHECK: air.channel @channel_0 [2, 2]
+// CHECK: air.channel @channel_1 [2, 2]
   func.func @matmul_on_buffers(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>, %arg2: memref<64x64xf32>) {
     %c2 = arith.constant 2 : index
 // CHECK: %[[EVENT0:.*]] = scf.parallel (%[[VALUE0:.*]], %[[VALUE1:.*]]) ={{.*}}init

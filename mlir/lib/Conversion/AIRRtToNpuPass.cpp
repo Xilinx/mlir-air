@@ -466,21 +466,33 @@ void identifyTargetAffineForAndOps(
   // Identify the target for loops and their target child ops
   int index = 0;
   for (auto for_op : f.getBody().getOps<affine::AffineForOp>()) {
+    SmallVector<StringRef> metadataVec;
+    // Get for_op's immediate child op
     for_op.walk([&](airrt::DmaMemcpyNdOp memcpyOp) {
-      // Get for_op's immediate child op
-      target_ops_vec.push_back(SmallVector<Operation *>{});
+      StringRef metadata =
+          memcpyOp->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata")
+              .getValue();
       // Check if any operand's defining ops needs to be hoisted together.
       SmallVector<Operation *> oper_def_ops;
       xilinx::air::getDefiningOpsToOperands(memcpyOp.getOperation(),
                                             oper_def_ops);
-      for (auto o : oper_def_ops) {
-        if (o->getParentOp() == memcpyOp->getParentOp()) {
-          push_back_if_unique<Operation *>(target_ops_vec[index], o);
-        }
+
+      // Ensure memcpy ops operating on the same metadata (i.e. the same shim
+      // dma channel) are hoisted together, to maintain data dependency.
+      auto it = std::find(metadataVec.begin(), metadataVec.end(), metadata);
+      if (it != metadataVec.end())
+        index = it - metadataVec.begin();
+      else {
+        metadataVec.push_back(metadata);
+        target_ops_vec.push_back(SmallVector<Operation *>{});
       }
+
+      for (auto o : oper_def_ops)
+        if (o->getParentOp() == memcpyOp->getParentOp())
+          push_back_if_unique<Operation *>(target_ops_vec[index], o);
       push_back_if_unique<Operation *>(target_ops_vec[index],
                                        memcpyOp.getOperation());
-      index++;
+      index = target_ops_vec.size();
     });
   }
 }

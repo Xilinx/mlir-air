@@ -14,10 +14,10 @@
 #set2 = affine_set<()[s0, s1] : (s0 - 2 == 0, s1 >= 0, -s1 + 3 >= 0)>
 #set3 = affine_set<()[s0, s1] : (s0 - 3 == 0, s1 >= 0, -s1 + 3 >= 0)>
 module {
-// CHECK: air.channel @channel_3 [1, 1] {broadcast_shape = [1, 4]}
-// CHECK: air.channel @channel_2 [1, 1] {broadcast_shape = [1, 4]}
-// CHECK: air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4]}
 // CHECK: air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
+// CHECK: air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4]}
+// CHECK: air.channel @channel_2 [1, 1] {broadcast_shape = [1, 4]}
+// CHECK: air.channel @channel_3 [1, 1] {broadcast_shape = [1, 4]}
   func.func @matmul(%arg0: memref<512x512xbf16>) {
     %c8 = arith.constant 8 : index
     %0 = air.launch async (%arg1, %arg2) in (%arg3=%c8, %arg4=%c8) args(%arg5=%arg0) : memref<512x512xbf16> attributes {id = 3 : i32} {
