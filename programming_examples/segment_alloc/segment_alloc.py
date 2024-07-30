@@ -48,8 +48,8 @@ def build_module():
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="copyherd", sizes=[1, 1], operands=[arg2, arg3, tile_in_l2])
-                def herd_body(tx, ty, sx, sy, a, b, my_l2_tile):
+                @herd(name="copyherd", operands=[arg2, arg3, tile_in_l2])
+                def herd_body(a, b, my_l2_tile):
 
                     # We want to store our data in L1 memory
                     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)

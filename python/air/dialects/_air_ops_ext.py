@@ -107,7 +107,7 @@ class Herd(HerdOp):
     def __init__(
         self,
         name=None,
-        sizes=[1, 1],
+        sizes=[],
         async_token=None,
         async_dependencies=[],
         operands=[],
