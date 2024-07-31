@@ -510,3 +510,17 @@ Interfaces: `air_AsyncOpInterface`
 
 
 
+## Enums
+
+### MemorySpace
+
+AIR Memory Space IDs
+
+#### Cases:
+
+| Symbol | Value | String |
+| :----: | :---: | ------ |
+| L1 | `2` | L1 |
+| L2 | `1` | L2 |
+| L3 | `0` | L3 |
+
