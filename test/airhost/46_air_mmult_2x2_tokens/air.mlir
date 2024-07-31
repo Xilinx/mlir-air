@@ -19,17 +19,9 @@ module {
       air.execute_terminator %alloc : memref<64x64xi32>
     }
     %0 = air.launch async [%async_token] (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) args(%arg7=%results, %arg8=%arg0, %arg9=%arg1) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {id = 1 : i32} {
-      %1 = air.segment @segment_0 async  args(%arg10=%arg3, %arg11=%arg4, %arg12=%arg7, %arg13=%arg8, %arg14=%arg9) : index, index, memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {id = 2 : i32} {
+      %1 = air.segment @segment_0 async  args(%arg12=%arg7, %arg13=%arg8, %arg14=%arg9) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {id = 2 : i32} {
         %c2 = arith.constant 2 : index
-        %async_token_1, %results_2 = air.execute -> (index) {
-          %3 = affine.apply #map()[%arg10]
-          air.execute_terminator %3 : index
-        }
-        %async_token_3, %results_4 = air.execute -> (index) {
-          %3 = affine.apply #map()[%arg11]
-          air.execute_terminator %3 : index
-        }
-        %2 = air.herd @herd_0 async  tile (%arg15, %arg16) in (%arg17=%c2, %arg18=%c2) args(%arg19=%results_2, %arg20=%results_4, %arg21=%arg12, %arg22=%arg13, %arg23=%arg14) : index, index, memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {id = 3 : i32} {
+        %2 = air.herd @herd_0 async  tile (%arg15, %arg16) in (%arg17=%c2, %arg18=%c2) args(%arg21=%arg12, %arg22=%arg13, %arg23=%arg14) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {id = 3 : i32} {
           %c1_5 = arith.constant 1 : index
           %c0_i32 = arith.constant 0 : i32
           %c0 = arith.constant 0 : index
@@ -44,11 +36,11 @@ module {
             air.execute_terminator %6 : index
           }
           %async_token_10, %results_11 = air.execute [%async_token_6] -> (index) {
-            %6 = arith.addi %arg19, %results_7 : index
+            %6 = arith.addi %c64, %results_7 : index
             air.execute_terminator %6 : index
           }
           %async_token_12, %results_13 = air.execute [%async_token_8] -> (index) {
-            %6 = arith.addi %arg20, %results_9 : index
+            %6 = arith.addi %c64, %results_9 : index
             air.execute_terminator %6 : index
           }
           %async_token_14, %results_15 = air.execute -> (memref<32x32xi32, 2>) {
