@@ -147,9 +147,13 @@ int main(int argc, const char *argv[]) {
   // Initialize buffers bo_inA and bo_out
   DATATYPE *bufInA = bo_inA.map<DATATYPE *>();
   DATATYPE *bufOut = bo_out.map<DATATYPE *>();
-  for (int i = 0; i < IMAGE_SIZE; i++) {
-    bufInA[i] = i + 0x1000;
-    bufOut[i] = 0x00defaced;
+
+  for (int i = 0; i < IMAGE_HEIGHT; i++) {
+    for (int j = 0; j < IMAGE_WIDTH; j++) {
+      int index = i * IMAGE_WIDTH + j;
+      bufInA[index] = index + 0x1000;
+      bufOut[index] = 0x00defaced;
+    }
   }
 
   // sync host to device memories
@@ -169,24 +173,27 @@ int main(int argc, const char *argv[]) {
 
   // check output, should have the top left filled in
   int errors = 0;
-  for (int i = 0; i < IMAGE_SIZE; i++) {
-    uint32_t rb = bufOut[i];
+  for (int i = 0; i < IMAGE_HEIGHT; i++) {
+    for (int j = 0; j < IMAGE_WIDTH; j++) {
+      int index = i * IMAGE_WIDTH + j;
+      uint32_t rb = bufOut[index];
 
-    uint32_t row = i / IMAGE_WIDTH;
-    uint32_t col = i % IMAGE_WIDTH;
+      if ((i < TILE_HEIGHT) && (j < TILE_WIDTH)) {
+        uint32_t expected = bufInA[index];
 
-    if ((row < TILE_HEIGHT) && (col < TILE_WIDTH)) {
-      // value should have been updated
-      if (!(rb == 0x1000 + i)) {
-        printf("IM %d [%d, %d] should be %08X, is %08X\n", i, col, row, i, rb);
-        errors++;
-      }
-    } else {
-      // value should stay unchanged
-      if (rb != 0x00defaced) {
-        printf("IM %d [%d, %d] should be 0xdefaced, is %08X\n", i, col, row,
-               rb);
-        errors++;
+        // value should have been updated
+        if (rb != expected) {
+          printf("IM %d [%d, %d] should be 0x%08x, is 0x%08x\n", index, i, j,
+                 expected, rb);
+          errors++;
+        }
+      } else {
+        // value should stay unchanged
+        if (rb != 0x00defaced) {
+          printf("IM %d [%d, %d] should be 0x0defaced, is %08x\n", index, i, j,
+                 rb);
+          errors++;
+        }
       }
     }
   }

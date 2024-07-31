@@ -6,9 +6,12 @@ targetname := $(shell basename ${srcdir})
 
 all: run
 
+print:
+	${powershell} python3 ${srcdir}/passthrough_channel.py -p
+
 run:
-	mkdir -p build
-	cd build && ${powershell} python3 ${srcdir}/run.py
+	mkdir -p ${srcdir}/build
+	cd ${srcdir}/build && ${powershell} python3 ${srcdir}/passthrough_channel.py
 
 clean:
 	rm -rf ${srcdir}/build ${srcdir}/__pycache__

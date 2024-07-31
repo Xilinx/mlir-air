@@ -4,5 +4,6 @@
  // REQUIRES: ryzen_ai
  //
  // RUN: make -f %S/Makefile clean
- // RUN: make -f %S/Makefile run | FileCheck %s
+ // RUN: make -f %S/Makefile run_int | FileCheck %s
+ // RUN: make -f %S/Makefile run_float | FileCheck %s
  // CHECK: PASS!

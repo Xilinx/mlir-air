@@ -52,7 +52,7 @@ affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label,
     if (!stringAttr)
       return WalkResult::advance();
     auto forOpCodegenName = stringAttr.getValue();
-    if (label.empty() || forOpCodegenName.equals(label)) {
+    if (label.empty() || forOpCodegenName == label) {
       res = forOp;
       return WalkResult::interrupt();
     }

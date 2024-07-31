@@ -1,57 +1,47 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import sys
-from pathlib import Path  # if you haven't already done so
-
-# Python paths are a bit complex. Taking solution from : https://stackoverflow.com/questions/16981921/relative-imports-in-python-3
-file = Path(__file__).resolve()
-parent, root = file.parent, file.parents[1]
-sys.path.append(str(root))
-
-# Additionally remove the current file's directory from sys.path
-try:
-    sys.path.remove(str(parent))
-except ValueError:  # Already removed
-    pass
+import argparse
+import numpy as np
 
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp
+from air.backend.xrt_runner import XRTRunner, type_mapper
 
-
-from common import *
+dtype_map = {
+    "uint32": np.uint32,
+    "float32": np.float32,
+}
+DEFAULT_DTYPE = "uint32"
 
 
 @module_builder
-def build_module(m, k):
-    memrefTyIn = MemRefType.get(shape=[m, k], element_type=T.i32())
-    memrefTyOut = MemRefType.get(shape=[k, m], element_type=T.i32())
+def build_module(m, k, dtype):
+    xrt_dtype = type_mapper(dtype)
+
+    memrefTyIn = MemRefType.get(shape=[m, k], element_type=xrt_dtype)
+    memrefTyOut = MemRefType.get(shape=[k, m], element_type=xrt_dtype)
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyIn, memrefTyOut)
     def transpose(arg0, arg1):
 
-        # The arguments are the input and output
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
 
-            # The arguments are still the input and the output
             @segment(name="seg", operands=[a, b])
             def segment_body(arg2, arg3):
 
-                # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
-                # We just need one compute core, so we ask for a 1x1 herd
                 @herd(name="herd", sizes=[1, 1], operands=[arg2, arg3])
                 def herd_body(_tx, _ty, _sx, _sy, a, b):
-
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
 
                     # This is the type definition of the tensor
                     tensor_type = MemRefType.get(
                         shape=[m * k],  # Read as one large array
-                        element_type=T.i32(),
+                        element_type=xrt_dtype,
                         memory_space=mem_space,
                     )
 
@@ -73,7 +63,82 @@ def build_module(m, k):
                     # Deallocate our L1 buffer
                     DeallocOp(tensor_in)
 
+                    # We must allocate a buffer of tile size for the input/output
+                    tensor_in = AllocOp(tensor_type, [], [])
+
+                    DeallocOp(tensor_in)
+
 
 if __name__ == "__main__":
-    module = build_module()
-    print(module)
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Builds, runs, and tests the matrix_scalar_add/single_core_channel example",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-m",
+        type=int,
+        default=64,
+        help="The matrix to transpose will be of size M x K, this parameter sets the M value",
+    )
+    parser.add_argument(
+        "-k",
+        type=int,
+        default=32,
+        help="The matrix to transpose will be of size M x K, this parameter sets the k value",
+    )
+    parser.add_argument(
+        "-t",
+        "--dtype",
+        default=DEFAULT_DTYPE,
+        choices=dtype_map.keys(),
+        help="The data type of the matrix",
+    )
+    parser.add_argument(
+        "-p",
+        "--print-module-only",
+        action="store_true",
+    )
+    args = parser.parse_args()
+
+    np_dtype = dtype_map[args.dtype]
+    mlir_module = build_module(args.m, args.k, np_dtype)
+    if args.print_module_only:
+        print(mlir_module)
+        exit(0)
+
+    # Generate a random matrix
+    matrix_shape = (args.m, args.k)
+    if np.issubdtype(np_dtype, np.floating):
+        for np_type in dtype_map.values():
+            if not np.issubdtype(np_type, np.floating):
+                if np_type.nbytes == np_dtype.nbytes:
+                    int_type_substitution = np_type
+        input_matrix = np.random.randint(
+            low=np.iinfo(int_type_substitution).min,
+            high=np.iinfo(int_type_substitution).max,
+            size=matrix_shape,
+            dtype=int_type_substitution,
+        ).astype(np_dtype)
+    else:
+        input_matrix = np.random.randint(
+            low=np.iinfo(np_dtype).min,
+            high=np.iinfo(np_dtype).max,
+            size=matrix_shape,
+            dtype=np_dtype,
+        )
+    expected_output_matrix = np.transpose(input_matrix)
+
+    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
+    exit(
+        runner.run_test(
+            mlir_module,
+            inputs=[input_matrix],
+            expected_outputs=[expected_output_matrix],
+        )
+    )

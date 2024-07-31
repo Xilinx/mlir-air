@@ -11,7 +11,7 @@ This set of passthrough designs demonstrates a simple MLIR-AIR implementation fo
 
 ## Source Files Overview
 
-1. [`passthrough_dma/passthrough_dma.py`](./passthrough_dma/passthrough_dma.py), [`passthrough_channel/passthrough_channel.py`](passthrough_channel/passthrough_channel.py), [`passthrough_kernel/passthrough_kernel.py`](passthrough_kernel/passthrough_kernel.py): Python scripts that defines the module design for each example using MLIR-AIR Python bindings. The file generates MLIR that is then compiled using `aircc.py` to produce design binaries (i.e. `XCLBIN` and `inst.txt` for the NPU in Ryzen™ AI). You can run `python passthrough_(dma|channel|kernel).py` to generate the MLIR.
+1. [`passthrough_dma/passthrough_dma.py`](./passthrough_dma/passthrough_dma.py), [`passthrough_channel/passthrough_channel.py`](passthrough_channel/passthrough_channel.py), [`passthrough_kernel/passthrough_kernel.py`](passthrough_kernel/passthrough_kernel.py): Python scripts that defines the module design for each example using MLIR-AIR Python bindings. The file generates MLIR that is then compiled using `aircc.py` to produce design binaries (i.e. `XCLBIN` and `inst.txt` for the NPU in Ryzen™ AI). You can run `python passthrough_(dma|channel|kernel).py -p` or `make print` to generate the AIR MLIR.
 
 1. `passThrough.cc`: A C++ implementation of vectorized memcpy operations for AIE cores. It is found in the [mlir-aie repo](https://github.com/Xilinx/mlir-aie) under [`mlir-aie/aie_kernels/generic/passThrough.cc`](https://github.com/Xilinx/mlir-aie/blob/main/aie_kernels/generic/passThrough.cc)
 
@@ -23,10 +23,21 @@ See the [design overview](https://github.com/Xilinx/mlir-aie/tree/main/programmi
 
 ## Usage
 
+### Generate AIR MLIR from Python
+
+```bash
+make print
+```
+
 ### Running
 
 To compile and run the design:
 
 ```bash
 make
+```
+
+To run with verbose settings, either modify the makefile, or run directly:
+```bash
+python passthrough_(dma|channel|kernel).py -v
 ```
