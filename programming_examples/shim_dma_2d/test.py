@@ -15,7 +15,7 @@ from shim_dma_2d import *
 
 KERNEL_NAME = "MLIR_AIE"
 
-INOUT_DATATYPE = np.uint32
+INOUT_DATATYPE = np.int32
 INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
 INOUT_SIZE = IMAGE_SIZE[0] * IMAGE_SIZE[1]
 INOUT_SIZE_BYTES = INOUT_SIZE * INOUT_ELEM_SIZE
@@ -74,11 +74,14 @@ def main():
     bo_instr.write(instr_v, 0)
     bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
-    input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
-    output_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
-    for i in range(INOUT_SIZE):
-        input_a[i] = i + 0x1000
-        output_a[i] = 0x00DEFACED
+    input_a = np.arange(np.prod(IMAGE_SIZE), dtype=INOUT_DATATYPE).reshape(IMAGE_SIZE)
+    output_a = np.zeros(shape=IMAGE_SIZE, dtype=INOUT_DATATYPE)
+    expected_output = np.zeros(shape=IMAGE_SIZE, dtype=INOUT_DATATYPE)
+
+    for h in range(TILE_HEIGHT):
+        for w in range(TILE_WIDTH):
+            expected_output[h, w] = input_a[h, w]
+
     bo_in.write(input_a, 0)
     bo_in.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
@@ -92,35 +95,12 @@ def main():
     output_buffer = bo_out.read(INOUT_SIZE_BYTES, 0).view(INOUT_DATATYPE)
 
     # check output, should have the top left filled in
-    errors = 0
-    for i in range(INOUT_SIZE):
-        rb = output_buffer[i]
-
-        row = i / IMAGE_WIDTH
-        col = i % IMAGE_WIDTH
-
-        if row < TILE_HEIGHT and col < TILE_WIDTH:
-            # value should have been updated
-            if not (rb == 0x1000 + i):
-                print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
-                errors += 1
-        else:
-            # value should stay unchanged
-            if rb != 0x00DEFACED:
-                print(
-                    f"IM {i} [{col}, {row}] should be 0xdefaced, is 0x{rb:x}\n",
-                    i,
-                    col,
-                    row,
-                    rb,
-                )
-                errors += 1
-
-    if errors == 0:
+    actual_output = np.reshape(output_buffer, expected_output.shape)
+    if np.array_equal(actual_output, expected_output):
         print("PASS!")
         exit(0)
     else:
-        print("failed. errors=", errors)
+        print("failed")
         exit(-1)
 
 

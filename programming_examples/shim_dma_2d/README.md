@@ -1,10 +1,15 @@
 # shim_dma_2d
 
-This example demonstrates how data may be moved using shim DMA operations. In this example, a 2-dimensional block of data (referred to in test code as an *image*) is set to have some specific values. The upper corner of the image (referred to in test code as the *tile*) is transferred to a compute core using DMA. The compute core then reads and outputs all the data in the tile. The tile is read back into an output image. When run, the output image is checked to verify that the tile region shows the values from the input image (showing the data transfer was successful) while the remainder of the output image is checked to ensure it retains the original output image values (showing the data is written to the correct tile region in the output image).
+This example demonstrates how data may be moved using shim DMA operations. In this example, a 2-dimensional block of data (referred to in test code as an *image*) is set to have some specific values. The upper corner of the image (referred to in test code as the *tile*) is transferred to a compute core using DMA. The compute core then copies all the data in the tile and sends the data out into an output *image*. When run, the output image is checked to verify that the tile region shows the values from the input image (showing the data transfer was successful) while the remainder of the output image is checked to ensure it retains the original output image values (showing the data is written to the correct tile region in the output image).
 
 The logic in this example is defined in [shim_dma_2d.py](shim_dma_2d.py), and uses Python AIR bindings to generate AIR MLIR.
 
 ## Running and Testing
+
+To generate AIR MLIR from the Python bindings, run:
+```bash
+python shim_dma_2d.py
+```
 
 For illustrative purposes, we provide three different ways to run and test this example. The three approaches are functionally equivalent but the implementation of each approach differs. The general workflow of each is:
 * Build
@@ -19,10 +24,12 @@ For illustrative purposes, we provide three different ways to run and test this 
 
 ### Method 1: Run and test with AIR utility functions
 
-This is the cleanest and simplest method of specifying a workflow to run AIR MLIR on an NPU, and uses code in the [run.py](run.py) file. The utility functions greatly simplify setting up input/output data and allow ```aircc.py``` to use a default set of pipelines and passes. For this example, ```aircc.py``` is configured with ```--experimental```, which adds some additional experimental passes to the pipeline with the goal of increased efficiency.
+This is the cleanest and simplest method of specifying a workflow to run AIR MLIR on an NPU, and uses code in the [run.py](run.py) file. The utility class ```XRTRunner``` simplifies setting up input/output data and allows the user to specify the input and an expected output using ```numpy``` ```ndarray```s. Behind the scenes, ```XRTRunner``` calls ```aircc.py``` with the default set of pipelines and passes, but for this and most examples, we use ```experimental_passes``` to signify we also want to run additional passes which should increase efficiency.
 ```bash
 make pyworkflow
 ```
+
+Note that if you'd like to run this example with verbose output - to see all the commands that are run, for example - you can change the ```VERBOSE``` variable in ```run.py``` to ```True```.
 
 ### Method 2: Generate AIR MLIR with python, compile on the command line, and run with python
 

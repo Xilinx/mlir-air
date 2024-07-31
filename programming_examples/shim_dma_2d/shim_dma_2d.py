@@ -11,11 +11,14 @@ range_ = for_
 
 IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
-IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
+IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
 TILE_WIDTH = 16
 TILE_HEIGHT = 8
-TILE_SIZE = [TILE_WIDTH, TILE_HEIGHT]
+TILE_SIZE = [TILE_HEIGHT, TILE_WIDTH]
+
+assert IMAGE_HEIGHT % TILE_HEIGHT == 0
+assert IMAGE_WIDTH % TILE_WIDTH == 0
 
 
 @module_builder
@@ -36,9 +39,8 @@ def build_module():
 
                 # The herd sizes correspond to the dimensions of the contiguous block of cores we are hoping to get.
                 # We just need one compute core, so we ask for a 1x1 herd
-                @herd(name="copyherd", sizes=[1, 1], operands=[arg2, arg3])
-                def herd_body(tx, ty, sx, sy, a, b):
-
+                @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
+                def herd_body(_tx, _ty, _sx, _sy, a, b):
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
 
@@ -58,13 +60,13 @@ def build_module():
                         tile_in,
                         a,
                         src_offsets=[0, 0],
-                        src_sizes=[TILE_HEIGHT, TILE_WIDTH],
+                        src_sizes=TILE_SIZE,
                         src_strides=[IMAGE_WIDTH, 1],
                     )
 
                     # Access every value in the tile
-                    for j in range_(TILE_HEIGHT):
-                        for i in range_(TILE_WIDTH):
+                    for i in range_(TILE_HEIGHT):
+                        for j in range_(TILE_WIDTH):
                             # Load the input value from tile_in
                             val = load(tile_in, [i, j])
 
@@ -78,7 +80,7 @@ def build_module():
                         b,
                         tile_out,
                         dst_offsets=[0, 0],
-                        dst_sizes=[TILE_HEIGHT, TILE_WIDTH],
+                        dst_sizes=TILE_SIZE,
                         dst_strides=[IMAGE_WIDTH, 1],
                     )
 

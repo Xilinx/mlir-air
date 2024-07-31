@@ -1,5 +1,7 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+import argparse
+import numpy as np
 
 from air.ir import *
 from air.dialects.air import *
@@ -8,17 +10,21 @@ from air.dialects.linalg.opdsl.lang import BinaryFn, TypeFn
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
+from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
 IMAGE_WIDTH = 32
 IMAGE_HEIGHT = 16
-IMAGE_SIZE = [IMAGE_WIDTH, IMAGE_HEIGHT]
+IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
+
+INOUT_DATATYPE = np.int32
 
 
 @module_builder
 def build_module():
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
 
     # We want to store our data in L1 memory
     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -26,7 +32,7 @@ def build_module():
     # This is the type definition of the tile
     image_type_l1 = MemRefType.get(
         shape=IMAGE_SIZE,
-        element_type=T.i32(),
+        element_type=xrt_dtype,
         memory_space=mem_space_l1,
     )
 
@@ -87,13 +93,13 @@ def build_module():
                     ChannelGet("Herd2Herd", image_in)
 
                     # Access every value in the image
-                    for j in range_(IMAGE_HEIGHT):
-                        for i in range_(IMAGE_WIDTH):
+                    for i in range_(IMAGE_HEIGHT):
+                        for j in range_(IMAGE_WIDTH):
                             # Load the input value
                             val_in = load(image_in, [i, j])
 
                             # Calculate the output value
-                            val_out = arith.addi(val_in, arith.ConstantOp(T.i32(), 1))
+                            val_out = arith.addi(val_in, arith.ConstantOp(xrt_dtype, 1))
 
                             # Store the output value
                             store(val_out, image_out, [i, j])
@@ -107,5 +113,29 @@ def build_module():
 
 
 if __name__ == "__main__":
-    module = build_module()
-    print(module)
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Builds, runs, and tests the herd_to_herd channel example",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-p",
+        "--print-module-only",
+        action="store_true",
+    )
+    args = parser.parse_args()
+
+    mlir_module = build_module()
+    if args.print_module_only:
+        print(mlir_module)
+        exit(0)
+
+    input_a = np.full(IMAGE_SIZE, 0x2, dtype=INOUT_DATATYPE)
+    output_b = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
+
+    runner = XRTRunner(verbose=args.verbose, experimental_passes=False)
+    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

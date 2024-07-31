@@ -1,33 +1,26 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import sys
-from pathlib import Path  # if you haven't already done so
-
-# Python paths are a bit complex. Taking solution from : https://stackoverflow.com/questions/16981921/relative-imports-in-python-3
-file = Path(__file__).resolve()
-parent, root = file.parent, file.parents[1]
-sys.path.append(str(root))
-
-# Additionally remove the current file's directory from sys.path
-try:
-    sys.path.remove(str(parent))
-except ValueError:  # Already removed
-    pass
+import argparse
 
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
+from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
-from common import *
-
 
 @module_builder
-def build_module():
-    memrefTyInOut = MemRefType.get(IMAGE_SIZE, T.i32())
+def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
+    assert image_height % tile_height == 0
+    assert image_width % tile_width == 0
+    image_size = [image_height, image_width]
+    tile_size = [tile_height, tile_width]
+    xrt_dtype = type_mapper(np_dtype)
+
+    memrefTyInOut = MemRefType.get(image_size, xrt_dtype)
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
@@ -45,28 +38,27 @@ def build_module():
                 # We just need one compute core, so we ask for a 1x1 herd
                 @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
                 def herd_body(_tx, _ty, _sx, _sy, a, b):
-
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
 
                     # This is the type definition of the tile
                     tile_type = MemRefType.get(
-                        shape=TILE_SIZE,
+                        shape=tile_size,
                         element_type=T.i32(),
                         memory_space=mem_space,
                     )
 
                     # Loop over columns and rows of tiles
-                    for tile_index0 in range_(IMAGE_HEIGHT // TILE_HEIGHT):
-                        for tile_index1 in range_(IMAGE_WIDTH // TILE_WIDTH):
+                    for tile_index0 in range_(image_height // tile_height):
+                        for tile_index1 in range_(image_width // tile_width):
 
                             # We must allocate a buffer of tile size for the input/output
                             tile_in = AllocOp(tile_type, [], [])
                             tile_out = AllocOp(tile_type, [], [])
 
                             # Convert the type of the tile size variable to the Index type
-                            tile_size0 = arith.ConstantOp.create_index(TILE_HEIGHT)
-                            tile_size1 = arith.ConstantOp.create_index(TILE_WIDTH)
+                            tile_size0 = arith.ConstantOp.create_index(tile_height)
+                            tile_size1 = arith.ConstantOp.create_index(tile_width)
 
                             # Calculate the offset into the channel data, which is based on our loop vars
                             offset0 = arith.MulIOp(tile_size0, tile_index0)
@@ -74,7 +66,7 @@ def build_module():
                             tile_num = arith.MulIOp(
                                 tile_index0,
                                 arith.ConstantOp.create_index(
-                                    IMAGE_WIDTH // TILE_WIDTH
+                                    image_width // tile_width
                                 ),
                             )
                             tile_num = arith.AddIOp(tile_num, tile_index1)
@@ -84,23 +76,23 @@ def build_module():
                                 tile_in,
                                 a,
                                 src_offsets=[offset0, offset1],
-                                src_sizes=[TILE_HEIGHT, TILE_WIDTH],
-                                src_strides=[IMAGE_WIDTH, 1],
+                                src_sizes=tile_size,
+                                src_strides=[image_width, 1],
                             )
 
                             # Access every value in the tile
-                            for j in range_(TILE_HEIGHT):
-                                for i in range_(TILE_WIDTH):
+                            for i in range_(tile_height):
+                                for j in range_(tile_width):
                                     # Load the input value from tile_in
-                                    val_in = load(tile_in, [j, i])
+                                    val_in = load(tile_in, [i, j])
 
                                     # Compute the output value
                                     val_out = arith.addi(
-                                        val_in, arith.index_cast(T.i32(), tile_num)
+                                        val_in, arith.index_cast(xrt_dtype, tile_num)
                                     )
 
                                     # Store the output value in tile_out
-                                    store(val_out, tile_out, [j, i])
+                                    store(val_out, tile_out, [i, j])
                                     yield_([])
                                 yield_([])
 
@@ -109,8 +101,8 @@ def build_module():
                                 b,
                                 tile_out,
                                 dst_offsets=[offset0, offset1],
-                                dst_sizes=[TILE_HEIGHT, TILE_WIDTH],
-                                dst_strides=[IMAGE_WIDTH, 1],
+                                dst_sizes=tile_size,
+                                dst_strides=[image_width, 1],
                             )
 
                             # Deallocate our L1 buffers
@@ -122,5 +114,69 @@ def build_module():
 
 
 if __name__ == "__main__":
-    module = build_module()
-    print(module)
+    # Default values.
+    IMAGE_WIDTH = 16
+    IMAGE_HEIGHT = 32
+    TILE_WIDTH = 8
+    TILE_HEIGHT = 16
+    INOUT_DATATYPE = np.int32
+
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Builds, runs, and tests the passthrough_dma example",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-p",
+        "--print-module-only",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--image-height",
+        type=int,
+        default=IMAGE_HEIGHT,
+        help="Height of the image data",
+    )
+    parser.add_argument(
+        "--image-width", type=int, default=IMAGE_WIDTH, help="Width of the image data"
+    )
+    parser.add_argument(
+        "--tile-height", type=int, default=TILE_HEIGHT, help="Height of the tile data"
+    )
+    parser.add_argument(
+        "--tile-width", type=int, default=TILE_WIDTH, help="Width of the tile data"
+    )
+    args = parser.parse_args()
+
+    mlir_module = build_module(
+        args.image_height,
+        args.image_width,
+        args.tile_height,
+        args.tile_width,
+        INOUT_DATATYPE,
+    )
+    if args.print_module_only:
+        print(mlir_module)
+        exit(0)
+
+    input_a = np.zeros(
+        shape=(args.image_height, args.image_width), dtype=INOUT_DATATYPE
+    )
+    output_b = np.zeros(
+        shape=(args.image_height, args.image_width), dtype=INOUT_DATATYPE
+    )
+    for i in range(args.image_height):
+        for j in range(args.image_width):
+            input_a[i, j] = i * args.image_height + j
+            tile_num = (
+                i // args.tile_height * (args.image_width // args.tile_width)
+                + j // args.tile_width
+            )
+            output_b[i, j] = input_a[i, j] + tile_num
+
+    runner = XRTRunner(verbose=args.verbose)
+    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

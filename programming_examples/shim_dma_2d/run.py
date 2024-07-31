@@ -4,74 +4,21 @@
 # SPDX-License-Identifier: MIT
 
 import numpy as np
-import air.backend.xrt as xrt_backend
-import os
-import os.path
-import filelock
+from air.backend.xrt_runner import XRTRunner
 from shim_dma_2d import *
 
-KERNEL_NAME = "MLIR_AIE"
-
-INOUT_DATATYPE = np.uint32
-INOUT_ELEM_SIZE = np.dtype(INOUT_DATATYPE).itemsize
-INOUT_SIZE = IMAGE_SIZE[0] * IMAGE_SIZE[1]
-INOUT_SIZE_BYTES = INOUT_SIZE * INOUT_ELEM_SIZE
-
-verbose = False
-
-
-def main():
-    mlir_module = build_module()
-
-    input_a = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
-    output_b = np.arange(1, INOUT_SIZE + 1, dtype=INOUT_DATATYPE)
-    for i in range(INOUT_SIZE):
-        input_a[i] = i + 0x1000
-        output_b[i] = 0x00DEFACED
-
-    backend = xrt_backend.XRTBackend(
-        verbose=verbose, experimental_passes=True, omit_while_true_loop=True
-    )
-
-    # run the module
-    with filelock.FileLock("/tmp/npu.lock"):
-        mul = backend.compile_and_load(mlir_module)
-        (_, output_b) = mul(input_a, output_b)
-
-    backend.unload()
-
-    # check output, should have the top left filled in
-    errors = 0
-    for i in range(INOUT_SIZE):
-        rb = output_b[i]
-
-        row = i / IMAGE_WIDTH
-        col = i % IMAGE_WIDTH
-
-        if row < TILE_HEIGHT and col < TILE_WIDTH:
-            # value should have been updated
-            if not (rb == 0x1000 + i):
-                print(f"IM {i} [{col}, {row}] should be 0x{i:x}, is 0x{rb:x}\n")
-                errors += 1
-        else:
-            # value should stay unchanged
-            if rb != 0x00DEFACED:
-                print(
-                    f"IM {i} [{col}, {row}] should be 0xdefaced, is 0x{rb:x}\n",
-                    i,
-                    col,
-                    row,
-                    rb,
-                )
-                errors += 1
-
-    if errors == 0:
-        print("PASS!")
-        exit(0)
-    else:
-        print("failed. errors=", errors)
-        exit(-1)
+INOUT_DATATYPE = np.int32
+VERBOSE = False
 
 
 if __name__ == "__main__":
-    main()
+    mlir_module = build_module()
+
+    input_a = np.arange(np.prod(IMAGE_SIZE), dtype=INOUT_DATATYPE).reshape(IMAGE_SIZE)
+    output_b = np.zeros(shape=IMAGE_SIZE, dtype=INOUT_DATATYPE)
+    for h in range(TILE_HEIGHT):
+        for w in range(TILE_WIDTH):
+            output_b[h, w] = input_a[h, w]
+
+    runner = XRTRunner(verbose=VERBOSE)
+    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))
