@@ -509,15 +509,10 @@ private:
     // Get the size of segment in tiles
     auto num_rows = op.getNumRows();
     auto num_cols = op.getNumCols();
-    if (num_rows) {
-      if (num_cols) {
-        usage_count *= llvm::divideCeilSigned(*num_rows, du_size_x);
-        usage_count *= llvm::divideCeilSigned(*num_cols, du_size_y);
-        return usage_count;
-      } else {
-        op->emitOpError("Segment has no placed AIE cores");
-        return 0;
-      }
+    if (num_rows && num_cols) {
+      usage_count *= llvm::divideCeil(*num_rows, du_size_x);
+      usage_count *= llvm::divideCeil(*num_cols, du_size_y);
+      return usage_count;
     } else {
       op->emitOpError("Segment has no placed AIE cores");
       return 0;
@@ -1196,7 +1191,7 @@ private:
     unsigned get_to_deallocate = 0;
     if (put_reserved_count * bcast_factor > get_reserved_count) {
       put_to_deallocate =
-          llvm::divideFloorSigned(get_reserved_count, bcast_factor);
+          llvm::divideFloorSigned(get_reserved_count, (int)bcast_factor);
     } else {
       put_to_deallocate = put_reserved_count;
     }
