@@ -3746,6 +3746,39 @@ private:
     }
     return true;
   }
+  // Check if two channel ops are under identical affine.if condition blocks.
+  bool areUnderTheSameAffineIfCond(Operation *a, Operation *b) {
+    auto a_loop_nest = getParentLoopNest(a);
+    auto b_loop_nest = getParentLoopNest(b);
+    affine::AffineIfOp a_aif = nullptr;
+    affine::AffineIfOp b_aif = nullptr;
+    for (unsigned i = 0; i < a_loop_nest.size(); i++) {
+      for (unsigned j = 0; j < b_loop_nest.size(); j++) {
+        auto a_parent = a_loop_nest[i]->getParentOp();
+        if (!a_parent)
+          continue;
+        auto b_parent = b_loop_nest[j]->getParentOp();
+        if (!b_parent)
+          continue;
+        a_aif = dyn_cast<affine::AffineIfOp>(a_parent);
+        if (!a_aif)
+          continue;
+        b_aif = dyn_cast<affine::AffineIfOp>(b_parent);
+        if (!b_aif)
+          continue;
+        // Reached innermost affine.if op for both a and b loop nests.
+        if (a_aif.getIntegerSet() == b_aif.getIntegerSet())
+          return true;
+        else
+          return false;
+      }
+    }
+    // One of a or b is under affine.if.
+    if (a_aif || b_aif)
+      return false;
+    // Default case when neither a nor b is under affine.if.
+    return true;
+  }
   // Check of two air.channels are mergeable in time, by fusing into a shared
   // scf.for loop. Returns a tuple of bool of whether mergeable, and string of
   // fusing into for loop lower bound (LB) or upper bound (UB), or fuse with no
@@ -3820,6 +3853,12 @@ private:
         (!areTheSameSSAValueLists(aSizes, bSizes)) ||
         (!areTheSameSSAValueLists(aStrides, bStrides)))
       return notMergeable;
+    // If destinations of the two channel ops fall into different affine.if
+    // conditions, which imply spatial scaling, then they are not fusable in
+    // time.
+    for (unsigned i = 0; i < a_gets.size(); i++)
+      if ((!areUnderTheSameAffineIfCond(a_gets[i], b_gets[i])))
+        return notMergeable;
     std::vector<std::tuple<bool, std::string>> putResults;
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
