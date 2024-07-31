@@ -316,6 +316,55 @@ public:
   }
 };
 
+// Convert FuncOp control function into aiex.runtime_sequence op.
+// Functions are converted if they are not external, are inside an aie.device
+// and contain aiex.npu.* ops
+class ControlFuncConversion : public OpConversionPattern<func::FuncOp> {
+public:
+  using OpConversionPattern<func::FuncOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(func::FuncOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    if (op.isExternal())
+      return failure();
+
+    auto device = op->getParentOfType<AIE::DeviceOp>();
+    if (!device)
+      return failure();
+
+    bool contains_npu_ops = false;
+    op.walk([&](Operation *o) {
+      if (o->getName().getStringRef().starts_with("aiex.npu."))
+        contains_npu_ops = true;
+    });
+    if (!contains_npu_ops)
+      return failure();
+
+    auto seq = rewriter.create<AIEX::RuntimeSequenceOp>(op->getLoc(),
+                                                        op.getSymNameAttr());
+    seq.getBody().push_back(new Block);
+
+    // Add and remap the arguments
+    IRMapping mapper;
+    for (int i = 0, e = op.getNumArguments(); i < e; i++) {
+      auto a = op.getBody().getArgument(i);
+      seq.getBody().addArgument(a.getType(), a.getLoc());
+      mapper.map(a, seq.getBody().getArgument(i));
+    }
+
+    // Clone the body of the function into the sequence, skipping the return op.
+    rewriter.setInsertionPointToStart(&seq.getBody().front());
+    for (auto &o : op.getBody().front().getOperations())
+      if (!isa<func::ReturnOp>(o))
+        rewriter.clone(o, mapper);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 // This is a hack due to the short-term limited support with lowering host code.
 // This should be removed in the future.
 class HostMemRefCopyOpConversion : public OpConversionPattern<memref::CopyOp> {
@@ -973,7 +1022,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
-    target.addLegalDialect<arith::ArithDialect, AIEX::AIEXDialect>();
+    target.addLegalDialect<arith::ArithDialect, AIEX::AIEXDialect,
+                           memref::MemRefDialect>();
     target.addLegalOp<UnrealizedConversionCastOp>();
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
         [&](affine::AffineStoreOp op) {
@@ -1036,6 +1086,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Configure the tile trace units and the shimDMA
     if (clTraceSize > 0)
       insertNpuWrite32ForTrace(module, clTraceSize, clTraceOffset);
+
+    RewritePatternSet funcToSeqPatterns(ctx);
+    funcToSeqPatterns.add<ControlFuncConversion>(ctx);
+
+    if (failed(applyPartialConversion(module, target,
+                                      std::move(funcToSeqPatterns))))
+      signalPassFailure();
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -1060,10 +1117,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     module.walk([&](DmaMemcpyNdOp dma) { dmas.push_back(dma); });
     for (auto dma : dmas) {
       if (dma->getNumResults()) {
-        OpBuilder buider(dma);
+        OpBuilder builder(dma);
         SmallVector<Type, 1> tys = {};
-        auto newOp = buider.create<DmaMemcpyNdOp>(dma->getLoc(), tys,
-                                                  dma->getOperands());
+        auto newOp = builder.create<DmaMemcpyNdOp>(dma->getLoc(), tys,
+                                                   dma->getOperands());
         if (dma->hasAttr("metadata"))
           newOp->setAttr("metadata",
                          dma->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
@@ -1299,8 +1356,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       v0 |= (ports[i].second << (i * 8));
       v0 |= (ports[i].first << ((i * 8) + 5));
     }
-    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0, col,
-                                       row);
+    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0,
+                                       nullptr, col, row);
     uint32_t v1 = 0;
     if (ports.size() > 4)
       for (unsigned i = 4; i < std::min(ports.size(), 8UL); i++) {
@@ -1308,7 +1365,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         v1 |= (ports[i].first << (((i - 4) * 8) + 5));
       }
     builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset + 0x4,
-                                       v1, col, row);
+                                       v1, nullptr, col, row);
   }
 
   // up to 8 events (up to 64 bits) will be written to the 8 event slots (bytes)
@@ -1325,10 +1382,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (unsigned i = 4; i < std::min(events.size(), 8UL); i++)
         v1 |= ((events[i] & 0xff) << ((i - 4) * 8));
 
-    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0, col,
-                                       row);
+    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0,
+                                       nullptr, col, row);
     builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset + 0x4,
-                                       v1, col, row);
+                                       v1, nullptr, col, row);
   }
 
   // configure events to monitor
@@ -1397,13 +1454,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           uint32_t core_event_broadcast_15 = 122;
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), core_reg_timer_control,
-              core_event_broadcast_15 << 8, col, row);
+              core_event_broadcast_15 << 8, nullptr, col, row);
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), core_reg_trace_control0,
-              core_event_broadcast_15 << 16, col, row);
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             core_reg_trace_control1,
-                                             pkt_type << 12 | flowID, col, row);
+              core_event_broadcast_15 << 16, nullptr, col, row);
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), core_reg_trace_control1,
+              pkt_type << 12 | flowID, nullptr, col, row);
 
           // configure events to monitor
           // todo: allow user to specify?
@@ -1430,13 +1487,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           uint32_t mem_event_broadcast_15 = 157;
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), mem_reg_timer_control,
-              mem_event_broadcast_15 << 8, col, row);
+              mem_event_broadcast_15 << 8, nullptr, col, row);
           builder.create<AIEX::NpuWrite32Op>(
               builder.getUnknownLoc(), mem_reg_trace_control0,
-              mem_event_broadcast_15 << 16, col, row);
-          builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(),
-                                             mem_reg_trace_control1,
-                                             pkt_type << 12 | flowID, col, row);
+              mem_event_broadcast_15 << 16, nullptr, col, row);
+          builder.create<AIEX::NpuWrite32Op>(
+              builder.getUnknownLoc(), mem_reg_trace_control1,
+              pkt_type << 12 | flowID, nullptr, col, row);
 
           // configure events to monitor
           // todo: allow user to specify?
@@ -1486,7 +1543,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         else
           assert(false && "unknown trace dest");
         builder.create<AIEX::NpuWrite32Op>(
-            builder.getUnknownLoc(), address, bdID,
+            builder.getUnknownLoc(), address, bdID, nullptr,
             builder.getIntegerAttr(builder.getI32Type(), dstColIndex),
             builder.getIntegerAttr(builder.getI32Type(), dstRowIndex));
         chanToIdMap[dstColIndex]--;
@@ -1495,11 +1552,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // broadcast event to sync timer
       auto zero = builder.getIntegerAttr(builder.getI32Type(), 0);
       builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x34000,
-                                         127 << 8, zero, zero);
+                                         127 << 8, nullptr, zero, zero);
       builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x3404C, 127,
-                                         zero, zero);
+                                         nullptr, zero, zero);
       builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x34008, 127,
-                                         zero, zero);
+                                         nullptr, zero, zero);
     }
   }
 

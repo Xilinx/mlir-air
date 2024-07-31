@@ -2359,7 +2359,8 @@ public:
             builder.getUnknownLoc(), SymbolRefAttr::get(ctx, dma_name_attr),
             AIE::DMAChannelDirAttr::get(ctx, dir),
             builder.getI64IntegerAttr(chan),
-            builder.getI64IntegerAttr(tileOp.getCol()));
+            builder.getI64IntegerAttr(tileOp.getCol()),
+            builder.getBoolAttr(false));
 
         air::MemcpyInterface tile_side_memcpy = nullptr;
         herd.walk([&](air::MemcpyInterface o) {
@@ -2433,7 +2434,8 @@ public:
             builder.getUnknownLoc(), SymbolRefAttr::get(ctx, dma_name_attr),
             AIE::DMAChannelDirAttr::get(ctx, dir),
             builder.getI64IntegerAttr(chan),
-            builder.getI64IntegerAttr(tileOp.getCol()));
+            builder.getI64IntegerAttr(tileOp.getCol()),
+            builder.getBoolAttr(false));
 
         // Create memref.global op with memref shape
         air::MemcpyInterface tile_side_memcpy = nullptr;
