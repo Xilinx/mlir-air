@@ -42,7 +42,7 @@ module {
           %async_token_16 = air.execute [%async_token_14] {
             linalg.fill ins(%c0_i32 : i32) outs(%results_15 : memref<32x32xi32, 2>)
           }
-          %3 = air.wait_all async [%async_token_16] 
+          %3 = air.wait_all async [%async_token_6, %async_token_8, %async_token_16] 
           %4 = scf.for %arg24 = %c0 to %c64 step %c32 iter_args(%arg25 = %3) -> (!air.async.token) {
             %async_token_18, %results_19 = air.execute -> (memref<32x32xi32, 2>) {
               %alloc = memref.alloc() : memref<32x32xi32, 2>
