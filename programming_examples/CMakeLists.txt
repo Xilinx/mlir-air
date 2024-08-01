@@ -93,3 +93,5 @@ add_lit_testsuite(check-programming-examples "Running the air programming exampl
   ARGS ${AIR_TEST_LIT_ARGS}
   )
 set_target_properties(check-programming-examples PROPERTIES FOLDER "Tests")
+
+add_dependencies(check-all check-programming-examples)
