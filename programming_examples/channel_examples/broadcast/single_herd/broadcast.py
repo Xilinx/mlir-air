@@ -1,11 +1,14 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+import argparse
+import numpy as np
 
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
+from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
@@ -18,7 +21,7 @@ INOUT_DATATYPE = np.int32
 
 @module_builder
 def build_module():
-    xrt_dtype = T.i32()
+    xrt_dtype = type_mapper(INOUT_DATATYPE)
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
 
     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -80,5 +83,43 @@ def build_module():
 
 
 if __name__ == "__main__":
-    module = build_module()
-    print(module)
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Builds, runs, and tests the channel broadcast multi herd example",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-p",
+        "--print-module-only",
+        action="store_true",
+    )
+    args = parser.parse_args()
+
+    mlir_module = build_module()
+    if args.print_module_only:
+        print(mlir_module)
+        exit(0)
+
+    input_a = np.arange(np.prod(IMAGE_SIZE), dtype=INOUT_DATATYPE).reshape(IMAGE_SIZE)
+    output_b = np.arange(1, np.prod(IMAGE_SIZE) + 1, dtype=INOUT_DATATYPE).reshape(
+        IMAGE_SIZE
+    )
+    output_c = np.arange(2, np.prod(IMAGE_SIZE) + 2, dtype=INOUT_DATATYPE).reshape(
+        IMAGE_SIZE
+    )
+    output_d = np.arange(3, np.prod(IMAGE_SIZE) + 3, dtype=INOUT_DATATYPE).reshape(
+        IMAGE_SIZE
+    )
+
+    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
+    exit(
+        runner.run_test(
+            mlir_module,
+            inputs=[input_a],
+            expected_outputs=[output_b, output_c, output_d],
+        )
+    )
