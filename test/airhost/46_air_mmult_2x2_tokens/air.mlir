@@ -77,7 +77,7 @@ module {
             }
             scf.yield %async_token_22 : !air.async.token
           }
-          %5 = air.dma_memcpy_nd async [%4] (%arg21[%results_11, %results_13] [%c32, %c32] [%c64, %c1_5], %results_15[] [] []) {id = 5 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
+          %5 = air.dma_memcpy_nd async [%4] (%arg21[%results_7, %results_9] [%c32, %c32] [%c64, %c1_5], %results_15[] [] []) {id = 5 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
           %async_token_17 = air.execute [%5] {
             memref.dealloc %results_15 : memref<32x32xi32, 2>
           }

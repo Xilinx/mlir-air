@@ -34,7 +34,7 @@ module {
             memref.dealloc %alloc_2 : memref<32x32xi32, 2>
             memref.dealloc %alloc_3 : memref<32x32xi32, 2>
           }
-          air.dma_memcpy_nd (%arg21[%4, %5] [%c32, %c32] [%c64, %c1_0], %alloc_1[] [] []) {id = 3 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
+          air.dma_memcpy_nd (%arg21[%2, %3] [%c32, %c32] [%c64, %c1_0], %alloc_1[] [] []) {id = 3 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
           memref.dealloc %alloc_1 : memref<32x32xi32, 2>
           air.herd_terminator
         }
