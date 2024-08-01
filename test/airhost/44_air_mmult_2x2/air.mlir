@@ -23,15 +23,13 @@ module {
           %c32 = arith.constant 32 : index
           %2 = affine.apply #map1()[%arg15]
           %3 = affine.apply #map1()[%arg16]
-          %4 = arith.addi %c64, %2 : index
-          %5 = arith.addi %c64, %3 : index
           %alloc_1 = memref.alloc() : memref<32x32xi32, 2>
           linalg.fill ins(%c0_i32 : i32) outs(%alloc_1 : memref<32x32xi32, 2>)
           scf.for %arg24 = %c0 to %c64 step %c32 {
             %alloc_2 = memref.alloc() : memref<32x32xi32, 2>
             %alloc_3 = memref.alloc() : memref<32x32xi32, 2>
-            air.dma_memcpy_nd (%alloc_2[] [] [], %arg22[%4, %arg24] [%c32, %c32] [%c64, %c1_0]) {id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
-            air.dma_memcpy_nd (%alloc_3[] [] [], %arg23[%arg24, %5] [%c32, %c32] [%c64, %c1_0]) {id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+            air.dma_memcpy_nd (%alloc_2[] [] [], %arg22[%2, %arg24] [%c32, %c32] [%c64, %c1_0]) {id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+            air.dma_memcpy_nd (%alloc_3[] [] [], %arg23[%arg24, %3] [%c32, %c32] [%c64, %c1_0]) {id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
             linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%alloc_2, %alloc_3 : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%alloc_1 : memref<32x32xi32, 2>)
             memref.dealloc %alloc_2 : memref<32x32xi32, 2>
             memref.dealloc %alloc_3 : memref<32x32xi32, 2>

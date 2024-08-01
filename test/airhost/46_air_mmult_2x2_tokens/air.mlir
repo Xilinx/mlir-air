@@ -35,14 +35,6 @@ module {
             %6 = affine.apply #map1()[%arg16]
             air.execute_terminator %6 : index
           }
-          %async_token_10, %results_11 = air.execute [%async_token_6] -> (index) {
-            %6 = arith.addi %c64, %results_7 : index
-            air.execute_terminator %6 : index
-          }
-          %async_token_12, %results_13 = air.execute [%async_token_8] -> (index) {
-            %6 = arith.addi %c64, %results_9 : index
-            air.execute_terminator %6 : index
-          }
           %async_token_14, %results_15 = air.execute -> (memref<32x32xi32, 2>) {
             %alloc = memref.alloc() : memref<32x32xi32, 2>
             air.execute_terminator %alloc : memref<32x32xi32, 2>
@@ -61,17 +53,17 @@ module {
               air.execute_terminator %alloc : memref<32x32xi32, 2>
             }
             %6 = affine.if #set()[%arg15, %arg16] -> !air.async.token {
-              %8 = air.dma_memcpy_nd async [%arg25, %async_token_18] (%results_19[] [] [], %arg22[%results_11, %arg24] [%c32, %c32] [%c64, %c1_5]) {broadcast_set = #set, id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+              %8 = air.dma_memcpy_nd async [%arg25, %async_token_18] (%results_19[] [] [], %arg22[%results_7, %arg24] [%c32, %c32] [%c64, %c1_5]) {broadcast_set = #set, id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
               affine.yield %8 : !air.async.token
             } else {
-              %8 = air.dma_memcpy_nd async [%arg25, %async_token_18] (%results_19[] [] [], %arg22[%results_11, %arg24] [%c32, %c32] [%c64, %c1_5]) {broadcast_set = #set1, id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+              %8 = air.dma_memcpy_nd async [%arg25, %async_token_18] (%results_19[] [] [], %arg22[%results_7, %arg24] [%c32, %c32] [%c64, %c1_5]) {broadcast_set = #set1, id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
               affine.yield %8 : !air.async.token
             }
             %7 = affine.if #set2()[%arg15, %arg16] -> !air.async.token {
-              %8 = air.dma_memcpy_nd async [%arg25, %async_token_20] (%results_21[] [] [], %arg23[%arg24, %results_13] [%c32, %c32] [%c64, %c1_5]) {broadcast_set = #set2, id = 3 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+              %8 = air.dma_memcpy_nd async [%arg25, %async_token_20] (%results_21[] [] [], %arg23[%arg24, %results_9] [%c32, %c32] [%c64, %c1_5]) {broadcast_set = #set2, id = 3 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
               affine.yield %8 : !air.async.token
             } else {
-              %8 = air.dma_memcpy_nd async [%arg25, %async_token_20] (%results_21[] [] [], %arg23[%arg24, %results_13] [%c32, %c32] [%c64, %c1_5]) {broadcast_set = #set3, id = 4 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+              %8 = air.dma_memcpy_nd async [%arg25, %async_token_20] (%results_21[] [] [], %arg23[%arg24, %results_9] [%c32, %c32] [%c64, %c1_5]) {broadcast_set = #set3, id = 4 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
               affine.yield %8 : !air.async.token
             }
             %async_token_22 = air.execute [%7, %6] {
