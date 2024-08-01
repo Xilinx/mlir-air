@@ -1533,60 +1533,57 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
             if (shapeDim == 1)
               numSingletonDimDiff--;
           }
-          if (numSingletonDimDiff != (int)(wraps.size() - memrefShape.size())) {
-            chanUserOp->emitOpError(
-                "Failed to split data access pattern along dimension ")
-                << std::to_string(dim)
-                << " due to dimension misalignment with channel op at the "
-                   "other "
-                   "side.";
-            return;
-          }
-          // Now let's figure out number of rank-reducing dimensions (of size 1)
-          // before 'dim' to compute the appropriate index into
-          // wraps/offsets/strides of the channel op on the other side of the
-          // segment.
-          auto otherShape =
-              air::getTensorShape(theOtherChanOp[0].getMemref().getType());
-          auto orgDim = 0;
-          auto wrapIdx = 0;
-          // The dimension index is computed below
-          adjustedDimIdx = 0;
-          while (orgDim != dim) {
-            auto wrapVal = *getConstantIntValue(wraps[wrapIdx]);
-            if (wrapVal == 1) {
-              // If the memrefShape dimension size is not equal to
-              // the wrap size, this is probably rank-reduced dimension.
-              if (memrefShape[orgDim] != 1)
-                adjustedDimIdx++;
-              else
+          if (numSingletonDimDiff == (int)(wraps.size() - memrefShape.size())) {
+            // Detected rank reduction (reducing singleton dimensions) between
+            // thisChanOp and theOtherChanOp.
+
+            // Now let's figure out number of rank-reducing dimensions (of size
+            // 1) before 'dim' to compute the appropriate index into
+            // wraps/offsets/strides of the channel op on the other side of the
+            // segment.
+            auto otherShape =
+                air::getTensorShape(theOtherChanOp[0].getMemref().getType());
+            auto orgDim = 0;
+            auto wrapIdx = 0;
+            // The dimension index is computed below
+            adjustedDimIdx = 0;
+            while (orgDim != dim) {
+              auto wrapVal = *getConstantIntValue(wraps[wrapIdx]);
+              if (wrapVal == 1) {
+                // If the memrefShape dimension size is not equal to
+                // the wrap size, this is probably rank-reduced dimension.
+                if (memrefShape[orgDim] != 1)
+                  adjustedDimIdx++;
+                else
+                  orgDim++;
+                wrapIdx++;
+                continue;
+              }
+              if (memrefShape[orgDim] == 1) {
                 orgDim++;
-              wrapIdx++;
-              continue;
+                continue;
+              }
+              if (memrefShape[orgDim] == wrapVal ||
+                  memrefShape[orgDim] == otherShape[wrapIdx]) {
+                orgDim++;
+                adjustedDimIdx++;
+                wrapIdx++;
+                continue;
+              }
+              chanUserOp->emitOpError(
+                  "Failed to split data access pattern along dimension ")
+                  << std::to_string(orgDim)
+                  << " due to dimension misalignment with channel op at "
+                     "the other side.";
+              return;
             }
-            if (memrefShape[orgDim] == 1) {
-              orgDim++;
-              continue;
-            }
-            if (memrefShape[orgDim] == wrapVal ||
-                memrefShape[orgDim] == otherShape[wrapIdx]) {
-              orgDim++;
-              adjustedDimIdx++;
-              wrapIdx++;
-              continue;
-            }
-            chanUserOp->emitOpError(
-                "Failed to split data access pattern along dimension ")
-                << std::to_string(orgDim)
-                << " due to dimension misalignment with channel op at "
-                   "the other side.";
-            return;
           }
         }
 
-        Value newWaitAll1 = tileChannelOpByFactor(
-            theOtherChanOp[0], targetColTilingFactor, memrefShape[dim],
-            adjustedDimIdx, allocOp, new_chan, loc, ctx);
+        Value newWaitAll1 =
+            tileChannelOpByFactor(theOtherChanOp[0], targetColTilingFactor,
+                                  *getConstantIntValue(wraps[adjustedDimIdx]),
+                                  adjustedDimIdx, allocOp, new_chan, loc, ctx);
 
         // Update dependency.
         auto oldToken =
