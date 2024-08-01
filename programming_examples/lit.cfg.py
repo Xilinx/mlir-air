@@ -7,17 +7,14 @@
 # -*- Python -*-
 
 import os
-import platform
 import re
 import subprocess
-import tempfile
+import shutil
 
 import lit.formats
 import lit.util
 
 from lit.llvm import llvm_config
-from lit.llvm.subst import ToolSubst
-from lit.llvm.subst import FindTool
 
 # Configuration file for the 'lit' test runner.
 
@@ -125,11 +122,7 @@ llvm_config.with_environment("PATH", config.air_tools_dir, append_path=True)
 
 # test if LM_LICENSE_FILE valid
 if config.enable_chess_tests:
-    import shutil
-
     result = shutil.which("xchesscc")
-
-    import subprocess
 
     if result != None:
         result = subprocess.run(
