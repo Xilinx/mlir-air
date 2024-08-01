@@ -1,7 +1,7 @@
 // (c) Copyright 2024 Advanced Micro Devices, Inc.
  // SPDX-License-Identifier: MIT
  //
- // REQUIRES: ryzen_ai
+ // REQUIRES: ryzen_ai, peano
  //
  // RUN: make -f %S/Makefile clean
  // RUN: make -f %S/Makefile 

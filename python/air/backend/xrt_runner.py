@@ -59,10 +59,12 @@ class XRTRunner:
         verbose: bool = False,
         experimental_passes: bool = True,
         omit_while_true_loop: bool = True,
+        peano_path: str = None,
     ):
         self.verbose = verbose
         self.experimental_passes = experimental_passes
         self.omit_while_true_loop = omit_while_true_loop
+        self.peano_path = peano_path
 
     def run_test(
         self,
@@ -78,6 +80,7 @@ class XRTRunner:
             verbose=self.verbose,
             experimental_passes=self.experimental_passes,
             omit_while_true_loop=self.omit_while_true_loop,
+            peano_path=self.peano_path,
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs

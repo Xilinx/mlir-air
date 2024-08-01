@@ -46,6 +46,7 @@ class XRTBackend(AirBackend):
         verbose=False,
         experimental_passes=False,
         omit_while_true_loop=False,
+        peano_path=None,
     ):
         """Constructor for XRTBackend
 
@@ -53,11 +54,13 @@ class XRTBackend(AirBackend):
             verbose: verbose output
             experimental_passes: configure aircc to run additional experimental passes
             omit_while_true_loop: configure aircc to comit the while true loop it traditionally emits.
+            peano_path: If path is specified, compile with peano instead of xchesscc
         """
         super().__init__()
         self.verbose = verbose
         self.experimental_passes = experimental_passes
         self.omit_while_true_loop = omit_while_true_loop
+        self.peano_path = peano_path
         self.currently_loaded = False
 
     def __del__(self):
@@ -97,13 +100,19 @@ class XRTBackend(AirBackend):
                 "--device",
                 "npu1_4col",
                 "air.mlir",
-                "-xchesscc",
-                "-xbridge",
                 "-o",
                 xclbin,
                 "-i",
                 insts,
             ]
+
+            if self.peano_path:
+                aircc_options += ["--peano", self.peano_path]
+            else:
+                aircc_options += [
+                    "-xchesscc",
+                    "-xbridge",
+                ]
 
             if self.verbose:
                 aircc_options = aircc_options + ["-v"]

@@ -7,17 +7,14 @@
 # -*- Python -*-
 
 import os
-import platform
 import re
 import subprocess
-import tempfile
+import shutil
 
 import lit.formats
 import lit.util
 
 from lit.llvm import llvm_config
-from lit.llvm.subst import ToolSubst
-from lit.llvm.subst import FindTool
 
 # Configuration file for the 'lit' test runner.
 
@@ -122,6 +119,21 @@ llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 llvm_config.with_environment("PATH", config.peano_tools_dir, append_path=True)
 llvm_config.with_environment("PATH", config.aie_tools_dir, append_path=True)
 llvm_config.with_environment("PATH", config.air_tools_dir, append_path=True)
+
+# Test to see if we have the peano backend.
+try:
+    result = subprocess.run(
+        [os.path.join(config.peano_tools_dir, "llc"), "-mtriple=aie", "--version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if re.search("Xilinx AI Engine", result.stdout.decode("utf-8")) is not None:
+        config.available_features.add("peano")
+        print("Peano found: " + shutil.which("llc"))
+    else:
+        print("Peano not found, but expected at ", config.peano_tools_dir)
+except Exception as e:
+    print("Peano not found, but expected at ", config.peano_tools_dir)
 
 # test if LM_LICENSE_FILE valid
 if config.enable_chess_tests:
