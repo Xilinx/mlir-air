@@ -38,7 +38,7 @@ run_py: build/final.xclbin build/final.insts.txt
 
 pyworkflow:
 	mkdir -p pybuild
-	cd pybuild && ${powershell} python3 ${srcdir}/run.py 
+	cd pybuild && ${powershell} python3 ${srcdir}/run.py --peano ${PEANO_INSTALL_DIR} 
 
 clean:
 	rm -rf build _build pybuild tmp ${targetname}.exe

@@ -17,3 +17,10 @@ python3 -m venv sandbox
 source sandbox/bin/activate
 python3 -m pip install --upgrade pip
 python3 -m pip install -r utils/requirements.txt
+
+python3 -m pip -q download llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+unzip -q llvm_aie*.whl
+rm -rf llvm_aie*.whl
+rm -rf llvm_aie-*
+rm -rf llvm_aie.libs
+python3 -m pip install https://github.com/makslevental/mlir-python-extras/archive/d84f05582adb2eed07145dabce1e03e13d0e29a6.zip

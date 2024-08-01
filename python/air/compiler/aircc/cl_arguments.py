@@ -92,16 +92,23 @@ def parse_args(args=None):
     parser.add_argument(
         "-xbridge",
         dest="xbridge",
-        default=air_link_with_xchesscc,
+        default=False,
         action="store_true",
         help="pass --xbridge to aiecc, otherwise pass --no-xbridge",
     )
     parser.add_argument(
         "-xchesscc",
         dest="xchesscc",
-        default=air_compile_with_xchesscc,
+        default=False,
         action="store_true",
         help="pass --xchesscc to aiecc, otherwise pass --no-xchesscc",
+    )
+    parser.add_argument(
+        "--peano",
+        dest="peano_path",
+        type=str,
+        default=None,
+        help="Use peano for compilation",
     )
     parser.add_argument(
         "--device",
@@ -125,4 +132,12 @@ def parse_args(args=None):
     )
 
     opts = parser.parse_args(args)
+
+    if opts.peano_path:
+        if opts.xchesscc or opts.xbridge:
+            parser.error("If peano is specified, xchesscc and xbridge cannot be used.")
+    else:
+        opts.xchesscc = air_compile_with_xchesscc
+        opts.xbridge = air_link_with_xchesscc
+
     return opts
