@@ -13,12 +13,12 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
-IMAGE_WIDTH = 48
-IMAGE_HEIGHT = 16
+IMAGE_WIDTH = 12
+IMAGE_HEIGHT = 4
 IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
-TILE_WIDTH = 16
-TILE_HEIGHT = 8
+TILE_WIDTH = 4
+TILE_HEIGHT = 2
 TILE_SIZE = [TILE_HEIGHT, TILE_WIDTH]
 
 assert IMAGE_HEIGHT % TILE_HEIGHT == 0
@@ -47,37 +47,41 @@ def build_module():
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
 
-            # Transfer one tile of data per worker
-            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = TILE_HEIGHT * h
-                    offset1 = TILE_WIDTH * w
+            # Transform data into contiguous tiles
+            for tile_index0 in range_(IMAGE_HEIGHT // TILE_HEIGHT):
+                for tile_index1 in range_(IMAGE_WIDTH // TILE_WIDTH):
+                    # Convert the type of the tile size variable to the Index type
+                    tile_size0 = arith.ConstantOp.create_index(TILE_HEIGHT)
+                    tile_size1 = arith.ConstantOp.create_index(TILE_WIDTH)
+
+                    # Calculate the offset into the channel data, which is based on which tile index
+                    # we are at using tile_index0 and tile_index1 (our loop vars).
+                    # tile_index0 and tile_index1 are dynamic so we have to use specialized
+                    # operations do to calculations on them
+                    offset0 = arith.MulIOp(tile_size0, tile_index0)
+                    offset1 = arith.MulIOp(tile_size1, tile_index1)
 
                     # Put data into the channel tile by tile
                     ChannelPut(
                         "ChanIn",
                         a,
-                        indices=[h, w],
+                        indices=[tile_index0, tile_index1],
                         offsets=[offset0, offset1],
                         sizes=TILE_SIZE,
                         strides=[IMAGE_WIDTH, 1],
                     )
-
-            # Transfer one tile of data per worker
-            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = TILE_HEIGHT * h
-                    offset1 = TILE_WIDTH * w
 
                     # Write data back out to the channel tile by tile
                     ChannelGet(
                         "ChanOut",
                         b,
-                        indices=[h, w],
+                        indices=[tile_index0, tile_index1],
                         offsets=[offset0, offset1],
                         sizes=TILE_SIZE,
                         strides=[IMAGE_WIDTH, 1],
                     )
+                    yield_([])
+                yield_([])
 
             # The arguments are still the input and the output
             @segment(name="seg")
@@ -87,35 +91,68 @@ def build_module():
                     name="xaddherd",
                     sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
                 )
-                def herd_body(th, tw, _sx, _sy):
-                    height_next = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mod(
-                                AffineExpr.get_add(
-                                    AffineSymbolExpr.get(0),
-                                    AffineConstantExpr.get(1),
-                                ),
-                                IMAGE_HEIGHT // TILE_HEIGHT,
-                            )
-                        ],
-                    )
+                def herd_body(tile_height, tile_width, size_height, size_width):
+                    """
+                    tw_next = (tw + 1) % sw
+                    th_next = (th + ((tw + 1 ) // sw)) % sh
+                    """
                     width_next = AffineMap.get(
                         0,
-                        1,
+                        2,
                         [
                             AffineExpr.get_mod(
                                 AffineExpr.get_add(
                                     AffineSymbolExpr.get(0),
                                     AffineConstantExpr.get(1),
                                 ),
-                                IMAGE_WIDTH // TILE_WIDTH,
+                                AffineSymbolExpr.get(1),
                             )
                         ],
                     )
-                    tw_next = affine_apply(width_next, [tw])
-                    th_next = affine_apply(height_next, [th])
+                    height_next = AffineMap.get(
+                        0,
+                        4,
+                        [
+                            AffineExpr.get_mod(
+                                # (((tw + 1) // sw) + th) % sh
+                                AffineExpr.get_add(
+                                    # ((tw + 1) // sw) + th
+                                    AffineExpr.get_floor_div(
+                                        # (tw + 1) // sw
+                                        AffineExpr.get_add(
+                                            # tw + 1
+                                            AffineSymbolExpr.get(0),
+                                            AffineConstantExpr.get(1),
+                                        ),
+                                        AffineSymbolExpr.get(1),
+                                    ),
+                                    AffineSymbolExpr.get(2),
+                                ),
+                                AffineSymbolExpr.get(3),
+                            )
+                        ],
+                    )
+                    # th * sw + tw
+                    get_tile_num = AffineMap.get(
+                        0,
+                        3,
+                        [
+                            AffineExpr.get_add(
+                                AffineExpr.get_mul(
+                                    AffineSymbolExpr.get(0),
+                                    AffineSymbolExpr.get(1),
+                                ),
+                                AffineSymbolExpr.get(2),
+                            )
+                        ],
+                    )
+                    tile_num = affine_apply(
+                        get_tile_num, [tile_height, size_width, tile_width]
+                    )
+                    tile_width_next = affine_apply(width_next, [tile_width, size_width])
+                    tile_height_next = affine_apply(
+                        height_next, [tile_width, size_width, tile_height, size_height]
+                    )
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -132,24 +169,33 @@ def build_module():
                     tile_out2 = AllocOp(tile_type, [], [])
 
                     # Copy a tile from the input image
-                    ChannelGet("ChanIn", tile_in, indices=[th, tw])
+                    ChannelGet("ChanIn", tile_in, indices=[tile_height, tile_width])
 
                     # Access every value in the tile
                     for i in range_(TILE_HEIGHT):
                         for j in range_(TILE_WIDTH):
                             # Load the input value from tile_in
-                            val = load(tile_in, [i, j])
+                            val_in = load(tile_in, [i, j])
+                            val_out = arith.MulIOp(
+                                arith.index_cast(xrt_dtype, tile_num), val_in
+                            )
 
                             # Store the output value in tile_out
-                            store(val, tile_out, [i, j])
+                            store(val_out, tile_out, [i, j])
                             yield_([])
                         yield_([])
 
-                    # Copy the output tile into a channel for another worker to get
-                    ChannelPut("SwitchTiles", tile_out, indices=[th, tw])
+                    # Copy the output tile into a channel for the "next" worker to get
+                    ChannelPut(
+                        "SwitchTiles",
+                        tile_out,
+                        indices=[tile_height_next, tile_width_next],
+                    )
 
                     # Get an output tile from another worker
-                    ChannelGet("SwitchTiles", tile_in2, indices=[th_next, tw_next])
+                    ChannelGet(
+                        "SwitchTiles", tile_in2, indices=[tile_height, tile_width]
+                    )
 
                     # Access every value in the tile
                     for i in range_(TILE_HEIGHT):
@@ -163,7 +209,7 @@ def build_module():
                         yield_([])
 
                     # Send the output tile to the output
-                    ChannelPut("ChanOut", tile_out, indices=[th, tw])
+                    ChannelPut("ChanOut", tile_out2, indices=[tile_height, tile_width])
 
                     # Deallocate our L1 buffers
                     DeallocOp(tile_in)
@@ -195,11 +241,10 @@ if __name__ == "__main__":
         exit(0)
 
     input_matrix = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
-    # TODO: this check is not fully correct, should show how data is transferred explicitly
-    # Will probably want to use different input to implement a more rigorous check.
-    output_matrix = input_matrix.copy()
+    # TODO: this check is NOT yet correct but we know this is currently not a successful program because right now the output is all zeroes.
+    output_matrix = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
 
-    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
+    runner = XRTRunner(verbose=args.verbose, experimental_passes=False)
     exit(
         runner.run_test(
             mlir_module, inputs=[input_matrix], expected_outputs=[output_matrix]
