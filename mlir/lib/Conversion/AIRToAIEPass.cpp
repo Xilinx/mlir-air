@@ -59,6 +59,12 @@ struct AIRToAIEConversionOptions {
   AIE::AIEDevice device;
 };
 
+struct link_ends_interface {
+  int numLinkEnds;
+  std::vector<std::pair<Attribute, int64_t>> input_ofs_with_offsets;
+  std::vector<std::pair<Attribute, int64_t>> output_ofs_with_offsets;
+};
+
 // get memcpy operation volumn (elements) as int
 int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
   MemRefType memTy = llvm::cast<MemRefType>(memref.getType());
@@ -96,8 +102,7 @@ struct ShimTileAllocator {
     for (int i = 0, e = aie_target.columns(); i < e; i++) {
       if (aie_target.isShimNOCTile(i, 0)) {
         shim_columns.push_back(i);
-        shim_dma_channels = aie_target.getNumDestSwitchboxConnections(
-            i, 0, AIE::WireBundle::FIFO);
+        shim_dma_channels = 2;
       }
     }
   }
@@ -1084,14 +1089,15 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   LowerAIRChannelsPattern(
       MLIRContext *ctx, ShimTileAllocator &shimTileAlloc,
       std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
-      std::map<Operation *, AIE::ObjectFifoCreateOp> &linksToComplete)
+      std::map<AIE::BufferOp, link_ends_interface> &linkEnds)
       : OpRewritePattern(ctx), shimTileAlloc(shimTileAlloc),
-        bufferToMemtileMap(bufferToMemtileMap),
-        linksToComplete(linksToComplete) {}
+        bufferToMemtileMap(bufferToMemtileMap), linkEnds(linkEnds) {}
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
     auto device = channel->getParentOfType<AIE::DeviceOp>();
+    const auto &target_model = device.getTargetModel();
+    bool isAIE2 = (target_model.getTargetArch() == AIE::AIEArch::AIE2);
     auto ctx = device->getContext();
     if (!device)
       return failure();
@@ -1100,21 +1106,24 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     if (channel.getBundleSize() > 1)
       return failure();
 
-    AIE::AIEObjectFifoType datatype;
+    std::pair<int, MemRefType> datatype = {(int)air::MemorySpace::L3, {}};
     std::vector<ChannelPutOp> channelPuts =
         getChannelPutOpThroughSymbol(channel, device);
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
 
-    channel->print(llvm::outs());
-    llvm::outs() << "channelPuts" << channelPuts.size() << "\n";
-    llvm::outs() << "channelGets" << channelGets.size() << "\n";
+    // channel->print(llvm::outs());
+    // llvm::outs() << "channelPuts" << channelPuts.size() << "\n";
+    // llvm::outs() << "channelGets" << channelGets.size() << "\n";
 
-    // keep track of potential LinkOp
-    bool linkToComplete =
-        false; // track if objFifo has to be added to linksToComplete
-    bool linkFound = false; // all ends of a link have been found
-    Operation *endOfLink;   // one end of a link
+    // variables to track LinkOp, i.e., a put and get using the same
+    // AIE.BufferOp
+    bool linkFound = false;         // a link end is found
+    Operation *endOfLink = nullptr; // one end of a LinkOp (i.e., a put or get)
+    int numLinkEnds = 0; // # ends in this link (i.e., # users of AIE.BufferOp)
+
+    AIE::BDDimLayoutArrayAttr dimensionsToStream =
+        AIE::BDDimLayoutArrayAttr::get(channel->getContext(), {});
 
     // put/get come in pairs, if one is missing then it's L3
     Value producerTile;
@@ -1127,26 +1136,45 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       if (res.failed())
         return res;
 
+      setChannelBufferResources(rewriter, channel,
+                                channelPuts[0].getOperation());
+
       // check if this put is linked to a get from another channel
-      MemRefType memref =
+      MemRefType memrefType =
           llvm::cast<MemRefType>(channelPuts[0].getMemref().getType());
-      int mem_space = memref.getMemorySpaceAsInt();
+      int mem_space = memrefType.getMemorySpaceAsInt();
       if (mem_space == (int)air::MemorySpace::L2) {
-        if (linksToComplete.find(channelPuts[0].getOperation()) !=
-            linksToComplete.end()) {
+        linkFound =
+            detectLinkEnd<ChannelPutOp>(rewriter, channelPuts[0], &numLinkEnds);
+        if (linkFound)
           endOfLink = channelPuts[0].getOperation();
-          linkFound = true;
-        } else {
-          AIE::BufferOp buff = dyn_cast<AIE::BufferOp>(
-              channelPuts[0].getMemref().getDefiningOp());
-          for (auto user : buff->getUsers()) {
-            if (auto pairedGet = dyn_cast<ChannelGetOp>(user)) {
-              endOfLink = pairedGet.getOperation();
-              linkToComplete = true;
-            }
-          }
-        }
       }
+
+      // get data layout transformation on channel put
+      auto ndcpy = cast<air::MemcpyInterface>(channelPuts[0].getOperation());
+      SmallVector<Value> sizes = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+                                     ? ndcpy.getDstSizes()
+                                     : ndcpy.getSrcSizes();
+      SmallVector<Value> strides =
+          isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+              ? ndcpy.getDstStrides()
+              : ndcpy.getSrcStrides();
+      if (!strides.empty() && !sizes.empty())
+        if (auto const_highest_stride = getConstantIntValue(strides[0]))
+          if (*const_highest_stride == 0) {
+            strides.erase(strides.begin());
+            sizes.erase(sizes.begin());
+          }
+      std::vector<AIE::BDDimLayoutAttr> dims =
+          getWrapsAndStrides(sizes, strides, ndcpy->getContext());
+      auto wraps_and_strides =
+          AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
+      bool useDefaultDataAccessPattern =
+          isAIE2 ? isDefaultDataAccessPattern(sizes, strides,
+                                              channelPuts[0].getMemref())
+                 : true;
+      if (!wraps_and_strides.getValue().empty() && !useDefaultDataAccessPattern)
+        dimensionsToStream = wraps_and_strides;
     } else {
       // put from L3
       producerTile = shimTileAlloc.getShimTile(
@@ -1154,8 +1182,10 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           channel.getName().str());
     }
 
+    std::vector<AIE::BDDimLayoutArrayAttr> dimsFromStreamPerConsumer;
+
     // put/get come in pairs, if one is missing then it's L3
-    std::vector<Value> consumers;
+    std::set<AIE::TileOp> consumers;
     Value consumerTile;
     if (channelGets.size() > 1 && !channel.isBroadcast())
       return channel.emitOpError("has multiple gets but no broadcast shape");
@@ -1166,62 +1196,96 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           findChannelPutGetTile<ChannelGetOp>(get, &consumerTile, &datatype);
       if (res.failed())
         return res;
-      consumers.push_back(consumerTile);
+      consumers.insert(consumerTile.getDefiningOp<AIE::TileOp>());
+
+      setChannelBufferResources(rewriter, channel, get.getOperation());
 
       // check if this get is linked to a put from another channel
-      MemRefType memref = llvm::cast<MemRefType>(get.getMemref().getType());
-      int mem_space = memref.getMemorySpaceAsInt();
+      MemRefType memrefType = llvm::cast<MemRefType>(get.getMemref().getType());
+      int mem_space = memrefType.getMemorySpaceAsInt();
       if (mem_space == (int)air::MemorySpace::L2) {
-        if (linksToComplete.find(get.getOperation()) != linksToComplete.end()) {
+        linkFound = detectLinkEnd<ChannelGetOp>(rewriter, get, &numLinkEnds);
+        if (linkFound)
           endOfLink = get.getOperation();
-          linkFound = true;
-        } else {
-          AIE::BufferOp buff =
-              dyn_cast<AIE::BufferOp>(get.getMemref().getDefiningOp());
-          for (auto user : buff->getUsers()) {
-            if (auto pairedPut = dyn_cast<ChannelPutOp>(user)) {
-              endOfLink = pairedPut.getOperation();
-              linkToComplete = true;
-            }
-          }
-        }
       }
+
+      // get data layout transformation on channel get
+      auto ndcpy = cast<air::MemcpyInterface>(get.getOperation());
+      SmallVector<Value> sizes = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+                                     ? ndcpy.getDstSizes()
+                                     : ndcpy.getSrcSizes();
+      SmallVector<Value> strides =
+          isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+              ? ndcpy.getDstStrides()
+              : ndcpy.getSrcStrides();
+      if (!strides.empty() && !sizes.empty())
+        if (auto const_highest_stride = getConstantIntValue(strides[0]))
+          if (*const_highest_stride == 0) {
+            strides.erase(strides.begin());
+            sizes.erase(sizes.begin());
+          }
+      std::vector<AIE::BDDimLayoutAttr> dims =
+          getWrapsAndStrides(sizes, strides, ndcpy->getContext());
+      auto wraps_and_strides =
+          AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
+      bool useDefaultDataAccessPattern =
+          isAIE2 ? isDefaultDataAccessPattern(sizes, strides, get.getMemref())
+                 : true;
+      if (!wraps_and_strides.getValue().empty() && !useDefaultDataAccessPattern)
+        dimsFromStreamPerConsumer.push_back(wraps_and_strides);
     }
     for (int i = 0; i < expectedGets - (int)channelGets.size(); i++) {
       // get from L3
       consumerTile = shimTileAlloc.getShimTile(
           device, (int)air::MemorySpace::L1, (int)air::MemorySpace::L3,
           channel.getName().str());
-      consumers.push_back(consumerTile);
+      consumers.insert(consumerTile.getDefiningOp<AIE::TileOp>());
     }
+    if ((int)consumers.size() != expectedGets)
+      return channel.emitOpError(
+          "number of channel gets does not match broadcast shape");
 
-    if (!datatype)
-      return failure();
+    if (datatype.first == (int)air::MemorySpace::L3)
+      return channel.emitOpError(
+          "could not infer datatype of Object FIFO elements");
 
     // create objFifo
     rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
+    AIE::BDDimLayoutArrayAttr emptyDims =
+        AIE::BDDimLayoutArrayAttr::get(channel->getContext(), {});
+    auto dimensionsFromStreamPerConsumer = AIE::BDDimLayoutArrayArrayAttr::get(
+        channel->getContext(), ArrayRef(emptyDims));
+    if (dimsFromStreamPerConsumer.size() > 0)
+      dimensionsFromStreamPerConsumer = AIE::BDDimLayoutArrayArrayAttr::get(
+          channel->getContext(), ArrayRef(dimsFromStreamPerConsumer));
+    std::vector<Value> consumerTiles;
+    for (auto tile : consumers)
+      consumerTiles.push_back(tile);
     AIE::ObjectFifoCreateOp objFifo = createObjectFifo(
-        rewriter, datatype, producerTile, consumers,
-        channel.getBufferResources(), "air_" + channel.getName().str());
+        rewriter, datatype.second, producerTile, consumerTiles,
+        channel.getBufferResources(), "air_" + channel.getName().str(),
+        dimensionsToStream, dimensionsFromStreamPerConsumer);
 
-    // if this channel's get is linked with another put, register it
-    if (linkToComplete)
-      linksToComplete[endOfLink] = objFifo;
-    // once the corresponding objFifo has been made, complete the link
+    // if a link end was found
     if (linkFound) {
-      AIE::ObjectFifoCreateOp producerFifo = linksToComplete[endOfLink];
-      if (isa<ChannelGetOp>(endOfLink))
-        rewriter.create<AIE::ObjectFifoLinkOp>(
-            rewriter.getUnknownLoc(),
-            rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}),
-            rewriter.getArrayAttr(
-                {SymbolRefAttr::get(ctx, producerFifo.name())}));
-      else
-        rewriter.create<AIE::ObjectFifoLinkOp>(
-            rewriter.getUnknownLoc(),
-            rewriter.getArrayAttr(
-                {SymbolRefAttr::get(ctx, producerFifo.name())}),
-            rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}));
+      AIE::BufferOp buff;
+      // if get: add to input objectFifo vector
+      if (auto get = dyn_cast<ChannelGetOp>(endOfLink)) {
+        buff = dyn_cast<AIE::BufferOp>(get.getMemref().getDefiningOp());
+        SmallVector<Value> offsets = get.getDstOffsets();
+        SmallVector<Value> strides = get.getDstStrides();
+        int64_t offset = get1DOffset(offsets, strides);
+        addLinkEnd(ctx, buff, /* isInput */ true, numLinkEnds, objFifo, offset);
+        // if put: add to output objectFifo vector
+      } else if (auto put = dyn_cast<ChannelPutOp>(endOfLink)) {
+        buff = dyn_cast<AIE::BufferOp>(put.getMemref().getDefiningOp());
+        SmallVector<Value> offsets = put.getSrcOffsets();
+        SmallVector<Value> strides = put.getSrcStrides();
+        int64_t offset = get1DOffset(offsets, strides);
+        addLinkEnd(ctx, buff, /* isInput */ false, numLinkEnds, objFifo,
+                   offset);
+      }
+      createLink(rewriter, buff);
     }
 
     // replace put/get and any associated memref alloc/dealloc
@@ -1277,12 +1341,16 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 private:
   // find AIE cores and their tiles based on memory hierarchy levels
   template <typename MyOp>
-  LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
-                                      AIE::AIEObjectFifoType *datatype) const {
+  LogicalResult
+  findChannelPutGetTile(MyOp op, Value *tile,
+                        std::pair<int, MemRefType> *datatype) const {
     MemRefType memref = llvm::cast<MemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
-    *datatype = AIE::AIEObjectFifoType::get(
-        MemRefType::get(memref.getShape(), memref.getElementType()));
+    // remove mem_space from memref for objFifo datatype
+    if (datatype->first != (int)air::MemorySpace::L1) {
+      *datatype = {mem_space, memref};
+                   //MemRefType::get(memref.getShape(), memref.getElementType())};
+    }
     if (mem_space == (int)air::MemorySpace::L1) {
       AIE::CoreOp core = op->template getParentOfType<AIE::CoreOp>();
       if (!core)
@@ -1305,16 +1373,29 @@ private:
     }
   }
 
-  AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
-                                           AIE::AIEObjectFifoType datatype,
-                                           Value prodTile,
-                                           const std::vector<Value> &consTile,
-                                           int depth, StringRef name) const {
-    AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-        builder.getUnknownLoc(), builder.getStringAttr(name), prodTile,
-        consTile, builder.getIntegerAttr(builder.getI32Type(), depth),
-        datatype);
-    return fifo;
+  void setChannelBufferResources(PatternRewriter &rewriter,
+                                 air::ChannelOp channel, Operation *op) const {
+    if (channel->hasAttr("buffer_resources"))
+      return;
+    auto for_op = op->getParentOfType<scf::ForOp>();
+    if (!for_op)
+      return;
+    if (for_op->hasAttr("unroll")) {
+      auto unroll_factor = for_op->getAttrOfType<IntegerAttr>("unroll");
+      channel->setAttr("buffer_resources", unroll_factor);
+    }
+  }
+
+  AIE::ObjectFifoCreateOp createObjectFifo(
+      PatternRewriter &rewriter, MemRefType datatype, Value prodTile,
+      const std::vector<Value> &consTile, int depth, StringRef name,
+      AIE::BDDimLayoutArrayAttr dimensionsToStream,
+      AIE::BDDimLayoutArrayArrayAttr dimensionsFromStreamPerConsumer) const {
+    return rewriter.create<AIE::ObjectFifoCreateOp>(
+        rewriter.getUnknownLoc(), rewriter.getStringAttr(name), prodTile,
+        consTile, rewriter.getIntegerAttr(rewriter.getI32Type(), depth),
+        AIE::AIEObjectFifoType::get(datatype), dimensionsToStream,
+        dimensionsFromStreamPerConsumer);
   }
 
   template <typename MyOp>
@@ -1374,9 +1455,96 @@ private:
     }
   }
 
+  template <typename MyOp>
+  bool detectLinkEnd(PatternRewriter &rewriter, MyOp op,
+                     int *numLinkEnds) const {
+    // check if this put is linked to a get from another channel that...
+    bool found = false;
+    int numEnds = 0;
+    AIE::BufferOp buff =
+        dyn_cast<AIE::BufferOp>(op.getMemref().getDefiningOp());
+    // ... has already been found in another channel
+    if (linkEnds.find(buff) != linkEnds.end()) {
+      return true;
+      // ... has not been found yet
+    } else {
+      for (auto user : buff->getUsers()) {
+        if (isa<ChannelGetOp>(op)) {
+          if (isa<ChannelPutOp>(user))
+            found = true;
+          if (isa<ChannelPutOp>(user) || isa<ChannelGetOp>(user))
+            numEnds++;
+        } else if (isa<ChannelPutOp>(op)) {
+          if (isa<ChannelGetOp>(user))
+            found = true;
+          if (isa<ChannelPutOp>(user) || isa<ChannelGetOp>(user))
+            numEnds++;
+        }
+      }
+    }
+    *numLinkEnds = numEnds;
+    return found;
+  }
+
+  void addLinkEnd(MLIRContext *ctx, AIE::BufferOp buff, bool isInput,
+                  int numLinkEnds, AIE::ObjectFifoCreateOp objFifo,
+                  int64_t offset) const {
+    if (linkEnds.find(buff) == linkEnds.end()) {
+      std::vector<std::pair<Attribute, int64_t>> input_ofs;
+      std::vector<std::pair<Attribute, int64_t>> output_ofs;
+      linkEnds[buff] = {numLinkEnds, input_ofs, output_ofs};
+    }
+    if (isInput)
+      linkEnds[buff].input_ofs_with_offsets.push_back(
+          {SymbolRefAttr::get(ctx, objFifo.name()), offset});
+    else
+      linkEnds[buff].output_ofs_with_offsets.push_back(
+          {SymbolRefAttr::get(ctx, objFifo.name()), offset});
+  }
+
+  static bool sortLinkObjectFifos(std::pair<Attribute, int64_t> op0,
+                                  std::pair<Attribute, int64_t> op1) {
+    return op0.second < op1.second;
+  }
+
+  void createLink(PatternRewriter &rewriter, AIE::BufferOp buff) const {
+    auto numEnds = linkEnds[buff].numLinkEnds;
+    auto input_pairs = linkEnds[buff].input_ofs_with_offsets;
+    auto output_pairs = linkEnds[buff].output_ofs_with_offsets;
+    std::vector<Attribute> input_ofs;
+    std::vector<Attribute> output_ofs;
+    //std::sort(input_pairs.begin(), input_pairs.end(), sortLinkObjectFifos);
+    //std::sort(output_pairs.begin(), output_pairs.end(), sortLinkObjectFifos);
+    // retrieve only objectFifo symbol ref attributes
+    std::vector<Value> srcOffsets;
+    std::vector<Value> dstOffsets;
+    for (auto p : input_pairs) {
+      input_ofs.push_back(p.first);
+      auto offset = rewriter.create<arith::ConstantOp>(
+          rewriter.getUnknownLoc(), rewriter.getIndexAttr(p.second));
+      srcOffsets.push_back(offset->getResult(0));
+    }
+    for (auto p : output_pairs) {
+      output_ofs.push_back(p.first);
+      auto offset = rewriter.create<arith::ConstantOp>(
+          rewriter.getUnknownLoc(), rewriter.getIndexAttr(p.second));
+      dstOffsets.push_back(offset->getResult(0));
+    }
+    // check if all ends have been found
+    // if yes, create ObjectFifoLinkOp
+    if ((int)input_ofs.size() + (int)output_ofs.size() == numEnds) {
+      rewriter.create<AIE::ObjectFifoLinkOp>(
+          rewriter.getUnknownLoc(), rewriter.getArrayAttr(ArrayRef(input_ofs)),
+          rewriter.getArrayAttr(ArrayRef(output_ofs)),
+          srcOffsets, dstOffsets);
+    }
+  }
+
   ShimTileAllocator &shimTileAlloc;
   std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
-  std::map<Operation *, AIE::ObjectFifoCreateOp> &linksToComplete;
+  std::map<AIE::BufferOp, link_ends_interface> &linkEnds;
+  // map L2 AIE.BufferOps to pairs of vectors of SymbolRefAttr
+  // (<inputOFs, outputOFs>)
 };
 
 // This function replaces ChannelPutOp/ChannelGetOp with AIE_CreateObjectFifoOps
@@ -1388,9 +1556,9 @@ void lowerAIRChannels(
     std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  std::map<Operation *, AIE::ObjectFifoCreateOp> linksToComplete;
+  std::map<AIE::BufferOp, link_ends_interface> linkEnds;
   patterns.insert<LowerAIRChannelsPattern>(ctx, s, bufferToMemtileMap,
-                                           linksToComplete);
+                                           linkEnds);
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
 }
 
@@ -3103,10 +3271,10 @@ public:
         builder.getUnknownLoc(),
         AIE::AIEDeviceAttr::get(builder.getContext(), *device));
     ShimTileAllocator shimTileAlloc(deviceOp.getTargetModel());
-    std::map<Operation *, AIE::ObjectFifoCreateOp> linksToComplete;
+    std::map<AIE::BufferOp, link_ends_interface> linkEnds;
     if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
-      patterns.insert<LowerAIRChannelsPattern>(
-          ctx, shimTileAlloc, bufferToMemtileMap, linksToComplete);
+      patterns.insert<LowerAIRChannelsPattern>(ctx, shimTileAlloc,
+                                               bufferToMemtileMap, linkEnds);
     }
     if (clTestPatterns.find("lower-air-ping-pong") != std::string::npos) {
       patterns.insert<LowerAIRPingPongPattern>(ctx);
