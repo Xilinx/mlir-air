@@ -241,7 +241,7 @@ if __name__ == "__main__":
         exit(0)
 
     input_matrix = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
-    # TODO: this check is NOT yet correct but we know this is currently not a successful program because right now the output is all zeroes.
+    # TODO: this check is NOT yet correct
     output_matrix = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
 
     runner = XRTRunner(verbose=args.verbose, experimental_passes=False)
