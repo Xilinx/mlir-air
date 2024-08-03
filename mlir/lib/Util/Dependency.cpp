@@ -11,8 +11,6 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include <sys/stat.h>
 
-#include <iostream>
-
 #define DEBUG_TYPE "air-dependency-util"
 
 using namespace mlir;
@@ -583,10 +581,8 @@ void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
   }
 }
 void addAsyncDependencyIfNew(Operation *op, Value token) {
-  if (!isAsyncOp(op)) {
-    op->emitOpError("op does not have async interface");
+  if (!isAsyncOp(op))
     return;
-  }
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
     addAsyncDependencyIfNewImpl(async_op, token);
   } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
@@ -626,6 +622,34 @@ bool areAsyncDependent(Operation *a, Operation *b) {
     if (dep == token_a)
       return true;
   return false;
+}
+
+// Get dependent ops and clone.
+void cloneDependentOps(Region *region, Value newForOpToken, Operation *op,
+                       IRMapping &remap, OpBuilder builder) {
+  SmallVector<Value> operandsList = op->getOperands();
+  if (op->getNumRegions() &&
+      !op->mightHaveTrait<OpTrait::IsIsolatedFromAbove>()) {
+    op->walk([&](Operation *childOp) {
+      operandsList.insert(operandsList.end(), childOp->getOperands().begin(),
+                          childOp->getOperands().end());
+    });
+  }
+  for (auto o : operandsList) {
+    auto defOp = o.getDefiningOp();
+    if (!defOp)
+      continue;
+    if (o.getDefiningOp()->getParentRegion() != region)
+      continue;
+    if (isa<air::AsyncTokenType>(o.getType())) {
+      // Reconnect deps to loop carried dep (iter arg).
+      if (!remap.contains(o))
+        remap.map(o, newForOpToken);
+      continue;
+    }
+    cloneDependentOps(region, newForOpToken, defOp, remap, builder);
+    builder.clone(*defOp, remap);
+  }
 }
 
 // Splits an SCF for loop into two for loops, by hoisting target operations in
@@ -675,13 +699,9 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
     if (op->getParentOp() != for_op.getOperation())
       continue;
     // Clone operands' defining ops.
-    for (auto operand : op->getOperands()) {
-      if (!operand.getDefiningOp())
-        continue;
-      if (operand.getDefiningOp()->getParentOp() != for_op.getOperation())
-        continue;
-      builder.clone(*operand.getDefiningOp(), remap);
-    }
+    cloneDependentOps(&for_op.getRegion(),
+                      getLoopCarriedTokenFromScfOp(new_for_op, "argument"), op,
+                      remap, builder);
     auto new_op = builder.clone(*op, remap);
     yield_operands.push_back(new_op->getResult(0));
   }
@@ -705,28 +725,16 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
     for (auto res : erase_op->getResults()) {
       if (!isa<air::AsyncTokenType>(res.getType()))
         continue;
-      for (auto &u : res.getUses()) {
-        if (auto async_user = dyn_cast<air::AsyncOpInterface>(u.getOwner())) {
-          eraseAsyncDependencyFromAsyncOp(async_user, res);
-          for (auto dep : getAsyncDependenciesFromOp(erase_op)) {
-            if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument")) {
-              air::addAsyncDependencyIfNew(u.getOwner(), dep);
-            }
-          }
-        } else {
-          // User op doesn't have air::AsyncOpInterface. Replace uses with newly
-          // generated air.wait_all op.
-          u.assign(builder
-                       .create<air::WaitAllOp>(
-                           loc, air::AsyncTokenType::get(builder.getContext()),
-                           getAsyncDependenciesFromOp(erase_op))
-                       .getAsyncToken());
-        }
-      }
+      auto newWait = builder.create<air::WaitAllOp>(
+          loc, air::AsyncTokenType::get(builder.getContext()),
+          getAsyncDependenciesFromOp(erase_op));
+      res.replaceAllUsesWith(newWait.getAsyncToken());
     }
   }
-  for (auto erase_op : target_ops)
+  for (auto erase_op : target_ops) {
+    assert(erase_op->use_empty());
     erase_op->erase();
+  }
   for (auto user : for_op.getResults().front().getUsers()) {
     air::addAsyncDependencyIfNew(user, new_for_op.getResults().front());
   }
