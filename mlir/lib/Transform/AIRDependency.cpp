@@ -221,6 +221,12 @@ public:
                 isCandidateExecute = false;
             }
           }
+          // No air execute for expand, collapse and reshape ops
+          if (dyn_cast<memref::ReshapeOp>(op) ||
+              dyn_cast<memref::ExpandShapeOp >(op) ||
+              dyn_cast<memref::CollapseShapeOp >(op)) {
+            isCandidateExecute = false;
+          }
           // No air execute for loop ops
           if (isa<mlir::LoopLikeOpInterface>(op))
             isCandidateExecute = false;
@@ -249,6 +255,9 @@ public:
       });
     }
 
+    llvm::errs() << "\n\nBEFORE SECOND TRAVERSAL:\n";
+    module.dump();
+
     // 2nd traversal: trace deps among async execute regions; build a dep graph
 
     for (auto f : module.getOps<func::FuncOp>()) {
@@ -274,7 +283,8 @@ public:
         SmallVector<partialMemref, 1> sink_op_memref_writes;
         SmallVector<Value, 1> sink_op_scalar_ins;
         SmallVector<Value, 1> sink_op_scalar_outs;
-
+        llvm::errs() << "SINK OP:\n";
+        sink_op->dump();
         // If the sink op is linalg op
         if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
           for (auto ins_value : sink_op_linalgop.getDpsInputs()) {
@@ -320,11 +330,18 @@ public:
         // If the sink op is memref::dealloc
         else if (auto sink_op_memdealloc =
                      dyn_cast<memref::DeallocOp>(sink_op)) {
+          mlir::Value sink_op_memref = sink_op_memdealloc.getMemref();
+          if (auto operation = sink_op_memref.getDefiningOp()) {
+            if (dyn_cast<memref::ReshapeOp>(operation) || 
+                dyn_cast<memref::ExpandShapeOp>(operation) ||
+                dyn_cast<memref::CollapseShapeOp>(operation)) {
+                sink_op_memref = operation->getOperand(0);
+            }
+          }
           unsigned memRefRank =
-              llvm::cast<MemRefType>(sink_op_memdealloc.getMemref().getType())
-                  .getRank();
+              llvm::cast<MemRefType>(sink_op_memref.getType()).getRank();
           partialMemref tile =
-              createPartialMemref(sink_op_memdealloc.getMemref(), memRefRank);
+              createPartialMemref(sink_op_memref, memRefRank);
           sink_op_memref_reads.push_back(tile);
           sink_op_memref_writes.push_back(
               tile); // dealloc erases (i.e. writes to) output memref
@@ -332,11 +349,18 @@ public:
 
         // If the sink op is memref::copy
         else if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)) {
+          mlir::Value op_src_memref = sink_op_memref_copy.getSource();
+          if (auto operation = op_src_memref.getDefiningOp()) {
+            if (dyn_cast<memref::ReshapeOp>(operation) || 
+                dyn_cast<memref::ExpandShapeOp>(operation) ||
+                dyn_cast<memref::CollapseShapeOp>(operation)) {
+                op_src_memref = operation->getOperand(0);
+            }
+          }
           unsigned memRefRankSrc =
-              llvm::cast<MemRefType>(sink_op_memref_copy.getSource().getType())
-                  .getRank();
+              llvm::cast<MemRefType>(op_src_memref.getType()).getRank();
           partialMemref tileSrc = createPartialMemref(
-              sink_op_memref_copy.getSource(), memRefRankSrc);
+              op_src_memref, memRefRankSrc);
           sink_op_memref_reads.push_back(tileSrc);
           unsigned memRefRankDst =
               llvm::cast<MemRefType>(sink_op_memref_copy.getTarget().getType())
@@ -350,11 +374,20 @@ public:
         // If the sink op is an air::MemcpyInterface op
         else if (auto sink_op_memcpy =
                      mlir::dyn_cast<xilinx::air::MemcpyInterface>(sink_op)) {
-          if (sink_op_memcpy.getSrcMemref()) {
+          auto op_src_memref = sink_op_memcpy.getSrcMemref();
+          if (op_src_memref) {
+            if (auto operation = op_src_memref.getDefiningOp()) {
+                if (dyn_cast<memref::ReshapeOp>(operation) || 
+                    dyn_cast<memref::ExpandShapeOp>(operation) ||
+                    dyn_cast<memref::CollapseShapeOp>(operation)) {
+                    op_src_memref = operation->getOperand(0);
+                }
+            }
+          }
+          if (llvm::isa<MemRefType>(op_src_memref.getType())) {
             SmallVector<Value, 2> src_indices;
             unsigned numDimsSrc =
-                llvm::cast<MemRefType>(sink_op_memcpy.getSrcMemref().getType())
-                    .getRank();
+                llvm::cast<MemRefType>(op_src_memref.getType()).getRank();
             for (unsigned i = 0; i < sink_op_memcpy.getSrcOffsets().size(); i++)
               sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcOffsets()[i]);
             for (unsigned i = 0; i < sink_op_memcpy.getSrcSizes().size(); i++)
@@ -372,7 +405,7 @@ public:
               }
             }
             partialMemref tile_in = createPartialMemref(
-                sink_op_memcpy.getSrcMemref(), numDimsSrc, src_indices);
+                op_src_memref, numDimsSrc, src_indices);
             sink_op_memref_reads.push_back(tile_in);
           }
           if (sink_op_memcpy.getDstMemref()) {
@@ -428,6 +461,13 @@ public:
         // If the sink op is an unknown op
         else {
           for (auto sink_op_op : sink_op->getOperands()) {
+            if (auto operation = sink_op_op.getDefiningOp()) {
+                if (dyn_cast<memref::ReshapeOp>(operation) || 
+                    dyn_cast<memref::ExpandShapeOp>(operation) ||
+                    dyn_cast<memref::CollapseShapeOp>(operation)) {
+                    sink_op_op = operation->getOperand(0);
+                }
+            }
             if (llvm::isa<MemRefType>(sink_op_op.getType())) {
               unsigned memRefRank =
                   llvm::cast<MemRefType>(sink_op_op.getType()).getRank();
@@ -494,6 +534,9 @@ public:
         }
       });
     }
+
+    llvm::errs() << "\n\nBEFORE THIRD TRAVERSAL:\n";
+    module.dump();
 
     // 3rd traversal: perform transitive reduction on dependency graph.
 
@@ -660,6 +703,28 @@ private:
     Block *async_region_bb = builder.createBlock(&async_region.getBody());
     builder.setInsertionPointToStart(async_region_bb);
 
+    // Handle cases when the operand(s) of the given op that is 
+    // reshape/expand/collapse ops.
+    for (unsigned idx = 0; idx < op->getNumOperands(); idx++) {
+        auto operand = op->getOperand(idx);
+        auto alt_shape_op = operand.getDefiningOp();
+        llvm::errs() << "alt_shape_op:\n";
+        alt_shape_op->dump();
+        if (dyn_cast<memref::ReshapeOp>(alt_shape_op) || 
+            dyn_cast<memref::ExpandShapeOp>(alt_shape_op) ||
+            dyn_cast<memref::CollapseShapeOp>(alt_shape_op)) {
+            assert(alt_shape_op->getNumResults() == 1 &&
+                    "Number of results of shape changing op == 1");
+            auto *cloned_op = builder.insert(alt_shape_op->clone());
+            op->setOperand(idx, cloned_op->getResult(0));
+            auto new_shape_val = alt_shape_op->getResult(0);
+            if (new_shape_val.use_empty()) {
+                // Erase this shape altering op
+                alt_shape_op->erase();
+            }
+        }
+    }
+    
     builder.clone(*op);
     builder.create<xilinx::air::ExecuteTerminatorOp>(builder.getUnknownLoc());
 
