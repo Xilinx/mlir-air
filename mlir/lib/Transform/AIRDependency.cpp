@@ -288,6 +288,13 @@ public:
         // If the sink op is linalg op
         if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
           for (auto ins_value : sink_op_linalgop.getDpsInputs()) {
+            if (auto operation = ins_value.getDefiningOp()) {
+                if (dyn_cast<memref::ReshapeOp>(operation) || 
+                    dyn_cast<memref::ExpandShapeOp>(operation) ||
+                    dyn_cast<memref::CollapseShapeOp>(operation)) {
+                    ins_value = operation->getOperand(0);
+                }
+            }
             if (llvm::isa<MemRefType>(ins_value.getType())) {
               unsigned memRefRank =
                   llvm::cast<MemRefType>(ins_value.getType()).getRank();
