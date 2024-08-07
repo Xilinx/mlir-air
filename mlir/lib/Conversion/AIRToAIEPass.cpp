@@ -3429,13 +3429,13 @@ public:
     auto getLibFnOperands = [](linalg::LinalgOp op) {
       SmallVector<Value> operands;
       for (auto operand : op->getOperands()) {
-        if (auto operation = operand.getDefiningOp()) {
-          if (dyn_cast<memref::ReshapeOp>(operation) ||
-              dyn_cast<memref::ExpandShapeOp>(operation) ||
-              dyn_cast<memref::CollapseShapeOp>(operation)) {
+        auto operation = operand.getDefiningOp();
+        if (isa_and_present<
+                    memref::ReshapeOp, 
+                    memref::ExpandShapeOp, 
+                    memref::CollapseShapeOp>(operation)) {
             operands.push_back(operation->getOperand(0));
             continue;
-          }
         }
         operands.push_back(operand);
       }
