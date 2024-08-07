@@ -254,9 +254,6 @@ public:
       });
     }
 
-    llvm::errs() << "\n\nBEFORE THE 2ND TRAVERSAL\n";
-    module.dump();
-
     // 2nd traversal: trace deps among async execute regions; build a dep graph
 
     for (auto f : module.getOps<func::FuncOp>()) {
@@ -284,8 +281,6 @@ public:
         SmallVector<Value, 1> sink_op_scalar_outs;
         // If the sink op is linalg op
         if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
-          llvm::errs() << "sink_op_linalgop: \n";
-          sink_op_linalgop.dump();
           for (auto ins_value : sink_op_linalgop.getDpsInputs()) {
             if (auto operation = ins_value.getDefiningOp()) {
               if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
@@ -335,8 +330,6 @@ public:
         // If the sink op is memref::dealloc
         else if (auto sink_op_memdealloc =
                      dyn_cast<memref::DeallocOp>(sink_op)) {
-          llvm::errs() << "sink_op_memdealloc: \n";
-          sink_op_memdealloc.dump();
           mlir::Value sink_op_memref = sink_op_memdealloc.getMemref();
           if (auto operation = sink_op_memref.getDefiningOp()) {
             if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
@@ -354,8 +347,6 @@ public:
 
         // If the sink op is memref::copy
         else if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)) {
-          llvm::errs() << "sink_op_memref_copy: \n";
-          sink_op_memref_copy.dump();
           mlir::Value op_src_memref = sink_op_memref_copy.getSource();
           if (auto operation = op_src_memref.getDefiningOp()) {
             if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
@@ -380,11 +371,7 @@ public:
         // If the sink op is an air::MemcpyInterface op
         else if (auto sink_op_memcpy =
                      mlir::dyn_cast<xilinx::air::MemcpyInterface>(sink_op)) {
-          llvm::errs() << "sink_op_memcpy: \n";
-          sink_op_memcpy.dump();
           auto op_src_memref = sink_op_memcpy.getSrcMemref();
-          llvm::errs() << "op_src_memref:\n";
-          op_src_memref.dump();
           if (op_src_memref) {
             if (auto operation = op_src_memref.getDefiningOp()) {
               if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
@@ -471,7 +458,6 @@ public:
 
         // If the sink op is an unknown op
         else {
-          llvm::errs() << "ELSE \n";
           for (auto sink_op_op : sink_op->getOperands()) {
             if (auto operation = sink_op_op.getDefiningOp()) {
               if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
@@ -546,9 +532,6 @@ public:
       });
     }
 
-    llvm::errs() << "\n\nBEFORE THE 3RD TRAVERSAL\n";
-    module.dump();
-
     // 3rd traversal: perform transitive reduction on dependency graph.
 
     std::vector<size_t> id_map(asyncExecuteGraph.numVertices());
@@ -576,9 +559,6 @@ public:
         }
       });
     }
-
-    llvm::errs() << "\n\nBEFORE THE 4TH TRAVERSAL\n";
-    module.dump();
 
     // 4th traversal: loop-carried deps.
     // Add wait_all events to collect sinks in loop bodies. Add iter_args to scp
