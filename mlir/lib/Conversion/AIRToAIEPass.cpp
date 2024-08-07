@@ -535,9 +535,8 @@ void createAIEModulesAndOutlineCores(
                      StringAttr::get(builder.getContext(), segment_name));
 
     aie_dev.getRegion().emplaceBlock();
-    seg.walk([&](xilinx::air::HerdOp h) {
-        aie_modules.push_back({aie_dev, h});
-    });
+    seg.walk(
+        [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
       outlineAIEMemtiles(builder, aie_dev, seg, options);
@@ -3430,12 +3429,10 @@ public:
       SmallVector<Value> operands;
       for (auto operand : op->getOperands()) {
         auto operation = operand.getDefiningOp();
-        if (isa_and_present<
-                    memref::ReshapeOp, 
-                    memref::ExpandShapeOp, 
-                    memref::CollapseShapeOp>(operation)) {
-            operands.push_back(operation->getOperand(0));
-            continue;
+        if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
+                            memref::CollapseShapeOp>(operation)) {
+          operands.push_back(operation->getOperand(0));
+          continue;
         }
         operands.push_back(operand);
       }
@@ -3532,9 +3529,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /*.trace_size = */ 0,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
-  p.walk([&](xilinx::air::HerdOp h) {
-      aie_modules.push_back({aie_module, h});
-  });
+  p.walk(
+      [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
   std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
