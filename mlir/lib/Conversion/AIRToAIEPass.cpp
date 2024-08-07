@@ -3425,13 +3425,32 @@ public:
     if (fnName.empty())
       return failure();
 
+    auto getLibFnOperands = [](linalg::LinalgOp op) {
+        SmallVector<Value> operands;
+        for (auto operand : op->getOperands()) {
+            if (auto operation = operand.getDefiningOp()) {
+                if (dyn_cast<memref::ReshapeOp>(operation) || 
+                    dyn_cast<memref::ExpandShapeOp>(operation) ||
+                    dyn_cast<memref::CollapseShapeOp>(operation)) {
+                    operands.push_back(operation->getOperand(0));
+                    continue;
+                }
+            } 
+            operands.push_back(operand);
+        }
+        return operands;
+    };
+
+    auto libFnOperands = getLibFnOperands(op);
+
     // fnName is a dynamic std::string, unique it via a SymbolRefAttr.
     FlatSymbolRefAttr fnNameAttr =
         SymbolRefAttr::get(rewriter.getContext(), fnName);
     auto module = op->getParentOfType<ModuleOp>();
     auto sym = module.lookupSymbol(fnNameAttr.getAttr());
     if (!sym) {
-      auto libFnType = rewriter.getFunctionType(op->getOperandTypes(), {});
+      auto libFnType = rewriter.getFunctionType(
+            ValueRange(ArrayRef<Value>(libFnOperands)).getTypes(), {});
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(module.getBody(),
                                  std::prev(module.getBody()->end()));
@@ -3453,7 +3472,8 @@ public:
     }
 
     rewriter.replaceOpWithNewOp<func::CallOp>(op, fnNameAttr.getValue(),
-                                              TypeRange(), op->getOperands());
+                                              TypeRange(), 
+                                              ValueRange(ArrayRef<Value>(libFnOperands)));
     return success();
   }
 
