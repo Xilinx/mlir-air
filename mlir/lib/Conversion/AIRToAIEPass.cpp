@@ -535,9 +535,8 @@ void createAIEModulesAndOutlineCores(
                      StringAttr::get(builder.getContext(), segment_name));
 
     aie_dev.getRegion().emplaceBlock();
-    seg.walk([&](xilinx::air::HerdOp h) {
-      aie_modules.push_back({aie_dev, h});
-    });
+    seg.walk(
+        [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
 
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
@@ -3428,19 +3427,19 @@ public:
     // Function to get operands of the library call that will
     // replace the given linalg op.
     auto getLibFnOperands = [](linalg::LinalgOp op) {
-        SmallVector<Value> operands;
-        for (auto operand : op->getOperands()) {
-            if (auto operation = operand.getDefiningOp()) {
-                if (dyn_cast<memref::ReshapeOp>(operation) || 
-                    dyn_cast<memref::ExpandShapeOp>(operation) ||
-                    dyn_cast<memref::CollapseShapeOp>(operation)) {
-                    operands.push_back(operation->getOperand(0));
-                    continue;
-                }
-            } 
-            operands.push_back(operand);
+      SmallVector<Value> operands;
+      for (auto operand : op->getOperands()) {
+        if (auto operation = operand.getDefiningOp()) {
+          if (dyn_cast<memref::ReshapeOp>(operation) ||
+              dyn_cast<memref::ExpandShapeOp>(operation) ||
+              dyn_cast<memref::CollapseShapeOp>(operation)) {
+            operands.push_back(operation->getOperand(0));
+            continue;
+          }
         }
-        return operands;
+        operands.push_back(operand);
+      }
+      return operands;
     };
 
     auto libFnOperands = getLibFnOperands(op);
@@ -3452,7 +3451,7 @@ public:
     auto sym = module.lookupSymbol(fnNameAttr.getAttr());
     if (!sym) {
       auto libFnType = rewriter.getFunctionType(
-            ValueRange(ArrayRef<Value>(libFnOperands)).getTypes(), {});
+          ValueRange(ArrayRef<Value>(libFnOperands)).getTypes(), {});
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(module.getBody(),
                                  std::prev(module.getBody()->end()));
@@ -3473,9 +3472,9 @@ public:
       funcOp.setPrivate();
     }
 
-    rewriter.replaceOpWithNewOp<func::CallOp>(op, fnNameAttr.getValue(),
-                                              TypeRange(), 
-                                              ValueRange(ArrayRef<Value>(libFnOperands)));
+    rewriter.replaceOpWithNewOp<func::CallOp>(
+        op, fnNameAttr.getValue(), TypeRange(),
+        ValueRange(ArrayRef<Value>(libFnOperands)));
 
     return success();
   }
@@ -3533,9 +3532,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /*.trace_size = */ 0,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
-  p.walk([&](xilinx::air::HerdOp h) {
-    aie_modules.push_back({aie_module, h});
-  });
+  p.walk(
+      [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
   std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
