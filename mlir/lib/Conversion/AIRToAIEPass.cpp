@@ -3474,7 +3474,6 @@ public:
         op, fnNameAttr.getValue(), TypeRange(),
         ValueRange(ArrayRef<Value>(libFnOperands)));
 
-    module.dump();
     return success();
   }
 
