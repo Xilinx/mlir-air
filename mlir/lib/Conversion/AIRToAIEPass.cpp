@@ -29,7 +29,6 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
 
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
@@ -3426,6 +3425,8 @@ public:
     if (fnName.empty())
       return failure();
 
+    // Function to get operands of the library call that will
+    // replace the given linalg op.
     auto getLibFnOperands = [](linalg::LinalgOp op) {
         SmallVector<Value> operands;
         for (auto operand : op->getOperands()) {
