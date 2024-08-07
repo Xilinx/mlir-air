@@ -1236,7 +1236,7 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
   int iter_count = 0;
   Graph::VertexId v_prev = 0;
   Graph::VertexId v = 0;
-  Operation *pointer_op = op; 
+  Operation *pointer_op = op;
   int num_non_shape_alt_ops = 0;
   for (auto &child_op : op->getRegions().front().getOps()) {
     if (auto linalg_child_op = dyn_cast<linalg::LinalgOp>(child_op)) {
@@ -1283,13 +1283,12 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
                           "ExecuteTerminatorOp", graphNodeProperties("compute"),
                           G, dep_ctx, pointer_op);
-    } else if (dyn_cast<memref::ReshapeOp>(child_op) ||
-                dyn_cast<memref::ExpandShapeOp>(child_op) ||
-                dyn_cast<memref::CollapseShapeOp>(child_op)) {
-        v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
-                        "ReshapeOp", graphNodeProperties("data"),
-                        G, dep_ctx, pointer_op);
-        num_non_shape_alt_ops--;
+    } else if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
+                               memref::CollapseShapeOp>(child_op)) {
+      v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
+                          "ReshapeOp", graphNodeProperties("data"), G, dep_ctx,
+                          pointer_op);
+      num_non_shape_alt_ops--;
     } else {
       v = addVertexFromOp(
           &child_op, dep_ctx.ExecuteOpID, "execute", air::to_string(&child_op),
@@ -1299,7 +1298,7 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
     if (iter_count > 0)
       G->g.addEdge(v_prev, v);
     if (num_non_shape_alt_ops > 0)
-        pointer_op = nullptr;
+      pointer_op = nullptr;
     v_prev = v;
     iter_count++;
     num_non_shape_alt_ops++;
@@ -1935,17 +1934,16 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     SmallVector<Value, 1> sink_op_scalar_ins;
     SmallVector<Value, 1> sink_op_scalar_outs;
     // auto &bb = exec_op.getBody().front();
-    //Operation &child_op = exec_op.getBody().front().getOperations().front();
+    // Operation &child_op = exec_op.getBody().front().getOperations().front();
     // Operation &child_op = exec_op.getOps().begin();
     Operation *child_op = nullptr;
     // Pick the first op that is not a shape altering op.
     for (auto &op : exec_op.getBody().front().getOperations()) {
-        child_op =  &op;
-        if (!dyn_cast<memref::ReshapeOp>(child_op) && 
-            !dyn_cast<memref::ExpandShapeOp>(child_op) &&
-            !dyn_cast<memref::CollapseShapeOp>(child_op)) {
-            break;
-        } 
+      child_op = &op;
+      if (!isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
+                           memref::CollapseShapeOp>(child_op)) {
+        break;
+      }
     }
     depTracer.getPartialMemrefFromOp(child_op, sink_op_memref_reads,
                                      sink_op_memref_writes, sink_op_scalar_ins,
