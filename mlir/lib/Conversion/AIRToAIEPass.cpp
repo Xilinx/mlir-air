@@ -29,6 +29,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Conversion/LLVMCommon/MemRefBuilder.h"
 
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
@@ -3474,6 +3475,25 @@ public:
     rewriter.replaceOpWithNewOp<func::CallOp>(op, fnNameAttr.getValue(),
                                               TypeRange(), 
                                               ValueRange(ArrayRef<Value>(libFnOperands)));
+
+    // Erase ops that will be rendered redundant by this pass
+    SmallVector<Operation *> toBeErased;
+    assert(libFnOperands.size() == op->getNumOperands()
+            && "Mismatch between linalg op and library call replacing it.");
+    for (unsigned i = 0; i < libFnOperands.size(); i++) {
+        auto orgOperand = op->getOperand(i);
+        if (orgOperand != libFnOperands[i]) {
+            if (orgOperand.hasOneUse()) {
+                auto org_op = orgOperand.getDefiningOp();
+                assert(org_op != nullptr 
+                    && "Only shape altering operations differ from operands "
+                       "of the replacing library call.");
+                org_op->dropAllUses();
+                org_op->erase();
+            }
+        }
+    }
+
     return success();
   }
 
