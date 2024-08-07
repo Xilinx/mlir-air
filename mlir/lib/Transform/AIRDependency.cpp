@@ -255,9 +255,6 @@ public:
       });
     }
 
-    llvm::errs() << "\n\nBEFORE SECOND TRAVERSAL:\n";
-    module.dump();
-
     // 2nd traversal: trace deps among async execute regions; build a dep graph
 
     for (auto f : module.getOps<func::FuncOp>()) {
@@ -283,8 +280,6 @@ public:
         SmallVector<partialMemref, 1> sink_op_memref_writes;
         SmallVector<Value, 1> sink_op_scalar_ins;
         SmallVector<Value, 1> sink_op_scalar_outs;
-        llvm::errs() << "SINK OP:\n";
-        sink_op->dump();
         // If the sink op is linalg op
         if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
           for (auto ins_value : sink_op_linalgop.getDpsInputs()) {
@@ -542,9 +537,6 @@ public:
       });
     }
 
-    llvm::errs() << "\n\nBEFORE THIRD TRAVERSAL:\n";
-    module.dump();
-
     // 3rd traversal: perform transitive reduction on dependency graph.
 
     std::vector<size_t> id_map(asyncExecuteGraph.numVertices());
@@ -715,8 +707,6 @@ private:
     for (unsigned idx = 0; idx < op->getNumOperands(); idx++) {
         auto operand = op->getOperand(idx);
         auto alt_shape_op = operand.getDefiningOp();
-        llvm::errs() << "alt_shape_op:\n";
-        alt_shape_op->dump();
         if (dyn_cast<memref::ReshapeOp>(alt_shape_op) || 
             dyn_cast<memref::ExpandShapeOp>(alt_shape_op) ||
             dyn_cast<memref::CollapseShapeOp>(alt_shape_op)) {
