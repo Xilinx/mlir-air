@@ -3531,7 +3531,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
   p.walk([&](xilinx::air::HerdOp h) {
-    aie_modules.push_back({aie_module, h}); 
+    aie_modules.push_back({aie_module, h});
   });
   std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
