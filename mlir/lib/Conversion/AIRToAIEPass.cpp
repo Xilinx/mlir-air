@@ -538,7 +538,6 @@ void createAIEModulesAndOutlineCores(
     seg.walk([&](xilinx::air::HerdOp h) {
       aie_modules.push_back({aie_dev, h});
     });
-
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
       outlineAIEMemtiles(builder, aie_dev, seg, options);
@@ -3425,13 +3424,32 @@ public:
     if (fnName.empty())
       return failure();
 
+    // Function to get operands of the library call that will
+    // replace the given linalg op.
+    auto getLibFnOperands = [](linalg::LinalgOp op) {
+      SmallVector<Value> operands;
+      for (auto operand : op->getOperands()) {
+        auto operation = operand.getDefiningOp();
+        if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
+                            memref::CollapseShapeOp>(operation)) {
+          operands.push_back(operation->getOperand(0));
+          continue;
+        }
+        operands.push_back(operand);
+      }
+      return operands;
+    };
+
+    auto libFnOperands = getLibFnOperands(op);
+
     // fnName is a dynamic std::string, unique it via a SymbolRefAttr.
     FlatSymbolRefAttr fnNameAttr =
         SymbolRefAttr::get(rewriter.getContext(), fnName);
     auto module = op->getParentOfType<ModuleOp>();
     auto sym = module.lookupSymbol(fnNameAttr.getAttr());
     if (!sym) {
-      auto libFnType = rewriter.getFunctionType(op->getOperandTypes(), {});
+      auto libFnType = rewriter.getFunctionType(
+          ValueRange(ArrayRef<Value>(libFnOperands)).getTypes(), {});
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(module.getBody(),
                                  std::prev(module.getBody()->end()));
@@ -3452,8 +3470,10 @@ public:
       funcOp.setPrivate();
     }
 
-    rewriter.replaceOpWithNewOp<func::CallOp>(op, fnNameAttr.getValue(),
-                                              TypeRange(), op->getOperands());
+    rewriter.replaceOpWithNewOp<func::CallOp>(
+        op, fnNameAttr.getValue(), TypeRange(),
+        ValueRange(ArrayRef<Value>(libFnOperands)));
+
     return success();
   }
 
