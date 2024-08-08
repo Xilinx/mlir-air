@@ -1933,11 +1933,8 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     SmallVector<air::partialMemref, 1> sink_op_memref_writes;
     SmallVector<Value, 1> sink_op_scalar_ins;
     SmallVector<Value, 1> sink_op_scalar_outs;
-    // auto &bb = exec_op.getBody().front();
-    // Operation &child_op = exec_op.getBody().front().getOperations().front();
-    // Operation &child_op = exec_op.getOps().begin();
-    Operation *child_op = nullptr;
     // Pick the first op that is not a shape altering op.
+    Operation *child_op = nullptr;
     for (auto &op : exec_op.getBody().front().getOperations()) {
       child_op = &op;
       if (!isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
