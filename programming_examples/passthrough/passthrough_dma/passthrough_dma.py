@@ -52,13 +52,21 @@ def build_module(vector_size, num_subvectors):
                 def herd_body(_tx, _ty, _sx, _sy, c, d):
 
                     # Process each subvector individually
-                    for _i in range_(num_subvectors):
+                    for _i in range_(
+                        0, num_subvectors * lineWidthInBytes, lineWidthInBytes
+                    ):
                         # We must allocate a buffer of image size for the input/output
                         tensor_in = AllocOp(tensor_type, [], [])
                         tensor_out = AllocOp(tensor_type, [], [])
 
                         # Place the input image (a) into the L1 memory region
-                        dma_memcpy_nd(tensor_in, c)
+                        dma_memcpy_nd(
+                            tensor_in,
+                            c,
+                            src_offsets=[_i],
+                            src_sizes=[1024],
+                            src_strides=[1],
+                        )
 
                         for j in range_(lineWidthInBytes):
                             # Load the input value
@@ -68,7 +76,13 @@ def build_module(vector_size, num_subvectors):
                             store(val, tensor_out, [j])
                             yield_([])
 
-                        dma_memcpy_nd(d, tensor_out)
+                        dma_memcpy_nd(
+                            d,
+                            tensor_out,
+                            dst_offsets=[_i],
+                            dst_sizes=[1024],
+                            dst_strides=[1],
+                        )
 
                         # Deallocate our L1 buffers
                         DeallocOp(tensor_in)
