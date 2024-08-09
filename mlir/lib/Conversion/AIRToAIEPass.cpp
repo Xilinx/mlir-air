@@ -2420,6 +2420,14 @@ public:
                                              memref_ty, nullptr, false,
                                              nullptr);
           }
+        } else {
+          // Just generate a SHIM DMA op
+          builder.create<AIE::ShimDMAAllocationOp>(
+              builder.getUnknownLoc(), SymbolRefAttr::get(ctx, dma_name_attr),
+              AIE::DMAChannelDirAttr::get(ctx, dir),
+              builder.getI64IntegerAttr(chan),
+              builder.getI64IntegerAttr(tileOp.getCol()),
+              builder.getBoolAttr(false));
         }
       }
     }
