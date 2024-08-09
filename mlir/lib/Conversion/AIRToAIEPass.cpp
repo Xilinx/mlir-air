@@ -2451,7 +2451,6 @@ public:
       AIE::DMAChannelDir dir =
           isMM2S ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
 
-      // llvm::SmallSet<int> unused_original_id;
       for (int64_t id : t.dma_id) {
         int original_id = chan_renumber_reverse_map.size()
                               ? chan_renumber_reverse_map[id]
