@@ -33,7 +33,7 @@
 // CHECK:    aie.use_lock(%[[VAL_2]], Release, 1)
 // CHECK:    aie.end
 // CHECK:  aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
-// CHECK-NOT:  aie.shim_dma_allocation
+// CHECK:  aie.shim_dma_allocation @airMemcpyId0(MM2S, 0, 2)
 // CHECK: @func1
 func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
