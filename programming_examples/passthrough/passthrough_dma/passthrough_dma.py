@@ -64,7 +64,7 @@ def build_module(vector_size, num_subvectors):
                             tensor_in,
                             c,
                             src_offsets=[_i],
-                            src_sizes=[1024],
+                            src_sizes=[lineWidthInBytes],
                             src_strides=[1],
                         )
 
@@ -80,7 +80,7 @@ def build_module(vector_size, num_subvectors):
                             d,
                             tensor_out,
                             dst_offsets=[_i],
-                            dst_sizes=[1024],
+                            dst_sizes=[lineWidthInBytes],
                             dst_strides=[1],
                         )
 
