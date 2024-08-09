@@ -1080,3 +1080,36 @@ module {
     return
   }
 }
+
+
+// -----
+
+// Ensure redundant shim DMA allocations do not occur
+//
+// CHECK:         aie.flow
+// CHECK-NEXT: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 2)
+// CHECK-NEXT: memref.global "public" @airMemcpyId2 : memref<1024xi32, 1>
+// CHECK: @func15
+air.channel @channel_2 [1, 1]
+air.channel @channel_3 [1, 1]
+func.func @func15(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c512 = arith.constant 512 : index
+  %c1024 = arith.constant 1024 : index
+  air.channel.put @channel_2[] (%arg0[] [] []) {id = 1 : i32} : (memref<1024xi32>)
+  air.segment @segment0 {
+    %herd_cols = arith.constant 1 : index
+    %herd_rows = arith.constant 1 : index
+    %memtile0 = memref.alloc() : memref<1024xi32, 1>
+    %memtile1 = memref.alloc() : memref<1024xi32, 1>
+    air.channel.get @channel_2[] (%memtile0[] [] []) {id = 2 : i32} : (memref<1024xi32, 1>)
+    air.channel.get @channel_2[] (%memtile1[] [] []) {id = 3 : i32} : (memref<1024xi32, 1>)
+    memref.dealloc %memtile0 : memref<1024xi32, 1>
+    air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) attributes { sym_name="herd4"} {
+      %buf0 = memref.alloc() : memref<1024xi32, 2>
+      memref.dealloc %buf0 : memref<1024xi32, 2>
+    }
+  }
+  return
+}
