@@ -86,16 +86,25 @@ def build_module():
             # The arguments are still the input and the output
             @segment(name="seg")
             def segment_body():
+                """
+                # Check math for selecting next tile values
+                my_set = set()
+                for tile_height in range(IMAGE_HEIGHT // TILE_HEIGHT):
+                    for tile_width in range(IMAGE_WIDTH // TILE_WIDTH):
+                        tw_next = (tile_width + 1) % (IMAGE_WIDTH // TILE_WIDTH)
+                        th_next = (tile_height + ((tile_width + 1 ) // (IMAGE_WIDTH // TILE_WIDTH))) % (IMAGE_HEIGHT // TILE_HEIGHT)
+                        print(f"(th={tile_height}, tw={tile_width}) (th_next={th_next}, tw_next={tw_next})")
+                        assert tw_next >= 0 and tw_next <= (IMAGE_WIDTH // TILE_WIDTH)
+                        assert th_next >= 0 and th_next <= (IMAGE_HEIGHT // TILE_HEIGHT)
+                        my_set.add((tw_next, th_next))
+                assert len(my_set) == ((IMAGE_WIDTH // TILE_WIDTH) * (IMAGE_HEIGHT // TILE_HEIGHT))
+                """
 
                 @herd(
                     name="xaddherd",
                     sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
                 )
                 def herd_body(tile_height, tile_width, size_height, size_width):
-                    """
-                    tw_next = (tw + 1) % sw
-                    th_next = (th + ((tw + 1 ) // sw)) % sh
-                    """
                     width_next = AffineMap.get(
                         0,
                         2,
@@ -243,8 +252,35 @@ if __name__ == "__main__":
         exit(0)
 
     input_matrix = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
-    # TODO: this check is NOT yet correct
     output_matrix = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
+
+    def get_next_tile_num(tile_height, tile_width):
+        # This should be the same math for how tile next values are calculated in the herd
+        tw_next = (tile_width + 1) % (IMAGE_WIDTH // TILE_WIDTH)
+        th_next = (tile_height + ((tile_width + 1) // (IMAGE_WIDTH // TILE_WIDTH))) % (
+            IMAGE_HEIGHT // TILE_HEIGHT
+        )
+        assert tw_next >= 0 and tw_next <= (IMAGE_WIDTH // TILE_WIDTH)
+        assert th_next >= 0 and th_next <= (IMAGE_HEIGHT // TILE_HEIGHT)
+        return th_next, tw_next
+
+    # Create a map of current tile coordinates to the tile_num of the "previous" tile num
+    tile_num_map = {}
+    for tile_height in range(IMAGE_HEIGHT // TILE_HEIGHT):
+        for tile_width in range(IMAGE_WIDTH // TILE_WIDTH):
+            next_tile_coords = get_next_tile_num(tile_height, tile_width)
+            tile_num_map[next_tile_coords] = (
+                # This should be the same math for how tile_num is calculated in the herd
+                tile_height * (IMAGE_WIDTH // TILE_WIDTH)
+                + tile_width
+            )
+
+    # Add the tile num of the "previous" tile to each value in each tile in the output data
+    for i in range(IMAGE_HEIGHT):
+        for j in range(IMAGE_WIDTH):
+            output_matrix[i, j] = (
+                input_matrix[i, j] + tile_num_map[(i // TILE_HEIGHT, j // TILE_WIDTH)]
+            )
 
     runner = XRTRunner(verbose=args.verbose, experimental_passes=False)
     exit(
