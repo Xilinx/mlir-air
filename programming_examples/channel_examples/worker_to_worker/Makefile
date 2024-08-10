@@ -11,7 +11,7 @@ print:
 
 run:
 	mkdir -p ${srcdir}/build
-	cd ${srcdir}/build && ${powershell} python3 ${srcdir}/worker_to_worker.py -v
+	cd ${srcdir}/build && ${powershell} python3 ${srcdir}/worker_to_worker.py
 
 clean:
 	rm -rf ${srcdir}/build ${srcdir}/__pycache__
