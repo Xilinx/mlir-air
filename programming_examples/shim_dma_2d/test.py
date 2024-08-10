@@ -4,10 +4,7 @@
 # SPDX-License-Identifier: MIT
 
 import numpy as np
-from bfloat16 import bfloat16
 import pyxrt as xrt
-import sys
-import time
 import os
 import os.path
 import argparse

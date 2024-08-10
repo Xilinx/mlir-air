@@ -13,22 +13,20 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 range_ = for_
 
 VECTOR_LEN = 32
-VECTOR_SIZE = [VECTOR_LEN, 1]
-
 INOUT_DATATYPE = np.int32
 
 
 @module_builder
 def build_module():
-    xrt_dtype = INOUT_DATATYPE
-    memrefTyInOut = MemRefType.get(VECTOR_SIZE, xrt_dtype)
+    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    memrefTyInOut = T.memref(VECTOR_LEN, xrt_dtype)
 
     # We want to store our data in L1 memory
     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
 
     # This is the type definition of the tile
     image_type_l1 = MemRefType.get(
-        shape=VECTOR_SIZE,
+        shape=[VECTOR_LEN],
         element_type=xrt_dtype,
         memory_space=mem_space_l1,
     )
@@ -62,11 +60,10 @@ def build_module():
                     ChannelGet("ChanInA", image_in_a)
 
                     # Access every value in the tile
-                    c0 = arith.ConstantOp.create_index(0)
                     for j in range_(VECTOR_LEN):
-                        val_a = load(image_in_a, [c0, j])
-                        val_outa = arith.addi(val_a, arith.constant(xrt_dtype, 10))
-                        store(val_outa, image_out_a, [c0, j])
+                        val_a = load(image_in_a, [j])
+                        val_out_a = arith.addi(val_a, arith.constant(xrt_dtype, 3))
+                        store(val_out_a, image_out_a, [j])
                         yield_([])
 
                     ChannelPut("ChanOutC", image_out_a)
@@ -84,11 +81,10 @@ def build_module():
                     ChannelGet("ChanInB", image_in_b)
 
                     # Access every value in the tile
-                    c0 = arith.ConstantOp.create_index(0)
                     for j in range_(VECTOR_LEN):
-                        val_b = load(image_in_b, [c0, j])
+                        val_b = load(image_in_b, [j])
                         val_outb = arith.addi(arith.constant(xrt_dtype, 10), val_b)
-                        store(val_outb, image_out_b, [c0, j])
+                        store(val_outb, image_out_b, [j])
                         yield_([])
 
                     ChannelPut("ChanOutD", image_out_b)
@@ -119,10 +115,10 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.full(VECTOR_SIZE, 2, dtype=INOUT_DATATYPE)
-    input_b = np.full(VECTOR_SIZE, 3, dtype=INOUT_DATATYPE)
-    output_c = np.full(VECTOR_SIZE, 12, dtype=INOUT_DATATYPE)
-    output_d = np.full(VECTOR_SIZE, 13, dtype=INOUT_DATATYPE)
+    input_a = np.full(VECTOR_LEN, 2, dtype=INOUT_DATATYPE)
+    input_b = np.full(VECTOR_LEN, 3, dtype=INOUT_DATATYPE)
+    output_c = np.full(VECTOR_LEN, 5, dtype=INOUT_DATATYPE)
+    output_d = np.full(VECTOR_LEN, 13, dtype=INOUT_DATATYPE)
 
     runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
     exit(

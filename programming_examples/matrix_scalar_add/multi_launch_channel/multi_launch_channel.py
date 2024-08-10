@@ -47,7 +47,7 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                     offset0 = tile_height * h
                     offset1 = tile_width * w
 
-                    # Put data into the channel tile by tile
+                    # Put one tile of input data into the channel
                     ChannelPut(
                         format_name("ChanIn", h, w),
                         a,
@@ -56,7 +56,7 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                         strides=[image_width, 1],
                     )
 
-                    # Write data back out to the channel tile by tile
+                    # Write one tile of data into the output
                     ChannelGet(
                         format_name("ChanOut", h, w),
                         b,
