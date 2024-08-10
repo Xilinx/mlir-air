@@ -86,19 +86,6 @@ def build_module():
             # The arguments are still the input and the output
             @segment(name="seg")
             def segment_body():
-                """
-                # Check math for selecting next tile values
-                my_set = set()
-                for tile_height in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                    for tile_width in range(IMAGE_WIDTH // TILE_WIDTH):
-                        tw_next = (tile_width + 1) % (IMAGE_WIDTH // TILE_WIDTH)
-                        th_next = (tile_height + ((tile_width + 1 ) // (IMAGE_WIDTH // TILE_WIDTH))) % (IMAGE_HEIGHT // TILE_HEIGHT)
-                        print(f"(th={tile_height}, tw={tile_width}) (th_next={th_next}, tw_next={tw_next})")
-                        assert tw_next >= 0 and tw_next <= (IMAGE_WIDTH // TILE_WIDTH)
-                        assert th_next >= 0 and th_next <= (IMAGE_HEIGHT // TILE_HEIGHT)
-                        my_set.add((tw_next, th_next))
-                assert len(my_set) == ((IMAGE_WIDTH // TILE_WIDTH) * (IMAGE_HEIGHT // TILE_HEIGHT))
-                """
 
                 @herd(
                     name="xaddherd",
