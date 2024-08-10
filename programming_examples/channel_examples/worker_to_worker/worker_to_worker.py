@@ -164,9 +164,7 @@ def build_module():
 
                     # We must allocate a buffer of tile size for the input/output
                     tile_in = AllocOp(tile_type, [], [])
-                    tile_in2 = AllocOp(tile_type, [], [])
                     tile_out = AllocOp(tile_type, [], [])
-                    tile_out2 = AllocOp(tile_type, [], [])
 
                     # Copy a tile from the input image
                     ChannelGet("ChanIn", tile_in, indices=[tile_height, tile_width])
@@ -192,6 +190,12 @@ def build_module():
                         indices=[tile_height_next, tile_width_next],
                     )
 
+                    DeallocOp(tile_in)
+                    DeallocOp(tile_out)
+
+                    tile_in2 = AllocOp(tile_type, [], [])
+                    tile_out2 = AllocOp(tile_type, [], [])
+
                     # Get an output tile from another worker
                     ChannelGet(
                         "SwitchTiles", tile_in2, indices=[tile_height, tile_width]
@@ -212,8 +216,6 @@ def build_module():
                     ChannelPut("ChanOut", tile_out2, indices=[tile_height, tile_width])
 
                     # Deallocate our L1 buffers
-                    DeallocOp(tile_in)
-                    DeallocOp(tile_out)
                     DeallocOp(tile_in2)
                     DeallocOp(tile_out2)
 
