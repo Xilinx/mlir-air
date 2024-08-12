@@ -6,7 +6,6 @@ import numpy as np
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
-from air.dialects import memref
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
@@ -22,36 +21,6 @@ IMAGE_OUT_SIZE = [IMAGE_OUT_HEIGHT, IMAGE_WIDTH]
 SINGLE_ROW = [1, IMAGE_WIDTH]
 
 INOUT_DATATYPE = np.int32
-"""
-Goals: Input in one large block
-[width, height] = [4, 8]
-example:
-0 0 0 0
-1 1 1 1
-2 2 2 2
-3 3 3 3
-4 4 4 4
-5 5 5 5
-6 6 6 6
-7 7 7 7
-
-Output: 3 rows added to each other
-[width, height] = [4, 8 - (window_size - 1)]
-tile_size = [1, 4]
-exmaple: 
-3 3 3 3 (rows: 0 1 2)
-6 6 6 6 (rows: 1 2 3)
-9 9 9 9 (rows: 2 3 4)
-12 12 12 12 (rows: 3 4 5)
-15 15 15 15 (rows: 4 5 6)
-18 18 18 18 (rows: 5 6 7)
-"""
-
-
-def memref_view(source, shape, dtype, shift):
-    byte_width_dtype = dtype.width // 8
-    byte_shift = arith.MulIOp(shift, arith.ConstantOp.create_index(byte_width_dtype))
-    return memref.subview(T.memref(*shape, dtype), source, byte_shift, [])
 
 
 @module_builder
@@ -62,8 +31,9 @@ def build_module():
 
     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
     image_buffer_l1 = MemRefType.get(
-        shape=(np.prod(IMAGE_IN_SIZE) * xrt_dtype.width,),
-        element_type=T.ui8(),
+        shape=IMAGE_IN_SIZE,
+        element_type=xrt_dtype,
+        memory_space=mem_space_l1,
     )
     image_row_l1 = MemRefType.get(
         shape=SINGLE_ROW,
@@ -91,48 +61,25 @@ def build_module():
                     image_in = AllocOp(image_buffer_l1, [], [])
                     ChannelGet("ChanIn", image_in)
 
-                    for i in range_(IMAGE_IN_HEIGHT - 2):
+                    for i in range_(IMAGE_OUT_HEIGHT):
                         row_out = AllocOp(image_row_l1, [], [])
 
-                        row0 = memref_view(
-                            image_in.operation,
-                            SINGLE_ROW,
-                            xrt_dtype,
-                            shift=arith.MulIOp(
-                                arith.ConstantOp.create_index(IMAGE_WIDTH), i
-                            ),
-                        )
-                        row1 = memref_view(
-                            image_in.operation,
-                            SINGLE_ROW,
-                            xrt_dtype,
-                            shift=arith.MulIOp(
-                                arith.ConstantOp.create_index(IMAGE_WIDTH),
-                                arith.AddIOp(arith.ConstantOp.create_index(1), i),
-                            ),
-                        )
-                        row2 = memref_view(
-                            image_in.operation,
-                            SINGLE_ROW,
-                            xrt_dtype,
-                            shift=arith.MulIOp(
-                                arith.ConstantOp.create_index(IMAGE_WIDTH),
-                                arith.AddIOp(arith.ConstantOp.create_index(2), i),
-                            ),
-                        )
+                        row0_index = i
+                        row1_index = arith.AddIOp(i, arith.ConstantOp.create_index(1))
+                        row2_index = arith.AddIOp(i, arith.ConstantOp.create_index(2))
 
                         for j in range_(IMAGE_WIDTH):
-                            val0 = load(row0, [j])
-                            val1 = load(row1, [j])
-                            val2 = load(row2, [j])
+                            val = load(image_in, [row0_index, j])
+                            val1 = load(image_in, [row1_index, j])
+                            val2 = load(image_in, [row2_index, j])
 
-                            val_out = arith.AddIOp(val0, val1)
-                            val_out = arith.AddIOp(val2, val_out)
-                            store(row_out, val_out, [j])
-
-                            ChannelPut("ChanOut", row_out)
-                            DeallocOp(row_out)
+                            val = arith.AddIOp(val, val1)
+                            val = arith.AddIOp(val, val2)
+                            store(val, row_out, [arith.ConstantOp.create_index(0), j])
                             yield_([])
+
+                        ChannelPut("ChanOut", row_out)
+                        DeallocOp(row_out)
                         yield_([])
 
                     DeallocOp(image_in)
@@ -165,11 +112,9 @@ if __name__ == "__main__":
     for i in range(IMAGE_IN_HEIGHT):
         for j in range(IMAGE_WIDTH):
             input_a[i, j] = i
-    print(input_a)
     for i in range(IMAGE_OUT_HEIGHT):
         for j in range(IMAGE_WIDTH):
             output_b[i, j] = (i + 1) * 3
-    print(output_b)
 
     runner = XRTRunner(verbose=args.verbose, experimental_passes=False)
     exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))
