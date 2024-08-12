@@ -13,6 +13,7 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
+"""
 IMAGE_WIDTH = 12
 IMAGE_HEIGHT = 4
 IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
@@ -34,7 +35,7 @@ def build_module():
 
     # Create an input/output channel pair per worker
     ChannelOp("ChanIn", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
-    ChannelOp("ChanOut", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
+    ChannelOp("ChanOut") #, size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
     ChannelOp(
         "SwitchTiles", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH]
     )
@@ -47,42 +48,37 @@ def build_module():
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
 
-            # Transform data into contiguous tiles
-            for tile_index0 in range_(IMAGE_HEIGHT // TILE_HEIGHT):
-                for tile_index1 in range_(IMAGE_WIDTH // TILE_WIDTH):
-                    # Convert the type of the tile size variable to the Index type
-                    tile_size0 = arith.ConstantOp.create_index(TILE_HEIGHT)
-                    tile_size1 = arith.ConstantOp.create_index(TILE_WIDTH)
-
-                    # Calculate the offset into the channel data, which is based on which tile index
-                    # we are at using tile_index0 and tile_index1 (our loop vars).
-                    # tile_index0 and tile_index1 are dynamic so we have to use specialized
-                    # operations do to calculations on them
-                    offset0 = arith.MulIOp(tile_size0, tile_index0)
-                    offset1 = arith.MulIOp(tile_size1, tile_index1)
+            # Transfer one tile of data per worker
+            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
+                for w in range(IMAGE_WIDTH // TILE_WIDTH):
+                    offset0 = TILE_HEIGHT * h
+                    offset1 = TILE_WIDTH * w
 
                     # Put data into the channel tile by tile
                     ChannelPut(
                         "ChanIn",
                         a,
-                        indices=[tile_index0, tile_index1],
+                        indices=[h, w],
                         offsets=[offset0, offset1],
                         sizes=TILE_SIZE,
                         strides=[IMAGE_WIDTH, 1],
                     )
+
+            # Transfer one tile of data per worker
+            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
+                for w in range(IMAGE_WIDTH // TILE_WIDTH):
+                    offset0 = TILE_HEIGHT * h
+                    offset1 = TILE_WIDTH * w
 
                     # Write data back out to the channel tile by tile
                     ChannelGet(
                         "ChanOut",
                         b,
-                        indices=[tile_index0, tile_index1],
+                        indices=[h, w],
                         offsets=[offset0, offset1],
                         sizes=TILE_SIZE,
                         strides=[IMAGE_WIDTH, 1],
                     )
-                    yield_([])
-                yield_([])
-
             # The arguments are still the input and the output
             @segment(name="seg")
             def segment_body():
@@ -91,7 +87,7 @@ def build_module():
                     name="xaddherd",
                     sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
                 )
-                def herd_body(tile_height, tile_width, size_height, size_width):
+                def herd_body(th, tw, _sx, _sy):
                     width_next = AffineMap.get(
                         0,
                         2,
@@ -163,19 +159,22 @@ def build_module():
                     tile_out = AllocOp(tile_type, [], [])
 
                     # Copy a tile from the input image
-                    ChannelGet("ChanIn", tile_in, indices=[tile_height, tile_width])
+                    ChannelGet("ChanIn", tile_in) #, indices=[tile_height, tile_width])
 
                     # Access every value in the tile
                     for i in range_(TILE_HEIGHT):
                         for j in range_(TILE_WIDTH):
                             # Load the input value from tile_in
                             val_in = load(tile_in, [i, j])
-                            val_out = arith.MulIOp(
+
+                            val_out = arith.AddIOp(
                                 arith.index_cast(xrt_dtype, tile_num), val_in
                             )
 
                             # Store the output value in tile_out
                             store(val_out, tile_out, [i, j])
+                            store(val_in, tile_out, [i, j])
+
                             yield_([])
                         yield_([])
 
@@ -184,6 +183,11 @@ def build_module():
                         "SwitchTiles",
                         tile_out,
                         indices=[tile_height_next, tile_width_next],
+                    )
+                    ChannelPut(
+                        "ChanOut",
+                        tile_out,
+                        #indices=[tile_height, tile_width],
                     )
 
                     DeallocOp(tile_in)
@@ -214,7 +218,115 @@ def build_module():
                     # Deallocate our L1 buffers
                     DeallocOp(tile_in2)
                     DeallocOp(tile_out2)
+"""
 
+IMAGE_WIDTH = 12
+IMAGE_HEIGHT = 4
+IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
+
+TILE_WIDTH = 4
+TILE_HEIGHT = 2
+TILE_SIZE = [TILE_HEIGHT, TILE_WIDTH]
+
+assert IMAGE_HEIGHT % TILE_HEIGHT == 0
+assert IMAGE_WIDTH % TILE_WIDTH == 0
+
+INOUT_DATATYPE = np.int32
+
+
+@module_builder
+def build_module():
+    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
+
+    # Create an input/output channel pair per worker
+    ChannelOp("ChanIn", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
+    ChannelOp("ChanOut", size=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH])
+
+    # We will send an image worth of data in and out
+    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
+    def copy(arg0, arg1):
+
+        # The arguments are the input and output
+        @launch(operands=[arg0, arg1])
+        def launch_body(a, b):
+
+            # Transfer one tile of data per worker
+            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
+                for w in range(IMAGE_WIDTH // TILE_WIDTH):
+                    offset0 = TILE_HEIGHT * h
+                    offset1 = TILE_WIDTH * w
+
+                    # Put data into the channel tile by tile
+                    ChannelPut(
+                        "ChanIn",
+                        a,
+                        indices=[h, w],
+                        offsets=[offset0, offset1],
+                        sizes=TILE_SIZE,
+                        strides=[IMAGE_WIDTH, 1],
+                    )
+
+            # Transfer one tile of data per worker
+            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
+                for w in range(IMAGE_WIDTH // TILE_WIDTH):
+                    offset0 = TILE_HEIGHT * h
+                    offset1 = TILE_WIDTH * w
+
+                    # Write data back out to the channel tile by tile
+                    ChannelGet(
+                        "ChanOut",
+                        b,
+                        indices=[h, w],
+                        offsets=[offset0, offset1],
+                        sizes=TILE_SIZE,
+                        strides=[IMAGE_WIDTH, 1],
+                    )
+
+            # The arguments are still the input and the output
+            @segment(name="seg")
+            def segment_body():
+
+                @herd(
+                    name="xaddherd",
+                    sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
+                )
+                def herd_body(th, tw, _sx, _sy):
+
+                    # We want to store our data in L1 memory
+                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+
+                    # This is the type definition of the tile
+                    tile_type = MemRefType.get(
+                        shape=TILE_SIZE,
+                        element_type=xrt_dtype,
+                        memory_space=mem_space,
+                    )
+
+                    # We must allocate a buffer of tile size for the input/output
+                    tile_in = AllocOp(tile_type, [], [])
+                    tile_out = AllocOp(tile_type, [], [])
+
+                    # Copy a tile from the input image (a) into the L1 memory region (tile_in)
+                    ChannelGet("ChanIn", tile_in, indices=[th, tw])
+
+                    # Access every value in the tile
+                    for i in range_(TILE_HEIGHT):
+                        for j in range_(TILE_WIDTH):
+                            # Load the input value from tile_in
+                            val = load(tile_in, [i, j])
+
+                            # Store the output value in tile_out
+                            store(val, tile_out, [i, j])
+                            yield_([])
+                        yield_([])
+
+                    # Copy the output tile into the output
+                    ChannelPut("ChanOut", tile_out, indices=[th, tw])
+
+                    # Deallocate our L1 buffers
+                    DeallocOp(tile_in)
+                    DeallocOp(tile_out)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
