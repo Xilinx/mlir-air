@@ -291,9 +291,44 @@ def build_module():
                             )
                         ],
                     )
-                    tile_num = affine_apply(
-                        get_tile_num, [th, sw, tw]
-                    )  # TODO(erika): this is good
+                    tile_num = affine_apply(get_tile_num, [th, sw, tw])
+                    get_tile_width_next = AffineMap.get(
+                        0,
+                        2,
+                        [
+                            AffineExpr.get_mod(
+                                AffineExpr.get_add(
+                                    AffineSymbolExpr.get(0),
+                                    AffineConstantExpr.get(1),
+                                ),
+                                AffineSymbolExpr.get(1),
+                            )
+                        ],
+                    )
+                    tile_width_next = affine_apply(get_tile_width_next, [tw, sw])
+                    # th_next = (th + ((tw + 1) // sw)) % sh
+                    get_tile_height_next = AffineMap.get(
+                        0,
+                        4,
+                        [
+                            AffineExpr.get_mod(
+                                AffineExpr.get_add(
+                                    AffineSymbolExpr.get(2),
+                                    AffineExpr.get_floor_div(
+                                        AffineExpr.get_add(
+                                            AffineSymbolExpr.get(0),
+                                            AffineConstantExpr.get(1),
+                                        ),
+                                        AffineSymbolExpr.get(1),
+                                    ),
+                                ),
+                                AffineSymbolExpr.get(3),
+                            )
+                        ],
+                    )
+                    tile_height_next = affine_apply(
+                        get_tile_height_next, [tw, sw, th, sh]
+                    )
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -318,7 +353,7 @@ def build_module():
                             # Load the input value from tile_in
                             val_in = load(tile_in, [i, j])
 
-                            val_out = arith.index_cast(xrt_dtype, tile_num)
+                            val_out = arith.index_cast(xrt_dtype, tile_height_next)
                             # arith.AddIOp(
                             #    arith.index_cast(xrt_dtype, tile_tilenum), val_in
                             # )
@@ -381,6 +416,7 @@ if __name__ == "__main__":
         )
         assert tw_next >= 0 and tw_next <= (IMAGE_WIDTH // TILE_WIDTH)
         assert th_next >= 0 and th_next <= (IMAGE_HEIGHT // TILE_HEIGHT)
+        print(f"{tile_height}, {tile_width} => {th_next}, {tw_next}")
         return th_next, tw_next
 
     # Create a map of current tile coordinates to the tile_num of the "previous" tile num
