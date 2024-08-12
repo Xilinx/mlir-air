@@ -44,10 +44,12 @@ def build_module():
         def launch_body(a, b):
 
             # Transfer one tile of data per worker
-            for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
-                for w in range(IMAGE_WIDTH // TILE_WIDTH):
-                    offset0 = TILE_HEIGHT * h
-                    offset1 = TILE_WIDTH * w
+            for h in range_(IMAGE_HEIGHT // TILE_HEIGHT):
+                for w in range_(IMAGE_WIDTH // TILE_WIDTH):
+                    offset0 = arith.MulIOp(
+                        arith.ConstantOp.create_index(TILE_HEIGHT), h
+                    )
+                    offset1 = arith.MulIOp(arith.ConstantOp.create_index(TILE_WIDTH), w)
 
                     # Put data into the channel tile by tile
                     ChannelPut(
@@ -58,6 +60,8 @@ def build_module():
                         sizes=TILE_SIZE,
                         strides=[IMAGE_WIDTH, 1],
                     )
+                    yield_([])
+                yield_([])
 
             # Transfer one tile of data per worker
             for h in range(IMAGE_HEIGHT // TILE_HEIGHT):
