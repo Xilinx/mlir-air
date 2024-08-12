@@ -116,5 +116,5 @@ if __name__ == "__main__":
         for j in range(IMAGE_WIDTH):
             output_b[i, j] = (i + 1) * 3
 
-    runner = XRTRunner(verbose=args.verbose, experimental_passes=False)
+    runner = XRTRunner(verbose=args.verbose)
     exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))
