@@ -34,6 +34,12 @@ This example ([worker_to_worker/worker_to_worker.py](worker_to_worker/worker_to_
 
 WARNING: This example currently fails for unknown reasons.
 
+#### WIP: Sliding Window of Data
+
+This example ([sliding_window/sliding_window.py](sliding_window/sliding_window.py)) is a work-in-progress example showing how to operate on a sliding window of data in a for-loop.
+
+WARNING: This example works but it requires all the data to be read in at once, which is not ideal. A mechanism for data streaming would be better.
+
 #### Usage (For All Examples)
 
 To generate AIR MLIR from Python:
