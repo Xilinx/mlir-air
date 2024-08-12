@@ -14,20 +14,6 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 range_ = for_
 
 """
-IMAGE_WIDTH = 12
-IMAGE_HEIGHT = 4
-IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
-
-TILE_WIDTH = 4
-TILE_HEIGHT = 2
-TILE_SIZE = [TILE_HEIGHT, TILE_WIDTH]
-
-assert IMAGE_HEIGHT % TILE_HEIGHT == 0
-assert IMAGE_WIDTH % TILE_WIDTH == 0
-
-INOUT_DATATYPE = np.int32
-
-
 @module_builder
 def build_module():
     xrt_dtype = type_mapper(INOUT_DATATYPE)
@@ -291,7 +277,23 @@ def build_module():
                     name="xaddherd",
                     sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
                 )
-                def herd_body(th, tw, _sx, _sy):
+                def herd_body(th, tw, sh, sw):
+                    get_tile_num = AffineMap.get(
+                        0,
+                        3,
+                        [
+                            AffineExpr.get_add(
+                                AffineExpr.get_mul(
+                                    AffineSymbolExpr.get(0),
+                                    AffineSymbolExpr.get(1),
+                                ),
+                                AffineSymbolExpr.get(2),
+                            )
+                        ],
+                    )
+                    tile_num = affine_apply(
+                        get_tile_num, [th, sw, tw]
+                    )  # TODO(erika): this is good
 
                     # We want to store our data in L1 memory
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -314,19 +316,37 @@ def build_module():
                     for i in range_(TILE_HEIGHT):
                         for j in range_(TILE_WIDTH):
                             # Load the input value from tile_in
-                            val = load(tile_in, [i, j])
+                            val_in = load(tile_in, [i, j])
+
+                            val_out = arith.index_cast(xrt_dtype, tile_num)
+                            # arith.AddIOp(
+                            #    arith.index_cast(xrt_dtype, tile_tilenum), val_in
+                            # )
 
                             # Store the output value in tile_out
-                            store(val, tile_out, [i, j])
+                            store(val_out, tile_out, [i, j])
+                            yield_([])
+                        yield_([])
+                    DeallocOp(tile_in)
+
+                    tile_in2 = AllocOp(tile_type, [], [])
+                    tile_out2 = AllocOp(tile_type, [], [])
+
+                    for i in range_(TILE_HEIGHT):
+                        for j in range_(TILE_WIDTH):
+                            # Load the input value from tile_in
+                            val = load(tile_out, [i, j])
+
+                            # Store the output value in tile_out
+                            store(val, tile_out2, [i, j])
                             yield_([])
                         yield_([])
 
                     # Copy the output tile into the output
-                    ChannelPut("ChanOut", tile_out, indices=[th, tw])
+                    ChannelPut("ChanOut", tile_out2, indices=[th, tw])
+                    DeallocOp(tile_in2)
+                    DeallocOp(tile_out2)
 
-                    # Deallocate our L1 buffers
-                    DeallocOp(tile_in)
-                    DeallocOp(tile_out)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
