@@ -249,7 +249,7 @@ if __name__ == "__main__":
                 input_matrix[i, j] + tile_num_map[(i // TILE_HEIGHT, j // TILE_WIDTH)]
             )
 
-    runner = XRTRunner(verbose=args.verbose, experimental_passes=False)
+    runner = XRTRunner(verbose=args.verbose)
     exit(
         runner.run_test(
             mlir_module, inputs=[input_matrix], expected_outputs=[output_matrix]

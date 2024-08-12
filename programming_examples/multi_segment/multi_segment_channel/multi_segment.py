@@ -120,7 +120,7 @@ if __name__ == "__main__":
     output_c = np.full(VECTOR_LEN, 5, dtype=INOUT_DATATYPE)
     output_d = np.full(VECTOR_LEN, 13, dtype=INOUT_DATATYPE)
 
-    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
+    runner = XRTRunner(verbose=args.verbose)
     exit(
         runner.run_test(
             mlir_module,
