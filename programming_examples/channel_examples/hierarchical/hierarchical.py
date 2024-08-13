@@ -38,10 +38,10 @@ def build_module():
         memory_space=mem_space_l2,
     )
 
-    ChannelOp("ChanInL2")
-    ChannelOp("ChanOutL2")
-    ChannelOp("ChanInL1")
-    ChannelOp("ChanOutL1")
+    Channel("ChanInL2")
+    Channel("ChanOutL2")
+    Channel("ChanInL1")
+    Channel("ChanOutL1")
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)

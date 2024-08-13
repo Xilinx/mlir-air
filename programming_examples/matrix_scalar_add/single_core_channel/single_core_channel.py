@@ -24,8 +24,8 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
 
     # Create two channels which will send/receive the
     # input/output data respectively
-    ChannelOp("ChanIn")
-    ChannelOp("ChanOut")
+    Channel("ChanIn")
+    Channel("ChanOut")
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)

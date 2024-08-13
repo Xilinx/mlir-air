@@ -27,9 +27,9 @@ def build_module(shape, idtype, odtype):
     # CHECK: air.channel @ChanA
     # CHECK: air.channel @ChanB
     # CHECK: air.channel @ChanC
-    ChannelOp("ChanA")
-    ChannelOp("ChanB")
-    ChannelOp("ChanC")
+    Channel("ChanA")
+    Channel("ChanB")
+    Channel("ChanC")
 
     @FuncOp.from_py_func(memrefTyIn, memrefTyIn, memrefTyOut)
     def mul(arg0, arg1, arg2):

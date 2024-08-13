@@ -16,7 +16,7 @@ Warning: The multi-segment example is a work in progress!
 
 #### ```channel-size```: Use the channel size argument
 
-This example ([channel_size/channel_size.py](channel_size/channel_size.py)) is a data passthrough example using the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only instead of using a separately defined channel for each tile/core, a bundle of channels is created (using the `ChannelOp` `size` parameter) and indexed into (the `ChannelGet` and `ChannelPut` `indices` parameter).
+This example ([channel_size/channel_size.py](channel_size/channel_size.py)) is a data passthrough example using the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only instead of using a separately defined channel for each tile/core, a bundle of channels is created (using the `Channel` `size` parameter) and indexed into (the `ChannelGet` and `ChannelPut` `indices` parameter).
 
 #### ```hierarchical```: Use channels for sending data from Launch to Segment to Herd and back again
 

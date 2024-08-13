@@ -22,8 +22,8 @@ def build_module(vector_size, num_subvectors):
 
     # Type and method of input/output
     memrefTyInOut = T.memref(vector_size, xrt_dtype)
-    ChannelOp("ChanIn")
-    ChannelOp("ChanOut")
+    Channel("ChanIn")
+    Channel("ChanOut")
 
     # The compute core splits input into subvectors for processing
     lineWidthInBytes = vector_size // num_subvectors
