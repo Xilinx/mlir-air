@@ -48,9 +48,9 @@ def to_type(dtype):
 def build_module(shape, idtype, odtype, tile_size):
     memrefTyIn = MemRefType.get(shape, to_type(idtype))
     memrefTyOut = MemRefType.get(shape, to_type(odtype))
-    ChannelOp("ChanA")
-    ChannelOp("ChanB")
-    ChannelOp("ChanC")
+    Channel("ChanA")
+    Channel("ChanB")
+    Channel("ChanC")
 
     @FuncOp.from_py_func(memrefTyIn, memrefTyIn, memrefTyOut)
     def mul(arg0, arg1, arg2):

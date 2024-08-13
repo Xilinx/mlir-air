@@ -12,8 +12,8 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
-IMAGE_WIDTH = 32
-IMAGE_HEIGHT = 16
+IMAGE_WIDTH = 8
+IMAGE_HEIGHT = 6
 IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
 INOUT_DATATYPE = np.int32
@@ -25,55 +25,39 @@ def build_module():
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
 
     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L2)
-
     image_type_l1 = MemRefType.get(
         shape=IMAGE_SIZE,
         element_type=xrt_dtype,
         memory_space=mem_space_l1,
     )
-    image_type_l2 = MemRefType.get(
-        shape=IMAGE_SIZE,
-        element_type=xrt_dtype,
-        memory_space=mem_space_l2,
-    )
 
-    Channel("ChanInL2")
-    Channel("ChanOutL2")
-    Channel("ChanInL1")
-    Channel("ChanOutL1")
+    Channel("ChanIn", size=[1, 1], broadcast_shape=[1, 3])
+    Channel("ChanOut", size=[1, 3])
 
     # We will send an image worth of data in and out
-    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
-    def copy(arg0, arg1):
+    @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut, memrefTyInOut, memrefTyInOut)
+    def copy(arg0, arg1, arg2, arg3):
 
         # The arguments are the input and output
-        @launch(operands=[arg0, arg1])
-        def launch_body(a, b):
+        @launch(operands=[arg0, arg1, arg2, arg3])
+        def launch_body(a, b, c, d):
 
-            ChannelPut("ChanInL2", a)
-            ChannelGet("ChanOutL2", b)
+            ChannelPut("ChanIn", a)
+            ChannelGet("ChanOut", b, indices=[0, 0])
+            ChannelGet("ChanOut", c, indices=[0, 1])
+            ChannelGet("ChanOut", d, indices=[0, 2])
 
             @segment(name="seg")
             def segment_body():
-                image_in_l2 = AllocOp(image_type_l2, [], [])
-                ChannelGet("ChanInL2", image_in_l2)
-                ChannelPut("ChanInL1", image_in_l2)
-                DeallocOp(image_in_l2)
 
-                image_out_l2 = AllocOp(image_type_l2, [], [])
-                ChannelGet("ChanOutL1", image_out_l2)
-                ChannelPut("ChanOutL2", image_out_l2)
-                DeallocOp(image_out_l2)
-
-                @herd(name="addherd", sizes=[1, 1])
-                def herd_body(tx, ty, sx, sy):
+                @herd(name="broadcastherd", sizes=[1, 3])
+                def herd_body(tx, ty, _sx, _sy):
 
                     # We must allocate a buffer of image size for the input/output
                     image_in = AllocOp(image_type_l1, [], [])
                     image_out = AllocOp(image_type_l1, [], [])
 
-                    ChannelGet("ChanInL1", image_in)
+                    ChannelGet("ChanIn", image_in, indices=[tx, ty])
 
                     # Access every value in the image
                     for i in range_(IMAGE_HEIGHT):
@@ -82,14 +66,15 @@ def build_module():
                             val_in = load(image_in, [i, j])
 
                             # Calculate the output value
-                            val_out = arith.addi(val_in, arith.ConstantOp(xrt_dtype, 1))
+                            val_out = arith.addi(val_in, arith.index_cast(T.i32(), ty))
+                            val_out = arith.addi(val_out, arith.ConstantOp(T.i32(), 1))
 
                             # Store the output value
                             store(val_out, image_out, [i, j])
                             yield_([])
                         yield_([])
 
-                    ChannelPut("ChanOutL1", image_out)
+                    ChannelPut("ChanOut", image_out, indices=[tx, ty])
 
                     DeallocOp(image_in)
                     DeallocOp(image_out)
@@ -98,7 +83,7 @@ def build_module():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the channel hierarchical example",
+        description="Builds, runs, and tests the channel broadcast multi herd example",
     )
     parser.add_argument(
         "-v",
@@ -117,16 +102,22 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_matrix = np.arange(np.prod(IMAGE_SIZE), dtype=INOUT_DATATYPE).reshape(
+    input_a = np.arange(np.prod(IMAGE_SIZE), dtype=INOUT_DATATYPE).reshape(IMAGE_SIZE)
+    output_b = np.arange(1, np.prod(IMAGE_SIZE) + 1, dtype=INOUT_DATATYPE).reshape(
         IMAGE_SIZE
     )
-    output_matrix = np.arange(1, np.prod(IMAGE_SIZE) + 1, dtype=INOUT_DATATYPE).reshape(
+    output_c = np.arange(2, np.prod(IMAGE_SIZE) + 2, dtype=INOUT_DATATYPE).reshape(
+        IMAGE_SIZE
+    )
+    output_d = np.arange(3, np.prod(IMAGE_SIZE) + 3, dtype=INOUT_DATATYPE).reshape(
         IMAGE_SIZE
     )
 
-    runner = XRTRunner(verbose=args.verbose)
+    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
     exit(
         runner.run_test(
-            mlir_module, inputs=[input_matrix], expected_outputs=[output_matrix]
+            mlir_module,
+            inputs=[input_a],
+            expected_outputs=[output_b, output_c, output_d],
         )
     )

@@ -72,12 +72,12 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
         memory_space=l2_mem_space,
     )
 
-    ChannelOp("ChanL2A")
-    ChannelOp("ChanL2B")
-    ChannelOp("ChanL2C")
-    ChannelOp("ChanL1A")
-    ChannelOp("ChanL1B")
-    ChannelOp("ChanL1C")
+    Channel("ChanL2A")
+    Channel("ChanL2B")
+    Channel("ChanL2C")
+    Channel("ChanL1A")
+    Channel("ChanL1B")
+    Channel("ChanL1C")
 
     @FuncOp.from_py_func(memrefTyIn, memrefTyIn, memrefTyOut)
     def mul(arg0, arg1, arg2):

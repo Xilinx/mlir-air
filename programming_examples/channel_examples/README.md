@@ -16,7 +16,7 @@ Warning: The multi-segment example is a work in progress!
 
 #### ```channel-size```: Use the channel size argument
 
-This example ([channel_size/channel_size.py](channel_size/channel_size.py)) is a data passthrough example using the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only instead of using a separately defined channel for each tile/core, a bundle of channels is created (using the `ChannelOp` `size` parameter) and indexed into (the `ChannelGet` and `ChannelPut` `indices` parameter).
+This example ([channel_size/channel_size.py](channel_size/channel_size.py)) is a data passthrough example using the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only instead of using a separately defined channel for each tile/core, a bundle of channels is created (using the `Channel` `size` parameter) and indexed into (the `ChannelGet` and `ChannelPut` `indices` parameter).
 
 #### ```hierarchical```: Use channels for sending data from Launch to Segment to Herd and back again
 
@@ -33,6 +33,11 @@ WARNING: This example currently fails for unknown reasons.
 This example ([worker_to_worker/worker_to_worker.py](worker_to_worker/worker_to_worker.py)) is a work-in-progress data passthrough example using the same tiling structure as the [matrix_scalar_add/multi_core_channel](../matrix_scalar_add/multi_core_channel.py) examples, only the each worker trades a tile of input data to another worker in the herd by sending it via channel.
 
 WARNING: This example currently fails for unknown reasons.
+
+#### ```broadcast```:
+
+These examples ([broadcast/multi_herd/broadcast.py](broadcast/multi_herd/broadcast.py) and [broadcast/single_herd/broadcast.py](broadcast/single_herd/broadcast.py)) are examples of using channels to broadcast data to multiple workers.
+
 
 #### Usage (For All Examples)
 
