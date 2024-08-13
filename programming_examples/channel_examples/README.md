@@ -34,11 +34,9 @@ This example ([worker_to_worker/worker_to_worker.py](worker_to_worker/worker_to_
 
 WARNING: This example currently fails for unknown reasons.
 
-#### WIP: ```broadcast```:
+#### ```broadcast```:
 
-These examples ([broadcast/multi_herd/broadcast.py](broadcast/multi_herd/broadcast.py) and [broadcast/single_herd/broadcast.py](broadcast/single_herd/broadcast.py)) are work-in-progress examples of using channels to broadcast data to multiple workers.
-
-WARNING: This example currently fails because I don't believe there is a mechanism for an AIR programmer to ask for a broadcast.
+These examples ([broadcast/multi_herd/broadcast.py](broadcast/multi_herd/broadcast.py) and [broadcast/single_herd/broadcast.py](broadcast/single_herd/broadcast.py)) are examples of using channels to broadcast data to multiple workers.
 
 
 #### Usage (For All Examples)
