@@ -472,6 +472,11 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
       }
     }
   }
+  if (!bufferOp) {
+    memcpyOp->emitOpError(
+        "failed to materialize src/dst memref into AIE.BufferOp.");
+    return {nullptr, nullptr};
+  }
   std::pair<int64_t, int64_t> init_pair;
   if (target_model.isMemTile(col, row))
     init_pair =
