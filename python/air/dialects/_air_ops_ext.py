@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: MIT
 
 import functools
+from typing import Optional, Sequence, Union
 
 from ..ir import *
 from ._air_ops_gen import *
@@ -127,6 +128,39 @@ class Herd(HerdOp):
         )
         operand_types = [s.type for s in sizes] * 2 + get_region_operand_types(operands)
         self.regions[0].blocks.append(*operand_types)
+
+
+class Channel(ChannelOp):
+    def __init__(
+        self,
+        sym_name,
+        broadcast_shape: Optional[
+            Union[Sequence[Union[int, IntegerAttr, Operation, Value]], ArrayAttr]
+        ] = None,
+        size=None,
+        loc=None,
+        ip=None,
+    ):
+        super().__init__(
+            sym_name=sym_name,
+            size=size,
+            loc=loc,
+            ip=ip,
+        )
+
+        if not (broadcast_shape is None):
+            static_sizes = []
+            if isinstance(broadcast_shape, ArrayAttr):
+                broadcast_shape_attr = broadcast_shape
+            else:
+                for size in broadcast_shape:
+                    if isinstance(size, int):
+
+                        static_sizes.append(IntegerAttr.get(T.index(), size))
+                    else:
+                        static_sizes.append(ShapedType.get_dynamic_size())
+                broadcast_shape_attr = ArrayAttr.get(static_sizes)
+            super().attributes["broadcast_shape"] = broadcast_shape_attr
 
 
 class ChannelGet(ChannelGetOp):
