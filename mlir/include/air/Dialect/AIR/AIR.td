@@ -311,8 +311,7 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
 
 def air_ChannelOp : air_Op<"channel", [Symbol]>,
     Arguments<(ins SymbolNameAttr:$sym_name,
-                   DefaultValuedAttr<I64ArrayAttr, "{}">:$size,
-                  DefaultValuedAttr<ArrayAttr, "{}">:$broadcast_shape)> {
+                   DefaultValuedAttr<I64ArrayAttr, "{}">:$size)> {
   let assemblyFormat = [{
     $sym_name $size attr-dict
   }];
@@ -337,6 +336,9 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
         return false;
     }
     int getBroadcastDimension();
+    ArrayAttr getBroadcastShape() {
+      return getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape");
+    }
     int getBroadcastNum() {
       int broadcastNum = 1;
       if (isBroadcast())
