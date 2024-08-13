@@ -155,7 +155,6 @@ class Channel(ChannelOp):
             else:
                 for size in broadcast_shape:
                     if isinstance(size, int):
-
                         static_sizes.append(IntegerAttr.get(T.index(), size))
                     else:
                         static_sizes.append(ShapedType.get_dynamic_size())

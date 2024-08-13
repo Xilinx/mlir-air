@@ -12,8 +12,8 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
-IMAGE_WIDTH = 32
-IMAGE_HEIGHT = 16
+IMAGE_WIDTH = 8
+IMAGE_HEIGHT = 6
 IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
 INOUT_DATATYPE = np.int32
@@ -66,10 +66,8 @@ def build_module():
                             val_in = load(image_in, [i, j])
 
                             # Calculate the output value
-                            # TODO: change from constant to value
-                            val_out = arith.addi(
-                                val_in, arith.ConstantOp(T.i32(), 3)
-                            )  # arith.index_cast(T.i32(), ty))
+                            val_out = arith.addi(val_in, arith.index_cast(T.i32(), ty))
+                            val_out = arith.addi(val_out, arith.ConstantOp(T.i32(), 1))
 
                             # Store the output value
                             store(val_out, image_out, [i, j])
