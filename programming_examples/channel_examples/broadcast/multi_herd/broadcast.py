@@ -33,9 +33,9 @@ def build_module():
         memory_space=mem_space_l1,
     )
 
-    ChannelOp("ChanIn")
+    Channel("ChanIn", size=[1, 1], broadcast_shape=[1, 3])
     for name in OUTPUT_HERD_NAMES:
-        ChannelOp(name)
+        Channel(name)
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut, memrefTyInOut, memrefTyInOut)
@@ -62,7 +62,7 @@ def build_module():
                         image_in = AllocOp(image_type_l1, [], [])
                         image_out = AllocOp(image_type_l1, [], [])
 
-                        ChannelGet("ChanIn", image_in)
+                        ChannelGet("ChanIn", image_in, indices=[0, herd_num])
 
                         # Access every value in the image
                         for i in range_(IMAGE_HEIGHT):
