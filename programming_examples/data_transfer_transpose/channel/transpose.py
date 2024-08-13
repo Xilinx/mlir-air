@@ -23,8 +23,8 @@ def build_module(m, k, dtype):
     memrefTyIn = MemRefType.get(shape=[m, k], element_type=xrt_dtype)
     memrefTyOut = MemRefType.get(shape=[k, m], element_type=xrt_dtype)
 
-    ChannelOp("ChanIn")
-    ChannelOp("ChanOut")
+    Channel("ChanIn")
+    Channel("ChanOut")
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyIn, memrefTyOut)

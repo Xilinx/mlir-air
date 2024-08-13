@@ -29,8 +29,8 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
     # Create an input/output channel pair per worker
     for h in range(image_height // tile_height):
         for w in range(image_width // tile_width):
-            ChannelOp(format_name("ChanIn", h, w))
-            ChannelOp(format_name("ChanOut", h, w))
+            Channel(format_name("ChanIn", h, w))
+            Channel(format_name("ChanOut", h, w))
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)

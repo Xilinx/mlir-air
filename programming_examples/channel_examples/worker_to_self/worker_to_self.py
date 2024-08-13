@@ -25,9 +25,9 @@ def build_module():
 
     # Type and method of input/output
     memrefTyInOut = T.MemRefType.get(IMAGE_SIZE, xrt_dtype)
-    ChannelOp("ChanIn")
-    ChannelOp("ChanOut")
-    ChannelOp("ToSelf")
+    Channel("ChanIn")
+    Channel("ChanOut")
+    Channel("ToSelf")
 
     mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
     image_type_l1 = MemRefType.get(

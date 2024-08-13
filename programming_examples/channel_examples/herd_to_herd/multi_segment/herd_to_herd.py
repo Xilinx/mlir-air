@@ -36,11 +36,11 @@ def build_module():
 
     # Create two channels which will send/receive the
     # input/output data respectively
-    ChannelOp("ChanIn")
-    ChannelOp("ChanOut")
+    Channel("ChanIn")
+    Channel("ChanOut")
 
     # Create a channel we will use to pass data between works in two herds
-    ChannelOp("Herd2Herd")
+    Channel("Herd2Herd")
 
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
