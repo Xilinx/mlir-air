@@ -171,6 +171,8 @@ def build_module():
                         yield_([])
 
                     ChannelPut("WorkerToWorker", tile_out, indices=[th_next, tw_next])
+                    DeallocOp(tile_in)
+                    DeallocOp(tile_out)
 
                     tile_in2 = AllocOp(tile_type, [], [])
                     tile_out2 = AllocOp(tile_type, [], [])
@@ -188,9 +190,6 @@ def build_module():
 
                     # Copy the output tile into the output
                     ChannelPut("ChanOut", tile_out2, indices=[th, tw])
-
-                    DeallocOp(tile_in)
-                    DeallocOp(tile_out)
                     DeallocOp(tile_in2)
                     DeallocOp(tile_out2)
 
