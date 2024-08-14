@@ -3397,6 +3397,10 @@ public:
     if (clTestPatterns.find("specialize-channel-bundle") != std::string::npos) {
       patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
     }
+    if (clTestPatterns.find("insert-control-packet-flow") !=
+        std::string::npos) {
+      m.walk([&](AIE::DeviceOp d) { createControlPacketFlow(d); });
+    }
 
     if (patterns.getNativePatterns().size())
       (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
