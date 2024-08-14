@@ -127,7 +127,7 @@ if __name__ == "__main__":
         )
     expected_output_matrix = np.transpose(input_matrix)
 
-    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
+    runner = XRTRunner(verbose=args.verbose)
     exit(
         runner.run_test(
             mlir_module,

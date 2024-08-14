@@ -124,7 +124,7 @@ if __name__ == "__main__":
         IMAGE_SIZE
     )
 
-    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
+    runner = XRTRunner(verbose=args.verbose)
     exit(
         runner.run_test(
             mlir_module, inputs=[input_matrix], expected_outputs=[output_matrix]

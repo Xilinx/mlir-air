@@ -111,11 +111,8 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.zeros(shape=(args.vector_size), dtype=INOUT_DATATYPE)
-    output_b = np.zeros(shape=(args.vector_size), dtype=INOUT_DATATYPE)
-    for i in range(args.vector_size):
-        input_a[i] = i % 0xFF
-        output_b[i] = i % 0xFF
+    input_a = np.arange(args.vector_size, dtype=INOUT_DATATYPE)
+    output_b = np.arange(args.vector_size, dtype=INOUT_DATATYPE)
 
     runner = XRTRunner(verbose=args.verbose)
     exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

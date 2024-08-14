@@ -24,7 +24,7 @@ For illustrative purposes, we provide three different ways to run and test this 
 
 ### Method 1: Run and test with AIR utility functions
 
-This is the cleanest and simplest method of specifying a workflow to run AIR MLIR on an NPU, and uses code in the [run.py](run.py) file. The utility class ```XRTRunner``` simplifies setting up input/output data and allows the user to specify the input and an expected output using ```numpy``` ```ndarray```s. Behind the scenes, ```XRTRunner``` calls ```aircc.py``` with the default set of pipelines and passes, but for this and most examples, we use ```experimental_passes``` to signify we also want to run additional passes which should increase efficiency.
+This is the cleanest and simplest method of specifying a workflow to run AIR MLIR on an NPU, and uses code in the [run.py](run.py) file. The utility class ```XRTRunner``` simplifies setting up input/output data and allows the user to specify the input and an expected output using ```numpy``` ```ndarray```s. Behind the scenes, ```XRTRunner``` calls ```aircc.py``` with the default set of pipelines and passes, and has ```experimental_passes``` enabled by default to signify we also want to run additional passes which should increase efficiency.
 ```bash
 make pyworkflow
 ```

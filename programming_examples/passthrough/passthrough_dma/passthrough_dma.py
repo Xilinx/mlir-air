@@ -34,11 +34,6 @@ def build_module(vector_size, num_subvectors):
         memory_space=mem_space,
     )
 
-    # Function definition of the external function we will call
-    passThroughLine = external_func(
-        "passThroughLine", inputs=[tensor_type, tensor_type, T.i32()]
-    )
-
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
     def copy(arg0, arg1):
 
@@ -52,7 +47,7 @@ def build_module(vector_size, num_subvectors):
                 def herd_body(_tx, _ty, _sx, _sy, c, d):
 
                     # Process each subvector individually
-                    for _i in range_(
+                    for i in range_(
                         0, num_subvectors * lineWidthInBytes, lineWidthInBytes
                     ):
                         # We must allocate a buffer of image size for the input/output
@@ -63,7 +58,7 @@ def build_module(vector_size, num_subvectors):
                         dma_memcpy_nd(
                             tensor_in,
                             c,
-                            src_offsets=[_i],
+                            src_offsets=[i],
                             src_sizes=[lineWidthInBytes],
                             src_strides=[1],
                         )
@@ -79,7 +74,7 @@ def build_module(vector_size, num_subvectors):
                         dma_memcpy_nd(
                             d,
                             tensor_out,
-                            dst_offsets=[_i],
+                            dst_offsets=[i],
                             dst_sizes=[lineWidthInBytes],
                             dst_strides=[1],
                         )
@@ -125,11 +120,8 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.zeros(shape=(args.vector_size), dtype=INOUT_DATATYPE)
-    output_b = np.zeros(shape=(args.vector_size), dtype=INOUT_DATATYPE)
-    for i in range(args.vector_size):
-        input_a[i] = i % 0xFF
-        output_b[i] = i % 0xFF
+    input_a = np.arange(args.vector_size, dtype=INOUT_DATATYPE)
+    output_b = np.arange(args.vector_size, dtype=INOUT_DATATYPE)
 
     runner = XRTRunner(verbose=args.verbose)
     exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

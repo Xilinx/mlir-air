@@ -36,11 +36,6 @@ def build_module(vector_size, num_subvectors):
         memory_space=mem_space,
     )
 
-    # Function definition of the external function we will call
-    passThroughLine = external_func(
-        "passThroughLine", inputs=[tensor_type, tensor_type, T.i32()]
-    )
-
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
     def copy(arg0, arg1):
 
@@ -114,8 +109,8 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.zeros(shape=(args.vector_size), dtype=INOUT_DATATYPE)
-    output_b = np.zeros(shape=(args.vector_size), dtype=INOUT_DATATYPE)
+    input_a = np.zeros(shape=args.vector_size, dtype=INOUT_DATATYPE)
+    output_b = np.zeros(shape=args.vector_size, dtype=INOUT_DATATYPE)
     for i in range(args.vector_size):
         input_a[i] = i % 0xFF
         output_b[i] = i % 0xFF
