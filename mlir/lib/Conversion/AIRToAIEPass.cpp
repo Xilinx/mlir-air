@@ -2543,7 +2543,10 @@ public:
 
           // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
           auto dmaop_labeled = labelAIRDmaOpsWithMetadata(
-              herd, original_id, dma_name_attr, memref_ty);
+              herd, original_id,
+              builder.getStringAttr("airMemcpyId" +
+                                    std::to_string(original_id)),
+              memref_ty);
 
           // Label packet header if airrt.dmamemcpynd op is source of a packet
           // flow
