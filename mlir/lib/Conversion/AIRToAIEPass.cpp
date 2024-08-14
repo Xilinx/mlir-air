@@ -1752,6 +1752,9 @@ public:
     return pktFlow;
   }
 
+  // This method generates broadcast packet flow if found multiple flows with
+  // the same source. TODO: packet flows sharing source do not always mean
+  // broadcast.
   AIE::PacketFlowOp getPacketFlowOp(AIE::DeviceOp aie_device,
                                     mlir::Value source,
                                     xilinx::AIE::WireBundle sourceBundle,
@@ -3238,6 +3241,75 @@ public:
     }
   }
 
+  // Create an overlay of packet flow network sending control packets from shim
+  // dma mm2s channels to tiles in a column.
+  void createControlPacketFlow(AIE::DeviceOp device) {
+    OpBuilder builder(device);
+    const auto &target_model = device.getTargetModel();
+
+    // Collect existing TileOps
+    DenseMap<AIE::TileID, AIE::TileOp> tiles;
+    llvm::SmallSet<int, 1> occupiedCols;
+    for (auto tile : device.getOps<AIE::TileOp>()) {
+      int colIndex = tile.colIndex();
+      int rowIndex = tile.rowIndex();
+      tiles[{colIndex, rowIndex}] = tile;
+      occupiedCols.insert(colIndex);
+    }
+
+    // Create packet flows
+    for (int col : occupiedCols) {
+      AIE::TileOp shimTile = nullptr;
+      builder.setInsertionPointToStart(device.getBody());
+      if (tiles.count({col, 0}))
+        shimTile = tiles[{col, 0}];
+      else
+        shimTile = builder.create<AIE::TileOp>(builder.getUnknownLoc(), col, 0);
+      // Get all tile ops on column col
+      SmallVector<AIE::TileOp> coreTilesOnCol;
+      SmallVector<AIE::TileOp> memTilesOnCol;
+      for (auto &[tId, tOp] : tiles)
+        if (tId.col == col) {
+          if (target_model.isCoreTile(tId.col, tId.row))
+            coreTilesOnCol.push_back(tOp);
+          else if (target_model.isMemTile(tId.col, tId.row))
+            memTilesOnCol.push_back(tOp);
+        }
+      // Create packet flows per col
+      int ctrlPktFlowID =
+          flowID; // Packet headers only need to be unique within each column
+      int shimChanToCoreTiles = 0;
+      int shimChanToMemTiles = 1;
+      // Broadcasting control packet to all core tiles on col
+      for (unsigned i = 0; i < coreTilesOnCol.size(); i++) {
+        builder.setInsertionPointToEnd(device.getBody());
+        if (i == 0)
+          (void)createPacketFlowOp(builder, ctrlPktFlowID, shimTile,
+                                   AIE::WireBundle::DMA, shimChanToCoreTiles,
+                                   coreTilesOnCol[i], AIE::WireBundle::Ctrl, 0);
+
+        else
+          (void)getPacketFlowOp(device, shimTile, AIE::WireBundle::DMA,
+                                shimChanToCoreTiles, coreTilesOnCol[i],
+                                AIE::WireBundle::Ctrl, 0, ctrlPktFlowID);
+      }
+      // Broadcasting control packet to all mem tiles on col
+      ctrlPktFlowID = flowID;
+      for (unsigned i = 0; i < memTilesOnCol.size(); i++) {
+        builder.setInsertionPointToEnd(device.getBody());
+        if (i == 0)
+          (void)createPacketFlowOp(builder, ctrlPktFlowID, shimTile,
+                                   AIE::WireBundle::DMA, shimChanToMemTiles,
+                                   memTilesOnCol[i], AIE::WireBundle::Ctrl, 0);
+
+        else
+          (void)getPacketFlowOp(device, shimTile, AIE::WireBundle::DMA,
+                                shimChanToMemTiles, memTilesOnCol[i],
+                                AIE::WireBundle::Ctrl, 0, ctrlPktFlowID);
+      }
+    }
+  }
+
   void runTestPatterns() {
 
     auto m = getOperation();
@@ -3293,6 +3365,8 @@ public:
         }
         if (options.insert_trace_packet_flow)
           createTracePacketFlow(d);
+        if (options.insert_control_packet_flow)
+          createControlPacketFlow(d);
       }
     }
 
@@ -3525,6 +3599,10 @@ public:
       for (auto &t : shimTileAlloc.mm2s_allocs)
         for (auto n : t.chan_names)
           labelAIRDmaOpsWithMetadata(channel_ops, n, chan_to_chan_map);
+
+      // Create control packet overlay
+      if (options.insert_control_packet_flow)
+        createControlPacketFlow(device);
 
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
