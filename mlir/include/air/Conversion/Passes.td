@@ -175,6 +175,10 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     Option<"clInsertTracePacketFlow", "insert-trace-packet-flow", "bool", 
           /*default=*/"false",
           "Create packet routed traces for cores and memtiles">,
+    Option<"clInsertCtrlPacketFlow", "insert-control-packet-flow", "bool", 
+          /*default=*/"false",
+          "Create packet routed control packets from ShimDMAs to reconfigure "
+          " AIE tiles">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE
