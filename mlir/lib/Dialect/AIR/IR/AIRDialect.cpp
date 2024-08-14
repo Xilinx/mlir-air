@@ -1117,7 +1117,7 @@ LogicalResult ChannelOp::verify() {
     auto bundle_size = getSize();
     auto broadcast_shape = getBroadcastShape();
     if (bundle_size.size() != broadcast_shape.size())
-      return emitOpError("bundle size should match broadcast_shape size");
+      return emitOpError("bundle rank should match broadcast_shape rank");
   }
   return success();
 }
