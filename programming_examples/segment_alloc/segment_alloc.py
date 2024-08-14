@@ -141,5 +141,5 @@ if __name__ == "__main__":
         for w in range(TILE_WIDTH):
             output_b[h, w] = input_a[h, w]
 
-    runner = XRTRunner(verbose=args.verbose, experimental_passes=True)
+    runner = XRTRunner(verbose=args.verbose)
     exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

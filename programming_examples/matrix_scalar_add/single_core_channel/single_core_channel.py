@@ -36,19 +36,12 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
         def launch_body(a, b):
 
             # Transform data into contiguous tiles
-            for tile_index0 in range_(image_height // tile_height):
-                for tile_index1 in range_(image_width // tile_width):
-                    # Convert the type of the tile size variable to the Index type
-                    tile_size0 = arith.ConstantOp.create_index(tile_height)
-                    tile_size1 = arith.ConstantOp.create_index(tile_width)
-
-                    # Calculate the offset into the channel data, which is based on which tile index
-                    # we are at using tile_index0 and tile_index1 (our loop vars).
-                    # tile_index0 and tile_index1 are dynamic so we have to use specialized
-                    # operations do to calculations on them
-                    offset0 = arith.MulIOp(tile_size0, tile_index0)
-                    offset1 = arith.MulIOp(tile_size1, tile_index1)
-
+            for offset0 in range_(
+                0, tile_height * (image_height // tile_height), tile_height
+            ):
+                for offset1 in range_(
+                    0, tile_width * (image_width // tile_width), tile_width
+                ):
                     # Put data into the channel tile by tile
                     ChannelPut(
                         "ChanIn",
