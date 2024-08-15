@@ -1005,7 +1005,6 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
   // Fold for loops int channel op's wrap and stride fields
   SmallVector<Operation *> for_loops;
   SmallVector<Value> ivs;
-  ;
   Operation *parent = channel_op;
   while (parent != for_op) {
     parent = parent->getParentOp();
