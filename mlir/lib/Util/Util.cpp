@@ -907,6 +907,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       offset_expr = offset_expr.replaceDimsAndSymbols({}, symReplacements);
       auto next_offset_map = AffineMap::get(0, 1, offset_expr);
       affine_apply.setMap(next_offset_map);
+      offsets[i] = affine_apply;
       offsets[i + 1] = offsets[i];
     }
     erased |= multiplyAdjWraps(builder, i, sizes);
@@ -927,7 +928,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
                                                  SmallVector<Value> &sizes,
                                                  SmallVector<Value> &strides,
                                                  int memref_volume) {
-
+  llvm::errs() << "\n\ncanonicalizeWrapAndStrideList\n";
   bool listsHaveChanged = false;
   // Match offsets size with sizes and strides
   auto max_dim_size =
@@ -1004,33 +1005,84 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
 
   // Fold for loops int channel op's wrap and stride fields
   SmallVector<Operation *> for_loops;
+  SmallVector<Value> ivs;;
   Operation *parent = channel_op;
   while (parent != for_op) {
     parent = parent->getParentOp();
-    if (isa<scf::ForOp>(parent))
+    if (auto sfo = dyn_cast<scf::ForOp>(parent)) {
       for_loops.push_back(parent);
-    else if (isa<affine::AffineForOp>(parent))
+      ivs.push_back(sfo.getInductionVar());
+    } else if (auto afo = dyn_cast<affine::AffineForOp>(parent)) {
       for_loops.push_back(parent);
+      ivs.push_back(afo.getInductionVar());
+    }
   }
 
-  // First traversal inserting new dimensions from loops
+  std::map<Operation *, int> op_to_count;
   for (auto o : for_loops) {
-    uint64_t ind_var_factor = 0;
-    for (int i = offsets.size() - 1; i >= 0; i--) {
-      Value iv = nullptr;
-      if (auto afo = dyn_cast<affine::AffineForOp>(o))
+    int64_t stepSize = -1;        
+    int loop_lower_bound = 0;
+    Value iv = nullptr;
+    if (auto afo = dyn_cast<affine::AffineForOp>(o)) {
         iv = afo.getInductionVar();
-      else if (auto sfo = dyn_cast<scf::ForOp>(o))
+        loop_lower_bound = afo.getConstantLowerBound();
+        stepSize = afo.getStepAsInt();
+    } else if (auto sfo = dyn_cast<scf::ForOp>(o)) {
         iv = sfo.getInductionVar();
+        if (auto cst_lower_bound =
+                mlir::getConstantIntValue(sfo.getLowerBound()))
+            loop_lower_bound = *cst_lower_bound;
+        stepSize = *mlir::getConstantIntValue(sfo.getStep());
+    }
+    int64_t ind_var_factor = 0;
+    for (int i = offsets.size() - 1; i >= 0; i--) {
+      offsets[i].dump();
       if (iv && offsets[i] == iv) {
         ind_var_factor = *getConstantIntValue(strides[i]);
+        offsets[i] = builder.template create<arith::ConstantIndexOp>(
+            loc, loop_lower_bound);
         break;
       } else if (iv && offsets[i].getDefiningOp()) {
         Operation *iv_consumer = offsets[i].getDefiningOp();
         if (auto exec = dyn_cast<air::ExecuteOp>(iv_consumer))
           iv_consumer = exec.getChildOp();
+        if (auto affop = dyn_cast<affine::AffineApplyOp>(iv_consumer)) {
+          // The induction variable must be the input to the affine op
+          if (affop.getSymbolOperands().size() == 1) {
+            bool iv_is_symbol = false;
+            for (auto val : affop.getSymbolOperands()) {
+                if (val == iv) {
+                    iv_is_symbol = true;
+                    break;
+                }
+            }
+            if (iv_is_symbol) {
+                auto map = affop.getAffineMap();
+                ind_var_factor = air::evaluateConstantsInMap(map, 
+                    SmallVector<std::optional<int64_t>>{
+                        std::optional<int64_t>{stepSize}}, for_op->getContext()).value();
+                offsets[i] = builder.template create<arith::ConstantIndexOp>(
+                                loc, loop_lower_bound);
+                break;
+            }
+          }
+        }
         if (llvm::is_contained(iv_consumer->getOperands(), iv)) {
+          if (op_to_count.find(iv_consumer) == op_to_count.end()) {
+              op_to_count[iv_consumer] = 0;
+              for (auto operand : iv_consumer->getOperands()) {
+                for (auto iv_val : ivs) {
+                  if (iv_val == operand)
+                    op_to_count[iv_consumer]++;
+                }
+              }
+          }
+          op_to_count[iv_consumer]--;
           ind_var_factor = *getConstantIntValue(strides[i]);
+          if (!op_to_count[iv_consumer]) {
+            offsets[i] = builder.template create<arith::ConstantIndexOp>(
+                        loc, loop_lower_bound);
+          }
           break;
         }
       }
@@ -1042,11 +1094,6 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       trip_count = *getStaticScfForTripCountAsInt(sfo);
     Value new_wrap =
         builder.template create<arith::ConstantIndexOp>(loc, trip_count);
-    int stepSize = -1;
-    if (auto afo = dyn_cast<affine::AffineForOp>(o))
-      stepSize = afo.getStepAsInt();
-    else if (auto sfo = dyn_cast<scf::ForOp>(o))
-      stepSize = *mlir::getConstantIntValue(sfo.getStep());
     int64_t new_stride_value =
         (stepSize * ind_var_factor) % getTensorVolume(memref.getType());
     Value new_stride =
@@ -1068,39 +1115,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
                    builder.template create<arith::ConstantIndexOp>(loc, 0));
     wraps.insert(wraps.begin(), new_wrap);
     strides.insert(strides.begin(), new_stride);
-  }
-
-  // Second traversal updating existing offsets
-  for (auto o : for_loops) {
-    for (int i = offsets.size() - 1; i >= 0; i--) {
-      Value iv = nullptr;
-      int loop_lower_bound = 0;
-      if (auto afo = dyn_cast<affine::AffineForOp>(o)) {
-        iv = afo.getInductionVar();
-        loop_lower_bound = afo.getConstantLowerBound();
-      } else if (auto sfo = dyn_cast<scf::ForOp>(o)) {
-        iv = sfo.getInductionVar();
-        if (auto cst_lower_bound =
-                mlir::getConstantIntValue(sfo.getLowerBound()))
-          loop_lower_bound = *cst_lower_bound;
-      }
-      if (iv && offsets[i] == iv) {
-        // Replace offset with for loop lower bound
-        offsets[i] = builder.template create<arith::ConstantIndexOp>(
-            loc, loop_lower_bound);
-        break;
-      } else if (iv && offsets[i].getDefiningOp()) {
-        Operation *iv_consumer = offsets[i].getDefiningOp();
-        if (auto exec = dyn_cast<air::ExecuteOp>(iv_consumer))
-          iv_consumer = exec.getChildOp();
-        if (llvm::is_contained(iv_consumer->getOperands(), iv)) {
-          offsets[i] = builder.template create<arith::ConstantIndexOp>(
-              loc, loop_lower_bound);
-          break;
-        }
-      }
-    }
-  }
+  }     
   return success();
 }
 
