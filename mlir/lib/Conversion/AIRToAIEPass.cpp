@@ -3266,46 +3266,33 @@ public:
       else
         shimTile = builder.create<AIE::TileOp>(builder.getUnknownLoc(), col, 0);
       // Get all tile ops on column col
-      SmallVector<AIE::TileOp> coreTilesOnCol;
-      SmallVector<AIE::TileOp> memTilesOnCol;
-      for (auto &[tId, tOp] : tiles)
-        if (tId.col == col) {
-          if (target_model.isCoreTile(tId.col, tId.row))
-            coreTilesOnCol.push_back(tOp);
-          else if (target_model.isMemTile(tId.col, tId.row))
-            memTilesOnCol.push_back(tOp);
-        }
+      SmallVector<AIE::TileOp> tilesOnCol;
+      for (auto &[tId, tOp] : tiles) {
+        if (tId.col != col)
+          continue;
+        if (target_model.isCoreTile(tId.col, tId.row) ||
+            target_model.isMemTile(tId.col, tId.row))
+          tilesOnCol.push_back(tOp);
+      }
       // Create packet flows per col
+      SmallVector<int> thresholdsToNextChannel;
+      int numShimDmaMM2SChans = target_model.getNumSourceShimMuxConnections(
+          shimTile.getCol(), shimTile.getRow(), AIE::WireBundle::DMA);
+      for (unsigned i = 1; i < numShimDmaMM2SChans + 1; i++)
+        thresholdsToNextChannel.push_back(tilesOnCol.size() /
+                                          numShimDmaMM2SChans * i);
       int ctrlPktFlowID =
           flowID; // Packet headers only need to be unique within each column
-      int shimChanToCoreTiles = 0;
-      int shimChanToMemTiles = 1;
-      // Broadcasting control packet to all core tiles on col
-      for (unsigned i = 0; i < coreTilesOnCol.size(); i++) {
+      int currShimChan = 0;
+      for (unsigned i = 0; i < tilesOnCol.size(); i++) {
         builder.setInsertionPointToEnd(device.getBody());
-        if (i == 0)
-          (void)createPacketFlowOp(builder, ctrlPktFlowID, shimTile,
-                                   AIE::WireBundle::DMA, shimChanToCoreTiles,
-                                   coreTilesOnCol[i], AIE::WireBundle::Ctrl, 0);
-
-        else
-          (void)getPacketFlowOp(device, shimTile, AIE::WireBundle::DMA,
-                                shimChanToCoreTiles, coreTilesOnCol[i],
-                                AIE::WireBundle::Ctrl, 0, ctrlPktFlowID);
-      }
-      // Broadcasting control packet to all mem tiles on col
-      ctrlPktFlowID = flowID;
-      for (unsigned i = 0; i < memTilesOnCol.size(); i++) {
-        builder.setInsertionPointToEnd(device.getBody());
-        if (i == 0)
-          (void)createPacketFlowOp(builder, ctrlPktFlowID, shimTile,
-                                   AIE::WireBundle::DMA, shimChanToMemTiles,
-                                   memTilesOnCol[i], AIE::WireBundle::Ctrl, 0);
-
-        else
-          (void)getPacketFlowOp(device, shimTile, AIE::WireBundle::DMA,
-                                shimChanToMemTiles, memTilesOnCol[i],
-                                AIE::WireBundle::Ctrl, 0, ctrlPktFlowID);
+        (void)createPacketFlowOp(builder, ctrlPktFlowID, shimTile,
+                                 AIE::WireBundle::DMA, currShimChan,
+                                 tilesOnCol[i], AIE::WireBundle::Ctrl, 0);
+        if (i >= thresholdsToNextChannel[currShimChan]) {
+          currShimChan++;
+          ctrlPktFlowID = flowID;
+        }
       }
     }
   }
