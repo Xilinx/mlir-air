@@ -742,11 +742,8 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
     // Innermost tiled affine.for loop induction variable as lowest offset, if
     // original rank exceeds hw limit.
     new_opers.insert(new_opers.end(), offsets.begin(), offsets.end() - 1);
-    auto new_inner_offset = builder.create<arith::AddIOp>(
-        loc,
-        builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64),
-                                           inner_affine_for_iv),
-        offsets.back());
+    auto new_inner_offset = builder.create<arith::IndexCastOp>(
+        loc, IntegerType::get(ctx, 64), inner_affine_for_iv);
     new_opers.push_back(new_inner_offset);
   } else
     new_opers.insert(new_opers.end(), offsets.begin(), offsets.end());
