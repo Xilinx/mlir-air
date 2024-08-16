@@ -10,9 +10,9 @@
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
-#define M 2048
-#define N 2048
-#define K 2048
+#define M 256
+#define N 256
+#define K 256
 
 #define A_VOLUME M *K
 #define B_VOLUME N *K

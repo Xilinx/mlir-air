@@ -204,9 +204,11 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
                                                        memref)
                    .getResult(0);
 
+    AIE::PacketInfoAttr packet =
+        op->getAttrOfType<AIE::PacketInfoAttr>("packet");
     rewriter.replaceOpWithNewOp<AIEX::NpuDmaMemcpyNdOp>(
         op, xInt, yInt, memref, offsets, sizes, strides, staticOffsets,
-        staticSizes, staticStrides, metadata, idInt);
+        staticSizes, staticStrides, packet, metadata, idInt);
 
     return success();
   }
@@ -440,11 +442,13 @@ static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
                         *getConstantIntValue(dmaUser.getMixedStrides()[j]);
         rewriter.setInsertionPoint(dmaUser);
         const std::vector<int64_t> newStaticOffsets = {0, 0, 0, oneDOffset};
+        AIE::PacketInfoAttr packet =
+            dmaUser.getPacket() ? *dmaUser.getPacket() : nullptr;
         rewriter.create<AIEX::NpuDmaMemcpyNdOp>(
             rewriter.getUnknownLoc(), dmaUser.getX(), dmaUser.getY(),
             dmaUser.getMemref(), SmallVector<Value>{}, dmaUser.getSizes(),
             dmaUser.getStrides(), ArrayRef(newStaticOffsets),
-            dmaUser.getStaticSizes(), dmaUser.getStaticStrides(),
+            dmaUser.getStaticSizes(), dmaUser.getStaticStrides(), packet,
             dmaUser.getMetadata(), dmaUser.getId());
         rewriter.eraseOp(dmaUser);
       }
@@ -919,10 +923,11 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   }
   auto new_dma = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
   // If dma op contains shim dma alloc metadata, then inherit this information
-  if (memcpy_ops[0]->hasAttr("metadata"))
-    new_dma->setAttr(
-        "metadata",
-        memcpy_ops[0]->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+  // if (memcpy_ops[0]->hasAttr("metadata"))
+  //   new_dma->setAttr(
+  //       "metadata",
+  //       memcpy_ops[0]->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+  new_dma->setAttrs(memcpy_ops[0]->getDiscardableAttrDictionary());
 
   return success();
 }
@@ -1118,9 +1123,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         SmallVector<Type, 1> tys = {};
         auto newOp = builder.create<DmaMemcpyNdOp>(dma->getLoc(), tys,
                                                    dma->getOperands());
-        if (dma->hasAttr("metadata"))
-          newOp->setAttr("metadata",
-                         dma->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+        // if (dma->hasAttr("metadata"))
+        //   newOp->setAttr("metadata",
+        //                  dma->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+        newOp->setAttrs(dma->getDiscardableAttrDictionary());
         dma->erase();
       }
     }

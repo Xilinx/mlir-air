@@ -14,6 +14,7 @@
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -56,6 +57,7 @@ struct AIRToAIEConversionOptions {
   bool emit_herd_lock;
   bool generate_shim_dma;
   bool insert_trace_packet_flow;
+  bool insert_control_packet_flow;
   AIE::AIEDevice device;
 };
 
@@ -1678,10 +1680,12 @@ public:
     registry.insert<xilinx::air::airDialect>();
     registry.insert<xilinx::airrt::AIRRtDialect>();
     registry.insert<xilinx::AIE::AIEDialect>();
+    registry.insert<xilinx::AIEX::AIEXDialect>();
     registry.insert<LLVM::LLVMDialect>();
     registry.insert<cf::ControlFlowDialect>();
   }
 
+  // Circuit-switched flow.
   AIE::FlowOp getFlowOp(AIE::DeviceOp aie_device, mlir::Value source,
                         xilinx::AIE::WireBundle sourceBundle,
                         uint32_t sourceChannel, mlir::Value dest,
@@ -1705,6 +1709,113 @@ public:
     return builder.create<AIE::FlowOp>(builder.getUnknownLoc(), source,
                                        sourceBundle, sourceChannel, dest,
                                        destBundle, destChannel);
+  }
+
+  // Packet-switched flow.
+  AIE::PacketSourceOp
+  getPacketSourceOpInPacketFlowOp(AIE::PacketFlowOp packetFlowOp,
+                                  Value source) {
+    AIE::PacketSourceOp res = nullptr;
+    packetFlowOp.walk([&](AIE::PacketSourceOp pktSoruceOp) {
+      if (pktSoruceOp.getTile() == source)
+        res = pktSoruceOp;
+    });
+    return res;
+  }
+
+  AIE::PacketDestOp
+  getPacketDestOpInPacketFlowOp(AIE::PacketFlowOp packetFlowOp, Value dest) {
+    AIE::PacketDestOp res = nullptr;
+    packetFlowOp.walk([&](AIE::PacketDestOp pktDestOp) {
+      if (pktDestOp.getTile() == dest)
+        res = pktDestOp;
+    });
+    return res;
+  }
+
+  AIE::PacketFlowOp
+  createPacketFlowOp(OpBuilder &builder, int &flowID, Value source,
+                     xilinx::AIE::WireBundle sourceBundle,
+                     uint32_t sourceChannel, Value dest,
+                     xilinx::AIE::WireBundle destBundle, uint32_t destChannel,
+                     mlir::BoolAttr keep_pkt_header = nullptr) {
+    AIE::PacketFlowOp pktFlow = builder.create<AIE::PacketFlowOp>(
+        builder.getUnknownLoc(), flowID++, keep_pkt_header);
+    Region &r_pktFlow = pktFlow.getPorts();
+    Block *b_pktFlow = builder.createBlock(&r_pktFlow);
+    builder.setInsertionPointToStart(b_pktFlow);
+    builder.create<AIE::PacketSourceOp>(builder.getUnknownLoc(), source,
+                                        sourceBundle, sourceChannel);
+    builder.create<AIE::PacketDestOp>(builder.getUnknownLoc(), dest, destBundle,
+                                      destChannel);
+    builder.create<AIE::EndOp>(builder.getUnknownLoc());
+    return pktFlow;
+  }
+
+  // This method generates broadcast packet flow if found multiple flows with
+  // the same source. TODO: packet flows sharing source do not always mean
+  // broadcast.
+  AIE::PacketFlowOp getPacketFlowOp(AIE::DeviceOp aie_device,
+                                    mlir::Value source,
+                                    xilinx::AIE::WireBundle sourceBundle,
+                                    uint32_t sourceChannel, mlir::Value dest,
+                                    xilinx::AIE::WireBundle destBundle,
+                                    uint32_t destChannel, int &flowID) {
+    AIE::PacketFlowOp packetFlowOp = nullptr;
+    aie_device.walk([&](AIE::PacketFlowOp pktFlowOp) {
+      auto pktSrcOp = getPacketSourceOpInPacketFlowOp(pktFlowOp, source);
+      if (!pktSrcOp)
+        return;
+      auto pktSrcBundle = pktSrcOp.getBundle();
+      if (pktSrcBundle != sourceBundle)
+        return;
+      auto pktSrcChannel = pktSrcOp.getChannel();
+      if (pktSrcChannel != (int)sourceChannel)
+        return;
+      packetFlowOp = pktFlowOp;
+    });
+
+    OpBuilder builder(aie_device);
+    if (packetFlowOp) {
+      auto pktDestOp = getPacketDestOpInPacketFlowOp(packetFlowOp, dest);
+      if (pktDestOp) {
+        auto pktDestBundle = pktDestOp.getBundle();
+        auto pktDestChannel = pktDestOp.getChannel();
+        if (pktDestBundle == destBundle && pktDestChannel == (int)destChannel) {
+          return packetFlowOp;
+        }
+      }
+      builder.setInsertionPoint(packetFlowOp.getBody()->getTerminator());
+      builder.create<AIE::PacketDestOp>(builder.getUnknownLoc(), dest,
+                                        destBundle, destChannel);
+      return packetFlowOp;
+    }
+
+    builder.setInsertionPointToEnd(aie_device.getBody());
+    return createPacketFlowOp(builder, flowID, source, sourceBundle,
+                              sourceChannel, dest, destBundle, destChannel);
+  }
+
+  AIE::PacketFlowOp
+  getExistingPacketFlowOp(mlir::Value source,
+                          xilinx::AIE::WireBundle sourceBundle,
+                          uint32_t sourceChannel) {
+    AIE::DeviceOp aieDeviceOp =
+        source.getParentRegion()->getParentOfType<AIE::DeviceOp>();
+    AIE::PacketFlowOp packetFlowOp = nullptr;
+    aieDeviceOp.walk([&](AIE::PacketFlowOp pktFlowOp) {
+      auto pktSrcOp = getPacketSourceOpInPacketFlowOp(pktFlowOp, source);
+      if (!pktSrcOp)
+        return;
+      auto pktSrcBundle = pktSrcOp.getBundle();
+      if (pktSrcBundle != sourceBundle)
+        return;
+      auto pktSrcChannel = pktSrcOp.getChannel();
+      if (pktSrcChannel != (int)sourceChannel)
+        return;
+      packetFlowOp = pktFlowOp;
+    });
+    return packetFlowOp;
   }
 
   template <typename T>
@@ -2055,7 +2166,7 @@ public:
                                      ShimDMAAllocator &shim_dma_alloc,
                                      MemTileDMAAllocator &memtile_dma_alloc,
                                      TileDMAAllocator &tile_dma_alloc,
-                                     bool generate_shim_dma) {
+                                     AIRToAIEConversionOptions options) {
 
     std::vector<Operation *> dma_memcpy_ops;
 
@@ -2122,10 +2233,20 @@ public:
       for (int i = 0; i < f.numS2MMAllocs; i++) {
         assert(f.MM2S_alloc.dma_tile);
         assert(f.S2MM_alloc[i].dma_tile);
-        getFlowOp(aie_device, f.MM2S_alloc.dma_tile, AIE::WireBundle::DMA,
-                  (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                  f.S2MM_alloc[i].dma_tile, AIE::WireBundle::DMA,
-                  (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        if (options.insert_control_packet_flow &&
+            f.MM2S_alloc.dma_tile.isShimNOCorPLTile())
+          // insert_control_packet_flow mode: use packet flow for all shim dma
+          // mm2s, to enable dma channel sharing with control packets
+          getPacketFlowOp(
+              aie_device, f.MM2S_alloc.dma_tile, AIE::WireBundle::DMA,
+              (uint32_t)f.MM2S_alloc.dma_channel.channel,
+              f.S2MM_alloc[i].dma_tile, AIE::WireBundle::DMA,
+              (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+        else
+          getFlowOp(aie_device, f.MM2S_alloc.dma_tile, AIE::WireBundle::DMA,
+                    (uint32_t)f.MM2S_alloc.dma_channel.channel,
+                    f.S2MM_alloc[i].dma_tile, AIE::WireBundle::DMA,
+                    (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
       }
     }
   }
@@ -2338,6 +2459,28 @@ public:
     return dmaops_labeled;
   }
 
+  void labelAIRDmaOpsAtShimWithPacketAttrInfo(func::FuncOp funcOp,
+                                              StringAttr dma_name_attr,
+                                              AIE::TileOp tileOp, int chan) {
+    // All air::MemcpyInterface ops with shim_dma_allocation metadata attribute
+    // are shim dma ops.
+    funcOp.walk([&](air::MemcpyInterface o) {
+      if (o->hasAttr("metadata")) {
+        auto metadataAttr =
+            o->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata").getValue();
+        if (metadataAttr.str() != dma_name_attr.str())
+          return;
+        auto pktFlowOp =
+            getExistingPacketFlowOp(tileOp, AIE::WireBundle::DMA, chan);
+        if (!pktFlowOp)
+          return;
+        auto pktInfoAttr = AIE::PacketInfoAttr::get(
+            o->getContext(), /*pkt_type*/ 0, pktFlowOp.getID());
+        o->setAttr("packet", pktInfoAttr);
+      }
+    });
+  }
+
   // Create channel name as string, in case if repetition due to channel
   // specialization
   std::string createChannelSubName(AIE::DeviceOp device, std::string dma_name) {
@@ -2407,6 +2550,14 @@ public:
               builder.getStringAttr("airMemcpyId" +
                                     std::to_string(original_id)),
               memref_ty);
+
+          // Label packet header if airrt.dmamemcpynd op is source of a packet
+          // flow
+          if (isMM2S)
+            labelAIRDmaOpsAtShimWithPacketAttrInfo(
+                herd->getParentOfType<func::FuncOp>(), dma_name_attr, tileOp,
+                chan);
+
           // Only create global SHIM DMA allocation op if the relevant
           // DMA ops have been successfully annotated.
           if (dmaop_labeled) {
@@ -2494,6 +2645,14 @@ public:
           // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
           auto dmaop_labeled = labelAIRDmaOpsWithMetadata(
               seg, original_id, dma_name_attr, memref_ty);
+
+          // Label packet header if airrt.dmamemcpynd op is source of a packet
+          // flow
+          if (isMM2S)
+            labelAIRDmaOpsAtShimWithPacketAttrInfo(
+                seg->getParentOfType<func::FuncOp>(), dma_name_attr, tileOp,
+                chan);
+
           // Only create global SHIM DMA allocation op if the relevant
           // DMA ops have been successfully annotated.
           if (dmaop_labeled) {
@@ -2649,7 +2808,7 @@ public:
         auto locks =
             dmaAlloc.getLockForDMA(memcpyOp, x, y, bufferOp.getOperation());
         generateDmaBd<bufferOpTy>(loc, dir, locks, x, y, arch, bd, memcpyOp,
-                                  bufferOp);
+                                  bufferOp, chan);
       }
 
       int repeat_count = 1;
@@ -2679,7 +2838,8 @@ public:
   void generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
                      std::pair<AIE::LockOp, AIE::LockOp> locks, int x, int y,
                      AIE::AIEArch arch, Block *bd,
-                     air::MemcpyInterface memcpyOp, bufferOpTy bufferOp) {
+                     air::MemcpyInterface memcpyOp, bufferOpTy bufferOp,
+                     int chan) {
     bool isAIE2 = (arch == AIE::AIEArch::AIE2);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
 
@@ -2732,21 +2892,35 @@ public:
                                     : AIE::LockAction::Acquire,
                              lockAqValue);
 
+    // Packet flow routing: get packet flow id.
+    auto aie_device = bufferOp->template getParentOfType<AIE::DeviceOp>();
+    auto tileOp = getPhysTileOpOrNull(aie_device, x, y);
+    auto pktFlowOp =
+        getExistingPacketFlowOp(tileOp, AIE::WireBundle::DMA, chan);
+    AIE::PacketInfoAttr pktInfoAttr = nullptr;
+    if (isMM2S && pktFlowOp) {
+      auto packetID = pktFlowOp.getID();
+      pktInfoAttr = AIE::PacketInfoAttr::get(ndcpy->getContext(), 0, packetID);
+    }
+
     std::vector<AIE::BDDimLayoutAttr> dims =
         getWrapsAndStrides(sizes, strides, ndcpy->getContext());
     auto wraps_and_strides =
         AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
     bool useDefaultDataAccessPattern =
         isAIE2 ? isDefaultDataAccessPattern(sizes, strides, memref) : true;
+    AIE::DMABDOp aieDmaBdOp = nullptr;
     if (wraps_and_strides.getValue().empty() || useDefaultDataAccessPattern)
-      b.create<AIE::DMABDOp>(
+      aieDmaBdOp = b.create<AIE::DMABDOp>(
           loc, bufferOp, offset,
           cast<arith::ConstantIndexOp>(length.getDefiningOp()).value());
     else
-      b.create<AIE::DMABDOp>(
+      aieDmaBdOp = b.create<AIE::DMABDOp>(
           loc, bufferOp, offset,
           cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(),
           wraps_and_strides);
+    if (pktInfoAttr)
+      aieDmaBdOp->setAttr("packet", pktInfoAttr);
     b.create<AIE::UseLockOp>(loc, relLockOp, AIE::LockAction::Release,
                              lockRelValue);
   }
@@ -2784,7 +2958,7 @@ public:
 
     // Place memcpy ops onto DMA tiles, channels and flows
     placeDMAChannelsAndRouteFlows<T>(device, shimDmaAlloc, memTileDmaAlloc,
-                                     tileDmaAlloc, options.generate_shim_dma);
+                                     tileDmaAlloc, options);
 
     for (AIE::CoreOp core : cores) {
       AIE::TileOp tile = core.getTileOp();
@@ -3039,7 +3213,6 @@ public:
     }
 
     // Create packet flows
-    int flowID = 0; // todo: check any existing?
     for (auto srcTile : device.getOps<AIE::TileOp>()) {
       int srcColIndex = srcTile.colIndex();
       int srcRowIndex = srcTile.rowIndex();
@@ -3061,16 +3234,65 @@ public:
 
         builder.setInsertionPointToEnd(device.getBody());
         auto keep_pkt_header = builder.getBoolAttr(true);
-        AIE::PacketFlowOp pktFlow = builder.create<AIE::PacketFlowOp>(
-            builder.getUnknownLoc(), flowID++, keep_pkt_header);
-        Region &r_pktFlow = pktFlow.getPorts();
-        Block *b_pktFlow = builder.createBlock(&r_pktFlow);
-        builder.setInsertionPointToStart(b_pktFlow);
-        builder.create<AIE::PacketSourceOp>(builder.getUnknownLoc(), srcTile,
-                                            AIE::WireBundle::Trace, 0);
-        builder.create<AIE::PacketDestOp>(builder.getUnknownLoc(), destTile,
-                                          AIE::WireBundle::DMA, destChan);
-        builder.create<AIE::EndOp>(builder.getUnknownLoc());
+        (void)createPacketFlowOp(
+            builder, flowID, srcTile, AIE::WireBundle::Trace, 0, destTile,
+            AIE::WireBundle::DMA, destChan, keep_pkt_header);
+      }
+    }
+  }
+
+  // Create an overlay of packet flow network sending control packets from shim
+  // dma mm2s channels to tiles in a column.
+  void createControlPacketFlow(AIE::DeviceOp device) {
+    OpBuilder builder(device);
+    const auto &target_model = device.getTargetModel();
+
+    // Collect existing TileOps
+    DenseMap<AIE::TileID, AIE::TileOp> tiles;
+    llvm::SmallSet<int, 1> occupiedCols;
+    for (auto tile : device.getOps<AIE::TileOp>()) {
+      int colIndex = tile.colIndex();
+      int rowIndex = tile.rowIndex();
+      tiles[{colIndex, rowIndex}] = tile;
+      occupiedCols.insert(colIndex);
+    }
+
+    // Create packet flows
+    for (int col : occupiedCols) {
+      AIE::TileOp shimTile = nullptr;
+      builder.setInsertionPointToStart(device.getBody());
+      if (tiles.count({col, 0}))
+        shimTile = tiles[{col, 0}];
+      else
+        shimTile = builder.create<AIE::TileOp>(builder.getUnknownLoc(), col, 0);
+      // Get all tile ops on column col
+      SmallVector<AIE::TileOp> tilesOnCol;
+      for (auto &[tId, tOp] : tiles) {
+        if (tId.col != col)
+          continue;
+        if (target_model.isCoreTile(tId.col, tId.row) ||
+            target_model.isMemTile(tId.col, tId.row))
+          tilesOnCol.push_back(tOp);
+      }
+      // Create packet flows per col
+      SmallVector<int> thresholdsToNextChannel;
+      int numShimDmaMM2SChans = target_model.getNumSourceShimMuxConnections(
+          shimTile.getCol(), shimTile.getRow(), AIE::WireBundle::DMA);
+      for (int i = 1; i < numShimDmaMM2SChans + 1; i++)
+        thresholdsToNextChannel.push_back(tilesOnCol.size() /
+                                          numShimDmaMM2SChans * i);
+      int ctrlPktFlowID =
+          flowID; // Packet headers only need to be unique within each column
+      int currShimChan = 0;
+      for (int i = 0; i < (int)tilesOnCol.size(); i++) {
+        builder.setInsertionPointToEnd(device.getBody());
+        (void)createPacketFlowOp(builder, ctrlPktFlowID, shimTile,
+                                 AIE::WireBundle::DMA, currShimChan,
+                                 tilesOnCol[i], AIE::WireBundle::Ctrl, 0);
+        if (i >= thresholdsToNextChannel[currShimChan]) {
+          currShimChan++;
+          ctrlPktFlowID = flowID;
+        }
       }
     }
   }
@@ -3101,6 +3323,7 @@ public:
           /*.emit_herd_lock = */ clEmitHerdLock,
           /*.generate_shim_dma = */ clGenerateShimDMA,
           /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
+          /*.insert_control_packet_flow = */ clInsertCtrlPacketFlow,
           /*.device = */ *device};
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
@@ -3129,6 +3352,8 @@ public:
         }
         if (options.insert_trace_packet_flow)
           createTracePacketFlow(d);
+        if (options.insert_control_packet_flow)
+          createControlPacketFlow(d);
       }
     }
 
@@ -3158,6 +3383,10 @@ public:
     std::map<std::string, std::string> chan_to_chan_map;
     if (clTestPatterns.find("specialize-channel-bundle") != std::string::npos) {
       patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
+    }
+    if (clTestPatterns.find("insert-control-packet-flow") !=
+        std::string::npos) {
+      m.walk([&](AIE::DeviceOp d) { createControlPacketFlow(d); });
     }
 
     if (patterns.getNativePatterns().size())
@@ -3198,7 +3427,8 @@ public:
         /* .emit_while = */ clEmitWhileLoop,
         /* .emit_herd_lock = */ clEmitHerdLock,
         /* .generate_shim_dma = */ clGenerateShimDMA,
-        /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
+        /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
+        /* .insert_control_packet_flow = */ clInsertCtrlPacketFlow,
         /* .device = */ *device};
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
@@ -3295,6 +3525,11 @@ public:
           auto herd_meta = createHerdMetadata(segment_meta, herd);
           herd_meta->setAttr("dma_allocations",
                              ArrayAttr::get(ctx, dma_allocations));
+
+          // Control packet generation for AIE1 is not yet implemented.
+          if (options.insert_control_packet_flow)
+            herd->emitOpError("control packet flow generation is not yet "
+                              "supported for AIE1.");
         } else if (device.getTargetModel().getTargetArch() ==
                    AIE::AIEArch::AIE2) {
           // AIE2 dma metadata format
@@ -3323,6 +3558,11 @@ public:
               getOrCreateSegmentMetadata(module_meta, segment_name);
           segment_meta->setAttr("dma_allocations",
                                 ArrayAttr::get(ctx, dma_allocations));
+
+          // Control packet generation for AIE1 is not yet implemented.
+          if (options.insert_control_packet_flow)
+            seg->emitOpError("control packet flow generation is not yet "
+                             "supported for AIE1.");
         } else if (device.getTargetModel().getTargetArch() ==
                    AIE::AIEArch::AIE2) {
           // AIE2 memtile dma metadata format
@@ -3351,11 +3591,18 @@ public:
         for (auto n : t.chan_names)
           labelAIRDmaOpsWithMetadata(channel_ops, n, chan_to_chan_map);
 
+      // Create control packet overlay
+      if (options.insert_control_packet_flow)
+        createControlPacketFlow(device);
+
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
       (void)applyPatternsAndFoldGreedily(device, std::move(patterns));
     }
   }
+
+  // Static flow id to ensure unique packet header per packet flow.
+  int flowID = 0;
 };
 
 template <typename OpT>
@@ -3571,6 +3818,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /* .emit_herd_lock = */ false,
                                        /* .generate_shim_dma = */ false,
                                        /*.trace_size = */ 0,
+                                       /*.ctrl_packet = */ false,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
   p.walk([&](xilinx::air::HerdOp h) {

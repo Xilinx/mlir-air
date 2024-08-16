@@ -435,10 +435,10 @@ public:
     } else {
       airrtOp = rewriter.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
     }
-    // If dma op contains shim dma alloc metadata, then inherit this information
-    if (op->hasAttr("metadata"))
-      airrtOp->setAttr("metadata",
-                       op->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+    // Copy over discardable attrs assigned in -air-to-aie pass.
+    op->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id has
+                          // been assigned.
+    airrtOp->setAttrs(op->getDiscardableAttrDictionary());
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
@@ -557,11 +557,10 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     tys.push_back(airrt::EventType::get(ctx));
 
   airrtOp = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
-  // If channel op contains shim dma alloc metadata, then inherit this
-  // information
-  if (thisOp->hasAttr("metadata"))
-    airrtOp->setAttr("metadata",
-                     thisOp->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+  // Copy over discardable attrs assigned in -air-to-aie pass.
+  thisOp->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id
+                            // has been assigned.
+  airrtOp->setAttrs(thisOp->getDiscardableAttrDictionary());
   return airrtOp;
 }
 
