@@ -1266,7 +1266,12 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
       for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++)
         src_offsets.push_back(constZero);
     }
+  } else {
+    src_offsets = dmaOp.getSrcOffsets();
+    src_sizes = dmaOp.getSrcSizes();
+    src_strides = dmaOp.getSrcStrides();
   }
+
   MemRefType dst_memref_ty;
   if (!dst_ancestor_memref_ops.empty()) {
     if (auto subviewOp =
@@ -1286,6 +1291,10 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
       for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++)
         dst_offsets.push_back(constZero);
     }
+  } else {
+    dst_offsets = dmaOp.getDstOffsets();
+    dst_sizes = dmaOp.getDstSizes();
+    dst_strides = dmaOp.getDstStrides();
   }
 
   for (auto memrefOp : src_ancestor_memref_ops) {
