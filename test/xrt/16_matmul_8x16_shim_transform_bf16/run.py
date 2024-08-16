@@ -66,7 +66,7 @@ macs = 2.0 * M * K * N
 
 input_b = np.random.rand(*in_b_size).astype(bfloat16)
 input_b = input_b.flatten()
-# Change the layout of the input tensor 
+
 blocked_input_b = input_b.copy()
 for k in range(0, int(K / Ty)):
     for n in range(0, int(N / Tx)):
