@@ -206,7 +206,7 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
 
     rewriter.replaceOpWithNewOp<AIEX::NpuDmaMemcpyNdOp>(
         op, xInt, yInt, memref, offsets, sizes, strides, staticOffsets,
-        staticSizes, staticStrides, metadata, idInt);
+        staticSizes, staticStrides, nullptr, metadata, idInt);
 
     return success();
   }
@@ -444,7 +444,7 @@ static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
             rewriter.getUnknownLoc(), dmaUser.getX(), dmaUser.getY(),
             dmaUser.getMemref(), SmallVector<Value>{}, dmaUser.getSizes(),
             dmaUser.getStrides(), ArrayRef(newStaticOffsets),
-            dmaUser.getStaticSizes(), dmaUser.getStaticStrides(),
+            dmaUser.getStaticSizes(), dmaUser.getStaticStrides(), nullptr,
             dmaUser.getMetadata(), dmaUser.getId());
         rewriter.eraseOp(dmaUser);
       }

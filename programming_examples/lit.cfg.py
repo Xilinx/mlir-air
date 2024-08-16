@@ -78,7 +78,8 @@ if config.xrt_lib_dir:
         )
         result = result.stdout.decode("utf-8").split("\n")
         # Starting with Linux 6.8 the format is like "[0000:66:00.1]  :  RyzenAI-npu1"
-        p = re.compile("\[.+:.+:.+\].+(Phoenix|RyzenAI-(npu\d))")
+        # Starting with Linux 6.10 the format is like "|[0000:41:00.1]  ||RyzenAI-npu1  |"
+        p = re.compile("[\|]?\[.+:.+:.+\].+(Phoenix|RyzenAI-(npu\d))")
         for l in result:
             m = p.match(l)
             if m:
