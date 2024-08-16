@@ -133,13 +133,13 @@ int main(int argc, const char *argv[]) {
   std::vector<B_DATATYPE> BlockedBVec(B_VOLUME);
   for (int k = 0; k < (K / Ty); k++) {
     for (int n = 0; n < (N / Tx); n++) {
-        for (int ty = 0; ty < Ty; ty++) {
-            for (int tx = 0; tx < Tx; tx++) {
-                int inputIdx = tx + (Tx * ty) + (n * Ty * Tx) + (k * N * Ty);
-                int blockIdx = tx + (N * ty) + (Tx * n) + (k * Ty * N);
-                BlockedBVec[blockIdx] = BVec[inputIdx];
-            }
+      for (int ty = 0; ty < Ty; ty++) {
+        for (int tx = 0; tx < Tx; tx++) {
+          int inputIdx = tx + (Tx * ty) + (n * Ty * Tx) + (k * N * Ty);
+          int blockIdx = tx + (N * ty) + (Tx * n) + (k * Ty * N);
+          BlockedBVec[blockIdx] = BVec[inputIdx];
         }
+      }
     }
   }
   memcpy(bufB, BlockedBVec.data(), (BlockedBVec.size() * sizeof(B_DATATYPE)));
