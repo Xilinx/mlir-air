@@ -1034,7 +1034,6 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     }
     int64_t ind_var_factor = 0;
     for (int i = offsets.size() - 1; i >= 0; i--) {
-      offsets[i].dump();
       if (iv && offsets[i] == iv) {
         ind_var_factor = *getConstantIntValue(strides[i]);
         offsets[i] = builder.template create<arith::ConstantIndexOp>(
