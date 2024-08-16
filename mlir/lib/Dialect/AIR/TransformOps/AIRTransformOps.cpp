@@ -67,6 +67,8 @@ class AIRTransformDialectExtension
     : public transform::TransformDialectExtension<
           AIRTransformDialectExtension> {
 public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AIRTransformDialectExtension)
+
   AIRTransformDialectExtension() {
     declareDependentDialect<func::FuncDialect>();
     registerTransformOps<
