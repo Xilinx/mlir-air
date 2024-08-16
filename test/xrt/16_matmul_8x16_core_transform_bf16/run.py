@@ -11,7 +11,7 @@ import time
 
 M = 512
 N = 512
-K = 1024
+K = 256
 
 Tx = 16
 Ty = 8
