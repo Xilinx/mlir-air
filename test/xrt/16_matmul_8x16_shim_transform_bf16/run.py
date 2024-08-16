@@ -9,9 +9,6 @@ import pyxrt as xrt
 import sys
 import time
 
-import warnings
-warnings.filterwarnings("ignore")
-
 M = 512
 N = 512
 K = 1024
