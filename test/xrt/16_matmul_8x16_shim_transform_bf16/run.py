@@ -16,6 +16,9 @@ M = 512
 N = 512
 K = 1024
 
+Tx = 16
+Ty = 8
+
 in_a_size = (M, K)
 in_b_size = (K, N)
 out_size = (M, N)
@@ -63,31 +66,14 @@ macs = 2.0 * M * K * N
 
 input_b = np.random.rand(*in_b_size).astype(bfloat16)
 input_b = input_b.flatten()
-#input_b = input_b.reshape((K, N))
-print("input b:", input_b)
-# Change the layout of the input tensor with 4x128 block
-Tx = 16
-Ty = 8
+# Change the layout of the input tensor 
 blocked_input_b = input_b.copy()
-print("blocked_input_b:", blocked_input_b)
-print("len(blocked_input_b): " + str(len(blocked_input_b)))
-print("len(input_b): " + str(len(input_b)))
 for k in range(0, int(K / Ty)):
     for n in range(0, int(N / Tx)):
         for ty in range(0, Ty):
             for tx in range(0, Tx):
-                #blockIdx = tx + (Tx * ty) + (n * Ty * Tx) + (k * N * Ty)
                 inputIdx = tx + (Tx * ty) + (n * Ty * Tx) + (k * N * Ty)
-                #inputIdx = tx + (N * ty) + (Tx * n) + (k * Ty * N)
                 blockIdx = tx + (N * ty) + (Tx * n) + (k * Ty * N)
-                if (k == 0 and n == 0) or (k == 0 and n == 1) \
-                or (k == 0 and n == 2) or (k == 0 and n == 3) \
-                or (k == 0 and n == 4) or (k == 0 and n == 5) \
-                or (k == 0 and n == 6) or (k == 0 and n == 7):
-                    print("\nk:" + str(k) + ", n:" + str(n) + ", ty:" + str(ty) + ", tx:" + str(tx))
-                    print("inputIdx: " + str(inputIdx) + "  blockIdx: " + str(blockIdx))
-                    print(input_b[inputIdx])
-                #blocked_input_b[k][n][ty][tx] = input_b[k][ty][n][tx] #nput_b[inputIdx]
                 blocked_input_b[blockIdx] = input_b[inputIdx]
 
 input_b = input_b.reshape((K, N))
