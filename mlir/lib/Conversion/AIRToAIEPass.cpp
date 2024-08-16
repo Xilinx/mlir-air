@@ -3278,13 +3278,13 @@ public:
       SmallVector<int> thresholdsToNextChannel;
       int numShimDmaMM2SChans = target_model.getNumSourceShimMuxConnections(
           shimTile.getCol(), shimTile.getRow(), AIE::WireBundle::DMA);
-      for (unsigned i = 1; i < numShimDmaMM2SChans + 1; i++)
+      for (int i = 1; i < numShimDmaMM2SChans + 1; i++)
         thresholdsToNextChannel.push_back(tilesOnCol.size() /
                                           numShimDmaMM2SChans * i);
       int ctrlPktFlowID =
           flowID; // Packet headers only need to be unique within each column
       int currShimChan = 0;
-      for (unsigned i = 0; i < tilesOnCol.size(); i++) {
+      for (int i = 0; i < (int)tilesOnCol.size(); i++) {
         builder.setInsertionPointToEnd(device.getBody());
         (void)createPacketFlowOp(builder, ctrlPktFlowID, shimTile,
                                  AIE::WireBundle::DMA, currShimChan,
