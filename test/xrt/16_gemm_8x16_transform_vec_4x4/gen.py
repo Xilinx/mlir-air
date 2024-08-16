@@ -12,8 +12,6 @@ from air.dialects import air as airdialect
 from air.compiler.util import run_transform
 import sys
 
-#with air.ir.Context() as ctx, Location.unknown():
-
 ctx = Context()
 
 ################################################
