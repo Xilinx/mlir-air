@@ -168,7 +168,7 @@ jobs:
             cmake .. \
               -GNinja \
               -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
-              -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_BUILD_TYPE=Release \
               -DLLVM_ENABLE_ASSERTIONS=ON \
               -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
               -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
