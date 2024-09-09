@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 
-// RUN: air-opt -o %T/broadcast.llvm.mlir %s -buffer-results-to-out-params -air-to-async -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -canonicalize -cse
+// RUN: air-opt -o %T/broadcast.llvm.mlir %s -buffer-results-to-out-params -air-to-async -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts -canonicalize -cse
 // RUN: air-translate --mlir-to-llvmir %T/broadcast.llvm.mlir -o %T/broadcast.ll
 // RUN: %OPT -O3 -o %T/broadcast.opt.bc < %T/broadcast.ll
 // RUN: %LLC %T/broadcast.opt.bc --relocation-model=pic -filetype=obj -o %T/broadcast.o
