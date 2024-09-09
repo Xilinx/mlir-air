@@ -1216,13 +1216,15 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
             rewriter.getUnknownLoc(),
             rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}),
             rewriter.getArrayAttr(
-                {SymbolRefAttr::get(ctx, producerFifo.name())}));
+                {SymbolRefAttr::get(ctx, producerFifo.name())}),
+            rewriter.getArrayAttr({}), rewriter.getArrayAttr({}));
       else
         rewriter.create<AIE::ObjectFifoLinkOp>(
             rewriter.getUnknownLoc(),
             rewriter.getArrayAttr(
                 {SymbolRefAttr::get(ctx, producerFifo.name())}),
-            rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}));
+            rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}),
+            rewriter.getArrayAttr({}), rewriter.getArrayAttr({}));
     }
 
     // replace put/get and any associated memref alloc/dealloc
@@ -1740,7 +1742,7 @@ public:
                      xilinx::AIE::WireBundle destBundle, uint32_t destChannel,
                      mlir::BoolAttr keep_pkt_header = nullptr) {
     AIE::PacketFlowOp pktFlow = builder.create<AIE::PacketFlowOp>(
-        builder.getUnknownLoc(), flowID++, keep_pkt_header);
+        builder.getUnknownLoc(), flowID++, keep_pkt_header, nullptr);
     Region &r_pktFlow = pktFlow.getPorts();
     Block *b_pktFlow = builder.createBlock(&r_pktFlow);
     builder.setInsertionPointToStart(b_pktFlow);

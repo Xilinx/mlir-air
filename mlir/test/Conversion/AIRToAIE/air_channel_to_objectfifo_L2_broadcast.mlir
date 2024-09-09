@@ -14,7 +14,7 @@
 // CHECK:    %[[VAL_4:.*]] = aie.tile(2, 0)
 // CHECK:    aie.objectfifo @air_channel_1(%[[VAL_0]], {%[[VAL_3]], %[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo @air_channel_0(%[[VAL_4]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:    aie.objectfifo.link [@air_channel_0] -> [@air_channel_1]()
+// CHECK:    aie.objectfifo.link [@air_channel_0] -> [@air_channel_1]([] [])
 // CHECK:    %[[VAL_8:.*]] = aie.core(%[[VAL_3]]) {
 // CHECK:      %[[VAL_9:.*]] = aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
 // CHECK:      %[[VAL_10:.*]] = aie.objectfifo.subview.access %[[VAL_9]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
