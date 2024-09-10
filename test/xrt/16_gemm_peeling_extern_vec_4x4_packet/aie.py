@@ -236,7 +236,7 @@ with air.ir.Context() as ctx, Location.unknown():
             [
                 "canonicalize",
                 "cse",
-                "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true insert-control-packet-flow=true}",
+                "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true use-pkt-flow-at-shim-dma=true}",
                 "canonicalize",
             ]
         )
