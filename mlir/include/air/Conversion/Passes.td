@@ -171,14 +171,14 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     Option<"clGenerateShimDMA", "generate-shim-dma", "bool",
            /*default=*/"false",
            "Choose whether to schedule shim data movement via generating AIE "
-           " shim DMA program, or AIR runtime.">,
+           "shim DMA program, or AIR runtime.">,
     Option<"clInsertTracePacketFlow", "insert-trace-packet-flow", "bool", 
           /*default=*/"false",
           "Create packet routed traces for cores and memtiles">,
-    Option<"clInsertCtrlPacketFlow", "insert-control-packet-flow", "bool", 
+    Option<"clUsePktFlowsAtShimDma", "use-pkt-flow-at-shim-dma", "bool", 
           /*default=*/"false",
-          "Create packet routed control packets from ShimDMAs to reconfigure "
-          " AIE tiles">,
+          "Switch to using packet flows for all data movements at shim DMAs, "
+          "to enable time-multiplex sharing with control packet flows.">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE

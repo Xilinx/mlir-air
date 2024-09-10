@@ -57,7 +57,7 @@ struct AIRToAIEConversionOptions {
   bool emit_herd_lock;
   bool generate_shim_dma;
   bool insert_trace_packet_flow;
-  bool insert_control_packet_flow;
+  bool use_packet_flow_at_shim_dmas;
   AIE::AIEDevice device;
 };
 
@@ -1216,13 +1216,15 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
             rewriter.getUnknownLoc(),
             rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}),
             rewriter.getArrayAttr(
-                {SymbolRefAttr::get(ctx, producerFifo.name())}));
+                {SymbolRefAttr::get(ctx, producerFifo.name())}),
+            rewriter.getArrayAttr({}), rewriter.getArrayAttr({}));
       else
         rewriter.create<AIE::ObjectFifoLinkOp>(
             rewriter.getUnknownLoc(),
             rewriter.getArrayAttr(
                 {SymbolRefAttr::get(ctx, producerFifo.name())}),
-            rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}));
+            rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}),
+            rewriter.getArrayAttr({}), rewriter.getArrayAttr({}));
     }
 
     // replace put/get and any associated memref alloc/dealloc
@@ -1740,7 +1742,7 @@ public:
                      xilinx::AIE::WireBundle destBundle, uint32_t destChannel,
                      mlir::BoolAttr keep_pkt_header = nullptr) {
     AIE::PacketFlowOp pktFlow = builder.create<AIE::PacketFlowOp>(
-        builder.getUnknownLoc(), flowID++, keep_pkt_header);
+        builder.getUnknownLoc(), flowID++, keep_pkt_header, nullptr);
     Region &r_pktFlow = pktFlow.getPorts();
     Block *b_pktFlow = builder.createBlock(&r_pktFlow);
     builder.setInsertionPointToStart(b_pktFlow);
@@ -2233,9 +2235,9 @@ public:
       for (int i = 0; i < f.numS2MMAllocs; i++) {
         assert(f.MM2S_alloc.dma_tile);
         assert(f.S2MM_alloc[i].dma_tile);
-        if (options.insert_control_packet_flow &&
+        if (options.use_packet_flow_at_shim_dmas &&
             f.MM2S_alloc.dma_tile.isShimNOCorPLTile())
-          // insert_control_packet_flow mode: use packet flow for all shim dma
+          // use_packet_flow_at_shim_dmas mode: use packet flow for all shim dma
           // mm2s, to enable dma channel sharing with control packets
           getPacketFlowOp(
               aie_device, f.MM2S_alloc.dma_tile, AIE::WireBundle::DMA,
@@ -3241,62 +3243,6 @@ public:
     }
   }
 
-  // Create an overlay of packet flow network sending control packets from shim
-  // dma mm2s channels to tiles in a column.
-  void createControlPacketFlow(AIE::DeviceOp device) {
-    OpBuilder builder(device);
-    const auto &target_model = device.getTargetModel();
-
-    // Collect existing TileOps
-    DenseMap<AIE::TileID, AIE::TileOp> tiles;
-    llvm::SmallSet<int, 1> occupiedCols;
-    for (auto tile : device.getOps<AIE::TileOp>()) {
-      int colIndex = tile.colIndex();
-      int rowIndex = tile.rowIndex();
-      tiles[{colIndex, rowIndex}] = tile;
-      occupiedCols.insert(colIndex);
-    }
-
-    // Create packet flows
-    for (int col : occupiedCols) {
-      AIE::TileOp shimTile = nullptr;
-      builder.setInsertionPointToStart(device.getBody());
-      if (tiles.count({col, 0}))
-        shimTile = tiles[{col, 0}];
-      else
-        shimTile = builder.create<AIE::TileOp>(builder.getUnknownLoc(), col, 0);
-      // Get all tile ops on column col
-      SmallVector<AIE::TileOp> tilesOnCol;
-      for (auto &[tId, tOp] : tiles) {
-        if (tId.col != col)
-          continue;
-        if (target_model.isCoreTile(tId.col, tId.row) ||
-            target_model.isMemTile(tId.col, tId.row))
-          tilesOnCol.push_back(tOp);
-      }
-      // Create packet flows per col
-      SmallVector<int> thresholdsToNextChannel;
-      int numShimDmaMM2SChans = target_model.getNumSourceShimMuxConnections(
-          shimTile.getCol(), shimTile.getRow(), AIE::WireBundle::DMA);
-      for (int i = 1; i < numShimDmaMM2SChans + 1; i++)
-        thresholdsToNextChannel.push_back(tilesOnCol.size() /
-                                          numShimDmaMM2SChans * i);
-      int ctrlPktFlowID =
-          flowID; // Packet headers only need to be unique within each column
-      int currShimChan = 0;
-      for (int i = 0; i < (int)tilesOnCol.size(); i++) {
-        builder.setInsertionPointToEnd(device.getBody());
-        (void)createPacketFlowOp(builder, ctrlPktFlowID, shimTile,
-                                 AIE::WireBundle::DMA, currShimChan,
-                                 tilesOnCol[i], AIE::WireBundle::Ctrl, 0);
-        if (i >= thresholdsToNextChannel[currShimChan]) {
-          currShimChan++;
-          ctrlPktFlowID = flowID;
-        }
-      }
-    }
-  }
-
   void runTestPatterns() {
 
     auto m = getOperation();
@@ -3323,7 +3269,7 @@ public:
           /*.emit_herd_lock = */ clEmitHerdLock,
           /*.generate_shim_dma = */ clGenerateShimDMA,
           /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
-          /*.insert_control_packet_flow = */ clInsertCtrlPacketFlow,
+          /*.use_packet_flow_at_shim_dmas = */ clUsePktFlowsAtShimDma,
           /*.device = */ *device};
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
@@ -3352,8 +3298,6 @@ public:
         }
         if (options.insert_trace_packet_flow)
           createTracePacketFlow(d);
-        if (options.insert_control_packet_flow)
-          createControlPacketFlow(d);
       }
     }
 
@@ -3383,10 +3327,6 @@ public:
     std::map<std::string, std::string> chan_to_chan_map;
     if (clTestPatterns.find("specialize-channel-bundle") != std::string::npos) {
       patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
-    }
-    if (clTestPatterns.find("insert-control-packet-flow") !=
-        std::string::npos) {
-      m.walk([&](AIE::DeviceOp d) { createControlPacketFlow(d); });
     }
 
     if (patterns.getNativePatterns().size())
@@ -3428,7 +3368,7 @@ public:
         /* .emit_herd_lock = */ clEmitHerdLock,
         /* .generate_shim_dma = */ clGenerateShimDMA,
         /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
-        /* .insert_control_packet_flow = */ clInsertCtrlPacketFlow,
+        /* .use_packet_flow_at_shim_dmas = */ clUsePktFlowsAtShimDma,
         /* .device = */ *device};
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
@@ -3527,7 +3467,7 @@ public:
                              ArrayAttr::get(ctx, dma_allocations));
 
           // Control packet generation for AIE1 is not yet implemented.
-          if (options.insert_control_packet_flow)
+          if (options.use_packet_flow_at_shim_dmas)
             herd->emitOpError("control packet flow generation is not yet "
                               "supported for AIE1.");
         } else if (device.getTargetModel().getTargetArch() ==
@@ -3560,7 +3500,7 @@ public:
                                 ArrayAttr::get(ctx, dma_allocations));
 
           // Control packet generation for AIE1 is not yet implemented.
-          if (options.insert_control_packet_flow)
+          if (options.use_packet_flow_at_shim_dmas)
             seg->emitOpError("control packet flow generation is not yet "
                              "supported for AIE1.");
         } else if (device.getTargetModel().getTargetArch() ==
@@ -3590,10 +3530,6 @@ public:
       for (auto &t : shimTileAlloc.mm2s_allocs)
         for (auto n : t.chan_names)
           labelAIRDmaOpsWithMetadata(channel_ops, n, chan_to_chan_map);
-
-      // Create control packet overlay
-      if (options.insert_control_packet_flow)
-        createControlPacketFlow(device);
 
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
