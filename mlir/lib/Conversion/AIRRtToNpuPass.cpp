@@ -1164,7 +1164,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   void purgeDuplicateShimDmaAllocs(ModuleOp module) {
-    llvm::SmallSet<AIE::ShimDMAAllocationOp, 1> allocs;
+    llvm::SetVector<AIE::ShimDMAAllocationOp> allocs;
     module.walk([&](AIE::ShimDMAAllocationOp alloc) { allocs.insert(alloc); });
     llvm::SmallSet<AIE::ShimDMAAllocationOp, 1> uniqueAllocs;
 
@@ -1197,6 +1197,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         return;
       StringRef metadata =
           dma->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata").getValue();
+      if (!uniqueAllocMap.count(metadata))
+        return;
       if (uniqueAllocMap[metadata] != metadata) {
         dma->setAttr("metadata",
                      FlatSymbolRefAttr::get(dma->getContext(),
