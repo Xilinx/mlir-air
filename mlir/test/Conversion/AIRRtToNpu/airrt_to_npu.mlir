@@ -967,3 +967,52 @@ module {
     return
   }
 }
+
+// -----
+
+// Offset field with (1) for loop induction variable, (2) affine map, and (3) existing non-singleton stride.
+
+// CHECK-LABEL: func22
+// CHECK: aiex.npu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][1, 2, 64, 64][1, 4096, 64, 1]) {id = 0 : i64, metadata = @airMemcpyId31} : memref<2x64x64xi32>
+// CHECK: aiex.npu.sync {channel = 0 : i32, column = 0 : i32, column_num = 1 : i32, direction = 0 : i32, row = 0 : i32, row_num = 1 : i32}
+
+#map = affine_map<()[s0] -> (s0 * 64)>
+module {
+  aie.device(npu1_1col) {
+    aie.shim_dma_allocation @airMemcpyId31(S2MM, 0, 0)
+    memref.global "public" @airMemcpyId31 : memref<1x2x2x32x32xi32, 1 : i32>
+  } {sym_name = "batch_matmul_dispatch_0_batch_matmul_2x64x64x64_i32_0"}
+  func.func @func22(%arg0: memref<2x64x64xi32>) {
+    %c32_i64 = arith.constant 32 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2048_i64 = arith.constant 2048 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c31_i32 = arith.constant 31 : i32
+    %c7_i32 = arith.constant 7 : i32
+    %c6_i32 = arith.constant 6 : i32
+    %c0_i64 = arith.constant 0 : i64
+    affine.for %arg3 = 0 to 1 {
+      affine.for %arg4 = 0 to 2 {
+        affine.for %arg5 = 0 to 1 {
+          affine.for %arg6 = 0 to 1 {
+            %p = airrt.segment_load "batch_matmul_dispatch_0_batch_matmul_2x64x64x64_i32_0" : i64
+            %20 = affine.apply #map()[%arg6]
+            %21 = affine.apply #map()[%arg5]
+            %22 = arith.index_cast %arg4 : index to i64
+            %23 = arith.index_cast %arg4 : index to i64
+            %24 = arith.index_cast %21 : index to i64
+            %25 = arith.index_cast %20 : index to i64
+            %26 = airrt.dma_memcpy_nd(%c31_i32, %22, %c0_i64, %arg0[%c0_i64, %23, %24, %25], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c4096_i64, %c64_i64]) {metadata = @airMemcpyId31} : (i32, i64, i64, memref<2x64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+            affine.for %arg7 = 0 to 1 {
+              %h = airrt.herd_load "herd_0" : i64
+              %h_0 = airrt.herd_load "herd_0" : i64
+            }
+          }
+        }
+      }
+    }
+    return
+  }
+}
