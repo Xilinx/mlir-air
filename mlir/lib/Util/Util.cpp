@@ -1002,7 +1002,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     SmallVector<Value> &strides, Value memref) {
   auto loc = for_op->getLoc();
 
-  // Fold for loops int channel op's wrap and stride fields
+  // Fold for loops into channel op's wrap and stride fields
   SmallVector<Operation *> for_loops;
   SmallVector<Value> ivs;
   Operation *parent = channel_op;
@@ -1055,12 +1055,13 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
             }
             if (iv_is_symbol) {
               auto map = affop.getAffineMap();
-              ind_var_factor = air::evaluateConstantsInMap(
-                                   map,
-                                   SmallVector<std::optional<int64_t>>{
-                                       std::optional<int64_t>{stepSize}},
-                                   for_op->getContext())
-                                   .value();
+              ind_var_factor = *getConstantIntValue(strides[i]);
+              ind_var_factor *= air::evaluateConstantsInMap(
+                                    map,
+                                    SmallVector<std::optional<int64_t>>{
+                                        std::optional<int64_t>{stepSize}},
+                                    for_op->getContext())
+                                    .value();
               offsets[i] = builder.template create<arith::ConstantIndexOp>(
                   loc, loop_lower_bound);
               break;
