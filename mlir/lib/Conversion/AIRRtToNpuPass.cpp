@@ -23,6 +23,8 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -478,7 +480,7 @@ AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
 // Splits an Affine for loop into two for loops, by hoisting target operations
 // in for loop to a new for loop located at the same scope.
 void hoistTargetOpsToNewAffineFor(OpBuilder builder, affine::AffineForOp for_op,
-                                  SmallVector<Operation *> target_ops) {
+                                  llvm::SetVector<Operation *> target_ops) {
   // Get loop nest
   SmallVector<affine::AffineForOp> for_loops;
   affine::AffineForOp parent_for =
@@ -515,7 +517,7 @@ void push_back_if_unique(SmallVector<T> &vec, T entry) {
 }
 
 void identifyTargetAffineForAndOps(
-    func::FuncOp f, SmallVector<SmallVector<Operation *>> &target_ops_vec) {
+    func::FuncOp f, SmallVector<llvm::SetVector<Operation *>> &target_ops_vec) {
   // Identify the target for loops and their target child ops
   int index = 0;
   for (auto for_op : f.getBody().getOps<affine::AffineForOp>()) {
@@ -537,14 +539,13 @@ void identifyTargetAffineForAndOps(
         index = it - metadataVec.begin();
       else {
         metadataVec.push_back(metadata);
-        target_ops_vec.push_back(SmallVector<Operation *>{});
+        target_ops_vec.push_back(llvm::SetVector<Operation *>{});
       }
 
       for (auto o : oper_def_ops)
         if (o->getParentOp() == memcpyOp->getParentOp())
-          push_back_if_unique<Operation *>(target_ops_vec[index], o);
-      push_back_if_unique<Operation *>(target_ops_vec[index],
-                                       memcpyOp.getOperation());
+          target_ops_vec[index].insert(o);
+      target_ops_vec[index].insert(memcpyOp.getOperation());
       index = target_ops_vec.size();
     });
   }
@@ -552,7 +553,7 @@ void identifyTargetAffineForAndOps(
 
 void isolateAIRRtDmaLoopNests(ModuleOp module) {
   // Identify affine.for ops and target child ops for hoisting.
-  SmallVector<SmallVector<Operation *>> target_ops_vec;
+  SmallVector<llvm::SetVector<Operation *>> target_ops_vec;
   SmallVector<func::FuncOp> funcOps;
   module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
   for (auto f : funcOps) {
@@ -922,11 +923,6 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
     }
   }
   auto new_dma = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
-  // If dma op contains shim dma alloc metadata, then inherit this information
-  // if (memcpy_ops[0]->hasAttr("metadata"))
-  //   new_dma->setAttr(
-  //       "metadata",
-  //       memcpy_ops[0]->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
   new_dma->setAttrs(memcpy_ops[0]->getDiscardableAttrDictionary());
 
   return success();
@@ -986,6 +982,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Purge airrt.dma x and y fields, as they are obsolete for AIE2.
     purgeAIRRtDmaXAndY(module);
+
+    // Remove any duplicate shim dma allocations
+    purgeDuplicateShimDmaAllocs(module);
 
     // Separate affine for loop nest into loop nests each containing one dma
     // memcpy op
@@ -1123,9 +1122,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         SmallVector<Type, 1> tys = {};
         auto newOp = builder.create<DmaMemcpyNdOp>(dma->getLoc(), tys,
                                                    dma->getOperands());
-        // if (dma->hasAttr("metadata"))
-        //   newOp->setAttr("metadata",
-        //                  dma->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
         newOp->setAttrs(dma->getDiscardableAttrDictionary());
         dma->erase();
       }
@@ -1165,6 +1161,48 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         }
       }
     }
+  }
+
+  void purgeDuplicateShimDmaAllocs(ModuleOp module) {
+    llvm::SmallSet<AIE::ShimDMAAllocationOp, 1> allocs;
+    module.walk([&](AIE::ShimDMAAllocationOp alloc) { allocs.insert(alloc); });
+    llvm::SmallSet<AIE::ShimDMAAllocationOp, 1> uniqueAllocs;
+
+    // Map each unique set of <dir, chan, col> to a shim dma alloc op
+    DenseMap<StringRef, StringRef> uniqueAllocMap;
+    for (auto alloc : allocs) {
+      std::tuple<bool, int, int> allocInfo = {
+          alloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
+          alloc.getChannelIndex(), alloc.getCol()};
+
+      auto it =
+          llvm::find_if(uniqueAllocs, [&](AIE::ShimDMAAllocationOp ualloc) {
+            std::tuple<bool, int, int> uallocInfo = {
+                ualloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
+                ualloc.getChannelIndex(), ualloc.getCol()};
+            return allocInfo == uallocInfo;
+          });
+      if (it != uniqueAllocs.end()) {
+        AIE::ShimDMAAllocationOp uniqueAlloc = *it;
+        uniqueAllocMap[alloc.getSymName()] = uniqueAlloc.getSymName();
+      } else {
+        uniqueAllocs.insert(alloc);
+        uniqueAllocMap[alloc.getSymName()] = alloc.getSymName();
+      }
+    }
+
+    // Replace all uses of metadata to unique
+    module.walk([&](DmaMemcpyNdOp dma) {
+      if (!dma->hasAttr("metadata"))
+        return;
+      StringRef metadata =
+          dma->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata").getValue();
+      if (uniqueAllocMap[metadata] != metadata) {
+        dma->setAttr("metadata",
+                     FlatSymbolRefAttr::get(dma->getContext(),
+                                            uniqueAllocMap[metadata]));
+      }
+    });
   }
 
   void unrollAffineFors(ModuleOp module) {
