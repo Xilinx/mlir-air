@@ -874,10 +874,14 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
         offset_producer = castOp.getIn().getDefiningOp();
       }
       if (!offset_producer) {
-        if (!affine::getForInductionVarOwner(offsets[i]))
+        if (auto afo = affine::getForInductionVarOwner(offsets[i])) {
+          builder.setInsertionPointToStart(afo.getBody());
+        } else if (auto sfo = scf::getForInductionVarOwner(offsets[i])) {
+          builder.setInsertionPointToStart(sfo.getBody());
+        } else if (auto aho = air::getHierarchyArgOwner(offsets[i])) {
+
+        } else
           continue;
-        auto afo = affine::getForInductionVarOwner(offsets[i]);
-        builder.setInsertionPointToStart(afo.getBody());
         // Create a new affine.apply on affine.for ind. vars, as handle for
         // subsequent offset composition.
         auto sym0_expr = getAffineSymbolExpr(0, builder.getContext());
@@ -960,12 +964,19 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
   if (!sizes.empty()) {
     for (int i = sizes.size() - 1; i >= 1; i--) {
       auto const_offset = getConstantIntValue(offsets[i]);
+      if (!const_offset)
+        continue;
       auto const_size = getConstantIntValue(sizes[i]);
+      if (!const_size)
+        continue;
       auto const_stride = getConstantIntValue(strides[i]);
+      if (!const_stride)
+        continue;
       auto const_offset_prev = getConstantIntValue(offsets[i - 1]);
+      if (!const_offset_prev)
+        continue;
       auto const_stride_prev = getConstantIntValue(strides[i - 1]);
-      if (!(const_offset && const_size && const_stride && const_offset_prev &&
-            const_stride_prev))
+      if (!const_stride_prev)
         continue;
       if (*const_stride_prev == *const_size * *const_stride)
         listsHaveChanged |=
