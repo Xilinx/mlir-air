@@ -12,6 +12,7 @@
 #map = affine_map<()[s0] -> (s0 * 32)>
 #map1 = affine_map<()[s0, s1] -> (s0 + s1)>
 #map2 = affine_map<(d0, d1) -> (d0 + d1)>
+#map3 = affine_map<()[s0] -> (s0 * 64)>
 module {
 
   // CHECK-LABEL: test0
@@ -445,6 +446,38 @@ module {
           }
           scf.yield %4 : !air.async.token
         }
+      }
+    }
+    return
+  }
+
+  // Offset propagated from scf.for and air.hier induction vars.
+  // CHECK-LABEL: test13
+  
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_14[] (%{{.*}}[%c0, %1, %results, %c0] [%c8, %c2_0, %c32, %c32] [%c32, %c8192, %c256, %c1]) : (memref<2x128x256xi32>)
+
+  func.func @test13(%arg0: memref<2x128x256xi32>, %arg1: memref<2x256x128xi32>) {
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async (%arg3, %arg4, %arg5) in (%arg6=%c2, %arg7=%c2, %arg8=%c2) args(%arg10=%arg0, %arg11=%arg1) : memref<2x128x256xi32>, memref<2x256x128xi32> {
+      %c4096 = arith.constant 4096 : index
+      %c8 = arith.constant 8 : index
+      %c16384 = arith.constant 16384 : index
+      %c64 = arith.constant 64 : index
+      %c128 = arith.constant 128 : index
+      %c256 = arith.constant 256 : index
+      %c32 = arith.constant 32 : index
+      %c8192 = arith.constant 8192 : index
+      %c32768 = arith.constant 32768 : index
+      %c0 = arith.constant 0 : index
+      %c2_0 = arith.constant 2 : index
+      %c1 = arith.constant 1 : index
+      %async_token, %results = air.execute -> (index) {
+        %7 = affine.apply #map3()[%arg4]
+        air.execute_terminator %7 : index
+      }
+      %2 = scf.for %arg12 = %c0 to %c256 step %c32 iter_args(%arg13 = %async_token) -> (!air.async.token) {
+        %7 = air.channel.put async [%arg13, %async_token]  @channel_14[] (%arg10[%arg3, %c0, %c0, %results, %arg12] [%c1, %c2_0, %c1, %c32, %c32] [%c32768, %c8192, %c32, %c256, %c1]) : (memref<2x128x256xi32>)
+        scf.yield %7 : !air.async.token
       }
     }
     return
