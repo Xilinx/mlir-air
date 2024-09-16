@@ -68,25 +68,17 @@ void conv_out_depthwise_nhwc_hwc(std::vector<T> a, std::vector<T> b,
     for (size_t cout = 0; cout < CHOUT; cout++) {
       for (size_t y = 0; y < YOUT; y++) {
         for (size_t x = 0; x < XOUT; x++) {
-          // size_t idx =
-          //     batch * CHOUT * XOUT * YOUT + cout * XOUT * YOUT + y * XOUT +
-          //     x;
           size_t idx =
               cout + x * CHOUT + y * XOUT * CHOUT + batch * YOUT * XOUT * CHOUT;
           r[idx] = (T)(0);
-          // for (size_t cin = 0; cin < CHIN; cin++) {
           for (size_t ky = 0; ky < K; ky++) {
             for (size_t kx = 0; kx < K; kx++) {
-              // T _a = a[batch * CHOUT * XIN * YIN + cout * XIN * YIN +
-              //          (y + ky) * XIN + x + kx];
               T _a = a[cout + (x + kx) * CHOUT + (y + ky) * XIN * CHOUT +
                        batch * YIN * XIN * CHOUT];
-              // T _b = b[cout * CHOUT * K * K + cout * K * K + ky * K + kx];
               T _b = b[cout + kx * CHOUT + ky * K * CHOUT];
               r[idx] += _a * _b;
             }
           }
-          // }
         }
       }
     }
