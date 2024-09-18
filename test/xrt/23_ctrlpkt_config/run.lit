@@ -1,0 +1,12 @@
+// (c) Copyright 2024 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// REQUIRES: ryzen_ai
+// RUN: %python %S/aie.py
+// RUN: %python aiecc.py --no-aiesim --aie-generate-cdo --no-compile-host --generate-ctrl-pkt-overlay --xclbin-name=base.xclbin %S/base.mlir
+// RUN: %python aiecc.py --no-aiesim --aie-generate-ctrlpkt --aie-generate-npu --no-compile-host --generate-ctrl-pkt-overlay --npu-insts-name=aie_run_seq.txt aie.mlir
+// RUN: aie-translate -aie-ctrlpkt-to-bin -aie-sequence-name=configure aie.mlir.prj/ctrlpkt.mlir -o ctrlpkt.txt
+// RUN: aie-opt -aie-ctrl-packet-to-dma -aie-dma-to-npu aie.mlir.prj/ctrlpkt.mlir -o ctrlpkt_dma_seq.mlir
+// RUN: aie-translate -aie-npu-instgen -aie-sequence-name=configure ctrlpkt_dma_seq.mlir -o ctrlpkt_dma_seq.txt
+// RUN: g++-13 %S/test.cpp -o test.exe -std=c++23 -Wall %xrt_flags -lrt -lstdc++ -lboost_program_options -lboost_filesystem
+// RUN: %run_on_npu ./test.exe -x base.xclbin -k MLIR_AIE -i aie_run_seq.txt -c ctrlpkt_dma_seq.txt -p ctrlpkt.txt -v 2
