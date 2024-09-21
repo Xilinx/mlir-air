@@ -154,7 +154,8 @@ public:
 
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col,
                                        int row,
-                                       std::vector<Operation *> &dma_ops);
+                                       std::vector<Operation *> &dma_ops,
+                                       std::string colAllocConstraint);
 
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
                                        allocation_info_t existing_alloc,
@@ -194,7 +195,8 @@ void simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
                                 ShimDMAAllocator &shim_dma_alloc,
                                 MemTileDMAAllocator &memtile_dma_alloc,
                                 TileDMAAllocator &tile_dma_alloc);
-template <typename T> int foundInVector(T item, std::vector<T> vec);
+template <typename T>
+int foundInVector(T item, std::vector<T> vec);
 int getSCFForLoopDepth(Operation *o);
 bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 
