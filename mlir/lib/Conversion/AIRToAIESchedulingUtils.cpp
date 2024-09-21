@@ -1016,7 +1016,6 @@ void air::simpleDMAChannelAllocation(
           f.MM2S_alloc = shim_dma_alloc.allocNewDmaChannel(
               memcpyOpIf, f.S2MM_alloc[i].dma_tile.getCol(),
               f.S2MM_alloc[i].dma_tile.getRow(), f.S2MM[i]);
-
           assert(f.MM2S_alloc.dma_tile);
         }
       }
@@ -1036,8 +1035,7 @@ void air::simpleDMAChannelAllocation(
 }
 
 // If found item in vector, return index; else return -1.
-template <typename T>
-int air::foundInVector(T item, std::vector<T> vec) {
+template <typename T> int air::foundInVector(T item, std::vector<T> vec) {
   auto it = std::find(vec.begin(), vec.end(), item);
   int index = it - vec.begin();
   return index;

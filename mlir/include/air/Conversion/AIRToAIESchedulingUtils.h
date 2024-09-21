@@ -195,8 +195,7 @@ void simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
                                 ShimDMAAllocator &shim_dma_alloc,
                                 MemTileDMAAllocator &memtile_dma_alloc,
                                 TileDMAAllocator &tile_dma_alloc);
-template <typename T>
-int foundInVector(T item, std::vector<T> vec);
+template <typename T> int foundInVector(T item, std::vector<T> vec);
 int getSCFForLoopDepth(Operation *o);
 bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 
