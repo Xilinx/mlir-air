@@ -154,7 +154,8 @@ public:
 
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col,
                                        int row,
-                                       std::vector<Operation *> &dma_ops);
+                                       std::vector<Operation *> &dma_ops,
+                                       std::string colAllocConstraint);
 
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
                                        allocation_info_t existing_alloc,

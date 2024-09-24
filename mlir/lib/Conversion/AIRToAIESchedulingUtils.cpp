@@ -592,12 +592,14 @@ ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
   }
 }
 
-allocation_info_t
-ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col,
-                                     int row,
-                                     std::vector<Operation *> &dma_ops) {
+allocation_info_t ShimDMAAllocator::allocNewDmaChannel(
+    air::MemcpyInterface &memcpyOp, int col, int row,
+    std::vector<Operation *> &dma_ops,
+    std::string colAllocConstraint = "same_column") {
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  AIE::DMAChannelDir dir =
+      isMM2S ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
 
   // Search for existing dma channel allocation
   for (auto &t : *allocs) {
@@ -607,10 +609,28 @@ ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col,
       return t;
     }
   }
-
-  auto dma_col = dma_columns[allocs->size() / shim_dma_channels];
-  auto dma_channel = allocs->size() % shim_dma_channels;
-  auto tile = getPhysTileOp(device, dma_col, 0);
+  AIE::TileOp tile = nullptr;
+  int colIdx = 0;
+  if (colAllocConstraint == "same_column") {
+    // Attempt to use shim dma channels within the same column.
+    auto it = find(dma_columns.begin(), dma_columns.end(), col);
+    if (it != dma_columns.end())
+      colIdx = it - dma_columns.begin();
+  }
+  int dma_col = dma_columns[colIdx];
+  int dma_channel = 0;
+  while (any_of(allocs->begin(), allocs->end(), [&](allocation_info_t &a) {
+    return a.dma_channel == AIE::DMAChannel{dir, dma_channel} &&
+           a.dma_tile.colIndex() == dma_col && a.dma_tile.rowIndex() == 0;
+  })) {
+    dma_channel++;
+    if (dma_channel >= shim_dma_channels) {
+      dma_channel = 0;
+      dma_col = dma_columns[colIdx++ % dma_columns.size()];
+    }
+  }
+  assert(dma_channel < shim_dma_channels);
+  tile = getPhysTileOp(device, dma_col, 0);
   assert(tile);
   // For shim dma allocations, the col, row and dma_id fields record the other
   // side of the flows, for airrt metadata

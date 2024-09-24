@@ -807,8 +807,8 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
 // CHECK: aie.core(%[[tile_1_3]])
 // CHECK: aie.core(%[[tile_0_3]])
 // CHECK: aie.flow(%[[tile_2_1]], DMA : 0, %[[tile_2_0]], DMA : 0)
-// CHECK: aie.flow(%[[tile_3_1]], DMA : 0, %[[tile_2_0]], DMA : 1)
-// CHECK: aie.flow(%[[tile_4_1]], DMA : 0, %[[tile_3_0]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_1]], DMA : 0, %[[tile_3_0]], DMA : 0)
+// CHECK: aie.flow(%[[tile_4_1]], DMA : 0, %[[tile_2_0]], DMA : 1)
 // CHECK: aie.flow(%[[tile_5_1]], DMA : 0, %[[tile_3_0]], DMA : 1)
 // CHECK: aie.flow(%[[tile_0_3]], DMA : 0, %[[tile_2_1]], DMA : 0)
 // CHECK: aie.flow(%[[tile_0_4]], DMA : 0, %[[tile_2_1]], DMA : 1)
@@ -1038,14 +1038,14 @@ module {
 // CHECK: %[[tile_2_4:.*]] = aie.tile(2, 4)
 // CHECK: %[[tile_3_4:.*]] = aie.tile(3, 4)
 // CHECK: aie.flow(%[[tile_2_0]], DMA : 0, %[[tile_2_3]], DMA : 0)
-// CHECK: aie.flow(%[[tile_2_0]], DMA : 1, %[[tile_3_3]], DMA : 0)
-// CHECK: aie.flow(%[[tile_3_0]], DMA : 0, %[[tile_2_4]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_0]], DMA : 0, %[[tile_3_3]], DMA : 0)
+// CHECK: aie.flow(%[[tile_2_0]], DMA : 1, %[[tile_2_4]], DMA : 0)
 // CHECK: aie.flow(%[[tile_3_0]], DMA : 1, %[[tile_3_4]], DMA : 0)
 // CHECK: aie.shim_dma_allocation @airMemcpyId9(MM2S, 0, 2)
 // CHECK: memref.global "public" @airMemcpyId9 : memref<16x8xi32, 2 : i32>
-// CHECK: aie.shim_dma_allocation @airMemcpyId9_1(MM2S, 1, 2)
+// CHECK: aie.shim_dma_allocation @airMemcpyId9_1(MM2S, 0, 3)
 // CHECK: memref.global "public" @airMemcpyId9_1 : memref<16x8xi32, 2 : i32>
-// CHECK: aie.shim_dma_allocation @airMemcpyId9_2(MM2S, 0, 3)
+// CHECK: aie.shim_dma_allocation @airMemcpyId9_2(MM2S, 1, 2)
 // CHECK: memref.global "public" @airMemcpyId9_2 : memref<16x8xi32, 2 : i32>
 // CHECK: aie.shim_dma_allocation @airMemcpyId9_3(MM2S, 1, 3)
 // CHECK: memref.global "public" @airMemcpyId9_3 : memref<16x8xi32, 2 : i32>
