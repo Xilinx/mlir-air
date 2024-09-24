@@ -9,6 +9,7 @@
 
 // CHECK-LABEL:   aie.device(npu1_4col) {
 // CHECK:   %[[tile_0_0:.*]] = aie.tile(0, 0)
+// CHECK:   %[[tile_1_0:.*]] = aie.tile(1, 0)
 // CHECK:   %[[tile_0_1:.*]] = aie.tile(0, 1)
 // CHECK:   %[[tile_1_1:.*]] = aie.tile(1, 1)
 // CHECK:   %[[tile_0_2:.*]] = aie.tile(0, 2)
@@ -28,7 +29,7 @@
 // CHECK:    aie.buffer(%[[tile_1_1]]) {{{.*}}} : memref<128x64xi32, 1>
 // CHECK-COUNT-20:    aie.buffer({{.*}}) {{{.*}}} : memref<32x32xi32, 2>
 // CHECK:    aie.flow(%[[tile_0_0]], DMA : 0, %[[tile_0_1]], DMA : 0)
-// CHECK:    aie.flow(%[[tile_0_0]], DMA : 1, %[[tile_1_1]], DMA : 0)
+// CHECK:    aie.flow(%[[tile_1_0]], DMA : 0, %[[tile_1_1]], DMA : 0)
 // CHECK:    aie.flow(%[[tile_0_1]], DMA : 0, %[[tile_0_0]], DMA : 0)
 // CHECK:    aie.flow(%[[tile_0_1]], DMA : 1, %[[tile_0_2]], DMA : 0)
 // CHECK:    aie.flow(%[[tile_0_1]], DMA : 2, %[[tile_1_2]], DMA : 0)
