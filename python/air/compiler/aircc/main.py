@@ -12,12 +12,10 @@ import os
 import platform
 import sys
 import subprocess
-from joblib import Parallel, delayed
 import shutil
 
 from air.passmanager import PassManager
 from air.ir import Module, Context, Location
-from air.dialects import air as airdialect
 
 import air.compiler.aircc.cl_arguments as cl_arguments
 from air.compiler.aircc.configure import *
@@ -455,17 +453,22 @@ def run(mlir_module, args=None):
             else:
                 assert xclbin_file.endswith(".xclbin")
                 insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.txt"
-            aiecc_options = (["-v"] if opts.verbose else []) + [
-                "--no-aiesim",
-                "--xchesscc" if opts.xchesscc else "--no-xchesscc",
-                "--xbridge" if opts.xbridge else "--no-xbridge",
-                "--aie-generate-cdo",
-                "--aie-generate-npu",
-                "--no-compile-host",
-                "--xclbin-name=" + xclbin_file,
-                "--npu-insts-name=" + insts_file,
-                air_to_npu_file,
-            ]
+            aiecc_options = (
+                (["-v"] if opts.verbose else [])
+                + (["--peano", opts.peano_path] if opts.peano_path else [])
+                + [
+                    "--no-aiesim",
+                    "--aie-generate-cdo",
+                    "--aie-generate-npu",
+                    "--no-compile-host",
+                    "--xchesscc" if opts.xchesscc else "--no-xchesscc",
+                    "--xbridge" if opts.xbridge else "--no-xbridge",
+                    "--xclbin-name=" + xclbin_file,
+                    "--npu-insts-name=" + insts_file,
+                    air_to_npu_file,
+                ]
+            )
+
             aiecc.run(air_to_npu_module, aiecc_options)
         else:
             lower_airrt_to_airhost(
