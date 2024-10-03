@@ -36,7 +36,7 @@ jobs:
 
       - name: Setup environment
         run: |
-          python3.10 -m venv air-venv
+          python3.12 -m venv air-venv
           source air-venv/bin/activate
           pip cache purge
           pip install --upgrade pip
