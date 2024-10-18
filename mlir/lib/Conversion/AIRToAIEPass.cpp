@@ -354,18 +354,6 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
               AIE::LockAction::AcquireGreaterEqual, 1);
         }
       }
-      if (options.emit_herd_lock) {
-        if (aie_device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
-          core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
-                                              herd_lock,
-                                              AIE::LockAction::Acquire, 0);
-        } else if (aie_device.getTargetModel().getTargetArch() ==
-                   AIE::AIEArch::AIE2) {
-          core_builder.create<AIE::UseLockOp>(
-              core_builder.getUnknownLoc(), herd_lock,
-              AIE::LockAction::AcquireGreaterEqual, 1);
-        }
-      }
 
       for (unsigned ki = 0, ke = h.getNumKernelOperands(); ki < ke; ki++) {
         BlockArgument karg = h.getKernelArgument(ki);
