@@ -273,10 +273,10 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<HerdLoadOp> {
           if (!constOp)
             continue;
           uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
-          rewriter.create<AIEX::NpuWriteRTPOp>(op.getLoc(), name, phys_x,
-                                               phys_y, i, v);
+          rewriter.create<AIEX::NpuWriteRTPOp>(op.getLoc(), name, i, v);
         }
         rewriter.create<AIEX::NpuWrite32Op>(op.getLoc(), 0x0001F000, 0x1,
+                                            nullptr,
                                             rewriter.getI32IntegerAttr(phys_x),
                                             rewriter.getI32IntegerAttr(phys_y));
       }
