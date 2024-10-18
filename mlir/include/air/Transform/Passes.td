@@ -1378,6 +1378,10 @@ def AIRSplitL2MemrefForBufferConstraintPass : Pass<"air-split-l2-memref", "func:
     }
     ```
   }];
+  let options = [
+    Option<"clTileColumnSize", "column-size", "unsigned", /*default=*/"4",
+           "Number of compute tiles in a column. Used to estimate if an air.segment is allocated to multiple columns (i.e. multiple memtiles), and therefore requires L2 memref splitting.">,
+  ];
 }
 
 def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {

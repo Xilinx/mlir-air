@@ -1431,6 +1431,24 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
     }
   });
 
+  // Check if any segment must be allocated to more than one column which
+  // implies more than one memtile (assumption is one memtile per column). If
+  // none, then memref splitting is not needed, as no routings or channels can
+  // be saved if only allocating to a single memtile.
+  auto getTileCountInSegment = [](air::SegmentOp seg) {
+    unsigned tileCount = 0;
+    seg.walk(
+        [&](air::HerdOp h) { tileCount += h.getNumCols() * h.getNumRows(); });
+    return tileCount;
+  };
+  if (llvm::none_of(allocOps, [&](memref::AllocOp a) {
+        if (auto s = a->getParentOfType<air::SegmentOp>()) {
+          return getTileCountInSegment(s) > clTileColumnSize;
+        } else
+          return false;
+      }))
+    return;
+
   // Map between the target memref alloc ops and all column-wise tiling factors
   // per alloc.
   std::map<memref::AllocOp, SmallVector<int>> targetMemrefsToColTilingFactors;
