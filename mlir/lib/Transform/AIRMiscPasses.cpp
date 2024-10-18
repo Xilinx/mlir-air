@@ -1443,7 +1443,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   };
   if (llvm::none_of(allocOps, [&](memref::AllocOp a) {
         if (auto s = a->getParentOfType<air::SegmentOp>()) {
-          return getTileCountInSegment(s) > clTileColumnSize;
+          return getTileCountInSegment(s) > clNumTilesPerL2Tile;
         } else
           return false;
       }))
