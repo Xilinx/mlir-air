@@ -14,4 +14,4 @@ run:
 	cd build && ${powershell} python3 ${srcdir}/channel_size.py
 
 clean:
-	rm -rf build ${srcdir}/__pycache__
+	rm -rf build __pycache__

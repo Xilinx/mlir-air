@@ -14,4 +14,4 @@ run:
 	cd build && ${powershell} python3 ${srcdir}/single_core_dma.py
 
 clean:
-	rm -rf build ${srcdir}/__pycache__
+	rm -rf build __pycache__

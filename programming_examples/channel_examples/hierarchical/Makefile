@@ -14,4 +14,4 @@ run:
 	cd build && ${powershell} python3 ${srcdir}/hierarchical.py
 
 clean:
-	rm -rf build ${srcdir}/__pycache__
+	rm -rf build __pycache__

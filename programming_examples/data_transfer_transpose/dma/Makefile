@@ -21,4 +21,4 @@ run_float:
 	cd build && ${powershell} python3 ${srcdir}/transpose.py -m ${M} -k ${K} -t float32
 
 clean:
-	rm -rf build ${srcdir}/__pycache__
+	rm -rf build __pycache__

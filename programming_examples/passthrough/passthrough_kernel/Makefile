@@ -22,4 +22,4 @@ run: build/passThrough.cc.o
 	cd build && ${powershell} python3 ${srcdir}/passthrough_kernel.py
 
 clean:
-	rm -rf build ${srcdir}/__pycache__
+	rm -rf build __pycache__
