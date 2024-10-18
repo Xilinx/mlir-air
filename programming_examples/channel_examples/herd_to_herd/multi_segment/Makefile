@@ -10,8 +10,8 @@ print:
 	${powershell} python3 ${srcdir}/herd_to_herd.py -p
 
 run:
-	mkdir -p ${srcdir}/build
-	cd ${srcdir}/build && ${powershell} python3 ${srcdir}/herd_to_herd.py
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/herd_to_herd.py
 
 clean:
-	rm -rf ${srcdir}/build ${srcdir}/__pycache__
+	rm -rf build __pycache__

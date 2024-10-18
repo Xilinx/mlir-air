@@ -13,12 +13,12 @@ print:
 	${powershell} python3 ${srcdir}/transpose.py -p
 
 run_int:
-	mkdir -p ${srcdir}/build
-	cd ${srcdir}/build && ${powershell} python3 ${srcdir}/transpose.py -m ${M} -k ${K} -t uint32
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/transpose.py -m ${M} -k ${K} -t uint32
 
 run_float:
-	mkdir -p ${srcdir}/build
-	cd ${srcdir}/build && ${powershell} python3 ${srcdir}/transpose.py -m ${M} -k ${K} -t float32
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/transpose.py -m ${M} -k ${K} -t float32
 
 clean:
-	rm -rf ${srcdir}/build ${srcdir}/__pycache__
+	rm -rf build __pycache__
