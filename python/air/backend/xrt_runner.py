@@ -9,7 +9,7 @@ from air.dialects.air import *
 import filelock
 from typing import List
 from collections import defaultdict
-from bfloat16 import bfloat16
+from ml_dtypes import bfloat16
 
 TYPE_MAP_DICT = defaultdict(
     lambda: None,
