@@ -10,8 +10,8 @@ print:
 	${powershell} python3 ${srcdir}/multi_launch_channel.py -p
 
 run:
-	mkdir -p ${srcdir}/build
-	cd ${srcdir}/build && ${powershell} python3 ${srcdir}/multi_launch_channel.py
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/multi_launch_channel.py
 
 clean:
-	rm -rf ${srcdir}/build ${srcdir}/__pycache__
+	rm -rf build ${srcdir}/__pycache__
