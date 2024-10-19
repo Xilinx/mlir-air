@@ -10,8 +10,8 @@ print:
 	${powershell} python3 ${srcdir}/channel_size.py -p
 
 run:
-	mkdir -p ${srcdir}/build
-	cd ${srcdir}/build && ${powershell} python3 ${srcdir}/channel_size.py
+	mkdir -p build
+	cd build && ${powershell} python3 ${srcdir}/channel_size.py
 
 clean:
-	rm -rf ${srcdir}/build ${srcdir}/__pycache__
+	rm -rf build __pycache__
