@@ -94,7 +94,7 @@ else:
 
 
 # XRT
-if config.xrt_lib_dir:
+if config.xrt_lib_dir and config.enable_run_xrt_tests:
     print("xrt found at", os.path.dirname(config.xrt_lib_dir))
     xrt_flags = "-I{} -L{} -luuid -lxrt_coreutil".format(
         config.xrt_include_dir, config.xrt_lib_dir
@@ -110,23 +110,17 @@ if config.xrt_lib_dir:
         result = result.stdout.decode("utf-8").split("\n")
         # Starting with Linux 6.8 the format is like "[0000:66:00.1]  :  RyzenAI-npu1"
         # Starting with Linux 6.10 the format is like "|[0000:41:00.1]  ||RyzenAI-npu1  |"
-        p = re.compile("[\|]?\[.+:.+:.+\].+(Phoenix|RyzenAI-(npu\d))")
+        p = re.compile(r"[\|]?(\[.+:.+:.+\]).+(Phoenix|RyzenAI-(npu\d))")
         for l in result:
             m = p.match(l)
             if m:
-                print("Found Ryzen AI device:", m.group().split()[0])
+                print("Found Ryzen AI device:", m.group(1))
+                if len(m.groups()) == 3:
+                    print("\tmodel:", m.group(3))
                 config.available_features.add("ryzen_ai")
-                if config.enable_run_xrt_tests:
-                    run_on_npu = (
-                        f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
-                    )
-                    # see https://github.com/amd/xdna-driver/blob/main/src/shim/kmq/hwctx.cpp
-                    config.environment["XRT_HACK_UNSECURE_LOADING_XCLBIN"] = "1"
-                else:
-                    print(
-                        "Skipping execution of Ryzen AI tests (ENABLE_RUN_XRT_TESTS=OFF)"
-                    )
-                break
+                run_on_npu = (
+                    f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
+                )
     except:
         print("Failed to run xbutil")
         pass
@@ -134,7 +128,7 @@ if config.xrt_lib_dir:
     config.substitutions.append(("%xrt_flags", xrt_flags))
     config.substitutions.append(("%XRT_DIR", config.xrt_dir))
 else:
-    print("xrt not found")
+    print("xrt not found or xrt tests disabled")
     config.excludes.append("xrt")
 
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])

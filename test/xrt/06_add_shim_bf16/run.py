@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: MIT
 
 import numpy as np
-from bfloat16 import bfloat16
+from ml_dtypes import bfloat16
 import pyxrt as xrt
 
 in_size = out_size = 128 * 128
