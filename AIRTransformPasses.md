@@ -1063,9 +1063,14 @@ computation. This specialization involves transforming data movement operations
 into more optimized versions that are aware of the broadcast semantics.
 ### `-air-split-l2-memref`
 
-_Split L2 memref into smaller buffers if it couldn't fit with the buffer harware constraints_
+_Split L2 memref into smaller buffers to better fit with the data movement harware constraints_
 
-  Transforms the input IR by splitting certain L2 memory references (`memrefs`) to adhere to AIE memtile-specific buffer and DMA channel constraints or optimization opportunities.
+  Checks if any of the `air.segment` op is implicitly allocated to more than one physical L2 memory tiles.
+  If true, then transforms them by splitting their L2 memory references (`memrefs`) into multiple allocations of same or smaller size, such that they can be distributed across those physical memory tiles.
+  Such transformation can optimize the IR's hardware mapping, given that the L2 memory tile has a finite number of DMA channels available to move data to and from compute tiles.
+
+  To check if any `air.segment` op can be allocated to more than one physical L2 memory tiles, the option `tiles-per-l2-tile` is used to specify in the target architecture how many compute tiles are in close affinity to each L2 memory tile, i.e. how many compute tiles can efficiently communicate to one L2 memory tile.
+  If any `air.segment` op must be allocated to more compute tiles than this number, then that means the `air.segment` op can allocate L2 `memrefs` to multiple L2 memory tiles.
 
   Example:
 
@@ -1207,6 +1212,11 @@ _Split L2 memref into smaller buffers if it couldn't fit with the buffer harware
     air.launch_terminator
   }
   ```
+
+#### Options
+```
+-tiles-per-l2-tile : Number of compute tiles per L2 memory tile. Used to estimate if an air.segment shall allocate to multiple L2 memory tiles, and therefore requires L2 memref splitting.
+```
 ### `-air-transform`
 
 _Transform IR with transform dialect_
