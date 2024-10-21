@@ -20,63 +20,56 @@ with air.ir.Context() as ctx, Location.unknown():
     ################################################
 
     air_tiled_ir_string = """
-    #map = affine_map<()[s0] -> (s0 * 4)>
-    #map1 = affine_map<()[s0] -> (s0 * 8)>
     module {
-      func.func @conv_static_dispatch_0_conv_2d_nhwc_hwcf_2x12x12x64x3x3x32_i32(%0 : memref<2x14x14x32xi8>, %1 : memref<3x3x32x64xi8>, %2 : memref<2x12x12x64xi32>) {
-        %c4 = arith.constant 4 : index
-        %c2 = arith.constant 2 : index
+      func.func private @conv(memref<1x3x4x6x8xi8, 2 : i32>, memref<3x3x4x1x8x8xi8, 2 : i32>, memref<1x1x4x1x8xi32, 2 : i32>) attributes {link_with = "conv.o", llvm.emit_c_interface}
+      func.func @conv_2d_nhwc_hwcf_q_dispatch_0_conv_2d_nhwc_hwcf_2x12x12x64x3x3x32_i8xi8xi32(%0 : memref<2x14x14x32xi8>, %1 : memref<3x3x32x64xi8>, %2 : memref<2x12x12x64xi32>) {
         %c8 = arith.constant 8 : index
-        %c32 = arith.constant 32 : index
-        %c3 = arith.constant 3 : index
-        %c1 = arith.constant 1 : index
-        %c0_i32 = arith.constant 0 : i32
+        %c64 = arith.constant 64 : index
+        %c12 = arith.constant 12 : index
+        %c2 = arith.constant 2 : index
         %c0 = arith.constant 0 : index
-        scf.parallel (%arg0, %arg1, %arg2, %arg3) = (%c0, %c0, %c0, %c0) to (%c2, %c3, %c3, %c8) step (%c1, %c1, %c1, %c1) {
-          %3 = affine.apply #map()[%arg1]
-          %4 = affine.apply #map()[%arg2]
-          %5 = affine.apply #map1()[%arg3]
-          %subview = memref.subview %0[%arg0, %3, %4, 0] [1, 6, 6, 32] [1, 1, 1, 1] : memref<2x14x14x32xi8> to memref<1x6x6x32xi8, strided<[6272, 448, 32, 1], offset: ?>>
-          %subview_0 = memref.subview %1[0, 0, 0, %5] [3, 3, 32, 8] [1, 1, 1, 1] : memref<3x3x32x64xi8> to memref<3x3x32x8xi8, strided<[6144, 2048, 64, 1], offset: ?>>
-          %subview_1 = memref.subview %2[%arg0, %3, %4, %5] [1, 4, 4, 8] [1, 1, 1, 1] : memref<2x12x12x64xi32> to memref<1x4x4x8xi32, strided<[9216, 768, 64, 1], offset: ?>>
-          %alloc = memref.alloc() : memref<1x6x6x32xi8, 1>
-          memref.copy %subview, %alloc : memref<1x6x6x32xi8, strided<[6272, 448, 32, 1], offset: ?>> to memref<1x6x6x32xi8, 1>
-          %alloc_2 = memref.alloc() : memref<3x3x32x8xi8, 1>
-          memref.copy %subview_0, %alloc_2 : memref<3x3x32x8xi8, strided<[6144, 2048, 64, 1], offset: ?>> to memref<3x3x32x8xi8, 1>
-          %alloc_3 = memref.alloc() : memref<1x4x4x8xi32, 1>
+        %c0_i32 = arith.constant 0 : i32
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
+        %c1 = arith.constant 1 : index
+        %alloc = memref.alloc() : memref<1x1x4x1x8xi32, 2 : i32>
+        %alloc_0 = memref.alloc() : memref<3x3x4x1x8x8xi8, 2 : i32>
+        %alloc_1 = memref.alloc() : memref<1x3x4x6x8xi8, 2 : i32>
+        %alloc_2 = memref.alloc() : memref<1x4x4x8xi32, 1 : i32>
+        %alloc_3 = memref.alloc() : memref<3x3x32x8xi8, 1 : i32>
+        %alloc_4 = memref.alloc() : memref<1x6x6x32xi8, 1 : i32>
+        scf.parallel (%arg0, %arg1, %arg2, %arg3) = (%c0, %c0, %c0, %c0) to (%c2, %c12, %c12, %c64) step (%c1, %c4, %c4, %c8) {
+          %subview = memref.subview %0[%arg0, %arg1, %arg2, 0] [1, 6, 6, 32] [1, 1, 1, 1] : memref<2x14x14x32xi8> to memref<1x6x6x32xi8, strided<[6272, 448, 32, 1], offset: ?>>
+          %subview_5 = memref.subview %1[0, 0, 0, %arg3] [3, 3, 32, 8] [1, 1, 1, 1] : memref<3x3x32x64xi8> to memref<3x3x32x8xi8, strided<[6144, 2048, 64, 1], offset: ?>>
+          %subview_6 = memref.subview %2[%arg0, %arg1, %arg2, %arg3] [1, 4, 4, 8] [1, 1, 1, 1] : memref<2x12x12x64xi32> to memref<1x4x4x8xi32, strided<[9216, 768, 64, 1], offset: ?>>
+          memref.copy %subview, %alloc_4 : memref<1x6x6x32xi8, strided<[6272, 448, 32, 1], offset: ?>> to memref<1x6x6x32xi8, 1 : i32>
+          memref.copy %subview_5, %alloc_3 : memref<3x3x32x8xi8, strided<[6144, 2048, 64, 1], offset: ?>> to memref<3x3x32x8xi8, 1 : i32>
           scf.parallel (%arg4) = (%c0) to (%c4) step (%c1) {
-            %subview_4 = memref.subview %alloc[0, %arg4, 0, 0] [1, 3, 6, 32] [1, 1, 1, 1] : memref<1x6x6x32xi8, 1> to memref<1x3x6x32xi8, strided<[1152, 192, 32, 1], offset: ?>, 1>
-            %subview_5 = memref.subview %alloc_3[0, %arg4, 0, 0] [1, 1, 4, 8] [1, 1, 1, 1] : memref<1x4x4x8xi32, 1> to memref<1x1x4x8xi32, strided<[128, 32, 8, 1], offset: ?>, 1>
-            %alloc_6 = memref.alloc() : memref<1x1x4x8xi32, 2>
-            linalg.fill ins(%c0_i32 : i32) outs(%alloc_6 : memref<1x1x4x8xi32, 2>)
-            %subview_7 = memref.subview %alloc_6[0, 0, 0, 0] [1, 1, 4, 8] [1, 1, 1, 1] : memref<1x1x4x8xi32, 2> to memref<1x4x8xi32, strided<[32, 8, 1]>, 2>
-            scf.for %arg5 = %c0 to %c3 step %c1 {
-              scf.for %arg6 = %c0 to %c3 step %c1 {
-                scf.for %arg7 = %c0 to %c32 step %c8 {
-                  %subview_8 = memref.subview %subview_4[0, %arg5, %arg6, %arg7] [1, 1, 4, 8] [1, 1, 1, 1] : memref<1x3x6x32xi8, strided<[1152, 192, 32, 1], offset: ?>, 1> to memref<1x1x4x8xi8, strided<[1152, 192, 32, 1], offset: ?>, 1>
-                  %subview_9 = memref.subview %alloc_2[%arg5, %arg6, %arg7, 0] [1, 1, 8, 8] [1, 1, 1, 1] : memref<3x3x32x8xi8, 1> to memref<1x1x8x8xi8, strided<[768, 256, 8, 1], offset: ?>, 1>
-                  %subview_10 = memref.subview %subview_8[0, 0, 0, 0] [1, 1, 4, 8] [1, 1, 1, 1] : memref<1x1x4x8xi8, strided<[1152, 192, 32, 1], offset: ?>, 1> to memref<1x4x8xi8, strided<[1152, 32, 1], offset: ?>, 1>
-                  %subview_11 = memref.subview %subview_9[0, 0, 0, 0] [1, 1, 8, 8] [1, 1, 1, 1] : memref<1x1x8x8xi8, strided<[768, 256, 8, 1], offset: ?>, 1> to memref<1x8x8xi8, strided<[768, 8, 1], offset: ?>, 1>
-                  %alloc_12 = memref.alloc() : memref<1x4x8xi8, 2>
-                  memref.copy %subview_10, %alloc_12 : memref<1x4x8xi8, strided<[1152, 32, 1], offset: ?>, 1> to memref<1x4x8xi8, 2>
-                  %alloc_13 = memref.alloc() : memref<1x8x8xi8, 2>
-                  memref.copy %subview_11, %alloc_13 : memref<1x8x8xi8, strided<[768, 8, 1], offset: ?>, 1> to memref<1x8x8xi8, 2>
-                  linalg.conv_1d_nwc_wcf {dilations = dense<1> : vector<1xi64>, strides = dense<1> : vector<1xi64>} ins(%alloc_12, %alloc_13 : memref<1x4x8xi8, 2>, memref<1x8x8xi8, 2>) outs(%subview_7 : memref<1x4x8xi32, strided<[32, 8, 1]>, 2>)
-                  memref.dealloc %alloc_12 : memref<1x4x8xi8, 2>
-                  memref.dealloc %alloc_13 : memref<1x8x8xi8, 2>
-                }
-              }
-            }
-            memref.copy %alloc_6, %subview_5 : memref<1x1x4x8xi32, 2> to memref<1x1x4x8xi32, strided<[128, 32, 8, 1], offset: ?>, 1>
-            memref.dealloc %alloc_6 : memref<1x1x4x8xi32, 2>
+            %subview_7 = memref.subview %alloc_4[0, %arg4, 0, 0] [1, 3, 6, 32] [1, 1, 1, 1] : memref<1x6x6x32xi8, 1 : i32> to memref<1x3x6x32xi8, strided<[1152, 192, 32, 1], offset: ?>, 1 : i32>
+            %cast = memref.cast %alloc_3 : memref<3x3x32x8xi8, 1 : i32> to memref<3x3x32x8xi8, strided<[768, 256, 8, 1], offset: ?>, 1 : i32>
+            %subview_8 = memref.subview %alloc_2[0, %arg4, 0, 0] [1, 1, 4, 8] [1, 1, 1, 1] : memref<1x4x4x8xi32, 1 : i32> to memref<1x1x4x8xi32, strided<[128, 32, 8, 1], offset: ?>, 1 : i32>
+            %expand_shape = memref.expand_shape %subview_7 [[0], [1], [2], [3, 4]] output_shape [1, 3, 6, 4, 8] : memref<1x3x6x32xi8, strided<[1152, 192, 32, 1], offset: ?>, 1 : i32> into memref<1x3x6x4x8xi8, strided<[1152, 192, 32, 8, 1], offset: ?>, 1 : i32>
+            %transpose = memref.transpose %expand_shape (d0, d1, d2, d3, d4) -> (d0, d1, d3, d2, d4) : memref<1x3x6x4x8xi8, strided<[1152, 192, 32, 8, 1], offset: ?>, 1 : i32> to memref<1x3x4x6x8xi8, strided<[1152, 192, 8, 32, 1], offset: ?>, 1 : i32>
+            air.dma_memcpy_nd (%alloc_1[] [] [], %transpose[] [] []) : (memref<1x3x4x6x8xi8, 2 : i32>, memref<1x3x4x6x8xi8, strided<[1152, 192, 8, 32, 1], offset: ?>, 1 : i32>)
+            %expand_shape_9 = memref.expand_shape %cast [[0], [1], [2, 3], [4, 5]] output_shape [3, 3, 4, 8, 1, 8] : memref<3x3x32x8xi8, strided<[768, 256, 8, 1], offset: ?>, 1 : i32> into memref<3x3x4x8x1x8xi8, strided<[768, 256, 64, 8, 8, 1], offset: ?>, 1 : i32>
+            %transpose_10 = memref.transpose %expand_shape_9 (d0, d1, d2, d3, d4, d5) -> (d0, d1, d2, d4, d3, d5) : memref<3x3x4x8x1x8xi8, strided<[768, 256, 64, 8, 8, 1], offset: ?>, 1 : i32> to memref<3x3x4x1x8x8xi8, strided<[768, 256, 64, 8, 8, 1], offset: ?>, 1 : i32>
+            air.dma_memcpy_nd (%alloc_0[] [] [], %transpose_10[] [] []) : (memref<3x3x4x1x8x8xi8, 2 : i32>, memref<3x3x4x1x8x8xi8, strided<[768, 256, 64, 8, 8, 1], offset: ?>, 1 : i32>)
+            linalg.fill ins(%c0_i32 : i32) outs(%alloc : memref<1x1x4x1x8xi32, 2 : i32>)
+            func.call @conv(%alloc_1, %alloc_0, %alloc) : (memref<1x3x4x6x8xi8, 2 : i32>, memref<3x3x4x1x8x8xi8, 2 : i32>, memref<1x1x4x1x8xi32, 2 : i32>) -> ()
+            %subview_11 = memref.subview %alloc[0, 0, 0, 0, 0] [1, 1, 4, 1, 8] [1, 1, 1, 1, 1] : memref<1x1x4x1x8xi32, 2 : i32> to memref<1x1x4x8xi32, 2 : i32>
+            %transpose_12 = memref.transpose %subview_11 (d0, d1, d2, d3) -> (d0, d1, d2, d3) : memref<1x1x4x8xi32, 2 : i32> to memref<1x1x4x8xi32, strided<[32, 32, 8, 1]>, 2 : i32>
+            air.dma_memcpy_nd (%subview_8[] [] [], %transpose_12[] [] []) : (memref<1x1x4x8xi32, strided<[128, 32, 8, 1], offset: ?>, 1 : i32>, memref<1x1x4x8xi32, strided<[32, 32, 8, 1]>, 2 : i32>)
             scf.reduce 
           }
-          memref.copy %alloc_3, %subview_1 : memref<1x4x4x8xi32, 1> to memref<1x4x4x8xi32, strided<[9216, 768, 64, 1], offset: ?>>
-          memref.dealloc %alloc : memref<1x6x6x32xi8, 1>
-          memref.dealloc %alloc_2 : memref<3x3x32x8xi8, 1>
-          memref.dealloc %alloc_3 : memref<1x4x4x8xi32, 1>
+          memref.copy %alloc_2, %subview_6 : memref<1x4x4x8xi32, 1 : i32> to memref<1x4x4x8xi32, strided<[9216, 768, 64, 1], offset: ?>>
           scf.reduce 
         }
+        memref.dealloc %alloc_4 : memref<1x6x6x32xi8, 1 : i32>
+        memref.dealloc %alloc_3 : memref<3x3x32x8xi8, 1 : i32>
+        memref.dealloc %alloc_2 : memref<1x4x4x8xi32, 1 : i32>
+        memref.dealloc %alloc_1 : memref<1x3x4x6x8xi8, 2 : i32>
+        memref.dealloc %alloc_0 : memref<3x3x4x1x8x8xi8, 2 : i32>
+        memref.dealloc %alloc : memref<1x1x4x1x8xi32, 2 : i32>
         return
       }
     }
@@ -123,6 +116,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "air-dependency-canonicalize",
                 "canonicalize",
                 "cse",
+                "func.func(air-split-l2-memref)",
                 "air-isolate-async-dma-loop-nests",
                 "func.func(air-loop-fusion)",
                 "air-label-scf-for-to-ping-pong",
