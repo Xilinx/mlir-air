@@ -577,6 +577,10 @@ AIE::BufferOp TileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
                      ? (memcpyOp.getDstMemref())
                      : (memcpyOp.getSrcMemref());
   AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
+  // Memref cast
+  memref::CastOp castOp = buffer.getDefiningOp<memref::CastOp>();
+  if (!bufferOp && castOp)
+    bufferOp = castOp.getOperand().getDefiningOp<AIE::BufferOp>();
   return bufferOp;
 }
 
@@ -856,6 +860,10 @@ AIE::BufferOp MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
                      ? (memcpyOp.getDstMemref())
                      : (memcpyOp.getSrcMemref());
   AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
+  // Memref cast
+  memref::CastOp castOp = buffer.getDefiningOp<memref::CastOp>();
+  if (!bufferOp && castOp)
+    bufferOp = castOp.getOperand().getDefiningOp<AIE::BufferOp>();
   return bufferOp;
 }
 
