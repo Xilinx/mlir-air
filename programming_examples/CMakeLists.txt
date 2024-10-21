@@ -35,7 +35,7 @@ if(NOT AIR_BINARY_DIR)
 find_package(AIR REQUIRED CONFIG)
 endif()
 
-find_package(Vitis 2023.2)
+find_package(Vitis 2023.2 COMPONENTS AIE AIE2)
 find_package(XRT)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")

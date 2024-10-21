@@ -14,7 +14,7 @@ from air.ir import *
 
 import numpy as np
 import filelock
-from bfloat16 import bfloat16
+from ml_dtypes import bfloat16
 
 verbose = False
 

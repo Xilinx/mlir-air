@@ -1265,6 +1265,26 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
       src_offsets.clear();
       for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++)
         src_offsets.push_back(constZero);
+    } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(
+                   src_ancestor_memref_ops[0])) {
+      // Init. memref type
+      src_memref_ty =
+          llvm::cast<MemRefType>(expandShapeOp.getViewSource().getType());
+      src = expandShapeOp.getViewSource();
+      // Init. offsets
+      src_offsets.clear();
+      for (unsigned i = 0; i < expandShapeOp.getReassociationIndices().size();
+           i++)
+        src_offsets.push_back(constZero);
+    } else if (auto castOp =
+                   dyn_cast<memref::CastOp>(src_ancestor_memref_ops[0])) {
+      // Init. memref type
+      src_memref_ty = llvm::cast<MemRefType>(castOp.getViewSource().getType());
+      src = castOp.getViewSource();
+      // Init. offsets
+      src_offsets.clear();
+      for (unsigned i = 0; i < src_memref_ty.getRank(); i++)
+        src_offsets.push_back(constZero);
     }
   } else {
     src_offsets = dmaOp.getSrcOffsets();
@@ -1289,6 +1309,26 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
       // Init. offsets
       dst_offsets.clear();
       for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++)
+        dst_offsets.push_back(constZero);
+    } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(
+                   dst_ancestor_memref_ops[0])) {
+      // Init. memref type
+      dst_memref_ty =
+          llvm::cast<MemRefType>(expandShapeOp.getViewSource().getType());
+      dst = expandShapeOp.getViewSource();
+      // Init. offsets
+      dst_offsets.clear();
+      for (unsigned i = 0; i < expandShapeOp.getReassociationIndices().size();
+           i++)
+        dst_offsets.push_back(constZero);
+    } else if (auto castOp =
+                   dyn_cast<memref::CastOp>(dst_ancestor_memref_ops[0])) {
+      // Init. memref type
+      dst_memref_ty = llvm::cast<MemRefType>(castOp.getViewSource().getType());
+      dst = castOp.getViewSource();
+      // Init. offsets
+      dst_offsets.clear();
+      for (unsigned i = 0; i < dst_memref_ty.getRank(); i++)
         dst_offsets.push_back(constZero);
     }
   } else {
@@ -1341,6 +1381,9 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
             llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
                 src_memref_ty, subviewOp.getStaticOffsets(),
                 subviewOp.getStaticSizes(), subviewOp.getStaticStrides()));
+    } else if (auto castOp = dyn_cast<memref::CastOp>(memrefOp)) {
+      // Init. memref type
+      src_memref_ty = llvm::cast<MemRefType>(castOp.getResult().getType());
     }
   }
 
@@ -1387,6 +1430,9 @@ static LogicalResult condenseMemrefDataReorderingToAIRDma(
             llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
                 dst_memref_ty, subviewOp.getStaticOffsets(),
                 subviewOp.getStaticSizes(), subviewOp.getStaticStrides()));
+    } else if (auto castOp = dyn_cast<memref::CastOp>(memrefOp)) {
+      // Init. memref type
+      dst_memref_ty = llvm::cast<MemRefType>(castOp.getResult().getType());
     }
   }
 
@@ -1537,6 +1583,9 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
                            dyn_cast<memref::SubViewOp>(ancestor)) {
               std::get<1>(log_entry).push_back(ancestor);
               ancestor = subview_anc.getSource().getDefiningOp();
+            } else if (auto cast_anc = dyn_cast<memref::CastOp>(ancestor)) {
+              std::get<1>(log_entry).push_back(ancestor);
+              ancestor = cast_anc.getViewSource().getDefiningOp();
             } else
               exit = true;
           }
@@ -1556,6 +1605,9 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
                            dyn_cast<memref::SubViewOp>(ancestor)) {
               std::get<2>(log_entry).push_back(ancestor);
               ancestor = subview_anc.getSource().getDefiningOp();
+            } else if (auto cast_anc = dyn_cast<memref::CastOp>(ancestor)) {
+              std::get<2>(log_entry).push_back(ancestor);
+              ancestor = cast_anc.getViewSource().getDefiningOp();
             } else
               exit = true;
           }
