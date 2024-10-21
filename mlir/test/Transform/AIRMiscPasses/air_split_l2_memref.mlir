@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s --air-split-l2-memref --split-input-file | FileCheck %s
+// RUN: air-opt %s --air-split-l2-memref="tiles-per-l2-tile=1" --split-input-file | FileCheck %s
 
 // Tiling up a single L2 memref.
 
