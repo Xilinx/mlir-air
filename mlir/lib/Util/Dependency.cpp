@@ -628,6 +628,28 @@ bool areAsyncDependent(Operation *a, Operation *b) {
   return false;
 }
 
+// Returns true if b is asynchronously dependent on a. This function performs a
+// deep dependency tracing that propagates through air.wait_all ops.
+bool isAsyncDependent(Operation *a, Operation *b) {
+  if (a == b)
+    return true;
+  Value token_a = getAsyncTokenFromOp(a);
+  SmallVector<Value> dep_b = getAsyncDependenciesFromOp(b);
+  if (!token_a)
+    return false;
+  if (dep_b.empty())
+    return false;
+  for (auto dep : dep_b) {
+    if (dep == token_a)
+      return true;
+    else if (auto dep_wa_defop = dep.getDefiningOp<air::WaitAllOp>()) {
+      if (isAsyncDependent(a, dep_wa_defop))
+        return true;
+    }
+  }
+  return false;
+}
+
 // Splits an SCF for loop into two for loops, by hoisting target operations in
 // for loop to a new for loop located at the same scope.
 scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,

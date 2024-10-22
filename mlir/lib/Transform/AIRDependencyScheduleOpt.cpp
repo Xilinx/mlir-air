@@ -4759,6 +4759,22 @@ private:
   }
 };
 
+// Get all users to the async op's async token, with type T.
+template <typename T>
+SmallVector<T> getTokenUsersOfType(air::AsyncOpInterface asyncOp) {
+  SmallVector<T> tokenUsers;
+  Value token = asyncOp.getAsyncToken();
+  for (auto token_user : token.getUsers()) {
+    if (auto token_user_of_type = dyn_cast<T>(token_user))
+      tokenUsers.push_back(token_user_of_type);
+    else if (auto token_user_wait_all = dyn_cast<air::WaitAllOp>(token_user))
+      for (auto wa_user : token_user_wait_all.getAsyncToken().getUsers())
+        if (auto token_user_of_type = dyn_cast<T>(wa_user))
+          tokenUsers.push_back(token_user_of_type);
+  }
+  return tokenUsers;
+}
+
 struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
   using OpRewritePattern<air::SegmentOp>::OpRewritePattern;
 
@@ -4866,7 +4882,7 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
         if (llvm::any_of(
                 alloc_dealloc_execs,
                 [&](std::pair<air::ExecuteOp, air::ExecuteOp> exec_pair) {
-                  return exec_pair.first == iaDefOp;
+                  return isAsyncDependent(exec_pair.first, iaDefOp);
                 }))
           fusableForOps.push_back(forOp);
       }
@@ -4874,7 +4890,7 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     if (fusableForOps.empty())
       return failure();
 
-    rewriter.setInsertionPoint(equalIterationForOps[0]);
+    rewriter.setInsertionPoint(equalIterationForOps.back());
     auto new_loop_op_init_arg =
         rewriter
             .create<air::WaitAllOp>(
@@ -4891,7 +4907,8 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     for (auto execOpPair : alloc_dealloc_execs) {
       bool canMove = false;
       air::ExecuteOp alloc_exec = execOpPair.first;
-      for (auto token_user : alloc_exec.getAsyncToken().getUsers())
+      auto token_users = getTokenUsersOfType<scf::ForOp>(alloc_exec);
+      for (auto token_user : token_users)
         if (llvm::any_of(equalIterationForOps, [&](scf::ForOp fusableForOp) {
               return fusableForOp == token_user;
             }))
@@ -4970,6 +4987,13 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
         put_parent = put_parent->getParentOp();
       }
       Operation *get_parent = getOp;
+      if (!get_parent) {
+        putOp->emitOpError(
+            "is producing data for memref in the fused scf.for loop, but no "
+            "consumer is found for this data within the fused loop. This "
+            "likely indicates a failure in the compiler pass.");
+        return;
+      }
       while (get_parent->getParentOp() != new_loop_op) {
         get_parent = get_parent->getParentOp();
       }
