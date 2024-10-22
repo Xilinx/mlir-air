@@ -69,6 +69,7 @@ Value getAsyncTokenFromOp(Operation *op);
 void addAsyncDependencyIfNew(Operation *op, Value token);
 bool isAsyncOp(Operation *op);
 bool areAsyncDependent(Operation *a, Operation *b);
+bool isAsyncDependent(Operation *a, Operation *b);
 scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops);
 LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
