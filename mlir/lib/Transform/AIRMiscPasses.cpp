@@ -1437,9 +1437,23 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   // none, then memref splitting is not needed, as no routings or channels can
   // be saved if only allocating to a single memtile.
   auto getTileCountInSegment = [](air::SegmentOp seg) {
+    DenseMap<StringRef, uint64_t>
+        herdNumTiles; // Herds with the same name are assumed to be different
+                      // time phases of the same physical herd.
     unsigned tileCount = 0;
-    seg.walk(
-        [&](air::HerdOp h) { tileCount += h.getNumCols() * h.getNumRows(); });
+    seg.walk([&](air::HerdOp h) {
+      if (!h.getSymName()) {
+        tileCount += h.getNumCols() * h.getNumRows();
+        return;
+      }
+      StringRef herdSym = *h.getSymName();
+      herdNumTiles[herdSym] =
+          herdNumTiles.count(herdSym)
+              ? std::max(herdNumTiles[herdSym], h.getNumCols() * h.getNumRows())
+              : h.getNumCols() * h.getNumRows();
+    });
+    for (const auto &[herdSym, count] : herdNumTiles)
+      tileCount += count;
     return tileCount;
   };
   if (llvm::none_of(allocOps, [&](memref::AllocOp a) {
