@@ -5105,14 +5105,14 @@ private:
       remap.map(forOp.getRegionIterArgs()[j],
                 new_for_op.getRegionIterArgs()[j]);
     remap.map(forOp.getInductionVar(), new_for_op.getInductionVar());
-    SmallVector<Operation *> erased;
+    llvm::SmallSet<Operation *, 1> erased;
     Value yielded_token = nullptr;
     for (auto &o : forOp.getOps()) {
       if (&o != new_for_op && &o != forOp.getBody()->getTerminator()) {
         auto new_o = builder.clone(o, remap);
         if (isAsyncOp(new_o)) {
           yielded_token = new_o->getResult(0);
-          erased.push_back(&o);
+          erased.insert(&o);
         }
       }
     }
@@ -5123,7 +5123,10 @@ private:
         builder.create<scf::YieldOp>(loc);
     }
     for (auto o : erased) {
-      o->getResult(0).replaceAllUsesWith(new_for_op->getResult(0));
+      // Replace all remaining uses of erased op's token with the new for op's.
+      for (auto res : o->getResults())
+        if (isa<air::AsyncTokenType>(res.getType()) && !res.use_empty())
+          res.replaceAllUsesWith(new_for_op->getResult(0));
       o->erase();
     }
 

@@ -9,6 +9,7 @@
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/SmallSet.h"
 #include <sys/stat.h>
 
 #include <iostream>
@@ -1852,7 +1853,7 @@ void dependencyCanonicalizer::removeDepListRepetition(func::FuncOp func) {
 
 // Remove unused air.execute ops which have no side effects
 void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
-  SmallVector<air::ExecuteOp, 1> erased_ops;
+  llvm::SmallSet<air::ExecuteOp, 1> erased_ops;
   func.walk([&](air::ExecuteOp op) {
     // Check the type of op inside the execute. Only remove ops with no side
     // effects
@@ -1863,7 +1864,7 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
       if (op->getNumResults() == 2) {
         auto result = op->getResult(1);
         if (result.use_empty()) {
-          erased_ops.push_back(op);
+          erased_ops.insert(op);
         }
       }
     }
