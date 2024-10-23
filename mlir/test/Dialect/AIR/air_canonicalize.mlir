@@ -158,3 +158,218 @@ func.func @execute_4() -> (memref<1xi32>, !air.async.token) {
   }
   return %results, %t : memref<1xi32>, !air.async.token
 }
+
+// CHECK: func.func @dma_compose_subview
+// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+func.func @dma_compose_subview() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c32 = arith.constant 32 : index
+  %c64 = arith.constant 64 : index
+  %0 = memref.alloc() : memref<64x64xbf16, 1>
+  %1 = memref.alloc() : memref<64x64xbf16, 2>
+  %subview_4 = memref.subview %0[%c0, %c0] [32, 32] [1, 1] : memref<64x64xbf16, 1> to memref<32x32xbf16, strided<[64, 1], offset: ?>, 1>
+  %subview_5 = memref.subview %1[%c0, %c0] [32, 32] [1, 1] : memref<64x64xbf16, 2> to memref<32x32xbf16, strided<[64, 1], offset: ?>, 2>
+  air.dma_memcpy_nd (%subview_4[] [] [], %subview_5[] [] []) : (memref<32x32xbf16, strided<[64, 1], offset: ?>, 1>, memref<32x32xbf16, strided<[64, 1], offset: ?>, 2>)
+  return 
+}
+
+// CHECK: func.func @dma_compose_transpose
+// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c64{{.*}}, %c128{{.*}}] [%c1{{.*}}, %c64{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c64{{.*}}, %c128{{.*}}] [%c1{{.*}}, %c64{{.*}}]
+func.func @dma_compose_transpose() {
+  %0 = memref.alloc() : memref<128x64xbf16, 1>
+  %1 = memref.alloc() : memref<128x64xbf16, 2>
+  %transpose_1 = memref.transpose %0 (d0, d1) -> (d1, d0) : memref<128x64xbf16, 1> to memref<64x128xbf16, affine_map<(d0, d1) -> (d0 + d1 * 64)>, 1>
+  %transpose_2 = memref.transpose %1 (d0, d1) -> (d1, d0) : memref<128x64xbf16, 2> to memref<64x128xbf16, affine_map<(d0, d1) -> (d0 + d1 * 64)>, 2>
+  air.dma_memcpy_nd (%transpose_1[] [] [], %transpose_2[] [] []) : (memref<64x128xbf16, affine_map<(d0, d1) -> (d0 + d1 * 64)>, 1>, memref<64x128xbf16, affine_map<(d0, d1) -> (d0 + d1 * 64)>, 2>)
+  return 
+}
+
+// CHECK: func.func @dma_compose_expand_shape
+// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c4096{{.*}}, %c64{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c4096{{.*}}, %c64{{.*}}, %c1{{.*}}]
+func.func @dma_compose_expand_shape() {
+  %0 = memref.alloc() : memref<128x64xbf16, 1>
+  %1 = memref.alloc() : memref<128x64xbf16, 2>
+  %expand_shape_1 = memref.expand_shape %0 [[0, 1], [2]] output_shape [2, 64, 64] : memref<128x64xbf16, 1> into memref<2x64x64xbf16, 1>
+  %expand_shape_2 = memref.expand_shape %1 [[0, 1], [2]] output_shape [2, 64, 64] : memref<128x64xbf16, 2> into memref<2x64x64xbf16, 2>
+  air.dma_memcpy_nd (%expand_shape_1[] [] [], %expand_shape_2[] [] []) : (memref<2x64x64xbf16, 1>, memref<2x64x64xbf16, 2>)
+  return 
+}
+
+// CHECK: func.func @dma_compose_cast
+// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c128{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c128{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+func.func @dma_compose_cast() {
+  %0 = memref.alloc() : memref<128x64xbf16, 1>
+  %1 = memref.alloc() : memref<128x64xbf16, 2>
+  %cast = memref.cast %0 : memref<128x64xbf16, 1> to memref<128x64xbf16, strided<[64, 1], offset: ?>, 1>
+  %cast_1 = memref.cast %1 : memref<128x64xbf16, 2> to memref<128x64xbf16, strided<[64, 1], offset: ?>, 2>
+  air.dma_memcpy_nd (%cast[] [] [], %cast_1[] [] []) : (memref<128x64xbf16, strided<[64, 1], offset: ?>, 1>, memref<128x64xbf16, strided<[64, 1], offset: ?>, 2>)
+  return 
+}
+
+// CHECK: func.func @channel_compose_subview
+// CHECK: air.channel.put @channel[] ({{.*}}[{{.*}}, {{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[{{.*}}, {{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+air.channel @channel[2,2]
+func.func @channel_compose_subview() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c32 = arith.constant 32 : index
+  %c64 = arith.constant 64 : index
+  %0 = memref.alloc() : memref<64x64xbf16, 1>
+  %1 = memref.alloc() : memref<64x64xbf16, 2>
+  %subview_4 = memref.subview %0[%c0, %c0] [32, 32] [1, 1] : memref<64x64xbf16, 1> to memref<32x32xbf16, strided<[64, 1], offset: ?>, 1>
+  air.channel.put @channel[] (%subview_4[] [] []) : (memref<32x32xbf16, strided<[64, 1], offset: ?>, 1>)
+  %subview_5 = memref.subview %1[%c0, %c0] [32, 32] [1, 1] : memref<64x64xbf16, 2> to memref<32x32xbf16, strided<[64, 1], offset: ?>, 2>
+  %5 = air.channel.get async @channel[] (%subview_5[] [] []) : (memref<32x32xbf16, strided<[64, 1], offset: ?>, 2>)
+  return 
+}
+
+// CHECK: func.func @channel_compose_transpose
+// CHECK: air.channel.put @channel[] ({{.*}}[{{.*}}, {{.*}}] [%c64{{.*}}, %c128{{.*}}] [%c1{{.*}}, %c64{{.*}}]
+// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[{{.*}}, {{.*}}] [%c64{{.*}}, %c128{{.*}}] [%c1{{.*}}, %c64{{.*}}]
+func.func @channel_compose_transpose() {
+  %0 = memref.alloc() : memref<128x64xbf16, 1>
+  %1 = memref.alloc() : memref<128x64xbf16, 2>
+  %transpose_1 = memref.transpose %0 (d0, d1) -> (d1, d0) : memref<128x64xbf16, 1> to memref<64x128xbf16, affine_map<(d0, d1) -> (d0 + d1 * 64)>, 1>
+  air.channel.put @channel[] (%transpose_1[] [] []) : (memref<64x128xbf16, affine_map<(d0, d1) -> (d0 + d1 * 64)>, 1>)
+  %transpose_2 = memref.transpose %1 (d0, d1) -> (d1, d0) : memref<128x64xbf16, 2> to memref<64x128xbf16, affine_map<(d0, d1) -> (d0 + d1 * 64)>, 2>
+  %5 = air.channel.get async @channel[] (%transpose_2[] [] []) : (memref<64x128xbf16, affine_map<(d0, d1) -> (d0 + d1 * 64)>, 2>)
+  return 
+}
+
+// CHECK: func.func @channel_compose_expand_shape
+// CHECK: air.channel.put @channel[] ({{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c4096{{.*}}, %c64{{.*}}, %c1{{.*}}]
+// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c4096{{.*}}, %c64{{.*}}, %c1{{.*}}]
+func.func @channel_compose_expand_shape() {
+  %0 = memref.alloc() : memref<128x64xbf16, 1>
+  %1 = memref.alloc() : memref<128x64xbf16, 2>
+  %expand_shape_1 = memref.expand_shape %0 [[0, 1], [2]] output_shape [2, 64, 64] : memref<128x64xbf16, 1> into memref<2x64x64xbf16, 1>
+  air.channel.put @channel[] (%expand_shape_1[] [] []) : (memref<2x64x64xbf16, 1>)
+  %expand_shape_2 = memref.expand_shape %1 [[0, 1], [2]] output_shape [2, 64, 64] : memref<128x64xbf16, 2> into memref<2x64x64xbf16, 2>
+  %5 = air.channel.get async @channel[] (%expand_shape_2[] [] []) : (memref<2x64x64xbf16, 2>)
+  return 
+}
+
+// CHECK: func.func @channel_compose_cast
+// CHECK: air.channel.put @channel[] ({{.*}}[%c0{{.*}}, %c0{{.*}}] [%c128{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[%c0{{.*}}, %c0{{.*}}] [%c128{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+func.func @channel_compose_cast() {
+  %0 = memref.alloc() : memref<128x64xbf16, 1>
+  %1 = memref.alloc() : memref<128x64xbf16, 2>
+  %cast = memref.cast %0 : memref<128x64xbf16, 1> to memref<128x64xbf16, strided<[64, 1], offset: ?>, 1>
+  air.channel.put @channel[] (%cast[] [] []) : (memref<128x64xbf16, strided<[64, 1], offset: ?>, 1>)
+  %cast_1 = memref.cast %1 : memref<128x64xbf16, 2> to memref<128x64xbf16, strided<[64, 1], offset: ?>, 2>
+  %5 = air.channel.get async @channel[] (%cast_1[] [] []) : (memref<128x64xbf16, strided<[64, 1], offset: ?>, 2>)
+  return 
+}
+
+// Memref op chain on air::DmaMemcpyNdOp's src/dst memrefs.
+// CHECK: func.func @func0
+// CHECK:  %[[CST128:.*]] = arith.constant 128 : index
+// CHECK:  %[[CST32:.*]] = arith.constant 32 : index
+// CHECK:  %[[CST8:.*]] = arith.constant 8 : index
+// CHECK:  %[[CST16:.*]] = arith.constant 16 : index
+// CHECK:  %[[CST0:.*]] = arith.constant 0 : index
+// CHECK:  %[[CST1:.*]] = arith.constant 1 : index
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %[[CST0]]] [%[[CST8]], %[[CST16]]] [%[[CST16]], %[[CST1]]]) : (memref<1x1x8x16xi32, 1>, memref<8x16xi32>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%[[CST0]], %{{.*}}] [%[[CST16]], %[[CST16]]] [%[[CST32]], %[[CST1]]]) : (memref<1x1x16x16xi32, 1>, memref<16x32xi32>)
+// CHECK:  air.herd @herd_0
+// CHECK:  %[[CST32_0:.*]] = arith.constant 32 : index
+// CHECK:  %[[CST256_0:.*]] = arith.constant 256 : index
+// CHECK:  %[[CST4_0:.*]] = arith.constant 4 : index
+// CHECK:  %[[CST2_0:.*]] = arith.constant 2 : index
+// CHECK:  %[[CST1_0:.*]] = arith.constant 1 : index
+// CHECK:  %[[CST16_0:.*]] = arith.constant 16 : index
+// CHECK:  %[[CST64_0:.*]] = arith.constant 64 : index
+// CHECK:  %[[CST8_0:.*]] = arith.constant 8 : index
+// CHECK:  %[[CST128_0:.*]] = arith.constant 128 : index
+// CHECK:  %[[CST0_0:.*]] = arith.constant 0 : index
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]]] [%[[CST1_0]], %[[CST1_0]], %[[CST2_0]], %[[CST2_0]], %[[CST4_0]], %[[CST8_0]]] [%[[CST128_0]], %[[CST128_0]], %[[CST8_0]], %[[CST64_0]], %[[CST16_0]], %[[CST1_0]]]) : (memref<1x1x2x2x4x8xi32, 2>, memref<1x1x8x16xi32, 1>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%[[CST0_0]], %{{.*}}, %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]]] [%[[CST1_0]], %[[CST1_0]], %[[CST2_0]], %[[CST2_0]], %[[CST8_0]], %[[CST8_0]]] [%[[CST256_0]], %[[CST256_0]], %[[CST8_0]], %[[CST128_0]], %[[CST16_0]], %[[CST1_0]]]) : (memref<1x1x2x2x8x8xi32, 2>, memref<1x1x16x16xi32, 1>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[%{{.*}}, %{{.*}}, %[[CST0_0]], %[[CST0_0]]] [%[[CST1_0]], %[[CST1_0]], %[[CST8_0]], %[[CST16_0]]] [%[[CST128_0]], %[[CST128_0]], %[[CST16_0]], %[[CST1_0]]], %{{.*}}[%[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]]] [%[[CST1_0]], %[[CST1_0]], %[[CST2_0]], %[[CST4_0]], %[[CST2_0]], %[[CST8_0]]] [%[[CST128_0]], %[[CST128_0]], %[[CST32_0]], %[[CST8_0]], %[[CST64_0]], %[[CST1_0]]]) : (memref<1x1x8x16xi32, 1>, memref<1x1x2x2x4x8xi32, 2>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[%{{.*}}, %{{.*}}] [%[[CST8]], %[[CST16]]] [%[[CST32]], %[[CST1]]], %{{.*}}[%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]]] [%[[CST1]], %[[CST1]], %[[CST8]], %[[CST16]]] [%[[CST128]], %[[CST128]], %[[CST16]], %[[CST1]]]) : (memref<8x32xi32>, memref<1x1x8x16xi32, 1>)
+
+#map = affine_map<()[s0] -> (s0 * 8)>
+#map1 = affine_map<()[s0] -> (s0 * 16)>
+func.func @func0(%arg0: memref<8x16xi32>, %arg1: memref<16x32xi32>, %arg2: memref<8x32xi32>) {
+  %c2 = arith.constant 2 : index
+  %c1 = arith.constant 1 : index
+  air.launch (%arg3, %arg4) in (%arg5=%c1, %arg6=%c2) args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg2) : memref<8x16xi32>, memref<16x32xi32>, memref<8x32xi32> {
+    air.segment @segment_0  args(%arg10=%arg3, %arg11=%arg4, %arg12=%arg7, %arg13=%arg8, %arg14=%arg9) : index, index, memref<8x16xi32>, memref<16x32xi32>, memref<8x32xi32> {
+      %c1_0 = arith.constant 1 : index
+      %0 = affine.apply #map()[%arg10]
+      %1 = affine.apply #map1()[%arg11]
+      %subview = memref.subview %arg12[%0, 0] [8, 16] [1, 1] : memref<8x16xi32> to memref<8x16xi32, strided<[16, 1], offset: ?>>
+      %subview_1 = memref.subview %arg13[0, %1] [16, 16] [1, 1] : memref<16x32xi32> to memref<16x16xi32, strided<[32, 1], offset: ?>>
+      %subview_2 = memref.subview %arg14[%0, %1] [8, 16] [1, 1] : memref<8x32xi32> to memref<8x16xi32, strided<[32, 1], offset: ?>>
+      %alloc = memref.alloc() : memref<1x1x8x16xi32, 1>
+      air.dma_memcpy_nd (%alloc[] [] [], %subview[] [] []) : (memref<1x1x8x16xi32, 1>, memref<8x16xi32, strided<[16, 1], offset: ?>>)
+      %alloc_3 = memref.alloc() : memref<1x1x16x16xi32, 1>
+      air.dma_memcpy_nd (%alloc_3[] [] [], %subview_1[] [] []) : (memref<1x1x16x16xi32, 1>, memref<16x16xi32, strided<[32, 1], offset: ?>>)
+      %alloc_4 = memref.alloc() : memref<1x1x8x16xi32, 1>
+      air.herd @herd_0  tile (%arg15, %arg16) in (%arg17=%c1_0, %arg18=%c1_0) args(%arg19=%alloc, %arg20=%alloc_3, %arg21=%alloc_4) : memref<1x1x8x16xi32, 1>, memref<1x1x16x16xi32, 1>, memref<1x1x8x16xi32, 1> {
+        %subview_6 = memref.subview %arg19[%arg15, 0, 0, 0] [1, 1, 8, 16] [1, 1, 1, 1] : memref<1x1x8x16xi32, 1> to memref<1x1x8x16xi32, strided<[128, 128, 16, 1], offset: ?>, 1>
+        %subview_7 = memref.subview %arg20[0, %arg16, 0, 0] [1, 1, 16, 16] [1, 1, 1, 1] : memref<1x1x16x16xi32, 1> to memref<1x1x16x16xi32, strided<[256, 256, 16, 1], offset: ?>, 1>
+        %subview_8 = memref.subview %arg21[%arg15, %arg16, 0, 0] [1, 1, 8, 16] [1, 1, 1, 1] : memref<1x1x8x16xi32, 1> to memref<1x1x8x16xi32, strided<[128, 128, 16, 1], offset: ?>, 1>
+        %alloc_9 = memref.alloc() : memref<1x1x2x2x4x8xi32, 2>
+        %expand_shape = memref.expand_shape %subview_6 [[0], [1], [2, 3], [4, 5]] output_shape [1, 1, 2, 4, 2, 8] : memref<1x1x8x16xi32, strided<[128, 128, 16, 1], offset: ?>, 1> into memref<1x1x2x4x2x8xi32, strided<[128, 128, 64, 16, 8, 1], offset: ?>, 1>
+        %transpose_10 = memref.transpose %expand_shape (d0, d1, d2, d3, d4, d5) -> (d0, d1, d4, d2, d3, d5) : memref<1x1x2x4x2x8xi32, strided<[128, 128, 64, 16, 8, 1], offset: ?>, 1> to memref<1x1x2x2x4x8xi32, strided<[128, 128, 8, 64, 16, 1], offset: ?>, 1>
+        air.dma_memcpy_nd (%alloc_9[] [] [], %transpose_10[] [] []) : (memref<1x1x2x2x4x8xi32, 2>, memref<1x1x2x2x4x8xi32, strided<[128, 128, 8, 64, 16, 1], offset: ?>, 1>)
+        %alloc_11 = memref.alloc() : memref<1x1x2x2x8x8xi32, 2>
+        %expand_shape_12 = memref.expand_shape %subview_7 [[0], [1], [2, 3], [4, 5]] output_shape [1, 1, 2, 8, 2, 8] : memref<1x1x16x16xi32, strided<[256, 256, 16, 1], offset: ?>, 1> into memref<1x1x2x8x2x8xi32, strided<[256, 256, 128, 16, 8, 1], offset: ?>, 1>
+        %transpose_13 = memref.transpose %expand_shape_12 (d0, d1, d2, d3, d4, d5) -> (d0, d1, d4, d2, d3, d5) : memref<1x1x2x8x2x8xi32, strided<[256, 256, 128, 16, 8, 1], offset: ?>, 1> to memref<1x1x2x2x8x8xi32, strided<[256, 256, 8, 128, 16, 1], offset: ?>, 1>
+        air.dma_memcpy_nd (%alloc_11[] [] [], %transpose_13[] [] []) : (memref<1x1x2x2x8x8xi32, 2>, memref<1x1x2x2x8x8xi32, strided<[256, 256, 8, 128, 16, 1], offset: ?>, 1>)
+        %alloc_14 = memref.alloc() : memref<1x1x2x2x4x8xi32, 2>
+        %transpose_15 = memref.transpose %alloc_14 (d0, d1, d2, d3, d4, d5) -> (d0, d1, d3, d4, d2, d5) : memref<1x1x2x2x4x8xi32, 2> to memref<1x1x2x4x2x8xi32, strided<[128, 128, 32, 8, 64, 1]>, 2>
+        air.dma_memcpy_nd (%subview_8[] [] [], %transpose_15[] [] []) : (memref<1x1x8x16xi32, strided<[128, 128, 16, 1], offset: ?>, 1>, memref<1x1x2x4x2x8xi32, strided<[128, 128, 32, 8, 64, 1]>, 2>)
+        memref.dealloc %alloc_9 : memref<1x1x2x2x4x8xi32, 2>
+        memref.dealloc %alloc_11 : memref<1x1x2x2x8x8xi32, 2>
+        memref.dealloc %alloc_14 : memref<1x1x2x2x4x8xi32, 2>
+      }
+      %subview_5 = memref.subview %alloc_4[0, 0, 0, 0] [1, 1, 8, 16] [1, 1, 1, 1] : memref<1x1x8x16xi32, 1> to memref<8x16xi32, 1>
+      %transpose = memref.transpose %subview_5 (d0, d1) -> (d0, d1) : memref<8x16xi32, 1> to memref<8x16xi32, strided<[16, 1]>, 1>
+      air.dma_memcpy_nd (%subview_2[] [] [], %transpose[] [] []) : (memref<8x16xi32, strided<[32, 1], offset: ?>>, memref<8x16xi32, strided<[16, 1]>, 1>)
+      memref.dealloc %alloc_3 : memref<1x1x16x16xi32, 1>
+      memref.dealloc %alloc : memref<1x1x8x16xi32, 1>
+      memref.dealloc %alloc_4 : memref<1x1x8x16xi32, 1>
+    }
+  }
+  return
+}
+
+// CHECK: func.func @func1
+// CHECK:  air.herd @herd_0 {{.*}} args(%[[ARG0:.*]]=%{{.*}}, %[[ARG1:.*]]=%{{.*}})
+// CHECK-DAG:    %[[CST4:.*]] = arith.constant 4 : index
+// CHECK-DAG:    %[[CST3:.*]] = arith.constant 3 : index
+// CHECK-DAG:    %[[CST1:.*]] = arith.constant 1 : index
+// CHECK-DAG:    %[[CST8:.*]] = arith.constant 8 : index
+// CHECK-DAG:    %[[CST64:.*]] = arith.constant 64 : index
+// CHECK-DAG:    %[[CST256:.*]] = arith.constant 256 : index
+// CHECK-DAG:    %[[CST768:.*]] = arith.constant 768 : index
+// CHECK-DAG:    %[[CST0:.*]] = arith.constant 0 : index
+// CHECK:    air.dma_memcpy_nd (%[[ARG1]][] [] [], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]]] [%[[CST3]], %[[CST3]], %[[CST4]], %[[CST1]], %[[CST8]], %[[CST8]]] [%[[CST768]], %[[CST256]], %[[CST64]], %[[CST8]], %[[CST8]], %[[CST1]]]) : (memref<3x3x4x1x8x8xi8, 2 : i32>, memref<3x3x32x8xi8, 1 : i32>)
+// CHECK:  }
+
+func.func @func1() {
+  %c8 = arith.constant 8 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  air.launch (%arg0, %arg1, %arg2, %arg3) in (%arg4=%c2, %arg5=%c3, %arg6=%c3, %arg7=%c8) {
+    air.segment @segment_0  {
+      %c1 = arith.constant 1 : index
+      %c4 = arith.constant 4 : index
+      %alloc = memref.alloc() : memref<3x3x4x1x8x8xi8, 2 : i32>
+      %alloc_0 = memref.alloc() : memref<3x3x32x8xi8, 1 : i32>
+      air.herd @herd_0  tile (%arg8, %arg9) in (%arg10=%c4, %arg11=%c1) args(%arg12=%alloc_0, %arg13=%alloc) : memref<3x3x32x8xi8, 1 : i32>, memref<3x3x4x1x8x8xi8, 2 : i32> {
+        %cast = memref.cast %arg12 : memref<3x3x32x8xi8, 1 : i32> to memref<3x3x32x8xi8, strided<[768, 256, 8, 1], offset: ?>, 1 : i32>
+        %expand_shape = memref.expand_shape %cast [[0], [1], [2, 3], [4, 5]] output_shape [3, 3, 4, 8, 1, 8] : memref<3x3x32x8xi8, strided<[768, 256, 8, 1], offset: ?>, 1 : i32> into memref<3x3x4x8x1x8xi8, strided<[768, 256, 64, 8, 8, 1], offset: ?>, 1 : i32>
+        %transpose = memref.transpose %expand_shape (d0, d1, d2, d3, d4, d5) -> (d0, d1, d2, d4, d3, d5) : memref<3x3x4x8x1x8xi8, strided<[768, 256, 64, 8, 8, 1], offset: ?>, 1 : i32> to memref<3x3x4x1x8x8xi8, strided<[768, 256, 64, 8, 8, 1], offset: ?>, 1 : i32>
+        air.dma_memcpy_nd (%arg13[] [] [], %transpose[] [] []) : (memref<3x3x4x1x8x8xi8, 2 : i32>, memref<3x3x4x1x8x8xi8, strided<[768, 256, 64, 8, 8, 1], offset: ?>, 1 : i32>)
+      }
+    }
+  }
+  return
+}
