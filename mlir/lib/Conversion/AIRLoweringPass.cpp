@@ -33,6 +33,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -652,7 +653,7 @@ LogicalResult lowerAirExecute(Operation *op) {
   if (!module)
     return failure();
 
-  SmallVector<Operation *, 8> erased;
+  llvm::SmallSet<Operation *, 8> erased;
   module->walk([&](air::ExecuteOp exe) {
     auto &bb = exe.getBody().front();
     unsigned idx = 0;
@@ -670,7 +671,7 @@ LogicalResult lowerAirExecute(Operation *op) {
       int resultIdx = 1;
       for (auto r : t->getOperands())
         exe.getResult(resultIdx++).replaceAllUsesWith(r);
-      erased.push_back(t);
+      erased.insert(t);
     });
     exe->getBlock()->getOperations().splice(Block::iterator(exe),
                                             bb.getOperations());
@@ -680,7 +681,7 @@ LogicalResult lowerAirExecute(Operation *op) {
           SmallVector<Value>{});
       exe.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
-    erased.push_back(exe);
+    erased.insert(exe);
   });
   for (auto a : erased)
     a->erase();
@@ -856,7 +857,7 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
   if (!f)
     return failure();
 
-  SmallVector<Operation *, 8> erased;
+  llvm::SmallSet<Operation *, 8> erased;
   f.walk([&](scf::ParallelOp scf_par) {
     for (auto v : scf_par.getLowerBound()) {
       assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 0);
@@ -894,7 +895,7 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
         builder.clone(o, remap);
       }
     }
-    erased.push_back(scf_par);
+    erased.insert(scf_par);
   });
   for (auto a : erased) {
     if (a->getNumResults())

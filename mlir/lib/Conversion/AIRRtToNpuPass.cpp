@@ -378,13 +378,13 @@ public:
   LogicalResult
   matchAndRewrite(memref::CopyOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    SmallVector<Operation *> erased;
+    llvm::SmallSet<Operation *, 1> erased;
     if (auto alloc = op.getSource().getDefiningOp()) {
       op.getSource().replaceAllUsesWith(op.getTarget());
-      erased.push_back(alloc);
+      erased.insert(alloc);
     } else if (auto alloc = op.getTarget().getDefiningOp()) {
       op.getTarget().replaceAllUsesWith(op.getSource());
-      erased.push_back(alloc);
+      erased.insert(alloc);
     }
     for (auto o : erased)
       rewriter.eraseOp(o);
@@ -509,13 +509,6 @@ void hoistTargetOpsToNewAffineFor(OpBuilder builder, affine::AffineForOp for_op,
   }
 }
 
-template <typename T>
-void push_back_if_unique(SmallVector<T> &vec, T entry) {
-  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
-    vec.push_back(entry);
-  }
-}
-
 void identifyTargetAffineForAndOps(
     func::FuncOp f, SmallVector<llvm::SetVector<Operation *>> &target_ops_vec) {
   // Identify the target for loops and their target child ops
@@ -563,7 +556,7 @@ void isolateAIRRtDmaLoopNests(ModuleOp module) {
   }
 
   // Hoist ops out of each scf.for.
-  SmallVector<Operation *> erased;
+  llvm::SmallSet<Operation *, 1> erased;
   for (auto vec : target_ops_vec) {
     affine::AffineForOp loop_nest_head =
         vec[0]->getParentOfType<affine::AffineForOp>();
@@ -572,7 +565,7 @@ void isolateAIRRtDmaLoopNests(ModuleOp module) {
     }
     OpBuilder builder(loop_nest_head);
     hoistTargetOpsToNewAffineFor(builder, loop_nest_head, vec);
-    push_back_if_unique<Operation *>(erased, loop_nest_head.getOperation());
+    erased.insert(loop_nest_head.getOperation());
   }
   for (auto o : erased)
     o->erase();
@@ -931,17 +924,18 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
 void specializeAffineForInAIRRtDmaWrapAndStride(ModuleOp module) {
   SmallVector<func::FuncOp> funcOps;
   module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
-  SmallVector<Operation *> erased;
+  llvm::SmallSet<Operation *, 1> erased;
   SmallVector<affine::AffineForOp> unroll_outer_dim;
   auto specialzeAllAffineFors =
-      [&](SmallVector<func::FuncOp> funcOps, SmallVector<Operation *> &erased,
+      [&](SmallVector<func::FuncOp> funcOps,
+          llvm::SmallSet<Operation *, 1> &erased,
           SmallVector<affine::AffineForOp> &unroll_outer_dim) {
         for (auto f : funcOps) {
           for (auto for_op : f.getOps<affine::AffineForOp>()) {
             OpBuilder builder(for_op);
             if (specializeAffineForInAIRRtDmaWrapAndStride(builder, for_op)
                     .succeeded())
-              erased.push_back(for_op);
+              erased.insert(for_op);
             else {
               // Wait list to be unrolled one outer dimension, and then try
               // specializing the wraps and strides again.

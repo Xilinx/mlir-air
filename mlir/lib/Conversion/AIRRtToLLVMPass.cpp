@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -1297,10 +1298,10 @@ public:
       signalPassFailure();
     }
 
-    SmallVector<func::FuncOp> erased_extern;
+    llvm::SmallSet<func::FuncOp, 1> erased_extern;
     for (auto func : module.getOps<func::FuncOp>()) {
       if (func.isExternal() && func.symbolKnownUseEmpty(module))
-        erased_extern.push_back(func);
+        erased_extern.insert(func);
       else
         func->setAttr("llvm.emit_c_interface",
                       UnitAttr::get(func.getContext()));
