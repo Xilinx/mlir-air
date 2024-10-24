@@ -1243,35 +1243,26 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   // Revert the vector of memref ops, as it was built with push_back.
   std::reverse(memrefOpVec.begin(), memrefOpVec.end());
 
-  // Init. memref type and offsets at the front of the vector of memref ops.
+  // Init. source memref and offsets at the front of the vector of memref ops.
   auto constZero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  MemRefType input_ty;
   if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOpVec[0])) {
-    // Init. offsets
     extractOffsetsFromSubview(subviewOp, rewriter, offsets);
-    // Init. memref type
-    input_ty = subviewOp.getSourceType();
     input_memref = subviewOp.getViewSource();
   } else if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOpVec[0])) {
-    // Init. memref type
-    input_ty = llvm::cast<MemRefType>(transposeOp.getIn().getType());
-    input_memref = transposeOp.getIn();
-    // Init. offsets
     offsets.clear();
     for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++)
       offsets.push_back(constZero);
+    input_memref = transposeOp.getIn();
   } else if (auto viewLikeOp = dyn_cast<ViewLikeOpInterface>(memrefOpVec[0])) {
-    // Init. memref type
-    input_ty = llvm::cast<MemRefType>(viewLikeOp.getViewSource().getType());
-    input_memref = viewLikeOp.getViewSource();
-    // Init. offsets
     offsets.clear();
-    for (unsigned i = 0; i < input_ty.getRank(); i++)
+    for (unsigned i = 0;
+         i < llvm::cast<MemRefType>(input_memref.getType()).getRank(); i++)
       offsets.push_back(constZero);
+    input_memref = viewLikeOp.getViewSource();
   } else
     return failure();
 
-  // Compose memref type as the memref propagates through the chain of memref
+  // Compose offsets as the memref type propagates through the chain of memref
   // ops.
   for (auto memrefOp : memrefOpVec) {
     if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOp)) {
@@ -1280,7 +1271,6 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       offsets =
           applyPermutationMap<Value>(transposeOp.getPermutation(), offsets);
     } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(memrefOp)) {
-      // Init. offsets
       for (int i = (int)expandShapeOp.getReassociationIndices().size() - 1;
            i >= 0; i--) {
         if (expandShapeOp.getReassociationIndices()[i].size() <= 1)
@@ -1299,16 +1289,16 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     }
   }
 
-  // Memref type at sink memref op.
-  input_ty =
+  // Memref type at the sink memref op.
+  MemRefType sink_memref_ty =
       llvm::cast<MemRefType>(memrefOpVec.back()->getResultTypes().front());
 
   // Compose sizes and strides from the output memref type's layout.
-  strides = extractStridesFromMemrefType(input_ty, rewriter);
-  sizes = extractSizesFromMemrefType(input_ty, rewriter);
+  strides = extractStridesFromMemrefType(sink_memref_ty, rewriter);
+  sizes = extractSizesFromMemrefType(sink_memref_ty, rewriter);
 
   return canonicalizeAIRDmaOperands(rewriter, offsets, sizes, strides,
-                                    input_ty);
+                                    sink_memref_ty);
 }
 
 //
@@ -1321,7 +1311,6 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(DmaMemcpyNdOp op, PatternRewriter &rewriter) {
   Value memref = op.getSrcMemref();
   if (!memref)
     return failure();
-  auto loc = op->getLoc();
   Value input_memref;
   SmallVector<Value> offsets, sizes, strides;
   offsets = op.getSrcOffsets();
@@ -1338,17 +1327,10 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(DmaMemcpyNdOp op, PatternRewriter &rewriter) {
                              strides))) {
     return failure();
   }
-
-  auto newOp = rewriter.create<air::DmaMemcpyNdOp>(
-      loc, op->getResultTypes(), op.getAsyncDependencies(), op.getDstMemref(),
+  rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
+      op, op->getResultTypes(), op.getAsyncDependencies(), op.getDstMemref(),
       op.getDstOffsets(), op.getDstSizes(), op.getDstStrides(), input_memref,
       offsets, sizes, strides);
-
-  for (unsigned i = 0; i < op->getNumResults(); i++) {
-    op->getResult(i).replaceAllUsesWith(newOp->getResult(i));
-  }
-
-  rewriter.eraseOp(op);
 
   return success();
 }
@@ -1359,7 +1341,6 @@ ComposeMemrefOpOnDmaMemcpyNdDst(DmaMemcpyNdOp op, PatternRewriter &rewriter) {
   Value memref = op.getDstMemref();
   if (!memref)
     return failure();
-  auto loc = op->getLoc();
   Value input_memref;
   SmallVector<Value> offsets, sizes, strides;
   offsets = op.getDstOffsets();
@@ -1376,17 +1357,10 @@ ComposeMemrefOpOnDmaMemcpyNdDst(DmaMemcpyNdOp op, PatternRewriter &rewriter) {
                              strides))) {
     return failure();
   }
-
-  auto newOp = rewriter.create<air::DmaMemcpyNdOp>(
-      loc, op->getResultTypes(), op.getAsyncDependencies(), input_memref,
+  rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
+      op, op->getResultTypes(), op.getAsyncDependencies(), input_memref,
       offsets, sizes, strides, op.getSrcMemref(), op.getSrcOffsets(),
       op.getSrcSizes(), op.getSrcStrides());
-
-  for (unsigned i = 0; i < op->getNumResults(); i++) {
-    op->getResult(i).replaceAllUsesWith(newOp->getResult(i));
-  }
-
-  rewriter.eraseOp(op);
 
   return success();
 }
@@ -1407,7 +1381,6 @@ static LogicalResult ComposeMemrefOpOnChannelPut(ChannelPutOp op,
   Value memref = op.getMemref();
   if (!memref)
     return failure();
-  auto loc = op->getLoc();
 
   // Init. memref type and offsets from memref's defining op's input type
   Value input_memref;
@@ -1426,16 +1399,9 @@ static LogicalResult ComposeMemrefOpOnChannelPut(ChannelPutOp op,
                              strides))) {
     return failure();
   }
-
-  auto newOp = rewriter.create<air::ChannelPutOp>(
-      loc, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
+  rewriter.replaceOpWithNewOp<air::ChannelPutOp>(
+      op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
       op.getIndices(), input_memref, offsets, sizes, strides);
-
-  for (unsigned i = 0; i < op->getNumResults(); i++) {
-    op->getResult(i).replaceAllUsesWith(newOp->getResult(i));
-  }
-
-  rewriter.eraseOp(op);
 
   return success();
 }
@@ -1455,7 +1421,6 @@ static LogicalResult ComposeMemrefOpOnChannelGet(ChannelGetOp op,
   Value memref = op.getMemref();
   if (!memref)
     return failure();
-  auto loc = op->getLoc();
 
   // Init. memref type and offsets from memref's defining op's input type
   Value input_memref;
@@ -1474,16 +1439,9 @@ static LogicalResult ComposeMemrefOpOnChannelGet(ChannelGetOp op,
                              strides))) {
     return failure();
   }
-
-  auto newOp = rewriter.create<air::ChannelGetOp>(
-      loc, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
+  rewriter.replaceOpWithNewOp<air::ChannelGetOp>(
+      op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
       op.getIndices(), input_memref, offsets, sizes, strides);
-
-  for (unsigned i = 0; i < op->getNumResults(); i++) {
-    op->getResult(i).replaceAllUsesWith(newOp->getResult(i));
-  }
-
-  rewriter.eraseOp(op);
 
   return success();
 }
