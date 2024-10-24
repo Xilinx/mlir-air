@@ -281,6 +281,7 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
       return -1;
     }
   }];
+  let hasCanonicalizer = 1;
 }
 
 def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
@@ -404,6 +405,7 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
       return -1;
     }
   }];
+  let hasCanonicalizer = 1;
 }
 
 def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface, 
@@ -445,6 +447,7 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
       return -1;
     }
   }];
+  let hasCanonicalizer = 1;
 }
 
 // AIR asynchronous region for dynamic event dispatching.
