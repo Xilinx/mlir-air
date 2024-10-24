@@ -1242,28 +1242,44 @@ static void updateAccessPatternByScfForNest(
         &pattern,
     SmallVector<Value> indices, OpBuilder builder) {
   auto loc = builder.getUnknownLoc();
-  auto updateWrapAndStride = [&](Value index, int i) {
-    if (auto scfForOp = scf::getForInductionVarOwner(index)) {
-      std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
-          loc, *air::getStaticScfForTripCountAsInt(scfForOp));
-      std::get<2>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
-          loc, (*getConstantIntValue(scfForOp.getStep())) *
-                   (*getConstantIntValue(std::get<2>(pattern)[i])));
-
-      scfForOp.getStep();
+  auto updateWrapAndStride = [&](int stepSize, int tripCount, int i) {
+    std::get<1>(pattern)[i] =
+        builder.create<arith::ConstantIndexOp>(loc, tripCount);
+    std::get<2>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
+        loc, stepSize * (*getConstantIntValue(std::get<2>(pattern)[i])));
+  };
+  // Infer data access pattern's sizes from parent scf.for loop and any affine
+  // op applied on the induction variable
+  auto inferDataAccessSizes = [](scf::ForOp scfForOp, air::ExecuteOp execOp,
+                                 Value index) {
+    int scfForTripCount = *air::getStaticScfForTripCountAsInt(scfForOp);
+    // If scf.for's iv applies affine::DelinerizeIndexOp
+    if (auto delinearizeOp =
+            dyn_cast<affine::AffineDelinearizeIndexOp>(execOp.getChildOp())) {
+      int resIdx =
+          llvm::find(execOp.getResults(), index) - execOp.getResults().begin();
+      scfForTripCount = *getConstantIntValue(delinearizeOp.getBasis()[resIdx]);
     }
+    return scfForTripCount;
   };
   int dim = -1;
   for (auto index : indices) {
     dim++;
     if (getConstantIntValue(index))
       continue;
-    updateWrapAndStride(index, dim);
+    if (auto scfForOp = scf::getForInductionVarOwner(index))
+      updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
+                          *air::getStaticScfForTripCountAsInt(scfForOp), dim);
     if (!index.getDefiningOp())
       continue;
-    if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp()))
+    if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
       for (auto oper : execOp.getChildOp()->getOperands())
-        updateWrapAndStride(oper, dim);
+        if (auto scfForOp = scf::getForInductionVarOwner(oper)) {
+          int scfForTripCount = inferDataAccessSizes(scfForOp, execOp, index);
+          updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
+                              scfForTripCount, dim);
+        }
+    }
   }
 }
 

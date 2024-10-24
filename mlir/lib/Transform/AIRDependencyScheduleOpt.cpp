@@ -4559,9 +4559,10 @@ private:
     auto shrunkMemrefType =
         MemRefType::get(overall_access_bounds, elemType, nullptr, memorySpace);
     MemRefType inferredSubViewOutputTy =
-        llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
-            shrunkMemrefType, subViewOp.getStaticOffsets(),
-            subViewOp.getStaticSizes(), subViewOp.getStaticStrides()));
+        llvm::cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
+            subViewOp.getType().getShape(), shrunkMemrefType,
+            subViewOp.getStaticOffsets(), subViewOp.getStaticSizes(),
+            subViewOp.getStaticStrides()));
     // Case 1: static size mismatches the shrunk shape.
     for (unsigned i = 0; i < static_sizes.size(); i++) {
       if (static_sizes[i] < 0) {
