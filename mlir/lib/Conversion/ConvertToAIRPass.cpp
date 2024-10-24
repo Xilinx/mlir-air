@@ -1171,6 +1171,10 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
 
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
+
+    RewritePatternSet pattern(context);
+    air::DmaMemcpyNdOp::getCanonicalizationPatterns(pattern, context);
+    (void)applyPatternsAndFoldGreedily(module, std::move(pattern));
   }
 };
 
