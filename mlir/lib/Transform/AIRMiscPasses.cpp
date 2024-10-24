@@ -33,6 +33,7 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
 
 #include <list>
@@ -1436,9 +1437,23 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   // none, then memref splitting is not needed, as no routings or channels can
   // be saved if only allocating to a single memtile.
   auto getTileCountInSegment = [](air::SegmentOp seg) {
+    DenseMap<StringRef, uint64_t>
+        herdNumTiles; // Herds with the same name are assumed to be different
+                      // time phases of the same physical herd.
     unsigned tileCount = 0;
-    seg.walk(
-        [&](air::HerdOp h) { tileCount += h.getNumCols() * h.getNumRows(); });
+    seg.walk([&](air::HerdOp h) {
+      if (!h.getSymName()) {
+        tileCount += h.getNumCols() * h.getNumRows();
+        return;
+      }
+      StringRef herdSym = *h.getSymName();
+      herdNumTiles[herdSym] =
+          herdNumTiles.count(herdSym)
+              ? std::max(herdNumTiles[herdSym], h.getNumCols() * h.getNumRows())
+              : h.getNumCols() * h.getNumRows();
+    });
+    for (const auto &[herdSym, count] : herdNumTiles)
+      tileCount += count;
     return tileCount;
   };
   if (llvm::none_of(allocOps, [&](memref::AllocOp a) {
@@ -1459,7 +1474,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
     return;
 
   // Tile memrefs.
-  SmallVector<Operation *> erased;
+  llvm::SmallSet<Operation *, 1> erased;
   for (auto allocOp : targetMemrefs) {
     int targetColTilingFactor =
         findGCD(targetMemrefsToColTilingFactors[allocOp]);
@@ -1482,7 +1497,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         IRMapping remap;
         (void)air::unrollAIRChannelPutGetInScfParallel(builder, par, user,
                                                        remap);
-        erased.push_back(par);
+        erased.insert(par);
       } else if ((isa<air::ChannelPutOp>(user) &&
                   splitTypeAttr.str() == "MM2SChannels") ||
                  (isa<air::ChannelGetOp>(user) &&
@@ -1608,14 +1623,25 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
             dyn_cast<air::AsyncOpInterface>(theOtherChanOp[0].getOperation())
                 .getAsyncToken();
         oldToken.replaceAllUsesWith(newWaitAll1);
-        erased.push_back(theOtherChanOp[0]);
-        erased.push_back(chanUserOp);
+        erased.insert(theOtherChanOp[0]);
+        erased.insert(chanUserOp);
       }
     }
   }
 
-  for (auto e : erased)
+  for (auto e : erased) {
+    // Replace all remaining uses of erased op's token with a new wait_all.
+    for (auto res : e->getResults()) {
+      if (isa<air::AsyncTokenType>(res.getType()) && !res.use_empty()) {
+        OpBuilder b(e);
+        res.replaceAllUsesWith(
+            b.create<air::WaitAllOp>(e->getLoc(), air::AsyncTokenType::get(ctx),
+                                     SmallVector<Value>{})
+                .getAsyncToken());
+      }
+    }
     e->erase();
+  }
 
   auto context = &getContext();
   RewritePatternSet canoPatterns(context);
