@@ -1246,19 +1246,19 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   // Init. source memref and offsets at the front of the vector of memref ops.
   auto constZero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOpVec[0])) {
-    extractOffsetsFromSubview(subviewOp, rewriter, offsets);
     input_memref = subviewOp.getViewSource();
+    extractOffsetsFromSubview(subviewOp, rewriter, offsets);
   } else if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOpVec[0])) {
+    input_memref = transposeOp.getIn();
     offsets.clear();
     for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++)
       offsets.push_back(constZero);
-    input_memref = transposeOp.getIn();
   } else if (auto viewLikeOp = dyn_cast<ViewLikeOpInterface>(memrefOpVec[0])) {
+    input_memref = viewLikeOp.getViewSource();
     offsets.clear();
     for (unsigned i = 0;
          i < llvm::cast<MemRefType>(input_memref.getType()).getRank(); i++)
       offsets.push_back(constZero);
-    input_memref = viewLikeOp.getViewSource();
   } else
     return failure();
 
