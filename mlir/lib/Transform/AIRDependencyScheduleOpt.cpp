@@ -46,8 +46,6 @@
 #include <string>
 #include <vector>
 
-#include <iostream>
-
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
