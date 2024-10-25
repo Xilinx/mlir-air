@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import subprocess
+import shutil
 import tempfile
 
 import lit.formats
