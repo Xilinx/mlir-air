@@ -40,7 +40,7 @@ jobs:
           source air-venv/bin/activate
           pip cache purge
           pip install --upgrade pip
-          pip install lit cmake joblib bfloat16
+          pip install lit cmake joblib
 
       - name: Get mlir-aie
         id: clone-mlir-aie
@@ -88,6 +88,7 @@ jobs:
             -DXRT_ROOT=/opt/xilinx/xrt \
             -DAIE_ENABLE_PYTHON_PASSES=OFF \
             -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON \
+            -DAIE_VITIS_COMPONENTS='AIE;AIE2' \
             -DAIE_INCLUDE_INTEGRATION_TESTS=OFF
 
           ninja install
