@@ -16,6 +16,7 @@ does not have a parent launch or segment operation.
 _Convert the operations from the linalg dialect into the function calls_
 
 
+
 #### Options
 ```
 -link-with : Path to the object file containing the functions that will be called in place of the linalg operations.
@@ -56,6 +57,7 @@ the generated `launch` operations with the `has-air-segment` option.
 ### `-air-split-devices`
 
 _Split the input into one output per aie.device op_
+
 
 
 #### Options

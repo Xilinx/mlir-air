@@ -4,6 +4,7 @@
 _Affine loop transformations_
 
 
+
 #### Options
 ```
 -affine-opt-tile-sizes      : Affine loop tiling sizes
@@ -537,6 +538,7 @@ iteration, by connecting them in the loop-carried dependency path.
 
 _Skeleton module op pass_
 
+
 ### `-air-fuse-channels`
 
 _Fuse multiple air.channel ops into one_
@@ -556,9 +558,11 @@ air.channel symbol.
 
 _Fuse parallel launch pass_
 
+
 ### `-air-herd-assign`
 
 _Transfor affine.for to affine.parallel_
+
 
 ### `-air-hoist-alloc-in-for-pattern`
 
@@ -597,6 +601,7 @@ hoisting them out of their previous parent loop.
 ### `-air-label-broadcast-channel-with-tile`
 
 _Label broadcasted channel ops with tile coordinates._
+
 
 ### `-air-label-scf-for-in-segment`
 
@@ -640,6 +645,7 @@ dialect.
 ### `-air-linalg-name`
 
 _Give linalg ops a LinalgTransformMarker string attribute if they don't already have one_
+
 
 ### `-air-linalg-op-stats`
 
@@ -813,6 +819,7 @@ module  {
 
 _Remove scf.parallel from inside herds by transforming them to scf.for._
 
+
 ### `-air-lower-linalg-tensors`
 
 _Lowering from linalg on tensors to loops_
@@ -841,6 +848,7 @@ edges which represent a ping-pong buffering scheduling.
 ### `-air-pipeline-reduce`
 
 _Turn a reduction dimension into a herd pipeline_
+
 
 
 #### Options
@@ -1036,6 +1044,7 @@ module  {
 _Renumber air dma op ids_
 
 
+
 #### Options
 ```
 -mode : In which hierarchy level to renumber the dma ops
@@ -1044,9 +1053,11 @@ _Renumber air dma op ids_
 
 _Convert functions to return their values with out parameters_
 
+
 ### `-air-rm-linalg-name`
 
 _Remove LinalgTransformMarker string attributes from linalg ops_
+
 
 ### `-air-specialize-channel-wrap-and-stride`
 
@@ -1220,6 +1231,7 @@ _Split L2 memref into smaller buffers to better fit with the data movement harwa
 ### `-air-transform`
 
 _Transform IR with transform dialect_
+
 
 
 #### Options
