@@ -40,7 +40,7 @@ jobs:
           source air-venv/bin/activate
           pip cache purge
           pip install --upgrade pip
-          pip install lit cmake joblib bfloat16
+          pip install lit cmake joblib
 
       - name: Get mlir-aie
         id: clone-mlir-aie
