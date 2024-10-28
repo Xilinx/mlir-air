@@ -610,13 +610,21 @@ struct AnnotateFrontAndBackOpsInForPattern
         continue;
 
       if (!dep_list.size())
-        op.setAttr("async_front", rewriter.getBoolAttr(true));
-      for (auto token : iterTokens) {
-        for (auto dep : dep_list) {
-          if (token == dep) {
-            setBoolAttrForAsyncOp(rewriter, &op, "async_front");
-          }
-        }
+        setBoolAttrForAsyncOp(rewriter, &op, "async_front");
+      for (auto dep : dep_list) {
+        // Token is in iter_args
+        if (llvm::any_of(iterTokens,
+                         [dep](Value token) { return token == dep; }))
+          setBoolAttrForAsyncOp(rewriter, &op, "async_front");
+      }
+      // Token is declared outside of for loop
+      if (llvm::any_of(dep_list, [for_op](Value token) {
+            auto tokenDefOp = token.getDefiningOp();
+            if (!tokenDefOp)
+              return false;
+            return !for_op->isProperAncestor(tokenDefOp);
+          })) {
+        setBoolAttrForAsyncOp(rewriter, &op, "async_front");
       }
     }
 
@@ -649,6 +657,9 @@ struct AnnotateFrontAndBackOpsInForPattern
     }
     for (auto op : back_candidates) {
       setBoolAttrForAsyncOp(rewriter, op, "async_back");
+      if (op->hasAttr("async_front"))
+        // An op cannot be both "async_back" and "async_front".
+        op->removeAttr("async_front");
     }
 
     return success();
