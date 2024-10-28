@@ -53,6 +53,8 @@ void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history) {
   for (auto operand : candidate_scalar_operands) {
+    if (!llvm::isa<IndexType>(operand.getType()))
+      continue; // Only tracing scalar operands
     // If parent loop op is an scf.for
     if (auto for_op = mlir::scf::getForInductionVarOwner(operand)) {
       loop_dep_history.push_back(for_op.getInductionVar());
@@ -76,27 +78,26 @@ void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
 
   // Recursively trace dependency to loop induction vars
   for (auto operand : candidate_scalar_operands) {
-    if (operand && llvm::isa<IndexType>(
-                       operand.getType())) { // Only tracing scalar operands
-      if (operand.getDefiningOp() &&
-          mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
-        auto ancestor_async_op =
-            dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-        op_history.push_back(ancestor_async_op.getOperation());
-        traceDependentInductionVar(ancestor_async_op, loop_dep_history,
-                                   op_history);
-      } else {
-        // Trace dependency through a for loop
-        if (auto for_op = getForRegionIterArgsOwner(operand)) {
-          for (auto iter_arg : for_op.getInitArgs()) {
-            if (operand == iter_arg) {
-              loop_dep_history.push_back(iter_arg);
-            }
+    if (!llvm::isa<IndexType>(operand.getType()))
+      continue; // Only tracing scalar operands
+    if (operand.getDefiningOp() &&
+        mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
+      auto ancestor_async_op =
+          dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
+      op_history.push_back(ancestor_async_op.getOperation());
+      traceDependentInductionVar(ancestor_async_op, loop_dep_history,
+                                 op_history);
+    } else {
+      // Trace dependency through a for loop
+      if (auto for_op = getForRegionIterArgsOwner(operand)) {
+        for (auto iter_arg : for_op.getInitArgs()) {
+          if (operand == iter_arg) {
+            loop_dep_history.push_back(iter_arg);
           }
         }
-        // Trace dependency through a parallel loop
-        // TODO: decide if parallel should exist in herd launch
       }
+      // Trace dependency through a parallel loop
+      // TODO: decide if parallel should exist in herd launch
     }
   }
 }
