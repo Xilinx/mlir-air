@@ -2470,21 +2470,6 @@ public:
           }
         }
       }
-      // If not variant wrt herd, then check for fixed row-wise or col-wise
-      // offset.
-      int src_memspace = llvm::cast<MemRefType>(dma_op.getSrcMemref().getType())
-                             .getMemorySpaceAsInt();
-      auto externalOffsets = src_memspace == (int)air::MemorySpace::L1
-                                 ? dma_op.getDstOffsets()
-                                 : dma_op.getSrcOffsets();
-      if (!hl_op && externalOffsets.size() ==
-                        dma_op->getParentOfType<air::HerdOp>().getNumDims()) {
-        hl_op = dma_op->getParentOfType<air::HerdOp>();
-        if (getConstantIntValue(externalOffsets[0]))
-          isVariantWrtHerdRows = true;
-        if (getConstantIntValue(externalOffsets[1]))
-          isVariantWrtHerdCols = true;
-      }
 
       if (!hl_op) {
         // If dma op is completely independent of the parent herd induction
