@@ -1,4 +1,4 @@
-//===- mm.cc ----------------------------------------------000---*- C++ -*-===//
+//===- vm.cc ----------------------------------------------000---*- C++ -*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -28,7 +28,7 @@ template <typename T_in, typename T_out, unsigned colA, unsigned colB,
           unsigned r, unsigned s, unsigned t>
 void vecmat_vectorized(const T_in *__restrict pA, const T_in *__restrict pB,
                        T_out *__restrict pC) {
-  using MMUL = aie::mmul<r, s, t, T_in, T_in, accfloat>;
+  using MMUL = aie::mmul<r, s, t, T_in, T_in, acc32>;
 
   event0();
 
