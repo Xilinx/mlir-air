@@ -1550,7 +1550,13 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
 
         // Account for cases where rank reduction results from at least
         // of the dimensions being equal to one.
-        auto wraps = theOtherChanOp[0].getSizes();
+        SmallVector<Value> wraps = theOtherChanOp[0].getSizes();
+        if (wraps.empty()) {
+          // Populate default wraps, if wraps is an empty vector.
+          SmallVector<Value> offsets, strides;
+          air::populateDefaultWrapsAndStrides(
+              builder, theOtherChanOp[0].getMemref(), offsets, wraps, strides);
+        }
         auto adjustedDimIdx = dim;
         if (wraps.size() != memrefShape.size()) {
           // Make sure that the number of rank-reducing dimensions and/or
@@ -1611,6 +1617,13 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
               return;
             }
           }
+        }
+
+        if (adjustedDimIdx >= (int)wraps.size()) {
+          theOtherChanOp[0]->emitOpError(
+              "Failed to split data access pattern due to air.channel op "
+              "having mismatching wraps rank.");
+          return;
         }
 
         Value newWaitAll1 =
