@@ -710,9 +710,9 @@ public:
       return type;
     });
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
-                                ValueRange inputs, Location loc) {
+                                ValueRange inputs, Location loc) -> Value {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return std::optional<Value>(cast.getResult(0));
+      return cast.getResult(0);
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
