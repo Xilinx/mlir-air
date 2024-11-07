@@ -11,8 +11,8 @@ print:
 
 run:
 	mkdir -p build
-	cd build && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/vm.cc -o ${srcdir}/vm.o
-	${powershell} python3 ${srcdir}/single_core.py
+	cd build && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/vm.cc -o vm.o
+	cd build && ${powershell} python3 ${srcdir}/single_core.py
 
 clean:
 	rm -rf build __pycache__
