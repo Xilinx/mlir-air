@@ -23,6 +23,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
@@ -509,12 +510,16 @@ void hoistTargetOpsToNewAffineFor(OpBuilder builder, affine::AffineForOp for_op,
   }
 }
 
+// Build up a queue of aiex::DmaMemcpyNdOps per shim alloc metadata (i.e. per
+// shim dma channel).
 void identifyTargetAffineForAndOps(
-    func::FuncOp f, SmallVector<llvm::SetVector<Operation *>> &target_ops_vec) {
-  // Identify the target for loops and their target child ops
-  int index = 0;
+    func::FuncOp f,
+    llvm::MapVector<affine::AffineForOp,
+                    llvm::MapVector<StringRef, llvm::SetVector<Operation *>>>
+        &opQueuePerMeta) {
+  // Ensure memcpy ops operating on the same metadata (i.e. the same shim
+  // dma channel) are hoisted together, to maintain data dependency.
   for (auto for_op : f.getBody().getOps<affine::AffineForOp>()) {
-    SmallVector<StringRef> metadataVec;
     // Get for_op's immediate child op
     for_op.walk([&](airrt::DmaMemcpyNdOp memcpyOp) {
       StringRef metadata =
@@ -524,48 +529,37 @@ void identifyTargetAffineForAndOps(
       SmallVector<Operation *> oper_def_ops;
       xilinx::air::getDefiningOpsToOperands(memcpyOp.getOperation(),
                                             oper_def_ops);
-
-      // Ensure memcpy ops operating on the same metadata (i.e. the same shim
-      // dma channel) are hoisted together, to maintain data dependency.
-      auto it = std::find(metadataVec.begin(), metadataVec.end(), metadata);
-      if (it != metadataVec.end())
-        index = it - metadataVec.begin();
-      else {
-        metadataVec.push_back(metadata);
-        target_ops_vec.push_back(llvm::SetVector<Operation *>{});
-      }
-
       for (auto o : oper_def_ops)
-        if (o->getParentOp() == memcpyOp->getParentOp())
-          target_ops_vec[index].insert(o);
-      target_ops_vec[index].insert(memcpyOp.getOperation());
-      index = target_ops_vec.size();
+        if (o->getParentRegion() == memcpyOp->getParentRegion())
+          opQueuePerMeta[for_op][metadata].insert(o);
+      opQueuePerMeta[for_op][metadata].insert(memcpyOp.getOperation());
     });
   }
 }
 
+// Split affine.for loops to ensure that each loop nest only contains memcpy ops
+// onto a single shim dma channel.
 void isolateAIRRtDmaLoopNests(ModuleOp module) {
   // Identify affine.for ops and target child ops for hoisting.
-  SmallVector<llvm::SetVector<Operation *>> target_ops_vec;
+  llvm::MapVector<affine::AffineForOp,
+                  llvm::MapVector<StringRef, llvm::SetVector<Operation *>>>
+      opQueuePerMeta;
   SmallVector<func::FuncOp> funcOps;
   module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
   for (auto f : funcOps) {
     f.walk(
         [&](affine::AffineForOp afo) { (void)promoteIfSingleIteration(afo); });
-    identifyTargetAffineForAndOps(f, target_ops_vec);
+    identifyTargetAffineForAndOps(f, opQueuePerMeta);
   }
 
   // Hoist ops out of each scf.for.
   llvm::SmallSet<Operation *, 1> erased;
-  for (auto vec : target_ops_vec) {
-    affine::AffineForOp loop_nest_head =
-        vec[0]->getParentOfType<affine::AffineForOp>();
-    while (!isa<func::FuncOp>(loop_nest_head->getParentOp())) {
-      loop_nest_head = loop_nest_head->getParentOfType<affine::AffineForOp>();
+  for (auto &[affineForBand, queue] : opQueuePerMeta) {
+    for (auto &[metadata, vec] : queue) {
+      OpBuilder builder(affineForBand);
+      hoistTargetOpsToNewAffineFor(builder, affineForBand, vec);
+      erased.insert(affineForBand.getOperation());
     }
-    OpBuilder builder(loop_nest_head);
-    hoistTargetOpsToNewAffineFor(builder, loop_nest_head, vec);
-    erased.insert(loop_nest_head.getOperation());
   }
   for (auto o : erased)
     o->erase();
@@ -1140,20 +1134,23 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
+  // Set all X and Y values of airrt::dma_memcpy_nd ops to 0.
   void purgeAIRRtDmaXAndY(ModuleOp module) {
+    auto i64Ty = IntegerType::get(module.getContext(), 64);
     SmallVector<airrt::DmaMemcpyNdOp> dmas;
     module.walk([&](airrt::DmaMemcpyNdOp dma) { dmas.push_back(dma); });
     for (auto dma : dmas) {
-      for (unsigned idx = 1; idx <= 2; idx++) {
-        auto x_def_op = dma->getOperand(idx).getDefiningOp();
-        if (x_def_op && !isa<arith::ConstantOp>(x_def_op)) {
-          OpBuilder builder(x_def_op);
-          auto i64Ty = builder.getI64Type();
-          dma->setOperand(
-              idx, builder.create<arith::ConstantOp>(
-                       dma->getLoc(), i64Ty, IntegerAttr::get(i64Ty, 0)));
-        }
-      }
+      OpBuilder builder(dma);
+      bool resetX = !(getConstantIntValue(dma.getX()) &&
+                      *getConstantIntValue(dma.getX()) == 0);
+      bool resetY = !(getConstantIntValue(dma.getY()) &&
+                      *getConstantIntValue(dma.getY()) == 0);
+      if (resetX)
+        dma.getXMutable().assign(builder.create<arith::ConstantOp>(
+            dma->getLoc(), i64Ty, IntegerAttr::get(i64Ty, 0)));
+      if (resetY)
+        dma.getYMutable().assign(builder.create<arith::ConstantOp>(
+            dma->getLoc(), i64Ty, IntegerAttr::get(i64Ty, 0)));
     }
   }
 
