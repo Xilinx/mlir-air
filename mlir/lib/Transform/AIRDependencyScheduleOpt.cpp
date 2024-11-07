@@ -1640,32 +1640,13 @@ void updateAffineForBounds(affine::AffineForOp loop_op, int lb, int ub,
   loop_op.setStep(step);
 }
 
-scf::ForOp updateScfForBounds(OpBuilder builder, IRMapping &remap,
-                              scf::ForOp loop_op, int lb, int ub, int step) {
+void updateScfForBounds(OpBuilder builder, scf::ForOp loop_op, int lb, int ub,
+                        int step) {
   auto loc = loop_op->getLoc();
-  SmallVector<Value, 1> deps =
-      loop_op.getOperands().drop_front(loop_op.getNumControlOperands());
-  scf::ForOp new_loop_op = builder.create<scf::ForOp>(
-      builder.getUnknownLoc(), builder.create<arith::ConstantIndexOp>(loc, lb),
-      builder.create<arith::ConstantIndexOp>(loc, ub),
-      builder.create<arith::ConstantIndexOp>(loc, step), deps);
-  remap.map(loop_op.getInductionVar(), new_loop_op.getInductionVar());
-  for (unsigned i = 0; i < loop_op.getRegionIterArgs().size(); i++)
-    remap.map(loop_op.getRegionIterArgs()[i],
-              new_loop_op.getRegionIterArgs()[i]);
-  auto insertionCheckpoint = builder.saveInsertionPoint();
-  builder.setInsertionPointToStart(new_loop_op.getBody());
-  for (Operation &child_op : loop_op.getBody()->getOperations()) {
-    if (&child_op == loop_op.getBody()->getTerminator()) {
-      if (!new_loop_op.getBody()->mightHaveTerminator())
-        builder.clone(child_op, remap);
-    } else
-      builder.clone(child_op, remap);
-  }
-  for (unsigned i = 0; i < loop_op->getNumResults(); i++)
-    loop_op->getResult(i).replaceAllUsesWith(new_loop_op->getResult(i));
-  builder.restoreInsertionPoint(insertionCheckpoint);
-  return new_loop_op;
+  builder.setInsertionPoint(loop_op);
+  loop_op.setLowerBound(builder.create<arith::ConstantIndexOp>(loc, lb));
+  loop_op.setUpperBound(builder.create<arith::ConstantIndexOp>(loc, ub));
+  loop_op.setStep(builder.create<arith::ConstantIndexOp>(loc, step));
 }
 
 // Fold affine.apply op operating on loop induction variable into loop bounds.
@@ -1714,7 +1695,6 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
       if (auto exec = dyn_cast<air::ExecuteOp>(apply->getParentOp())) {
-        rewriter.setInsertionPoint(exec);
         exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
         if (sfo.getNumRegionIterArgs())
           exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
@@ -1727,13 +1707,10 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
         }
         rewriter.eraseOp(exec);
       } else {
-        rewriter.setInsertionPoint(apply);
         apply.getResult().replaceAllUsesWith(sfo.getInductionVar());
         rewriter.eraseOp(apply);
       }
-      rewriter.setInsertionPoint(sfo);
-      updateScfForBounds(rewriter, remap, sfo, *new_lb, *new_ub, newStepInInt);
-      rewriter.eraseOp(sfo);
+      updateScfForBounds(rewriter, sfo, *new_lb, *new_ub, newStepInInt);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
@@ -1816,7 +1793,6 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
       IRMapping remap;
       if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp())) {
-        rewriter.setInsertionPoint(exec);
         exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
         if (sfo.getNumRegionIterArgs())
           exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
@@ -1829,13 +1805,10 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
         }
         rewriter.eraseOp(exec);
       } else {
-        rewriter.setInsertionPoint(op);
         op.getResult().replaceAllUsesWith(sfo.getInductionVar());
         rewriter.eraseOp(op);
       }
-      rewriter.setInsertionPoint(sfo);
-      updateScfForBounds(rewriter, remap, sfo, new_lb, new_ub, newStepInInt);
-      rewriter.eraseOp(sfo);
+      updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
@@ -1844,7 +1817,6 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
       int new_lb = afo.getConstantLowerBound() * muli_factor;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
       IRMapping remap;
-      rewriter.setInsertionPoint(afo);
       op.getResult().replaceAllUsesWith(afo.getInductionVar());
       rewriter.eraseOp(op);
       updateAffineForBounds(afo, new_lb, new_ub, newStepInInt);
@@ -1912,7 +1884,6 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
       IRMapping remap;
       if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp())) {
-        rewriter.setInsertionPoint(exec);
         exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
         if (sfo.getNumRegionIterArgs())
           exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
@@ -1925,13 +1896,10 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
         }
         rewriter.eraseOp(exec);
       } else {
-        rewriter.setInsertionPoint(op);
         op.getResult().replaceAllUsesWith(sfo.getInductionVar());
         rewriter.eraseOp(op);
       }
-      rewriter.setInsertionPoint(sfo);
-      updateScfForBounds(rewriter, remap, sfo, new_lb, new_ub, newStepInInt);
-      rewriter.eraseOp(sfo);
+      updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
@@ -1940,7 +1908,6 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
       int new_lb = afo.getConstantLowerBound() + addi_operand;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
       IRMapping remap;
-      rewriter.setInsertionPoint(afo);
       op.getResult().replaceAllUsesWith(afo.getInductionVar());
       rewriter.eraseOp(op);
       updateAffineForBounds(afo, new_lb, new_ub, newStepInInt);
