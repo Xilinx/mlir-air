@@ -1633,22 +1633,11 @@ struct CanonicalizeAIRExecute : public OpRewritePattern<air::ExecuteOp> {
 private:
 };
 
-affine::AffineForOp updateAffineForBounds(OpBuilder builder, IRMapping &remap,
-                                          affine::AffineForOp loop_op, int lb,
-                                          int ub, int step) {
-  affine::AffineForOp new_loop_op = builder.create<affine::AffineForOp>(
-      builder.getUnknownLoc(), lb, ub, step);
-  remap.map(loop_op.getInductionVar(), new_loop_op.getInductionVar());
-  // remap.map(old_apply.getResult(), new_loop_op.getInductionVar());
-  auto insertionCheckpoint = builder.saveInsertionPoint();
-  builder.setInsertionPointToStart(new_loop_op.getBody());
-  for (Operation &child_op : loop_op.getBody()->getOperations()) {
-    if (&child_op == loop_op.getBody()->getTerminator()) { /*Skip*/
-    } else
-      builder.clone(child_op, remap);
-  }
-  builder.restoreInsertionPoint(insertionCheckpoint);
-  return new_loop_op;
+void updateAffineForBounds(affine::AffineForOp loop_op, int lb, int ub,
+                           int step) {
+  loop_op.setConstantLowerBound(lb);
+  loop_op.setConstantUpperBound(ub);
+  loop_op.setStep(step);
 }
 
 scf::ForOp updateScfForBounds(OpBuilder builder, IRMapping &remap,
@@ -1760,12 +1749,9 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       assert(new_ub && new_lb);
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
-      rewriter.setInsertionPoint(afo);
       apply.getResult().replaceAllUsesWith(afo.getInductionVar());
       rewriter.eraseOp(apply);
-      updateAffineForBounds(rewriter, remap, afo, *new_lb, *new_ub,
-                            newStepInInt);
-      rewriter.eraseOp(afo);
+      updateAffineForBounds(afo, *new_lb, *new_ub, newStepInInt);
     } else
       return failure();
 
@@ -1861,8 +1847,7 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
       rewriter.setInsertionPoint(afo);
       op.getResult().replaceAllUsesWith(afo.getInductionVar());
       rewriter.eraseOp(op);
-      updateAffineForBounds(rewriter, remap, afo, new_lb, new_ub, newStepInInt);
-      rewriter.eraseOp(afo);
+      updateAffineForBounds(afo, new_lb, new_ub, newStepInInt);
     } else
       return failure();
 
@@ -1958,8 +1943,7 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
       rewriter.setInsertionPoint(afo);
       op.getResult().replaceAllUsesWith(afo.getInductionVar());
       rewriter.eraseOp(op);
-      updateAffineForBounds(rewriter, remap, afo, new_lb, new_ub, newStepInInt);
-      rewriter.eraseOp(afo);
+      updateAffineForBounds(afo, new_lb, new_ub, newStepInInt);
     } else
       return failure();
 
