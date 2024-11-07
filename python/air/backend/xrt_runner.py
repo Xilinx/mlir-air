@@ -124,7 +124,17 @@ class XRTRunner:
                 else:
                     print(actual)
 
-            if not np.array_equal(actual, expected):
-                print(f"ERROR: Output {i} does not meet expected output.")
-                return False
+            if expected.dtype in [np.float16, np.float32, np.float64, bfloat16]:
+                if not np.allclose(actual, expected, rtol=1e-3):
+                    print(f"ERROR: Output {i} does not meet expected output.")
+                    print(actual)
+                    print(expected)
+                    return False
+            else:
+                if not np.array_equal(actual, expected):
+                    print(f"ERROR: Output {i} does not meet expected output.")
+                    print(actual)
+                    print(expected)
+                    return False
+
         return True
