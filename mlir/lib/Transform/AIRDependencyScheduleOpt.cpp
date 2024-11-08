@@ -12,6 +12,7 @@
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -2027,6 +2028,93 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 private:
 };
 
+// This pattern should be executed after
+// AIRSpecializeChannelWrapAndStrideInScfFor. The pattern unrolls any remaining
+// scf.for loops that iterates over air.channel.put/get but cannot be converted
+// directly to wraps and strides. The unrolled air.channel.put/get ops form a bd
+// chain.
+struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the loop contains only air.channel.put/get ops, or pure ops.
+    auto containsOnlyAIRChannels = [](Block *block) {
+      if (block->getOperations().empty())
+        return false;
+      for (auto &o : block->getOperations()) {
+        if (isa<air::ChannelInterface>(o))
+          continue;
+        else if (isa<air::WaitAllOp>(o))
+          continue;
+        else if (isPure(&o))
+          continue;
+        else if (auto exec = dyn_cast<air::ExecuteOp>(o)) {
+          auto childOp = exec.getChildOp();
+          if (childOp && isPure(childOp))
+            continue;
+        }
+        return false;
+      }
+      return true;
+    };
+
+    if (!containsOnlyAIRChannels(for_op.getBody()))
+      return failure();
+
+    auto unroll_factor = air::getStaticScfForTripCountAsInt(for_op);
+    if (!unroll_factor)
+      return failure(); // Dynamic loop bound.
+    (void)loopUnrollByFactor(for_op, *unroll_factor);
+
+    return success();
+  }
+
+private:
+};
+
+// Affine for version of the `AIRUnrollScfForIntoBDChain` pattern above.
+struct AIRUnrollAffineForIntoBDChain
+    : public OpRewritePattern<affine::AffineForOp> {
+  using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineForOp for_op,
+                                PatternRewriter &rewriter) const override {
+    // Check if the loop contains only air.channel.put/get ops, or pure ops.
+    auto containsOnlyAIRChannels = [](Block *block) {
+      if (block->getOperations().empty())
+        return false;
+      for (auto &o : block->getOperations()) {
+        if (isa<air::ChannelInterface>(o))
+          continue;
+        else if (isa<air::WaitAllOp>(o))
+          continue;
+        else if (isPure(&o))
+          continue;
+        else if (auto exec = dyn_cast<air::ExecuteOp>(o)) {
+          auto childOp = exec.getChildOp();
+          if (childOp && isPure(childOp))
+            continue;
+        }
+        return false;
+      }
+      return true;
+    };
+
+    if (!containsOnlyAIRChannels(for_op.getBody()))
+      return failure();
+
+    auto unroll_factor = air::getStaticAffineForTripCountAsInt(for_op);
+    if (!unroll_factor)
+      return failure(); // Dynamic loop bound.
+    (void)loopUnrollFull(for_op);
+
+    return success();
+  }
+
+private:
+};
+
 struct AIRSpecializeChannelWrapAndStrideInAffineFor
     : public OpRewritePattern<affine::AffineForOp> {
   using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
@@ -2980,10 +3068,17 @@ public:
                     AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
 
+    // Unroll any remaining loops which contain only data movements.
+    RewritePatternSet unroll_patterns(&getContext());
+    unroll_patterns
+        .insert<AIRUnrollScfForIntoBDChain, AIRUnrollAffineForIntoBDChain>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(unroll_patterns));
+
     // Canonicalize wrap and stride list to remove redundant dimensions
     RewritePatternSet cano_patterns(&getContext());
     cano_patterns.insert<AIRCanonicalizeChannelGetOpWrapAndStrideList,
                          AIRCanonicalizeChannelPutOpWrapAndStrideList>(ctx);
+    ExecuteOp::getCanonicalizationPatterns(cano_patterns, &getContext());
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(cano_patterns));
   }
 
