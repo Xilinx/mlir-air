@@ -608,6 +608,8 @@ bool isAsyncOp(Operation *op) {
   return false;
 }
 
+// Air dependency comes in two forms: production and consumption of the same
+// async token, and usage of the same air.channel.
 bool areAsyncDependent(Operation *a, Operation *b) {
   SmallVector<Value> dep_a = getAsyncDependenciesFromOp(a);
   Value token_a = getAsyncTokenFromOp(a);
@@ -626,6 +628,12 @@ bool areAsyncDependent(Operation *a, Operation *b) {
       return true;
   for (auto dep : dep_b)
     if (dep == token_a)
+      return true;
+
+  auto chanA = dyn_cast<air::ChannelInterface>(a);
+  auto chanB = dyn_cast<air::ChannelInterface>(b);
+  if (chanA && chanB)
+    if (chanA.getChanName() == chanB.getChanName())
       return true;
   return false;
 }
