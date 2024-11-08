@@ -386,11 +386,11 @@ module {
         %4 = affine.apply #map()[%arg1]
         %5 = air.channel.put async [%arg7]  @channel_0[%c0, %c0] (%arg5[%4, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref<512x1024xbf16>)
         %6 = affine.apply #map1()[%arg1]
-        %7 = air.channel.put async [%arg7]  @channel_0[%c1, %c0] (%arg5[%6, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref<512x1024xbf16>)
+        %7 = air.channel.put async [%arg7]  @channel_1[%c1, %c0] (%arg5[%6, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref<512x1024xbf16>)
         %8 = affine.apply #map2()[%arg1]
-        %9 = air.channel.put async [%arg7]  @channel_0[%c2_0, %c0] (%arg5[%8, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 3 : i32} : (memref<512x1024xbf16>)
+        %9 = air.channel.put async [%arg7]  @channel_2[%c2_0, %c0] (%arg5[%8, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 3 : i32} : (memref<512x1024xbf16>)
         %10 = affine.apply #map3()[%arg1]
-        %11 = air.channel.put async [%arg7]  @channel_0[%c3, %c0] (%arg5[%10, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 4 : i32} : (memref<512x1024xbf16>)
+        %11 = air.channel.put async [%arg7]  @channel_3[%c3, %c0] (%arg5[%10, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 4 : i32} : (memref<512x1024xbf16>)
         %12 = air.wait_all async [%5, %7, %9, %11] 
         scf.yield %12 : !air.async.token
       }
@@ -421,9 +421,9 @@ module {
         %4 = air.wait_all async 
         %5 = scf.for %arg6 = %c0_5 to %c1024_6 step %c256_7 iter_args(%arg7 = %4) -> (!air.async.token) {
           %6 = air.channel.get async [%arg7]  @channel_0[%c0_5, %c0_5] (%results[%c0_5, %arg6] [%c64_3, %c256_7] [%c1024_6, %c1_4]) {id = 13 : i32} : (memref<64x1024xbf16, 1>)
-          %7 = air.channel.get async [%arg7]  @channel_0[%c1_4, %c0_5] (%results_9[%c0_5, %arg6] [%c64_3, %c256_7] [%c1024_6, %c1_4]) {id = 14 : i32} : (memref<64x1024xbf16, 1>)
-          %8 = air.channel.get async [%arg7]  @channel_0[%c2_2, %c0_5] (%results_11[%c0_5, %arg6] [%c64_3, %c256_7] [%c1024_6, %c1_4]) {id = 15 : i32} : (memref<64x1024xbf16, 1>)
-          %9 = air.channel.get async [%arg7]  @channel_0[%c3_1, %c0_5] (%results_13[%c0_5, %arg6] [%c64_3, %c256_7] [%c1024_6, %c1_4]) {id = 16 : i32} : (memref<64x1024xbf16, 1>)
+          %7 = air.channel.get async [%arg7]  @channel_1[%c1_4, %c0_5] (%results_9[%c0_5, %arg6] [%c64_3, %c256_7] [%c1024_6, %c1_4]) {id = 14 : i32} : (memref<64x1024xbf16, 1>)
+          %8 = air.channel.get async [%arg7]  @channel_2[%c2_2, %c0_5] (%results_11[%c0_5, %arg6] [%c64_3, %c256_7] [%c1024_6, %c1_4]) {id = 15 : i32} : (memref<64x1024xbf16, 1>)
+          %9 = air.channel.get async [%arg7]  @channel_3[%c3_1, %c0_5] (%results_13[%c0_5, %arg6] [%c64_3, %c256_7] [%c1024_6, %c1_4]) {id = 16 : i32} : (memref<64x1024xbf16, 1>)
           %10 = air.wait_all async [%6, %7, %8, %9] 
           scf.yield %10 : !air.async.token
         }
@@ -439,6 +439,57 @@ module {
         %async_token_17 = air.execute [%5] {
           memref.dealloc %results : memref<64x1024xbf16, 1>
         }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// CHECK-LABEL: func4
+
+// CHECK: scf.for{{.*}}{
+// CHECK-NEXT: air.channel.put{{.*}}@channel_0
+// CHECK-NEXT: air.channel.put{{.*}}@channel_0
+// CHECK-NEXT: air.wait_all
+// CHECK-NEXT: scf.yield
+// CHECK-NEXT: }
+// CHECK: scf.for{{.*}}{
+// CHECK-NEXT: air.channel.put{{.*}}@channel_1
+// CHECK-NEXT: air.channel.put{{.*}}@channel_2
+// CHECK-NEXT: air.wait_all
+// CHECK-NEXT: scf.yield
+// CHECK-NEXT: }
+
+#map = affine_map<()[s0] -> (s0 * 256)>
+#map1 = affine_map<()[s0] -> (s0 * 256 + 64)>
+#map2 = affine_map<()[s0] -> (s0 * 256 + 128)>
+#map3 = affine_map<()[s0] -> (s0 * 256 + 192)>
+module {
+  air.channel @channel_0 [4, 1]
+  func.func @func4(%arg0: memref<512x1024xbf16>) {
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async (%arg1, %arg2) in (%arg3=%c2, %arg4=%c2) args(%arg5=%arg0) : memref<512x1024xbf16> attributes {id = 1 : i32} {
+      %c64 = arith.constant 64 : index
+      %c1 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %c1024 = arith.constant 1024 : index
+      %c256 = arith.constant 256 : index
+      %1 = air.wait_all async
+      %2 = scf.for %arg6 = %c0 to %c1024 step %c256 iter_args(%arg7 = %1) -> (!air.async.token) {
+        // %7 depends on %5 due to shared usage of @channel_0
+        %5 = air.channel.put async [%arg7]  @channel_0[%c0, %c0] (%arg5[%c0, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref<512x1024xbf16>)
+        %7 = air.channel.put async [%arg7]  @channel_0[%c1, %c0] (%arg5[%c0, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref<512x1024xbf16>)
+        %12 = air.wait_all async [%5, %7] 
+        scf.yield %12 : !air.async.token
+      }
+      %3 = scf.for %arg6 = %c0 to %c1024 step %c256 iter_args(%arg7 = %1) -> (!air.async.token) {
+        // %7 depends on %5 due to production and consumption over async token %5
+        %5 = air.channel.put async [%arg7]  @channel_1[%c0, %c0] (%arg5[%c0, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref<512x1024xbf16>)
+        %7 = air.channel.put async [%5]  @channel_2[%c1, %c0] (%arg5[%c0, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref<512x1024xbf16>)
+        %12 = air.wait_all async [%7] 
+        scf.yield %12 : !air.async.token
       }
     }
     return
