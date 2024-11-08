@@ -235,8 +235,30 @@ def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_acc, np_dtype_o
                 b_s_l2l1_pack_size = [tile_n // mmul_mkn[2], tile_k // bs, mmul_mkn[2]]
                 b_s_l2l1_pack_stride = [mmul_mkn[2], tile_n, 1]
 
-                for i in range(0, k, tile_k):
-                    a_l2l1_pack_offset = [i]
+                for_iv_map_data = AffineMap.get(
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(tile_k),
+                        )
+                    ],
+                )
+                for_iv_map_scale = AffineMap.get(
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(tile_k // bs),
+                        )
+                    ],
+                )
+
+                for i in range_(0, k // tile_k):
+                    for_iv_data_offset = affine_apply(for_iv_map_data, [i])
+                    a_l2l1_pack_offset = [for_iv_data_offset]
                     ChannelPut(
                         "aL2ToL1",
                         l2_a_data,
@@ -244,7 +266,8 @@ def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_acc, np_dtype_o
                         sizes=a_l2l1_pack_size,
                         strides=a_l2l1_pack_stride,
                     )
-                    a_s_l2l1_pack_offset = [i // bs]
+                    for_iv_scale_offset = affine_apply(for_iv_map_scale, [i])
+                    a_s_l2l1_pack_offset = [for_iv_scale_offset]
                     ChannelPut(
                         "aL2ToL1",
                         l2_a_scale,
@@ -252,9 +275,11 @@ def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_acc, np_dtype_o
                         sizes=a_s_l2l1_pack_size,
                         strides=a_s_l2l1_pack_stride,
                     )
+                    yield_([])
 
-                for i in range(0, k, tile_k):
-                    b_l2l1_pack_offset = [0, i, 0]
+                for i in range_(0, k // tile_k):
+                    for_iv_data_offset = affine_apply(for_iv_map_data, [i])
+                    b_l2l1_pack_offset = [0, for_iv_data_offset, 0]
                     ChannelPut(
                         "bL2ToL1",
                         l2_b_data,
@@ -262,7 +287,8 @@ def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_acc, np_dtype_o
                         sizes=b_l2l1_pack_size,
                         strides=b_l2l1_pack_stride,
                     )
-                    b_s_l2l1_pack_offset = [0, i // bs, 0]
+                    for_iv_scale_offset = affine_apply(for_iv_map_scale, [i])
+                    b_s_l2l1_pack_offset = [0, for_iv_scale_offset, 0]
                     ChannelPut(
                         "bL2ToL1",
                         l2_b_scale,
@@ -270,6 +296,7 @@ def build_module(k, n, bs, tile_k, tile_n, np_dtype_in, np_dtype_acc, np_dtype_o
                         sizes=b_s_l2l1_pack_size,
                         strides=b_s_l2l1_pack_stride,
                     )
+                    yield_([])
 
                 l2_c_data = AllocOp(l2MemrefTyC, [], [])
                 ChannelGet(
