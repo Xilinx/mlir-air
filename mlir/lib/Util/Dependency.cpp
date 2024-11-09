@@ -633,8 +633,21 @@ bool areAsyncDependent(Operation *a, Operation *b) {
   auto chanA = dyn_cast<air::ChannelInterface>(a);
   auto chanB = dyn_cast<air::ChannelInterface>(b);
   if (chanA && chanB)
-    if (chanA.getChanName() == chanB.getChanName())
+    if (chanA.getChanName() == chanB.getChanName()) {
+      if (chanA.getIndices().size() != chanB.getIndices().size())
+        return true;
+      for (unsigned i = 0; i < chanA.getIndices().size(); i++) {
+        auto constIdxA = getConstantIntValue(chanA.getIndices()[i]);
+        auto constIdxB = getConstantIntValue(chanB.getIndices()[i]);
+        if (!constIdxA)
+          return true;
+        if (!constIdxB)
+          return true;
+        if (*constIdxA != *constIdxB)
+          return false;
+      }
       return true;
+    }
   return false;
 }
 
