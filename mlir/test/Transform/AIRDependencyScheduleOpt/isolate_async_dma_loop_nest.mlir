@@ -461,6 +461,14 @@ module {
 // CHECK-NEXT: air.wait_all
 // CHECK-NEXT: scf.yield
 // CHECK-NEXT: }
+// CHECK: scf.for %{{.*}}{
+// CHECK-NEXT: air.channel.put{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}]
+// CHECK: scf.for %{{.*}}{
+// CHECK-NEXT: air.channel.put{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}]
+// CHECK: scf.for %{{.*}}{
+// CHECK-NEXT: air.channel.put{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}]
+// CHECK: scf.for %{{.*}}{
+// CHECK-NEXT: air.channel.put{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}]
 
 #map = affine_map<()[s0] -> (s0 * 256)>
 #map1 = affine_map<()[s0] -> (s0 * 256 + 64)>
