@@ -4211,6 +4211,14 @@ struct IsolateAsyncDmaLoopNestInAIRLaunchPattern
     identifyTargetSCFForAndOps(f, hier_op, target_ops_map);
     if (target_ops_map.empty())
       return failure();
+    if (all_of(target_ops_map.begin(), target_ops_map.end(),
+               [&](std::pair<const scf::ForOp, llvm::SetVector<Operation *>>
+                       pair) {
+                 return pair.second.size() <
+                        2; // Must have at least two target ops to start
+                           // splitting the loop.
+               }))
+      return failure();
 
     // If necessary, hoist allocs out of the loops, too.
     RewritePatternSet patterns(f.getContext());
@@ -4262,6 +4270,14 @@ struct IsolateAsyncDmaLoopNestInAIRSegmentPattern
 
     identifyTargetSCFForAndOps(f, hier_op, target_ops_map);
     if (target_ops_map.empty())
+      return failure();
+    if (all_of(target_ops_map.begin(), target_ops_map.end(),
+               [&](std::pair<const scf::ForOp, llvm::SetVector<Operation *>>
+                       pair) {
+                 return pair.second.size() <
+                        2; // Must have at least two target ops to start
+                           // splitting the loop.
+               }))
       return failure();
 
     // If necessary, hoist allocs out of the loops, too.
