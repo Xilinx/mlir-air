@@ -494,7 +494,7 @@ module {
         scf.yield %12 : !air.async.token
       }
       %4 = scf.for %arg6 = %c0 to %c1024 step %c256 iter_args(%arg7 = %1) -> (!air.async.token) {
-        // %7 depends on %5 due to production and consumption over async token %5
+        // Same channel SymbolRef but different subchannels
         %5 = air.channel.put async [%arg7]  @channel_0[%c0, %c0] (%arg5[%c0, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref<512x1024xbf16>)
         %6 = air.channel.put async [%arg7]  @channel_0[%c1, %c0] (%arg5[%c0, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref<512x1024xbf16>)
         %7 = air.channel.put async [%arg7]  @channel_0[%c2_0, %c0] (%arg5[%c0, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref<512x1024xbf16>)
