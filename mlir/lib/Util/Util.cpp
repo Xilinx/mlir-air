@@ -1258,7 +1258,12 @@ static void updateAccessPatternByScfForNest(
             dyn_cast<affine::AffineDelinearizeIndexOp>(execOp.getChildOp())) {
       int resIdx =
           llvm::find(execOp.getResults(), index) - execOp.getResults().begin();
-      scfForTripCount = *getConstantIntValue(delinearizeOp.getBasis()[resIdx]);
+      auto constBasis =
+          getConstantIntValue(delinearizeOp.getMixedBasis()[resIdx]);
+      if (!constBasis)
+        delinearizeOp->emitOpError("has non-static basis");
+      else
+        scfForTripCount = *constBasis;
     }
     return scfForTripCount;
   };
