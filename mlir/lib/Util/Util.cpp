@@ -1261,7 +1261,7 @@ static void updateAccessPatternByScfForNest(
       auto constBasis =
           getConstantIntValue(delinearizeOp.getMixedBasis()[resIdx]);
       if (!constBasis)
-        delinearizeOp->emitOpError("has non-static basis");
+        delinearizeOp->emitOpError("basis ") << resIdx << " is non-static.";
       else
         scfForTripCount = *constBasis;
     }
