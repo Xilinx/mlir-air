@@ -4190,10 +4190,8 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
 
     identifyTargetOpsInSCFFor(f, for_op, target_ops_set);
     if (target_ops_set.empty())
-      // assert(false);
       return failure();
     if (target_ops_set.size() < 2)
-      // assert(false);
       return failure();
 
     // If necessary, hoist allocs out of the loops, too.
