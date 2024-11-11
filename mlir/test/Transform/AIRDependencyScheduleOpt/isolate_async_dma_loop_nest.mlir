@@ -18,6 +18,11 @@
 // CHECK: scf.yield
 
 // CHECK: air.segment @segment_0
+
+// CHECK: air.herd @herd_0
+// CHECK: scf.for
+// CHECK: scf.yield
+
 // CHECK: scf.for
 // CHECK: scf.parallel
 // CHECK: air.channel.put{{.*}}@channel_2
@@ -28,10 +33,6 @@
 // CHECK: scf.parallel
 // CHECK: air.channel.get{{.*}}@channel_3
 // CHECK: scf.reduce
-// CHECK: scf.yield
-
-// CHECK: air.herd @herd_0
-// CHECK: scf.for
 // CHECK: scf.yield
 
 // CHECK: %[[EVENT0:.*]]:4 = scf.for
@@ -172,13 +173,8 @@ module {
 
 // CHECK: air.launch
 // CHECK: air.segment @segment_0
-// CHECK-DAG: %[[CST0:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[CST64:.*]] = arith.constant 64 : index
-// CHECK: scf.for {{.*}} = %[[CST0]] to %[[CST64]] step %[[CST64]] iter_args
-// CHECK: scf.parallel
-// CHECK: air.channel.get{{.*}}@channel_0
-// CHECK: scf.reduce
-// CHECK: scf.yield
+// CHECK-DAG: %[[SEGCST0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[SEGCST64:.*]] = arith.constant 64 : index
 
 // CHECK: air.herd @herd_0
 // CHECK-DAG: %[[CST0:.*]] = arith.constant 0 : index
@@ -188,6 +184,12 @@ module {
 // CHECK: scf.for {{.*}} = %[[CST0]] to %[[CST512]] step %[[CST64]] iter_args
 // CHECK: scf.yield
 // CHECK: air.channel.put{{.*}}@channel_0
+
+// CHECK: scf.for {{.*}} = %[[SEGCST0]] to %[[SEGCST64]] step %[[SEGCST64]] iter_args
+// CHECK: scf.parallel
+// CHECK: air.channel.get{{.*}}@channel_0
+// CHECK: scf.reduce
+// CHECK: scf.yield
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {
@@ -509,6 +511,49 @@ module {
         %8 = air.channel.put async [%arg7]  @channel_0[%c3, %c0] (%arg5[%c0, %arg6] [%c64, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref<512x1024xbf16>)
         %12 = air.wait_all async [%5, %7] 
         scf.yield %12 : !air.async.token
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Scf.for loop nest deep splitting.
+
+// CHECK-LABEL: func5
+
+// CHECK: scf.for{{.*}}{
+// CHECK: scf.for{{.*}}{
+// CHECK: air.channel.put{{.*}}@ChanIn
+// CHECK: scf.yield
+// CHECK: scf.yield
+
+// CHECK: scf.for{{.*}}{
+// CHECK: scf.for{{.*}}{
+// CHECK: air.channel.get{{.*}}@ChanOut
+// CHECK: scf.yield
+// CHECK: scf.yield
+
+module {
+  air.channel @ChanIn []
+  air.channel @ChanOut []
+  func.func @func5(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
+    %0 = air.launch async () in () args(%arg2=%arg0, %arg3=%arg1) : memref<32x16xi32>, memref<32x16xi32> attributes {id = 1 : i32} {
+      %c1 = arith.constant 1 : index
+      %c8 = arith.constant 8 : index
+      %c0 = arith.constant 0 : index
+      %c32 = arith.constant 32 : index
+      %c16 = arith.constant 16 : index
+      %1 = air.wait_all async 
+      %2 = scf.for %arg4 = %c0 to %c32 step %c16 iter_args(%arg5 = %1) -> (!air.async.token) {
+        %4 = scf.for %arg6 = %c0 to %c16 step %c8 iter_args(%arg7 = %arg5) -> (!air.async.token) {
+          %5 = air.channel.put async [%arg7]  @ChanIn[] (%arg2[%arg4, %arg6] [%c16, %c8] [%c16, %c1]) {id = 1 : i32} : (memref<32x16xi32>)
+          %6 = air.channel.get async [%arg7]  @ChanOut[] (%arg3[%arg4, %arg6] [%c16, %c8] [%c16, %c1]) {id = 2 : i32} : (memref<32x16xi32>)
+          %7 = air.wait_all async [%5, %6] 
+          scf.yield %7 : !air.async.token
+        }
+        scf.yield %4 : !air.async.token
       }
     }
     return
