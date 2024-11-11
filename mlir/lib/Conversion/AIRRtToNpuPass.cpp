@@ -745,8 +745,7 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
                                        memcpy_op->getAttrs());
 
   // Unroll the affine loop nest.
-  llvm::reverse(for_loop_nest);
-  for (auto forOp : for_loop_nest) {
+  for (auto forOp : llvm::reverse(for_loop_nest)) {
     (void)loopUnrollFull(forOp);
   }
 

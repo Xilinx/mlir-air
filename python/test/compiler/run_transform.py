@@ -9,6 +9,7 @@ from air.dialects import air as airdialect
 from air.dialects import arith, func, linalg
 from air.dialects.air import module_builder
 from air.compiler.util import run_transform
+from air.dialects.linalg.opdsl.lang import *
 
 
 def run(f):
@@ -17,12 +18,21 @@ def run(f):
     return f
 
 
+@linalg_structured_op
+def matmul_mono(
+    A=TensorDef(T, S.M, S.K),
+    B=TensorDef(T, S.K, S.N),
+    C=TensorDef(T, S.M, S.N, output=True),
+):
+    domain(D.m, D.n, D.k)
+    C[D.m, D.n] += A[D.m, D.k] * B[D.k, D.n]
+
+
 # CHECK-LABEL: TEST: gemm_module
 # CHECK: scf.parallel
 # CHECK: scf.for
 @run
 def gemm_module():
-
     @module_builder
     def build_module():
         M = 256
@@ -38,7 +48,7 @@ def gemm_module():
         def matmul(lhs, rhs, out):
             zero = arith.ConstantOp(dtype, FloatAttr.get(dtype, 0))
             linalg.fill(zero, outs=[out])
-            linalg.matmul(lhs, rhs, outs=[out])
+            matmul_mono(lhs, rhs, outs=[out])
             return out
 
     module = build_module()
@@ -47,7 +57,7 @@ def gemm_module():
     ^bb0(%arg0: !pdl.operation):
         transform.sequence %arg0 : !pdl.operation failures(propagate) {
         ^bb1(%arg1: !pdl.operation):
-            %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+            %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!pdl.operation) -> !pdl.operation
             %matmul_1, %loops:3 = transform.air.linalg_tile %matmul [64, 64, 64]
         }
     }

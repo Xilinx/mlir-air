@@ -853,9 +853,7 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
     if (for_loop_nest.empty())
       return failure();
 
-    llvm::reverse(for_loop_nest);
-
-    scf::ForOp outerMostLoop = for_loop_nest.front();
+    scf::ForOp outerMostLoop = for_loop_nest.back();
 
     // Create new herd op as parent to the scf.for loop nest.
     rewriter.setInsertionPoint(outerMostLoop);
@@ -878,7 +876,7 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
               .getAsyncToken();
       replaceAllUsesInRegionWith(val, newAsyncToken, newHerdOp.getBody());
     }
-    for (auto loop : for_loop_nest) {
+    for (auto loop : llvm::reverse(for_loop_nest)) {
       if (auto definingOp = loop.getUpperBound().getDefiningOp())
         replaceAllUsesInRegionWith(loop.getUpperBound(),
                                    builder.clone(*definingOp)->getResult(0),
@@ -896,7 +894,7 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
       res.replaceAllUsesWith(newHerdOp.getAsyncToken());
 
     // Splice herd block into inner-most for loop.
-    scf::ForOp innerMostLoop = for_loop_nest.back();
+    scf::ForOp innerMostLoop = for_loop_nest.front();
     auto &bb = innerMostLoop.getBody()->getOperations();
     auto &body = herdOp.getBody().front().getOperations();
     bb.splice(bb.begin(), body, body.begin(), --body.end());
