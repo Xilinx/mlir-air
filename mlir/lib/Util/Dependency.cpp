@@ -8,6 +8,7 @@
 
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
+#include "mlir/IR/Iterators.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallSet.h"
 #include <sys/stat.h>
@@ -585,10 +586,8 @@ void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
   }
 }
 void addAsyncDependencyIfNew(Operation *op, Value token) {
-  if (!isAsyncOp(op)) {
-    op->emitOpError("op does not have async interface");
+  if (!isAsyncOp(op))
     return;
-  }
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
     addAsyncDependencyIfNewImpl(async_op, token);
   } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
@@ -608,6 +607,8 @@ bool isAsyncOp(Operation *op) {
   return false;
 }
 
+// Air dependency comes in two forms: production and consumption of the same
+// async token, and usage of the same air.channel.
 bool areAsyncDependent(Operation *a, Operation *b) {
   SmallVector<Value> dep_a = getAsyncDependenciesFromOp(a);
   Value token_a = getAsyncTokenFromOp(a);
@@ -627,6 +628,25 @@ bool areAsyncDependent(Operation *a, Operation *b) {
   for (auto dep : dep_b)
     if (dep == token_a)
       return true;
+
+  auto chanA = dyn_cast<air::ChannelInterface>(a);
+  auto chanB = dyn_cast<air::ChannelInterface>(b);
+  if (chanA && chanB)
+    if (chanA.getChanName() == chanB.getChanName()) {
+      if (chanA.getIndices().size() != chanB.getIndices().size())
+        return true;
+      for (unsigned i = 0; i < chanA.getIndices().size(); i++) {
+        auto constIdxA = getConstantIntValue(chanA.getIndices()[i]);
+        auto constIdxB = getConstantIntValue(chanB.getIndices()[i]);
+        if (!constIdxA)
+          return true;
+        if (!constIdxB)
+          return true;
+        if (*constIdxA != *constIdxB)
+          return false;
+      }
+      return true;
+    }
   return false;
 }
 
@@ -2401,7 +2421,13 @@ void dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
   air::WaitAllOp sink_wait_all_op =
       assignEmptyWaitAllAtScfForIterArg(builder, forOp);
   SmallVector<air::AsyncOpInterface> asyncChildOps;
-  forOp.walk([&](air::AsyncOpInterface op) { asyncChildOps.push_back(op); });
+  forOp.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+      [&](air::AsyncOpInterface op) {
+        if (op->hasTrait<OpTrait::IsIsolatedFromAbove>())
+          return WalkResult::skip();
+        asyncChildOps.push_back(op);
+        return WalkResult::advance();
+      });
   for (auto op : asyncChildOps) {
     SmallVector<air::partialMemref, 1> sink_op_memref_reads;
     SmallVector<air::partialMemref, 1> sink_op_memref_writes;
