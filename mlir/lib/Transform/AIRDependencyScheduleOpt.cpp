@@ -46,8 +46,6 @@
 #include <string>
 #include <vector>
 
-#include <iostream>
-
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
@@ -4141,6 +4139,9 @@ void identifyTargetOpsInSCFFor(func::FuncOp f, scf::ForOp for_op,
     if (isPure(&o))
       continue; // Pure ops do not touch memory, and therefore do not require
                 // explicit hoisting.
+    if (auto execOp = dyn_cast<air::ExecuteOp>(o))
+      if (isPure(execOp.getChildOp()))
+        continue;
     if (isa<air::WaitAllOp>(o))
       continue;
     // Check if for loop is splittable by tracing air dependency.
@@ -4189,8 +4190,10 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
 
     identifyTargetOpsInSCFFor(f, for_op, target_ops_set);
     if (target_ops_set.empty())
+      // assert(false);
       return failure();
     if (target_ops_set.size() < 2)
+      // assert(false);
       return failure();
 
     // If necessary, hoist allocs out of the loops, too.
