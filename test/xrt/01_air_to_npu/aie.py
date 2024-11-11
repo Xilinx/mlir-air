@@ -4,9 +4,20 @@ from air.dialects import linalg, arith, func, memref
 from air.ir import *
 import air.passmanager
 from air.dialects.air import module_builder
+from air.dialects.linalg.opdsl.lang import *
 from air.compiler.util import run_transform
 import argparse
 import sys
+
+
+@linalg_structured_op
+def matmul_mono(
+    A=TensorDef(T, S.M, S.K),
+    B=TensorDef(T, S.K, S.N),
+    C=TensorDef(T, S.M, S.N, output=True),
+):
+    domain(D.m, D.n, D.k)
+    C[D.m, D.n] += A[D.m, D.k] * B[D.k, D.n]
 
 
 @module_builder
@@ -20,7 +31,7 @@ def matmul_on_tensors(m, n, k):
         out = memref.AllocOp(MemRefType.get((m, n), dtype), [], [])
         zero = arith.ConstantOp(dtype, 0)
         zero_fill = linalg.fill(zero, outs=[out])
-        linalg.matmul(lhs, rhs, outs=[out])
+        matmul_mono(lhs, rhs, outs=[out])
         return out
 
 
@@ -63,7 +74,7 @@ transform.with_pdl_patterns {
     transform.sequence %arg0 : !pdl.operation failures(propagate) {
     ^bb1(%arg1: !pdl.operation):
         %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-        %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+        %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!pdl.operation) -> !pdl.operation
         %matmul_1, %loops:2 = transform.air.linalg_tile %matmul [64, 64, 0]
         %fill_1 = transform.air.fuse_into_containing_op %fill into %loops#1
         transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L2"}
