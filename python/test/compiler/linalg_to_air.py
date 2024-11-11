@@ -12,6 +12,7 @@ from air.dialects import func
 from air.dialects import linalg
 from air.dialects import arith
 from air.dialects import tensor
+from air.dialects.linalg.opdsl.lang import *
 
 # this has a side effect of registering the air passes
 import air.compiler.util
@@ -21,6 +22,16 @@ def run(f):
     print("\nTEST:", f.__name__)
     f()
     return f
+
+
+@linalg_structured_op
+def matmul_mono(
+    A=TensorDef(T, S.M, S.K),
+    B=TensorDef(T, S.K, S.N),
+    C=TensorDef(T, S.M, S.N, output=True),
+):
+    domain(D.m, D.n, D.k)
+    C[D.m, D.n] += A[D.m, D.k] * B[D.k, D.n]
 
 
 # CHECK-LABEL: TEST: matmul_l1_l2_2x2
@@ -50,7 +61,7 @@ def matmul_l1_l2_2x2():
             zero = arith.ConstantOp(elemTy, IntegerAttr.get(elemTy, 0))
             init_tensor = tensor.EmptyOp((128, 128), elemTy)
             zero_tensor = linalg.fill(zero.result, outs=[init_tensor.result])
-            out = linalg.matmul(lhs, rhs, outs=[zero_tensor])
+            out = matmul_mono(lhs, rhs, outs=[zero_tensor])
             return out
 
     module = my_module()

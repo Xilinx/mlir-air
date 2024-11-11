@@ -257,9 +257,8 @@ module {
 
   // AIE2 hw limitation: stride <= 1M.
   // CHECK-LABEL: test8
-  // CHECK: scf.for %[[VAL0:.*]] = %c0 to %c512 step %c256 {
-  // CHECK-NEXT: put  @channel_20[%c0, %c0] (%arg0[%[[VAL0]], %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK-NEXT: }
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
   // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0, %c0] [%c4, %c64, %c256] [%c1245184, %c9728, %c1]) : (memref<2432x9728xbf16>)
   // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c512, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
 
@@ -479,6 +478,37 @@ module {
         %7 = air.channel.put async [%arg13, %async_token]  @channel_14[] (%arg10[%arg3, %c0, %c0, %results, %arg12] [%c1, %c2_0, %c1, %c32, %c32] [%c32768, %c8192, %c32, %c256, %c1]) : (memref<2x128x256xi32>)
         scf.yield %7 : !air.async.token
       }
+    }
+    return
+  }
+
+  // Unroll any data movement loops that cannot directly transform into wraps and strides.
+  // CHECK-LABEL: test14
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+
+  func.func @test14(%arg0: memref<2432x9728xbf16>, %arg1: memref<2432x9728xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c128 = arith.constant 128 : index
+    %c256 = arith.constant 256 : index
+    %c512 = arith.constant 512 : index
+    %c64 = arith.constant 64 : index
+    %c9728 = arith.constant 9728 : index
+    scf.for %arg2 = %c0 to %c512 step %c256 {
+      air.channel.put @channel_20[%c0, %c0] (%arg0[%arg2, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+      air.channel.put @channel_20[%c0, %c0] (%arg1[%arg2, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+    }
+    affine.for %arg2 = 0 to 512 step 256 {
+      air.channel.put @channel_20[%c0, %c0] (%arg0[%arg2, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+      air.channel.put @channel_20[%c0, %c0] (%arg1[%arg2, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
     }
     return
   }
