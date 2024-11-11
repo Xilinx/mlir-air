@@ -46,6 +46,8 @@
 #include <string>
 #include <vector>
 
+#include <iostream>
+
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
@@ -4115,107 +4117,80 @@ private:
   }
 };
 
-// Build a map of scf.for ops to a set of ops, each of which is to be hoisted
-// into a new loop.
-void identifyTargetSCFForAndOps(
-    func::FuncOp f, std::vector<air::HierarchyInterface> hierOps,
-    std::map<scf::ForOp, llvm::SetVector<Operation *>> &target_ops_map) {
-  for (auto hier_op : hierOps) {
-    // Identify the target for loops and their target child ops
-    for (auto for_op : hier_op->getRegion(0).getOps<scf::ForOp>()) {
-      for_op.walk([&](air::MemcpyInterface memcpyOp) {
-        // Get for_op's immediate child op
-        if (!dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation())
-                 .getAsyncToken())
-          return; // This pass requires an async IR.
-        int for_op_token_count = 0;
-        for (auto v : for_op->getResults())
-          if (isa<air::AsyncTokenType>(v.getType()))
-            for_op_token_count++;
-        if (for_op_token_count > 1)
-          return; // This for op has more than one loop-carried dep token,
-                  // suggesting pipelining pattern. Will be handelled by
-                  // -air-unroll-loop-for-pipelining-pattern instead.
-        Operation *parent = memcpyOp.getOperation();
-        while (parent->getParentOp() != for_op.getOperation()) {
-          parent = parent->getParentOp();
-        }
-        if (isa<air::HierarchyInterface>(parent))
-          return;
-        if (isa<affine::AffineIfOp>(parent))
-          return;
-        // Check if for loop is splittable by tracing air dependency.
-        for (auto op : target_ops_map[for_op]) {
-          if (areAsyncDependent(op, parent)) {
-            target_ops_map.erase(for_op);
-            return;
-          }
-        }
-        target_ops_map[for_op].insert(parent);
-        // Check if any memref.alloc needs to be hoisted.
-        if (memcpyOp.getSrcMemref() && !memcpyOp.getSrcMemref().getDefiningOp())
-          return;
-        if (memcpyOp.getSrcMemref() &&
-            for_op->isProperAncestor(memcpyOp.getSrcMemref().getDefiningOp())) {
-          Operation *memref_def = memcpyOp.getSrcMemref().getDefiningOp();
-          if (auto exec = dyn_cast<air::ExecuteOp>(memref_def))
-            memref_def = exec.getBody()
-                             .getBlocks()
-                             .front()
-                             .getTerminator()
-                             ->getOperand(0)
-                             .getDefiningOp();
-          memref_def->setAttr(
-              "hoist_alloc",
-              mlir::BoolAttr::get(memref_def->getContext(), true));
-        }
-        if (memcpyOp.getDstMemref() && !memcpyOp.getDstMemref().getDefiningOp())
-          return;
-        if (memcpyOp.getDstMemref() &&
-            for_op->isProperAncestor(memcpyOp.getDstMemref().getDefiningOp())) {
-          Operation *memref_def = memcpyOp.getDstMemref().getDefiningOp();
-          if (auto exec = dyn_cast<air::ExecuteOp>(memref_def))
-            memref_def = exec.getBody()
-                             .getBlocks()
-                             .front()
-                             .getTerminator()
-                             ->getOperand(0)
-                             .getDefiningOp();
-          memref_def->setAttr(
-              "hoist_alloc",
-              mlir::BoolAttr::get(memref_def->getContext(), true));
-        }
-      });
+// Build a set of child ops from the body of one scf.for op, each of which is to
+// be hoisted into a new loop.
+void identifyTargetOpsInSCFFor(func::FuncOp f, scf::ForOp for_op,
+                               llvm::SetVector<Operation *> &target_ops_set) {
+  int for_op_token_count = 0;
+  for (auto v : for_op->getResults())
+    if (isa<air::AsyncTokenType>(v.getType()))
+      for_op_token_count++;
+  if (for_op_token_count > 1)
+    return; // This for op has more than one loop-carried dep token,
+            // suggesting pipelining pattern. Will be handelled by
+            // -air-unroll-loop-for-pipelining-pattern instead.
+  for (auto &o : for_op.getBody()->getOperations()) {
+    // Get for_op's immediate child op
+    if (!isAsyncOp(&o))
+      continue; // This pass requires an async IR.
+
+    if (o.getParentOfType<air::HerdOp>())
+      continue; // Skip over herd op's body for now. TODO: generalize this.
+    if (o.getParentOfType<affine::AffineIfOp>())
+      continue; // Skip over if-else bodies for now. TODO: generalize this.
+    if (isPure(&o))
+      continue; // Pure ops do not touch memory, and therefore do not require
+                // explicit hoisting.
+    if (isa<air::WaitAllOp>(o))
+      continue;
+    // Check if for loop is splittable by tracing air dependency.
+    if (llvm::any_of(target_ops_set,
+                     [&](Operation *op) { return areAsyncDependent(op, &o); }))
+      continue;
+    target_ops_set.insert(&o);
+    // Check if any memref.alloc needs to be hoisted.
+    SmallVector<Value, 2> operand_memrefs;
+    for (auto operand : o.getOperands()) {
+      if (!operand)
+        continue;
+      if (isa<MemRefType>(operand.getType()))
+        operand_memrefs.push_back(operand);
+    }
+    for (auto memref : operand_memrefs) {
+      if (!memref)
+        continue;
+      auto memrefDefOp = memref.getDefiningOp();
+      if (!memrefDefOp)
+        continue;
+      if (for_op->isProperAncestor(memrefDefOp)) {
+        if (auto exec = dyn_cast<air::ExecuteOp>(memrefDefOp))
+          memrefDefOp = exec.getChildOp();
+        memrefDefOp->setAttr(
+            "hoist_alloc",
+            mlir::BoolAttr::get(memrefDefOp->getContext(), true));
+      }
     }
   }
 }
 
-struct IsolateAsyncDmaLoopNestInAIRLaunchPattern
-    : public OpRewritePattern<air::LaunchOp> {
-  using OpRewritePattern<air::LaunchOp>::OpRewritePattern;
+struct IsolateAsyncDmaLoopNestInSCFForPattern
+    : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(air::LaunchOp op,
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
 
-    auto f = op->getParentOfType<func::FuncOp>();
+    auto f = for_op->getParentOfType<func::FuncOp>();
     if (!f)
       return failure();
 
-    // Identify scf.for ops and target child ops for hoisting.
-    std::map<scf::ForOp, llvm::SetVector<Operation *>> target_ops_map;
-    std::vector<air::HierarchyInterface> hier_op;
-    hier_op.push_back(op);
+    // Identify target child ops for hoisting.
+    llvm::SetVector<Operation *> target_ops_set;
 
-    identifyTargetSCFForAndOps(f, hier_op, target_ops_map);
-    if (target_ops_map.empty())
+    identifyTargetOpsInSCFFor(f, for_op, target_ops_set);
+    if (target_ops_set.empty())
       return failure();
-    if (all_of(target_ops_map.begin(), target_ops_map.end(),
-               [&](std::pair<const scf::ForOp, llvm::SetVector<Operation *>>
-                       pair) {
-                 return pair.second.size() <
-                        2; // Must have at least two target ops to start
-                           // splitting the loop.
-               }))
+    if (target_ops_set.size() < 2)
       return failure();
 
     // If necessary, hoist allocs out of the loops, too.
@@ -4224,77 +4199,15 @@ struct IsolateAsyncDmaLoopNestInAIRLaunchPattern
     (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
 
     // Hoist ops out of each scf.for.
-    for (auto pair : target_ops_map) {
-      rewriter.setInsertionPoint(pair.first);
-      for (auto op : pair.second) {
-        auto newForOp = hoistTargetOpsToNewSCFFor(rewriter, pair.first,
-                                                  SmallVector<Operation *>{op});
-        if (!newForOp)
-          continue;
-        // Redo async dependency tracing.
-        air::dependencyTracer depTracer;
-        depTracer.traceDependencyFromScfForOp(newForOp);
-      }
+    for (auto op : target_ops_set) {
+      auto newForOp = hoistTargetOpsToNewSCFFor(rewriter, for_op,
+                                                SmallVector<Operation *>{op});
+      if (!newForOp)
+        continue;
+      // Redo async dependency tracing.
+      air::dependencyTracer depTracer;
+      depTracer.traceDependencyFromScfForOp(newForOp);
     }
-
-    // Post processing, hoisting air.herd ops out of perfectly nested scf.for
-    // loop.
-    RewritePatternSet patterns_1(f.getContext());
-    patterns_1.insert<HoistAIRHerdInForPattern, HoistAIRChannelInAccumPattern>(
-        f.getContext(), false);
-    (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
-
-    return success();
-  }
-
-private:
-};
-
-struct IsolateAsyncDmaLoopNestInAIRSegmentPattern
-    : public OpRewritePattern<air::SegmentOp> {
-  using OpRewritePattern<air::SegmentOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(air::SegmentOp op,
-                                PatternRewriter &rewriter) const override {
-
-    auto f = op->getParentOfType<func::FuncOp>();
-    if (!f)
-      return failure();
-
-    // Identify scf.for ops and target child ops for hoisting.
-    std::map<scf::ForOp, llvm::SetVector<Operation *>> target_ops_map;
-    std::vector<air::HierarchyInterface> hier_op;
-    hier_op.push_back(op);
-
-    identifyTargetSCFForAndOps(f, hier_op, target_ops_map);
-    if (target_ops_map.empty())
-      return failure();
-
-    // If necessary, hoist allocs out of the loops, too.
-    RewritePatternSet patterns(f.getContext());
-    patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
-    (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
-
-    // Hoist ops out of each scf.for.
-    for (auto pair : target_ops_map) {
-      rewriter.setInsertionPoint(pair.first);
-      for (auto op : pair.second) {
-        auto newForOp = hoistTargetOpsToNewSCFFor(rewriter, pair.first,
-                                                  SmallVector<Operation *>{op});
-        if (!newForOp)
-          continue;
-        // Redo async dependency tracing.
-        air::dependencyTracer depTracer;
-        depTracer.traceDependencyFromScfForOp(newForOp);
-      }
-    }
-
-    // Post processing, hoisting air.herd ops out of perfectly nested scf.for
-    // loop.
-    RewritePatternSet patterns_1(f.getContext());
-    patterns_1.insert<HoistAIRHerdInForPattern, HoistAIRChannelInAccumPattern>(
-        f.getContext(), false);
-    (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
 
     return success();
   }
@@ -4323,20 +4236,20 @@ public:
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
 
     for (auto f : funcOps) {
-      RewritePatternSet patterns(f.getContext());
-      patterns.insert<IsolateAsyncDmaLoopNestInAIRLaunchPattern,
-                      IsolateAsyncDmaLoopNestInAIRSegmentPattern>(
-          f.getContext());
-      (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
+      SmallVector<Operation *> forOps;
+      module.walk([&](scf::ForOp op) { forOps.push_back(op); });
 
-      // // Post processing, hoisting air.herd ops out of perfectly nested
-      // scf.for
-      // // loop.
-      // RewritePatternSet patterns_1(f.getContext());
-      // patterns_1.insert<HoistAIRHerdInForPattern,
-      // HoistAIRChannelInAccumPattern>(
-      //     f.getContext(), false);
-      // (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
+      RewritePatternSet patterns(f.getContext());
+      patterns.insert<IsolateAsyncDmaLoopNestInSCFForPattern>(f.getContext());
+      (void)applyOpPatternsAndFold(forOps, std::move(patterns));
+
+      // Post processing, hoisting air.herd ops out of perfectly nested scf.for
+      // loop.
+      RewritePatternSet patterns_1(f.getContext());
+      patterns_1
+          .insert<HoistAIRHerdInForPattern, HoistAIRChannelInAccumPattern>(
+              f.getContext(), false);
+      (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
     }
   }
 
