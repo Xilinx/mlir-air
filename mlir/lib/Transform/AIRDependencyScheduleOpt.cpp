@@ -4212,8 +4212,9 @@ private:
 
 // Build a set of child ops from the body of one scf.for op, each of which is to
 // be hoisted into a new loop.
-void identifyTargetOpsInSCFFor(func::FuncOp f, scf::ForOp for_op,
-                               llvm::SetVector<Operation *> &target_ops_set) {
+void identifyTargetOpsInSCFFor(
+    func::FuncOp f, scf::ForOp for_op,
+    SmallVector<llvm::SetVector<Operation *>> &target_ops_sets) {
   int for_op_token_count = 0;
   for (auto v : for_op->getResults())
     if (isa<air::AsyncTokenType>(v.getType()))
@@ -4222,6 +4223,7 @@ void identifyTargetOpsInSCFFor(func::FuncOp f, scf::ForOp for_op,
     return; // This for op has more than one loop-carried dep token,
             // suggesting pipelining pattern. Will be handelled by
             // -air-unroll-loop-for-pipelining-pattern instead.
+  SmallVector<Operation *> candidate_ops;
   for (auto &o : for_op.getBody()->getOperations()) {
     // Get for_op's immediate child op
     if (!isAsyncOp(&o))
@@ -4239,14 +4241,28 @@ void identifyTargetOpsInSCFFor(func::FuncOp f, scf::ForOp for_op,
         continue;
     if (isa<air::WaitAllOp>(o))
       continue;
-    // Check if for loop is splittable by tracing air dependency.
-    if (llvm::any_of(target_ops_set,
-                     [&](Operation *op) { return areAsyncDependent(op, &o); }))
-      continue;
-    target_ops_set.insert(&o);
+    candidate_ops.push_back(&o);
+  }
+  // Group candidate_ops based on async dependencies.
+  for (auto o : candidate_ops) {
+    auto it =
+        llvm::find_if(target_ops_sets, [&](llvm::SetVector<Operation *> set) {
+          return llvm::any_of(
+              set, [&](Operation *op) { return areAsyncDependent(op, o); });
+        });
+    if (it == target_ops_sets.end()) {
+      auto newSetVec = llvm::SetVector<Operation *>();
+      newSetVec.insert(o);
+      target_ops_sets.push_back(newSetVec);
+    } else {
+      it->insert(o);
+    }
+  }
+
+  for (auto o : candidate_ops) {
     // Check if any memref.alloc needs to be hoisted.
     SmallVector<Value, 2> operand_memrefs;
-    for (auto operand : o.getOperands()) {
+    for (auto operand : o->getOperands()) {
       if (!operand)
         continue;
       if (isa<MemRefType>(operand.getType()))
@@ -4281,12 +4297,16 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
       return failure();
 
     // Identify target child ops for hoisting.
-    llvm::SetVector<Operation *> target_ops_set;
+    SmallVector<llvm::SetVector<Operation *>> target_ops_sets;
 
-    identifyTargetOpsInSCFFor(f, for_op, target_ops_set);
-    if (target_ops_set.empty())
+    identifyTargetOpsInSCFFor(f, for_op, target_ops_sets);
+    // std::cout << "\nscf for op\n";
+    // for (auto o : target_ops_set){
+    //   std::cout << air::to_string(o) << " ";
+    // }
+    if (target_ops_sets.empty())
       return failure();
-    if (target_ops_set.size() < 2)
+    if (target_ops_sets.size() < 2)
       return failure();
 
     // If necessary, hoist allocs out of the loops, too.
@@ -4295,9 +4315,19 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
 
     // Hoist ops out of each scf.for.
-    for (auto op : target_ops_set) {
-      auto newForOp = hoistTargetOpsToNewSCFFor(rewriter, for_op,
-                                                SmallVector<Operation *>{op});
+    // for (auto op : target_ops_set) {
+    //   auto newForOp = hoistTargetOpsToNewSCFFor(rewriter, for_op,
+    //                                             SmallVector<Operation
+    //                                             *>{op});
+    //   if (!newForOp)
+    //     continue;
+    //   // Redo async dependency tracing.
+    //   air::dependencyTracer depTracer;
+    //   depTracer.traceDependencyFromScfForOp(newForOp);
+    // }
+    for (auto set : target_ops_sets) {
+      auto newForOp =
+          hoistTargetOpsToNewSCFFor(rewriter, for_op, set.takeVector());
       if (!newForOp)
         continue;
       // Redo async dependency tracing.
