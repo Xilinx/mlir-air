@@ -586,7 +586,11 @@ void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
   }
 }
 void addAsyncDependencyIfNew(Operation *op, Value token) {
+  if (!op)
+    return;
   if (!isAsyncOp(op))
+    return;
+  if (!token)
     return;
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
     addAsyncDependencyIfNewImpl(async_op, token);
@@ -599,6 +603,8 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
 }
 
 bool isAsyncOp(Operation *op) {
+  if (!op)
+    return false;
   for (auto result : op->getResults()) {
     if (llvm::isa<air::AsyncTokenType>(result.getType())) {
       return true;
