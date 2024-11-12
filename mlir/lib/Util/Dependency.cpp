@@ -475,21 +475,7 @@ SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
 Value getAsyncTokenFromOpImpl(air::AsyncOpInterface op) {
   return op.getAsyncToken();
 }
-Value getAsyncTokenFromOpImpl(scf::ForOp op) {
-  for (auto res : op->getResults()) {
-    if (isa<air::AsyncTokenType>(res.getType()))
-      return res;
-  }
-  return nullptr;
-}
-Value getAsyncTokenFromOpImpl(scf::ParallelOp op) {
-  for (auto res : op->getResults()) {
-    if (isa<air::AsyncTokenType>(res.getType()))
-      return res;
-  }
-  return nullptr;
-}
-Value getAsyncTokenFromOpImpl(affine::AffineIfOp op) {
+Value getAsyncTokenFromOpImpl(Operation *op) {
   for (auto res : op->getResults()) {
     if (isa<air::AsyncTokenType>(res.getType()))
       return res;
@@ -499,14 +485,8 @@ Value getAsyncTokenFromOpImpl(affine::AffineIfOp op) {
 Value getAsyncTokenFromOp(Operation *op) {
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
     return getAsyncTokenFromOpImpl(async_op);
-  else if (auto for_op = dyn_cast<scf::ForOp>(op))
-    return getAsyncTokenFromOpImpl(for_op);
-  else if (auto par_op = dyn_cast<scf::ParallelOp>(op))
-    return getAsyncTokenFromOpImpl(par_op);
-  else if (auto aif_op = dyn_cast<affine::AffineIfOp>(op))
-    return getAsyncTokenFromOpImpl(aif_op);
   else
-    return nullptr;
+    return getAsyncTokenFromOpImpl(op);
 }
 
 // Add async dependency to op if unique
@@ -715,20 +695,27 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
   builder.setInsertionPointToStart(new_for_op.getBody());
   SmallVector<Value> yield_operands;
+  // Build up a log of ops to be cloned; using SetVector to avoid repetition.
+  llvm::SetVector<Operation *> ops_to_be_cloned;
   for (auto op : target_ops) {
     if (op->getParentOp() != for_op.getOperation())
       continue;
     // Clone operands' defining ops.
     for (auto operand : op->getOperands()) {
-      if (!operand.getDefiningOp())
+      auto operandDepOp = operand.getDefiningOp();
+      if (!operandDepOp)
         continue;
-      if (operand.getDefiningOp()->getParentOp() != for_op.getOperation())
+      if (operandDepOp->getBlock() != for_op.getBody())
         continue;
-      builder.clone(*operand.getDefiningOp(), remap);
+      ops_to_be_cloned.insert(operandDepOp);
     }
-    auto new_op = builder.clone(*op, remap);
-    yield_operands.push_back(new_op->getResult(0));
+    ops_to_be_cloned.insert(op);
   }
+  Operation *back_of_dep_chain;
+  for (auto o : ops_to_be_cloned)
+    back_of_dep_chain = builder.clone(*o, remap);
+  yield_operands.push_back(getAsyncTokenFromOp(back_of_dep_chain));
+
   builder.create<scf::YieldOp>(
       loc, SmallVector<Value>{
                builder
@@ -749,18 +736,17 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
     for (auto res : erase_op->getResults()) {
       if (!isa<air::AsyncTokenType>(res.getType()))
         continue;
-      for (auto &u : res.getUses()) {
-        if (auto async_user = dyn_cast<air::AsyncOpInterface>(u.getOwner())) {
+      for (auto u : res.getUsers()) {
+        if (auto async_user = dyn_cast<air::AsyncOpInterface>(u)) {
           eraseAsyncDependencyFromAsyncOp(async_user, res);
-          for (auto dep : getAsyncDependenciesFromOp(erase_op)) {
-            if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument")) {
-              air::addAsyncDependencyIfNew(u.getOwner(), dep);
-            }
-          }
+          for (auto dep : getAsyncDependenciesFromOp(erase_op))
+            if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument"))
+              air::addAsyncDependencyIfNew(u, dep);
         } else {
           // User op doesn't have air::AsyncOpInterface. Replace uses with newly
           // generated air.wait_all op.
-          u.assign(builder
+          u->replaceUsesOfWith(
+              res, builder
                        .create<air::WaitAllOp>(
                            loc, air::AsyncTokenType::get(builder.getContext()),
                            getAsyncDependenciesFromOp(erase_op))
