@@ -71,29 +71,14 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
     newOperandsIdx.push_back(i);
   }
 
-  // make a list of new async token operands
-  SmallVector<Value> newAsyncDeps;
-  for (auto v : op.getAsyncDependencies()) {
-    // don't include duplicates
-    if (std::find(std::begin(newAsyncDeps), std::end(newAsyncDeps), v) !=
-        std::end(newAsyncDeps))
-      continue;
-    // don't include wait_all ops with no operands
-    if (auto wa = dyn_cast_if_present<WaitAllOp>(v.getDefiningOp()))
-      if (wa.getAsyncDependencies().size() == 0)
-        continue;
-    newAsyncDeps.push_back(v);
-  }
-
   // if the operands won't change, return
-  if (newOperands.size() == op.getNumKernelOperands() &&
-      newAsyncDeps.size() == op.getAsyncDependencies().size())
+  if (newOperands.size() == op.getNumKernelOperands())
     return failure();
 
   IRMapping remap;
-  auto newOp =
-      rewriter.create<T>(op.getLoc(), newAsyncDeps, op.getSizeOperands(),
-                         newOperands, op->getNumResults() > 0, op->getAttrs());
+  auto newOp = rewriter.create<T>(op.getLoc(), op.getAsyncDependencies(),
+                                  op.getSizeOperands(), newOperands,
+                                  op->getNumResults() > 0, op->getAttrs());
 
   rewriter.setInsertionPointToStart(&newOp.getBody().front());
   for (auto p : llvm::zip(op.getSize(), newOp.getSize()))
@@ -203,6 +188,49 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
     llvm::interleaveComma(asyncDependencies, printer);
   }
   printer << "] ";
+}
+
+template <class OpT>
+static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
+                                             PatternRewriter &rewriter) {
+
+  SmallVector<Value> depsOfDeps;
+  for (auto v : op.getAsyncDependencies()) {
+    if (auto asyncOperand =
+            dyn_cast_if_present<AsyncOpInterface>(v.getDefiningOp())) {
+      auto deps = asyncOperand.getAsyncDependencies();
+      depsOfDeps.append(deps.begin(), deps.end());
+    }
+  }
+  // make a list of new async token operands
+  SmallVector<Value> newAsyncDeps;
+  for (auto v : op.getAsyncDependencies()) {
+    // don't include duplicates
+    if (std::find(std::begin(newAsyncDeps), std::end(newAsyncDeps), v) !=
+        std::end(newAsyncDeps))
+      continue;
+    // don't include wait_all ops with no operands
+    if (auto wa = dyn_cast_if_present<WaitAllOp>(v.getDefiningOp()))
+      if (wa.getAsyncDependencies().size() == 0)
+        continue;
+    // don't include a dependency of another dependency
+    if (std::find(std::begin(depsOfDeps), std::end(depsOfDeps), v) !=
+        std::end(depsOfDeps))
+      continue;
+    newAsyncDeps.push_back(v);
+  }
+
+  // if the operands won't change, return
+  if (newAsyncDeps.size() == op.getAsyncDependencies().size())
+    return failure();
+
+  while (op.getAsyncDependencies().size())
+    op.eraseAsyncDependency(0);
+  for (auto v : newAsyncDeps)
+    op.addAsyncDependency(v);
+  auto newOp = rewriter.clone(*op.getOperation());
+  rewriter.replaceOp(op, newOp->getResults());
+  return success();
 }
 
 //
@@ -418,6 +446,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                            MLIRContext *context) {
   patterns.add(canonicalizeHierarchyOpArgs<LaunchOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<LaunchOp>);
 }
 
 ArrayRef<BlockArgument> LaunchOp::getIds() {
@@ -678,6 +707,7 @@ ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 void SegmentOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(canonicalizeHierarchyOpArgs<SegmentOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<SegmentOp>);
 }
 
 ArrayRef<BlockArgument> SegmentOp::getIds() {
@@ -937,6 +967,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
 void HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                          MLIRContext *context) {
   patterns.add(canonicalizeHierarchyOpArgs<HerdOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<HerdOp>);
 }
 
 ArrayRef<BlockArgument> HerdOp::getIds() {
@@ -1052,6 +1083,7 @@ static LogicalResult FoldExecute(ExecuteOp op, PatternRewriter &rewriter) {
 void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldExecute);
+  patterns.add(CanonicalizeAsyncOpDeps<ExecuteOp>);
 }
 
 Operation *ExecuteOp::getChildOp() {
@@ -1065,33 +1097,10 @@ Operation *ExecuteOp::getChildOp() {
 //
 
 static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
-  SmallVector<Value> operands;
-  for (auto o : op->getOperands())
-    if (std::find(operands.begin(), operands.end(), o) == std::end(operands))
-      operands.push_back(o);
 
   // Erase wait_all with no operands and no uses
-  if (op.use_empty() && !operands.size()) {
+  if (op.use_empty() && !op->getOperands().size()) {
     rewriter.eraseOp(op);
-    return success();
-  }
-
-  // remove duplicate operands
-  if (op->getNumOperands() != operands.size()) {
-    rewriter.replaceOpWithNewOp<WaitAllOp>(op, op.getResultTypes(), operands);
-    return success();
-  }
-
-  // If an operand of a wait_all is a wait_all without operands,
-  // then we can remove it from the operand list.
-  for (auto i = operands.begin(), e = operands.end(); i != e; ++i) {
-    auto wa = llvm::dyn_cast_if_present<WaitAllOp>(i->getDefiningOp());
-    if (!wa)
-      continue;
-    if (wa->getNumOperands())
-      continue;
-    operands.erase(i);
-    rewriter.replaceOpWithNewOp<WaitAllOp>(op, op.getResultTypes(), operands);
     return success();
   }
 
@@ -1107,6 +1116,7 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
 void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldWaitAll);
+  patterns.add(CanonicalizeAsyncOpDeps<WaitAllOp>);
 }
 
 // Get strides from MemRefType.
@@ -1375,8 +1385,9 @@ void DmaMemcpyNdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 // Channel put op
 //
 
-static LogicalResult ComposeMemrefOpOnChannelPut(ChannelPutOp op,
-                                                 PatternRewriter &rewriter) {
+template <typename OpT>
+static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
+                                                PatternRewriter &rewriter) {
 
   Value memref = op.getMemref();
   if (!memref)
@@ -1399,7 +1410,8 @@ static LogicalResult ComposeMemrefOpOnChannelPut(ChannelPutOp op,
                              strides))) {
     return failure();
   }
-  rewriter.replaceOpWithNewOp<air::ChannelPutOp>(
+
+  rewriter.replaceOpWithNewOp<OpT>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
       op.getIndices(), input_memref, offsets, sizes, strides);
 
@@ -1408,47 +1420,18 @@ static LogicalResult ComposeMemrefOpOnChannelPut(ChannelPutOp op,
 
 void ChannelPutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                MLIRContext *context) {
-  patterns.add(ComposeMemrefOpOnChannelPut);
+  patterns.add(ComposeMemrefOpOnChannelOp<ChannelPutOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<ChannelPutOp>);
 }
 
 //
 // Channel get op
 //
 
-static LogicalResult ComposeMemrefOpOnChannelGet(ChannelGetOp op,
-                                                 PatternRewriter &rewriter) {
-
-  Value memref = op.getMemref();
-  if (!memref)
-    return failure();
-
-  // Init. memref type and offsets from memref's defining op's input type
-  Value input_memref;
-  SmallVector<Value> offsets, sizes, strides;
-  offsets = op.getOffsets();
-  if (!offsets.empty())
-    return failure();
-  sizes = op.getSizes();
-  if (!sizes.empty())
-    return failure();
-  strides = op.getStrides();
-  if (!strides.empty())
-    return failure();
-
-  if (failed(ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes,
-                             strides))) {
-    return failure();
-  }
-  rewriter.replaceOpWithNewOp<air::ChannelGetOp>(
-      op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
-      op.getIndices(), input_memref, offsets, sizes, strides);
-
-  return success();
-}
-
 void ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                MLIRContext *context) {
-  patterns.add(ComposeMemrefOpOnChannelGet);
+  patterns.add(ComposeMemrefOpOnChannelOp<ChannelGetOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<ChannelGetOp>);
 }
 
 //
