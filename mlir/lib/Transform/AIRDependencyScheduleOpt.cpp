@@ -4300,10 +4300,6 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     SmallVector<llvm::SetVector<Operation *>> target_ops_sets;
 
     identifyTargetOpsInSCFFor(f, for_op, target_ops_sets);
-    // std::cout << "\nscf for op\n";
-    // for (auto o : target_ops_set){
-    //   std::cout << air::to_string(o) << " ";
-    // }
     if (target_ops_sets.empty())
       return failure();
     if (target_ops_sets.size() < 2)
@@ -4315,16 +4311,6 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
 
     // Hoist ops out of each scf.for.
-    // for (auto op : target_ops_set) {
-    //   auto newForOp = hoistTargetOpsToNewSCFFor(rewriter, for_op,
-    //                                             SmallVector<Operation
-    //                                             *>{op});
-    //   if (!newForOp)
-    //     continue;
-    //   // Redo async dependency tracing.
-    //   air::dependencyTracer depTracer;
-    //   depTracer.traceDependencyFromScfForOp(newForOp);
-    // }
     for (auto set : target_ops_sets) {
       auto newForOp =
           hoistTargetOpsToNewSCFFor(rewriter, for_op, set.takeVector());
