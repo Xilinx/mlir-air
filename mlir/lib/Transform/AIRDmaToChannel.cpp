@@ -208,10 +208,6 @@ replaceAffineIfOpWithChannelOpAndClone(OpBuilder builder, IRMapping &remap,
   }
 }
 
-static Value lookupOrDefaultRange(Value v, IRMapping &remap) {
-  return remap.lookupOrDefault(v);
-}
-
 static Operation *getCoreComputeOpFromExecuteOp(Operation *op) {
   // We assume all linalg ops (except for linalg.copy) and func.call ops do
   // computations only and do not participate in data movement.
@@ -222,26 +218,17 @@ static Operation *getCoreComputeOpFromExecuteOp(Operation *op) {
   return nullptr;
 }
 
-static SmallVector<Value> lookupOrDefaultRange(SmallVector<Value> vec,
-                                               IRMapping &remap) {
-  SmallVector<Value> output;
-  for (auto v : vec) {
-    output.push_back(remap.lookupOrDefault(v));
-  }
-  return output;
-}
-
 template <typename T>
 static LogicalResult
 cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                        air::ChannelInterface externalGetPut = nullptr) {
 
-  T new_loop_op =
-      builder.create<T>(builder.getUnknownLoc(),
-                        lookupOrDefaultRange(loop_op.getLowerBound(), remap),
-                        lookupOrDefaultRange(loop_op.getUpperBound(), remap),
-                        lookupOrDefaultRange(loop_op.getStep(), remap),
-                        lookupOrDefaultRange(getLoopTokens(loop_op), remap));
+  T new_loop_op = builder.create<T>(
+      builder.getUnknownLoc(),
+      air::lookupOrDefaultRange(loop_op.getLowerBound(), remap),
+      air::lookupOrDefaultRange(loop_op.getUpperBound(), remap),
+      air::lookupOrDefaultRange(loop_op.getStep(), remap),
+      air::lookupOrDefaultRange(getLoopTokens(loop_op), remap));
 
   OpBuilder::InsertionGuard guard(builder);
 

@@ -1577,8 +1577,27 @@ air::evaluateConstantsInMap(AffineMap map,
     newmap =
         newmap.replace(getAffineSymbolExpr(i, ctx), c, 0, map.getNumSymbols());
   }
-  // auto c = getAffineConstantExpr(const_input, ctx);
-  // auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
   output = simplifyAffineMap(newmap).getSingleConstantResult();
   return output;
+}
+
+// Extend the lookupOrDefault method to operate on a vector of values.
+Value air::lookupOrDefaultRange(Value v, IRMapping &remap) {
+  return remap.lookupOrDefault(v);
+}
+SmallVector<Value> air::lookupOrDefaultRange(SmallVector<Value> vec,
+                                             IRMapping &remap) {
+  SmallVector<Value> output;
+  for (auto v : vec) {
+    output.push_back(remap.lookupOrDefault(v));
+  }
+  return output;
+}
+
+// Extend isPure method to operate on air.execute.
+bool air::isPure(Operation *op) {
+  bool result = mlir::isPure(op);
+  if (auto execOp = dyn_cast<air::ExecuteOp>(op))
+    result = mlir::isPure(execOp.getChildOp());
+  return result;
 }
