@@ -134,12 +134,12 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
   // Get child op if async_op is air.execute
   Operation *op = nullptr;
   if (auto air_region_op = dyn_cast<air::ExecuteOp>(async_op.getOperation())) {
-    if (air_region_op.getBody().front().getOperations().size() != 2) {
+    if (air_region_op.getRegion().front().getOperations().size() != 2) {
       air_region_op->emitOpError("air::ExecuteOp should have only one child "
                                  "operation beside the terminator");
       return;
     }
-    for (auto &child_op : air_region_op.getBody().front().getOperations()) {
+    for (auto &child_op : air_region_op.getRegion().front().getOperations()) {
       if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
         op = &child_op;
     }
@@ -1414,7 +1414,7 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
       output.second = dep_ctx.op_to_g[entry_pair];
     } else if (front_or_back == "back") {
       auto execute_end_op =
-          execute_op.getBody().getBlocks().front().getTerminator();
+          execute_op.getRegion().getBlocks().front().getTerminator();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_end_op);
       output.first = dep_ctx.op_to_v[entry_pair];
@@ -1971,7 +1971,7 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     SmallVector<Value, 1> sink_op_scalar_outs;
     // Pick the first op that is not a shape altering op.
     Operation *child_op = nullptr;
-    for (auto &op : exec_op.getBody().front().getOperations()) {
+    for (auto &op : exec_op.getRegion().front().getOperations()) {
       child_op = &op;
       if (!isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
                            memref::CollapseShapeOp>(child_op)) {

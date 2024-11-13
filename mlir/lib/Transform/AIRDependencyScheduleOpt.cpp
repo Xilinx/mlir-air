@@ -3317,7 +3317,8 @@ public:
               auto async_exec = builder.create<xilinx::air::ExecuteOp>(
                   user->getLoc(), air::AsyncTokenType::get(alloc->getContext()),
                   SmallVector<Value>{});
-              Block *async_exec_bb = builder.createBlock(&async_exec.getBody());
+              Block *async_exec_bb =
+                  builder.createBlock(&async_exec.getRegion());
               builder.setInsertionPointToStart(async_exec_bb);
               builder.create<memref::DeallocOp>(user->getLoc(), new_memref);
               builder.create<air::ExecuteTerminatorOp>(user->getLoc());
@@ -4492,7 +4493,7 @@ struct ShrinkMemrefSizesByAccessPattern
         auto newExecOp = rewriter.create<air::ExecuteOp>(
             execOp->getLoc(), air::AsyncTokenType::get(rewriter.getContext()),
             newMemrefType, execOp.getAsyncDependencies());
-        Block *async_exec_bb = rewriter.createBlock(&newExecOp.getBody());
+        Block *async_exec_bb = rewriter.createBlock(&newExecOp.getRegion());
         rewriter.setInsertionPointToStart(async_exec_bb);
         auto newAlloc =
             rewriter.create<memref::AllocOp>(alloc->getLoc(), newMemrefType);

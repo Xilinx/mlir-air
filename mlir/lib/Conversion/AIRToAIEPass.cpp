@@ -718,7 +718,7 @@ struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
 
   LogicalResult matchAndRewrite(air::ExecuteOp op,
                                 PatternRewriter &rewriter) const override {
-    auto &bb = op.getBody().front();
+    auto &bb = op.getRegion().front();
     unsigned idx = 0;
     for (auto &arg : bb.getArguments()) {
       arg.replaceAllUsesWith(op.getOperand(idx));

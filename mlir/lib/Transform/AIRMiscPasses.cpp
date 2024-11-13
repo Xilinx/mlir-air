@@ -1140,7 +1140,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       auto execOp =
           builder.create<air::ExecuteOp>(loc, air::AsyncTokenType::get(ctx),
                                          newMemrefType, SmallVector<Value>{});
-      Block *async_bb = builder.createBlock(&execOp.getBody());
+      Block *async_bb = builder.createBlock(&execOp.getRegion());
       builder.setInsertionPointToStart(async_bb);
       auto childMemAlloc = builder.create<memref::AllocOp>(loc, newMemrefType);
       builder.create<xilinx::air::ExecuteTerminatorOp>(
@@ -1156,7 +1156,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         auto execOp = builder.create<air::ExecuteOp>(
             loc, air::AsyncTokenType::get(ctx),
             execDeallocOp.getAsyncDependencies());
-        Block *async_bb = builder.createBlock(&execOp.getBody());
+        Block *async_bb = builder.createBlock(&execOp.getRegion());
         builder.setInsertionPointToStart(async_bb);
         builder.create<memref::DeallocOp>(loc, newMemref);
         builder.create<xilinx::air::ExecuteTerminatorOp>(loc);

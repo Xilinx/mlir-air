@@ -1027,6 +1027,7 @@ uint64_t HerdOp::getNumRows() {
 
 LogicalResult ExecuteOp::verify() {
   assert(getOperation()->getNumRegions() == 1 && "ExecuteOp has zero region!");
+  assert(!getRegion().empty() && "ExecuteOp should have non-empty region");
   assert(!getBody().empty() && "ExecuteOp should have non-empty body");
 
   return success();
