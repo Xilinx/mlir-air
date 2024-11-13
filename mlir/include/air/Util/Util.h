@@ -232,8 +232,9 @@ evaluateConstantsInMap(AffineMap map,
 
 // Extend the lookupOrDefault method to operate on a vector of values.
 Value lookupOrDefaultRange(Value v, IRMapping &remap);
-SmallVector<Value> lookupOrDefaultRange(SmallVector<Value> vec,
+SmallVector<Value> lookupOrDefaultRange(SmallVectorImpl<Value> &vec,
                                         IRMapping &remap);
+SmallVector<Value> lookupOrDefaultRange(OperandRange vec, IRMapping &remap);
 
 // Extend isPure method to operate on air.execute.
 bool isPure(Operation *op);

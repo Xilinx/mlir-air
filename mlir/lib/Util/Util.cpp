@@ -1585,7 +1585,15 @@ air::evaluateConstantsInMap(AffineMap map,
 Value air::lookupOrDefaultRange(Value v, IRMapping &remap) {
   return remap.lookupOrDefault(v);
 }
-SmallVector<Value> air::lookupOrDefaultRange(SmallVector<Value> vec,
+SmallVector<Value> air::lookupOrDefaultRange(SmallVectorImpl<Value> &vec,
+                                             IRMapping &remap) {
+  SmallVector<Value> output;
+  for (auto v : vec) {
+    output.push_back(remap.lookupOrDefault(v));
+  }
+  return output;
+}
+SmallVector<Value> air::lookupOrDefaultRange(OperandRange vec,
                                              IRMapping &remap) {
   SmallVector<Value> output;
   for (auto v : vec) {

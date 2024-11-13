@@ -2003,12 +2003,12 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         for_op.getOperands().drop_front(for_op.getNumControlOperands());
 
     // Hoist any pure ops that the new channel op depends on.
-    auto new_opers = llvm::concat<Value>(
+    SmallVector<Value> new_opers = llvm::to_vector(llvm::concat<Value>(
         SmallVector<Value>{channel_ops[0].getMemref()},
-        channel_ops[0].getIndices(), offsets, wraps, strides);
+        channel_ops[0].getIndices(), offsets, wraps, strides));
     IRMapping remap;
-    auto clonedOps = cloneDefiningOpsInRegion(
-        rewriter, &for_op.getRegion(), llvm::to_vector(new_opers), remap);
+    auto clonedOps = cloneDefiningOpsInRegion(rewriter, &for_op.getRegion(),
+                                              new_opers, remap);
     for (auto cloned : clonedOps) {
       clearAsyncDependenciesOfAsyncOp(cloned);
       for (auto token : deps)
@@ -2049,10 +2049,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
 private:
   // Clone backward slices of a list of values, opers.
-  SmallVector<Operation *> cloneDefiningOpsInRegion(OpBuilder builder,
-                                                    Region *region,
-                                                    SmallVector<Value> opers,
-                                                    IRMapping &remap) const {
+  SmallVector<Operation *>
+  cloneDefiningOpsInRegion(OpBuilder builder, Region *region,
+                           SmallVectorImpl<Value> &opers,
+                           IRMapping &remap) const {
     SmallVector<Operation *> clonedOps;
     SetVector<Operation *> backwardSlices;
     BackwardSliceOptions bsOptions{
@@ -2070,9 +2070,10 @@ private:
       // Get backward slices
       SetVector<Operation *> operandBS;
       getBackwardSlice(operandDefOp, &operandBS, bsOptions);
-      for (auto b : operandBS)
-        if (air::isPure(b))
-          backwardSlices.insert(b);
+      for (auto b : operandBS) {
+        assert(air::isPure(b));
+        backwardSlices.insert(b);
+      }
       backwardSlices.insert(operandDefOp);
     }
     for (auto op : backwardSlices)
@@ -2139,11 +2140,6 @@ struct AIRUnrollAffineForIntoBDChain
           continue;
         else if (air::isPure(&o))
           continue;
-        // else if (auto exec = dyn_cast<air::ExecuteOp>(o)) {
-        //   auto childOp = exec.getChildOp();
-        //   if (childOp && isPure(childOp))
-        //     continue;
-        // }
         return false;
       }
       return true;
