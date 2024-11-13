@@ -218,8 +218,9 @@ air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
   return output;
 }
 
-std::pair<int64_t, int64_t> air::getLockValuePair(const AIE::AIETargetModel &targetModel,
-                                                  Value buffer_memref) {
+std::pair<int64_t, int64_t>
+air::getLockValuePair(const AIE::AIETargetModel &targetModel,
+                      Value buffer_memref) {
   if (isa<AIE::AIE1TargetModel>(targetModel))
     return std::make_pair(0, 0);
 
@@ -260,9 +261,9 @@ std::pair<int64_t, int64_t> air::getLockValuePair(const AIE::AIETargetModel &tar
                           llvm::divideCeilSigned(write_counter, read_counter));
 }
 
-std::pair<int64_t, int64_t> air::getLockValuePair(const AIE::AIETargetModel &targetModel,
-                                                  Value buffer_memref,
-                                                  air::ChannelOp air_chan) {
+std::pair<int64_t, int64_t>
+air::getLockValuePair(const AIE::AIETargetModel &targetModel,
+                      Value buffer_memref, air::ChannelOp air_chan) {
   if (isa<AIE::AIE1TargetModel>(targetModel))
     return std::make_pair(0, 0);
 
@@ -478,11 +479,10 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
   }
   std::pair<int64_t, int64_t> init_pair;
   if (target_model.isMemTile(col, row))
-    init_pair =
-        getLockValuePair(target_model, bufferOp->getResult(0));
+    init_pair = getLockValuePair(target_model, bufferOp->getResult(0));
   else
-    init_pair = getLockValuePair(target_model,
-                                 bufferOp->getResult(0), air_chan);
+    init_pair =
+        getLockValuePair(target_model, bufferOp->getResult(0), air_chan);
   auto init = std::max(init_pair.first, init_pair.second);
 
   OpBuilder builder(bufferOp);
