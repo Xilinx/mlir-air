@@ -70,7 +70,7 @@ air::ExecuteOp getRegionOfAllocOpForOp(Operation *op) {
           dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
         // Found air.ExecuteOp in upstream dependency
         auto exec_op = dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp());
-        auto child_op = exec_op.getChildOp();
+        auto child_op = &exec_op.getChildOps().front();
         if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
           // Found memref.allocOp inside air.ExecuteOp
           return exec_op;
@@ -89,7 +89,7 @@ air::ExecuteOp getRegionOfDeallocOpForOp(Operation *op) {
   for (auto user : dependency_token.getUsers()) {
     if (auto exec_op = dyn_cast<air::ExecuteOp>(user)) {
       // Found air.ExecuteOp in downstream dependency
-      auto child_op = exec_op.getChildOp();
+      auto child_op = &exec_op.getChildOps().front();
       if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
         // Found memref.deallocOp inside air.ExecuteOp
         return exec_op;
@@ -273,7 +273,7 @@ private:
         } else if (auto exec_op =
                        dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
           // Found air.ExecuteOp in upstream dependency
-          auto child_op = exec_op.getChildOp();
+          auto child_op = &exec_op.getChildOps().front();
           if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
             // Found memref.allocOp inside air.ExecuteOp
             foundMemrefAllocDep = true;
@@ -296,7 +296,7 @@ private:
     for (auto user : dependency_token.getUsers()) {
       if (auto exec_op = dyn_cast<air::ExecuteOp>(user)) {
         // Found air.ExecuteOp in downstream dependency
-        auto child_op = exec_op.getChildOp();
+        auto child_op = &exec_op.getChildOps().front();
         if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
           // Found memref.deallocOp inside air.ExecuteOp
           foundDepToMemrefDealloc = true;
@@ -364,7 +364,7 @@ struct HoistAIRChannelInAccumPattern : public OpRewritePattern<scf::ForOp> {
     for (auto get : for_op.getOps<air::ChannelGetOp>())
       dataProducers.push_back(get);
     for (auto exec : for_op.getOps<air::ExecuteOp>()) {
-      auto child_op = exec.getChildOp();
+      auto child_op = &exec.getChildOps().front();
       if (isa<linalg::FillOp>(child_op))
         dataProducers.push_back(exec);
     }
@@ -530,7 +530,7 @@ private:
     }
     Operation *actual_op_1 = op_1;
     if (auto exec = dyn_cast<air::ExecuteOp>(op_1)) {
-      actual_op_1 = exec.getChildOp();
+      actual_op_1 = &exec.getChildOps().front();
     }
     Value op_1_memref = nullptr;
     Value op_2_memref = nullptr;
@@ -585,7 +585,7 @@ struct AnnotateFrontAndBackOpsInForPattern
             }
           }
         }
-        auto child_op = exec_op.getChildOp();
+        auto child_op = &exec_op.getChildOps().front();
         if (isa<memref::AllocOp>(child_op) && isFrontCandidate) {
           iterTokens.push_back(op.getResult(0));
           // Note: skipping over alloc ops, since they will get hoisted out of
@@ -641,7 +641,7 @@ struct AnnotateFrontAndBackOpsInForPattern
     for (auto token : yielded_tokens) {
       auto back_candidate = token.getDefiningOp();
       if (auto exec_op = dyn_cast<air::ExecuteOp>(back_candidate)) {
-        auto child_op = exec_op.getChildOp();
+        auto child_op = &exec_op.getChildOps().front();
         if (isa<memref::DeallocOp>(child_op)) {
           for (auto d : exec_op.getAsyncDependencies()) {
             back_candidates.push_back(
@@ -1607,8 +1607,7 @@ struct CanonicalizeAIRExecute : public OpRewritePattern<air::ExecuteOp> {
   LogicalResult matchAndRewrite(air::ExecuteOp exec,
                                 PatternRewriter &rewriter) const override {
 
-    auto childOp = exec.getChildOp();
-    assert(childOp && "air.execute op has no child op");
+    auto childOp = &exec.getChildOps().front();
     // Canonicalize air.execute with empty region.
     if (!childOp->mightHaveTrait<OpTrait::IsTerminator>())
       return failure();
@@ -4304,7 +4303,7 @@ void identifyTargetOpsInSCFFor(
         continue;
       if (for_op->isProperAncestor(memrefDefOp)) {
         if (auto exec = dyn_cast<air::ExecuteOp>(memrefDefOp))
-          memrefDefOp = exec.getChildOp();
+          memrefDefOp = &exec.getChildOps().front();
         memrefDefOp->setAttr(
             "hoist_alloc",
             mlir::BoolAttr::get(memrefDefOp->getContext(), true));
@@ -4723,7 +4722,8 @@ private:
         continue;
       if (auto exec_to_herd_iv =
               dyn_cast<air::ExecuteOp>((*subview_offsets).getDefiningOp())) {
-        for (auto oper : exec_to_herd_iv.getChildOp()->getOperands())
+        auto childOpFront = &exec_to_herd_iv.getChildOps().front();
+        for (auto oper : childOpFront->getOperands())
           if (getHerdArgOwner(oper))
             offsetIsHerdIndVar = true;
       }
@@ -4748,7 +4748,8 @@ private:
             return false;
           if (auto exec = dyn_cast<air::ExecuteOp>(
                   (*subview_offsets).getDefiningOp())) {
-            for (auto oper : exec.getChildOp()->getOperands()) {
+            auto childOpFront = &exec.getChildOps().front();
+            for (auto oper : childOpFront->getOperands()) {
               if (!getConstantIntValue(oper))
                 return false;
               if (*getConstantIntValue(oper) != 0)
@@ -4821,10 +4822,11 @@ private:
       return nullptr;
     if (index.getDefiningOp()) {
       if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
-        for (auto oper : execOp.getChildOp()->getOperands()) {
+        auto childOpFront = &execOp.getChildOps().front();
+        for (auto oper : childOpFront->getOperands()) {
           if (auto herdOp = air::getHerdArgOwner(oper)) {
             rewriter.setInsertionPointToStart(&herdOp.getBody().front());
-            execOp.getChildOp()->replaceUsesOfWith(
+            childOpFront->replaceUsesOfWith(
                 oper, rewriter.create<arith::ConstantIndexOp>(
                           rewriter.getUnknownLoc(), 0));
           }
@@ -4870,9 +4872,7 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     // dealloc.
     std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> alloc_dealloc_execs;
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
-      if (!execOp.getChildOp())
-        continue;
-      if (!isa<memref::AllocOp>(execOp.getChildOp()))
+      if (!isa<memref::AllocOp>(execOp.getChildOps().front()))
         continue;
       auto memref = execOp->getResult(1);
       bool allChannelUsersAreInScfFor = true;
@@ -4884,11 +4884,9 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
         alloc_dealloc_execs.push_back(std::make_pair(execOp, nullptr));
     }
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
-      if (!execOp.getChildOp())
+      if (!isa<memref::DeallocOp>(&execOp.getChildOps().front()))
         continue;
-      if (!isa<memref::DeallocOp>(execOp.getChildOp()))
-        continue;
-      auto dealloc = dyn_cast<memref::DeallocOp>(execOp.getChildOp());
+      auto dealloc = dyn_cast<memref::DeallocOp>(execOp.getChildOps().front());
       for (auto &pair : alloc_dealloc_execs) {
         if (dealloc.getMemref() == pair.first.getResult(1)) {
           pair.second = execOp;

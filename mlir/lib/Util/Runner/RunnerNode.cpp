@@ -327,7 +327,7 @@ public:
     } else if (auto Op = dyn_cast<air::ChannelGetOp>(op)) {
       return (bool)this->checkResourceFulfillmentForOp(Op);
     } else if (auto Op = dyn_cast<air::ExecuteOp>(op)) {
-      auto child_op = Op.getChildOp();
+      auto child_op = &Op.getChildOps().front();
       if (name == "AllocOp") {
         auto Op = dyn_cast<memref::AllocOp>(child_op);
         return this->checkResourceFulfillmentForOp(Op);
@@ -715,7 +715,7 @@ private:
                                 std::string name = "") {
     if (op) {
       if (auto exec_op = dyn_cast<air::ExecuteOp>(op)) {
-        auto child_op = exec_op.getChildOp();
+        auto child_op = &exec_op.getChildOps().front();
         // Memory allocation/deallocation
         if (name == "AllocOp") {
           auto Op = dyn_cast<memref::AllocOp>(child_op);

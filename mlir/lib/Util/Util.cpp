@@ -890,7 +890,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
             builder.getUnknownLoc(), iv_map, offsets[i]);
       }
       if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
-        offset_producer = exec.getChildOp();
+        offset_producer = &exec.getChildOps().front();
       auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
       assert(affine_apply && "ssa offset not produced by affine.apply, NYI.");
       if (affine_apply->getNumOperands() > 1)
@@ -1053,7 +1053,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       } else if (iv && offsets[i].getDefiningOp()) {
         Operation *iv_consumer = offsets[i].getDefiningOp();
         if (auto exec = dyn_cast<air::ExecuteOp>(iv_consumer))
-          iv_consumer = exec.getChildOp();
+          iv_consumer = &exec.getChildOps().front();
         if (auto affop = dyn_cast<affine::AffineApplyOp>(iv_consumer)) {
           // The induction variable must be the input to the affine op
           if (affop.getSymbolOperands().size() == 1) {
@@ -1254,8 +1254,8 @@ static void updateAccessPatternByScfForNest(
                                  Value index) {
     int scfForTripCount = *air::getStaticScfForTripCountAsInt(scfForOp);
     // If scf.for's iv applies affine::DelinerizeIndexOp
-    if (auto delinearizeOp =
-            dyn_cast<affine::AffineDelinearizeIndexOp>(execOp.getChildOp())) {
+    if (auto delinearizeOp = dyn_cast<affine::AffineDelinearizeIndexOp>(
+            &execOp.getChildOps().front())) {
       int resIdx =
           llvm::find(execOp.getResults(), index) - execOp.getResults().begin();
       auto constBasis =
@@ -1278,12 +1278,13 @@ static void updateAccessPatternByScfForNest(
     if (!index.getDefiningOp())
       continue;
     if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
-      for (auto oper : execOp.getChildOp()->getOperands())
-        if (auto scfForOp = scf::getForInductionVarOwner(oper)) {
-          int scfForTripCount = inferDataAccessSizes(scfForOp, execOp, index);
-          updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
-                              scfForTripCount, dim);
-        }
+      for (auto &childOp : execOp.getChildOps())
+        for (auto oper : childOp.getOperands())
+          if (auto scfForOp = scf::getForInductionVarOwner(oper)) {
+            int scfForTripCount = inferDataAccessSizes(scfForOp, execOp, index);
+            updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
+                                scfForTripCount, dim);
+          }
     }
   }
 }
@@ -1473,9 +1474,10 @@ air::getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
       // scf.parallel).
       if (offsets[i].getDefiningOp()) {
         if (auto exec = dyn_cast<air::ExecuteOp>(offsets[i].getDefiningOp())) {
-          for (auto oper : exec.getChildOp()->getOperands())
-            if (getHerdArgOwner(oper))
-              new_offsets[i] = 0;
+          for (auto &childOp : exec.getChildOps())
+            for (auto oper : childOp.getOperands())
+              if (getHerdArgOwner(oper))
+                new_offsets[i] = 0;
         }
       } else {
         // If offset is some block argument
@@ -1606,6 +1608,8 @@ SmallVector<Value> air::lookupOrDefaultRange(OperandRange vec,
 bool air::isPure(Operation *op) {
   bool result = mlir::isPure(op);
   if (auto execOp = dyn_cast<air::ExecuteOp>(op))
-    result = mlir::isPure(execOp.getChildOp());
+    result = llvm::all_of(execOp.getChildOps(), [](Operation &childOp) {
+      return mlir::isPure(&childOp);
+    });
   return result;
 }

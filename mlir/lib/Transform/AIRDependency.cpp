@@ -260,12 +260,9 @@ public:
       f.walk([&](Operation *op) {
         Operation *sink_op = nullptr;
         if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
-          for (auto &bb : async_execute_op.getRegion()) {
-            for (auto &child_op : bb.getOperations()) {
-              if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
-                sink_op = &child_op;
-            }
-          }
+          for (auto &child_op : async_execute_op.getChildOps())
+            if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
+              sink_op = &child_op;
         } else if (isa<xilinx::air::DmaMemcpyNdOp>(op)) {
           sink_op = op;
         } else if (isa<xilinx::air::ChannelInterface>(op)) {

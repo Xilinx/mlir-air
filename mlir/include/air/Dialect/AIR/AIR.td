@@ -462,7 +462,7 @@ def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTer
          Variadic<AnyType>:$results
   );
   let summary = "Asynchronous code region";
-  let regions = (region SizedRegion<1>:$body);
+  let regions = (region SizedRegion<1>:$region);
   let description = [{
     Defines a code region to be dispatched asynchronously at runtime. All operations in
     the region must be executed sequentially.
@@ -477,7 +477,15 @@ def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTer
   }];
 
   let extraClassDeclaration = [{
-    Operation * getChildOp();
+    Block &getBody() { return getRegion().front(); }
+    llvm::iplist<Operation> &getChildOps() { return getBody().getOperations(); }
+    SmallVector<Operation *> getYieldedChildOps() {
+      SmallVector<Operation *> ops;
+      for (auto oper : getBody().getTerminator()->getOperands())
+        if (oper.getDefiningOp() && getRegion().isAncestor(oper.getDefiningOp()->getParentRegion()))
+          ops.push_back(oper.getDefiningOp());
+      return ops;
+    }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();

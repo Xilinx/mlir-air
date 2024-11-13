@@ -1087,12 +1087,6 @@ void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   patterns.add(CanonicalizeAsyncOpDeps<ExecuteOp>);
 }
 
-Operation *ExecuteOp::getChildOp() {
-  auto child_op =
-      &getOperation()->getRegion(0).getBlocks().front().getOperations().front();
-  return child_op;
-}
-
 //
 // WaitAllOp
 //
