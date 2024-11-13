@@ -96,22 +96,6 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
   return scf_par;
 }
 
-static SmallVector<Value, 1> getLoopTokens(scf::ForOp loop) {
-  SmallVector<Value, 1> output;
-  for (auto v : loop.getInitArgs()) {
-    output.push_back(v);
-  }
-  return output;
-}
-
-static SmallVector<Value, 1> getLoopTokens(scf::ParallelOp loop) {
-  SmallVector<Value, 1> output;
-  for (auto v : loop.getInitVals()) {
-    output.push_back(v);
-  }
-  return output;
-}
-
 static void getLeavesInDepGraph(Operation *op,
                                 SmallVector<Value> &leaves_list) {
   Value token = nullptr;
@@ -208,10 +192,6 @@ replaceAffineIfOpWithChannelOpAndClone(OpBuilder builder, IRMapping &remap,
   }
 }
 
-static Value lookupOrDefaultRange(Value v, IRMapping &remap) {
-  return remap.lookupOrDefault(v);
-}
-
 static Operation *getCoreComputeOpFromExecuteOp(Operation *op) {
   // We assume all linalg ops (except for linalg.copy) and func.call ops do
   // computations only and do not participate in data movement.
@@ -222,26 +202,18 @@ static Operation *getCoreComputeOpFromExecuteOp(Operation *op) {
   return nullptr;
 }
 
-static SmallVector<Value> lookupOrDefaultRange(SmallVector<Value> vec,
-                                               IRMapping &remap) {
-  SmallVector<Value> output;
-  for (auto v : vec) {
-    output.push_back(remap.lookupOrDefault(v));
-  }
-  return output;
-}
-
 template <typename T>
 static LogicalResult
 cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                        air::ChannelInterface externalGetPut = nullptr) {
 
-  T new_loop_op =
-      builder.create<T>(builder.getUnknownLoc(),
-                        lookupOrDefaultRange(loop_op.getLowerBound(), remap),
-                        lookupOrDefaultRange(loop_op.getUpperBound(), remap),
-                        lookupOrDefaultRange(loop_op.getStep(), remap),
-                        lookupOrDefaultRange(getLoopTokens(loop_op), remap));
+  SmallVector<Value> loop_init_args = air::getAsyncDependenciesFromOp(loop_op);
+  T new_loop_op = builder.create<T>(
+      builder.getUnknownLoc(),
+      air::lookupOrDefaultRange(loop_op.getLowerBound(), remap),
+      air::lookupOrDefaultRange(loop_op.getUpperBound(), remap),
+      air::lookupOrDefaultRange(loop_op.getStep(), remap),
+      air::lookupOrDefaultRange(loop_init_args, remap));
 
   OpBuilder::InsertionGuard guard(builder);
 
@@ -311,7 +283,7 @@ cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                        StringAttr::get(loop_op->getContext(), "hoistedLoop"));
 
   // Generate yield op and/or reduce op if async
-  if (getLoopTokens(loop_op).size()) {
+  if (air::getAsyncDependenciesFromOp(loop_op).size()) {
     generateYieldAndOrReduceToScfLoop(builder, loop_op->getContext(),
                                       new_loop_op);
   }

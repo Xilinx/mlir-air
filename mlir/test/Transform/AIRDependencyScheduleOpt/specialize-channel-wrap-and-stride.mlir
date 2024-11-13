@@ -289,6 +289,8 @@ module {
   // CHECK: put  @channel_21[] (%arg0[%c0, %c0, %[[VAL0]], %c0] [%c8, %c2, %c32, %c32] [%c32, %c8192, %c256, %c1]) : (memref<128x256xi32>)
   // CHECK: air.channel.put  @channel_22[] (%arg2[%c256, %c0, %c0] [%c8, %c32, %c4] [%c4, %c32, %c1]) : (memref<1x2x32x32xi32, 1 : i32>)
   // CHECK: air.channel.put  @channel_23[] (%arg3[%c128, %c0, %c0] [%c4, %c32, %c8] [%c8, %c32, %c1]) : (memref<2x1x32x32xi32, 1 : i32>)
+  // CHECK: %[[VAL1:.*]] = affine.apply
+  // CHECK: put async  @channel_21[] (%arg0[%c0, %[[VAL1]]] [%c8, %c8] [%c0, %c1]) : (memref<128x256xi32>)
 
   func.func @test9(%arg0: memref<128x256xi32>, %arg1: index, %arg2: memref<1x2x32x32xi32, 1 : i32>, %arg3: memref<2x1x32x32xi32, 1 : i32>) {
     %c0 = arith.constant 0 : index
@@ -306,6 +308,10 @@ module {
     air.channel.put  @channel_21[] (%arg0[%c0, %c0, %results, %c0, %c0] [%c8, %c2, %c1, %c32, %c32] [%c32, %c8192, %c32, %c256, %c1]) : (memref<128x256xi32>)
     air.channel.put  @channel_22[] (%arg2[%c0, %c1, %c0, %c0, %c0, %c0] [%c1, %c1, %c8, %c4, %c8, %c4] [%c2048, %c1024, %c4, %c256, %c32, %c1]) : (memref<1x2x32x32xi32, 1 : i32>)
     air.channel.put  @channel_23[] (%arg3[%c1, %c0, %c0, %c0, %c0, %c0] [%c1, %c1, %c4, %c8, %c4, %c8] [%c1024, %c1024, %c8, %c128, %c32, %c1]) : (memref<2x1x32x32xi32, 1 : i32>)
+    scf.for %arg4 = %c0 to %c8 step %c1 {
+      %0 = affine.apply #map()[%arg1]
+      %1 = air.channel.put async @channel_21[] (%arg0[%0] [%c8] [%c1]) : (memref<128x256xi32>)
+    }
     return
   }
 

@@ -2001,17 +2001,41 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     }
     SmallVector<Value, 1> deps =
         for_op.getOperands().drop_front(for_op.getNumControlOperands());
+
+    // Hoist any pure ops that the new channel op depends on.
+    SmallVector<Value> new_opers = llvm::to_vector(llvm::concat<Value>(
+        SmallVector<Value>{channel_ops[0].getMemref()},
+        channel_ops[0].getIndices(), offsets, wraps, strides));
+    IRMapping remap;
+    auto clonedOps = cloneDefiningOpsInRegion(rewriter, &for_op.getRegion(),
+                                              new_opers, remap);
+    for (auto cloned : clonedOps) {
+      clearAsyncDependenciesOfAsyncOp(cloned);
+      for (auto token : deps)
+        addAsyncDependencyIfNew(cloned, token);
+      if (auto token = getAsyncTokenFromOp(cloned))
+        deps.push_back(token);
+    }
+
+    // Create specialized air.channel.put/get.
     if (isa<air::ChannelPutOp>(channel_ops[0]))
       new_chan_op = rewriter.create<air::ChannelPutOp>(
           loc, tys, deps, channel_ops[0].getChanName(),
-          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
-          wraps, strides);
+          air::lookupOrDefaultRange(channel_ops[0].getIndices(), remap),
+          air::lookupOrDefaultRange(channel_ops[0].getMemref(), remap),
+          air::lookupOrDefaultRange(offsets, remap),
+          air::lookupOrDefaultRange(wraps, remap),
+          air::lookupOrDefaultRange(strides, remap));
     else if (isa<air::ChannelGetOp>(channel_ops[0]))
       new_chan_op = rewriter.create<air::ChannelGetOp>(
           loc, tys, deps, channel_ops[0].getChanName(),
-          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
-          wraps, strides);
+          air::lookupOrDefaultRange(channel_ops[0].getIndices(), remap),
+          air::lookupOrDefaultRange(channel_ops[0].getMemref(), remap),
+          air::lookupOrDefaultRange(offsets, remap),
+          air::lookupOrDefaultRange(wraps, remap),
+          air::lookupOrDefaultRange(strides, remap));
 
+    // Clear all external uses of for_op before erasing it.
     for (auto res : for_op.getResults()) {
       if (isa<air::AsyncTokenType>(res.getType())) {
         res.replaceAllUsesWith(
@@ -2024,6 +2048,38 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
   }
 
 private:
+  // Clone backward slices of a list of values, opers.
+  SmallVector<Operation *>
+  cloneDefiningOpsInRegion(OpBuilder builder, Region *region,
+                           SmallVectorImpl<Value> &opers,
+                           IRMapping &remap) const {
+    SmallVector<Operation *> clonedOps;
+    SetVector<Operation *> backwardSlices;
+    BackwardSliceOptions bsOptions{
+        [&](Operation *o) { return region->isAncestor(o->getParentRegion()); }};
+    if (!region)
+      return clonedOps;
+    for (auto operand : opers) {
+      auto operandDefOp = operand.getDefiningOp();
+      if (!operandDefOp)
+        continue;
+      if (!region->isAncestor(operandDefOp->getParentRegion()))
+        continue;
+      assert(air::isPure(
+          operandDefOp)); // Pure ops are safe to hoist out of loops.
+      // Get backward slices
+      SetVector<Operation *> operandBS;
+      getBackwardSlice(operandDefOp, &operandBS, bsOptions);
+      for (auto b : operandBS) {
+        assert(air::isPure(b));
+        backwardSlices.insert(b);
+      }
+      backwardSlices.insert(operandDefOp);
+    }
+    for (auto op : backwardSlices)
+      clonedOps.push_back(builder.clone(*op, remap));
+    return clonedOps;
+  }
 };
 
 // This pattern should be executed after
@@ -2045,13 +2101,8 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
           continue;
         else if (isa<air::WaitAllOp>(o))
           continue;
-        else if (isPure(&o))
+        else if (air::isPure(&o))
           continue;
-        else if (auto exec = dyn_cast<air::ExecuteOp>(o)) {
-          auto childOp = exec.getChildOp();
-          if (childOp && isPure(childOp))
-            continue;
-        }
         return false;
       }
       return true;
@@ -2087,13 +2138,8 @@ struct AIRUnrollAffineForIntoBDChain
           continue;
         else if (isa<air::WaitAllOp>(o))
           continue;
-        else if (isPure(&o))
+        else if (air::isPure(&o))
           continue;
-        else if (auto exec = dyn_cast<air::ExecuteOp>(o)) {
-          auto childOp = exec.getChildOp();
-          if (childOp && isPure(childOp))
-            continue;
-        }
         return false;
       }
       return true;
@@ -4118,28 +4164,12 @@ private:
                                 Operation *op) {
     SetVector<Operation *> backwardSlice;
     BackwardSliceOptions bsOptions{[&](Operation *o) {
-      return !isa<scf::ForOp>(o) && !isa<scf::ParallelOp>(o) &&
-             !isa<air::HierarchyInterface>(o);
+      return !isa<LoopLikeOpInterface>(o) && !isa<air::HierarchyInterface>(o);
     }};
     getBackwardSlice(op, &backwardSlice, bsOptions);
-    for (auto operand : op->getOperands()) {
-      if (operand.getDefiningOp() &&
-          isa<arith::ConstantIndexOp>(operand.getDefiningOp()))
-        backwardSlice.insert(operand.getDefiningOp());
-    }
-    for (auto b : backwardSlice) {
-      if (isa<arith::ConstantIndexOp>(b))
+    for (auto b : backwardSlice)
+      if (air::isPure(b))
         builder.clone(*b, remap);
-      else if (b->getNumResults() == 1 &&
-               isa<IndexType>(b->getResult(0).getType()))
-        builder.clone(*b, remap);
-      else if (auto exec = dyn_cast<air::ExecuteOp>(b)) {
-        auto child_op = exec.getChildOp();
-        if (child_op->getNumResults() == 1 &&
-            isa<IndexType>(child_op->getResult(0).getType()))
-          builder.clone(*b, remap);
-      }
-    }
     auto new_op = builder.clone(*op, remap);
     return new_op;
   }
@@ -4233,12 +4263,9 @@ void identifyTargetOpsInSCFFor(
       continue; // Skip over herd op's body for now. TODO: generalize this.
     if (o.getParentOfType<affine::AffineIfOp>())
       continue; // Skip over if-else bodies for now. TODO: generalize this.
-    if (isPure(&o))
+    if (air::isPure(&o))
       continue; // Pure ops do not touch memory, and therefore do not require
                 // explicit hoisting.
-    if (auto execOp = dyn_cast<air::ExecuteOp>(o))
-      if (isPure(execOp.getChildOp()))
-        continue;
     if (isa<air::WaitAllOp>(o))
       continue;
     candidate_ops.push_back(&o);
