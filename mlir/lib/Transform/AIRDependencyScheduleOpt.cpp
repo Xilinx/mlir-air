@@ -66,16 +66,13 @@ air::ExecuteOp getRegionOfAllocOpForOp(Operation *op) {
   auto dependency_list = current_async_op.getAsyncDependencies();
   if (dependency_list.size()) {
     for (auto dep_op : dependency_list) {
-      if (dep_op.getDefiningOp() &&
-          dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
-        // Found air.ExecuteOp in upstream dependency
-        auto exec_op = dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp());
-        auto child_op = &exec_op.getChildOps().front();
-        if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
-          // Found memref.allocOp inside air.ExecuteOp
-          return exec_op;
-        }
-      }
+      auto exec_op = dep_op.getDefiningOp<air::ExecuteOp>();
+      if (!exec_op)
+        continue;
+      if (llvm::any_of(exec_op.getChildOps(), [](Operation &child_op) {
+            return isa<memref::AllocOp>(child_op);
+          }))
+        return exec_op;
     }
   }
   return nullptr;
@@ -87,14 +84,13 @@ air::ExecuteOp getRegionOfDeallocOpForOp(Operation *op) {
   air::AsyncOpInterface current_async_op = dyn_cast<air::AsyncOpInterface>(op);
   auto dependency_token = current_async_op.getAsyncToken();
   for (auto user : dependency_token.getUsers()) {
-    if (auto exec_op = dyn_cast<air::ExecuteOp>(user)) {
-      // Found air.ExecuteOp in downstream dependency
-      auto child_op = &exec_op.getChildOps().front();
-      if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
-        // Found memref.deallocOp inside air.ExecuteOp
-        return exec_op;
-      }
-    }
+    auto exec_op = dyn_cast<air::ExecuteOp>(user);
+    if (!exec_op)
+      continue;
+    if (llvm::any_of(exec_op.getChildOps(), [](Operation &child_op) {
+          return isa<memref::DeallocOp>(child_op);
+        }))
+      return exec_op;
   }
   return nullptr;
 }
@@ -273,11 +269,11 @@ private:
         } else if (auto exec_op =
                        dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
           // Found air.ExecuteOp in upstream dependency
-          auto child_op = &exec_op.getChildOps().front();
-          if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
-            // Found memref.allocOp inside air.ExecuteOp
-            foundMemrefAllocDep = true;
-          }
+          if (llvm::any_of(exec_op.getChildOps(), [](Operation &child_op) {
+                return isa<memref::AllocOp>(child_op);
+              }))
+            foundMemrefAllocDep =
+                true; // Found memref.allocOp inside air.ExecuteOp
         }
       }
     }
@@ -294,18 +290,18 @@ private:
         dyn_cast<air::AsyncOpInterface>(current_op);
     auto dependency_token = current_async_op.getAsyncToken();
     for (auto user : dependency_token.getUsers()) {
-      if (auto exec_op = dyn_cast<air::ExecuteOp>(user)) {
-        // Found air.ExecuteOp in downstream dependency
-        auto child_op = &exec_op.getChildOps().front();
-        if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
-          // Found memref.deallocOp inside air.ExecuteOp
-          foundDepToMemrefDealloc = true;
-        }
-      }
-      if (dyn_cast<air::WaitAllOp>(user)) {
-        foundDepToWaitall = true;
-      }
+      auto exec_op = dyn_cast<air::ExecuteOp>(user);
+      if (!exec_op)
+        continue;
+      // Found air.ExecuteOp in downstream dependency
+      if (llvm::any_of(exec_op.getChildOps(), [](Operation &child_op) {
+            return isa<memref::DeallocOp>(child_op);
+          }))
+        foundDepToMemrefDealloc = true;
     }
+    if (llvm::any_of(dependency_token.getUsers(),
+                     [](Operation *user) { return isa<air::WaitAllOp>(user); }))
+      foundDepToWaitall = true;
     return foundDepToWaitall & foundDepToMemrefDealloc;
   }
 
@@ -4722,10 +4718,11 @@ private:
         continue;
       if (auto exec_to_herd_iv =
               dyn_cast<air::ExecuteOp>((*subview_offsets).getDefiningOp())) {
-        auto childOpFront = &exec_to_herd_iv.getChildOps().front();
-        for (auto oper : childOpFront->getOperands())
-          if (getHerdArgOwner(oper))
-            offsetIsHerdIndVar = true;
+        SetVector<Value> opers;
+        getUsedValuesDefinedAbove(exec_to_herd_iv.getRegion(), opers);
+        if (llvm::any_of(opers,
+                         [](Value oper) { return getHerdArgOwner(oper); }))
+          offsetIsHerdIndVar = true;
       }
       if (offsetIsHerdIndVar)
         if (auto updatedOffset =
@@ -4748,13 +4745,16 @@ private:
             return false;
           if (auto exec = dyn_cast<air::ExecuteOp>(
                   (*subview_offsets).getDefiningOp())) {
-            auto childOpFront = &exec.getChildOps().front();
-            for (auto oper : childOpFront->getOperands()) {
-              if (!getConstantIntValue(oper))
-                return false;
-              if (*getConstantIntValue(oper) != 0)
-                return false;
-            }
+            SetVector<Value> opers;
+            getUsedValuesDefinedAbove(exec.getRegion(), opers);
+            if (llvm::any_of(opers, [](Value oper) {
+                  return !getConstantIntValue(oper);
+                }))
+              return false;
+            if (llvm::any_of(opers, [](Value oper) {
+                  return *getConstantIntValue(oper) != 0;
+                }))
+              return false;
           } else
             return false;
         } else if (*getConstantIntValue(*subview_offsets) != 0)
@@ -4822,14 +4822,16 @@ private:
       return nullptr;
     if (index.getDefiningOp()) {
       if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
-        auto childOpFront = &execOp.getChildOps().front();
-        for (auto oper : childOpFront->getOperands()) {
-          if (auto herdOp = air::getHerdArgOwner(oper)) {
-            rewriter.setInsertionPointToStart(&herdOp.getBody().front());
-            childOpFront->replaceUsesOfWith(
-                oper, rewriter.create<arith::ConstantIndexOp>(
-                          rewriter.getUnknownLoc(), 0));
-          }
+        SetVector<Value> opers;
+        getUsedValuesDefinedAbove(execOp.getRegion(), opers);
+        for (auto oper : opers) {
+          auto herdOp = air::getHerdArgOwner(oper);
+          if (!herdOp)
+            continue;
+          rewriter.setInsertionPointToStart(&herdOp.getBody().front());
+          Value constZero = rewriter.create<arith::ConstantIndexOp>(
+              rewriter.getUnknownLoc(), 0);
+          replaceAllUsesInRegionWith(oper, constZero, execOp.getRegion());
         }
       }
     } else if (auto herdOp = air::getHerdArgOwner(index)) {
@@ -4872,19 +4874,29 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     // dealloc.
     std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> alloc_dealloc_execs;
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
-      if (!isa<memref::AllocOp>(execOp.getChildOps().front()))
+      if (llvm::none_of(execOp.getChildOps(), [](Operation &child_op) {
+            return isa<memref::AllocOp>(child_op);
+          }))
         continue;
-      auto memref = execOp->getResult(1);
-      bool allChannelUsersAreInScfFor = true;
-      for (auto user : memref.getUsers())
-        if (isa<air::ChannelInterface>(user))
-          if (!isa<scf::ForOp>(user->getParentOp()))
-            allChannelUsersAreInScfFor = false;
-      if (allChannelUsersAreInScfFor)
-        alloc_dealloc_execs.push_back(std::make_pair(execOp, nullptr));
+      SmallVector<Value> memrefs;
+      for (auto res : execOp->getResults())
+        if (isa<MemRefType>(res.getType()))
+          memrefs.push_back(res);
+      // Skip over any memref results used by other than air.channel.put/get ops
+      // in loops.
+      if (llvm::any_of(memrefs, [](Value v) {
+            return llvm::any_of(v.getUsers(), [](Operation *user) {
+              return isa<air::ChannelInterface>(user) &&
+                     !isa<scf::ForOp>(user->getParentOp());
+            });
+          }))
+        continue;
+      alloc_dealloc_execs.push_back(std::make_pair(execOp, nullptr));
     }
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
-      if (!isa<memref::DeallocOp>(&execOp.getChildOps().front()))
+      if (llvm::none_of(execOp.getChildOps(), [](Operation &child_op) {
+            return isa<memref::DeallocOp>(child_op);
+          }))
         continue;
       auto dealloc = dyn_cast<memref::DeallocOp>(execOp.getChildOps().front());
       for (auto &pair : alloc_dealloc_execs) {

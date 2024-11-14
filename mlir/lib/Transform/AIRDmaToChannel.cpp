@@ -1193,10 +1193,12 @@ class AIRDemoteDmaToAIRHierarchyConversion
       }
 
       for (auto b : backwardSlice) {
-        if (auto execOp = dyn_cast<air::ExecuteOp>(b)) {
-          getBackwardSlice(&execOp.getChildOps().front(), &backwardSlice,
-                           bsOptions);
-          backwardSlice.insert(&execOp.getChildOps().front());
+        auto execOp = dyn_cast<air::ExecuteOp>(b);
+        if (!execOp)
+          continue;
+        for (auto &childOp : execOp.getChildOps()) {
+          getBackwardSlice(&childOp, &backwardSlice, bsOptions);
+          backwardSlice.insert(&childOp);
         }
       }
 
