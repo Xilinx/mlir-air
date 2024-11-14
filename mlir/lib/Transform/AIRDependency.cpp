@@ -260,12 +260,9 @@ public:
       f.walk([&](Operation *op) {
         Operation *sink_op = nullptr;
         if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
-          for (auto &bb : async_execute_op.getBody()) {
-            for (auto &child_op : bb.getOperations()) {
-              if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
-                sink_op = &child_op;
-            }
-          }
+          for (auto &child_op : async_execute_op.getChildOps())
+            if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
+              sink_op = &child_op;
         } else if (isa<xilinx::air::DmaMemcpyNdOp>(op)) {
           sink_op = op;
         } else if (isa<xilinx::air::ChannelInterface>(op)) {
@@ -694,7 +691,7 @@ private:
                   mlir::IntegerType::get(op->getContext(), 32), ++ExecuteOpID));
 
     // Insert op to the new async execute region's body.
-    Block *async_region_bb = builder.createBlock(&async_region.getBody());
+    Block *async_region_bb = builder.createBlock(&async_region.getRegion());
     builder.setInsertionPointToStart(async_region_bb);
 
     // Handle cases when the operand(s) of the given op that is
@@ -757,7 +754,7 @@ private:
                   mlir::IntegerType::get(op->getContext(), 32), ++ExecuteOpID));
 
     // Insert op to the new async execute region's body.
-    Block *async_region_bb = builder.createBlock(&async_region.getBody());
+    Block *async_region_bb = builder.createBlock(&async_region.getRegion());
     builder.setInsertionPointToStart(async_region_bb);
     auto op_cloned = builder.clone(*op);
     builder.create<xilinx::air::ExecuteTerminatorOp>(builder.getUnknownLoc(),
@@ -1989,7 +1986,7 @@ private:
   }
   bool isNotLoopCarriedOp(air::AsyncOpInterface op) {
     if (auto exec_op = dyn_cast<air::ExecuteOp>(op.getOperation())) {
-      auto &bb = exec_op.getBody().front();
+      auto &bb = exec_op.getRegion().front();
       Operation &child_op = bb.getOperations().front();
       return isNotLoopCarriedOp(&child_op);
     } else
@@ -2005,7 +2002,7 @@ private:
     for (auto user : token.getUsers()) {
       if (user->getBlock() == block) {
         if (auto async_user = dyn_cast<air::ExecuteOp>(user)) {
-          auto &bb = async_user.getBody().front();
+          auto &bb = async_user.getRegion().front();
           Operation &child_op = bb.getOperations().front();
           if (!isNotLoopCarriedOp(&child_op))
             isOnlyUsedByNoCarryOps = false;

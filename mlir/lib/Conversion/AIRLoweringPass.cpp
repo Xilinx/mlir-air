@@ -655,7 +655,7 @@ LogicalResult lowerAirExecute(Operation *op) {
 
   llvm::SmallSet<Operation *, 8> erased;
   module->walk([&](air::ExecuteOp exe) {
-    auto &bb = exe.getBody().front();
+    auto &bb = exe.getRegion().front();
     unsigned idx = 0;
 
     OpBuilder builder(exe);

@@ -134,12 +134,12 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
   // Get child op if async_op is air.execute
   Operation *op = nullptr;
   if (auto air_region_op = dyn_cast<air::ExecuteOp>(async_op.getOperation())) {
-    if (air_region_op.getBody().front().getOperations().size() != 2) {
+    if (air_region_op.getRegion().front().getOperations().size() != 2) {
       air_region_op->emitOpError("air::ExecuteOp should have only one child "
                                  "operation beside the terminator");
       return;
     }
-    for (auto &child_op : air_region_op.getBody().front().getOperations()) {
+    for (auto &child_op : air_region_op.getRegion().front().getOperations()) {
       if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
         op = &child_op;
     }
@@ -158,7 +158,7 @@ void traceDependentHerdId(Operation *async_op,
   // Get child op if async_op is air.execute
   Operation *op = nullptr;
   if (auto air_execute_op = dyn_cast<air::ExecuteOp>(async_op)) {
-    op = air_execute_op.getChildOp();
+    op = &air_execute_op.getChildOps().front();
   } else {
     op = async_op;
   }
@@ -819,8 +819,8 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
                 dyn_cast<mlir::affine::AffineApplyOp>(oper.getDefiningOp()))
           position_apply = apply_op;
         else if (auto exec = dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
-          if (auto apply_op =
-                  dyn_cast<mlir::affine::AffineApplyOp>(exec.getChildOp()))
+          if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(
+                  exec.getChildOps().front()))
             position_apply = apply_op;
         }
         if (position_apply) {
@@ -1407,14 +1407,14 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
   std::pair<Graph::VertexId, dependencyGraph *> output;
   if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)) {
     if (front_or_back == "front") {
-      auto execute_front_op = execute_op.getChildOp();
+      auto execute_front_op = &execute_op.getChildOps().front();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_front_op);
       output.first = dep_ctx.op_to_v[entry_pair];
       output.second = dep_ctx.op_to_g[entry_pair];
     } else if (front_or_back == "back") {
       auto execute_end_op =
-          execute_op.getBody().getBlocks().front().getTerminator();
+          execute_op.getRegion().getBlocks().front().getTerminator();
       std::pair<std::string, unsigned> entry_pair =
           getTypeIdPairFromOp(execute_end_op);
       output.first = dep_ctx.op_to_v[entry_pair];
@@ -1870,7 +1870,7 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
   func.walk([&](air::ExecuteOp op) {
     // Check the type of op inside the execute. Only remove ops with no side
     // effects
-    auto child_op = op.getChildOp();
+    auto child_op = &op.getChildOps().front();
     if (dyn_cast<memref::AllocOp>(child_op) ||
         dyn_cast<affine::AffineApplyOp>(child_op)) {
       // The second result is the ssa value yielded from child op inside execute
@@ -1971,7 +1971,7 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     SmallVector<Value, 1> sink_op_scalar_outs;
     // Pick the first op that is not a shape altering op.
     Operation *child_op = nullptr;
-    for (auto &op : exec_op.getBody().front().getOperations()) {
+    for (auto &op : exec_op.getRegion().front().getOperations()) {
       child_op = &op;
       if (!isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
                            memref::CollapseShapeOp>(child_op)) {

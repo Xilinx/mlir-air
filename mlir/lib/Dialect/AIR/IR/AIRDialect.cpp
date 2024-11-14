@@ -1026,8 +1026,12 @@ uint64_t HerdOp::getNumRows() {
 //
 
 LogicalResult ExecuteOp::verify() {
-  assert(getOperation()->getNumRegions() == 1 && "ExecuteOp has zero region!");
-  assert(!getBody().empty() && "ExecuteOp should have non-empty body");
+  if (getOperation()->getNumRegions() != 1)
+    return emitOpError("ExecuteOp has zero region.");
+  if (getRegion().empty())
+    return emitOpError("ExecuteOp should have non-empty region.");
+  if (getBody().empty())
+    return emitOpError("ExecuteOp should have non-empty body.");
 
   return success();
 }
@@ -1084,12 +1088,6 @@ void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldExecute);
   patterns.add(CanonicalizeAsyncOpDeps<ExecuteOp>);
-}
-
-Operation *ExecuteOp::getChildOp() {
-  auto child_op =
-      &getOperation()->getRegion(0).getBlocks().front().getOperations().front();
-  return child_op;
 }
 
 //

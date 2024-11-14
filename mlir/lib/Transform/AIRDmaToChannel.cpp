@@ -196,8 +196,8 @@ static Operation *getCoreComputeOpFromExecuteOp(Operation *op) {
   // We assume all linalg ops (except for linalg.copy) and func.call ops do
   // computations only and do not participate in data movement.
   if (auto exec = dyn_cast<air::ExecuteOp>(op)) {
-    if (isa<linalg::LinalgOp, func::CallOp>(exec.getChildOp()))
-      return exec.getChildOp();
+    if (isa<linalg::LinalgOp, func::CallOp>(&exec.getChildOps().front()))
+      return &exec.getChildOps().front();
   }
   return nullptr;
 }
@@ -1193,9 +1193,12 @@ class AIRDemoteDmaToAIRHierarchyConversion
       }
 
       for (auto b : backwardSlice) {
-        if (auto execOp = dyn_cast<air::ExecuteOp>(b)) {
-          getBackwardSlice(execOp.getChildOp(), &backwardSlice, bsOptions);
-          backwardSlice.insert(execOp.getChildOp());
+        auto execOp = dyn_cast<air::ExecuteOp>(b);
+        if (!execOp)
+          continue;
+        for (auto &childOp : execOp.getChildOps()) {
+          getBackwardSlice(&childOp, &backwardSlice, bsOptions);
+          backwardSlice.insert(&childOp);
         }
       }
 

@@ -317,7 +317,7 @@ private:
       for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin();
            i != op_history.rend(); ++i) {
         if (auto exec_op = dyn_cast<air::ExecuteOp>(*i)) {
-          Operation *op = exec_op.getChildOp();
+          Operation *op = &exec_op.getChildOps().front();
           // If the async op is affine.apply
           if (auto apply_op = dyn_cast<affine::AffineApplyOp>(op)) {
             // Can only propagate affine.apply ops with single operand.
@@ -903,7 +903,9 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
     originalApplyOutput = affineApplyOp->getResult(0);
   } else if (affineApplyOp && isa<air::ExecuteOp>(affineApplyOp)) {
     auto execOp = dyn_cast<air::ExecuteOp>(affineApplyOp);
-    originalApplyOperands = execOp.getChildOp()->getOperands();
+    SetVector<Value> opers;
+    getUsedValuesDefinedAbove(execOp.getRegion(), opers);
+    originalApplyOperands = llvm::to_vector(opers);
     originalApplyOutput = affineApplyOp->getResult(1);
   } else {
     originalApplyOperands.push_back(zeroIdx);
@@ -998,10 +1000,9 @@ scf::ForOp getScfForFromVal(Value val) {
   if (!defOp)
     return scf::ForOp();
   if (auto exec = dyn_cast<air::ExecuteOp>(defOp)) {
-    auto exec_child = exec.getChildOp();
-    if (!exec_child)
-      return scf::ForOp();
-    for (auto oper : exec_child->getOperands())
+    SetVector<Value> opers;
+    getUsedValuesDefinedAbove(exec.getRegion(), opers);
+    for (auto oper : opers)
       if (auto res = scf::getForInductionVarOwner(oper))
         return res;
   }
@@ -1026,7 +1027,9 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
   Operation *deallocOp = nullptr;
   for (auto user : memref.getUsers()) {
     if (auto execOp = dyn_cast<air::ExecuteOp>(user->getParentOp())) {
-      if (isa<memref::DeallocOp>(execOp.getChildOp())) {
+      if (llvm::any_of(execOp.getChildOps(), [](Operation &child_op) {
+            return isa<memref::DeallocOp>(child_op);
+          })) {
         deallocOp = execOp;
         break;
       }
@@ -1140,7 +1143,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       auto execOp =
           builder.create<air::ExecuteOp>(loc, air::AsyncTokenType::get(ctx),
                                          newMemrefType, SmallVector<Value>{});
-      Block *async_bb = builder.createBlock(&execOp.getBody());
+      Block *async_bb = builder.createBlock(&execOp.getRegion());
       builder.setInsertionPointToStart(async_bb);
       auto childMemAlloc = builder.create<memref::AllocOp>(loc, newMemrefType);
       builder.create<xilinx::air::ExecuteTerminatorOp>(
@@ -1156,7 +1159,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         auto execOp = builder.create<air::ExecuteOp>(
             loc, air::AsyncTokenType::get(ctx),
             execDeallocOp.getAsyncDependencies());
-        Block *async_bb = builder.createBlock(&execOp.getBody());
+        Block *async_bb = builder.createBlock(&execOp.getRegion());
         builder.setInsertionPointToStart(async_bb);
         builder.create<memref::DeallocOp>(loc, newMemref);
         builder.create<xilinx::air::ExecuteTerminatorOp>(loc);
@@ -1188,8 +1191,10 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         auto defOp = op.getOffsets()[*offsetDim].getDefiningOp();
         affine::AffineApplyOp apply = dyn_cast<affine::AffineApplyOp>(defOp);
         air::ExecuteOp exec = dyn_cast<air::ExecuteOp>(defOp);
-        if (exec && isa<affine::AffineApplyOp>(exec.getChildOp()))
-          apply = dyn_cast<affine::AffineApplyOp>(exec.getChildOp());
+        if (exec)
+          for (auto &child_op : exec.getChildOps())
+            if (auto apply_child_op = dyn_cast<affine::AffineApplyOp>(child_op))
+              apply = apply_child_op;
         assert(apply && "Apply op not found. NYI.");
         for (auto oper : apply->getOperands())
           if (getConstantIntValue(oper))
@@ -1340,9 +1345,10 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
             affine::AffineApplyOp apply =
                 dyn_cast<affine::AffineApplyOp>(offsetDefOp);
             if (auto exec = dyn_cast<air::ExecuteOp>(offsetDefOp))
-              if (auto exec_child_apply =
-                      dyn_cast<affine::AffineApplyOp>(exec.getChildOp()))
-                apply = exec_child_apply;
+              for (auto &child_op : exec.getChildOps())
+                if (auto apply_child_op =
+                        dyn_cast<affine::AffineApplyOp>(child_op))
+                  apply = apply_child_op;
             if (apply)
               allocOp->setAttr("affine_map",
                                AffineMapAttr::get(apply.getAffineMap()));

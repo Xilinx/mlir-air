@@ -218,7 +218,7 @@ public:
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'execute' as event type, but op isn't of type "
                "air::ExecuteOp";
-      auto child_op = dyn_cast<air::ExecuteOp>(c.op).getChildOp();
+      auto child_op = &dyn_cast<air::ExecuteOp>(c.op).getChildOps().front();
       if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
         uint64_t compute_op_cost = getComputeCostFromCostModel(d, child_op);
@@ -815,7 +815,8 @@ unsigned lookUpMemorySpaceIntFromString(std::string memory_space) {
   return output;
 }
 
-template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
+template <typename T>
+void push_back_if_unique(std::vector<T> &vec, T entry) {
   if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
     vec.push_back(entry);
   }

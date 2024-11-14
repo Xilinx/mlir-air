@@ -66,16 +66,13 @@ air::ExecuteOp getRegionOfAllocOpForOp(Operation *op) {
   auto dependency_list = current_async_op.getAsyncDependencies();
   if (dependency_list.size()) {
     for (auto dep_op : dependency_list) {
-      if (dep_op.getDefiningOp() &&
-          dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
-        // Found air.ExecuteOp in upstream dependency
-        auto exec_op = dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp());
-        auto child_op = exec_op.getChildOp();
-        if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
-          // Found memref.allocOp inside air.ExecuteOp
-          return exec_op;
-        }
-      }
+      auto exec_op = dep_op.getDefiningOp<air::ExecuteOp>();
+      if (!exec_op)
+        continue;
+      if (llvm::any_of(exec_op.getChildOps(), [](Operation &child_op) {
+            return isa<memref::AllocOp>(child_op);
+          }))
+        return exec_op;
     }
   }
   return nullptr;
@@ -87,14 +84,13 @@ air::ExecuteOp getRegionOfDeallocOpForOp(Operation *op) {
   air::AsyncOpInterface current_async_op = dyn_cast<air::AsyncOpInterface>(op);
   auto dependency_token = current_async_op.getAsyncToken();
   for (auto user : dependency_token.getUsers()) {
-    if (auto exec_op = dyn_cast<air::ExecuteOp>(user)) {
-      // Found air.ExecuteOp in downstream dependency
-      auto child_op = exec_op.getChildOp();
-      if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
-        // Found memref.deallocOp inside air.ExecuteOp
-        return exec_op;
-      }
-    }
+    auto exec_op = dyn_cast<air::ExecuteOp>(user);
+    if (!exec_op)
+      continue;
+    if (llvm::any_of(exec_op.getChildOps(), [](Operation &child_op) {
+          return isa<memref::DeallocOp>(child_op);
+        }))
+      return exec_op;
   }
   return nullptr;
 }
@@ -273,11 +269,11 @@ private:
         } else if (auto exec_op =
                        dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
           // Found air.ExecuteOp in upstream dependency
-          auto child_op = exec_op.getChildOp();
-          if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
-            // Found memref.allocOp inside air.ExecuteOp
-            foundMemrefAllocDep = true;
-          }
+          if (llvm::any_of(exec_op.getChildOps(), [](Operation &child_op) {
+                return isa<memref::AllocOp>(child_op);
+              }))
+            foundMemrefAllocDep =
+                true; // Found memref.allocOp inside air.ExecuteOp
         }
       }
     }
@@ -294,18 +290,18 @@ private:
         dyn_cast<air::AsyncOpInterface>(current_op);
     auto dependency_token = current_async_op.getAsyncToken();
     for (auto user : dependency_token.getUsers()) {
-      if (auto exec_op = dyn_cast<air::ExecuteOp>(user)) {
-        // Found air.ExecuteOp in downstream dependency
-        auto child_op = exec_op.getChildOp();
-        if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
-          // Found memref.deallocOp inside air.ExecuteOp
-          foundDepToMemrefDealloc = true;
-        }
-      }
-      if (dyn_cast<air::WaitAllOp>(user)) {
-        foundDepToWaitall = true;
-      }
+      auto exec_op = dyn_cast<air::ExecuteOp>(user);
+      if (!exec_op)
+        continue;
+      // Found air.ExecuteOp in downstream dependency
+      if (llvm::any_of(exec_op.getChildOps(), [](Operation &child_op) {
+            return isa<memref::DeallocOp>(child_op);
+          }))
+        foundDepToMemrefDealloc = true;
     }
+    if (llvm::any_of(dependency_token.getUsers(),
+                     [](Operation *user) { return isa<air::WaitAllOp>(user); }))
+      foundDepToWaitall = true;
     return foundDepToWaitall & foundDepToMemrefDealloc;
   }
 
@@ -364,7 +360,7 @@ struct HoistAIRChannelInAccumPattern : public OpRewritePattern<scf::ForOp> {
     for (auto get : for_op.getOps<air::ChannelGetOp>())
       dataProducers.push_back(get);
     for (auto exec : for_op.getOps<air::ExecuteOp>()) {
-      auto child_op = exec.getChildOp();
+      auto child_op = &exec.getChildOps().front();
       if (isa<linalg::FillOp>(child_op))
         dataProducers.push_back(exec);
     }
@@ -530,7 +526,7 @@ private:
     }
     Operation *actual_op_1 = op_1;
     if (auto exec = dyn_cast<air::ExecuteOp>(op_1)) {
-      actual_op_1 = exec.getChildOp();
+      actual_op_1 = &exec.getChildOps().front();
     }
     Value op_1_memref = nullptr;
     Value op_2_memref = nullptr;
@@ -585,7 +581,7 @@ struct AnnotateFrontAndBackOpsInForPattern
             }
           }
         }
-        auto child_op = exec_op.getChildOp();
+        auto child_op = &exec_op.getChildOps().front();
         if (isa<memref::AllocOp>(child_op) && isFrontCandidate) {
           iterTokens.push_back(op.getResult(0));
           // Note: skipping over alloc ops, since they will get hoisted out of
@@ -641,7 +637,7 @@ struct AnnotateFrontAndBackOpsInForPattern
     for (auto token : yielded_tokens) {
       auto back_candidate = token.getDefiningOp();
       if (auto exec_op = dyn_cast<air::ExecuteOp>(back_candidate)) {
-        auto child_op = exec_op.getChildOp();
+        auto child_op = &exec_op.getChildOps().front();
         if (isa<memref::DeallocOp>(child_op)) {
           for (auto d : exec_op.getAsyncDependencies()) {
             back_candidates.push_back(
@@ -1607,8 +1603,7 @@ struct CanonicalizeAIRExecute : public OpRewritePattern<air::ExecuteOp> {
   LogicalResult matchAndRewrite(air::ExecuteOp exec,
                                 PatternRewriter &rewriter) const override {
 
-    auto childOp = exec.getChildOp();
-    assert(childOp && "air.execute op has no child op");
+    auto childOp = &exec.getChildOps().front();
     // Canonicalize air.execute with empty region.
     if (!childOp->mightHaveTrait<OpTrait::IsTerminator>())
       return failure();
@@ -3317,7 +3312,8 @@ public:
               auto async_exec = builder.create<xilinx::air::ExecuteOp>(
                   user->getLoc(), air::AsyncTokenType::get(alloc->getContext()),
                   SmallVector<Value>{});
-              Block *async_exec_bb = builder.createBlock(&async_exec.getBody());
+              Block *async_exec_bb =
+                  builder.createBlock(&async_exec.getRegion());
               builder.setInsertionPointToStart(async_exec_bb);
               builder.create<memref::DeallocOp>(user->getLoc(), new_memref);
               builder.create<air::ExecuteTerminatorOp>(user->getLoc());
@@ -4303,7 +4299,7 @@ void identifyTargetOpsInSCFFor(
         continue;
       if (for_op->isProperAncestor(memrefDefOp)) {
         if (auto exec = dyn_cast<air::ExecuteOp>(memrefDefOp))
-          memrefDefOp = exec.getChildOp();
+          memrefDefOp = &exec.getChildOps().front();
         memrefDefOp->setAttr(
             "hoist_alloc",
             mlir::BoolAttr::get(memrefDefOp->getContext(), true));
@@ -4492,7 +4488,7 @@ struct ShrinkMemrefSizesByAccessPattern
         auto newExecOp = rewriter.create<air::ExecuteOp>(
             execOp->getLoc(), air::AsyncTokenType::get(rewriter.getContext()),
             newMemrefType, execOp.getAsyncDependencies());
-        Block *async_exec_bb = rewriter.createBlock(&newExecOp.getBody());
+        Block *async_exec_bb = rewriter.createBlock(&newExecOp.getRegion());
         rewriter.setInsertionPointToStart(async_exec_bb);
         auto newAlloc =
             rewriter.create<memref::AllocOp>(alloc->getLoc(), newMemrefType);
@@ -4722,9 +4718,11 @@ private:
         continue;
       if (auto exec_to_herd_iv =
               dyn_cast<air::ExecuteOp>((*subview_offsets).getDefiningOp())) {
-        for (auto oper : exec_to_herd_iv.getChildOp()->getOperands())
-          if (getHerdArgOwner(oper))
-            offsetIsHerdIndVar = true;
+        SetVector<Value> opers;
+        getUsedValuesDefinedAbove(exec_to_herd_iv.getRegion(), opers);
+        if (llvm::any_of(opers,
+                         [](Value oper) { return getHerdArgOwner(oper); }))
+          offsetIsHerdIndVar = true;
       }
       if (offsetIsHerdIndVar)
         if (auto updatedOffset =
@@ -4747,12 +4745,16 @@ private:
             return false;
           if (auto exec = dyn_cast<air::ExecuteOp>(
                   (*subview_offsets).getDefiningOp())) {
-            for (auto oper : exec.getChildOp()->getOperands()) {
-              if (!getConstantIntValue(oper))
-                return false;
-              if (*getConstantIntValue(oper) != 0)
-                return false;
-            }
+            SetVector<Value> opers;
+            getUsedValuesDefinedAbove(exec.getRegion(), opers);
+            if (llvm::any_of(opers, [](Value oper) {
+                  return !getConstantIntValue(oper);
+                }))
+              return false;
+            if (llvm::any_of(opers, [](Value oper) {
+                  return *getConstantIntValue(oper) != 0;
+                }))
+              return false;
           } else
             return false;
         } else if (*getConstantIntValue(*subview_offsets) != 0)
@@ -4820,13 +4822,16 @@ private:
       return nullptr;
     if (index.getDefiningOp()) {
       if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
-        for (auto oper : execOp.getChildOp()->getOperands()) {
-          if (auto herdOp = air::getHerdArgOwner(oper)) {
-            rewriter.setInsertionPointToStart(&herdOp.getBody().front());
-            execOp.getChildOp()->replaceUsesOfWith(
-                oper, rewriter.create<arith::ConstantIndexOp>(
-                          rewriter.getUnknownLoc(), 0));
-          }
+        SetVector<Value> opers;
+        getUsedValuesDefinedAbove(execOp.getRegion(), opers);
+        for (auto oper : opers) {
+          auto herdOp = air::getHerdArgOwner(oper);
+          if (!herdOp)
+            continue;
+          rewriter.setInsertionPointToStart(&herdOp.getBody().front());
+          Value constZero = rewriter.create<arith::ConstantIndexOp>(
+              rewriter.getUnknownLoc(), 0);
+          replaceAllUsesInRegionWith(oper, constZero, execOp.getRegion());
         }
       }
     } else if (auto herdOp = air::getHerdArgOwner(index)) {
@@ -4869,25 +4874,31 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     // dealloc.
     std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> alloc_dealloc_execs;
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
-      if (!execOp.getChildOp())
+      if (llvm::none_of(execOp.getChildOps(), [](Operation &child_op) {
+            return isa<memref::AllocOp>(child_op);
+          }))
         continue;
-      if (!isa<memref::AllocOp>(execOp.getChildOp()))
+      SmallVector<Value> memrefs;
+      for (auto res : execOp->getResults())
+        if (isa<MemRefType>(res.getType()))
+          memrefs.push_back(res);
+      // Skip over any memref results used by other than air.channel.put/get ops
+      // in loops.
+      if (llvm::any_of(memrefs, [](Value v) {
+            return llvm::any_of(v.getUsers(), [](Operation *user) {
+              return isa<air::ChannelInterface>(user) &&
+                     !isa<scf::ForOp>(user->getParentOp());
+            });
+          }))
         continue;
-      auto memref = execOp->getResult(1);
-      bool allChannelUsersAreInScfFor = true;
-      for (auto user : memref.getUsers())
-        if (isa<air::ChannelInterface>(user))
-          if (!isa<scf::ForOp>(user->getParentOp()))
-            allChannelUsersAreInScfFor = false;
-      if (allChannelUsersAreInScfFor)
-        alloc_dealloc_execs.push_back(std::make_pair(execOp, nullptr));
+      alloc_dealloc_execs.push_back(std::make_pair(execOp, nullptr));
     }
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
-      if (!execOp.getChildOp())
+      if (llvm::none_of(execOp.getChildOps(), [](Operation &child_op) {
+            return isa<memref::DeallocOp>(child_op);
+          }))
         continue;
-      if (!isa<memref::DeallocOp>(execOp.getChildOp()))
-        continue;
-      auto dealloc = dyn_cast<memref::DeallocOp>(execOp.getChildOp());
+      auto dealloc = dyn_cast<memref::DeallocOp>(execOp.getChildOps().front());
       for (auto &pair : alloc_dealloc_execs) {
         if (dealloc.getMemref() == pair.first.getResult(1)) {
           pair.second = execOp;
