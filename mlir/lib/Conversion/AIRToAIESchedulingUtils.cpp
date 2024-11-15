@@ -218,10 +218,10 @@ air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
   return output;
 }
 
-std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
-                                                  Value buffer_memref) {
-  bool isAIE2 = (arch == AIE::AIEArch::AIE2);
-  if (!isAIE2)
+std::pair<int64_t, int64_t>
+air::getLockValuePair(const AIE::AIETargetModel &targetModel,
+                      Value buffer_memref) {
+  if (isa<AIE::AIE1TargetModel>(targetModel))
     return std::make_pair(0, 0);
 
   // Infer semaphore lock values using buffer op
@@ -261,17 +261,17 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
                           llvm::divideCeilSigned(write_counter, read_counter));
 }
 
-std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
-                                                  Value buffer_memref,
-                                                  air::ChannelOp air_chan) {
-  bool isAIE2 = (arch == AIE::AIEArch::AIE2);
-  if (!isAIE2)
+std::pair<int64_t, int64_t>
+air::getLockValuePair(const AIE::AIETargetModel &targetModel,
+                      Value buffer_memref, air::ChannelOp air_chan) {
+  if (isa<AIE::AIE1TargetModel>(targetModel))
     return std::make_pair(0, 0);
+
   if (!llvm::isa<MemRefType>(buffer_memref.getType()))
     return std::make_pair(-1, -1);
 
   if (!air_chan)
-    return getLockValuePair(arch, buffer_memref);
+    return getLockValuePair(targetModel, buffer_memref);
 
   // Infer semaphore lock values using air.channel. This method enables
   // ping-pong compute-communication overlap.
@@ -418,8 +418,8 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
     air_chan = getChannelDeclarationThroughSymbol(air_chan_op);
   }
   const auto &target_model = device.getTargetModel();
-  bool isAIE2 = (target_model.getTargetArch() == AIE::AIEArch::AIE2);
-  bool isAIE1 = (target_model.getTargetArch() == AIE::AIEArch::AIE1);
+  bool isAIE2 = isa<AIE::AIE2TargetModel>(target_model);
+  bool isAIE1 = isa<AIE::AIE1TargetModel>(target_model);
 
   if (isAIE1) {
     for (size_t i = 0; i < lock_allocation_list.size(); i++) {
@@ -479,11 +479,10 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
   }
   std::pair<int64_t, int64_t> init_pair;
   if (target_model.isMemTile(col, row))
-    init_pair =
-        getLockValuePair(target_model.getTargetArch(), bufferOp->getResult(0));
+    init_pair = getLockValuePair(target_model, bufferOp->getResult(0));
   else
-    init_pair = getLockValuePair(target_model.getTargetArch(),
-                                 bufferOp->getResult(0), air_chan);
+    init_pair =
+        getLockValuePair(target_model, bufferOp->getResult(0), air_chan);
   auto init = std::max(init_pair.first, init_pair.second);
 
   OpBuilder builder(bufferOp);

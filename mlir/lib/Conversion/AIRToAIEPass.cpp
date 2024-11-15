@@ -149,7 +149,8 @@ bool isLegalMemorySpace(air::MemcpyInterface memcpyOp, AIE::AIEArch arch) {
     }
     return false;
   }
-  case xilinx::AIE::AIEArch::AIE2: {
+  case xilinx::AIE::AIEArch::AIE2:
+  case xilinx::AIE::AIEArch::AIE2p: {
     // todo for AIE2: add memtile data movement support
     if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
       if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1" &&
@@ -2706,11 +2707,13 @@ public:
     return herd_meta;
   }
 
-  void allocateCoreLocksPerMemcpyOp(
-      OpBuilder builder, air::MemcpyInterface memcpyOpIf,
-      std::unordered_set<Operation *> &allocs_to_remap, AIE::AIEArch arch,
-      TileDMAAllocator &tileDmaAlloc, int x, int y) {
-    bool isAIE2 = (arch == AIE::AIEArch::AIE2);
+  void
+  allocateCoreLocksPerMemcpyOp(OpBuilder builder,
+                               air::MemcpyInterface memcpyOpIf,
+                               std::unordered_set<Operation *> &allocs_to_remap,
+                               const AIE::AIETargetModel &targetModel,
+                               TileDMAAllocator &tileDmaAlloc, int x, int y) {
+    bool isAIE2 = isa<AIE::AIE2TargetModel>(targetModel);
     AIE::DMAChannel tile_channel =
         tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf).dma_channel;
     AIE::BufferOp bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
@@ -2773,7 +2776,7 @@ public:
 
   template <typename dmaAllocatorTy, typename bufferOpTy, typename memOpTy>
   void generateDmaBdProgram(
-      OpBuilder builder, AIE::AIEArch arch,
+      OpBuilder builder, const AIE::AIETargetModel &targetModel,
       std::map<std::pair<AIE::DMAChannelDir, int>, std::vector<Operation *>>
           dma_memcpys,
       dmaAllocatorTy dmaAlloc, mlir::Location loc, memOpTy mem, int x, int y) {
@@ -2809,8 +2812,8 @@ public:
         bufferOpTy bufferOp = dmaAlloc.getBuffer(BufferId, x, y, memcpyOp);
         auto locks =
             dmaAlloc.getLockForDMA(memcpyOp, x, y, bufferOp.getOperation());
-        generateDmaBd<bufferOpTy>(loc, dir, locks, x, y, arch, bd, memcpyOp,
-                                  bufferOp, chan);
+        generateDmaBd<bufferOpTy>(loc, dir, locks, x, y, targetModel, bd,
+                                  memcpyOp, bufferOp, chan);
       }
 
       int repeat_count = 1;
@@ -2839,10 +2842,10 @@ public:
   template <typename bufferOpTy>
   void generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
                      std::pair<AIE::LockOp, AIE::LockOp> locks, int x, int y,
-                     AIE::AIEArch arch, Block *bd,
+                     const AIE::AIETargetModel &targetModel, Block *bd,
                      air::MemcpyInterface memcpyOp, bufferOpTy bufferOp,
                      int chan) {
-    bool isAIE2 = (arch == AIE::AIEArch::AIE2);
+    bool isAIE2 = isa<AIE::AIE2TargetModel>(targetModel);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
 
     auto b = OpBuilder::atBlockEnd(bd);
@@ -2851,7 +2854,7 @@ public:
     b.setInsertionPointToStart(bd);
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
-    auto aie2LockVal = getLockValuePair(arch, bufferOp->getResult(0));
+    auto aie2LockVal = getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
       lockAqValue = isAIE2 ? aie2LockVal.first : 0;
       lockRelValue = isAIE2 ? aie2LockVal.first : 1;
@@ -2979,8 +2982,7 @@ public:
             if (!memcpyOpIf)
               o->emitOpError("does not have air::MemcpyInterface");
             allocateCoreLocksPerMemcpyOp(builder, memcpyOpIf, allocs_to_remap,
-                                         target_model.getTargetArch(),
-                                         tileDmaAlloc, x, y);
+                                         target_model, tileDmaAlloc, x, y);
           }
         }
       }
@@ -2992,8 +2994,7 @@ public:
             if (!memcpyOpIf)
               o->emitOpError("does not have air::MemcpyInterface");
             allocateCoreLocksPerMemcpyOp(builder, memcpyOpIf, allocs_to_remap,
-                                         target_model.getTargetArch(),
-                                         tileDmaAlloc, x, y);
+                                         target_model, tileDmaAlloc, x, y);
           }
         }
       }
@@ -3050,8 +3051,8 @@ public:
       }
 
       generateDmaBdProgram<TileDMAAllocator, AIE::BufferOp, AIE::MemOp>(
-          builder, target_model.getTargetArch(), tile_dma_memcpys, tileDmaAlloc,
-          loc, mem, x, y);
+          builder, target_model, tile_dma_memcpys, tileDmaAlloc, loc, mem, x,
+          y);
     }
 
     // Generate L3 DMA program
@@ -3117,9 +3118,9 @@ public:
 
       // Generate DMA BD program
       generateDmaBdProgram<ShimDMAAllocator, AIE::ExternalBufferOp,
-                           AIE::ShimDMAOp>(
-          builder, target_model.getTargetArch(), shim_dma_memcpys, shimDmaAlloc,
-          loc, shimDMA, x, y);
+                           AIE::ShimDMAOp>(builder, target_model,
+                                           shim_dma_memcpys, shimDmaAlloc, loc,
+                                           shimDMA, x, y);
     }
 
     // Generate L2 DMA program
@@ -3165,8 +3166,8 @@ public:
       // Generate DMA BD program
       generateDmaBdProgram<MemTileDMAAllocator, AIE::BufferOp,
                            AIE::MemTileDMAOp>(
-          builder, target_model.getTargetArch(), memtile_dma_memcpys,
-          memTileDmaAlloc, loc, memTileDMA, x, y);
+          builder, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
+          memTileDMA, x, y);
     }
 
     // Clear allocation_info_t allocations' memcpyOps field
@@ -3447,7 +3448,7 @@ public:
 
       for (auto herd : herds) {
         std::vector<Attribute> dma_allocations;
-        if (device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
+        if (isa<AIE::AIE1TargetModel>(device.getTargetModel())) {
           // AIE1 dma metadata format
           getHerdDmaAllocations(builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
                                 false, chan_renumber_reverse_map,
@@ -3470,8 +3471,7 @@ public:
           if (options.use_packet_flow_at_shim_dmas)
             herd->emitOpError("control packet flow generation is not yet "
                               "supported for AIE1.");
-        } else if (device.getTargetModel().getTargetArch() ==
-                   AIE::AIEArch::AIE2) {
+        } else if (isa<AIE::AIE2TargetModel>(device.getTargetModel())) {
           // AIE2 dma metadata format
           builder.setInsertionPointToEnd(device.getBody());
           createShimDMAAllocationOpsFromHerd(builder, ctx, herd,
@@ -3484,7 +3484,7 @@ public:
       }
       for (auto seg : segs) {
         std::vector<Attribute> dma_allocations;
-        if (device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
+        if (isa<AIE::AIE1TargetModel>(device.getTargetModel())) {
           // AIE1 memtile dma metadata format
           getSegmentDmaAllocations(builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
                                    true, chan_renumber_reverse_map,
@@ -3503,8 +3503,7 @@ public:
           if (options.use_packet_flow_at_shim_dmas)
             seg->emitOpError("control packet flow generation is not yet "
                              "supported for AIE1.");
-        } else if (device.getTargetModel().getTargetArch() ==
-                   AIE::AIEArch::AIE2) {
+        } else if (isa<AIE::AIE2TargetModel>(device.getTargetModel())) {
           // AIE2 memtile dma metadata format
           builder.setInsertionPointToEnd(device.getBody());
           createShimDMAAllocationOpsFromSegment(builder, ctx, seg,
