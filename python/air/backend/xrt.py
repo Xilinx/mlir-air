@@ -15,6 +15,8 @@ import numpy as np
 import pyxrt as xrt
 import os
 
+from ml_dtypes import bfloat16
+
 
 class XRTCompileArtifact:
     """A class encompassing information on the artifacts produced by compilation for the NPU/XRT"""
@@ -190,6 +192,9 @@ class XRTBackend(AirBackend):
 
             self.bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
             for i, a in enumerate(args):
+                if a.dtype == bfloat16:
+                    # store bfloat16 in binary as int16
+                    a = a.view(np.int16)
                 bos[i].write(a, 0)
                 bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
