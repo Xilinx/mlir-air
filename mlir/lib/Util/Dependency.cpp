@@ -660,16 +660,27 @@ bool isAsyncDependent(Operation *a, Operation *b) {
 
 // Splits an SCF for loop into two for loops, by hoisting target operations in
 // for loop to a new for loop located at the same scope.
-scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
+scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
+                                     scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops) {
   auto loc = for_op->getLoc();
   // If target ops are already perfectly nested, then skip
-  auto hasNChannelOps = [](Block *block, unsigned N) {
-    SmallVector<air::ChannelInterface> chanOps;
-    block->walk([&](air::ChannelInterface op) { chanOps.push_back(op); });
-    return chanOps.size() == N;
+  auto hasNImpureOps = [](Block *block, unsigned N) {
+    unsigned counter = 0;
+    block->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+        [&](Operation *op) {
+          if (op->hasTrait<OpTrait::IsIsolatedFromAbove>())
+            return WalkResult::skip();
+          if (air::isPure(op))
+            return WalkResult::advance();
+          if (isa<air::WaitAllOp>(op))
+            return WalkResult::advance();
+          counter++;
+          return WalkResult::advance();
+        });
+    return counter == N;
   };
-  if (hasNChannelOps(for_op.getBody(), 1))
+  if (hasNImpureOps(for_op.getBody(), 1))
     return for_op;
 
   // Preprocess target ops by canonicalizing dependencies in target ops' region.
@@ -686,20 +697,20 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
     }
   }
 
-  builder.setInsertionPoint(for_op);
+  rewriter.setInsertionPoint(for_op);
   IRMapping remap;
-  auto new_for_op = builder.create<scf::ForOp>(
+  auto new_for_op = rewriter.create<scf::ForOp>(
       loc, for_op.getLowerBound(), for_op.getUpperBound(), for_op.getStep(),
-      SmallVector<Value>{builder
-                             .create<air::WaitAllOp>(
-                                 loc,
-                                 air::AsyncTokenType::get(builder.getContext()),
-                                 SmallVector<Value>{})
-                             .getAsyncToken()});
+      SmallVector<Value>{
+          rewriter
+              .create<air::WaitAllOp>(
+                  loc, air::AsyncTokenType::get(rewriter.getContext()),
+                  SmallVector<Value>{})
+              .getAsyncToken()});
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
-  builder.setInsertionPointToStart(new_for_op.getBody());
+  rewriter.setInsertionPointToStart(new_for_op.getBody());
   SmallVector<Value> yield_operands;
   // Build up a log of ops to be cloned; using SetVector to avoid repetition.
   llvm::SetVector<Operation *> ops_to_be_cloned;
@@ -719,14 +730,14 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   }
   Operation *back_of_dep_chain;
   for (auto o : ops_to_be_cloned)
-    back_of_dep_chain = builder.clone(*o, remap);
+    back_of_dep_chain = rewriter.clone(*o, remap);
   yield_operands.push_back(getAsyncTokenFromOp(back_of_dep_chain));
 
-  builder.create<scf::YieldOp>(
+  rewriter.create<scf::YieldOp>(
       loc, SmallVector<Value>{
-               builder
+               rewriter
                    .create<air::WaitAllOp>(
-                       loc, air::AsyncTokenType::get(builder.getContext()),
+                       loc, air::AsyncTokenType::get(rewriter.getContext()),
                        yield_operands)
                    ->getResult(0)});
 
@@ -738,7 +749,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   }
   for (auto erase_op : target_ops) {
     // Reconnect returned tokens.
-    builder.setInsertionPoint(erase_op);
+    rewriter.setInsertionPoint(erase_op);
     for (auto res : erase_op->getResults()) {
       if (!isa<air::AsyncTokenType>(res.getType()))
         continue;
@@ -752,9 +763,9 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
           // User op doesn't have air::AsyncOpInterface. Replace uses with newly
           // generated air.wait_all op.
           u->replaceUsesOfWith(
-              res, builder
+              res, rewriter
                        .create<air::WaitAllOp>(
-                           loc, air::AsyncTokenType::get(builder.getContext()),
+                           loc, air::AsyncTokenType::get(rewriter.getContext()),
                            getAsyncDependenciesFromOp(erase_op))
                        .getAsyncToken());
         }
@@ -762,7 +773,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
     }
   }
   for (auto erase_op : target_ops)
-    erase_op->erase();
+    rewriter.eraseOp(erase_op);
   for (auto user : for_op.getResults().front().getUsers()) {
     air::addAsyncDependencyIfNew(user, new_for_op.getResults().front());
   }
