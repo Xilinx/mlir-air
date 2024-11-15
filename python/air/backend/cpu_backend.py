@@ -26,7 +26,9 @@ from pathlib import Path
 from typing import List
 
 path = Path(air.backend.__file__).resolve().parent
-ctypes.CDLL(f"{path}/../../../runtime_lib/x86_64/aircpu/libaircpu.so", mode=ctypes.RTLD_GLOBAL)
+ctypes.CDLL(
+    f"{path}/../../../runtime_lib/x86_64/aircpu/libaircpu.so", mode=ctypes.RTLD_GLOBAL
+)
 ctypes.CDLL(
     f"/FIXME/PATH/TO/llvm/lib/libmlir_async_runtime.so.20.0git", mode=ctypes.RTLD_GLOBAL
 )
@@ -200,8 +202,8 @@ class AirCpuBackend(AirBackend):
                 pm.run(imported_module.operation)
 
         if verbose:
-                print("Torch Module:")
-                print(imported_module)
+            print("Torch Module:")
+            print(imported_module)
 
         with air.ir.Context():
             air_module = air.ir.Module.parse(str(imported_module))
