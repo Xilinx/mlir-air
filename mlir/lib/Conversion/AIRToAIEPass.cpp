@@ -32,6 +32,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -173,10 +174,10 @@ bool isLegalMemorySpace(air::MemcpyInterface memcpyOp, AIE::AIEArch arch) {
   return false;
 }
 
-AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
-                               AIE::TileOp tile,
-                               mlir::StringAttr attr = nullptr, int x = -1,
-                               int y = -1) {
+static AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
+                                      AIE::TileOp tile,
+                                      mlir::StringAttr attr = nullptr,
+                                      int x = -1, int y = -1) {
 
   OpBuilder builder(tile);
   Operation *t = tile.getOperation();
@@ -217,16 +218,17 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
   int64_t row_offset = options.row_offset;
   auto col_name = xilinx::air::HerdOp::getColOffsetAttrName();
   auto row_name = xilinx::air::HerdOp::getRowOffsetAttrName();
+  auto ctx = h->getContext();
   if (auto co = h.getColOffset())
     col_offset = *co;
   else
-    h->setAttr(col_name, IntegerAttr::get(IntegerType::get(h->getContext(), 32),
-                                          col_offset));
+    h->setAttr(col_name,
+               IntegerAttr::get(IntegerType::get(ctx, 32), col_offset));
   if (auto ro = h.getRowOffset())
     row_offset = *ro;
   else
-    h->setAttr(row_name, IntegerAttr::get(IntegerType::get(h->getContext(), 32),
-                                          row_offset));
+    h->setAttr(row_name,
+               IntegerAttr::get(IntegerType::get(ctx, 32), row_offset));
 
   for (auto y = 0; y < herd_size_y; y++) {
     for (auto x = 0; x < herd_size_x; x++) {
@@ -244,34 +246,58 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       builder.setInsertionPointAfter(t);
 
       // make the aie.core for the tile core
+      auto herd_name =
+          aie_device
+              ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+              .getValue()
+              .str();
       auto core = tile.getCoreOp();
       if (!core) {
         core = builder.create<AIE::CoreOp>(hloc, tile);
         tileToHerdMap[tile] = h;
-        auto herd_name =
-            aie_device
-                ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
-                .getValue()
-                .str();
-        core->setAttr("elf_file",
-                      StringAttr::get(aie_device.getContext(),
-                                      herd_name + "_core_" +
-                                          std::to_string(phys_x) + "_" +
-                                          std::to_string(phys_y) + ".elf"));
+        core->setAttr(
+            "elf_file",
+            StringAttr::get(ctx, herd_name + "_core_" + std::to_string(phys_x) +
+                                     "_" + std::to_string(phys_y) + ".elf"));
         if (auto a = h->getAttrOfType<StringAttr>("link_with"))
           core->setAttr("link_with", a);
       }
 
-      Value herd_lock = nullptr;
-      if (options.emit_herd_lock)
-        herd_lock = allocateLockOp(aie_device, tile, /*init=*/0, /*id=*/0);
+      int64_t rtp_buffer_size = 0; // size in i32s
+      for (unsigned ki = 0, ke = h.getNumKernelOperands(); ki < ke; ki++) {
+        BlockArgument karg = h.getKernelArgument(ki);
+        // each one gets 32-bits in the rtp buffer
+        if (llvm::isa<IntegerType, IndexType, FloatType>(karg.getType()))
+          rtp_buffer_size++;
+      }
+      AIE::BufferOp rtp_buffer = nullptr;
+      if (rtp_buffer_size) {
+        uint64_t buffer_id = 0;
+        rtp_buffer = allocateBufferOp(
+            buffer_id, MemRefType::get({rtp_buffer_size}, builder.getI32Type()),
+            tile, builder.getStringAttr("__air_herd_rtp"), phys_x, phys_y);
+        if (!options.emit_herd_lock) {
+          h.emitWarning("Herd RTP buffer allocated but herd lock disabled");
+          h.emitWarning("Enabling herd lock for RTP buffer synchronization");
+          options.emit_herd_lock = true;
+        }
+      }
 
-      // the buffers and locks created below need to go before the core and
-      // mem
-      builder.setInsertionPoint(core);
+      Value herd_lock = nullptr;
+      if (options.emit_herd_lock) {
+        StringAttr name =
+            builder.getStringAttr("__air_herd_lock_" + std::to_string(phys_x) +
+                                  "_" + std::to_string(phys_y));
+        // herd lock is always lock zero
+        herd_lock =
+            allocateLockOp(aie_device, tile, /*init=*/0, /*id=*/0, name);
+      }
 
       assert((h.getBody().getBlocks().size() == 1) &&
              "Launch body can only contain one Block");
+
+      // set insertion point for anything below created on behalf of the core
+      builder.setInsertionPoint(core);
 
       // generate the aie.core body
       //
@@ -315,19 +341,74 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       remap.map(h.getSize()[1],
                 core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_y));
 
-      for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
-        auto a = h.getKernelArgument(i);
-        auto memrefTy = llvm::dyn_cast<MemRefType>(a.getType());
+      if (options.emit_herd_lock) {
+        if (aie_device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
+          core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
+                                              herd_lock,
+                                              AIE::LockAction::Acquire, 0);
+        } else if (aie_device.getTargetModel().getTargetArch() ==
+                   AIE::AIEArch::AIE2) {
+          core_builder.create<AIE::UseLockOp>(
+              core_builder.getUnknownLoc(), herd_lock,
+              AIE::LockAction::AcquireGreaterEqual, 1);
+        }
+      }
+
+      for (unsigned ki = 0, ke = h.getNumKernelOperands(); ki < ke; ki++) {
+        BlockArgument karg = h.getKernelArgument(ki);
+
+        // Remap the kernel operands to the rtp buffer.
+        // For each kernel operand of a supported type, load the data from the
+        // rtp buffer and remap uses of the kernel operand to the loaded value.
+        if (llvm::isa<IntegerType, IndexType, FloatType>(karg.getType())) {
+
+          // load from rtp buffer
+          SmallVector<Value> offsets{
+              core_builder.create<arith::ConstantIndexOp>(hloc, ki)};
+          auto load = core_builder.create<memref::LoadOp>(
+              hloc, IntegerType::get(ctx, 32), rtp_buffer, offsets);
+
+          // truncate, extend or bitcast the value to the correct type
+          Value rtp = nullptr;
+          llvm::TypeSwitch<Type>(karg.getType())
+              .Case<IntegerType>([&](IntegerType ity) {
+                unsigned int width = ity.getWidth();
+                if (width < 32)
+                  rtp = core_builder.create<arith::TruncIOp>(hloc, ity, load);
+                else if (width > 32)
+                  rtp = core_builder.create<arith::ExtUIOp>(hloc, ity, load);
+                else
+                  rtp = load;
+              })
+              .Case<IndexType>([&](IndexType ity) {
+                rtp = core_builder.create<arith::IndexCastOp>(hloc, ity, load);
+              })
+              .Case<FloatType>([&](FloatType fty) {
+                if (fty.getWidth() == 32) {
+                  rtp = core_builder.create<arith::BitcastOp>(hloc, fty, load);
+                } else if (fty.getWidth() == 16) {
+                  auto ity = IntegerType::get(ctx, 16);
+                  auto tr =
+                      core_builder.create<arith::TruncIOp>(hloc, ity, load);
+                  rtp = core_builder.create<arith::BitcastOp>(hloc, fty, tr);
+                }
+              });
+
+          // remap the kernel operand
+          if (rtp)
+            remap.map(karg, rtp);
+          else
+            h.emitWarning("Unsupported runtime parmeter int or float type");
+        }
+
+        auto memrefTy = llvm::dyn_cast<MemRefType>(karg.getType());
         if (!memrefTy)
           continue;
-
-        OpBuilder b(aie_device);
-        b.setInsertionPoint(core);
 
         if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L1) {
           // fused herds sometimes have L1 memref allocation outside of herds.
           // mapping them back
-          remap.map(a, h.getKernelOperand(i));
+          remap.map(karg, h.getKernelOperand(ki));
           continue;
         }
 
@@ -335,19 +416,14 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         std::string sym_name = "__air_herd_arg_0";
         while (aie_device.lookupSymbol(sym_name))
           sym_name = "__air_herd_arg_" + std::to_string(++which_try);
-        b.create<memref::GlobalOp>(builder.getUnknownLoc(), sym_name,
-                                   builder.getStringAttr("public"), memrefTy,
-                                   nullptr, false, nullptr);
+        builder.create<memref::GlobalOp>(builder.getUnknownLoc(), sym_name,
+                                         builder.getStringAttr("public"),
+                                         memrefTy, nullptr, false, nullptr);
 
         auto m = core_builder.create<memref::GetGlobalOp>(
-            hloc, SmallVector<Type, 1>{a.getType()}, sym_name);
-        remap.map(a, m);
+            hloc, SmallVector<Type, 1>{karg.getType()}, sym_name);
+        remap.map(karg, m);
       }
-
-      if (options.emit_herd_lock)
-        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
-                                            herd_lock, AIE::LockAction::Acquire,
-                                            0);
 
       Region &r = h.getRegion();
       r.cloneInto(&core.getBody(), remap);
@@ -355,10 +431,17 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       Block *launch_bb = remap.lookup(&r.front());
       core_builder.create<cf::BranchOp>(hloc, launch_bb);
       core_builder.setInsertionPoint(launch_bb->getTerminator());
-      if (options.emit_herd_lock)
-        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
-                                            herd_lock, AIE::LockAction::Release,
-                                            0);
+      if (options.emit_herd_lock) {
+        if (aie_device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
+          core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
+                                              herd_lock,
+                                              AIE::LockAction::Release, 0);
+        } else if (aie_device.getTargetModel().getTargetArch() ==
+                   AIE::AIEArch::AIE2) {
+          // we could release something, but we don't have to a way to observe
+          // it yet in NPU
+        }
+      }
 
       if (options.emit_while) {
         auto entry_bb_br = dyn_cast<cf::BranchOp>(entry_bb->getTerminator());
@@ -537,9 +620,8 @@ void createAIEModulesAndOutlineCores(
                      StringAttr::get(builder.getContext(), segment_name));
 
     aie_dev.getRegion().emplaceBlock();
-    seg.walk([&](xilinx::air::HerdOp h) {
-      aie_modules.push_back({aie_dev, h});
-    });
+    seg.walk(
+        [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
       outlineAIEMemtiles(builder, aie_dev, seg, options);
@@ -877,8 +959,7 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
       return failure();
 
-    rewriter.setInsertionPointAfter(tile);
-    auto herd = tileToHerdMap[core.getTileOp()];
+    auto herd = tileToHerdMap[tile];
     int64_t col_offset = 0;
     int64_t row_offset = 0;
     if (herd) {
@@ -893,7 +974,6 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
         tile.getCol() - col_offset, tile.getRow() - row_offset);
 
-    rewriter.setInsertionPoint(alloc);
     rewriter.replaceOp(alloc, buffer->getResults());
     return success();
   }
@@ -936,7 +1016,6 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     if (!tile)
       return failure();
 
-    rewriter.setInsertionPointAfter(tile);
     auto seg = alloc->getParentOfType<air::SegmentOp>();
     int64_t col_offset = 0;
     int64_t row_offset = 0;
@@ -951,7 +1030,6 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
         tile.getCol() - col_offset, tile.getRow() - row_offset);
 
-    rewriter.setInsertionPoint(alloc);
     rewriter.replaceOp(alloc, buffer->getResults());
     bufferToMemtileMap[buffer] = tile;
     return success();
@@ -2703,6 +2781,12 @@ public:
       name = attr.getValue().str();
 
     auto herd_meta = builder.create<airrt::HerdMetadataOp>(loc, name);
+    herd_meta->setAttr("size_x", builder.getI64IntegerAttr(herd.getNumCols()));
+    herd_meta->setAttr("size_y", builder.getI64IntegerAttr(herd.getNumRows()));
+    if (auto co = herd.getColOffset())
+      herd_meta->setAttr("loc_x", builder.getI64IntegerAttr(*co));
+    if (auto ro = herd.getRowOffset())
+      herd_meta->setAttr("loc_y", builder.getI64IntegerAttr(*ro));
     return herd_meta;
   }
 
@@ -3438,40 +3522,38 @@ public:
       SmallVector<air::SegmentOp, 4> segs;
       std::set<int64_t> dma_ids;
       if (auto p = h->getParentOfType<air::SegmentOp>()) {
-        auto hops = p.getOps<air::HerdOp>();
-        herds.append(hops.begin(), hops.end());
+        p.walk([&](air::HerdOp h) { herds.push_back(h); });
         segs.push_back(p);
       } else {
         herds.push_back(h);
       }
 
+      auto segment_name =
+          device->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+              .getValue();
+      auto segment_meta = getOrCreateSegmentMetadata(module_meta, segment_name);
       for (auto herd : herds) {
+        auto herd_meta = createHerdMetadata(segment_meta, herd);
+
         std::vector<Attribute> dma_allocations;
-        if (device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
-          // AIE1 dma metadata format
-          getHerdDmaAllocations(builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
-                                false, chan_renumber_reverse_map,
-                                dma_allocations);
-          getHerdDmaAllocations(builder, ctx, herd, shimDmaAlloc.mm2s_allocs,
-                                true, chan_renumber_reverse_map,
-                                dma_allocations);
 
-          auto segment_name =
-              device
-                  ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
-                  .getValue();
-          auto segment_meta =
-              getOrCreateSegmentMetadata(module_meta, segment_name);
-          auto herd_meta = createHerdMetadata(segment_meta, herd);
-          herd_meta->setAttr("dma_allocations",
-                             ArrayAttr::get(ctx, dma_allocations));
+        // AIE1 dma metadata format
+        getHerdDmaAllocations(builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
+                              false, chan_renumber_reverse_map,
+                              dma_allocations);
+        getHerdDmaAllocations(builder, ctx, herd, shimDmaAlloc.mm2s_allocs,
+                              true, chan_renumber_reverse_map, dma_allocations);
 
-          // Control packet generation for AIE1 is not yet implemented.
-          if (options.use_packet_flow_at_shim_dmas)
-            herd->emitOpError("control packet flow generation is not yet "
-                              "supported for AIE1.");
-        } else if (device.getTargetModel().getTargetArch() ==
-                   AIE::AIEArch::AIE2) {
+        herd_meta->setAttr("dma_allocations",
+                           ArrayAttr::get(ctx, dma_allocations));
+
+        // Control packet generation for AIE1 is not yet implemented.
+        if (device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1 &&
+            options.use_packet_flow_at_shim_dmas)
+          herd->emitOpError("control packet flow generation is not yet "
+                            "supported for AIE1.");
+
+        if (device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE2) {
           // AIE2 dma metadata format
           builder.setInsertionPointToEnd(device.getBody());
           createShimDMAAllocationOpsFromHerd(builder, ctx, herd,
@@ -3484,27 +3566,27 @@ public:
       }
       for (auto seg : segs) {
         std::vector<Attribute> dma_allocations;
-        if (device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
-          // AIE1 memtile dma metadata format
-          getSegmentDmaAllocations(builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
-                                   true, chan_renumber_reverse_map,
-                                   dma_allocations);
 
-          auto segment_name =
-              device
-                  ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
-                  .getValue();
-          auto segment_meta =
-              getOrCreateSegmentMetadata(module_meta, segment_name);
-          segment_meta->setAttr("dma_allocations",
-                                ArrayAttr::get(ctx, dma_allocations));
+        // AIE1 memtile dma metadata format
+        getSegmentDmaAllocations(builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
+                                 true, chan_renumber_reverse_map,
+                                 dma_allocations);
 
-          // Control packet generation for AIE1 is not yet implemented.
-          if (options.use_packet_flow_at_shim_dmas)
-            seg->emitOpError("control packet flow generation is not yet "
-                             "supported for AIE1.");
-        } else if (device.getTargetModel().getTargetArch() ==
-                   AIE::AIEArch::AIE2) {
+        auto segment_name =
+            device->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+                .getValue();
+        auto segment_meta =
+            getOrCreateSegmentMetadata(module_meta, segment_name);
+        segment_meta->setAttr("dma_allocations",
+                              ArrayAttr::get(ctx, dma_allocations));
+
+        // Control packet generation for AIE1 is not yet implemented.
+        if (device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1 &&
+            options.use_packet_flow_at_shim_dmas)
+          seg->emitOpError("control packet flow generation is not yet "
+                           "supported for AIE1.");
+
+        if (device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE2) {
           // AIE2 memtile dma metadata format
           builder.setInsertionPointToEnd(device.getBody());
           createShimDMAAllocationOpsFromSegment(builder, ctx, seg,
@@ -3757,9 +3839,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /*.ctrl_packet = */ false,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
-  p.walk([&](xilinx::air::HerdOp h) {
-    aie_modules.push_back({aie_module, h});
-  });
+  p.walk(
+      [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
   std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
