@@ -5,10 +5,11 @@
 
 import torch
 import torch_mlir.ir
-from torch_mlir.dynamo import make_simple_dynamo_backend
+import torch_mlir.passmanager
+from torch_mlir import torchscript
 
-import air.mlir.ir
-import air.mlir.passmanager
+import air.ir
+import air.passmanager
 
 from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import (
     RefBackendLinalgOnTensorsBackend,
@@ -25,12 +26,12 @@ from pathlib import Path
 from typing import List
 
 path = Path(air.backend.__file__).resolve().parent
-ctypes.CDLL(f"{path}/../../../runtime_lib/aircpu/libaircpu.so", mode=ctypes.RTLD_GLOBAL)
+ctypes.CDLL(f"{path}/../../../runtime_lib/x86_64/aircpu/libaircpu.so", mode=ctypes.RTLD_GLOBAL)
 ctypes.CDLL(
-    f"/FIXME/PATH/TO/llvm/lib/libmlir_async_runtime.so.17git", mode=ctypes.RTLD_GLOBAL
+    f"/FIXME/PATH/TO/llvm/lib/libmlir_async_runtime.so.20.0git", mode=ctypes.RTLD_GLOBAL
 )
 
-__all__ = ["AirCpuBackend", "make_dynamo_backend", "DEFAULT_PIPELINE"]
+__all__ = ["AirCpuBackend", "DEFAULT_PIPELINE"]
 
 DEFAULT_PIPELINE = (
     "builtin.module(" + ",".join(["air-to-async", "canonicalize", "cse"]) + ")"
@@ -52,6 +53,7 @@ ASYNC_TO_LLVM_PIPELINE = (
     + ")"
 )
 
+# copied from torch-mlir
 REF_BACKEND_LOWERING_PIPELINE = (
     "builtin.module("
     + ",".join(
@@ -91,7 +93,6 @@ REF_BACKEND_LOWERING_PIPELINE = (
             "func.func(convert-math-to-llvm)",
             # Handle some complex mlir::math ops (e.g. atan2)
             "convert-math-to-libm",
-            "convert-linalg-to-llvm",
             "expand-strided-metadata",
             "finalize-memref-to-llvm",
             "lower-affine",
@@ -123,7 +124,7 @@ class AirCpuBackend(AirBackend):
 
     def compile(
         self,
-        air_module: air.mlir.ir.Module,
+        air_module: air.ir.Module,
         pipeline=None,
         verbose=False,
         segment_offset=None,
@@ -133,7 +134,7 @@ class AirCpuBackend(AirBackend):
 
         The module is expected to be AIR dialect.
         Args:
-          imported_module: The MLIR module consisting of functions containing
+          air_module: The MLIR module consisting of functions containing
             AIR dialect.
           pipeline: The custom lowering pipeline to use for lowering.
             The default is `air.backend.cpu_backend.DEFAULT_PIPELINE`
@@ -148,21 +149,25 @@ class AirCpuBackend(AirBackend):
             pipeline = DEFAULT_PIPELINE
 
         s = str(air_module)
-        with air_module.context:
+        with air.ir.Context() as ctx:
+            ctx.allow_unregistered_dialects = True
             # make a copy of the input MLIR
-            air_module = air.mlir.ir.Module.parse(s)
+            air_module = air.ir.Module.parse(s)
 
             if verbose:
                 print("Running MLIR pass pipeline: ", pipeline)
 
-            pm = air.mlir.passmanager.PassManager.parse(pipeline)
-            pm.run(air_module.operation)
+            if callable(pipeline):
+                air_module = pipeline(air_module)
+            else:
+                pm = air.passmanager.PassManager.parse(pipeline)
+                pm.run(air_module.operation)
 
             if verbose:
                 print("Async Module:")
                 print(air_module)
 
-            pm = air.mlir.passmanager.PassManager.parse(ASYNC_TO_LLVM_PIPELINE)
+            pm = air.passmanager.PassManager.parse(ASYNC_TO_LLVM_PIPELINE)
             pm.run(air_module.operation)
 
             if verbose:
@@ -175,6 +180,45 @@ class AirCpuBackend(AirBackend):
             pm.run(torch_mlir_module.operation)
         return torch_mlir_module
 
+    def compile_from_torch_mlir(
+        self,
+        imported_module: torch_mlir.ir.Module,
+        pipeline=None,
+        verbose=False,
+        segment_offset=None,
+        segment_size=None,
+    ):
+        if type(imported_module) is torch_mlir.ir.Module:
+            with imported_module.operation.context:
+                imported_module = torchscript.lower_mlir_module(
+                    False, torchscript.OutputType.LINALG_ON_TENSORS, imported_module
+                )
+
+                pm = torch_mlir.passmanager.PassManager.parse(
+                    "builtin.module(refback-mlprogram-bufferize)"
+                )
+                pm.run(imported_module.operation)
+
+        if verbose:
+                print("Torch Module:")
+                print(imported_module)
+
+        with air.ir.Context():
+            air_module = air.ir.Module.parse(str(imported_module))
+            pm = air.passmanager.PassManager.parse(
+                air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE
+            )
+
+            if verbose:
+                print(
+                    "Running MLIR pass pipeline: ",
+                    air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE,
+                )
+
+            pm.run(air_module.operation)
+
+        return self.compile(air_module, pipeline, verbose, segment_offset, segment_size)
+
     def load(self, module):
         """Load a compiled artifact."""
         return self.refbackend.load(module)
@@ -182,64 +226,3 @@ class AirCpuBackend(AirBackend):
     def unload(self):
         """Unload any loaded module and release resources."""
         pass
-
-
-def make_dynamo_backend(pipeline=None, verbose=False):
-    """Make a PyTorch dynamo backend using AirCpuBackend.
-
-    Args:
-        pipeline: The custom lowering pipeline to use for lowering. First
-            `air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE` is applied,
-            then `pipeline`.
-            The default is `air.backend.linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE`
-        verbose: enable verbose output
-        segment_offset: default location for generated segments as [colOffset, rowOffset]
-        segment_size: default size for generated segments as [numCols, numRows]
-    Returns:
-        A PyTorch dynamo backend
-    """
-    backend = AirCpuBackend()
-
-    @make_simple_dynamo_backend
-    def air_backend(fx_graph: torch.fx.GraphModule, example_inputs: List[torch.Tensor]):
-
-        # get the linalg mlir of the model from torch_mlir
-        mlir_module = torch_mlir.compile(
-            fx_graph,
-            example_inputs,
-            output_type=torch_mlir.OutputType.LINALG_ON_TENSORS,
-        )
-
-        with air.mlir.ir.Context():
-            air_module = air.mlir.ir.Module.parse(str(mlir_module))
-            pm = air.mlir.passmanager.PassManager.parse(
-                air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE
-            )
-            pm.run(air_module.operation)
-            if pipeline is None:
-                pm = air.mlir.passmanager.PassManager.parse(
-                    linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE
-                )
-                pm.run(air_module.operation)
-            elif callable(pipeline):
-                air_module = pipeline(air_module)
-            else:
-                pm = air.mlir.passmanager.PassManager.parse(pipeline)
-                pm.run(air_module.operation)
-
-            if verbose:
-                print("AIR Module:")
-                print(air_module)
-
-        compiled = backend.compile(air_module, verbose=verbose)
-
-        # return a function for invoking the compiled model
-        def compiled_callable(*inputs):
-            inputs = [x.numpy() for x in inputs]
-            loaded = backend.load(compiled)
-            result = loaded.forward(*inputs)
-            return torch.from_numpy(result)
-
-        return compiled_callable
-
-    return air_backend

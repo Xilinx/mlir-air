@@ -46,7 +46,10 @@ except Exception as e:
     print("[WARNING] We were not able to load .so for libairhost_shared.so")
     print(e)
     pass
-import air._mlir_libs._airRt as airrt
+try:
+    import air._mlir_libs._airRt as airrt
+except Exception as e:
+    pass
 
 __all__ = [
     "LinalgOnTensorsAirBackend",
