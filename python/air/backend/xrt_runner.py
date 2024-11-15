@@ -69,6 +69,7 @@ class XRTRunner:
         mlir_module: np.ndarray,
         inputs: List[np.ndarray],
         expected_outputs: List[np.ndarray],
+        rtol: float = 1e-3,
     ):
         if self.verbose:
             print("Running module: ")
@@ -93,7 +94,7 @@ class XRTRunner:
         # Remove input slots from the received outputs
         actual_outputs = actual_outputs[len(inputs) :]
 
-        if self._check_outputs(actual_outputs, expected_outputs):
+        if self._check_outputs(actual_outputs, expected_outputs, rtol=rtol):
             print("PASS!")
             return_code = 0
         else:
@@ -102,7 +103,10 @@ class XRTRunner:
         return return_code
 
     def _check_outputs(
-        self, actual_outputs: List[np.ndarray], expected_outputs: List[np.ndarray]
+        self,
+        actual_outputs: List[np.ndarray],
+        expected_outputs: List[np.ndarray],
+        rtol: float = 1e-3,
     ):
         assert len(actual_outputs) == len(
             expected_outputs
@@ -125,16 +129,20 @@ class XRTRunner:
                     print(actual)
 
             if expected.dtype in [np.float16, np.float32, np.float64, bfloat16]:
-                if not np.allclose(actual, expected, rtol=1e-3):
+                if not np.allclose(actual, expected, rtol=rtol):
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    print(actual)
+                    print("Expected: ")
                     print(expected)
+                    print("Actual: ")
+                    print(actual)
                     return False
             else:
                 if not np.array_equal(actual, expected):
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    print(actual)
+                    print("Expected: ")
                     print(expected)
+                    print("Actual: ")
+                    print(actual)
                     return False
 
         return True
