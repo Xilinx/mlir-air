@@ -665,22 +665,24 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                                      SmallVector<Operation *> target_ops) {
   auto loc = for_op->getLoc();
   // If target ops are already perfectly nested, then skip
-  auto hasNImpureOps = [](Block *block, unsigned N) {
+  auto hasNChannelOps = [target_ops](Block *block, unsigned N) {
     unsigned counter = 0;
     block->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
-        [&](Operation *op) {
+        [target_ops, &counter](Operation *op) {
           if (op->hasTrait<OpTrait::IsIsolatedFromAbove>())
             return WalkResult::skip();
-          if (air::isPure(op))
-            return WalkResult::advance();
-          if (isa<air::WaitAllOp>(op))
-            return WalkResult::advance();
+          if (llvm::is_contained(target_ops, op)) {
+            counter++;
+            return WalkResult::skip();
+          }
+          if (isa<air::ChannelInterface>(op))
+            counter++;
           counter++;
           return WalkResult::advance();
         });
     return counter == N;
   };
-  if (hasNImpureOps(for_op.getBody(), 1))
+  if (hasNChannelOps(for_op.getBody(), 1))
     return for_op;
 
   // Preprocess target ops by canonicalizing dependencies in target ops' region.
