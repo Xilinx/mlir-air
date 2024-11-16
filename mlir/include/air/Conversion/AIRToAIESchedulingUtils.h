@@ -57,12 +57,12 @@ bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
                                 SmallVector<Value> memcpy_strides,
                                 Value memref);
 
-std::pair<int64_t, int64_t> getLockValuePair(AIE::AIEArch arch,
-                                             Value buffer_memref);
+std::pair<int64_t, int64_t>
+getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref);
 
-std::pair<int64_t, int64_t> getLockValuePair(AIE::AIEArch arch,
-                                             Value buffer_memref,
-                                             air::ChannelOp air_chan);
+std::pair<int64_t, int64_t>
+getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref,
+                 air::ChannelOp air_chan);
 
 struct allocation_info_t {
   AIE::TileOp dma_tile = nullptr;
