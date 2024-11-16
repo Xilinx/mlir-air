@@ -212,15 +212,9 @@ public:
           }
           // If a memref store is storing to an alloca for shape,
           // it must not be executed.
-          if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
-            if (auto memalloc_op = dyn_cast<memref::AllocOp>(
-                    storeOp.getMemRef().getDefiningOp())) {
-              assert(memalloc_op->getNumResults() == 1 &&
-                     "Number of results of alloc op == 1");
-              if (alloc_for_reshape(memalloc_op->getOpResult(0)))
-                isCandidateExecute = false;
-            }
-          }
+          if (auto storeOp = dyn_cast<memref::StoreOp>(op))
+            if (alloc_for_reshape(storeOp.getMemRef()))
+              isCandidateExecute = false;
           // No air execute for expand, collapse and reshape ops
           if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
                               memref::CollapseShapeOp>(op)) {
