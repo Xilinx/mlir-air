@@ -104,7 +104,7 @@ _Load a herd_
 Syntax:
 
 ```
-operation ::= `airrt.herd_load` $sym_name attr-dict `:` type($h) (`,` type($event)^)?
+operation ::= `airrt.herd_load` $sym_name ` ``(` $rtp `)` attr-dict `:` functional-type($rtp, results)
 ```
 
 
@@ -114,6 +114,12 @@ operation ::= `airrt.herd_load` $sym_name attr-dict `:` type($h) (`,` type($even
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
 </table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `rtp` | variadic of any type
 
 #### Results:
 
