@@ -235,7 +235,8 @@ public:
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(op->getBlock());
       rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                         herd_name_attr.getValue().str());
+                                         herd_name_attr.getValue().str(),
+                                         /* operands */ SmallVector<Value>());
     }
 
     SmallVector<Value, 4> deps;
