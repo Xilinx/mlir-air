@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-std | FileCheck %s
-// CHECK: %{{.*}} = airrt.herd_load "herd_0" : i64
+// CHECK: %{{.*}} = airrt.herd_load "herd_0" () : () -> i64
 // CHECK: airrt.memcpy_nd({{.*}}) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 // CHECK: airrt.memcpy_nd({{.*}}) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 // CHECK: airrt.memcpy_nd({{.*}}) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])

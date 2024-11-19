@@ -3,15 +3,16 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-# REQUIRES: torch_mlir, needs_update
+# REQUIRES: torch_mlir
 
 # RUN: %PYTHON %s | FileCheck %s
-# CHECK: PASSED
+# CHECK: PASSED! 8/8
 
 import torch
-import torch._dynamo as dynamo
+from torch_mlir import fx
 
-from air.backend import cpu_backend as backend
+from air.backend import cpu_backend
+from air.passmanager import PassManager
 
 verbose = False
 
@@ -25,17 +26,44 @@ class model_mul(torch.nn.Module):
         return x
 
 
-air_backend = backend.make_dynamo_backend(verbose=verbose)
+def pipeline(module):
+    with module.operation.context as ctx:
+        pipeline = (
+            "builtin.module("
+            + ",".join(
+                [
+                    "canonicalize",
+                    "cse",
+                    "air-linalg-codegen",
+                    "air-par-to-herd{depth=0}",
+                    "air-copy-to-dma",
+                    "canonicalize",
+                    "cse",
+                ]
+            )
+            + ")"
+        )
+        pm = PassManager.parse(pipeline)
+        pm.run(module.operation)
+        pm = PassManager.parse(cpu_backend.DEFAULT_PIPELINE)
+        pm.run(module.operation)
+    return module
 
 
 def run_test(model, dtype, shape):
     torch_model = model()
-    dynamo_model = dynamo.optimize(air_backend)(torch_model)
 
     a = torch.randint(size=shape, low=1, high=100, dtype=dtype)
     b = torch.randint(size=shape, low=1, high=100, dtype=dtype)
-    c = dynamo_model(a, b)
+    m = fx.export_and_import(torch_model, a, b, func_name="forward")
+
+    backend = cpu_backend.AirCpuBackend()
+    air_program = backend.load(
+        backend.compile_from_torch_mlir(m, pipeline=pipeline, verbose=verbose)
+    )
+
     c_ref = torch_model(a, b)
+    c = torch.tensor(air_program.forward(a.numpy(), b.numpy()))
 
     if verbose:
         print(f"input:\n{a}\n{b}\noutput:\n{c}")
