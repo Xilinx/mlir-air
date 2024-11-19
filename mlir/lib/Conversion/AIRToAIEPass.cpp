@@ -3318,7 +3318,7 @@ public:
 
       for (auto herd : herds) {
         std::vector<Attribute> dma_allocations;
-        if (isa<AIE::AIE1TargetModel>(device.getTargetModel())) {
+        if (!device.getTargetModel().isNPU()) {
           // AIE1 dma metadata format
           getDmaAllocationMetadata(builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
                                    AIE::DMAChannelDir::S2MM,
@@ -3341,7 +3341,7 @@ public:
           if (options.use_packet_flow_at_shim_dmas)
             herd->emitOpError("control packet flow generation is not yet "
                               "supported for AIE1.");
-        } else if (isa<AIE::AIE2TargetModel>(device.getTargetModel())) {
+        } else {
           // AIE2 dma metadata format
           builder.setInsertionPointToEnd(device.getBody());
           createShimDMAAllocationOps(
@@ -3354,7 +3354,7 @@ public:
       }
       for (auto seg : segs) {
         std::vector<Attribute> dma_allocations;
-        if (isa<AIE::AIE1TargetModel>(device.getTargetModel())) {
+        if (!device.getTargetModel().isNPU()) {
           // AIE1 memtile dma metadata format
           getDmaAllocationMetadata(builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
                                    AIE::DMAChannelDir::MM2S,
@@ -3373,7 +3373,7 @@ public:
           if (options.use_packet_flow_at_shim_dmas)
             seg->emitOpError("control packet flow generation is not yet "
                              "supported for AIE1.");
-        } else if (isa<AIE::AIE2TargetModel>(device.getTargetModel())) {
+        } else {
           // AIE2 memtile dma metadata format
           builder.setInsertionPointToEnd(device.getBody());
           createShimDMAAllocationOps(
