@@ -5092,6 +5092,8 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     });
     for (auto put_parent : put_parents) {
       auto get_parent = put_get_mapping[put_parent];
+      if (put_parent == get_parent)
+        continue;
       if (put_parent->isBeforeInBlock(get_parent))
         put_parent->moveAfter(get_parent);
       Value get_parent_token = nullptr;
