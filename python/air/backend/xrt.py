@@ -48,18 +48,21 @@ class XRTBackend(AirBackend):
         verbose=False,
         experimental_passes=False,
         omit_while_true_loop=False,
+        omit_pingpong=False,
     ):
         """Constructor for XRTBackend
 
         Args:
             verbose: verbose output
             experimental_passes: configure aircc to run additional experimental passes
-            omit_while_true_loop: configure aircc to comit the while true loop it traditionally emits.
+            omit_while_true_loop: configure aircc to omit the while true loop it traditionally emits.
+            omit_pingpong: configure aircc to omit the generation of ping-pong buffering.
         """
         super().__init__()
         self.verbose = verbose
         self.experimental_passes = experimental_passes
         self.omit_while_true_loop = omit_while_true_loop
+        self.omit_pingpong = omit_pingpong
         self.currently_loaded = False
 
     def __del__(self):
@@ -115,6 +118,9 @@ class XRTBackend(AirBackend):
 
             if self.omit_while_true_loop:
                 aircc_options += ["--omit-while-true-loop"]
+
+            if self.omit_pingpong:
+                aircc_options += ["--omit-ping-pong-transform"]
 
             aircc.run(air_module, aircc_options)
 
