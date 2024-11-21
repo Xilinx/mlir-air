@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-dependency | FileCheck %s
+// RUN: air-opt %s -air-dependency --split-input-file | FileCheck %s
 
 // Trace dependencies with air.channel put/get ops
 
@@ -15,7 +15,7 @@
 #map0 = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
 #map2 = affine_map<(d0, d1) -> (d0, d1)>
-module attributes {torch.debug_module_name = "mmult"} {
+module {
   air.channel @channel_1 [1]
   air.channel @channel_2 [1]
   air.channel @channel_3 [1]
@@ -24,7 +24,7 @@ module attributes {torch.debug_module_name = "mmult"} {
   air.channel @channel_6 [2, 2]
   air.channel @channel_7 [2, 2]
   air.channel @channel_8 [2, 2]
-  func.func @forward(%arg0: memref<24576x1024xbf16>, %arg1: memref<1024x1024xbf16>) -> memref<24576x1024xbf16> {
+  func.func @func0(%arg0: memref<24576x1024xbf16>, %arg1: memref<1024x1024xbf16>) -> memref<24576x1024xbf16> {
     %c16 = arith.constant 16 : index
     %c384 = arith.constant 384 : index
     %cst = arith.constant 0.000000e+00 : bf16
@@ -139,3 +139,74 @@ module attributes {torch.debug_module_name = "mmult"} {
     return %1 : memref<24576x1024xbf16>
   }
 }
+
+// -----
+
+// CHECK: scf.for {{.*}}iter_args(%[[VAL0:.*]] = %{{.*}})
+// CHECK: %[[VAL1:.*]] = air.channel.get async [%[[VAL0]]]
+// CHECK: %[[VAL2:.*]] = air.channel.get async [%[[VAL0]]]
+// CHECK: scf.for {{.*}}iter_args(%[[VAL3:.*]] = %{{.*}})
+// CHECK: %[[VAL4:.*]], %[[RES0:.*]] = air.execute [%[[VAL3]]]
+// CHECK: air.channel.put async [%[[VAL4]], %[[VAL3]]]
+// CHECK: %[[VAL5:.*]], %[[RES1:.*]] = air.execute [%[[VAL3]]]
+// CHECK: air.channel.put async [%[[VAL5]], %[[VAL3]]]
+// CHECK: scf.yield
+
+// CHECK: scf.for {{.*}}iter_args(%[[VAL6:.*]] = %{{.*}})
+// CHECK: %[[VAL7:.*]] = air.channel.get async [%[[VAL6]]]
+// CHECK: %[[VAL8:.*]] = air.channel.get async [%[[VAL6]]]
+// CHECK: scf.for {{.*}}iter_args(%[[VAL9:.*]] = %{{.*}})
+// CHECK: %[[VAL10:.*]], %[[RES2:.*]] = air.execute [%[[VAL9]]]
+// CHECK: air.channel.put async [%[[VAL10]], %[[VAL9]]]
+// CHECK: %[[VAL11:.*]], %[[RES3:.*]] = air.execute [%[[VAL9]]]
+// CHECK: air.channel.put async [%[[VAL11]], %[[VAL9]]]
+// CHECK: scf.yield
+
+#map = affine_map<()[s0] -> (s0 * 96)>
+#map1 = affine_map<()[s0] -> (s0 * 3)>
+module {
+  air.channel @channel_0 []
+  air.channel @channel_1 []
+  air.channel @channel_2 []
+  air.channel @channel_3 []
+  func.func @func1() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg5, %arg6) in (%arg7=%c1, %arg8=%c1) {
+      air.segment @vecmat_i8_0  {
+        %c48 = arith.constant 48 : index
+        %c8 = arith.constant 8 : index
+        %c6 = arith.constant 6 : index
+        %c96 = arith.constant 96 : index
+        %c1_0 = arith.constant 1 : index
+        %c3 = arith.constant 3 : index
+        %c0 = arith.constant 0 : index
+        %alloc = memref.alloc() : memref<288xi8, 1 : i32>
+        %alloc_1 = memref.alloc() : memref<9xf32, 1 : i32>
+        %alloc_2 = memref.alloc() : memref<288x48xi8, 1 : i32>
+        %alloc_3 = memref.alloc() : memref<9x48xf32, 1 : i32>
+        scf.for %arg9 = %c0 to %c3 step %c1_0 {
+          air.channel.get  @channel_0[] (%alloc[] [] []) : (memref<288xi8, 1 : i32>)
+          air.channel.get  @channel_0[] (%alloc_1[] [] []) : (memref<9xf32, 1 : i32>)
+          scf.for %arg10 = %c0 to %c3 step %c1_0 {
+            %0 = affine.apply #map()[%arg10]
+            air.channel.put  @channel_1[] (%alloc[%0] [%c96] [%c1_0]) : (memref<288xi8, 1 : i32>)
+            %1 = affine.apply #map1()[%arg10]
+            air.channel.put  @channel_1[] (%alloc_1[%1] [%c3] [%c1_0]) : (memref<9xf32, 1 : i32>)
+          }
+        }
+        scf.for %arg9 = %c0 to %c3 step %c1_0 {
+          air.channel.get  @channel_2[] (%alloc_2[] [] []) : (memref<288x48xi8, 1 : i32>)
+          air.channel.get  @channel_2[] (%alloc_3[] [] []) : (memref<9x48xf32, 1 : i32>)
+          scf.for %arg10 = %c0 to %c3 step %c1_0 {
+            %0 = affine.apply #map()[%arg10]
+            air.channel.put  @channel_3[] (%alloc_2[%c0, %0, %c0] [%c6, %c96, %c8] [%c8, %c48, %c1_0]) : (memref<288x48xi8, 1 : i32>)
+            %1 = affine.apply #map1()[%arg10]
+            air.channel.put  @channel_3[] (%alloc_3[%c0, %1, %c0] [%c6, %c3, %c8] [%c8, %c48, %c1_0]) : (memref<9x48xf32, 1 : i32>)
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
