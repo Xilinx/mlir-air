@@ -1936,9 +1936,6 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
       }
       return counter == N;
     };
-    if (auto parent_for = dyn_cast<scf::ForOp>(for_op->getParentOp()))
-      if (hasNElements(parent_for.getBody(), 1))
-        return failure();
 
     if (!hasNElements(for_op.getBody(), 1))
       return failure();
