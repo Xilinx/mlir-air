@@ -2060,13 +2060,14 @@ private:
         continue;
       if (!region->isAncestor(operandDefOp->getParentRegion()))
         continue;
-      assert(air::isPure(
-          operandDefOp)); // Pure ops are safe to hoist out of loops.
+      assert(air::isPure(operandDefOp) ||
+             isa<air::WaitAllOp>(operandDefOp)); // Pure ops and wait ops are
+                                                 // safe to hoist out of loops.
       // Get backward slices
       SetVector<Operation *> operandBS;
       getBackwardSlice(operandDefOp, &operandBS, bsOptions);
       for (auto b : operandBS) {
-        assert(air::isPure(b));
+        assert(air::isPure(b) || isa<air::WaitAllOp>(b));
         backwardSlices.insert(b);
       }
       backwardSlices.insert(operandDefOp);
