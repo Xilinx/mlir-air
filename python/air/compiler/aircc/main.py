@@ -24,24 +24,32 @@ from air.compiler.aircc.configure import *
 
 import aie.compiler.aiecc.main as aiecc
 
-EXPERIMENTAL_PASSES = [
-    "air-dependency",
-    "air-dependency-schedule-opt",
-    "air-specialize-dma-broadcast",
-    "air-dma-to-channel",
-    "canonicalize",
-    "cse",
-    "air-dependency-canonicalize",
-    "canonicalize",
-    "cse",
-    "func.func(air-loop-fusion)",
-    "air-label-scf-for-to-ping-pong",
-    "air-ping-pong-transform{keep-memref-dealloc=true}",
-    "air-isolate-async-dma-loop-nests",
-    "air-linalg-to-func",
-    "canonicalize",
-    "cse",
-]
+
+def get_experimental_passes(omit_pingpong=True):
+    EXPERIMENTAL_PASSES = [
+        "air-dependency",
+        "air-dependency-schedule-opt",
+        "air-specialize-dma-broadcast",
+        "air-dma-to-channel",
+        "canonicalize",
+        "cse",
+        "air-dependency-canonicalize",
+        "canonicalize",
+        "cse",
+        "func.func(air-loop-fusion)",
+    ]
+    if not omit_pingpong:
+        EXPERIMENTAL_PASSES += [
+            "air-label-scf-for-to-ping-pong",
+            "air-ping-pong-transform{keep-memref-dealloc=true}",
+        ]
+    EXPERIMENTAL_PASSES += [
+        "air-isolate-async-dma-loop-nests",
+        "air-linalg-to-func",
+        "canonicalize",
+        "cse",
+    ]
+    return EXPERIMENTAL_PASSES
 
 
 def emit_wrapper(herd_name="segment", include_name="aie.inc"):
@@ -378,7 +386,7 @@ def run(mlir_module, args=None):
                 "func.func(air-lower-herd-parallel)",
             ]
             + (
-                EXPERIMENTAL_PASSES
+                get_experimental_passes(opts.omit_pingpong)
                 if "npu" in opts.device and opts.experimental_passes
                 else []
             )
