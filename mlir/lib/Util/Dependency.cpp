@@ -752,7 +752,6 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   for (auto erase_op : target_ops) {
     // Reconnect returned tokens.
     rewriter.setInsertionPoint(erase_op);
-    SmallVector<Value> erase_op_results = erase_op->getResults();
     SmallVector<Value> erase_op_async_deps =
         air::getAsyncDependenciesFromOp(erase_op);
     for (auto res : erase_op->getResults()) {
