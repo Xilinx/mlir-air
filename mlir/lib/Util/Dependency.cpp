@@ -752,25 +752,23 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   for (auto erase_op : target_ops) {
     // Reconnect returned tokens.
     rewriter.setInsertionPoint(erase_op);
+    SmallVector<Value> erase_op_results = erase_op->getResults();
+    SmallVector<Value> erase_op_async_deps =
+        air::getAsyncDependenciesFromOp(erase_op);
     for (auto res : erase_op->getResults()) {
       if (!isa<air::AsyncTokenType>(res.getType()))
         continue;
-      for (auto u : res.getUsers()) {
-        if (auto async_user = dyn_cast<air::AsyncOpInterface>(u)) {
-          eraseAsyncDependencyFromAsyncOp(async_user, res);
-          for (auto dep : getAsyncDependenciesFromOp(erase_op))
-            if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument"))
-              air::addAsyncDependencyIfNew(u, dep);
-        } else {
-          // User op doesn't have air::AsyncOpInterface. Replace uses with newly
-          // generated air.wait_all op.
-          u->replaceUsesOfWith(
-              res, rewriter
-                       .create<air::WaitAllOp>(
-                           loc, air::AsyncTokenType::get(rewriter.getContext()),
-                           getAsyncDependenciesFromOp(erase_op))
-                       .getAsyncToken());
-        }
+      if (erase_op_async_deps.empty())
+        continue;
+      else if (erase_op_async_deps.size() == 1)
+        res.replaceAllUsesWith(erase_op_async_deps.front());
+      else {
+        res.replaceAllUsesWith(
+            rewriter
+                .create<air::WaitAllOp>(
+                    loc, air::AsyncTokenType::get(rewriter.getContext()),
+                    erase_op_async_deps)
+                .getAsyncToken());
       }
     }
   }
