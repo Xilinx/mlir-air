@@ -3318,7 +3318,7 @@ public:
 
       for (auto herd : herds) {
         std::vector<Attribute> dma_allocations;
-        if (!device.getTargetModel().isNPU()) {
+        if (!device.getTargetModel().hasProperty(AIE::AIETargetModel::IsNPU)) {
           // AIE1 dma metadata format
           getDmaAllocationMetadata(builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
                                    AIE::DMAChannelDir::S2MM,
@@ -3354,7 +3354,7 @@ public:
       }
       for (auto seg : segs) {
         std::vector<Attribute> dma_allocations;
-        if (!device.getTargetModel().isNPU()) {
+        if (!device.getTargetModel().hasProperty(AIE::AIETargetModel::IsNPU)) {
           // AIE1 memtile dma metadata format
           getDmaAllocationMetadata(builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
                                    AIE::DMAChannelDir::MM2S,
