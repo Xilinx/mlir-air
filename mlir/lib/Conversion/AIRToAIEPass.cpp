@@ -2583,7 +2583,8 @@ public:
                                std::unordered_set<Operation *> &allocs_to_remap,
                                const AIE::AIETargetModel &targetModel,
                                TileDMAAllocator &tileDmaAlloc, int x, int y) {
-    bool isAIE2 = isa<AIE::AIE2TargetModel>(targetModel);
+    bool UsesSemaphoreLocks =
+        targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     AIE::DMAChannel tile_channel =
         tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf).dma_channel;
     AIE::BufferOp bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
@@ -2596,12 +2597,12 @@ public:
     Value alloc = nullptr;
     auto tileInbound = isTileInbound(memcpyOpIf, (int)air::MemorySpace::L1);
     if (tileInbound) {
-      lockAqValue = isAIE2 ? 1 : 1;
-      lockRelValue = isAIE2 ? 1 : 0;
+      lockAqValue = UsesSemaphoreLocks ? 1 : 1;
+      lockRelValue = UsesSemaphoreLocks ? 1 : 0;
       alloc = memcpyOpIf.getDstMemref();
     } else {
-      lockAqValue = isAIE2 ? 1 : 0;
-      lockRelValue = isAIE2 ? 1 : 1;
+      lockAqValue = UsesSemaphoreLocks ? 1 : 0;
+      lockRelValue = UsesSemaphoreLocks ? 1 : 1;
       alloc = memcpyOpIf.getSrcMemref();
     }
 
@@ -2619,8 +2620,9 @@ public:
       builder.setInsertionPoint(memcpyOpIf);
 
     builder.create<AIE::UseLockOp>(memcpyOpIf->getLoc(), acqLockOp,
-                                   isAIE2 ? AIE::LockAction::AcquireGreaterEqual
-                                          : AIE::LockAction::Acquire,
+                                   UsesSemaphoreLocks
+                                       ? AIE::LockAction::AcquireGreaterEqual
+                                       : AIE::LockAction::Acquire,
                                    lockAqValue);
     // try to find a place to put the unlock. If there are deallocs,
     // replace them with unlock. Otherwise, put them at the end.
@@ -2715,7 +2717,8 @@ public:
                      const AIE::AIETargetModel &targetModel, Block *bd,
                      air::MemcpyInterface memcpyOp, bufferOpTy bufferOp,
                      int chan) {
-    bool isAIE2 = isa<AIE::AIE2TargetModel>(targetModel);
+    bool UsesSemaphoreLocks =
+        targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
 
     auto b = OpBuilder::atBlockEnd(bd);
@@ -2726,11 +2729,11 @@ public:
     int64_t lockRelValue = -1;
     auto aie2LockVal = getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
-      lockAqValue = isAIE2 ? aie2LockVal.first : 0;
-      lockRelValue = isAIE2 ? aie2LockVal.first : 1;
+      lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;
+      lockRelValue = UsesSemaphoreLocks ? aie2LockVal.first : 1;
     } else {
-      lockAqValue = isAIE2 ? aie2LockVal.second : 1;
-      lockRelValue = isAIE2 ? aie2LockVal.second : 0;
+      lockAqValue = UsesSemaphoreLocks ? aie2LockVal.second : 1;
+      lockRelValue = UsesSemaphoreLocks ? aie2LockVal.second : 0;
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 
@@ -2763,8 +2766,9 @@ public:
     Value length =
         b.create<arith::ConstantIndexOp>(memcpyOp.getLoc(), len)->getResult(0);
     b.create<AIE::UseLockOp>(loc, acqLockOp,
-                             isAIE2 ? AIE::LockAction::AcquireGreaterEqual
-                                    : AIE::LockAction::Acquire,
+                             UsesSemaphoreLocks
+                                 ? AIE::LockAction::AcquireGreaterEqual
+                                 : AIE::LockAction::Acquire,
                              lockAqValue);
 
     // Packet flow routing: get packet flow id.
@@ -2783,7 +2787,8 @@ public:
     auto wraps_and_strides =
         AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
     bool useDefaultDataAccessPattern =
-        isAIE2 ? isDefaultDataAccessPattern(sizes, strides, memref) : true;
+        UsesSemaphoreLocks ? isDefaultDataAccessPattern(sizes, strides, memref)
+                           : true;
     AIE::DMABDOp aieDmaBdOp = nullptr;
     if (wraps_and_strides.getValue().empty() || useDefaultDataAccessPattern)
       aieDmaBdOp = b.create<AIE::DMABDOp>(
