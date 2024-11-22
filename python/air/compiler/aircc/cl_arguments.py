@@ -123,6 +123,13 @@ def parse_args(args=None):
         action="store_true",
         help="By default, aircc may output a while(true) loop around per-core logic. If this option is specified, a while(true) loop will not be added.",
     )
+    parser.add_argument(
+        "--omit-ping-pong-transform",
+        dest="omit_pingpong",
+        default=False,
+        action="store_true",
+        help="Whether to run passes which generate ping-pong buffering patterns or not. This will only change the behavior for this program for npu devices",
+    )
 
     opts = parser.parse_args(args)
     return opts

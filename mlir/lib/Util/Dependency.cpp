@@ -614,6 +614,11 @@ bool areAsyncDependent(Operation *a, Operation *b) {
   for (auto dep : dep_b)
     if (dep == token_a)
       return true;
+  // Deep async dependency tracing through air.wait_all.
+  if (isAsyncDependent(a, b))
+    return true;
+  if (isAsyncDependent(b, a))
+    return true;
 
   auto chanA = dyn_cast<air::ChannelInterface>(a);
   auto chanB = dyn_cast<air::ChannelInterface>(b);
