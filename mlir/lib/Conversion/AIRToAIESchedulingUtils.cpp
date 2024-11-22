@@ -221,7 +221,7 @@ air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
 std::pair<int64_t, int64_t>
 air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                       Value buffer_memref) {
-  if (isa<AIE::AIE1TargetModel>(targetModel))
+  if (!targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks))
     return std::make_pair(0, 0);
 
   // Infer semaphore lock values using buffer op
@@ -264,7 +264,7 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
 std::pair<int64_t, int64_t>
 air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                       Value buffer_memref, air::ChannelOp air_chan) {
-  if (isa<AIE::AIE1TargetModel>(targetModel))
+  if (!targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks))
     return std::make_pair(0, 0);
 
   if (!llvm::isa<MemRefType>(buffer_memref.getType()))
@@ -418,21 +418,10 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
     air_chan = getChannelDeclarationThroughSymbol(air_chan_op);
   }
   const auto &target_model = device.getTargetModel();
-  bool isAIE2 = isa<AIE::AIE2TargetModel>(target_model);
-  bool isAIE1 = isa<AIE::AIE1TargetModel>(target_model);
+  bool UsesSemaphoreLocks =
+      target_model.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
 
-  if (isAIE1) {
-    for (size_t i = 0; i < lock_allocation_list.size(); i++) {
-      // If multiple bds reference the same buffer and DMA channel
-      if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&
-          (std::get<2>(lock_allocation_list[i]) == channel)) {
-        return {std::get<3>(lock_allocation_list[i]),
-                std::get<4>(lock_allocation_list[i])};
-      }
-    }
-  }
-
-  else if (isAIE2) {
+  if (UsesSemaphoreLocks) {
     if (air_chan) {
       // AIE2's semaphore locks may share by air.channels
       for (size_t i = 0; i < lock_allocation_list.size(); i++) {
@@ -471,6 +460,15 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
         }
       }
     }
+  } else {
+    for (size_t i = 0; i < lock_allocation_list.size(); i++) {
+      // If multiple bds reference the same buffer and DMA channel
+      if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&
+          (std::get<2>(lock_allocation_list[i]) == channel)) {
+        return {std::get<3>(lock_allocation_list[i]),
+                std::get<4>(lock_allocation_list[i])};
+      }
+    }
   }
   if (!bufferOp) {
     memcpyOp->emitOpError(
@@ -487,7 +485,7 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
 
   OpBuilder builder(bufferOp);
   auto rlock = allocateLockOp(device, tile, 0);
-  auto wlock = isAIE2 ? allocateLockOp(device, tile, init) : rlock;
+  auto wlock = UsesSemaphoreLocks ? allocateLockOp(device, tile, init) : rlock;
   lock_allocation_list.push_back({bufferOp, air_chan, channel, rlock, wlock});
   return {rlock, wlock};
 }
@@ -1042,7 +1040,8 @@ void air::simpleDMAChannelAllocation(
 }
 
 // If found item in vector, return index; else return -1.
-template <typename T> int air::foundInVector(T item, std::vector<T> vec) {
+template <typename T>
+int air::foundInVector(T item, std::vector<T> vec) {
   auto it = std::find(vec.begin(), vec.end(), item);
   int index = it - vec.begin();
   return index;
