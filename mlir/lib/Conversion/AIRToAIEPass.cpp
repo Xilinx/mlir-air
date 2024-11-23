@@ -3639,7 +3639,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     auto devOp = rewriter.create<AIE::DeviceOp>(
         aie_module.getLoc(),
         AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device));
-    AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter, devOp.getLoc());
+    AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter,
+                                    devOp.getLoc());
     outlineAIECores(rewriter, devOp, h, tileToHerdMap, options);
 
     auto ctx = aie_module->getContext();
