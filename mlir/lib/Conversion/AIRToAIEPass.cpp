@@ -381,7 +381,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
             fn = func::FuncOp::create(aie_device.getLoc(), call.getCallee(),
                                       call.getCalleeType());
             fn.setPrivate();
-            aie_device.push_back(fn);
+            aie_device.insert(aie_device.getBody()->getTerminator(), fn);
           }
         }
       });
@@ -543,8 +543,8 @@ void createAIEModulesAndOutlineCores(
         AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
     aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                      StringAttr::get(builder.getContext(), segment_name));
-
-    aie_dev.getRegion().emplaceBlock();
+    AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
+                                    aie_dev.getLoc());
     seg.walk([&](xilinx::air::HerdOp h) {
       aie_modules.push_back({aie_dev, h});
     });
@@ -568,7 +568,8 @@ void createAIEModulesAndOutlineCores(
         AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
     aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                      StringAttr::get(builder.getContext(), segment_name));
-    aie_dev.getRegion().emplaceBlock();
+    AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
+                                    aie_dev.getLoc());
     aie_modules.push_back({aie_dev, herd});
   };
   for (auto &p : aie_modules) {
@@ -1715,7 +1716,7 @@ public:
       return flowOp;
 
     OpBuilder builder(aie_device);
-    builder.setInsertionPointToEnd(aie_device.getBody());
+    builder.setInsertionPoint(aie_device.getBody()->getTerminator());
     return builder.create<AIE::FlowOp>(builder.getUnknownLoc(), source,
                                        sourceBundle, sourceChannel, dest,
                                        destBundle, destChannel);
@@ -1801,7 +1802,7 @@ public:
       return packetFlowOp;
     }
 
-    builder.setInsertionPointToEnd(aie_device.getBody());
+    builder.setInsertionPoint(aie_device.getBody()->getTerminator());
     return createPacketFlowOp(builder, flowID, source, sourceBundle,
                               sourceChannel, dest, destBundle, destChannel);
   }
@@ -2984,7 +2985,7 @@ public:
       // Generate aie.shim_dma op
       AIE::ShimDMAOp shimDMA = getShimDMAOp(tile);
       if (!shimDMA) {
-        builder.setInsertionPointToEnd(device.getBody());
+        builder.setInsertionPoint(device.getBody()->getTerminator());
         shimDMA = builder.create<AIE::ShimDMAOp>(builder.getUnknownLoc(),
                                                  builder.getIndexType(), tile);
       }
@@ -3031,7 +3032,7 @@ public:
       // Generate aie.memtile_dma op
       AIE::MemTileDMAOp memTileDMA = getMemTileDMAOp(tile);
       if (!memTileDMA) {
-        builder.setInsertionPointToEnd(device.getBody());
+        builder.setInsertionPoint(device.getBody()->getTerminator());
         memTileDMA = builder.create<AIE::MemTileDMAOp>(
             builder.getUnknownLoc(), builder.getIndexType(), tile);
       }
@@ -3110,7 +3111,7 @@ public:
         }
         int destChan = 1; // todo: allocation?
 
-        builder.setInsertionPointToEnd(device.getBody());
+        builder.setInsertionPoint(device.getBody()->getTerminator());
         auto keep_pkt_header = builder.getBoolAttr(true);
         (void)createPacketFlowOp(
             builder, flowID, srcTile, AIE::WireBundle::Trace, 0, destTile,
@@ -3187,11 +3188,7 @@ public:
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
       patterns.insert<LowerScfTokenPattern>(ctx);
 
-    OpBuilder builder(ctx);
-    AIE::DeviceOp deviceOp = builder.create<AIE::DeviceOp>(
-        builder.getUnknownLoc(),
-        AIE::AIEDeviceAttr::get(builder.getContext(), *device));
-    ShimTileAllocator shimTileAlloc(deviceOp.getTargetModel());
+    ShimTileAllocator shimTileAlloc(AIE::getTargetModel(*device));
     std::map<Operation *, AIE::ObjectFifoCreateOp> linksToComplete;
     if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
       patterns.insert<LowerAIRChannelsPattern>(
@@ -3348,7 +3345,7 @@ public:
                               "supported for AIE1.");
         } else {
           // AIE2 dma metadata format
-          builder.setInsertionPointToEnd(device.getBody());
+          builder.setInsertionPoint(device.getBody()->getTerminator());
           createShimDMAAllocationOps(
               builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
               AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map);
@@ -3380,7 +3377,7 @@ public:
                              "supported for AIE1.");
         } else {
           // AIE2 memtile dma metadata format
-          builder.setInsertionPointToEnd(device.getBody());
+          builder.setInsertionPoint(device.getBody()->getTerminator());
           createShimDMAAllocationOps(
               builder, ctx, seg, shimDmaAlloc.s2mm_allocs,
               AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map);
@@ -3642,7 +3639,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     auto devOp = rewriter.create<AIE::DeviceOp>(
         aie_module.getLoc(),
         AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device));
-    devOp.getRegion().emplaceBlock();
+    AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter, devOp.getLoc());
     outlineAIECores(rewriter, devOp, h, tileToHerdMap, options);
 
     auto ctx = aie_module->getContext();
