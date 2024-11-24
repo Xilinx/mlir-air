@@ -851,12 +851,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
         continue; // Currently unable to compose offset[i] expr onto another
                   // offset[j] expr.
       auto constStrideJ = getConstantIntValue(strides[j]);
-      std::cout << "\n findFirstComposableOffsetIdx \n";
-      std::cout << "i: " << i << " *constStrideI: " << *constStrideI;
-      std::cout << "j: " << j << " *constStrideJ: " << *constStrideJ;
       if (!(*constStrideI) % (*constStrideJ) || (*constStrideJ == 1)) {
-        std::cout << "returning j: " << j;
-        std::cout << "for i: " << i;
         output = j;
         return output;
       }
