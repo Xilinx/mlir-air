@@ -846,7 +846,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
                                          SmallVector<Value> strides) {
     auto constStrideI = getConstantIntValue(strides[i]);
     std::optional<int> output = std::nullopt;
-    for (int j = i + 1; j < strides.size(); j++) {
+    for (int j = i + 1; j < (int)strides.size(); j++) {
       if (!getConstantIntValue(offsets[j]))
         continue; // Currently unable to compose offset[i] expr onto another
                   // offset[j] expr.
