@@ -840,6 +840,29 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
         builder.getUnknownLoc(), (*const_size) * (*const_size_next));
     return true;
   };
+  // For a given offset[i], find the first offset[j] such that stride[j] is
+  // divisible by stride[i], so that offset[i] can be composed onto offset[j].
+  auto findFirstComposableOffsetIdx = [](int i, SmallVector<Value> offsets,
+                                         SmallVector<Value> strides) {
+    auto constStrideI = getConstantIntValue(strides[i]);
+    std::optional<int> output = std::nullopt;
+    for (int j = i + 1; j < strides.size(); j++) {
+      if (!getConstantIntValue(offsets[j]))
+        continue; // Currently unable to compose offset[i] expr onto another
+                  // offset[j] expr.
+      auto constStrideJ = getConstantIntValue(strides[j]);
+      std::cout << "\n findFirstComposableOffsetIdx \n";
+      std::cout << "i: " << i << " *constStrideI: " << *constStrideI;
+      std::cout << "j: " << j << " *constStrideJ: " << *constStrideJ;
+      if (!(*constStrideI) % (*constStrideJ) || (*constStrideJ == 1)) {
+        std::cout << "returning j: " << j;
+        std::cout << "for i: " << i;
+        output = j;
+        return output;
+      }
+    }
+    return output;
+  };
   for (auto i : erase_dims) {
     auto const_offset = getConstantIntValue(offsets[i]);
     if (const_offset && *const_offset == 0) {
@@ -855,13 +878,14 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       continue;
     auto const_stride = getConstantIntValue(strides[i]);
     assert(const_stride && "non-static stride, NYI.");
-    auto const_offset_next = getConstantIntValue(offsets[i + 1]);
-    if (!const_offset_next)
+    auto j = findFirstComposableOffsetIdx(i, offsets, strides);
+    if (!j)
       continue;
-    auto const_stride_next = getConstantIntValue(strides[i + 1]);
-    assert(const_stride_next && "non-static stride, NYI.");
+    auto const_offset_next = getConstantIntValue(offsets[*j]);
+    auto const_stride_next = getConstantIntValue(strides[*j]);
+    // Attempting to compose i-th offset onto another offset.
     if (const_offset) {
-      offsets[i + 1] = builder.create<arith::ConstantIndexOp>(
+      offsets[*j] = builder.create<arith::ConstantIndexOp>(
           builder.getUnknownLoc(),
           (*const_stride) * (*const_offset) / (*const_stride_next) +
               (*const_offset_next));
@@ -912,7 +936,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       auto next_offset_map = AffineMap::get(0, 1, offset_expr);
       affine_apply.setMap(next_offset_map);
       offsets[i] = affine_apply;
-      offsets[i + 1] = offsets[i];
+      offsets[*j] = offsets[i];
     }
     erased |= multiplyAdjWraps(builder, i, sizes);
     offsets.erase(offsets.begin() + i);

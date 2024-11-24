@@ -69,7 +69,7 @@ module {
   // CHECK: put @channel_3[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
   // CHECK: put @channel_4[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
   // CHECK: get @channel_5[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: put @channel_5[] (%alloc_0[%c0, %c18, %c0] [%c4, %c18, %c8] [%c8, %c32, %c1]) : (memref<1x6x6x32xi8, 1>)
+  // CHECK: put @channel_5[] (%alloc_0[%c0, %c0, %c576] [%c4, %c18, %c8] [%c8, %c32, %c1]) : (memref<1x6x6x32xi8, 1>)
 
   func.func @test1(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
     %c0 = arith.constant 0 : index
@@ -286,9 +286,9 @@ module {
   // Offset propagation with wrap-and-stride canonicalization.
   // CHECK-LABEL: test9
   // CHECK: %[[VAL0:.*]] = affine.apply #map()[%arg1]
-  // CHECK: put  @channel_21[] (%arg0[%c0, %c0, %[[VAL0]], %c0] [%c8, %c2, %c32, %c32] [%c32, %c8192, %c256, %c1]) : (memref<128x256xi32>)
-  // CHECK: air.channel.put  @channel_22[] (%arg2[%c256, %c0, %c0] [%c8, %c32, %c4] [%c4, %c32, %c1]) : (memref<1x2x32x32xi32, 1 : i32>)
-  // CHECK: air.channel.put  @channel_23[] (%arg3[%c128, %c0, %c0] [%c4, %c32, %c8] [%c8, %c32, %c1]) : (memref<2x1x32x32xi32, 1 : i32>)
+  // CHECK: put  @channel_21[] (%arg0[%c0, %c0, %[[VAL0]]] [%c8, %c64, %c32] [%c32, %c256, %c1]) : (memref<128x256xi32>)
+  // CHECK: air.channel.put  @channel_22[] (%arg2[%c0, %c0, %c1024] [%c8, %c32, %c4] [%c4, %c32, %c1]) : (memref<1x2x32x32xi32, 1 : i32>)
+  // CHECK: air.channel.put  @channel_23[] (%arg3[%c0, %c0, %c1024] [%c4, %c32, %c8] [%c8, %c32, %c1]) : (memref<2x1x32x32xi32, 1 : i32>)
   // CHECK: %[[VAL1:.*]] = affine.apply
   // CHECK: put async  @channel_21[] (%arg0[%c0, %[[VAL1]]] [%c8, %c8] [%c0, %c1]) : (memref<128x256xi32>)
 
@@ -459,7 +459,7 @@ module {
   // Offset propagated from scf.for and air.hier induction vars.
   // CHECK-LABEL: test13
   
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_14[] (%{{.*}}[%c0, %1, %results, %c0] [%c8, %c2_0, %c32, %c32] [%c32, %c8192, %c256, %c1]) : (memref<2x128x256xi32>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_14[] (%{{.*}}[%c0, %c0, %results, %1] [%c8, %c2_0, %c32, %c32] [%c32, %c8192, %c256, %c1]) : (memref<2x128x256xi32>)
 
   func.func @test13(%arg0: memref<2x128x256xi32>, %arg1: memref<2x256x128xi32>) {
     %c2 = arith.constant 2 : index
