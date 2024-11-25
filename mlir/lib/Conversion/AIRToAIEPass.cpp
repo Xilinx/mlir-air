@@ -128,51 +128,6 @@ struct ShimTileAllocator {
 bool isMM2S(AIE::DMAChannel channel) {
   return (channel.direction == AIE::DMAChannelDir::MM2S);
 }
-bool isLegalMemorySpace(air::MemcpyInterface memcpyOp, AIE::AIEArch arch) {
-  switch (arch) {
-  case xilinx::AIE::AIEArch::AIE1: {
-    if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
-      if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1" &&
-          getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L3") {
-        return true;
-      } else if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L3" &&
-                 getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
-        return true;
-      } else
-        return false;
-    } else if (memcpyOp.getSrcMemref() &&
-               getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1") {
-      return true;
-    } else if (memcpyOp.getDstMemref() &&
-               getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
-      return true;
-    }
-    return false;
-  }
-  case xilinx::AIE::AIEArch::AIE2:
-  case xilinx::AIE::AIEArch::AIE2p: {
-    // todo for AIE2: add memtile data movement support
-    if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
-      if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1" &&
-          getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L3") {
-        return true;
-      } else if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L3" &&
-                 getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
-        return true;
-      } else
-        return false;
-    } else if (memcpyOp.getSrcMemref() &&
-               getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1") {
-      return true;
-    } else if (memcpyOp.getDstMemref() &&
-               getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
-      return true;
-    }
-    return false;
-  }
-  }
-  return false;
-}
 
 std::string createSymbolName(Operation *symbol_table, std::string dma_name) {
   std::string new_cname = dma_name;
@@ -2158,20 +2113,6 @@ public:
     }
   }
 
-  // Verify data movement legality for the given device architecture
-  void verifyMemcpyOps(std::vector<Operation *> &dma_memcpy_ops,
-                       AIE::AIEArch arch) {
-    for (auto o = dma_memcpy_ops.begin(); o != dma_memcpy_ops.end();) {
-      auto memcpyOpIf = cast<air::MemcpyInterface>(*o);
-      if (!isLegalMemorySpace(memcpyOpIf, arch)) {
-        o = dma_memcpy_ops.erase(o);
-        (*o)->emitOpError("is an illegal data movement for architecture");
-        (*o)->erase();
-      } else
-        ++o;
-    }
-  }
-
   template <typename T>
   void placeDMAChannelsAndRouteFlows(AIE::DeviceOp aie_device,
                                      ShimDMAAllocator &shim_dma_alloc,
@@ -2184,11 +2125,7 @@ public:
     aie_device.walk(
         [&](T memcpyOp) { dma_memcpy_ops.push_back(memcpyOp.getOperation()); });
 
-    // Step 1: Verify data movement legality for the given device architecture
-    // verifyMemcpyOps(dma_memcpy_ops,
-    //                 aie_device.getTargetModel().getTargetArch());
-
-    // Step 2: Pair up memcpy ops into flow ops. Each entry in memcpy_flows is a
+    // Step 1: Pair up memcpy ops into flow ops. Each entry in memcpy_flows is a
     // bundle of memcpy ops which share the same aie.flow.
     std::vector<MemcpyBundleAsFlow> memcpy_flows;
     for (auto o : dma_memcpy_ops) {
@@ -2222,7 +2159,7 @@ public:
       }
     }
 
-    // Step 3: Allocate tile DMA channels, shim DMA channels and shim tiles
+    // Step 2: Allocate tile DMA channels, shim DMA channels and shim tiles
     // AIR channel to AIE flow mapping strategy: allocate L1 DMAs first,
     // followed by L2 and then L3, where outer memory hierarchies reuse existing
     // AIE flows as possible.
@@ -2235,7 +2172,7 @@ public:
     simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc, memtile_dma_alloc,
                                tile_dma_alloc);
 
-    // Step 3.5: Sort all ops being allocated to each DMA channel, to avoid
+    // Step 3: Sort all ops being allocated to each DMA channel, to avoid
     // ping-pong deadlock.
     tile_dma_alloc.sortMemcpyOps(dma_memcpy_ops);
 
