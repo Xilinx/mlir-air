@@ -1048,6 +1048,12 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
   }
 
   std::map<Operation *, int> op_to_count;
+  // Evaluate offset from affine map.
+  auto evalOffsetFromAffineMap = [&](MLIRContext *ctx, AffineMap map) {
+    return air::evaluateConstantsInMap(
+        map, SmallVector<std::optional<int64_t>>{std::optional<int64_t>{0}},
+        ctx);
+  };
   for (auto o : for_loops) {
     int64_t stepSize = -1;
     int loop_lower_bound = 0;
@@ -1086,14 +1092,18 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
             if (iv_is_symbol) {
               auto map = affop.getAffineMap();
               ind_var_factor = *getConstantIntValue(strides[i]);
-              ind_var_factor *= air::evaluateConstantsInMap(
-                                    map,
-                                    SmallVector<std::optional<int64_t>>{
-                                        std::optional<int64_t>{stepSize}},
-                                    for_op->getContext())
-                                    .value();
+              int64_t map_offset =
+                  evalOffsetFromAffineMap(for_op->getContext(), map).value();
+              int64_t map_gradient = air::evaluateConstantsInMap(
+                                         map,
+                                         SmallVector<std::optional<int64_t>>{
+                                             std::optional<int64_t>{stepSize}},
+                                         for_op->getContext())
+                                         .value() -
+                                     map_offset;
+              ind_var_factor *= map_gradient;
               offsets[i] = builder.template create<arith::ConstantIndexOp>(
-                  loc, loop_lower_bound);
+                  loc, loop_lower_bound + map_offset);
               break;
             }
           }
