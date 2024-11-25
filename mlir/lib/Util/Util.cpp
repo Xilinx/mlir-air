@@ -851,7 +851,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
         continue; // Currently unable to compose offset[i] expr onto another
                   // offset[j] expr.
       auto constStrideJ = getConstantIntValue(strides[j]);
-      if (!(*constStrideI) % (*constStrideJ) || (*constStrideJ == 1)) {
+      if ((*constStrideI) % (*constStrideJ) == 0) {
         output = j;
         return output;
       }

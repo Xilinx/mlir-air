@@ -69,7 +69,7 @@ module {
   // CHECK: put @channel_3[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
   // CHECK: put @channel_4[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
   // CHECK: get @channel_5[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: put @channel_5[] (%alloc_0[%c0, %c0, %c576] [%c4, %c18, %c8] [%c8, %c32, %c1]) : (memref<1x6x6x32xi8, 1>)
+  // CHECK: put @channel_5[] (%alloc_0[%c0, %c18, %c0] [%c4, %c18, %c8] [%c8, %c32, %c1]) : (memref<1x6x6x32xi8, 1>)
 
   func.func @test1(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
     %c0 = arith.constant 0 : index
@@ -287,8 +287,8 @@ module {
   // CHECK-LABEL: test9
   // CHECK: %[[VAL0:.*]] = affine.apply #map()[%arg1]
   // CHECK: put  @channel_21[] (%arg0[%c0, %c0, %[[VAL0]]] [%c8, %c64, %c32] [%c32, %c256, %c1]) : (memref<128x256xi32>)
-  // CHECK: air.channel.put  @channel_22[] (%arg2[%c0, %c0, %c1024] [%c8, %c32, %c4] [%c4, %c32, %c1]) : (memref<1x2x32x32xi32, 1 : i32>)
-  // CHECK: air.channel.put  @channel_23[] (%arg3[%c0, %c0, %c1024] [%c4, %c32, %c8] [%c8, %c32, %c1]) : (memref<2x1x32x32xi32, 1 : i32>)
+  // CHECK: air.channel.put  @channel_22[] (%arg2[%c256, %c0, %c0] [%c8, %c32, %c4] [%c4, %c32, %c1]) : (memref<1x2x32x32xi32, 1 : i32>)
+  // CHECK: air.channel.put  @channel_23[] (%arg3[%c128, %c0, %c0] [%c4, %c32, %c8] [%c8, %c32, %c1]) : (memref<2x1x32x32xi32, 1 : i32>)
   // CHECK: %[[VAL1:.*]] = affine.apply
   // CHECK: put async  @channel_21[] (%arg0[%c0, %[[VAL1]]] [%c8, %c8] [%c0, %c1]) : (memref<128x256xi32>)
 
@@ -459,11 +459,12 @@ module {
   // Offset propagated from scf.for and air.hier induction vars.
   // CHECK-LABEL: test13
   
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_14[] (%{{.*}}[%c0, %c0, %results, %1] [%c8, %c2_0, %c32, %c32] [%c32, %c8192, %c256, %c1]) : (memref<2x128x256xi32>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_14[] (%{{.*}}[%c0, %1, %results, %c0] [%c8, %c2_0, %c32, %c32] [%c32, %c8192, %c256, %c1]) : (memref<2x128x256xi32>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_15[%c0, %c0] (%{{.*}}[%c0, %results, %c32768] [%c8, %c32, %c32] [%c32, %c256, %c1]) : (memref<512x512xi32>)
 
-  func.func @test13(%arg0: memref<2x128x256xi32>, %arg1: memref<2x256x128xi32>) {
+  func.func @test13(%arg0: memref<2x128x256xi32>, %arg1: memref<512x512xi32>) {
     %c2 = arith.constant 2 : index
-    %0 = air.launch async (%arg3, %arg4, %arg5) in (%arg6=%c2, %arg7=%c2, %arg8=%c2) args(%arg10=%arg0, %arg11=%arg1) : memref<2x128x256xi32>, memref<2x256x128xi32> {
+    %0 = air.launch async (%arg3, %arg4, %arg5) in (%arg6=%c2, %arg7=%c2, %arg8=%c2) args(%arg10=%arg0, %arg11=%arg1) : memref<2x128x256xi32>, memref<512x512xi32> {
       %c4096 = arith.constant 4096 : index
       %c8 = arith.constant 8 : index
       %c16384 = arith.constant 16384 : index
@@ -482,6 +483,10 @@ module {
       }
       %2 = scf.for %arg12 = %c0 to %c256 step %c32 iter_args(%arg13 = %async_token) -> (!air.async.token) {
         %7 = air.channel.put async [%arg13, %async_token]  @channel_14[] (%arg10[%arg3, %c0, %c0, %results, %arg12] [%c1, %c2_0, %c1, %c32, %c32] [%c32768, %c8192, %c32, %c256, %c1]) : (memref<2x128x256xi32>)
+        scf.yield %7 : !air.async.token
+      }
+      %3 = scf.for %arg12 = %c0 to %c256 step %c32 iter_args(%arg13 = %async_token) -> (!air.async.token) {
+        %7 = air.channel.put async [%arg13, %async_token]  @channel_15[%c0, %c0] (%arg11[%c2_0, %c0, %results, %arg12] [%c1, %c1, %c32, %c32] [%c16384, %c32, %c256, %c1]) {id = 1 : i32} : (memref<512x512xi32>)
         scf.yield %7 : !air.async.token
       }
     }
