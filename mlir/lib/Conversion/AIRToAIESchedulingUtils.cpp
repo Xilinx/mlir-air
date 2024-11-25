@@ -627,7 +627,13 @@ allocation_info_t ShimDMAAllocator::allocNewDmaChannel(
     dma_channel++;
     if (dma_channel >= shim_dma_channels) {
       dma_channel = 0;
-      dma_col = dma_columns[colIdx++ % dma_columns.size()];
+      // dma_col = dma_columns[colIdx++ % dma_columns.size()];
+      dma_col = dma_columns[colIdx++];
+      if (colIdx == (int)dma_columns.size()) {
+        memcpyOp->emitOpError(
+            "failed to map to shim dma channels: out of channels.");
+        break;
+      }
     }
   }
   assert(dma_channel < shim_dma_channels);
