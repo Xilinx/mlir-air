@@ -1479,6 +1479,18 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   if (targetMemrefs.empty())
     return;
 
+  // Look up or create a new air.channel name.
+  std::map<std::string, std::string> chanNameMap;
+  auto lookUpOrCreateChanName = [&](std::string chanName, ModuleOp module) {
+    if (chanNameMap.count(chanName))
+      return chanNameMap[chanName];
+    else {
+      auto newChanName = air::createChannelName(module);
+      chanNameMap[chanName] = newChanName;
+      return newChanName;
+    }
+  };
+
   // Tile memrefs.
   llvm::SmallSet<Operation *, 1> erased;
   for (auto allocOp : targetMemrefs) {
@@ -1528,10 +1540,18 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         SmallVector<Type, 4> tys = {
             air::AsyncTokenType::get(chanUserOp->getContext())};
         auto cname =
-            air::createChannelName(chanUserOp->getParentOfType<ModuleOp>());
-        SmallVector<int64_t, 2> channel_sizes = {targetColTilingFactor, 1};
-        auto new_chan = builder.create<air::ChannelOp>(
-            loc, cname, builder.getI64ArrayAttr(channel_sizes));
+            lookUpOrCreateChanName(chanUserOp.getChanName().str(),
+                                   chanUserOp->getParentOfType<ModuleOp>());
+        air::ChannelOp new_chan;
+        auto new_chan_op = mlir::SymbolTable::lookupSymbolIn(
+            chanUserOp->getParentOfType<ModuleOp>(), cname);
+        if (new_chan_op) {
+          new_chan = dyn_cast<air::ChannelOp>(new_chan_op);
+        } else {
+          SmallVector<int64_t, 2> channel_sizes = {targetColTilingFactor, 1};
+          new_chan = builder.create<air::ChannelOp>(
+              loc, cname, builder.getI64ArrayAttr(channel_sizes));
+        }
         auto memrefShape = air::getTensorShape(memref.getType());
 
         int dim = 0;
