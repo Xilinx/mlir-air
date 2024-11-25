@@ -840,6 +840,24 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
         builder.getUnknownLoc(), (*const_size) * (*const_size_next));
     return true;
   };
+  // For a given offset[i], find the first offset[j] such that stride[j] is
+  // divisible by stride[i], so that offset[i] can be composed onto offset[j].
+  auto findFirstComposableOffsetIdx = [](int i, SmallVector<Value> offsets,
+                                         SmallVector<Value> strides) {
+    auto constStrideI = getConstantIntValue(strides[i]);
+    std::optional<int> output = std::nullopt;
+    for (int j = i + 1; j < (int)strides.size(); j++) {
+      if (!getConstantIntValue(offsets[j]))
+        continue; // Currently unable to compose offset[i] expr onto another
+                  // offset[j] expr.
+      auto constStrideJ = getConstantIntValue(strides[j]);
+      if ((*constStrideI) % (*constStrideJ) == 0) {
+        output = j;
+        return output;
+      }
+    }
+    return output;
+  };
   for (auto i : erase_dims) {
     auto const_offset = getConstantIntValue(offsets[i]);
     if (const_offset && *const_offset == 0) {
@@ -855,13 +873,14 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       continue;
     auto const_stride = getConstantIntValue(strides[i]);
     assert(const_stride && "non-static stride, NYI.");
-    auto const_offset_next = getConstantIntValue(offsets[i + 1]);
-    if (!const_offset_next)
+    auto j = findFirstComposableOffsetIdx(i, offsets, strides);
+    if (!j)
       continue;
-    auto const_stride_next = getConstantIntValue(strides[i + 1]);
-    assert(const_stride_next && "non-static stride, NYI.");
+    auto const_offset_next = getConstantIntValue(offsets[*j]);
+    auto const_stride_next = getConstantIntValue(strides[*j]);
+    // Attempting to compose i-th offset onto another offset.
     if (const_offset) {
-      offsets[i + 1] = builder.create<arith::ConstantIndexOp>(
+      offsets[*j] = builder.create<arith::ConstantIndexOp>(
           builder.getUnknownLoc(),
           (*const_stride) * (*const_offset) / (*const_stride_next) +
               (*const_offset_next));
@@ -912,7 +931,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       auto next_offset_map = AffineMap::get(0, 1, offset_expr);
       affine_apply.setMap(next_offset_map);
       offsets[i] = affine_apply;
-      offsets[i + 1] = offsets[i];
+      offsets[*j] = offsets[i];
     }
     erased |= multiplyAdjWraps(builder, i, sizes);
     offsets.erase(offsets.begin() + i);
@@ -1029,6 +1048,12 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
   }
 
   std::map<Operation *, int> op_to_count;
+  // Evaluate offset from affine map.
+  auto evalOffsetFromAffineMap = [&](MLIRContext *ctx, AffineMap map) {
+    return air::evaluateConstantsInMap(
+        map, SmallVector<std::optional<int64_t>>{std::optional<int64_t>{0}},
+        ctx);
+  };
   for (auto o : for_loops) {
     int64_t stepSize = -1;
     int loop_lower_bound = 0;
@@ -1067,14 +1092,18 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
             if (iv_is_symbol) {
               auto map = affop.getAffineMap();
               ind_var_factor = *getConstantIntValue(strides[i]);
-              ind_var_factor *= air::evaluateConstantsInMap(
-                                    map,
-                                    SmallVector<std::optional<int64_t>>{
-                                        std::optional<int64_t>{stepSize}},
-                                    for_op->getContext())
-                                    .value();
+              int64_t map_offset =
+                  evalOffsetFromAffineMap(for_op->getContext(), map).value();
+              int64_t map_gradient = air::evaluateConstantsInMap(
+                                         map,
+                                         SmallVector<std::optional<int64_t>>{
+                                             std::optional<int64_t>{stepSize}},
+                                         for_op->getContext())
+                                         .value() -
+                                     map_offset;
+              ind_var_factor *= map_gradient;
               offsets[i] = builder.template create<arith::ConstantIndexOp>(
-                  loc, loop_lower_bound);
+                  loc, loop_lower_bound + map_offset);
               break;
             }
           }
