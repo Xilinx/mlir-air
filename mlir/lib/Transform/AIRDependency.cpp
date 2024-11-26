@@ -1185,8 +1185,21 @@ private:
       // Check if operand is returned from memref.subview
       if (auto subview =
               operand.memrefValue.getDefiningOp<memref::SubViewOp>()) {
-        partialMemref subview_tile(subview.getSource(), subview.getOffsets(),
-                                   subview.getSizes(), subview.getStrides());
+        OpBuilder svBuilder(subview);
+        auto loc = subview->getLoc();
+        SmallVector<Value> subviewOffsetVals, subviewSizeVals,
+            subviewStrideVals;
+        for (auto fr : subview.getMixedOffsets())
+          subviewOffsetVals.push_back(
+              getValueOrCreateConstantIndexOp(svBuilder, loc, fr));
+        for (auto fr : subview.getMixedSizes())
+          subviewSizeVals.push_back(
+              getValueOrCreateConstantIndexOp(svBuilder, loc, fr));
+        for (auto fr : subview.getMixedStrides())
+          subviewStrideVals.push_back(
+              getValueOrCreateConstantIndexOp(svBuilder, loc, fr));
+        partialMemref subview_tile(subview.getSource(), subviewOffsetVals,
+                                   subviewSizeVals, subviewStrideVals);
         SmallVector<partialMemref, 1> subview_operands = {subview_tile};
         traceDeps<T>(subview_operands, sink_air_op, dep_type);
       }
