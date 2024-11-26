@@ -830,16 +830,21 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
     auto loc = herdOp->getLoc();
     auto ctx = herdOp->getContext();
     auto hasNElements = [](Block *block, unsigned N) {
-      auto op_ptr = block->begin();
-      for (unsigned i = 0; i < N; i++)
-        op_ptr = std::next(op_ptr);
-      return op_ptr != block->end() && &*op_ptr == &block->back();
+      unsigned counter = 0;
+      for (auto &o : block->without_terminator()) {
+        if (air::isPure(&o))
+          continue;
+        if (isa<air::WaitAllOp>(o))
+          continue;
+        counter++;
+      }
+      return counter == N;
     };
     SmallVector<scf::ForOp> for_loop_nest;
     Operation *parent = herdOp->getParentOp();
     while (parent && !isa<air::SegmentOp>(parent)) {
       if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-        if (hasNElements(forOp.getBody(), 2))
+        if (hasNElements(forOp.getBody(), 1))
           for_loop_nest.push_back(forOp);
         else
           return failure(); // Herd is not in perfectly nested loop.
