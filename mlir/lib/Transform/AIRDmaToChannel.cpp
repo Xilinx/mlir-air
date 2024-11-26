@@ -551,6 +551,19 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
   SmallVector<air::ChannelInterface, 1> internalGetPut;
   SmallVector<air::DmaMemcpyNdOp, 2> dmas;
 
+  // Clear async dependency tokens from dma memcpy ops to air hierarchy ops;
+  // async parallelism to be represented as channels instead.
+  auto hier_op_async_deps = air::getAsyncDependenciesFromOp(hier_op);
+  for (int i = hier_op_async_deps.size() - 1; i >= 0; i--) {
+    auto def_memcpyi =
+        hier_op_async_deps[i].getDefiningOp<air::MemcpyInterface>();
+    if (!def_memcpyi)
+      continue;
+    air::eraseAsyncDependencyFromAsyncOp(
+        dyn_cast<air::AsyncOpInterface>(hier_op.getOperation()),
+        hier_op_async_deps[i]);
+  }
+
   // Recursively search for and replace air.dma ops
   auto module = op->getParentOfType<ModuleOp>();
   OpBuilder module_builder(module);
@@ -751,6 +764,19 @@ class AIRDmaToAIRChannelConversion
     std::set<Operation *> erased;
     SmallVector<air::ChannelInterface, 1> externalGetPut;
     SmallVector<air::ChannelInterface, 1> internalGetPut;
+
+    // Clear async dependency tokens to air hierarchy ops; async parallelism to
+    // be represented as channels instead.
+    auto hier_op_async_deps = air::getAsyncDependenciesFromOp(hier_op);
+    for (int i = hier_op_async_deps.size() - 1; i >= 0; i--) {
+      auto def_memcpyi =
+          hier_op_async_deps[i].getDefiningOp<air::MemcpyInterface>();
+      if (!def_memcpyi)
+        continue;
+      air::eraseAsyncDependencyFromAsyncOp(
+          dyn_cast<air::AsyncOpInterface>(hier_op.getOperation()),
+          hier_op_async_deps[i]);
+    }
 
     replaceAIRDmaWithAIRChannelPairs(rewriter, innerMemorySpace, op,
                                      internalGetPut, externalGetPut);
