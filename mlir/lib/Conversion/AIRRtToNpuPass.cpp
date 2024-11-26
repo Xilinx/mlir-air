@@ -1096,7 +1096,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       auto d = getDeviceForSegmentLoad(s);
       if (!f || !d)
         continue;
-      f->moveAfter(&d.getBody()->back());
+      f->moveBefore(d.getBody()->getTerminator());
     }
   }
 
@@ -1557,12 +1557,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             /*enable_packet*/ 1, /*out_of_order_id*/ 0,
             /*packet_id*/ flowID, pkt_type,
             /* d0_size */ 0, /* d0_stride */ 0, /* d1_size */ 0,
-            /* d1_stride */ 0, /* d2_stride */ 0,
+            /* d1_stride */ 0, /* d2_size */ 0, /* d2_stride */ 0,
             /* iteration_current */ 0, /* iteration_size */ 0,
             /* iteration_stride */ 0, /* next_bd */ 0, dstRowIndex,
             /* use_next_bd */ 0,
             /* valid_bd */ 1, /* lock_rel_val */ 0, /* lock_rel_id */ 0,
-            /* lock_acq_enable */ 0, /* lock_acq_val */ 0, /* lock_acq_id */ 0);
+            /* lock_acq_enable */ 0, /* lock_acq_val */ 0, /* lock_acq_id */ 0,
+            /* d0_zero_before */ 0, /* d1_zero_before */ 0,
+            /* d2_zero_before */ 0,
+            /* d0_zero_after */ 0, /* d1_zero_after */ 0,
+            /* d2_zero_after */ 0);
         uint32_t addr = (dstColIndex << target_model.getColumnShift()) |
                         (0x1D004 + bdID * 0x20);
         builder.create<AIEX::NpuAddressPatchOp>(builder.getUnknownLoc(), addr,

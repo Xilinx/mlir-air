@@ -128,51 +128,6 @@ struct ShimTileAllocator {
 bool isMM2S(AIE::DMAChannel channel) {
   return (channel.direction == AIE::DMAChannelDir::MM2S);
 }
-bool isLegalMemorySpace(air::MemcpyInterface memcpyOp, AIE::AIEArch arch) {
-  switch (arch) {
-  case xilinx::AIE::AIEArch::AIE1: {
-    if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
-      if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1" &&
-          getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L3") {
-        return true;
-      } else if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L3" &&
-                 getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
-        return true;
-      } else
-        return false;
-    } else if (memcpyOp.getSrcMemref() &&
-               getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1") {
-      return true;
-    } else if (memcpyOp.getDstMemref() &&
-               getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
-      return true;
-    }
-    return false;
-  }
-  case xilinx::AIE::AIEArch::AIE2:
-  case xilinx::AIE::AIEArch::AIE2p: {
-    // todo for AIE2: add memtile data movement support
-    if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
-      if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1" &&
-          getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L3") {
-        return true;
-      } else if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L3" &&
-                 getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
-        return true;
-      } else
-        return false;
-    } else if (memcpyOp.getSrcMemref() &&
-               getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1") {
-      return true;
-    } else if (memcpyOp.getDstMemref() &&
-               getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
-      return true;
-    }
-    return false;
-  }
-  }
-  return false;
-}
 
 std::string createSymbolName(Operation *symbol_table, std::string dma_name) {
   std::string new_cname = dma_name;
@@ -381,7 +336,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
             fn = func::FuncOp::create(aie_device.getLoc(), call.getCallee(),
                                       call.getCalleeType());
             fn.setPrivate();
-            aie_device.push_back(fn);
+            aie_device.insert(aie_device.getBody()->getTerminator(), fn);
           }
         }
       });
@@ -543,8 +498,8 @@ void createAIEModulesAndOutlineCores(
         AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
     aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                      StringAttr::get(builder.getContext(), segment_name));
-
-    aie_dev.getRegion().emplaceBlock();
+    AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
+                                    aie_dev.getLoc());
     seg.walk([&](xilinx::air::HerdOp h) {
       aie_modules.push_back({aie_dev, h});
     });
@@ -568,7 +523,8 @@ void createAIEModulesAndOutlineCores(
         AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
     aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                      StringAttr::get(builder.getContext(), segment_name));
-    aie_dev.getRegion().emplaceBlock();
+    AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
+                                    aie_dev.getLoc());
     aie_modules.push_back({aie_dev, herd});
   };
   for (auto &p : aie_modules) {
@@ -1715,7 +1671,7 @@ public:
       return flowOp;
 
     OpBuilder builder(aie_device);
-    builder.setInsertionPointToEnd(aie_device.getBody());
+    builder.setInsertionPoint(aie_device.getBody()->getTerminator());
     return builder.create<AIE::FlowOp>(builder.getUnknownLoc(), source,
                                        sourceBundle, sourceChannel, dest,
                                        destBundle, destChannel);
@@ -1801,7 +1757,7 @@ public:
       return packetFlowOp;
     }
 
-    builder.setInsertionPointToEnd(aie_device.getBody());
+    builder.setInsertionPoint(aie_device.getBody()->getTerminator());
     return createPacketFlowOp(builder, flowID, source, sourceBundle,
                               sourceChannel, dest, destBundle, destChannel);
   }
@@ -2157,20 +2113,6 @@ public:
     }
   }
 
-  // Verify data movement legality for the given device architecture
-  void verifyMemcpyOps(std::vector<Operation *> &dma_memcpy_ops,
-                       AIE::AIEArch arch) {
-    for (auto o = dma_memcpy_ops.begin(); o != dma_memcpy_ops.end();) {
-      auto memcpyOpIf = cast<air::MemcpyInterface>(*o);
-      if (!isLegalMemorySpace(memcpyOpIf, arch)) {
-        o = dma_memcpy_ops.erase(o);
-        (*o)->emitOpError("is an illegal data movement for architecture");
-        (*o)->erase();
-      } else
-        ++o;
-    }
-  }
-
   template <typename T>
   void placeDMAChannelsAndRouteFlows(AIE::DeviceOp aie_device,
                                      ShimDMAAllocator &shim_dma_alloc,
@@ -2183,11 +2125,7 @@ public:
     aie_device.walk(
         [&](T memcpyOp) { dma_memcpy_ops.push_back(memcpyOp.getOperation()); });
 
-    // Step 1: Verify data movement legality for the given device architecture
-    // verifyMemcpyOps(dma_memcpy_ops,
-    //                 aie_device.getTargetModel().getTargetArch());
-
-    // Step 2: Pair up memcpy ops into flow ops. Each entry in memcpy_flows is a
+    // Step 1: Pair up memcpy ops into flow ops. Each entry in memcpy_flows is a
     // bundle of memcpy ops which share the same aie.flow.
     std::vector<MemcpyBundleAsFlow> memcpy_flows;
     for (auto o : dma_memcpy_ops) {
@@ -2221,7 +2159,7 @@ public:
       }
     }
 
-    // Step 3: Allocate tile DMA channels, shim DMA channels and shim tiles
+    // Step 2: Allocate tile DMA channels, shim DMA channels and shim tiles
     // AIR channel to AIE flow mapping strategy: allocate L1 DMAs first,
     // followed by L2 and then L3, where outer memory hierarchies reuse existing
     // AIE flows as possible.
@@ -2234,7 +2172,7 @@ public:
     simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc, memtile_dma_alloc,
                                tile_dma_alloc);
 
-    // Step 3.5: Sort all ops being allocated to each DMA channel, to avoid
+    // Step 3: Sort all ops being allocated to each DMA channel, to avoid
     // ping-pong deadlock.
     tile_dma_alloc.sortMemcpyOps(dma_memcpy_ops);
 
@@ -2583,7 +2521,8 @@ public:
                                std::unordered_set<Operation *> &allocs_to_remap,
                                const AIE::AIETargetModel &targetModel,
                                TileDMAAllocator &tileDmaAlloc, int x, int y) {
-    bool isAIE2 = isa<AIE::AIE2TargetModel>(targetModel);
+    bool UsesSemaphoreLocks =
+        targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     AIE::DMAChannel tile_channel =
         tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf).dma_channel;
     AIE::BufferOp bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
@@ -2596,12 +2535,12 @@ public:
     Value alloc = nullptr;
     auto tileInbound = isTileInbound(memcpyOpIf, (int)air::MemorySpace::L1);
     if (tileInbound) {
-      lockAqValue = isAIE2 ? 1 : 1;
-      lockRelValue = isAIE2 ? 1 : 0;
+      lockAqValue = UsesSemaphoreLocks ? 1 : 1;
+      lockRelValue = UsesSemaphoreLocks ? 1 : 0;
       alloc = memcpyOpIf.getDstMemref();
     } else {
-      lockAqValue = isAIE2 ? 1 : 0;
-      lockRelValue = isAIE2 ? 1 : 1;
+      lockAqValue = UsesSemaphoreLocks ? 1 : 0;
+      lockRelValue = UsesSemaphoreLocks ? 1 : 1;
       alloc = memcpyOpIf.getSrcMemref();
     }
 
@@ -2619,8 +2558,9 @@ public:
       builder.setInsertionPoint(memcpyOpIf);
 
     builder.create<AIE::UseLockOp>(memcpyOpIf->getLoc(), acqLockOp,
-                                   isAIE2 ? AIE::LockAction::AcquireGreaterEqual
-                                          : AIE::LockAction::Acquire,
+                                   UsesSemaphoreLocks
+                                       ? AIE::LockAction::AcquireGreaterEqual
+                                       : AIE::LockAction::Acquire,
                                    lockAqValue);
     // try to find a place to put the unlock. If there are deallocs,
     // replace them with unlock. Otherwise, put them at the end.
@@ -2715,7 +2655,8 @@ public:
                      const AIE::AIETargetModel &targetModel, Block *bd,
                      air::MemcpyInterface memcpyOp, bufferOpTy bufferOp,
                      int chan) {
-    bool isAIE2 = isa<AIE::AIE2TargetModel>(targetModel);
+    bool UsesSemaphoreLocks =
+        targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
 
     auto b = OpBuilder::atBlockEnd(bd);
@@ -2726,11 +2667,11 @@ public:
     int64_t lockRelValue = -1;
     auto aie2LockVal = getLockValuePair(targetModel, bufferOp->getResult(0));
     if (!isMM2S) {
-      lockAqValue = isAIE2 ? aie2LockVal.first : 0;
-      lockRelValue = isAIE2 ? aie2LockVal.first : 1;
+      lockAqValue = UsesSemaphoreLocks ? aie2LockVal.first : 0;
+      lockRelValue = UsesSemaphoreLocks ? aie2LockVal.first : 1;
     } else {
-      lockAqValue = isAIE2 ? aie2LockVal.second : 1;
-      lockRelValue = isAIE2 ? aie2LockVal.second : 0;
+      lockAqValue = UsesSemaphoreLocks ? aie2LockVal.second : 1;
+      lockRelValue = UsesSemaphoreLocks ? aie2LockVal.second : 0;
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 
@@ -2763,8 +2704,9 @@ public:
     Value length =
         b.create<arith::ConstantIndexOp>(memcpyOp.getLoc(), len)->getResult(0);
     b.create<AIE::UseLockOp>(loc, acqLockOp,
-                             isAIE2 ? AIE::LockAction::AcquireGreaterEqual
-                                    : AIE::LockAction::Acquire,
+                             UsesSemaphoreLocks
+                                 ? AIE::LockAction::AcquireGreaterEqual
+                                 : AIE::LockAction::Acquire,
                              lockAqValue);
 
     // Packet flow routing: get packet flow id.
@@ -2783,7 +2725,8 @@ public:
     auto wraps_and_strides =
         AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
     bool useDefaultDataAccessPattern =
-        isAIE2 ? isDefaultDataAccessPattern(sizes, strides, memref) : true;
+        UsesSemaphoreLocks ? isDefaultDataAccessPattern(sizes, strides, memref)
+                           : true;
     AIE::DMABDOp aieDmaBdOp = nullptr;
     if (wraps_and_strides.getValue().empty() || useDefaultDataAccessPattern)
       aieDmaBdOp = b.create<AIE::DMABDOp>(
@@ -2979,7 +2922,7 @@ public:
       // Generate aie.shim_dma op
       AIE::ShimDMAOp shimDMA = getShimDMAOp(tile);
       if (!shimDMA) {
-        builder.setInsertionPointToEnd(device.getBody());
+        builder.setInsertionPoint(device.getBody()->getTerminator());
         shimDMA = builder.create<AIE::ShimDMAOp>(builder.getUnknownLoc(),
                                                  builder.getIndexType(), tile);
       }
@@ -3026,7 +2969,7 @@ public:
       // Generate aie.memtile_dma op
       AIE::MemTileDMAOp memTileDMA = getMemTileDMAOp(tile);
       if (!memTileDMA) {
-        builder.setInsertionPointToEnd(device.getBody());
+        builder.setInsertionPoint(device.getBody()->getTerminator());
         memTileDMA = builder.create<AIE::MemTileDMAOp>(
             builder.getUnknownLoc(), builder.getIndexType(), tile);
       }
@@ -3105,7 +3048,7 @@ public:
         }
         int destChan = 1; // todo: allocation?
 
-        builder.setInsertionPointToEnd(device.getBody());
+        builder.setInsertionPoint(device.getBody()->getTerminator());
         auto keep_pkt_header = builder.getBoolAttr(true);
         (void)createPacketFlowOp(
             builder, flowID, srcTile, AIE::WireBundle::Trace, 0, destTile,
@@ -3182,11 +3125,7 @@ public:
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
       patterns.insert<LowerScfTokenPattern>(ctx);
 
-    OpBuilder builder(ctx);
-    AIE::DeviceOp deviceOp = builder.create<AIE::DeviceOp>(
-        builder.getUnknownLoc(),
-        AIE::AIEDeviceAttr::get(builder.getContext(), *device));
-    ShimTileAllocator shimTileAlloc(deviceOp.getTargetModel());
+    ShimTileAllocator shimTileAlloc(AIE::getTargetModel(*device));
     std::map<Operation *, AIE::ObjectFifoCreateOp> linksToComplete;
     if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
       patterns.insert<LowerAIRChannelsPattern>(
@@ -3318,7 +3257,7 @@ public:
 
       for (auto herd : herds) {
         std::vector<Attribute> dma_allocations;
-        if (!device.getTargetModel().isNPU()) {
+        if (!device.getTargetModel().hasProperty(AIE::AIETargetModel::IsNPU)) {
           // AIE1 dma metadata format
           getDmaAllocationMetadata(builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
                                    AIE::DMAChannelDir::S2MM,
@@ -3343,7 +3282,7 @@ public:
                               "supported for AIE1.");
         } else {
           // AIE2 dma metadata format
-          builder.setInsertionPointToEnd(device.getBody());
+          builder.setInsertionPoint(device.getBody()->getTerminator());
           createShimDMAAllocationOps(
               builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
               AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map);
@@ -3354,7 +3293,7 @@ public:
       }
       for (auto seg : segs) {
         std::vector<Attribute> dma_allocations;
-        if (!device.getTargetModel().isNPU()) {
+        if (!device.getTargetModel().hasProperty(AIE::AIETargetModel::IsNPU)) {
           // AIE1 memtile dma metadata format
           getDmaAllocationMetadata(builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
                                    AIE::DMAChannelDir::MM2S,
@@ -3375,7 +3314,7 @@ public:
                              "supported for AIE1.");
         } else {
           // AIE2 memtile dma metadata format
-          builder.setInsertionPointToEnd(device.getBody());
+          builder.setInsertionPoint(device.getBody()->getTerminator());
           createShimDMAAllocationOps(
               builder, ctx, seg, shimDmaAlloc.s2mm_allocs,
               AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map);
@@ -3637,7 +3576,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     auto devOp = rewriter.create<AIE::DeviceOp>(
         aie_module.getLoc(),
         AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device));
-    devOp.getRegion().emplaceBlock();
+    AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter,
+                                    devOp.getLoc());
     outlineAIECores(rewriter, devOp, h, tileToHerdMap, options);
 
     auto ctx = aie_module->getContext();

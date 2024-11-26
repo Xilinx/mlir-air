@@ -4090,12 +4090,8 @@ private:
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder builder(a);
     builder.setInsertionPoint(a->getBlock()->getTerminator());
-    auto new_b = cloneOpAndOperands(builder, remap, b);
+    cloneOpAndOperands(builder, remap, b);
     eraseParentLoopIfEmpty(*b);
-    auto async_b = dyn_cast<air::AsyncOpInterface>(new_b);
-    if (async_b.getAsyncToken())
-      async_b.addAsyncDependency(
-          dyn_cast<air::AsyncOpInterface>(a.getOperation()).getAsyncToken());
   }
   void mergeChannelOpsTemporally(air::ChannelInterface a,
                                  air::ChannelInterface b,
