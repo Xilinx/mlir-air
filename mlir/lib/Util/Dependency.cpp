@@ -604,10 +604,6 @@ bool areAsyncDependent(Operation *a, Operation *b) {
     return false;
   if (!token_b)
     return false;
-  if (dep_a.empty())
-    return false;
-  if (dep_b.empty())
-    return false;
   for (auto dep : dep_a)
     if (dep == token_b)
       return true;
