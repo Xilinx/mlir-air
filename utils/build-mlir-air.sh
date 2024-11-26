@@ -2,21 +2,21 @@
 #set -x
 
 ##===- utils/build-mlir-air.sh - Build mlir-air --*- Script -*-===##
-# 
+#
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-# 
+#
 ##===----------------------------------------------------------------------===##
 #
-# This script build mlir-air given the <sysroot dir>, <llvm dir>, 
+# This script build mlir-air given the <sysroot dir>, <llvm dir>,
 # <cmakeModules dir>, and <mlir-aie dir>. Assuming they are all in the same
 # subfolder, it would look like:
 #
 # build-mlir-air.sh <sysroot dir> <llvm dir> <cmakeModules dir> <mlir-aie dir>
 #     <build dir> <install dir>
 #
-# e.g. build-mlir-air.sh /scratch/vck190_air_sysroot /scratch/llvm 
+# e.g. build-mlir-air.sh /scratch/vck190_air_sysroot /scratch/llvm
 #          /scratch/cmakeModules/cmakeModulesXilinx /scratch/mlir-aie build install
 #
 # <sysroot dir>      - sysroot
@@ -39,8 +39,8 @@ LLVM_DIR=`realpath $2`
 CMAKEMODULES_DIR=`realpath $3`
 MLIR_AIE_DIR=`realpath $4`
 
-BUILD_DIR=${5:-"build"}
-INSTALL_DIR=${6:-"install"}
+BUILD_DIR=`realpath ${5:-"build"}`
+INSTALL_DIR=`realpath ${6:-"install"}`
 
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
@@ -52,7 +52,7 @@ cmake .. \
     -GNinja \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
-    -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
+    -DCMAKE_INSTALL_PREFIX="${INSTALL_DIR}" \
     -DArch=arm64 \
     -DgccVer=10.2.0 \
     -DCMAKE_USE_TOOLCHAIN=FALSE \
@@ -64,7 +64,7 @@ cmake .. \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_USE_LINKER=lld \
-    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
+    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR} \
     |& tee cmake.log
 
 ninja |& tee ninja.log
