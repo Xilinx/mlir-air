@@ -280,9 +280,7 @@ public:
               }
             }
             if (llvm::isa<MemRefType>(ins_value.getType())) {
-              unsigned memRefRank =
-                  llvm::cast<MemRefType>(ins_value.getType()).getRank();
-              partialMemref tile = createPartialMemref(ins_value, memRefRank);
+              partialMemref tile(ins_value);
               sink_op_memref_reads.push_back(tile);
             } else if (llvm::isa<IndexType>(ins_value.getType())) {
               sink_op_scalar_ins.push_back(ins_value);
@@ -290,9 +288,7 @@ public:
           }
           for (auto outs_value : sink_op_linalgop.getDpsInits()) {
             if (llvm::isa<MemRefType>(outs_value.getType())) {
-              unsigned memRefRank =
-                  llvm::cast<MemRefType>(outs_value.getType()).getRank();
-              partialMemref tile = createPartialMemref(outs_value, memRefRank);
+              partialMemref tile(outs_value);
               sink_op_memref_reads.push_back(
                   tile); // linalg op both reads and writes the output memref
               sink_op_memref_writes.push_back(tile);
@@ -306,10 +302,7 @@ public:
           if (sink_op_linalgop->getNumResults()) {
             for (auto linalg_results : sink_op_linalgop->getResults()) {
               if (llvm::isa<MemRefType>(linalg_results.getType())) {
-                unsigned memRefRank =
-                    llvm::cast<MemRefType>(linalg_results.getType()).getRank();
-                partialMemref tile =
-                    createPartialMemref(linalg_results, memRefRank);
+                partialMemref tile(linalg_results);
                 sink_op_memref_writes.push_back(tile);
               } else if (llvm::isa<IndexType>(linalg_results.getType())) {
                 sink_op_scalar_outs.push_back(linalg_results);
@@ -328,9 +321,7 @@ public:
               sink_op_memref = operation->getOperand(0);
             }
           }
-          unsigned memRefRank =
-              llvm::cast<MemRefType>(sink_op_memref.getType()).getRank();
-          partialMemref tile = createPartialMemref(sink_op_memref, memRefRank);
+          partialMemref tile(sink_op_memref);
           sink_op_memref_reads.push_back(tile);
           sink_op_memref_writes.push_back(
               tile); // dealloc erases (i.e. writes to) output memref
@@ -345,16 +336,9 @@ public:
               op_src_memref = operation->getOperand(0);
             }
           }
-          unsigned memRefRankSrc =
-              llvm::cast<MemRefType>(op_src_memref.getType()).getRank();
-          partialMemref tileSrc =
-              createPartialMemref(op_src_memref, memRefRankSrc);
+          partialMemref tileSrc(op_src_memref);
           sink_op_memref_reads.push_back(tileSrc);
-          unsigned memRefRankDst =
-              llvm::cast<MemRefType>(sink_op_memref_copy.getTarget().getType())
-                  .getRank();
-          partialMemref tileDst = createPartialMemref(
-              sink_op_memref_copy.getTarget(), memRefRankDst);
+          partialMemref tileDst(sink_op_memref_copy.getTarget());
           sink_op_memref_reads.push_back(tileDst);
           sink_op_memref_writes.push_back(tileDst);
         }
@@ -371,9 +355,6 @@ public:
               }
             }
             if (llvm::isa<MemRefType>(op_src_memref.getType())) {
-              SmallVector<Value, 2> src_indices;
-              unsigned numDimsSrc =
-                  llvm::cast<MemRefType>(op_src_memref.getType()).getRank();
               for (unsigned i = 0; i < sink_op_memcpy.getSrcOffsets().size();
                    i++)
                 sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcOffsets()[i]);
@@ -382,44 +363,23 @@ public:
               for (unsigned i = 0; i < sink_op_memcpy.getSrcStrides().size();
                    i++)
                 sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcStrides()[i]);
-              if (sink_op_memcpy.getSrcOffsets().size()) {
-                numDimsSrc = sink_op_memcpy.getSrcOffsets().size();
-                for (unsigned i = 0; i < numDimsSrc; i++) {
-                  src_indices.push_back(sink_op_memcpy.getSrcOffsets()[i]);
-                }
-              } else {
-                for (unsigned i = 0; i < numDimsSrc; i++) {
-                  src_indices.push_back(nullptr);
-                }
-              }
-              partialMemref tile_in =
-                  createPartialMemref(op_src_memref, numDimsSrc, src_indices);
+              partialMemref tile_in(
+                  op_src_memref, sink_op_memcpy.getSrcOffsets(),
+                  sink_op_memcpy.getSrcSizes(), sink_op_memcpy.getSrcStrides());
               sink_op_memref_reads.push_back(tile_in);
             }
           }
-          if (sink_op_memcpy.getDstMemref()) {
-            SmallVector<Value, 2> dst_indices;
-            unsigned numDimsDst =
-                llvm::cast<MemRefType>(sink_op_memcpy.getDstMemref().getType())
-                    .getRank();
+          auto op_dst_memref = sink_op_memcpy.getDstMemref();
+          if (op_dst_memref) {
             for (unsigned i = 0; i < sink_op_memcpy.getDstOffsets().size(); i++)
               sink_op_scalar_outs.push_back(sink_op_memcpy.getDstOffsets()[i]);
             for (unsigned i = 0; i < sink_op_memcpy.getDstSizes().size(); i++)
               sink_op_scalar_outs.push_back(sink_op_memcpy.getDstSizes()[i]);
             for (unsigned i = 0; i < sink_op_memcpy.getDstStrides().size(); i++)
               sink_op_scalar_outs.push_back(sink_op_memcpy.getDstStrides()[i]);
-            if (sink_op_memcpy.getDstOffsets().size()) {
-              numDimsDst = sink_op_memcpy.getDstOffsets().size();
-              for (unsigned i = 0; i < numDimsDst; i++) {
-                dst_indices.push_back(sink_op_memcpy.getDstOffsets()[i]);
-              }
-            } else {
-              for (unsigned i = 0; i < numDimsDst; i++) {
-                dst_indices.push_back(nullptr);
-              }
-            }
-            partialMemref tile_out = createPartialMemref(
-                sink_op_memcpy.getDstMemref(), numDimsDst, dst_indices);
+            partialMemref tile_out(
+                op_dst_memref, sink_op_memcpy.getDstOffsets(),
+                sink_op_memcpy.getDstSizes(), sink_op_memcpy.getDstStrides());
             sink_op_memref_writes.push_back(tile_out);
           }
         }
@@ -457,9 +417,7 @@ public:
               }
             }
             if (llvm::isa<MemRefType>(sink_op_op.getType())) {
-              unsigned memRefRank =
-                  llvm::cast<MemRefType>(sink_op_op.getType()).getRank();
-              partialMemref tile = createPartialMemref(sink_op_op, memRefRank);
+              partialMemref tile(sink_op_op);
               sink_op_memref_reads.push_back(
                   tile); // Assuming all operands are both read and written to
               sink_op_memref_writes.push_back(tile);
@@ -473,10 +431,7 @@ public:
           if (sink_op->getNumResults()) {
             for (auto sink_op_results : sink_op->getResults()) {
               if (llvm::isa<MemRefType>(sink_op_results.getType())) {
-                unsigned memRefRank =
-                    llvm::cast<MemRefType>(sink_op_results.getType()).getRank();
-                partialMemref tile =
-                    createPartialMemref(sink_op_results, memRefRank);
+                partialMemref tile(sink_op_results);
                 sink_op_memref_writes.push_back(tile);
               } else if (llvm::isa<IndexType>(sink_op_results.getType())) {
                 sink_op_scalar_outs.push_back(sink_op_results);
@@ -971,30 +926,18 @@ private:
 
   struct partialMemref {
     Value memrefValue;
-    unsigned numDims;
-    SmallVector<Value, 2> memrefIndices;
+    SmallVector<Value> offsets, sizes, strides;
+    partialMemref() = default;
+    partialMemref(mlir::Value m) { memrefValue = m; };
+    partialMemref(mlir::Value m, SmallVector<Value> memrefOffsets,
+                  SmallVector<Value> memrefSizes,
+                  SmallVector<Value> memrefStrides) {
+      memrefValue = m;
+      offsets = memrefOffsets;
+      sizes = memrefSizes;
+      strides = memrefStrides;
+    };
   };
-
-  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims) {
-    partialMemref tile;
-    tile.memrefValue = memrefValue;
-    tile.numDims = numDims;
-    for (unsigned i = 0; i < numDims; i++) {
-      tile.memrefIndices.push_back(nullptr);
-    }
-    return tile;
-  }
-
-  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims,
-                                    SmallVector<Value, 2> memrefIndices) {
-    partialMemref tile;
-    tile.memrefValue = memrefValue;
-    tile.numDims = numDims;
-    for (unsigned i = 0; i < numDims; i++) {
-      tile.memrefIndices.push_back(memrefIndices[i]);
-    }
-    return tile;
-  }
 
   // Check if operand is returned from ExecuteOp (memref.alloc)
   template <typename T>
@@ -1101,40 +1044,14 @@ private:
         if (isUsedAboveThisLine) {
           partialMemref memcpy_src, memcpy_dst;
           if (memcpy.getSrcMemref()) {
-            SmallVector<Value, 2> src_indices;
-            unsigned numDimsSrc =
-                llvm::cast<MemRefType>(memcpy.getSrcMemref().getType())
-                    .getRank();
-            if (memcpy.getSrcOffsets().size()) {
-              numDimsSrc = memcpy.getSrcOffsets().size();
-              for (unsigned i = 0; i < numDimsSrc; i++) {
-                src_indices.push_back(memcpy.getSrcOffsets()[i]);
-              }
-            } else {
-              for (unsigned i = 0; i < numDimsSrc; i++) {
-                src_indices.push_back(nullptr);
-              }
-            }
-            memcpy_src = createPartialMemref(memcpy.getSrcMemref(), numDimsSrc,
-                                             src_indices);
+            memcpy_src =
+                partialMemref(memcpy.getSrcMemref(), memcpy.getSrcOffsets(),
+                              memcpy.getSrcSizes(), memcpy.getSrcStrides());
           }
           if (memcpy.getDstMemref()) {
-            unsigned numDimsDst =
-                llvm::cast<MemRefType>(memcpy.getDstMemref().getType())
-                    .getRank();
-            SmallVector<Value, 2> dst_indices;
-            if (memcpy.getDstOffsets().size()) {
-              numDimsDst = memcpy.getDstOffsets().size();
-              for (unsigned i = 0; i < numDimsDst; i++) {
-                dst_indices.push_back(memcpy.getDstOffsets()[i]);
-              }
-            } else {
-              for (unsigned i = 0; i < numDimsDst; i++) {
-                dst_indices.push_back(nullptr);
-              }
-            }
-            memcpy_dst = createPartialMemref(memcpy.getDstMemref(), numDimsDst,
-                                             dst_indices);
+            memcpy_dst =
+                partialMemref(memcpy.getDstMemref(), memcpy.getDstOffsets(),
+                              memcpy.getDstSizes(), memcpy.getDstStrides());
           }
 
           if (rw == 'r') {
@@ -1256,8 +1173,7 @@ private:
           if (hier.getKernelArguments()[hier_operand_id] ==
               operand.memrefValue) {
             auto ancestor_op = hier.getKernelOperand(hier_operand_id);
-            partialMemref ancestor_operand =
-                createPartialMemref(ancestor_op, operand.numDims);
+            partialMemref ancestor_operand(ancestor_op);
             SmallVector<partialMemref, 1> ancestor_operands = {
                 ancestor_operand};
             traceDeps<air::HierarchyInterface>(ancestor_operands, hier,
@@ -1269,9 +1185,21 @@ private:
       // Check if operand is returned from memref.subview
       if (auto subview =
               operand.memrefValue.getDefiningOp<memref::SubViewOp>()) {
-        partialMemref subview_tile =
-            createPartialMemref(subview.getSource(), subview.getSizes().size(),
-                                subview.getOffsets());
+        OpBuilder svBuilder(subview);
+        auto loc = subview->getLoc();
+        SmallVector<Value> subviewOffsetVals, subviewSizeVals,
+            subviewStrideVals;
+        for (auto fr : subview.getMixedOffsets())
+          subviewOffsetVals.push_back(
+              getValueOrCreateConstantIndexOp(svBuilder, loc, fr));
+        for (auto fr : subview.getMixedSizes())
+          subviewSizeVals.push_back(
+              getValueOrCreateConstantIndexOp(svBuilder, loc, fr));
+        for (auto fr : subview.getMixedStrides())
+          subviewStrideVals.push_back(
+              getValueOrCreateConstantIndexOp(svBuilder, loc, fr));
+        partialMemref subview_tile(subview.getSource(), subviewOffsetVals,
+                                   subviewSizeVals, subviewStrideVals);
         SmallVector<partialMemref, 1> subview_operands = {subview_tile};
         traceDeps<T>(subview_operands, sink_air_op, dep_type);
       }
@@ -1284,14 +1212,14 @@ private:
                         SmallVector<Value, 1> in_scalars,
                         SmallVector<Value, 1> out_scalars, T sink_air_op) {
     for (auto operand : read_operands) {
-      for (unsigned i = 0; i < operand.numDims; i++) {
-        pushTileIndexAsDep<T>(operand.memrefIndices[i], sink_air_op);
-      }
+      for (auto v :
+           llvm::concat<Value>(operand.offsets, operand.sizes, operand.strides))
+        pushTileIndexAsDep<T>(v, sink_air_op);
     }
     for (auto operand : write_operands) {
-      for (unsigned i = 0; i < operand.numDims; i++) {
-        pushTileIndexAsDep<T>(operand.memrefIndices[i], sink_air_op);
-      }
+      for (auto v :
+           llvm::concat<Value>(operand.offsets, operand.sizes, operand.strides))
+        pushTileIndexAsDep<T>(v, sink_air_op);
     }
     for (auto scalar : in_scalars) {
       pushTileIndexAsDep<T>(scalar, sink_air_op);
@@ -1937,19 +1865,50 @@ private:
     return false;
   }
 
-  // Check if two partial memref tiles have identical indices
+  // Check if two partial memref tiles have identical access patterns
   bool areEqualIndexPartialMemrefs(partialMemref *tile_0,
                                    partialMemref *tile_1) {
-    if (tile_0->numDims != tile_1->numDims) {
-      // Unequal # dimensions
-      return false;
-    } else {
-      for (unsigned i = 0; i < tile_0->numDims; i++) {
-        if (!xilinx::air::areEqualIndices(tile_0->memrefIndices[i],
-                                          tile_1->memrefIndices[i]))
-          return false;
+    // Check if all static offsets of each partialMemref lead to equal overall
+    // offset.
+    auto getOffsetFromOffsetsAndStrides = [&](partialMemref *tile) {
+      unsigned offset = 0;
+      for (unsigned i = 0; i < tile->offsets.size(); i++) {
+        auto constOffset = getConstantIntValue(tile->offsets[i]);
+        auto constStride = getConstantIntValue(tile->strides[i]);
+        if (!constOffset || !constStride)
+          continue;
+        offset += (*constOffset) * (*constStride);
       }
-    }
+      return offset;
+    };
+    if (getOffsetFromOffsetsAndStrides(tile_0) !=
+        getOffsetFromOffsetsAndStrides(tile_1))
+      return false;
+
+    // Check if all static offsets, hash mapped by strides, are equal across the
+    // two partialMemrefs.
+    auto buildStrideToVarOffsetsMap =
+        [](partialMemref *tile,
+           DenseMap<unsigned, llvm::SetVector<Value>> &map) {
+          for (unsigned i = 0; i < tile->offsets.size(); i++) {
+            auto constOffset = getConstantIntValue(tile->offsets[i]);
+            auto constStride = getConstantIntValue(tile->strides[i]);
+            if (!constStride)
+              continue;
+            if (constOffset)
+              continue;
+            map[*constStride].insert(tile->offsets[i]);
+          }
+        };
+    DenseMap<unsigned, llvm::SetVector<Value>> strideToVarOffsetsMap;
+    buildStrideToVarOffsetsMap(tile_0, strideToVarOffsetsMap);
+    buildStrideToVarOffsetsMap(tile_1, strideToVarOffsetsMap);
+    // More than 1 unique variadic offsets per stride across the two
+    // partialMemrefs.
+    for (auto &[_, set] : strideToVarOffsetsMap)
+      if (set.size() > 1)
+        return false;
+
     return true;
   }
 
