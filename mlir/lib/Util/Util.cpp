@@ -9,6 +9,7 @@
 #include "air/Util/Util.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -1047,12 +1048,12 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     }
   }
 
-  std::map<Operation *, int> op_to_count;
+  // std::map<Operation *, int> op_to_count;
   // Evaluate offset from affine map.
   auto evalOffsetFromAffineMap = [&](MLIRContext *ctx, AffineMap map) {
-    return air::evaluateConstantsInMap(
-        map, SmallVector<std::optional<int64_t>>{std::optional<int64_t>{0}},
-        ctx);
+    SmallVector<std::optional<int64_t>> zeros(map.getNumSymbols(),
+                                              std::optional<int64_t>{0});
+    return air::evaluateConstantsInMap(map, zeros, ctx);
   };
   for (auto o : for_loops) {
     int64_t stepSize = -1;
@@ -1070,62 +1071,89 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     }
     int64_t ind_var_factor = 0;
     for (int i = offsets.size() - 1; i >= 0; i--) {
-      if (iv && offsets[i] == iv) {
+      Value offsetVal = offsets[i];
+      // Propagate through cast op
+      if (auto cast = offsetVal.getDefiningOp<CastOpInterface>()) {
+        if (cast->getNumOperands() == 1)
+          offsetVal = cast->getOperand(0);
+      }
+      if (iv && offsetVal == iv) {
         ind_var_factor = *getConstantIntValue(strides[i]);
         offsets[i] = builder.template create<arith::ConstantIndexOp>(
             loc, loop_lower_bound);
         break;
-      } else if (iv && offsets[i].getDefiningOp()) {
-        Operation *iv_consumer = offsets[i].getDefiningOp();
+      } else if (iv && offsetVal.getDefiningOp()) {
+        Operation *iv_consumer = offsetVal.getDefiningOp();
         if (auto exec = dyn_cast<air::ExecuteOp>(iv_consumer))
           iv_consumer = &exec.getChildOps().front();
         if (auto affop = dyn_cast<affine::AffineApplyOp>(iv_consumer)) {
-          // The induction variable must be the input to the affine op
-          if (affop.getSymbolOperands().size() == 1) {
-            bool iv_is_symbol = false;
-            for (auto val : affop.getSymbolOperands()) {
-              if (val == iv) {
-                iv_is_symbol = true;
-                break;
-              }
-            }
-            if (iv_is_symbol) {
-              auto map = affop.getAffineMap();
-              ind_var_factor = *getConstantIntValue(strides[i]);
-              int64_t map_offset =
-                  evalOffsetFromAffineMap(for_op->getContext(), map).value();
-              int64_t map_gradient = air::evaluateConstantsInMap(
-                                         map,
-                                         SmallVector<std::optional<int64_t>>{
-                                             std::optional<int64_t>{stepSize}},
-                                         for_op->getContext())
-                                         .value() -
-                                     map_offset;
-              ind_var_factor *= map_gradient;
-              offsets[i] = builder.template create<arith::ConstantIndexOp>(
-                  loc, loop_lower_bound + map_offset);
-              break;
-            }
+          // // The induction variable must be the input to the affine op
+          // if (affop.getSymbolOperands().size() == 1) {
+          //   bool iv_is_symbol = false;
+          //   for (auto val : affop.getSymbolOperands()) {
+          //     if (val == iv) {
+          //       iv_is_symbol = true;
+          //       break;
+          //     }
+          //   }
+          //   if (iv_is_symbol) {
+          //     auto map = affop.getAffineMap();
+          //     ind_var_factor = *getConstantIntValue(strides[i]);
+          //     int64_t map_offset =
+          //         evalOffsetFromAffineMap(for_op->getContext(), map).value();
+          //     int64_t map_gradient = air::evaluateConstantsInMap(
+          //                                map,
+          //                                SmallVector<std::optional<int64_t>>{
+          //                                    std::optional<int64_t>{stepSize}},
+          //                                for_op->getContext())
+          //                                .value() -
+          //                            map_offset;
+          //     ind_var_factor *= map_gradient;
+          //     offsets[i] = builder.template create<arith::ConstantIndexOp>(
+          //         loc, loop_lower_bound + map_offset);
+          //     break;
+          //   }
+          // }
+
+          auto idx = llvm::find_if(affop.getSymbolOperands(),
+                                   [iv](Value oper) { return oper == iv; });
+          if (idx != affop.getSymbolOperands().end()) {
+            auto map = affop.getAffineMap();
+            int64_t map_offset =
+                evalOffsetFromAffineMap(for_op->getContext(), map).value();
+            ind_var_factor = *getConstantIntValue(strides[i]);
+            SmallVector<std::optional<int64_t>> stepSizeAsVec(
+                affop.getSymbolOperands().size(), std::optional<int64_t>{0});
+            stepSizeAsVec[idx - affop.getSymbolOperands().begin()] = stepSize;
+            int64_t map_gradient = air::evaluateConstantsInMap(
+                                       map, stepSizeAsVec, for_op->getContext())
+                                       .value() -
+                                   map_offset;
+            ind_var_factor *= map_gradient;
           }
         }
-        if (llvm::is_contained(iv_consumer->getOperands(), iv)) {
-          if (op_to_count.find(iv_consumer) == op_to_count.end()) {
-            op_to_count[iv_consumer] = 0;
-            for (auto operand : iv_consumer->getOperands()) {
-              for (auto iv_val : ivs) {
-                if (iv_val == operand)
-                  op_to_count[iv_consumer]++;
-              }
-            }
-          }
-          op_to_count[iv_consumer]--;
-          ind_var_factor = *getConstantIntValue(strides[i]);
-          if (!op_to_count[iv_consumer]) {
-            offsets[i] = builder.template create<arith::ConstantIndexOp>(
-                loc, loop_lower_bound);
-          }
-          break;
-        }
+
+        // if (llvm::is_contained(iv_consumer->getOperands(), iv)) {
+        //   if (op_to_count.find(iv_consumer) == op_to_count.end()) {
+        //     op_to_count[iv_consumer] = 0;
+        //     for (auto operand : iv_consumer->getOperands()) {
+        //       for (auto iv_val : ivs) {
+        //         if (iv_val == operand)
+        //           op_to_count[iv_consumer]++;
+        //       }
+        //     }
+        //   }
+        //   op_to_count[iv_consumer]--;
+        //   ind_var_factor = *getConstantIntValue(strides[i]);
+        //   if (!op_to_count[iv_consumer]) {
+        //     offsets[i] = builder.template create<arith::ConstantIndexOp>(
+        //         loc, loop_lower_bound);
+        //   }
+        //   break;
+        // }
+        iv_consumer->replaceUsesOfWith(
+            iv, builder.template create<arith::ConstantIndexOp>(
+                    loc, loop_lower_bound));
       }
     }
     int trip_count = -1;
@@ -1641,4 +1669,60 @@ bool air::isPure(Operation *op) {
       return mlir::isPure(&childOp);
     });
   return result;
+}
+
+// Return if the given block contains N ops which are impure and aren't async
+// wait ops (such as air.wait_all).
+bool air::hasNImpureOps(Block *block, unsigned N) {
+  unsigned counter = 0;
+  for (auto &o : block->without_terminator()) {
+    if (air::isPure(&o))
+      continue;
+    if (isa<air::WaitAllOp>(o))
+      continue;
+    counter++;
+  }
+  return counter == N;
+}
+
+// Return if the given block contains N ops or not, not counting the block's
+// terminator.
+bool air::hasNElements(Block *block, unsigned N) {
+  // unsigned counter = 0;
+  // for (auto &o : block->without_terminator())
+  //   counter++;
+  return llvm::range_size(block->without_terminator()) == N;
+}
+
+// Clone backward slices of a list of values.
+SmallVector<Operation *>
+air::cloneDefiningOpsInRegion(OpBuilder builder, Region *region,
+                              SmallVectorImpl<Value> &opers, IRMapping &remap) {
+  SmallVector<Operation *> clonedOps;
+  SetVector<Operation *> backwardSlices;
+  BackwardSliceOptions bsOptions{
+      [&](Operation *o) { return region->isAncestor(o->getParentRegion()); }};
+  if (!region)
+    return clonedOps;
+  for (auto operand : opers) {
+    auto operandDefOp = operand.getDefiningOp();
+    if (!operandDefOp)
+      continue;
+    if (!region->isAncestor(operandDefOp->getParentRegion()))
+      continue;
+    assert(air::isPure(operandDefOp) ||
+           isa<air::WaitAllOp>(operandDefOp)); // Pure ops and wait ops are
+                                               // safe to hoist out of loops.
+    // Get backward slices
+    SetVector<Operation *> operandBS;
+    getBackwardSlice(operandDefOp, &operandBS, bsOptions);
+    for (auto b : operandBS) {
+      assert(air::isPure(b) || isa<air::WaitAllOp>(b));
+      backwardSlices.insert(b);
+    }
+    backwardSlices.insert(operandDefOp);
+  }
+  for (auto op : backwardSlices)
+    clonedOps.push_back(builder.clone(*op, remap));
+  return clonedOps;
 }

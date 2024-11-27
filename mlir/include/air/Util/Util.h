@@ -239,6 +239,20 @@ SmallVector<Value> lookupOrDefaultRange(OperandRange vec, IRMapping &remap);
 // Extend isPure method to operate on air.execute.
 bool isPure(Operation *op);
 
+// Return if the given block contains N ops which are impure and aren't async
+// wait ops (such as air.wait_all).
+bool hasNImpureOps(Block *block, unsigned N);
+
+// Return if the given block contains N ops or not, not counting the block's
+// terminator.
+bool hasNElements(Block *block, unsigned N);
+
+// Clone backward slices of a list of values.
+SmallVector<Operation *> cloneDefiningOpsInRegion(OpBuilder builder,
+                                                  Region *region,
+                                                  SmallVectorImpl<Value> &opers,
+                                                  IRMapping &remap);
+
 } // namespace air
 } // namespace xilinx
 
