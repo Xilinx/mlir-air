@@ -1048,7 +1048,6 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     }
   }
 
-  // std::map<Operation *, int> op_to_count;
   // Evaluate offset from affine map.
   auto evalOffsetFromAffineMap = [&](MLIRContext *ctx, AffineMap map) {
     SmallVector<std::optional<int64_t>> zeros(map.getNumSymbols(),
@@ -1087,34 +1086,6 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
         if (auto exec = dyn_cast<air::ExecuteOp>(iv_consumer))
           iv_consumer = &exec.getChildOps().front();
         if (auto affop = dyn_cast<affine::AffineApplyOp>(iv_consumer)) {
-          // // The induction variable must be the input to the affine op
-          // if (affop.getSymbolOperands().size() == 1) {
-          //   bool iv_is_symbol = false;
-          //   for (auto val : affop.getSymbolOperands()) {
-          //     if (val == iv) {
-          //       iv_is_symbol = true;
-          //       break;
-          //     }
-          //   }
-          //   if (iv_is_symbol) {
-          //     auto map = affop.getAffineMap();
-          //     ind_var_factor = *getConstantIntValue(strides[i]);
-          //     int64_t map_offset =
-          //         evalOffsetFromAffineMap(for_op->getContext(), map).value();
-          //     int64_t map_gradient = air::evaluateConstantsInMap(
-          //                                map,
-          //                                SmallVector<std::optional<int64_t>>{
-          //                                    std::optional<int64_t>{stepSize}},
-          //                                for_op->getContext())
-          //                                .value() -
-          //                            map_offset;
-          //     ind_var_factor *= map_gradient;
-          //     offsets[i] = builder.template create<arith::ConstantIndexOp>(
-          //         loc, loop_lower_bound + map_offset);
-          //     break;
-          //   }
-          // }
-
           auto idx = llvm::find_if(affop.getSymbolOperands(),
                                    [iv](Value oper) { return oper == iv; });
           if (idx != affop.getSymbolOperands().end()) {
@@ -1132,25 +1103,6 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
             ind_var_factor *= map_gradient;
           }
         }
-
-        // if (llvm::is_contained(iv_consumer->getOperands(), iv)) {
-        //   if (op_to_count.find(iv_consumer) == op_to_count.end()) {
-        //     op_to_count[iv_consumer] = 0;
-        //     for (auto operand : iv_consumer->getOperands()) {
-        //       for (auto iv_val : ivs) {
-        //         if (iv_val == operand)
-        //           op_to_count[iv_consumer]++;
-        //       }
-        //     }
-        //   }
-        //   op_to_count[iv_consumer]--;
-        //   ind_var_factor = *getConstantIntValue(strides[i]);
-        //   if (!op_to_count[iv_consumer]) {
-        //     offsets[i] = builder.template create<arith::ConstantIndexOp>(
-        //         loc, loop_lower_bound);
-        //   }
-        //   break;
-        // }
         iv_consumer->replaceUsesOfWith(
             iv, builder.template create<arith::ConstantIndexOp>(
                     loc, loop_lower_bound));
