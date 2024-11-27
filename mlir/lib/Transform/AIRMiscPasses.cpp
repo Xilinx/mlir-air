@@ -1069,15 +1069,22 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
           for (auto user : iv.getUsers())
             oneUser = user;
           if (auto apply = dyn_cast<affine::AffineApplyOp>(oneUser)) {
-            SmallVector<std::optional<int64_t>> const_ints;
-            for (auto oper : apply->getOperands()) {
+            SmallVector<std::optional<int64_t>> sym_ints;
+            SmallVector<std::optional<int64_t>> dim_ints;
+            for (auto oper : apply.getSymbolOperands()) {
               if (auto constVal = getConstantIntValue(oper))
-                const_ints.push_back(constVal);
+                sym_ints.push_back(constVal);
               else
-                const_ints.push_back(lb);
+                sym_ints.push_back(lb);
+            }
+            for (auto oper : apply.getDimOperands()) {
+              if (auto constVal = getConstantIntValue(oper))
+                dim_ints.push_back(constVal);
+              else
+                dim_ints.push_back(lb);
             }
             auto key_opt = air::evaluateConstantsInMap(apply.getAffineMap(),
-                                                       const_ints, ctx);
+                                                       sym_ints, dim_ints, ctx);
             if (!key_opt)
               return;
             offset_key = *key_opt;

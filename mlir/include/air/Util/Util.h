@@ -225,10 +225,9 @@ std::optional<int> getOffsetDimFromMemrefDim(int dimOnMemref,
 
 // Evaluate the affine expression of affine map on a sparse vector of constant
 // ints.
-std::optional<int64_t>
-evaluateConstantsInMap(AffineMap map,
-                       SmallVector<std::optional<int64_t>> const_inputs,
-                       MLIRContext *ctx);
+std::optional<int64_t> evaluateConstantsInMap(
+    AffineMap map, SmallVector<std::optional<int64_t>> symbolInputs,
+    SmallVector<std::optional<int64_t>> dimInputs, MLIRContext *ctx);
 
 // Extend the lookupOrDefault method to operate on a vector of values.
 Value lookupOrDefaultRange(Value v, IRMapping &remap);

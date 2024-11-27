@@ -1050,9 +1050,11 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
 
   // Evaluate offset from affine map.
   auto evalOffsetFromAffineMap = [&](MLIRContext *ctx, AffineMap map) {
-    SmallVector<std::optional<int64_t>> zeros(map.getNumSymbols(),
-                                              std::optional<int64_t>{0});
-    return air::evaluateConstantsInMap(map, zeros, ctx);
+    SmallVector<std::optional<int64_t>> zeroSyms(map.getNumSymbols(),
+                                                 std::optional<int64_t>{0});
+    SmallVector<std::optional<int64_t>> zeroDims(map.getNumDims(),
+                                                 std::optional<int64_t>{0});
+    return air::evaluateConstantsInMap(map, zeroSyms, zeroDims, ctx);
   };
   for (auto o : for_loops) {
     int64_t stepSize = -1;
@@ -1086,18 +1088,25 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
         if (auto exec = dyn_cast<air::ExecuteOp>(iv_consumer))
           iv_consumer = &exec.getChildOps().front();
         if (auto affop = dyn_cast<affine::AffineApplyOp>(iv_consumer)) {
-          auto idx = llvm::find_if(affop.getSymbolOperands(),
+          auto idx = llvm::find_if(affop.getOperands(),
                                    [iv](Value oper) { return oper == iv; });
-          if (idx != affop.getSymbolOperands().end()) {
+          if (idx != affop.getOperands().end()) {
             auto map = affop.getAffineMap();
             int64_t map_offset =
                 evalOffsetFromAffineMap(for_op->getContext(), map).value();
             ind_var_factor = *getConstantIntValue(strides[i]);
-            SmallVector<std::optional<int64_t>> stepSizeAsVec(
-                affop.getSymbolOperands().size(), std::optional<int64_t>{0});
-            stepSizeAsVec[idx - affop.getSymbolOperands().begin()] = stepSize;
+            SmallVector<std::optional<int64_t>> stepSizeAsSymVec(
+                affop.getMap().getNumSymbols(), std::optional<int64_t>{0});
+            SmallVector<std::optional<int64_t>> stepSizeAsDimVec(
+                affop.getMap().getNumDims(), std::optional<int64_t>{0});
+            if (idx - affop.getOperands().begin() < affop.getMap().getNumDims())
+              stepSizeAsDimVec[idx - affop.getOperands().begin()] = stepSize;
+            else
+              stepSizeAsSymVec[idx - affop.getOperands().begin() -
+                               affop.getMap().getNumDims()] = stepSize;
             int64_t map_gradient = air::evaluateConstantsInMap(
-                                       map, stepSizeAsVec, for_op->getContext())
+                                       map, stepSizeAsSymVec, stepSizeAsDimVec,
+                                       for_op->getContext())
                                        .value() -
                                    map_offset;
             ind_var_factor *= map_gradient;
@@ -1573,20 +1582,27 @@ air::getOffsetDimFromMemrefDim(int dimOnMemref, SmallVector<Value> strides,
 
 // Evaluate the affine expression of affine map on a sparse vector of constant
 // ints.
-std::optional<int64_t>
-air::evaluateConstantsInMap(AffineMap map,
-                            SmallVector<std::optional<int64_t>> const_inputs,
-                            MLIRContext *ctx) {
+std::optional<int64_t> air::evaluateConstantsInMap(
+    AffineMap map, SmallVector<std::optional<int64_t>> symbolInputs,
+    SmallVector<std::optional<int64_t>> dimInputs, MLIRContext *ctx) {
   std::optional<int64_t> output = std::nullopt;
-  if (map.getNumInputs() != const_inputs.size())
+  if (map.getNumSymbols() != symbolInputs.size())
+    return output;
+  if (map.getNumDims() != dimInputs.size())
     return output;
   auto newmap = map;
   for (unsigned i = 0; i < map.getNumSymbols(); i++) {
-    if (!const_inputs[i])
+    if (!symbolInputs[i])
       continue;
-    auto c = getAffineConstantExpr(*const_inputs[i], ctx);
+    auto c = getAffineConstantExpr(*symbolInputs[i], ctx);
     newmap =
         newmap.replace(getAffineSymbolExpr(i, ctx), c, 0, map.getNumSymbols());
+  }
+  for (unsigned i = 0; i < map.getNumDims(); i++) {
+    if (!dimInputs[i])
+      continue;
+    auto c = getAffineConstantExpr(*dimInputs[i], ctx);
+    newmap = newmap.replace(getAffineDimExpr(i, ctx), c, map.getNumDims(), 0);
   }
   output = simplifyAffineMap(newmap).getSingleConstantResult();
   return output;

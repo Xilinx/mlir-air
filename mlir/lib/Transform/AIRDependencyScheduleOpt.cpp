@@ -1673,12 +1673,12 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{
               *mlir::getConstantIntValue(sfo.getUpperBound())},
-          ctx);
+          SmallVector<std::optional<int64_t>>{}, ctx);
       auto new_lb = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{
               *mlir::getConstantIntValue(sfo.getLowerBound())},
-          ctx);
+          SmallVector<std::optional<int64_t>>{}, ctx);
       assert(new_ub && new_lb);
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
@@ -1706,11 +1706,11 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       auto new_ub = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{afo.getConstantUpperBound()},
-          ctx);
+          SmallVector<std::optional<int64_t>>{}, ctx);
       auto new_lb = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{afo.getConstantLowerBound()},
-          ctx);
+          SmallVector<std::optional<int64_t>>{}, ctx);
       assert(new_ub && new_lb);
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
