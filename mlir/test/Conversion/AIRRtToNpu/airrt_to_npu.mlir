@@ -310,7 +310,7 @@ module {
 
 // CHECK-LABEL: aie.device(npu1_1col)
 // CHECK:  aiex.runtime_sequence @func6(%[[ARG0:.*]]: memref<8x16xi32>, %[[ARG1:.*]]: memref<16x32xi32>, %[[ARG2:.*]]: memref<8x32xi32>)
-// CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][2, 1, 8, 16][0, 1, 16, 1]) {id = 0 : i64, metadata = @airMemcpyId4} : memref<8x16xi32>
+// CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][2, 1, 1, 128][0, 1, 1, 1]) {id = 0 : i64, metadata = @airMemcpyId4} : memref<8x16xi32>
 // CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG1]][0, 0, 0, 0][1, 2, 16, 16][1, 16, 32, 1]) {id = 1 : i64, metadata = @airMemcpyId5} : memref<16x32xi32>
 // CHECK:  aiex.npu.dma_memcpy_nd(0, 0, %[[ARG2]][0, 0, 0, 0][1, 2, 8, 16][1, 16, 32, 1]) {id = 2 : i64, metadata = @airMemcpyId12} : memref<8x32xi32>
 

@@ -387,6 +387,7 @@ module {
   // CHECK-LABEL: test11
   
   // CHECK: air.channel.put async {{.*}}@channel_26[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c18{{.*}}, %c4{{.*}}] [%c96{{.*}}, %c16{{.*}}, %c1{{.*}}]) : (memref<1x6x6x16xbf16, 1>)
+  // CHECK: air.channel.put async {{.*}}@channel_26[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c18{{.*}}, %c4{{.*}}] [%c96{{.*}}, %c16{{.*}}, %c1{{.*}}]) : (memref<1x6x6x16xbf16, 1>)
   // CHECK: air.channel.put async {{.*}}@channel_26[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c12{{.*}}] [%c3{{.*}}, %c3{{.*}}, %c4{{.*}}, %c4{{.*}}] [%c96{{.*}}, %c16{{.*}}, %c16{{.*}}, %c1{{.*}}]) : (memref<1x3x6x16xi32, 1>)
 
   func.func @test11() {
@@ -417,6 +418,17 @@ module {
             %async_token_2, %results_3 = air.execute [%arg11] -> (index) {
               %4 = affine.apply #map2(%arg9, %arg10)
               air.execute_terminator %4 : index
+            }
+            %3 = air.channel.put async [%async_token_2]  @channel_26[%c0, %c0] (%results[%c0, %results_3, %c0, %c0] [%c1, %c1, %c6, %c4_1] [%c576, %c96, %c16, %c1]) : (memref<1x6x6x16xbf16, 1>)
+            scf.yield %3 : !air.async.token
+          }
+          scf.yield %2 : !air.async.token
+        }
+        %5 = scf.for %arg9 = %c0 to %c4_1 step %c1 iter_args(%arg13 = %async_token) -> (!air.async.token) {
+          %2 = scf.for %arg10 = %c0 to %c3_0 step %c1 iter_args(%arg11 = %arg13) -> (!air.async.token) {
+            %async_token_2, %results_3 = air.execute [%arg11] -> (index) {
+              %6 = affine.apply #map1()[%arg9, %arg10]
+              air.execute_terminator %6 : index
             }
             %3 = air.channel.put async [%async_token_2]  @channel_26[%c0, %c0] (%results[%c0, %results_3, %c0, %c0] [%c1, %c1, %c6, %c4_1] [%c576, %c96, %c16, %c1]) : (memref<1x6x6x16xbf16, 1>)
             scf.yield %3 : !air.async.token

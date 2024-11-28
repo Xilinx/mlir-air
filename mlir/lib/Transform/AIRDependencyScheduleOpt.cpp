@@ -829,22 +829,11 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
                                 PatternRewriter &rewriter) const override {
     auto loc = herdOp->getLoc();
     auto ctx = herdOp->getContext();
-    auto hasNElements = [](Block *block, unsigned N) {
-      unsigned counter = 0;
-      for (auto &o : block->without_terminator()) {
-        if (air::isPure(&o))
-          continue;
-        if (isa<air::WaitAllOp>(o))
-          continue;
-        counter++;
-      }
-      return counter == N;
-    };
     SmallVector<scf::ForOp> for_loop_nest;
     Operation *parent = herdOp->getParentOp();
     while (parent && !isa<air::SegmentOp>(parent)) {
       if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-        if (hasNElements(forOp.getBody(), 1))
+        if (hasNImpureOps(forOp.getBody(), 1))
           for_loop_nest.push_back(forOp);
         else
           return failure(); // Herd is not in perfectly nested loop.
@@ -1684,12 +1673,12 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{
               *mlir::getConstantIntValue(sfo.getUpperBound())},
-          ctx);
+          SmallVector<std::optional<int64_t>>{}, ctx);
       auto new_lb = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{
               *mlir::getConstantIntValue(sfo.getLowerBound())},
-          ctx);
+          SmallVector<std::optional<int64_t>>{}, ctx);
       assert(new_ub && new_lb);
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
@@ -1717,11 +1706,11 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       auto new_ub = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{afo.getConstantUpperBound()},
-          ctx);
+          SmallVector<std::optional<int64_t>>{}, ctx);
       auto new_lb = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{afo.getConstantLowerBound()},
-          ctx);
+          SmallVector<std::optional<int64_t>>{}, ctx);
       assert(new_ub && new_lb);
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
@@ -1929,80 +1918,53 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     auto ctx = for_op->getContext();
 
     // Check if the loop is the outermost loop in a perfect loop nest
-    auto hasNElements = [](Block *block, unsigned N) {
-      unsigned counter = 0;
-      for (auto &o : block->getOperations()) {
-        if (isa<air::ChannelInterface>(o))
-          counter++;
-        else if (isa<LoopLikeOpInterface>(o))
-          counter++;
-        else if (isa<mlir::linalg::LinalgOp>(o))
-          counter++;
-      }
-      return counter == N;
-    };
-
-    if (!hasNElements(for_op.getBody(), 1))
+    if (!hasNImpureOps(for_op.getBody(), 1))
       return failure();
 
-    // Check if the loop nest contains exactly one channel op
-    SmallVector<air::ChannelInterface> channel_ops;
-    for_op.getBody()->walk(
-        [&](air::ChannelInterface putget) { channel_ops.push_back(putget); });
-    if (channel_ops.size() != 1)
+    // Check if the loop contains exactly one channel op
+    if (llvm::range_size(for_op.getBody()->getOps<air::ChannelInterface>()) !=
+        1)
       return failure();
+    air::ChannelInterface channel_op =
+        *(for_op.getBody()->getOps<air::ChannelInterface>().begin());
 
-    // Fold for loops int channel op's wrap and stride fields
-    SmallVector<scf::ForOp> for_loops;
-    Operation *parent = channel_ops[0].getOperation();
-    while (parent != for_op.getOperation()) {
-      parent = parent->getParentOp();
-      if (auto for_op_in_nest = dyn_cast<scf::ForOp>(parent))
-        for_loops.push_back(for_op_in_nest);
-    }
-    SmallVector<Value> offsets = channel_ops[0].getOffsets();
-    SmallVector<Value> wraps = channel_ops[0].getSizes();
-    SmallVector<Value> strides = channel_ops[0].getStrides();
-    for (auto o : for_loops) {
-      // Check for perfect loop nest containing only air.channel ops
-      if (!hasNElements(o.getBody(), 1))
-        return failure();
-      if (!getStaticScfForTripCountAsInt(o))
-        return failure();
-    }
+    // Fold for loops into channel op's wrap and stride fields
+    SmallVector<Value> offsets = channel_op.getOffsets();
+    SmallVector<Value> wraps = channel_op.getSizes();
+    SmallVector<Value> strides = channel_op.getStrides();
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_ops[0].getMemref().getType()));
+        air::getTensorVolume(channel_op.getMemref().getType()));
 
     // If empty offsets/sizes/strides, then populate the lists with default
     // values.
     if (offsets.empty() && wraps.empty() && strides.empty())
-      populateDefaultWrapsAndStrides(rewriter, channel_ops[0].getMemref(),
-                                     offsets, wraps, strides);
+      populateDefaultWrapsAndStrides(rewriter, channel_op.getMemref(), offsets,
+                                     wraps, strides);
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
-        rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
-        wraps, strides, channel_ops[0].getMemref());
+        rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
+        wraps, strides, channel_op.getMemref());
     if (res.failed())
       return failure();
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_ops[0].getMemref().getType()));
+        air::getTensorVolume(channel_op.getMemref().getType()));
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
-    if (isAsyncOp(channel_ops[0].getOperation())) {
+    if (isAsyncOp(channel_op.getOperation())) {
       tys.push_back(air::AsyncTokenType::get(ctx));
     }
     SmallVector<Value, 1> deps =
         for_op.getOperands().drop_front(for_op.getNumControlOperands());
 
     // Hoist any pure ops that the new channel op depends on.
-    SmallVector<Value> new_opers = llvm::to_vector(llvm::concat<Value>(
-        SmallVector<Value>{channel_ops[0].getMemref()},
-        channel_ops[0].getIndices(), offsets, wraps, strides));
+    SmallVector<Value> new_opers = llvm::to_vector(
+        llvm::concat<Value>(SmallVector<Value>{channel_op.getMemref()},
+                            channel_op.getIndices(), offsets, wraps, strides));
     IRMapping remap;
     auto clonedOps = cloneDefiningOpsInRegion(rewriter, &for_op.getRegion(),
                                               new_opers, remap);
@@ -2015,19 +1977,19 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     }
 
     // Create specialized air.channel.put/get.
-    if (isa<air::ChannelPutOp>(channel_ops[0]))
+    if (isa<air::ChannelPutOp>(channel_op))
       new_chan_op = rewriter.create<air::ChannelPutOp>(
-          loc, tys, deps, channel_ops[0].getChanName(),
-          air::lookupOrDefaultRange(channel_ops[0].getIndices(), remap),
-          air::lookupOrDefaultRange(channel_ops[0].getMemref(), remap),
+          loc, tys, deps, channel_op.getChanName(),
+          air::lookupOrDefaultRange(channel_op.getIndices(), remap),
+          air::lookupOrDefaultRange(channel_op.getMemref(), remap),
           air::lookupOrDefaultRange(offsets, remap),
           air::lookupOrDefaultRange(wraps, remap),
           air::lookupOrDefaultRange(strides, remap));
-    else if (isa<air::ChannelGetOp>(channel_ops[0]))
+    else if (isa<air::ChannelGetOp>(channel_op))
       new_chan_op = rewriter.create<air::ChannelGetOp>(
-          loc, tys, deps, channel_ops[0].getChanName(),
-          air::lookupOrDefaultRange(channel_ops[0].getIndices(), remap),
-          air::lookupOrDefaultRange(channel_ops[0].getMemref(), remap),
+          loc, tys, deps, channel_op.getChanName(),
+          air::lookupOrDefaultRange(channel_op.getIndices(), remap),
+          air::lookupOrDefaultRange(channel_op.getMemref(), remap),
           air::lookupOrDefaultRange(offsets, remap),
           air::lookupOrDefaultRange(wraps, remap),
           air::lookupOrDefaultRange(strides, remap));
@@ -2045,39 +2007,6 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
   }
 
 private:
-  // Clone backward slices of a list of values, opers.
-  SmallVector<Operation *>
-  cloneDefiningOpsInRegion(OpBuilder builder, Region *region,
-                           SmallVectorImpl<Value> &opers,
-                           IRMapping &remap) const {
-    SmallVector<Operation *> clonedOps;
-    SetVector<Operation *> backwardSlices;
-    BackwardSliceOptions bsOptions{
-        [&](Operation *o) { return region->isAncestor(o->getParentRegion()); }};
-    if (!region)
-      return clonedOps;
-    for (auto operand : opers) {
-      auto operandDefOp = operand.getDefiningOp();
-      if (!operandDefOp)
-        continue;
-      if (!region->isAncestor(operandDefOp->getParentRegion()))
-        continue;
-      assert(air::isPure(operandDefOp) ||
-             isa<air::WaitAllOp>(operandDefOp)); // Pure ops and wait ops are
-                                                 // safe to hoist out of loops.
-      // Get backward slices
-      SetVector<Operation *> operandBS;
-      getBackwardSlice(operandDefOp, &operandBS, bsOptions);
-      for (auto b : operandBS) {
-        assert(air::isPure(b) || isa<air::WaitAllOp>(b));
-        backwardSlices.insert(b);
-      }
-      backwardSlices.insert(operandDefOp);
-    }
-    for (auto op : backwardSlices)
-      clonedOps.push_back(builder.clone(*op, remap));
-    return clonedOps;
-  }
 };
 
 // This pattern should be executed after
@@ -2167,82 +2096,81 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
     auto ctx = for_op->getContext();
 
     // Check if the loop is the outermost loop in a perfect loop nest
-    auto hasNElements = [](Block *block, unsigned N) {
-      unsigned counter = 0;
-      for (auto &o : block->getOperations()) {
-        if (isa<air::ChannelInterface>(o))
-          counter++;
-        else if (isa<LoopLikeOpInterface>(o))
-          counter++;
-        else if (isa<mlir::linalg::LinalgOp>(o))
-          counter++;
-      }
-      return counter == N;
-    };
-    if (auto parent_for = dyn_cast<affine::AffineForOp>(for_op->getParentOp()))
-      if (hasNElements(parent_for.getBody(), 1))
-        return failure();
-
-    if (!hasNElements(for_op.getBody(), 1))
+    if (!hasNImpureOps(for_op.getBody(), 1))
       return failure();
 
-    // Check if the loop nest contains exactly one channel op
-    SmallVector<air::ChannelInterface> channel_ops;
-    for_op.getBody()->walk(
-        [&](air::ChannelInterface putget) { channel_ops.push_back(putget); });
-    if (channel_ops.size() != 1)
+    // Check if the loop contains exactly one channel op
+    if (llvm::range_size(for_op.getBody()->getOps<air::ChannelInterface>()) !=
+        1)
       return failure();
+    air::ChannelInterface channel_op =
+        *(for_op.getBody()->getOps<air::ChannelInterface>().begin());
 
-    // Fold for loops int channel op's wrap and stride fields
-    SmallVector<affine::AffineForOp> for_loops;
-    Operation *parent = channel_ops[0].getOperation();
-    while (parent != for_op.getOperation()) {
-      parent = parent->getParentOp();
-      if (auto for_op_in_nest = dyn_cast<affine::AffineForOp>(parent))
-        for_loops.push_back(for_op_in_nest);
-    }
-    SmallVector<Value> offsets = channel_ops[0].getOffsets();
-    SmallVector<Value> wraps = channel_ops[0].getSizes();
-    SmallVector<Value> strides = channel_ops[0].getStrides();
-    for (auto o : for_loops) {
-      // Check for perfect loop nest containing only air.channel ops
-      if (!hasNElements(o.getBody(), 1))
-        return failure();
-      if (!getStaticAffineForTripCountAsInt(o))
-        return failure();
-    }
+    // // Fold for loops int channel op's wrap and stride fields
+    SmallVector<Value> offsets = channel_op.getOffsets();
+    SmallVector<Value> wraps = channel_op.getSizes();
+    SmallVector<Value> strides = channel_op.getStrides();
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_ops[0].getMemref().getType()));
+        air::getTensorVolume(channel_op.getMemref().getType()));
+
+    // If empty offsets/sizes/strides, then populate the lists with default
+    // values.
+    if (offsets.empty() && wraps.empty() && strides.empty())
+      populateDefaultWrapsAndStrides(rewriter, channel_op.getMemref(), offsets,
+                                     wraps, strides);
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
-        rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
-        wraps, strides, channel_ops[0].getMemref());
+        rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
+        wraps, strides, channel_op.getMemref());
     if (res.failed())
       return failure();
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_ops[0].getMemref().getType()));
+        air::getTensorVolume(channel_op.getMemref().getType()));
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
-    if (isAsyncOp(channel_ops[0].getOperation())) {
+    if (isAsyncOp(channel_op.getOperation())) {
       tys.push_back(air::AsyncTokenType::get(ctx));
     }
     SmallVector<Value, 1> deps =
         for_op.getOperands().drop_front(for_op.getNumControlOperands());
-    if (isa<air::ChannelPutOp>(channel_ops[0]))
+
+    // Hoist any pure ops that the new channel op depends on.
+    SmallVector<Value> new_opers = llvm::to_vector(
+        llvm::concat<Value>(SmallVector<Value>{channel_op.getMemref()},
+                            channel_op.getIndices(), offsets, wraps, strides));
+    IRMapping remap;
+    auto clonedOps = cloneDefiningOpsInRegion(rewriter, &for_op.getRegion(),
+                                              new_opers, remap);
+    for (auto cloned : clonedOps) {
+      clearAsyncDependenciesOfAsyncOp(cloned);
+      for (auto token : deps)
+        addAsyncDependencyIfNew(cloned, token);
+      if (auto token = getAsyncTokenFromOp(cloned))
+        deps.push_back(token);
+    }
+
+    // Create specialized air.channel.put/get.
+    if (isa<air::ChannelPutOp>(channel_op))
       new_chan_op = rewriter.create<air::ChannelPutOp>(
-          loc, tys, deps, channel_ops[0].getChanName(),
-          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
-          wraps, strides);
-    else if (isa<air::ChannelGetOp>(channel_ops[0]))
+          loc, tys, deps, channel_op.getChanName(),
+          air::lookupOrDefaultRange(channel_op.getIndices(), remap),
+          air::lookupOrDefaultRange(channel_op.getMemref(), remap),
+          air::lookupOrDefaultRange(offsets, remap),
+          air::lookupOrDefaultRange(wraps, remap),
+          air::lookupOrDefaultRange(strides, remap));
+    else if (isa<air::ChannelGetOp>(channel_op))
       new_chan_op = rewriter.create<air::ChannelGetOp>(
-          loc, tys, deps, channel_ops[0].getChanName(),
-          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
-          wraps, strides);
+          loc, tys, deps, channel_op.getChanName(),
+          air::lookupOrDefaultRange(channel_op.getIndices(), remap),
+          air::lookupOrDefaultRange(channel_op.getMemref(), remap),
+          air::lookupOrDefaultRange(offsets, remap),
+          air::lookupOrDefaultRange(wraps, remap),
+          air::lookupOrDefaultRange(strides, remap));
 
     for (auto res : for_op.getResults()) {
       if (isa<air::AsyncTokenType>(res.getType())) {
@@ -3106,8 +3034,13 @@ public:
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(preproc_patterns));
 
     RewritePatternSet patterns(&getContext());
-    patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor,
+    patterns.insert<CanonicalizeAIRExecute,
+                    CanonicalizeAffineApplyOnLoopInductionVar,
+                    CanonicalizeArithMuliOpOnLoopInductionVar,
+                    CanonicalizeArithAddiOpOnLoopInductionVar,
+                    AIRSpecializeChannelWrapAndStrideInScfFor,
                     AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
+    affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
 
     // Unroll any remaining loops which contain only data movements.
@@ -4906,24 +4839,12 @@ struct AIRSegmentLoopFusionPattern : public OpRewritePattern<air::SegmentOp> {
     }
     // Get roots to perfectly nested scf.for loops.
     SmallVector<scf::ForOp> perfectlyNestedForBands;
-    auto hasNElements = [](Block *block, unsigned N) {
-      unsigned counter = 0;
-      for (auto &o : block->getOperations()) {
-        if (isa<air::ChannelInterface>(o))
-          counter++;
-        else if (isa<LoopLikeOpInterface>(o))
-          counter++;
-        else if (isa<mlir::linalg::LinalgOp>(o))
-          counter++;
-      }
-      return counter == N;
-    };
     for (auto forOp : op.getOps<scf::ForOp>()) {
       // Conditions for candicate scf.for op for fusion: (1) has at most 1
       // unique channels operating in the block, (2) is either perfectly nested,
       // or contains only channel ops, (3) is static for loop.
       if (getNumUniqueChannelsInBlock(forOp.getBody()) <= 1 &&
-          hasNElements(
+          hasNImpureOps(
               forOp.getBody(),
               std::max(getNumChannelPutsGetsInBlock(forOp.getBody()), 1)) &&
           air::getStaticScfForTripCountAsInt(forOp))

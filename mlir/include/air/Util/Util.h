@@ -225,10 +225,9 @@ std::optional<int> getOffsetDimFromMemrefDim(int dimOnMemref,
 
 // Evaluate the affine expression of affine map on a sparse vector of constant
 // ints.
-std::optional<int64_t>
-evaluateConstantsInMap(AffineMap map,
-                       SmallVector<std::optional<int64_t>> const_inputs,
-                       MLIRContext *ctx);
+std::optional<int64_t> evaluateConstantsInMap(
+    AffineMap map, SmallVector<std::optional<int64_t>> symbolInputs,
+    SmallVector<std::optional<int64_t>> dimInputs, MLIRContext *ctx);
 
 // Extend the lookupOrDefault method to operate on a vector of values.
 Value lookupOrDefaultRange(Value v, IRMapping &remap);
@@ -238,6 +237,20 @@ SmallVector<Value> lookupOrDefaultRange(OperandRange vec, IRMapping &remap);
 
 // Extend isPure method to operate on air.execute.
 bool isPure(Operation *op);
+
+// Return if the given block contains N ops which are impure and aren't async
+// wait ops (such as air.wait_all).
+bool hasNImpureOps(Block *block, unsigned N);
+
+// Return if the given block contains N ops or not, not counting the block's
+// terminator.
+bool hasNElements(Block *block, unsigned N);
+
+// Clone backward slices of a list of values.
+SmallVector<Operation *> cloneDefiningOpsInRegion(OpBuilder builder,
+                                                  Region *region,
+                                                  SmallVectorImpl<Value> &opers,
+                                                  IRMapping &remap);
 
 } // namespace air
 } // namespace xilinx
