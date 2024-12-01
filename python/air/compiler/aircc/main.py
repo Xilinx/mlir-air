@@ -36,10 +36,10 @@ def get_experimental_passes(omit_pingpong=True):
         "air-dependency-canonicalize",
         "canonicalize",
         "cse",
-        "func.func(air-loop-fusion)",
     ]
     if not omit_pingpong:
         EXPERIMENTAL_PASSES += [
+            "func.func(air-loop-fusion)",
             "air-label-scf-for-to-ping-pong",
             "air-ping-pong-transform{keep-memref-dealloc=true}",
         ]
