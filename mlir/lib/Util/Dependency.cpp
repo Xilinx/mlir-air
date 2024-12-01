@@ -720,8 +720,13 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   for (auto op : target_ops) {
     if (op->getParentOp() != for_op.getOperation())
       continue;
-    // Clone operands' defining ops.
-    for (auto operand : op->getOperands()) {
+    // Clone defining ops of both the target_op's operands, and any used values
+    // within its regions.
+    llvm::SetVector<Value> region_opers;
+    for (auto &region : op->getRegions())
+      getUsedValuesDefinedAbove(region, region_opers);
+    region_opers.insert(op->getOperands().begin(), op->getOperands().end());
+    for (auto operand : region_opers) {
       auto operandDepOp = operand.getDefiningOp();
       if (!operandDepOp)
         continue;
