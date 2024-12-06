@@ -131,18 +131,11 @@ class XRTRunner:
                 else:
                     print(actual)
 
-            if expected.dtype in [np.float16, np.float32, np.float64]:
+            if expected.dtype in [np.float16, np.float32, np.float64, bfloat16]:
+                if expected.dtype == bfloat16:
+                    expected = expected.astype(np.float64)
+                    actual = actual.astype(np.float64)
                 if not np.allclose(actual, expected, rtol=rtol):
-                    print(f"ERROR: Output {i} does not meet expected output.")
-                    print("Expected: ")
-                    print(expected)
-                    print("Actual: ")
-                    print(actual)
-                    return False
-            elif expected.dtype in [bfloat16]:
-                if not np.allclose(
-                    actual.astype(np.float32), expected.astype(np.float32), rtol=rtol
-                ):
                     print(f"ERROR: Output {i} does not meet expected output.")
                     print("Expected: ")
                     print(expected)
