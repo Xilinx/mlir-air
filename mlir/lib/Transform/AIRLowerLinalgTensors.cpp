@@ -13,9 +13,9 @@
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
-#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
@@ -147,7 +147,6 @@ void AIRLowerLinalgTensors::runOnOperation() {
                          func::FuncDialect, arith::ArithDialect>();
   target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp,
                       tensor::InsertSliceOp>();
-
 
   bufferization::BufferizationOptions options;
   options.opFilter.allowDialect<linalg::LinalgDialect>();
