@@ -22,7 +22,7 @@ module {
   func.func @graph(%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
     %0 = arith.constant 1.0 : f32
     %1 = memref.alloc() : memref<4x4xf32>
-    %2 = bufferization.to_memref %arg0 : memref<4x4xf32>
+    %2 = bufferization.to_memref %arg0 : tensor<4x4xf32> to memref<4x4xf32>
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
@@ -41,7 +41,7 @@ module {
         affine.store %4, %1[%arg1, %arg2] : memref<4x4xf32>
       }
     } {affine_opt_label = "affine_opt"}
-    %3 = bufferization.to_tensor %1 : memref<4x4xf32>
+    %3 = bufferization.to_tensor %1 : memref<4x4xf32> to tensor<4x4xf32>
     return %3 : tensor<4x4xf32>
   }
 }

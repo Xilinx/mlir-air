@@ -17,7 +17,7 @@
 module  {
   func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
-    %1 = bufferization.to_memref %arg0 : memref<28x10xf32>
+    %1 = bufferization.to_memref %arg0 : tensor<28x10xf32> to memref<28x10xf32>
     affine.for %arg2 = 0 to 28 {
       affine.for %arg3 = 0 to 10 {
         %7 = affine.load %1[%arg2, %arg3] : memref<28x10xf32>
@@ -26,10 +26,10 @@ module  {
         affine.store %8, %0[%arg2, %arg3] : memref<28x10xf32>
       }
     } {affine_opt_label = "affine_opt"}
-    %2 = bufferization.to_tensor %0 : memref<28x10xf32>
+    %2 = bufferization.to_tensor %0 : memref<28x10xf32> to tensor<28x10xf32>
     %3 = memref.alloc() : memref<28x10xf32>
-    %4 = bufferization.to_memref %2 : memref<28x10xf32>
-    %5 = bufferization.to_memref %arg1 : memref<28x10xf32>
+    %4 = bufferization.to_memref %2 : tensor<28x10xf32> to memref<28x10xf32>
+    %5 = bufferization.to_memref %arg1 : tensor<28x10xf32> to memref<28x10xf32>
     affine.for %arg2 = 0 to 28 {
       affine.for %arg3 = 0 to 10 {
         %7 = affine.load %4[%arg2, %arg3] : memref<28x10xf32>
@@ -38,7 +38,7 @@ module  {
         affine.store %9, %3[%arg2, %arg3] : memref<28x10xf32>
       }
     } {affine_opt_label = "xten.binary_op"}
-    %6 = bufferization.to_tensor %3 : memref<28x10xf32>
+    %6 = bufferization.to_tensor %3 : memref<28x10xf32> to tensor<28x10xf32>
     return %6 : tensor<28x10xf32>
   }
 }
