@@ -13,9 +13,9 @@
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
-#include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
@@ -142,21 +142,13 @@ void AIRLowerLinalgTensors::runOnOperation() {
   MLIRContext &context = getContext();
 
   ConversionTarget target(context);
-  bufferization::BufferizeTypeConverter typeConverter;
   target.addLegalDialect<AIE::AIEDialect, affine::AffineDialect,
                          math::MathDialect, memref::MemRefDialect,
                          func::FuncDialect, arith::ArithDialect>();
   target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp,
                       tensor::InsertSliceOp>();
 
-  // Mark all Linalg operations illegal as long as they work on tensors.
-  auto isLegalOperation = [&](Operation *op) {
-    return typeConverter.isLegal(op);
-  };
-  target.addDynamicallyLegalDialect<linalg::LinalgDialect>(isLegalOperation);
-
-  bufferization::BufferizationOptions options =
-      bufferization::getPartialBufferizationOptions();
+  bufferization::BufferizationOptions options;
   options.opFilter.allowDialect<linalg::LinalgDialect>();
 
   if (failed(bufferizeOp(getOperation(), options)))
