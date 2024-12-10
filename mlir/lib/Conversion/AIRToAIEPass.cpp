@@ -2114,11 +2114,10 @@ public:
   }
 
   template <typename T>
-  void placeDMAChannelsAndRouteFlows(AIE::DeviceOp aie_device,
-                                     ShimDMAAllocator &shim_dma_alloc,
-                                     MemTileDMAAllocator &memtile_dma_alloc,
-                                     TileDMAAllocator &tile_dma_alloc,
-                                     AIRToAIEConversionOptions options) {
+  LogicalResult placeDMAChannelsAndRouteFlows(
+      AIE::DeviceOp aie_device, ShimDMAAllocator &shim_dma_alloc,
+      MemTileDMAAllocator &memtile_dma_alloc, TileDMAAllocator &tile_dma_alloc,
+      AIRToAIEConversionOptions options) {
 
     std::vector<Operation *> dma_memcpy_ops;
 
@@ -2154,7 +2153,7 @@ public:
           memcpy_flows.push_back(flow);
         }
       } else {
-        o->emitOpError(
+        return o->emitOpError(
             "unknown memcpy op type. Expected air::MemcpyInterface.");
       }
     }
@@ -2169,8 +2168,10 @@ public:
     // else
     //   simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
     //                              memtile_dma_alloc, tile_dma_alloc);
-    simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc, memtile_dma_alloc,
-                               tile_dma_alloc);
+    auto r = simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
+                                        memtile_dma_alloc, tile_dma_alloc);
+    if (failed(r))
+      return r;
 
     // Step 3: Sort all ops being allocated to each DMA channel, to avoid
     // ping-pong deadlock.
@@ -2179,24 +2180,23 @@ public:
     // Step 4: Connect flows
     for (auto &f : memcpy_flows) {
       for (int i = 0; i < f.numS2MMAllocs; i++) {
-        assert(f.MM2S_alloc.dma_tile);
-        assert(f.S2MM_alloc[i].dma_tile);
         if (options.use_packet_flow_at_shim_dmas &&
-            f.MM2S_alloc.dma_tile.isShimNOCorPLTile())
+            f.MM2S_alloc.getDmaTile().isShimNOCorPLTile())
           // use_packet_flow_at_shim_dmas mode: use packet flow for all shim dma
           // mm2s, to enable dma channel sharing with control packets
           getPacketFlowOp(
-              aie_device, f.MM2S_alloc.dma_tile, AIE::WireBundle::DMA,
+              aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
               (uint32_t)f.MM2S_alloc.dma_channel.channel,
-              f.S2MM_alloc[i].dma_tile, AIE::WireBundle::DMA,
+              f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
               (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
         else
-          getFlowOp(aie_device, f.MM2S_alloc.dma_tile, AIE::WireBundle::DMA,
+          getFlowOp(aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
                     (uint32_t)f.MM2S_alloc.dma_channel.channel,
-                    f.S2MM_alloc[i].dma_tile, AIE::WireBundle::DMA,
+                    f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
                     (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
       }
     }
+    return success();
   }
 
   void getDmaAllocationMetadata(OpBuilder builder, MLIRContext *ctx,
@@ -2231,7 +2231,7 @@ public:
     }
 
     for (auto &t : allocs) {
-      auto tileOp = t.dma_tile;
+      AIE::TileOp tileOp = t.getDmaTile();
       int64_t col = t.col - col_offset;
       int64_t row = t.row - row_offset;
       int64_t chan = dir == AIE::DMAChannelDir::MM2S ? t.dma_channel.channel + 2
@@ -2402,7 +2402,7 @@ public:
     });
 
     for (allocation_info_t &t : allocs) {
-      AIE::TileOp tileOp = t.dma_tile;
+      AIE::TileOp tileOp = t.getDmaTile();
       int chan = t.dma_channel.channel;
 
       for (int32_t id : t.dma_id) {
@@ -2760,8 +2760,9 @@ public:
   }
 
   template <typename T>
-  void lowerAIRMemcpyOp(AIE::DeviceOp device, ShimDMAAllocator &shimDmaAlloc,
-                        AIRToAIEConversionOptions options) {
+  LogicalResult lowerAIRMemcpyOp(AIE::DeviceOp device,
+                                 ShimDMAAllocator &shimDmaAlloc,
+                                 AIRToAIEConversionOptions options) {
     SmallVector<AIE::CoreOp, 32> cores;
     for (auto c : device.getOps<AIE::CoreOp>())
       cores.push_back(c);
@@ -2775,8 +2776,10 @@ public:
     MemTileDMAAllocator memTileDmaAlloc(device);
 
     // Place memcpy ops onto DMA tiles, channels and flows
-    placeDMAChannelsAndRouteFlows<T>(device, shimDmaAlloc, memTileDmaAlloc,
-                                     tileDmaAlloc, options);
+    auto r = placeDMAChannelsAndRouteFlows<T>(
+        device, shimDmaAlloc, memTileDmaAlloc, tileDmaAlloc, options);
+    if (failed(r))
+      return r;
 
     for (AIE::CoreOp core : cores) {
       AIE::TileOp tile = core.getTileOp();
@@ -2793,7 +2796,7 @@ public:
             assert(o);
             auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
             if (!memcpyOpIf)
-              o->emitOpError("does not have air::MemcpyInterface");
+              return o->emitOpError("does not have air::MemcpyInterface");
             allocateCoreLocksPerMemcpyOp(builder, memcpyOpIf, allocs_to_remap,
                                          target_model, tileDmaAlloc, x, y);
           }
@@ -2805,7 +2808,7 @@ public:
             assert(o);
             auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
             if (!memcpyOpIf)
-              o->emitOpError("does not have air::MemcpyInterface");
+              return o->emitOpError("does not have air::MemcpyInterface");
             allocateCoreLocksPerMemcpyOp(builder, memcpyOpIf, allocs_to_remap,
                                          target_model, tileDmaAlloc, x, y);
           }
@@ -2874,18 +2877,22 @@ public:
     std::vector<AIE::TileOp> shimtiles;
     std::vector<AIE::TileOp> memTileTiles;
     for (auto &alloc : shimDmaAlloc.mm2s_allocs) {
-      auto tile = alloc.dma_tile;
+      auto tile = alloc.getDmaTile();
       if (tile.isShimTile())
         push_back_if_unique<AIE::TileOp>(shimtiles, tile);
-      else
+      else {
         assert(false);
+        return failure();
+      }
     }
     for (auto &alloc : memTileDmaAlloc.mm2s_allocs) {
-      auto tile = alloc.dma_tile;
+      auto tile = alloc.getDmaTile();
       if (tile.isMemTile())
         push_back_if_unique<AIE::TileOp>(memTileTiles, tile);
-      else
+      else {
         assert(false);
+        return failure();
+      }
     }
 
     // Disable generation of shim dma program if generate_shim_dma unset
@@ -3014,6 +3021,8 @@ public:
         o->erase();
       }
     }
+
+    return success();
   }
 
   void createTracePacketFlow(AIE::DeviceOp device) {
@@ -3236,10 +3245,18 @@ public:
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
         renumberChannelOps(&device.getBodyRegion().front(),
                            chan_renumber_reverse_map);
-        lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc, options);
+        if (failed(lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc,
+                                                           options))) {
+          signalPassFailure();
+          return;
+        }
       }
 
-      lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc, options);
+      if (failed(lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc,
+                                                      options))) {
+        signalPassFailure();
+        return;
+      }
 
       if (options.insert_trace_packet_flow)
         createTracePacketFlow(device);

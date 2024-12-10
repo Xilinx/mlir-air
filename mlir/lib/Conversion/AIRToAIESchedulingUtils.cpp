@@ -309,9 +309,14 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
 
 // allocation_info_t impl.
 
-namespace xilinx::air {
+bool xilinx::air::allocation_info_t::valid() { return dma_tile != nullptr; }
 
-bool allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
+AIE::TileOp xilinx::air::allocation_info_t::getDmaTile() {
+  assert(valid());
+  return dma_tile;
+}
+
+bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
   if (channel_op) {
     for (auto o : memcpyOps) {
       if (auto chan_op = dyn_cast<air::ChannelInterface>(o)) {
@@ -323,47 +328,53 @@ bool allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
   }
   return false;
 }
-bool allocation_info_t::foundAlloc(int32_t col, int32_t row,
-                                   air::MemcpyInterface memcpyOp) {
-  if (col == dma_tile.getCol() && row == dma_tile.getRow())
+
+bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row) {
+  if (col == getDmaTile().getCol() && row == getDmaTile().getRow())
+    return true;
+  return false;
+}
+
+bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row,
+                                                air::MemcpyInterface memcpyOp) {
+  if (foundAlloc(col, row))
     for (auto o : memcpyOps)
       if (memcpyOp.getOperation() == o)
         return true;
   return false;
 }
-bool allocation_info_t::foundAlloc(int32_t col, int32_t row, int chan) {
-  if (col == dma_tile.getCol() && row == dma_tile.getRow() &&
-      chan == dma_channel.channel)
-    return true;
-  return false;
+
+bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row,
+                                                int chan) {
+  return foundAlloc(col, row) && (chan == dma_channel.channel);
 }
-bool allocation_info_t::foundAlloc(int32_t col, int32_t row) {
-  if (col == dma_tile.getCol() && row == dma_tile.getRow())
-    return true;
-  return false;
-}
-bool allocation_info_t::foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel) {
-  if (tile == dma_tile && channel.direction == dma_channel.direction &&
+
+bool xilinx::air::allocation_info_t::foundAlloc(AIE::DMAChannel channel) {
+  if (channel.direction == dma_channel.direction &&
       channel.channel == dma_channel.channel)
     return true;
   else
     return false;
 }
-bool allocation_info_t::foundAlloc(int32_t col, int32_t row,
-                                   air::ChannelOp channel_op) {
-  if (col == dma_tile.getCol() && row == dma_tile.getRow() && channel_op) {
-    for (auto o : memcpyOps) {
-      if (auto chan_op = dyn_cast<air::ChannelInterface>(o)) {
-        auto chan_declr = getChannelDeclarationThroughSymbol(chan_op);
-        if (chan_declr == channel_op)
-          return true;
-      }
-    }
-  }
-  return false;
+
+bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row,
+                                                AIE::DMAChannel channel) {
+  return foundAlloc(col, row) && foundAlloc(channel);
 }
 
-} // namespace xilinx::air
+bool xilinx::air::allocation_info_t::foundAlloc(AIE::TileOp tile,
+                                                AIE::DMAChannel channel) {
+  if (tile == getDmaTile() && foundAlloc(channel))
+    return true;
+  else
+    return false;
+}
+
+bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row,
+                                                air::ChannelOp channel_op) {
+
+  return foundAlloc(col, row) && foundAlloc(channel_op);
+}
 
 // DMAAllocator impl.
 
@@ -401,7 +412,7 @@ DMAAllocator::lookupDMAAllocation(int64_t col, int64_t row,
       return t;
   }
   assert(false);
-  return {nullptr, -1, -1, AIE::DMAChannel(), -1, {}, {}};
+  return {};
 }
 
 // Allocate a reader/writer lock pair. These may be the same or different
@@ -411,7 +422,7 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
                             Operation *bufferOp) {
   allocation_info_t alloc = lookupDMAAllocation(col, row, memcpyOp);
   AIE::DMAChannel channel = alloc.dma_channel;
-  AIE::TileOp tile = alloc.dma_tile;
+  AIE::TileOp tile = alloc.getDmaTile();
   air::ChannelOp air_chan = nullptr;
   if (auto air_chan_op =
           dyn_cast<air::ChannelInterface>(memcpyOp.getOperation())) {
@@ -621,8 +632,7 @@ allocation_info_t ShimDMAAllocator::allocNewDmaChannel(
   int dma_col = dma_columns[colIdx];
   int dma_channel = 0;
   while (any_of(allocs->begin(), allocs->end(), [&](allocation_info_t &a) {
-    return a.dma_channel == AIE::DMAChannel{dir, dma_channel} &&
-           a.dma_tile.colIndex() == dma_col && a.dma_tile.rowIndex() == 0;
+    return a.foundAlloc(dma_col, 0, AIE::DMAChannel{dir, dma_channel});
   })) {
     dma_channel++;
     if (dma_channel >= shim_dma_channels) {
@@ -631,7 +641,7 @@ allocation_info_t ShimDMAAllocator::allocNewDmaChannel(
       if (colIdx == (int)dma_columns.size()) {
         memcpyOp->emitOpError(
             "failed to map to shim dma channels: out of channels.");
-        break;
+        return {};
       }
     }
   }
@@ -667,7 +677,7 @@ ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
   }
 
   for (auto &t : *allocs) {
-    if (t.foundAlloc(existing_alloc.dma_tile, existing_alloc.dma_channel)) {
+    if (t.foundAlloc(existing_alloc.getDmaTile(), existing_alloc.dma_channel)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       for (auto id : dma_ops_get_id)
         t.dma_id.push_back(id);
@@ -675,7 +685,7 @@ ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
     }
   }
   assert(false);
-  return DMAAllocator::allocNewDmaChannel(memcpyOp, existing_alloc.dma_tile,
+  return DMAAllocator::allocNewDmaChannel(memcpyOp, existing_alloc.getDmaTile(),
                                           existing_alloc.dma_channel.channel);
 }
 
@@ -708,23 +718,25 @@ ShimDMAAllocator::foundFlowReuseOpportunity(
   for (auto &f : memcpy_flows) {
     if (isMM2S) {
       for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
-        if (f.S2MM_alloc[i].dma_tile == alloc.dma_tile &&
+        if (f.S2MM_alloc[i].getDmaTile() == alloc.getDmaTile() &&
             f.S2MM_alloc[i].dma_channel.direction ==
                 alloc.dma_channel.direction &&
             f.S2MM_alloc[i].dma_channel.channel == alloc.dma_channel.channel) {
-          if (f.MM2S_alloc.dma_tile && f.MM2S_alloc.dma_tile.isShimTile()) {
+          if (f.MM2S_alloc.getDmaTile() &&
+              f.MM2S_alloc.getDmaTile().isShimTile()) {
             output = f.MM2S_alloc;
             return output;
           }
         }
       }
-    } else if (!isMM2S && f.MM2S_alloc.dma_tile == alloc.dma_tile &&
+    } else if (!isMM2S && f.MM2S_alloc.getDmaTile() == alloc.getDmaTile() &&
                f.MM2S_alloc.dma_channel.direction ==
                    alloc.dma_channel.direction &&
                f.MM2S_alloc.dma_channel.channel == alloc.dma_channel.channel) {
 
       for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
-        if (f.S2MM_alloc[i].dma_tile && f.S2MM_alloc[i].dma_tile.isShimTile()) {
+        if (f.S2MM_alloc[i].getDmaTile() &&
+            f.S2MM_alloc[i].getDmaTile().isShimTile()) {
           output = f.S2MM_alloc[i];
           return output;
         }
@@ -788,7 +800,7 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   assert(tile);
 
   for (auto &t : *allocs) {
-    if (t.foundAlloc(existing_alloc.dma_tile, existing_alloc.dma_channel)) {
+    if (t.foundAlloc(existing_alloc.getDmaTile(), existing_alloc.dma_channel)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -808,23 +820,25 @@ MemTileDMAAllocator::foundFlowReuseOpportunity(
   for (auto &f : memcpy_flows) {
     if (!isMM2S) {
       for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
-        if (f.S2MM_alloc[i].dma_tile == alloc.dma_tile &&
+        if (f.S2MM_alloc[i].getDmaTile() == alloc.getDmaTile() &&
             f.S2MM_alloc[i].dma_channel.direction ==
                 alloc.dma_channel.direction &&
             f.S2MM_alloc[i].dma_channel.channel == alloc.dma_channel.channel) {
-          if (f.MM2S_alloc.dma_tile && f.MM2S_alloc.dma_tile.isMemTile()) {
+          if (f.MM2S_alloc.getDmaTile() &&
+              f.MM2S_alloc.getDmaTile().isMemTile()) {
             output = f.MM2S_alloc;
             return output;
           }
         }
       }
-    } else if (isMM2S && f.MM2S_alloc.dma_tile == alloc.dma_tile &&
+    } else if (isMM2S && f.MM2S_alloc.getDmaTile() == alloc.getDmaTile() &&
                f.MM2S_alloc.dma_channel.direction ==
                    alloc.dma_channel.direction &&
                f.MM2S_alloc.dma_channel.channel == alloc.dma_channel.channel) {
 
       for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
-        if (f.S2MM_alloc[i].dma_tile && f.S2MM_alloc[i].dma_tile.isMemTile()) {
+        if (f.S2MM_alloc[i].getDmaTile() &&
+            f.S2MM_alloc[i].getDmaTile().isMemTile()) {
           output = f.S2MM_alloc[i];
           return output;
         }
@@ -964,10 +978,11 @@ MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
 
 // AIR channel to AIE flow scheduling strategy 1: round robin
 // Problem: no awareness wrt channel put and get pattern, leading to deadlocks
-void air::simpleDMAChannelAllocation(
-    std::vector<MemcpyBundleAsFlow> &memcpy_flows,
-    ShimDMAAllocator &shim_dma_alloc, MemTileDMAAllocator &memtile_dma_alloc,
-    TileDMAAllocator &tile_dma_alloc) {
+LogicalResult
+air::simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
+                                ShimDMAAllocator &shim_dma_alloc,
+                                MemTileDMAAllocator &memtile_dma_alloc,
+                                TileDMAAllocator &tile_dma_alloc) {
   for (auto &f : memcpy_flows) {
     if (f.MM2S_memspace_as_int == (int)air::MemorySpace::L1) {
       for (auto o : f.MM2S) {
@@ -980,7 +995,8 @@ void air::simpleDMAChannelAllocation(
 
         f.MM2S_alloc = tile_dma_alloc.simpleDmaChannelAlloc(
             memcpyOpIf, x, y, f.MM2S_alloc.dma_channel.channel);
-        assert(f.MM2S_alloc.dma_tile);
+        if (!f.MM2S_alloc.valid())
+          return failure();
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L1) {
@@ -995,7 +1011,8 @@ void air::simpleDMAChannelAllocation(
 
           f.S2MM_alloc[i] = tile_dma_alloc.simpleDmaChannelAlloc(
               memcpyOpIf, x, y, f.S2MM_alloc[i].dma_channel.channel);
-          assert(f.S2MM_alloc[i].dma_tile);
+          if (!f.S2MM_alloc[i].valid())
+            return failure();
         }
       }
     }
@@ -1005,7 +1022,8 @@ void air::simpleDMAChannelAllocation(
       for (auto o : f.MM2S) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         f.MM2S_alloc = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
-        assert(f.MM2S_alloc.dma_tile);
+        if (!f.MM2S_alloc.valid())
+          return failure();
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L2) {
@@ -1013,7 +1031,8 @@ void air::simpleDMAChannelAllocation(
         for (auto o : f.S2MM[i]) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           f.S2MM_alloc[i] = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
-          assert(f.S2MM_alloc[i].dma_tile);
+          if (!f.S2MM_alloc[i].valid())
+            return failure();
         }
       }
     }
@@ -1024,9 +1043,10 @@ void air::simpleDMAChannelAllocation(
         for (auto o : f.MM2S) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           f.MM2S_alloc = shim_dma_alloc.allocNewDmaChannel(
-              memcpyOpIf, f.S2MM_alloc[i].dma_tile.getCol(),
-              f.S2MM_alloc[i].dma_tile.getRow(), f.S2MM[i]);
-          assert(f.MM2S_alloc.dma_tile);
+              memcpyOpIf, f.S2MM_alloc[i].getDmaTile().getCol(),
+              f.S2MM_alloc[i].getDmaTile().getRow(), f.S2MM[i]);
+          if (!f.MM2S_alloc.valid())
+            return failure();
         }
       }
     }
@@ -1036,12 +1056,14 @@ void air::simpleDMAChannelAllocation(
       for (auto o : f.S2MM[0]) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         f.S2MM_alloc[0] = shim_dma_alloc.allocNewDmaChannel(
-            memcpyOpIf, f.MM2S_alloc.dma_tile.getCol(),
-            f.MM2S_alloc.dma_tile.getRow(), f.MM2S);
-        assert(f.S2MM_alloc[0].dma_tile);
+            memcpyOpIf, f.MM2S_alloc.getDmaTile().getCol(),
+            f.MM2S_alloc.getDmaTile().getRow(), f.MM2S);
+        if (!f.S2MM_alloc[0].valid())
+          return failure();
       }
     }
   }
+  return success();
 }
 
 // If found item in vector, return index; else return -1.
@@ -1103,7 +1125,7 @@ bool air::groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
   return flow_op_group_max;
 }
 
-void air::groupedByLoopDMAChannelAllocation(
+LogicalResult air::groupedByLoopDMAChannelAllocation(
     std::vector<MemcpyBundleAsFlow> &memcpy_flows,
     ShimDMAAllocator &shim_dma_alloc, MemTileDMAAllocator &memtile_dma_alloc,
     TileDMAAllocator &tile_dma_alloc) {
@@ -1120,7 +1142,8 @@ void air::groupedByLoopDMAChannelAllocation(
 
         f.MM2S_alloc = tile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf, x, y,
                                                             f.flow_op_group);
-        assert(f.MM2S_alloc.dma_tile);
+        if (!f.MM2S_alloc.valid())
+          return failure();
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L1) {
@@ -1135,7 +1158,8 @@ void air::groupedByLoopDMAChannelAllocation(
 
           f.S2MM_alloc[i] = tile_dma_alloc.simpleDmaChannelAlloc(
               memcpyOpIf, x, y, f.flow_op_group);
-          assert(f.S2MM_alloc[i].dma_tile);
+          if (!f.S2MM_alloc[i].valid())
+            return failure();
         }
       }
     }
@@ -1156,11 +1180,15 @@ void air::groupedByLoopDMAChannelAllocation(
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           f.MM2S_alloc = memtile_dma_alloc.simpleDmaChannelAlloc(
               memcpyOpIf, *reusable_alloc);
+          if (!f.MM2S_alloc.valid())
+            return failure();
         }
       } else {
         for (auto o : f.MM2S) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           f.MM2S_alloc = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
+          if (!f.MM2S_alloc.valid())
+            return failure();
         }
       }
     }
@@ -1177,12 +1205,16 @@ void air::groupedByLoopDMAChannelAllocation(
             auto memcpyOpIf = cast<air::MemcpyInterface>(o);
             f.S2MM_alloc[i] = memtile_dma_alloc.simpleDmaChannelAlloc(
                 memcpyOpIf, *reusable_alloc);
+            if (!f.S2MM_alloc[i].valid())
+              return failure();
           }
         } else {
           for (auto o : f.S2MM[i]) {
             auto memcpyOpIf = cast<air::MemcpyInterface>(o);
             f.S2MM_alloc[i] =
                 memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
+            if (!f.S2MM_alloc[i].valid())
+              return failure();
           }
         }
       }
@@ -1198,13 +1230,17 @@ void air::groupedByLoopDMAChannelAllocation(
             auto memcpyOpIf = cast<air::MemcpyInterface>(o);
             f.MM2S_alloc = shim_dma_alloc.allocNewDmaChannel(memcpyOpIf, *alloc,
                                                              f.S2MM[i]);
+            if (!f.MM2S_alloc.valid())
+              return failure();
           }
         } else {
           for (auto o : f.MM2S) {
             auto memcpyOpIf = cast<air::MemcpyInterface>(o);
             f.MM2S_alloc = shim_dma_alloc.allocNewDmaChannel(
-                memcpyOpIf, f.S2MM_alloc[i].dma_tile.getCol(),
-                f.S2MM_alloc[i].dma_tile.getRow(), f.S2MM[i]);
+                memcpyOpIf, f.S2MM_alloc[i].getDmaTile().getCol(),
+                f.S2MM_alloc[i].getDmaTile().getRow(), f.S2MM[i]);
+            if (!f.MM2S_alloc.valid())
+              return failure();
           }
         }
       }
@@ -1218,15 +1254,20 @@ void air::groupedByLoopDMAChannelAllocation(
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           f.S2MM_alloc[0] =
               shim_dma_alloc.allocNewDmaChannel(memcpyOpIf, *alloc, f.MM2S);
+          if (!f.S2MM_alloc[0].valid())
+            return failure();
         }
       } else {
         for (auto o : f.S2MM[0]) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           f.S2MM_alloc[0] = shim_dma_alloc.allocNewDmaChannel(
-              memcpyOpIf, f.MM2S_alloc.dma_tile.getCol(),
-              f.MM2S_alloc.dma_tile.getRow(), f.MM2S);
+              memcpyOpIf, f.MM2S_alloc.getDmaTile().getCol(),
+              f.MM2S_alloc.getDmaTile().getRow(), f.MM2S);
+          if (!f.S2MM_alloc[0].valid())
+            return failure();
         }
       }
     }
   }
+  return success();
 }
