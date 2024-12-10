@@ -72,9 +72,13 @@ struct allocation_info_t {
   int64_t tile_channel = -1;
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
+  bool valid();
+  AIE::TileOp getDmaTile();
   bool foundAlloc(air::ChannelOp channel_op);
   bool foundAlloc(int32_t col, int32_t row, air::MemcpyInterface memcpyOp);
   bool foundAlloc(int32_t col, int32_t row, int chan);
+  bool foundAlloc(AIE::DMAChannel channel);
+  bool foundAlloc(int32_t col, int32_t row, AIE::DMAChannel channel);
   bool foundAlloc(int32_t col, int32_t row);
   bool foundAlloc(int32_t col, int32_t row, air::ChannelOp channel_op);
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
@@ -191,18 +195,20 @@ public:
                             air::allocation_info_t alloc, bool isMM2S);
 };
 
-void simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
-                                ShimDMAAllocator &shim_dma_alloc,
-                                MemTileDMAAllocator &memtile_dma_alloc,
-                                TileDMAAllocator &tile_dma_alloc);
+LogicalResult
+simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
+                           ShimDMAAllocator &shim_dma_alloc,
+                           MemTileDMAAllocator &memtile_dma_alloc,
+                           TileDMAAllocator &tile_dma_alloc);
 template <typename T> int foundInVector(T item, std::vector<T> vec);
 int getSCFForLoopDepth(Operation *o);
 bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 
-void groupedByLoopDMAChannelAllocation(
-    std::vector<MemcpyBundleAsFlow> &memcpy_flows,
-    ShimDMAAllocator &shim_dma_alloc, MemTileDMAAllocator &memtile_dma_alloc,
-    TileDMAAllocator &tile_dma_alloc);
+LogicalResult
+groupedByLoopDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
+                                  ShimDMAAllocator &shim_dma_alloc,
+                                  MemTileDMAAllocator &memtile_dma_alloc,
+                                  TileDMAAllocator &tile_dma_alloc);
 
 } // namespace air
 } // namespace xilinx
