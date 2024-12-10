@@ -620,6 +620,7 @@ allocation_info_t ShimDMAAllocator::allocNewDmaChannel(
   }
   int dma_col = dma_columns[colIdx];
   int dma_channel = 0;
+  int colTripCount = 0;
   while (any_of(allocs->begin(), allocs->end(), [&](allocation_info_t &a) {
     return a.dma_channel == AIE::DMAChannel{dir, dma_channel} &&
            a.dma_tile.colIndex() == dma_col && a.dma_tile.rowIndex() == 0;
@@ -627,8 +628,9 @@ allocation_info_t ShimDMAAllocator::allocNewDmaChannel(
     dma_channel++;
     if (dma_channel >= shim_dma_channels) {
       dma_channel = 0;
-      dma_col = dma_columns[colIdx++];
-      if (colIdx == (int)dma_columns.size()) {
+      dma_col = dma_columns[colIdx++ % dma_columns.size()];
+      colTripCount++;
+      if (colTripCount > (int)dma_columns.size()) {
         memcpyOp->emitOpError(
             "failed to map to shim dma channels: out of channels.");
         break;
