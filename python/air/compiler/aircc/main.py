@@ -151,7 +151,7 @@ def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filena
 
     aie_ctrl = opts.tmpdir + "/aie_ctrl." + air_mlir_filename
     pass_pipeline = ",".join(
-        ["airrt-to-llvm", "func-bufferize", "func.func(finalizing-bufferize)"]
+        ["airrt-to-llvm", "one-shot-bufferize"]
     )
     run_passes("builtin.module(" + pass_pipeline + ")", airrt_module, opts, aie_ctrl)
 
