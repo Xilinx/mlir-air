@@ -20,7 +20,7 @@
 // CHECK:         %[[VAL_10:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_9]] : memref<32x32xbf16, 2>, 0, 1024)
@@ -46,7 +46,7 @@
 // CHECK:         aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
 
 // CHECK:    aie.memtile_dma(%[[VAL_0]])  {
-// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_8]] : memref<32x32xbf16, 1>, 0, 1024)
@@ -109,7 +109,7 @@ func.func @multi_memcpys_over_time() {
 // CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_2]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024)
@@ -133,7 +133,7 @@ func.func @multi_memcpys_over_time() {
 // CHECK:         }
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
-// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024)
@@ -213,7 +213,7 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_2]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024)
@@ -237,7 +237,7 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         }
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
-// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024)
@@ -329,19 +329,21 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<1x1x4x8x4x8xi32, 2 : i32>
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024)
+// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024) {task_id = 0 : i32}
 // CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
 // CHECK:           aie.next_bd ^bb2
-// CHECK:         ^bb2:
-// CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024)
-// CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
-// CHECK:           aie.next_bd ^bb1
-// CHECK:         ^bb3:
+// CHECK:         ^bb2:  // 3 preds: ^bb1, ^bb3, ^bb4
 // CHECK:           aie.end
+// CHECK:         ^bb3:
+// CHECK:           aie.dma_start(S2MM, 0, ^bb4, ^bb2, repeat_count = 3)
+// CHECK:         ^bb4:  // pred: ^bb3
+// CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024) {task_id = 1 : i32}
+// CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
+// CHECK:           aie.next_bd ^bb2
 // CHECK:         }
 
 // CHECK:    aie.core(%[[VAL_1]])  {

@@ -19,7 +19,7 @@
 // CHECK:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<32x32xbf16, 2>
 
 // CHECK:    aie.mem(%[[VAL_2]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_7]] : memref<32x32xbf16, 2>, 0, 1024)
@@ -36,7 +36,7 @@
 // CHECK:         }
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
-// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_8]] : memref<32x32xbf16, 2>, 0, 1024)
