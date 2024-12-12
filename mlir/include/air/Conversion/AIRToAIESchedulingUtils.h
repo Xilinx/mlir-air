@@ -47,7 +47,10 @@ bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 int64_t get1DOffset(SmallVector<Value> memcpy_offsets,
                     SmallVector<Value> memcpy_strides);
 
-int getRepeatCount(Operation *memcpy_op);
+// Given a vector of memcpy operations, return a map of their repeat counts,
+// relative to a common ancestor region.
+llvm::MapVector<int, llvm::SetVector<Operation *>>
+getRepeatCounts(std::vector<Operation *> memcpy_ops);
 
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
@@ -200,7 +203,8 @@ simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
                            ShimDMAAllocator &shim_dma_alloc,
                            MemTileDMAAllocator &memtile_dma_alloc,
                            TileDMAAllocator &tile_dma_alloc);
-template <typename T> int foundInVector(T item, std::vector<T> vec);
+template <typename T>
+int foundInVector(T item, std::vector<T> vec);
 int getSCFForLoopDepth(Operation *o);
 bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 
