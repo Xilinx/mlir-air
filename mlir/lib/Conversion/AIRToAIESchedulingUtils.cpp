@@ -189,39 +189,76 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
 
   // Check if all of memcpy_ops only map to one same dma bd. If true, then
   // return that there is only one single repeat count, i.e. a single bd task.
-  bool areAllIdenticalBDs = llvm::all_of(memcpy_ops, [&](Operation *op) {
-    if (auto chanOpFront = dyn_cast<air::ChannelInterface>(memcpy_ops[0])) {
-      // Check if all air.channel_interface ops map to equivalent BDs.
-      auto chanOp = dyn_cast<air::ChannelInterface>(op);
-      if (!chanOp)
-        return false;
-      if (chanOp.getMemref() != chanOpFront.getMemref())
-        return false;
-      if (chanOpFront.getOffsets().size() != chanOp.getOffsets().size() ||
-          chanOpFront.getSizes().size() != chanOp.getSizes().size() ||
-          chanOpFront.getStrides().size() != chanOp.getStrides().size())
-        return false;
-      auto zipped_operands = llvm::zip_equal(
-          llvm::concat<Value>(chanOpFront.getOffsets(), chanOpFront.getSizes(),
-                              chanOpFront.getStrides()),
-          llvm::concat<Value>(chanOp.getOffsets(), chanOp.getSizes(),
-                              chanOp.getStrides()));
-      bool offsetsAllEquivalent =
-          llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
-            return isEqualConstantIntOrValue(std::get<0>(pair),
-                                             std::get<1>(pair));
-          });
-      return offsetsAllEquivalent;
-    } else {
-      // Check if all air.dma_memcpy_nd ops are equivalent.
-      return OperationEquivalence::isEquivalentTo(
-          memcpy_ops.front(), op, OperationEquivalence::IgnoreLocations);
+  auto chansMappedToEquivalentBDs = [](air::ChannelInterface chanA,
+                                       air::ChannelInterface chanB) {
+    if (chanA.getMemref() != chanB.getMemref())
+      return false;
+    if (chanA.getOffsets().size() != chanB.getOffsets().size() ||
+        chanA.getSizes().size() != chanB.getSizes().size() ||
+        chanA.getStrides().size() != chanB.getStrides().size())
+      return false;
+    auto zipped_operands = llvm::zip_equal(
+        llvm::concat<Value>(chanA.getOffsets(), chanA.getSizes(),
+                            chanA.getStrides()),
+        llvm::concat<Value>(chanB.getOffsets(), chanB.getSizes(),
+                            chanB.getStrides()));
+    bool wrapsAndStridesAllEquivalent =
+        llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
+          return isEqualConstantIntOrValue(std::get<0>(pair),
+                                           std::get<1>(pair));
+        });
+    return wrapsAndStridesAllEquivalent;
+  };
+  auto dmasMappedToEquivalentBDs = [](air::DmaMemcpyNdOp dmaA,
+                                      air::DmaMemcpyNdOp dmaB) {
+    return OperationEquivalence::isEquivalentTo(
+        dmaA, dmaB, OperationEquivalence::IgnoreLocations);
+  };
+  auto memcpyIMappedToEquivalentBDs =
+      [chansMappedToEquivalentBDs, dmasMappedToEquivalentBDs](Operation *opA,
+                                                              Operation *opB) {
+        if (auto chanA = dyn_cast<air::ChannelInterface>(opA))
+          if (auto chanB = dyn_cast<air::ChannelInterface>(opB))
+            return chansMappedToEquivalentBDs(chanA, chanB);
+        if (auto dmaA = dyn_cast<air::DmaMemcpyNdOp>(opA))
+          if (auto dmaB = dyn_cast<air::DmaMemcpyNdOp>(opB))
+            return dmasMappedToEquivalentBDs(dmaA, dmaB);
+        return false; // Unknown or different air::MemcpyInterface op types.
+      };
+
+  // Canonicalize a chain of memcpy ops as candidates to map to dma bds, by
+  // removing repetitive patterns.
+  auto getUniqueBDPattern = [memcpyIMappedToEquivalentBDs](
+                                llvm::SetVector<Operation *> memcpyIOps) {
+    // Get a vector of unique BDs.
+    llvm::SetVector<Operation *> uniqueBDPattern;
+    auto opIt = memcpyIOps.begin();
+    while (opIt != memcpyIOps.end() &&
+           llvm::none_of(uniqueBDPattern,
+                         [opIt, memcpyIMappedToEquivalentBDs](Operation *op1) {
+                           return memcpyIMappedToEquivalentBDs(*opIt, op1);
+                         })) {
+      uniqueBDPattern.insert(*opIt);
+      opIt++;
     }
-  });
-  if (areAllIdenticalBDs) {
-    repeatCounts[0] = memcpyIOps;
-    return repeatCounts;
-  }
+
+    unsigned idx = 0;
+    while (opIt != memcpyIOps.end()) {
+      // BD repetition found. Check if repeating pattern.
+      if (!memcpyIMappedToEquivalentBDs(*opIt, uniqueBDPattern[idx]))
+        return llvm::SetVector<Operation *>{}; // Chain isn't repeating. Return
+                                               // an empty vector.
+      opIt++;
+      idx = (++idx) % uniqueBDPattern.size();
+    }
+
+    // Repeating BD chain successfully detected.
+    return uniqueBDPattern;
+  };
+
+  auto uniqueMemcpyIPattern = getUniqueBDPattern(memcpyIOps);
+  if (!uniqueMemcpyIPattern.empty())
+    memcpyIOps = uniqueMemcpyIPattern;
 
   // Get the deepest region which is ancestor to all memcpyIOps.
   Region *commonRegion = memcpyIOps.front()->getParentRegion();
