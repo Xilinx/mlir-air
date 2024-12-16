@@ -2592,66 +2592,98 @@ public:
     Block *channel_head = nullptr;
     Block *end_bb = nullptr;
 
-    for (auto &p : dma_memcpys) {
-      AIE::DMAChannelDir dir = p.first.first;
-      int chan = p.first.second;
-      Block *start_bb = new Block();
-      mem.getBody().push_back(start_bb);
+    for (auto &[dma_chan, memcpy_ops] : dma_memcpys) {
+      AIE::DMAChannelDir dir = dma_chan.first;
+      int chan = dma_chan.second;
 
-      Block *first_bd = new Block();
-      mem.getBody().push_back(first_bd);
-      Block *next_bd = nullptr;
-      for (size_t i = 0; i < p.second.size(); i++) {
-        auto memcpyOp = cast<air::MemcpyInterface>(p.second[i]);
-        Block *bd;
-        if (i == 0)
-          bd = first_bd;
-        else
-          bd = next_bd;
-        auto b = OpBuilder::atBlockEnd(bd);
-        if (i == p.second.size() - 1) {
-          b.create<AIE::NextBDOp>(loc, first_bd);
-        } else {
-          next_bd = new Block();
-          mem.getBody().push_back(next_bd);
-          b.create<AIE::NextBDOp>(loc, next_bd);
-        }
-        bufferOpTy bufferOp = dmaAlloc.getBuffer(BufferId, x, y, memcpyOp);
-        auto locks =
-            dmaAlloc.getLockForDMA(memcpyOp, x, y, bufferOp.getOperation());
-        generateDmaBd<bufferOpTy>(loc, dir, locks, x, y, targetModel, bd,
-                                  memcpyOp, bufferOp, chan);
-      }
+      // Map key: repeat counts. Map value: vector of memcpy operations sharing
+      // the same repeat count.
+      llvm::MapVector<int, llvm::SetVector<Operation *>> repeat_counts =
+          air::getRepeatCounts(memcpy_ops);
 
-      int repeat_count = 1;
-      if (p.second.size() == 1)
-        repeat_count = air::getRepeatCount(p.second[0]);
+      // Note: we designate each unique repeat value in repeat_counts map with a
+      // new BD task. If there is only one repeat value for all memcpy ops
+      // associated to the channel, then there is no need to do repeat count; we
+      // generate BDs in infinite loop mode instead.
+      bool infiniteBDLoopMode = repeat_counts.size() == 1;
 
-      if (!channel_head) {
-        channel_head = start_bb;
+      unsigned taskId = 0;
+      // For every BD task
+      for (auto &[rep, task_ops] : repeat_counts) {
+        // The block containing aie.dma_start
+        Block *start_bb = new Block();
+        mem.getBody().push_back(start_bb);
+
+        // The last block containing aie.end
         end_bb = new Block();
         mem.getBody().push_back(end_bb);
-        auto b = OpBuilder::atBlockBegin(channel_head);
-        b.create<AIE::DMAStartOp>(loc, dir, chan, repeat_count, first_bd,
-                                  end_bb);
-        b.setInsertionPointToEnd(end_bb);
-        b.create<AIE::EndOp>(loc);
-      } else {
-        auto b = OpBuilder::atBlockBegin(start_bb);
-        b.create<AIE::DMAStartOp>(
-            loc, dir, chan, repeat_count, first_bd,
-            channel_head->getTerminator()->getSuccessor(1));
-        channel_head->getTerminator()->setSuccessor(start_bb, 1);
+        auto end_bb_builder = OpBuilder::atBlockBegin(end_bb);
+        end_bb_builder.setInsertionPointToEnd(end_bb);
+        end_bb_builder.create<AIE::EndOp>(loc);
+
+        // First bd in task
+        Block *first_bd = new Block();
+        first_bd->insertBefore(end_bb);
+        Block *next_bd = nullptr;
+        for (size_t i = 0; i < task_ops.size(); i++) {
+          auto memcpyOp = cast<air::MemcpyInterface>(task_ops[i]);
+          Block *bd;
+          if (i == 0)
+            bd = first_bd;
+          else
+            bd = next_bd;
+          auto b = OpBuilder::atBlockEnd(bd);
+          if (i == task_ops.size() - 1) {
+            if (infiniteBDLoopMode)
+              b.create<AIE::NextBDOp>(loc, first_bd);
+            else
+              b.create<AIE::NextBDOp>(loc, end_bb);
+          } else {
+            next_bd = new Block();
+            next_bd->insertBefore(end_bb);
+            b.create<AIE::NextBDOp>(loc, next_bd);
+          }
+          bufferOpTy bufferOp = dmaAlloc.getBuffer(BufferId, x, y, memcpyOp);
+          auto locks =
+              dmaAlloc.getLockForDMA(memcpyOp, x, y, bufferOp.getOperation());
+          auto newBD = generateDmaBd<bufferOpTy>(
+              loc, dir, locks, x, y, targetModel, bd, memcpyOp, bufferOp, chan);
+          // Attribute task_id is necessary to ensure that BDs do not get shared
+          // across tasks, otherwise MLIR may fold BDs and cause BD sharing
+          // across tasks.
+          // TODO: check if mlir-aie enables BD sharing across tasks. If so,
+          // then this attribute is no longer necessary.
+          newBD->setAttr(
+              "task_id",
+              IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
+        }
+
+        AIE::DMAStartOp startOp = nullptr;
+        if (infiniteBDLoopMode)
+          rep = 0;
+        if (!channel_head) {
+          channel_head = start_bb;
+          auto b = OpBuilder::atBlockBegin(channel_head);
+          startOp =
+              b.create<AIE::DMAStartOp>(loc, dir, chan, rep, first_bd, end_bb);
+        } else {
+          auto b = OpBuilder::atBlockBegin(start_bb);
+          startOp = b.create<AIE::DMAStartOp>(
+              loc, dir, chan, rep, first_bd,
+              channel_head->getTerminator()->getSuccessor(1));
+          channel_head->getTerminator()->setSuccessor(start_bb, 1);
+        }
+        taskId++;
       }
     }
   }
 
   template <typename bufferOpTy>
-  void generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
-                     std::pair<AIE::LockOp, AIE::LockOp> locks, int x, int y,
-                     const AIE::AIETargetModel &targetModel, Block *bd,
-                     air::MemcpyInterface memcpyOp, bufferOpTy bufferOp,
-                     int chan) {
+  AIE::DMABDOp generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
+                             std::pair<AIE::LockOp, AIE::LockOp> locks, int x,
+                             int y, const AIE::AIETargetModel &targetModel,
+                             Block *bd, air::MemcpyInterface memcpyOp,
+                             bufferOpTy bufferOp, int chan) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
@@ -2738,6 +2770,7 @@ public:
       aieDmaBdOp->setAttr("packet", pktInfoAttr);
     b.create<AIE::UseLockOp>(loc, relLockOp, AIE::LockAction::Release,
                              lockRelValue);
+    return aieDmaBdOp;
   }
 
   AIE::ShimDMAOp getShimDMAOp(AIE::TileOp tile) {

@@ -15,7 +15,7 @@
 // CHECK:  %[[VAL_3:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
 // CHECK:  %[[VAL_4:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2>
 // CHECK:  %[[VAL_5:.*]] = aie.mem(%[[VAL_0]]) {
-// CHECK:    %[[VAL_6:.*]] = aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:    %[[VAL_6:.*]] = aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:  ^bb1:
 // CHECK:    aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, 1)
 // CHECK:    aie.dma_bd(%[[VAL_4]] : memref<1024xi32, 2>, 0, 1024)
@@ -61,7 +61,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: %[[VAL_6:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2>
 // CHECK: %[[VAL_7:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<512xi32, 2>
 // CHECK: %[[VAL_8:.*]] = aie.mem(%[[VAL_0]]) {
-// CHECK:   %[[VAL_9:.*]] = aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:   %[[VAL_9:.*]] = aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:
 // CHECK:   aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2>, 0, 1024)
@@ -70,7 +70,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: ^bb2:
 // CHECK:   aie.end
 // CHECK: ^bb3:
-// CHECK:   %[[VAL_10:.*]] = aie.dma_start(MM2S, 0, ^bb4, ^bb2, repeat_count = 1)
+// CHECK:   %[[VAL_10:.*]] = aie.dma_start(MM2S, 0, ^bb4, ^bb2)
 // CHECK: ^bb4:
 // CHECK:   aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2>, 0, 512)
@@ -126,7 +126,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<512xi32, 2>
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2>, 0, 1024)
@@ -135,7 +135,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         ^bb2:
 // CHECK:           aie.end
 // CHECK:         ^bb3:
-// CHECK:           aie.dma_start(MM2S, 0, ^bb4, ^bb2, repeat_count = 1)
+// CHECK:           aie.dma_start(MM2S, 0, ^bb4, ^bb2)
 // CHECK:         ^bb4:
 // CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2>, 0, 512)
@@ -204,7 +204,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         %[[VAL_23:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<1024xi32, 2>
 
 // CHECK:    aie.mem(%[[VAL_3]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           aie.use_lock(%[[VAL_17]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_23]] : memref<1024xi32, 2>, 0, 1024)
@@ -213,7 +213,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         ^bb2:
 // CHECK:           aie.end
 // CHECK:         ^bb3:
-// CHECK:           aie.dma_start(MM2S, 0, ^bb4, ^bb2, repeat_count = 1)
+// CHECK:           aie.dma_start(MM2S, 0, ^bb4, ^bb2)
 // CHECK:         ^bb4:
 // CHECK:           aie.use_lock(%[[VAL_20]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_23]] : memref<1024xi32, 2>, 0, 1024)
@@ -235,7 +235,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         aie.flow(%[[VAL_2]], DMA : 1, %[[VAL_4]], DMA : 0)
 
 // CHECK: aie.memtile_dma(%[[VAL_2]]) {
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb7, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb7)
 // CHECK: ^bb1:
 // CHECK:   aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024)
@@ -244,21 +244,21 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: ^bb2:
 // CHECK:   aie.end
 // CHECK: ^bb3:
-// CHECK:   aie.dma_start(S2MM, 1, ^bb4, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 1, ^bb4, ^bb2)
 // CHECK: ^bb4:
 // CHECK:   aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024)
 // CHECK:   aie.use_lock(%[[VAL_6]], Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: ^bb5:
-// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3)
 // CHECK: ^bb6:
 // CHECK:   aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024)
 // CHECK:   aie.use_lock(%[[VAL_7]], Release, 1)
 // CHECK:   aie.next_bd ^bb6
 // CHECK: ^bb7:
-// CHECK:   aie.dma_start(MM2S, 1, ^bb8, ^bb5, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 1, ^bb8, ^bb5)
 // CHECK: ^bb8:
 // CHECK:   aie.use_lock(%[[VAL_6]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024)
@@ -468,21 +468,21 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
 // Multi-dimensional memref copy to wraps and strides
 // CHECK: aie.device(npu1_4col)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb5, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb5)
 // CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1>, 0, 16)
 // CHECK:   aie.use_lock({{.*}}, Release, 1)
 // CHECK:   aie.next_bd ^bb1
 // CHECK: ^bb3:  // pred: ^bb5
-// CHECK:   aie.dma_start(S2MM, 1, ^bb4, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 1, ^bb4, ^bb2)
 // CHECK: ^bb4:  // 2 preds: ^bb3, ^bb4
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1>, 0, 16, [<size = 4, stride = 16>, <size = 4, stride = 1>])
 // CHECK:   aie.use_lock({{.*}}, Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: ^bb5:  // pred: ^bb0
-// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3)
 // CHECK: ^bb6:  // 2 preds: ^bb5, ^bb6
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1>, 0, 16)
@@ -524,7 +524,7 @@ func.func @func7(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // Multi-dimensional memref copy to wraps and strides, with offsets having more dims than memref type.
 // CHECK: aie.device(npu1_4col)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
-// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<64x256xi32, 1>, 8192, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
@@ -561,15 +561,15 @@ func.func @func8(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // 1D scf.parallel iteration space support.
 // CHECK: aie.device(npu1_4col)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32xf32, 2>, 0, 32)
 // CHECK: %[[tileDMA_0_3:.*]] = aie.mem
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32xf32, 2>, 0, 32)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
-// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 0, 32)
-// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 32, 32)
 // CHECK: @func9
 #map = affine_map<()[s0] -> (s0 * 32)>
@@ -623,15 +623,15 @@ func.func @func9(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // Tile / memtile DMA repeat count support.
 // CHECK: aie.device(npu1_4col)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 2>, 0, 8192)
 // CHECK: %[[tileDMA_0_3:.*]] = aie.mem
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 2>, 0, 8192)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
-// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 1>, 0, 8192)
-// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 1>, 0, 8192)
 // CHECK: @func10
 #map = affine_map<()[s0] -> (s0 * 32)>
@@ -685,15 +685,15 @@ func.func @func10(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // Bf16 datatype support.
 // CHECK: aie.device(npu1_4col)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 0, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
 // CHECK: %[[tileDMA_0_3:.*]] = aie.mem
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 0, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
-// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:   memref<32x256xbf16, 1>, 0, 8192)
-// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
 // CHECK:   memref<32x256xbf16, 1>, 0, 8192)
 // CHECK: @func11
 #map = affine_map<()[s0] -> (s0 * 32)>
@@ -958,7 +958,7 @@ module {
 // CHECK: %[[tile_2_1:.*]] = aie.tile(0, 1)
 // CHECK: %[[tile_2_3:.*]] = aie.tile(0, 2)
 // CHECK:  %[[VAL_0:.*]] = aie.mem(%[[tile_2_3]]) {
-// CHECK:    %[[VAL_1:.*]] = aie.dma_start(MM2S, 0, ^bb1, ^bb2, repeat_count = 1)
+// CHECK:    %[[VAL_1:.*]] = aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:  ^bb1:
 // CHECK:    aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
 // CHECK:    aie.dma_bd(%{{.*}} : memref<1x1x16x16x4x4xf32, 2 : i32>, 0, 4096, [<size = 64, stride = 4>, <size = 16, stride = 256>, <size = 4, stride = 1>])
