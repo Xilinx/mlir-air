@@ -27,6 +27,7 @@
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
+#include "mlir/IR/Iterators.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -1361,32 +1362,6 @@ void lowerAIRChannels(
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
 }
 
-// Get owner (scf.parallelop) of channel indices
-scf::ParallelOp getChannelIndicesOwner(Value val) {
-  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
-  if (!ivArg)
-    return scf::ParallelOp();
-  if (!ivArg.getOwner()) {
-    val.getDefiningOp()->emitOpError("unlinked block argument");
-    return scf::ParallelOp();
-  }
-  auto *containingOp = ivArg.getOwner()->getParentOp();
-  return dyn_cast<scf::ParallelOp>(containingOp);
-}
-scf::ParallelOp getChannelIndicesOwner(Operation *op) {
-  if (!op)
-    return scf::ParallelOp();
-  auto putget = dyn_cast<air::ChannelInterface>(op);
-  if (!putget)
-    return scf::ParallelOp();
-  for (auto index : putget.getIndices()) {
-    if (auto par = getChannelIndicesOwner(index)) {
-      return par;
-    }
-  }
-  return scf::ParallelOp();
-}
-
 struct SpecializeChannelBundlePattern
     : public OpRewritePattern<air::ChannelOp> {
   using OpRewritePattern<air::ChannelOp>::OpRewritePattern;
@@ -1462,10 +1437,24 @@ struct SpecializeChannelBundlePattern
 
     // Erase bundled channel ops and their corresponding put/get ops
     for (auto put : channelPuts) {
-      rewriter.eraseOp(put);
+      if (!put->getNumResults()) {
+        rewriter.eraseOp(put);
+        continue;
+      }
+      rewriter.setInsertionPoint(put);
+      rewriter.replaceOpWithNewOp<air::WaitAllOp>(
+          put, air::AsyncTokenType::get(put->getContext()),
+          put.getAsyncDependencies());
     }
     for (auto get : channelGets) {
-      rewriter.eraseOp(get);
+      if (!get->getNumResults()) {
+        rewriter.eraseOp(get);
+        continue;
+      }
+      rewriter.setInsertionPoint(get);
+      rewriter.replaceOpWithNewOp<air::WaitAllOp>(
+          get, air::AsyncTokenType::get(get->getContext()),
+          get.getAsyncDependencies());
     }
     rewriter.eraseOp(channel);
 
@@ -1631,6 +1620,34 @@ void LowerAIRPingPong(AIE::DeviceOp &d) {
   patterns.insert<LowerAIRPingPongPattern>(ctx);
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
 }
+
+template <typename OpT>
+struct OpRemovalPattern : public OpConversionPattern<OpT> {
+  using OpConversionPattern<OpT>::OpConversionPattern;
+  using OpAdaptor = typename OpT::Adaptor;
+
+  OpRemovalPattern(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern<OpT>(context, benefit) {}
+
+  LogicalResult
+  matchAndRewrite(OpT op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    for (auto res : op->getResults()) {
+      if (res.use_empty())
+        continue;
+      if (isa<air::AsyncTokenType>(res.getType())) {
+        res.replaceAllUsesWith(
+            rewriter
+                .create<air::WaitAllOp>(op->getLoc(),
+                                        AsyncTokenType::get(op->getContext()),
+                                        getAsyncDependenciesFromOp(op))
+                .getAsyncToken());
+      }
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
@@ -1808,22 +1825,7 @@ public:
     if (!clone_l2 && !clone_l3)
       return;
 
-    std::vector<xilinx::air::MemcpyInterface> memcpyOps;
-    module.walk([&](xilinx::air::MemcpyInterface memcpyOp) {
-      auto hasParentHerdOp = memcpyOp->getParentOfType<air::HerdOp>();
-      auto hasParentSegmentOp = memcpyOp->getParentOfType<air::SegmentOp>();
-      auto hasParentDeviceOp = memcpyOp->getParentOfType<AIE::DeviceOp>();
-      if (clone_l2) {
-        if (!hasParentHerdOp && hasParentSegmentOp && !hasParentDeviceOp) {
-          memcpyOps.push_back(memcpyOp);
-        }
-      }
-      if (clone_l3) {
-        if (!hasParentHerdOp && !hasParentSegmentOp && !hasParentDeviceOp) {
-          memcpyOps.push_back(memcpyOp);
-        }
-      }
-    });
+    auto ctx = builder.getContext();
 
     Operation *t = nullptr;
     for (auto tile_op : aie_device.getBody()->getOps<AIE::TileOp>()) {
@@ -1832,70 +1834,65 @@ public:
     builder.setInsertionPointAfter(t);
     IRMapping remap;
 
-    // Get defining ops to memcpyOp's operands copied over together with
-    // memcpyOp
-    std::vector<Operation *> operandOps;
-    for (auto o : memcpyOps) {
-      for (auto operand : o->getOperands()) {
-        if (operand.getDefiningOp() &&
-            isa<arith::ConstantIndexOp>(operand.getDefiningOp())) {
-          operandOps.push_back(operand.getDefiningOp());
-        }
-        // Substituting index operands, such as strides and offsets, to constant
-        // zero for convenience. TODO: generalize this
-        else if (llvm::isa<IndexType>(operand.getType())) {
-          remap.map(operand, builder.create<arith::ConstantIndexOp>(
-                                 builder.getUnknownLoc(), 0));
-        }
-      }
+    SmallVector<func::FuncOp> funcs;
+    module.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+        [&](func::FuncOp f) {
+          funcs.push_back(f);
+          return WalkResult::advance();
+        });
+    for (auto f : funcs) {
+      f.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+          [&](Operation *op) {
+            if (isa<air::LaunchOp, func::FuncOp>(op))
+              return WalkResult::advance();
+            if (isa<air::SegmentOp>(op) && clone_l2)
+              return WalkResult::advance();
+            if (isa<air::HerdOp>(op))
+              return WalkResult::skip();
+            if (isa<air::LaunchTerminatorOp, air::SegmentTerminatorOp,
+                    func::ReturnOp>(op))
+              return WalkResult::advance();
+            bool hasParentSegmentOp = op->getParentOfType<air::SegmentOp>();
+            if (!clone_l3 && !hasParentSegmentOp)
+              return WalkResult::advance();
+            builder.clone(*op, remap);
+            return WalkResult::skip();
+          });
     }
 
-    for (auto o : operandOps) {
-      builder.clone(*o, remap);
-    }
-    std::vector<Value> cloned_memrefs;
-    for (auto o : memcpyOps) {
-      if (auto memref = o.getSrcMemref()) {
-        push_back_if_unique<Value>(cloned_memrefs, memref);
-      }
-      if (auto memref = o.getDstMemref()) {
-        push_back_if_unique<Value>(cloned_memrefs, memref);
-      }
-    }
-    for (auto memref : cloned_memrefs) {
-      if (auto memalloc = memref.getDefiningOp()) {
-        auto cloned_alloc = builder.clone(*memalloc, remap);
-        clearAsyncDependenciesOfAsyncOp(cloned_alloc);
-      } else {
-        MemRefType ty = llvm::cast<MemRefType>(memref.getType());
-        auto alloc_op = builder.create<memref::AllocOp>(
-            builder.getUnknownLoc(),
-            MemRefType::get(ty.getShape(), ty.getElementType(),
-                            ty.getLayout().getAffineMap(),
-                            ty.getMemorySpaceAsInt()));
-        remap.map(memref, alloc_op.getMemref());
-      }
-    }
-    for (auto o : memcpyOps) {
-      // Clone memcpy op
-      if (auto par = getChannelIndicesOwner(o)) {
-        (void)unrollAIRChannelPutGetInScfParallel(builder, par,
-                                                  o.getOperation(), remap);
-      } else {
-        auto new_memcpy = builder.clone(*o, remap);
-        clearAsyncDependenciesOfAsyncOp(new_memcpy);
-      }
-    }
-
-    // Clone channel declaration ops
-    for (auto o : memcpyOps) {
-      if (auto chan_op = dyn_cast<air::ChannelInterface>(o.getOperation())) {
-        if (!aie_device.lookupSymbol(chan_op.getChanName())) {
-          auto ch = air::getChannelDeclarationThroughSymbol(chan_op);
-          builder.clone(*ch.getOperation());
+    // Remove ops which are irrelevant to L2 and L3 data movements.
+    aie_device.walk([ctx](air::HierarchyInterface hierOp) {
+      OpBuilder b(hierOp);
+      for (auto r : hierOp->getResults()) {
+        if (isa<air::AsyncTokenType>(r.getType())) {
+          r.replaceAllUsesWith(
+              b.create<air::WaitAllOp>(hierOp->getLoc(),
+                                       air::AsyncTokenType::get(ctx),
+                                       air::getAsyncDependenciesFromOp(hierOp))
+                  .getAsyncToken());
         }
       }
-    }
+      hierOp->erase();
+    });
+
+    // Unroll scf.parallel
+    RewritePatternSet patterns(ctx);
+    xilinx::air::populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
+        patterns);
+    (void)applyPatternsAndFoldGreedily(aie_device, std::move(patterns));
+
+    // Substituting index operands, such as strides and offsets, to constant
+    // zero for convenience. TODO: generalize this
+    aie_device.walk([](air::ChannelInterface chanI) {
+      OpBuilder b(chanI);
+      for (auto oper : llvm::concat<Value>(chanI.getOffsets(), chanI.getSizes(),
+                                           chanI.getStrides())) {
+        if (!getConstantIntValue(oper)) {
+          chanI->replaceUsesOfWith(
+              oper, b.create<arith::ConstantIndexOp>(b.getUnknownLoc(), 0));
+        }
+      }
+    });
   }
 
   bool everyAIRChannelAccessIsContiguousRowMajor(
@@ -3004,22 +3001,18 @@ public:
     for (auto &alloc : tileDmaAlloc.s2mm_allocs)
       alloc.memcpyOps.clear();
 
-    // erase the memcpy operations
-    for (AIE::CoreOp core : cores) {
-      (void)core;
-      std::vector<Operation *> memcpy_ops;
-      getAIRMemcpyOpInRegion<T>(device.getRegion(), memcpy_ops);
-
-      for (auto o : memcpy_ops) {
-        auto a = cast<xilinx::air::AsyncOpInterface>(o);
-        if (a.getAsyncToken()) {
-          OpBuilder b(o);
-          o->replaceAllUsesWith(b.create<xilinx::air::WaitAllOp>(
-              o->getLoc(), air::AsyncTokenType::get(o->getContext()),
-              a.getAsyncDependencies()));
-        }
-        o->erase();
+    // erase the memcpy operations in aie.device
+    std::vector<Operation *> memcpy_ops;
+    getAIRMemcpyOpInRegion<T>(device.getRegion(), memcpy_ops);
+    for (auto o : memcpy_ops) {
+      auto a = dyn_cast<xilinx::air::AsyncOpInterface>(o);
+      if (a && a.getAsyncToken()) {
+        OpBuilder b(o);
+        o->replaceAllUsesWith(b.create<xilinx::air::WaitAllOp>(
+            o->getLoc(), air::AsyncTokenType::get(o->getContext()),
+            a.getAsyncDependencies()));
       }
+      o->erase();
     }
 
     return success();
@@ -3359,27 +3352,22 @@ public:
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
       (void)applyPatternsAndFoldGreedily(device, std::move(patterns));
+
+      // Remove ops via rewrite patterns.
+      RewritePatternSet removepatterns(ctx);
+      removepatterns.add<OpRemovalPattern<memref::DeallocOp>,
+                         OpRemovalPattern<air::WaitAllOp>,
+                         OpRemovalPattern<memref::CopyOp>>(ctx);
+      ConversionTarget target(*ctx);
+      target.addIllegalOp<memref::DeallocOp, air::WaitAllOp, memref::CopyOp>();
+      if (failed(applyPartialConversion(device, target,
+                                        std::move(removepatterns))))
+        signalPassFailure();
     }
   }
 
   // Static flow id to ensure unique packet header per packet flow.
   int flowID = 0;
-};
-
-template <typename OpT>
-struct OpRemovalPattern : public OpConversionPattern<OpT> {
-  using OpConversionPattern<OpT>::OpConversionPattern;
-  using OpAdaptor = typename OpT::Adaptor;
-
-  OpRemovalPattern(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern<OpT>(context, benefit) {}
-
-  LogicalResult
-  matchAndRewrite(OpT op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.eraseOp(op);
-    return success();
-  }
 };
 
 class SplitAIEDevicesPass
