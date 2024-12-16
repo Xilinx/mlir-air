@@ -335,15 +335,13 @@ func.func @core_to_core_ping_pong() {
 // CHECK:           aie.dma_bd(%[[VAL_12]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024) {task_id = 0 : i32}
 // CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
 // CHECK:           aie.next_bd ^bb2
-// CHECK:         ^bb2:  // 3 preds: ^bb1, ^bb3, ^bb4
-// CHECK:           aie.end
-// CHECK:         ^bb3:
-// CHECK:           aie.dma_start(S2MM, 0, ^bb4, ^bb2, repeat_count = 3)
-// CHECK:         ^bb4:  // pred: ^bb3
+// CHECK:         ^bb2:  // pred: ^bb1
 // CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024) {task_id = 1 : i32}
+// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<1x1x4x8x4x8xi32, 2 : i32>, 0, 1024) {task_id = 0 : i32}
 // CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
-// CHECK:           aie.next_bd ^bb2
+// CHECK:           aie.next_bd ^bb1
+// CHECK:         ^bb3:  // pred: ^bb0
+// CHECK:           aie.end
 // CHECK:         }
 
 // CHECK:    aie.core(%[[VAL_1]])  {

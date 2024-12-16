@@ -187,6 +187,42 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     memcpyIOps.insert(o);
   }
 
+  // Check if all of memcpy_ops only map to one same dma bd. If true, then
+  // return that there is only one single repeat count, i.e. a single bd task.
+  bool areAllIdenticalBDs = llvm::all_of(memcpy_ops, [&](Operation *op) {
+    if (auto chanOpFront = dyn_cast<air::ChannelInterface>(memcpy_ops[0])) {
+      // Check if all air.channel_interface ops map to equivalent BDs.
+      auto chanOp = dyn_cast<air::ChannelInterface>(op);
+      if (!chanOp)
+        return false;
+      if (chanOp.getMemref() != chanOpFront.getMemref())
+        return false;
+      if (chanOpFront.getOffsets().size() != chanOp.getOffsets().size() ||
+          chanOpFront.getSizes().size() != chanOp.getSizes().size() ||
+          chanOpFront.getStrides().size() != chanOp.getStrides().size())
+        return false;
+      auto zipped_operands = llvm::zip_equal(
+          llvm::concat<Value>(chanOpFront.getOffsets(), chanOpFront.getSizes(),
+                              chanOpFront.getStrides()),
+          llvm::concat<Value>(chanOp.getOffsets(), chanOp.getSizes(),
+                              chanOp.getStrides()));
+      bool offsetsAllEquivalent =
+          llvm::all_of(zipped_operands, [](std::tuple<Value, Value> pair) {
+            return isEqualConstantIntOrValue(std::get<0>(pair),
+                                             std::get<1>(pair));
+          });
+      return offsetsAllEquivalent;
+    } else {
+      // Check if all air.dma_memcpy_nd ops are equivalent.
+      return OperationEquivalence::isEquivalentTo(
+          memcpy_ops.front(), op, OperationEquivalence::IgnoreLocations);
+    }
+  });
+  if (areAllIdenticalBDs) {
+    repeatCounts[0] = memcpyIOps;
+    return repeatCounts;
+  }
+
   // Get the deepest region which is ancestor to all memcpyIOps.
   Region *commonRegion = memcpyIOps.front()->getParentRegion();
   while (!llvm::all_of(memcpyIOps, [commonRegion](Operation *o) {
