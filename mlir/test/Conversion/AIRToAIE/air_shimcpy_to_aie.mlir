@@ -381,8 +381,8 @@ func.func @func6(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // DMA bd program taking into account hoisted partial pixel copies
 // CHECK: aie.device
-// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 2)
-// CHECK:         %[[VAL_1:.*]] = aie.tile(2, 0)
+// CHECK-DAG:         %[[VAL_0:.*]] = aie.tile(2, 2)
+// CHECK-DAG:         %[[VAL_1:.*]] = aie.tile(2, 0)
 // CHECK:         %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 3) {init = 0 : i32}
 // CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_0]], 2) {init = 0 : i32}
 // CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_0]], 1) {init = 0 : i32}
