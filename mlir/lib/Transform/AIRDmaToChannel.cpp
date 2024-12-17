@@ -683,7 +683,10 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
           module_builder.clone(o, remap);
         }
       } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(o)) {
-        replaceAsyncOpWithWaitAll(module_builder, remap, &o, false);
+        if (o.hasAttr("loop-carried-dep"))
+          module_builder.clone(o, remap);
+        else
+          replaceAsyncOpWithWaitAll(module_builder, remap, &o, false);
       } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
         if (air::isAsyncOp(&o))
           replaceAsyncOpWithWaitAll(module_builder, remap, &o, false);
@@ -898,7 +901,6 @@ class AIRDmaToAIRChannelConversion
             auto res = cloneScfLoopUsingRemap(rewriter, remap, child_for_op);
             if (failed(res))
               return res;
-            continue;
           } else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)) {
             if (o.hasAttr("loop-carried-dep") &&
                 o.getAttrOfType<StringAttr>("loop-carried-dep")
@@ -907,7 +909,6 @@ class AIRDmaToAIRChannelConversion
               // Found channel op labelled as "internalGetPut", which
               // shouldn't be hoisted
               replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
-              continue;
             } else {
               rewriter.clone(o, remap);
             }
@@ -1269,6 +1270,8 @@ class AIRDemoteDmaToAIRHierarchyConversion
             auto res = cloneScfLoopUsingRemap(rewriter, remap, child_for_op);
             if (failed(res))
               return res;
+          } else if (auto memcpy_op = dyn_cast<air::MemcpyInterface>(o)) {
+            rewriter.clone(o, remap);
           } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
             if (air::isAsyncOp(&o))
               replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
