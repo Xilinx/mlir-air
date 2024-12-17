@@ -1169,3 +1169,67 @@ func.func @func16(%arg0 : memref<5xi32>, %arg1 : memref<96xi32>, %arg2 : memref<
   }
   return
 }
+
+// -----
+
+// Lowering complex loop structures around channel.puts/gets into BD task repeat counts (aie.memtile_dma).
+//
+// CHECK:      aie.memtile_dma
+// CHECK-NEXT: aie.dma_start(S2MM, 0, ^bb1, ^bb7)
+// CHECK-NEXT: ^bb1:
+// CHECK:      aie.dma_bd({{.*}}) {task_id = 0 : i32}
+// CHECK:      aie.next_bd ^bb2
+// CHECK-NEXT: ^bb2:
+// CHECK-NEXT: aie.end
+// CHECK-NEXT: ^bb3:
+// CHECK-NEXT: aie.dma_start(S2MM, 0, ^bb4, ^bb2, repeat_count = 7)
+// CHECK:      aie.dma_bd({{.*}}) {task_id = 1 : i32}
+// CHECK:      aie.next_bd ^bb2
+// CHECK: @func17
+air.channel @channel_0 [1, 1]
+air.channel @channel_1 [1, 1]
+func.func @func17(%arg0 : memref<5xi32>, %arg1 : memref<96xi32>, %arg2 : memref<9xi32>, %ub : index) -> () {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %c12 = arith.constant 12 : index
+  air.channel.put @channel_0[] (%arg0[] [] []) {id = 1 : i32} : (memref<5xi32>)
+  scf.for %arg3 = %c0 to %c8 step %c1 {
+    air.channel.put @channel_0[] (%arg1[] [] []) {id = 2 : i32} : (memref<96xi32>)
+  }
+  air.segment @segment0 args (%ub_seg=%ub) : index {
+    %c0_0 = arith.constant 0 : index
+    %c1_0 = arith.constant 1 : index
+    %c8_0 = arith.constant 8 : index
+    %c12_0 = arith.constant 12 : index
+    %herd_cols = arith.constant 1 : index
+    %herd_rows = arith.constant 1 : index
+    %memtile0 = memref.alloc() : memref<5xi32, 1>
+    %tok_0 = air.channel.get async @channel_0[] (%memtile0[] [] []) {id = 3 : i32} : (memref<5xi32, 1>)
+    %tok_1 = air.channel.put async [%tok_0] @channel_1[] (%memtile0[] [] []) {id = 4 : i32} : (memref<5xi32, 1>)
+    %tok_2 = scf.for %arg4 = %c0_0 to %c8_0 step %c1_0 iter_args(%arg14 = %tok_1) -> (!air.async.token) {
+      %memtile1 = memref.alloc() : memref<96xi32, 1>
+      %tok_3 = air.channel.get async [%arg14] @channel_0[] (%memtile1[] [] []) {id = 5 : i32} : (memref<96xi32, 1>)
+      %tok_4 = air.channel.put async [%tok_3] @channel_1[] (%memtile1[] [] []) {id = 6 : i32} : (memref<96xi32, 1>)
+      memref.dealloc %memtile1 : memref<96xi32, 1>
+      scf.yield %tok_4 : !air.async.token
+    }
+    memref.dealloc %memtile0 : memref<5xi32, 1>
+    %tok_5 = air.herd async tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args (%ub_herd=%ub_seg) : index attributes { sym_name="herd4"} {
+      %c0_1 = arith.constant 0 : index
+      %c1_1 = arith.constant 1 : index
+      %c8_1 = arith.constant 8 : index
+      %c12_1 = arith.constant 12 : index
+      %buf0 = memref.alloc() : memref<5xi32, 2>
+      %tok_6 = air.channel.get async @channel_1[] (%buf0[] [] []) {id = 7 : i32} : (memref<5xi32, 2>)
+      %tok_7 = scf.for %arg5 = %c0_1 to %c8_1 step %c1_1 iter_args(%arg14 = %tok_6) -> (!air.async.token) {
+        %buf1 = memref.alloc() : memref<96xi32, 2>
+        %tok_5 = air.channel.get async [%arg14] @channel_1[] (%buf1[] [] []) {id = 8 : i32} : (memref<96xi32, 2>)
+        memref.dealloc %buf1 : memref<96xi32, 2>
+        scf.yield %tok_5 : !air.async.token
+      }
+      memref.dealloc %buf0 : memref<5xi32, 2>
+    }
+  }
+  return
+}
