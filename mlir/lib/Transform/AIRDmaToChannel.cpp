@@ -838,6 +838,39 @@ class AIRDmaToAIRChannelConversion
         b->setAttr("hoist", StringAttr::get(ctx, "dep"));
       }
 
+      auto cloneOpsInBlock = [](Block *blk, OpBuilder &builder,
+                                IRMapping &remap) {
+        for (Operation &o : blk->without_terminator()) {
+          if (!o.hasAttr("hoist")) {
+            if (air::isAsyncOp(&o))
+              replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+            continue;
+          }
+          if (auto child_for_op = dyn_cast<LoopLikeOpInterface>(o)) {
+            auto res = cloneScfLoopUsingRemap(builder, remap, child_for_op);
+            if (failed(res))
+              return res;
+          } else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)) {
+            if (o.hasAttr("loop-carried-dep") &&
+                o.getAttrOfType<StringAttr>("loop-carried-dep")
+                        .getValue()
+                        .str() == "internalGetPut") {
+              // Found channel op labelled as "internalGetPut", which
+              // shouldn't be hoisted
+              replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+            } else {
+              builder.clone(o, remap);
+            }
+          } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
+            if (air::isAsyncOp(&o))
+              replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+          } else {
+            builder.clone(o, remap);
+          }
+        }
+        return success();
+      };
+
       if (herd) {
         auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop);
         // Get mapping for remapped ssa values entering the hoisted scf.parallel
@@ -850,37 +883,10 @@ class AIRDmaToAIRChannelConversion
         int arg_idx = 0;
         for (auto arg : herd.getKernelArguments())
           remap.map(arg, herd.getKernelOperand(arg_idx++));
-
         // Clone ops into hoisted scf.parallel
         rewriter.setInsertionPointToStart(scf_par.getBody());
-        for (Operation &o : herd.getBody().front().without_terminator()) {
-          if (!o.hasAttr("hoist")) {
-            if (air::isAsyncOp(&o))
-              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
-            continue;
-          }
-          if (auto child_for_op = dyn_cast<LoopLikeOpInterface>(o)) {
-            auto res = cloneScfLoopUsingRemap(rewriter, remap, child_for_op);
-            if (failed(res))
-              return res;
-          } else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)) {
-            if (o.hasAttr("loop-carried-dep") &&
-                o.getAttrOfType<StringAttr>("loop-carried-dep")
-                        .getValue()
-                        .str() == "internalGetPut") {
-              // Found channel op labelled as "internalGetPut", which
-              // shouldn't be hoisted
-              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
-            } else {
-              rewriter.clone(o, remap);
-            }
-          } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
-            if (air::isAsyncOp(&o))
-              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
-          } else {
-            rewriter.clone(o, remap);
-          }
-        }
+        if (cloneOpsInBlock(&herd.getBody().front(), rewriter, remap).failed())
+          return failure();
       } else if (segment) {
         // Get mapping for remapped ssa values entering the hoisted scf.for
         IRMapping remap;
@@ -890,35 +896,9 @@ class AIRDmaToAIRChannelConversion
 
         // Hoist ops
         rewriter.restoreInsertionPoint(insertionPointAtHierOp);
-        for (Operation &o : segment.getBody().front().without_terminator()) {
-          if (!o.hasAttr("hoist")) {
-            if (air::isAsyncOp(&o))
-              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
-            continue;
-          }
-
-          if (auto child_for_op = dyn_cast<LoopLikeOpInterface>(o)) {
-            auto res = cloneScfLoopUsingRemap(rewriter, remap, child_for_op);
-            if (failed(res))
-              return res;
-          } else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)) {
-            if (o.hasAttr("loop-carried-dep") &&
-                o.getAttrOfType<StringAttr>("loop-carried-dep")
-                        .getValue()
-                        .str() == "internalGetPut") {
-              // Found channel op labelled as "internalGetPut", which
-              // shouldn't be hoisted
-              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
-            } else {
-              rewriter.clone(o, remap);
-            }
-          } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
-            if (air::isAsyncOp(&o))
-              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
-          } else {
-            rewriter.clone(o, remap);
-          }
-        }
+        if (cloneOpsInBlock(&segment.getBody().front(), rewriter, remap)
+                .failed())
+          return failure();
       }
 
       if (scf_loop) {
