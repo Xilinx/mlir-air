@@ -77,7 +77,8 @@ LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
                                                   scf::ParallelOp par,
                                                   Operation *originalChanOp,
                                                   IRMapping remap);
-
+void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
+    RewritePatternSet &patterns);
 //===----------------------------------------------------------------------===//
 // Dependency graph
 //===----------------------------------------------------------------------===//
