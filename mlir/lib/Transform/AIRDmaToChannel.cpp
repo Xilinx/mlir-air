@@ -161,11 +161,10 @@ static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder builder,
 // Replace async op with wait_all op
 static void replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
                                       Operation *op, bool cloneDepList = true) {
-  auto async_op = dyn_cast<air::AsyncOpInterface>(op);
-  assert(async_op);
+  assert(air::isAsyncOp(op));
   SmallVector<Value> dep_list_remap;
   if (cloneDepList) {
-    for (auto dep : async_op.getAsyncDependencies()) {
+    for (auto dep : air::getAsyncDependenciesFromOp(op)) {
       dep_list_remap.push_back(remap.lookupOrDefault(dep));
     }
   }
@@ -173,7 +172,7 @@ static void replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
       builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
       dep_list_remap);
   wa_op->setAttr("hoist", StringAttr::get(op->getContext(), "dep"));
-  remap.map(async_op.getAsyncToken(), wa_op.getAsyncToken());
+  remap.map(air::getAsyncTokenFromOp(op), wa_op.getAsyncToken());
 }
 
 // Clone affine if's block with remap
@@ -190,16 +189,6 @@ replaceAffineIfOpWithChannelOpAndClone(OpBuilder builder, IRMapping &remap,
       continue;
     builder.clone(child_op, remap);
   }
-}
-
-static Operation *getCoreComputeOpFromExecuteOp(Operation *op) {
-  // We assume all linalg ops (except for linalg.copy) and func.call ops do
-  // computations only and do not participate in data movement.
-  if (auto exec = dyn_cast<air::ExecuteOp>(op)) {
-    if (isa<linalg::LinalgOp, func::CallOp>(&exec.getChildOps().front()))
-      return &exec.getChildOps().front();
-  }
-  return nullptr;
 }
 
 template <typename T>
@@ -243,9 +232,12 @@ cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
     remap.map(std::get<0>(p), std::get<1>(p));
 
   builder.setInsertionPointToStart(new_loop_op.getBody());
-  for (Operation &child_op : loop_op.getBody()->getOperations()) {
-    if (!child_op.hasAttr("hoist"))
+  for (Operation &child_op : loop_op.getBody()->without_terminator()) {
+    if (!child_op.hasAttr("hoist")) {
+      if (air::isAsyncOp(&child_op))
+        replaceAsyncOpWithWaitAll(builder, remap, &child_op, false);
       continue;
+    }
 
     if (auto for_op = dyn_cast<LoopLikeOpInterface>(child_op)) {
       auto res = cloneScfLoopUsingRemap(builder, remap, for_op, externalGetPut);
@@ -270,8 +262,9 @@ cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
         builder.clone(child_op, remap);
       else
         replaceAsyncOpWithWaitAll(builder, remap, &child_op, false);
-    } else if (getCoreComputeOpFromExecuteOp(&child_op)) {
-      replaceAsyncOpWithWaitAll(builder, remap, &child_op, false);
+    } else if (!air::isPure(&child_op) && !isa<air::WaitAllOp>(child_op)) {
+      if (air::isAsyncOp(&child_op))
+        replaceAsyncOpWithWaitAll(builder, remap, &child_op, false);
     } else {
       builder.clone(child_op, remap);
     }
@@ -666,11 +659,12 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
 
     // Clone ops into hoisted scf.parallel
     module_builder.restoreInsertionPoint(insertionPointAtHierOp);
-    for (Operation &o : herd.getBody().getOps()) {
-      if (isa<air::HerdTerminatorOp>(o))
+    for (Operation &o : herd.getBody().front().without_terminator()) {
+      if (!o.hasAttr("hoist")) {
+        if (air::isAsyncOp(&o))
+          replaceAsyncOpWithWaitAll(module_builder, remap, &o, false);
         continue;
-      if (!o.hasAttr("hoist"))
-        continue;
+      }
 
       if (auto child_for_op = dyn_cast<LoopLikeOpInterface>(o)) {
         (void)cloneScfLoopUsingRemap(module_builder, remap, child_for_op,
@@ -690,8 +684,9 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
         }
       } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(o)) {
         replaceAsyncOpWithWaitAll(module_builder, remap, &o, false);
-      } else if (getCoreComputeOpFromExecuteOp(&o)) {
-        replaceAsyncOpWithWaitAll(module_builder, remap, &o, false);
+      } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
+        if (air::isAsyncOp(&o))
+          replaceAsyncOpWithWaitAll(module_builder, remap, &o, false);
       } else {
         module_builder.clone(o, remap);
       }
@@ -855,12 +850,12 @@ class AIRDmaToAIRChannelConversion
 
         // Clone ops into hoisted scf.parallel
         rewriter.setInsertionPointToStart(scf_par.getBody());
-        for (Operation &o :
-             herd->getRegions().front().getBlocks().front().getOperations()) {
-          if (isa<air::HerdTerminatorOp>(o))
+        for (Operation &o : herd.getBody().front().without_terminator()) {
+          if (!o.hasAttr("hoist")) {
+            if (air::isAsyncOp(&o))
+              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
             continue;
-          if (!o.hasAttr("hoist"))
-            continue;
+          }
           if (auto child_for_op = dyn_cast<LoopLikeOpInterface>(o)) {
             auto res = cloneScfLoopUsingRemap(rewriter, remap, child_for_op);
             if (failed(res))
@@ -876,8 +871,9 @@ class AIRDmaToAIRChannelConversion
             } else {
               rewriter.clone(o, remap);
             }
-          } else if (getCoreComputeOpFromExecuteOp(&o)) {
-            replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
+          } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
+            if (air::isAsyncOp(&o))
+              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
           } else {
             rewriter.clone(o, remap);
           }
@@ -918,8 +914,11 @@ class AIRDmaToAIRChannelConversion
             }
           }
 
-          if (!o.hasAttr("hoist"))
+          if (!o.hasAttr("hoist")) {
+            if (air::isAsyncOp(&o))
+              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
             continue;
+          }
 
           if (auto child_for_op = dyn_cast<LoopLikeOpInterface>(o)) {
             auto res = cloneScfLoopUsingRemap(rewriter, remap, child_for_op);
@@ -936,8 +935,12 @@ class AIRDmaToAIRChannelConversion
               replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
               continue;
             }
+          } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
+            if (air::isAsyncOp(&o))
+              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
+          } else {
+            rewriter.clone(o, remap);
           }
-          rewriter.clone(o, remap);
         }
       }
 
@@ -1279,19 +1282,20 @@ class AIRDemoteDmaToAIRHierarchyConversion
         // Clone ops into hoisted scf.parallel
         if (scf_par)
           rewriter.setInsertionPointToStart(scf_par.getBody());
-        for (Operation &o :
-             herd->getRegions().front().getBlocks().front().getOperations()) {
-          if (isa<air::HerdTerminatorOp>(o))
+        for (Operation &o : herd.getBody().front().without_terminator()) {
+          if (!o.hasAttr("hoist")) {
+            if (air::isAsyncOp(&o))
+              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
             continue;
-          if (!o.hasAttr("hoist"))
-            continue;
+          }
 
           if (auto child_for_op = dyn_cast<LoopLikeOpInterface>(o)) {
             auto res = cloneScfLoopUsingRemap(rewriter, remap, child_for_op);
             if (failed(res))
               return res;
-          } else if (getCoreComputeOpFromExecuteOp(&o)) {
-            replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
+          } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
+            if (air::isAsyncOp(&o))
+              replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
           } else {
             rewriter.clone(o, remap);
           }
