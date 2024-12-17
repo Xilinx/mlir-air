@@ -934,6 +934,8 @@ class AIRDmaToAIRChannelConversion
               // shouldn't be hoisted
               replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
               continue;
+            } else {
+              rewriter.clone(o, remap);
             }
           } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
             if (air::isAsyncOp(&o))
