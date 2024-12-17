@@ -887,33 +887,7 @@ class AIRDmaToAIRChannelConversion
 
         // Hoist ops
         rewriter.restoreInsertionPoint(insertionPointAtHierOp);
-        for (Operation &o : segment->getRegions()
-                                .front()
-                                .getBlocks()
-                                .front()
-                                .getOperations()) {
-          if (isa<air::SegmentTerminatorOp>(o))
-            continue;
-          // When hoisting air.channel puts/gets from air.segment to air.launch,
-          // any dependence to air.herd should drop. TODO: generalize this to
-          // cover more event types.
-          if (air::isAsyncOp(&o)) {
-            for (auto operand : o.getOperands()) {
-              auto depHerdOp =
-                  dyn_cast_if_present<air::HerdOp>(operand.getDefiningOp());
-              if (!depHerdOp)
-                continue;
-              auto checkpoint = rewriter.saveInsertionPoint();
-              remap.map(depHerdOp.getAsyncToken(),
-                        rewriter
-                            .create<air::WaitAllOp>(
-                                loc, air::AsyncTokenType::get(o.getContext()),
-                                SmallVector<Value>{})
-                            .getAsyncToken());
-              rewriter.restoreInsertionPoint(checkpoint);
-            }
-          }
-
+        for (Operation &o : segment.getBody().front().without_terminator()) {
           if (!o.hasAttr("hoist")) {
             if (air::isAsyncOp(&o))
               replaceAsyncOpWithWaitAll(rewriter, remap, &o, false);
