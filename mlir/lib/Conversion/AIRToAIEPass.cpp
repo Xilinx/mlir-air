@@ -2271,26 +2271,79 @@ public:
         // Check if the two end points of the connection match
         bool matchingSubChannel = true;
         bool allConstantIndices = false;
+        // Walk the channel bundle.
         for (unsigned i = 0; i < internalIndices.size(); i++) {
           Value internalIdx = internalIndices[i];
           Value externalIdx = the_other_chan_o.getIndices()[i];
-          auto constInternalIdx = getConstantIntValue(internalIdx);
-          auto constExternalIdx = getConstantIntValue(externalIdx);
-          if (constInternalIdx && constExternalIdx) {
-            if (*constInternalIdx != *constExternalIdx)
-              matchingSubChannel = false;
-            else
-              allConstantIndices = true;
-          } else if (constInternalIdx && !constExternalIdx) {
-            if (!scf::getParallelForInductionVarOwner(externalIdx))
-              matchingSubChannel = false;
-          } else if (!constInternalIdx && constExternalIdx) {
-            if (!air::getHerdArgOwner(internalIdx))
-              matchingSubChannel = false;
-          } else {
-            if (!scf::getParallelForInductionVarOwner(externalIdx))
-              matchingSubChannel = false;
-            if (!air::getHerdArgOwner(internalIdx))
+          // Find matching sub-channels by walking the (spatial) iteration space
+          // around the channel bundle indices.
+          auto getAllStaticStepsInLoopLike =
+              [](LoopLikeOpInterface loopLikeOwner, BlockArgument iterArg) {
+                SmallVector<int> steps;
+                if (!llvm::is_contained(*loopLikeOwner.getLoopInductionVars(),
+                                        iterArg))
+                  return steps;
+                int idx = iterArg.getArgNumber();
+                int intLb = *getConstantIntValue(
+                    (*loopLikeOwner.getLoopLowerBounds())[idx]);
+                int intUb = *getConstantIntValue(
+                    (*loopLikeOwner.getLoopUpperBounds())[idx]);
+                int intStep =
+                    *getConstantIntValue((*loopLikeOwner.getLoopSteps())[idx]);
+                for (int intIter = intLb; intIter < intUb; intIter += intStep)
+                  steps.push_back(intIter);
+                return steps;
+              };
+          auto getAllStaticStepsInAIRHerd = [](air::HerdOp herdOwner,
+                                               BlockArgument iterArg) {
+            SmallVector<int> steps;
+            if (!llvm::is_contained(herdOwner.getIds(), iterArg))
+              return steps;
+            int idx = iterArg.getArgNumber();
+            int intUb =
+                *getConstantIntValue((herdOwner.getSizeOperands())[idx]);
+            for (int intIter = 0; intIter < intUb; intIter++)
+              steps.push_back(intIter);
+            return steps;
+          };
+          if (isEqualConstantIntOrValue(internalIdx, externalIdx))
+            allConstantIndices = true;
+          else {
+            auto constInternalIdx = getConstantIntValue(internalIdx);
+            auto constExternalIdx = getConstantIntValue(externalIdx);
+            auto internalBlockArg = dyn_cast<BlockArgument>(internalIdx);
+            auto externalBlockArg = dyn_cast<BlockArgument>(externalIdx);
+            SmallVector<int> internalSteps, externalSteps;
+            if (internalBlockArg) {
+              if (LoopLikeOpInterface loopLikeOwner =
+                      dyn_cast<LoopLikeOpInterface>(
+                          internalBlockArg.getOwner()->getParentOp()))
+                internalSteps = getAllStaticStepsInLoopLike(loopLikeOwner,
+                                                            internalBlockArg);
+              else if (air::HerdOp herdOwner = dyn_cast<air::HerdOp>(
+                           internalBlockArg.getOwner()->getParentOp()))
+                internalSteps =
+                    getAllStaticStepsInAIRHerd(herdOwner, internalBlockArg);
+            } else if (constInternalIdx)
+              internalSteps.push_back(*constInternalIdx);
+            if (externalBlockArg) {
+              if (LoopLikeOpInterface loopLikeOwner =
+                      dyn_cast<LoopLikeOpInterface>(
+                          externalBlockArg.getOwner()->getParentOp()))
+                externalSteps = getAllStaticStepsInLoopLike(loopLikeOwner,
+                                                            externalBlockArg);
+              else if (air::HerdOp herdOwner = dyn_cast<air::HerdOp>(
+                           externalBlockArg.getOwner()->getParentOp()))
+                externalSteps =
+                    getAllStaticStepsInAIRHerd(herdOwner, externalBlockArg);
+            } else if (constExternalIdx)
+              externalSteps.push_back(*constExternalIdx);
+
+            // Check if externalSteps and internalSteps include one another
+            if (!std::includes(internalSteps.begin(), internalSteps.end(),
+                               externalSteps.begin(), externalSteps.end()) &&
+                !std::includes(externalSteps.begin(), externalSteps.end(),
+                               internalSteps.begin(), internalSteps.end()))
               matchingSubChannel = false;
           }
         }
@@ -2305,13 +2358,10 @@ public:
               shim_chans_annotated = false;
           }
         }
-      } else { // One on shim, one on air.hierarchy.
-        if (!the_other_chan_o->hasAttr("metadata")) {
-          the_other_chan_o->setAttr("metadata",
-                                    FlatSymbolRefAttr::get(ctx, dma_name_attr));
-          shim_chans_annotated = true;
-          break;
-        }
+      } else { // Channel isn't a bundle.
+        the_other_chan_o->setAttr("metadata",
+                                  FlatSymbolRefAttr::get(ctx, dma_name_attr));
+        shim_chans_annotated = true;
       }
     }
     return shim_chans_annotated;
