@@ -761,10 +761,10 @@ std::vector<unsigned>
 air::convertVecOfConstIndexToVecOfUInt(SmallVector<Value> svec) {
   std::vector<unsigned> output;
   for (auto v : svec) {
-    auto op = v.getDefiningOp<arith::ConstantIndexOp>();
-    if (!op)
+    auto constOp = getConstantIntValue(v);
+    if (!constOp)
       return std::vector<unsigned>();
-    output.push_back(op.value());
+    output.push_back(*constOp);
   }
   return output;
 }
