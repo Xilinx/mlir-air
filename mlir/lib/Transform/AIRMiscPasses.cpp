@@ -894,8 +894,7 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
   Value zeroIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
   if (!originalChanOp.getOffsets().empty()) {
     auto offsetDefOp = originalChanOp.getOffsets()[dim].getDefiningOp();
-    if ((offsetDefOp && isa<affine::AffineApplyOp>(offsetDefOp)) ||
-        isa<air::ExecuteOp>(offsetDefOp))
+    if (offsetDefOp && isa<affine::AffineApplyOp, air::ExecuteOp>(offsetDefOp))
       affineApplyOp = offsetDefOp;
   }
   if (affineApplyOp && isa<affine::AffineApplyOp>(affineApplyOp)) {
