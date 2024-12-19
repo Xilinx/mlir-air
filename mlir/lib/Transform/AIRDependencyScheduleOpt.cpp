@@ -4111,6 +4111,10 @@ public:
       // loop.
       RewritePatternSet patterns_1(f.getContext());
       patterns_1.insert<HoistAIRHerdInForPattern>(f.getContext(), false);
+      air::LaunchOp::getCanonicalizationPatterns(patterns_1, f.getContext());
+      air::SegmentOp::getCanonicalizationPatterns(patterns_1, f.getContext());
+      air::HerdOp::getCanonicalizationPatterns(patterns_1, f.getContext());
+      air::WaitAllOp::getCanonicalizationPatterns(patterns_1, f.getContext());
       (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
     }
   }

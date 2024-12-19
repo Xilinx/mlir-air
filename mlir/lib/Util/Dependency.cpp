@@ -686,20 +686,6 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   if (hasNChannelOps(for_op.getBody(), 1))
     return for_op;
 
-  // Preprocess target ops by canonicalizing dependencies in target ops' region.
-  for (auto target_op : target_ops) {
-    for (auto &region : target_op->getRegions()) {
-      llvm::SetVector<Value> region_args;
-      getUsedValuesDefinedAbove(region, region_args);
-      for (auto arg : region_args) {
-        if (isa<air::AsyncTokenType>(arg.getType())) {
-          replaceAllUsesInRegionWith(
-              arg, getLoopCarriedTokenFromScfOp(for_op, "argument"), region);
-        }
-      }
-    }
-  }
-
   rewriter.setInsertionPoint(for_op);
   IRMapping remap;
   auto new_for_op = rewriter.create<scf::ForOp>(
