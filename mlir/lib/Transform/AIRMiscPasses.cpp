@@ -1681,7 +1681,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         OpBuilder b(e);
         res.replaceAllUsesWith(
             b.create<air::WaitAllOp>(e->getLoc(), air::AsyncTokenType::get(ctx),
-                                     SmallVector<Value>{})
+                                     air::getAsyncDependenciesFromOp(e))
                 .getAsyncToken());
       }
     }
