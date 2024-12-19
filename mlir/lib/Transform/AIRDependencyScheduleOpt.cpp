@@ -4313,9 +4313,7 @@ public:
       // Post processing, hoisting air.herd ops out of perfectly nested scf.for
       // loop.
       RewritePatternSet patterns_1(f.getContext());
-      patterns_1
-          .insert<HoistAIRHerdInForPattern, HoistAIRChannelInAccumPattern>(
-              f.getContext(), false);
+      patterns_1.insert<HoistAIRHerdInForPattern>(f.getContext(), false);
       (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
     }
   }
