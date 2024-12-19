@@ -461,7 +461,6 @@ module {
 // CHECK: scf.for{{.*}}{
 // CHECK-NEXT: air.channel.put{{.*}}@channel_1
 // CHECK-NEXT: air.channel.put{{.*}}@channel_2
-// CHECK-NEXT: air.wait_all
 // CHECK-NEXT: scf.yield
 // CHECK-NEXT: }
 // CHECK: scf.for %{{.*}}{
@@ -585,6 +584,7 @@ module {
   air.channel @bL2ToL3 []
   air.channel @cL1ToL2 []
   air.channel @cL2ToL3 []
+  air.channel @bL2ToL1 []
   func.func @func6(%arg0: memref<288xi8>, %arg1: memref<9xf32>, %arg2: memref<288x48xi8>, %arg3: memref<9x48xf32>, %arg4: memref<48xf32>) {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg5, %arg6) in (%arg7=%c1, %arg8=%c1) attributes {id = 1 : i32} {
@@ -602,7 +602,10 @@ module {
         }
         %2 = scf.for %arg9 = %c0 to %c3 step %c1_0 iter_args(%arg10 = %async_token) -> (!air.async.token) {
           %3 = air.channel.get async [%arg10]  @bL1ToL2[] (%results[] [] []) {id = 14 : i32} : (memref<48xf32, 1 : i32>)
-          %4 = air.herd @herd_0 async [%arg10]  tile (%arg11, %arg12) in (%arg13=%c1_0, %arg14=%c1_0) 
+          %4 = air.herd @herd_0 async [%arg10]  tile (%arg11, %arg12) in (%arg13=%c1_0, %arg14=%c1_0) {
+            %alloc = memref.alloc() : memref<48xf32, 2 : i32>
+            air.channel.get @bL2ToL1[] (%alloc[] [] []) : (memref<48xf32, 2 : i32>)
+          }
           %5 = air.channel.put async [%3]  @bL2ToL3[] (%results[] [] []) {id = 20 : i32} : (memref<48xf32, 1 : i32>)
           %6 = air.channel.get async [%arg10]  @cL1ToL2[] (%results_2[] [] []) {id = 14 : i32} : (memref<48xf32, 1 : i32>)
           %7 = air.channel.put async [%6]  @cL2ToL3[] (%results_2[] [] []) {id = 20 : i32} : (memref<48xf32, 1 : i32>)
