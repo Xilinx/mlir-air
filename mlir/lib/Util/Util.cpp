@@ -446,7 +446,7 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
   while ((parent = parent->getParentOp())) {
     if (parent->hasTrait<OpTrait::SymbolTable>()) {
       auto st = mlir::SymbolTable::lookupSymbolIn(parent, op.getChanName());
-      if (st && isa<air::ChannelOp>(st)) {
+      if (isa_and_present<air::ChannelOp>(st)) {
         return dyn_cast<air::ChannelOp>(st);
       }
     }
@@ -888,7 +888,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
     } else {
       // Get affine.apply which produces the offset ssa
       Operation *offset_producer = offsets[i].getDefiningOp();
-      if (offset_producer && isa<arith::IndexCastOp>(offset_producer)) {
+      if (isa_and_present<arith::IndexCastOp>(offset_producer)) {
         auto castOp = dyn_cast<arith::IndexCastOp>(offset_producer);
         offsets[i] = castOp.getIn();
         offset_producer = castOp.getIn().getDefiningOp();

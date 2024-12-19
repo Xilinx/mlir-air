@@ -2376,7 +2376,7 @@ private:
       }
     }
     auto size_op = new_sizes[dim].getDefiningOp();
-    if (size_op && isa<arith::ConstantIndexOp>(size_op)) {
+    if (isa_and_present<arith::ConstantIndexOp>(size_op)) {
       auto val = dyn_cast<arith::ConstantIndexOp>(size_op).value();
       val = llvm::divideCeilSigned(val, factor);
       new_sizes[dim] =
@@ -2617,8 +2617,8 @@ public:
     auto dep_list = async_op.getAsyncDependencies();
     for (int i = dep_list.size() - 1; i >= 0; i--) {
       auto upstream_op = dep_list[i].getDefiningOp();
-      if (upstream_op && dyn_cast<air::DmaMemcpyNdOp>(upstream_op)) {
-        auto upstream_dma = dyn_cast<air::DmaMemcpyNdOp>(upstream_op);
+      if (auto upstream_dma =
+              dyn_cast_if_present<air::DmaMemcpyNdOp>(upstream_op)) {
         if (v == upstream_dma.getDstMemref()) {
           // Disconnect dependency between async op and upstream dma
           async_op.eraseAsyncDependency(i);
