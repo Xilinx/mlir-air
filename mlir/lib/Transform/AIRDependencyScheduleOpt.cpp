@@ -2637,6 +2637,32 @@ public:
 private:
 };
 
+// Convert any air.herd op within an scf.for loop body to be strictly async wrt
+// other async ops in the loop body.
+struct MakeHerdOpAsyncInScfForLoopPattern
+    : public OpRewritePattern<air::HerdOp> {
+  using OpRewritePattern<air::HerdOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(air::HerdOp herdOp,
+                                PatternRewriter &rewriter) const override {
+    auto forOp = dyn_cast_if_present<scf::ForOp>(herdOp->getParentOp());
+    if (!forOp)
+      return failure();
+    auto loopCarriedToken = getLoopCarriedTokenFromScfOp(forOp, "argument");
+    if (herdOp.getAsyncDependencies().size() == 1 &&
+        herdOp.getAsyncDependencies().front() == loopCarriedToken &&
+        herdOp.getAsyncToken().use_empty())
+      return failure();
+    clearAsyncDependenciesOfAsyncOp(herdOp);
+    herdOp.addAsyncDependency(loopCarriedToken);
+    if (!herdOp.getAsyncToken().use_empty())
+      herdOp.getAsyncToken().replaceAllUsesWith(loopCarriedToken);
+    return success();
+  }
+
+private:
+};
+
 class AIRHoistOpsNotUsingPingPongPattern
     : public xilinx::air::impl::AIRHoistOpsNotUsingPingPongPatternBase<
           AIRHoistOpsNotUsingPingPongPattern> {
@@ -2649,7 +2675,8 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistOpsNotUsingPingPongPattern>(ctx);
+    patterns.insert<HoistOpsNotUsingPingPongPattern,
+                    MakeHerdOpAsyncInScfForLoopPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -2679,7 +2706,8 @@ public:
   void runIsolateScfForOpForPingPong(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistOpsNotUsingPingPongPattern>(ctx);
+    patterns.insert<HoistOpsNotUsingPingPongPattern,
+                    MakeHerdOpAsyncInScfForLoopPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -3963,30 +3991,6 @@ private:
     }
     targetOp->erase();
   }
-};
-
-struct MakeHerdOpAsyncInScfForLoopPattern
-    : public OpRewritePattern<air::HerdOp> {
-  using OpRewritePattern<air::HerdOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(air::HerdOp herdOp,
-                                PatternRewriter &rewriter) const override {
-    auto forOp = dyn_cast_if_present<scf::ForOp>(herdOp->getParentOp());
-    if (!forOp)
-      return failure();
-    auto loopCarriedToken = getLoopCarriedTokenFromScfOp(forOp, "argument");
-    if (herdOp.getAsyncDependencies().size() == 1 &&
-        herdOp.getAsyncDependencies().front() == loopCarriedToken &&
-        herdOp.getAsyncToken().use_empty())
-      return failure();
-    clearAsyncDependenciesOfAsyncOp(herdOp);
-    herdOp.addAsyncDependency(loopCarriedToken);
-    if (!herdOp.getAsyncToken().use_empty())
-      herdOp.getAsyncToken().replaceAllUsesWith(loopCarriedToken);
-    return success();
-  }
-
-private:
 };
 
 struct IsolateAsyncDmaLoopNestInSCFForPattern
