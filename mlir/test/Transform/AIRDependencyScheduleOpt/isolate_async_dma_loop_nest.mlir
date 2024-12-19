@@ -167,7 +167,7 @@ module {
 
 // -----
 
-// Check air.herd and air.channel op hoisting.
+// Check air.herd op hoisting.
 
 // CHECK-LABEL: func1
 
@@ -175,17 +175,18 @@ module {
 // CHECK: air.segment @segment_0
 // CHECK-DAG: %[[SEGCST0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[SEGCST64:.*]] = arith.constant 64 : index
+// CHECK-DAG: %[[SEGCST512:.*]] = arith.constant 512 : index
 
 // CHECK: air.herd @herd_0
 // CHECK-DAG: %[[CST0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[CST64:.*]] = arith.constant 64 : index
 // CHECK-DAG: %[[CST512:.*]] = arith.constant 512 : index
-// CHECK: linalg.fill
 // CHECK: scf.for {{.*}} = %[[CST0]] to %[[CST512]] step %[[CST64]] iter_args
-// CHECK: scf.yield
+// CHECK: linalg.fill
 // CHECK: air.channel.put{{.*}}@channel_0
+// CHECK: scf.yield
 
-// CHECK: scf.for {{.*}} = %[[SEGCST0]] to %[[SEGCST64]] step %[[SEGCST64]] iter_args
+// CHECK: scf.for {{.*}} = %[[SEGCST0]] to %[[SEGCST512]] step %[[SEGCST64]] iter_args
 // CHECK: scf.parallel
 // CHECK: air.channel.get{{.*}}@channel_0
 // CHECK: scf.reduce
