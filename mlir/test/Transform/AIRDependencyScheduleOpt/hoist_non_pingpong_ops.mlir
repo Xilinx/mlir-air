@@ -11,7 +11,7 @@
 // CHECK-LABEL: hoist_ops
 // CHECK: %[[EVENT0:.*]] = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = {{.*}}
 // CHECK: %[[EVENT2:.*]] = air.herd @herd_0 async [%[[EVENT1]]]  tile
-// CHECK: %[[EVENT3:.*]] = air.wait_all async [%[[EVENT2]]]
+// CHECK: %[[EVENT3:.*]] = air.wait_all async [%[[EVENT1]]]
 // CHECK: scf.yield %[[EVENT3]]
 // CHECK: %[[EVENT4:.*]] = scf.for {{.*}} iter_args(%[[EVENT5:.*]] = {{.*}}
 // CHECK: memref.alloc() {hoist_alloc = "true"}

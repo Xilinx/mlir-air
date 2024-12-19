@@ -735,12 +735,6 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                        yield_operands)
                    ->getResult(0)});
 
-  // Update dependency to hoisted ops
-  for (auto herd : new_for_op.getOps<air::HerdOp>()) {
-    clearAsyncDependenciesOfAsyncOp(herd);
-    herd.addAsyncDependency(
-        getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
-  }
   for (auto erase_op : target_ops) {
     // Reconnect returned tokens.
     rewriter.setInsertionPoint(erase_op);
