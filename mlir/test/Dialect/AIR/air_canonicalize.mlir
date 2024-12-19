@@ -105,8 +105,7 @@ func.func @segmnet_async() {
 // CHECK-LABEL: segmnet_async_1
 // CHECK: air.segment @segment_0 async
 // CHECK: %[[TOKEN0:.*]], %[[RES0:.*]] = air.execute -> (memref<4x4x64x64xbf16, 1 : i32>) {
-// CHECK: %[[TOKEN1:.*]] = air.wait_all async 
-// CHECK-NEXT: %[[TOKEN2:.*]] = scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%[[TOKEN5:.*]] = %[[TOKEN1]]) -> (!air.async.token) {
+// CHECK: %[[TOKEN2:.*]] = scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%[[TOKEN5:.*]] = %[[TOKEN0]]) -> (!air.async.token) {
 // CHECK-NEXT: %[[TOKEN3:.*]] = scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%[[TOKEN6:.*]] = %[[TOKEN5]]) -> (!air.async.token) {
 // CHECK-NEXT: %[[TOKEN4:.*]] = scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%[[TOKEN7:.*]] = %[[TOKEN6]]) -> (!air.async.token) {
 // CHECK-NEXT: %[[TOKEN8:.*]] = air.channel.put async [%[[TOKEN7]]]
