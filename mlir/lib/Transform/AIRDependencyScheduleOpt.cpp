@@ -2376,8 +2376,8 @@ private:
       }
     }
     auto size_op = new_sizes[dim].getDefiningOp();
-    if (isa_and_present<arith::ConstantIndexOp>(size_op)) {
-      auto val = dyn_cast<arith::ConstantIndexOp>(size_op).value();
+    if (auto cIOp = dyn_cast_if_present<arith::ConstantIndexOp>(size_op)) {
+      auto val = cIOp.value();
       val = llvm::divideCeilSigned(val, factor);
       new_sizes[dim] =
           builder.create<arith::ConstantIndexOp>(par->getLoc(), val);

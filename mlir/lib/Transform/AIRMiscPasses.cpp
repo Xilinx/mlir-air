@@ -900,8 +900,7 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
   if (isa_and_present<affine::AffineApplyOp>(affineApplyOp)) {
     originalApplyOperands = affineApplyOp->getOperands();
     originalApplyOutput = affineApplyOp->getResult(0);
-  } else if (isa_and_present<air::ExecuteOp>(affineApplyOp)) {
-    auto execOp = dyn_cast<air::ExecuteOp>(affineApplyOp);
+  } else if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(affineApplyOp)) {
     SetVector<Value> opers;
     getUsedValuesDefinedAbove(execOp.getRegion(), opers);
     originalApplyOperands = llvm::to_vector(opers);

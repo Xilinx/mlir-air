@@ -632,8 +632,8 @@ private:
     uint64_t output = 1;
     for (auto s : sizes) {
       auto op = s.getDefiningOp();
-      if (isa_and_present<arith::ConstantIndexOp>(op)) {
-        output *= dyn_cast<arith::ConstantIndexOp>(op).value();
+      if (auto cIOp = dyn_cast_if_present<arith::ConstantIndexOp>(op)) {
+        output *= cIOp.value();
       } else if (op)
         op->emitOpError("non-static shape for data movement");
     }
