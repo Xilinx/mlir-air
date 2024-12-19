@@ -67,7 +67,7 @@ func.func @herd_async_2() {
   return
 }
 
-// CHECK-LABEL: segmnet_async
+// CHECK-LABEL: segment_async
 // CHECK: air.segment @segment_0 async
 // CHECK: %[[TOKEN0:.*]] = air.wait_all async 
 // CHECK-NEXT: %[[TOKEN1:.*]] = scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%[[TOKEN4:.*]] = %[[TOKEN0]]) -> (!air.async.token) {
@@ -77,7 +77,7 @@ func.func @herd_async_2() {
 // CHECK-NEXT: }
 // CHECK-NEXT: scf.yield %[[TOKEN2]] : !air.async.token
 // CHECK-NEXT: }
-func.func @segmnet_async() {
+func.func @segment_async() {
   %7 = air.segment @segment_0 async  {
     %c0 = arith.constant 0 : index
     %c256 = arith.constant 256 : index
@@ -102,7 +102,7 @@ func.func @segmnet_async() {
   return
 }
 
-// CHECK-LABEL: segmnet_async_1
+// CHECK-LABEL: segment_async_1
 // CHECK: air.segment @segment_0 async
 // CHECK: %[[TOKEN0:.*]], %[[RES0:.*]] = air.execute -> (memref<4x4x64x64xbf16, 1 : i32>) {
 // CHECK: %[[TOKEN2:.*]] = scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%[[TOKEN5:.*]] = %[[TOKEN0]]) -> (!air.async.token) {
@@ -115,7 +115,7 @@ func.func @segmnet_async() {
 // CHECK-NEXT: }
 // CHECK-NEXT: scf.yield %[[TOKEN3]] : !air.async.token
 // CHECK-NEXT: }
-func.func @segmnet_async_1() {
+func.func @segment_async_1() {
   %7 = air.segment @segment_0 async  {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -146,7 +146,7 @@ func.func @segmnet_async_1() {
   return
 }
 
-// CHECK-LABEL: segmnet_async_2
+// CHECK-LABEL: segment_async_2
 // CHECK: air.segment @segment_0 async
 // CHECK: %[[TOKEN0:.*]], %[[RES0:.*]] = air.execute -> (memref<4x4x64x64xbf16, 1 : i32>) {
 // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} {
@@ -158,7 +158,7 @@ func.func @segmnet_async_1() {
 // CHECK-NEXT: scf.yield %[[TOKEN4]] : !air.async.token
 // CHECK-NEXT: }
 // CHECK-NEXT: }
-func.func @segmnet_async_2() {
+func.func @segment_async_2() {
   %7 = air.segment @segment_0 async  {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
