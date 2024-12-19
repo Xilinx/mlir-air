@@ -42,12 +42,11 @@ func::CallOp AIROutliner::outline(affine::AffineForOp forOp,
 
   for (Value v : region_args) {
     auto o = v.getDefiningOp();
-    if (o && isa<arith::ConstantOp>(o)) {
+    if (isa_and_present<arith::ConstantOp>(o)) {
       auto builder = OpBuilder::atBlockBegin(forOp.getBody());
       auto c = builder.clone(*o);
       replaceAllUsesInRegionWith(v, c->getResult(0), region);
-    }
-    else {
+    } else {
       outline_args.insert(v);
     }
   }
@@ -57,7 +56,8 @@ func::CallOp AIROutliner::outline(affine::AffineForOp forOp,
     arg_types.push_back(a.getType());
 
   auto module = forOp->getParentOfType<mlir::ModuleOp>();
-  auto func_type = mlir::FunctionType::get(forOp.getContext(), arg_types, ret_types);
+  auto func_type =
+      mlir::FunctionType::get(forOp.getContext(), arg_types, ret_types);
 
   std::string new_fname = fname;
   int which_try = 0;
@@ -76,7 +76,7 @@ func::CallOp AIROutliner::outline(affine::AffineForOp forOp,
     mapper.map(a, entryBlock.getArgument(idx++));
 
   auto body_builder = OpBuilder::atBlockBegin(&entryBlock);
-  Operation* clone = body_builder.clone(*forOp.getOperation(), mapper);
+  Operation *clone = body_builder.clone(*forOp.getOperation(), mapper);
   assert(clone);
   (void)clone;
 
@@ -95,17 +95,18 @@ func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
   auto module = ops[0]->getParentOfType<mlir::ModuleOp>();
   Block *bb = nullptr;
   (void)bb;
-  std::vector<Operation*> outline_ops;
+  std::vector<Operation *> outline_ops;
   std::vector<Value> outline_rets;
   std::vector<mlir::Type> ret_types;
   std::vector<Value> outline_args;
 
   for (Operation *op : ops) {
-    assert((!bb || bb == op->getBlock()) && "operations must be in same basic block");
+    assert((!bb || bb == op->getBlock()) &&
+           "operations must be in same basic block");
     bb = op->getBlock();
     for (Value v : op->getOperands()) {
       auto def = v.getDefiningOp();
-      if (def && dyn_cast<arith::ConstantOp>(def))
+      if (isa_and_present<arith::ConstantOp>(def))
         outline_ops.push_back(def);
       else
         outline_args.push_back(v);
@@ -142,7 +143,7 @@ func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
 
   SmallVector<Value, 4> rets;
   for (Operation *op : outline_ops) {
-    Operation* clone = op->clone(mapper);
+    Operation *clone = op->clone(mapper);
     for (auto p : llvm::zip(op->getResults(), clone->getResults()))
       mapper.map(std::get<0>(p), std::get<1>(p));
     entryBlock.push_back(clone);
@@ -167,5 +168,5 @@ func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
   return call;
 }
 
-} // namespace aten
+} // namespace air
 } // namespace xilinx

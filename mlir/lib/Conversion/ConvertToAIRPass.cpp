@@ -176,7 +176,7 @@ void getUsedConstsAndArgsDefinedAbove(MutableArrayRef<Region> region,
   llvm::SetVector<Value> region_args;
   getUsedValuesDefinedAbove(region, region_args);
   for (Value v : region_args) {
-    if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+    if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
       constants.push_back(v);
     else
       args.push_back(v);
@@ -680,7 +680,7 @@ public:
     llvm::SetVector<Value> region_args;
     getUsedValuesDefinedAbove(op.getRegion(), region_args);
     for (Value v : region_args) {
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+      if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
         constants.push_back(v);
       else
         args.push_back(v);
@@ -1044,7 +1044,7 @@ public:
     llvm::SetVector<Value> region_args;
     getUsedValuesDefinedAbove(op.getRegion(), region_args);
     for (Value v : region_args) {
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+      if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
         constants.push_back(v);
       else
         args.push_back(v);

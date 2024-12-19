@@ -399,7 +399,7 @@ private:
       return;
     }
     auto acc = add_operand.value();
-    assert(dyn_cast<AffineConstantExpr>(c) && "non-constant affine expression");
+    assert(isa<AffineConstantExpr>(c) && "non-constant affine expression");
     acc += dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(acc, ctx);
   }
@@ -424,7 +424,7 @@ private:
       return;
     }
     auto mul = mul_operand.value();
-    assert(dyn_cast<AffineConstantExpr>(c) && "non-constant affine expression");
+    assert(isa<AffineConstantExpr>(c) && "non-constant affine expression");
     mul *= dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(mul, ctx);
   }
@@ -535,7 +535,7 @@ void AIRFuseParallelHerdPass::runOnOperation() {
 
   getUsedValuesDefinedAbove(parOp.getRegion(), region_args);
   for (Value v : region_args) {
-    if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+    if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
       constants.push_back(v);
     else
       args.push_back(v);
@@ -894,14 +894,13 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
   Value zeroIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
   if (!originalChanOp.getOffsets().empty()) {
     auto offsetDefOp = originalChanOp.getOffsets()[dim].getDefiningOp();
-    if (offsetDefOp && isa<affine::AffineApplyOp, air::ExecuteOp>(offsetDefOp))
+    if (isa_and_present<affine::AffineApplyOp, air::ExecuteOp>(offsetDefOp))
       affineApplyOp = offsetDefOp;
   }
-  if (affineApplyOp && isa<affine::AffineApplyOp>(affineApplyOp)) {
+  if (isa_and_present<affine::AffineApplyOp>(affineApplyOp)) {
     originalApplyOperands = affineApplyOp->getOperands();
     originalApplyOutput = affineApplyOp->getResult(0);
-  } else if (affineApplyOp && isa<air::ExecuteOp>(affineApplyOp)) {
-    auto execOp = dyn_cast<air::ExecuteOp>(affineApplyOp);
+  } else if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(affineApplyOp)) {
     SetVector<Value> opers;
     getUsedValuesDefinedAbove(execOp.getRegion(), opers);
     originalApplyOperands = llvm::to_vector(opers);
@@ -1681,7 +1680,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         OpBuilder b(e);
         res.replaceAllUsesWith(
             b.create<air::WaitAllOp>(e->getLoc(), air::AsyncTokenType::get(ctx),
-                                     SmallVector<Value>{})
+                                     air::getAsyncDependenciesFromOp(e))
                 .getAsyncToken());
       }
     }
