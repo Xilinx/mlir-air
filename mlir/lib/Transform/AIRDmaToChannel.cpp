@@ -254,7 +254,7 @@ cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
       } else {
         builder.clone(child_op, remap);
       }
-    } else if (externalGetPut && dyn_cast<affine::AffineIfOp>(child_op)) {
+    } else if (externalGetPut && isa<affine::AffineIfOp>(child_op)) {
       // If externalGetPut is not nullptr, then broadcast lowering mode is on
       replaceAffineIfOpWithChannelOpAndClone(builder, remap, externalGetPut);
     } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(child_op)) {

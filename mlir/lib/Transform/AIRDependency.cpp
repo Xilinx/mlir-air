@@ -824,7 +824,7 @@ private:
     SmallVector<Value, 4> constants;
     for (unsigned i = 0; i < op.getNumKernelOperands(); i++) {
       auto v = op.getKernelOperand(i);
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp())) {
+      if (isa_and_present<arith::ConstantOp>(v.getDefiningOp())) {
         constants.push_back(v);
         args.push_back(v);
       } else
@@ -1543,7 +1543,7 @@ private:
     llvm::SetVector<Value> region_args;
     getUsedValuesDefinedAbove(loop_op.getRegion(), region_args);
     for (Value v : region_args) {
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+      if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
         constants.push_back(v);
       else if (v.getDefiningOp()) {
         if (auto v_op =
@@ -1609,7 +1609,7 @@ private:
     llvm::SetVector<Value> region_args;
     getUsedValuesDefinedAbove(loop_op.getRegion(), region_args);
     for (Value v : region_args) {
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+      if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
         constants.push_back(v);
       else if (v.getDefiningOp()) {
         if (auto v_op =
