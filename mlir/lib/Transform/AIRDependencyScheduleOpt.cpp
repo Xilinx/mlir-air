@@ -3965,6 +3965,30 @@ private:
   }
 };
 
+struct MakeHerdOpAsyncInScfForLoopPattern
+    : public OpRewritePattern<air::HerdOp> {
+  using OpRewritePattern<air::HerdOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(air::HerdOp herdOp,
+                                PatternRewriter &rewriter) const override {
+    auto forOp = dyn_cast_if_present<scf::ForOp>(herdOp->getParentOp());
+    if (!forOp)
+      return failure();
+    auto loopCarriedToken = getLoopCarriedTokenFromScfOp(forOp, "argument");
+    if (herdOp.getAsyncDependencies().size() == 1 &&
+        herdOp.getAsyncDependencies().front() == loopCarriedToken &&
+        herdOp.getAsyncToken().use_empty())
+      return failure();
+    clearAsyncDependenciesOfAsyncOp(herdOp);
+    herdOp.addAsyncDependency(loopCarriedToken);
+    if (!herdOp.getAsyncToken().use_empty())
+      herdOp.getAsyncToken().replaceAllUsesWith(loopCarriedToken);
+    return success();
+  }
+
+private:
+};
+
 struct IsolateAsyncDmaLoopNestInSCFForPattern
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -4103,7 +4127,8 @@ public:
       module.walk([&](scf::ForOp op) { forOps.push_back(op); });
 
       RewritePatternSet patterns(f.getContext());
-      patterns.insert<IsolateAsyncDmaLoopNestInSCFForPattern>(f.getContext());
+      patterns.insert<IsolateAsyncDmaLoopNestInSCFForPattern,
+                      MakeHerdOpAsyncInScfForLoopPattern>(f.getContext());
       (void)applyOpPatternsAndFold(forOps, std::move(patterns));
 
       // Post processing, hoisting air.herd ops out of perfectly nested scf.for
