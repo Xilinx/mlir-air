@@ -10,11 +10,14 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Iterators.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -233,6 +236,62 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
   return success();
 }
 
+// Enforce that, within op's region, all loop-carried dependency tokens to
+// scf.for loops must enter as iter_args.
+template <class OpT>
+static LogicalResult
+CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
+  // Get async tokens used by ops within region.getOps(), which are defined
+  // above this region.
+  auto getUsedAsyncTokensDefinedAbove = [](Region *region,
+                                           SetVector<Value> &regionTokens) {
+    for (auto &o : region->getOps()) {
+      for (auto oper : o.getOperands()) {
+        if (!isa<air::AsyncTokenType>(oper.getType()))
+          continue;
+        if (!oper.getParentRegion()->isProperAncestor(region))
+          continue;
+        regionTokens.insert(oper);
+      }
+    }
+    return;
+  };
+  // Get all scf.for ops which might require loop-carried token
+  // canonicalization.
+  SetVector<scf::ForOp> candidateForOps;
+  op.getBody().template walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+      [&](Operation *o) {
+        if (o->hasTrait<OpTrait::IsIsolatedFromAbove>())
+          return WalkResult::skip();
+        if (auto forOp = dyn_cast<scf::ForOp>(o)) {
+          SetVector<Value> regionTokens;
+          getUsedAsyncTokensDefinedAbove(&forOp.getRegion(), regionTokens);
+          if (regionTokens.empty())
+            return WalkResult::advance();
+          if (llvm::none_of(forOp.getRegionIterArgs(), [](BlockArgument arg) {
+                return isa<air::AsyncTokenType>(arg.getType());
+              }))
+            return WalkResult::advance();
+          candidateForOps.insert(forOp);
+        }
+        return WalkResult::advance();
+      });
+  if (candidateForOps.empty())
+    return failure();
+  // Enforce that all loop-carried tokens must be passed in from the iter_args.
+  for (auto forOp : candidateForOps) {
+    SetVector<Value> regionTokens;
+    getUsedAsyncTokensDefinedAbove(&forOp.getRegion(), regionTokens);
+    BlockArgument loopCarriedTokenArg =
+        *llvm::find_if(forOp.getRegionIterArgs(), [](BlockArgument arg) {
+          return isa<air::AsyncTokenType>(arg.getType());
+        });
+    for (auto tok : regionTokens)
+      replaceAllUsesInRegionWith(tok, loopCarriedTokenArg, forOp.getRegion());
+  }
+  return success();
+}
+
 //
 // LaunchOp
 //
@@ -447,6 +506,7 @@ void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                            MLIRContext *context) {
   patterns.add(canonicalizeHierarchyOpArgs<LaunchOp>);
   patterns.add(CanonicalizeAsyncOpDeps<LaunchOp>);
+  patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<LaunchOp>);
 }
 
 ArrayRef<BlockArgument> LaunchOp::getIds() {
@@ -708,6 +768,7 @@ void SegmentOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(canonicalizeHierarchyOpArgs<SegmentOp>);
   patterns.add(CanonicalizeAsyncOpDeps<SegmentOp>);
+  patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<SegmentOp>);
 }
 
 ArrayRef<BlockArgument> SegmentOp::getIds() {
@@ -968,6 +1029,7 @@ void HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                          MLIRContext *context) {
   patterns.add(canonicalizeHierarchyOpArgs<HerdOp>);
   patterns.add(CanonicalizeAsyncOpDeps<HerdOp>);
+  patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<HerdOp>);
 }
 
 ArrayRef<BlockArgument> HerdOp::getIds() {
@@ -1088,6 +1150,7 @@ void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldExecute);
   patterns.add(CanonicalizeAsyncOpDeps<ExecuteOp>);
+  patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<ExecuteOp>);
 }
 
 //
