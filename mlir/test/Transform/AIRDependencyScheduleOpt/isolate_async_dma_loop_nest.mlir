@@ -784,7 +784,11 @@ module {
           %alloc = memref.alloc() : memref<4x4x16x16x4x4xbf16, 2 : i32>
           air.execute_terminator %alloc : memref<4x4x16x16x4x4xbf16, 2 : i32>
         }
-        %2 = air.wait_all async [%async_token_9] 
+        %async_token_14, %results_15 = air.execute -> (memref<4x1x64x64xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<4x1x64x64xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<4x1x64x64xbf16, 1 : i32>
+        }
+        %2 = air.wait_all async [%async_token_9, %async_token_14] 
         %3 = scf.for %arg5 = %c0 to %c512 step %c256 iter_args(%arg6 = %2) -> (!air.async.token) {
           %4 = scf.for %arg7 = %c0 to %c512 step %c256 iter_args(%arg8 = %arg6) -> (!air.async.token) {
             %5 = air.herd @herd_0 async [%arg8]  tile (%arg9, %arg10) in (%arg11=%c4, %arg12=%c4) args(%arg13=%results_10) : memref<4x4x16x16x4x4xbf16, 2 : i32> attributes {id = 3 : i32, link_with = "mm.o"} {
@@ -795,7 +799,7 @@ module {
               }
             }
             %6 = scf.for %arg9 = %c0 to %c8 step %c1_0 iter_args(%arg10 = %5) -> (!air.async.token) {
-              %7 = air.channel.get async [%arg10]  @channel_0[] (%results_10[] [] []) {id = 4 : i32} : (memref<4x4x16x16x4x4xbf16, 2 : i32>)
+              %7 = air.channel.get async [%arg10]  @channel_0[] (%results_15[] [] []) {id = 4 : i32} : (memref<4x1x64x64xbf16, 1 : i32>)
               %8 = air.herd @herd_0 async [%arg10]  tile (%arg11, %arg12) in (%arg13=%c4, %arg14=%c4) args(%arg15=%results_10) : memref<4x4x16x16x4x4xbf16, 2 : i32> attributes {id = 4 : i32, link_with = "mm.o"} {
                 %cst = arith.constant 0.000000e+00 : bf16
                 %subview = memref.subview %arg15[%arg11, %arg12, 0, 0, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<4x4x16x16x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 4096, 256, 16, 4, 1], offset: ?>, 2 : i32>
@@ -811,6 +815,9 @@ module {
         }
         %async_token_11 = air.execute [%3] {
           memref.dealloc %results_10 : memref<4x4x16x16x4x4xbf16, 2 : i32>
+        }
+        %async_token_12 = air.execute [%3] {
+          memref.dealloc %results_15 : memref<4x1x64x64xbf16, 1 : i32>
         }
       }
     }
