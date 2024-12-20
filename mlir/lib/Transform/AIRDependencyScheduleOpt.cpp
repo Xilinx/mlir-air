@@ -4590,25 +4590,6 @@ SmallVector<T> getTokenUsersOfType(air::AsyncOpInterface asyncOp) {
   return tokenUsers;
 }
 
-// Get the number of air.channel.puts/gets in block.
-int getNumChannelPutsGetsInBlock(Block *block) {
-  int count = 0;
-  for (auto &o : block->getOperations())
-    if (auto chanOp = dyn_cast<air::ChannelInterface>(o))
-      count++;
-  return count;
-}
-
-// Get the total number of unique air.channels that all air.channel.puts/gets
-// in block operate on.
-int getNumUniqueChannelsInBlock(Block *block) {
-  llvm::SmallSet<std::string, 1> chanNamesInBlock;
-  for (auto &o : block->getOperations())
-    if (auto chanOp = dyn_cast<air::ChannelInterface>(o))
-      chanNamesInBlock.insert(chanOp.getChanName().str());
-  return chanNamesInBlock.size();
-}
-
 // Scf.for loop tiling. This simple tiling implementation generates a new
 // inner scf.for loop which starts from the original loop's lower bound. It
 // may change the meaning of the original scf.for loop, therefore it requires
@@ -4750,6 +4731,15 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
     }
   }
   // Get roots to perfectly nested scf.for loops.
+  auto getNumChannelPutsGetsInBlock = [](Block *block) {
+    return (int)llvm::range_size(block->getOps<air::ChannelInterface>());
+  };
+  auto getNumUniqueChannelsInBlock = [](Block *block) {
+    llvm::SmallSet<std::string, 1> chanNamesInBlock;
+    for (auto chanOp : block->getOps<air::ChannelInterface>())
+      chanNamesInBlock.insert(chanOp.getChanName().str());
+    return (int)chanNamesInBlock.size();
+  };
   SmallVector<scf::ForOp> perfectlyNestedForBands;
   for (auto forOp : region->getOps<scf::ForOp>()) {
     // Conditions for candicate scf.for op for fusion: (1) has at most 1
