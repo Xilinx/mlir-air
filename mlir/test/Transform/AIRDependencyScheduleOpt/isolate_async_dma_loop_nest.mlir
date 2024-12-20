@@ -754,18 +754,15 @@ module {
 // CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
 // CHECK: linalg.fill
 
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}}
-// CHECK: air.channel.get
-// CHECK: scf.yield
-// CHECK: scf.yield
-// CHECK: scf.yield
-
 // CHECK: air.herd
 // CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
 // CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
 // CHECK: scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}}
+// CHECK: linalg.fill
+
+// CHECK: air.herd
+// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
+// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
 // CHECK: linalg.fill
 
 module {
@@ -799,17 +796,25 @@ module {
               }
             }
             %6 = scf.for %arg9 = %c0 to %c8 step %c1_0 iter_args(%arg10 = %5) -> (!air.async.token) {
-              %7 = air.channel.get async [%arg10]  @channel_0[] (%results_15[] [] []) {id = 4 : i32} : (memref<4x1x64x64xbf16, 1 : i32>)
-              %8 = air.herd @herd_0 async [%arg10]  tile (%arg11, %arg12) in (%arg13=%c4, %arg14=%c4) args(%arg15=%results_10) : memref<4x4x16x16x4x4xbf16, 2 : i32> attributes {id = 4 : i32, link_with = "mm.o"} {
+              %7 = air.herd @herd_0 async [%arg10]  tile (%arg11, %arg12) in (%arg13=%c4, %arg14=%c4) args(%arg15=%results_10) : memref<4x4x16x16x4x4xbf16, 2 : i32> attributes {id = 4 : i32, link_with = "mm.o"} {
                 %cst = arith.constant 0.000000e+00 : bf16
                 %subview = memref.subview %arg15[%arg11, %arg12, 0, 0, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<4x4x16x16x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 4096, 256, 16, 4, 1], offset: ?>, 2 : i32>
                 %async_token_17 = air.execute {
                   linalg.fill ins(%cst : bf16) outs(%subview : memref<1x1x16x16x4x4xbf16, strided<[16384, 4096, 256, 16, 4, 1], offset: ?>, 2 : i32>)
                 }
               }
-              scf.yield %8 : !air.async.token
+              scf.yield %7 : !air.async.token
             }
-            scf.yield %6 : !air.async.token
+            %8 = air.herd @herd_0 async [%6]  tile (%arg11, %arg12) in (%arg13=%c4, %arg14=%c4) args(%arg15=%results_10) : memref<4x4x16x16x4x4xbf16, 2 : i32> attributes {id = 4 : i32, link_with = "mm.o"} {
+              %cst = arith.constant 0.000000e+00 : bf16
+              %subview = memref.subview %arg15[%arg11, %arg12, 0, 0, 0, 0] [1, 1, 16, 16, 4, 4] [1, 1, 1, 1, 1, 1] : memref<4x4x16x16x4x4xbf16, 2 : i32> to memref<1x1x16x16x4x4xbf16, strided<[16384, 4096, 256, 16, 4, 1], offset: ?>, 2 : i32>
+              %async_token_17 = air.execute {
+                linalg.fill ins(%cst : bf16) outs(%subview : memref<1x1x16x16x4x4xbf16, strided<[16384, 4096, 256, 16, 4, 1], offset: ?>, 2 : i32>)
+              }
+            }
+            %9 = air.channel.put async [%arg8]  @channel_0[] (%results_15[] [] []) : (memref<4x1x64x64xbf16, 1 : i32>)
+            %10 = air.wait_all async [%8, %9]
+            scf.yield %10 : !air.async.token
           }
           scf.yield %4 : !air.async.token
         }
