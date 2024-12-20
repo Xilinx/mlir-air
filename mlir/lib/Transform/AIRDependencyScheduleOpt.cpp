@@ -47,6 +47,8 @@
 #include <string>
 #include <vector>
 
+#include <iostream>
+
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
@@ -4692,6 +4694,7 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
                                 bool fuseWithAllocDeallocs = true,
                                 int maxDepth = 1) {
   auto loc = region->getLoc();
+  auto ctx = region->getContext();
   // Get memref.alloc ops.
   SmallVector<air::ExecuteOp> memalloc_execs;
   SmallVector<air::ExecuteOp> memdealloc_execs;
@@ -4740,7 +4743,27 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
       chanNamesInBlock.insert(chanOp.getChanName().str());
     return (int)chanNamesInBlock.size();
   };
-  SmallVector<scf::ForOp> perfectlyNestedForBands;
+  std::function<void(Block *, SmallVector<scf::ForOp> &, int, int)>
+      getPerfectlyNestedForInForBody;
+  getPerfectlyNestedForInForBody = [&](Block *body,
+                                       SmallVector<scf::ForOp> &forOpNest,
+                                       int max_depth, int curr_depth) {
+    if (max_depth >= 0 && curr_depth >= max_depth)
+      return;
+    for (auto forOp : body->getOps<scf::ForOp>()) {
+      if (getNumUniqueChannelsInBlock(forOp.getBody()) <= 1 &&
+          hasNImpureOps(
+              forOp.getBody(),
+              std::max(getNumChannelPutsGetsInBlock(forOp.getBody()), 1)) &&
+          air::getStaticScfForTripCountAsInt(forOp)) {
+        forOpNest.push_back(forOp);
+        getPerfectlyNestedForInForBody(forOp.getBody(), forOpNest, max_depth,
+                                       ++curr_depth);
+      }
+    }
+    return;
+  };
+  SmallVector<SmallVector<scf::ForOp>> perfectlyNestedForBands;
   for (auto forOp : region->getOps<scf::ForOp>()) {
     // Conditions for candicate scf.for op for fusion: (1) has at most 1
     // unique channels operating in the block, (2) is either perfectly nested,
@@ -4749,8 +4772,12 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
         hasNImpureOps(
             forOp.getBody(),
             std::max(getNumChannelPutsGetsInBlock(forOp.getBody()), 1)) &&
-        air::getStaticScfForTripCountAsInt(forOp))
-      perfectlyNestedForBands.push_back(forOp);
+        air::getStaticScfForTripCountAsInt(forOp)) {
+      SmallVector<scf::ForOp> newForOpNest = {forOp};
+      getPerfectlyNestedForInForBody(forOp.getBody(), newForOpNest, maxDepth,
+                                     1);
+      perfectlyNestedForBands.push_back(newForOpNest);
+    }
   }
   if (perfectlyNestedForBands.empty())
     return failure();
@@ -4758,41 +4785,51 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
     return failure();
 
   // From the loop bands, get fusable scf.for for loop bands.
-  SmallVector<scf::ForOp> equalIterationForOps;
-  equalIterationForOps.push_back(perfectlyNestedForBands[0]);
-  int lb = *getConstantIntValue(perfectlyNestedForBands[0].getLowerBound());
-  int ub = *getConstantIntValue(perfectlyNestedForBands[0].getUpperBound());
-  int step = *getConstantIntValue(perfectlyNestedForBands[0].getStep());
+  SmallVector<SmallVector<scf::ForOp>> equalIterationForOps;
+  SmallVector<scf::ForOp> equalIterFirstBand = perfectlyNestedForBands.front();
+  equalIterationForOps.push_back(equalIterFirstBand);
   for (unsigned i = 1; i < perfectlyNestedForBands.size(); i++) {
-    int band_step = *getConstantIntValue(perfectlyNestedForBands[i].getStep());
-    int band_lb =
-        *getConstantIntValue(perfectlyNestedForBands[i].getLowerBound());
-    int band_ub =
-        *getConstantIntValue(perfectlyNestedForBands[i].getUpperBound());
-    if (band_lb == lb && band_ub == ub && band_step == step) {
+    if (perfectlyNestedForBands[i].size() != equalIterFirstBand.size())
+      continue;
+    if (llvm::all_of(
+            llvm::zip_equal(equalIterFirstBand, perfectlyNestedForBands[i]),
+            [&](std::tuple<scf::ForOp, scf::ForOp> pair) {
+              int lb = *getConstantIntValue(std::get<0>(pair).getLowerBound());
+              int ub = *getConstantIntValue(std::get<0>(pair).getUpperBound());
+              int step = *getConstantIntValue(std::get<0>(pair).getStep());
+              int band_step = *getConstantIntValue(std::get<1>(pair).getStep());
+              int band_lb =
+                  *getConstantIntValue(std::get<1>(pair).getLowerBound());
+              int band_ub =
+                  *getConstantIntValue(std::get<1>(pair).getUpperBound());
+              if (band_lb == lb && band_ub == ub && band_step == step) {
+                return true;
+              } else if (band_lb == lb && band_ub == ub &&
+                         llvm::mod(std::max(band_step, step),
+                                   std::min(band_step, step)) == 0) {
+                // If scf.for loops are not identical, but tilable to having
+                // identical roots.
+                if (simpleScfForLoopTiling(std::get<1>(pair), step, band_step))
+                  return true;
+              }
+              return false;
+            }))
       equalIterationForOps.push_back(perfectlyNestedForBands[i]);
-    } else if (band_lb == lb && band_ub == ub &&
-               llvm::mod(std::max(band_step, step),
-                         std::min(band_step, step)) == 0) {
-      // If scf.for loops are not identical, but tilable to having identical
-      // roots.
-      if (simpleScfForLoopTiling(perfectlyNestedForBands[i], step, band_step))
-        equalIterationForOps.push_back(perfectlyNestedForBands[i]);
-    }
   }
   if (equalIterationForOps.empty())
     return failure();
 
   // Folding memref.alloc / dealloc ops into fused loop.
   SmallVector<scf::ForOp> fusableForOps;
-  for (auto forOp : equalIterationForOps) {
+  for (auto forOpNest : equalIterationForOps) {
+    auto nestBack = forOpNest.back();
     if (!fuseWithAllocDeallocs) {
-      fusableForOps.push_back(forOp);
+      fusableForOps.push_back(nestBack);
       continue;
     }
     // If fuseWithAllocDeallocs, check whether the loop is dependent on the
     // alloc op.
-    for (auto ia : forOp.getInitArgs()) {
+    for (auto ia : nestBack.getInitArgs()) {
       auto iaDefOp = ia.getDefiningOp();
       if (!iaDefOp)
         continue;
@@ -4801,24 +4838,33 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
               [&](std::pair<air::ExecuteOp, air::ExecuteOp> exec_pair) {
                 return isAsyncDependent(exec_pair.first, iaDefOp);
               }))
-        fusableForOps.push_back(forOp);
+        fusableForOps.push_back(nestBack);
     }
   }
-  if (fusableForOps.empty())
+  if (fusableForOps.size() <= 1)
     return failure();
 
-  rewriter.setInsertionPoint(equalIterationForOps.back());
+  rewriter.setInsertionPointAfter(equalIterationForOps.back().front());
   auto new_loop_op_init_arg =
       rewriter
-          .create<air::WaitAllOp>(
-              loc, air::AsyncTokenType::get(rewriter.getContext()),
-              SmallVector<Value>{})
+          .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                  SmallVector<Value>{})
           .getAsyncToken();
-  scf::ForOp new_loop_op = rewriter.create<scf::ForOp>(
-      rewriter.getUnknownLoc(), perfectlyNestedForBands[0].getLowerBound(),
-      perfectlyNestedForBands[0].getUpperBound(),
-      perfectlyNestedForBands[0].getStep(),
-      SmallVector<Value>{new_loop_op_init_arg});
+  scf::ForOp new_loop_op = nullptr; // Inner-most newly created scf.for op.
+  for (unsigned i = 0; i < equalIterFirstBand.size(); i++) {
+    new_loop_op = rewriter.create<scf::ForOp>(
+        rewriter.getUnknownLoc(), equalIterFirstBand[i].getLowerBound(),
+        equalIterFirstBand[i].getUpperBound(), equalIterFirstBand[i].getStep(),
+        SmallVector<Value>{new_loop_op_init_arg});
+    if (i > 0) {
+      // Create scf.yield for perfectly nested scf.for.
+      rewriter.create<scf::YieldOp>(loc, air::getAsyncTokenFromOp(new_loop_op));
+    }
+    // Dive in.
+    rewriter.setInsertionPointToStart(new_loop_op.getBody());
+    new_loop_op_init_arg =
+        air::getLoopCarriedTokenFromScfOp(new_loop_op, "argument");
+  }
   IRMapping remap;
   if (fuseWithAllocDeallocs) {
     SmallVector<air::ExecuteOp> erase_keys;
@@ -4827,9 +4873,11 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
       air::ExecuteOp alloc_exec = execOpPair.first;
       auto token_users = getTokenUsersOfType<scf::ForOp>(alloc_exec);
       for (auto token_user : token_users)
-        if (llvm::any_of(equalIterationForOps, [&](scf::ForOp fusableForOp) {
-              return fusableForOp == token_user;
-            }))
+        if (llvm::any_of(equalIterationForOps,
+                         [&](SmallVector<scf::ForOp> fusableForOpNest) {
+                           return llvm::is_contained(fusableForOpNest,
+                                                     token_user);
+                         }))
           canMove = true;
       if (canMove) {
         rewriter.setInsertionPointToEnd(new_loop_op.getBody());
@@ -4848,16 +4896,30 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
   }
 
   // Loop fusion.
+  auto getParentScfForNest = [](Operation *op) {
+    SmallVector<scf::ForOp> forNest;
+    if (auto forOp = dyn_cast_if_present<scf::ForOp>(op))
+      forNest.push_back(forOp);
+    scf::ForOp parent = dyn_cast_if_present<scf::ForOp>(op->getParentOp());
+    while (parent) {
+      forNest.push_back(parent);
+      parent = dyn_cast_if_present<scf::ForOp>(parent->getParentOp());
+    }
+    return forNest;
+  };
   for (auto forOp : fusableForOps) {
-    remap.map(forOp.getInductionVar(), new_loop_op.getInductionVar());
-    for (unsigned i = 0; i < forOp.getRegionIterArgs().size(); i++)
-      remap.map(forOp.getRegionIterArgs()[i],
-                remap.lookupOrDefault(
-                    forOp.getOperand(i + forOp.getNumControlOperands())));
+    for (std::tuple<scf::ForOp, scf::ForOp> pair : llvm::zip_equal(
+             getParentScfForNest(forOp), getParentScfForNest(new_loop_op))) {
+      remap.map(std::get<0>(pair).getInductionVar(),
+                std::get<1>(pair).getInductionVar());
+      for (unsigned i = 0; i < std::get<0>(pair).getRegionIterArgs().size();
+           i++)
+        remap.map(std::get<0>(pair).getRegionIterArgs()[i],
+                  std::get<1>(pair).getRegionIterArgs()[i]);
+    }
     rewriter.setInsertionPointToEnd(new_loop_op.getBody());
-    for (auto &child_op : forOp.getBody()->getOperations())
-      if (!child_op.mightHaveTrait<OpTrait::IsTerminator>())
-        rewriter.clone(child_op, remap);
+    for (auto &child_op : forOp.getBody()->without_terminator())
+      rewriter.clone(child_op, remap);
   }
 
   // Fuse dealloc ops.
@@ -4881,16 +4943,8 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
     }
   }
   auto wa_op = rewriter.create<air::WaitAllOp>(
-      loc, air::AsyncTokenType::get(rewriter.getContext()), yield_dep_list);
+      loc, air::AsyncTokenType::get(ctx), yield_dep_list);
   rewriter.create<scf::YieldOp>(loc, wa_op.getAsyncToken());
-
-  // Erase original scf.for ops.
-  for (auto forOp : fusableForOps) {
-    for (unsigned i = 0; i < forOp.getNumResults(); i++) {
-      forOp.getResult(i).replaceAllUsesWith(new_loop_op.getResult(i));
-    }
-    forOp->erase();
-  }
 
   // Map from channel.put (or any parent scf.for op) to dependent channel.get.
   std::vector<Operation *> put_parents;
@@ -4941,11 +4995,20 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
     for (auto execOpPair : alloc_dealloc_execs) {
       auto alloc = execOpPair.first;
       replaceAsyncOpWithWaitAll(rewriter, alloc);
-      alloc->erase();
+      rewriter.eraseOp(alloc);
       auto dealloc = execOpPair.second;
       replaceAsyncOpWithWaitAll(rewriter, dealloc);
-      dealloc->erase();
+      rewriter.eraseOp(dealloc);
     }
+
+  // Erase original scf.for ops.
+  for (auto forOp : fusableForOps) {
+    auto fusableBandHead = getParentScfForNest(forOp).back();
+    for (unsigned i = 0; i < fusableBandHead.getNumResults(); i++) {
+      fusableBandHead.getResult(i).replaceAllUsesWith(new_loop_op.getResult(i));
+    }
+    rewriter.eraseOp(fusableBandHead);
+  }
 
   return success();
 }
