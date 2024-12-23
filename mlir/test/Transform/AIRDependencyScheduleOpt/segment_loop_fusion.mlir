@@ -6,8 +6,9 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt -air-loop-fusion %s | FileCheck %s
+// RUN: air-opt %s -air-loop-fusion="fusion-scope=launch" | FileCheck %s --check-prefix=LAUNCH
 
-// Fuse scf.for loops in air.segment.
+// Fuse scf.for loops in air.hierarchy.
 
 // CHECK-LABEL: func.func @func0
 // CHECK: air.launch
@@ -997,18 +998,18 @@ func.func @func11(%arg0: memref<512x512xbf16>, %arg1: memref<512x16384xbf16>, %a
 
 // Loop fusion in air.launch body.
 
-// CHECK-LABEL: func.func @func12
-// CHECK: air.launch
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK-NEXT: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK-NEXT: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c64{{.*}}
-// CHECK-NEXT: air.channel.put
-// CHECK-NEXT: air.channel.put
-// CHECK: scf.yield
-// CHECK-NEXT: }
-// CHECK-NEXT: scf.yield
-// CHECK-NEXT: }
-// CHECK-NEXT: scf.yield
+// LAUNCH-LABEL: func.func @func12
+// LAUNCH: air.launch
+// LAUNCH: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
+// LAUNCH-NEXT: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
+// LAUNCH-NEXT: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c64{{.*}}
+// LAUNCH-NEXT: air.channel.put
+// LAUNCH-NEXT: air.channel.put
+// LAUNCH: scf.yield
+// LAUNCH-NEXT: }
+// LAUNCH-NEXT: scf.yield
+// LAUNCH-NEXT: }
+// LAUNCH-NEXT: scf.yield
 
 func.func @func12(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg2: memref<512x512xbf16>) {
   %c1 = arith.constant 1 : index

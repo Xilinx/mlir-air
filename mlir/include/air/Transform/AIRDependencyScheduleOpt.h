@@ -57,7 +57,7 @@ createAIRFuseChannels(const AIRFuseChannelsOptions &);
 
 std::unique_ptr<mlir::Pass> createAIRIsolateAsyncDmaLoopNests();
 
-std::unique_ptr<mlir::Pass> createAIRSegmentLoopFusion();
+std::unique_ptr<mlir::Pass> createAIRLoopFusion();
 
 // Populate patterns for canonicalizing index operations on loop index
 // variables. At the moment, only affine.apply computations on induction

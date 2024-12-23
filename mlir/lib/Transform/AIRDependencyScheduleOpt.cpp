@@ -5070,12 +5070,12 @@ private:
 };
 
 // A pass which performs loop fusion within air.segment op's region.
-class AIRSegmentLoopFusion
-    : public xilinx::air::impl::AIRSegmentLoopFusionBase<AIRSegmentLoopFusion> {
+class AIRLoopFusion
+    : public xilinx::air::impl::AIRLoopFusionBase<AIRLoopFusion> {
 
 public:
-  AIRSegmentLoopFusion() = default;
-  AIRSegmentLoopFusion(const AIRSegmentLoopFusion &pass) {}
+  AIRLoopFusion() = default;
+  AIRLoopFusion(const AIRLoopFusion &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect>();
@@ -5138,8 +5138,18 @@ public:
     auto func = getOperation();
     runPreProcPatterns(func);
     RewritePatternSet patterns(func.getContext());
-    patterns.insert<AIRSegmentLoopFusionPattern, AIRLaunchLoopFusionPattern>(
-        func.getContext(), false);
+    if (clFusionScope == "segment")
+      patterns.insert<AIRSegmentLoopFusionPattern>(func.getContext(), false);
+    else if (clFusionScope == "launch")
+      patterns.insert<AIRLaunchLoopFusionPattern>(func.getContext(), false);
+    else if (clFusionScope == "all")
+      patterns.insert<AIRSegmentLoopFusionPattern, AIRLaunchLoopFusionPattern>(
+          func.getContext(), false);
+    else {
+      emitError(func.getLoc(), "Unknown fusion-scope for -air-loop-fusion. "
+                               "Must be one of [segment, launch, all].");
+      signalPassFailure();
+    }
     (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
     runPostProcPatterns(func);
     func.walk([&](memref::AllocOp op) { op->removeAttr("shrinkage"); });
@@ -5256,8 +5266,8 @@ std::unique_ptr<Pass> createAIRIsolateAsyncDmaLoopNests() {
   return std::make_unique<AIRIsolateAsyncDmaLoopNests>();
 }
 
-std::unique_ptr<Pass> createAIRSegmentLoopFusion() {
-  return std::make_unique<AIRSegmentLoopFusion>();
+std::unique_ptr<Pass> createAIRLoopFusion() {
+  return std::make_unique<AIRLoopFusion>();
 }
 
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
