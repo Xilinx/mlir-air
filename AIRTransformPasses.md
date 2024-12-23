@@ -659,6 +659,11 @@ Optimizes the data movement around L2 memories by rearranging and potentially
 fusing perfect `scf.for` loop nests of `air.channel.put` and `air.channel.get`, 
 which access the same L2 memref, into `scf.for` loop nest patterns mappable to a 
 complex finite-state machine consisting of a multiple of AIE DMA Block Descriptors.
+
+#### Options
+```
+-fusion-scope : AIR hierarchy scope to perform loop fusion under. Must be one of [all, segment, launch].
+```
 ### `-air-loop-merging`
 
 _Merge several nested subloops into a single loop_
