@@ -1042,15 +1042,20 @@ def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "Modul
   }];
 }
 
-def AIRSegmentLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
+def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";
-  let constructor = "xilinx::air::createAIRSegmentLoopFusion()";
+  let constructor = "xilinx::air::createAIRLoopFusion()";
   let description = [{
     Optimizes the data movement around L2 memories by rearranging and potentially 
     fusing perfect `scf.for` loop nests of `air.channel.put` and `air.channel.get`, 
     which access the same L2 memref, into `scf.for` loop nest patterns mappable to a 
     complex finite-state machine consisting of a multiple of AIE DMA Block Descriptors.
   }];
+  let options = [
+    Option<"clFusionScope", "fusion-scope", "std::string", 
+            /*default=*/"\"segment\"",
+            "AIR hierarchy scope to perform loop fusion under. Must be one of [all, segment, launch].">
+  ];
 }
 
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {

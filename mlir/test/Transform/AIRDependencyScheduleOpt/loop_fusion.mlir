@@ -6,8 +6,9 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt -air-loop-fusion %s | FileCheck %s
+// RUN: air-opt %s -air-loop-fusion="fusion-scope=launch" | FileCheck %s --check-prefix=LAUNCH
 
-// Fuse scf.for loops in air.segment.
+// Fuse scf.for loops in air.hierarchy.
 
 // CHECK-LABEL: func.func @func0
 // CHECK: air.launch
@@ -988,6 +989,54 @@ func.func @func11(%arg0: memref<512x512xbf16>, %arg1: memref<512x16384xbf16>, %a
           }
           %5 = air.wait_all async [%async_token_4, %async_token_8] 
           scf.yield %5 : !air.async.token
+        }
+      }
+    }
+  }
+  return
+}
+
+// Loop fusion in air.launch body.
+
+// LAUNCH-LABEL: func.func @func12
+// LAUNCH: air.launch
+// LAUNCH: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
+// LAUNCH-NEXT: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
+// LAUNCH-NEXT: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c64{{.*}}
+// LAUNCH-NEXT: air.channel.put
+// LAUNCH-NEXT: air.channel.put
+// LAUNCH: scf.yield
+// LAUNCH-NEXT: }
+// LAUNCH-NEXT: scf.yield
+// LAUNCH-NEXT: }
+// LAUNCH-NEXT: scf.yield
+
+func.func @func12(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg2: memref<512x512xbf16>) {
+  %c1 = arith.constant 1 : index
+  %0 = air.launch async (%arg3) in (%arg4=%c1) args(%arg5=%arg0, %arg6=%arg1) : memref<512x512xbf16>, memref<512x512xbf16> attributes {id = 1 : i32} {
+    %c3 = arith.constant 3 : index
+    %c2 = arith.constant 2 : index
+    %c64 = arith.constant 64 : index
+    %c32768 = arith.constant 32768 : index
+    %c0 = arith.constant 0 : index
+    %c1_0 = arith.constant 1 : index
+    %c512 = arith.constant 512 : index
+    %c256 = arith.constant 256 : index
+    scf.for %arg7 = %c0 to %c512 step %c256 {
+      scf.for %arg8 = %c0 to %c512 step %c256 {
+        %1 = air.wait_all async 
+        %2 = scf.for %arg9 = %c0 to %c512 step %c64 iter_args(%arg10 = %1) -> (!air.async.token) {
+          %3 = air.channel.put async [%arg10]  @channel_14[%c0, %c0] (%arg5[%c0, %c0, %arg7, %arg9] [%c1_0, %c1_0, %c64, %c64] [%c32768, %c64, %c512, %c1_0]) {id = 1 : i32} : (memref<512x512xbf16>)
+          scf.yield %3 : !air.async.token
+        }
+      }
+    }
+    scf.for %arg7 = %c0 to %c512 step %c256 {
+      scf.for %arg8 = %c0 to %c512 step %c256 {
+        %1 = air.wait_all async 
+        %2 = scf.for %arg9 = %c0 to %c512 step %c64 iter_args(%arg10 = %1) -> (!air.async.token) {
+          %3 = air.channel.put async [%arg10]  @channel_14[%c1_0, %c0] (%arg5[%c1_0, %c0, %arg7, %arg9] [%c1_0, %c1_0, %c64, %c64] [%c32768, %c64, %c512, %c1_0]) {id = 2 : i32} : (memref<512x512xbf16>)
+          scf.yield %3 : !air.async.token
         }
       }
     }
