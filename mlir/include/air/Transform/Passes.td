@@ -975,6 +975,11 @@ def AIRSpecializeChannelWrapAndStridePattern: Pass<"air-specialize-channel-wrap-
     This pass specialize air.channel op in perfect loop nest with wraps and strides, for
     efficient mapping to hardware buffer descriptors.
   }];
+  let options = [
+    Option<"clScope", "scope", "std::string",
+            /*default=*/"\"segment\"",
+            "AIR hierarchy scope to perform loop specialization under. Must be one of [all, segment, func].">
+  ];
 }
 
 def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "ModuleOp"> {
@@ -1040,6 +1045,11 @@ def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "Modul
     This pass isolates loops containing dma memcpy ops into perfectly nested loops, by 
     hoisting them out of their previous parent loop.
   }];
+  let options = [
+    Option<"clScope", "scope", "std::string",
+            /*default=*/"\"segment\"",
+            "AIR hierarchy scope to perform loop splitting under. Must be one of [func, segment, launch].">
+  ];
 }
 
 def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
