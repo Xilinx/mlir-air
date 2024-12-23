@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-isolate-async-dma-loop-nests --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-isolate-async-dma-loop-nests="scope=func" --split-input-file | FileCheck %s
 
 // Isolate scf for loops containing dma ops into perfectly nested loop.
 
