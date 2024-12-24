@@ -1711,6 +1711,9 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
+  AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims)
+      : OpRewritePattern(ctx), maxNumDims(maxNumDims) {}
+
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
     auto loc = for_op->getLoc();
@@ -1741,6 +1744,11 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     if (offsets.empty() && wraps.empty() && strides.empty())
       populateDefaultWrapsAndStrides(rewriter, channel_op.getMemref(), offsets,
                                      wraps, strides);
+
+    // Check if the number of wrap-and-stride dims exceed maxNumDims. TODO:
+    // expand this to take into account wrap-and-stride constraints.
+    if (maxNumDims >= 0 && (int)wraps.size() > maxNumDims - 1)
+      return failure();
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
@@ -1792,6 +1800,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
           air::lookupOrDefaultRange(offsets, remap),
           air::lookupOrDefaultRange(wraps, remap),
           air::lookupOrDefaultRange(strides, remap));
+    new_chan_op->setAttrs(channel_op->getDiscardableAttrDictionary());
 
     // Clear all external uses of for_op before erasing it.
     for (auto res : for_op.getResults()) {
@@ -1806,6 +1815,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
   }
 
 private:
+  int &maxNumDims;
 };
 
 // This pattern should be executed after
@@ -1970,6 +1980,7 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
           air::lookupOrDefaultRange(offsets, remap),
           air::lookupOrDefaultRange(wraps, remap),
           air::lookupOrDefaultRange(strides, remap));
+    new_chan_op->setAttrs(channel_op->getDiscardableAttrDictionary());
 
     for (auto res : for_op.getResults()) {
       if (isa<air::AsyncTokenType>(res.getType())) {
@@ -2011,6 +2022,7 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     auto new_op = rewriter.create<air::ChannelPutOp>(
         op->getLoc(), tys, deps, op.getChanName(), op.getIndices(),
         op.getMemref(), offsets, sizes, strides);
+    new_op->setAttrs(op->getDiscardableAttrDictionary());
     for (unsigned i = 0; i < op->getResults().size(); i++)
       op->getResults()[i].replaceAllUsesWith(new_op->getResults()[i]);
 
@@ -2048,6 +2060,7 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     auto new_op = rewriter.create<air::ChannelGetOp>(
         op->getLoc(), tys, deps, op.getChanName(), op.getIndices(),
         op.getMemref(), offsets, sizes, strides);
+    new_op->setAttrs(op->getDiscardableAttrDictionary());
     for (unsigned i = 0; i < op->getResults().size(); i++)
       op->getResults()[i].replaceAllUsesWith(new_op->getResults()[i]);
 
@@ -2838,6 +2851,46 @@ public:
 private:
 };
 
+LogicalResult AIRSpecializeChannelWrapAndStrideImpl(Region *region,
+                                                    int maxNumDims = -1) {
+  MLIRContext *ctx = region->getContext();
+  RewritePatternSet preproc_patterns(ctx);
+  preproc_patterns.insert<UnrollScfParallel, CanonicalizeAIRExecute,
+                          CanonicalizeAffineApplyOnLoopInductionVar,
+                          CanonicalizeArithMuliOpOnLoopInductionVar,
+                          CanonicalizeArithAddiOpOnLoopInductionVar>(ctx);
+  // Canonicalize constant operands in affine.apply.
+  mlir::affine::AffineApplyOp::getCanonicalizationPatterns(preproc_patterns,
+                                                           ctx);
+  air::WaitAllOp::getCanonicalizationPatterns(preproc_patterns, ctx);
+  (void)applyPatternsAndFoldGreedily(*region, std::move(preproc_patterns));
+
+  RewritePatternSet patterns(ctx);
+  patterns
+      .insert<CanonicalizeAIRExecute, CanonicalizeAffineApplyOnLoopInductionVar,
+              CanonicalizeArithMuliOpOnLoopInductionVar,
+              CanonicalizeArithAddiOpOnLoopInductionVar,
+              AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
+  patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(ctx, maxNumDims);
+  affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
+  (void)applyPatternsAndFoldGreedily(*region, std::move(patterns));
+
+  // Unroll any remaining loops which contain only data movements.
+  RewritePatternSet unroll_patterns(ctx);
+  unroll_patterns
+      .insert<AIRUnrollScfForIntoBDChain, AIRUnrollAffineForIntoBDChain>(ctx);
+  (void)applyPatternsAndFoldGreedily(*region, std::move(unroll_patterns));
+
+  // Canonicalize wrap and stride list to remove redundant dimensions
+  RewritePatternSet cano_patterns(ctx);
+  cano_patterns.insert<AIRCanonicalizeChannelGetOpWrapAndStrideList,
+                       AIRCanonicalizeChannelPutOpWrapAndStrideList>(ctx);
+  ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
+  (void)applyPatternsAndFoldGreedily(*region, std::move(cano_patterns));
+
+  return success();
+}
+
 class AIRSpecializeChannelWrapAndStridePattern
     : public xilinx::air::impl::AIRSpecializeChannelWrapAndStridePatternBase<
           AIRSpecializeChannelWrapAndStridePattern> {
@@ -2847,49 +2900,26 @@ public:
   AIRSpecializeChannelWrapAndStridePattern(
       const AIRSpecializeChannelWrapAndStridePattern &pass){};
 
-  void runOptPatterns(func::FuncOp funcOp) {
-    MLIRContext *ctx = funcOp.getContext();
-    RewritePatternSet preproc_patterns(&getContext());
-    preproc_patterns.insert<UnrollScfParallel, CanonicalizeAIRExecute,
-                            CanonicalizeAffineApplyOnLoopInductionVar,
-                            CanonicalizeArithMuliOpOnLoopInductionVar,
-                            CanonicalizeArithAddiOpOnLoopInductionVar>(ctx);
-    // Canonicalize constant operands in affine.apply.
-    mlir::affine::AffineApplyOp::getCanonicalizationPatterns(preproc_patterns,
-                                                             ctx);
-    air::WaitAllOp::getCanonicalizationPatterns(preproc_patterns, ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(preproc_patterns));
-
-    RewritePatternSet patterns(&getContext());
-    patterns.insert<CanonicalizeAIRExecute,
-                    CanonicalizeAffineApplyOnLoopInductionVar,
-                    CanonicalizeArithMuliOpOnLoopInductionVar,
-                    CanonicalizeArithAddiOpOnLoopInductionVar,
-                    AIRSpecializeChannelWrapAndStrideInScfFor,
-                    AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
-    affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-
-    // Unroll any remaining loops which contain only data movements.
-    RewritePatternSet unroll_patterns(&getContext());
-    unroll_patterns
-        .insert<AIRUnrollScfForIntoBDChain, AIRUnrollAffineForIntoBDChain>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(unroll_patterns));
-
-    // Canonicalize wrap and stride list to remove redundant dimensions
-    RewritePatternSet cano_patterns(&getContext());
-    cano_patterns.insert<AIRCanonicalizeChannelGetOpWrapAndStrideList,
-                         AIRCanonicalizeChannelPutOpWrapAndStrideList>(ctx);
-    ExecuteOp::getCanonicalizationPatterns(cano_patterns, &getContext());
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(cano_patterns));
-  }
-
   void runOnOperation() override {
     auto module = getOperation();
-    SmallVector<func::FuncOp, 4> funcOps;
-    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
-    for (auto f : funcOps)
-      runOptPatterns(f);
+    SmallVector<Region *, 4> regions;
+    if (clScope == "segment")
+      module.walk(
+          [&](air::SegmentOp op) { regions.push_back(&op.getRegion()); });
+    else if (clScope == "launch")
+      module.walk(
+          [&](air::LaunchOp op) { regions.push_back(&op.getRegion()); });
+    else if (clScope == "func")
+      module.walk([&](func::FuncOp op) { regions.push_back(&op.getRegion()); });
+    else {
+      emitError(module.getLoc(),
+                "Unknown scope for -air-specialize-channel-wrap-and-stride. "
+                "Must be one of [segment, launch, func].");
+      signalPassFailure();
+    }
+    for (auto region : regions)
+      if (AIRSpecializeChannelWrapAndStrideImpl(region).failed())
+        signalPassFailure();
   }
 
 private:
@@ -3162,6 +3192,7 @@ private:
         old->getLoc(), tys, deps, old.getChanName(), old.getIndices(),
         new_memref, old.getDstOffsets(), old.getDstSizes(),
         old.getDstStrides());
+    new_op->setAttrs(old->getDiscardableAttrDictionary());
     if (old.getAsyncToken()) {
       old.getAsyncToken().replaceAllUsesWith(new_op.getAsyncToken());
       // Add dependence to the new memref
@@ -4108,6 +4139,29 @@ private:
   }
 };
 
+LogicalResult AIRIsolateAsyncDmaLoopNestsImpl(Region *region) {
+  SmallVector<Operation *> forOps;
+  region->walk([&](scf::ForOp op) { forOps.push_back(op); });
+  auto ctx = region->getContext();
+
+  RewritePatternSet patterns(ctx);
+  patterns.insert<IsolateAsyncDmaLoopNestInSCFForPattern,
+                  MakeHerdOpAsyncInScfForLoopPattern>(ctx);
+  (void)applyOpPatternsAndFold(forOps, std::move(patterns));
+
+  // Post processing, hoisting air.herd ops out of perfectly nested scf.for
+  // loop.
+  RewritePatternSet patterns_1(ctx);
+  patterns_1.insert<HoistAIRHerdInForPattern>(ctx, false);
+  air::LaunchOp::getCanonicalizationPatterns(patterns_1, ctx);
+  air::SegmentOp::getCanonicalizationPatterns(patterns_1, ctx);
+  air::HerdOp::getCanonicalizationPatterns(patterns_1, ctx);
+  air::WaitAllOp::getCanonicalizationPatterns(patterns_1, ctx);
+  scf::ForOp::getCanonicalizationPatterns(patterns_1, ctx);
+  (void)applyPatternsAndFoldGreedily(*region, std::move(patterns_1));
+  return success();
+}
+
 // A pass which hoists dma ops out of shared for loops, into perfectly nested
 // loops.
 class AIRIsolateAsyncDmaLoopNests
@@ -4125,28 +4179,25 @@ public:
   void runOnOperation() override {
     auto module = getOperation();
 
-    SmallVector<func::FuncOp, 4> funcOps;
-    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    SmallVector<Region *> regions;
+    if (clScope == "segment")
+      module.walk(
+          [&](air::SegmentOp op) { regions.push_back(&op.getRegion()); });
+    else if (clScope == "launch")
+      module.walk(
+          [&](air::LaunchOp op) { regions.push_back(&op.getRegion()); });
+    else if (clScope == "func")
+      module.walk([&](func::FuncOp op) { regions.push_back(&op.getRegion()); });
+    else {
+      emitError(module.getLoc(),
+                "Unknown scope for -air-isolate-async-dma-loop-nests. Must be "
+                "one of [segment, launch, func].");
+      signalPassFailure();
+    }
 
-    for (auto f : funcOps) {
-      SmallVector<Operation *> forOps;
-      module.walk([&](scf::ForOp op) { forOps.push_back(op); });
-
-      RewritePatternSet patterns(f.getContext());
-      patterns.insert<IsolateAsyncDmaLoopNestInSCFForPattern,
-                      MakeHerdOpAsyncInScfForLoopPattern>(f.getContext());
-      (void)applyOpPatternsAndFold(forOps, std::move(patterns));
-
-      // Post processing, hoisting air.herd ops out of perfectly nested scf.for
-      // loop.
-      RewritePatternSet patterns_1(f.getContext());
-      patterns_1.insert<HoistAIRHerdInForPattern>(f.getContext(), false);
-      air::LaunchOp::getCanonicalizationPatterns(patterns_1, f.getContext());
-      air::SegmentOp::getCanonicalizationPatterns(patterns_1, f.getContext());
-      air::HerdOp::getCanonicalizationPatterns(patterns_1, f.getContext());
-      air::WaitAllOp::getCanonicalizationPatterns(patterns_1, f.getContext());
-      scf::ForOp::getCanonicalizationPatterns(patterns_1, f.getContext());
-      (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
+    for (auto region : regions) {
+      if (AIRIsolateAsyncDmaLoopNestsImpl(region).failed())
+        signalPassFailure();
     }
   }
 
@@ -5273,6 +5324,21 @@ std::unique_ptr<Pass> createAIRLoopFusion() {
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
   patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
+}
+
+void applyAIRSpecializeChannelWrapAndStridePattern(Region *region,
+                                                   int maxNumDims = -1) {
+  (void)AIRSpecializeChannelWrapAndStrideImpl(region, maxNumDims);
+}
+
+void populateAIRLaunchLoopFusionPattern(RewritePatternSet &patterns) {
+  MLIRContext *ctx = patterns.getContext();
+  patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar, UnrollScfParallel,
+                  AIRLaunchLoopFusionPattern>(ctx);
+}
+
+void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region) {
+  (void)AIRIsolateAsyncDmaLoopNestsImpl(region);
 }
 
 } // namespace air

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-specialize-channel-wrap-and-stride | FileCheck %s
+// RUN: air-opt %s -air-specialize-channel-wrap-and-stride="scope=func" | FileCheck %s
 
 // Specialize air.channel ops in perfectly nested for loops in air.segment with wraps and strides.
 
@@ -24,7 +24,7 @@ module {
   // CHECK-DAG: %[[CST32:.*]] = arith.constant 32 : index
   // CHECK-DAG: %[[CST64:.*]] = arith.constant 64 : index
   // CHECK-DAG: %[[CST512:.*]] = arith.constant 512 : index
-  // CHECK: %[[EVENT0:.*]] = air.channel.put async [{{.*}}]  @channel_0[] (%[[VAL0:.*]][%[[CST0]], %[[CST0]]] [%[[CST32]], %[[CST4]]] [%[[CST16]], %[[CST1]]]) : (memref<8x16xi32, 1>)
+  // CHECK: %[[EVENT0:.*]] = air.channel.put async [{{.*}}]  @channel_0[] (%[[VAL0:.*]][%[[CST0]], %[[CST0]]] [%[[CST32]], %[[CST4]]] [%[[CST16]], %[[CST1]]]){{.*}}: (memref<8x16xi32, 1>)
   // CHECK: scf.for{{.*}}iter_args(%[[EVENT1:.*]] = %[[EVENT0]])
   // CHECK: air.herd
   // CHECK: air.channel.get async{{.*}}@channel_0
@@ -64,12 +64,12 @@ module {
   }
 
   // CHECK-LABEL: test1
-  // CHECK: put @channel_1[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
-  // CHECK: get @channel_2[%c0, %c0] (%arg1[%c0, %c0] [%c128, %c32] [%c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: put @channel_3[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: put @channel_4[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: get @channel_5[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: put @channel_5[] (%alloc_0[%c0, %c18, %c0] [%c4, %c18, %c8] [%c8, %c32, %c1]) : (memref<1x6x6x32xi8, 1>)
+  // CHECK: put @channel_1[%c0, %c0] (%arg0[] [] []){{.*}}: (memref<128xf32>)
+  // CHECK: get @channel_2[%c0, %c0] (%arg1[%c0, %c0] [%c128, %c32] [%c128, %c1]){{.*}}: (memref<128x128xf32>)
+  // CHECK: put @channel_3[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]){{.*}}: (memref<128x128xf32>)
+  // CHECK: put @channel_4[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]){{.*}}: (memref<128x128xf32>)
+  // CHECK: get @channel_5[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]){{.*}}: (memref<128x128xf32>)
+  // CHECK: put @channel_5[] (%alloc_0[%c0, %c18, %c0] [%c4, %c18, %c8] [%c8, %c32, %c1]){{.*}}: (memref<1x6x6x32xi8, 1>)
 
   func.func @test1(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
     %c0 = arith.constant 0 : index
@@ -109,11 +109,11 @@ module {
   }
 
   // CHECK-LABEL: test2
-  // CHECK: put @channel_6[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
-  // CHECK: get @channel_7[%c0, %c0] (%arg1[%c0, %c0] [%c128, %c32] [%c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: put @channel_8[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: put @channel_9[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: get @channel_10[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]) : (memref<128x128xf32>)
+  // CHECK: put @channel_6[%c0, %c0] (%arg0[] [] []){{.*}}: (memref<128xf32>)
+  // CHECK: get @channel_7[%c0, %c0] (%arg1[%c0, %c0] [%c128, %c32] [%c128, %c1]){{.*}}: (memref<128x128xf32>)
+  // CHECK: put @channel_8[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]){{.*}}: (memref<128x128xf32>)
+  // CHECK: put @channel_9[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]){{.*}}: (memref<128x128xf32>)
+  // CHECK: get @channel_10[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]){{.*}}: (memref<128x128xf32>)
 
   func.func @test2(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
     %c0 = arith.constant 0 : index
@@ -144,10 +144,10 @@ module {
   }
 
   // CHECK-LABEL: test3
-  // CHECK: put @channel_11[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
-  // CHECK: put @channel_12[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: put @channel_13[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
-  // CHECK: put async [%0]  @channel_14[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
+  // CHECK: put @channel_11[%c0, %c0] (%arg0[] [] []){{.*}}: (memref<128xf32>)
+  // CHECK: put @channel_12[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]){{.*}}: (memref<128x128xf32>)
+  // CHECK: put @channel_13[%c0, %c0] (%arg0[] [] []){{.*}}: (memref<128xf32>)
+  // CHECK: put async [%0]  @channel_14[%c0, %c0] (%arg0[] [] []){{.*}}: (memref<128xf32>)
 
   func.func @test3(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
     %c0 = arith.constant 0 : index
@@ -184,8 +184,8 @@ module {
   }
 
   // CHECK-LABEL: test4
-  // CHECK: put async  @channel_15[%c0, %c0] (%arg0[%c0] [%c32] [%c1]) : (memref<128xf32>)
-  // CHECK: put async  @channel_16[%c0, %c0] (%arg1[%c0] [%c64] [%c1]) : (memref<128x128xf32>)
+  // CHECK: put async  @channel_15[%c0, %c0] (%arg0[%c0] [%c32] [%c1]){{.*}}: (memref<128xf32>)
+  // CHECK: put async  @channel_16[%c0, %c0] (%arg1[%c0] [%c64] [%c1]){{.*}}: (memref<128x128xf32>)
 
   func.func @test4(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
     %c0 = arith.constant 0 : index
@@ -204,7 +204,7 @@ module {
   }
 
   // CHECK-LABEL: test5
-  // CHECK: put async  @channel_17[] (%arg0[%c0, %c0] [%c8, %c1024] [%c0, %c1]) : (memref<32x32xf32>)
+  // CHECK: put async  @channel_17[] (%arg0[%c0, %c0] [%c8, %c1024] [%c0, %c1]){{.*}}: (memref<32x32xf32>)
 
   func.func @test5(%arg0: memref<32x32xf32>) -> memref<32x32xf32> {
     %c0 = arith.constant 0 : index
@@ -219,7 +219,7 @@ module {
   }
 
   // CHECK-LABEL: test6
-  // CHECK: put async  @channel_18[] (%arg0[] [] []) : (memref<1x1x4x2x8x4xi32>)
+  // CHECK: put async  @channel_18[] (%arg0[] [] []){{.*}}: (memref<1x1x4x2x8x4xi32>)
 
   func.func @test6(%arg0: memref<1x1x4x2x8x4xi32>) {
     %c0 = arith.constant 0 : index
@@ -234,10 +234,10 @@ module {
   }
 
   // CHECK-LABEL: test7
-  // CHECK: put async  @channel_19[%c0, %c0] (%arg0[%c0] [%c16384] [%c1]) : (memref<256x256xbf16>)
-  // CHECK: put async  @channel_19[%c1, %c0] (%arg0[%c16384] [%c16384] [%c1]) : (memref<256x256xbf16>)
-  // CHECK: put async  @channel_19[%c2, %c0] (%arg0[%c32768] [%c16384] [%c1]) : (memref<256x256xbf16>)
-  // CHECK: put async  @channel_19[%c3, %c0] (%arg0[%c49152] [%c16384] [%c1]) : (memref<256x256xbf16>)
+  // CHECK: put async  @channel_19[%c0, %c0] (%arg0[%c0] [%c16384] [%c1]){{.*}}: (memref<256x256xbf16>)
+  // CHECK: put async  @channel_19[%c1, %c0] (%arg0[%c16384] [%c16384] [%c1]){{.*}}: (memref<256x256xbf16>)
+  // CHECK: put async  @channel_19[%c2, %c0] (%arg0[%c32768] [%c16384] [%c1]){{.*}}: (memref<256x256xbf16>)
+  // CHECK: put async  @channel_19[%c3, %c0] (%arg0[%c49152] [%c16384] [%c1]){{.*}}: (memref<256x256xbf16>)
 
   func.func @test7(%arg0: memref<256x256xbf16>) {
     %c0 = arith.constant 0 : index
@@ -257,10 +257,10 @@ module {
 
   // AIE2 hw limitation: stride <= 1M.
   // CHECK-LABEL: test8
-  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0, %c0] [%c4, %c64, %c256] [%c1245184, %c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c512, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c256, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0, %c0] [%c4, %c64, %c256] [%c1245184, %c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c512, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
 
   func.func @test8(%arg0: memref<2432x9728xbf16>) {
     %c0 = arith.constant 0 : index
@@ -286,11 +286,11 @@ module {
   // Offset propagation with wrap-and-stride canonicalization.
   // CHECK-LABEL: test9
   // CHECK: %[[VAL0:.*]] = affine.apply #map()[%arg1]
-  // CHECK: put  @channel_21[] (%arg0[%c0, %c0, %[[VAL0]]] [%c8, %c64, %c32] [%c32, %c256, %c1]) : (memref<128x256xi32>)
-  // CHECK: air.channel.put  @channel_22[] (%arg2[%c256, %c0, %c0] [%c8, %c32, %c4] [%c4, %c32, %c1]) : (memref<1x2x32x32xi32, 1 : i32>)
-  // CHECK: air.channel.put  @channel_23[] (%arg3[%c128, %c0, %c0] [%c4, %c32, %c8] [%c8, %c32, %c1]) : (memref<2x1x32x32xi32, 1 : i32>)
+  // CHECK: put  @channel_21[] (%arg0[%c0, %c0, %[[VAL0]]] [%c8, %c64, %c32] [%c32, %c256, %c1]){{.*}}: (memref<128x256xi32>)
+  // CHECK: air.channel.put  @channel_22[] (%arg2[%c256, %c0, %c0] [%c8, %c32, %c4] [%c4, %c32, %c1]){{.*}}: (memref<1x2x32x32xi32, 1 : i32>)
+  // CHECK: air.channel.put  @channel_23[] (%arg3[%c128, %c0, %c0] [%c4, %c32, %c8] [%c8, %c32, %c1]){{.*}}: (memref<2x1x32x32xi32, 1 : i32>)
   // CHECK: %[[VAL1:.*]] = affine.apply
-  // CHECK: put async  @channel_21[] (%arg0[%c0, %[[VAL1]]] [%c8, %c8] [%c0, %c1]) : (memref<128x256xi32>)
+  // CHECK: put async  @channel_21[] (%arg0[%c0, %[[VAL1]]] [%c8, %c8] [%c0, %c1]){{.*}}: (memref<128x256xi32>)
 
   func.func @test9(%arg0: memref<128x256xi32>, %arg1: index, %arg2: memref<1x2x32x32xi32, 1 : i32>, %arg3: memref<2x1x32x32xi32, 1 : i32>) {
     %c0 = arith.constant 0 : index
@@ -318,14 +318,14 @@ module {
   // Scf.parallel loop specialization; specialization of affine.apply on induction vars.
   // CHECK-LABEL: test10
   
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_24[%c0, %c0] (%{{.*}}[%c0, %c0, %c0, %c0, %c0] [%c4, %c3, %c3, %c8, %c4] [%c288, %c6, %c1, %c36, %c1]) : (memref<1x32x6x6xi32, 1>)
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_24[%c1, %c0] (%{{.*}}[%c0, %c0, %c0, %c0, %c6] [%c4, %c3, %c3, %c8, %c4] [%c288, %c6, %c1, %c36, %c1]) : (memref<1x32x6x6xi32, 1>)
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_24[%c2{{.*}}, %c0] (%{{.*}}[%c0, %c0, %c0, %c0, %c12] [%c4, %c3, %c3, %c8, %c4] [%c288, %c6, %c1, %c36, %c1]) : (memref<1x32x6x6xi32, 1>)
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_24[%c3, %c0] (%{{.*}}[%c0, %c0, %c0, %c0, %c18] [%c4, %c3, %c3, %c8, %c4] [%c288, %c6, %c1, %c36, %c1]) : (memref<1x32x6x6xi32, 1>)
-  // CHECK: air.channel.get async [%{{.*}}]  @channel_25[%c0, %c0] (%{{.*}}[%c0, %c0] [%c4, %c4] [%c16, %c1]) : (memref<1x4x4x4xi32, 1>)
-  // CHECK: air.channel.get async [%{{.*}}]  @channel_25[%c1, %c0] (%{{.*}}[%c0, %c4] [%c4, %c4] [%c16, %c1]) : (memref<1x4x4x4xi32, 1>)
-  // CHECK: air.channel.get async [%{{.*}}]  @channel_25[%c2{{.*}}, %c0] (%{{.*}}[%c0, %c8] [%c4, %c4] [%c16, %c1]) : (memref<1x4x4x4xi32, 1>)
-  // CHECK: air.channel.get async [%{{.*}}]  @channel_25[%c3, %c0] (%{{.*}}[%c0, %c12] [%c4, %c4] [%c16, %c1]) : (memref<1x4x4x4xi32, 1>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_24[%c0, %c0] (%{{.*}}[%c0, %c0, %c0, %c0, %c0] [%c4, %c3, %c3, %c8, %c4] [%c288, %c6, %c1, %c36, %c1]){{.*}}: (memref<1x32x6x6xi32, 1>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_24[%c1, %c0] (%{{.*}}[%c0, %c0, %c0, %c0, %c6] [%c4, %c3, %c3, %c8, %c4] [%c288, %c6, %c1, %c36, %c1]){{.*}}: (memref<1x32x6x6xi32, 1>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_24[%c2{{.*}}, %c0] (%{{.*}}[%c0, %c0, %c0, %c0, %c12] [%c4, %c3, %c3, %c8, %c4] [%c288, %c6, %c1, %c36, %c1]){{.*}}: (memref<1x32x6x6xi32, 1>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_24[%c3, %c0] (%{{.*}}[%c0, %c0, %c0, %c0, %c18] [%c4, %c3, %c3, %c8, %c4] [%c288, %c6, %c1, %c36, %c1]){{.*}}: (memref<1x32x6x6xi32, 1>)
+  // CHECK: air.channel.get async [%{{.*}}]  @channel_25[%c0, %c0] (%{{.*}}[%c0, %c0] [%c4, %c4] [%c16, %c1]){{.*}}: (memref<1x4x4x4xi32, 1>)
+  // CHECK: air.channel.get async [%{{.*}}]  @channel_25[%c1, %c0] (%{{.*}}[%c0, %c4] [%c4, %c4] [%c16, %c1]){{.*}}: (memref<1x4x4x4xi32, 1>)
+  // CHECK: air.channel.get async [%{{.*}}]  @channel_25[%c2{{.*}}, %c0] (%{{.*}}[%c0, %c8] [%c4, %c4] [%c16, %c1]){{.*}}: (memref<1x4x4x4xi32, 1>)
+  // CHECK: air.channel.get async [%{{.*}}]  @channel_25[%c3, %c0] (%{{.*}}[%c0, %c12] [%c4, %c4] [%c16, %c1]){{.*}}: (memref<1x4x4x4xi32, 1>)
 
   func.func @test10(%arg0: memref<2x32x6x6xi32>, %arg1: memref<4x32x3x3xi32>, %arg2: memref<2x4x4x4xi32>) {
     %c2 = arith.constant 2 : index
@@ -386,9 +386,9 @@ module {
   // Affine.apply with map joining two for loops in a loop nest.
   // CHECK-LABEL: test11
   
-  // CHECK: air.channel.put async {{.*}}@channel_26[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c18{{.*}}, %c4{{.*}}] [%c96{{.*}}, %c16{{.*}}, %c1{{.*}}]) : (memref<1x6x6x16xbf16, 1>)
-  // CHECK: air.channel.put async {{.*}}@channel_26[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c18{{.*}}, %c4{{.*}}] [%c96{{.*}}, %c16{{.*}}, %c1{{.*}}]) : (memref<1x6x6x16xbf16, 1>)
-  // CHECK: air.channel.put async {{.*}}@channel_26[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c12{{.*}}] [%c3{{.*}}, %c3{{.*}}, %c4{{.*}}, %c4{{.*}}] [%c96{{.*}}, %c16{{.*}}, %c16{{.*}}, %c1{{.*}}]) : (memref<1x3x6x16xi32, 1>)
+  // CHECK: air.channel.put async {{.*}}@channel_26[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c18{{.*}}, %c4{{.*}}] [%c96{{.*}}, %c16{{.*}}, %c1{{.*}}]){{.*}}: (memref<1x6x6x16xbf16, 1>)
+  // CHECK: air.channel.put async {{.*}}@channel_26[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c18{{.*}}, %c4{{.*}}] [%c96{{.*}}, %c16{{.*}}, %c1{{.*}}]){{.*}}: (memref<1x6x6x16xbf16, 1>)
+  // CHECK: air.channel.put async {{.*}}@channel_26[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c12{{.*}}] [%c3{{.*}}, %c3{{.*}}, %c4{{.*}}, %c4{{.*}}] [%c96{{.*}}, %c16{{.*}}, %c16{{.*}}, %c1{{.*}}]){{.*}}: (memref<1x3x6x16xi32, 1>)
 
   func.func @test11() {
     %c3 = arith.constant 3 : index
@@ -452,7 +452,7 @@ module {
   // Arith.muli and addi folding into loops.
   // CHECK-LABEL: test12
   
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_27[%c0, %c0] (%{{.*}}[%c0, %c0, %c8] [%c2, %c2, %c128] [%c8, %c16, %c1]) : (memref<32x16xi32>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_27[%c0, %c0] (%{{.*}}[%c0, %c0, %c8] [%c2, %c2, %c128] [%c8, %c16, %c1]){{.*}}: (memref<32x16xi32>)
 
   func.func @test12(%arg0: memref<32x16xi32>) {
     %0 = air.launch async () in () args(%arg2=%arg0) : memref<32x16xi32> {
@@ -487,8 +487,8 @@ module {
   // Offset propagated from scf.for and air.hier induction vars.
   // CHECK-LABEL: test13
   
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_14[] (%{{.*}}[%c0, %1, %results, %c0] [%c8, %c2_0, %c32, %c32] [%c32, %c8192, %c256, %c1]) : (memref<2x128x256xi32>)
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_15[%c0, %c0] (%{{.*}}[%c0, %results, %c32768] [%c8, %c32, %c32] [%c32, %c256, %c1]) : (memref<512x512xi32>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_14[] (%{{.*}}[%c0, %1, %results, %c0] [%c8, %c2_0, %c32, %c32] [%c32, %c8192, %c256, %c1]){{.*}}: (memref<2x128x256xi32>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_15[%c0, %c0] (%{{.*}}[%c0, %results, %c32768] [%c8, %c32, %c32] [%c32, %c256, %c1]){{.*}}: (memref<512x512xi32>)
 
   func.func @test13(%arg0: memref<2x128x256xi32>, %arg1: memref<512x512xi32>) {
     %c2 = arith.constant 2 : index
@@ -523,14 +523,14 @@ module {
 
   // Unroll any data movement loops that cannot directly transform into wraps and strides.
   // CHECK-LABEL: test14
-  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c0, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
-  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c256, %c0] [%c64, %c256] [%c9728, %c1]) : (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c0, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c256, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c256, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c0, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg0[%c256, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
+  // CHECK: put  @channel_20[%c0, %c0] (%arg1[%c256, %c0] [%c64, %c256] [%c9728, %c1]){{.*}}: (memref<2432x9728xbf16>)
 
   func.func @test14(%arg0: memref<2432x9728xbf16>, %arg1: memref<2432x9728xbf16>) {
     %c0 = arith.constant 0 : index
