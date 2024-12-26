@@ -46,7 +46,7 @@ parser.add_argument(
 )
 opts = parser.parse_args()
 
-air_module = matmul_on_tensors(512, 512, 1024)
+air_module = matmul_on_tensors(128, 128, 256)
 context = air_module.context
 
 ################################################
@@ -89,7 +89,7 @@ transform.with_pdl_patterns {
         %ps = transform.merge_handles %fill_0, %matmul_0 : !pdl.operation
         transform.air.linalg_promote %ps {"operands_to_promote"=[1,4], "group_size"=2, "memory_space"="L1"}
 
-        %matmul_1, %loops:3 = transform.air.linalg_tile %matmul_0 [64, 64, 64]
+        %matmul_1, %loops:3 = transform.air.linalg_tile %matmul_0 [16, 16, 16]
 
         transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L1"}
 

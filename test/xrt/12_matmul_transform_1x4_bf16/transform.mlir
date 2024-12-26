@@ -13,7 +13,7 @@ transform.sequence %arg0 : !transform.any_op failures(propagate) {
       : (!transform.any_op) -> !transform.any_op
     // First level tile to forall.
     %tiled_matmul, %forall =
-      transform.structured.tile_using_forall %matmul num_threads [] tile_sizes [128, 128, 0]
+      transform.structured.tile_using_forall %matmul num_threads [] tile_sizes [32, 32, 0]
         : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
     // Fuse fill operation into the forall loop.
@@ -47,15 +47,15 @@ transform.sequence %arg0 : !transform.any_op failures(propagate) {
     %copy_1 = transform.get_producer_of_operand %padded[0] : (!transform.any_op) -> (!transform.any_op)
     %copy_2 = transform.get_producer_of_operand %padded[1] : (!transform.any_op) -> (!transform.any_op)
     %tiled_copy_1, %tiled_copy_for_loop_1 =
-      transform.structured.tile_using_for %copy_1 tile_sizes [0, 256]
+      transform.structured.tile_using_for %copy_1 tile_sizes [0, 64]
       : (!transform.any_op) -> (!transform.any_op, !transform.op<"scf.for">)
     %tiled_copy_2, %tiled_copy_for_loop_2 =
-      transform.structured.tile_using_for %copy_2 tile_sizes [256, 0]
+      transform.structured.tile_using_for %copy_2 tile_sizes [64, 0]
       : (!transform.any_op) -> (!transform.any_op, !transform.op<"scf.for">)
 
     // Second level tile to forall with tile_sizes.
     %tiled_matmul_1, %forall_1 =
-      transform.structured.tile_using_forall %padded tile_sizes [64, 64]
+      transform.structured.tile_using_forall %padded tile_sizes [16, 16]
         ( mapping = [#gpu.thread<y>, #gpu.thread<x>] ) : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
     // Clean up.
