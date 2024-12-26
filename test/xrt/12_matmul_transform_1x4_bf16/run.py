@@ -9,9 +9,9 @@ import pyxrt as xrt
 import sys
 import time
 
-M = 512
-N = 512
-K = 1024
+M = 128
+N = 128
+K = 256
 
 in_a_size = (M, K)
 in_b_size = (K, N)
