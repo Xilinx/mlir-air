@@ -4,12 +4,24 @@
 import air
 import air.compiler.util
 from air.dialects import linalg, arith, func
+from air.dialects.linalg.opdsl.lang import *
 from air.ir import *
 import air.passmanager
 from air._mlir_libs._air import run_transform
 from air.dialects.air import module_builder
 
 import argparse
+
+
+@linalg_structured_op
+def matmul_poly(
+    A=TensorDef(TV.T1, S.M, S.K),
+    B=TensorDef(TV.T2, S.K, S.N),
+    C=TensorDef(U, S.M, S.N, output=True),
+    cast=TypeFnAttrDef(default=TypeFn.cast_signed),
+):
+    domain(D.m, D.n, D.k)
+    C[D.m, D.n] += cast(U, A[D.m, D.k]) * cast(U, B[D.k, D.n])
 
 
 @module_builder
@@ -24,7 +36,7 @@ def matmul_on_tensors(m, n, k):
     def forward(lhs, rhs, out):
         zero = arith.ConstantOp(F32Type.get(), 0.0)
         zero_fill = linalg.fill(zero, outs=[out])
-        o = linalg.matmul(lhs, rhs, outs=[zero_fill])
+        o = matmul_poly(lhs, rhs, outs=[zero_fill])
         return o
 
 
@@ -72,7 +84,8 @@ transform.with_pdl_patterns {
     ^bb1(%arg1: !pdl.operation):
 
         %fill_0 = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-        %matmul_0 = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+        %generic = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+        %matmul_0 = transform.structured.specialize %generic : (!pdl.operation) -> !pdl.operation
         %ps = transform.merge_handles %fill_0, %matmul_0 : !pdl.operation
         transform.air.linalg_promote %ps {"operands_to_promote"=[1,4], "group_size"=2, "memory_space"="L1"}
 
@@ -140,22 +153,6 @@ pipeline = (
             "cse",
             "func.func(air-loop-fusion)",
             "air-label-scf-for-to-ping-pong",
-        ]
-    )
-    + ")"
-)
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-
-with open("air_channel.mlir", "w") as f:
-    f.write(str(air_module))
-
-# Not sure why parsing the ir solves the segmentation fault...
-air_module = Module.parse(str(air_module), context=context)
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
             "air-ping-pong-transform{keep-memref-dealloc=true}",
             "canonicalize",
             "cse",

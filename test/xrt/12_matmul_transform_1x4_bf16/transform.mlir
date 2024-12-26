@@ -9,7 +9,7 @@ transform.sequence %arg0 : !transform.any_op failures(propagate) {
 ^bb1(%variant_op: !transform.any_op):
     %fill = transform.structured.match ops{["linalg.fill"]} in %variant_op
       : (!transform.any_op) -> !transform.any_op
-    %matmul = transform.structured.match ops{["linalg.matmul"]} in %variant_op
+    %matmul = transform.structured.match ops{["linalg.generic"]} in %variant_op
       : (!transform.any_op) -> !transform.any_op
     // First level tile to forall.
     %tiled_matmul, %forall =
@@ -24,6 +24,7 @@ transform.sequence %arg0 : !transform.any_op failures(propagate) {
       padding_values=[0.000000e+00 : bf16, 0.000000e+00 : bf16, 0.000000e+00 : f32],
       padding_dimensions=[0, 1, 2],
       pack_paddings=[1, 1, 1],
+      nofold_flags=[1, 1, 1],
       copy_back_op="linalg.copy"
     } : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
     %pad_dps = transform.structured.rewrite_in_destination_passing_style %pad : (!transform.any_op) -> !transform.any_op
