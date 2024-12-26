@@ -647,8 +647,19 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
 
     // Create new herd op as parent to the scf.for loop nest.
     rewriter.setInsertionPoint(outerMostLoop);
-    auto herdOperands = herdOp.getOperands().drop_front(
+    auto originalHerdOperands = herdOp.getOperands().drop_front(
         herdOp.getAsyncDependencies().size() + herdOp.getNumDims());
+    SmallVector<Value> herdOperands;
+    SmallVector<unsigned> sparseKernelArgIndices;
+    IRMapping remap;
+    for (unsigned i = 0; i < originalHerdOperands.size(); i++) {
+      if (originalHerdOperands[i].getParentRegion()->isAncestor(
+              outerMostLoop->getParentRegion())) {
+        herdOperands.push_back(originalHerdOperands[i]);
+        sparseKernelArgIndices.push_back(i);
+      } else
+        remap.map(herdOp.getKernelArgument(i), herdOp.getKernelOperand(i));
+    }
     auto forRegionIterOperands = outerMostLoop.getOperands().drop_front(
         outerMostLoop.getNumControlOperands());
     auto newHerdOp = rewriter.create<air::HerdOp>(
@@ -656,32 +667,34 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
         true, herdOp->getAttrs());
     outerMostLoop->moveBefore(newHerdOp.getBody().front().getTerminator());
     OpBuilder builder(outerMostLoop);
+    for (unsigned i = 0; i < sparseKernelArgIndices.size(); i++)
+      remap.map(herdOp.getKernelArgument(sparseKernelArgIndices[i]),
+                newHerdOp.getKernelArgument(i));
 
-    // Replace uses of tokens and consts in for loop nest.
+    // Replace uses of tokens in for loop nest with air.wait_all located at the
+    // start of air.herd body.
     for (auto val : forRegionIterOperands) {
+      if (!isa<air::AsyncTokenType>(val.getType())) {
+        outerMostLoop->emitOpError(
+            "loop op's iter_args contain non-async-token-type block arguments, "
+            "NYI.");
+        return failure();
+      }
       auto newAsyncToken =
           builder
               .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
                                       SmallVector<Value>{})
               .getAsyncToken();
-      replaceAllUsesInRegionWith(val, newAsyncToken, newHerdOp.getBody());
+      remap.map(val, newAsyncToken);
     }
     for (auto loop : llvm::reverse(for_loop_nest)) {
       if (auto definingOp = loop.getUpperBound().getDefiningOp())
-        replaceAllUsesInRegionWith(loop.getUpperBound(),
-                                   builder.clone(*definingOp)->getResult(0),
-                                   newHerdOp.getBody());
+        builder.clone(*definingOp, remap);
       if (auto definingOp = loop.getLowerBound().getDefiningOp())
-        replaceAllUsesInRegionWith(loop.getLowerBound(),
-                                   builder.clone(*definingOp)->getResult(0),
-                                   newHerdOp.getBody());
+        builder.clone(*definingOp, remap);
       if (auto definingOp = loop.getStep().getDefiningOp())
-        replaceAllUsesInRegionWith(loop.getStep(),
-                                   builder.clone(*definingOp)->getResult(0),
-                                   newHerdOp.getBody());
+        builder.clone(*definingOp, remap);
     }
-    for (auto res : outerMostLoop->getResults())
-      res.replaceAllUsesWith(newHerdOp.getAsyncToken());
 
     // Splice herd block into inner-most for loop.
     scf::ForOp innerMostLoop = for_loop_nest.front();
@@ -691,20 +704,19 @@ struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
 
     rewriter.setInsertionPoint(herdOp);
     for (auto res : herdOp->getResults())
-      res.replaceAllUsesWith(
-          rewriter
-              .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
-                                      SmallVector<Value>{})
-              .getAsyncToken());
-    for (unsigned i = 0; i < herdOp.getNumKernelOperands(); i++)
-      herdOp.getKernelArgument(i).replaceAllUsesWith(
-          newHerdOp.getKernelArgument(i));
+      remap.map(res,
+                rewriter
+                    .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                            SmallVector<Value>{})
+                    .getAsyncToken());
     for (unsigned i = 0; i < herdOp.getNumDims(); i++) {
-      replaceAllUsesInRegionWith(herdOp.getIds()[i], newHerdOp.getIds()[i],
-                                 newHerdOp.getBody());
-      replaceAllUsesInRegionWith(herdOp.getSize()[i], newHerdOp.getSize()[i],
-                                 newHerdOp.getBody());
+      remap.map(herdOp.getIds()[i], newHerdOp.getIds()[i]);
+      remap.map(herdOp.getSize()[i], newHerdOp.getSize()[i]);
     }
+    for (auto [key, val] : remap.getValueMap())
+      replaceAllUsesInRegionWith(key, val, newHerdOp.getBody());
+    for (auto res : outerMostLoop->getResults())
+      res.replaceAllUsesWith(newHerdOp.getAsyncToken());
 
     rewriter.eraseOp(herdOp);
     return success();
