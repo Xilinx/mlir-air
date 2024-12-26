@@ -254,6 +254,7 @@ with air.ir.Context() as ctx, Location.unknown():
         "builtin.module("
         + ",".join(
             [
+                "func.func(air-opt-shim-dma-bds)",
                 "air-to-std",
                 "canonicalize",
                 "symbol-dce",
