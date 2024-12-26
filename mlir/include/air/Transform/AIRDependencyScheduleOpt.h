@@ -68,10 +68,11 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns);
 
 // Apply AIRSpecializeChannelWrapAndStridePattern on region.
 void applyAIRSpecializeChannelWrapAndStridePattern(Region *region,
-                                                   int maxNumDims);
+                                                   int maxNumDims,
+                                                   bool enableForLoopUnrolling);
 
 // Populate patterns for fusing scf.for loops within air.launch.
-void populateAIRLaunchLoopFusionPattern(RewritePatternSet &patterns);
+void populateAIRLoopFusionPattern(RewritePatternSet &patterns);
 
 // Apply AIRIsolateAsyncDmaLoopNestsPattern on region.
 void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region);

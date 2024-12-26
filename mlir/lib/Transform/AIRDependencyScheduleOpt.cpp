@@ -2863,8 +2863,9 @@ public:
 private:
 };
 
-LogicalResult AIRSpecializeChannelWrapAndStrideImpl(Region *region,
-                                                    int maxNumDims = -1) {
+LogicalResult
+AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
+                                      bool enableForLoopUnrolling = true) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
   preproc_patterns.insert<UnrollScfParallel, CanonicalizeAIRExecute,
@@ -2888,10 +2889,12 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(Region *region,
   (void)applyPatternsAndFoldGreedily(*region, std::move(patterns));
 
   // Unroll any remaining loops which contain only data movements.
-  RewritePatternSet unroll_patterns(ctx);
-  unroll_patterns
-      .insert<AIRUnrollScfForIntoBDChain, AIRUnrollAffineForIntoBDChain>(ctx);
-  (void)applyPatternsAndFoldGreedily(*region, std::move(unroll_patterns));
+  if (enableForLoopUnrolling) {
+    RewritePatternSet unroll_patterns(ctx);
+    unroll_patterns
+        .insert<AIRUnrollScfForIntoBDChain, AIRUnrollAffineForIntoBDChain>(ctx);
+    (void)applyPatternsAndFoldGreedily(*region, std::move(unroll_patterns));
+  }
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet cano_patterns(ctx);
@@ -5105,6 +5108,20 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
   return success();
 }
 
+struct AIRFuncLoopFusionPattern : public OpRewritePattern<func::FuncOp> {
+  using OpRewritePattern<func::FuncOp>::OpRewritePattern;
+
+  AIRFuncLoopFusionPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(func::FuncOp op,
+                                PatternRewriter &rewriter) const override {
+    return fuseLoopsInRegion(&op.getRegion(), rewriter,
+                             /*fuseWithAllocDeallocs*/ false, /*maxDepth*/ -1);
+  }
+
+private:
+};
+
 struct AIRLaunchLoopFusionPattern : public OpRewritePattern<air::LaunchOp> {
   using OpRewritePattern<air::LaunchOp>::OpRewritePattern;
 
@@ -5261,13 +5278,16 @@ public:
 
   void runOnOperation() override {
     auto func = getOperation();
+    MLIRContext *ctx = &getContext();
     // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
     // specialization patterns.
     air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getRegion());
-    air::applyAIRSpecializeChannelWrapAndStridePattern(&func.getRegion(),
-                                                       /*maxNumDims*/ 4);
-    // TODO: Disable loop unrolling in patterns above, and add AIRLoopFusion
-    // pattern here to handle any potential out-of-bd scenarios.
+    air::applyAIRSpecializeChannelWrapAndStridePattern(
+        &func.getRegion(),
+        /*maxNumDims*/ 4, /*enableForLoopUnrolling*/ false);
+    RewritePatternSet patterns(ctx);
+    populateAIRLoopFusionPattern(patterns);
+    (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
   }
 
 private:
@@ -5371,15 +5391,17 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
   patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
 }
 
-void applyAIRSpecializeChannelWrapAndStridePattern(Region *region,
-                                                   int maxNumDims = -1) {
-  (void)AIRSpecializeChannelWrapAndStrideImpl(region, maxNumDims);
+void applyAIRSpecializeChannelWrapAndStridePattern(
+    Region *region, int maxNumDims = -1, bool enableForLoopUnrolling = true) {
+  (void)AIRSpecializeChannelWrapAndStrideImpl(region, maxNumDims,
+                                              enableForLoopUnrolling);
 }
 
-void populateAIRLaunchLoopFusionPattern(RewritePatternSet &patterns) {
+void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
   patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar, UnrollScfParallel,
-                  AIRLaunchLoopFusionPattern>(ctx);
+                  AIRSegmentLoopFusionPattern, AIRLaunchLoopFusionPattern,
+                  AIRFuncLoopFusionPattern>(ctx);
 }
 
 void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region) {
