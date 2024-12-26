@@ -226,6 +226,7 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
+            "func.func(air-opt-shim-dma-bds)",
             "air-to-std",
             "symbol-dce",
             "canonicalize",
