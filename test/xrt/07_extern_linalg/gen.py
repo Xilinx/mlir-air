@@ -102,7 +102,7 @@ pipeline = (
     + ",".join(
         [
             "air-to-aie{device=npu1_4col row-offset=2 col-offset=0}",
-            "func.func(air-opt-shim-dma-bds)",
+            "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
             "air-to-std",
             "symbol-dce",
             "canonicalize",

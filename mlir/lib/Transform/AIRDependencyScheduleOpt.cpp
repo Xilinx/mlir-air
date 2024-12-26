@@ -10,6 +10,9 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIEX/IR/AIEXDialect.h"
+
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
@@ -46,8 +49,6 @@
 #include <numeric>
 #include <string>
 #include <vector>
-
-#include <iostream>
 
 using namespace mlir;
 using namespace xilinx;
@@ -5273,18 +5274,30 @@ public:
   AIROptimizeShimDMABDs(const AIROptimizeShimDMABDs &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<scf::SCFDialect, air::airDialect>();
+    registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect>();
   }
 
   void runOnOperation() override {
     auto func = getOperation();
     MLIRContext *ctx = &getContext();
+    auto device = AIE::symbolizeAIEDevice(clDevice);
+    if (!device) {
+      func.emitOpError("Invalid aie.device option");
+      signalPassFailure();
+      return;
+    }
+    int maxNumDims = -1; // -1 means unlimited.
+    const auto &targetModel = AIE::getTargetModel(*device);
+    if (isa<AIE::AIE1TargetModel>(targetModel))
+      maxNumDims = 1;
+    else if (isa<AIE::AIE2TargetModel>(targetModel))
+      maxNumDims = 4;
     // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
     // specialization patterns.
     air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getRegion());
     air::applyAIRSpecializeChannelWrapAndStridePattern(
         &func.getRegion(),
-        /*maxNumDims*/ 4, /*enableForLoopUnrolling*/ false);
+        /*maxNumDims*/ maxNumDims, /*enableForLoopUnrolling*/ false);
     RewritePatternSet patterns(ctx);
     populateAIRLoopFusionPattern(patterns);
     (void)applyPatternsAndFoldGreedily(func, std::move(patterns));

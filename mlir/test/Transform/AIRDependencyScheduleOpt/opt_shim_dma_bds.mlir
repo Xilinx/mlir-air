@@ -5,7 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-opt-shim-dma-bds | FileCheck %s
+// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1_4col" | FileCheck %s
+// RUN: air-opt %s -air-opt-shim-dma-bds="device=xcvc1902" | FileCheck %s --check-prefix=AIE1
 
 // Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD).
 
@@ -23,6 +24,11 @@ module {
   // CHECK-NEXT: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT2]], %[[EVENT3]], %[[EVENT4]], %[[EVENT5]]] 
   // CHECK-NEXT: scf.yield %[[EVENT6]] : !air.async.token
   // CHECK-NEXT: }
+  
+  // AIE1-LABEL: func0
+  // AIE1-COUNT-3: scf.for
+  // AIE1-COUNT-4: air.channel.put
+  // AIE1-COUNT-3: scf.yield
 
   func.func @func0(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c1 = arith.constant 1 : index
@@ -72,6 +78,11 @@ module {
   // CHECK: }
   // CHECK: scf.yield %[[EVENT2]] : !air.async.token
   // CHECK: }
+  
+  // AIE1-LABEL: func1
+  // AIE1-COUNT-3: scf.for
+  // AIE1-COUNT-4: air.channel.put
+  // AIE1-COUNT-3: scf.yield
 
   func.func @func1(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c1 = arith.constant 1 : index
@@ -112,6 +123,11 @@ module {
   // CHECK: air.channel.get async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c64{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId41} : (memref<512x512xbf16>)
   // CHECK: air.channel.get async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c128{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId43} : (memref<512x512xbf16>)
   // CHECK: air.channel.get async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c192{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId45} : (memref<512x512xbf16>)
+  
+  // AIE1-LABEL: func2
+  // AIE1-COUNT-2: scf.for
+  // AIE1-COUNT-4: air.channel.get
+  // AIE1-COUNT-2: scf.yield
 
   func.func @func2(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c1 = arith.constant 1 : index
@@ -149,6 +165,12 @@ module {
   // CHECK-COUNT-3: scf.for
   // CHECK-COUNT-4: air.dma_memcpy_nd
   // CHECK-COUNT-4: }
+  
+  // AIE1-LABEL: func3
+  // AIE1: air.herd
+  // AIE1-COUNT-3: scf.for
+  // AIE1-COUNT-4: air.dma_memcpy_nd
+  // AIE1-COUNT-4: }
 
   func.func @func3(%arg0: memref<4096x1024x512xi32>, %arg1: memref<4096x1024x512xi32>, %arg2: memref<4096x1024x512xi32>) {
     %c4 = arith.constant 4 : index
@@ -192,6 +214,11 @@ module {
   // No air.launch or air.segment.
 
   // CHECK: air.channel.put  @channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c32{{.*}}, %c32{{.*}}] [%c4096{{.*}}, %c32{{.*}}, %c128{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<128x128xbf16>)
+  
+  // AIE1-LABEL: func4
+  // AIE1-COUNT-2: scf.for
+  // AIE1: air.channel.put
+  // AIE1-COUNT-2: }
 
   func.func @func4(%arg0: memref<128x128xbf16>) {
     %c32 = arith.constant 32 : index

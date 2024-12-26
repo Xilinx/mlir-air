@@ -1074,6 +1074,11 @@ def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
   let description = [{
     Optimize the logical data movement by transforming them, represented as air.channel.put/get operations, into explicit representation of physical data movement block descriptors (BDs), also represented as air.channel.put/get operations.
   }];
+  let options = [
+    Option<"clDevice", "device", "std::string",
+          /*default=*/"\"xcvc1902\"",
+           "AIE device to target.">,
+  ];
 }
 
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {

@@ -139,7 +139,7 @@ def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filena
             "convert-math-to-llvm",
             "func.func(air-label-broadcast-channel-with-tile)",
             "lower-affine",
-            "func.func(air-opt-shim-dma-bds)",
+            "func.func(air-opt-shim-dma-bds{device=" + opts.device + "})",
             "air-to-std",
             "air-lower-linalg-tensors",
             "canonicalize",
@@ -161,7 +161,7 @@ def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filena
             "convert-math-to-llvm",
             "func.func(air-label-broadcast-channel-with-tile)",
             "lower-affine",
-            "func.func(air-opt-shim-dma-bds)",
+            "func.func(air-opt-shim-dma-bds{device=" + opts.device + "})",
             "air-to-std",
             "air-lower-linalg-tensors",
             "canonicalize",
@@ -440,7 +440,7 @@ def run(mlir_module, args=None):
                 "builtin.module("
                 + ",".join(
                     [
-                        "func.func(air-opt-shim-dma-bds)",
+                        "func.func(air-opt-shim-dma-bds{device=" + opts.device + "})",
                         "air-to-std",
                         "symbol-dce",
                         "func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})",
