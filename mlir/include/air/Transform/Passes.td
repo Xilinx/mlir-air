@@ -1068,6 +1068,14 @@ def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
   ];
 }
 
+def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
+  let summary = "Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD)";
+  let constructor = "xilinx::air::createAIROptimizeShimDMABDs()";
+  let description = [{
+    Optimize the logical data movement by transforming them, represented as air.channel.put/get operations, into explicit representation of physical data movement block descriptors (BDs), also represented as air.channel.put/get operations.
+  }];
+}
+
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   let summary = "Optimize scheduling based on air async dependency";
   let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";

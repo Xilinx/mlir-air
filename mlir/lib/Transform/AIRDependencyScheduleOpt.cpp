@@ -5244,6 +5244,35 @@ private:
   }
 };
 
+// A pass which performs a series of scf.for loop splitting, fusion and
+// specialization, with the goal of generating efficient shim dma block
+// descriptors (BD). TODO: generalize this to cover memtile BDs, too.
+class AIROptimizeShimDMABDs
+    : public xilinx::air::impl::AIROptimizeShimDMABDsBase<
+          AIROptimizeShimDMABDs> {
+
+public:
+  AIROptimizeShimDMABDs() = default;
+  AIROptimizeShimDMABDs(const AIROptimizeShimDMABDs &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOnOperation() override {
+    auto func = getOperation();
+    // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
+    // specialization patterns.
+    air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getRegion());
+    air::applyAIRSpecializeChannelWrapAndStridePattern(&func.getRegion(),
+                                                       /*maxNumDims*/ 4);
+    // TODO: Disable loop unrolling in patterns above, and add AIRLoopFusion
+    // pattern here to handle any potential out-of-bd scenarios.
+  }
+
+private:
+};
+
 } // namespace
 
 namespace xilinx {
@@ -5331,6 +5360,10 @@ std::unique_ptr<Pass> createAIRIsolateAsyncDmaLoopNests() {
 
 std::unique_ptr<Pass> createAIRLoopFusion() {
   return std::make_unique<AIRLoopFusion>();
+}
+
+std::unique_ptr<Pass> createAIROptimizeShimDMABDs() {
+  return std::make_unique<AIROptimizeShimDMABDs>();
 }
 
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {

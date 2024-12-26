@@ -59,6 +59,8 @@ std::unique_ptr<mlir::Pass> createAIRIsolateAsyncDmaLoopNests();
 
 std::unique_ptr<mlir::Pass> createAIRLoopFusion();
 
+std::unique_ptr<mlir::Pass> createAIROptimizeShimDMABDs();
+
 // Populate patterns for canonicalizing index operations on loop index
 // variables. At the moment, only affine.apply computations on induction
 // variables are canonicalized

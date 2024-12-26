@@ -927,21 +927,6 @@ public:
     auto module = getOperation();
     auto context = module.getContext();
 
-    // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
-    // specialization patterns.
-    SmallVector<Region *> regions;
-    module.walk([&regions](func::FuncOp func) {
-      regions.push_back(&func.getRegion());
-    });
-    for (auto region : regions) {
-      // Split async for loops into asynchronously independent loop nests.
-      air::applyAIRIsolateAsyncDmaLoopNestsPattern(region);
-      air::applyAIRSpecializeChannelWrapAndStridePattern(region,
-                                                         /*maxNumDims*/ 4);
-    }
-    // TODO: Disable loop unrolling in patterns above, and add AIRLoopFusion
-    // pattern here to handle any potential out-of-bd scenarios.
-
     TypeConverter converter;
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert !air.async.token to !airrt.event
