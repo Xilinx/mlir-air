@@ -510,8 +510,10 @@ void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
 void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
   SmallVector<Value> operands_without_wait_all;
   for (auto iter_oper : op.getInitArgs()) {
-    if (!isa_and_present<air::AsyncTokenType>(iter_oper.getType())) continue;
-    if (auto wa_op = dyn_cast_if_present<air::WaitAllOp>(iter_oper.getDefiningOp()))
+    if (!isa_and_present<air::AsyncTokenType>(iter_oper.getType()))
+      continue;
+    if (auto wa_op =
+            dyn_cast_if_present<air::WaitAllOp>(iter_oper.getDefiningOp()))
       addAsyncDependencyIfNewImpl(wa_op, token);
     else {
       // Push to vec if unique
