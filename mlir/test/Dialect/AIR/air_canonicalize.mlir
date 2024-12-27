@@ -280,6 +280,17 @@ func.func @execute_4() -> (memref<1xi32>, !air.async.token) {
   return %results, %t : memref<1xi32>, !air.async.token
 }
 
+// CHECK: func.func @chan_0
+// CHECK: %[[TOKEN0:.*]] = air.channel.get async  @channel_0
+// CHECK: %[[TOKEN1:.*]] = air.channel.get async  @channel_1
+// CHECK: air.channel.put async [%[[TOKEN0]]]
+func.func @chan_0(%arg0 : memref<4x1x64x64xbf16>, %arg1 : memref<1x4x64x64xbf16>) {
+  %0 = air.channel.get async  @channel_0[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  %1 = air.channel.get async  @channel_1[] (%arg1[] [] []) : (memref<1x4x64x64xbf16>)
+  %2 = air.channel.put async [%0, %1]  @channel_0[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  return
+}
+
 // CHECK: func.func @dma_compose_subview
 // CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]
 func.func @dma_compose_subview() {
