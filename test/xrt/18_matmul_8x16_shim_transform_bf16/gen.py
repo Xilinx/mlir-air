@@ -226,6 +226,7 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
+            "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
             "air-to-std",
             "symbol-dce",
             "canonicalize",

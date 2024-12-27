@@ -229,6 +229,7 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
+            "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
             "air-to-std",
             "airrt-to-npu{"
             + f"trace-offset={opts.trace_offset} trace-size={opts.trace_size}"
