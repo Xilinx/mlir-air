@@ -891,25 +891,40 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
   SmallVector<Value> originalApplyOperands;
   Operation *affineApplyOp = nullptr;
   Value originalApplyOutput = nullptr;
+  AffineExpr originalExpr = nullptr;
   Value zeroIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
   if (!originalChanOp.getOffsets().empty()) {
     auto offsetDefOp = originalChanOp.getOffsets()[dim].getDefiningOp();
     if (isa_and_present<affine::AffineApplyOp, air::ExecuteOp>(offsetDefOp))
       affineApplyOp = offsetDefOp;
   }
-  if (isa_and_present<affine::AffineApplyOp>(affineApplyOp)) {
-    originalApplyOperands = affineApplyOp->getOperands();
-    originalApplyOutput = affineApplyOp->getResult(0);
+  if (auto applyOp =
+          dyn_cast_if_present<affine::AffineApplyOp>(affineApplyOp)) {
+    originalApplyOperands = applyOp->getOperands();
+    originalApplyOutput = applyOp->getResult(0);
+    originalExpr = applyOp.getAffineMap().getResult(0);
   } else if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(affineApplyOp)) {
     SetVector<Value> opers;
     getUsedValuesDefinedAbove(execOp.getRegion(), opers);
     originalApplyOperands = llvm::to_vector(opers);
     originalApplyOutput = affineApplyOp->getResult(1);
+    originalExpr = dyn_cast<affine::AffineApplyOp>(execOp.getChildOps().front())
+                       .getAffineMap()
+                       .getResult(0);
   } else {
-    originalApplyOperands.push_back(zeroIdx);
+    if (originalChanOp.getOffsets().empty())
+      originalApplyOperands.push_back(zeroIdx);
+    else
+      originalApplyOperands.push_back(originalChanOp.getOffsets()[dim]);
     originalApplyOutput = originalChanOp.getOffsets().empty()
                               ? zeroIdx
                               : originalChanOp.getOffsets()[dim];
+    if (allocOp->hasAttr("affine_map"))
+      originalExpr = allocOp->getAttrOfType<AffineMapAttr>("affine_map")
+                         .getAffineMap()
+                         .getResult(0);
+    else
+      originalExpr = builder.getAffineSymbolExpr(0);
   }
   SmallVector<Value> tokens;
   for (int i = 0; i < factor; i++) {
@@ -920,12 +935,7 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
     auto checkpoint = builder.saveInsertionPoint();
     if (affineApplyOp)
       builder.setInsertionPoint(affineApplyOp);
-    // Generate default affine.map assuming non-overlapping data access pattern.
-    AffineExpr s0 = builder.getAffineSymbolExpr(0);
-    AffineExpr mul = s0 * originalMemrefSize;
-    AffineExpr add =
-        mul + i * llvm::divideCeilSigned(originalMemrefSize, factor);
-    auto map = AffineMap::get(0, 1, add);
+    AffineMap map;
     // If allocOp has "affine_map" attribute set, then use that map instead
     // (potentially overlapping access pattern).
     affine::AffineApplyOp newApplyOp = nullptr;
@@ -933,19 +943,27 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
       auto original_map =
           allocOp->getAttrOfType<AffineMapAttr>("affine_map").getAffineMap();
       if (original_map.getNumInputs() == 2) {
-        // Overlapping data access.
+        // Overlapping data access. TODO: generalize this.
         map = original_map.replace(getAffineSymbolExpr(1, ctx),
                                    getAffineConstantExpr(i, ctx), 0, 1);
         if (affineApplyOp)
           builder.setInsertionPointAfter(affineApplyOp);
         newApplyOp = builder.create<affine::AffineApplyOp>(
             loc, map, SmallVector<Value>{originalApplyOutput});
-      } else // Non-overlapping data access.
+      } else { // Non-overlapping data access.
+        AffineExpr add = originalExpr +
+                         i * llvm::divideCeilSigned(originalMemrefSize, factor);
+        map = AffineMap::get(0, 1, add);
         newApplyOp = builder.create<affine::AffineApplyOp>(
             loc, map, originalApplyOperands);
-    } else // Non-overlapping data access.
+      }
+    } else { // Non-overlapping data access.
+      AffineExpr add =
+          originalExpr + i * llvm::divideCeilSigned(originalMemrefSize, factor);
+      map = AffineMap::get(0, 1, add);
       newApplyOp = builder.create<affine::AffineApplyOp>(loc, map,
                                                          originalApplyOperands);
+    }
     if (affineApplyOp)
       builder.restoreInsertionPoint(checkpoint);
     SmallVector<Value> newOffsets = originalChanOp.getOffsets();

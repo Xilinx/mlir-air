@@ -235,6 +235,7 @@ module {
 
 // Convolution.
 
+// CHECK-LABEL: @func3
 // CHECK-DAG: %[[CST_64:.*]] = arith.constant 64 : i64
 // CHECK-DAG: %[[CST_1:.*]] = arith.constant 1 : i64
 // CHECK-DAG: %[[CST_1152:.*]] = arith.constant 1152 : i64

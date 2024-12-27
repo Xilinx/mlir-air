@@ -16,7 +16,8 @@
 
 #include <aie_api/aie.hpp>
 
-template <typename T, int M, int N> void zero_scalar(T *__restrict c) {
+template <typename T, int M, int N>
+void zero_scalar(T *__restrict c) {
   for (int i = 0; i < M * N; i++) {
     c[i] = 0.0f;
   }
@@ -53,21 +54,21 @@ void matmul_scalar(T_in *a, T_in *b, T_out *c) {
 
 extern "C" {
 
-void linalg_fill_bf16_view64x64xbf16as2(bfloat16 *d) {
-  zero_vectorized<bfloat16, 64, 64, 32>(d);
+void linalg_fill_bf16_view16x16xbf16as2(bfloat16 *d) {
+  zero_vectorized<bfloat16, 16, 16, 32>(d);
 }
 
-void linalg_fill_f32_view64x64xf32as2(float *d) {
-  zero_scalar<float, 64, 64>(d);
+void linalg_fill_f32_view16x16xf32as2(float *d) {
+  zero_scalar<float, 16, 16>(d);
 }
 
-void linalg_matmul_view64x64xbf16as2_view64x64xbf16as2_view64x64xbf16as2(
+void linalg_matmul_view16x16xbf16as2_view16x16xbf16as2_view16x16xbf16as2(
     bfloat16 *a, bfloat16 *b, bfloat16 *c) {
-  matmul_scalar<bfloat16, bfloat16, 64, 64, 64>(a, b, c);
+  matmul_scalar<bfloat16, bfloat16, 16, 16, 16>(a, b, c);
 }
 
-void linalg_matmul_view64x64xbf16as2_view64x64xbf16as2_view64x64xf32as2(
+void linalg_matmul_view16x16xbf16as2_view16x16xbf16as2_view16x16xf32as2(
     bfloat16 *a, bfloat16 *b, float *c) {
-  matmul_scalar<bfloat16, float, 64, 64, 64>(a, b, c);
+  matmul_scalar<bfloat16, float, 16, 16, 16>(a, b, c);
 }
 }
