@@ -301,6 +301,59 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
   return success();
 }
 
+// Break any faulty async dependencies.
+template <class T>
+static LogicalResult canonicalizeFalseDependencies(T op,
+                                                   PatternRewriter &rewriter) {
+  auto asyncOp = dyn_cast_if_present<air::AsyncOpInterface>(op.getOperation());
+  if (!asyncOp)
+    return failure();
+  if (asyncOp.getAsyncDependencies().empty())
+    return failure();
+
+  auto getMemrefsFromVec = [](SmallVector<Value> vec) {
+    SmallVector<Value> memrefs;
+    for (auto v : vec)
+      if (isa<MemRefType>(v.getType()))
+        memrefs.push_back(v);
+    return memrefs;
+  };
+  auto getAllMemrefsTouchedbyOp = [getMemrefsFromVec](Operation *o) {
+    llvm::SetVector<Value> memrefs;
+    auto memrefOpers = getMemrefsFromVec(o->getOperands());
+    memrefs.insert(memrefOpers.begin(), memrefOpers.end());
+    for (auto &region : o->getRegions()) {
+      llvm::SetVector<Value> usedVals;
+      getUsedValuesDefinedAbove(region, usedVals);
+      auto usedMemrefs = getMemrefsFromVec(usedVals.takeVector());
+      memrefs.insert(usedMemrefs.begin(), usedMemrefs.end());
+    }
+    return memrefs;
+  };
+
+  auto memrefsTouchedByOp = getAllMemrefsTouchedbyOp(op.getOperation());
+  if (memrefsTouchedByOp.empty())
+    return failure();
+  auto depList = asyncOp.getAsyncDependencies();
+  for (int i = depList.size() - 1; i >= 0; i--) {
+    auto tokDefOp = depList[i].getDefiningOp();
+    if (!tokDefOp)
+      continue;
+    auto memrefsTouchedByDefOp = getAllMemrefsTouchedbyOp(tokDefOp);
+    if (memrefsTouchedByDefOp.empty())
+      continue;
+    if (llvm::none_of(memrefsTouchedByDefOp, [&memrefsTouchedByOp](Value v) {
+          return llvm::is_contained(memrefsTouchedByOp, v);
+        })) {
+      auto newOp = rewriter.clone(*op);
+      dyn_cast<air::AsyncOpInterface>(newOp).eraseAsyncDependency(i);
+      rewriter.replaceOp(op, newOp);
+      return success();
+    }
+  }
+  return failure();
+}
+
 //
 // LaunchOp
 //
@@ -516,6 +569,7 @@ void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   patterns.add(canonicalizeHierarchyOpArgs<LaunchOp>);
   patterns.add(CanonicalizeAsyncOpDeps<LaunchOp>);
   patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<LaunchOp>);
+  patterns.add(canonicalizeFalseDependencies<LaunchOp>);
 }
 
 ArrayRef<BlockArgument> LaunchOp::getIds() {
@@ -778,6 +832,7 @@ void SegmentOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   patterns.add(canonicalizeHierarchyOpArgs<SegmentOp>);
   patterns.add(CanonicalizeAsyncOpDeps<SegmentOp>);
   patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<SegmentOp>);
+  patterns.add(canonicalizeFalseDependencies<SegmentOp>);
 }
 
 ArrayRef<BlockArgument> SegmentOp::getIds() {
@@ -1039,6 +1094,7 @@ void HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   patterns.add(canonicalizeHierarchyOpArgs<HerdOp>);
   patterns.add(CanonicalizeAsyncOpDeps<HerdOp>);
   patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<HerdOp>);
+  patterns.add(canonicalizeFalseDependencies<HerdOp>);
 }
 
 ArrayRef<BlockArgument> HerdOp::getIds() {
@@ -1160,6 +1216,7 @@ void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   patterns.add(FoldExecute);
   patterns.add(CanonicalizeAsyncOpDeps<ExecuteOp>);
   patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<ExecuteOp>);
+  patterns.add(canonicalizeFalseDependencies<ExecuteOp>);
 }
 
 //
@@ -1449,6 +1506,7 @@ void DmaMemcpyNdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                 MLIRContext *context) {
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdSrc);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdDst);
+  patterns.add(canonicalizeFalseDependencies<DmaMemcpyNdOp>);
 }
 
 //
@@ -1492,6 +1550,7 @@ void ChannelPutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                MLIRContext *context) {
   patterns.add(ComposeMemrefOpOnChannelOp<ChannelPutOp>);
   patterns.add(CanonicalizeAsyncOpDeps<ChannelPutOp>);
+  patterns.add(canonicalizeFalseDependencies<ChannelPutOp>);
 }
 
 //
@@ -1502,6 +1561,7 @@ void ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                MLIRContext *context) {
   patterns.add(ComposeMemrefOpOnChannelOp<ChannelGetOp>);
   patterns.add(CanonicalizeAsyncOpDeps<ChannelGetOp>);
+  patterns.add(canonicalizeFalseDependencies<ChannelGetOp>);
 }
 
 //
