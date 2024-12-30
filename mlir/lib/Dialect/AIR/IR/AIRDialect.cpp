@@ -301,7 +301,7 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
   return success();
 }
 
-// Break any faulty async dependencies.
+// Break any wrong async dependencies.
 template <class T>
 static LogicalResult canonicalizeFalseDependencies(T op,
                                                    PatternRewriter &rewriter) {
@@ -320,11 +320,29 @@ static LogicalResult canonicalizeFalseDependencies(T op,
   };
   auto getAllMemrefsTouchedbyOp = [getMemrefsFromVec](Operation *o) {
     llvm::SetVector<Value> memrefs;
-    auto memrefOpers = getMemrefsFromVec(o->getOperands());
-    memrefs.insert(memrefOpers.begin(), memrefOpers.end());
-    for (auto &region : o->getRegions()) {
+    SmallVector<Value> vals = o->getOperands();
+    vals.insert(vals.end(), o->getResults().begin(), o->getResults().end());
+    SmallVector<Region *> regions;
+    for (auto &region : o->getRegions())
+      regions.push_back(&region);
+    // If air.wait_all, then we analyze the dependency by collecting all
+    // operations that depend on it.
+    auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
+    if (waitAllOp && waitAllOp.getAsyncToken()) {
+      for (auto user : waitAllOp.getAsyncToken().getUsers()) {
+        vals.insert(vals.end(), user->getOperands().begin(),
+                    user->getOperands().end());
+        vals.insert(vals.end(), user->getResults().begin(),
+                    user->getResults().end());
+        for (auto &region : user->getRegions())
+          regions.push_back(&region);
+      }
+    }
+    auto memrefvals = getMemrefsFromVec(vals);
+    memrefs.insert(memrefvals.begin(), memrefvals.end());
+    for (auto region : regions) {
       llvm::SetVector<Value> usedVals;
-      getUsedValuesDefinedAbove(region, usedVals);
+      getUsedValuesDefinedAbove(*region, usedVals);
       auto usedMemrefs = getMemrefsFromVec(usedVals.takeVector());
       memrefs.insert(usedMemrefs.begin(), usedMemrefs.end());
     }
@@ -334,7 +352,7 @@ static LogicalResult canonicalizeFalseDependencies(T op,
   auto memrefsTouchedByOp = getAllMemrefsTouchedbyOp(op.getOperation());
   if (memrefsTouchedByOp.empty())
     return failure();
-  auto depList = asyncOp.getAsyncDependencies();
+  SmallVector<Value> depList = asyncOp.getAsyncDependencies();
   for (int i = depList.size() - 1; i >= 0; i--) {
     auto tokDefOp = depList[i].getDefiningOp();
     if (!tokDefOp)
@@ -1244,6 +1262,7 @@ void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldWaitAll);
   patterns.add(CanonicalizeAsyncOpDeps<WaitAllOp>);
+  patterns.add(canonicalizeFalseDependencies<WaitAllOp>);
 }
 
 // Get strides from MemRefType.
