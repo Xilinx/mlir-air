@@ -4923,19 +4923,16 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
       fusableForOps.push_back(nestBack);
       continue;
     }
-    // If fuseWithAllocDeallocs, check whether the loop is dependent on the
-    // alloc op.
-    for (auto ia : nestBack.getInitArgs()) {
-      auto iaDefOp = ia.getDefiningOp();
-      if (!iaDefOp)
-        continue;
-      if (llvm::any_of(
-              alloc_dealloc_execs,
-              [&](std::pair<air::ExecuteOp, air::ExecuteOp> exec_pair) {
-                return isAsyncDependent(exec_pair.first, iaDefOp);
-              }))
-        fusableForOps.push_back(nestBack);
-    }
+    // If fuseWithAllocDeallocs, check whether the loop is using any memrefs
+    // with alloc/dealloc hoisted.
+    SetVector<Value> vals;
+    getUsedValuesDefinedAbove(nestBack.getRegion(), vals);
+    if (llvm::any_of(alloc_dealloc_execs,
+                     [&](std::pair<air::ExecuteOp, air::ExecuteOp> exec_pair) {
+                       return llvm::is_contained(vals,
+                                                 exec_pair.first->getResult(1));
+                     }))
+      fusableForOps.push_back(nestBack);
   }
   if (fusableForOps.size() <= 1)
     return failure();
@@ -5168,6 +5165,8 @@ public:
     patterns
         .insert<CanonicalizeAffineApplyOnLoopInductionVar, UnrollScfParallel>(
             ctx);
+    air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
+    air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
