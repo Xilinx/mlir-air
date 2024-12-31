@@ -73,10 +73,8 @@ bool isAsyncDependent(Operation *a, Operation *b);
 scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                                      scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops);
-LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
-                                                  scf::ParallelOp par,
-                                                  Operation *originalChanOp,
-                                                  IRMapping remap);
+LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
+                                Operation *originalChanOp, IRMapping remap);
 void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
     RewritePatternSet &patterns);
 //===----------------------------------------------------------------------===//
