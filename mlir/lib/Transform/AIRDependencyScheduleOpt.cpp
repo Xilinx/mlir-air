@@ -4946,9 +4946,6 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
   if (fusableForOps.size() <= 1)
     return failure();
 
-  // rewriter.setInsertionPoint(equalIterationForOps.front().front());
-  // if (!alloc_dealloc_execs.empty() && fuseWithAllocDeallocs)
-  //   rewriter.setInsertionPoint(alloc_dealloc_execs.front().first);
   rewriter.setInsertionPointAfter(equalIterationForOps.back().front());
   auto new_loop_op_init_arg =
       rewriter
