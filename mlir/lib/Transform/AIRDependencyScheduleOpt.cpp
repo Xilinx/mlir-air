@@ -4946,7 +4946,10 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
   if (fusableForOps.size() <= 1)
     return failure();
 
-  rewriter.setInsertionPoint(equalIterationForOps.front().front());
+  // rewriter.setInsertionPoint(equalIterationForOps.front().front());
+  // if (!alloc_dealloc_execs.empty() && fuseWithAllocDeallocs)
+  //   rewriter.setInsertionPoint(alloc_dealloc_execs.front().first);
+  rewriter.setInsertionPointAfter(equalIterationForOps.back().front());
   auto new_loop_op_init_arg =
       rewriter
           .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
@@ -5013,13 +5016,17 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
     SmallVector<air::ExecuteOp> erase_keys;
     for (auto &[alloc_exec, dealloc_exec] : alloc_dealloc_execs) {
       Value alloc_token = alloc_exec.getAsyncToken();
-      Value dealloc_token = dealloc_exec.getAsyncToken();
+      Value dealloc_token =
+          dealloc_exec ? dealloc_exec.getAsyncToken() : nullptr;
       Value memref = alloc_exec->getResult(1);
       bool canMove = llvm::all_of(memref.getUsers(), [&new_loop_op](
                                                          Operation *user) {
         return new_loop_op.getRegion().isAncestor(user->getParentRegion()) ||
                isa<memref::DeallocOp>(user);
       });
+      llvm::SetVector<Value> vals;
+      getUsedValuesDefinedAbove(new_loop_op.getRegion(), vals);
+      canMove &= llvm::is_contained(vals, memref);
 
       if (canMove) {
         rewriter.setInsertionPointToStart(new_loop_op.getBody());
@@ -5028,7 +5035,8 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
         clearAsyncDependenciesOfAsyncOp(
             dyn_cast<air::AsyncOpInterface>(new_alloc_exec));
         rewriter.setInsertionPointToEnd(new_loop_op.getBody());
-        auto new_dealloc_exec = rewriter.clone(*dealloc_exec, remap);
+        Operation *new_dealloc_exec =
+            dealloc_exec ? rewriter.clone(*dealloc_exec, remap) : nullptr;
 
         if (air::isAsyncOp(new_loop_op))
           air::addAsyncDependencyIfNew(
@@ -5038,8 +5046,9 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
         alloc_token.replaceUsesWithIf(
             air::getAsyncTokenFromOp(new_loop_op),
             [&new_loop_op](OpOperand &u) {
-              return !new_loop_op.getRegion().isAncestor(
-                  u.getOwner()->getParentRegion());
+              return new_loop_op->getParentRegion() ==
+                         u.getOwner()->getParentRegion() &&
+                     new_loop_op->isBeforeInBlock(u.getOwner());
             });
         replaceAllUsesInRegionWith(alloc_token,
                                    air::getAsyncTokenFromOp(new_alloc_exec),
@@ -5050,21 +5059,23 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
               new_alloc_exec->getResult(i));
 
         // Replace all uses of tokens
-        dealloc_token.replaceUsesWithIf(
-            air::getAsyncTokenFromOp(new_loop_op),
-            [&new_loop_op](OpOperand &u) {
-              return !new_loop_op.getRegion().isAncestor(
-                  u.getOwner()->getParentRegion());
-            });
-        replaceAllUsesInRegionWith(dealloc_token,
-                                   air::getAsyncTokenFromOp(new_dealloc_exec),
-                                   new_loop_op.getRegion());
+        if (dealloc_token) {
+          dealloc_token.replaceUsesWithIf(
+              air::getAsyncTokenFromOp(new_loop_op),
+              [&new_loop_op](OpOperand &u) {
+                return !new_loop_op.getRegion().isAncestor(
+                    u.getOwner()->getParentRegion());
+              });
+          replaceAllUsesInRegionWith(dealloc_token,
+                                     air::getAsyncTokenFromOp(new_dealloc_exec),
+                                     new_loop_op.getRegion());
+        }
       } else
         erase_keys.push_back(alloc_exec);
     }
-    llvm::SetVector<Value> outstandingTokens;
-    getUsedValuesDefinedAbove(new_loop_op.getRegion(), outstandingTokens);
-    for (auto token : outstandingTokens)
+    llvm::SetVector<Value> usedValsDefedAbove;
+    getUsedValuesDefinedAbove(new_loop_op.getRegion(), usedValsDefedAbove);
+    for (auto token : usedValsDefedAbove)
       if (isa<air::AsyncTokenType>(token.getType()))
         replaceAllUsesInRegionWith(
             token, air::getLoopCarriedTokenFromScfOp(new_loop_op, "argument"),
@@ -5073,12 +5084,19 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
       for (unsigned i = 0; i < alloc_dealloc_execs.size(); i++)
         if (e == alloc_dealloc_execs[i].first)
           alloc_dealloc_execs.erase(alloc_dealloc_execs.begin() + i);
-    // Erase allocs/deallocs upon fusion.
+    // Erase the original allocs/deallocs upon fusion.
     for (auto &[alloc, dealloc] : alloc_dealloc_execs) {
-      assert(alloc->use_empty());
+      air::WaitAllOp waitAll = air::WaitAllOp();
+      if (dealloc) {
+        rewriter.setInsertionPoint(dealloc);
+        waitAll = replaceAsyncOpWithWaitAll(rewriter, remap, dealloc);
+        dealloc.getAsyncToken().replaceAllUsesWith(waitAll.getAsyncToken());
+        rewriter.eraseOp(dealloc);
+      }
+      rewriter.setInsertionPoint(alloc);
+      waitAll = replaceAsyncOpWithWaitAll(rewriter, remap, alloc);
+      alloc.getAsyncToken().replaceAllUsesWith(waitAll.getAsyncToken());
       rewriter.eraseOp(alloc);
-      assert(dealloc->use_empty());
-      rewriter.eraseOp(dealloc);
     }
   }
 
