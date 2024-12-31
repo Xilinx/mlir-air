@@ -1255,6 +1255,30 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
     return success();
   }
 
+  // If all of async wait_all's users have AsyncOpInterface, fold it into its
+  // users
+  if (op.getResults().size() == 1 &&
+      llvm::all_of(op.getResults().front().getUsers(), [](Operation *user) {
+        return isa_and_present<air::AsyncOpInterface>(user);
+      })) {
+    SmallVector<Operation *> users;
+    for (auto user : op.getResults().front().getUsers()) {
+      users.push_back(user);
+    }
+    for (auto user : users) {
+      air::AsyncOpInterface asyncUser =
+          dyn_cast_if_present<air::AsyncOpInterface>(user);
+      for (int i = asyncUser.getAsyncDependencies().size() - 1; i >= 0; i--) {
+        if (asyncUser.getAsyncDependencies()[i] == op.getResults().front())
+          asyncUser.eraseAsyncDependency(i);
+      }
+      for (auto dep : op.getAsyncDependencies())
+        asyncUser.addAsyncDependency(dep);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+
   return failure();
 }
 
