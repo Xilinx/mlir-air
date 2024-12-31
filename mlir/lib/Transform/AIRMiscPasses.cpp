@@ -1190,7 +1190,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         builder.create<memref::DeallocOp>(loc, newMemref);
       builder.setInsertionPoint(newMemref.getDefiningOp());
     }
-    // Mutate air.channel.put/get opoperands.
+    // Mutate air.channel.put/get memref and async token usage.
     for (auto op : chanOpPartitions[key]) {
       int memrefOperandOffset =
           dyn_cast<air::AsyncOpInterface>(op.getOperation())
@@ -1199,6 +1199,11 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
           op.getIndices().size();
       auto &memrefOpOper = op->getOpOperand(memrefOperandOffset);
       memrefOpOper.assign(newMemref);
+      if (air::getAsyncTokenFromOp(allocOp) &&
+          air::getAsyncTokenFromOp(newMemref.getDefiningOp()))
+        op->replaceUsesOfWith(
+            air::getAsyncTokenFromOp(allocOp),
+            air::getAsyncTokenFromOp(newMemref.getDefiningOp()));
       auto offsetDim = air::getOffsetDimFromMemrefDim(dim, op.getStrides(),
                                                       air::getTensorShape(ty));
       if (!offsetDim)
@@ -1709,6 +1714,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   // Fold constants.
   mlir::arith::ConstantIndexOp::getCanonicalizationPatterns(canoPatterns,
                                                             context);
+  air::ExecuteOp::getCanonicalizationPatterns(canoPatterns, context);
   (void)applyPatternsAndFoldGreedily(func, std::move(canoPatterns));
 
   // Split memrefs.
