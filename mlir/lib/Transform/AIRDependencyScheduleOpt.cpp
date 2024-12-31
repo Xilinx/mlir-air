@@ -4996,7 +4996,9 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
     }
     // Preserve the original outermost scf.for's iter_arg.
     for (unsigned i = 0; i < forOp.getRegionIterArgs().size(); i++)
-      remap.map(forOp.getRegionIterArgs()[i], forOp.getInitArgs()[i]);
+      if (forOp.getInitArgs()[i].getParentRegion()->isProperAncestor(
+              forOp->getParentRegion()))
+        remap.map(forOp.getRegionIterArgs()[i], forOp.getInitArgs()[i]);
     rewriter.setInsertionPointToEnd(new_loop_op.getBody());
     for (auto &child_op : forOp.getBody()->without_terminator())
       rewriter.clone(child_op, remap);
