@@ -5000,6 +5000,7 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
               forOp->getParentRegion()))
         remap.map(forOp.getRegionIterArgs()[i], forOp.getInitArgs()[i]);
     rewriter.setInsertionPointToEnd(new_loop_op.getBody());
+    // Clone ops
     for (auto &child_op : forOp.getBody()->without_terminator())
       rewriter.clone(child_op, remap);
   }
@@ -5033,13 +5034,9 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
       if (canMove) {
         rewriter.setInsertionPointToStart(new_loop_op.getBody());
         auto new_alloc_exec = rewriter.clone(*alloc_exec, remap);
-        /// TODO: Do we still need below?
-        clearAsyncDependenciesOfAsyncOp(
-            dyn_cast<air::AsyncOpInterface>(new_alloc_exec));
         rewriter.setInsertionPointToEnd(new_loop_op.getBody());
         Operation *new_dealloc_exec =
             dealloc_exec ? rewriter.clone(*dealloc_exec, remap) : nullptr;
-
         if (air::isAsyncOp(new_loop_op))
           air::addAsyncDependencyIfNew(
               new_alloc_exec,
