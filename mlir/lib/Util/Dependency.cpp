@@ -534,11 +534,12 @@ void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
   auto ctx = op->getContext();
   SmallVector<Value> operands_without_wait_all;
   for (auto iter_oper : op.getInitArgs()) {
-    if (iter_oper.getDefiningOp() &&
-        isa<air::WaitAllOp>(iter_oper.getDefiningOp())) {
-      auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp());
+    if (!isa_and_present<air::AsyncTokenType>(iter_oper.getType()))
+      continue;
+    if (auto wa_op =
+            dyn_cast_if_present<air::WaitAllOp>(iter_oper.getDefiningOp()))
       addAsyncDependencyIfNewImpl(wa_op, token);
-    } else {
+    else {
       // Push to vec if unique
       if (std::find(operands_without_wait_all.begin(),
                     operands_without_wait_all.end(),
@@ -549,13 +550,11 @@ void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
   }
   for (auto v : operands_without_wait_all) {
     OpBuilder builder(op);
-    SmallVector<Value> dep_list = {};
+    SmallVector<Value> dep_list = {token, v};
     air::WaitAllOp wait_all_op_before_loop =
         builder.create<xilinx::air::WaitAllOp>(
             builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), dep_list);
     op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
-    addAsyncDependencyIfNewImpl(wait_all_op_before_loop, v);
-    addAsyncDependencyIfNewImpl(wait_all_op_before_loop, token);
   }
   // If scf.for loop isn't async, then make it async.
   if (operands_without_wait_all.empty()) {
