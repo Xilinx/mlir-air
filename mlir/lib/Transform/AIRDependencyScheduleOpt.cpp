@@ -28,6 +28,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
+#include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -3225,6 +3226,25 @@ private:
   }
 };
 
+// Replace async op with wait_all op
+static air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder,
+                                                IRMapping &remap, Operation *op,
+                                                bool cloneDepList = true) {
+  assert(air::isAsyncOp(op));
+  SmallVector<Value> dep_list_remap;
+  if (cloneDepList) {
+    for (auto dep : air::getAsyncDependenciesFromOp(op)) {
+      dep_list_remap.push_back(remap.lookupOrDefault(dep));
+    }
+  }
+  auto wa_op = builder.create<air::WaitAllOp>(
+      builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
+      dep_list_remap);
+  wa_op->setAttr("hoist", StringAttr::get(op->getContext(), "dep"));
+  remap.map(air::getAsyncTokenFromOp(op), wa_op.getAsyncToken());
+  return wa_op;
+}
+
 // A pass which transform multiple channel ops into one, where the data movement
 // is time-multiplexed.
 class AIRFuseChannels
@@ -3305,10 +3325,66 @@ public:
       }
     }
     renameSymbols(channelOps, chan_merge_map);
+    // Walk the region and mutate scf.for loop bounds based on "setLB" and
+    // "setUB" attributes;
+    auto getNewBoundValue = [](scf::ForOp fop, std::string attrNameInStr) {
+      std::optional<int> setBound;
+      SmallVector<Operation *> chanOpRange;
+      fop.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+          [fop, &chanOpRange](Operation *o) {
+            if (isa<scf::ForOp>(o) && o != fop)
+              WalkResult::skip();
+            if (isa<air::ChannelInterface>(o))
+              chanOpRange.push_back(o);
+            WalkResult::advance();
+          });
+      if (chanOpRange.empty())
+        return setBound;
+      if (llvm::any_of(chanOpRange, [attrNameInStr](Operation *o) {
+            return !o->hasAttr(attrNameInStr);
+          }))
+        return setBound;
+      setBound = (*chanOpRange.begin())
+                     ->getAttrOfType<IntegerAttr>(attrNameInStr)
+                     .getInt();
+      if (llvm::any_of(chanOpRange, [&setBound, attrNameInStr](Operation *o) {
+            return o->getAttrOfType<IntegerAttr>(attrNameInStr).getInt() !=
+                   *setBound;
+          })) {
+        fop->emitOpError("contains op marked to set its lower bound, but the "
+                         "set value isn't consistent");
+        return setBound;
+      }
+      return setBound;
+    };
+    auto clearAttrsInBlk = [](Block *blk, std::string attrNameInStr) {
+      blk->walk([attrNameInStr](air::ChannelInterface chanOp) {
+        chanOp->removeAttr(attrNameInStr);
+      });
+    };
+    f.walk([getNewBoundValue, clearAttrsInBlk](scf::ForOp fop) {
+      auto setLB = getNewBoundValue(fop, "setLB");
+      if (!setLB)
+        return;
+      OpBuilder builder(fop);
+      fop->getOpOperand(0).assign(
+          builder.create<arith::ConstantIndexOp>(fop->getLoc(), *setLB));
+      clearAttrsInBlk(fop.getBody(), "setLB");
+    });
+    f.walk([getNewBoundValue, clearAttrsInBlk](scf::ForOp fop) {
+      auto setUB = getNewBoundValue(fop, "setUB");
+      if (!setUB)
+        return;
+      OpBuilder builder(fop);
+      fop->getOpOperand(1).assign(
+          builder.create<arith::ConstantIndexOp>(fop->getLoc(), *setUB));
+      clearAttrsInBlk(fop.getBody(), "setUB");
+    });
   }
 
   void runOnOperation() override {
     auto module = getOperation();
+    auto ctx = &getContext();
 
     SmallVector<func::FuncOp, 4> funcOps;
     std::vector<air::ChannelOp> channelOps;
@@ -3316,6 +3392,11 @@ public:
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
     for (auto f : funcOps) {
       runOnFunction(f, channelOps);
+      // Canonicalization patterns.
+      RewritePatternSet patterns(ctx);
+      air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
+      scf::ForOp::getCanonicalizationPatterns(patterns, ctx);
+      (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
     }
   }
 
@@ -3901,9 +3982,45 @@ private:
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder builder(a);
-    builder.setInsertionPoint(a->getBlock()->getTerminator());
+    builder.setInsertionPointAfter(a);
     cloneOpAndOperands(builder, remap, b);
-    eraseParentLoopIfEmpty(*b);
+    // Erase b
+    if (air::isAsyncOp(b)) {
+      IRMapping waitAllRemap;
+      builder.setInsertionPoint(b);
+      auto waitAll = replaceAsyncOpWithWaitAll(builder, waitAllRemap, b);
+      air::getAsyncTokenFromOp(b).replaceAllUsesWith(waitAll.getAsyncToken());
+    }
+    b->erase();
+  }
+  // Fuse parent region nests to both a and b, interleaving pairs of
+  // air::ChannelInterface ops, originating from a and b loop nests
+  // respectively, into the fused loop nest.
+  void fuseParentRegionNestByIneterleaving(Operation *a, Operation *b) {
+    if (!a->getParentOfType<LoopLikeOpInterface>())
+      return;
+    if (!b->getParentOfType<LoopLikeOpInterface>())
+      return;
+    Region *aRegion = a->getParentRegion();
+    Region *bRegion = b->getParentRegion();
+    while (!aRegion->getParentOp()->getParentRegion()->isAncestor(
+        b->getParentRegion()))
+      aRegion = aRegion->getParentOp()->getParentRegion();
+    while (!bRegion->getParentOp()->getParentRegion()->isAncestor(
+        a->getParentRegion()))
+      bRegion = bRegion->getParentOp()->getParentRegion();
+    SmallVector<air::ChannelInterface> aChanOps, bChanOps;
+    aRegion->walk([&aChanOps](air::ChannelInterface chanOp) {
+      aChanOps.push_back(chanOp);
+    });
+    bRegion->walk([&bChanOps](air::ChannelInterface chanOp) {
+      bChanOps.push_back(chanOp);
+    });
+    if (aChanOps.size() != bChanOps.size())
+      return;
+    for (auto [aOtherOp, bOtherOp] : llvm::zip_equal(aChanOps, bChanOps))
+      mergeChannelOps(aOtherOp, bOtherOp);
+    return;
   }
   void mergeChannelOpsTemporally(air::ChannelInterface a,
                                  air::ChannelInterface b,
@@ -3918,17 +4035,26 @@ private:
     if (mergeByLBOrUB == "LB") {
       int originalLB = *getConstantIntValue(parentForOp.getLowerBound());
       assert(originalLB > 0);
-      parentForOp->getOpOperand(0).assign(
-          builder.create<arith::ConstantIndexOp>(parentForOp->getLoc(),
-                                                 originalLB - 1));
+      int currLB = originalLB;
+      if (a->hasAttr("setLB"))
+        currLB = a->getAttrOfType<IntegerAttr>("setLB").getInt();
+      a->setAttr("setLB", builder.getI32IntegerAttr(currLB - 1));
     } else if (mergeByLBOrUB == "UB") {
       int originalUB = *getConstantIntValue(parentForOp.getUpperBound());
-      parentForOp->getOpOperand(1).assign(
-          builder.create<arith::ConstantIndexOp>(parentForOp->getLoc(),
-                                                 originalUB + 1));
+      int currUB = originalUB;
+      if (a->hasAttr("setUB"))
+        currUB = a->getAttrOfType<IntegerAttr>("setUB").getInt();
+      a->setAttr("setUB", builder.getI32IntegerAttr(currUB + 1));
     } else
       assert(false && "invalid mergeByLBOrUB flag");
-    eraseParentLoopIfEmpty(*b);
+    // Erase b.
+    if (air::isAsyncOp(b)) {
+      IRMapping remap;
+      builder.setInsertionPoint(b);
+      auto waitAll = replaceAsyncOpWithWaitAll(builder, remap, b);
+      air::getAsyncTokenFromOp(b).replaceAllUsesWith(waitAll.getAsyncToken());
+    }
+    b->erase();
   }
   void mergeChannels(air::ChannelOp chan_a, air::ChannelOp chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
@@ -3941,9 +4067,9 @@ private:
         getChannelGetOpThroughSymbol(chan_b);
     // Interleave puts and gets
     for (unsigned i = 0; i < a_puts.size(); i++)
-      mergeChannelOps(a_puts[i], b_puts[i]);
+      fuseParentRegionNestByIneterleaving(a_puts[i], b_puts[i]);
     for (unsigned i = 0; i < a_gets.size(); i++)
-      mergeChannelOps(a_gets[i], b_gets[i]);
+      fuseParentRegionNestByIneterleaving(a_gets[i], b_gets[i]);
   }
   void mergeChannelOpsTemporally(air::ChannelOp chan_a, air::ChannelOp chan_b,
                                  std::string mergeByLBOrUB) {
@@ -3993,52 +4119,14 @@ private:
               dyn_cast<scf::ParallelOp>(a_loop_nest[i]->getParentOp())) {
         if (auto b_par =
                 dyn_cast<scf::ParallelOp>(b_loop_nest[i]->getParentOp())) {
-          for (unsigned j = 0; j < a_par.getBody()->getNumArguments(); j++) {
+          for (unsigned j = 0; j < a_par.getBody()->getNumArguments(); j++)
             remap.map(b_par.getBody()->getArgument(j),
                       a_par.getBody()->getArgument(j));
-          }
+          for (unsigned j = 0; j < a_par.getInitVals().size(); j++)
+            remap.map(b_par.getInitVals()[j], a_par.getInitVals()[j]);
         }
       }
     }
-  }
-  void eraseParentLoopIfEmpty(Operation &op) {
-    auto hasNEvents = [](Block *block, unsigned N) {
-      unsigned eventCounter = 0;
-      for (auto &o : block->getOperations()) {
-        if (isa<scf::YieldOp>(o))
-          continue;
-        if (isa<air::WaitAllOp>(o))
-          continue;
-        if (auto execOp = dyn_cast<air::ExecuteOp>(o))
-          if (execOp->getNumResults() == 2 &&
-              llvm::isa<IndexType>(execOp->getResult(1).getType()))
-            continue;
-        eventCounter++;
-      }
-      return eventCounter == N;
-    };
-    Operation *targetOp = &op;
-    for (Operation *parent = &op; !isa<air::HierarchyInterface>(parent);
-         parent = parent->getParentOp()) {
-      if (!hasNEvents(parent->getBlock(), 1)) {
-        targetOp = parent;
-        break;
-      };
-    }
-    // Erase target op.
-    OpBuilder builder(targetOp);
-    SmallVector<Value> depList;
-    for (auto operand : targetOp->getOperands()) {
-      if (llvm::isa<air::AsyncTokenType>(operand.getType()))
-        depList.push_back(operand);
-    }
-    for (auto res : targetOp->getResults()) {
-      auto wa = builder.create<air::WaitAllOp>(
-          builder.getUnknownLoc(),
-          air::AsyncTokenType::get(builder.getContext()), depList);
-      res.replaceAllUsesWith(wa.getAsyncToken());
-    }
-    targetOp->erase();
   }
 };
 
@@ -4770,25 +4858,6 @@ scf::ForOp simpleScfForLoopTiling(scf::ForOp forOp, int original_step,
   }
 
   return new_for_op;
-}
-
-// Replace async op with wait_all op
-static air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder,
-                                                IRMapping &remap, Operation *op,
-                                                bool cloneDepList = true) {
-  assert(air::isAsyncOp(op));
-  SmallVector<Value> dep_list_remap;
-  if (cloneDepList) {
-    for (auto dep : air::getAsyncDependenciesFromOp(op)) {
-      dep_list_remap.push_back(remap.lookupOrDefault(dep));
-    }
-  }
-  auto wa_op = builder.create<air::WaitAllOp>(
-      builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
-      dep_list_remap);
-  wa_op->setAttr("hoist", StringAttr::get(op->getContext(), "dep"));
-  remap.map(air::getAsyncTokenFromOp(op), wa_op.getAsyncToken());
-  return wa_op;
 }
 
 // Fuse scf.for loops in region. "fuseWithAllocDeallocs" is a bool argument
