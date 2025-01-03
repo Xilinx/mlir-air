@@ -1860,6 +1860,11 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
 
     if (!containsOnlyAIRChannels(for_op.getBody()))
       return failure();
+    // Induction variable isn't used, meaning that the loop body is invariant,
+    // i.e. any bd generated from the body is already specialized wrt the loop.
+    // No need to unroll the loop anymore.
+    if (for_op.getInductionVar().use_empty())
+      return failure();
 
     auto unroll_factor = air::getStaticScfForTripCountAsInt(for_op);
     if (!unroll_factor)
