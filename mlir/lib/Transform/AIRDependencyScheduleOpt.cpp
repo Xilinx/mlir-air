@@ -4200,44 +4200,63 @@ private:
         continue;
       candidate_ops.push_back(&o);
     }
-    // Group candidate_ops based on async dependencies.
-    for (auto o : candidate_ops) {
-      auto it =
-          llvm::find_if(target_ops_sets, [&](llvm::SetVector<Operation *> set) {
-            return llvm::any_of(
-                set, [&](Operation *op) { return areAsyncDependent(op, o); });
-          });
-      if (it == target_ops_sets.end()) {
-        auto newSetVec = llvm::SetVector<Operation *>();
-        newSetVec.insert(o);
-        target_ops_sets.push_back(newSetVec);
-      } else {
-        it->insert(o);
-      }
-    }
 
+    // Perform DFS and mark all nodes in the current connected component.
+    std::function<void(
+        Operation *, llvm::MapVector<Operation *, SmallVector<Operation *>> &,
+        llvm::SetVector<Operation *> &, llvm::SetVector<Operation *> &)>
+        dfs;
+    dfs = [&dfs](Operation *node,
+                 llvm::MapVector<Operation *, SmallVector<Operation *>> &graph,
+                 llvm::SetVector<Operation *> &visited,
+                 llvm::SetVector<Operation *> &component) {
+      visited.insert(node);
+      component.insert(node);
+      for (Operation *neighbour : graph[node])
+        if (llvm::find(visited, neighbour) == visited.end())
+          dfs(neighbour, graph, visited, component);
+      return;
+    };
+    // Partition the graph into connected subgraphs.
+    std::function<SmallVector<llvm::SetVector<Operation *>>(
+        llvm::MapVector<Operation *, SmallVector<Operation *>> &)>
+        partitionGraph;
+    partitionGraph =
+        [&dfs](llvm::MapVector<Operation *, SmallVector<Operation *>> &graph) {
+          llvm::SetVector<Operation *> visited;
+          SmallVector<llvm::SetVector<Operation *>> connectedComponents;
+          for (const auto &[node, neighbours] : graph) {
+            if (llvm::find(visited, node) == visited.end()) {
+              llvm::SetVector<Operation *> component;
+              dfs(node, graph, visited, component);
+              connectedComponents.push_back(component);
+            }
+          }
+          return connectedComponents;
+        };
+    llvm::MapVector<Operation *, SmallVector<Operation *>> depGraph;
+    for (auto sinkOp : candidate_ops) {
+      depGraph[sinkOp] = SmallVector<Operation *>{};
+      for (auto sourceOp : candidate_ops)
+        if (areAsyncDependent(sourceOp, sinkOp))
+          depGraph[sinkOp].push_back(sourceOp);
+    }
+    // Partition the graph.
+    target_ops_sets = partitionGraph(depGraph);
+
+    // Check if any memref.alloc needs to be hoisted.
     for (auto o : candidate_ops) {
-      // Check if any memref.alloc needs to be hoisted.
       SmallVector<Value, 2> operand_memrefs;
-      for (auto operand : o->getOperands()) {
-        if (!operand)
-          continue;
-        if (isa<MemRefType>(operand.getType()))
+      for (auto operand : o->getOperands())
+        if (isa_and_present<MemRefType>(operand.getType()))
           operand_memrefs.push_back(operand);
-      }
       for (auto memref : operand_memrefs) {
-        if (!memref)
+        auto exec = dyn_cast_if_present<air::ExecuteOp>(memref.getDefiningOp());
+        if (!exec)
           continue;
-        auto memrefDefOp = memref.getDefiningOp();
-        if (!memrefDefOp)
-          continue;
-        if (for_op->isProperAncestor(memrefDefOp)) {
-          if (auto exec = dyn_cast<air::ExecuteOp>(memrefDefOp))
-            memrefDefOp = &exec.getChildOps().front();
-          memrefDefOp->setAttr(
-              "hoist_alloc",
-              mlir::BoolAttr::get(memrefDefOp->getContext(), true));
-        }
+        if (for_op->isProperAncestor(exec))
+          exec->setAttr("hoist_alloc",
+                        mlir::BoolAttr::get(exec->getContext(), true));
       }
     }
   }
