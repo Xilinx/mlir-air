@@ -4238,11 +4238,22 @@ private:
     for (auto sinkOp : candidate_ops) {
       depGraph[sinkOp] = SmallVector<Operation *>{};
       for (auto sourceOp : candidate_ops)
-        if (areAsyncDependent(sourceOp, sinkOp))
+        if (areAsyncDependent(sourceOp, sinkOp) && sourceOp != sinkOp)
           depGraph[sinkOp].push_back(sourceOp);
     }
     // Partition the graph.
     target_ops_sets = partitionGraph(depGraph);
+    // Sort ops in each partition based on their order in block.
+    auto sortSetVectorByOpOrder = [](llvm::SetVector<Operation *> &setVec) {
+      SmallVector<Operation *> sortedVec = setVec.takeVector();
+      llvm::sort(
+          sortedVec.begin(), sortedVec.end(),
+          [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+      setVec = llvm::SetVector<Operation *>(sortedVec.begin(), sortedVec.end());
+      return;
+    };
+    for (auto &setVec : target_ops_sets)
+      sortSetVectorByOpOrder(setVec);
 
     // Check if any memref.alloc needs to be hoisted.
     for (auto o : candidate_ops) {
