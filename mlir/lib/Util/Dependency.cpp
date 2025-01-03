@@ -498,7 +498,7 @@ struct MakeAsyncScfForPattern : public OpRewritePattern<scf::ForOp> {
 
   LogicalResult matchAndRewrite(scf::ForOp forOp,
                                 PatternRewriter &rewriter) const override {
-    if (air::getAsyncDependenciesFromOp(forOp).empty())
+    if (!air::getAsyncDependenciesFromOp(forOp).empty())
       return failure();
     if (!isa<air::AsyncTokenType>(token.getType()))
       return failure();
