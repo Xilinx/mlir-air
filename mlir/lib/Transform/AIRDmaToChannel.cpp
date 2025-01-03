@@ -709,8 +709,11 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
 
     // Clone ops
     module_builder.restoreInsertionPoint(insertionPointAtHierOp);
-    (void)cloneOpsInBlock(&herd.getBody().front(), module_builder, remap,
-                          externalGetPut[dma_index]);
+    auto clonedOps = cloneOpsInBlock(&herd.getBody().front(), module_builder,
+                                     remap, externalGetPut[dma_index]);
+    for (auto o : clonedOps)
+      for (auto d : air::getAsyncDependenciesFromOp(hier_op))
+        air::addAsyncDependencyIfNew(o, d);
     dma_index++;
   }
 
