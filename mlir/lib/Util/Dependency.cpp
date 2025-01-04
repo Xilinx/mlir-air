@@ -936,6 +936,23 @@ void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
 }
 
+// Replace async op with wait_all op
+air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
+                                         Operation *op, bool cloneDepList) {
+  assert(air::isAsyncOp(op));
+  SmallVector<Value> dep_list_remap;
+  if (cloneDepList) {
+    for (auto dep : air::getAsyncDependenciesFromOp(op)) {
+      dep_list_remap.push_back(remap.lookupOrDefault(dep));
+    }
+  }
+  auto wa_op = builder.create<air::WaitAllOp>(
+      builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
+      dep_list_remap);
+  remap.map(air::getAsyncTokenFromOp(op), wa_op.getAsyncToken());
+  return wa_op;
+}
+
 //===----------------------------------------------------------------------===//
 // Dependency graph
 //===----------------------------------------------------------------------===//

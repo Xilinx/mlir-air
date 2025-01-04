@@ -159,25 +159,6 @@ static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder builder,
   return output;
 }
 
-// Replace async op with wait_all op
-static air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder,
-                                                IRMapping &remap, Operation *op,
-                                                bool cloneDepList = true) {
-  assert(air::isAsyncOp(op));
-  SmallVector<Value> dep_list_remap;
-  if (cloneDepList) {
-    for (auto dep : air::getAsyncDependenciesFromOp(op)) {
-      dep_list_remap.push_back(remap.lookupOrDefault(dep));
-    }
-  }
-  auto wa_op = builder.create<air::WaitAllOp>(
-      builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
-      dep_list_remap);
-  wa_op->setAttr("hoist", StringAttr::get(op->getContext(), "dep"));
-  remap.map(air::getAsyncTokenFromOp(op), wa_op.getAsyncToken());
-  return wa_op;
-}
-
 // Clone affine if's block with remap
 static SmallVector<Operation *>
 replaceAffineIfOpWithChannelOpAndClone(OpBuilder builder, IRMapping &remap,
@@ -240,9 +221,12 @@ cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
     SmallVector<Operation *> clonedOps;
     for (Operation &o : blk->without_terminator()) {
       if (!o.hasAttr("hoist")) {
-        if (air::isAsyncOp(&o))
-          clonedOps.push_back(
-              replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+        if (air::isAsyncOp(&o)) {
+          auto wa_op =
+              air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+          wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+          clonedOps.push_back(wa_op);
+        }
         continue;
       }
 
@@ -255,8 +239,10 @@ cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                 "internalGetPut") {
           // Found channel op labelled as "internalGetPut", which shouldn't be
           // hoisted
-          clonedOps.push_back(
-              replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+          auto wa_op =
+              air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+          wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+          clonedOps.push_back(wa_op);
         } else {
           clonedOps.push_back(builder.clone(o, remap));
         }
@@ -268,13 +254,19 @@ cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
       } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(o)) {
         if (o.hasAttr("loop-carried-dep"))
           clonedOps.push_back(builder.clone(o, remap));
-        else
-          clonedOps.push_back(
-              replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+        else {
+          auto wa_op =
+              air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+          wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+          clonedOps.push_back(wa_op);
+        }
       } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
-        if (air::isAsyncOp(&o))
-          clonedOps.push_back(
-              replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+        if (air::isAsyncOp(&o)) {
+          auto wa_op =
+              air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+          wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+          clonedOps.push_back(wa_op);
+        }
       } else {
         clonedOps.push_back(builder.clone(o, remap));
       }
@@ -665,9 +657,12 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
       SmallVector<Operation *> clonedOps;
       for (Operation &o : blk->without_terminator()) {
         if (!o.hasAttr("hoist")) {
-          if (air::isAsyncOp(&o))
-            clonedOps.push_back(
-                replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+          if (air::isAsyncOp(&o)) {
+            auto wa_op =
+                air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+            wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+            clonedOps.push_back(wa_op);
+          }
           continue;
         }
 
@@ -685,21 +680,29 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
                       .str() == "internalGetPut") {
             // Found channel op labelled as "internalGetPut", which shouldn't be
             // hoisted
-            clonedOps.push_back(
-                replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+            auto wa_op =
+                air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+            wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+            clonedOps.push_back(wa_op);
           } else {
             clonedOps.push_back(builder.clone(o, remap));
           }
         } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(o)) {
           if (o.hasAttr("loop-carried-dep"))
             clonedOps.push_back(builder.clone(o, remap));
-          else
-            clonedOps.push_back(
-                replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+          else {
+            auto wa_op =
+                air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+            wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+            clonedOps.push_back(wa_op);
+          }
         } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
-          if (air::isAsyncOp(&o))
-            clonedOps.push_back(
-                replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+          if (air::isAsyncOp(&o)) {
+            auto wa_op =
+                air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+            wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+            clonedOps.push_back(wa_op);
+          }
         } else {
           clonedOps.push_back(builder.clone(o, remap));
         }
@@ -843,9 +846,12 @@ class AIRDmaToAIRChannelConversion
         SmallVector<Operation *> clonedOps;
         for (Operation &o : blk->without_terminator()) {
           if (!o.hasAttr("hoist")) {
-            if (air::isAsyncOp(&o))
-              clonedOps.push_back(
-                  replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+            if (air::isAsyncOp(&o)) {
+              auto wa_op =
+                  air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+              wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+              clonedOps.push_back(wa_op);
+            }
             continue;
           }
           if (auto child_for_op = dyn_cast<LoopLikeOpInterface>(o)) {
@@ -858,15 +864,20 @@ class AIRDmaToAIRChannelConversion
                         .str() == "internalGetPut") {
               // Found channel op labelled as "internalGetPut", which
               // shouldn't be hoisted
-              clonedOps.push_back(
-                  replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+              auto wa_op =
+                  air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+              wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+              clonedOps.push_back(wa_op);
             } else {
               clonedOps.push_back(builder.clone(o, remap));
             }
           } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
-            if (air::isAsyncOp(&o))
-              clonedOps.push_back(
-                  replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+            if (air::isAsyncOp(&o)) {
+              auto wa_op =
+                  air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+              wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+              clonedOps.push_back(wa_op);
+            }
           } else {
             clonedOps.push_back(builder.clone(o, remap));
           }
@@ -1242,9 +1253,12 @@ class AIRDemoteDmaToAIRHierarchyConversion
         SmallVector<Operation *> clonedOps;
         for (Operation &o : blk->without_terminator()) {
           if (!o.hasAttr("hoist")) {
-            if (air::isAsyncOp(&o))
-              clonedOps.push_back(
-                  replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+            if (air::isAsyncOp(&o)) {
+              auto wa_op =
+                  air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+              wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+              clonedOps.push_back(wa_op);
+            }
             continue;
           }
 
@@ -1254,9 +1268,12 @@ class AIRDemoteDmaToAIRHierarchyConversion
           } else if (auto memcpy_op = dyn_cast<air::MemcpyInterface>(o)) {
             clonedOps.push_back(builder.clone(o, remap));
           } else if (!air::isPure(&o) && !isa<air::WaitAllOp>(o)) {
-            if (air::isAsyncOp(&o))
-              clonedOps.push_back(
-                  replaceAsyncOpWithWaitAll(builder, remap, &o, false));
+            if (air::isAsyncOp(&o)) {
+              auto wa_op =
+                  air::replaceAsyncOpWithWaitAll(builder, remap, &o, false);
+              wa_op->setAttr("hoist", StringAttr::get(o.getContext(), "dep"));
+              clonedOps.push_back(wa_op);
+            }
           } else {
             clonedOps.push_back(builder.clone(o, remap));
           }
