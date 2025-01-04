@@ -77,6 +77,10 @@ LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
                                 Operation *originalChanOp, IRMapping remap);
 void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
     RewritePatternSet &patterns);
+air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
+                                         Operation *op,
+                                         bool cloneDepList = true);
+
 //===----------------------------------------------------------------------===//
 // Dependency graph
 //===----------------------------------------------------------------------===//

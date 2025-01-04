@@ -3231,25 +3231,6 @@ private:
   }
 };
 
-// Replace async op with wait_all op
-static air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder,
-                                                IRMapping &remap, Operation *op,
-                                                bool cloneDepList = true) {
-  assert(air::isAsyncOp(op));
-  SmallVector<Value> dep_list_remap;
-  if (cloneDepList) {
-    for (auto dep : air::getAsyncDependenciesFromOp(op)) {
-      dep_list_remap.push_back(remap.lookupOrDefault(dep));
-    }
-  }
-  auto wa_op = builder.create<air::WaitAllOp>(
-      builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
-      dep_list_remap);
-  wa_op->setAttr("hoist", StringAttr::get(op->getContext(), "dep"));
-  remap.map(air::getAsyncTokenFromOp(op), wa_op.getAsyncToken());
-  return wa_op;
-}
-
 // A pass which transform multiple channel ops into one, where the data movement
 // is time-multiplexed.
 class AIRFuseChannels
@@ -3993,7 +3974,7 @@ private:
     if (air::isAsyncOp(b)) {
       IRMapping waitAllRemap;
       builder.setInsertionPoint(b);
-      auto waitAll = replaceAsyncOpWithWaitAll(builder, waitAllRemap, b);
+      auto waitAll = air::replaceAsyncOpWithWaitAll(builder, waitAllRemap, b);
       air::getAsyncTokenFromOp(b).replaceAllUsesWith(waitAll.getAsyncToken());
     }
     b->erase();
@@ -4056,7 +4037,7 @@ private:
     if (air::isAsyncOp(b)) {
       IRMapping remap;
       builder.setInsertionPoint(b);
-      auto waitAll = replaceAsyncOpWithWaitAll(builder, remap, b);
+      auto waitAll = air::replaceAsyncOpWithWaitAll(builder, remap, b);
       air::getAsyncTokenFromOp(b).replaceAllUsesWith(waitAll.getAsyncToken());
     }
     b->erase();
@@ -5189,12 +5170,12 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
       air::WaitAllOp waitAll = air::WaitAllOp();
       if (dealloc) {
         rewriter.setInsertionPoint(dealloc);
-        waitAll = replaceAsyncOpWithWaitAll(rewriter, remap, dealloc);
+        waitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, dealloc);
         dealloc.getAsyncToken().replaceAllUsesWith(waitAll.getAsyncToken());
         rewriter.eraseOp(dealloc);
       }
       rewriter.setInsertionPoint(alloc);
-      waitAll = replaceAsyncOpWithWaitAll(rewriter, remap, alloc);
+      waitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, alloc);
       alloc.getAsyncToken().replaceAllUsesWith(waitAll.getAsyncToken());
       rewriter.eraseOp(alloc);
     }
