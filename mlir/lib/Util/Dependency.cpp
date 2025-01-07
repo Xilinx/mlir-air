@@ -532,21 +532,15 @@ void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
 }
 void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
   auto ctx = op->getContext();
-  SmallVector<Value> operands_without_wait_all;
+  llvm::SetVector<Value> operands_without_wait_all;
   for (auto iter_oper : op.getInitArgs()) {
     if (!isa_and_present<air::AsyncTokenType>(iter_oper.getType()))
       continue;
-    if (auto wa_op =
-            dyn_cast_if_present<air::WaitAllOp>(iter_oper.getDefiningOp()))
+    auto wa_op = dyn_cast_if_present<air::WaitAllOp>(iter_oper.getDefiningOp());
+    if (wa_op && wa_op.getAsyncToken().hasOneUse())
       addAsyncDependencyIfNewImpl(wa_op, token);
-    else {
-      // Push to vec if unique
-      if (std::find(operands_without_wait_all.begin(),
-                    operands_without_wait_all.end(),
-                    iter_oper) == operands_without_wait_all.end()) {
-        operands_without_wait_all.push_back(iter_oper);
-      }
-    }
+    else
+      operands_without_wait_all.insert(iter_oper);
   }
   for (auto v : operands_without_wait_all) {
     OpBuilder builder(op);
@@ -557,7 +551,7 @@ void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
     op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
   }
   // If scf.for loop isn't async, then make it async.
-  if (operands_without_wait_all.empty()) {
+  if (!isAsyncOp(op)) {
     RewritePatternSet patterns(ctx);
     patterns.insert<MakeAsyncScfForPattern>(ctx, token);
     (void)applyOpPatternsAndFold(ArrayRef<Operation *>{op},
@@ -719,12 +713,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   IRMapping remap;
   auto new_for_op = rewriter.create<scf::ForOp>(
       loc, for_op.getLowerBound(), for_op.getUpperBound(), for_op.getStep(),
-      SmallVector<Value>{
-          rewriter
-              .create<air::WaitAllOp>(
-                  loc, air::AsyncTokenType::get(rewriter.getContext()),
-                  SmallVector<Value>{})
-              .getAsyncToken()});
+      for_op.getInitArgs());
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -765,25 +754,14 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                    ->getResult(0)});
 
   for (auto erase_op : target_ops) {
-    // Reconnect returned tokens.
-    rewriter.setInsertionPoint(erase_op);
-    SmallVector<Value> erase_op_async_deps =
-        air::getAsyncDependenciesFromOp(erase_op);
-    for (auto res : erase_op->getResults()) {
-      if (!isa<air::AsyncTokenType>(res.getType()))
-        continue;
-      if (erase_op_async_deps.empty())
-        continue;
-      else if (erase_op_async_deps.size() == 1)
-        res.replaceAllUsesWith(erase_op_async_deps.front());
-      else {
-        res.replaceAllUsesWith(
-            rewriter
-                .create<air::WaitAllOp>(
-                    loc, air::AsyncTokenType::get(rewriter.getContext()),
-                    erase_op_async_deps)
-                .getAsyncToken());
-      }
+    IRMapping waitAllRemap;
+    if (air::isAsyncOp(erase_op)) {
+      // Reconnect returned tokens.
+      rewriter.setInsertionPoint(erase_op);
+      auto newWaitAll = air::replaceAsyncOpWithWaitAll(rewriter, waitAllRemap,
+                                                       erase_op, true);
+      air::getAsyncTokenFromOp(erase_op).replaceAllUsesWith(
+          newWaitAll.getAsyncToken());
     }
   }
   for (auto erase_op : target_ops)

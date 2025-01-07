@@ -50,6 +50,7 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
     ArrayRef<BlockArgument> getSize();
     OperandRange getSizeOperands();
     unsigned getNumKernelOperands();
+    OperandRange getKernelOperands();
     Value getKernelOperand(unsigned i);
     ArrayRef<BlockArgument> getKernelArguments();
     BlockArgument getKernelArgument(unsigned i);
@@ -59,6 +60,27 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
         return id_attr.getInt();
       }
       return -1;
+    }
+    
+    /// Return the kernel argument that corresponds to the given operand.
+    /// Return an "empty" block argument if the given value is not a kernel
+    /// operand.
+    BlockArgument getTiedKernelArgument(Value Oper) {
+      auto kernelOperands = getKernelOperands();
+      auto it = llvm::find(kernelOperands, Oper);
+      if (it == kernelOperands.end())
+        return {};
+      return getKernelArgument(std::distance(kernelOperands.begin(), it));
+    }
+    /// Return the operand that corresponds to the given kernel argument.
+    /// Return "nullptr" if the given block argument is not a kernel argument
+    /// of this op.
+    Value getTiedKernelOperand(BlockArgument bbArg) {
+      auto args = getKernelArguments();
+      auto it = llvm::find(args, bbArg);
+      if (it == args.end())
+        return {};
+      return getKernelOperand(std::distance(args.begin(), it));
     }
   }];
   let hasCanonicalizer = 1;
@@ -109,6 +131,7 @@ def air_SegmentOp : air_Op<"segment", [air_AsyncOpInterface,
     ArrayRef<BlockArgument> getSize();
     OperandRange getSizeOperands();
     unsigned getNumKernelOperands();
+    OperandRange getKernelOperands();
     Value getKernelOperand(unsigned i);
     ArrayRef<BlockArgument> getKernelArguments();
     BlockArgument getKernelArgument(unsigned i);
@@ -150,6 +173,26 @@ def air_SegmentOp : air_Op<"segment", [air_AsyncOpInterface,
         return a.getInt();
       }
       return std::optional<uint64_t>();
+    }
+    /// Return the kernel argument that corresponds to the given operand.
+    /// Return an "empty" block argument if the given value is not a kernel
+    /// operand.
+    BlockArgument getTiedKernelArgument(Value Oper) {
+      auto kernelOperands = getKernelOperands();
+      auto it = llvm::find(kernelOperands, Oper);
+      if (it == kernelOperands.end())
+        return {};
+      return getKernelArgument(std::distance(kernelOperands.begin(), it));
+    }
+    /// Return the operand that corresponds to the given kernel argument.
+    /// Return "nullptr" if the given block argument is not a kernel argument
+    /// of this op.
+    Value getTiedKernelOperand(BlockArgument bbArg) {
+      auto args = getKernelArguments();
+      auto it = llvm::find(args, bbArg);
+      if (it == args.end())
+        return {};
+      return getKernelOperand(std::distance(args.begin(), it));
     }
   }];
   let hasCanonicalizer = 1;
@@ -201,6 +244,7 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
     ArrayRef<BlockArgument> getSize();
     OperandRange getSizeOperands();
     unsigned getNumKernelOperands();
+    OperandRange getKernelOperands();
     Value getKernelOperand(unsigned i);
     ArrayRef<BlockArgument> getKernelArguments();
     BlockArgument getKernelArgument(unsigned i);
@@ -229,6 +273,27 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
     }
     uint64_t getNumCols();
     uint64_t getNumRows();
+
+    /// Return the kernel argument that corresponds to the given operand.
+    /// Return an "empty" block argument if the given value is not a kernel
+    /// operand.
+    BlockArgument getTiedKernelArgument(Value Oper) {
+      auto kernelOperands = getKernelOperands();
+      auto it = llvm::find(kernelOperands, Oper);
+      if (it == kernelOperands.end())
+        return {};
+      return getKernelArgument(std::distance(kernelOperands.begin(), it));
+    }
+    /// Return the operand that corresponds to the given kernel argument.
+    /// Return "nullptr" if the given block argument is not a kernel argument
+    /// of this op.
+    Value getTiedKernelOperand(BlockArgument bbArg) {
+      auto args = getKernelArguments();
+      auto it = llvm::find(args, bbArg);
+      if (it == args.end())
+        return {};
+      return getKernelOperand(std::distance(args.begin(), it));
+    }
   }];
   let hasCanonicalizer = 1;
 }

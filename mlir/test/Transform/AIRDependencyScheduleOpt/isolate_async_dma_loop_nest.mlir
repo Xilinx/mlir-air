@@ -743,7 +743,7 @@ module {
 
 // -----
 
-// Check air.herd op hoisting from a chain of loop-carried dependency.
+// Check air.herd ops greedily hoisted from a chain of loop-carried dependency, and merged into one.
 
 // CHECK-LABEL: func.func @func9
 // CHECK: air.launch
@@ -752,18 +752,29 @@ module {
 // CHECK: air.herd
 // CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
 // CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
+// CHECK: air.execute {
 // CHECK: linalg.fill
+// CHECK: }
 
-// CHECK: air.herd
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
 // CHECK: scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}}
+// CHECK: air.execute {
 // CHECK: linalg.fill
+// CHECK: }
+// CHECK: }
 
-// CHECK: air.herd
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
+// CHECK: air.execute {
 // CHECK: linalg.fill
+// CHECK: }
+
+// CHECK: }
+// CHECK: }
+// CHECK: }
+
+// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
+// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
+// CHECK: air.channel.put{{.*}}@channel_0
+// CHECK: }
+// CHECK: }
 
 module {
   air.channel @channel_0 [1, 1]

@@ -621,106 +621,272 @@ private:
   }
 };
 
-struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
+// Hoist the herd out of a parent scf.for loop.
+FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
+                                             Region *destRegion,
+                                             OpBuilder &builder) {
+  auto insertionCheckpoint = builder.saveInsertionPoint();
+  auto loc = herdOp->getLoc();
+  auto ctx = herdOp->getContext();
+  if (!destRegion->isAncestor(herdOp->getParentRegion()))
+    return failure();
+  SmallVector<scf::ForOp> for_loop_nest;
+  Operation *parent = herdOp->getParentOp();
+  while (parent && parent != destRegion->getParentOp()) {
+    if (auto fop = dyn_cast<scf::ForOp>(parent)) {
+      if (hasNImpureOps(fop.getBody(), 1))
+        for_loop_nest.push_back(fop);
+      else
+        return failure(); // Herd is not in perfectly nested loop.
+    }
+    parent = parent->getParentOp();
+  }
+
+  if (for_loop_nest.empty())
+    return failure();
+
+  scf::ForOp outerMostLoop = for_loop_nest.back();
+
+  // Create new herd op as parent to the scf.for loop nest.
+  builder.setInsertionPoint(outerMostLoop);
+  auto originalHerdOperands = herdOp.getOperands().drop_front(
+      herdOp.getAsyncDependencies().size() + herdOp.getNumDims());
+  SmallVector<Value> herdOperands;
+  SmallVector<unsigned> sparseKernelArgIndices;
+  IRMapping remap;
+  for (unsigned i = 0; i < originalHerdOperands.size(); i++) {
+    if (originalHerdOperands[i].getParentRegion()->isAncestor(
+            outerMostLoop->getParentRegion())) {
+      herdOperands.push_back(originalHerdOperands[i]);
+      sparseKernelArgIndices.push_back(i);
+    } else
+      remap.map(herdOp.getKernelArgument(i), herdOp.getKernelOperand(i));
+  }
+  auto forRegionIterOperands = outerMostLoop.getOperands().drop_front(
+      outerMostLoop.getNumControlOperands());
+  auto newHerdOp = builder.create<air::HerdOp>(
+      loc, forRegionIterOperands, herdOp.getSizeOperands(), herdOperands, true,
+      herdOp->getAttrs());
+  outerMostLoop->moveBefore(newHerdOp.getBody().front().getTerminator());
+  builder.setInsertionPoint(outerMostLoop);
+  for (unsigned i = 0; i < sparseKernelArgIndices.size(); i++)
+    remap.map(herdOp.getKernelArgument(sparseKernelArgIndices[i]),
+              newHerdOp.getKernelArgument(i));
+
+  // Replace uses of tokens in for loop nest with air.wait_all located at the
+  // start of air.herd body.
+  for (auto val : forRegionIterOperands) {
+    if (!isa<air::AsyncTokenType>(val.getType())) {
+      outerMostLoop->emitOpError(
+          "loop op's iter_args contain non-async-token-type block arguments, "
+          "NYI.");
+      return failure();
+    }
+    auto newAsyncToken =
+        builder
+            .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                    SmallVector<Value>{})
+            .getAsyncToken();
+    remap.map(val, newAsyncToken);
+  }
+  for (auto loop : llvm::reverse(for_loop_nest)) {
+    if (auto definingOp = loop.getUpperBound().getDefiningOp())
+      builder.clone(*definingOp, remap);
+    if (auto definingOp = loop.getLowerBound().getDefiningOp())
+      builder.clone(*definingOp, remap);
+    if (auto definingOp = loop.getStep().getDefiningOp())
+      builder.clone(*definingOp, remap);
+  }
+
+  // Splice herd block into inner-most for loop.
+  scf::ForOp innerMostLoop = for_loop_nest.front();
+  auto &bb = innerMostLoop.getBody()->getOperations();
+  auto &body = herdOp.getBody().front().getOperations();
+  bb.splice(bb.begin(), body, body.begin(), --body.end());
+
+  builder.setInsertionPoint(herdOp);
+  for (auto res : herdOp->getResults())
+    remap.map(res,
+              builder
+                  .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                          SmallVector<Value>{})
+                  .getAsyncToken());
+  for (unsigned i = 0; i < herdOp.getNumDims(); i++) {
+    remap.map(herdOp.getIds()[i], newHerdOp.getIds()[i]);
+    remap.map(herdOp.getSize()[i], newHerdOp.getSize()[i]);
+  }
+  for (auto [key, val] : remap.getValueMap())
+    replaceAllUsesInRegionWith(key, val, newHerdOp.getBody());
+  for (auto res : outerMostLoop->getResults())
+    res.replaceAllUsesWith(newHerdOp.getAsyncToken());
+
+  builder.restoreInsertionPoint(insertionCheckpoint);
+  return newHerdOp;
+}
+
+// Merge all herds which are (1) sharing one common parent region and (2) using
+// the same symname into one herd.
+struct MergeAIRHerdsPattern : public OpRewritePattern<air::HerdOp> {
   using OpRewritePattern<air::HerdOp>::OpRewritePattern;
 
-  HoistAIRHerdInForPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+  MergeAIRHerdsPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
 
   LogicalResult matchAndRewrite(air::HerdOp herdOp,
                                 PatternRewriter &rewriter) const override {
-    auto loc = herdOp->getLoc();
-    auto ctx = herdOp->getContext();
-    SmallVector<scf::ForOp> for_loop_nest;
-    Operation *parent = herdOp->getParentOp();
-    while (parent && !isa<air::SegmentOp>(parent)) {
-      if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
-        if (hasNImpureOps(forOp.getBody(), 1))
-          for_loop_nest.push_back(forOp);
-        else
-          return failure(); // Herd is not in perfectly nested loop.
-      }
-      parent = parent->getParentOp();
-    }
+    auto parentRegion = herdOp->getParentRegion();
 
-    if (for_loop_nest.empty())
+    auto symName = herdOp.getSymName();
+    SmallVector<air::HerdOp> herdsWithSameName;
+    parentRegion->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+        [symName, &herdsWithSameName](air::HerdOp herd) {
+          if (herd.getSymName() != symName)
+            return WalkResult::skip();
+          herdsWithSameName.push_back(herd);
+          return WalkResult::advance();
+        });
+    // Pattern is only applied to the last herd with the same herd name.
+    if (herdOp != herdsWithSameName.back())
+      return failure();
+    // Failure if there's only one herd with the same herd name.
+    if (herdsWithSameName.size() == 1)
+      return failure();
+    // Get the innermost region that is ancestor to all herds sharing the same
+    // herd name.
+    Region *region = herdOp->getParentRegion();
+    // Failure if not all herds with the same symname are under one single
+    // region.
+    if (!llvm::all_of(herdsWithSameName, [region](air::HerdOp h) {
+          return h->getParentRegion() == region;
+        }))
       return failure();
 
-    scf::ForOp outerMostLoop = for_loop_nest.back();
+    // Verify that all specified herds are mergeable.
+    if (!llvm::all_of(herdsWithSameName, [&herdOp](air::HerdOp h) {
+          if (herdOp.getNumDims() != h.getNumDims())
+            return false;
+          for (unsigned i = 0; i < herdOp.getNumDims(); i++) {
+            auto herdOpS = getConstantIntValue(herdOp.getSizeOperands()[i]);
+            auto hS = getConstantIntValue(h.getSizeOperands()[i]);
+            if (herdOpS && hS && *herdOpS != *hS)
+              return false;
+          }
+          return true;
+        }))
+      return failure();
 
-    // Create new herd op as parent to the scf.for loop nest.
-    rewriter.setInsertionPoint(outerMostLoop);
-    auto originalHerdOperands = herdOp.getOperands().drop_front(
-        herdOp.getAsyncDependencies().size() + herdOp.getNumDims());
-    SmallVector<Value> herdOperands;
-    SmallVector<unsigned> sparseKernelArgIndices;
+    // Merge all herds with the same herd name into one.
+    llvm::SetVector<Value> kernelOperands;
+    for (auto h : herdsWithSameName)
+      kernelOperands.insert(h.getKernelOperands().begin(),
+                            h.getKernelOperands().end());
+    rewriter.setInsertionPointAfter(herdsWithSameName.back());
+    auto newMergedHerd = rewriter.create<air::HerdOp>(
+        herdOp->getLoc(), herdsWithSameName.back().getAsyncDependencies(),
+        herdOp.getSizeOperands(), kernelOperands.takeVector(),
+        (bool)herdOp.getAsyncToken(), herdOp->getAttrs());
+    rewriter.setInsertionPointToStart(&newMergedHerd.getBody().front());
     IRMapping remap;
-    for (unsigned i = 0; i < originalHerdOperands.size(); i++) {
-      if (originalHerdOperands[i].getParentRegion()->isAncestor(
-              outerMostLoop->getParentRegion())) {
-        herdOperands.push_back(originalHerdOperands[i]);
-        sparseKernelArgIndices.push_back(i);
-      } else
-        remap.map(herdOp.getKernelArgument(i), herdOp.getKernelOperand(i));
+    for (auto h : herdsWithSameName) {
+      // Update "link_with" attr
+      if (h.getLinkWith())
+        newMergedHerd.setLinkWith(h.getLinkWith());
+      // Remap kernel arguments
+      for (unsigned i = 0; i < h.getNumDims() * 2; i++)
+        remap.map(h.getBody().getArgument(i),
+                  newMergedHerd.getBody().getArgument(i));
+      for (unsigned i = 0; i < h.getNumKernelOperands(); i++)
+        remap.map(h.getKernelArgument(i),
+                  newMergedHerd.getTiedKernelArgument(
+                      h.getTiedKernelOperand(h.getKernelArgument(i))));
+      // Clone ops
+      for (auto &o : h.getBody().front().without_terminator())
+        rewriter.clone(o, remap);
     }
-    auto forRegionIterOperands = outerMostLoop.getOperands().drop_front(
-        outerMostLoop.getNumControlOperands());
-    auto newHerdOp = rewriter.create<air::HerdOp>(
-        loc, forRegionIterOperands, herdOp.getSizeOperands(), herdOperands,
-        true, herdOp->getAttrs());
-    outerMostLoop->moveBefore(newHerdOp.getBody().front().getTerminator());
-    OpBuilder builder(outerMostLoop);
-    for (unsigned i = 0; i < sparseKernelArgIndices.size(); i++)
-      remap.map(herdOp.getKernelArgument(sparseKernelArgIndices[i]),
-                newHerdOp.getKernelArgument(i));
 
-    // Replace uses of tokens in for loop nest with air.wait_all located at the
-    // start of air.herd body.
-    for (auto val : forRegionIterOperands) {
-      if (!isa<air::AsyncTokenType>(val.getType())) {
-        outerMostLoop->emitOpError(
-            "loop op's iter_args contain non-async-token-type block arguments, "
-            "NYI.");
-        return failure();
+    // Erase original herds; replace async token uses if async.
+    for (auto it = herdsWithSameName.begin(); it != herdsWithSameName.end();
+         it++) {
+      if (!it->getAsyncToken()) {
+        rewriter.eraseOp(*it);
+        continue;
       }
-      auto newAsyncToken =
-          builder
-              .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
-                                      SmallVector<Value>{})
-              .getAsyncToken();
-      remap.map(val, newAsyncToken);
-    }
-    for (auto loop : llvm::reverse(for_loop_nest)) {
-      if (auto definingOp = loop.getUpperBound().getDefiningOp())
-        builder.clone(*definingOp, remap);
-      if (auto definingOp = loop.getLowerBound().getDefiningOp())
-        builder.clone(*definingOp, remap);
-      if (auto definingOp = loop.getStep().getDefiningOp())
-        builder.clone(*definingOp, remap);
+      rewriter.setInsertionPoint(*it);
+      if (it == herdsWithSameName.end() - 1) {
+        rewriter.replaceOp(*it, newMergedHerd.getAsyncToken());
+        continue;
+      }
+      auto newWaitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, *it);
+      rewriter.replaceOp(*it, newWaitAll.getAsyncToken());
     }
 
-    // Splice herd block into inner-most for loop.
-    scf::ForOp innerMostLoop = for_loop_nest.front();
-    auto &bb = innerMostLoop.getBody()->getOperations();
-    auto &body = herdOp.getBody().front().getOperations();
-    bb.splice(bb.begin(), body, body.begin(), --body.end());
+    return success();
+  }
 
-    rewriter.setInsertionPoint(herdOp);
-    for (auto res : herdOp->getResults())
-      remap.map(res,
-                rewriter
-                    .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
-                                            SmallVector<Value>{})
-                    .getAsyncToken());
-    for (unsigned i = 0; i < herdOp.getNumDims(); i++) {
-      remap.map(herdOp.getIds()[i], newHerdOp.getIds()[i]);
-      remap.map(herdOp.getSize()[i], newHerdOp.getSize()[i]);
+private:
+};
+
+struct HoistAIRHerdsToSharedRegionPattern
+    : public OpRewritePattern<air::HerdOp> {
+  using OpRewritePattern<air::HerdOp>::OpRewritePattern;
+
+  HoistAIRHerdsToSharedRegionPattern(MLIRContext *ctx)
+      : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::HerdOp herdOp,
+                                PatternRewriter &rewriter) const override {
+    auto parentRegion = herdOp->getParentRegion();
+    auto symName = herdOp.getSymName();
+    SmallVector<air::HerdOp> herdsWithSameName;
+    parentRegion->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+        [symName, &herdsWithSameName](air::HerdOp herd) {
+          if (herd.getSymName() != symName)
+            return WalkResult::skip();
+          herdsWithSameName.push_back(herd);
+          return WalkResult::advance();
+        });
+    if (herdOp != herdsWithSameName.back())
+      return failure(); // Apply pattern at the last herd
+
+    // Get the innermost region that is ancestor to all herds sharing the same
+    // name
+    Region *region = herdOp->getParentRegion();
+    while (llvm::any_of(herdsWithSameName, [region](air::HerdOp h) {
+      return !region->isAncestor(h->getParentRegion());
+    })) {
+      // Failed to find any shared region within the parent IsolatedFromAbove op
+      // body.
+      if (region->getParentOp()->mightHaveTrait<OpTrait::IsIsolatedFromAbove>())
+        return failure();
+      region = region->getParentRegion();
     }
-    for (auto [key, val] : remap.getValueMap())
-      replaceAllUsesInRegionWith(key, val, newHerdOp.getBody());
-    for (auto res : outerMostLoop->getResults())
-      res.replaceAllUsesWith(newHerdOp.getAsyncToken());
+    // If none of the herds are directly contained in region, then abort herd
+    // hoisting; otherwise the loop hoisting breaks the IR functionality.
+    if (llvm::none_of(herdsWithSameName, [region](air::HerdOp h) {
+          return h->getParentRegion() == region;
+        }))
+      return failure();
+    // If only one herd uses the same symname, then hoist it all the way to the
+    // body of any parent op with trait "IsolatedFromAbove".
+    if (herdsWithSameName.size() == 1)
+      while (region->getParentOp() &&
+             !region->getParentOp()
+                  ->mightHaveTrait<OpTrait::IsIsolatedFromAbove>())
+        region = region->getParentRegion();
 
-    rewriter.eraseOp(herdOp);
+    // Hoist herds to the shared parent region
+    SmallVector<Operation *> processed, unprocessed;
+    for (auto h : herdsWithSameName) {
+      auto newHerd = hoistAIRHerdInForImpl(h, region, rewriter);
+      if (succeeded(newHerd)) {
+        rewriter.eraseOp(h);
+        processed.push_back(*newHerd);
+        continue;
+      }
+      unprocessed.push_back(h);
+    }
+    if (processed.empty())
+      return failure();
+    processed.insert(processed.end(), unprocessed.begin(), unprocessed.end());
     return success();
   }
 
@@ -3667,9 +3833,8 @@ private:
     auto hierArgOwner = air::getHierarchyArgOwner(arg);
     if (!hierArgOwner)
       return nullptr;
-    for (unsigned i = 0; i < hierArgOwner.getNumKernelOperands(); i++)
-      if (hierArgOwner.getKernelArgument(i) == arg)
-        return hierArgOwner.getKernelOperand(i);
+    if (auto tiedOper = hierArgOwner.getTiedKernelOperand(arg))
+      return tiedOper;
     return nullptr;
   }
   // Check if two values represent the same memref. TODO: Need async dependency
@@ -4142,15 +4307,8 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
 
     // Hoist ops out of each scf.for.
-    for (auto set : target_ops_sets) {
-      auto newForOp =
-          hoistTargetOpsToNewSCFFor(rewriter, for_op, set.takeVector());
-      if (!newForOp)
-        continue;
-      // Redo async dependency tracing.
-      air::dependencyTracer depTracer;
-      depTracer.traceDependencyFromScfForOp(newForOp);
-    }
+    for (auto set : target_ops_sets)
+      (void)hoistTargetOpsToNewSCFFor(rewriter, for_op, set.takeVector());
 
     return success();
   }
@@ -4265,14 +4423,15 @@ LogicalResult AIRIsolateAsyncDmaLoopNestsImpl(Region *region) {
   auto ctx = region->getContext();
 
   RewritePatternSet patterns(ctx);
-  patterns.insert<IsolateAsyncDmaLoopNestInSCFForPattern,
-                  MakeHerdOpAsyncInScfForLoopPattern>(ctx);
+  patterns.insert<IsolateAsyncDmaLoopNestInSCFForPattern>(ctx);
   (void)applyOpPatternsAndFold(forOps, std::move(patterns));
 
-  // Post processing, hoisting air.herd ops out of perfectly nested scf.for
-  // loop.
+  // Greedily hoisting air.herd ops out of for loops and merging, and then
+  // re-applying loop splitting.
   RewritePatternSet patterns_1(ctx);
-  patterns_1.insert<HoistAIRHerdInForPattern>(ctx, false);
+  patterns_1
+      .insert<MergeAIRHerdsPattern, IsolateAsyncDmaLoopNestInSCFForPattern,
+              HoistAIRHerdsToSharedRegionPattern>(ctx);
   air::LaunchOp::getCanonicalizationPatterns(patterns_1, ctx);
   air::SegmentOp::getCanonicalizationPatterns(patterns_1, ctx);
   air::HerdOp::getCanonicalizationPatterns(patterns_1, ctx);
@@ -4477,13 +4636,10 @@ private:
       else if (isa<mlir::vector::TransferWriteOp>(user))
         users.push_back(user);
       else if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
-        for (unsigned i = 0; i < herdOp.getNumKernelOperands(); i++) {
-          if (herdOp.getKernelOperand(i) == memref) {
-            auto memrefInHerd = herdOp.getKernelArgument(i);
-            if (getAllChanUsers(memrefInHerd, users, dealloc, builder).failed())
-              return failure();
-          }
-        }
+        auto memrefInHerd = herdOp.getTiedKernelArgument(memref);
+        if (memrefInHerd &&
+            getAllChanUsers(memrefInHerd, users, dealloc, builder).failed())
+          return failure();
       } else
         return failure(); // NYI.
     }
@@ -5336,9 +5492,9 @@ public:
       for (auto user : memref.getUsers()) {
         getFuncCallIndirUser(user, funcCalls);
         if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
-          if (!getHerdArgumentFromHerdOperand(herdOp, memref))
+          auto herdArg = herdOp.getTiedKernelArgument(memref);
+          if (!herdArg)
             continue;
-          auto herdArg = getHerdArgumentFromHerdOperand(herdOp, memref);
           for (auto userInHerd : herdArg.getUsers())
             getFuncCallIndirUser(userInHerd, funcCalls);
         }
@@ -5383,15 +5539,6 @@ private:
     auto newFunctionType = FunctionType::get(fnDecl.getContext(), newArgTypes,
                                              functionType.getResults());
     fnDecl.setType(newFunctionType);
-  }
-
-  // Get herd argument to a herd operand
-  BlockArgument getHerdArgumentFromHerdOperand(air::HerdOp herdOp,
-                                               Value v) const {
-    for (unsigned i = 0; i < herdOp.getNumKernelOperands(); i++)
-      if (herdOp.getKernelOperand(i) == v)
-        return herdOp.getKernelArgument(i);
-    return nullptr;
   }
 };
 
