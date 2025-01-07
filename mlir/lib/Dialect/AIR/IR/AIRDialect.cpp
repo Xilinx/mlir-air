@@ -591,6 +591,10 @@ unsigned LaunchOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
+OperandRange LaunchOp::getKernelOperands() {
+  return getOperands().drop_front(getAsyncDependencies().size() + getNumDims());
+}
+
 Value LaunchOp::getKernelOperand(unsigned i) {
   return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
@@ -853,6 +857,10 @@ unsigned SegmentOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
+OperandRange SegmentOp::getKernelOperands() {
+  return getOperands().drop_front(getAsyncDependencies().size() + getNumDims());
+}
+
 Value SegmentOp::getKernelOperand(unsigned i) {
   return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
@@ -1112,6 +1120,10 @@ OperandRange HerdOp::getSizeOperands() {
 
 unsigned HerdOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
+}
+
+OperandRange HerdOp::getKernelOperands() {
+  return getOperands().drop_front(getAsyncDependencies().size() + getNumDims());
 }
 
 Value HerdOp::getKernelOperand(unsigned i) {
