@@ -2622,6 +2622,32 @@ public:
         need_unlock = false;
       }
     }
+    // try to insert a lock release before entering a for loop that iteratively
+    // copies data into the same buffer.
+    if (need_unlock)
+      for (auto u : alloc.getUsers()) {
+        auto get = dyn_cast<air::ChannelGetOp>(u);
+        if (!get)
+          continue;
+        if (u == memcpyOpIf)
+          continue;
+        if (u->getParentRegion()->isProperAncestor(
+                memcpyOpIf->getParentRegion()))
+          continue;
+        auto t = u;
+        while (memcpyOpIf->getParentRegion()->isProperAncestor(
+            t->getParentRegion()))
+          t = u->getParentOp();
+        if (t->getBlock() != memcpyOpIf->getBlock())
+          continue;
+        if (t->isBeforeInBlock(memcpyOpIf))
+          continue;
+        builder.setInsertionPoint(t);
+        builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp,
+                                       AIE::LockAction::Release, lockRelValue);
+        need_unlock = false;
+        break;
+      }
     if (need_unlock) {
       auto t = memcpyOpIf->getBlock()->getTerminator();
       builder.setInsertionPoint(t);
