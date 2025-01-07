@@ -191,7 +191,7 @@ module {
     scf.for %arg3 = %c0 to %c8 step %c1 {
       air.channel.put @channel_2[] (%arg0[] [] []) : (memref<1024xi32>)
     }
-    air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args (%arg1=%alloc) : memref<1024xi32, 2> {
+    air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) {
       %c0_0 = arith.constant 0 : index
       %c1_0 = arith.constant 1 : index
       %c8_0 = arith.constant 8 : index
@@ -199,7 +199,7 @@ module {
       air.channel.get @channel_2[] (%alloc[] [] []) : (memref<1024xi32, 2>)
       memref.dealloc %alloc : memref<1024xi32, 2>
       scf.for %arg4 = %c0_0 to %c8_0 step %c1_0 {
-        air.channel.get @channel_2[] (%arg1[] [] []) : (memref<1024xi32, 2>)
+        air.channel.get @channel_2[] (%alloc[] [] []) : (memref<1024xi32, 2>)
         memref.dealloc %alloc : memref<1024xi32, 2>
       }
     }
