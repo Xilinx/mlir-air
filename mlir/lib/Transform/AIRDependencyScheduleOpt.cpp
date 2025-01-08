@@ -5058,6 +5058,21 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
       if (e == allocDeallocExecs[i].first)
         allocDeallocExecs.erase(allocDeallocExecs.begin() + i);
   // Move the original allocs/deallocs.
+  auto addDepToAllocUsersInBlock = [](air::ExecuteOp alloc, Block *blk) {
+    Value memref = alloc->getResult(1);
+    SmallVector<Operation *> asyncUsers;
+    blk->walk([memref, &asyncUsers](Operation *user) {
+      if (!llvm::is_contained(user->getOperands(), memref))
+        return;
+      if (air::isAsyncOp(user))
+        asyncUsers.push_back(user);
+      else if (auto exec =
+                   dyn_cast_if_present<air::ExecuteOp>(user->getParentOp()))
+        asyncUsers.push_back(exec);
+    });
+    for (auto user : asyncUsers)
+      air::addAsyncDependencyIfNew(user, alloc.getAsyncToken());
+  };
   auto resolveDepToExecs = [](PatternRewriter &rewriter,
                               SmallVector<air::ExecuteOp> execs, Block *blk) {
     for (auto exec : execs) {
@@ -5094,6 +5109,7 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
   for (auto &[alloc, dealloc] : allocDeallocExecs) {
     SmallVector<air::ExecuteOp> execs({alloc});
     resolveDepFromAllocExec(alloc, block);
+    addDepToAllocUsersInBlock(alloc, block);
     if (dealloc) {
       resolveDepFromDeallocExec(dealloc, block);
       execs.push_back(dealloc);
@@ -5582,6 +5598,8 @@ public:
 private:
 };
 
+// Fuse pairs of alloc and dealloc into the inner-most loop-like op's body,
+// which contains all uses of the memref.
 template <typename OpTy>
 struct AIRFuseAllocDeallocToLoopLike : public OpRewritePattern<OpTy> {
   using OpRewritePattern<OpTy>::OpRewritePattern;
@@ -5667,6 +5685,8 @@ struct AIRFuseAllocDeallocToLoopLike : public OpRewritePattern<OpTy> {
 private:
 };
 
+// Fuse pairs of alloc and dealloc into the inner-most air.hierarchy op's body,
+// which contains all uses of the memref.
 template <typename OpTy>
 struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
   using OpRewritePattern<OpTy>::OpRewritePattern;
@@ -5743,7 +5763,21 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
         llvm::erase(deps, exec.getAsyncToken());
       if (auto exec = dyn_cast_if_present<air::ExecuteOp>(dealloc))
         llvm::erase(deps, exec.getAsyncToken());
-      //
+      auto addDepToAllocUsersInRegion = [](air::ExecuteOp alloc, Region *dest) {
+        Value memref = alloc->getResult(1);
+        SmallVector<Operation *> asyncUsers;
+        dest->walk([memref, &asyncUsers](Operation *user) {
+          if (!llvm::is_contained(user->getOperands(), memref))
+            return;
+          if (air::isAsyncOp(user))
+            asyncUsers.push_back(user);
+          else if (auto exec =
+                       dyn_cast_if_present<air::ExecuteOp>(user->getParentOp()))
+            asyncUsers.push_back(exec);
+        });
+        for (auto user : asyncUsers)
+          air::addAsyncDependencyIfNew(user, alloc.getAsyncToken());
+      };
       auto resolveDepFromAllocExec = [](AsyncOpInterface alloc,
                                         air::HierarchyInterface dest) {
         Region &destRegion = dest.getBody();
@@ -5790,6 +5824,7 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
         execs.push_back(exec);
       }
       if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc)) {
+        addDepToAllocUsersInRegion(exec, &op.getBody());
         resolveDepFromAllocExec(exec, op);
         execs.push_back(exec);
       }
@@ -5815,7 +5850,8 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
 private:
 };
 
-//
+// Fuse pairs of alloc and dealloc into the inner-most region, which contains
+// all uses of the memref.
 class AIRFuseAllocDealloc
     : public xilinx::air::impl::AIRFuseAllocDeallocBase<AIRFuseAllocDealloc> {
 
