@@ -1081,6 +1081,14 @@ def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
   ];
 }
 
+def AIRFuseAllocDealloc: Pass<"air-fuse-alloc-dealloc", "func::FuncOp"> {
+  let summary = "";
+  let constructor = "xilinx::air::createAIRFuseAllocDealloc()";
+  let description = [{
+    .
+  }];
+}
+
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   let summary = "Optimize scheduling based on air async dependency";
   let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";

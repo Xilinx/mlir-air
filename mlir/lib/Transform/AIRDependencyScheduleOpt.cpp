@@ -5032,6 +5032,85 @@ scf::ForOp simpleScfForLoopTiling(scf::ForOp forOp, int original_step,
   return new_for_op;
 }
 
+// Fuse allocs and deallocs into the specified block, if the memref value is
+// only used inside the block.
+LogicalResult fuseAllocDeallocExecsIntoBlock(
+    Block *block, PatternRewriter &rewriter, IRMapping &remap,
+    std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> &allocDeallocExecs) {
+  SmallVector<air::ExecuteOp> erase_keys;
+  for (auto &[alloc_exec, dealloc_exec] : allocDeallocExecs) {
+    Value memref = alloc_exec->getResult(1);
+    bool canMove = llvm::all_of(memref.getUsers(), [block](Operation *user) {
+      return block->getParentOp()->isAncestor(user) ||
+             isa<memref::DeallocOp>(user);
+    });
+    llvm::SetVector<Value> vals;
+    getUsedValuesDefinedAbove(*block->getParent(), vals);
+    canMove &= llvm::is_contained(vals, memref);
+
+    if (!canMove) {
+      erase_keys.push_back(alloc_exec);
+      continue;
+    }
+  }
+  for (auto e : erase_keys)
+    for (unsigned i = 0; i < allocDeallocExecs.size(); i++)
+      if (e == allocDeallocExecs[i].first)
+        allocDeallocExecs.erase(allocDeallocExecs.begin() + i);
+  // Move the original allocs/deallocs.
+  auto resolveDepToExecs = [](PatternRewriter &rewriter,
+                              SmallVector<air::ExecuteOp> execs, Block *blk) {
+    for (auto exec : execs) {
+      rewriter.setInsertionPoint(exec);
+      IRMapping remap;
+      auto waitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, exec);
+      rewriter.replaceUsesWithIf(
+          exec.getAsyncToken(), waitAll.getAsyncToken(),
+          [blk, &execs](OpOperand &u) {
+            return !blk->getParent()->isAncestor(
+                       u.getOwner()->getParentRegion()) &&
+                   !llvm::is_contained(execs, u.getOwner());
+          });
+    }
+    return;
+  };
+  auto resolveDepFromAllocExec = [](AsyncOpInterface alloc, Block *blk) {
+    for (auto d : alloc.getAsyncDependencies()) {
+      if (blk->getParent()->isAncestor(d.getParentRegion()))
+        continue;
+      air::eraseAsyncDependencyFromAsyncOp(alloc, d);
+      air::addAsyncDependencyIfNew(blk->getParentOp(), d);
+    }
+    return;
+  };
+  auto resolveDepFromDeallocExec = [](AsyncOpInterface delloc, Block *blk) {
+    for (auto d : delloc.getAsyncDependencies()) {
+      if (blk->getParent()->isAncestor(d.getParentRegion()))
+        continue;
+      air::eraseAsyncDependencyFromAsyncOp(delloc, d);
+    }
+    return;
+  };
+  for (auto &[alloc, dealloc] : allocDeallocExecs) {
+    SmallVector<air::ExecuteOp> execs({alloc});
+    resolveDepFromAllocExec(alloc, block);
+    if (dealloc) {
+      resolveDepFromDeallocExec(dealloc, block);
+      execs.push_back(dealloc);
+    }
+    resolveDepToExecs(rewriter, execs, block);
+    // Move alloc and dealloc
+    rewriter.moveOpBefore(alloc, block, block->without_terminator().begin());
+    if (dealloc) {
+      if (block->mightHaveTerminator())
+        rewriter.moveOpBefore(dealloc, block->getTerminator());
+      else
+        rewriter.moveOpBefore(dealloc, block, block->getOperations().end());
+    }
+  }
+  return success();
+}
+
 // Fuse scf.for loops in region. "fuseWithAllocDeallocs" is a bool argument
 // configuring whether the pass fuses allocs and deallocs together with the loop
 // bands. "maxDepth" is the maximum depth of the fused loop band. "-1" means
@@ -5041,9 +5120,6 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
                                 int maxDepth = 1) {
   auto loc = region->getLoc();
   auto ctx = region->getContext();
-  // Get memref.alloc ops.
-  SmallVector<air::ExecuteOp> memalloc_execs;
-  SmallVector<air::ExecuteOp> memdealloc_execs;
   // Map from air.execute op containing alloc to air.execute op containing
   // dealloc.
   std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> alloc_dealloc_execs;
@@ -5253,89 +5329,9 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
   }
 
   // Fuse allocs and deallocs into the created scf.for loop.
-  if (fuseWithAllocDeallocs) {
-    SmallVector<air::ExecuteOp> erase_keys;
-    for (auto &[alloc_exec, dealloc_exec] : alloc_dealloc_execs) {
-      Value alloc_token = alloc_exec.getAsyncToken();
-      Value dealloc_token =
-          dealloc_exec ? dealloc_exec.getAsyncToken() : nullptr;
-      Value memref = alloc_exec->getResult(1);
-      bool canMove = llvm::all_of(memref.getUsers(), [&new_loop_op](
-                                                         Operation *user) {
-        return new_loop_op.getRegion().isAncestor(user->getParentRegion()) ||
-               isa<memref::DeallocOp>(user);
-      });
-      llvm::SetVector<Value> vals;
-      getUsedValuesDefinedAbove(new_loop_op.getRegion(), vals);
-      canMove &= llvm::is_contained(vals, memref);
-
-      if (canMove) {
-        rewriter.setInsertionPointToStart(new_loop_op.getBody());
-        auto new_alloc_exec = rewriter.clone(*alloc_exec, remap);
-        rewriter.setInsertionPointToEnd(new_loop_op.getBody());
-        Operation *new_dealloc_exec =
-            dealloc_exec ? rewriter.clone(*dealloc_exec, remap) : nullptr;
-        if (air::isAsyncOp(new_loop_op))
-          air::addAsyncDependencyIfNew(
-              new_alloc_exec,
-              air::getLoopCarriedTokenFromScfOp(new_loop_op, "argument"));
-        // Replace all uses of tokens
-        alloc_token.replaceUsesWithIf(
-            air::getAsyncTokenFromOp(new_loop_op),
-            [&new_loop_op](OpOperand &u) {
-              return new_loop_op->getParentRegion() ==
-                         u.getOwner()->getParentRegion() &&
-                     new_loop_op->isBeforeInBlock(u.getOwner());
-            });
-        replaceAllUsesInRegionWith(alloc_token,
-                                   air::getAsyncTokenFromOp(new_alloc_exec),
-                                   new_loop_op.getRegion());
-        // Replace all uses of values
-        for (unsigned i = 1; i < new_alloc_exec->getNumResults(); i++)
-          alloc_exec->getResult(i).replaceAllUsesWith(
-              new_alloc_exec->getResult(i));
-
-        // Replace all uses of tokens
-        if (dealloc_token) {
-          dealloc_token.replaceUsesWithIf(
-              air::getAsyncTokenFromOp(new_loop_op),
-              [&new_loop_op](OpOperand &u) {
-                return !new_loop_op.getRegion().isAncestor(
-                    u.getOwner()->getParentRegion());
-              });
-          replaceAllUsesInRegionWith(dealloc_token,
-                                     air::getAsyncTokenFromOp(new_dealloc_exec),
-                                     new_loop_op.getRegion());
-        }
-      } else
-        erase_keys.push_back(alloc_exec);
-    }
-    llvm::SetVector<Value> usedValsDefedAbove;
-    getUsedValuesDefinedAbove(new_loop_op.getRegion(), usedValsDefedAbove);
-    for (auto token : usedValsDefedAbove)
-      if (isa<air::AsyncTokenType>(token.getType()))
-        replaceAllUsesInRegionWith(
-            token, air::getLoopCarriedTokenFromScfOp(new_loop_op, "argument"),
-            new_loop_op.getRegion());
-    for (auto e : erase_keys)
-      for (unsigned i = 0; i < alloc_dealloc_execs.size(); i++)
-        if (e == alloc_dealloc_execs[i].first)
-          alloc_dealloc_execs.erase(alloc_dealloc_execs.begin() + i);
-    // Erase the original allocs/deallocs upon fusion.
-    for (auto &[alloc, dealloc] : alloc_dealloc_execs) {
-      air::WaitAllOp waitAll = air::WaitAllOp();
-      if (dealloc) {
-        rewriter.setInsertionPoint(dealloc);
-        waitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, dealloc);
-        dealloc.getAsyncToken().replaceAllUsesWith(waitAll.getAsyncToken());
-        rewriter.eraseOp(dealloc);
-      }
-      rewriter.setInsertionPoint(alloc);
-      waitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, alloc);
-      alloc.getAsyncToken().replaceAllUsesWith(waitAll.getAsyncToken());
-      rewriter.eraseOp(alloc);
-    }
-  }
+  if (fuseWithAllocDeallocs)
+    (void)fuseAllocDeallocExecsIntoBlock(new_loop_op.getBody(), rewriter, remap,
+                                         alloc_dealloc_execs);
 
   // Scf.yield op.
   rewriter.setInsertionPointToEnd(new_loop_op.getBody());
@@ -5586,6 +5582,266 @@ public:
 private:
 };
 
+template <typename OpTy>
+struct AIRFuseAllocDeallocToLoopLike : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    // Skip if the loop-like op is not the inner-most loop of a perfect loop
+    // nest.
+    Region *opRegion = op.getLoopRegions().front();
+    Block *opBlock = &opRegion->front();
+    if (hasNImpureOps(opBlock, 1))
+      if (llvm::any_of(opBlock->without_terminator(), [](Operation &o) {
+            return isa_and_present<LoopLikeOpInterface>(o);
+          }))
+        return failure();
+
+    llvm::SetVector<Value> usedValsDefedAbove, usedMemrefsDefedAbove;
+    getUsedValuesDefinedAbove(*opRegion, usedValsDefedAbove);
+    for (auto v : usedValsDefedAbove)
+      if (isa<MemRefType>(v.getType()))
+        usedMemrefsDefedAbove.insert(v);
+
+    auto memrefIsOnlyUsedInRegionOrByDealloc = [](Region *region,
+                                                  Value memref) {
+      return llvm::all_of(memref.getUsers(), [region](Operation *user) {
+        return isa<memref::DeallocOp>(user) ||
+               region->isAncestor(user->getParentRegion());
+      });
+    };
+
+    // Get candidate allocs and deallocs to be fused.
+    std::vector<std::pair<memref::AllocOp, memref::DeallocOp>> allocsDeallocs;
+    std::vector<std::pair<air::ExecuteOp, air::ExecuteOp>> allocDeallocExecs;
+    for (auto memref : usedMemrefsDefedAbove) {
+      if (!memrefIsOnlyUsedInRegionOrByDealloc(opRegion, memref))
+        continue;
+      air::ExecuteOp allocExec = nullptr;
+      air::ExecuteOp deallocExec = nullptr;
+      memref::AllocOp alloc = nullptr;
+      memref::DeallocOp dealloc = nullptr;
+      auto defOp = memref.getDefiningOp();
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(defOp))
+        allocExec = exec;
+      else if (auto a = dyn_cast_if_present<memref::AllocOp>(defOp))
+        alloc = a;
+      else
+        continue;
+      auto deallocOpt = memref::findDealloc(memref);
+      if (deallocOpt && *deallocOpt) {
+        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(
+                (*deallocOpt)->getParentOp()))
+          deallocExec = exec;
+        else if (auto d = dyn_cast_if_present<memref::DeallocOp>(*deallocOpt))
+          dealloc = d;
+      }
+      if (allocExec)
+        allocDeallocExecs.push_back(std::make_pair(allocExec, deallocExec));
+      else if (alloc)
+        allocsDeallocs.push_back(std::make_pair(alloc, dealloc));
+    }
+
+    // Fuse async allocs and deallocs, i.e. alloc and dealloc enclosed in an
+    // air.execute.
+    IRMapping remap;
+    if (failed(fuseAllocDeallocExecsIntoBlock(opBlock, rewriter, remap,
+                                              allocDeallocExecs)))
+      return failure();
+
+    // Fuse non-async allocs and deallocs.
+    for (auto [alloc, dealloc] : allocsDeallocs) {
+      rewriter.moveOpBefore(alloc, opBlock,
+                            opBlock->without_terminator().begin());
+      if (!dealloc)
+        continue;
+      if (opBlock->mightHaveTerminator())
+        rewriter.moveOpBefore(dealloc, opBlock->getTerminator());
+      else
+        rewriter.moveOpBefore(dealloc, opBlock, opBlock->getOperations().end());
+    }
+    return success();
+  }
+
+private:
+};
+
+template <typename OpTy>
+struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    // Skip if the op is not the inner-most loop of a perfect loop nest.
+    Region *opRegion = &op->getRegions().front();
+    Block *opBlock = &opRegion->front();
+    if (hasNImpureOps(opBlock, 1))
+      if (llvm::any_of(opBlock->without_terminator(), [](Operation &o) {
+            return isa_and_present<air::HierarchyInterface>(o);
+          }))
+        return failure();
+
+    llvm::SetVector<Value> usedMemrefsDefedAbove;
+    for (auto v : op->getOperands())
+      if (isa<MemRefType>(v.getType()))
+        usedMemrefsDefedAbove.insert(v);
+
+    auto memrefIsOnlyUsedByOpOrByDealloc = [](Operation *o, Value memref) {
+      return llvm::all_of(memref.getUsers(), [o](Operation *user) {
+        return isa<memref::DeallocOp>(user) || o == user;
+      });
+    };
+    // Get candidate allocs and deallocs to be fused.
+    std::vector<std::pair<Operation *, Operation *>> allocsDeallocs;
+    std::vector<std::pair<Operation *, Operation *>> allocDeallocExecs;
+    for (auto memref : usedMemrefsDefedAbove) {
+      if (!memrefIsOnlyUsedByOpOrByDealloc(op, memref))
+        continue;
+      air::ExecuteOp allocExec = nullptr;
+      air::ExecuteOp deallocExec = nullptr;
+      memref::AllocOp alloc = nullptr;
+      memref::DeallocOp dealloc = nullptr;
+      auto defOp = memref.getDefiningOp();
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(defOp))
+        allocExec = exec;
+      else if (auto a = dyn_cast_if_present<memref::AllocOp>(defOp))
+        alloc = a;
+      else
+        continue;
+      auto deallocOpt = memref::findDealloc(memref);
+      if (deallocOpt && *deallocOpt) {
+        if (auto exec = dyn_cast_if_present<air::ExecuteOp>(
+                (*deallocOpt)->getParentOp()))
+          deallocExec = exec;
+        else if (auto d = dyn_cast_if_present<memref::DeallocOp>(*deallocOpt))
+          dealloc = d;
+      }
+      if (allocExec)
+        allocDeallocExecs.push_back(std::make_pair(allocExec, deallocExec));
+      else if (alloc)
+        allocsDeallocs.push_back(std::make_pair(alloc, dealloc));
+    }
+    if (allocDeallocExecs.empty() && allocsDeallocs.empty())
+      return failure();
+    // Fuse async allocs and deallocs, i.e. alloc and dealloc enclosed in an
+    // air.execute.
+    SmallVector<Value> deps = op.getAsyncDependencies();
+    SmallVector<Value> kernelOpers = op.getKernelOperands();
+    for (auto [alloc, dealloc] :
+         llvm::concat<std::pair<Operation *, Operation *>>(allocDeallocExecs,
+                                                           allocsDeallocs)) {
+      Value memref = nullptr;
+      if (auto exec = dyn_cast<air::ExecuteOp>(alloc))
+        memref = alloc->getResult(1);
+      else
+        memref = dyn_cast<memref::AllocOp>(alloc).getMemref();
+      rewriter.replaceAllUsesWith(op.getTiedKernelArgument(memref), memref);
+      // Remove alloc and dealloc results from the new herd's arg list.
+      llvm::erase(kernelOpers, memref);
+      if (auto exec = dyn_cast<air::ExecuteOp>(alloc))
+        llvm::erase(deps, exec.getAsyncToken());
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(dealloc))
+        llvm::erase(deps, exec.getAsyncToken());
+      //
+      auto resolveDepFromAllocExec = [](AsyncOpInterface alloc,
+                                        air::HierarchyInterface dest) {
+        Region &destRegion = dest.getBody();
+        for (auto d : alloc.getAsyncDependencies()) {
+          if (destRegion.isAncestor(d.getParentRegion()))
+            continue;
+          air::eraseAsyncDependencyFromAsyncOp(alloc, d);
+          air::addAsyncDependencyIfNew(dest.getOperation(), d);
+        }
+        return;
+      };
+      auto resolveDepToExecs = [](PatternRewriter &rewriter,
+                                  SmallVector<air::ExecuteOp> execs,
+                                  air::HierarchyInterface dest) {
+        for (auto exec : execs) {
+          rewriter.setInsertionPoint(exec);
+          IRMapping remap;
+          auto waitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, exec);
+          Region &destRegion = dest.getBody();
+          rewriter.replaceUsesWithIf(
+              exec.getAsyncToken(), waitAll.getAsyncToken(),
+              [&destRegion, &execs](OpOperand &u) {
+                return !destRegion.isAncestor(
+                           u.getOwner()->getParentRegion()) &&
+                       !llvm::is_contained(execs, u.getOwner());
+              });
+        }
+        return;
+      };
+      auto resolveDepFromDeallocExec = [](AsyncOpInterface delloc,
+                                          air::HierarchyInterface dest) {
+        Region &destRegion = dest.getBody();
+        for (auto d : delloc.getAsyncDependencies()) {
+          if (destRegion.isAncestor(d.getParentRegion()))
+            continue;
+          air::eraseAsyncDependencyFromAsyncOp(delloc, d);
+        }
+        return;
+      };
+      SmallVector<air::ExecuteOp> execs;
+      resolveDepToExecs(rewriter, execs, op);
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(dealloc)) {
+        resolveDepFromDeallocExec(exec, op);
+        execs.push_back(exec);
+      }
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc)) {
+        resolveDepFromAllocExec(exec, op);
+        execs.push_back(exec);
+      }
+      // Move alloc and dealloc
+      rewriter.moveOpBefore(alloc, &op.getBody().front(),
+                            op.getBody().front().without_terminator().begin());
+      if (dealloc)
+        rewriter.moveOpBefore(dealloc, op.getBody().front().getTerminator());
+    }
+
+    // Update air.hierarchy args.
+    rewriter.setInsertionPoint(op);
+    auto newHerd = rewriter.create<OpTy>(
+        op->getLoc(), deps, op.getSizeOperands(), kernelOpers,
+        (bool)op.getAsyncToken(), op->getAttrs());
+    rewriter.inlineRegionBefore(op.getBody(), newHerd.getBody(),
+                                newHerd.getBody().begin());
+    rewriter.eraseBlock(&newHerd.getBody().back());
+    rewriter.replaceOp(op, newHerd);
+    return success();
+  }
+
+private:
+};
+
+//
+class AIRFuseAllocDealloc
+    : public xilinx::air::impl::AIRFuseAllocDeallocBase<AIRFuseAllocDealloc> {
+
+public:
+  AIRFuseAllocDealloc() = default;
+  AIRFuseAllocDealloc(const AIRFuseAllocDealloc &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<air::airDialect>();
+  }
+
+  void runOnOperation() override {
+    auto func = getOperation();
+    MLIRContext *ctx = &getContext();
+    RewritePatternSet patterns(ctx);
+    patterns.insert<AIRFuseAllocDeallocToLoopLike<scf::ForOp>,
+                    AIRFuseAllocDeallocToLoopLike<scf::ParallelOp>,
+                    AIRFuseAllocDeallocToAIRHierarchy<air::HerdOp>,
+                    AIRFuseAllocDeallocToAIRHierarchy<air::SegmentOp>,
+                    AIRFuseAllocDeallocToAIRHierarchy<air::LaunchOp>>(ctx);
+    (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
+  }
+
+private:
+};
+
 } // namespace
 
 namespace xilinx {
@@ -5677,6 +5933,10 @@ std::unique_ptr<Pass> createAIRLoopFusion() {
 
 std::unique_ptr<Pass> createAIROptimizeShimDMABDs() {
   return std::make_unique<AIROptimizeShimDMABDs>();
+}
+
+std::unique_ptr<Pass> createAIRFuseAllocDealloc() {
+  return std::make_unique<AIRFuseAllocDealloc>();
 }
 
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
