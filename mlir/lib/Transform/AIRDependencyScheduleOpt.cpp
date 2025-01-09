@@ -5950,6 +5950,76 @@ public:
 private:
 };
 
+// Shrink the size of each memref based on the actual access pattern. This
+// avoids allocating buffers which are too large.
+class AIRShrinkMemrefSizesByAccess
+    : public xilinx::air::impl::AIRShrinkMemrefSizesByAccessBase<
+          AIRShrinkMemrefSizesByAccess> {
+public:
+  AIRShrinkMemrefSizesByAccess() = default;
+  AIRShrinkMemrefSizesByAccess(const AIRShrinkMemrefSizesByAccess &pass) {}
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+  void runOnOperation() override {
+    MLIRContext *ctx = &getContext();
+    auto funcOp = getOperation();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    // Update func.call declaration after memref shrinkage
+    SmallVector<memref::AllocOp> shrunkMemallocs;
+    funcOp.walk([&](memref::AllocOp op) {
+      if (op->hasAttr("shrinkage"))
+        shrunkMemallocs.push_back(op);
+    });
+    // Find indirect funcCall users of memref.
+    auto getFuncCallIndirUser = [](Operation *u,
+                                   SmallVector<func::CallOp> &funcCalls) {
+      if (auto funcCall = dyn_cast<func::CallOp>(u))
+        funcCalls.push_back(funcCall);
+      else if (auto subview = dyn_cast<memref::SubViewOp>(u)) {
+        for (auto subViewUser : subview.getResult().getUsers())
+          if (auto funcCall = dyn_cast<func::CallOp>(subViewUser))
+            funcCalls.push_back(funcCall);
+      }
+    };
+    SmallVector<func::CallOp> funcCalls;
+    for (auto alloc : shrunkMemallocs) {
+      Value memref = alloc.getMemref();
+      if (auto exec = dyn_cast<air::ExecuteOp>(alloc->getParentOp()))
+        memref = exec.getResult(1);
+      for (auto user : memref.getUsers()) {
+        getFuncCallIndirUser(user, funcCalls);
+        if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
+          auto herdArg = herdOp.getTiedKernelArgument(memref);
+          if (!herdArg)
+            continue;
+          for (auto userInHerd : herdArg.getUsers())
+            getFuncCallIndirUser(userInHerd, funcCalls);
+        }
+      }
+    }
+    auto updateFuncOpInputTypesFromCall = [](func::CallOp callOp) {
+      // Fetch name.
+      StringRef fnName = callOp.getCallee();
+      auto fnDecl = dyn_cast_or_null<func::FuncOp>(SymbolTable::lookupSymbolIn(
+          callOp->getParentOfType<ModuleOp>(), fnName));
+      assert(fnDecl && "expected function declaration");
+      // Update function's argument types.
+      auto functionType = fnDecl.getFunctionType();
+      auto newArgTypes = llvm::to_vector<6>(callOp.getOperandTypes());
+      auto newFunctionType = FunctionType::get(fnDecl.getContext(), newArgTypes,
+                                               functionType.getResults());
+      fnDecl.setType(newFunctionType);
+    };
+    for (auto funcCall : funcCalls)
+      updateFuncOpInputTypesFromCall(funcCall);
+  }
+
+private:
+};
+
 } // namespace
 
 namespace xilinx {
@@ -6045,6 +6115,10 @@ std::unique_ptr<Pass> createAIROptimizeShimDMABDs() {
 
 std::unique_ptr<Pass> createAIRFuseAllocDealloc() {
   return std::make_unique<AIRFuseAllocDealloc>();
+}
+
+std::unique_ptr<Pass> createAIRShrinkMemrefSizesByAccess() {
+  return std::make_unique<AIRShrinkMemrefSizesByAccess>();
 }
 
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
