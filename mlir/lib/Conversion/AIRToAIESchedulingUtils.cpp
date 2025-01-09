@@ -249,7 +249,8 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
         return llvm::SetVector<Operation *>{}; // Chain isn't repeating. Return
                                                // an empty vector.
       opIt++;
-      idx = (++idx) % uniqueBDPattern.size();
+      idx++;
+      idx %= uniqueBDPattern.size();
     }
 
     // Repeating BD chain successfully detected.
