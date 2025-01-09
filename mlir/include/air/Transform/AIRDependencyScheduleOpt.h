@@ -60,6 +60,8 @@ std::unique_ptr<mlir::Pass> createAIRIsolateAsyncDmaLoopNests();
 std::unique_ptr<mlir::Pass> createAIRLoopFusion();
 
 std::unique_ptr<mlir::Pass> createAIROptimizeShimDMABDs();
+std::unique_ptr<Pass>
+createAIROptimizeShimDMABDs(AIROptimizeShimDMABDsOptions options);
 
 std::unique_ptr<mlir::Pass> createAIRFuseAllocDealloc();
 

@@ -5600,6 +5600,9 @@ class AIROptimizeShimDMABDs
 public:
   AIROptimizeShimDMABDs() = default;
   AIROptimizeShimDMABDs(const AIROptimizeShimDMABDs &pass) {}
+  AIROptimizeShimDMABDs(
+      const ::xilinx::air::AIROptimizeShimDMABDsOptions &options)
+      : AIROptimizeShimDMABDsBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect>();
@@ -6107,6 +6110,10 @@ std::unique_ptr<Pass> createAIRLoopFusion() {
 
 std::unique_ptr<Pass> createAIROptimizeShimDMABDs() {
   return std::make_unique<AIROptimizeShimDMABDs>();
+}
+std::unique_ptr<Pass>
+createAIROptimizeShimDMABDs(AIROptimizeShimDMABDsOptions options) {
+  return std::make_unique<AIROptimizeShimDMABDs>(options);
 }
 
 std::unique_ptr<Pass> createAIRFuseAllocDealloc() {
