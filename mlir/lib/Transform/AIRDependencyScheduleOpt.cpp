@@ -5950,7 +5950,8 @@ public:
 private:
 };
 
-//
+// Shrink the size of each memref based on the actual access pattern. This
+// avoids allocating buffers which are too large.
 class AIRShrinkMemrefSizesByAccess
     : public xilinx::air::impl::AIRShrinkMemrefSizesByAccessBase<
           AIRShrinkMemrefSizesByAccess> {
@@ -5966,7 +5967,7 @@ public:
     RewritePatternSet patterns(&getContext());
     patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-    // Update func.call declaration post memref shrinkage
+    // Update func.call declaration after memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
     funcOp.walk([&](memref::AllocOp op) {
       if (op->hasAttr("shrinkage"))

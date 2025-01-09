@@ -1090,10 +1090,10 @@ def AIRFuseAllocDealloc: Pass<"air-fuse-alloc-dealloc", "func::FuncOp"> {
 }
 
 def AIRShrinkMemrefSizesByAccess: Pass<"air-shrink-memref-sizes-by-access", "func::FuncOp"> {
-  let summary = ".";
+  let summary = "Shrink the size of each memref based on the actual access pattern.";
   let constructor = "xilinx::air::createAIRShrinkMemrefSizesByAccess()";
   let description = [{
-    .
+    Shrink the size of each memref based on the actual access pattern. This avoids allocating buffers which are too large.
   }];
 }
 
