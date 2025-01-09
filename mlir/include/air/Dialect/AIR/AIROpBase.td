@@ -187,6 +187,9 @@ def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
     InterfaceMethod<"description",
     "Value", "getTiedKernelOperand", (ins "BlockArgument":$i)
     >,
+    InterfaceMethod<"description",
+    "Region&", "getBody"
+    >,
   ];
 }
 

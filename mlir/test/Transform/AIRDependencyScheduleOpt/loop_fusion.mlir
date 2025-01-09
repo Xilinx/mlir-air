@@ -1050,25 +1050,27 @@ func.func @func12(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg
 // CHECK: air.segment
 // CHECK: scf.for %arg5 = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[VALUE0:.*]] = %{{.*}})
 
-// CHECK: memref.alloc()
-// CHECK: memref.alloc()
+// CHECK: %[[ALLOC0:.*]], %{{.*}} = air.execute
+// CHECK-NEXT: memref.alloc()
+// CHECK: %[[ALLOC1:.*]], %{{.*}} = air.execute
+// CHECK-NEXT: memref.alloc()
 
 // CHECK: %[[VALUE3:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[VALUE1:.*]] = %[[VALUE0]])
 // CHECK: %{{.*}} = scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}} iter_args(%[[VALUE2:.*]] = %[[VALUE1]])
-// CHECK: air.channel.get async [%[[VALUE2]]]  @channel_13
-// CHECK: air.channel.get async [%[[VALUE2]]]  @channel_13
+// CHECK: air.channel.get async [%[[ALLOC1]], %[[VALUE2]]]  @channel_13
+// CHECK: air.channel.get async [%[[ALLOC0]], %[[VALUE2]]]  @channel_13
 // CHECK: scf.yield
 // CHECK: scf.yield
 
 // CHECK: %{{.*}} = scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[VALUE1:.*]] = %[[VALUE3]])
 // CHECK: %{{.*}} = scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}} iter_args(%[[VALUE2:.*]] = %[[VALUE1]])
-// CHECK: air.channel.put async [%[[VALUE2]]]  @channel_4
+// CHECK: air.channel.put async [%[[ALLOC1]], %[[VALUE2]]]  @channel_4
 // CHECK: scf.yield
 // CHECK: scf.yield
 
 // CHECK: %{{.*}} = scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[VALUE1:.*]] = %[[VALUE3]])
 // CHECK: %{{.*}} = scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}} iter_args(%[[VALUE2:.*]] = %[[VALUE1]])
-// CHECK: air.channel.put async [%[[VALUE2]]]  @channel_5
+// CHECK: air.channel.put async [%[[ALLOC0]], %[[VALUE2]]]  @channel_5
 // CHECK: scf.yield
 // CHECK: scf.yield
 
