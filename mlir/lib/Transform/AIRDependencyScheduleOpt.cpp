@@ -5073,12 +5073,44 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
     for (auto user : asyncUsers)
       air::addAsyncDependencyIfNew(user, alloc.getAsyncToken());
   };
+  auto addDepToDeallocInBlock = [](air::ExecuteOp dealloc, Value memref,
+                                   Block *blk) {
+    SmallVector<Operation *> asyncUsers;
+    blk->walk([dealloc, memref, &asyncUsers](Operation *user) {
+      if (user == dealloc)
+        return;
+      if (!llvm::is_contained(user->getOperands(), memref))
+        return;
+      if (air::isAsyncOp(user))
+        asyncUsers.push_back(user);
+      else if (auto exec =
+                   dyn_cast_if_present<air::ExecuteOp>(user->getParentOp()))
+        asyncUsers.push_back(exec);
+    });
+    // Find parents to asyncUsers in blk
+    llvm::SetVector<Operation *> asyncUsersInBlk;
+    for (auto user : asyncUsers) {
+      if (!blk->getParent()->isAncestor(user->getParentRegion()))
+        continue;
+      Operation *userParent = user;
+      while (blk->getParent()->isProperAncestor(userParent->getParentRegion()))
+        userParent = userParent->getParentOp();
+      asyncUsersInBlk.insert(userParent);
+    }
+    for (auto user : asyncUsersInBlk)
+      air::addAsyncDependencyIfNew(dealloc, air::getAsyncTokenFromOp(user));
+  };
   auto resolveDepToExecs = [](PatternRewriter &rewriter,
                               SmallVector<air::ExecuteOp> execs, Block *blk) {
+    IRMapping remap;
+    llvm::DenseMap<air::ExecuteOp, air::WaitAllOp> execToWaitAll;
     for (auto exec : execs) {
       rewriter.setInsertionPoint(exec);
-      IRMapping remap;
-      auto waitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, exec);
+      execToWaitAll[exec] =
+          air::replaceAsyncOpWithWaitAll(rewriter, remap, exec);
+    }
+    for (auto exec : execs) {
+      auto waitAll = execToWaitAll[exec];
       rewriter.replaceUsesWithIf(
           exec.getAsyncToken(), waitAll.getAsyncToken(),
           [blk, &execs](OpOperand &u) {
@@ -5109,12 +5141,16 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
   for (auto &[alloc, dealloc] : allocDeallocExecs) {
     SmallVector<air::ExecuteOp> execs({alloc});
     resolveDepFromAllocExec(alloc, block);
-    addDepToAllocUsersInBlock(alloc, block);
     if (dealloc) {
       resolveDepFromDeallocExec(dealloc, block);
       execs.push_back(dealloc);
     }
     resolveDepToExecs(rewriter, execs, block);
+    addDepToAllocUsersInBlock(alloc, block);
+    if (dealloc) {
+      addDepToDeallocInBlock(dealloc, alloc->getResult(1), block);
+    }
+
     // Move alloc and dealloc
     rewriter.moveOpBefore(alloc, block, block->without_terminator().begin());
     if (dealloc) {
@@ -5778,6 +5814,33 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
         for (auto user : asyncUsers)
           air::addAsyncDependencyIfNew(user, alloc.getAsyncToken());
       };
+      auto addDepToDeallocInRegion = [](air::ExecuteOp dealloc, Value memref,
+                                        Region *dest) {
+        SmallVector<Operation *> asyncUsers;
+        dest->walk([dealloc, memref, &asyncUsers](Operation *user) {
+          if (user == dealloc)
+            return;
+          if (!llvm::is_contained(user->getOperands(), memref))
+            return;
+          if (air::isAsyncOp(user))
+            asyncUsers.push_back(user);
+          else if (auto exec =
+                       dyn_cast_if_present<air::ExecuteOp>(user->getParentOp()))
+            asyncUsers.push_back(exec);
+        });
+        // Find parents to asyncUsers in blk
+        llvm::SetVector<Operation *> asyncUsersInDest;
+        for (auto user : asyncUsers) {
+          if (!dest->isAncestor(user->getParentRegion()))
+            continue;
+          Operation *userParent = user;
+          while (dest->isProperAncestor(userParent->getParentRegion()))
+            userParent = userParent->getParentOp();
+          asyncUsersInDest.insert(userParent);
+        }
+        for (auto user : asyncUsersInDest)
+          air::addAsyncDependencyIfNew(dealloc, air::getAsyncTokenFromOp(user));
+      };
       auto resolveDepFromAllocExec = [](AsyncOpInterface alloc,
                                         air::HierarchyInterface dest) {
         Region &destRegion = dest.getBody();
@@ -5792,10 +5855,15 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
       auto resolveDepToExecs = [](PatternRewriter &rewriter,
                                   SmallVector<air::ExecuteOp> execs,
                                   air::HierarchyInterface dest) {
+        IRMapping remap;
+        llvm::DenseMap<air::ExecuteOp, air::WaitAllOp> execToWaitAll;
         for (auto exec : execs) {
           rewriter.setInsertionPoint(exec);
-          IRMapping remap;
-          auto waitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, exec);
+          execToWaitAll[exec] =
+              air::replaceAsyncOpWithWaitAll(rewriter, remap, exec);
+        }
+        for (auto exec : execs) {
+          auto waitAll = execToWaitAll[exec];
           Region &destRegion = dest.getBody();
           rewriter.replaceUsesWithIf(
               exec.getAsyncToken(), waitAll.getAsyncToken(),
@@ -5818,16 +5886,20 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
         return;
       };
       SmallVector<air::ExecuteOp> execs;
-      resolveDepToExecs(rewriter, execs, op);
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc)) {
+        resolveDepFromAllocExec(exec, op);
+        execs.push_back(exec);
+      }
       if (auto exec = dyn_cast_if_present<air::ExecuteOp>(dealloc)) {
         resolveDepFromDeallocExec(exec, op);
         execs.push_back(exec);
       }
-      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc)) {
+      resolveDepToExecs(rewriter, execs, op);
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(dealloc))
+        addDepToDeallocInRegion(exec, alloc->getResult(1), &op.getBody());
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc))
         addDepToAllocUsersInRegion(exec, &op.getBody());
-        resolveDepFromAllocExec(exec, op);
-        execs.push_back(exec);
-      }
+
       // Move alloc and dealloc
       rewriter.moveOpBefore(alloc, &op.getBody().front(),
                             op.getBody().front().without_terminator().begin());

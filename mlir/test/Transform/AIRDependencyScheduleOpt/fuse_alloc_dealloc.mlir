@@ -309,10 +309,10 @@ module {
 // CHECK-NEXT:   memref.alloc()
 // CHECK-NEXT:   air.execute_terminator
 // CHECK-NEXT:   }
-// CHECK:   air.execute{{.*}}{
+// CHECK:   %[[VALUE1:.*]] = air.execute{{.*}}{
 // CHECK-NEXT:   linalg.fill
 // CHECK-NEXT:   }
-// CHECK:   air.execute [%[[VALUE0]]] {
+// CHECK:   air.execute [%[[VALUE1]], %[[VALUE0]]] {
 // CHECK-NEXT:   memref.dealloc
 // CHECK-NEXT:   }
 
@@ -352,10 +352,10 @@ module {
 // CHECK-NEXT:   memref.alloc()
 // CHECK-NEXT:   air.execute_terminator
 // CHECK-NEXT:   }
-// CHECK:   air.execute [%[[VALUE0]], %{{.*}}] {
+// CHECK:   %[[VALUE1:.*]] = air.execute [%[[VALUE0]], %{{.*}}] {
 // CHECK-NEXT:   linalg.fill
 // CHECK-NEXT:   }
-// CHECK:   air.execute{{.*}}{
+// CHECK:   air.execute{{.*}} [%[[VALUE1]], %[[VALUE0]]] {
 // CHECK-NEXT:   memref.dealloc
 // CHECK-NEXT:   }
 // CHECK:   }
