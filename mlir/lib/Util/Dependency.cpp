@@ -489,6 +489,29 @@ Value getAsyncTokenFromOp(Operation *op) {
     return getAsyncTokenFromOpImpl(op);
 }
 
+// Convert scf.for op to async, by adding an async token iter arg.
+struct MakeAsyncScfForPattern : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  MakeAsyncScfForPattern(MLIRContext *ctx, Value token)
+      : OpRewritePattern(ctx), token(token) {}
+
+  LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    if (!air::getAsyncDependenciesFromOp(forOp).empty())
+      return failure();
+    if (!isa<air::AsyncTokenType>(token.getType()))
+      return failure();
+    if (failed(forOp.replaceWithAdditionalIterOperands(
+            rewriter, SmallVector<Value>{token}, true)))
+      return failure();
+    return success();
+  }
+
+private:
+  Value token;
+};
+
 // Add async dependency to op if unique
 void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
   if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
@@ -508,31 +531,31 @@ void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
   }
 }
 void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
-  SmallVector<Value> operands_without_wait_all;
+  auto ctx = op->getContext();
+  llvm::SetVector<Value> operands_without_wait_all;
   for (auto iter_oper : op.getInitArgs()) {
-    if (iter_oper.getDefiningOp() &&
-        isa<air::WaitAllOp>(iter_oper.getDefiningOp())) {
-      auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp());
+    if (!isa_and_present<air::AsyncTokenType>(iter_oper.getType()))
+      continue;
+    auto wa_op = dyn_cast_if_present<air::WaitAllOp>(iter_oper.getDefiningOp());
+    if (wa_op && wa_op.getAsyncToken().hasOneUse())
       addAsyncDependencyIfNewImpl(wa_op, token);
-    } else {
-      // Push to vec if unique
-      if (std::find(operands_without_wait_all.begin(),
-                    operands_without_wait_all.end(),
-                    iter_oper) == operands_without_wait_all.end()) {
-        operands_without_wait_all.push_back(iter_oper);
-      }
-    }
+    else
+      operands_without_wait_all.insert(iter_oper);
   }
   for (auto v : operands_without_wait_all) {
     OpBuilder builder(op);
-    SmallVector<Value> dep_list = {};
+    SmallVector<Value> dep_list = {token, v};
     air::WaitAllOp wait_all_op_before_loop =
         builder.create<xilinx::air::WaitAllOp>(
-            builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
-            dep_list);
+            builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), dep_list);
     op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
-    addAsyncDependencyIfNewImpl(wait_all_op_before_loop, v);
-    addAsyncDependencyIfNewImpl(wait_all_op_before_loop, token);
+  }
+  // If scf.for loop isn't async, then make it async.
+  if (!isAsyncOp(op)) {
+    RewritePatternSet patterns(ctx);
+    patterns.insert<MakeAsyncScfForPattern>(ctx, token);
+    (void)applyOpPatternsAndFold(ArrayRef<Operation *>{op},
+                                 std::move(patterns));
   }
 }
 void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
@@ -690,12 +713,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   IRMapping remap;
   auto new_for_op = rewriter.create<scf::ForOp>(
       loc, for_op.getLowerBound(), for_op.getUpperBound(), for_op.getStep(),
-      SmallVector<Value>{
-          rewriter
-              .create<air::WaitAllOp>(
-                  loc, air::AsyncTokenType::get(rewriter.getContext()),
-                  SmallVector<Value>{})
-              .getAsyncToken()});
+      for_op.getInitArgs());
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -736,25 +754,14 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                    ->getResult(0)});
 
   for (auto erase_op : target_ops) {
-    // Reconnect returned tokens.
-    rewriter.setInsertionPoint(erase_op);
-    SmallVector<Value> erase_op_async_deps =
-        air::getAsyncDependenciesFromOp(erase_op);
-    for (auto res : erase_op->getResults()) {
-      if (!isa<air::AsyncTokenType>(res.getType()))
-        continue;
-      if (erase_op_async_deps.empty())
-        continue;
-      else if (erase_op_async_deps.size() == 1)
-        res.replaceAllUsesWith(erase_op_async_deps.front());
-      else {
-        res.replaceAllUsesWith(
-            rewriter
-                .create<air::WaitAllOp>(
-                    loc, air::AsyncTokenType::get(rewriter.getContext()),
-                    erase_op_async_deps)
-                .getAsyncToken());
-      }
+    IRMapping waitAllRemap;
+    if (air::isAsyncOp(erase_op)) {
+      // Reconnect returned tokens.
+      rewriter.setInsertionPoint(erase_op);
+      auto newWaitAll = air::replaceAsyncOpWithWaitAll(rewriter, waitAllRemap,
+                                                       erase_op, true);
+      air::getAsyncTokenFromOp(erase_op).replaceAllUsesWith(
+          newWaitAll.getAsyncToken());
     }
   }
   for (auto erase_op : target_ops)
@@ -767,100 +774,10 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
 }
 
 // Unroll scf.parallel ops.
-LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder,
-                                                  scf::ParallelOp par,
-                                                  Operation *originalChanOp,
-                                                  IRMapping remap) {
-  SmallVector<int, 2> lbs_spatial, ubs_spatial;
-  air::getSizesFromSpatialLoop(par.getOperation(), lbs_spatial, ubs_spatial);
-  std::vector<unsigned> par_size;
-  unsigned par_vol = 1;
-  for (unsigned i = 0; i < lbs_spatial.size(); i++) {
-    par_size.push_back(ubs_spatial[i] - lbs_spatial[i] + 1);
-    par_vol *= ubs_spatial[i] - lbs_spatial[i] + 1;
-  }
-  for (unsigned iter = 0; iter < par_vol; iter++) {
-    IRMapping localRemap = remap;
-    std::vector<unsigned> position =
-        air::getMDVectorFromIterator(par_size, iter);
-    SmallVector<Value, 4> emptyVec = {};
-    SmallVector<Type, 4> tys = {};
-    if (auto putget = dyn_cast<air::ChannelInterface>(originalChanOp)) {
-      auto air_chan = getChannelDeclarationThroughSymbol(putget);
-      auto air_chan_size =
-          extractFromIntegerArrayAttr<int64_t>(air_chan.getSize());
-      if (position.size() == putget.getIndices().size()) {
-        for (unsigned i = 0; i < putget.getIndices().size(); i++)
-          localRemap.map(putget.getIndices()[i],
-                         builder.create<arith::ConstantIndexOp>(
-                             builder.getUnknownLoc(), position[i]));
-      } else if (position.size() == 1 &&
-                 std::find(air_chan_size.begin(), air_chan_size.end(),
-                           air_chan.getBundleSize()) != air_chan_size.end()) {
-        auto idx = std::find(air_chan_size.begin(), air_chan_size.end(),
-                             air_chan.getBundleSize()) -
-                   air_chan_size.begin();
-        localRemap.map(putget.getIndices()[idx],
-                       builder.create<arith::ConstantIndexOp>(
-                           builder.getUnknownLoc(), position[0]));
-      } else
-        assert(false && "mismatching dimension counts between loop "
-                        "iteration space and air.channel shape");
-    }
-    // Specialize any affine apply mappings to operand
-    for (auto oper : originalChanOp->getOperands()) {
-      if (oper.getDefiningOp()) {
-        mlir::affine::AffineApplyOp position_apply = nullptr;
-        if (auto apply_op =
-                dyn_cast<mlir::affine::AffineApplyOp>(oper.getDefiningOp()))
-          position_apply = apply_op;
-        else if (auto exec = dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
-          if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(
-                  exec.getChildOps().front()))
-            position_apply = apply_op;
-        }
-        if (position_apply) {
-          bool positionApplyIsVariantWrtPar = false;
-          SmallVector<AffineExpr> const_syms;
-          for (unsigned i = 0; i < par.getInductionVars().size(); i++) {
-            for (auto map_o : position_apply.getMapOperands()) {
-              if (par.getInductionVars()[i] == map_o) {
-                const_syms.push_back(
-                    getAffineConstantExpr(position[i], builder.getContext()));
-                positionApplyIsVariantWrtPar = true;
-              }
-            }
-          }
-          if (!positionApplyIsVariantWrtPar)
-            continue;
-          AffineExpr newC = position_apply.getAffineMap().getResult(0);
-          newC = newC.replaceSymbols(const_syms);
-          auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
-              newC, 0, position_apply.getMapOperands().size()));
-          if (expr) {
-            int result = expr.getValue();
-            localRemap.map(oper, builder.create<arith::ConstantIndexOp>(
-                                     builder.getUnknownLoc(), result));
-          }
-        }
-      }
-    }
-    // Clone the immediate child op under scf.parallel.
-    Operation *parent = originalChanOp;
-    assert(par->isProperAncestor(originalChanOp));
-    while (parent->getParentOp() != par) {
-      parent = parent->getParentOp();
-    }
-    auto new_memcpy = builder.clone(*parent, localRemap);
-    clearAsyncDependenciesOfAsyncOp(new_memcpy);
-  }
-  return success();
-}
-
-// Unroll scf.parallel ops.
 LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
                                 Operation *originalChanOp, IRMapping remap) {
-
+  auto loc = par->getLoc();
+  auto ctx = par->getContext();
   SmallVector<int, 2> lbs_spatial, ubs_spatial;
   air::getSizesFromSpatialLoop(par.getOperation(), lbs_spatial, ubs_spatial);
   std::vector<unsigned> par_size;
@@ -869,6 +786,7 @@ LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
     par_size.push_back(ubs_spatial[i] - lbs_spatial[i] + 1);
     par_vol *= ubs_spatial[i] - lbs_spatial[i] + 1;
   }
+  SmallVector<Value> yieldedTokens;
   Operation *curr_new_op = nullptr;
   for (unsigned iter = 0; iter < par_vol; iter++) {
     IRMapping localRemap = remap;
@@ -881,24 +799,28 @@ LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
                          position[i] * *getConstantIntValue(par.getStep()[i]) +
                              *getConstantIntValue(par.getLowerBound()[i])));
     }
+    SmallVector<Value> yieldedTokensInIter;
     // Clone ops
     for (auto &op : par.getBody()->without_terminator()) {
       curr_new_op = builder.clone(op, localRemap);
+      if (air::getAsyncTokenFromOp(curr_new_op))
+        yieldedTokensInIter.push_back(air::getAsyncTokenFromOp(curr_new_op));
+    }
+    // Unroll air.wait_all token reduction
+    if (getAsyncTokenFromOp(par)) {
+      auto yieldedWaitAll = builder.create<air::WaitAllOp>(
+          loc, air::AsyncTokenType::get(builder.getContext()),
+          yieldedTokensInIter);
+      yieldedTokens.push_back(yieldedWaitAll.getAsyncToken());
     }
   }
 
   if (auto parToken = getAsyncTokenFromOp(par)) {
-    if (auto tailToken = getAsyncTokenFromOp(curr_new_op)) {
-      parToken.replaceAllUsesWith(tailToken);
-    } else {
-      parToken.replaceAllUsesWith(
-          builder
-              .create<air::WaitAllOp>(
-                  builder.getUnknownLoc(),
-                  air::AsyncTokenType::get(builder.getContext()),
-                  SmallVector<Value>{})
-              .getAsyncToken());
-    }
+    parToken.replaceAllUsesWith(
+        builder
+            .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                    yieldedTokens)
+            .getAsyncToken());
   }
   return success();
 }
@@ -990,6 +912,23 @@ void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
   air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
+}
+
+// Replace async op with wait_all op
+air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
+                                         Operation *op, bool cloneDepList) {
+  assert(air::isAsyncOp(op));
+  SmallVector<Value> dep_list_remap;
+  if (cloneDepList) {
+    for (auto dep : air::getAsyncDependenciesFromOp(op)) {
+      dep_list_remap.push_back(remap.lookupOrDefault(dep));
+    }
+  }
+  auto wa_op = builder.create<air::WaitAllOp>(
+      builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
+      dep_list_remap);
+  remap.map(air::getAsyncTokenFromOp(op), wa_op.getAsyncToken());
+  return wa_op;
 }
 
 //===----------------------------------------------------------------------===//

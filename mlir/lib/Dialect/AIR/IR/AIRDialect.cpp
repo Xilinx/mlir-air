@@ -196,32 +196,83 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 template <class OpT>
 static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
-
-  SmallVector<Value> depsOfDeps;
-  for (auto v : op.getAsyncDependencies()) {
-    if (auto asyncOperand =
-            dyn_cast_if_present<AsyncOpInterface>(v.getDefiningOp())) {
-      auto deps = asyncOperand.getAsyncDependencies();
-      depsOfDeps.append(deps.begin(), deps.end());
+  auto getMemrefsFromVec = [](SmallVector<Value> vec) {
+    SmallVector<Value> memrefs;
+    for (auto v : vec)
+      if (isa<MemRefType>(v.getType()))
+        memrefs.push_back(v);
+    return memrefs;
+  };
+  auto getAllMemrefsTouchedbyOp = [getMemrefsFromVec](Operation *o) {
+    llvm::SetVector<Value> memrefs;
+    SmallVector<Value> vals = o->getOperands();
+    vals.insert(vals.end(), o->getResults().begin(), o->getResults().end());
+    SmallVector<Region *> regions;
+    for (auto &region : o->getRegions())
+      regions.push_back(&region);
+    // If air.wait_all, then we analyze the dependency by collecting all
+    // operations that depend on it.
+    auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
+    if (waitAllOp && waitAllOp.getAsyncToken()) {
+      for (auto user : waitAllOp.getAsyncToken().getUsers()) {
+        vals.insert(vals.end(), user->getOperands().begin(),
+                    user->getOperands().end());
+        vals.insert(vals.end(), user->getResults().begin(),
+                    user->getResults().end());
+        for (auto &region : user->getRegions())
+          regions.push_back(&region);
+      }
     }
-  }
+    auto memrefvals = getMemrefsFromVec(vals);
+    memrefs.insert(memrefvals.begin(), memrefvals.end());
+    for (auto region : regions) {
+      llvm::SetVector<Value> usedVals;
+      getUsedValuesDefinedAbove(*region, usedVals);
+      auto usedMemrefs = getMemrefsFromVec(usedVals.takeVector());
+      memrefs.insert(usedMemrefs.begin(), usedMemrefs.end());
+    }
+    return memrefs;
+  };
+  auto memrefsTouchedByOp = getAllMemrefsTouchedbyOp(op.getOperation());
   // make a list of new async token operands
-  SmallVector<Value> newAsyncDeps;
+  llvm::SetVector<Value> newAsyncDeps; // don't include duplicates
   for (auto v : op.getAsyncDependencies()) {
-    // don't include duplicates
-    if (std::find(std::begin(newAsyncDeps), std::end(newAsyncDeps), v) !=
-        std::end(newAsyncDeps))
-      continue;
     // don't include wait_all ops with no operands
     if (auto wa = dyn_cast_if_present<WaitAllOp>(v.getDefiningOp()))
       if (wa.getAsyncDependencies().size() == 0)
         continue;
-    // don't include a dependency of another dependency
-    if (std::find(std::begin(depsOfDeps), std::end(depsOfDeps), v) !=
-        std::end(depsOfDeps))
-      continue;
-    newAsyncDeps.push_back(v);
+    // don't include any wrong dependencies
+    if (v.getDefiningOp()) {
+      auto memrefsTouchedByDefOp = getAllMemrefsTouchedbyOp(v.getDefiningOp());
+      if (!memrefsTouchedByDefOp.empty() && !memrefsTouchedByOp.empty() &&
+          llvm::none_of(memrefsTouchedByDefOp, [&memrefsTouchedByOp](Value v) {
+            return llvm::is_contained(memrefsTouchedByOp, v);
+          })) {
+        continue;
+      }
+    }
+    newAsyncDeps.insert(v);
   }
+
+  // don't include a dependency of another dependency
+  auto getDepsOfDeps = [](llvm::SetVector<Value> deps) {
+    llvm::SetVector<Value> depsOfDeps;
+    for (auto v : deps) {
+      if (auto asyncOperand =
+              dyn_cast_if_present<AsyncOpInterface>(v.getDefiningOp())) {
+        auto deps = asyncOperand.getAsyncDependencies();
+        depsOfDeps.insert(deps.begin(), deps.end());
+      }
+    }
+    return depsOfDeps;
+  };
+  llvm::SetVector<Value> erased;
+  for (auto v : newAsyncDeps) {
+    if (llvm::is_contained(getDepsOfDeps(newAsyncDeps), v))
+      erased.insert(v);
+  }
+  for (auto e : erased)
+    newAsyncDeps.remove(e);
 
   // if the operands won't change, return
   if (newAsyncDeps.size() == op.getAsyncDependencies().size())
@@ -540,6 +591,10 @@ unsigned LaunchOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
+OperandRange LaunchOp::getKernelOperands() {
+  return getOperands().drop_front(getAsyncDependencies().size() + getNumDims());
+}
+
 Value LaunchOp::getKernelOperand(unsigned i) {
   return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
@@ -800,6 +855,10 @@ OperandRange SegmentOp::getSizeOperands() {
 
 unsigned SegmentOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
+}
+
+OperandRange SegmentOp::getKernelOperands() {
+  return getOperands().drop_front(getAsyncDependencies().size() + getNumDims());
 }
 
 Value SegmentOp::getKernelOperand(unsigned i) {
@@ -1063,6 +1122,10 @@ unsigned HerdOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
+OperandRange HerdOp::getKernelOperands() {
+  return getOperands().drop_front(getAsyncDependencies().size() + getNumDims());
+}
+
 Value HerdOp::getKernelOperand(unsigned i) {
   return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
@@ -1177,6 +1240,30 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
   // If async wait_all has a single operand, forward it to any uses
   if (op.getAsyncDependencies().size() == 1 && op.getResults().size() == 1) {
     rewriter.replaceOp(op, op.getAsyncDependencies()[0]);
+    return success();
+  }
+
+  // If all of async wait_all's users have AsyncOpInterface, fold it into its
+  // users
+  if (op.getResults().size() == 1 &&
+      llvm::all_of(op.getResults().front().getUsers(), [](Operation *user) {
+        return isa_and_present<air::AsyncOpInterface>(user);
+      })) {
+    SmallVector<Operation *> users;
+    for (auto user : op.getResults().front().getUsers()) {
+      users.push_back(user);
+    }
+    for (auto user : users) {
+      air::AsyncOpInterface asyncUser =
+          dyn_cast_if_present<air::AsyncOpInterface>(user);
+      for (int i = asyncUser.getAsyncDependencies().size() - 1; i >= 0; i--) {
+        if (asyncUser.getAsyncDependencies()[i] == op.getResults().front())
+          asyncUser.eraseAsyncDependency(i);
+      }
+      for (auto dep : op.getAsyncDependencies())
+        asyncUser.addAsyncDependency(dep);
+    }
+    rewriter.eraseOp(op);
     return success();
   }
 
@@ -1449,6 +1536,7 @@ void DmaMemcpyNdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                 MLIRContext *context) {
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdSrc);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdDst);
+  patterns.add(CanonicalizeAsyncOpDeps<DmaMemcpyNdOp>);
 }
 
 //

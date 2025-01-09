@@ -167,6 +167,9 @@ def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
     "ArrayRef<BlockArgument>", "getKernelArguments"
     >,
     InterfaceMethod<"description",
+    "OperandRange", "getKernelOperands"
+    >,
+    InterfaceMethod<"description",
     "Value", "getKernelOperand", (ins "unsigned":$i)
     >,
     InterfaceMethod<"description",
@@ -177,6 +180,15 @@ def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
     >,
     InterfaceMethod<"description",
     "int32_t", "getId"
+    >,
+    InterfaceMethod<"description",
+    "BlockArgument", "getTiedKernelArgument", (ins "Value":$i)
+    >,
+    InterfaceMethod<"description",
+    "Value", "getTiedKernelOperand", (ins "BlockArgument":$i)
+    >,
+    InterfaceMethod<"description",
+    "Region&", "getBody"
     >,
   ];
 }
