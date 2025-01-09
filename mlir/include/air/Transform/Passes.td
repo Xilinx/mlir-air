@@ -1089,6 +1089,14 @@ def AIRFuseAllocDealloc: Pass<"air-fuse-alloc-dealloc", "func::FuncOp"> {
   }];
 }
 
+def AIRShrinkMemrefSizesByAccess: Pass<"air-shrink-memref-sizes-by-access", "func::FuncOp"> {
+  let summary = ".";
+  let constructor = "xilinx::air::createAIRShrinkMemrefSizesByAccess()";
+  let description = [{
+    .
+  }];
+}
+
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   let summary = "Optimize scheduling based on air async dependency";
   let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";
