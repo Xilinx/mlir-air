@@ -5614,12 +5614,8 @@ public:
       signalPassFailure();
       return;
     }
-    int maxNumDims = -1; // -1 means unlimited.
-    const auto &targetModel = AIE::getTargetModel(*device);
-    if (isa<AIE::AIE1TargetModel>(targetModel))
-      maxNumDims = 1;
-    else if (isa<AIE::AIE2TargetModel>(targetModel))
-      maxNumDims = 4;
+    int maxNumDims =
+        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? 1 : 4;
     // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
     // specialization patterns.
     air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getRegion());
