@@ -63,6 +63,8 @@ std::unique_ptr<mlir::Pass> createAIROptimizeShimDMABDs();
 
 std::unique_ptr<mlir::Pass> createAIRFuseAllocDealloc();
 
+std::unique_ptr<mlir::Pass> createAIRShrinkMemrefSizesByAccess();
+
 // Populate patterns for canonicalizing index operations on loop index
 // variables. At the moment, only affine.apply computations on induction
 // variables are canonicalized
