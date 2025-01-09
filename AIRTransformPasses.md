@@ -539,6 +539,11 @@ iteration, by connecting them in the loop-carried dependency path.
 _Skeleton module op pass_
 
 
+### `-air-fuse-alloc-dealloc`
+
+_Fuse pairs of memref.alloc/dealloc ops into the inner-most region containing all uses of the memref._
+
+Fuse pairs of memref.alloc/dealloc into the inner-most region, which contains all uses of the memref.
 ### `-air-fuse-channels`
 
 _Fuse multiple air.channel ops into one_
