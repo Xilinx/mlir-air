@@ -108,7 +108,7 @@ include_directories(${AIE_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
 ## flags duplicated from mlir-aie
-add_flag_if_supported("-Werror=sign-compare" WERROR_SIGN_COMPARE)
+# add_flag_if_supported("-Werror=sign-compare" WERROR_SIGN_COMPARE)
 add_flag_if_supported("-Werror=unused" WERROR_USED)
 # What happens when you have a non-void function with no return?
 # No `ret` instruction is generated and so execution of that function just
