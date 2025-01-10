@@ -673,7 +673,8 @@ struct LinalgTransformationFilter {
     return *this;
   }
 
-  template <typename... OpTypes> LinalgTransformationFilter &addOpFilter() {
+  template <typename... OpTypes>
+  LinalgTransformationFilter &addOpFilter() {
     return addFilter(
         [](Operation *op) { return success(isa<OpTypes...>(op)); });
   }
@@ -1122,7 +1123,7 @@ void AIRPipelineReducePass::runOnOperation() {
                                       clPipelineDepth, clPipelineDirection,
                                       clPromoteSubViews);
 
-  (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
+  (void)applyPatternsGreedily(func, std::move(patterns));
 }
 class AIRLinalgCodegen
     : public air::impl::AIRLinalgCodegenBase<AIRLinalgCodegen> {
@@ -1145,7 +1146,7 @@ public:
                     RemoveAllocLinalgOpCopyPattern, RemoveExtraAllocPattern,
                     RemoveAllocCopyLinalgOpCopyPattern, RemoveDeadCopyPattern,
                     RemoveFillCopyLinalgPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   /// Collect perfectly nested loops starting from `rootForOps`.  Loops are
@@ -1361,7 +1362,7 @@ public:
         stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
         stageL2Patterns.insert<MemrefsPattern>(ctx);
         scf::populateSCFForLoopCanonicalizationPatterns(stageL2Patterns);
-        (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
+        (void)applyPatternsGreedily(called, std::move(stageL2Patterns));
 
         LLVM_DEBUG(llvm::outs() << "After L2 Tiling\n");
         LLVM_DEBUG(called.print(llvm::outs()));
@@ -1416,7 +1417,7 @@ public:
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
           LinalgTransformationFilter(next_match,
                                      StringAttr::get(ctx, "herd_tiling")));
-      (void)applyPatternsAndFoldGreedily(called, std::move(patterns));
+      (void)applyPatternsGreedily(called, std::move(patterns));
       next_match = StringAttr::get(ctx, "herd_tiling");
 
       LLVM_DEBUG(llvm::outs() << "After Herd Tiling\n");
@@ -1449,12 +1450,12 @@ public:
       stageL1Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
       stageL1Patterns.insert<FoldSubViewOpsPattern>(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stageL1Patterns);
-      (void)applyPatternsAndFoldGreedily(called, std::move(stageL1Patterns));
+      (void)applyPatternsGreedily(called, std::move(stageL1Patterns));
 
       RewritePatternSet stage3Patterns(&getContext());
       stage3Patterns.insert<MemrefsPattern>(ctx);
       stage3Patterns.insert<RemoveAllocCopyLinalgOpCopyPattern>(ctx);
-      (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
+      (void)applyPatternsGreedily(called, std::move(stage3Patterns));
 
       LLVM_DEBUG(llvm::outs() << "After L1 Tiling\n");
       LLVM_DEBUG(called.print(llvm::outs()));
@@ -1554,7 +1555,7 @@ public:
         stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
         stageL2Patterns.insert<MemrefsPattern>(ctx);
         scf::populateSCFForLoopCanonicalizationPatterns(stageL2Patterns);
-        (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
+        (void)applyPatternsGreedily(called, std::move(stageL2Patterns));
         next_match = StringAttr::get(ctx, "L2_promoted");
       }
 
@@ -1585,8 +1586,8 @@ public:
       stage3Patterns.insert<MemrefsPattern>(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stage3Patterns);
 
-      (void)applyPatternsAndFoldGreedily(called, std::move(stageL1Patterns));
-      (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
+      (void)applyPatternsGreedily(called, std::move(stageL1Patterns));
+      (void)applyPatternsGreedily(called, std::move(stage3Patterns));
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(air::LinalgTransforms::kLinalgTransformMarker);
       });
@@ -1650,9 +1651,9 @@ public:
       stage3Patterns.insert<MemrefsPattern>(ctx);
       stage3Patterns.insert<RemoveViewOpsPattern>(ctx, 2);
 
-      (void)applyPatternsAndFoldGreedily(called, std::move(stage1Patterns));
-      (void)applyPatternsAndFoldGreedily(called, std::move(stage2Patterns));
-      (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
+      (void)applyPatternsGreedily(called, std::move(stage1Patterns));
+      (void)applyPatternsGreedily(called, std::move(stage2Patterns));
+      (void)applyPatternsGreedily(called, std::move(stage3Patterns));
 
       /// scf.parallel transform from herd dimension
       /// Step-1: Capture the perfectly nested scf.for loops
@@ -1721,7 +1722,7 @@ public:
 
     // RewritePatternSet prePatterns(&getContext());
     // prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
-    //(void)applyPatternsAndFoldGreedily(f, std::move(prePatterns));
+    //(void)applyPatternsGreedily(f, std::move(prePatterns));
     if (!clLinalgCodegenTestPatterns) {
       runMatmulPatterns(f);
       runConv2dPatterns(f);
@@ -2101,8 +2102,8 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   // to:
   //  memref.alloc() : memref<32x32xi32, 2>
   memref::AllocOp::getCanonicalizationPatterns(patterns, ctx);
-  (void)applyPatternsAndFoldGreedily(
-      payloadOps[0]->getParentOfType<func::FuncOp>(), std::move(patterns));
+  (void)applyPatternsGreedily(payloadOps[0]->getParentOfType<func::FuncOp>(),
+                              std::move(patterns));
 
   if (!transformed.size())
     return emitDefaultDefiniteFailure(payloadOps[0]);

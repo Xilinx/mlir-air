@@ -673,7 +673,7 @@ void specializeHerdAffineIf(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<SpecializeAffineIfPattern>(ctx);
-  (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+  (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
 struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
@@ -720,7 +720,7 @@ void lowerAirExecute(AIE::DeviceOp d) {
   patterns.insert<LowerAIRExecutePattern,
                   CanonicalizeChannelPutWrapsAndStridesPattern,
                   CanonicalizeChannelGetWrapsAndStridesPattern>(ctx);
-  (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
+  (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
 struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
@@ -813,7 +813,7 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<LowerScfTokenPattern>(ctx);
-  (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+  (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
 struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
@@ -935,7 +935,7 @@ void allocL1Buffers(AIE::DeviceOp m,
   RewritePatternSet patterns(ctx);
   patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
   // AllocL1TensorsPattern
-  (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+  (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
 bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b) {
@@ -1027,7 +1027,7 @@ void allocL2Buffers(AIE::DeviceOp m,
     L2MemrefToMemTileMap(m, memrefToTileMap);
     patterns.insert<AllocL2BuffersPattern>(ctx, memrefToTileMap,
                                            bufferToMemtileMap, BufferId);
-    (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+    (void)applyPatternsGreedily(m, std::move(patterns));
   }
 
   // Remove L2 temporary buffer allocs now that
@@ -1359,7 +1359,7 @@ void lowerAIRChannels(
   std::map<Operation *, AIE::ObjectFifoCreateOp> linksToComplete;
   patterns.insert<LowerAIRChannelsPattern>(ctx, s, bufferToMemtileMap,
                                            linksToComplete);
-  (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
+  (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
 struct SpecializeChannelBundlePattern
@@ -1561,7 +1561,7 @@ void specializeChannelBundle(
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
-  (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
+  (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
 struct LowerAIRPingPongPattern : public OpRewritePattern<scf::ForOp> {
@@ -1618,7 +1618,7 @@ void LowerAIRPingPong(AIE::DeviceOp &d) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<LowerAIRPingPongPattern>(ctx);
-  (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
+  (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
 template <typename OpT>
@@ -1879,7 +1879,7 @@ public:
     RewritePatternSet patterns(ctx);
     xilinx::air::populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
         patterns);
-    (void)applyPatternsAndFoldGreedily(aie_device, std::move(patterns));
+    (void)applyPatternsGreedily(aie_device, std::move(patterns));
 
     // Substituting index operands, such as strides and offsets, to constant
     // zero for convenience. TODO: generalize this
@@ -3251,7 +3251,7 @@ public:
     }
 
     if (patterns.getNativePatterns().size())
-      (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+      (void)applyPatternsGreedily(m, std::move(patterns));
   }
 
   void runOnOperation() override {
@@ -3460,7 +3460,7 @@ public:
 
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
-      (void)applyPatternsAndFoldGreedily(device, std::move(patterns));
+      (void)applyPatternsGreedily(device, std::move(patterns));
 
       // Remove ops via rewrite patterns.
       RewritePatternSet removepatterns(ctx);
@@ -3700,7 +3700,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     patterns.insert<LowerAIRExecutePattern>(ctx);
     patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
-    (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns));
+    (void)applyPatternsGreedily(aie_module, std::move(patterns));
   }
 
   return aie_module;

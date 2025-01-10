@@ -1973,7 +1973,7 @@ void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func) {
   auto ctx = func.getContext();
   RewritePatternSet patterns(ctx);
   air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
-  (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
+  (void)applyPatternsGreedily(func, std::move(patterns));
 }
 
 // Get number of cores in herd

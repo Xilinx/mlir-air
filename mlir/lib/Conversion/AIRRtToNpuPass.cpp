@@ -947,19 +947,19 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     auto ctx = &getContext();
     RewritePatternSet canoPatterns_0(ctx);
     xilinx::air::populateAIRLoopIndexCanonicalizationPatterns(canoPatterns_0);
-    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_0));
+    (void)applyPatternsGreedily(module, std::move(canoPatterns_0));
 
     // Specialize affine for loop nest into wraps and strides
     RewritePatternSet loopFoldPattern(ctx);
     loopFoldPattern.add<AIRSpecializeAIRRtDmaWrapAndStrideInAffineFor>(ctx);
     air::populateAIRLoopIndexCanonicalizationPatterns(loopFoldPattern);
-    (void)applyPatternsAndFoldGreedily(module, std::move(loopFoldPattern));
+    (void)applyPatternsGreedily(module, std::move(loopFoldPattern));
     unrollAffineFors(module);
 
     // Simplify arith ops (from airrt)
     RewritePatternSet canoPatterns_1(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_1, ctx);
-    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_1));
+    (void)applyPatternsGreedily(module, std::move(canoPatterns_1));
 
     // Purge all wait ops again after unroll, in case there were loop carried
     // events which couldn't be purged before
@@ -974,7 +974,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Simplify arith ops (from airrt)
     RewritePatternSet canoPatterns_3(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_3, ctx);
-    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_3));
+    (void)applyPatternsGreedily(module, std::move(canoPatterns_3));
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
@@ -1020,7 +1020,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     RewritePatternSet canoPatterns_2(ctx);
     canoPatterns_2.insert<RelocateAssumeAlignmentOp>(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_2, ctx);
-    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_2));
+    (void)applyPatternsGreedily(module, std::move(canoPatterns_2));
 
     // Unroll any affine for loops
     unrollAffineFors(module);
@@ -1031,7 +1031,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Cast buffers to i32 types
     RewritePatternSet castPattern(ctx);
     castPattern.add(CastFunctionArgs);
-    (void)applyPatternsAndFoldGreedily(module, std::move(castPattern));
+    (void)applyPatternsGreedily(module, std::move(castPattern));
 
     // Insert sync op after copying data out to host
     insertNpuSyncOpForResults(module);

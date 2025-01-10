@@ -1141,7 +1141,7 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
         linalg::getLinalgTilingCanonicalizationPatterns(context);
     memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
     memref::populateComposeSubViewPatterns(stage1Patterns, context);
-    (void)applyPatternsAndFoldGreedily(module, std::move(stage1Patterns));
+    (void)applyPatternsGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
     stage2Patterns
@@ -1174,7 +1174,7 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
 
     RewritePatternSet pattern(context);
     air::DmaMemcpyNdOp::getCanonicalizationPatterns(pattern, context);
-    (void)applyPatternsAndFoldGreedily(module, std::move(pattern));
+    (void)applyPatternsGreedily(module, std::move(pattern));
   }
 };
 
@@ -1613,7 +1613,7 @@ transform::ParToHerdOp::applyToOne(transform::TransformRewriter &rewriter,
                                        getFirstDim());
   patterns.add<ScfForallToHerdConversion>(ctx, filteredOps, herdOps,
                                           getFirstDim());
-  (void)applyPatternsAndFoldGreedily(
+  (void)applyPatternsGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
   for (auto h : herdOps) {
@@ -1641,7 +1641,7 @@ transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
                                          getHasAirSegment());
   patterns.add<ScfForallToLaunchConversion>(ctx, filteredOps, launchOps,
                                             getHasAirSegment());
-  (void)applyPatternsAndFoldGreedily(
+  (void)applyPatternsGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
   for (auto l : launchOps)
