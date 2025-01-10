@@ -1025,11 +1025,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Unroll any affine for loops
     unrollAffineFors(module);
 
-    // Buffer npu.dma_memcpy_nd memref to function's argument list.
-    BufferMemrefToFuncArgs(module);
-
-    // Cast buffers to i32 types
+    // Cast buffers to i32 types; buffer npu.dma_memcpy_nd memref to function's
+    // argument list.
     RewritePatternSet castPattern(ctx);
+    air::populateBufferMemrefToFuncArgsPattern(castPattern);
     castPattern.add(CastFunctionArgs);
     (void)applyPatternsAndFoldGreedily(module, std::move(castPattern));
 
@@ -1630,57 +1629,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                              mlir::IntegerType::get(dma->getContext(), 64),
                              chanToIdMap[col]++));
     });
-  }
-
-  // Buffers npu.dma_memcpy_op memref as function argument
-  void BufferMemrefToFuncArgs(ModuleOp module) {
-    module.walk([&](mlir::func::FuncOp f) { BufferMemrefToFuncArgs(f); });
-  }
-  void BufferMemrefToFuncArgs(func::FuncOp funcOp) {
-    if (!funcOp)
-      return;
-
-    // Collect illegal dma ops whose memrefs are not in function's arguments.
-    SmallVector<Type, 6> memrefTypes;
-    SmallVector<Value, 6> memrefs;
-    funcOp.walk([&](AIEX::NpuDmaMemcpyNdOp dma) {
-      Value memref = dma.getMemref();
-      auto args = funcOp.getArguments();
-      // if the memref is an arg, return
-      if (std::find(args.begin(), args.end(), memref) != args.end())
-        return;
-      // if the memref is the result of a cast of an arg, return
-      if (auto cast = dyn_cast_or_null<UnrealizedConversionCastOp>(
-              memref.getDefiningOp())) {
-        if (std::find(args.begin(), args.end(), cast.getOperand(0)) !=
-            args.end())
-          return;
-        else
-          memref = cast.getOperand(0);
-      }
-      // push back if unique
-      if (std::find(memrefs.begin(), memrefs.end(), memref) == memrefs.end()) {
-        memrefs.push_back(memref);
-        memrefTypes.push_back(memref.getType());
-      }
-    });
-
-    // Append memref to function's arguments.
-    auto functionType = funcOp.getFunctionType();
-    auto newArgTypes = llvm::to_vector<6>(
-        llvm::concat<const Type>(functionType.getInputs(), memrefTypes));
-    auto newFunctionType = FunctionType::get(funcOp.getContext(), newArgTypes,
-                                             functionType.getResults());
-    funcOp.setType(newFunctionType);
-
-    // Add the new arguments to the entry block if the function is not external.
-    if (!funcOp.isExternal()) {
-      Location loc = funcOp.getLoc();
-      for (Value v : memrefs) {
-        auto newArg = funcOp.front().addArgument(v.getType(), loc);
-        v.replaceAllUsesWith(newArg);
-      }
-    }
   }
 };
 
