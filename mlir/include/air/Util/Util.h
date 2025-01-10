@@ -252,6 +252,10 @@ SmallVector<Operation *> cloneDefiningOpsInRegion(OpBuilder builder,
                                                   SmallVectorImpl<Value> &opers,
                                                   IRMapping &remap);
 
+// Buffer all allocations of memref directly within the func op's body into the
+// func op's arguments.
+void populateBufferMemrefToFuncArgsPattern(RewritePatternSet &patterns);
+
 } // namespace air
 } // namespace xilinx
 

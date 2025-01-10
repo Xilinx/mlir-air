@@ -1693,3 +1693,57 @@ air::cloneDefiningOpsInRegion(OpBuilder builder, Region *region,
     clonedOps.push_back(builder.clone(*op, remap));
   return clonedOps;
 }
+
+// Buffer all allocations of L3 memref directly within the func op's body into
+// the func op's arguments.
+struct BufferMemrefToFuncArgsPattern : public OpRewritePattern<func::FuncOp> {
+  using OpRewritePattern<func::FuncOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(func::FuncOp funcOp,
+                                PatternRewriter &rewriter) const override {
+
+    if (funcOp.isExternal())
+      return failure();
+
+    SmallVector<Type, 6> memrefTypes;
+    llvm::SetVector<Value> memrefs;
+    for (auto &op : funcOp.getFunctionBody().getOps()) {
+      if (isa<CastOpInterface>(op))
+        continue;
+      for (auto res : op.getResults()) {
+        MemRefType resType = dyn_cast<MemRefType>(res.getType());
+        if (!resType)
+          continue;
+        if (resType.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+          memrefs.insert(res);
+      }
+    }
+    for (auto memref : memrefs)
+      memrefTypes.push_back(memref.getType());
+    if (memrefs.empty())
+      return failure();
+
+    // Append memref to function's arguments.
+    auto functionType = funcOp.getFunctionType();
+    auto newArgTypes = llvm::to_vector<6>(
+        llvm::concat<const Type>(functionType.getInputs(), memrefTypes));
+    auto newFunctionType = FunctionType::get(funcOp.getContext(), newArgTypes,
+                                             functionType.getResults());
+    funcOp.setType(newFunctionType);
+
+    // Add the new arguments to the entry block if the function is not external.
+    Location loc = funcOp.getLoc();
+    for (Value v : memrefs) {
+      auto newArg = funcOp.front().addArgument(v.getType(), loc);
+      v.replaceAllUsesWith(newArg);
+    }
+    return success();
+  }
+
+private:
+};
+
+void air::populateBufferMemrefToFuncArgsPattern(RewritePatternSet &patterns) {
+  MLIRContext *ctx = patterns.getContext();
+  patterns.insert<BufferMemrefToFuncArgsPattern>(ctx);
+}
