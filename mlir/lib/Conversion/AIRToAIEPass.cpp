@@ -3466,9 +3466,11 @@ public:
       RewritePatternSet removepatterns(ctx);
       removepatterns.add<OpRemovalPattern<memref::DeallocOp>,
                          OpRemovalPattern<air::WaitAllOp>,
-                         OpRemovalPattern<memref::CopyOp>>(ctx);
+                         OpRemovalPattern<memref::CopyOp>,
+                         OpRemovalPattern<memref::AssumeAlignmentOp>>(ctx);
       ConversionTarget target(*ctx);
-      target.addIllegalOp<memref::DeallocOp, air::WaitAllOp, memref::CopyOp>();
+      target.addIllegalOp<memref::DeallocOp, air::WaitAllOp, memref::CopyOp,
+                          memref::AssumeAlignmentOp>();
       if (failed(applyPartialConversion(device, target,
                                         std::move(removepatterns))))
         signalPassFailure();
