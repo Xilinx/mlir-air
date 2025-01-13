@@ -62,6 +62,8 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
     AIRCAPI
   PRIVATE_LINK_LIBS
     LLVMSupport
+  PYTHON_BINDINGS_LIBRARY
+    nanobind
 )
 
 # Only building this if we are building the hsa runtime, as it requires hsa.h
@@ -77,6 +79,8 @@ if(hsa-runtime64_FOUND)
       AIRCAPI
     PRIVATE_LINK_LIBS
       LLVMSupport
+    PYTHON_BINDINGS_LIBRARY
+      nanobind
   )
 endif()
 
