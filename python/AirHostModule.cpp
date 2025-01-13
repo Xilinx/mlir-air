@@ -20,11 +20,11 @@
 namespace nb = nanobind;
 
 namespace {
-void defineAIRHostModule(nanobind::module &m) {
+void defineAIRHostModule(nb::module_ &m) {
 
   m.def(
       "init_libxaie", []() -> uint64_t { return (uint64_t)air_init_libxaie(); },
-      nanobind::return_value_policy::reference);
+      nb::return_value_policy::reference);
 
   m.def("deinit_libxaie", [](uint64_t ctx) -> void {
     air_deinit_libxaie((air_libxaie_ctx_t)ctx);
@@ -34,7 +34,7 @@ void defineAIRHostModule(nanobind::module &m) {
 
   m.def("shut_down", []() -> uint64_t { return (uint64_t)air_shut_down(); });
 
-  nanobind::class_<air_module_desc_t>(m, "ModuleDescriptor")
+  nb::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
           "getSegments",
           [](const air_module_desc_t &d) -> std::vector<air_segment_desc_t *> {
@@ -43,10 +43,9 @@ void defineAIRHostModule(nanobind::module &m) {
               segments.push_back(d.segment_descs[i]);
             return segments;
           },
-          nanobind::return_value_policy::reference);
-  // pybind11::return_value_policy::reference);
+          nb::return_value_policy::reference);
 
-  nanobind::class_<air_segment_desc_t>(m, "SegmentDescriptor")
+  nb::class_<air_segment_desc_t>(m, "SegmentDescriptor")
       .def(
           "getHerds",
           [](const air_segment_desc_t &d) -> std::vector<air_herd_desc_t *> {
@@ -55,12 +54,12 @@ void defineAIRHostModule(nanobind::module &m) {
               herds.push_back(d.herd_descs[i]);
             return herds;
           },
-          nanobind::return_value_policy::reference)
+          nb::return_value_policy::reference)
       .def("getName", [](const air_segment_desc_t &d) -> std::string {
         return {d.name, static_cast<size_t>(d.name_length)};
       });
 
-  nanobind::class_<air_herd_desc_t>(m, "HerdDescriptor")
+  nb::class_<air_herd_desc_t>(m, "HerdDescriptor")
       .def("getName", [](const air_herd_desc_t &d) -> std::string {
         return {d.name, static_cast<size_t>(d.name_length)};
       });
@@ -74,9 +73,9 @@ void defineAIRHostModule(nanobind::module &m) {
   m.def("module_unload", &air_module_unload);
 
   m.def("get_module_descriptor", &air_module_get_desc,
-        nanobind::return_value_policy::reference);
+        nb::return_value_policy::reference);
 
-  nanobind::class_<hsa_agent_t> Agent(m, "Agent");
+  nb::class_<hsa_agent_t> Agent(m, "Agent");
 
   m.def(
       "get_agents",
@@ -85,10 +84,9 @@ void defineAIRHostModule(nanobind::module &m) {
         air_get_agents(agents);
         return agents;
       },
-      nanobind::return_value_policy::reference);
-  // pybind11::return_value_policy::reference);
+      nb::return_value_policy::reference);
 
-  nanobind::class_<hsa_queue_t> Queue(m, "Queue");
+  nb::class_<hsa_queue_t> Queue(m, "Queue");
 
   m.def(
       "queue_create",
@@ -111,11 +109,11 @@ void defineAIRHostModule(nanobind::module &m) {
           return nullptr;
         return q;
       },
-      nanobind::return_value_policy::reference);
+      nb::return_value_policy::reference);
 
   m.def(
       "read32", [](uint64_t addr) -> uint32_t { return air_read32(addr); },
-      nanobind::return_value_policy::copy);
+      nb::return_value_policy::copy);
 
   m.def("write32", [](uint64_t addr, uint32_t val) -> void {
     return air_write32(addr, val);
@@ -126,7 +124,7 @@ void defineAIRHostModule(nanobind::module &m) {
       [](uint32_t col, uint32_t row) -> uint64_t {
         return air_get_tile_addr(col, row);
       },
-      nanobind::return_value_policy::copy);
+      nb::return_value_policy::copy);
 }
 
 } // namespace
