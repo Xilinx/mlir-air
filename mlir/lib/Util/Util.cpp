@@ -1708,7 +1708,7 @@ struct BufferMemrefToFuncArgsPattern : public OpRewritePattern<func::FuncOp> {
     SmallVector<Type, 6> memrefTypes;
     llvm::SetVector<Value> memrefs;
     for (auto &op : funcOp.getFunctionBody().getOps()) {
-      if (isa<CastOpInterface>(op))
+      if (isa<CastOpInterface, UnrealizedConversionCastOp>(op))
         continue;
       for (auto res : op.getResults()) {
         MemRefType resType = dyn_cast<MemRefType>(res.getType());
