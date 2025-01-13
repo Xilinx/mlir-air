@@ -24,7 +24,7 @@ void defineAIRHostModule(nb::module_ &m) {
 
   m.def(
       "init_libxaie", []() -> uint64_t { return (uint64_t)air_init_libxaie(); },
-      nb::return_value_policy::reference);
+      nb::rv_policy::reference);
 
   m.def("deinit_libxaie", [](uint64_t ctx) -> void {
     air_deinit_libxaie((air_libxaie_ctx_t)ctx);
@@ -43,7 +43,7 @@ void defineAIRHostModule(nb::module_ &m) {
               segments.push_back(d.segment_descs[i]);
             return segments;
           },
-          nb::return_value_policy::reference);
+          nb::rv_policy::reference);
 
   nb::class_<air_segment_desc_t>(m, "SegmentDescriptor")
       .def(
@@ -54,7 +54,7 @@ void defineAIRHostModule(nb::module_ &m) {
               herds.push_back(d.herd_descs[i]);
             return herds;
           },
-          nb::return_value_policy::reference)
+          nb::rv_policy::reference)
       .def("getName", [](const air_segment_desc_t &d) -> std::string {
         return {d.name, static_cast<size_t>(d.name_length)};
       });
@@ -73,7 +73,7 @@ void defineAIRHostModule(nb::module_ &m) {
   m.def("module_unload", &air_module_unload);
 
   m.def("get_module_descriptor", &air_module_get_desc,
-        nb::return_value_policy::reference);
+        nb::rv_policy::reference);
 
   nb::class_<hsa_agent_t> Agent(m, "Agent");
 
@@ -84,7 +84,7 @@ void defineAIRHostModule(nb::module_ &m) {
         air_get_agents(agents);
         return agents;
       },
-      nb::return_value_policy::reference);
+      nb::rv_policy::reference);
 
   nb::class_<hsa_queue_t> Queue(m, "Queue");
 
@@ -109,11 +109,11 @@ void defineAIRHostModule(nb::module_ &m) {
           return nullptr;
         return q;
       },
-      nb::return_value_policy::reference);
+      nb::rv_policy::reference);
 
   m.def(
       "read32", [](uint64_t addr) -> uint32_t { return air_read32(addr); },
-      nb::return_value_policy::copy);
+      nb::rv_policy::copy);
 
   m.def("write32", [](uint64_t addr, uint32_t val) -> void {
     return air_write32(addr, val);
@@ -124,7 +124,7 @@ void defineAIRHostModule(nb::module_ &m) {
       [](uint32_t col, uint32_t row) -> uint64_t {
         return air_get_tile_addr(col, row);
       },
-      nb::return_value_policy::copy);
+      nb::rv_policy::copy);
 }
 
 } // namespace
