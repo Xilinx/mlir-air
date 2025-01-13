@@ -554,8 +554,8 @@ void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
   if (!isAsyncOp(op)) {
     RewritePatternSet patterns(ctx);
     patterns.insert<MakeAsyncScfForPattern>(ctx, token);
-    (void)applyOpPatternsAndFold(ArrayRef<Operation *>{op},
-                                 std::move(patterns));
+    (void)applyOpPatternsGreedily(ArrayRef<Operation *>{op},
+                                  std::move(patterns));
   }
 }
 void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {

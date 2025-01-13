@@ -4424,7 +4424,7 @@ LogicalResult AIRIsolateAsyncDmaLoopNestsImpl(Region *region) {
 
   RewritePatternSet patterns(ctx);
   patterns.insert<IsolateAsyncDmaLoopNestInSCFForPattern>(ctx);
-  (void)applyOpPatternsAndFold(forOps, std::move(patterns));
+  (void)applyOpPatternsGreedily(forOps, std::move(patterns));
 
   // Greedily hoisting air.herd ops out of for loops and merging, and then
   // re-applying loop splitting.
