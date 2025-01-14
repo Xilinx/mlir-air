@@ -118,19 +118,19 @@ elseif(LLVM_COMPILER_IS_GCC_COMPATIBLE OR CLANG_CL)
   set(eh_rtti_enable -frtti -fexceptions)
 endif ()
 nanobind_add_module(${libname}
-NB_DOMAIN ${ARG_NB_DOMAIN}
-${ARG_SOURCES}
+  NB_DOMAIN ${ARG_NB_DOMAIN}
+  ${ARG_SOURCES}
 )
 if (LLVM_COMPILER_IS_GCC_COMPATIBLE OR CLANG_CL)
-target_compile_options(nanobind-static
-  PRIVATE
-    -Wno-cast-qual
-    -Wno-zero-length-array
-    -Wno-nested-anon-types
-    -Wno-c++98-compat-extra-semi
-    -Wno-covered-switch-default
-    ${eh_rtti_enable}
-)
+  target_compile_options(nanobind-static
+    PRIVATE
+      -Wno-cast-qual
+      -Wno-zero-length-array
+      -Wno-nested-anon-types
+      -Wno-c++98-compat-extra-semi
+      -Wno-covered-switch-default
+      ${eh_rtti_enable}
+  )
 endif()
 target_compile_options(${libname} PRIVATE ${eh_rtti_enable})
 set_target_properties(
@@ -165,7 +165,17 @@ cmake_parse_arguments(ARG
   ${ARGN})
 function(_process_target modules_target sources_target)
   get_target_property(_source_type ${sources_target} mlir_python_SOURCES_TYPE)
-  if(_source_type STREQUAL "extension")
+  if(_source_type STREQUAL "pure")
+    # Pure python sources to link into the tree.
+    set(_pure_sources_target "${modules_target}.sources.${sources_target}")
+    add_mlir_python_sources_target(${_pure_sources_target}
+      INSTALL_COMPONENT ${modules_target}
+      INSTALL_DIR ${ARG_INSTALL_PREFIX}
+      OUTPUT_DIRECTORY ${ARG_ROOT_PREFIX}
+      SOURCES_TARGETS ${sources_target}
+    )
+    add_dependencies(${modules_target} ${_pure_sources_target})
+  elseif(_source_type STREQUAL "extension")
     get_target_property(_module_name ${sources_target} mlir_python_EXTENSION_MODULE_NAME)
     get_target_property(_bindings_library ${sources_target} mlir_python_BINDINGS_LIBRARY)
     set(_extension_target "${modules_target}.extension.${_module_name}.dso")
