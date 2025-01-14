@@ -2676,7 +2676,7 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<HoistDmaInAccumPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOnOperation() override {
@@ -2743,7 +2743,7 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<AnnotateFrontAndBackOpsInForPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOnOperation() override {
@@ -2769,7 +2769,7 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOnOperation() override {
@@ -2796,7 +2796,7 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<ConstructPingPongDependencyPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOnOperation() override {
@@ -2877,7 +2877,7 @@ public:
     RewritePatternSet patterns(&getContext());
     patterns.insert<HoistOpsNotUsingPingPongPattern,
                     MakeHerdOpAsyncInScfForLoopPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOnOperation() override {
@@ -2908,28 +2908,28 @@ public:
     RewritePatternSet patterns(&getContext());
     patterns.insert<HoistOpsNotUsingPingPongPattern,
                     MakeHerdOpAsyncInScfForLoopPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOpAnnotationPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<AnnotateFrontAndBackOpsInForPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runHoistMemallocPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runConstructPingPongDependencyPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<ConstructPingPongDependencyPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runLoopUnroll(func::FuncOp funcOp) {
@@ -2995,7 +2995,7 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<LabelScfForLoopForPingPongPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOnOperation() override {
@@ -3022,7 +3022,7 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<LabelScfForLoopInAIRSegment>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOnOperation() override {
@@ -3049,7 +3049,7 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
   mlir::affine::AffineApplyOp::getCanonicalizationPatterns(preproc_patterns,
                                                            ctx);
   air::WaitAllOp::getCanonicalizationPatterns(preproc_patterns, ctx);
-  (void)applyPatternsAndFoldGreedily(*region, std::move(preproc_patterns));
+  (void)applyPatternsGreedily(*region, std::move(preproc_patterns));
 
   RewritePatternSet patterns(ctx);
   patterns
@@ -3059,14 +3059,14 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
               AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(ctx, maxNumDims);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
-  (void)applyPatternsAndFoldGreedily(*region, std::move(patterns));
+  (void)applyPatternsGreedily(*region, std::move(patterns));
 
   // Unroll any remaining loops which contain only data movements.
   if (enableForLoopUnrolling) {
     RewritePatternSet unroll_patterns(ctx);
     unroll_patterns
         .insert<AIRUnrollScfForIntoBDChain, AIRUnrollAffineForIntoBDChain>(ctx);
-    (void)applyPatternsAndFoldGreedily(*region, std::move(unroll_patterns));
+    (void)applyPatternsGreedily(*region, std::move(unroll_patterns));
   }
 
   // Canonicalize wrap and stride list to remove redundant dimensions
@@ -3074,7 +3074,7 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
   cano_patterns.insert<AIRCanonicalizeChannelGetOpWrapAndStrideList,
                        AIRCanonicalizeChannelPutOpWrapAndStrideList>(ctx);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
-  (void)applyPatternsAndFoldGreedily(*region, std::move(cano_patterns));
+  (void)applyPatternsGreedily(*region, std::move(cano_patterns));
 
   return success();
 }
@@ -3163,7 +3163,7 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<HoistDmaInAccumPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOnFunction(func::FuncOp f) {
@@ -3208,7 +3208,7 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<EnforceLoopCarriedMemrefDeallocPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runOnFunction(func::FuncOp f) { runOptPatterns(f); }
@@ -3548,7 +3548,7 @@ public:
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
       scf::ForOp::getCanonicalizationPatterns(patterns, ctx);
-      (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
+      (void)applyPatternsGreedily(f, std::move(patterns));
     }
   }
 
@@ -4304,7 +4304,7 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     // If necessary, hoist allocs out of the loops, too.
     RewritePatternSet patterns(f.getContext());
     patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
-    (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
+    (void)applyPatternsGreedily(f, std::move(patterns));
 
     // Hoist ops out of each scf.for.
     for (auto set : target_ops_sets)
@@ -4424,7 +4424,7 @@ LogicalResult AIRIsolateAsyncDmaLoopNestsImpl(Region *region) {
 
   RewritePatternSet patterns(ctx);
   patterns.insert<IsolateAsyncDmaLoopNestInSCFForPattern>(ctx);
-  (void)applyOpPatternsAndFold(forOps, std::move(patterns));
+  (void)applyOpPatternsGreedily(forOps, std::move(patterns));
 
   // Greedily hoisting air.herd ops out of for loops and merging, and then
   // re-applying loop splitting.
@@ -4437,7 +4437,7 @@ LogicalResult AIRIsolateAsyncDmaLoopNestsImpl(Region *region) {
   air::HerdOp::getCanonicalizationPatterns(patterns_1, ctx);
   air::WaitAllOp::getCanonicalizationPatterns(patterns_1, ctx);
   scf::ForOp::getCanonicalizationPatterns(patterns_1, ctx);
-  (void)applyPatternsAndFoldGreedily(*region, std::move(patterns_1));
+  (void)applyPatternsGreedily(*region, std::move(patterns_1));
   return success();
 }
 
@@ -5505,14 +5505,14 @@ public:
             ctx);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
     air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
   void runPostProcPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration post memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
     funcOp.walk([&](memref::AllocOp op) {
@@ -5568,7 +5568,7 @@ public:
                                "Must be one of [segment, launch, all].");
       signalPassFailure();
     }
-    (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
+    (void)applyPatternsGreedily(func, std::move(patterns));
     runPostProcPatterns(func);
     func.walk([&](memref::AllocOp op) { op->removeAttr("shrinkage"); });
   }
@@ -5627,7 +5627,7 @@ public:
         /*maxNumDims*/ maxNumDims, /*enableForLoopUnrolling*/ false);
     RewritePatternSet patterns(ctx);
     populateAIRLoopFusionPattern(patterns);
-    (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
+    (void)applyPatternsGreedily(func, std::move(patterns));
   }
 
 private:
@@ -5943,7 +5943,7 @@ public:
                     AIRFuseAllocDeallocToAIRHierarchy<air::HerdOp>,
                     AIRFuseAllocDeallocToAIRHierarchy<air::SegmentOp>,
                     AIRFuseAllocDeallocToAIRHierarchy<air::LaunchOp>>(ctx);
-    (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
+    (void)applyPatternsGreedily(func, std::move(patterns));
   }
 
 private:
@@ -5965,7 +5965,7 @@ public:
     auto funcOp = getOperation();
     RewritePatternSet patterns(&getContext());
     patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration after memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
     funcOp.walk([&](memref::AllocOp op) {

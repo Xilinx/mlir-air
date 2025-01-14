@@ -158,12 +158,12 @@ void AIRLowerLinalgTensors::runOnOperation() {
   patterns1.add<RemoveBufferCastPattern>(&context);
   // RemoveAllocCopyPattern,
   // RemoveTensorLoadStorePattern
-  (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns1));
+  (void)applyPatternsGreedily(aie_module, std::move(patterns1));
 
   RewritePatternSet patterns2(&context);
   linalg::populateLinalgNamedOpsGeneralizationPatterns(patterns2);
   patterns2.add<LowerLinalgOpPattern>(&context);
-  (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns2));
+  (void)applyPatternsGreedily(aie_module, std::move(patterns2));
 }
 
 namespace xilinx {

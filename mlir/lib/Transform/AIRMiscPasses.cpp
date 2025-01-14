@@ -657,7 +657,7 @@ void AIRLowerHerdParallelPass::runOnOperation() {
   auto context = op->getContext();
   RewritePatternSet patterns(context);
   patterns.add<ParallelToForConversion>(context);
-  (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
+  (void)applyPatternsGreedily(op, std::move(patterns));
 }
 
 class AIRLabelBroadcastChannelWithTilePass
@@ -1715,7 +1715,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   mlir::arith::ConstantIndexOp::getCanonicalizationPatterns(canoPatterns,
                                                             context);
   air::ExecuteOp::getCanonicalizationPatterns(canoPatterns, context);
-  (void)applyPatternsAndFoldGreedily(func, std::move(canoPatterns));
+  (void)applyPatternsGreedily(func, std::move(canoPatterns));
 
   // Split memrefs.
   allocOps.clear();

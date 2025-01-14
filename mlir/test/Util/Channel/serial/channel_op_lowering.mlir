@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 
-// RUN: air-opt -o %T/channel.async.llvm.mlir %s -buffer-results-to-out-params -air-to-async -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts -canonicalize -cse
+// RUN: air-opt -o %T/channel.async.llvm.mlir %s -buffer-results-to-out-params -air-to-async -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -convert-arith-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -reconcile-unrealized-casts -canonicalize -cse
 // RUN: air-translate --mlir-to-llvmir %T/channel.async.llvm.mlir -o %T/channel.async.ll
 // RUN: %OPT -O3 -o %T/channel.async.opt.bc < %T/channel.async.ll
 // RUN: %LLC %T/channel.async.opt.bc --relocation-model=pic -filetype=obj -o %T/channel.async.o

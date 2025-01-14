@@ -6,17 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Bindings/Python/PybindAdaptors.h"
+#include "mlir/Bindings/Python/NanobindAdaptors.h"
 
 #include "air-c/Dialects.h"
 #include "air-c/Registration.h"
 #include "air-c/Runner.h"
 #include "air-c/Transform.h"
 
-namespace py = pybind11;
-using namespace mlir::python::adaptors;
+namespace nb = nanobind;
+using namespace nb::literals;
+using namespace mlir::python;
 
-PYBIND11_MODULE(_air, m) {
+NB_MODULE(_air, m) {
 
   ::airRegisterAllPasses();
 
@@ -36,14 +37,15 @@ PYBIND11_MODULE(_air, m) {
       "registry"_a);
 
   // AIR types bindings
-  mlir_type_subclass(m, "AsyncTokenType", mlirTypeIsAIRAsyncTokenType)
+  nanobind_adaptors::mlir_type_subclass(m, "AsyncTokenType",
+                                        mlirTypeIsAIRAsyncTokenType)
       .def_classmethod(
           "get",
-          [](const py::object &cls, MlirContext ctx) {
+          [](const nb::object &cls, MlirContext ctx) {
             return cls(mlirAIRAsyncTokenTypeGet(ctx));
           },
           "Get an instance of AsyncTokenType in given context.",
-          py::arg("self"), py::arg("ctx") = py::none());
+          nb::arg("self"), nb::arg("ctx") = nb::none());
 
   m.def("run_transform", ::runTransform);
 
