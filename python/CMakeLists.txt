@@ -98,9 +98,111 @@ add_mlir_python_common_capi_library(AirAggregateCAPI
     AirPythonExtensions
 )
 
-add_mlir_python_modules(AirMLIRPythonModules
+################################################################################
+# MLIR has switched to using nanobind 2.4 which enforces a check on the domain, 
+# but MLIR's add_mlir_python_extension and add_mlir_python_modules methods are
+# fixing the NB_DOMAIN as mlir, leading to domain conflict between air and aie.
+# Below is a workaround which re-implements the above methods by exposing the
+# NB_DOMAIN for customization. 
+# TODO: Remove these when upstream LLVM fixes this issue.
+function(add_mlir_python_extension_domain libname extname)
+cmake_parse_arguments(ARG
+""
+"INSTALL_COMPONENT;INSTALL_DIR;OUTPUT_DIRECTORY;PYTHON_BINDINGS_LIBRARY"
+"SOURCES;LINK_LIBS;NB_DOMAIN"
+${ARGN})
+set(eh_rtti_enable)
+if (MSVC)
+  set(eh_rtti_enable /EHsc /GR)
+elseif(LLVM_COMPILER_IS_GCC_COMPATIBLE OR CLANG_CL)
+  set(eh_rtti_enable -frtti -fexceptions)
+endif ()
+nanobind_add_module(${libname}
+NB_DOMAIN ${ARG_NB_DOMAIN}
+${ARG_SOURCES}
+)
+if (LLVM_COMPILER_IS_GCC_COMPATIBLE OR CLANG_CL)
+target_compile_options(nanobind-static
+  PRIVATE
+    -Wno-cast-qual
+    -Wno-zero-length-array
+    -Wno-nested-anon-types
+    -Wno-c++98-compat-extra-semi
+    -Wno-covered-switch-default
+    ${eh_rtti_enable}
+)
+endif()
+target_compile_options(${libname} PRIVATE ${eh_rtti_enable})
+set_target_properties(
+  ${libname} PROPERTIES
+  LIBRARY_OUTPUT_DIRECTORY ${ARG_OUTPUT_DIRECTORY}
+  OUTPUT_NAME "${extname}"
+  NO_SONAME ON
+)
+target_link_libraries(${libname}
+  PRIVATE
+  ${ARG_LINK_LIBS}
+)
+target_link_options(${libname}
+  PRIVATE
+    $<$<PLATFORM_ID:Linux>:LINKER:--exclude-libs,ALL>
+)
+if(ARG_INSTALL_DIR)
+  install(TARGETS ${libname}
+    COMPONENT ${ARG_INSTALL_COMPONENT}
+    LIBRARY DESTINATION ${ARG_INSTALL_DIR}
+    ARCHIVE DESTINATION ${ARG_INSTALL_DIR}
+    RUNTIME DESTINATION ${ARG_INSTALL_DIR}
+  )
+endif()
+endfunction()
+
+function(add_mlir_python_modules_domain name)
+cmake_parse_arguments(ARG
+  ""
+  "ROOT_PREFIX;INSTALL_PREFIX"
+  "COMMON_CAPI_LINK_LIBS;DECLARED_SOURCES;NB_DOMAIN"
+  ${ARGN})
+function(_process_target modules_target sources_target)
+  get_target_property(_source_type ${sources_target} mlir_python_SOURCES_TYPE)
+  if(_source_type STREQUAL "extension")
+    get_target_property(_module_name ${sources_target} mlir_python_EXTENSION_MODULE_NAME)
+    get_target_property(_bindings_library ${sources_target} mlir_python_BINDINGS_LIBRARY)
+    set(_extension_target "${modules_target}.extension.${_module_name}.dso")
+    add_mlir_python_extension_domain(${_extension_target} "${_module_name}"
+      INSTALL_COMPONENT ${modules_target}
+      INSTALL_DIR "${ARG_INSTALL_PREFIX}/_mlir_libs"
+      OUTPUT_DIRECTORY "${ARG_ROOT_PREFIX}/_mlir_libs"
+      PYTHON_BINDINGS_LIBRARY ${_bindings_library}
+      NB_DOMAIN ${ARG_NB_DOMAIN}
+      LINK_LIBS PRIVATE
+        ${sources_target}
+        ${ARG_COMMON_CAPI_LINK_LIBS}
+    )
+    add_dependencies(${modules_target} ${_extension_target})
+    mlir_python_setup_extension_rpath(${_extension_target})
+  endif()
+endfunction()
+
+add_custom_target(${name} ALL)
+_flatten_mlir_python_targets(_flat_targets ${ARG_DECLARED_SOURCES})
+foreach(sources_target ${_flat_targets})
+  _process_target(${name} ${sources_target})
+endforeach()
+
+if(NOT LLVM_ENABLE_IDE)
+  add_llvm_install_targets(
+    install-${name}
+    DEPENDS ${name}
+    COMPONENT ${name})
+endif()
+endfunction()
+################################################################################
+
+add_mlir_python_modules_domain(AirMLIRPythonModules
   ROOT_PREFIX "${AIR_PYTHON_PACKAGES_DIR}/air"
   INSTALL_PREFIX "python/air"
+  NB_DOMAIN "_air"
   DECLARED_SOURCES
     MLIRPythonSources
     MLIRPythonExtension.Core
@@ -111,9 +213,10 @@ add_mlir_python_modules(AirMLIRPythonModules
     AirAggregateCAPI
   )
 
-add_mlir_python_modules(AirPythonModules
+add_mlir_python_modules_domain(AirPythonModules
   ROOT_PREFIX "${AIR_PYTHON_PACKAGES_DIR}/air"
   INSTALL_PREFIX "python/air"
+  NB_DOMAIN "_air"
   DECLARED_SOURCES
     AirPythonSources
   COMMON_CAPI_LINK_LIBS
