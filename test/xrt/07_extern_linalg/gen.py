@@ -101,8 +101,8 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
-            "air-to-aie{device=npu1_4col row-offset=2 col-offset=0}",
-            "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
+            "air-to-aie{device=npu2 row-offset=2 col-offset=1}",
+            "func.func(air-opt-shim-dma-bds{device=npu2})",
             "air-to-std",
             "symbol-dce",
             "canonicalize",

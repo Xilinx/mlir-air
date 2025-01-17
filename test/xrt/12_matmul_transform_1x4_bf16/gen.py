@@ -201,7 +201,7 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
-            "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}",
+            "air-to-aie{row-offset=2 col-offset=1 device=npu2 emit-while-loop=true}",
             "canonicalize",
         ]
     )
@@ -220,7 +220,7 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
-            "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
+            "func.func(air-opt-shim-dma-bds{device=npu2})",
             "air-to-std",
             "symbol-dce",
             "airrt-to-npu",

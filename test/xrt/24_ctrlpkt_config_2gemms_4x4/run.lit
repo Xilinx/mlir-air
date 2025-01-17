@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // REQUIRES: ryzen_ai
-// RUN: xchesscc_wrapper aie2 -c %S/mm.cc -o mm.o
+// RUN: xchesscc_wrapper aie2p -c %S/mm.cc -o mm.o
 // RUN: %python %S/aie.py
 // RUN: %python %S/aie2.py
 // RUN: %python aiecc.py --no-aiesim --aie-generate-cdo --no-compile-host --generate-ctrl-pkt-overlay --xclbin-name=base.xclbin %S/base.mlir
