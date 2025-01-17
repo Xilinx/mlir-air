@@ -186,6 +186,7 @@ def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filena
             "convert-scf-to-cf",
             "finalize-memref-to-llvm",
             "convert-func-to-llvm",
+            "convert-arith-to-llvm",
             "convert-cf-to-llvm",
             "canonicalize",
             "cse",
