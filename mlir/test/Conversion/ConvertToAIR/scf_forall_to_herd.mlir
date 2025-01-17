@@ -49,6 +49,41 @@ func.func @scf2()  {
 
 // -----
 
+// CHECK: [[$MAP0:#map[0-9]*]] = affine_map<(d0) -> (d0 * 2)>
+// CHECK: [[$MAP1:#map[0-9]*]] = affine_map<(d0) -> (d0 + 1)>
+// CHECK-LABEL: func.func @scf3() {
+// CHECK: air.herd @herd_0  tile (%[[VAL_0:.*]], %[[VAL_1:.*]]) in (%{{.*}}=%c3{{.*}}, %{{.*}}=%c2{{.*}})
+// CHECK: affine.apply [[$MAP0]](%[[VAL_1]])
+// CHECK: affine.apply [[$MAP1]](%[[VAL_0]])
+func.func @scf3()  {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  scf.forall (%i, %j) = (%c1, %c0) to (%c4, %c4)
+      step (%c1, %c2) {
+    %2 = arith.muli %i, %j : index
+  }
+  return
+}
+
+// -----
+
+// CHECK: [[$MAP0:#map[0-9]*]] = affine_map<(d0) -> (d0 * 2)>
+// CHECK: [[$MAP1:#map[0-9]*]] = affine_map<(d0) -> (d0 + 1)>
+// CHECK-LABEL: func.func @scf4() {
+// CHECK: air.herd @herd_0  tile (%[[VAL_0:.*]], %[[VAL_1:.*]]) in (%{{.*}}=%c3{{.*}}, %{{.*}}=%c2{{.*}})
+// CHECK: affine.apply [[$MAP0]](%[[VAL_1]])
+// CHECK: affine.apply [[$MAP1]](%[[VAL_0]])
+func.func @scf4()  {
+  scf.forall (%i, %j) = (1, 0) to (4, 4) step (1, 2) {
+    %2 = arith.muli %i, %j : index
+  }
+  return
+}
+
+// -----
+
 // This test demonstrates that while forming air.herd we look through func.call ops, fetch
 // the corresponding function declaration's 'link_with' attribute and attach it to the newly
 // formed air.herd op.
