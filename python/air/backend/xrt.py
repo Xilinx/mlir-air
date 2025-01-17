@@ -100,7 +100,9 @@ class XRTBackend(AirBackend):
 
             aircc_options = [
                 "--device",
-                "npu1_4col",
+                "npu2",
+                "-row-offset", "2",
+                "-col-offset", "1",
                 "air.mlir",
                 "-xchesscc",
                 "-xbridge",
