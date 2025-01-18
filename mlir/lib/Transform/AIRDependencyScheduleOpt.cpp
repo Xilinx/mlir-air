@@ -5122,20 +5122,26 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
     return;
   };
   auto resolveDepFromAllocExec = [](AsyncOpInterface alloc, Block *blk) {
+    SmallVector<Value> erasedD;
     for (auto d : alloc.getAsyncDependencies()) {
       if (blk->getParent()->isAncestor(d.getParentRegion()))
         continue;
-      air::eraseAsyncDependencyFromAsyncOp(alloc, d);
+      erasedD.push_back(d);
       air::addAsyncDependencyIfNew(blk->getParentOp(), d);
     }
+    for (auto d : erasedD)
+      air::eraseAsyncDependencyFromAsyncOp(alloc, d);
     return;
   };
   auto resolveDepFromDeallocExec = [](AsyncOpInterface delloc, Block *blk) {
+    SmallVector<Value> erasedD;
     for (auto d : delloc.getAsyncDependencies()) {
       if (blk->getParent()->isAncestor(d.getParentRegion()))
         continue;
-      air::eraseAsyncDependencyFromAsyncOp(delloc, d);
+      erasedD.push_back(d);
     }
+    for (auto d : erasedD)
+      air::eraseAsyncDependencyFromAsyncOp(delloc, d);
     return;
   };
   for (auto &[alloc, dealloc] : allocDeallocExecs) {
@@ -5834,12 +5840,15 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
       auto resolveDepFromAllocExec = [](AsyncOpInterface alloc,
                                         air::HierarchyInterface dest) {
         Region &destRegion = dest.getBody();
+        SmallVector<Value> erasedD;
         for (auto d : alloc.getAsyncDependencies()) {
           if (destRegion.isAncestor(d.getParentRegion()))
             continue;
-          air::eraseAsyncDependencyFromAsyncOp(alloc, d);
+          erasedD.push_back(d);
           air::addAsyncDependencyIfNew(dest.getOperation(), d);
         }
+        for (auto d : erasedD)
+          air::eraseAsyncDependencyFromAsyncOp(alloc, d);
         return;
       };
       auto resolveDepToExecs = [](PatternRewriter &rewriter,
@@ -5868,11 +5877,14 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
       auto resolveDepFromDeallocExec = [](AsyncOpInterface delloc,
                                           air::HierarchyInterface dest) {
         Region &destRegion = dest.getBody();
+        SmallVector<Value> erasedD;
         for (auto d : delloc.getAsyncDependencies()) {
           if (destRegion.isAncestor(d.getParentRegion()))
             continue;
-          air::eraseAsyncDependencyFromAsyncOp(delloc, d);
+          erasedD.push_back(d);
         }
+        for (auto d : erasedD)
+          air::eraseAsyncDependencyFromAsyncOp(delloc, d);
         return;
       };
       SmallVector<air::ExecuteOp> execs;
