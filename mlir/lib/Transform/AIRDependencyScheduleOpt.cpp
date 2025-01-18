@@ -5728,15 +5728,6 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
 
   LogicalResult matchAndRewrite(OpTy op,
                                 PatternRewriter &rewriter) const override {
-    // Skip if the op is not the inner-most loop of a perfect loop nest.
-    Region *opRegion = &op->getRegions().front();
-    Block *opBlock = &opRegion->front();
-    if (hasNImpureOps(opBlock, 1))
-      if (llvm::any_of(opBlock->without_terminator(), [](Operation &o) {
-            return isa_and_present<air::HierarchyInterface>(o);
-          }))
-        return failure();
-
     llvm::SetVector<Value> usedMemrefsDefedAbove;
     for (auto v : op->getOperands())
       if (isa<MemRefType>(v.getType()))
@@ -5911,9 +5902,16 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
     auto newHerd = rewriter.create<OpTy>(
         op->getLoc(), deps, op.getSizeOperands(), kernelOpers,
         (bool)op.getAsyncToken(), op->getAttrs());
-    rewriter.inlineRegionBefore(op.getBody(), newHerd.getBody(),
-                                newHerd.getBody().begin());
-    rewriter.eraseBlock(&newHerd.getBody().back());
+    for (unsigned i = 0; i < op.getNumDims(); i++) {
+      rewriter.replaceAllUsesWith(op.getIds()[i], newHerd.getIds()[i]);
+      rewriter.replaceAllUsesWith(op.getSize()[i], newHerd.getSize()[i]);
+    }
+    for (auto oper : kernelOpers)
+      rewriter.replaceAllUsesWith(op.getTiedKernelArgument(oper),
+                                  newHerd.getTiedKernelArgument(oper));
+    auto &bb = newHerd.getBody().front().getOperations();
+    auto &body = op.getBody().front().getOperations();
+    bb.splice(bb.begin(), body, body.begin(), --body.end());
     rewriter.replaceOp(op, newHerd);
     return success();
   }
@@ -6144,6 +6142,13 @@ void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {
 
 void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region) {
   (void)AIRIsolateAsyncDmaLoopNestsImpl(region);
+}
+
+void populateAIRFuseAllocDeallocToAIRHierPatterns(RewritePatternSet &patterns) {
+  MLIRContext *ctx = patterns.getContext();
+  patterns.insert<AIRFuseAllocDeallocToAIRHierarchy<air::LaunchOp>,
+                  AIRFuseAllocDeallocToAIRHierarchy<air::SegmentOp>,
+                  AIRFuseAllocDeallocToAIRHierarchy<air::HerdOp>>(ctx);
 }
 
 } // namespace air
