@@ -1,4 +1,4 @@
-//===- transform-ops.mlir --------------------------------------*- MLIR -*-===//
+//===- transform-par-to-launch.mlir ----------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
