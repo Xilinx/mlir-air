@@ -496,6 +496,118 @@ static void propagateLinkWith(Operation *op, air::HerdOp herdOp) {
   });
 }
 
+// Given an scf.parallel loop with N dimensions, return a pair of outer- and
+// inner-scf.parallel loops, such that the inner loop has `innerNumLoops` loops,
+// and the outer loop has `N - innerNumLoops` loops.
+FailureOr<std::pair<scf::ParallelOp, scf::ParallelOp>>
+separateScfParallel(scf::ParallelOp op, unsigned innerNumLoops,
+                    OpBuilder &builder) {
+  if (innerNumLoops >= op.getNumLoops())
+    return failure();
+  auto loc = op->getLoc();
+
+  unsigned outerNumLoops = op.getNumLoops() - innerNumLoops;
+  SmallVector<Value, 2> outerLowerBounds, outerUpperBounds, outerSteps;
+  SmallVector<Value, 2> innerLowerBounds, innerUpperBounds, innerSteps;
+
+  for (unsigned i = 0, e = outerNumLoops; i < e; ++i) {
+    outerLowerBounds.push_back(op.getLowerBound()[i]);
+    outerUpperBounds.push_back(op.getUpperBound()[i]);
+    outerSteps.push_back(op.getStep()[i]);
+  }
+  scf::ParallelOp outerLoop = builder.create<scf::ParallelOp>(
+      loc, outerLowerBounds, outerUpperBounds, outerSteps);
+  for (unsigned i = 0, e = outerNumLoops; i < e; ++i)
+    op.getInductionVars()[i].replaceAllUsesWith(
+        outerLoop.getInductionVars()[i]);
+  for (unsigned i = outerNumLoops, e = op.getNumLoops(); i < e; ++i) {
+    innerLowerBounds.push_back(op.getLowerBound()[i]);
+    innerUpperBounds.push_back(op.getUpperBound()[i]);
+    innerSteps.push_back(op.getStep()[i]);
+  }
+  builder.setInsertionPointToStart(outerLoop.getBody());
+  scf::ParallelOp innerLoop = builder.create<scf::ParallelOp>(
+      loc, innerLowerBounds, innerUpperBounds, innerSteps);
+  for (unsigned i = outerNumLoops, e = op.getNumLoops(); i < e; ++i)
+    op.getInductionVars()[i].replaceAllUsesWith(
+        innerLoop.getInductionVars()[i - outerNumLoops]);
+  auto &body = op.getBody()->getOperations();
+  innerLoop.getBody()->getOperations().splice(innerLoop.getBody()->begin(),
+                                              body, body.begin(), --body.end());
+  return std::make_pair(outerLoop, innerLoop);
+}
+
+template <typename hierTy>
+FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
+    scf::ParallelOp parOp, SmallPtrSet<Operation *, 8> &filteredOps,
+    int firstDim, int fixedNumLoops, PatternRewriter &rewriter) {
+  scf::ParallelOp op = parOp;
+
+  if (fixedNumLoops > 0 && firstDim > fixedNumLoops) {
+    parOp->emitOpError("firstDim exceeds fixedNumLoops.");
+    return failure();
+  }
+
+  if (!filteredOps.contains(op))
+    return failure();
+
+  if (failed(normalizeScfParallel(op, rewriter)))
+    return failure();
+
+  auto loc = op.getLoc();
+
+  // If given a positive `fixedNumLoops`, separate the scf.parallel by
+  // `fixedNumLoops`.
+  if (fixedNumLoops > 0 && op.getNumLoops() > (unsigned)fixedNumLoops) {
+    auto parPair = separateScfParallel(op, (unsigned)fixedNumLoops, rewriter);
+    if (failed(parPair))
+      return failure();
+    op = parPair->second; // Assign op to be the inner scf.parallel.
+  }
+
+  int newHierNumLoops = fixedNumLoops > 0 ? fixedNumLoops : op.getNumLoops();
+  SmallVector<int, 2> bounds(newHierNumLoops, 1);
+  for (unsigned int i = 0; i < op.getNumLoops(); i++) {
+    // these are arith.constant after normalizeScfParallel
+    auto to_int = [](Value v) {
+      return cast<arith::ConstantIndexOp>(v.getDefiningOp()).value();
+    };
+    auto ub_int = to_int(op.getUpperBound()[i]);
+    auto step_int = to_int(op.getStep()[i]);
+    bounds[i] = ub_int / step_int;
+  }
+  SmallVector<Value, 4> args;
+  SmallVector<Value, 4> constants;
+  getUsedConstsAndArgsDefinedAbove(op.getRegion(), constants, args);
+  SmallVector<int> ids;
+  for (int i = 0; i < newHierNumLoops; i++) {
+    ids.push_back((firstDim + i) % newHierNumLoops);
+  }
+  SmallVector<Value, 2> dims;
+  for (auto id : ids)
+    dims.push_back(rewriter.create<arith::ConstantIndexOp>(loc, bounds[id]));
+  auto hierOp = rewriter.create<hierTy>(op.getLoc(), dims, args);
+  auto &body = op.getBody()->getOperations();
+  if (auto herdOp = dyn_cast<air::HerdOp>(hierOp.getOperation()))
+    propagateLinkWith(op, herdOp);
+  auto &bb = hierOp.getBody().front();
+  auto ivs = op.getInductionVars();
+  for (unsigned i = 0; i < op.getNumLoops(); i++) {
+    ivs[i].replaceAllUsesWith(hierOp.getIds()[ids[i]]);
+  }
+  bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
+  rewriter.setInsertionPointToStart(&hierOp.getRegion().front());
+  replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                        hierOp.getRegion());
+  int arg_idx = 0;
+  auto kernel_args = hierOp.getKernelArguments();
+  for (Value v : args)
+    replaceAllUsesInRegionWith(v, kernel_args[arg_idx++], hierOp.getRegion());
+  if (op != parOp)
+    rewriter.eraseOp(op);
+  return hierOp;
+}
+
 class ScfParToHerdConversion : public OpRewritePattern<scf::ParallelOp> {
 public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
@@ -509,98 +621,14 @@ public:
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
-
-    scf::ParallelOp op = parOp;
-
-    if (!filteredOps.contains(op))
+    auto res = ScfParToAIRHierarchyConversionImpl<air::HerdOp>(
+        parOp, filteredOps, firstDim, /*fixedNumLoops*/ 2, rewriter);
+    if (failed(res)) {
       return failure();
-
-    if (failed(normalizeScfParallel(op, rewriter)))
-      return failure();
-
-    auto loc = op.getLoc();
-
-    if (op.getNumLoops() > 2) {
-      unsigned split_idx = op.getNumLoops() - 2;
-      SmallVector<Value, 2> outerLowerBounds, outerUpperBounds, outerSteps;
-      SmallVector<Value, 2> innerLowerBounds, innerUpperBounds, innerSteps;
-
-      for (unsigned i = 0, e = split_idx; i < e; ++i) {
-        outerLowerBounds.push_back(op.getLowerBound()[i]);
-        outerUpperBounds.push_back(op.getUpperBound()[i]);
-        outerSteps.push_back(op.getStep()[i]);
-      }
-      auto outerLoop = rewriter.create<scf::ParallelOp>(
-          loc, outerLowerBounds, outerUpperBounds, outerSteps);
-      for (unsigned i = 0, e = split_idx; i < e; ++i)
-        op.getInductionVars()[i].replaceAllUsesWith(
-            outerLoop.getInductionVars()[i]);
-
-      rewriter.setInsertionPointToStart(outerLoop.getBody());
-
-      for (unsigned i = split_idx, e = op.getNumLoops(); i < e; ++i) {
-        innerLowerBounds.push_back(op.getLowerBound()[i]);
-        innerUpperBounds.push_back(op.getUpperBound()[i]);
-        innerSteps.push_back(op.getStep()[i]);
-      }
-      auto innerLoop = rewriter.create<scf::ParallelOp>(
-          loc, innerLowerBounds, innerUpperBounds, innerSteps);
-      for (unsigned i = split_idx, e = op.getNumLoops(); i < e; ++i)
-        op.getInductionVars()[i].replaceAllUsesWith(
-            innerLoop.getInductionVars()[i - split_idx]);
-
-      auto &body = op.getBody()->getOperations();
-      innerLoop.getBody()->getOperations().splice(
-          innerLoop.getBody()->begin(), body, body.begin(), --body.end());
-      op = innerLoop;
     }
-
-    SmallVector<int, 2> bounds{1, 1};
-    for (unsigned int i = 0; i < op.getNumLoops(); i++) {
-      // these are arith.constant after normalizeScfParallel
-      auto to_int = [](Value v) {
-        return cast<arith::ConstantIndexOp>(v.getDefiningOp()).value();
-      };
-      auto ub_int = to_int(op.getUpperBound()[i]);
-      auto step_int = to_int(op.getStep()[i]);
-      bounds[i] = ub_int / step_int;
-    }
-    SmallVector<Value, 4> args;
-    SmallVector<Value, 4> constants;
-    getUsedConstsAndArgsDefinedAbove(op.getRegion(), constants, args);
-
-    int idx0 = firstDim;
-    int idx1 = (firstDim + 1) % 2;
-    SmallVector<Value, 2> dims{
-        rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx0]),
-        rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx1])};
-    auto herdOp = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
-    auto &body = op.getBody()->getOperations();
-
-    propagateLinkWith(op, herdOp);
-
-    auto &bb = herdOp.getBody().front();
-    auto ivs = op.getInductionVars();
-
-    ivs[0].replaceAllUsesWith(herdOp.getIds()[idx0]);
-    if (op.getNumLoops() == 2)
-      ivs[1].replaceAllUsesWith(herdOp.getIds()[idx1]);
-
-    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    rewriter.setInsertionPointToStart(&herdOp.getRegion().front());
-    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
-                                          herdOp.getRegion());
-
-    int i = 0;
-    auto kernel_args = herdOp.getKernelArguments();
-    for (Value v : args)
-      replaceAllUsesInRegionWith(v, kernel_args[i++], herdOp.getRegion());
-
-    if (op != parOp)
-      op.erase();
+    air::HerdOp herdOp = *res;
     rewriter.eraseOp(parOp);
     replacementOps.insert(herdOp);
-
     return success();
   }
 
@@ -745,33 +773,23 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   return success();
 }
 
-template <class T>
-air::SegmentOp generateEmptySegmentOp(OpBuilder &rewriter, T op,
-                                      air::LaunchOp launch) {
+FailureOr<air::SegmentOp> insertAIRSegmentOpAroundRegion(OpBuilder &rewriter,
+                                                         Region *region) {
+  if (!region->hasOneBlock())
+    return failure();
   SmallVector<Value, 1> segmentSizes = {};
   SmallVector<Value, 4> segmentOpers;
-  for (Value v : launch.getIds()) {
+  for (Value v : region->getArguments())
     segmentOpers.push_back(v);
-  }
-  for (Value v : launch.getSize()) {
-    segmentOpers.push_back(v);
-  }
-  for (Value v : launch.getKernelArguments()) {
-    segmentOpers.push_back(v);
-  }
-  auto segment =
-      rewriter.create<air::SegmentOp>(op->getLoc(), segmentSizes, segmentOpers);
+  rewriter.setInsertionPointToStart(&region->front());
+  auto segment = rewriter.create<air::SegmentOp>(rewriter.getUnknownLoc(),
+                                                 segmentSizes, segmentOpers);
   auto &bb = segment.getBody().front();
-  auto ivs = op.getInductionVars();
-
-  for (int i = 0, e = ivs.size(); i < e; i++) {
-    ivs[i].replaceAllUsesWith(segment.getKernelArgument(i));
-  }
-
-  auto &body = op.getBody()->getOperations();
-  bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-  rewriter.setInsertionPointToStart(&segment.getRegion().front());
-
+  auto &body = region->front().getOperations();
+  bb.getOperations().splice(bb.begin(), body, ++body.begin(), --body.end());
+  for (int i = 0, e = segmentOpers.size(); i < e; i++)
+    replaceAllUsesInRegionWith(segmentOpers[i], segment.getKernelArgument(i),
+                               segment.getBody());
   return segment;
 }
 
@@ -789,89 +807,20 @@ public:
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
 
-    scf::ParallelOp op = parOp;
-
-    if (!filteredOps.contains(op))
+    auto res = ScfParToAIRHierarchyConversionImpl<air::LaunchOp>(
+        parOp, filteredOps, /*firstDim*/ 0, /*fixedNumLoops*/ -1, rewriter);
+    if (failed(res)) {
       return failure();
-
-    if (failed(normalizeScfParallel(op, rewriter)))
-      return failure();
-
-    auto loc = op.getLoc();
-
-    SmallVector<int, 4> bounds(op.getNumLoops(), 1);
-    for (unsigned int i = 0; i < op.getNumLoops(); i++) {
-      auto lb = dyn_cast<arith::ConstantIndexOp>(
-          op.getLowerBound()[i].getDefiningOp());
-      auto ub = dyn_cast<arith::ConstantIndexOp>(
-          op.getUpperBound()[i].getDefiningOp());
-      auto step =
-          dyn_cast<arith::ConstantIndexOp>(op.getStep()[i].getDefiningOp());
-
-      // lowerBound, upperBound and step must be arith::ConstantIndexOps
-      if (!(lb && step && ub))
-        return failure();
-
-      auto ub_int = ub.value();
-      auto lb_int = lb.value();
-      auto step_int = step.value();
-
-      // must start at 0
-      if (lb_int)
-        return failure();
-
-      // step must divide upper bound evenly
-      if (ub_int % step_int)
-        return failure();
-
-      ub_int = ub_int / step_int;
-      bounds[i] = ub_int;
     }
-
-    SmallVector<Value, 4> args;
-    SmallVector<Value, 4> constants;
-    getUsedConstsAndArgsDefinedAbove(op.getRegion(), constants, args);
-
-    SmallVector<Value, 4> sizes;
-    for (auto b : bounds)
-      sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
-    auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
-    rewriter.setInsertionPointToStart(&launch.getRegion().front());
-
+    air::LaunchOp launchOp = *res;
     if (generateSegment) {
-      auto segment = generateEmptySegmentOp(rewriter, op, launch);
-      replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
-                                            segment.getRegion());
-      int i = 0;
-      auto kernel_args = segment.getKernelArguments();
-      kernel_args = kernel_args.drop_front(
-          launch.getIds().size() +
-          launch.getSize().size()); // Launch's induction vars
-      for (Value v : args)
-        replaceAllUsesInRegionWith(v, kernel_args[i++], segment.getRegion());
-    } else {
-      auto &bb = launch.getBody().front();
-      auto ivs = op.getInductionVars();
-
-      for (int i = 0, e = ivs.size(); i < e; i++) {
-        ivs[i].replaceAllUsesWith(launch.getIds()[i]);
-      }
-
-      auto &body = op.getBody()->getOperations();
-      bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-      replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
-                                            launch.getRegion());
-      int i = 0;
-      auto kernel_args = launch.getKernelArguments();
-      for (Value v : args)
-        replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
+      auto segment =
+          insertAIRSegmentOpAroundRegion(rewriter, &launchOp.getBody());
+      if (failed(segment))
+        return failure();
     }
-
-    if (op != parOp)
-      op.erase();
     rewriter.eraseOp(parOp);
-    replacementOps.insert(launch);
-
+    replacementOps.insert(launchOp);
     return success();
   }
 
@@ -879,6 +828,35 @@ private:
   llvm::SmallSet<Operation *, 8> &filteredOps;
   llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
   bool generateSegment;
+};
+
+class ScfParToSegmentConversion : public OpRewritePattern<scf::ParallelOp> {
+public:
+  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
+
+  ScfParToSegmentConversion(MLIRContext *ctx,
+                            llvm::SmallSet<Operation *, 8> &filteredOps,
+                            llvm::SmallSet<air::SegmentOp, 2> &replacementOps)
+      : OpRewritePattern(ctx), filteredOps(filteredOps),
+        replacementOps(replacementOps){};
+
+  LogicalResult matchAndRewrite(scf::ParallelOp parOp,
+                                PatternRewriter &rewriter) const override {
+
+    auto res = ScfParToAIRHierarchyConversionImpl<air::SegmentOp>(
+        parOp, filteredOps, /*firstDim*/ 0, /*fixedNumLoops*/ -1, rewriter);
+    if (failed(res)) {
+      return failure();
+    }
+    air::SegmentOp segmentOp = *res;
+    rewriter.eraseOp(parOp);
+    replacementOps.insert(segmentOp);
+    return success();
+  }
+
+private:
+  llvm::SmallSet<Operation *, 8> &filteredOps;
+  llvm::SmallSet<air::SegmentOp, 2> &replacementOps;
 };
 
 /// Pattern to rewriter scf.forall -> scf.parallel after bufferization.
@@ -1200,15 +1178,15 @@ struct ParallelToHerdPass
     SmallPtrSet<Operation *, 8> filteredOps;
     llvm::SmallSet<air::HerdOp, 2> replacementOps;
     module.walk([&](Operation *op) {
-      if (!isa<scf::ForallOp, scf::ParallelOp, affine::AffineParallelOp>(op))
+      if (!isa<scf::ParallelOp, affine::AffineParallelOp>(op))
         return;
       // skip parallel op already inside herd
       if (op->getParentOfType<air::HerdOp>())
         return;
       // skip parallel ops already containing herd/segment/launch
-      for (auto &h : hierOps)
-        if (op->isProperAncestor(h))
-          return;
+      if (llvm::any_of(hierOps,
+                       [op](Operation *h) { return op->isProperAncestor(h); }))
+        return;
       if (clAssignDepth < 0) {
         filteredOps.insert(op);
         return;
@@ -1217,7 +1195,7 @@ struct ParallelToHerdPass
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
-        if (isa<scf::ForallOp, scf::ParallelOp, affine::AffineParallelOp>(par))
+        if (isa<scf::ParallelOp, affine::AffineParallelOp>(par))
           parallel_depth++;
       if (parallel_depth != clAssignDepth)
         return;
@@ -1240,8 +1218,6 @@ struct ParallelToHerdPass
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
-    target.addDynamicallyLegalOp<scf::ForallOp>(
-        [&](scf::ForallOp p) { return !filteredOps.contains(p); });
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
@@ -1291,16 +1267,15 @@ struct ParallelToLaunchPass
 
     llvm::SmallSet<Operation *, 8> filteredOps;
     llvm::SmallSet<air::LaunchOp, 2> replacementOps;
-    module.walk([&](Operation *op) {
-      if (!isa<scf::ForallOp, scf::ParallelOp>(op))
-        return;
+    module.walk([&](scf::ParallelOp op) {
       if (op->getParentOfType<air::HerdOp>())
         return;
       if (op->getParentOfType<air::LaunchOp>())
         return;
-      for (auto &l : launchOps)
-        if (op->isProperAncestor(l))
-          return;
+      if (llvm::any_of(launchOps, [op](air::LaunchOp l) {
+            return op->isProperAncestor(l);
+          }))
+        return;
       if (clAssignDepth < 0) {
         filteredOps.insert(op);
         return;
@@ -1309,7 +1284,7 @@ struct ParallelToLaunchPass
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
-        if (isa<scf::ForallOp, scf::ParallelOp>(par))
+        if (isa<scf::ParallelOp>(par))
           parallel_depth++;
       if (parallel_depth != clAssignDepth)
         return;
@@ -1388,8 +1363,153 @@ struct ParallelToLaunchPass
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
-    target.addDynamicallyLegalOp<scf::ForallOp>(
-        [&](scf::ForallOp p) { return !filteredOps.contains(p); });
+
+    if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
+      emitError(UnknownLoc::get(context), "error\n");
+      signalPassFailure();
+      assert(0);
+    }
+
+    getSegmentNames(module);
+    LLVM_DEBUG(llvm::outs() << "output\n");
+    LLVM_DEBUG(module.print(llvm::outs()));
+  }
+};
+
+struct ParallelToSegmentPass
+    : public air::impl::ParallelToSegmentBase<ParallelToSegmentPass> {
+
+  ParallelToSegmentPass() = default;
+  ParallelToSegmentPass(const ParallelToSegmentPass &pass) {}
+  ParallelToSegmentPass(const xilinx::air::ParallelToSegmentOptions &options)
+      : ParallelToSegmentBase(options) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<air::airDialect>();
+    registry.insert<linalg::LinalgDialect>();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    auto context = module.getContext();
+
+    LLVM_DEBUG(llvm::outs() << "input\n");
+    LLVM_DEBUG(module.print(llvm::outs()));
+
+    // Preprocessing: convert forall to parallel.
+    RewritePatternSet preprocPatterns(context);
+    preprocPatterns.add<SCFForAllToParallelOp>(context);
+    ConversionTarget preprocTarget(*context);
+    preprocTarget.addLegalDialect<scf::SCFDialect, arith::ArithDialect>();
+    preprocTarget.addIllegalOp<scf::ForallOp>();
+    if (failed(applyPartialConversion(module, preprocTarget,
+                                      std::move(preprocPatterns)))) {
+      signalPassFailure();
+    }
+    LLVM_DEBUG(llvm::outs() << "ir after preprocessing\n");
+    LLVM_DEBUG(module.print(llvm::outs()));
+
+    llvm::SmallVector<air::SegmentOp> segmentOps;
+    module.walk([&](air::SegmentOp op) { segmentOps.push_back(op); });
+
+    llvm::SmallSet<Operation *, 8> filteredOps;
+    llvm::SmallSet<air::SegmentOp, 2> replacementOps;
+    module.walk([&](scf::ParallelOp op) {
+      if (op->getParentOfType<air::HerdOp>())
+        return;
+      if (op->getParentOfType<air::SegmentOp>())
+        return;
+      if (llvm::any_of(segmentOps, [op](air::SegmentOp s) {
+            return op->isProperAncestor(s);
+          }))
+        return;
+      if (clAssignDepth < 0) {
+        filteredOps.insert(op);
+        return;
+      }
+      // the number of nested scf.parallel above this one
+      int parallel_depth = 0;
+      Operation *par = op;
+      while ((par = par->getParentOp()))
+        if (isa<scf::ParallelOp>(par))
+          parallel_depth++;
+      if (parallel_depth != clAssignDepth)
+        return;
+      filteredOps.insert(op);
+    });
+
+    // if any L1 or L2 memref has lifetime only within the scf.par/forall
+    // region, but allocated outside, then attempt to move them into the region.
+    std::map<memref::AllocOp, SmallVector<Block *>> allocToParBodyMap;
+    SmallVector<memref::AllocOp> globalAllocs;
+    for (auto op : filteredOps) {
+      Block *opBlk = nullptr;
+      if (auto par = dyn_cast<scf::ParallelOp>(op))
+        opBlk = par.getBody();
+      else if (auto forall = dyn_cast<scf::ForallOp>(op))
+        opBlk = forall.getBody();
+      if (!opBlk)
+        continue;
+      llvm::SetVector<Value> regionArgs;
+      getUsedValuesDefinedAbove(*opBlk->getParent(), regionArgs);
+      for (auto arg : regionArgs) {
+        if (auto allocOp = arg.getDefiningOp<memref::AllocOp>()) {
+          allocToParBodyMap[allocOp].push_back(opBlk);
+          if (std::find(globalAllocs.begin(), globalAllocs.end(), allocOp) ==
+              globalAllocs.end())
+            globalAllocs.push_back(allocOp);
+        }
+      }
+    }
+    // check for memref lifetime
+    for (auto allocOp : globalAllocs) {
+      if (allocToParBodyMap[allocOp].size() != 1)
+        continue;
+      auto blk = allocToParBodyMap[allocOp][0];
+      memref::DeallocOp dealloc = nullptr;
+      bool hasExtraUsers = false;
+      for (auto user : allocOp.getMemref().getUsers()) {
+        if (!blk->getParentOp()->isProperAncestor(user)) {
+          if (auto da = dyn_cast<memref::DeallocOp>(user))
+            dealloc = da;
+          else
+            hasExtraUsers = true;
+        }
+      }
+      if (hasExtraUsers)
+        continue;
+      OpBuilder builder(allocOp);
+      builder.setInsertionPointToStart(blk);
+      auto newAlloc = dyn_cast<memref::AllocOp>(builder.clone(*allocOp));
+      allocOp.getMemref().replaceAllUsesWith(newAlloc.getMemref());
+      allocOp->erase();
+      if (dealloc) {
+        if (auto term = blk->getTerminator()) {
+          builder.setInsertionPoint(term);
+          builder.clone(*dealloc);
+        } else {
+          builder.setInsertionPointToEnd(blk);
+          builder.clone(*dealloc);
+        }
+        dealloc->erase();
+      }
+    }
+
+    RewritePatternSet patterns(context);
+    patterns.add<ScfParToSegmentConversion>(context, filteredOps,
+                                            replacementOps);
+
+    ConversionTarget target(*context);
+
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           air::airDialect, arith::ArithDialect>();
+
+    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
+                      affine::AffineLoadOp, affine::AffineStoreOp,
+                      affine::AffineYieldOp, scf::YieldOp>();
+
+    target.addDynamicallyLegalOp<scf::ParallelOp>(
+        [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
@@ -1514,6 +1634,14 @@ std::unique_ptr<mlir::Pass> createParallelToLaunchPass() {
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createParallelToLaunchPass(const ParallelToLaunchOptions &options) {
   return std::make_unique<ParallelToLaunchPass>(options);
+}
+
+std::unique_ptr<mlir::Pass> createParallelToSegmentPass() {
+  return std::make_unique<ParallelToSegmentPass>();
+}
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createParallelToSegmentPass(const ParallelToSegmentOptions &options) {
+  return std::make_unique<ParallelToSegmentPass>(options);
 }
 
 std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
