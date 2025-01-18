@@ -57,6 +57,22 @@ def ParallelToLaunch : Pass<"air-par-to-launch", "ModuleOp"> {
   ];
 }
 
+def ParallelToSegment : Pass<"air-par-to-segment", "ModuleOp"> {
+  let summary = "Convert parallel loops to air.segment";
+  let constructor = "xilinx::air::createParallelToSegmentPass()";
+  let description =  [{
+    This pass converts parallel loop operations to air `segment` operations. The
+    iteration space of the parallel loops will be normalized and will become the
+    iteration space of the new `segment`. If nested parallel loops are present
+    then the `depth` option can to used to specify which loop depth to convert.
+  }];
+  let options = [
+    Option<"clAssignDepth", "depth", "int",
+          /*default=*/"-1",
+          "Given a nest of parallel for loops, which depth to map to air.segment">,
+  ];
+}
+
 def CopyToDma : Pass<"air-copy-to-dma", "ModuleOp"> {
   let summary = "Convert memcpy to air.dma_memcpy_nd";
   let constructor = "xilinx::air::createCopyToDmaPass()";

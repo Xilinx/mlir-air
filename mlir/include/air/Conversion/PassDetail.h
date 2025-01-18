@@ -31,6 +31,7 @@ using namespace mlir;
 #define GEN_PASS_DEF_INSERTEMPTYLAUNCHOVERHERD
 #define GEN_PASS_DEF_PARALLELTOHERD
 #define GEN_PASS_DEF_PARALLELTOLAUNCH
+#define GEN_PASS_DEF_PARALLELTOSEGMENT
 #include "air/Conversion/Passes.h.inc"
 
 } // namespace air
