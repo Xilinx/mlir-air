@@ -1615,8 +1615,7 @@ transform::ParToSegmentOp::applyToOne(transform::TransformRewriter &rewriter,
   llvm::SmallSet<air::SegmentOp, 2> segmentOps;
   llvm::SmallSet<Operation *, 8> filteredOps;
   filteredOps.insert(target);
-  patterns.add<ScfParToSegmentConversion>(ctx, filteredOps, segmentOps,
-                                          getHasAirSegment());
+  patterns.add<ScfParToSegmentConversion>(ctx, filteredOps, segmentOps);
   (void)applyPatternsGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));

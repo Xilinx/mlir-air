@@ -103,6 +103,28 @@ def ParToLaunchOp : Op<Transform_Dialect, "air.par_to_launch",
   }];
 }
 
+def ParToSegmentOp : Op<Transform_Dialect, "air.par_to_segment",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+    TransformOpInterface, TransformEachOpTrait]> {
+  let description = [{
+    Transform a `scf.parallel` operation into a `air.segment` operation.
+    Returns the new `air.segment` operation.
+  }];
+  let arguments =
+    (ins PDL_Operation:$target,
+     DefaultValuedAttr<BoolAttr, "false">:$has_air_segment);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::scf::ParallelOp target,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
 def CopyToDmaOp : Op<Transform_Dialect, "air.copy_to_dma",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
     TransformOpInterface, TransformEachOpTrait]> {
