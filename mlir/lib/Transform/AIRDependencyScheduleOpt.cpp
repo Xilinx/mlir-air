@@ -5136,10 +5136,8 @@ LogicalResult fuseAllocDeallocExecsIntoBlock(
   auto resolveDepFromDeallocExec = [](AsyncOpInterface delloc, Block *blk) {
     SmallVector<Value> erasedD;
     for (auto d : delloc.getAsyncDependencies()) {
-      if (blk->getParent()->isAncestor(d.getParentRegion())) {
-        assert(d.getDefiningOp() != blk->getParentOp());
+      if (blk->getParent()->isAncestor(d.getParentRegion()))
         continue;
-      }
       erasedD.push_back(d);
     }
     for (auto d : erasedD)
