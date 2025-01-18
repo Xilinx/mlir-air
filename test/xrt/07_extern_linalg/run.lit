@@ -3,6 +3,6 @@
 
 // REQUIRES: ryzen_ai, valid_xchess_license
 
-// RUN: xchesscc_wrapper aie2 -c %S/kernel.cpp -o kernel.o
+// RUN: xchesscc_wrapper aie2p -c %S/kernel.cpp -o kernel.o
 // RUN: %python %S/gen.py
 // RUN: %run_on_npu %python %S/run.py add.xclbin
