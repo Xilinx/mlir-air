@@ -1602,6 +1602,30 @@ transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
 }
 
 //===----------------------------------------------------------------------===//
+// ParToSegmentOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::ParToSegmentOp::applyToOne(transform::TransformRewriter &rewriter,
+                                      scf::ParallelOp target,
+                                      transform::ApplyToEachResultList &results,
+                                      transform::TransformState &state) {
+  auto ctx = target->getContext();
+  RewritePatternSet patterns(ctx);
+  llvm::SmallSet<air::SegmentOp, 2> segmentOps;
+  llvm::SmallSet<Operation *, 8> filteredOps;
+  filteredOps.insert(target);
+  patterns.add<ScfParToSegmentConversion>(ctx, filteredOps, segmentOps,
+                                          getHasAirSegment());
+  (void)applyPatternsGreedily(
+      target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
+      std::move(patterns));
+  for (auto s : segmentOps)
+    results.push_back(s);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
 // CopyToDmaOp
 //===----------------------------------------------------------------------===//
 
