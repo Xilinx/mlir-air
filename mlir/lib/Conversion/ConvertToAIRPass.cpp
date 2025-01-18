@@ -9,6 +9,7 @@
 #include "air/Conversion/ConvertToAIRPass.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
+#include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 
@@ -1222,8 +1223,14 @@ struct ParallelToHerdPass
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
     }
-
     getHerdNames(module);
+
+    // Postprocessing: fuse allocs and deallocs into air.hierarchy, if their
+    // memref is never used outside.
+    RewritePatternSet postProcPatterns(context);
+    air::populateAIRFuseAllocDeallocToAIRHierPatterns(postProcPatterns);
+    (void)applyPatternsGreedily(module, std::move(postProcPatterns));
+
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
   }
@@ -1291,63 +1298,6 @@ struct ParallelToLaunchPass
       filteredOps.insert(op);
     });
 
-    // if any L1 or L2 memref has lifetime only within the scf.par/forall
-    // region, but allocated outside, then attempt to move them into the region.
-    std::map<memref::AllocOp, SmallVector<Block *>> allocToParBodyMap;
-    SmallVector<memref::AllocOp> globalAllocs;
-    for (auto op : filteredOps) {
-      Block *opBlk = nullptr;
-      if (auto par = dyn_cast<scf::ParallelOp>(op))
-        opBlk = par.getBody();
-      else if (auto forall = dyn_cast<scf::ForallOp>(op))
-        opBlk = forall.getBody();
-      if (!opBlk)
-        continue;
-      llvm::SetVector<Value> regionArgs;
-      getUsedValuesDefinedAbove(*opBlk->getParent(), regionArgs);
-      for (auto arg : regionArgs) {
-        if (auto allocOp = arg.getDefiningOp<memref::AllocOp>()) {
-          allocToParBodyMap[allocOp].push_back(opBlk);
-          if (std::find(globalAllocs.begin(), globalAllocs.end(), allocOp) ==
-              globalAllocs.end())
-            globalAllocs.push_back(allocOp);
-        }
-      }
-    }
-    // check for memref lifetime
-    for (auto allocOp : globalAllocs) {
-      if (allocToParBodyMap[allocOp].size() != 1)
-        continue;
-      auto blk = allocToParBodyMap[allocOp][0];
-      memref::DeallocOp dealloc = nullptr;
-      bool hasExtraUsers = false;
-      for (auto user : allocOp.getMemref().getUsers()) {
-        if (!blk->getParentOp()->isProperAncestor(user)) {
-          if (auto da = dyn_cast<memref::DeallocOp>(user))
-            dealloc = da;
-          else
-            hasExtraUsers = true;
-        }
-      }
-      if (hasExtraUsers)
-        continue;
-      OpBuilder builder(allocOp);
-      builder.setInsertionPointToStart(blk);
-      auto newAlloc = dyn_cast<memref::AllocOp>(builder.clone(*allocOp));
-      allocOp.getMemref().replaceAllUsesWith(newAlloc.getMemref());
-      allocOp->erase();
-      if (dealloc) {
-        if (auto term = blk->getTerminator()) {
-          builder.setInsertionPoint(term);
-          builder.clone(*dealloc);
-        } else {
-          builder.setInsertionPointToEnd(blk);
-          builder.clone(*dealloc);
-        }
-        dealloc->erase();
-      }
-    }
-
     RewritePatternSet patterns(context);
     patterns.add<ScfParToLaunchConversion>(context, filteredOps, replacementOps,
                                            clHasSegment);
@@ -1369,8 +1319,14 @@ struct ParallelToLaunchPass
       signalPassFailure();
       assert(0);
     }
-
     getSegmentNames(module);
+
+    // Postprocessing: fuse allocs and deallocs into air.hierarchy, if their
+    // memref is never used outside.
+    RewritePatternSet postProcPatterns(context);
+    air::populateAIRFuseAllocDeallocToAIRHierPatterns(postProcPatterns);
+    (void)applyPatternsGreedily(module, std::move(postProcPatterns));
+
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
   }
@@ -1438,63 +1394,6 @@ struct ParallelToSegmentPass
       filteredOps.insert(op);
     });
 
-    // if any L1 or L2 memref has lifetime only within the scf.par/forall
-    // region, but allocated outside, then attempt to move them into the region.
-    std::map<memref::AllocOp, SmallVector<Block *>> allocToParBodyMap;
-    SmallVector<memref::AllocOp> globalAllocs;
-    for (auto op : filteredOps) {
-      Block *opBlk = nullptr;
-      if (auto par = dyn_cast<scf::ParallelOp>(op))
-        opBlk = par.getBody();
-      else if (auto forall = dyn_cast<scf::ForallOp>(op))
-        opBlk = forall.getBody();
-      if (!opBlk)
-        continue;
-      llvm::SetVector<Value> regionArgs;
-      getUsedValuesDefinedAbove(*opBlk->getParent(), regionArgs);
-      for (auto arg : regionArgs) {
-        if (auto allocOp = arg.getDefiningOp<memref::AllocOp>()) {
-          allocToParBodyMap[allocOp].push_back(opBlk);
-          if (std::find(globalAllocs.begin(), globalAllocs.end(), allocOp) ==
-              globalAllocs.end())
-            globalAllocs.push_back(allocOp);
-        }
-      }
-    }
-    // check for memref lifetime
-    for (auto allocOp : globalAllocs) {
-      if (allocToParBodyMap[allocOp].size() != 1)
-        continue;
-      auto blk = allocToParBodyMap[allocOp][0];
-      memref::DeallocOp dealloc = nullptr;
-      bool hasExtraUsers = false;
-      for (auto user : allocOp.getMemref().getUsers()) {
-        if (!blk->getParentOp()->isProperAncestor(user)) {
-          if (auto da = dyn_cast<memref::DeallocOp>(user))
-            dealloc = da;
-          else
-            hasExtraUsers = true;
-        }
-      }
-      if (hasExtraUsers)
-        continue;
-      OpBuilder builder(allocOp);
-      builder.setInsertionPointToStart(blk);
-      auto newAlloc = dyn_cast<memref::AllocOp>(builder.clone(*allocOp));
-      allocOp.getMemref().replaceAllUsesWith(newAlloc.getMemref());
-      allocOp->erase();
-      if (dealloc) {
-        if (auto term = blk->getTerminator()) {
-          builder.setInsertionPoint(term);
-          builder.clone(*dealloc);
-        } else {
-          builder.setInsertionPointToEnd(blk);
-          builder.clone(*dealloc);
-        }
-        dealloc->erase();
-      }
-    }
-
     RewritePatternSet patterns(context);
     patterns.add<ScfParToSegmentConversion>(context, filteredOps,
                                             replacementOps);
@@ -1516,8 +1415,14 @@ struct ParallelToSegmentPass
       signalPassFailure();
       assert(0);
     }
-
     getSegmentNames(module);
+
+    // Postprocessing: fuse allocs and deallocs into air.hierarchy, if their
+    // memref is never used outside.
+    RewritePatternSet postProcPatterns(context);
+    air::populateAIRFuseAllocDeallocToAIRHierPatterns(postProcPatterns);
+    (void)applyPatternsGreedily(module, std::move(postProcPatterns));
+
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
   }
