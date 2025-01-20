@@ -91,6 +91,29 @@ func.func @scf4()  {
 
 // -----
 
+// CHECK-LABEL: func.func @scf5() {
+// CHECK: air.herd @herd_{{.*}} {
+// CHECK: air.herd @herd_{{.*}} {
+// CHECK: air.herd @herd_{{.*}} {
+// CHECK: }
+// CHECK: }
+// CHECK: }
+func.func @scf5()  {
+  %src = memref.alloc() : memref<4x4x4xi32, 2 : i32>
+  %dst = memref.alloc() : memref<4x4x4xi32, 2 : i32>
+  scf.forall (%i) = (0) to (4) step (1) {
+    scf.forall (%j) = (0) to (4) step (1) {
+      scf.forall (%k) = (0) to (4) step (1) {
+        %0 = memref.load %src[%i, %j, %k] : memref<4x4x4xi32, 2 : i32>
+        memref.store %0, %dst[%i, %j, %k] : memref<4x4x4xi32, 2 : i32>
+      }
+    }
+  }
+  return
+}
+
+// -----
+
 // This test demonstrates that while forming air.herd we look through func.call ops, fetch
 // the corresponding function declaration's 'link_with' attribute and attach it to the newly
 // formed air.herd op.
