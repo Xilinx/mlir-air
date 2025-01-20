@@ -83,6 +83,10 @@ void populateAIRLoopFusionPattern(RewritePatternSet &patterns);
 // Apply AIRIsolateAsyncDmaLoopNestsPattern on region.
 void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region);
 
+// Populate patterns for fusing memref.alloc and dealloc ops into air.herarchy
+// ops.
+void populateAIRFuseAllocDeallocToAIRHierPatterns(RewritePatternSet &patterns);
+
 } // namespace air
 } // namespace xilinx
 

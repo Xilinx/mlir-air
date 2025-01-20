@@ -1,15 +1,15 @@
-//===- transform-par-to-launch.mlir ----------------------------*- MLIR -*-===//
+//===- transform-par-to-segment.mlir ---------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-transform='filename=%s' | FileCheck %s
 
-// CHECK-LABEL @air_par_to_launch
-// CHECK: air.launch
-func.func @air_par_to_launch() {
+// CHECK-LABEL @air_par_to_segment
+// CHECK: air.segment
+func.func @air_par_to_segment() {
   %c0 = arith.constant 0 : index
   %c32 = arith.constant 4 : index
   %c128 = arith.constant 128 : index
@@ -33,6 +33,6 @@ transform.with_pdl_patterns {
   sequence %arg0 : !pdl.operation failures(propagate) {
   ^bb1(%arg1 : !pdl.operation):
       %0 = pdl_match @match_par in %arg1 : (!pdl.operation) -> !pdl.operation
-      %1 = transform.air.par_to_launch %0
+      %1 = transform.air.par_to_segment %0
   }
 }

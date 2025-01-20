@@ -5,14 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd -cse %s | FileCheck %s
+// RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd %s | FileCheck %s
 
 // CHECK-LABEL: func.func @scf0() {
-// CHECK: %[[C2:.*]] = arith.constant 2 : index
-// CHECK: air.herd @herd_0  tile ({{.*}}, {{.*}}) in ({{.*}}=%[[C2]], {{.*}}=%[[C2]])
+// CHECK: air.herd @herd_0  tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%c2{{.*}}, %{{.*}}=%c2{{.*}})
 func.func @scf0()  {
+  %src = memref.alloc() : memref<2x2xi32, 2 : i32>
+  %dst = memref.alloc() : memref<2x2xi32, 2 : i32>
   scf.forall (%x,%y) in (2, 2) {
-    %2 = arith.addi %x, %y : index
+    %0 = memref.load %src[%x, %y] : memref<2x2xi32, 2 : i32>
+    memref.store %0, %dst[%x, %y] : memref<2x2xi32, 2 : i32>
   }
   return
 }
@@ -20,12 +22,13 @@ func.func @scf0()  {
 // -----
 
 // CHECK-LABEL: func.func @scf1() {
-// CHECK-DAG: %[[C4:.*]] = arith.constant 4 : index
-// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
-// CHECK: air.herd @herd_0  tile (%[[A0:.*]], {{.*}}) in ({{.*}}=%[[C4]], {{.*}}=%[[C1]])
+// CHECK: air.herd @herd_0  tile (%[[A0:.*]], {{.*}}) in (%{{.*}}=%c4{{.*}}, %{{.*}}=%c1{{.*}}) 
 func.func @scf1()  {
+  %src = memref.alloc() : memref<4xi32, 2 : i32>
+  %dst = memref.alloc() : memref<4xi32, 2 : i32>
   scf.forall (%x) in (4) {
-    %2 = arith.muli %x, %x : index
+    %0 = memref.load %src[%x] : memref<4xi32, 2 : i32>
+    memref.store %0, %dst[%x] : memref<4xi32, 2 : i32>
   }
   return
 }
@@ -33,16 +36,14 @@ func.func @scf1()  {
 // -----
 
 // CHECK-LABEL: func.func @scf2() {
-// CHECK-DAG: %[[VAL_1:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[VAL_2:.*]] = arith.constant 2 : index
-// CHECK-DAG: %[[VAL_0:.*]] = arith.constant 0 : index
-// CHECK: scf.parallel (%[[VAL_3:.*]], %[[VAL_4:.*]]) = (%[[VAL_0]], %[[VAL_0]]) to (%[[VAL_1]], %[[VAL_2]]) step (%[[VAL_1]], %[[VAL_1]]) {
-// CHECK:   %[[VAL_5:.*]] = arith.constant 3 : index
-// CHECK:   %[[VAL_6:.*]] = arith.constant 4 : index
-// CHECK:   air.herd @herd_0  tile (%[[VAL_7:.*]], %[[VAL_8:.*]]) in (%[[VAL_9:.*]]=%[[VAL_5]], %[[VAL_10:.*]]=%[[VAL_6]])
+// CHECK: scf.parallel (%[[VAL_3:.*]], %[[VAL_4:.*]]) = (%c0{{.*}}, %c0{{.*}}) to (%c1{{.*}}, %c2{{.*}}) step (%c1{{.*}}, %c1{{.*}}) {
+// CHECK:   air.herd @herd_0  tile (%[[VAL_7:.*]], %[[VAL_8:.*]]) in (%{{.*}}=%c3{{.*}}, %{{.*}}=%c4{{.*}}) args(%{{.*}}=%[[VAL_4]], %{{.*}}=%[[VAL_3]]) : index, index 
 func.func @scf2()  {
+  %src = memref.alloc() : memref<1x2x3x4xi32, 2 : i32>
+  %dst = memref.alloc() : memref<1x2x3x4xi32, 2 : i32>
   scf.forall (%a,%b,%x,%y) in (1,2,3,4) {
-    %2 = arith.muli %x, %y : index
+    %0 = memref.load %src[%a,%b,%x,%y] : memref<1x2x3x4xi32, 2 : i32>
+    memref.store %0, %dst[%a,%b,%x,%y] : memref<1x2x3x4xi32, 2 : i32>
   }
   return
 }
@@ -60,9 +61,12 @@ func.func @scf3()  {
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   %c4 = arith.constant 4 : index
+  %src = memref.alloc() : memref<4x4xi32, 2 : i32>
+  %dst = memref.alloc() : memref<4x4xi32, 2 : i32>
   scf.forall (%i, %j) = (%c1, %c0) to (%c4, %c4)
       step (%c1, %c2) {
-    %2 = arith.muli %i, %j : index
+    %0 = memref.load %src[%i, %j] : memref<4x4xi32, 2 : i32>
+    memref.store %0, %dst[%i, %j] : memref<4x4xi32, 2 : i32>
   }
   return
 }
@@ -76,8 +80,11 @@ func.func @scf3()  {
 // CHECK: affine.apply [[$MAP0]](%[[VAL_1]])
 // CHECK: affine.apply [[$MAP1]](%[[VAL_0]])
 func.func @scf4()  {
+  %src = memref.alloc() : memref<4x4xi32, 2 : i32>
+  %dst = memref.alloc() : memref<4x4xi32, 2 : i32>
   scf.forall (%i, %j) = (1, 0) to (4, 4) step (1, 2) {
-    %2 = arith.muli %i, %j : index
+    %0 = memref.load %src[%i, %j] : memref<4x4xi32, 2 : i32>
+    memref.store %0, %dst[%i, %j] : memref<4x4xi32, 2 : i32>
   }
   return
 }
