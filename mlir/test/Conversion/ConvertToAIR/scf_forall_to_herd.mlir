@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd %s | FileCheck %s
+// RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd="depth=-1" %s | FileCheck %s --check-prefix=DEPTHM1
+// RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd="depth=0" %s | FileCheck %s --check-prefix=DEPTH0
+// RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd="depth=1" %s | FileCheck %s --check-prefix=DEPTH1
 
 // CHECK-LABEL: func.func @scf0() {
 // CHECK: air.herd @herd_0  tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%c2{{.*}}, %{{.*}}=%c2{{.*}})
@@ -98,6 +101,27 @@ func.func @scf4()  {
 // CHECK: }
 // CHECK: }
 // CHECK: }
+// DEPTHM1-LABEL: func.func @scf5() {
+// DEPTHM1: scf.forall {{.*}} {
+// DEPTHM1: scf.forall {{.*}} {
+// DEPTHM1: air.herd @herd_{{.*}} {
+// DEPTHM1: }
+// DEPTHM1: }
+// DEPTHM1: }
+// DEPTH0-LABEL: func.func @scf5() {
+// DEPTH0: air.herd @herd_{{.*}} {
+// DEPTH0: scf.forall {{.*}} {
+// DEPTH0: scf.forall {{.*}} {
+// DEPTH0: }
+// DEPTH0: }
+// DEPTH0: }
+// DEPTH1-LABEL: func.func @scf5() {
+// DEPTH1: scf.forall {{.*}} {
+// DEPTH1: air.herd @herd_{{.*}} {
+// DEPTH1: scf.forall {{.*}} {
+// DEPTH1: }
+// DEPTH1: }
+// DEPTH1: }
 func.func @scf5()  {
   %src = memref.alloc() : memref<4x4x4xi32, 2 : i32>
   %dst = memref.alloc() : memref<4x4x4xi32, 2 : i32>

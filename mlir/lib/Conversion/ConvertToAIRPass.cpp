@@ -1165,11 +1165,11 @@ struct ParallelToHerdPass
       if (llvm::any_of(hierOps,
                        [op](Operation *h) { return op->isProperAncestor(h); }))
         return;
-      // Depth = -1 means converting the innermost scf.parallel ops
+      // Depth = -1 means converting the innermost parallel ops
       if (clAssignDepth == -1) {
         SmallVector<Operation *> parOpsInOp;
         op->walk([&parOpsInOp](Operation *o) {
-          if (isa<scf::ParallelOp, affine::AffineParallelOp>(o))
+          if (isa<scf::ForallOp, scf::ParallelOp, affine::AffineParallelOp>(o))
             parOpsInOp.push_back(o);
         });
         if (parOpsInOp.size() > 1)
@@ -1178,12 +1178,12 @@ struct ParallelToHerdPass
         return;
       }
       // Assigning depth to other negative values means converting all
-      // scf.parallel ops
+      // parallel ops
       if (clAssignDepth < 0) {
         filteredOps.insert(op);
         return;
       }
-      // the number of nested scf.parallel above this one
+      // the number of nested parallel above this one
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
@@ -1267,7 +1267,7 @@ struct ParallelToLaunchPass
             return op->isProperAncestor(l);
           }))
         return;
-      // Depth = -1 means converting the innermost scf.parallel ops
+      // Depth = -1 means converting the innermost parallel ops
       if (clAssignDepth == -1) {
         SmallVector<Operation *> parOpsInOp;
         op->walk([&parOpsInOp](Operation *o) {
@@ -1280,12 +1280,12 @@ struct ParallelToLaunchPass
         return;
       }
       // Assigning depth to other negative values means converting all
-      // scf.parallel ops
+      // parallel ops
       if (clAssignDepth < 0) {
         filteredOps.insert(op);
         return;
       }
-      // the number of nested scf.parallel above this one
+      // the number of nested parallel above this one
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
@@ -1370,7 +1370,7 @@ struct ParallelToSegmentPass
             return op->isProperAncestor(s);
           }))
         return;
-      // Depth = -1 means converting the innermost scf.parallel ops
+      // Depth = -1 means converting the innermost parallel ops
       if (clAssignDepth == -1) {
         SmallVector<Operation *> parOpsInOp;
         op->walk([&parOpsInOp](Operation *o) {
@@ -1383,12 +1383,12 @@ struct ParallelToSegmentPass
         return;
       }
       // Assigning depth to other negative values means converting all
-      // scf.parallel ops
+      // parallel ops
       if (clAssignDepth < 0) {
         filteredOps.insert(op);
         return;
       }
-      // the number of nested scf.parallel above this one
+      // the number of nested parallel above this one
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
