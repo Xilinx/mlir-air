@@ -22,6 +22,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/ComposeSubView.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -866,30 +867,9 @@ class SCFForAllToParallelOp : public OpRewritePattern<scf::ForallOp> {
 
   LogicalResult matchAndRewrite(scf::ForallOp forallOp,
                                 PatternRewriter &rewriter) const override {
-    if (forallOp.getNumResults() != 0) {
+    if (forallOp.getNumResults() != 0)
       return failure();
-    }
-    Location loc = forallOp.getLoc();
-    SmallVector<Value> lowerBounds = getValueOrCreateConstantIndexOp(
-        rewriter, loc, forallOp.getMixedLowerBound());
-    SmallVector<Value> upperBounds = getValueOrCreateConstantIndexOp(
-        rewriter, loc, forallOp.getMixedUpperBound());
-    SmallVector<Value> step =
-        getValueOrCreateConstantIndexOp(rewriter, loc, forallOp.getMixedStep());
-    auto parallelOp = rewriter.create<scf::ParallelOp>(
-        loc, lowerBounds, upperBounds, step, ValueRange{},
-        [&](OpBuilder &b, Location bodyLoc, ValueRange ivs,
-            ValueRange regionArgs) {});
-    rewriter.inlineRegionBefore(forallOp.getRegion(), parallelOp.getRegion(),
-                                parallelOp.getRegion().begin());
-    rewriter.eraseBlock(&parallelOp.getRegion().back());
-    // Fixup the terminator
-    OpBuilder::InsertionGuard g(rewriter);
-    rewriter.setInsertionPointToEnd(&parallelOp.getRegion().front());
-    rewriter.replaceOpWithNewOp<scf::ReduceOp>(
-        parallelOp.getRegion().front().getTerminator());
-    rewriter.replaceOp(forallOp, parallelOp);
-    return success();
+    return forallToParallelLoop(rewriter, forallOp);
   }
 };
 
