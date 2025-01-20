@@ -753,8 +753,8 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                        yield_operands)
                    ->getResult(0)});
 
+  IRMapping waitAllRemap;
   for (auto erase_op : target_ops) {
-    IRMapping waitAllRemap;
     if (air::isAsyncOp(erase_op)) {
       // Reconnect returned tokens.
       rewriter.setInsertionPoint(erase_op);
@@ -764,7 +764,9 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
           newWaitAll.getAsyncToken());
     }
   }
-  for (auto erase_op : target_ops)
+  // Erasing the original ops backwards, to avoid erasing op that still has
+  // valid uses.
+  for (auto erase_op : llvm::reverse(target_ops))
     rewriter.eraseOp(erase_op);
   for (auto user : for_op.getResults().front().getUsers()) {
     air::addAsyncDependencyIfNew(user, new_for_op.getResults().front());
