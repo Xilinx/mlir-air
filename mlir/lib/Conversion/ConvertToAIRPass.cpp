@@ -1188,6 +1188,20 @@ struct ParallelToHerdPass
       if (llvm::any_of(hierOps,
                        [op](Operation *h) { return op->isProperAncestor(h); }))
         return;
+      // Depth = -1 means converting the innermost scf.parallel ops
+      if (clAssignDepth == -1) {
+        SmallVector<Operation *> parOpsInOp;
+        op->walk([&parOpsInOp](Operation *o) {
+          if (isa<scf::ParallelOp, affine::AffineParallelOp>(o))
+            parOpsInOp.push_back(o);
+        });
+        if (parOpsInOp.size() > 1)
+          return;
+        filteredOps.insert(op);
+        return;
+      }
+      // Assigning depth to other negative values means converting all
+      // scf.parallel ops
       if (clAssignDepth < 0) {
         filteredOps.insert(op);
         return;
@@ -1283,6 +1297,20 @@ struct ParallelToLaunchPass
             return op->isProperAncestor(l);
           }))
         return;
+      // Depth = -1 means converting the innermost scf.parallel ops
+      if (clAssignDepth == -1) {
+        SmallVector<Operation *> parOpsInOp;
+        op->walk([&parOpsInOp](Operation *o) {
+          if (isa<scf::ParallelOp>(o))
+            parOpsInOp.push_back(o);
+        });
+        if (parOpsInOp.size() > 1)
+          return;
+        filteredOps.insert(op);
+        return;
+      }
+      // Assigning depth to other negative values means converting all
+      // scf.parallel ops
       if (clAssignDepth < 0) {
         filteredOps.insert(op);
         return;
@@ -1379,6 +1407,20 @@ struct ParallelToSegmentPass
             return op->isProperAncestor(s);
           }))
         return;
+      // Depth = -1 means converting the innermost scf.parallel ops
+      if (clAssignDepth == -1) {
+        SmallVector<Operation *> parOpsInOp;
+        op->walk([&parOpsInOp](Operation *o) {
+          if (isa<scf::ParallelOp>(o))
+            parOpsInOp.push_back(o);
+        });
+        if (parOpsInOp.size() > 1)
+          return;
+        filteredOps.insert(op);
+        return;
+      }
+      // Assigning depth to other negative values means converting all
+      // scf.parallel ops
       if (clAssignDepth < 0) {
         filteredOps.insert(op);
         return;

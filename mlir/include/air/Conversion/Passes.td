@@ -24,8 +24,10 @@ def ParallelToHerd : Pass<"air-par-to-herd", "ModuleOp"> {
   }];
   let options = [
     Option<"clAssignDepth", "depth", "int",
-          /*default=*/"-1",
-          "Given a nest of parallel for loops, which depth to map to air.herd">,
+          /*default=*/"-2",
+          "Given a nest of parallel for loops, which depth to map to air.herd. "
+          "-1 means converting the innermost parallel loop; any other negative "
+          "value means converting all parallel loops">,
     Option<"clFirstDim", "first-dim", "int",
           /*default=*/"0",
           "Which herd dimension to map to first. Can be zero or one. If set to "
@@ -49,8 +51,10 @@ def ParallelToLaunch : Pass<"air-par-to-launch", "ModuleOp"> {
   }];
   let options = [
     Option<"clAssignDepth", "depth", "int",
-          /*default=*/"-1",
-          "Given a nest of parallel for loops, which depth to map to air.launch">,
+          /*default=*/"-2",
+          "Given a nest of parallel for loops, which depth to map to air.launch"
+          "-1 means converting the innermost parallel loop; any other negative "
+          "value means converting all parallel loops">,
     Option<"clHasSegment", "has-air-segment", "bool", /*default=*/"false",
            "Whether to create an air.segment op in generated air.launch "
            "regions">,
@@ -68,8 +72,10 @@ def ParallelToSegment : Pass<"air-par-to-segment", "ModuleOp"> {
   }];
   let options = [
     Option<"clAssignDepth", "depth", "int",
-          /*default=*/"-1",
-          "Given a nest of parallel for loops, which depth to map to air.segment">,
+          /*default=*/"-2",
+          "Given a nest of parallel for loops, which depth to map to air.segment"
+          "-1 means converting the innermost parallel loop; any other negative "
+          "value means converting all parallel loops">,
   ];
 }
 

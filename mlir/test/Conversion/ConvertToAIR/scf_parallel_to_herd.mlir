@@ -7,6 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd %s | FileCheck %s
+// RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd="depth=-1" %s | FileCheck %s --check-prefix=DEPTHM1
+// RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd="depth=0" %s | FileCheck %s --check-prefix=DEPTH0
 
 // CHECK-LABEL: func.func @scf0() {
 // CHECK: %[[C2:.*]] = arith.constant 2 : index
@@ -201,6 +203,34 @@ module {
 //       CHECK:    return
 //       CHECK:  }
 //       CHECK: }
+// DEPTHM1-LABEL: @shared_herd_name
+//       DEPTHM1:    scf.parallel {{.*}} {
+//       DEPTHM1:      air.herd @herd_0
+//       DEPTHM1:      }
+//       DEPTHM1:      air.herd @herd_0
+//       DEPTHM1:      }
+//       DEPTHM1:      air.herd @herd_0
+//       DEPTHM1:      }
+//       DEPTHM1:      scf.reduce
+//       DEPTHM1:    }
+//       DEPTHM1:    return
+//       DEPTHM1:  }
+//       DEPTHM1: }
+// DEPTH0-LABEL: @shared_herd_name
+//       DEPTH0:    air.herd @herd_0
+//       DEPTH0:      scf.parallel {{.*}}
+//       DEPTH0:        scf.reduce
+//       DEPTH0:      }
+//       DEPTH0:      scf.parallel {{.*}}
+//       DEPTH0:        scf.reduce
+//       DEPTH0:      }
+//       DEPTH0:      scf.parallel {{.*}}
+//       DEPTH0:        scf.reduce
+//       DEPTH0:      }
+//       DEPTH0:    }
+//       DEPTH0:    return
+//       DEPTH0:  }
+//       DEPTH0: }
 module {
   func.func @shared_herd_name(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c32 = arith.constant 32 : index
@@ -248,6 +278,29 @@ module {
 //       CHECK:    return
 //       CHECK:  }
 //       CHECK: }
+// DEPTHM1-LABEL: @unique_herd_name
+//       DEPTHM1:    scf.parallel {{.*}} {
+//       DEPTHM1:      air.herd @herd_0
+//       DEPTHM1:      }
+//       DEPTHM1:      air.herd @herd_1
+//       DEPTHM1:      }
+//       DEPTHM1:      scf.reduce
+//       DEPTHM1:    }
+//       DEPTHM1:    return
+//       DEPTHM1:  }
+//       DEPTHM1: }
+// DEPTH0-LABEL: @unique_herd_name
+//       DEPTH0:    air.herd @herd_0
+//       DEPTH0:      scf.parallel {{.*}} {
+//       DEPTH0:        scf.reduce
+//       DEPTH0:      }
+//       DEPTH0:      scf.parallel {{.*}} {
+//       DEPTH0:        scf.reduce
+//       DEPTH0:      }
+//       DEPTH0:    }
+//       DEPTH0:    return
+//       DEPTH0:  }
+//       DEPTH0: }
 module {
   func.func @unique_herd_name(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c32 = arith.constant 32 : index
@@ -303,6 +356,29 @@ module {
 //       CHECK:    return
 //       CHECK:  }
 //       CHECK: }
+// DEPTHM1-LABEL: @l2_to_l1_dma_infer_herd
+//       DEPTHM1:    scf.parallel {{.*}} {
+//       DEPTHM1:      air.herd @herd_0
+//       DEPTHM1:      }
+//       DEPTHM1:      air.herd @herd_0
+//       DEPTHM1:      }
+//       DEPTHM1:      scf.reduce
+//       DEPTHM1:    }
+//       DEPTHM1:    return
+//       DEPTHM1:  }
+//       DEPTHM1: }
+// DEPTH0-LABEL: @l2_to_l1_dma_infer_herd
+//       DEPTH0:    air.herd @herd_0
+//       DEPTH0:      scf.parallel {{.*}} {
+//       DEPTH0:        scf.reduce
+//       DEPTH0:      }
+//       DEPTH0:      scf.parallel {{.*}} {
+//       DEPTH0:        scf.reduce
+//       DEPTH0:      }
+//       DEPTH0:    }
+//       DEPTH0:    return
+//       DEPTH0:  }
+//       DEPTH0: }
 module {
   func.func @l2_to_l1_dma_infer_herd() {
     %c32 = arith.constant 32 : index
