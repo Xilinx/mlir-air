@@ -861,18 +861,6 @@ private:
   llvm::SmallSet<air::SegmentOp, 2> &replacementOps;
 };
 
-/// Pattern to rewriter scf.forall -> scf.parallel after bufferization.
-class SCFForAllToParallelOp : public OpRewritePattern<scf::ForallOp> {
-  using OpRewritePattern<scf::ForallOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(scf::ForallOp forallOp,
-                                PatternRewriter &rewriter) const override {
-    if (forallOp.getNumResults() != 0)
-      return failure();
-    return forallToParallelLoop(rewriter, forallOp);
-  }
-};
-
 struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
 
   CopyToDmaPass() = default;
@@ -1072,6 +1060,28 @@ static void getSegmentNames(ModuleOp module) {
   }
 }
 
+// Convert forall to parallel in filtered ops
+LogicalResult
+ConvertForallToParallelInFilteredOps(SmallPtrSet<Operation *, 8> &filteredOps,
+                                     mlir::MLIRContext *context) {
+  IRRewriter rewriter(context);
+  SmallVector<Operation *> fErased, fAdded;
+  for (auto op : filteredOps) {
+    auto forall = dyn_cast<scf::ForallOp>(op);
+    if (!forall)
+      continue;
+    scf::ParallelOp newPar;
+    fErased.push_back(op);
+    if (failed(forallToParallelLoop(rewriter, forall, &newPar)))
+      return failure();
+    fAdded.push_back(newPar);
+  }
+  for (auto e : fErased)
+    assert(filteredOps.erase(e));
+  filteredOps.insert(fAdded.begin(), fAdded.end());
+  return success();
+}
+
 struct ParallelToHerdPass
     : public air::impl::ParallelToHerdBase<ParallelToHerdPass> {
 
@@ -1090,19 +1100,6 @@ struct ParallelToHerdPass
     auto context = module.getContext();
 
     LLVM_DEBUG(llvm::outs() << "input\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
-
-    // Preprocessing: convert forall to parallel.
-    RewritePatternSet preprocPatterns(context);
-    preprocPatterns.add<SCFForAllToParallelOp>(context);
-    ConversionTarget preprocTarget(*context);
-    preprocTarget.addLegalDialect<scf::SCFDialect, arith::ArithDialect>();
-    preprocTarget.addIllegalOp<scf::ForallOp>();
-    if (failed(applyPartialConversion(module, preprocTarget,
-                                      std::move(preprocPatterns)))) {
-      signalPassFailure();
-    }
-    LLVM_DEBUG(llvm::outs() << "ir after preprocessing\n");
     LLVM_DEBUG(module.print(llvm::outs()));
 
     // Ensure that air.dma_memcpy_nd ops between L1 and L2 are within at least
@@ -1159,7 +1156,7 @@ struct ParallelToHerdPass
     SmallPtrSet<Operation *, 8> filteredOps;
     llvm::SmallSet<air::HerdOp, 2> replacementOps;
     module.walk([&](Operation *op) {
-      if (!isa<scf::ParallelOp, affine::AffineParallelOp>(op))
+      if (!isa<scf::ForallOp, scf::ParallelOp, affine::AffineParallelOp>(op))
         return;
       // skip parallel op already inside herd
       if (op->getParentOfType<air::HerdOp>())
@@ -1176,12 +1173,16 @@ struct ParallelToHerdPass
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
-        if (isa<scf::ParallelOp, affine::AffineParallelOp>(par))
+        if (isa<scf::ForallOp, scf::ParallelOp, affine::AffineParallelOp>(par))
           parallel_depth++;
       if (parallel_depth != clAssignDepth)
         return;
       filteredOps.insert(op);
     });
+
+    // Convert forall to parallel in filtered ops
+    if (failed(ConvertForallToParallelInFilteredOps(filteredOps, context)))
+      signalPassFailure();
 
     RewritePatternSet patterns(context);
     patterns.add<AffineParToHerdConversion>(context);
@@ -1236,25 +1237,14 @@ struct ParallelToLaunchPass
     LLVM_DEBUG(llvm::outs() << "input\n");
     LLVM_DEBUG(module.print(llvm::outs()));
 
-    // Preprocessing: convert forall to parallel.
-    RewritePatternSet preprocPatterns(context);
-    preprocPatterns.add<SCFForAllToParallelOp>(context);
-    ConversionTarget preprocTarget(*context);
-    preprocTarget.addLegalDialect<scf::SCFDialect, arith::ArithDialect>();
-    preprocTarget.addIllegalOp<scf::ForallOp>();
-    if (failed(applyPartialConversion(module, preprocTarget,
-                                      std::move(preprocPatterns)))) {
-      signalPassFailure();
-    }
-    LLVM_DEBUG(llvm::outs() << "ir after preprocessing\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
-
     llvm::SmallVector<air::LaunchOp> launchOps;
     module.walk([&](air::LaunchOp op) { launchOps.push_back(op); });
 
     llvm::SmallSet<Operation *, 8> filteredOps;
     llvm::SmallSet<air::LaunchOp, 2> replacementOps;
-    module.walk([&](scf::ParallelOp op) {
+    module.walk([&](Operation *op) {
+      if (!isa<scf::ForallOp, scf::ParallelOp>(op))
+        return;
       if (op->getParentOfType<air::HerdOp>())
         return;
       if (op->getParentOfType<air::LaunchOp>())
@@ -1271,12 +1261,16 @@ struct ParallelToLaunchPass
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
-        if (isa<scf::ParallelOp>(par))
+        if (isa<scf::ForallOp, scf::ParallelOp>(par))
           parallel_depth++;
       if (parallel_depth != clAssignDepth)
         return;
       filteredOps.insert(op);
     });
+
+    // Convert forall to parallel in filtered ops
+    if (failed(ConvertForallToParallelInFilteredOps(filteredOps, context)))
+      signalPassFailure();
 
     RewritePatternSet patterns(context);
     patterns.add<ScfParToLaunchConversion>(context, filteredOps, replacementOps,
@@ -1332,25 +1326,14 @@ struct ParallelToSegmentPass
     LLVM_DEBUG(llvm::outs() << "input\n");
     LLVM_DEBUG(module.print(llvm::outs()));
 
-    // Preprocessing: convert forall to parallel.
-    RewritePatternSet preprocPatterns(context);
-    preprocPatterns.add<SCFForAllToParallelOp>(context);
-    ConversionTarget preprocTarget(*context);
-    preprocTarget.addLegalDialect<scf::SCFDialect, arith::ArithDialect>();
-    preprocTarget.addIllegalOp<scf::ForallOp>();
-    if (failed(applyPartialConversion(module, preprocTarget,
-                                      std::move(preprocPatterns)))) {
-      signalPassFailure();
-    }
-    LLVM_DEBUG(llvm::outs() << "ir after preprocessing\n");
-    LLVM_DEBUG(module.print(llvm::outs()));
-
     llvm::SmallVector<air::SegmentOp> segmentOps;
     module.walk([&](air::SegmentOp op) { segmentOps.push_back(op); });
 
     llvm::SmallSet<Operation *, 8> filteredOps;
     llvm::SmallSet<air::SegmentOp, 2> replacementOps;
-    module.walk([&](scf::ParallelOp op) {
+    module.walk([&](Operation *op) {
+      if (!isa<scf::ForallOp, scf::ParallelOp>(op))
+        return;
       if (op->getParentOfType<air::HerdOp>())
         return;
       if (op->getParentOfType<air::SegmentOp>())
@@ -1367,12 +1350,16 @@ struct ParallelToSegmentPass
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
-        if (isa<scf::ParallelOp>(par))
+        if (isa<scf::ForallOp, scf::ParallelOp>(par))
           parallel_depth++;
       if (parallel_depth != clAssignDepth)
         return;
       filteredOps.insert(op);
     });
+
+    // Convert forall to parallel in filtered ops
+    if (failed(ConvertForallToParallelInFilteredOps(filteredOps, context)))
+      signalPassFailure();
 
     RewritePatternSet patterns(context);
     patterns.add<ScfParToSegmentConversion>(context, filteredOps,
