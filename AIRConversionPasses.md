@@ -54,6 +54,19 @@ the generated `launch` operations with the `has-air-segment` option.
 -depth           : Given a nest of parallel for loops, which depth to map to air.launch
 -has-air-segment : Whether to create an air.segment op in generated air.launch regions
 ```
+### `-air-par-to-segment`
+
+_Convert parallel loops to air.segment_
+
+This pass converts parallel loop operations to air `segment` operations. The
+iteration space of the parallel loops will be normalized and will become the
+iteration space of the new `segment`. If nested parallel loops are present
+then the `depth` option can to used to specify which loop depth to convert.
+
+#### Options
+```
+-depth : Given a nest of parallel for loops, which depth to map to air.segment
+```
 ### `-air-split-devices`
 
 _Split the input into one output per aie.device op_

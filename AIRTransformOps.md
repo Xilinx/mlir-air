@@ -279,6 +279,40 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 | :----: | ----------- |
 | `result` | PDL handle to an `mlir::Operation *`
 
+### `transform.air.par_to_segment` (transform::ParToSegmentOp)
+
+Syntax:
+
+```
+operation ::= `transform.air.par_to_segment` $target attr-dict
+```
+
+Transform a `scf.parallel` operation into a `air.segment` operation.
+Returns the new `air.segment` operation.
+
+Traits: `FunctionalStyleTransformOpTrait`, `TransformEachOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>has_air_segment</code></td><td>::mlir::BoolAttr</td><td>bool attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *`
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *`
+
 ### `transform.air.pipeline_reduce` (transform::PipelineReduceOp)
 
 Syntax:
