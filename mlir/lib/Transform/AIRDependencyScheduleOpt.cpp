@@ -4296,8 +4296,6 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     SmallVector<llvm::SetVector<Operation *>> target_ops_sets;
 
     identifyTargetOpsInSCFFor(f, for_op, target_ops_sets);
-    if (target_ops_sets.empty())
-      return failure();
     if (target_ops_sets.size() < 2)
       return failure();
 
