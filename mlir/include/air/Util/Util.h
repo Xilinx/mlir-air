@@ -246,11 +246,10 @@ bool hasNImpureOps(Block *block, unsigned N);
 // terminator.
 bool hasNElements(Block *block, unsigned N);
 
-// Clone backward slices of a list of values.
-SmallVector<Operation *> cloneDefiningOpsInRegion(OpBuilder builder,
-                                                  Region *region,
-                                                  SmallVectorImpl<Value> &opers,
-                                                  IRMapping &remap);
+// Get backward slice to a vector of values, within a specified region.
+void getBackwardSliceInRegion(OpBuilder builder, Region *region,
+                              SmallVectorImpl<Value> &vals,
+                              SetVector<Operation *> &backwardSlices);
 
 // Buffer all allocations of memref directly within the func op's body into the
 // func op's arguments.
