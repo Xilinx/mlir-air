@@ -525,7 +525,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     strides.push_back(one_idx);
   }
   // Stride field implicit last element one
-  auto lastStrideConst = getConstantIntValue(strides.back());
+  [[maybe_unused]] auto lastStrideConst = getConstantIntValue(strides.back());
   assert(lastStrideConst && "the last stride is not static");
 
   strides.pop_back();
