@@ -676,8 +676,8 @@ bool isAsyncDependent(Operation *a, Operation *b) {
   for (auto dep : dep_b) {
     if (dep == token_a)
       return true;
-    else if (auto dep_wa_defop = dep.getDefiningOp<air::WaitAllOp>()) {
-      if (isAsyncDependent(a, dep_wa_defop))
+    else if (dep.getDefiningOp() && air::isAsyncOp(dep.getDefiningOp())) {
+      if (isAsyncDependent(a, dep.getDefiningOp()))
         return true;
     }
   }
