@@ -1181,17 +1181,21 @@ static LogicalResult FoldExecute(ExecuteOp op, PatternRewriter &rewriter) {
     return success();
   }
 
-  // replace returns of constants with the constant
+  // replace returns of (1) constants with the constant, and (2) values not
+  // defined within the execute with its original value
   int idx = 0;
   for (auto v : et->getOperands()) {
     idx++;
     if (op.getResult(idx).use_empty())
       continue;
-    auto o = v.getDefiningOp();
-    if (!o)
-      continue;
-    if (isa<arith::ConstantOp>(o)) {
-      op.getResult(idx).replaceAllUsesWith(rewriter.clone(*o)->getResult(0));
+    if (!op.getRegion().isAncestor(v.getParentRegion())) {
+      rewriter.replaceAllUsesWith(op.getResult(idx), v);
+      return success();
+    }
+    if (auto constOp =
+            dyn_cast_if_present<arith::ConstantOp>(v.getDefiningOp())) {
+      rewriter.replaceAllUsesWith(op.getResult(idx),
+                                  rewriter.clone(*constOp)->getResult(0));
       return success();
     }
   }
