@@ -732,14 +732,11 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
     for (auto &region : op->getRegions())
       getUsedValuesDefinedAbove(region, region_opers);
     region_opers.insert(op->getOperands().begin(), op->getOperands().end());
-    for (auto operand : region_opers) {
-      auto operandDepOp = operand.getDefiningOp();
-      if (!operandDepOp)
-        continue;
-      if (operandDepOp->getBlock() != for_op.getBody())
-        continue;
-      ops_to_be_cloned.insert(operandDepOp);
-    }
+    SmallVector<Value> region_opers_vec = region_opers.takeVector();
+    llvm::SetVector<Operation *> backwardSlices;
+    air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(),
+                                  region_opers_vec, backwardSlices);
+    ops_to_be_cloned.insert(backwardSlices.begin(), backwardSlices.end());
     ops_to_be_cloned.insert(op);
   }
   Operation *back_of_dep_chain;
@@ -755,8 +752,8 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                        yield_operands)
                    ->getResult(0)});
 
+  IRMapping waitAllRemap;
   for (auto erase_op : target_ops) {
-    IRMapping waitAllRemap;
     if (air::isAsyncOp(erase_op)) {
       // Reconnect returned tokens.
       rewriter.setInsertionPoint(erase_op);
@@ -766,10 +763,12 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
           newWaitAll.getAsyncToken());
     }
   }
-  for (auto erase_op : target_ops)
+  // Erasing the original ops backwards, to avoid erasing op that still has
+  // valid uses.
+  for (auto erase_op : llvm::reverse(target_ops))
     rewriter.eraseOp(erase_op);
   for (auto user : for_op.getResults().front().getUsers()) {
-    air::addAsyncDependencyIfNew(user, new_for_op.getResults().front());
+    air::addAsyncDependencyIfNew(user, air::getAsyncTokenFromOp(new_for_op));
   }
 
   return new_for_op;

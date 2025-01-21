@@ -1953,9 +1953,11 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         llvm::concat<Value>(SmallVector<Value>{channel_op.getMemref()},
                             channel_op.getIndices(), offsets, wraps, strides));
     IRMapping remap;
-    auto clonedOps = cloneDefiningOpsInRegion(rewriter, &for_op.getRegion(),
-                                              new_opers, remap);
-    for (auto cloned : clonedOps) {
+    llvm::SetVector<Operation *> backwardSlices;
+    air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(), new_opers,
+                                  backwardSlices);
+    for (auto o : backwardSlices) {
+      auto cloned = rewriter.clone(*o, remap);
       clearAsyncDependenciesOfAsyncOp(cloned);
       for (auto token : deps)
         addAsyncDependencyIfNew(cloned, token);
@@ -2138,9 +2140,11 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
         llvm::concat<Value>(SmallVector<Value>{channel_op.getMemref()},
                             channel_op.getIndices(), offsets, wraps, strides));
     IRMapping remap;
-    auto clonedOps = cloneDefiningOpsInRegion(rewriter, &for_op.getRegion(),
-                                              new_opers, remap);
-    for (auto cloned : clonedOps) {
+    llvm::SetVector<Operation *> backwardSlices;
+    air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(), new_opers,
+                                  backwardSlices);
+    for (auto o : backwardSlices) {
+      auto cloned = rewriter.clone(*o, remap);
       clearAsyncDependenciesOfAsyncOp(cloned);
       for (auto token : deps)
         addAsyncDependencyIfNew(cloned, token);
@@ -4296,8 +4300,6 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     SmallVector<llvm::SetVector<Operation *>> target_ops_sets;
 
     identifyTargetOpsInSCFFor(f, for_op, target_ops_sets);
-    if (target_ops_sets.empty())
-      return failure();
     if (target_ops_sets.size() < 2)
       return failure();
 

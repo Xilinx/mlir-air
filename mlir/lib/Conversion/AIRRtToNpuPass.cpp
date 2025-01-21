@@ -905,8 +905,11 @@ struct AIRSpecializeAIRRtDmaWrapAndStrideInAffineFor
     }
 
     // Hoist any pure ops that the new channel op depends on.
-    (void)air::cloneDefiningOpsInRegion(rewriter, &for_op.getRegion(), opers,
-                                        remap);
+    llvm::SetVector<Operation *> backwardSlices;
+    air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(), opers,
+                                  backwardSlices);
+    for (auto o : backwardSlices)
+      rewriter.clone(*o, remap);
 
     auto new_dma = rewriter.create<airrt::DmaMemcpyNdOp>(
         loc, tys, air::lookupOrDefaultRange(opers, remap));
