@@ -1507,7 +1507,7 @@ struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
     auto loc = rewriter.getUnknownLoc();
 
     for (auto lb : par.getLowerBound()) {
-      auto constLB = getConstantIntValue(lb);
+      [[maybe_unused]] auto constLB = getConstantIntValue(lb);
       assert(constLB && "non-static scf.parallel lb, NYI");
       assert(*constLB == 0 && "non-zero scf.parallel lb, NYI");
     }
@@ -3806,7 +3806,7 @@ private:
           return notMergeable;
       }
       // Merge by unpeeling into UB.
-      auto outerMostScfFor =
+      [[maybe_unused]] auto outerMostScfFor =
           dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]->getParentOp());
       assert(outerMostScfFor);
       return mergeableToUB;

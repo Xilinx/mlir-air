@@ -1375,8 +1375,8 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   OpBuilder builder(readOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
-  auto memrefTy = llvm::cast<MemRefType>(readOp.getSource().getType());
+  [[maybe_unused]] auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
+  [[maybe_unused]] auto memrefTy = llvm::cast<MemRefType>(readOp.getSource().getType());
   assert(vectorTy && "Not a vector");
   assert(memrefTy && "Not a memref");
   // Initialize wraps and strides based on the unshrunk memref shape.
@@ -1400,8 +1400,8 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   OpBuilder builder(writeOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  auto memrefTy = llvm::cast<MemRefType>(writeOp.getSource().getType());
-  auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
+  [[maybe_unused]] auto memrefTy = llvm::cast<MemRefType>(writeOp.getSource().getType());
+  [[maybe_unused]] auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
   assert(memrefTy && "Not a memref");
   assert(vectorTy && "Not a vector");
   // Initialize wraps and strides based on the unshrunk memref shape.
