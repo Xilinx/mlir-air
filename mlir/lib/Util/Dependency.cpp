@@ -595,6 +595,8 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
     return;
   if (!token)
     return;
+  if (token.getDefiningOp() && token.getDefiningOp() == op)
+    return;
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
     addAsyncDependencyIfNewImpl(async_op, token);
   } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
