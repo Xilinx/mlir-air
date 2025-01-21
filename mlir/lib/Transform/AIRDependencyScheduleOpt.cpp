@@ -1507,7 +1507,7 @@ struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
     auto loc = rewriter.getUnknownLoc();
 
     for (auto lb : par.getLowerBound()) {
-      auto constLB = getConstantIntValue(lb);
+      [[maybe_unused]] auto constLB = getConstantIntValue(lb);
       assert(constLB && "non-static scf.parallel lb, NYI");
       assert(*constLB == 0 && "non-zero scf.parallel lb, NYI");
     }
@@ -1953,9 +1953,11 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         llvm::concat<Value>(SmallVector<Value>{channel_op.getMemref()},
                             channel_op.getIndices(), offsets, wraps, strides));
     IRMapping remap;
-    auto clonedOps = cloneDefiningOpsInRegion(rewriter, &for_op.getRegion(),
-                                              new_opers, remap);
-    for (auto cloned : clonedOps) {
+    llvm::SetVector<Operation *> backwardSlices;
+    air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(), new_opers,
+                                  backwardSlices);
+    for (auto o : backwardSlices) {
+      auto cloned = rewriter.clone(*o, remap);
       clearAsyncDependenciesOfAsyncOp(cloned);
       for (auto token : deps)
         addAsyncDependencyIfNew(cloned, token);
@@ -2138,9 +2140,11 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
         llvm::concat<Value>(SmallVector<Value>{channel_op.getMemref()},
                             channel_op.getIndices(), offsets, wraps, strides));
     IRMapping remap;
-    auto clonedOps = cloneDefiningOpsInRegion(rewriter, &for_op.getRegion(),
-                                              new_opers, remap);
-    for (auto cloned : clonedOps) {
+    llvm::SetVector<Operation *> backwardSlices;
+    air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(), new_opers,
+                                  backwardSlices);
+    for (auto o : backwardSlices) {
+      auto cloned = rewriter.clone(*o, remap);
       clearAsyncDependenciesOfAsyncOp(cloned);
       for (auto token : deps)
         addAsyncDependencyIfNew(cloned, token);
@@ -3802,7 +3806,7 @@ private:
           return notMergeable;
       }
       // Merge by unpeeling into UB.
-      auto outerMostScfFor =
+      [[maybe_unused]] auto outerMostScfFor =
           dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]->getParentOp());
       assert(outerMostScfFor);
       return mergeableToUB;
@@ -4296,8 +4300,6 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     SmallVector<llvm::SetVector<Operation *>> target_ops_sets;
 
     identifyTargetOpsInSCFFor(f, for_op, target_ops_sets);
-    if (target_ops_sets.empty())
-      return failure();
     if (target_ops_sets.size() < 2)
       return failure();
 

@@ -1375,8 +1375,8 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   OpBuilder builder(readOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
-  auto memrefTy = llvm::cast<MemRefType>(readOp.getSource().getType());
+  [[maybe_unused]] auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
+  [[maybe_unused]] auto memrefTy = llvm::cast<MemRefType>(readOp.getSource().getType());
   assert(vectorTy && "Not a vector");
   assert(memrefTy && "Not a memref");
   // Initialize wraps and strides based on the unshrunk memref shape.
@@ -1400,8 +1400,8 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   OpBuilder builder(writeOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  auto memrefTy = llvm::cast<MemRefType>(writeOp.getSource().getType());
-  auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
+  [[maybe_unused]] auto memrefTy = llvm::cast<MemRefType>(writeOp.getSource().getType());
+  [[maybe_unused]] auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
   assert(memrefTy && "Not a memref");
   assert(vectorTy && "Not a vector");
   // Initialize wraps and strides based on the unshrunk memref shape.
@@ -1655,43 +1655,31 @@ bool air::hasNImpureOps(Block *block, unsigned N) {
 // Return if the given block contains N ops or not, not counting the block's
 // terminator.
 bool air::hasNElements(Block *block, unsigned N) {
-  // unsigned counter = 0;
-  // for (auto &o : block->without_terminator())
-  //   counter++;
   return llvm::range_size(block->without_terminator()) == N;
 }
 
-// Clone backward slices of a list of values.
-SmallVector<Operation *>
-air::cloneDefiningOpsInRegion(OpBuilder builder, Region *region,
-                              SmallVectorImpl<Value> &opers, IRMapping &remap) {
-  SmallVector<Operation *> clonedOps;
-  SetVector<Operation *> backwardSlices;
+// Get backward slice to a vector of values, within a specified region.
+void air::getBackwardSliceInRegion(OpBuilder builder, Region *region,
+                                   SmallVectorImpl<Value> &vals,
+                                   SetVector<Operation *> &backwardSlices) {
   BackwardSliceOptions bsOptions{
       [&](Operation *o) { return region->isAncestor(o->getParentRegion()); }};
   if (!region)
-    return clonedOps;
-  for (auto operand : opers) {
-    auto operandDefOp = operand.getDefiningOp();
-    if (!operandDefOp)
+    return;
+  for (auto val : vals) {
+    auto valDefOp = val.getDefiningOp();
+    if (!valDefOp)
       continue;
-    if (!region->isAncestor(operandDefOp->getParentRegion()))
+    if (!region->isAncestor(valDefOp->getParentRegion()))
       continue;
-    assert(air::isPure(operandDefOp) ||
-           isa<air::WaitAllOp>(operandDefOp)); // Pure ops and wait ops are
-                                               // safe to hoist out of loops.
     // Get backward slices
-    SetVector<Operation *> operandBS;
-    getBackwardSlice(operandDefOp, &operandBS, bsOptions);
-    for (auto b : operandBS) {
-      assert(air::isPure(b) || isa<air::WaitAllOp>(b));
+    SetVector<Operation *> valBS;
+    getBackwardSlice(valDefOp, &valBS, bsOptions);
+    for (auto b : valBS) {
       backwardSlices.insert(b);
     }
-    backwardSlices.insert(operandDefOp);
+    backwardSlices.insert(valDefOp);
   }
-  for (auto op : backwardSlices)
-    clonedOps.push_back(builder.clone(*op, remap));
-  return clonedOps;
 }
 
 // Buffer all allocations of L3 memref directly within the func op's body into
