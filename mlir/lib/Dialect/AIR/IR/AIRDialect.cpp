@@ -9,6 +9,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Attributes.h"
@@ -196,17 +197,29 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 template <class OpT>
 static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
                                              PatternRewriter &rewriter) {
-  auto getMemrefsFromVec = [](SmallVector<Value> vec) {
-    SmallVector<Value> memrefs;
-    for (auto v : vec)
-      if (isa<MemRefType>(v.getType()))
-        memrefs.push_back(v);
-    return memrefs;
+  auto getAllReadAccess = [](Operation *op) {
+    SmallVector<Value> operands;
+    if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
+      for (auto oper : linalgop.getDpsInputs())
+        operands.push_back(oper);
+    } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
+      operands.push_back(memref_copy.getSource());
+    } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
+      if (memcpy.getSrcMemref())
+        operands.push_back(memcpy.getSrcMemref());
+    } else { // If unknown op, then assume all operands are read.
+      for (auto oper : op->getOperands()) {
+        if (!isa<MemRefType>(oper.getType()))
+          continue;
+        operands.push_back(oper);
+      }
+    }
+    return operands;
   };
-  auto getAllMemrefsTouchedbyOp = [getMemrefsFromVec](Operation *o) {
+  auto getAllMemrefsReadByOp = [getAllReadAccess](Operation *o) {
     llvm::SetVector<Value> memrefs;
-    SmallVector<Value> vals = o->getOperands();
-    vals.insert(vals.end(), o->getResults().begin(), o->getResults().end());
+    auto opReadAccesses = getAllReadAccess(o);
+    memrefs.insert(opReadAccesses.begin(), opReadAccesses.end());
     SmallVector<Region *> regions;
     for (auto &region : o->getRegions())
       regions.push_back(&region);
@@ -215,25 +228,72 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
     if (waitAllOp && waitAllOp.getAsyncToken()) {
       for (auto user : waitAllOp.getAsyncToken().getUsers()) {
-        vals.insert(vals.end(), user->getOperands().begin(),
-                    user->getOperands().end());
-        vals.insert(vals.end(), user->getResults().begin(),
-                    user->getResults().end());
+        auto userReadAccesses = getAllReadAccess(user);
+        memrefs.insert(userReadAccesses.begin(), userReadAccesses.end());
         for (auto &region : user->getRegions())
           regions.push_back(&region);
       }
     }
-    auto memrefvals = getMemrefsFromVec(vals);
-    memrefs.insert(memrefvals.begin(), memrefvals.end());
     for (auto region : regions) {
-      llvm::SetVector<Value> usedVals;
-      getUsedValuesDefinedAbove(*region, usedVals);
-      auto usedMemrefs = getMemrefsFromVec(usedVals.takeVector());
-      memrefs.insert(usedMemrefs.begin(), usedMemrefs.end());
+      visitUsedValuesDefinedAbove(*region, [&memrefs,
+                                            getAllReadAccess](OpOperand *use) {
+        if (llvm::is_contained(getAllReadAccess(use->getOwner()), use->get()))
+          memrefs.insert(use->get());
+      });
     }
     return memrefs;
   };
-  auto memrefsTouchedByOp = getAllMemrefsTouchedbyOp(op.getOperation());
+  auto getAllWriteAccess = [](Operation *op) {
+    SmallVector<Value> operands;
+    if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
+      for (auto oper :
+           llvm::concat<Value>(linalgop.getDpsInits(), linalgop->getResults()))
+        operands.push_back(oper);
+    } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
+      operands.push_back(memref_copy.getTarget());
+    } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
+      if (memcpy.getDstMemref())
+        operands.push_back(memcpy.getDstMemref());
+    } else { // If unknown op, then assume all operands and results are written
+             // to.
+      for (auto oper :
+           llvm::concat<Value>(op->getOperands(), op->getResults())) {
+        if (!isa<MemRefType>(oper.getType()))
+          continue;
+        operands.push_back(oper);
+      }
+    }
+    return operands;
+  };
+  auto getAllMemrefsWrittenByOp = [getAllWriteAccess](Operation *o) {
+    llvm::SetVector<Value> memrefs;
+    auto opWriteAccesses = getAllWriteAccess(o);
+    memrefs.insert(opWriteAccesses.begin(), opWriteAccesses.end());
+    SmallVector<Region *> regions;
+    for (auto &region : o->getRegions())
+      regions.push_back(&region);
+    // If air.wait_all, then we analyze the dependency by collecting all
+    // operations that depend on it.
+    auto waitAllOp = dyn_cast_if_present<air::WaitAllOp>(o);
+    if (waitAllOp && waitAllOp.getAsyncToken()) {
+      for (auto user : waitAllOp.getAsyncToken().getUsers()) {
+        auto userWriteAccesses = getAllWriteAccess(user);
+        memrefs.insert(userWriteAccesses.begin(), userWriteAccesses.end());
+        for (auto &region : user->getRegions())
+          regions.push_back(&region);
+      }
+    }
+    for (auto region : regions) {
+      visitUsedValuesDefinedAbove(*region, [&memrefs,
+                                            getAllWriteAccess](OpOperand *use) {
+        if (llvm::is_contained(getAllWriteAccess(use->getOwner()), use->get()))
+          memrefs.insert(use->get());
+      });
+    }
+    return memrefs;
+  };
+  auto memrefsReadBySinkOp = getAllMemrefsReadByOp(op.getOperation());
+  auto memrefsWrittenBySinkOp = getAllMemrefsWrittenByOp(op.getOperation());
   // make a list of new async token operands
   llvm::SetVector<Value> newAsyncDeps; // don't include duplicates
   for (auto v : op.getAsyncDependencies()) {
@@ -241,14 +301,33 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     if (auto wa = dyn_cast_if_present<WaitAllOp>(v.getDefiningOp()))
       if (wa.getAsyncDependencies().size() == 0)
         continue;
-    // don't include any wrong dependencies
+    // don't include any false dependencies, i.e. sink does not depend on source
+    // in RAW, WAR or WAW; RAR is a false dependency
     if (v.getDefiningOp()) {
-      auto memrefsTouchedByDefOp = getAllMemrefsTouchedbyOp(v.getDefiningOp());
-      if (!memrefsTouchedByDefOp.empty() && !memrefsTouchedByOp.empty() &&
-          llvm::none_of(memrefsTouchedByDefOp, [&memrefsTouchedByOp](Value v) {
-            return llvm::is_contained(memrefsTouchedByOp, v);
-          })) {
-        continue;
+      auto memrefsReadBySourceOp = getAllMemrefsReadByOp(v.getDefiningOp());
+      auto memrefsWrittenBySourceOp =
+          getAllMemrefsWrittenByOp(v.getDefiningOp());
+      bool sourceOpTouchesMemref =
+          llvm::range_size(llvm::concat<Value>(memrefsReadBySourceOp,
+                                               memrefsWrittenBySourceOp)) != 0;
+      bool sinkOpTouchesMemref =
+          llvm::range_size(llvm::concat<Value>(memrefsReadBySinkOp,
+                                               memrefsWrittenBySinkOp)) != 0;
+      if (sourceOpTouchesMemref && sinkOpTouchesMemref) {
+        bool RAWNotFound = llvm::none_of(
+            memrefsWrittenBySourceOp, [&memrefsReadBySinkOp](Value v) {
+              return llvm::is_contained(memrefsReadBySinkOp, v);
+            });
+        bool WARNotFound = llvm::none_of(
+            memrefsReadBySourceOp, [&memrefsWrittenBySinkOp](Value v) {
+              return llvm::is_contained(memrefsWrittenBySinkOp, v);
+            });
+        bool WAWNotFound = llvm::none_of(
+            memrefsWrittenBySourceOp, [&memrefsWrittenBySinkOp](Value v) {
+              return llvm::is_contained(memrefsWrittenBySinkOp, v);
+            });
+        if (RAWNotFound && WARNotFound && WAWNotFound)
+          continue;
       }
     }
     newAsyncDeps.insert(v);
