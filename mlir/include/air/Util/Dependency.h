@@ -80,6 +80,15 @@ void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
 air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
                                          Operation *op,
                                          bool cloneDepList = true);
+FailureOr<SmallVector<
+    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                SmallVector<Value>>>>>
+getAllReadAccessedMemrefOperandsFromOp(Operation *op);
+FailureOr<SmallVector<
+    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                SmallVector<Value>>>>>
+getAllWriteAccessedMemrefOperandsFromOp(Operation *op);
+FailureOr<SmallVector<Value>> getAllAccessedIndexOperandsFromOp(Operation *op);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph

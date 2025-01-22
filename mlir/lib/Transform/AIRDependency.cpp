@@ -270,175 +270,43 @@ public:
         SmallVector<partialMemref, 1> sink_op_memref_writes;
         SmallVector<Value, 1> sink_op_scalar_ins;
         SmallVector<Value, 1> sink_op_scalar_outs;
-        // If the sink op is linalg op
-        if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
-          for (auto ins_value : sink_op_linalgop.getDpsInputs()) {
-            if (auto operation = ins_value.getDefiningOp()) {
-              if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                  memref::CollapseShapeOp>(operation)) {
-                ins_value = operation->getOperand(0);
+        auto readAccessedMemrefs =
+            air::getAllReadAccessedMemrefOperandsFromOp(sink_op);
+        auto writeAccessedMemrefs =
+            air::getAllWriteAccessedMemrefOperandsFromOp(sink_op);
+        auto readAccessedIndices =
+            air::getAllAccessedIndexOperandsFromOp(sink_op);
+        auto writeAccessedIndices =
+            air::getAllAccessedIndexOperandsFromOp(sink_op);
+        if (failed(readAccessedMemrefs) || failed(writeAccessedMemrefs) ||
+            failed(readAccessedIndices) || failed(writeAccessedIndices)) {
+          sink_op->emitOpError("failed to get read-accessed operands.");
+          return;
+        }
+        auto getPartialMemrefsFromMemrefAccessPatterns =
+            [](SmallVector<std::pair<
+                   Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                     SmallVector<Value>>>> &accessPattern,
+               SmallVector<partialMemref, 1> &partialMemrefs) {
+              for (auto &entry : accessPattern) {
+                if (std::get<0>(entry.second).empty()) {
+                  partialMemref tile(entry.first);
+                  partialMemrefs.push_back(tile);
+                } else {
+                  partialMemref tile(entry.first, std::get<0>(entry.second),
+                                     std::get<1>(entry.second),
+                                     std::get<2>(entry.second));
+                  partialMemrefs.push_back(tile);
+                }
               }
-            }
-            if (llvm::isa<MemRefType>(ins_value.getType())) {
-              partialMemref tile(ins_value);
-              sink_op_memref_reads.push_back(tile);
-            } else if (llvm::isa<IndexType>(ins_value.getType())) {
-              sink_op_scalar_ins.push_back(ins_value);
-            }
-          }
-          for (auto outs_value : sink_op_linalgop.getDpsInits()) {
-            if (llvm::isa<MemRefType>(outs_value.getType())) {
-              partialMemref tile(outs_value);
-              sink_op_memref_reads.push_back(
-                  tile); // linalg op both reads and writes the output memref
-              sink_op_memref_writes.push_back(tile);
-            } else if (llvm::isa<IndexType>(outs_value.getType())) {
-              sink_op_scalar_ins.push_back(
-                  outs_value); // linalg op both reads and writes the output
-                               // memref
-              sink_op_scalar_outs.push_back(outs_value);
-            }
-          }
-          if (sink_op_linalgop->getNumResults()) {
-            for (auto linalg_results : sink_op_linalgop->getResults()) {
-              if (llvm::isa<MemRefType>(linalg_results.getType())) {
-                partialMemref tile(linalg_results);
-                sink_op_memref_writes.push_back(tile);
-              } else if (llvm::isa<IndexType>(linalg_results.getType())) {
-                sink_op_scalar_outs.push_back(linalg_results);
-              }
-            }
-          }
-        }
-
-        // If the sink op is memref::dealloc
-        else if (auto sink_op_memdealloc =
-                     dyn_cast<memref::DeallocOp>(sink_op)) {
-          mlir::Value sink_op_memref = sink_op_memdealloc.getMemref();
-          if (auto operation = sink_op_memref.getDefiningOp()) {
-            if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                memref::CollapseShapeOp>(operation)) {
-              sink_op_memref = operation->getOperand(0);
-            }
-          }
-          partialMemref tile(sink_op_memref);
-          sink_op_memref_reads.push_back(tile);
-          sink_op_memref_writes.push_back(
-              tile); // dealloc erases (i.e. writes to) output memref
-        }
-
-        // If the sink op is memref::copy
-        else if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)) {
-          mlir::Value op_src_memref = sink_op_memref_copy.getSource();
-          if (auto operation = op_src_memref.getDefiningOp()) {
-            if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                memref::CollapseShapeOp>(operation)) {
-              op_src_memref = operation->getOperand(0);
-            }
-          }
-          partialMemref tileSrc(op_src_memref);
-          sink_op_memref_reads.push_back(tileSrc);
-          partialMemref tileDst(sink_op_memref_copy.getTarget());
-          sink_op_memref_reads.push_back(tileDst);
-          sink_op_memref_writes.push_back(tileDst);
-        }
-
-        // If the sink op is an air::MemcpyInterface op
-        else if (auto sink_op_memcpy =
-                     mlir::dyn_cast<xilinx::air::MemcpyInterface>(sink_op)) {
-          auto op_src_memref = sink_op_memcpy.getSrcMemref();
-          if (op_src_memref) {
-            if (auto operation = op_src_memref.getDefiningOp()) {
-              if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                  memref::CollapseShapeOp>(operation)) {
-                op_src_memref = operation->getOperand(0);
-              }
-            }
-            if (llvm::isa<MemRefType>(op_src_memref.getType())) {
-              for (unsigned i = 0; i < sink_op_memcpy.getSrcOffsets().size();
-                   i++)
-                sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcOffsets()[i]);
-              for (unsigned i = 0; i < sink_op_memcpy.getSrcSizes().size(); i++)
-                sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcSizes()[i]);
-              for (unsigned i = 0; i < sink_op_memcpy.getSrcStrides().size();
-                   i++)
-                sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcStrides()[i]);
-              partialMemref tile_in(
-                  op_src_memref, sink_op_memcpy.getSrcOffsets(),
-                  sink_op_memcpy.getSrcSizes(), sink_op_memcpy.getSrcStrides());
-              sink_op_memref_reads.push_back(tile_in);
-            }
-          }
-          auto op_dst_memref = sink_op_memcpy.getDstMemref();
-          if (op_dst_memref) {
-            for (unsigned i = 0; i < sink_op_memcpy.getDstOffsets().size(); i++)
-              sink_op_scalar_outs.push_back(sink_op_memcpy.getDstOffsets()[i]);
-            for (unsigned i = 0; i < sink_op_memcpy.getDstSizes().size(); i++)
-              sink_op_scalar_outs.push_back(sink_op_memcpy.getDstSizes()[i]);
-            for (unsigned i = 0; i < sink_op_memcpy.getDstStrides().size(); i++)
-              sink_op_scalar_outs.push_back(sink_op_memcpy.getDstStrides()[i]);
-            partialMemref tile_out(
-                op_dst_memref, sink_op_memcpy.getDstOffsets(),
-                sink_op_memcpy.getDstSizes(), sink_op_memcpy.getDstStrides());
-            sink_op_memref_writes.push_back(tile_out);
-          }
-        }
-
-        // If the sink op is arith::MulIOp
-        else if (auto sink_op_arith = dyn_cast<arith::MulIOp>(sink_op)) {
-          sink_op_scalar_ins.push_back(sink_op_arith.getLhs());
-          sink_op_scalar_ins.push_back(sink_op_arith.getRhs());
-          sink_op_scalar_outs.push_back(sink_op_arith.getResult());
-        }
-
-        // If the sink op is arith::AddIOp
-        else if (auto sink_op_arith = dyn_cast<arith::AddIOp>(sink_op)) {
-          sink_op_scalar_ins.push_back(sink_op_arith.getLhs());
-          sink_op_scalar_ins.push_back(sink_op_arith.getRhs());
-          sink_op_scalar_outs.push_back(sink_op_arith.getResult());
-        }
-
-        // If the sink op is mlir::affine::AffineApplyOp
-        else if (auto sink_op_apply =
-                     dyn_cast<mlir::affine::AffineApplyOp>(sink_op)) {
-          for (auto applyop_operand : sink_op_apply.getMapOperands()) {
-            sink_op_scalar_ins.push_back(applyop_operand);
-          }
-          sink_op_scalar_outs.push_back(sink_op_apply.getResult());
-        }
-
-        // If the sink op is an unknown op
-        else {
-          for (auto sink_op_op : sink_op->getOperands()) {
-            if (auto operation = sink_op_op.getDefiningOp()) {
-              if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                  memref::CollapseShapeOp>(operation)) {
-                sink_op_op = operation->getOperand(0);
-              }
-            }
-            if (llvm::isa<MemRefType>(sink_op_op.getType())) {
-              partialMemref tile(sink_op_op);
-              sink_op_memref_reads.push_back(
-                  tile); // Assuming all operands are both read and written to
-              sink_op_memref_writes.push_back(tile);
-            } else if (llvm::isa<IndexType>(sink_op_op.getType())) {
-              sink_op_scalar_ins.push_back(
-                  sink_op_op); // Assuming all operands are both read and
-                               // written to
-              sink_op_scalar_outs.push_back(sink_op_op);
-            }
-          }
-          if (sink_op->getNumResults()) {
-            for (auto sink_op_results : sink_op->getResults()) {
-              if (llvm::isa<MemRefType>(sink_op_results.getType())) {
-                partialMemref tile(sink_op_results);
-                sink_op_memref_writes.push_back(tile);
-              } else if (llvm::isa<IndexType>(sink_op_results.getType())) {
-                sink_op_scalar_outs.push_back(sink_op_results);
-              }
-            }
-          }
-        }
+              return;
+            };
+        getPartialMemrefsFromMemrefAccessPatterns(*readAccessedMemrefs,
+                                                  sink_op_memref_reads);
+        getPartialMemrefsFromMemrefAccessPatterns(*writeAccessedMemrefs,
+                                                  sink_op_memref_writes);
+        llvm::append_range(sink_op_scalar_ins, *readAccessedIndices);
+        llvm::append_range(sink_op_scalar_outs, *writeAccessedIndices);
 
         // Detect dependencies
         if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
@@ -981,32 +849,31 @@ private:
     bool foundWriteAccess = false;
     bool foundReadAccess = false;
     for (auto &u : operand.getUses()) {
-      // If used in MemcpyInterface Op
-      if (auto memcpy = dyn_cast<xilinx::air::MemcpyInterface>(u.getOwner())) {
-        if (u.is(memcpy.getSrcMemref())) {
-          foundReadAccess = true;
-        } else if (u.is(memcpy.getDstMemref())) {
-          foundWriteAccess = true;
-        } else {
-          memcpy->emitOpError("unknown operand in air::MemcpyInterface");
-        }
+      auto writeAccesses =
+          air::getAllWriteAccessedMemrefOperandsFromOp(u.getOwner());
+      auto readAccesses =
+          air::getAllReadAccessedMemrefOperandsFromOp(u.getOwner());
+      if (failed(writeAccesses) || failed(readAccesses)) {
+        operand.getDefiningOp()->emitOpError(
+            "has user which failed to get memref accesses.");
+        return 'x';
       }
-      // If used in a linalg op
-      else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())) {
-        if (u.getOperandNumber() <
-            linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
-          foundReadAccess = true;
-        } else if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
-                   u.getOperandNumber() - linalgop.getNumDpsInputs() <
-                       linalgop.getNumDpsInits()) {
-          foundWriteAccess = true;
-        } else {
-          linalgop->emitOpError("unknown operand in linalg op");
-        }
-      }
-      // If unknown op, then assume write access for safety
-      else
-        foundWriteAccess = true;
+      foundWriteAccess =
+          foundWriteAccess ||
+          llvm::any_of(
+              *writeAccesses,
+              [&u](std::pair<Value,
+                             std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                        SmallVector<Value>>>
+                       entry) { return entry.first == u.get(); });
+      foundReadAccess =
+          foundReadAccess ||
+          llvm::any_of(
+              *readAccesses,
+              [&u](std::pair<Value,
+                             std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                        SmallVector<Value>>>
+                       entry) { return entry.first == u.get(); });
     }
     if (foundWriteAccess)
       return 'w';

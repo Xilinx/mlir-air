@@ -932,6 +932,136 @@ air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
   return wa_op;
 }
 
+// Get memref operands which are read accessed by op. Each entry has the
+// following format: pair<memref, tuple<offsets, sizes, strides>>.
+FailureOr<SmallVector<
+    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                SmallVector<Value>>>>>
+getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
+  SmallVector<
+      std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                  SmallVector<Value>>>>
+      operands;
+  if (!op)
+    return failure();
+  auto getMemrefEntry = [](Value memref) {
+    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                SmallVector<Value>>>
+        entry;
+    entry.first = memref;
+    return entry;
+  };
+  auto getMemrefAndAccessPatternEntry =
+      [](Value memref, SmallVector<Value> offsets, SmallVector<Value> sizes,
+         SmallVector<Value> strides) {
+        std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                    SmallVector<Value>>>
+            entry;
+        entry.first = memref;
+        std::get<0>(entry.second) = offsets;
+        std::get<1>(entry.second) = sizes;
+        std::get<2>(entry.second) = strides;
+        return entry;
+      };
+  // Below is an incomplete list of common mlir ops that provide interfaces
+  // allowing for separating read and write accesses in its operands.
+  if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
+    for (auto oper : linalgop.getDpsInputs())
+      operands.push_back(getMemrefEntry(oper));
+  } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
+    operands.push_back(getMemrefEntry(memref_copy.getSource()));
+  } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
+    if (memcpy.getSrcMemref())
+      operands.push_back(getMemrefAndAccessPatternEntry(
+          memcpy.getSrcMemref(), memcpy.getSrcOffsets(), memcpy.getSrcSizes(),
+          memcpy.getSrcStrides()));
+  } else { // If unknown op, then assume all operands are read.
+    for (auto oper : op->getOperands()) {
+      if (!isa<MemRefType>(oper.getType()))
+        continue;
+      operands.push_back(getMemrefEntry(oper));
+    }
+  }
+
+  // if operand is defined by a memref reshape op
+  // TODO: fix me
+  for (auto &oper : operands) {
+    if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
+                        memref::CollapseShapeOp>(oper.first.getDefiningOp())) {
+      oper.first = oper.first.getDefiningOp()->getOperand(0);
+    }
+  }
+  return operands;
+}
+
+// Get memref operands which are write accessed by op. Each entry has the
+// following format: pair<memref, tuple<offsets, sizes, strides>>.
+FailureOr<SmallVector<
+    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                SmallVector<Value>>>>>
+getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
+  SmallVector<
+      std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                  SmallVector<Value>>>>
+      operands;
+  if (!op)
+    return failure();
+  auto getMemrefEntry = [](Value memref) {
+    std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                SmallVector<Value>>>
+        entry;
+    entry.first = memref;
+    return entry;
+  };
+  auto getMemrefAndAccessPatternEntry =
+      [](Value memref, SmallVector<Value> offsets, SmallVector<Value> sizes,
+         SmallVector<Value> strides) {
+        std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                    SmallVector<Value>>>
+            entry;
+        entry.first = memref;
+        std::get<0>(entry.second) = offsets;
+        std::get<1>(entry.second) = sizes;
+        std::get<2>(entry.second) = strides;
+        return entry;
+      };
+  // Below is an incomplete list of common mlir ops that provide interfaces
+  // allowing for separating read and write accesses in its operands.
+  if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
+    for (auto oper :
+         llvm::concat<Value>(linalgop.getDpsInits(), linalgop->getResults()))
+      operands.push_back(getMemrefEntry(oper));
+  } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
+    operands.push_back(getMemrefEntry(memref_copy.getTarget()));
+  } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
+    if (memcpy.getDstMemref())
+      operands.push_back(getMemrefAndAccessPatternEntry(
+          memcpy.getDstMemref(), memcpy.getDstOffsets(), memcpy.getDstSizes(),
+          memcpy.getDstStrides()));
+  } else { // If unknown op, then assume all operands and results are written
+           // to.
+    for (auto oper : llvm::concat<Value>(op->getOperands(), op->getResults())) {
+      if (!isa<MemRefType>(oper.getType()))
+        continue;
+      operands.push_back(getMemrefEntry(oper));
+    }
+  }
+  return operands;
+}
+
+// Get index operands which are accessed by op.
+FailureOr<SmallVector<Value>> getAllAccessedIndexOperandsFromOp(Operation *op) {
+  SmallVector<Value> operands;
+  if (!op)
+    return failure();
+  for (auto oper : op->getOperands()) {
+    if (!isa<IndexType>(oper.getType()))
+      continue;
+    operands.push_back(oper);
+  }
+  return operands;
+}
+
 //===----------------------------------------------------------------------===//
 // Dependency graph
 //===----------------------------------------------------------------------===//
