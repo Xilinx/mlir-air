@@ -689,3 +689,54 @@ func.func @func3(%arg0: memref<2048xi8>, %arg1: memref<2048x1024xi8>, %arg2: mem
   }
   return
 }
+
+// Check that RAW, WAR, and WAW dependencies get preserved, while RAR gets dropped.
+
+// CHECK-LABEL: func.func @func4
+// CHECK:  %[[GET0:.*]] = air.channel.get async [%{{.*}}]  @channel_3[] (%{{.*}}[] [] [])
+// CHECK:  %[[FOR0:.*]] = scf.for %[[FOR0IV:.*]] = %c0{{.*}} to %c8{{.*}} step %c4{{.*}} iter_args(%[[FOR0IARG:.*]] = %[[GET0]])
+// CHECK:  %[[FOR1:.*]] = scf.for %[[FOR1IV:.*]] = %c0{{.*}} to %c8{{.*}} step %c4{{.*}} iter_args(%[[FOR1IARG:.*]] = %[[FOR0IARG]])
+// CHECK:  %[[PUT0:.*]] = air.channel.put async [%[[FOR1IARG]]]  @channel_0[] (%{{.*}}[%[[FOR0IV]], 
+// CHECK:  %[[FOR2:.*]] = scf.for %[[FOR2IV:.*]] = %c1{{.*}} to %c15{{.*}} step %c1{{.*}} iter_args(%[[FOR2IARG:.*]] = %[[FOR1IARG]])
+// CHECK:  %[[PUT1:.*]] = air.channel.put async [%[[FOR2IARG]]]  @channel_1[] (%{{.*}}[%[[FOR0IV]], %[[FOR2IV]],
+// CHECK:  scf.yield %[[PUT1]] : !air.async.token
+// CHECK:  }
+// CHECK:  %[[PUT2:.*]] = air.channel.put async [%[[FOR1IARG]]]  @channel_2[] (%{{.*}}[%[[FOR0IV]],
+// CHECK:  scf.yield %[[PUT2]] : !air.async.token
+// CHECK:  }
+// CHECK:  scf.yield %[[FOR1]] : !air.async.token
+// CHECK:  }
+// CHECK:  %[[GET1:.*]] = air.channel.get async [%[[GET0]], %[[FOR0]]]  @channel_3[] (%{{.*}}[] [] [])
+
+func.func @func4(%arg0: memref<512x512xbf16>, %arg1: memref<512x4096xbf16>, %arg2: memref<512x4096xf32>) {
+  %c128 = arith.constant 128 : index
+  %c1024 = arith.constant 1024 : index
+  %c15 = arith.constant 15 : index
+  %c4 = arith.constant 4 : index
+  %c1_11 = arith.constant 1 : index
+  %c16384_12 = arith.constant 16384 : index
+  %c32_13 = arith.constant 32 : index
+  %c8_14 = arith.constant 8 : index
+  %c0_15 = arith.constant 0 : index
+  %async_token, %alloc = air.execute -> (memref<8x16x32x32xbf16, 1 : i32>) {
+    %alloc = memref.alloc() : memref<8x16x32x32xbf16, 1 : i32>
+    air.execute_terminator %alloc : memref<8x16x32x32xbf16, 1 : i32>
+  }
+  %5 = air.channel.get async [%async_token]  @channel_3[] (%alloc[] [] []) : (memref<8x16x32x32xbf16, 1 : i32>) // WAW
+  %7 = air.wait_all async [%async_token, %5] 
+  %8 = scf.for %arg10 = %c0_15 to %c8_14 step %c4 iter_args(%arg11 = %7) -> (!air.async.token) {
+    %10 = scf.for %arg12 = %c0_15 to %c8_14 step %c4 iter_args(%arg13 = %arg11) -> (!air.async.token) {
+      %11 = air.channel.put async [%arg13]  @channel_0[] (%alloc[%arg10, %c0_15, %c0_15, %c0_15, %c0_15, %c0_15] [%c1_11, %c1_11, %c4, %c8_14, %c4, %c8_14] [%c16384_12, %c1024, %c8_14, %c128, %c32_13, %c1_11]) : (memref<8x16x32x32xbf16, 1 : i32>) // RAW
+      %12 = air.wait_all async [%arg13, %11]
+      %20 = scf.for %arg14 = %c1_11 to %c15 step %c1_11 iter_args(%arg15 = %12) -> (!air.async.token) {
+        %31 = air.channel.put async [%arg15]  @channel_1[] (%alloc[%arg10, %arg14, %c0_15, %c0_15, %c0_15, %c0_15] [%c1_11, %c1_11, %c4, %c8_14, %c4, %c8_14] [%c16384_12, %c1024, %c8_14, %c128, %c32_13, %c1_11]) : (memref<8x16x32x32xbf16, 1 : i32>) // RAW, RAR
+        scf.yield %31 : !air.async.token
+      }
+      %21 = air.channel.put async [%arg13, %20]  @channel_2[] (%alloc[%arg10, %c15, %c0_15, %c0_15, %c0_15, %c0_15] [%c1_11, %c1_11, %c4, %c8_14, %c4, %c8_14] [%c16384_12, %c1024, %c8_14, %c128, %c32_13, %c1_11]) : (memref<8x16x32x32xbf16, 1 : i32>) // RAW, RAR
+      scf.yield %21 : !air.async.token
+    }
+    scf.yield %10 : !air.async.token
+  }
+  %9 = air.channel.get async [%5, %8]  @channel_3[] (%alloc[] [] []) : (memref<8x16x32x32xbf16, 1 : i32>) // WAW, WAR
+  return
+}
