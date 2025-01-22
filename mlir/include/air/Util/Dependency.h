@@ -325,8 +325,17 @@ private:
 
 struct partialMemref {
   Value memrefValue;
-  unsigned numDims;
-  SmallVector<Value, 2> memrefIndices;
+  SmallVector<Value> offsets, sizes, strides;
+  partialMemref() = default;
+  partialMemref(mlir::Value m) { memrefValue = m; };
+  partialMemref(mlir::Value m, SmallVector<Value> memrefOffsets,
+                SmallVector<Value> memrefSizes,
+                SmallVector<Value> memrefStrides) {
+    memrefValue = m;
+    offsets = memrefOffsets;
+    sizes = memrefSizes;
+    strides = memrefStrides;
+  };
 };
 
 class dependencyTracer {
@@ -394,11 +403,6 @@ private:
   // If sink op and operand's use are under the same scope
   void pushDepsAtCurrentScope(mlir::Value operand, air::AsyncOpInterface op,
                               char rw = 'n', partialMemref *tile = nullptr);
-
-  // Create partial memref
-  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims);
-  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims,
-                                    SmallVector<Value, 2> memrefIndices);
 
   // Check if two partial memref tiles have identical indices
   bool areEqualIndexPartialMemrefs(partialMemref *tile_0,
