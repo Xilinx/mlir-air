@@ -963,24 +963,28 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
         std::get<2>(entry.second) = strides;
         return entry;
       };
+  auto pushMemrefEntryToVector = []<typename T>(T entry,
+                                                SmallVector<T> &vector) {
+    if (!isa<MemRefType>(entry.first.getType()))
+      return;
+    vector.push_back(entry);
+  };
   // Below is an incomplete list of common mlir ops that provide interfaces
   // allowing for separating read and write accesses in its operands.
   if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
     for (auto oper : linalgop.getDpsInputs())
-      operands.push_back(getMemrefEntry(oper));
+      pushMemrefEntryToVector(getMemrefEntry(oper), operands);
   } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
-    operands.push_back(getMemrefEntry(memref_copy.getSource()));
+    pushMemrefEntryToVector(getMemrefEntry(memref_copy.getSource()), operands);
   } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
     if (memcpy.getSrcMemref())
-      operands.push_back(getMemrefAndAccessPatternEntry(
-          memcpy.getSrcMemref(), memcpy.getSrcOffsets(), memcpy.getSrcSizes(),
-          memcpy.getSrcStrides()));
+      pushMemrefEntryToVector(getMemrefAndAccessPatternEntry(
+                                  memcpy.getSrcMemref(), memcpy.getSrcOffsets(),
+                                  memcpy.getSrcSizes(), memcpy.getSrcStrides()),
+                              operands);
   } else { // If unknown op, then assume all operands are read.
-    for (auto oper : op->getOperands()) {
-      if (!isa<MemRefType>(oper.getType()))
-        continue;
-      operands.push_back(getMemrefEntry(oper));
-    }
+    for (auto oper : op->getOperands())
+      pushMemrefEntryToVector(getMemrefEntry(oper), operands);
   }
 
   // if operand is defined by a memref reshape op
@@ -1025,26 +1029,30 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
         std::get<2>(entry.second) = strides;
         return entry;
       };
+  auto pushMemrefEntryToVector = []<typename T>(T entry,
+                                                SmallVector<T> &vector) {
+    if (!isa<MemRefType>(entry.first.getType()))
+      return;
+    vector.push_back(entry);
+  };
   // Below is an incomplete list of common mlir ops that provide interfaces
   // allowing for separating read and write accesses in its operands.
   if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
     for (auto oper :
          llvm::concat<Value>(linalgop.getDpsInits(), linalgop->getResults()))
-      operands.push_back(getMemrefEntry(oper));
+      pushMemrefEntryToVector(getMemrefEntry(oper), operands);
   } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
-    operands.push_back(getMemrefEntry(memref_copy.getTarget()));
+    pushMemrefEntryToVector(getMemrefEntry(memref_copy.getTarget()), operands);
   } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
     if (memcpy.getDstMemref())
-      operands.push_back(getMemrefAndAccessPatternEntry(
-          memcpy.getDstMemref(), memcpy.getDstOffsets(), memcpy.getDstSizes(),
-          memcpy.getDstStrides()));
+      pushMemrefEntryToVector(getMemrefAndAccessPatternEntry(
+                                  memcpy.getDstMemref(), memcpy.getDstOffsets(),
+                                  memcpy.getDstSizes(), memcpy.getDstStrides()),
+                              operands);
   } else { // If unknown op, then assume all operands and results are written
            // to.
-    for (auto oper : llvm::concat<Value>(op->getOperands(), op->getResults())) {
-      if (!isa<MemRefType>(oper.getType()))
-        continue;
-      operands.push_back(getMemrefEntry(oper));
-    }
+    for (auto oper : llvm::concat<Value>(op->getOperands(), op->getResults()))
+      pushMemrefEntryToVector(getMemrefEntry(oper), operands);
   }
   return operands;
 }
