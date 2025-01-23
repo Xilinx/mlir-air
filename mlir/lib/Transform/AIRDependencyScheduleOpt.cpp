@@ -836,12 +836,12 @@ struct HoistAIRHerdsToSharedRegionPattern
                                 PatternRewriter &rewriter) const override {
     auto parentRegion = herdOp->getParentRegion();
     auto symName = herdOp.getSymName();
-    SmallVector<air::HerdOp> herdsWithSameName;
+    SmallVector<Operation *> herdsWithSameName;
     parentRegion->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
         [symName, &herdsWithSameName](air::HerdOp herd) {
           if (herd.getSymName() != symName)
             return WalkResult::skip();
-          herdsWithSameName.push_back(herd);
+          herdsWithSameName.push_back(herd.getOperation());
           return WalkResult::advance();
         });
     if (herdOp != herdsWithSameName.back())
@@ -849,19 +849,15 @@ struct HoistAIRHerdsToSharedRegionPattern
 
     // Get the innermost region that is ancestor to all herds sharing the same
     // name
-    Region *region = herdOp->getParentRegion();
-    while (llvm::any_of(herdsWithSameName, [region](air::HerdOp h) {
-      return !region->isAncestor(h->getParentRegion());
-    })) {
-      // Failed to find any shared region within the parent IsolatedFromAbove op
-      // body.
-      if (region->getParentOp()->mightHaveTrait<OpTrait::IsIsolatedFromAbove>())
-        return failure();
-      region = region->getParentRegion();
-    }
+    Region *region = air::findCommonRegionContainingAllAncestors(
+        herdsWithSameName,
+        herdsWithSameName.front()
+            ->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());
+    if (!region)
+      return failure();
     // If none of the herds are directly contained in region, then abort herd
     // hoisting; otherwise the loop hoisting breaks the IR functionality.
-    if (llvm::none_of(herdsWithSameName, [region](air::HerdOp h) {
+    if (llvm::none_of(herdsWithSameName, [region](Operation *h) {
           return h->getParentRegion() == region;
         }))
       return failure();
@@ -876,7 +872,8 @@ struct HoistAIRHerdsToSharedRegionPattern
     // Hoist herds to the shared parent region
     SmallVector<Operation *> processed, unprocessed;
     for (auto h : herdsWithSameName) {
-      auto newHerd = hoistAIRHerdInForImpl(h, region, rewriter);
+      auto newHerd =
+          hoistAIRHerdInForImpl(dyn_cast<air::HerdOp>(h), region, rewriter);
       if (succeeded(newHerd)) {
         rewriter.eraseOp(h);
         processed.push_back(*newHerd);
