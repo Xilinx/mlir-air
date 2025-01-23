@@ -202,7 +202,7 @@ cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
     SmallVector<OpFoldResult> o = *oldValues;
     SmallVector<OpFoldResult> n = *newValues;
     for (auto p : llvm::zip(o, n))
-      remap.map(std::get<0>(p).get<Value>(), std::get<1>(p).get<Value>());
+      remap.map(cast<Value>(std::get<0>(p)), cast<Value>(std::get<1>(p)));
   };
   remapVals(loop_op.getLoopLowerBounds(), new_loop_op.getLoopLowerBounds());
   remapVals(loop_op.getLoopUpperBounds(), new_loop_op.getLoopUpperBounds());
