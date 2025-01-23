@@ -963,12 +963,17 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
         std::get<2>(entry.second) = strides;
         return entry;
       };
-  auto pushMemrefEntryToVector = []<typename T>(T entry,
-                                                SmallVector<T> &vector) {
-    if (!isa<MemRefType>(entry.first.getType()))
-      return;
-    vector.push_back(entry);
-  };
+  auto pushMemrefEntryToVector =
+      [](std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                     SmallVector<Value>>>
+             entry,
+         SmallVector<
+             std::pair<Value, std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                         SmallVector<Value>>>> &vector) {
+        if (!isa<MemRefType>(entry.first.getType()))
+          return;
+        vector.push_back(entry);
+      };
   // Below is an incomplete list of common mlir ops that provide interfaces
   // allowing for separating read and write accesses in its operands.
   if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
