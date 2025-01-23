@@ -1375,8 +1375,10 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   OpBuilder builder(readOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  [[maybe_unused]] auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
-  [[maybe_unused]] auto memrefTy = llvm::cast<MemRefType>(readOp.getSource().getType());
+  [[maybe_unused]] auto vectorTy =
+      llvm::cast<VectorType>(readOp.getVector().getType());
+  [[maybe_unused]] auto memrefTy =
+      llvm::cast<MemRefType>(readOp.getSource().getType());
   assert(vectorTy && "Not a vector");
   assert(memrefTy && "Not a memref");
   // Initialize wraps and strides based on the unshrunk memref shape.
@@ -1400,8 +1402,10 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   OpBuilder builder(writeOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  [[maybe_unused]] auto memrefTy = llvm::cast<MemRefType>(writeOp.getSource().getType());
-  [[maybe_unused]] auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
+  [[maybe_unused]] auto memrefTy =
+      llvm::cast<MemRefType>(writeOp.getSource().getType());
+  [[maybe_unused]] auto vectorTy =
+      llvm::cast<VectorType>(writeOp.getVector().getType());
   assert(memrefTy && "Not a memref");
   assert(vectorTy && "Not a vector");
   // Initialize wraps and strides based on the unshrunk memref shape.
@@ -1734,4 +1738,24 @@ private:
 void air::populateBufferMemrefToFuncArgsPattern(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
   patterns.insert<BufferMemrefToFuncArgsPattern>(ctx);
+}
+
+// Find a common region that contains all ops, or ancestors of ops, until it
+// reaches a specified parent op.
+Region *
+air::findCommonRegionContainingAllAncestors(SmallVector<Operation *> ops,
+                                            Operation *until) {
+  Region *region = ops.front()->getParentRegion();
+  while (llvm::any_of(ops, [region](Operation *op) {
+    return !region->isAncestor(op->getParentRegion());
+  })) {
+    // Failed to find any shared region within the parent IsolatedFromAbove op
+    // body.
+    if (until && region->getParentOp() == until)
+      return nullptr;
+    region = region->getParentRegion();
+    if (!region)
+      return nullptr;
+  }
+  return region;
 }
