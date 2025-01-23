@@ -1754,6 +1754,8 @@ air::findCommonRegionContainingAllAncestors(SmallVector<Operation *> ops,
     if (until && region->getParentOp() == until)
       return nullptr;
     region = region->getParentRegion();
+    if (!region)
+      return nullptr;
   }
   return region;
 }

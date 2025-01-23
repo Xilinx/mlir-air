@@ -258,7 +258,7 @@ void populateBufferMemrefToFuncArgsPattern(RewritePatternSet &patterns);
 // Find a common region that contains all ops, or ancestors of ops, until a
 // specified region.
 Region *findCommonRegionContainingAllAncestors(SmallVector<Operation *> ops,
-                                               Operation *until);
+                                               Operation *until = nullptr);
 
 } // namespace air
 } // namespace xilinx
