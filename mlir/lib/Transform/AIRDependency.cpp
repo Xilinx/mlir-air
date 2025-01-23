@@ -250,6 +250,7 @@ public:
 
     // 2nd traversal: trace deps among async execute regions; build a dep graph
 
+    llvm::DenseMap<std::pair<StringRef, int>, Operation *> opIdToOpMap;
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         Operation *sink_op = nullptr;
@@ -290,14 +291,15 @@ public:
                            async_execute_op);
           // Keep track of processed async execute region ops. Deps should point
           // to the past, not future.
-          async_execute_op_history.push_back(async_execute_op);
+          opIdToOpMap[std::make_pair("execute", async_execute_op.getId())] =
+              async_execute_op;
         } else if (auto dma_op = mlir::dyn_cast<air::DmaMemcpyNdOp>(op)) {
           traceDeps<air::DmaMemcpyNdOp>(sink_op_memref_reads, dma_op, "RAW");
           traceDeps<air::DmaMemcpyNdOp>(sink_op_memref_writes, dma_op,
                                         "WAW/WAR");
           traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
                            sink_op_scalar_ins, sink_op_scalar_outs, dma_op);
-          dma_op_history.push_back(dma_op);
+          opIdToOpMap[std::make_pair("dma", dma_op.getId())] = dma_op;
         } else if (auto channel_op =
                        mlir::dyn_cast<air::ChannelInterface>(op)) {
           traceDeps<air::ChannelInterface>(sink_op_memref_reads, channel_op,
@@ -306,9 +308,10 @@ public:
                                            "WAW/WAR");
           traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
                            sink_op_scalar_ins, sink_op_scalar_outs, channel_op);
-          channel_op_history.push_back(channel_op);
+          opIdToOpMap[std::make_pair("channel", channel_op.getId())] =
+              channel_op;
         } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
-          hier_op_history.push_back(hier_op);
+          opIdToOpMap[std::make_pair("hierarchy", hier_op.getId())] = hier_op;
         }
       });
     }
@@ -324,19 +327,22 @@ public:
       f.walk([&](Operation *op) {
         // Fill dep list of air execute ops
         if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
-          fillAIRDepListUsingGraphTR<air::ExecuteOp>(async_execute_op);
+          fillAIRDepListUsingGraphTR<air::ExecuteOp>(async_execute_op,
+                                                     opIdToOpMap);
         }
         // Fill dep list of air dmamemcpy2d ops
         else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(op)) {
-          fillAIRDepListUsingGraphTR<air::DmaMemcpyNdOp>(dma_op);
+          fillAIRDepListUsingGraphTR<air::DmaMemcpyNdOp>(dma_op, opIdToOpMap);
         }
         // Fill dep list of air channel ops
         else if (auto channel_op = dyn_cast<air::ChannelInterface>(op)) {
-          fillAIRDepListUsingGraphTR<air::ChannelInterface>(channel_op);
+          fillAIRDepListUsingGraphTR<air::ChannelInterface>(channel_op,
+                                                            opIdToOpMap);
         }
         // Fill dep list of air hierarchy ops
         else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
-          fillAIRDepListUsingGraphTR<air::HierarchyInterface>(hier_op);
+          fillAIRDepListUsingGraphTR<air::HierarchyInterface>(hier_op,
+                                                              opIdToOpMap);
         }
       });
     }
@@ -452,12 +458,6 @@ private:
   //===----------------------------------------------------------------------===//
   // Creating async events
   //===----------------------------------------------------------------------===//
-
-  // Air async op history
-  std::vector<air::ExecuteOp> async_execute_op_history;
-  std::vector<air::DmaMemcpyNdOp> dma_op_history;
-  std::vector<air::ChannelInterface> channel_op_history;
-  std::vector<air::HierarchyInterface> hier_op_history;
 
   // Create air execute op with async interface (no ssa result returned); update
   // graph
@@ -764,7 +764,9 @@ private:
   void pushDefiningOpAsDep(Value operand, T op) {
     // Check memref deps
     if (auto defop = operand.getDefiningOp<air::ExecuteOp>()) {
-      if (foundAsyncOpUsesAboveCurrentLine(&defop)) {
+      DominanceInfo domInfo(defop);
+      if (domInfo.properlyDominates(defop, op)) {
+        // if (foundAsyncOpUsesAboveCurrentLine(&defop)) {
         addAsyncDepToGraphIfNew<T>(defop.getResult(0), op);
       }
     }
@@ -777,7 +779,9 @@ private:
       // If tile_index is not a nullptr
       // If created by async_region
       if (auto defop = tile_index.getDefiningOp<air::ExecuteOp>()) {
-        if (foundAsyncOpUsesAboveCurrentLine(&defop)) {
+        DominanceInfo domInfo(defop);
+        if (domInfo.properlyDominates(defop, op)) {
+          // if (foundAsyncOpUsesAboveCurrentLine(&defop)) {
           addAsyncDepToGraphIfNew<T>(defop.getResult(0), op);
         }
       }
@@ -843,67 +847,62 @@ private:
       operand.getDefiningOp()->emitOpError(
           "operand being traced is not a memref");
     }
+    auto opOrAncestorIsDominantOver = [](Operation *a, Operation *b) {
+      Region *commonRegion = air::findCommonRegionContainingAllAncestors(
+          SmallVector<Operation *>{a, b}, nullptr);
+      auto aAncestor = commonRegion->findAncestorOpInRegion(*a);
+      auto bAncestor = commonRegion->findAncestorOpInRegion(*b);
+      if (!aAncestor || !bAncestor)
+        return false;
+      DominanceInfo domInfo(aAncestor);
+      return domInfo.properlyDominates(aAncestor, bAncestor);
+    };
     for (auto &u : operand.getUses()) {
+      if (!opOrAncestorIsDominantOver(u.getOwner(), op))
+        continue;
       // If used in MemcpyInterface Op
       if (auto memcpy = dyn_cast<air::MemcpyInterface>(u.getOwner())) {
-        bool isUsedAboveThisLine = false;
-        if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(u.getOwner())) {
-          if (foundAsyncOpUsesAboveCurrentLine(
-                  &dma)) { // If this use is above current line
-            isUsedAboveThisLine = true;
-          }
-        } else if (auto channel =
-                       dyn_cast<air::ChannelInterface>(u.getOwner())) {
-          if (foundAsyncOpUsesAboveCurrentLine(
-                  &channel)) { // If this use is above current line
-            isUsedAboveThisLine = true;
-          }
+        partialMemref memcpy_src, memcpy_dst;
+        if (memcpy.getSrcMemref()) {
+          memcpy_src =
+              partialMemref(memcpy.getSrcMemref(), memcpy.getSrcOffsets(),
+                            memcpy.getSrcSizes(), memcpy.getSrcStrides());
+        }
+        if (memcpy.getDstMemref()) {
+          memcpy_dst =
+              partialMemref(memcpy.getDstMemref(), memcpy.getDstOffsets(),
+                            memcpy.getDstSizes(), memcpy.getDstStrides());
         }
 
-        if (isUsedAboveThisLine) {
-          partialMemref memcpy_src, memcpy_dst;
-          if (memcpy.getSrcMemref()) {
-            memcpy_src =
-                partialMemref(memcpy.getSrcMemref(), memcpy.getSrcOffsets(),
-                              memcpy.getSrcSizes(), memcpy.getSrcStrides());
-          }
-          if (memcpy.getDstMemref()) {
-            memcpy_dst =
-                partialMemref(memcpy.getDstMemref(), memcpy.getDstOffsets(),
-                              memcpy.getDstSizes(), memcpy.getDstStrides());
-          }
-
-          if (rw == 'r') {
-            if (u.is(memcpy.getSrcMemref())) {
-              if (tile == nullptr) {
-                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
-                                           op);
-              } else if (areEqualIndexPartialMemrefs(tile, &memcpy_src))
-                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
-                                           op);
-            }
-          } else if (rw == 'w') {
-            if (u.is(memcpy.getDstMemref())) {
-              if (tile == nullptr) {
-                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
-                                           op);
-              } else if (areEqualIndexPartialMemrefs(tile, &memcpy_dst))
-                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
-                                           op);
-            }
-          } else {
+        if (rw == 'r') {
+          if (u.is(memcpy.getSrcMemref())) {
             if (tile == nullptr) {
               addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                          op);
-            } else if (u.is(memcpy.getDstMemref())) {
-              if (areEqualIndexPartialMemrefs(tile, &memcpy_dst))
-                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
-                                           op);
-            } else if (u.is(memcpy.getSrcMemref())) {
-              if (areEqualIndexPartialMemrefs(tile, &memcpy_src))
-                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
-                                           op);
-            }
+            } else if (areEqualIndexPartialMemrefs(tile, &memcpy_src))
+              addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
+                                         op);
+          }
+        } else if (rw == 'w') {
+          if (u.is(memcpy.getDstMemref())) {
+            if (tile == nullptr) {
+              addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
+                                         op);
+            } else if (areEqualIndexPartialMemrefs(tile, &memcpy_dst))
+              addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
+                                         op);
+          }
+        } else {
+          if (tile == nullptr) {
+            addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0), op);
+          } else if (u.is(memcpy.getDstMemref())) {
+            if (areEqualIndexPartialMemrefs(tile, &memcpy_dst))
+              addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
+                                         op);
+          } else if (u.is(memcpy.getSrcMemref())) {
+            if (areEqualIndexPartialMemrefs(tile, &memcpy_src))
+              addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
+                                         op);
           }
         }
       }
@@ -911,37 +910,33 @@ private:
       // If used in a linalg op
       else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())) {
         if (auto ar = dyn_cast<air::ExecuteOp>(linalgop->getParentOp())) {
-          if (foundAsyncOpUsesAboveCurrentLine(&ar)) {
-            if (rw == 'r') {
-              if (u.getOperandNumber() <
-                  linalgop.getNumDpsInputs() + linalgop.getNumDpsInits())
-                addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
-            } else if (rw == 'w') {
-              if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
-                  u.getOperandNumber() - linalgop.getNumDpsInputs() <
-                      linalgop.getNumDpsInits())
-                addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
-            } else {
+          if (rw == 'r') {
+            if (u.getOperandNumber() <
+                linalgop.getNumDpsInputs() + linalgop.getNumDpsInits())
               addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
-            }
+          } else if (rw == 'w') {
+            if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
+                u.getOperandNumber() - linalgop.getNumDpsInputs() <
+                    linalgop.getNumDpsInits())
+              addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
+          } else {
+            addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
           }
         }
       }
 
       // If used in hierarchy op
       else if (auto hier = dyn_cast<air::HierarchyInterface>(u.getOwner())) {
-        if (foundAsyncOpUsesAboveCurrentLine(&hier)) {
-          // check if the use inside hierarchy op matches with the tracing mode
-          // (r or w)
-          for (unsigned hier_argument_id = 0;
-               hier_argument_id < hier.getNumKernelOperands();
-               hier_argument_id++) {
-            if (u.is(hier.getKernelOperand(hier_argument_id))) {
-              auto child_op = hier.getKernelArgument(hier_argument_id);
-              char rw_check = checkOperandReadOrWrite(child_op);
-              if (rw == 'n' || rw_check == rw) {
-                addAsyncDepToGraphIfNew<T>(hier->getResult(0), op);
-              }
+        // check if the use inside hierarchy op matches with the tracing mode (r
+        // or w)
+        for (unsigned hier_argument_id = 0;
+             hier_argument_id < hier.getNumKernelOperands();
+             hier_argument_id++) {
+          if (u.is(hier.getKernelOperand(hier_argument_id))) {
+            auto child_op = hier.getKernelArgument(hier_argument_id);
+            char rw_check = checkOperandReadOrWrite(child_op);
+            if (rw == 'n' || rw_check == rw) {
+              addAsyncDepToGraphIfNew<T>(hier->getResult(0), op);
             }
           }
         }
@@ -949,12 +944,8 @@ private:
 
       // If used in an unknown op
       else {
-        auto unknownop = u.getOwner();
-        if (auto ar = dyn_cast<air::ExecuteOp>(unknownop->getParentOp())) {
-          if (foundAsyncOpUsesAboveCurrentLine(&ar)) {
-            addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
-          }
-        }
+        if (auto ar = dyn_cast<air::ExecuteOp>(u.getOwner()->getParentOp()))
+          addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
       }
     }
   }
@@ -1517,28 +1508,36 @@ private:
       wa_to_g; // Map between air wait_all and vertices in graph
 
   // g vertex to air op mapping
-  air::ExecuteOp getExecuteOpFromVertex(ExecuteGraph::VertexId v,
-                                        ExecuteGraph g) {
+  air::ExecuteOp getExecuteOpFromVertex(
+      ExecuteGraph::VertexId v, ExecuteGraph g,
+      llvm::DenseMap<std::pair<StringRef, int>, Operation *> &opIdToOpMap) {
     assert(g[v].asyncEventType == "execute" &&
            "This vertex is not a ExecuteOp");
-    return async_execute_op_history[g[v].operationId - 1];
+    auto op = opIdToOpMap[std::make_pair("execute", g[v].operationId)];
+    return dyn_cast_if_present<air::ExecuteOp>(op);
   }
-  air::DmaMemcpyNdOp getDmaOpFromVertex(ExecuteGraph::VertexId v,
-                                        ExecuteGraph g) {
+  air::DmaMemcpyNdOp getDmaOpFromVertex(
+      ExecuteGraph::VertexId v, ExecuteGraph g,
+      llvm::DenseMap<std::pair<StringRef, int>, Operation *> &opIdToOpMap) {
     assert(g[v].asyncEventType == "dma" && "This vertex is not a DmaMemcpy op");
-    return dma_op_history[g[v].operationId - 1];
+    auto op = opIdToOpMap[std::make_pair("dma", g[v].operationId)];
+    return dyn_cast_if_present<air::DmaMemcpyNdOp>(op);
   }
-  air::ChannelInterface getChannelOpFromVertex(ExecuteGraph::VertexId v,
-                                               ExecuteGraph g) {
+  air::ChannelInterface getChannelOpFromVertex(
+      ExecuteGraph::VertexId v, ExecuteGraph g,
+      llvm::DenseMap<std::pair<StringRef, int>, Operation *> &opIdToOpMap) {
     assert(g[v].asyncEventType == "channel" &&
            "This vertex is not a Channel op");
-    return channel_op_history[g[v].operationId - 1];
+    auto op = opIdToOpMap[std::make_pair("channel", g[v].operationId)];
+    return dyn_cast_if_present<air::ChannelInterface>(op);
   }
-  air::HierarchyInterface getHierOpFromVertex(ExecuteGraph::VertexId v,
-                                              ExecuteGraph g) {
+  air::HierarchyInterface getHierOpFromVertex(
+      ExecuteGraph::VertexId v, ExecuteGraph g,
+      llvm::DenseMap<std::pair<StringRef, int>, Operation *> &opIdToOpMap) {
     assert(g[v].asyncEventType == "hierarchy" &&
            "This vertex is not a Hierarchy op");
-    return hier_op_history[g[v].operationId - 1];
+    auto op = opIdToOpMap[std::make_pair("hierarchy", g[v].operationId)];
+    return dyn_cast_if_present<air::HierarchyInterface>(op);
   }
 
   // air execute op to g vertex mapping
@@ -1584,7 +1583,9 @@ private:
 
   // Fill in dep list of air async ops using graph tr's connectivity
   template <typename T>
-  void fillAIRDepListUsingGraphTR(T op) {
+  void fillAIRDepListUsingGraphTR(
+      T op,
+      llvm::DenseMap<std::pair<StringRef, int>, Operation *> &opIdToOpMap) {
     if (auto async_op =
             mlir::dyn_cast<air::AsyncOpInterface>(op.getOperation())) {
       uint64_t dstTRVertex = getGraphGVertexFromAIROp(op);
@@ -1592,20 +1593,21 @@ private:
            asyncExecuteGraph.inverseAdjacentVertices(dstTRVertex)) {
         if (asyncExecuteGraph[TRVertex].asyncEventType == "execute")
           async_op.addAsyncDependency(
-              getExecuteOpFromVertex(TRVertex, asyncExecuteGraph).getResult(0));
+              getExecuteOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
+                  .getResult(0));
         else if (asyncExecuteGraph[TRVertex].asyncEventType == "dma")
           async_op.addAsyncDependency(
-              getDmaOpFromVertex(TRVertex, asyncExecuteGraph)
+              getDmaOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
                   .getOperation()
                   ->getResult(0));
         else if (asyncExecuteGraph[TRVertex].asyncEventType == "channel")
           async_op.addAsyncDependency(
-              getChannelOpFromVertex(TRVertex, asyncExecuteGraph)
+              getChannelOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
                   .getOperation()
                   ->getResult(0));
         else if (asyncExecuteGraph[TRVertex].asyncEventType == "hierarchy")
           async_op.addAsyncDependency(
-              getHierOpFromVertex(TRVertex, asyncExecuteGraph)
+              getHierOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
                   .getOperation()
                   ->getResult(0));
         else
@@ -1648,38 +1650,6 @@ private:
   //===----------------------------------------------------------------------===//
   // Other utilities
   //===----------------------------------------------------------------------===//
-
-  bool foundAsyncOpUsesAboveCurrentLine(air::ExecuteOp *op) {
-    if (!async_execute_op_history.empty())
-      for (auto &iter : async_execute_op_history)
-        if (iter.getResult(0) == op->getResult(0))
-          return true;
-    return false;
-  }
-
-  bool foundAsyncOpUsesAboveCurrentLine(air::DmaMemcpyNdOp *op) {
-    if (!dma_op_history.empty())
-      for (auto &iter : dma_op_history)
-        if (iter->getResult(0) == op->getOperation()->getResult(0))
-          return true;
-    return false;
-  }
-
-  bool foundAsyncOpUsesAboveCurrentLine(air::ChannelInterface *op) {
-    if (!channel_op_history.empty())
-      for (auto &iter : channel_op_history)
-        if (iter->getResult(0) == op->getOperation()->getResult(0))
-          return true;
-    return false;
-  }
-
-  bool foundAsyncOpUsesAboveCurrentLine(air::HierarchyInterface *op) {
-    if (!hier_op_history.empty())
-      for (auto &iter : hier_op_history)
-        if (iter->getResult(0) == op->getOperation()->getResult(0))
-          return true;
-    return false;
-  }
 
   // Check if two partial memref tiles have identical access patterns
   bool areEqualIndexPartialMemrefs(partialMemref *tile_0,

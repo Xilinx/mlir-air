@@ -262,17 +262,14 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     memcpyIOps = uniqueMemcpyIPattern;
 
   // Get the deepest region which is ancestor to all memcpyIOps.
-  Region *commonRegion = memcpyIOps.front()->getParentRegion();
-  while (!llvm::all_of(memcpyIOps, [commonRegion](Operation *o) {
-    return commonRegion->isAncestor(o->getParentRegion());
-  })) {
-    commonRegion = commonRegion->getParentRegion();
-    if (!commonRegion)
-      return repeatCounts;
-  }
+  SmallVector<Operation *> memcpyIOpVec = memcpyIOps.takeVector();
+  Region *commonRegion =
+      air::findCommonRegionContainingAllAncestors(memcpyIOpVec);
+  if (!commonRegion)
+    return repeatCounts;
 
   // Get each memcpy op's repeat count, relative to the common region.
-  for (auto o : memcpyIOps) {
+  for (auto o : memcpyIOpVec) {
     int tripCount = 1;
     Region *currRegion = o->getParentRegion();
     while (commonRegion->isAncestor(currRegion)) {
