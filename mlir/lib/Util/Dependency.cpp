@@ -963,8 +963,7 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
         std::get<2>(entry.second) = strides;
         return entry;
       };
-  auto pushMemrefEntryToVector = []<typename T>(T entry,
-                                                SmallVector<T> &vector) {
+  auto pushMemrefEntryToVector = [](auto entry, auto &vector) {
     if (!isa<MemRefType>(entry.first.getType()))
       return;
     vector.push_back(entry);
