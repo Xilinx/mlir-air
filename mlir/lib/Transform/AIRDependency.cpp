@@ -44,6 +44,7 @@
 
 using namespace mlir;
 using namespace xilinx;
+using namespace air;
 
 #define DEBUG_TYPE "air-dependency"
 
@@ -81,13 +82,12 @@ struct executeNode {
   unsigned operationId;
 };
 
-using ExecuteGraph = xilinx::air::TypedDirectedAdjacencyMap<::executeNode>;
+using ExecuteGraph = air::TypedDirectedAdjacencyMap<::executeNode>;
 
 typedef std::map<ExecuteGraph::VertexId, ExecuteGraph::VertexId> vertex_map;
 typedef std::map<unsigned, ExecuteGraph::VertexId> operation_id_to_vertex_map;
 
-class AIRDependency
-    : public xilinx::air::impl::AIRDependencyBase<AIRDependency> {
+class AIRDependency : public air::impl::AIRDependencyBase<AIRDependency> {
 
 public:
   AIRDependency() = default;
@@ -103,7 +103,7 @@ public:
 
     // Preprocessing: renumber the air dma op ids
     for (auto f : module.getOps<func::FuncOp>()) {
-      xilinx::air::renumberDmaOps(f, "global");
+      air::renumberDmaOps(f, "global");
     }
 
     // 1st traversal: create async ops with empty dep list.
@@ -118,11 +118,11 @@ public:
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         // Create async interface for air.dmamemcpy ops
-        if (isa<xilinx::air::DmaMemcpyNdOp>(op))
+        if (isa<air::DmaMemcpyNdOp>(op))
           createAsyncDMA(module_builder, op);
 
         // Create async interface for air.channel ops
-        else if (isa<xilinx::air::ChannelInterface>(op))
+        else if (isa<air::ChannelInterface>(op))
           createAsyncChannel(module_builder, op, ChannelOpID);
 
         // Create async execute region for linalg.matmul
@@ -257,9 +257,9 @@ public:
           for (auto &child_op : async_execute_op.getChildOps())
             if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
               sink_op = &child_op;
-        } else if (isa<xilinx::air::DmaMemcpyNdOp>(op)) {
+        } else if (isa<air::DmaMemcpyNdOp>(op)) {
           sink_op = op;
-        } else if (isa<xilinx::air::ChannelInterface>(op)) {
+        } else if (isa<air::ChannelInterface>(op)) {
           sink_op = op;
         } else if (dyn_cast<air::HierarchyInterface>(op)) {
           sink_op = op;
@@ -270,175 +270,11 @@ public:
         SmallVector<partialMemref, 1> sink_op_memref_writes;
         SmallVector<Value, 1> sink_op_scalar_ins;
         SmallVector<Value, 1> sink_op_scalar_outs;
-        // If the sink op is linalg op
-        if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
-          for (auto ins_value : sink_op_linalgop.getDpsInputs()) {
-            if (auto operation = ins_value.getDefiningOp()) {
-              if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                  memref::CollapseShapeOp>(operation)) {
-                ins_value = operation->getOperand(0);
-              }
-            }
-            if (llvm::isa<MemRefType>(ins_value.getType())) {
-              partialMemref tile(ins_value);
-              sink_op_memref_reads.push_back(tile);
-            } else if (llvm::isa<IndexType>(ins_value.getType())) {
-              sink_op_scalar_ins.push_back(ins_value);
-            }
-          }
-          for (auto outs_value : sink_op_linalgop.getDpsInits()) {
-            if (llvm::isa<MemRefType>(outs_value.getType())) {
-              partialMemref tile(outs_value);
-              sink_op_memref_reads.push_back(
-                  tile); // linalg op both reads and writes the output memref
-              sink_op_memref_writes.push_back(tile);
-            } else if (llvm::isa<IndexType>(outs_value.getType())) {
-              sink_op_scalar_ins.push_back(
-                  outs_value); // linalg op both reads and writes the output
-                               // memref
-              sink_op_scalar_outs.push_back(outs_value);
-            }
-          }
-          if (sink_op_linalgop->getNumResults()) {
-            for (auto linalg_results : sink_op_linalgop->getResults()) {
-              if (llvm::isa<MemRefType>(linalg_results.getType())) {
-                partialMemref tile(linalg_results);
-                sink_op_memref_writes.push_back(tile);
-              } else if (llvm::isa<IndexType>(linalg_results.getType())) {
-                sink_op_scalar_outs.push_back(linalg_results);
-              }
-            }
-          }
-        }
 
-        // If the sink op is memref::dealloc
-        else if (auto sink_op_memdealloc =
-                     dyn_cast<memref::DeallocOp>(sink_op)) {
-          mlir::Value sink_op_memref = sink_op_memdealloc.getMemref();
-          if (auto operation = sink_op_memref.getDefiningOp()) {
-            if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                memref::CollapseShapeOp>(operation)) {
-              sink_op_memref = operation->getOperand(0);
-            }
-          }
-          partialMemref tile(sink_op_memref);
-          sink_op_memref_reads.push_back(tile);
-          sink_op_memref_writes.push_back(
-              tile); // dealloc erases (i.e. writes to) output memref
-        }
-
-        // If the sink op is memref::copy
-        else if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)) {
-          mlir::Value op_src_memref = sink_op_memref_copy.getSource();
-          if (auto operation = op_src_memref.getDefiningOp()) {
-            if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                memref::CollapseShapeOp>(operation)) {
-              op_src_memref = operation->getOperand(0);
-            }
-          }
-          partialMemref tileSrc(op_src_memref);
-          sink_op_memref_reads.push_back(tileSrc);
-          partialMemref tileDst(sink_op_memref_copy.getTarget());
-          sink_op_memref_reads.push_back(tileDst);
-          sink_op_memref_writes.push_back(tileDst);
-        }
-
-        // If the sink op is an air::MemcpyInterface op
-        else if (auto sink_op_memcpy =
-                     mlir::dyn_cast<xilinx::air::MemcpyInterface>(sink_op)) {
-          auto op_src_memref = sink_op_memcpy.getSrcMemref();
-          if (op_src_memref) {
-            if (auto operation = op_src_memref.getDefiningOp()) {
-              if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                  memref::CollapseShapeOp>(operation)) {
-                op_src_memref = operation->getOperand(0);
-              }
-            }
-            if (llvm::isa<MemRefType>(op_src_memref.getType())) {
-              for (unsigned i = 0; i < sink_op_memcpy.getSrcOffsets().size();
-                   i++)
-                sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcOffsets()[i]);
-              for (unsigned i = 0; i < sink_op_memcpy.getSrcSizes().size(); i++)
-                sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcSizes()[i]);
-              for (unsigned i = 0; i < sink_op_memcpy.getSrcStrides().size();
-                   i++)
-                sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcStrides()[i]);
-              partialMemref tile_in(
-                  op_src_memref, sink_op_memcpy.getSrcOffsets(),
-                  sink_op_memcpy.getSrcSizes(), sink_op_memcpy.getSrcStrides());
-              sink_op_memref_reads.push_back(tile_in);
-            }
-          }
-          auto op_dst_memref = sink_op_memcpy.getDstMemref();
-          if (op_dst_memref) {
-            for (unsigned i = 0; i < sink_op_memcpy.getDstOffsets().size(); i++)
-              sink_op_scalar_outs.push_back(sink_op_memcpy.getDstOffsets()[i]);
-            for (unsigned i = 0; i < sink_op_memcpy.getDstSizes().size(); i++)
-              sink_op_scalar_outs.push_back(sink_op_memcpy.getDstSizes()[i]);
-            for (unsigned i = 0; i < sink_op_memcpy.getDstStrides().size(); i++)
-              sink_op_scalar_outs.push_back(sink_op_memcpy.getDstStrides()[i]);
-            partialMemref tile_out(
-                op_dst_memref, sink_op_memcpy.getDstOffsets(),
-                sink_op_memcpy.getDstSizes(), sink_op_memcpy.getDstStrides());
-            sink_op_memref_writes.push_back(tile_out);
-          }
-        }
-
-        // If the sink op is arith::MulIOp
-        else if (auto sink_op_arith = dyn_cast<arith::MulIOp>(sink_op)) {
-          sink_op_scalar_ins.push_back(sink_op_arith.getLhs());
-          sink_op_scalar_ins.push_back(sink_op_arith.getRhs());
-          sink_op_scalar_outs.push_back(sink_op_arith.getResult());
-        }
-
-        // If the sink op is arith::AddIOp
-        else if (auto sink_op_arith = dyn_cast<arith::AddIOp>(sink_op)) {
-          sink_op_scalar_ins.push_back(sink_op_arith.getLhs());
-          sink_op_scalar_ins.push_back(sink_op_arith.getRhs());
-          sink_op_scalar_outs.push_back(sink_op_arith.getResult());
-        }
-
-        // If the sink op is mlir::affine::AffineApplyOp
-        else if (auto sink_op_apply =
-                     dyn_cast<mlir::affine::AffineApplyOp>(sink_op)) {
-          for (auto applyop_operand : sink_op_apply.getMapOperands()) {
-            sink_op_scalar_ins.push_back(applyop_operand);
-          }
-          sink_op_scalar_outs.push_back(sink_op_apply.getResult());
-        }
-
-        // If the sink op is an unknown op
-        else {
-          for (auto sink_op_op : sink_op->getOperands()) {
-            if (auto operation = sink_op_op.getDefiningOp()) {
-              if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
-                                  memref::CollapseShapeOp>(operation)) {
-                sink_op_op = operation->getOperand(0);
-              }
-            }
-            if (llvm::isa<MemRefType>(sink_op_op.getType())) {
-              partialMemref tile(sink_op_op);
-              sink_op_memref_reads.push_back(
-                  tile); // Assuming all operands are both read and written to
-              sink_op_memref_writes.push_back(tile);
-            } else if (llvm::isa<IndexType>(sink_op_op.getType())) {
-              sink_op_scalar_ins.push_back(
-                  sink_op_op); // Assuming all operands are both read and
-                               // written to
-              sink_op_scalar_outs.push_back(sink_op_op);
-            }
-          }
-          if (sink_op->getNumResults()) {
-            for (auto sink_op_results : sink_op->getResults()) {
-              if (llvm::isa<MemRefType>(sink_op_results.getType())) {
-                partialMemref tile(sink_op_results);
-                sink_op_memref_writes.push_back(tile);
-              } else if (llvm::isa<IndexType>(sink_op_results.getType())) {
-                sink_op_scalar_outs.push_back(sink_op_results);
-              }
-            }
-          }
-        }
+        dependencyTracer DTObject;
+        DTObject.getPartialMemrefFromOp(
+            sink_op, sink_op_memref_reads, sink_op_memref_writes,
+            sink_op_scalar_ins, sink_op_scalar_outs);
 
         // Detect dependencies
         if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
@@ -455,8 +291,7 @@ public:
           // Keep track of processed async execute region ops. Deps should point
           // to the past, not future.
           async_execute_op_history.push_back(async_execute_op);
-        } else if (auto dma_op =
-                       mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
+        } else if (auto dma_op = mlir::dyn_cast<air::DmaMemcpyNdOp>(op)) {
           traceDeps<air::DmaMemcpyNdOp>(sink_op_memref_reads, dma_op, "RAW");
           traceDeps<air::DmaMemcpyNdOp>(sink_op_memref_writes, dma_op,
                                         "WAW/WAR");
@@ -464,7 +299,7 @@ public:
                            sink_op_scalar_ins, sink_op_scalar_outs, dma_op);
           dma_op_history.push_back(dma_op);
         } else if (auto channel_op =
-                       mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
+                       mlir::dyn_cast<air::ChannelInterface>(op)) {
           traceDeps<air::ChannelInterface>(sink_op_memref_reads, channel_op,
                                            "RAW");
           traceDeps<air::ChannelInterface>(sink_op_memref_writes, channel_op,
@@ -599,7 +434,7 @@ private:
     for (auto user : val.getUsers()) {
       // If one of the user is a herd, segment or a launch op,
       // explore the hierarchy further.
-      if (auto hier_op = dyn_cast<xilinx::air::HierarchyInterface>(user)) {
+      if (auto hier_op = dyn_cast<air::HierarchyInterface>(user)) {
         for (int i = 0, e = hier_op.getNumKernelOperands(); i < e; i++) {
           if (hier_op.getKernelOperand(i) == val) {
             if (alloc_for_reshape(hier_op.getKernelArgument(i)))
@@ -633,7 +468,7 @@ private:
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::ExecuteOp async_region;
-    async_region = builder.create<xilinx::air::ExecuteOp>(
+    async_region = builder.create<air::ExecuteOp>(
         loc, air::AsyncTokenType::get(op->getContext()), deps);
     async_region->setAttr(
         "id", mlir::IntegerAttr::get(
@@ -663,7 +498,7 @@ private:
     }
 
     builder.clone(*op);
-    builder.create<xilinx::air::ExecuteTerminatorOp>(builder.getUnknownLoc());
+    builder.create<air::ExecuteTerminatorOp>(builder.getUnknownLoc());
 
     auto v = asyncExecuteGraph.addVertex();
     auto &node = asyncExecuteGraph[v];
@@ -695,7 +530,7 @@ private:
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::ExecuteOp async_region;
-    async_region = builder.create<xilinx::air::ExecuteOp>(
+    async_region = builder.create<air::ExecuteOp>(
         loc, air::AsyncTokenType::get(op->getContext()),
         op->getResults().getType(), deps);
     async_region->setAttr(
@@ -706,8 +541,8 @@ private:
     Block *async_region_bb = builder.createBlock(&async_region.getRegion());
     builder.setInsertionPointToStart(async_region_bb);
     auto op_cloned = builder.clone(*op);
-    builder.create<xilinx::air::ExecuteTerminatorOp>(builder.getUnknownLoc(),
-                                                     op_cloned->getResults());
+    builder.create<air::ExecuteTerminatorOp>(builder.getUnknownLoc(),
+                                             op_cloned->getResults());
     SmallVector<Value, 1> returnVals;
     for (auto val : async_region.getResults()) {
       returnVals.push_back(val);
@@ -737,7 +572,7 @@ private:
     builder.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
-    auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op);
+    auto dma_op = mlir::dyn_cast<air::DmaMemcpyNdOp>(op);
     unsigned id = dma_op.getId();
     air::DmaMemcpyNdOp new_dmaNd_op = builder.create<air::DmaMemcpyNdOp>(
         loc, air::AsyncTokenType::get(dma_op->getContext()), deps,
@@ -924,21 +759,6 @@ private:
   // Data dependency tracing
   //===----------------------------------------------------------------------===//
 
-  struct partialMemref {
-    Value memrefValue;
-    SmallVector<Value> offsets, sizes, strides;
-    partialMemref() = default;
-    partialMemref(mlir::Value m) { memrefValue = m; };
-    partialMemref(mlir::Value m, SmallVector<Value> memrefOffsets,
-                  SmallVector<Value> memrefSizes,
-                  SmallVector<Value> memrefStrides) {
-      memrefValue = m;
-      offsets = memrefOffsets;
-      sizes = memrefSizes;
-      strides = memrefStrides;
-    };
-  };
-
   // Check if operand is returned from ExecuteOp (memref.alloc)
   template <typename T>
   void pushDefiningOpAsDep(Value operand, T op) {
@@ -981,32 +801,31 @@ private:
     bool foundWriteAccess = false;
     bool foundReadAccess = false;
     for (auto &u : operand.getUses()) {
-      // If used in MemcpyInterface Op
-      if (auto memcpy = dyn_cast<xilinx::air::MemcpyInterface>(u.getOwner())) {
-        if (u.is(memcpy.getSrcMemref())) {
-          foundReadAccess = true;
-        } else if (u.is(memcpy.getDstMemref())) {
-          foundWriteAccess = true;
-        } else {
-          memcpy->emitOpError("unknown operand in air::MemcpyInterface");
-        }
+      auto writeAccesses =
+          air::getAllWriteAccessedMemrefOperandsFromOp(u.getOwner());
+      auto readAccesses =
+          air::getAllReadAccessedMemrefOperandsFromOp(u.getOwner());
+      if (failed(writeAccesses) || failed(readAccesses)) {
+        operand.getDefiningOp()->emitOpError(
+            "has user which failed to get memref accesses.");
+        return 'x';
       }
-      // If used in a linalg op
-      else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())) {
-        if (u.getOperandNumber() <
-            linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
-          foundReadAccess = true;
-        } else if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
-                   u.getOperandNumber() - linalgop.getNumDpsInputs() <
-                       linalgop.getNumDpsInits()) {
-          foundWriteAccess = true;
-        } else {
-          linalgop->emitOpError("unknown operand in linalg op");
-        }
-      }
-      // If unknown op, then assume write access for safety
-      else
-        foundWriteAccess = true;
+      foundWriteAccess =
+          foundWriteAccess ||
+          llvm::any_of(
+              *writeAccesses,
+              [&u](std::pair<Value,
+                             std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                        SmallVector<Value>>>
+                       entry) { return entry.first == u.get(); });
+      foundReadAccess =
+          foundReadAccess ||
+          llvm::any_of(
+              *readAccesses,
+              [&u](std::pair<Value,
+                             std::tuple<SmallVector<Value>, SmallVector<Value>,
+                                        SmallVector<Value>>>
+                       entry) { return entry.first == u.get(); });
     }
     if (foundWriteAccess)
       return 'w';
@@ -1026,15 +845,15 @@ private:
     }
     for (auto &u : operand.getUses()) {
       // If used in MemcpyInterface Op
-      if (auto memcpy = dyn_cast<xilinx::air::MemcpyInterface>(u.getOwner())) {
+      if (auto memcpy = dyn_cast<air::MemcpyInterface>(u.getOwner())) {
         bool isUsedAboveThisLine = false;
-        if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(u.getOwner())) {
+        if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(u.getOwner())) {
           if (foundAsyncOpUsesAboveCurrentLine(
                   &dma)) { // If this use is above current line
             isUsedAboveThisLine = true;
           }
         } else if (auto channel =
-                       dyn_cast<xilinx::air::ChannelInterface>(u.getOwner())) {
+                       dyn_cast<air::ChannelInterface>(u.getOwner())) {
           if (foundAsyncOpUsesAboveCurrentLine(
                   &channel)) { // If this use is above current line
             isUsedAboveThisLine = true;
@@ -1091,8 +910,7 @@ private:
 
       // If used in a linalg op
       else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())) {
-        if (auto ar =
-                dyn_cast<xilinx::air::ExecuteOp>(linalgop->getParentOp())) {
+        if (auto ar = dyn_cast<air::ExecuteOp>(linalgop->getParentOp())) {
           if (foundAsyncOpUsesAboveCurrentLine(&ar)) {
             if (rw == 'r') {
               if (u.getOperandNumber() <
@@ -1111,8 +929,7 @@ private:
       }
 
       // If used in hierarchy op
-      else if (auto hier =
-                   dyn_cast<xilinx::air::HierarchyInterface>(u.getOwner())) {
+      else if (auto hier = dyn_cast<air::HierarchyInterface>(u.getOwner())) {
         if (foundAsyncOpUsesAboveCurrentLine(&hier)) {
           // check if the use inside hierarchy op matches with the tracing mode
           // (r or w)
@@ -1133,8 +950,7 @@ private:
       // If used in an unknown op
       else {
         auto unknownop = u.getOwner();
-        if (auto ar =
-                dyn_cast<xilinx::air::ExecuteOp>(unknownop->getParentOp())) {
+        if (auto ar = dyn_cast<air::ExecuteOp>(unknownop->getParentOp())) {
           if (foundAsyncOpUsesAboveCurrentLine(&ar)) {
             addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
           }
@@ -1165,8 +981,9 @@ private:
                                 dep_tracing_mode, &operand);
 
       // If sink op is in hierarchy op
-      if (auto hier = sink_air_op->template getParentOfType<
-                      xilinx::air::HierarchyInterface>()) {
+      if (auto hier =
+              sink_air_op
+                  ->template getParentOfType<air::HierarchyInterface>()) {
         // Search for deps outside (before) hierarchy op
         for (unsigned hier_operand_id = 0;
              hier_operand_id < hier.getNumKernelOperands(); hier_operand_id++) {
@@ -1288,7 +1105,7 @@ private:
     // Output token of wait_all shall be yielded
     auto loop_op_terminator = loop_op.getBody()->getTerminator();
     builder.setInsertionPoint(loop_op_terminator);
-    air::WaitAllOp wait_all_op_yielded = builder.create<xilinx::air::WaitAllOp>(
+    air::WaitAllOp wait_all_op_yielded = builder.create<air::WaitAllOp>(
         builder.getUnknownLoc(),
         air::AsyncTokenType::get(loop_op->getContext()),
         yielded_tokens_in_loop_op);
@@ -1348,10 +1165,9 @@ private:
     // Create a new wait_all event before the for op which collects the incoming
     // deps. Output token of wait_all shall be the iter_arg of for op.
     builder.setInsertionPoint(loop_op);
-    air::WaitAllOp wait_all_op_before_loop =
-        builder.create<xilinx::air::WaitAllOp>(
-            builder.getUnknownLoc(),
-            air::AsyncTokenType::get(loop_op->getContext()), incoming_tokens);
+    air::WaitAllOp wait_all_op_before_loop = builder.create<air::WaitAllOp>(
+        builder.getUnknownLoc(),
+        air::AsyncTokenType::get(loop_op->getContext()), incoming_tokens);
     wait_all_op_before_loop->setAttr(
         "id",
         mlir::IntegerAttr::get(
@@ -1770,7 +1586,7 @@ private:
   template <typename T>
   void fillAIRDepListUsingGraphTR(T op) {
     if (auto async_op =
-            mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op.getOperation())) {
+            mlir::dyn_cast<air::AsyncOpInterface>(op.getOperation())) {
       uint64_t dstTRVertex = getGraphGVertexFromAIROp(op);
       for (auto TRVertex :
            asyncExecuteGraph.inverseAdjacentVertices(dstTRVertex)) {
@@ -1802,7 +1618,7 @@ private:
   template <typename T>
   void addAsyncDepToGraphIfNew(Value dep, T op) {
     if (auto async_op =
-            mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op.getOperation())) {
+            mlir::dyn_cast<air::AsyncOpInterface>(op.getOperation())) {
       for (auto old_dep : async_op.getAsyncDependencies())
         if (old_dep == dep)
           return;
