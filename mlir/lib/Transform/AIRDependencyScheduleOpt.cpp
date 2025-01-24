@@ -3779,7 +3779,6 @@ private:
     std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
     if (std::abs((int)a_loop_nest.size() - (int)b_loop_nest.size()) != 1)
       return notMergeable;
-    scf::ForOp mismatchScfFor = scf::ForOp();
     if (a_loop_nest.size() < b_loop_nest.size()) {
       auto mismatchScfFor = findMismatchControlLoop(b_loop_nest, a_loop_nest);
       if (!mismatchScfFor)
