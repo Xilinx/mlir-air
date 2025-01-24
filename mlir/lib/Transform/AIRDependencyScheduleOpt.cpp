@@ -3750,6 +3750,27 @@ private:
     return true;
   }
 
+  // Find the first control loop that is mismatching. Assume longer_loop_nest is
+  // one-loop more than shorter_loop_nest.
+  scf::ForOp findMismatchControlLoop(std::vector<Block *> longer_loop_nest,
+                                     std::vector<Block *> shorter_loop_nest) {
+    if (longer_loop_nest.size() - shorter_loop_nest.size() != 1)
+      return scf::ForOp();
+    scf::ForOp mismatchScfFor = scf::ForOp();
+    unsigned index = 0;
+    for (unsigned i = 0; i < shorter_loop_nest.size(); i++) {
+      auto aLoop = shorter_loop_nest[i];
+      auto bLoop = longer_loop_nest[index++];
+      if (!areEquivalentControlLoops(aLoop, bLoop)) {
+        mismatchScfFor = dyn_cast<scf::ForOp>(bLoop->getParentOp());
+        bLoop = longer_loop_nest[index++];
+        if (!areEquivalentControlLoops(aLoop, bLoop))
+          return scf::ForOp();
+      }
+    }
+    return mismatchScfFor;
+  }
+
   std::tuple<bool, std::string>
   checkIfTemporalMergeableByScfForImpl(std::vector<Block *> a_loop_nest,
                                        std::vector<Block *> b_loop_nest) {
@@ -3758,57 +3779,23 @@ private:
     std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
     if (std::abs((int)a_loop_nest.size() - (int)b_loop_nest.size()) != 1)
       return notMergeable;
-    unsigned max_loop_nest_count =
-        std::max(a_loop_nest.size(), b_loop_nest.size());
-    // Skip over the unequal scf.for loop, and check equality for the rest of
-    // the loops first.
-    int outermostScfFor = -1;
-    for (unsigned i = 0; i < max_loop_nest_count; i++) {
-      unsigned scfForCount = 0;
-      if ((i < a_loop_nest.size()) &&
-          isa<scf::ForOp>(a_loop_nest[i]->getParentOp()))
-        scfForCount++;
-      if ((i < b_loop_nest.size()) &&
-          isa<scf::ForOp>(b_loop_nest[i]->getParentOp()))
-        scfForCount++;
-      if (scfForCount == 1)
-        outermostScfFor = (int)i;
-    }
-    if (outermostScfFor < 0)
-      return notMergeable;
-    SmallVector<unsigned> controlLoopIndices;
-    for (int i = 0; i < (int)max_loop_nest_count; i++)
-      if (i != outermostScfFor)
-        controlLoopIndices.push_back(i);
-    // TODO: Assuming a_loop_nest is before b_loop_nest. Always true? TODO:
-    // formalize using async dep.
-    unsigned index = 0;
+    scf::ForOp mismatchScfFor = scf::ForOp();
     if (a_loop_nest.size() < b_loop_nest.size()) {
-      for (auto i : controlLoopIndices) {
-        if (!areEquivalentControlLoops(a_loop_nest[index++], b_loop_nest[i]))
-          return notMergeable;
-      }
-      // Check if the skipped scf.for loop has LB >= 1. This is a sign of
-      // peeling, indicating opportunity of merge by unpeeling into LB.
-      auto outerMostScfFor =
-          dyn_cast<scf::ForOp>(b_loop_nest[outermostScfFor]->getParentOp());
-      assert(outerMostScfFor);
-      if (auto constLB = getConstantIntValue(outerMostScfFor.getLowerBound()))
+      auto mismatchScfFor = findMismatchControlLoop(b_loop_nest, a_loop_nest);
+      if (!mismatchScfFor)
+        return notMergeable;
+      if (auto constLB = getConstantIntValue(mismatchScfFor.getLowerBound()))
         if (*constLB < 1)
           return notMergeable;
+      // Merge by unpeeling into LB.
       return mergeableToLB;
     } else {
-      for (auto i : controlLoopIndices) {
-        if (!areEquivalentControlLoops(a_loop_nest[i], b_loop_nest[index++]))
-          return notMergeable;
-      }
+      auto mismatchScfFor = findMismatchControlLoop(a_loop_nest, b_loop_nest);
+      if (!mismatchScfFor)
+        return notMergeable;
       // Merge by unpeeling into UB.
-      [[maybe_unused]] auto outerMostScfFor =
-          dyn_cast<scf::ForOp>(a_loop_nest[outermostScfFor]->getParentOp());
-      assert(outerMostScfFor);
       return mergeableToUB;
     }
-    return mergeableToLB;
   }
   std::tuple<bool, std::string>
   checkIfTemporalMergeableImpl(std::vector<Block *> a_loop_nest,
@@ -4177,22 +4164,24 @@ private:
   void mergeChannelOpsTemporally(air::ChannelInterface a,
                                  air::ChannelInterface b,
                                  std::string mergeByLBOrUB) {
-    scf::ForOp parentForOp = a->getParentOfType<scf::ForOp>();
-    if (!parentForOp)
+    scf::ForOp mismatchScfFor =
+        findMismatchControlLoop(getParentLoopNest(a), getParentLoopNest(b));
+    if (!mismatchScfFor)
+      mismatchScfFor =
+          findMismatchControlLoop(getParentLoopNest(b), getParentLoopNest(a));
+    if (!mismatchScfFor)
       return;
-    while (parentForOp && parentForOp->getParentOfType<scf::ForOp>()) {
-      parentForOp = parentForOp->getParentOfType<scf::ForOp>();
-    }
-    OpBuilder builder(parentForOp);
+
+    OpBuilder builder(mismatchScfFor);
     if (mergeByLBOrUB == "LB") {
-      int originalLB = *getConstantIntValue(parentForOp.getLowerBound());
+      int originalLB = *getConstantIntValue(mismatchScfFor.getLowerBound());
       assert(originalLB > 0);
       int currLB = originalLB;
       if (a->hasAttr("setLB"))
         currLB = a->getAttrOfType<IntegerAttr>("setLB").getInt();
       a->setAttr("setLB", builder.getI32IntegerAttr(currLB - 1));
     } else if (mergeByLBOrUB == "UB") {
-      int originalUB = *getConstantIntValue(parentForOp.getUpperBound());
+      int originalUB = *getConstantIntValue(mismatchScfFor.getUpperBound());
       int currUB = originalUB;
       if (a->hasAttr("setUB"))
         currUB = a->getAttrOfType<IntegerAttr>("setUB").getInt();
