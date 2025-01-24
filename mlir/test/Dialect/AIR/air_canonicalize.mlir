@@ -363,6 +363,48 @@ func.func @chan_0(%arg0 : memref<4x1x64x64xbf16>, %arg1 : memref<1x4x64x64xbf16>
   return
 }
 
+// CHECK: func.func @chan_1
+// CHECK: %[[TOKEN0:.*]] = air.channel.put async  @channel_0
+// CHECK: %[[TOKEN1:.*]] = air.channel.put async  @channel_1
+func.func @chan_1(%arg0 : memref<4x1x64x64xbf16>) {
+  %1 = air.channel.put async  @channel_0[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  %2 = air.channel.put async [%1]  @channel_1[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  return
+}
+
+// CHECK: func.func @chan_2
+// CHECK: %[[TOKEN0:.*]] = air.channel.get async  @channel_0
+// CHECK: %[[TOKEN1:.*]] = air.channel.get async [%[[TOKEN0]]] @channel_1
+func.func @chan_2(%arg0 : memref<4x1x64x64xbf16>) {
+  %0 = air.channel.get async  @channel_0[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  %1 = air.channel.get async [%0]  @channel_1[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  return
+}
+
+// CHECK: func.func @chan_3
+// CHECK: %[[TOKEN0:.*]] = air.channel.get async  @channel_0
+// CHECK: %[[TOKEN1:.*]] = air.channel.put async [%[[TOKEN0]]] @channel_1
+func.func @chan_3(%arg0 : memref<4x1x64x64xbf16>) {
+  %0 = air.channel.get async  @channel_0[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  %1 = air.wait_all async [%0]
+  %2 = air.channel.put async [%1]  @channel_1[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  return
+}
+
+// CHECK: func.func @chan_4
+// CHECK: %[[TOKEN0:.*]] = air.channel.get async  @channel_0
+// CHECK: %[[TOKEN1:.*]] = air.channel.get async  @channel_1
+// CHECK: %[[TOKEN2:.*]] = air.channel.put async [%[[TOKEN0]]] @channel_2
+// CHECK: %[[TOKEN3:.*]] = air.channel.put async [%[[TOKEN1]]] @channel_3
+func.func @chan_4(%arg0 : memref<4x1x64x64xbf16>, %arg1 : memref<4x1x64x64xbf16>) {
+  %0 = air.channel.get async  @channel_0[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  %1 = air.channel.get async  @channel_1[] (%arg1[] [] []) : (memref<4x1x64x64xbf16>)
+  %2 = air.wait_all async [%0, %1]
+  %3 = air.channel.put async [%2]  @channel_2[] (%arg0[] [] []) : (memref<4x1x64x64xbf16>)
+  %4 = air.channel.put async [%2]  @channel_3[] (%arg1[] [] []) : (memref<4x1x64x64xbf16>)
+  return
+}
+
 // CHECK: func.func @dma_compose_subview
 // CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]
 func.func @dma_compose_subview() {
