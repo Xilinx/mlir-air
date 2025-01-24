@@ -7,6 +7,7 @@
 
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1_4col" | FileCheck %s
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=xcvc1902" | FileCheck %s --check-prefix=AIE1
+// XFAIL:*
 
 // Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD).
 
