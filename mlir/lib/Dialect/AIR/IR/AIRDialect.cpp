@@ -295,12 +295,23 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
   auto memrefsReadBySinkOp = getAllMemrefsReadByOp(op.getOperation());
   auto memrefsWrittenBySinkOp = getAllMemrefsWrittenByOp(op.getOperation());
   // make a list of new async token operands
+  std::function<void(SmallVector<Value>, SmallVector<Value> &)>
+      getDirectDependenciesGreedily;
+  getDirectDependenciesGreedily = [&getDirectDependenciesGreedily](
+                                      SmallVector<Value> depList,
+                                      SmallVector<Value> &directDeps) {
+    for (auto v : depList) {
+      if (auto wa = dyn_cast_if_present<air::WaitAllOp>(v.getDefiningOp()))
+        getDirectDependenciesGreedily(wa.getAsyncDependencies(), directDeps);
+      else
+        directDeps.push_back(v);
+    }
+    return;
+  };
   llvm::SetVector<Value> newAsyncDeps; // don't include duplicates
-  for (auto v : op.getAsyncDependencies()) {
-    // don't include wait_all ops with no operands
-    if (auto wa = dyn_cast_if_present<WaitAllOp>(v.getDefiningOp()))
-      if (wa.getAsyncDependencies().size() == 0)
-        continue;
+  SmallVector<Value> directDeps;
+  getDirectDependenciesGreedily(op.getAsyncDependencies(), directDeps);
+  for (auto v : directDeps) {
     // don't include any false dependencies, i.e. sink does not depend on source
     // in RAW, WAR or WAW; RAR is a false dependency
     if (v.getDefiningOp()) {
