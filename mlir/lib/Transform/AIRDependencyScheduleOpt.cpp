@@ -4112,7 +4112,7 @@ private:
           b->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
       if (aHierSym && bHierSym && aHierSym.str() == bHierSym.str())
         return true;
-    } else if (isa<affine::AffineIfOp>(a) || isa<affine::AffineIfOp>(b)) {
+    } else if (isa<affine::AffineIfOp>(a) && isa<affine::AffineIfOp>(b)) {
       if (a == b)
         return false; // Sharing the same affine.if means spatially parallel
                       // ops. Cannot merge by for loop (i.e. in time).
