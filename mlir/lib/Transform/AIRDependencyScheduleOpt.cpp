@@ -5617,11 +5617,6 @@ public:
     air::applyAIRSpecializeChannelWrapAndStridePattern(
         &func.getRegion(),
         /*maxNumDims*/ maxNumDims, /*enableForLoopUnrolling*/ false);
-
-    // TODO: Loop fusion is commented out below. To revise later if we should
-    // drop loop fusion. MLIRContext *ctx = &getContext(); RewritePatternSet
-    // patterns(ctx); populateAIRLoopFusionPattern(patterns);
-    // (void)applyPatternsGreedily(func, std::move(patterns));
   }
 
 private:
