@@ -16,14 +16,18 @@ module {
   // Specialize two inner-most for loops into the wrap-and-stride list, and leave one outer-most for loop unchanged.
 
   // CHECK-LABEL: func0
-  // CHECK: scf.for %[[EVENT0:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[EVENT1:.*]] = %{{.*}}) -> (!air.async.token) {
-  // CHECK-NEXT: %[[EVENT2:.*]] = air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[EVENT0]], %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId22} : (memref<512x512xbf16>)
-  // CHECK-NEXT: %[[EVENT3:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[EVENT0]], %c32768{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId23} : (memref<512x512xbf16>)
-  // CHECK-NEXT: %[[EVENT4:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[EVENT0]], %c65536{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId24} : (memref<512x512xbf16>)
-  // CHECK-NEXT: %[[EVENT5:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[EVENT0]], %c98304{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId25} : (memref<512x512xbf16>)
-  // CHECK-NEXT: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT2]], %[[EVENT3]], %[[EVENT4]], %[[EVENT5]]] 
-  // CHECK-NEXT: scf.yield %[[EVENT6]] : !air.async.token
-  // CHECK-NEXT: }
+  // CHECK: scf.for %[[FOR0IV:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[FOR0IA:.*]] = %{{.*}})
+  // CHECK: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[FOR0IV]], %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId22} : (memref<512x512xbf16>)
+  // CHECK: scf.yield %[[PUT0]] : !air.async.token
+  // CHECK: scf.for %[[FOR1IV:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[FOR1IA:.*]] = %{{.*}})
+  // CHECK: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[FOR1IV]], %c32768{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId23} : (memref<512x512xbf16>)
+  // CHECK: scf.yield %[[PUT1]] : !air.async.token
+  // CHECK: scf.for %[[FOR2IV:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[FOR2IA:.*]] = %{{.*}})
+  // CHECK: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[FOR2IV]], %c65536{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId24} : (memref<512x512xbf16>)
+  // CHECK: scf.yield %[[PUT2]] : !air.async.token
+  // CHECK: scf.for %[[FOR3IV:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[FOR3IA:.*]] = %{{.*}})
+  // CHECK: %[[PUT3:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[FOR3IV]], %c98304{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId25} : (memref<512x512xbf16>)
+  // CHECK: scf.yield %[[PUT3]] : !air.async.token
   
   // AIE1-LABEL: func0
   // AIE1-COUNT-3: scf.for
@@ -68,16 +72,21 @@ module {
   // The second to fourth air.channel.puts can only fold one inner-most for loop into wrap-and-stride list due to having non-zero offsets at 3rd dimension.
 
   // CHECK: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId26} : (memref<512x512xbf16>)
-  // CHECK: scf.for %[[EVENT0:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%{{.*}} = %{{.*}})
-  // CHECK-NEXT: %[[EVENT2:.*]] = scf.for %[[EVENT1:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%{{.*}} = %{{.*}})
-  // CHECK: %[[EVENT3:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c1{{.*}}, %c0{{.*}}, %[[EVENT1]]] [%c8{{.*}}, %c1{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId27} : (memref<512x512xbf16>)
-  // CHECK: %[[EVENT4:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c2{{.*}}, %c0{{.*}}, %[[EVENT1]]] [%c8{{.*}}, %c1{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId28} : (memref<512x512xbf16>)
-  // CHECK: %[[EVENT5:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c3{{.*}}, %c0{{.*}}, %[[EVENT1]]] [%c8{{.*}}, %c1{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId29} : (memref<512x512xbf16>)
-  // CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT4]], %[[EVENT5]]] 
-  // CHECK: scf.yield %[[EVENT6]] : !air.async.token
-  // CHECK: }
-  // CHECK: scf.yield %[[EVENT2]] : !air.async.token
-  // CHECK: }
+  // CHECK: scf.for %[[FOR0IV:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%{{.*}} = %{{.*}})
+  // CHECK-NEXT: %[[FOR3IV:.*]] = scf.for %[[FOR0IA:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%{{.*}} = %{{.*}})
+  // CHECK: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c1{{.*}}, %c0{{.*}}, %[[FOR0IA]]] [%c8{{.*}}, %c1{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId27} : (memref<512x512xbf16>)
+  // CHECK: scf.yield %[[PUT0]] : !air.async.token
+  // CHECK: scf.yield %[[FOR3IV]] : !air.async.token
+  // CHECK: scf.for %[[FOR1IV:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%{{.*}} = %{{.*}})
+  // CHECK-NEXT: %[[FOR4IV:.*]] = scf.for %[[FOR1IA:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%{{.*}} = %{{.*}})
+  // CHECK: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c2{{.*}}, %c0{{.*}}, %[[FOR1IA]]] [%c8{{.*}}, %c1{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId28} : (memref<512x512xbf16>)
+  // CHECK: scf.yield %[[PUT1]] : !air.async.token
+  // CHECK: scf.yield %[[FOR4IV]] : !air.async.token
+  // CHECK: scf.for %[[FOR2IV:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%{{.*}} = %{{.*}})
+  // CHECK-NEXT: %[[FOR5IV:.*]] = scf.for %[[FOR2IA:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%{{.*}} = %{{.*}})
+  // CHECK: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c3{{.*}}, %c0{{.*}}, %[[FOR2IA]]] [%c8{{.*}}, %c1{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c32768{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId29} : (memref<512x512xbf16>)
+  // CHECK: scf.yield %[[PUT2]] : !air.async.token
+  // CHECK: scf.yield %[[FOR5IV]] : !air.async.token
   
   // AIE1-LABEL: func1
   // AIE1-COUNT-3: scf.for

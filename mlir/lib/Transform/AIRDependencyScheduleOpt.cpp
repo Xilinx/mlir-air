@@ -5603,7 +5603,6 @@ public:
 
   void runOnOperation() override {
     auto func = getOperation();
-    MLIRContext *ctx = &getContext();
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
       func.emitOpError("Invalid aie.device option");
@@ -5618,9 +5617,6 @@ public:
     air::applyAIRSpecializeChannelWrapAndStridePattern(
         &func.getRegion(),
         /*maxNumDims*/ maxNumDims, /*enableForLoopUnrolling*/ false);
-    RewritePatternSet patterns(ctx);
-    populateAIRLoopFusionPattern(patterns);
-    (void)applyPatternsGreedily(func, std::move(patterns));
   }
 
 private:
