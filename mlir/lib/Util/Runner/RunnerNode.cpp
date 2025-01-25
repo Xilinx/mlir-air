@@ -1666,35 +1666,10 @@ private:
   unsigned getSizeThroughAffineIf(Operation *op, Operation *spatial_loop,
                                   std::vector<Operation *> affine_if_nest) {
     unsigned output = 1;
-    SmallVector<int, 2> lbs_spatial;
-    SmallVector<int, 2> ubs_spatial;
-    getSizesFromSpatialLoop(spatial_loop, lbs_spatial, ubs_spatial);
-
-    // Walk through affine.if nest (in reverse order through vector)
-    for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
-      auto affine_if = dyn_cast<affine::AffineIfOp>(*it);
-      // Get then integerset sizes
-      SmallVector<int, 2> lbs_int = {0, 0};
-      SmallVector<int, 2> ubs_int = {0, 0};
-      IntegerSet int_set = affine_if.getIntegerSet();
-      getSizesFromIntegerSet(affine_if->getContext(), int_set, lbs_int,
-                             ubs_int);
-      // If found then block containing op
-      if (affine_if.getThenBlock()->findAncestorOpInBlock(*op)) {
-        for (unsigned i = 0; i < lbs_int.size(); i++) {
-          output *= ubs_int[i] - lbs_int[i] + 1;
-        }
-        return output;
-      }
-      // Else keep going, while updating the spatial sizes wrt else condition
-      else {
-        getElseSizesFromAffineIf(lbs_spatial, ubs_spatial, lbs_int, ubs_int);
-      }
-    }
-    // If op isn't in any then blocks in affine.if nest
-    for (unsigned i = 0; i < lbs_spatial.size(); i++) {
-      output *= ubs_spatial[i] - lbs_spatial[i] + 1;
-    }
+    auto conditionBounds = air::getRectangularConditionBoundsThroughAffineIfs(
+        op, spatial_loop, affine_if_nest);
+    for (auto [lbs_int, ubs_int] : conditionBounds)
+      output *= ubs_int - lbs_int + 1;
     return output;
   }
 
