@@ -638,12 +638,27 @@ LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
     return failure();
 
   // Clone ops
-  unsigned dma_index = 0;
-  for (size_t i = 0; i < dmas.size(); i++) {
+  for (size_t dma_index = 0; dma_index < dmas.size(); dma_index++) {
+    // Fast forward through affine.if nest
+    std::vector<Operation *> affine_if_nest;
+    Operation *spatial_loop = nullptr;
+    (void)air::getAffineIfNestAndSpatialLoopFromOp(
+        externalGetPut[dma_index], affine_if_nest, spatial_loop);
+    auto conditionBounds = getRectangularConditionBoundsThroughAffineIfs(
+        externalGetPut[dma_index], spatial_loop, affine_if_nest);
     // Get mapping for remapped ssa values entering the hoisted scf.parallel
     IRMapping remap;
-    remap.map(herd.getIds()[0], zero_const_op);
-    remap.map(herd.getIds()[1], zero_const_op);
+    for (size_t herdDim = 0; herdDim < herd.getNumDims(); herdDim++) {
+      auto [conditionLB, conditionUB] = conditionBounds[herdDim];
+      if (conditionLB == conditionUB) {
+        // Induction var at herdDim becomes const under this condition.
+        auto constIV = module_builder.create<arith::ConstantIndexOp>(
+            module_builder.getUnknownLoc(), conditionLB);
+        remap.map(herd.getIds()[herdDim], constIV);
+      } else
+        remap.map(herd.getIds()[herdDim], zero_const_op);
+    }
+
     int arg_idx = 0;
     if (externalMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
         segment) {
@@ -720,7 +735,6 @@ LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
     for (auto o : clonedOps)
       for (auto d : air::getAsyncDependenciesFromOp(hier_op))
         air::addAsyncDependencyIfNew(o, d);
-    dma_index++;
   }
 
   module.walk([&](mlir::Operation *o) {
