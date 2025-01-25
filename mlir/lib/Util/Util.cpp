@@ -698,6 +698,46 @@ Operation *air::getAffineIfNestAndSpatialLoopFromOp(
   return parent;
 }
 
+// Evaluate the condition lower and upper boundaries that the specified op is
+// hitting, from an affine if nest. Assumes a rectangular condition bound
+// region.
+SmallVector<std::pair<int, int>>
+air::getRectangularConditionBoundsThroughAffineIfs(
+    Operation *op, Operation *spatial_loop,
+    std::vector<Operation *> affine_if_nest) {
+  SmallVector<int, 2> lbs_spatial;
+  SmallVector<int, 2> ubs_spatial;
+  air::getSizesFromSpatialLoop(spatial_loop, lbs_spatial, ubs_spatial);
+
+  // Walk through affine.if nest (in reverse order through vector)
+  for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
+    auto affine_if = dyn_cast<affine::AffineIfOp>(*it);
+    // Get then integerset sizes
+    SmallVector<int, 2> lbs_int = {0, 0};
+    SmallVector<int, 2> ubs_int = {0, 0};
+    IntegerSet int_set = affine_if.getIntegerSet();
+    air::getSizesFromIntegerSet(affine_if->getContext(), int_set, lbs_int,
+                                ubs_int);
+    // If found then block containing op
+    SmallVector<std::pair<int, int>> conditionBounds; // <LB, UB>
+    if (affine_if.getThenBlock()->findAncestorOpInBlock(*op)) {
+      for (unsigned i = 0; i < lbs_int.size(); i++)
+        conditionBounds.push_back(std::make_pair(lbs_int[i], ubs_int[i]));
+      return conditionBounds;
+    }
+    // Else keep going, while updating the spatial sizes wrt else condition
+    else {
+      air::getElseSizesFromAffineIf(lbs_spatial, ubs_spatial, lbs_int, ubs_int);
+    }
+  }
+
+  // If op isn't in any then blocks in affine.if nest
+  SmallVector<std::pair<int, int>> conditionBounds; // <LB, UB>
+  for (unsigned i = 0; i < lbs_spatial.size(); i++)
+    conditionBounds.push_back(std::make_pair(lbs_spatial[i], ubs_spatial[i]));
+  return conditionBounds;
+}
+
 // Check if an operand of an operation is read or write access
 char air::checkOpOperandReadOrWrite(Value v, Operation *owner) {
   for (auto &op_operand : owner->getOpOperands()) {

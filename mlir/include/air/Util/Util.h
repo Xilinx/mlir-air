@@ -118,6 +118,10 @@ getAffineIfNestAndSpatialLoopFromOp(Operation *op,
                                     std::vector<Operation *> &affine_if_nest,
                                     Operation *&spatial_loop);
 
+SmallVector<std::pair<int, int>> getRectangularConditionBoundsThroughAffineIfs(
+    Operation *op, Operation *spatial_loop,
+    std::vector<Operation *> affine_if_nest);
+
 struct LinalgTransforms {
   static const StringLiteral kLinalgTransformMarker;
 };
