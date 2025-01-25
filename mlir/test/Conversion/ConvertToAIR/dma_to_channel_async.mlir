@@ -221,3 +221,84 @@ module {
     return
   }
 }
+
+// -----
+
+// CHECK-LABEL: @func2
+// CHECK: air.segment
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: scf.for
+
+// CHECK: %[[TOK0:.*]], %[[EXEC0:.*]] = air.execute
+// CHECK-NEXT: affine.apply {{.*}}[%{{.*}}, %c0{{.*}}]
+// CHECK: air.channel.put async{{.*}}@channel_0[] (%{{.*}}[%[[EXEC0]], 
+// CHECK: %[[TOK1:.*]], %[[EXEC1:.*]] = air.execute
+// CHECK-NEXT: affine.apply {{.*}}[%{{.*}}, %c1{{.*}}]
+// CHECK: air.channel.put async{{.*}}@channel_1[] (%{{.*}}[%[[EXEC1]], 
+// CHECK: air.herd
+
+#map = affine_map<()[s0, s1] -> (s0 + s1)>
+#set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
+#set1 = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0, -s1 + 1 >= 0)>
+module {
+  func.func @func2() {
+    %c2 = arith.constant 2 : index
+    %c16 = arith.constant 16 : index
+    %0 = air.launch async (%arg3, %arg4) in (%arg5=%c2, %arg6=%c16) attributes {id = 5 : i32} {
+      %1 = air.segment @segment_0 async  attributes {id = 4 : i32} {
+        %c15 = arith.constant 15 : index
+        %c4 = arith.constant 4 : index
+        %c2_0 = arith.constant 2 : index
+        %c1 = arith.constant 1 : index
+        %c8 = arith.constant 8 : index
+        %c0 = arith.constant 0 : index
+        %async_token, %results = air.execute -> (memref<1x1x4x8x4x8xbf16, 2 : i32>) {
+          %alloc = memref.alloc() : memref<1x1x4x8x4x8xbf16, 2 : i32>
+          air.execute_terminator %alloc : memref<1x1x4x8x4x8xbf16, 2 : i32>
+        } {id = 7 : i32}
+        %async_token_1, %results_2 = air.execute -> (memref<8x16x32x32xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<8x16x32x32xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<8x16x32x32xbf16, 1 : i32>
+        } {id = 9 : i32}
+        scf.for %arg7 = %c0 to %c8 step %c4 {
+          scf.for %arg8 = %c0 to %c8 step %c4 {
+            %2 = scf.for %arg9 = %c1 to %c15 step %c1 iter_args(%arg10 = %async_token) -> (!air.async.token) {
+              %3 = air.herd @herd_0 async [%arg10]  tile (%arg11, %arg12) in (%arg13=%c2_0, %arg14=%c2_0) args(%arg15=%arg7, %arg16=%results, %arg17=%results_2, %arg18=%arg9) : index, memref<1x1x4x8x4x8xbf16, 2 : i32>, memref<8x16x32x32xbf16, 1 : i32>, index attributes {id = 2 : i32, link_with = "mm.o"} {
+                %c0_5 = arith.constant 0 : index
+                %c1_6 = arith.constant 1 : index
+                %c4_7 = arith.constant 4 : index
+                %c8_8 = arith.constant 8 : index
+                %c16384 = arith.constant 16384 : index
+                %c1024 = arith.constant 1024 : index
+                %c128 = arith.constant 128 : index
+                %c32 = arith.constant 32 : index
+                %async_token_9, %results_10 = air.execute -> (index) {
+                  %5 = affine.apply #map()[%arg15, %arg11]
+                  air.execute_terminator %5 : index
+                } {id = 16 : i32}
+                %4 = affine.if #set()[%arg11, %arg12] -> !air.async.token {
+                  %5 = air.dma_memcpy_nd async [%async_token_9] (%arg16[] [] [], %arg17[%results_10, %arg18, %c0_5, %c0_5, %c0_5, %c0_5] [%c1_6, %c1_6, %c4_7, %c8_8, %c4_7, %c8_8] [%c16384, %c1024, %c8_8, %c128, %c32, %c1_6]) {broadcast_set = #set, id = 11 : i32} : (memref<1x1x4x8x4x8xbf16, 2 : i32>, memref<8x16x32x32xbf16, 1 : i32>)
+                  affine.yield %5 : !air.async.token
+                } else {
+                  %5 = air.dma_memcpy_nd async [%async_token_9] (%arg16[] [] [], %arg17[%results_10, %arg18, %c0_5, %c0_5, %c0_5, %c0_5] [%c1_6, %c1_6, %c4_7, %c8_8, %c4_7, %c8_8] [%c16384, %c1024, %c8_8, %c128, %c32, %c1_6]) {broadcast_set = #set1, id = 12 : i32} : (memref<1x1x4x8x4x8xbf16, 2 : i32>, memref<8x16x32x32xbf16, 1 : i32>)
+                  affine.yield %5 : !air.async.token
+                }
+              }
+              scf.yield %3 : !air.async.token
+            }
+          }
+        }
+        %async_token_3 = air.execute {
+          memref.dealloc %results_2 : memref<8x16x32x32xbf16, 1 : i32>
+        } {id = 22 : i32}
+        %async_token_4 = air.execute [%async_token] {
+          memref.dealloc %results : memref<1x1x4x8x4x8xbf16, 2 : i32>
+        } {id = 24 : i32}
+      }
+    }
+    return
+  }
+}
+
+

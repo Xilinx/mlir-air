@@ -639,24 +639,24 @@ LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
 
   // Clone ops
   for (size_t dma_index = 0; dma_index < dmas.size(); dma_index++) {
-    // Fast forward through affine.if nest
-    std::vector<Operation *> affine_if_nest;
-    Operation *spatial_loop = nullptr;
-    (void)air::getAffineIfNestAndSpatialLoopFromOp(
-        externalGetPut[dma_index], affine_if_nest, spatial_loop);
-    auto conditionBounds = getRectangularConditionBoundsThroughAffineIfs(
-        externalGetPut[dma_index], spatial_loop, affine_if_nest);
     // Get mapping for remapped ssa values entering the hoisted scf.parallel
     IRMapping remap;
+    auto is = dmas[dma_index]
+                  ->getAttrOfType<IntegerSetAttr>("broadcast_set")
+                  .getValue();
     for (size_t herdDim = 0; herdDim < herd.getNumDims(); herdDim++) {
-      auto [conditionLB, conditionUB] = conditionBounds[herdDim];
-      if (conditionLB == conditionUB) {
-        // Induction var at herdDim becomes const under this condition.
+      remap.map(herd.getIds()[herdDim], zero_const_op);
+      for (unsigned i = 0; i < is.getNumConstraints(); i++) {
+        if (!is.isEq(i))
+          continue;
+        auto c = is.getConstraint(i);
+        if (!c.isFunctionOfSymbol(herdDim))
+          continue;
         auto constIV = module_builder.create<arith::ConstantIndexOp>(
-            module_builder.getUnknownLoc(), conditionLB);
+            module_builder.getUnknownLoc(),
+            air::evaluateSymbolEqualityInSet(c, ctx));
         remap.map(herd.getIds()[herdDim], constIV);
-      } else
-        remap.map(herd.getIds()[herdDim], zero_const_op);
+      }
     }
 
     int arg_idx = 0;

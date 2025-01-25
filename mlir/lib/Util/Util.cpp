@@ -738,6 +738,22 @@ air::getRectangularConditionBoundsThroughAffineIfs(
   return conditionBounds;
 }
 
+// Evaluate the integer value of affine set expression if the only symbolic
+// identifier is replaced with zero
+int air::evaluateSymbolEqualityInSet(AffineExpr c, MLIRContext *ctx) {
+  assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
+  SmallVector<AffineExpr, 2> zero_syms{
+      getAffineConstantExpr(0, ctx),
+      getAffineConstantExpr(0, ctx),
+  };
+  auto newC = c.replaceSymbols(zero_syms);
+  auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
+  assert(expr);
+  int result = expr.getValue();
+  // Both + and - constant eval are legal for AffineExpr
+  return (result >= 0) ? (result) : (-result);
+}
+
 // Check if an operand of an operation is read or write access
 char air::checkOpOperandReadOrWrite(Value v, Operation *owner) {
   for (auto &op_operand : owner->getOpOperands()) {
