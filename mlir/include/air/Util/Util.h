@@ -118,6 +118,17 @@ getAffineIfNestAndSpatialLoopFromOp(Operation *op,
                                     std::vector<Operation *> &affine_if_nest,
                                     Operation *&spatial_loop);
 
+// Evaluate the condition lower and upper boundaries that the specified op is
+// hitting, from an affine if nest. Assumes a rectangular condition bound
+// region.
+SmallVector<std::pair<int, int>> getRectangularConditionBoundsThroughAffineIfs(
+    Operation *op, Operation *spatial_loop,
+    std::vector<Operation *> affine_if_nest);
+
+// Evaluate the integer value of affine set expression if the only symbolic
+// identifier is replaced with zero
+int evaluateSymbolEqualityInSet(AffineExpr c, MLIRContext *ctx);
+
 struct LinalgTransforms {
   static const StringLiteral kLinalgTransformMarker;
 };

@@ -531,13 +531,14 @@ static void replaceAIRDmaWithAIRChannelPairs(
   internalGetPutVector.push_back(internalGetPut);
 }
 
-static void HoistingAffineIf(affine::AffineIfOp op) {
+LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
   auto ctx = op->getContext();
 
   air::HierarchyInterface hier_op = nullptr;
   unsigned int innerMemorySpace = 0;
   auto herd = op->getParentOfType<air::HerdOp>();
-  assert(herd && "affine if op has no air.herdOp as parent");
+  if (!herd)
+    return failure();
   auto segment = op->getParentOfType<air::SegmentOp>();
   if (herd) {
     hier_op = dyn_cast<air::HierarchyInterface>(herd.getOperation());
@@ -631,16 +632,33 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
       module_builder.getUnknownLoc(), 0);
 
   // Check for op buffer sizes
-  assert(internalGetPut.size() == externalGetPut.size());
-  assert(externalGetPut.size() == dmas.size());
+  if (internalGetPut.size() != externalGetPut.size())
+    return failure();
+  if (externalGetPut.size() != dmas.size())
+    return failure();
 
   // Clone ops
-  unsigned dma_index = 0;
-  for (size_t i = 0; i < dmas.size(); i++) {
+  for (size_t dma_index = 0; dma_index < dmas.size(); dma_index++) {
     // Get mapping for remapped ssa values entering the hoisted scf.parallel
     IRMapping remap;
-    remap.map(herd.getIds()[0], zero_const_op);
-    remap.map(herd.getIds()[1], zero_const_op);
+    auto is = dmas[dma_index]
+                  ->getAttrOfType<IntegerSetAttr>("broadcast_set")
+                  .getValue();
+    for (size_t herdDim = 0; herdDim < herd.getNumDims(); herdDim++) {
+      remap.map(herd.getIds()[herdDim], zero_const_op);
+      for (unsigned i = 0; i < is.getNumConstraints(); i++) {
+        if (!is.isEq(i))
+          continue;
+        auto c = is.getConstraint(i);
+        if (!c.isFunctionOfSymbol(herdDim))
+          continue;
+        auto constIV = module_builder.create<arith::ConstantIndexOp>(
+            module_builder.getUnknownLoc(),
+            air::evaluateSymbolEqualityInSet(c, ctx));
+        remap.map(herd.getIds()[herdDim], constIV);
+      }
+    }
+
     int arg_idx = 0;
     if (externalMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
         segment) {
@@ -717,7 +735,6 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
     for (auto o : clonedOps)
       for (auto d : air::getAsyncDependenciesFromOp(hier_op))
         air::addAsyncDependencyIfNew(o, d);
-    dma_index++;
   }
 
   module.walk([&](mlir::Operation *o) {
@@ -735,6 +752,8 @@ static void HoistingAffineIf(affine::AffineIfOp op) {
   for (auto &dma : dmas) {
     dma->erase();
   }
+
+  return success();
 }
 
 namespace {
@@ -1402,7 +1421,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       f.walk([&](affine::AffineIfOp op) {
         if (!op->getParentOfType<affine::AffineIfOp>()) {
           // Only hoist top-level affine if op with a nest of if ops
-          HoistingAffineIf(op);
+          auto res = HoistingAffineIf(op);
+          if (failed(res))
+            signalPassFailure();
         }
       });
     }
