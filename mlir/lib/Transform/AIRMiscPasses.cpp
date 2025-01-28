@@ -1280,14 +1280,27 @@ std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
     for (unsigned j = i + 1; j < putgets.size(); j++) {
       if (putgets[i].getOffsets().size() != putgets[j].getOffsets().size())
         continue;
-      for (unsigned k = 0; k < putgets[i].getOffsets().size(); k++) {
-        if (getConstantIntValue(putgets[i].getOffsets()[k]) &&
-            getConstantIntValue(putgets[j].getOffsets()[k])) {
-          if (*getConstantIntValue(putgets[i].getOffsets()[k]) !=
-              *getConstantIntValue(putgets[j].getOffsets()[k]))
-            memrefDim = k;
-        }
-      }
+      auto offsetZip =
+          llvm::zip_equal(putgets[i].getOffsets(), putgets[j].getOffsets());
+      auto d =
+          llvm::find_if(offsetZip, [](std::tuple<Value, Value> offsetPair) {
+            auto [o1, o2] = offsetPair;
+            auto defO1 = o1.getDefiningOp();
+            auto defO2 = o2.getDefiningOp();
+            if (defO1 && defO2) {
+              if (OperationEquivalence::isEquivalentTo(
+                      defO1, defO2,
+                      OperationEquivalence::ignoreValueEquivalence,
+                      /*markEquivalent=*/nullptr,
+                      OperationEquivalence::IgnoreLocations))
+                return false;
+              else
+                return true;
+            }
+            return false;
+          });
+      if (d != offsetZip.end())
+        memrefDim = std::distance(offsetZip.begin(), d);
     }
   }
   // Match offset dims with memref dims.
@@ -1320,6 +1333,20 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy> targetMemrefsToInfoMap;
   // Map between the target memref alloc ops and all column-wise tiling factors
   // per alloc.
+
+  // If there is an affine.apply operating on offsets[split_dim], then
+  // log the affine.map.
+  auto getAffineMapOnMemrefSplitDim = [](air::ChannelInterface chanOp,
+                                         int splitDim) {
+    auto offsetDefOp = chanOp.getOffsets()[splitDim].getDefiningOp();
+    affine::AffineApplyOp apply =
+        dyn_cast_if_present<affine::AffineApplyOp>(offsetDefOp);
+    if (auto exec = dyn_cast_if_present<air::ExecuteOp>(offsetDefOp))
+      for (auto &child_op : exec.getChildOps())
+        if (auto apply_child_op = dyn_cast<affine::AffineApplyOp>(child_op))
+          apply = apply_child_op;
+    return apply;
+  };
   for (auto allocOp : allocOps) {
     Value memref = allocOp.getMemref();
     if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
@@ -1363,21 +1390,6 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
               }
               return splitDim;
             };
-
-        // If there is an affine.apply operating on offsets[split_dim], then
-        // log the affine.map.
-        auto getAffineMapOnMemrefSplitDim = [](air::ChannelInterface chanOp,
-                                               int splitDim) {
-          auto offsetDefOp = chanOp.getOffsets()[splitDim].getDefiningOp();
-          affine::AffineApplyOp apply =
-              dyn_cast_if_present<affine::AffineApplyOp>(offsetDefOp);
-          if (auto exec = dyn_cast_if_present<air::ExecuteOp>(offsetDefOp))
-            for (auto &child_op : exec.getChildOps())
-              if (auto apply_child_op =
-                      dyn_cast<affine::AffineApplyOp>(child_op))
-                apply = apply_child_op;
-          return apply;
-        };
 
         allocOp->setAttr("split", BoolAttr::get(ctx, true));
         allocOp->setAttr("split_type", StringAttr::get(ctx, "scf.parallel"));
@@ -1454,7 +1466,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     int tilingFactor = 1;
     AffineMap applyMap;
     std::optional<int> splitDimSize = std::nullopt;
-    std::optional<int> split_dim = std::nullopt;
+    std::optional<int> splitDim = std::nullopt;
     if (MM2SChannels.size() > 1) {
       tilingFactor = MM2SChannels.size();
       targetMemrefsToColTilingFactors[allocOp].push_back(tilingFactor);
@@ -1463,17 +1475,33 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       for (auto chanOp : MM2SChannels)
         for (auto put : air::getChannelPutOpThroughSymbol(chanOp))
           putgets.push_back(put);
-      split_dim =
+      splitDim =
           getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
-      if (split_dim)
-        allocOp->setAttr(
-            "split_dim",
-            IntegerAttr::get(IntegerType::get(ctx, 32), *split_dim));
+      if (splitDim) {
+        if (allocOp->hasAttr("split_dim"))
+          assert(allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt() ==
+                     *splitDim &&
+                 "L2 memref tiled inconsistently across multiple data access "
+                 "patterns. Cannot infer L2 memref tiling strategy.");
+        else {
+          if (*splitDim >= 0)
+            allocOp->setAttr(
+                "split_dim",
+                IntegerAttr::get(IntegerType::get(ctx, 32), *splitDim));
+          assert(*splitDim >= 0 && "failed to get split dimension");
+        }
+
+        auto apply = getAffineMapOnMemrefSplitDim(putgets.front(), *splitDim);
+        if (apply) {
+          applyMap = apply.getAffineMap();
+          allocOp->setAttr("affine_map", AffineMapAttr::get(applyMap));
+        }
+      }
       infoEntryTy newEntry = {
           tilingFactor, applyMap,
           splitDimSize}; //<split_factor, split_affine_map, split_size>
       llvm::MapVector<int, infoEntryTy> infoEntryMap;
-      infoEntryMap[*split_dim] = newEntry;
+      infoEntryMap[*splitDim] = newEntry;
       targetMemrefsToInfoMap[allocOp] = std::make_pair(
           "MM2SChannels",
           infoEntryMap); // typedef std::pair<std::string, llvm::DenseMap<int,
@@ -1487,17 +1515,33 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       for (auto chanOp : MM2SChannels)
         for (auto get : air::getChannelGetOpThroughSymbol(chanOp))
           putgets.push_back(get);
-      split_dim =
+      splitDim =
           getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
-      if (split_dim)
-        allocOp->setAttr(
-            "split_dim",
-            IntegerAttr::get(IntegerType::get(ctx, 32), *split_dim));
+      if (splitDim) {
+        if (allocOp->hasAttr("split_dim"))
+          assert(allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt() ==
+                     *splitDim &&
+                 "L2 memref tiled inconsistently across multiple data access "
+                 "patterns. Cannot infer L2 memref tiling strategy.");
+        else {
+          if (*splitDim >= 0)
+            allocOp->setAttr(
+                "split_dim",
+                IntegerAttr::get(IntegerType::get(ctx, 32), *splitDim));
+          assert(*splitDim >= 0 && "failed to get split dimension");
+        }
+
+        auto apply = getAffineMapOnMemrefSplitDim(putgets.front(), *splitDim);
+        if (apply) {
+          applyMap = apply.getAffineMap();
+          allocOp->setAttr("affine_map", AffineMapAttr::get(applyMap));
+        }
+      }
       infoEntryTy newEntry = {
           tilingFactor, applyMap,
           splitDimSize}; //<split_factor, split_affine_map, split_size>
       llvm::MapVector<int, infoEntryTy> infoEntryMap;
-      infoEntryMap[*split_dim] = newEntry;
+      infoEntryMap[*splitDim] = newEntry;
       targetMemrefsToInfoMap[allocOp] = std::make_pair(
           "S2MMChannels",
           infoEntryMap); // typedef std::pair<std::string, llvm::DenseMap<int,
