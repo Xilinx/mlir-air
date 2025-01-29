@@ -380,6 +380,9 @@ module {
     memref.global "public" @airMemcpyId21 : memref<64x64xi32, 1>
   } {sym_name = "segment_0"}
   airrt.module_metadata{
+    airrt.segment_metadata attributes {sym_name = "segment_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
   }
   func.func @func7(%arg0: memref<2048x512xi32>, %arg1: memref<512x2048xi32>) {
     %c2048_i64 = arith.constant 2048 : i64
@@ -430,6 +433,11 @@ module {
     aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
     memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
   } {sym_name = "herd"}
+  airrt.module_metadata{
+    airrt.segment_metadata attributes {sym_name = ""} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd"}
+    }
+  }
   func.func @func8(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
@@ -474,6 +482,9 @@ module {
     memref.global "public" @airMemcpyId21 : memref<256x64xi32, 1>
   } {sym_name = "segment_0"}
   airrt.module_metadata{
+    airrt.segment_metadata attributes {sym_name = "segment_0"} {
+      airrt.herd_metadata {size_x = 4 : i64, size_y = 4 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
   }
   func.func @func9(%arg0: memref<2048x2048xi32>, %arg1: memref<2048x2048xi32>) {
     %c64_i64 = arith.constant 64 : i64
@@ -530,6 +541,9 @@ module {
     memref.global "public" @airMemcpyId21 : memref<256x64xbf16, 1>
   } {sym_name = "segment_0"}
   airrt.module_metadata{
+    airrt.segment_metadata attributes {sym_name = "segment_0"} {
+      airrt.herd_metadata {size_x = 3 : i64, size_y = 3 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
   }
   func.func @func10(%arg2: memref<2304x2304xbf16>) {
     %c64_i64 = arith.constant 64 : i64
@@ -982,6 +996,11 @@ module {
     aie.shim_dma_allocation @airMemcpyId31(S2MM, 0, 0)
     memref.global "public" @airMemcpyId31 : memref<1x2x2x32x32xi32, 1 : i32>
   } {sym_name = "batch_matmul_dispatch_0_batch_matmul_2x64x64x64_i32_0"}
+  airrt.module_metadata{
+    airrt.segment_metadata attributes {sym_name = "segment_0"} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd_0"}
+    }
+  }
   func.func @func22(%arg0: memref<2x64x64xi32>) {
     %c32_i64 = arith.constant 32 : i64
     %c2_i64 = arith.constant 2 : i64
