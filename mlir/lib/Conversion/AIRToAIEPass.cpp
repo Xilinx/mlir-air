@@ -3503,10 +3503,6 @@ public:
                                   AIE::DMAChannelDir::MM2S,
                                   chan_renumber_reverse_map, dma_allocations);
 
-        getSegmentDmaAllocations(builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
-                                 true, chan_renumber_reverse_map,
-                                 dma_allocations);
-
         auto segment_name =
             device->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
                 .getValue();
