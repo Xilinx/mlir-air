@@ -776,7 +776,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
 
 // Unroll scf.parallel ops.
 LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
-                                Operation *originalChanOp, IRMapping remap) {
+                                IRMapping remap) {
   auto loc = par->getLoc();
   auto ctx = par->getContext();
   SmallVector<int, 2> lbs_spatial, ubs_spatial;
@@ -826,6 +826,100 @@ LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
   return success();
 }
 
+// Separate one scf.parallel with multiple loops into two scf.parallels, with
+// the outer parallel containing the specified dimensions.
+FailureOr<std::pair<scf::ParallelOp, scf::ParallelOp>>
+separateScfParallelByDims(RewriterBase &rewriter, scf::ParallelOp par,
+                          IRMapping remap, SmallVector<int> dims) {
+  if (par.getNumLoops() < dims.size())
+    return failure();
+  auto loc = par->getLoc();
+  auto ctx = par->getContext();
+  // Separate scf.parallel into multiple scf.parallel loops
+  SmallVector<Value> lbs = par.getLowerBound();
+  SmallVector<Value> ubs = par.getUpperBound();
+  SmallVector<Value> steps = par.getStep();
+  SmallVector<Value> inits = par.getInitVals();
+
+  SmallVector<Value> outerLbs, outerUbs, outerSteps, innerLbs, innerUbs,
+      innerSteps;
+  for (unsigned i = 0; i < par.getNumLoops(); i++) {
+    if (llvm::is_contained(dims, i)) {
+      outerLbs.push_back(lbs[i]);
+      outerUbs.push_back(ubs[i]);
+      outerSteps.push_back(steps[i]);
+    } else {
+      innerLbs.push_back(lbs[i]);
+      innerUbs.push_back(ubs[i]);
+      innerSteps.push_back(steps[i]);
+    }
+  }
+
+  auto outerPar = rewriter.create<scf::ParallelOp>(loc, outerLbs, outerUbs,
+                                                   outerSteps, inits);
+  rewriter.setInsertionPointToStart(outerPar.getBody());
+  auto innerPar = rewriter.create<scf::ParallelOp>(loc, innerLbs, innerUbs,
+                                                   innerSteps, inits);
+  int innerIdx = 0;
+  int outerIdx = 0;
+  for (unsigned i = 0; i < par.getNumLoops(); i++) {
+    if (llvm::is_contained(dims, i)) {
+      remap.map(par.getInductionVars()[i],
+                outerPar.getInductionVars()[outerIdx]);
+      outerIdx++;
+    } else {
+      remap.map(par.getInductionVars()[i],
+                innerPar.getInductionVars()[innerIdx]);
+      innerIdx++;
+    }
+  }
+
+  // Clone body with remap.
+  rewriter.setInsertionPointToStart(innerPar.getBody());
+  for (auto &o : par.getOps()) {
+    rewriter.clone(o, remap);
+  }
+
+  // Clone the terminator.
+  auto term = innerPar.getBody()->getTerminator();
+  rewriter.setInsertionPointToEnd(&outerPar.getRegion().front());
+  remap.map(term->getOperands(), innerPar->getResults());
+  rewriter.clone(*term, remap);
+
+  rewriter.replaceOp(par, outerPar);
+
+  return std::make_pair(outerPar, innerPar);
+}
+
+// Unroll scf.parallel ops along a specific set of dimensions.
+LogicalResult unrollScfParallelOnDims(RewriterBase &rewriter,
+                                      scf::ParallelOp par, IRMapping remap,
+                                      SmallVector<int> dims) {
+
+  // Separate the parallel op into two parallel ops, with the outer loop
+  // containing dimensions specified in dims.
+  auto sepRes = separateScfParallelByDims(rewriter, par, remap, dims);
+  if (failed(sepRes))
+    return failure();
+  auto [outerPar, innerPar] = *sepRes;
+
+  // Unroll outer parallel.
+  rewriter.setInsertionPoint(outerPar);
+  IRMapping unrollRemap;
+  if (failed(unrollScfParallel(rewriter, outerPar, unrollRemap)))
+    return failure();
+
+  if (air::isAsyncOp(outerPar)) {
+    rewriter.setInsertionPoint(outerPar);
+    auto waitAll =
+        air::replaceAsyncOpWithWaitAll(rewriter, unrollRemap, outerPar, false);
+    air::getAsyncTokenFromOp(outerPar).replaceAllUsesWith(
+        waitAll.getAsyncToken());
+  }
+  rewriter.eraseOp(outerPar);
+  return success();
+}
+
 // Unroll air.channel.put/get in scf.parallel.
 struct unrollAIRChannelPutInScfParallelPattern
     : public OpRewritePattern<air::ChannelPutOp> {
@@ -844,7 +938,7 @@ struct unrollAIRChannelPutInScfParallelPattern
     IRMapping remap;
     for (auto par : parOps) {
       rewriter.setInsertionPoint(par);
-      auto res = unrollScfParallel(rewriter, par, put.getOperation(), remap);
+      auto res = unrollScfParallel(rewriter, par, remap);
       if (res.failed())
         return failure();
       rewriter.eraseOp(par);
@@ -871,7 +965,7 @@ struct unrollAIRChannelGetInScfParallelPattern
     IRMapping remap;
     for (auto par : parOps) {
       rewriter.setInsertionPoint(par);
-      auto res = unrollScfParallel(rewriter, par, get.getOperation(), remap);
+      auto res = unrollScfParallel(rewriter, par, remap);
       if (res.failed())
         return failure();
       rewriter.eraseOp(par);

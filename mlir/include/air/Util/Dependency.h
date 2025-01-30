@@ -74,7 +74,10 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                                      scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops);
 LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
-                                Operation *originalChanOp, IRMapping remap);
+                                IRMapping remap);
+LogicalResult unrollScfParallelOnDims(RewriterBase &rewriter,
+                                      scf::ParallelOp par, IRMapping remap,
+                                      SmallVector<int> dims);
 void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
     RewritePatternSet &patterns);
 air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
