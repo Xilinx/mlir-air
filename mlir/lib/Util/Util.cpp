@@ -17,6 +17,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IntegerSet.h"
+#include "mlir/IR/Iterators.h"
 #include "mlir/IR/OperationSupport.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
@@ -462,15 +463,15 @@ air::getChannelPutOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
 
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
-
   std::vector<ChannelPutOp> channelPuts;
-  scope->walk([&](Operation *op) {
-    if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
-      if (put.getChanName() == attr) {
-        channelPuts.push_back(put);
-      }
-    }
-  });
+  scope->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+      [&](air::ChannelPutOp put) {
+        if (put.getChanName() == attr) {
+          channelPuts.push_back(put);
+          WalkResult::advance();
+        }
+        WalkResult::advance();
+      });
 
   return channelPuts;
 }
@@ -484,15 +485,15 @@ air::getChannelGetOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
 
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
-
   std::vector<ChannelGetOp> channelGets;
-  scope->walk([&](Operation *op) {
-    if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
-      if (get.getChanName() == attr) {
-        channelGets.push_back(get);
-      }
-    }
-  });
+  scope->walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
+      [&](air::ChannelGetOp get) {
+        if (get.getChanName() == attr) {
+          channelGets.push_back(get);
+          WalkResult::advance();
+        }
+        WalkResult::advance();
+      });
 
   return channelGets;
 }
@@ -1814,4 +1815,75 @@ air::findCommonRegionContainingAllAncestors(SmallVector<Operation *> ops,
       return nullptr;
   }
   return region;
+}
+
+// A lite version of OperationEquivalence::isRegionEquivalentTo which only
+// checks for const value equivalences.
+bool air::isRegionEquivalentTo(Region *lhs, Region *rhs) {
+  auto blocksEquivalent = [&](Block &lBlock, Block &rBlock) {
+    // Check block arguments.
+    if (lBlock.getNumArguments() != rBlock.getNumArguments())
+      return false;
+
+    for (auto argPair :
+         llvm::zip(lBlock.getArguments(), rBlock.getArguments())) {
+      Value curArg = std::get<0>(argPair);
+      Value otherArg = std::get<1>(argPair);
+      if (curArg.getType() != otherArg.getType())
+        return false;
+    }
+
+    auto opsEquivalent = [&](Operation &lOp, Operation &rOp) {
+      // Check for op equality (recursively).
+      if (!air::isEquivalentTo(&lOp, &rOp))
+        return false;
+      return true;
+    };
+    return llvm::all_of_zip(lBlock, rBlock, opsEquivalent);
+  };
+  return llvm::all_of_zip(*lhs, *rhs, blocksEquivalent);
+}
+
+// A lite version of OperationEquivalence::isEquivalentTo which only checks for
+// const value equivalences.
+bool air::isEquivalentTo(Operation *lhs, Operation *rhs) {
+  // 1. Compare the operation properties.
+  if (lhs->getName() != rhs->getName() ||
+      lhs->getRawDictionaryAttrs() != rhs->getRawDictionaryAttrs() ||
+      lhs->getNumRegions() != rhs->getNumRegions() ||
+      lhs->getNumSuccessors() != rhs->getNumSuccessors() ||
+      lhs->getNumOperands() != rhs->getNumOperands() ||
+      lhs->getNumResults() != rhs->getNumResults() ||
+      !lhs->getName().compareOpProperties(lhs->getPropertiesStorage(),
+                                          rhs->getPropertiesStorage()))
+    return false;
+
+  // 2. Compare operands.
+  for (auto operandPair : llvm::zip(lhs->getOperands(), rhs->getOperands())) {
+    Value curArg = std::get<0>(operandPair);
+    Value otherArg = std::get<1>(operandPair);
+    if (curArg.getType() != otherArg.getType())
+      return false;
+    auto curConst = getConstantIntValue(curArg);
+    auto otherConst = getConstantIntValue(otherArg);
+    if (curConst && otherConst)
+      if (curConst != otherConst)
+        return false;
+  }
+
+  // 3. Compare result types and mark results as equivalent.
+  for (auto resultPair : llvm::zip(lhs->getResults(), rhs->getResults())) {
+    Value curArg = std::get<0>(resultPair);
+    Value otherArg = std::get<1>(resultPair);
+    if (curArg.getType() != otherArg.getType())
+      return false;
+  }
+
+  // 4. Compare regions.
+  for (auto regionPair : llvm::zip(lhs->getRegions(), rhs->getRegions()))
+    if (!air::isRegionEquivalentTo(&std::get<0>(regionPair),
+                                   &std::get<1>(regionPair)))
+      return false;
+
+  return true;
 }
