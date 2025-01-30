@@ -834,7 +834,6 @@ separateScfParallelByDims(RewriterBase &rewriter, scf::ParallelOp par,
   if (par.getNumLoops() < dims.size())
     return failure();
   auto loc = par->getLoc();
-  auto ctx = par->getContext();
   // Separate scf.parallel into multiple scf.parallel loops
   SmallVector<Value> lbs = par.getLowerBound();
   SmallVector<Value> ubs = par.getUpperBound();
