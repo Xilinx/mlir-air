@@ -898,7 +898,7 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
   for (int i = 0; i < factor; i++) {
     // Get affine map and split size from splitInfo.
     auto &[splitInfoAffineMap, splitInfoSplitOffset, splitInfoSplitSize,
-           splitInfoSplitStride] = splitInfoVec[i];
+           splitInfoSplitStrideFactor] = splitInfoVec[i];
 
     auto getOriginalApplyOperands =
         [zeroIdx, dim](Operation *affineApplyOp,
@@ -1009,6 +1009,10 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
     else
       newWraps[dim] = rewriter.create<arith::ConstantIndexOp>(
           loc, llvm::divideCeilSigned(originalMemrefSize, factor));
+    if (splitInfoSplitStrideFactor)
+      newStrides[dim] = rewriter.create<arith::ConstantIndexOp>(
+          loc, *getConstantIntValue(newStrides[dim]) *
+                   (*splitInfoSplitStrideFactor));
     auto deps = dyn_cast<air::AsyncOpInterface>(originalChanOp.getOperation())
                     .getAsyncDependencies();
     SmallVector<Type, 4> tys = {air::AsyncTokenType::get(ctx)};
@@ -1031,10 +1035,10 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
         newGetOp->setAttr("split_size",
                           mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
                                                  *splitInfoSplitSize));
-      if (splitInfoSplitStride)
-        newGetOp->setAttr("split_stride",
+      if (splitInfoSplitStrideFactor)
+        newGetOp->setAttr("split_stride_factor",
                           mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
-                                                 *splitInfoSplitStride));
+                                                 *splitInfoSplitStrideFactor));
     } else {
       auto newPutOp = rewriter.create<air::ChannelPutOp>(
           loc, tys, deps, newChanOp.getSymName(), newIndices,
@@ -1054,10 +1058,10 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
         newPutOp->setAttr("split_size",
                           mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
                                                  *splitInfoSplitSize));
-      if (splitInfoSplitStride)
-        newPutOp->setAttr("split_stride",
+      if (splitInfoSplitStrideFactor)
+        newPutOp->setAttr("split_stride_factor",
                           mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
-                                                 *splitInfoSplitStride));
+                                                 *splitInfoSplitStrideFactor));
     }
   }
   auto newWaitAll = rewriter.create<air::WaitAllOp>(
@@ -1454,7 +1458,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     llvm::MapVector<int, SmallVector<infoEntryTy>> infoEntryMap;
     std::optional<int> splitDimOffset = std::nullopt;
     std::optional<int> splitDimSize = std::nullopt;
-    std::optional<int> splitDimStride = std::nullopt;
+    std::optional<int> splitDimStrideFactor = std::nullopt;
     std::optional<int> splitDim = std::nullopt;
 
     // Get all puts or gets, whichever direction has multiple operators.
@@ -1516,18 +1520,11 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       }
       return rootSize;
     };
-    auto getRootStride = [&](Value offsetVal, Value strideVal) {
-      std::optional<int> rootStride = std::nullopt;
-      if (auto constStride = getConstantIntValue(strideVal)) {
-        rootStride = *constStride;
-      } else if (auto forOp = getScfForFromVal(offsetVal)) {
-        if (auto trip_count = air::getStaticScfForTripCountAsInt(forOp))
-          rootStride = *getConstantIntValue(strideVal) *
-                       (*getConstantIntValue(forOp.getStep()));
-        else
-          forOp->emitOpError("has dynamic loop bound. NYI.");
-      }
-      return rootStride;
+    auto getRootStrideFactor = [&](Value offsetVal, Value strideVal) {
+      std::optional<int> rootStrideFactor = std::nullopt;
+      if (auto forOp = getScfForFromVal(offsetVal))
+        rootStrideFactor = *getConstantIntValue(forOp.getStep());
+      return rootStrideFactor;
     };
 
     for (unsigned i = 0; i < putgets.size(); i++) {
@@ -1559,14 +1556,16 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
             "split_dim_size",
             IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimSize));
       }
-      // Infer stride at splitDim.
-      if (auto rootStride =
-              getRootStride(putgets[i].getOffsets()[*offsetDimOpt],
-                            putgets[i].getStrides()[*offsetDimOpt])) {
-        splitDimStride = *rootStride;
+      // Infer stride (factor) at splitDim. If the root comes from an scf.for
+      // loop, and if the loop has non-unit step size, then that multiplier
+      // should be applied to other split channe put/get ops.
+      if (auto rootStrideFactor =
+              getRootStrideFactor(putgets[i].getOffsets()[*offsetDimOpt],
+                                  putgets[i].getStrides()[*offsetDimOpt])) {
+        splitDimStrideFactor = *rootStrideFactor;
         putgets[i]->setAttr(
-            "split_dim_stride",
-            IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimStride));
+            "split_dim_stride_factor",
+            IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimStrideFactor));
       }
       AffineMap applyMap;
       auto apply = getAffineMapOnMemrefSplitDim(putgets[i], *offsetDimOpt);
@@ -1577,7 +1576,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       }
 
       infoEntryTy newEntry = {applyMap, splitDimOffset, splitDimSize,
-                              splitDimStride};
+                              splitDimStrideFactor};
       infoEntryMap[*splitDim].push_back(newEntry);
     }
 
