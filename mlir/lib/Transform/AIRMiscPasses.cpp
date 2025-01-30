@@ -983,9 +983,10 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
     };
 
     AffineMap map;
-    if (splitInfoAffineMap) {
-      // If any AffineMap is logged, it must be respected throughout the
-      // splitting process.
+    if (splitInfoAffineMap || splitInfoSplitSize ||
+        splitInfoSplitStrideFactor) {
+      // If any overriding offset affine mapping, size or stride factor is
+      // logged, it must be respected throughout the splitting process.
       map = composeAffineExprWithOffsetAndAffineMap(
           originalExpr, splitInfoAffineMap, splitInfoSplitOffset, ctx);
     } else
