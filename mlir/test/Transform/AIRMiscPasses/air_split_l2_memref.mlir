@@ -26,15 +26,15 @@
 // CHECK: %[[VAL1:.*]] = affine.apply [[$MAP1]]()
 // CHECK: %[[VAL2:.*]] = affine.apply [[$MAP2]]()
 // CHECK: %[[VAL3:.*]] = affine.apply [[$MAP3]]()
-// CHECK: air.channel.get {{.*}} @channel_2[%[[CST0]], %[[CST0]]] (%{{.*}}[%[[VAL0]]
-// CHECK: air.channel.get {{.*}} @channel_2[%[[CST1]], %[[CST0]]] (%{{.*}}[%[[VAL1]]
-// CHECK: air.channel.get {{.*}} @channel_2[%[[CST2]], %[[CST0]]] (%{{.*}}[%[[VAL2]]
-// CHECK: air.channel.get {{.*}} @channel_2[%[[CST3]], %[[CST0]]] (%{{.*}}[%[[VAL3]]
+// CHECK: air.channel.get {{.*}} @channel_2[%[[CST0]], %[[CST0]]] (%{{.*}}[%[[VAL0]], %{{.*}}] [%c64{{.*}}, %c256{{.*}}] [%c512{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.get {{.*}} @channel_2[%[[CST1]], %[[CST0]]] (%{{.*}}[%[[VAL1]], %{{.*}}] [%c64{{.*}}, %c256{{.*}}] [%c512{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.get {{.*}} @channel_2[%[[CST2]], %[[CST0]]] (%{{.*}}[%[[VAL2]], %{{.*}}] [%c64{{.*}}, %c256{{.*}}] [%c512{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.get {{.*}} @channel_2[%[[CST3]], %[[CST0]]] (%{{.*}}[%[[VAL3]], %{{.*}}] [%c64{{.*}}, %c256{{.*}}] [%c512{{.*}}, %c1{{.*}}])
 // CHECK: air.segment
 // CHECK-COUNT-4: memref.alloc() : memref<64x256xbf16, 1>
-// CHECK-COUNT-16: air.channel.get async{{.*}}@channel_0
+// CHECK-COUNT-16: air.channel.get async{{.*}}@channel_0[{{.*}}] (%{{.*}}[%c0{{.*}}, %{{.*}}] [%c64{{.*}}, %c64{{.*}}] [%c256{{.*}}, %c1{{.*}}])
 // CHECK: air.herd
-// CHECK-COUNT-4: air.channel.put async{{.*}}@channel_2
+// CHECK-COUNT-4: air.channel.put async{{.*}}@channel_2[{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c64{{.*}}, %c256{{.*}}] [%c256{{.*}}, %c1{{.*}}])
 
 
 #map = affine_map<()[s0] -> (s0 * 256)>
@@ -113,11 +113,11 @@ func.func @test0(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %ar
 
 // Specializing L2 memrefs based on air.channels.
 
-// CHECK: [[$MAP0:#map[0-9]*]] = affine_map<()[s0] -> (s0 * 256)>
-// CHECK: [[$MAP1:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 256 + 64)>
-// CHECK: [[$MAP2:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 256 + 128)>
-// CHECK: [[$MAP3:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 256 + 192)>
-// CHECK: [[$MAP4:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 8)>
+// CHECK-DAG: affine_map<()[s0] -> (s0 * 256)>
+// CHECK-DAG: affine_map<()[s0] -> (s0 * 256 + 64)>
+// CHECK-DAG: affine_map<()[s0] -> (s0 * 256 + 128)>
+// CHECK-DAG: affine_map<()[s0] -> (s0 * 256 + 192)>
+// CHECK-DAG: [[$MAP4:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 8)>
 // CHECK-LABEL: func.func @test1
 // CHECK: air.launch
 // CHECK-COUNT-4: memref.alloc() : memref<64x2048xbf16, 1>
@@ -1177,21 +1177,23 @@ module {
 
 // -----
 
-// Conv2d 3x3, stride 2 (overlapping l2 access).
+// Conv2d 3x3, stride 2 (overlapping l2 access). Checking size at the split dimension.
 
-// CHECK-DAG: [[$MAP0:#map[0-9]*]] = affine_map<()[s0] -> (s0 + 2)>
-// CHECK-DAG: [[$MAP1:#map[0-9]+]] = affine_map<()[s0] -> (s0 + 4)>
-// CHECK-DAG: [[$MAP2:#map[0-9]+]] = affine_map<()[s0] -> (s0 + 6)>
+// CHECK-DAG: [[$MAP0:#map[0-9]*]] = affine_map<()[s0] -> (s0 * 8)>
+// CHECK-DAG: [[$MAP1:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 8 + 2)>
+// CHECK-DAG: [[$MAP2:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 8 + 4)>
+// CHECK-DAG: [[$MAP3:#map[0-9]+]] = affine_map<()[s0] -> (s0 * 8 + 6)>
 
 // CHECK-LABEL: func.func @test9
 // CHECK: air.launch
 // CHECK-DAG: %[[VAL0:.*]] = affine.apply [[$MAP0]]()
 // CHECK-DAG: %[[VAL1:.*]] = affine.apply [[$MAP1]]()
 // CHECK-DAG: %[[VAL2:.*]] = affine.apply [[$MAP2]]()
-// CHECK: air.channel.put {{.*}} @channel_0[%c0, %c0]
-// CHECK: air.channel.put {{.*}} @channel_0[%c1, %c0] (%{{.*}}[%c0, %[[VAL0]]
-// CHECK: air.channel.put {{.*}} @channel_0[%c2, %c0] (%{{.*}}[%c0, %[[VAL1]]
-// CHECK: air.channel.put {{.*}} @channel_0[%c3, %c0] (%{{.*}}[%c0, %[[VAL2]]
+// CHECK-DAG: %[[VAL3:.*]] = affine.apply [[$MAP3]]()
+// CHECK: air.channel.put {{.*}} @channel_0[%c0, %c0] (%{{.*}}[%c0, %[[VAL0]], %{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c3{{.*}}, %c33{{.*}}, %c16{{.*}}] [%c4210704{{.*}}, %c8208{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.put {{.*}} @channel_0[%c1, %c0] (%{{.*}}[%c0, %[[VAL1]], %{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c3{{.*}}, %c33{{.*}}, %c16{{.*}}] [%c4210704{{.*}}, %c8208{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.put {{.*}} @channel_0[%c2, %c0] (%{{.*}}[%c0, %[[VAL2]], %{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c3{{.*}}, %c33{{.*}}, %c16{{.*}}] [%c4210704{{.*}}, %c8208{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.put {{.*}} @channel_0[%c3, %c0] (%{{.*}}[%c0, %[[VAL3]], %{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c3{{.*}}, %c33{{.*}}, %c16{{.*}}] [%c4210704{{.*}}, %c8208{{.*}}, %c16{{.*}}, %c1{{.*}}])
 // CHECK: air.segment
 // CHECK: %[[TOKEN0:.*]], %[[ALLOC0:.*]] = air.execute -> (memref<1x3x33x16xi8, 1>) {
 // CHECK-NEXT: memref.alloc() : memref<1x3x33x16xi8, 1>
@@ -1201,26 +1203,26 @@ module {
 // CHECK-NEXT: memref.alloc() : memref<1x3x33x16xi8, 1>
 // CHECK: %[[TOKEN3:.*]], %[[ALLOC3:.*]] = air.execute -> (memref<1x3x33x16xi8, 1>) {
 // CHECK-NEXT: memref.alloc() : memref<1x3x33x16xi8, 1>
-// CHECK: air.channel.get async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%[[ALLOC0]]
-// CHECK: air.channel.get async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%[[ALLOC1]]
-// CHECK: air.channel.get async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%[[ALLOC2]]
-// CHECK: air.channel.get async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%[[ALLOC3]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c0{{.*}}, %c0{{.*}}] (%[[ALLOC0]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c1{{.*}}, %c0{{.*}}] (%[[ALLOC1]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c2{{.*}}, %c0{{.*}}] (%[[ALLOC2]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c3{{.*}}, %c0{{.*}}] (%[[ALLOC3]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c0{{.*}}, %c1{{.*}}] (%[[ALLOC0]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c1{{.*}}, %c1{{.*}}] (%[[ALLOC1]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c2{{.*}}, %c1{{.*}}] (%[[ALLOC2]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c3{{.*}}, %c1{{.*}}] (%[[ALLOC3]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c0{{.*}}, %c2{{.*}}] (%[[ALLOC0]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c1{{.*}}, %c2{{.*}}] (%[[ALLOC1]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c2{{.*}}, %c2{{.*}}] (%[[ALLOC2]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c3{{.*}}, %c2{{.*}}] (%[[ALLOC3]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c0{{.*}}, %c3{{.*}}] (%[[ALLOC0]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c1{{.*}}, %c3{{.*}}] (%[[ALLOC1]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c2{{.*}}, %c3{{.*}}] (%[[ALLOC2]]
-// CHECK: air.channel.put async{{.*}}@channel_3[%c3{{.*}}, %c3{{.*}}] (%[[ALLOC3]]
+// CHECK: air.channel.get async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%[[ALLOC0]][%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c3{{.*}}, %c33{{.*}}, %c16{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.get async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%[[ALLOC1]][%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c3{{.*}}, %c33{{.*}}, %c16{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.get async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%[[ALLOC2]][%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c3{{.*}}, %c33{{.*}}, %c16{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK: air.channel.get async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%[[ALLOC3]][%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c3{{.*}}, %c33{{.*}}, %c16{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c0{{.*}}, %c0{{.*}}] (%[[ALLOC0]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c1{{.*}}, %c0{{.*}}] (%[[ALLOC1]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c2{{.*}}, %c0{{.*}}] (%[[ALLOC2]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c3{{.*}}, %c0{{.*}}] (%[[ALLOC3]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c0{{.*}}, %c1{{.*}}] (%[[ALLOC0]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c1{{.*}}, %c1{{.*}}] (%[[ALLOC1]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c2{{.*}}, %c1{{.*}}] (%[[ALLOC2]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c3{{.*}}, %c1{{.*}}] (%[[ALLOC3]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c0{{.*}}, %c2{{.*}}] (%[[ALLOC0]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c1{{.*}}, %c2{{.*}}] (%[[ALLOC1]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c2{{.*}}, %c2{{.*}}] (%[[ALLOC2]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c3{{.*}}, %c2{{.*}}] (%[[ALLOC3]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c0{{.*}}, %c3{{.*}}] (%[[ALLOC0]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c1{{.*}}, %c3{{.*}}] (%[[ALLOC1]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c2{{.*}}, %c3{{.*}}] (%[[ALLOC2]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
+// CHECK-DAG: air.channel.put async{{.*}}@channel_3[%c3{{.*}}, %c3{{.*}}] (%[[ALLOC3]][%c0_8, %{{.*}}, %{{.*}}, %{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c7{{.*}}, %c8{{.*}}] [%c1584{{.*}}, %c528{{.*}}, %c16{{.*}}, %c1{{.*}}])
 // CHECK: air.herd
 // CHECK: air.channel.get async{{.*}}@channel_3
 
@@ -1336,10 +1338,10 @@ module {
 // CHECK-LABEL: func.func @test10
 // CHECK: air.launch async (%[[VAL0:.*]], %{{.*}}) in {{.*}} {
 // CHECK: scf.for %[[VAL1:.*]] = %c0 to %c2048 step %c256 iter_args(%{{.*}} = %{{.*}}) -> (!air.async.token) {
-// CHECK-NEXT: air.channel.put {{.*}} @channel_4[%c0, %c0] (%{{.*}}[%c0, %[[VAL0]], %[[VAL1]]] [%c64, %c1, %c256]
-// CHECK-NEXT: air.channel.put {{.*}} @channel_4[%c1, %c0] (%{{.*}}[%c64, %[[VAL0]], %[[VAL1]]] [%c64, %c1, %c256]
-// CHECK-NEXT: air.channel.put {{.*}} @channel_4[%c2, %c0] (%{{.*}}[%c128, %[[VAL0]], %[[VAL1]]] [%c64, %c1, %c256]
-// CHECK-NEXT: air.channel.put {{.*}} @channel_4[%c3, %c0] (%{{.*}}[%c192, %[[VAL0]], %[[VAL1]]] [%c64, %c1, %c256]
+// CHECK-DAG: air.channel.put {{.*}} @channel_4[{{.*}}] (%{{.*}}[%c0, %[[VAL0]], %[[VAL1]]] [%c64, %c1, %c256]
+// CHECK-DAG: air.channel.put {{.*}} @channel_4[{{.*}}] (%{{.*}}[%c64, %[[VAL0]], %[[VAL1]]] [%c64, %c1, %c256]
+// CHECK-DAG: air.channel.put {{.*}} @channel_4[{{.*}}] (%{{.*}}[%c128, %[[VAL0]], %[[VAL1]]] [%c64, %c1, %c256]
+// CHECK-DAG: air.channel.put {{.*}} @channel_4[{{.*}}] (%{{.*}}[%c192, %[[VAL0]], %[[VAL1]]] [%c64, %c1, %c256]
 // CHECK-COUNT-4: memref.alloc() : memref<64x2048xbf16, 1>
 // CHECK-COUNT-4: air.channel.get {{.*}} @channel_4
 // CHECK: scf.for
@@ -1794,13 +1796,12 @@ module {
 // CHECK-NEXT: %[[WAITALL14:.*]] = air.wait_all async [%[[GET14]]]
 // CHECK: %[[GET15:.*]] = air.channel.get async [%[[VAL0]]]  @channel_0
 // CHECK-NEXT: %[[WAITALL15:.*]] = air.wait_all async [%[[GET15]]]
-// CHECK-NEXT: %[[YIELDED:.*]] = air.wait_all async [%[[WAITALL0]], %[[WAITALL1]], %[[WAITALL2]], %[[WAITALL3]], %[[WAITALL4]], %[[WAITALL5]], %[[WAITALL6]], %[[WAITALL7]], %[[WAITALL8]], %[[WAITALL9]], %[[WAITALL10]], %[[WAITALL11]], %[[WAITALL12]], %[[WAITALL13]], %[[WAITALL14]], %[[WAITALL15]]]
-// CHECK-NEXT: %[[PUT0:.*]] = air.channel.put async [%[[YIELDED]]]  @channel_2
-// CHECK-NEXT: %[[PUT1:.*]] = air.channel.put async [%[[YIELDED]]]  @channel_2
-// CHECK-NEXT: %[[PUT2:.*]] = air.channel.put async [%[[YIELDED]]]  @channel_2
-// CHECK-NEXT: %[[PUT3:.*]] = air.channel.put async [%[[YIELDED]]]  @channel_2
+// CHECK: %[[PUT0:.*]] = air.channel.put async {{.*}}  @channel_2
+// CHECK-NEXT: %[[PUT1:.*]] = air.channel.put async {{.*}}  @channel_2
+// CHECK-NEXT: %[[PUT2:.*]] = air.channel.put async {{.*}}  @channel_2
+// CHECK-NEXT: %[[PUT3:.*]] = air.channel.put async {{.*}}  @channel_2
 // CHECK-NEXT: %[[YIELDED:.*]] = air.wait_all async [%[[PUT0]], %[[PUT1]], %[[PUT2]], %[[PUT3]]]
-// CHECK-NEXT: scf.yield %[[YIELDED]]
+// CHECK: scf.yield %[[YIELDED]]
 // CHECK: scf.yield
 
 module {

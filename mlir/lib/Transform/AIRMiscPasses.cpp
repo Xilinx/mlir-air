@@ -838,10 +838,13 @@ void AIRUnrollOuterPerfectlyNestedLoopsPass::runOnOperation() {
   }
 }
 
-// <split_factor, split_affine_map, split_size>
-typedef std::tuple<int, AffineMap, std::optional<int>> infoEntryTy;
-// <split_type, map<split_dim, vector<infoEntryTy>>>
-typedef std::pair<std::string, llvm::MapVector<int, infoEntryTy>>
+// <split_affine_map, split_offset, split_size, split_stride>
+typedef std::tuple<AffineMap, std::optional<int>, std::optional<int>,
+                   std::optional<int>>
+    infoEntryTy;
+// <split_type, split_factor, map<split_dim, vector<info_entry>>>
+typedef std::tuple<std::string, int,
+                   llvm::MapVector<int, SmallVector<infoEntryTy>>>
     memrefSplitInfoTy;
 
 class AIRSplitL2MemrefForBufferConstraintPass
@@ -858,11 +861,10 @@ public:
 private:
   void partitionMemref(SmallVector<air::ChannelPutOp> &puts,
                        SmallVector<air::ChannelGetOp> &gets, int dim,
-                       Operation *allocOp, infoEntryTy splitInfoEntry);
-  llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy>
-  getTargetMemrefAllocs(func::FuncOp func,
-                        std::map<memref::AllocOp, SmallVector<int>>
-                            &targetMemrefsToColTilingFactors);
+                       Operation *allocOp,
+                       SmallVector<infoEntryTy> splitInfoEntryVec);
+  FailureOr<llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy>>
+  getTargetMemrefAllocs(func::FuncOp func);
   std::optional<int>
   getMemrefSplitDim(SmallVector<air::ChannelInterface> putgets,
                     SmallVector<int> memrefShape);
@@ -875,141 +877,190 @@ void push_back_if_unique(SmallVector<T> &vec, T entry) {
   }
 }
 
-// Find GCD of a vector of ints.
-int findGCD(SmallVector<int> vec) {
-  int result = vec[0];
-  for (unsigned i = 1; i < vec.size(); i++) {
-    result = std::gcd(vec[i], result);
-
-    if (result == 1) {
-      return 1;
-    }
-  }
-  return result;
-}
-
 // Tile air.channel put/get wrt a memref.
 Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
                             int originalMemrefSize, int dim,
-                            memref::AllocOp allocOp, air::ChannelOp newChanOp,
-                            Location loc, MLIRContext *ctx) {
-  OpBuilder builder(originalChanOp);
-  SmallVector<Value> originalApplyOperands;
+                            SmallVector<infoEntryTy> &splitInfoVec,
+                            air::ChannelOp newChanOp, Location loc,
+                            MLIRContext *ctx) {
+  IRRewriter rewriter(ctx);
+  rewriter.setInsertionPoint(originalChanOp);
   Operation *affineApplyOp = nullptr;
-  Value originalApplyOutput = nullptr;
-  AffineExpr originalExpr = nullptr;
-  Value zeroIdx = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   // Get any existing affine map operating on the target split dimension.
   if (!originalChanOp.getOffsets().empty()) {
     auto offsetDefOp = originalChanOp.getOffsets()[dim].getDefiningOp();
     if (isa_and_present<affine::AffineApplyOp, air::ExecuteOp>(offsetDefOp))
       affineApplyOp = offsetDefOp;
   }
-  if (auto applyOp =
-          dyn_cast_if_present<affine::AffineApplyOp>(affineApplyOp)) {
-    originalApplyOperands = applyOp->getOperands();
-    originalApplyOutput = applyOp->getResult(0);
-    originalExpr = applyOp.getAffineMap().getResult(0);
-  } else if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(affineApplyOp)) {
-    SetVector<Value> opers;
-    getUsedValuesDefinedAbove(execOp.getRegion(), opers);
-    originalApplyOperands = llvm::to_vector(opers);
-    originalApplyOutput = affineApplyOp->getResult(1);
-    originalExpr = dyn_cast<affine::AffineApplyOp>(execOp.getChildOps().front())
-                       .getAffineMap()
-                       .getResult(0);
-  } else {
-    if (originalChanOp.getOffsets().empty())
-      originalApplyOperands.push_back(zeroIdx);
-    else
-      originalApplyOperands.push_back(originalChanOp.getOffsets()[dim]);
-    originalApplyOutput = originalChanOp.getOffsets().empty()
-                              ? zeroIdx
-                              : originalChanOp.getOffsets()[dim];
-    if (allocOp->hasAttr("affine_map"))
-      originalExpr = allocOp->getAttrOfType<AffineMapAttr>("affine_map")
-                         .getAffineMap()
-                         .getResult(0);
-    else
-      originalExpr = builder.getAffineSymbolExpr(0);
-  }
   // Create and apply affine map onto the split channel ops.
   SmallVector<Value> tokens;
   for (int i = 0; i < factor; i++) {
+    // Get affine map and split size from splitInfo.
+    auto &[splitInfoAffineMap, splitInfoSplitOffset, splitInfoSplitSize,
+           splitInfoSplitStride] = splitInfoVec[i];
+
+    auto getOriginalApplyOperands =
+        [zeroIdx, dim](Operation *affineApplyOp,
+                       air::ChannelInterface originalChanOp,
+                       std::optional<int> splitInfoSplitOffset) {
+          SmallVector<Value> originalApplyOperands;
+          if (auto applyOp =
+                  dyn_cast_if_present<affine::AffineApplyOp>(affineApplyOp)) {
+            originalApplyOperands = applyOp->getOperands();
+          } else if (auto execOp =
+                         dyn_cast_if_present<air::ExecuteOp>(affineApplyOp)) {
+            SetVector<Value> opers;
+            getUsedValuesDefinedAbove(execOp.getRegion(), opers);
+            originalApplyOperands = llvm::to_vector(opers);
+          } else {
+            if (air::isDefaultDataAccessPattern(originalChanOp.getSizes(),
+                                                originalChanOp.getStrides(),
+                                                originalChanOp.getMemref()))
+              originalApplyOperands.push_back(zeroIdx);
+            else
+              originalApplyOperands.push_back(originalChanOp.getOffsets()[dim]);
+          }
+          return originalApplyOperands;
+        };
+
+    auto getOriginalExpr = [&rewriter](Operation *affineApplyOp,
+                                       AffineMap splitInfoAffineMap) {
+      AffineExpr originalExpr = nullptr;
+      if (auto applyOp =
+              dyn_cast_if_present<affine::AffineApplyOp>(affineApplyOp)) {
+        originalExpr = applyOp.getAffineMap().getResult(0);
+      } else if (auto execOp =
+                     dyn_cast_if_present<air::ExecuteOp>(affineApplyOp)) {
+        originalExpr =
+            dyn_cast<affine::AffineApplyOp>(execOp.getChildOps().front())
+                .getAffineMap()
+                .getResult(0);
+      } else {
+        originalExpr = rewriter.getAffineSymbolExpr(0);
+      }
+      return originalExpr;
+    };
+
+    SmallVector<Value> originalApplyOperands = getOriginalApplyOperands(
+        affineApplyOp, originalChanOp, splitInfoSplitOffset);
+    AffineExpr originalExpr =
+        getOriginalExpr(affineApplyOp, splitInfoAffineMap);
+
     SmallVector<Value> newIndices{
-        builder.create<arith::ConstantIndexOp>(loc, i), zeroIdx};
-    // Update y offset.
+        rewriter.create<arith::ConstantIndexOp>(loc, i), zeroIdx};
     // Create affine.apply on induction variable.
-    auto checkpoint = builder.saveInsertionPoint();
+    auto checkpoint = rewriter.saveInsertionPoint();
     if (affineApplyOp)
-      builder.setInsertionPoint(affineApplyOp);
-    AffineMap map;
+      rewriter.setInsertionPoint(affineApplyOp);
     // If allocOp has "affine_map" attribute set, then use that map instead
     // (potentially overlapping access pattern).
     affine::AffineApplyOp newApplyOp = nullptr;
-    if (allocOp->hasAttr("affine_map")) {
-      auto original_map =
-          allocOp->getAttrOfType<AffineMapAttr>("affine_map").getAffineMap();
-      if (original_map.getNumInputs() == 2) {
-        // Overlapping data access. TODO: generalize this.
-        map = original_map.replace(getAffineSymbolExpr(1, ctx),
-                                   getAffineConstantExpr(i, ctx), 0, 1);
-        if (affineApplyOp)
-          builder.setInsertionPointAfter(affineApplyOp);
-        newApplyOp = builder.create<affine::AffineApplyOp>(
-            loc, map, SmallVector<Value>{originalApplyOutput});
-      } else { // Non-overlapping data access.
-        AffineExpr add = originalExpr +
-                         i * llvm::divideCeilSigned(originalMemrefSize, factor);
-        map = AffineMap::get(0, 1, add);
-        newApplyOp = builder.create<affine::AffineApplyOp>(
-            loc, map, originalApplyOperands);
+
+    // Methods to compose affine expression for offset at each split.
+    auto composeAffineExprWithOffsetAndAffineMap = [](AffineExpr originalExpr,
+                                                      AffineMap affineMap,
+                                                      std::optional<int> offset,
+                                                      MLIRContext *ctx) {
+      int const_in = offset ? *offset : 0;
+      if (affineMap) {
+        auto original_map = affineMap;
+        original_map =
+            original_map.replace(getAffineSymbolExpr(0, ctx),
+                                 getAffineConstantExpr(const_in, ctx), 0, 1);
+        AffineExpr add = originalExpr + original_map.getResult(0);
+        return AffineMap::get(0, 1, add);
       }
-    } else { // Non-overlapping data access.
+      AffineExpr add = originalExpr + getAffineConstantExpr(const_in, ctx);
+      return AffineMap::get(0, 1, add);
+    };
+    auto composeAffineExprFromSizes = [](AffineExpr originalExpr,
+                                         int originalMemrefSize, int factor,
+                                         int i) {
       AffineExpr add =
           originalExpr + i * llvm::divideCeilSigned(originalMemrefSize, factor);
-      map = AffineMap::get(0, 1, add);
-      newApplyOp = builder.create<affine::AffineApplyOp>(loc, map,
-                                                         originalApplyOperands);
-    }
+      return AffineMap::get(0, 1, add);
+    };
+
+    AffineMap map;
+    if (splitInfoAffineMap) {
+      // If any AffineMap is logged, it must be respected throughout the
+      // splitting process.
+      map = composeAffineExprWithOffsetAndAffineMap(
+          originalExpr, splitInfoAffineMap, splitInfoSplitOffset, ctx);
+    } else
+      map = composeAffineExprFromSizes(originalExpr, originalMemrefSize, factor,
+                                       i);
+    newApplyOp =
+        rewriter.create<affine::AffineApplyOp>(loc, map, originalApplyOperands);
+
     if (affineApplyOp)
-      builder.restoreInsertionPoint(checkpoint);
+      rewriter.restoreInsertionPoint(checkpoint);
     SmallVector<Value> newOffsets = originalChanOp.getOffsets();
     SmallVector<Value> newWraps = originalChanOp.getSizes();
     SmallVector<Value> newStrides = originalChanOp.getStrides();
     if (newOffsets.empty() && newWraps.empty())
-      air::populateDefaultWrapsAndStrides(builder, originalChanOp.getMemref(),
+      air::populateDefaultWrapsAndStrides(rewriter, originalChanOp.getMemref(),
                                           newOffsets, newWraps, newStrides);
     newOffsets[dim] = newApplyOp.getResult();
-    // Get post-splitting size at split_dim from allocOp attributes.
-    if (allocOp->hasAttr("split_dim_size"))
-      newWraps[dim] = builder.create<arith::ConstantIndexOp>(
-          loc, allocOp->getAttrOfType<IntegerAttr>("split_dim_size").getInt());
+    if (splitInfoSplitSize)
+      newWraps[dim] =
+          rewriter.create<arith::ConstantIndexOp>(loc, *splitInfoSplitSize);
     else
-      newWraps[dim] = builder.create<arith::ConstantIndexOp>(
+      newWraps[dim] = rewriter.create<arith::ConstantIndexOp>(
           loc, llvm::divideCeilSigned(originalMemrefSize, factor));
     auto deps = dyn_cast<air::AsyncOpInterface>(originalChanOp.getOperation())
                     .getAsyncDependencies();
     SmallVector<Type, 4> tys = {air::AsyncTokenType::get(ctx)};
     if (isa<air::ChannelGetOp>(originalChanOp)) {
-      auto newGetOp = builder.create<air::ChannelGetOp>(
+      auto newGetOp = rewriter.create<air::ChannelGetOp>(
           loc, tys, deps, newChanOp.getSymName(), newIndices,
           originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
       newGetOp->setAttr("id",
                         mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
                                                originalChanOp.getId()));
       tokens.push_back(newGetOp.getAsyncToken());
+      if (splitInfoAffineMap)
+        newGetOp->setAttr("affine_map",
+                          mlir::AffineMapAttr::get(splitInfoAffineMap));
+      if (splitInfoSplitOffset)
+        newGetOp->setAttr("split_offset",
+                          mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
+                                                 *splitInfoSplitOffset));
+      if (splitInfoSplitSize)
+        newGetOp->setAttr("split_size",
+                          mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
+                                                 *splitInfoSplitSize));
+      if (splitInfoSplitStride)
+        newGetOp->setAttr("split_stride",
+                          mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
+                                                 *splitInfoSplitStride));
     } else {
-      auto newPutOp = builder.create<air::ChannelPutOp>(
+      auto newPutOp = rewriter.create<air::ChannelPutOp>(
           loc, tys, deps, newChanOp.getSymName(), newIndices,
           originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
       newPutOp->setAttr("id",
                         mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
                                                originalChanOp.getId()));
       tokens.push_back(newPutOp.getAsyncToken());
+      if (splitInfoAffineMap)
+        newPutOp->setAttr("affine_map",
+                          mlir::AffineMapAttr::get(splitInfoAffineMap));
+      if (splitInfoSplitOffset)
+        newPutOp->setAttr("split_offset",
+                          mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
+                                                 *splitInfoSplitOffset));
+      if (splitInfoSplitSize)
+        newPutOp->setAttr("split_size",
+                          mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
+                                                 *splitInfoSplitSize));
+      if (splitInfoSplitStride)
+        newPutOp->setAttr("split_stride",
+                          mlir::IntegerAttr::get(IntegerType::get(ctx, 32),
+                                                 *splitInfoSplitStride));
     }
   }
-  auto newWaitAll = builder.create<air::WaitAllOp>(
+  auto newWaitAll = rewriter.create<air::WaitAllOp>(
       loc, air::AsyncTokenType::get(ctx), tokens);
   return newWaitAll.getAsyncToken();
 }
@@ -1036,10 +1087,12 @@ scf::ForOp getScfForFromVal(Value val) {
 // Partition L2 memref.
 void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
     SmallVector<air::ChannelPutOp> &puts, SmallVector<air::ChannelGetOp> &gets,
-    int dim, Operation *allocOp, infoEntryTy splitInfoEntry) {
+    int dim, Operation *allocOp, SmallVector<infoEntryTy> splitInfoEntryVec) {
   auto memref = puts.front().getMemref();
   MemRefType ty = llvm::cast<MemRefType>(memref.getType());
-  auto &[splitDim, splitAffineMap, splitSize] = splitInfoEntry;
+  auto &[splitAffineMap, splitOffset, splitSize, splitStride] =
+      splitInfoEntryVec.front(); // TODO: assuming all splitSize split from one
+                                 // channel op are equal
   // allocOp attributes:
   int split_dim_size = splitSize ? *splitSize : -1;
   if (isa<air::ExecuteOp>(allocOp->getParentOp()))
@@ -1116,10 +1169,9 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
         if (offset_key < 0)
           return;
         push_back_if_unique<int>(keys, offset_key);
-        if (!chanOpPartitions.count(offset_key))
-          chanOpPartitions[offset_key] = SmallVector<air::ChannelInterface>{op};
-        else
-          chanOpPartitions[offset_key].push_back(op);
+        chanOpPartitions[offset_key].push_back(op);
+        op->setAttr("partition_key",
+                    IntegerAttr::get(IntegerType::get(ctx, 32), offset_key));
       };
 
   for (auto op : puts)
@@ -1217,23 +1269,33 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       int offsetOperandOffset = memrefOperandOffset + *offsetDim + 1;
       auto &offsetOpOper = op->getOpOperand(offsetOperandOffset);
 
-      // Const offset. Reset offset to 0.
-      if (getConstantIntValue(op.getOffsets()[*offsetDim]))
-        offsetOpOper.assign(builder.create<arith::ConstantIndexOp>(loc, 0));
-      // Variadic offset. Reset const operands of apply to 0.
-      else {
-        auto defOp = op.getOffsets()[*offsetDim].getDefiningOp();
-        affine::AffineApplyOp apply = dyn_cast<affine::AffineApplyOp>(defOp);
-        air::ExecuteOp exec = dyn_cast<air::ExecuteOp>(defOp);
-        if (exec)
-          for (auto &child_op : exec.getChildOps())
-            if (auto apply_child_op = dyn_cast<affine::AffineApplyOp>(child_op))
-              apply = apply_child_op;
-        assert(apply && "Apply op not found. NYI.");
-        for (auto oper : apply->getOperands())
-          if (getConstantIntValue(oper))
-            apply->replaceUsesOfWith(
-                oper, builder.create<arith::ConstantIndexOp>(loc, 0));
+      auto defOp = op.getOffsets()[*offsetDim].getDefiningOp();
+      if (defOp) {
+        // Const offset. Reset offset to 0.
+        if (getConstantIntValue(op.getOffsets()[*offsetDim]))
+          offsetOpOper.assign(builder.create<arith::ConstantIndexOp>(loc, 0));
+        // Variadic offset. Reset const operands of apply to 0.
+        else {
+          affine::AffineApplyOp apply =
+              dyn_cast_if_present<affine::AffineApplyOp>(defOp);
+          air::ExecuteOp exec = dyn_cast_if_present<air::ExecuteOp>(defOp);
+          if (exec)
+            for (auto &child_op : exec.getChildOps())
+              if (auto apply_child_op =
+                      dyn_cast<affine::AffineApplyOp>(child_op))
+                apply = apply_child_op;
+          assert(apply && "Apply op not found. NYI.");
+          // Any const operands to affine map should have been canonicalized
+          // away.
+          for (auto oper : apply->getOperands())
+            assert(!getConstantIntValue(oper));
+          // Set map's expressions to cancel out each key's offset
+          auto applyExpr = apply.getMap().getResult(0);
+          applyExpr = applyExpr - key;
+          apply.setMap(AffineMap::get(apply.getDimOperands().size(),
+                                      apply.getSymbolOperands().size(),
+                                      applyExpr));
+        }
       }
 
       // Update strides (contiguous, row-major) after memref tiling.
@@ -1288,11 +1350,7 @@ std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
             auto defO1 = o1.getDefiningOp();
             auto defO2 = o2.getDefiningOp();
             if (defO1 && defO2) {
-              if (OperationEquivalence::isEquivalentTo(
-                      defO1, defO2,
-                      OperationEquivalence::ignoreValueEquivalence,
-                      /*markEquivalent=*/nullptr,
-                      OperationEquivalence::IgnoreLocations))
+              if (air::isEquivalentTo(defO1, defO2))
                 return false;
               else
                 return true;
@@ -1312,10 +1370,9 @@ std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
 
 // Get a vector of allocs whose memrefs require splitting; label the single
 // split dimension with split factor, split_type and affine_map (if any).
-llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy>
+FailureOr<llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy>>
 AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
-    func::FuncOp func, std::map<memref::AllocOp, SmallVector<int>>
-                           &targetMemrefsToColTilingFactors) {
+    func::FuncOp func) {
   auto ctx = func.getContext();
   SmallVector<memref::AllocOp> allocOps;
   func.walk([&](memref::AllocOp allocOp) {
@@ -1328,17 +1385,14 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
 
   // Condition to split a memref: detected multiple-in-single-out or
   // single-in-multiple-out channel patterns. Such pattern is represented via
-  // the memref being accessed by (1) multiple unique channel puts/gets, or (2)
-  // channel puts/gets within scf.parallel.
+  // the memref being accessed by multiple unique channel puts/gets.
   llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy> targetMemrefsToInfoMap;
-  // Map between the target memref alloc ops and all column-wise tiling factors
-  // per alloc.
 
-  // If there is an affine.apply operating on offsets[split_dim], then
+  // If there is an affine.apply operating on offsets[offsetDim], then
   // log the affine.map.
   auto getAffineMapOnMemrefSplitDim = [](air::ChannelInterface chanOp,
-                                         int splitDim) {
-    auto offsetDefOp = chanOp.getOffsets()[splitDim].getDefiningOp();
+                                         int offsetDim) {
+    auto offsetDefOp = chanOp.getOffsets()[offsetDim].getDefiningOp();
     affine::AffineApplyOp apply =
         dyn_cast_if_present<affine::AffineApplyOp>(offsetDefOp);
     if (auto exec = dyn_cast_if_present<air::ExecuteOp>(offsetDefOp))
@@ -1347,205 +1401,196 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
           apply = apply_child_op;
     return apply;
   };
+
   for (auto allocOp : allocOps) {
     Value memref = allocOp.getMemref();
     if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
       memref = exec->getResult(1);
-    SmallVector<air::ChannelOp> MM2SChannels;
-    SmallVector<air::ChannelOp> S2MMChannels;
+    // Maps of MM2S and S2MM channels and their sub-channels.
+    llvm::MapVector<air::ChannelOp, SmallVector<SmallVector<Value>>>
+        MM2SChannels, S2MMChannels;
     for (auto user : memref.getUsers()) {
-      if (isa<air::ChannelInterface>(user) &&
-          user->getParentOfType<scf::ParallelOp>()) {
-        // Condition 1: accessed by channel put/get within scf.parallel.
-        auto parentParOp = user->getParentOfType<scf::ParallelOp>();
-        auto chanOp = dyn_cast<air::ChannelInterface>(user);
-        SmallVector<int, 2> lbs_spatial;
-        SmallVector<int, 2> ubs_spatial;
-        air::getSizesFromSpatialLoop(parentParOp, lbs_spatial, ubs_spatial);
-
-        // Get the dimension on memref to be targetted for splitting, by
-        // analyzing the scf.parallel access pattern (as dependence from offsets
-        // to induction variables).
-        auto getMemrefSplitDimOnChanOpFromScfParallel =
-            [](air::ChannelInterface chanOp, SmallVector<int> memrefShape) {
-              int splitDim = -1;
-              for (unsigned i = 0; i < chanOp.getOffsets().size(); i++) {
-                SmallVector<Value, 1> candidateOperands(1,
-                                                        chanOp.getOffsets()[i]);
-                SmallVector<Value, 1> backwardSliceVals;
-                std::vector<Operation *> op_history;
-                air::traceDependentInductionVar(candidateOperands,
-                                                backwardSliceVals, op_history);
-                if (llvm::none_of(backwardSliceVals, [](Value v) {
-                      return (bool)scf::getParallelForInductionVarOwner(v);
-                    }))
-                  continue;
-                auto memrefDim = air::getMemrefDimFromOffsetDim(
-                    i, chanOp.getOffsets(), chanOp.getStrides(), memrefShape);
-                if (!memrefDim)
-                  continue;
-                splitDim = *memrefDim;
-                if (splitDim >= 0)
-                  break;
-              }
-              return splitDim;
-            };
-
-        allocOp->setAttr("split", BoolAttr::get(ctx, true));
-        allocOp->setAttr("split_type", StringAttr::get(ctx, "scf.parallel"));
-        int splitDim = getMemrefSplitDimOnChanOpFromScfParallel(
-            chanOp, air::getTensorShape(memref.getType()));
-        if (allocOp->hasAttr("split_dim"))
-          assert(allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt() ==
-                     splitDim &&
-                 "L2 memref tiled inconsistently across multiple data access "
-                 "patterns. Cannot infer L2 memref tiling strategy.");
-        else {
-          if (splitDim >= 0)
-            allocOp->setAttr(
-                "split_dim",
-                IntegerAttr::get(IntegerType::get(ctx, 32), splitDim));
-          assert(splitDim >= 0 && "failed to get split dimension");
-        }
-
-        AffineMap applyMap;
-        auto apply = getAffineMapOnMemrefSplitDim(chanOp, splitDim);
-        if (apply) {
-          applyMap = apply.getAffineMap();
-          allocOp->setAttr("affine_map", AffineMapAttr::get(applyMap));
-        }
-
-        // Infer the size at splitDim for both overlapping and non-overlapping
-        // access pattern.
-        std::optional<int> splitDimSize = std::nullopt;
-        auto offsetDimOpt = air::getOffsetDimFromMemrefDim(
-            splitDim, chanOp.getStrides(),
-            air::getTensorShape(memref.getType()));
-        auto constOffset =
-            getConstantIntValue(chanOp.getOffsets()[*offsetDimOpt]);
-        if (!constOffset)
-          if (auto forOp = getScfForFromVal(chanOp.getOffsets()[*offsetDimOpt]))
-            if (auto trip_count = air::getStaticScfForTripCountAsInt(forOp)) {
-              splitDimSize =
-                  *getConstantIntValue(chanOp.getSizes()[*offsetDimOpt]) *
-                  (*trip_count);
-              allocOp->setAttr(
-                  "split_dim_size",
-                  IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimSize));
-            }
-
-        // Tiling along the first (x) dimension of scf.parallel only, as one NPU
-        // memtile is located at the bottom of each column.
-        int tilingFactor = ubs_spatial[0] - lbs_spatial[0] + 1;
-        targetMemrefsToColTilingFactors[allocOp].push_back(tilingFactor);
-
-        infoEntryTy newEntry = {
-            tilingFactor, applyMap,
-            splitDimSize}; //<split_factor, split_affine_map, split_size>
-        llvm::MapVector<int, infoEntryTy> infoEntryMap;
-        infoEntryMap[splitDim] = newEntry;
-        targetMemrefsToInfoMap[allocOp] = std::make_pair(
-            "scf.parallel",
-            infoEntryMap); // typedef std::pair<std::string, llvm::DenseMap<int,
-                           // infoEntryTy>> memrefSplitInfoTy;
-      } else if (auto put = dyn_cast<air::ChannelPutOp>(user)) {
+      if (auto put = dyn_cast<air::ChannelPutOp>(user)) {
         // Condition 2: accessed by multiple puts with unique names.
-        push_back_if_unique<air::ChannelOp>(
-            MM2SChannels, air::getChannelDeclarationThroughSymbol(put));
+        push_back_if_unique<SmallVector<Value>>(
+            MM2SChannels[air::getChannelDeclarationThroughSymbol(put)],
+            put.getIndices());
       } else if (auto get = dyn_cast<air::ChannelGetOp>(user)) {
         // Condition 3: accessed by multiple gets with unique names.
-        push_back_if_unique<air::ChannelOp>(
-            S2MMChannels, air::getChannelDeclarationThroughSymbol(get));
+        push_back_if_unique<SmallVector<Value>>(
+            S2MMChannels[air::getChannelDeclarationThroughSymbol(get)],
+            get.getIndices());
       }
     }
-    if (MM2SChannels.size() <= 1 && S2MMChannels.size() <= 1)
+    auto getChanCount =
+        [](llvm::MapVector<air::ChannelOp, SmallVector<SmallVector<Value>>>
+               Channels) {
+          int count = 0;
+          for (auto &[chanOp, indicesVec] : Channels) {
+            count += indicesVec.size();
+          }
+          return count;
+        };
+    // Single-in-single-out. Skip.
+    if (getChanCount(MM2SChannels) <= 1 && getChanCount(S2MMChannels) <= 1)
       continue;
-    if (MM2SChannels.size() > 1 && S2MMChannels.size() > 1)
+    // Multiple-in-multiple-out. Skip.
+    if (getChanCount(MM2SChannels) > 1 && getChanCount(S2MMChannels) > 1)
       continue;
+
+    // Get tiling factor.
+    int tilingFactor =
+        std::max(getChanCount(MM2SChannels), getChanCount(S2MMChannels));
+
+    // Keep debug log in alloc op's attributes. TODO: clean up.
     allocOp->setAttr("split", BoolAttr::get(func.getContext(), true));
-    int tilingFactor = 1;
-    AffineMap applyMap;
-    std::optional<int> splitDimSize = std::nullopt;
-    std::optional<int> splitDim = std::nullopt;
-    if (MM2SChannels.size() > 1) {
-      tilingFactor = MM2SChannels.size();
-      targetMemrefsToColTilingFactors[allocOp].push_back(tilingFactor);
+    allocOp->setAttr("tilingFactor",
+                     IntegerAttr::get(IntegerType::get(ctx, 32), tilingFactor));
+    if (getChanCount(MM2SChannels) > 1) {
       allocOp->setAttr("split_type", StringAttr::get(ctx, "MM2SChannels"));
-      SmallVector<air::ChannelInterface> putgets;
-      for (auto chanOp : MM2SChannels)
+    } else {
+      allocOp->setAttr("split_type", StringAttr::get(ctx, "S2MMChannels"));
+    }
+    llvm::MapVector<int, SmallVector<infoEntryTy>> infoEntryMap;
+    std::optional<int> splitDimOffset = std::nullopt;
+    std::optional<int> splitDimSize = std::nullopt;
+    std::optional<int> splitDimStride = std::nullopt;
+    std::optional<int> splitDim = std::nullopt;
+
+    // Get all puts or gets, whichever direction has multiple operators.
+    SmallVector<air::ChannelInterface> putgets;
+    if (getChanCount(MM2SChannels) > 1) {
+      for (auto &[chanOp, __] : MM2SChannels)
         for (auto put : air::getChannelPutOpThroughSymbol(chanOp))
           putgets.push_back(put);
-      splitDim =
-          getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
-      if (splitDim) {
-        if (allocOp->hasAttr("split_dim"))
-          assert(allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt() ==
-                     *splitDim &&
-                 "L2 memref tiled inconsistently across multiple data access "
-                 "patterns. Cannot infer L2 memref tiling strategy.");
-        else {
-          if (*splitDim >= 0)
-            allocOp->setAttr(
-                "split_dim",
-                IntegerAttr::get(IntegerType::get(ctx, 32), *splitDim));
-          assert(*splitDim >= 0 && "failed to get split dimension");
-        }
-
-        auto apply = getAffineMapOnMemrefSplitDim(putgets.front(), *splitDim);
-        if (apply) {
-          applyMap = apply.getAffineMap();
-          allocOp->setAttr("affine_map", AffineMapAttr::get(applyMap));
-        }
-      }
-      infoEntryTy newEntry = {
-          tilingFactor, applyMap,
-          splitDimSize}; //<split_factor, split_affine_map, split_size>
-      llvm::MapVector<int, infoEntryTy> infoEntryMap;
-      infoEntryMap[*splitDim] = newEntry;
-      targetMemrefsToInfoMap[allocOp] = std::make_pair(
-          "MM2SChannels",
-          infoEntryMap); // typedef std::pair<std::string, llvm::DenseMap<int,
-                         // infoEntryTy>> memrefSplitInfoTy;
-    }
-    if (S2MMChannels.size() > 1) {
-      tilingFactor = S2MMChannels.size();
-      targetMemrefsToColTilingFactors[allocOp].push_back(tilingFactor);
-      allocOp->setAttr("split_type", StringAttr::get(ctx, "S2MMChannels"));
-      SmallVector<air::ChannelInterface> putgets;
-      for (auto chanOp : MM2SChannels)
+    } else {
+      for (auto &[chanOp, __] : S2MMChannels)
         for (auto get : air::getChannelGetOpThroughSymbol(chanOp))
           putgets.push_back(get);
-      splitDim =
-          getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
-      if (splitDim) {
-        if (allocOp->hasAttr("split_dim"))
-          assert(allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt() ==
-                     *splitDim &&
-                 "L2 memref tiled inconsistently across multiple data access "
-                 "patterns. Cannot infer L2 memref tiling strategy.");
-        else {
-          if (*splitDim >= 0)
-            allocOp->setAttr(
-                "split_dim",
-                IntegerAttr::get(IntegerType::get(ctx, 32), *splitDim));
-          assert(*splitDim >= 0 && "failed to get split dimension");
-        }
+    }
 
-        auto apply = getAffineMapOnMemrefSplitDim(putgets.front(), *splitDim);
-        if (apply) {
-          applyMap = apply.getAffineMap();
-          allocOp->setAttr("affine_map", AffineMapAttr::get(applyMap));
-        }
+    splitDim =
+        getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
+    if (!splitDim) {
+      allocOp->emitOpError(
+          "memref splitting analysis failed to get the split dimension.");
+      return failure();
+    }
+    if (allocOp->hasAttr("split_dim"))
+      assert(allocOp->getAttrOfType<IntegerAttr>("split_dim").getInt() ==
+                 *splitDim &&
+             "L2 memref tiled inconsistently across multiple data access "
+             "patterns. Cannot infer L2 memref tiling strategy.");
+    else {
+      if (*splitDim >= 0)
+        allocOp->setAttr(
+            "split_dim",
+            IntegerAttr::get(IntegerType::get(ctx, 32), *splitDim));
+      assert(*splitDim >= 0 && "failed to get split dimension");
+    }
+
+    // Methods to get root offset/size/stride from air.channel's operands, where
+    // root is either a constant, or a loop's induction variable.
+    auto getRootOffset = [&](Value offsetVal) {
+      std::optional<int> rootOffset = std::nullopt;
+      if (auto constOffset = getConstantIntValue(offsetVal))
+        rootOffset = *constOffset;
+      else if (auto forOp = getScfForFromVal(offsetVal))
+        rootOffset = *getConstantIntValue(forOp.getLowerBound());
+      return rootOffset;
+    };
+    auto getRootSize = [&](Value offsetVal, Value sizeVal) {
+      std::optional<int> rootSize = std::nullopt;
+      // if (auto constSize = getConstantIntValue(sizeVal)){
+      //   // splitDimSize = *constSize;
+      //   // putgets[i]->setAttr(
+      //   //     "split_dim_size",
+      //   //     IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimSize));
+      // }
+      // else
+      if (auto forOp = getScfForFromVal(offsetVal)) {
+        if (auto trip_count = air::getStaticScfForTripCountAsInt(forOp))
+          rootSize = *getConstantIntValue(sizeVal) * (*trip_count);
+        else
+          forOp->emitOpError("has dynamic loop bound. NYI.");
       }
-      infoEntryTy newEntry = {
-          tilingFactor, applyMap,
-          splitDimSize}; //<split_factor, split_affine_map, split_size>
-      llvm::MapVector<int, infoEntryTy> infoEntryMap;
-      infoEntryMap[*splitDim] = newEntry;
-      targetMemrefsToInfoMap[allocOp] = std::make_pair(
-          "S2MMChannels",
-          infoEntryMap); // typedef std::pair<std::string, llvm::DenseMap<int,
-                         // infoEntryTy>> memrefSplitInfoTy;
+      return rootSize;
+    };
+    auto getRootStride = [&](Value offsetVal, Value strideVal) {
+      std::optional<int> rootStride = std::nullopt;
+      if (auto constStride = getConstantIntValue(strideVal)) {
+        rootStride = *constStride;
+      } else if (auto forOp = getScfForFromVal(offsetVal)) {
+        if (auto trip_count = air::getStaticScfForTripCountAsInt(forOp))
+          rootStride = *getConstantIntValue(strideVal) *
+                       (*getConstantIntValue(forOp.getStep()));
+        else
+          forOp->emitOpError("has dynamic loop bound. NYI.");
+      }
+      return rootStride;
+    };
+
+    for (unsigned i = 0; i < putgets.size(); i++) {
+      // Infer the size at splitDim for both overlapping and non-overlapping
+      // access pattern.
+      auto offsetDimOpt =
+          air::getOffsetDimFromMemrefDim(*splitDim, putgets[i].getStrides(),
+                                         air::getTensorShape(memref.getType()));
+      if (offsetDimOpt)
+        putgets[i]->setAttr(
+            "split_dim",
+            IntegerAttr::get(IntegerType::get(ctx, 32), *offsetDimOpt));
+      // Infer offset at splitDim.
+      if (auto rootOffset =
+              getRootOffset(putgets[i].getOffsets()[*offsetDimOpt])) {
+        splitDimOffset = *rootOffset;
+        putgets[i]->setAttr(
+            "split_dim_offset",
+            IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimOffset));
+      }
+      // Infer size at splitDim.
+      if (auto rootSize = getRootSize(putgets[i].getOffsets()[*offsetDimOpt],
+                                      putgets[i].getSizes()[*offsetDimOpt])) {
+        splitDimSize = *rootSize;
+        allocOp->setAttr(
+            "split_dim_size",
+            IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimSize));
+        putgets[i]->setAttr(
+            "split_dim_size",
+            IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimSize));
+      }
+      // Infer stride at splitDim.
+      if (auto rootStride =
+              getRootStride(putgets[i].getOffsets()[*offsetDimOpt],
+                            putgets[i].getStrides()[*offsetDimOpt])) {
+        splitDimStride = *rootStride;
+        putgets[i]->setAttr(
+            "split_dim_stride",
+            IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimStride));
+      }
+      AffineMap applyMap;
+      auto apply = getAffineMapOnMemrefSplitDim(putgets[i], *offsetDimOpt);
+      if (apply) {
+        applyMap = apply.getAffineMap();
+        allocOp->setAttr("affine_map", AffineMapAttr::get(applyMap));
+        putgets[i]->setAttr("affine_map", AffineMapAttr::get(applyMap));
+      }
+
+      infoEntryTy newEntry = {applyMap, splitDimOffset, splitDimSize,
+                              splitDimStride};
+      infoEntryMap[*splitDim].push_back(newEntry);
+    }
+
+    // Get output map.
+    if (getChanCount(MM2SChannels) > 1) {
+      // targetMemrefsToInfoMap[allocOp] = std::make_pair(
+      //     "MM2SChannels",
+      //     infoEntryMap);
+      targetMemrefsToInfoMap[allocOp] = {"MM2SChannels", tilingFactor,
+                                         infoEntryMap};
+    } else {
+      targetMemrefsToInfoMap[allocOp] = {"S2MMChannels", tilingFactor,
+                                         infoEntryMap};
     }
   }
   return targetMemrefsToInfoMap;
@@ -1598,12 +1643,48 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       }))
     return;
 
-  // Map between the target memref alloc ops and all column-wise tiling factors
-  // per alloc.
-  std::map<memref::AllocOp, SmallVector<int>> targetMemrefsToColTilingFactors;
-  llvm::DenseMap<memref::AllocOp, memrefSplitInfoTy> targetMemrefsToInfoMap =
-      getTargetMemrefAllocs(func, targetMemrefsToColTilingFactors);
-  if (targetMemrefsToInfoMap.empty())
+  // STEP 1: Unroll scf.parallels in segment
+  SmallVector<scf::ParallelOp> parOps;
+  func.walk([&](scf::ParallelOp parOp) {
+    if (parOp->getParentOfType<air::SegmentOp>()) {
+      parOps.push_back(parOp);
+    }
+  });
+
+  llvm::SetVector<Operation *> erased;
+  for (auto par : parOps) {
+    IRRewriter rewriter(ctx);
+    IRMapping remap, waitAllRemap;
+    rewriter.setInsertionPoint(par);
+    if (par.getNumLoops() > 1) {
+      // NOTE: Splitting along the first dimension of scf.parallel only.
+      if (failed(air::unrollScfParallelOnDims(rewriter, par, remap, {0})))
+        signalPassFailure();
+    } else {
+      if (failed(air::unrollScfParallel(rewriter, par, remap)))
+        signalPassFailure();
+      if (air::isAsyncOp(par)) {
+        rewriter.setInsertionPoint(par);
+        auto waitAll =
+            air::replaceAsyncOpWithWaitAll(rewriter, waitAllRemap, par, false);
+        air::getAsyncTokenFromOp(par).replaceAllUsesWith(
+            waitAll.getAsyncToken());
+        rewriter.eraseOp(par);
+      }
+    }
+  }
+
+  // Fold affine maps and constants after loop unrolling.
+  RewritePatternSet cano_affine_map_patterns(ctx);
+  mlir::affine::AffineApplyOp::getCanonicalizationPatterns(
+      cano_affine_map_patterns, ctx);
+  air::ExecuteOp::getCanonicalizationPatterns(cano_affine_map_patterns, ctx);
+  (void)applyPatternsGreedily(func, std::move(cano_affine_map_patterns));
+
+  // STEP 2: Map between the target memref alloc ops and all column-wise tiling
+  // factors per alloc.
+  auto targetMemrefsToInfoMap = getTargetMemrefAllocs(func);
+  if (failed(targetMemrefsToInfoMap))
     return;
 
   // Look up or create a new air.channel name.
@@ -1618,16 +1699,13 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
     }
   };
 
-  // Tile memrefs.
-  llvm::SmallSet<Operation *, 1> erased;
-  for (auto &[allocOp, splitInfo] : targetMemrefsToInfoMap) {
-    auto &[splitType, infoEntryMap] = splitInfo;
-    auto &[splitDim, infoEntry] =
+  // STEP 3: Tile the side accessed by a single air.channel.
+  for (auto &[allocOp, splitInfo] : *targetMemrefsToInfoMap) {
+    auto &[splitType, splitFactor, infoEntryMap] = splitInfo;
+    auto &[splitDim, infoEntryVec] =
         infoEntryMap.front(); // TODO: assuming only one dimension is subject to
                               // splitting for now.
-    // auto &[splitFactor, splitAffineMap, splitSize] = infoEntry;
-    int targetColTilingFactor =
-        findGCD(targetMemrefsToColTilingFactors[allocOp]);
+    int targetColTilingFactor = splitFactor;
     allocOp->setAttr("split",
                      mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
                                             targetColTilingFactor));
@@ -1637,176 +1715,160 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
     for (auto user : memref.getUsers()) {
       if (!isa<air::ChannelInterface>(user))
         continue;
+      // Multiple-channel side. Skip.
+      if (isa<air::ChannelPutOp>(user) && splitType == "MM2SChannels")
+        continue;
+      if (isa<air::ChannelGetOp>(user) && splitType == "S2MMChannels")
+        continue;
+
+      // Single-channel side found. Perform tiling on put/get ops operating on
+      // the channel.
       auto chanUserOp = dyn_cast<air::ChannelInterface>(user);
-      if (auto par = user->getParentOfType<scf::ParallelOp>()) {
-        // Case 1: Parallel access to the memref represented with scf.parallel
-        // op. Data access specialization method: unroll the scf.parallel
-        // loop.
-        OpBuilder builder(par);
-        IRMapping remap;
-        (void)air::unrollScfParallel(builder, par, user, remap);
-        erased.insert(par);
-      } else if ((isa<air::ChannelPutOp>(user) &&
-                  splitType == "MM2SChannels") ||
-                 (isa<air::ChannelGetOp>(user) &&
-                  splitType == "S2MMChannels")) {
-        // Case 2: Parallel access to the memref represented with multiple
-        // air.channel put/gets. Data access specialization method:
-        // specializing memref wrt each unique air.channel access. To be
-        // handled below.
+      auto loc = chanUserOp->getLoc();
+      auto ctx = chanUserOp->getContext();
+
+      // Creating a new unique channel for tiling.
+      IRRewriter rewriter(ctx);
+      Operation *o =
+          &chanUserOp->getParentOfType<ModuleOp>().getBody()->front();
+      while (dyn_cast_or_null<air::ChannelOp>(o))
+        o = o->getNextNode();
+      rewriter.setInsertionPoint(o);
+      auto cname =
+          lookUpOrCreateChanName(chanUserOp.getChanName().str(),
+                                 chanUserOp->getParentOfType<ModuleOp>());
+      air::ChannelOp new_chan;
+      auto new_chan_op = mlir::SymbolTable::lookupSymbolIn(
+          chanUserOp->getParentOfType<ModuleOp>(), cname);
+      if (new_chan_op) {
+        new_chan = dyn_cast<air::ChannelOp>(new_chan_op);
       } else {
-        // Case 3: A single put/get op with default data access pattern
-        // (contiguous, row major) spanning the entire memref. Data access
-        // specialization method: tiling the air.channel op by
-        // targetColTilingFactor.
-        auto loc = chanUserOp->getLoc();
-        auto ctx = chanUserOp->getContext();
-        OpBuilder builder(chanUserOp);
-        Operation *o =
-            &chanUserOp->getParentOfType<ModuleOp>().getBody()->front();
-        while (dyn_cast_or_null<air::ChannelOp>(o))
-          o = o->getNextNode();
-        builder.setInsertionPoint(o);
-        SmallVector<Type, 4> tys = {
-            air::AsyncTokenType::get(chanUserOp->getContext())};
-        auto cname =
-            lookUpOrCreateChanName(chanUserOp.getChanName().str(),
-                                   chanUserOp->getParentOfType<ModuleOp>());
-        air::ChannelOp new_chan;
-        auto new_chan_op = mlir::SymbolTable::lookupSymbolIn(
-            chanUserOp->getParentOfType<ModuleOp>(), cname);
-        if (new_chan_op) {
-          new_chan = dyn_cast<air::ChannelOp>(new_chan_op);
-        } else {
-          SmallVector<int64_t, 2> channel_sizes = {targetColTilingFactor, 1};
-          new_chan = builder.create<air::ChannelOp>(
-              loc, cname, builder.getI64ArrayAttr(channel_sizes));
-        }
-        auto memrefShape = air::getTensorShape(memref.getType());
-        int dim = splitDim;
-        auto offsetDimOpt = air::getOffsetDimFromMemrefDim(
-            dim, chanUserOp.getStrides(), memrefShape);
-        int offsetDim = offsetDimOpt ? *offsetDimOpt : dim;
-        auto newWaitAll = tileChannelOpByFactor(
-            chanUserOp, targetColTilingFactor, memrefShape[dim], offsetDim,
-            allocOp, new_chan, loc, ctx);
-
-        // Update async dependency.
-        auto old_token =
-            dyn_cast<air::AsyncOpInterface>(chanUserOp.getOperation())
-                .getAsyncToken();
-        old_token.replaceAllUsesWith(newWaitAll);
-
-        // Update the other channel op of the chanUserChannelDeclr.
-        auto theOtherChanOp =
-            air::getTheOtherChannelOpThroughSymbol(chanUserOp);
-
-        // Account for cases where rank reduction results from at least
-        // of the dimensions being equal to one.
-        SmallVector<Value> wraps = theOtherChanOp[0].getSizes();
-        if (wraps.empty()) {
-          // Populate default wraps, if wraps is an empty vector.
-          SmallVector<Value> offsets, strides;
-          air::populateDefaultWrapsAndStrides(
-              builder, theOtherChanOp[0].getMemref(), offsets, wraps, strides);
-        }
-        auto adjustedDimIdx = dim;
-        if (wraps.size() != memrefShape.size()) {
-          // Make sure that the number of rank-reducing dimensions and/or
-          // the number of leading singleton dimensions must be equal to
-          // the difference between the number of wraps and the shape of
-          // the memref of the original channel.
-          int numSingletonDimDiff = 0;
-          for (auto wrap : wraps) {
-            if (*getConstantIntValue(wrap) == 1)
-              numSingletonDimDiff++;
-          }
-          for (auto shapeDim : memrefShape) {
-            if (shapeDim == 1)
-              numSingletonDimDiff--;
-          }
-          if (numSingletonDimDiff == (int)(wraps.size() - memrefShape.size())) {
-            // Detected rank reduction (reducing singleton dimensions) between
-            // thisChanOp and theOtherChanOp.
-
-            // Now let's figure out number of rank-reducing dimensions (of size
-            // 1) before 'dim' to compute the appropriate index into
-            // wraps/offsets/strides of the channel op on the other side of the
-            // segment.
-            auto otherShape =
-                air::getTensorShape(theOtherChanOp[0].getMemref().getType());
-            auto orgDim = 0;
-            auto wrapIdx = 0;
-            // The dimension index is computed below
-            adjustedDimIdx = 0;
-            while (orgDim != dim) {
-              auto wrapVal = *getConstantIntValue(wraps[wrapIdx]);
-              if (wrapVal == 1) {
-                // If the memrefShape dimension size is not equal to
-                // the wrap size, this is probably rank-reduced dimension.
-                if (memrefShape[orgDim] != 1)
-                  adjustedDimIdx++;
-                else
-                  orgDim++;
-                wrapIdx++;
-                continue;
-              }
-              if (memrefShape[orgDim] == 1) {
-                orgDim++;
-                continue;
-              }
-              if (memrefShape[orgDim] == wrapVal ||
-                  memrefShape[orgDim] == otherShape[wrapIdx]) {
-                orgDim++;
-                adjustedDimIdx++;
-                wrapIdx++;
-                continue;
-              }
-              chanUserOp->emitOpError(
-                  "Failed to split data access pattern along dimension ")
-                  << std::to_string(orgDim)
-                  << " due to dimension misalignment with channel op at "
-                     "the other side.";
-              return;
-            }
-          }
-        }
-
-        if (adjustedDimIdx >= (int)wraps.size()) {
-          theOtherChanOp[0]->emitOpError(
-              "Failed to split data access pattern due to air.channel op "
-              "having mismatching wraps rank.");
-          return;
-        }
-
-        Value newWaitAll1 =
-            tileChannelOpByFactor(theOtherChanOp[0], targetColTilingFactor,
-                                  *getConstantIntValue(wraps[adjustedDimIdx]),
-                                  adjustedDimIdx, allocOp, new_chan, loc, ctx);
-
-        // Update dependency.
-        auto oldToken =
-            dyn_cast<air::AsyncOpInterface>(theOtherChanOp[0].getOperation())
-                .getAsyncToken();
-        oldToken.replaceAllUsesWith(newWaitAll1);
-        erased.insert(theOtherChanOp[0]);
-        erased.insert(chanUserOp);
+        SmallVector<int64_t, 2> channel_sizes = {targetColTilingFactor, 1};
+        new_chan = rewriter.create<air::ChannelOp>(
+            loc, cname, rewriter.getI64ArrayAttr(channel_sizes));
       }
+
+      // Perform tiling on thsee channel put/get ops which are using the memref.
+      auto memrefShape = air::getTensorShape(memref.getType());
+      int dim = splitDim;
+      auto offsetDimOpt = air::getOffsetDimFromMemrefDim(
+          dim, chanUserOp.getStrides(), memrefShape);
+      int offsetDim = offsetDimOpt ? *offsetDimOpt : dim;
+      auto newWaitAll = tileChannelOpByFactor(chanUserOp, targetColTilingFactor,
+                                              memrefShape[dim], offsetDim,
+                                              infoEntryVec, new_chan, loc, ctx);
+      rewriter.replaceAllUsesWith(air::getAsyncTokenFromOp(chanUserOp),
+                                  newWaitAll);
+
+      // Now that one side of those channels are tiled, perform tiling on the
+      // other side, too.
+      auto theOtherChanOp = air::getTheOtherChannelOpThroughSymbol(chanUserOp);
+
+      // Account for cases where rank reduction results from at least
+      // of the dimensions being equal to one.
+      SmallVector<Value> wraps = theOtherChanOp[0].getSizes();
+      if (wraps.empty()) {
+        // Populate default wraps, if wraps is an empty vector.
+        SmallVector<Value> offsets, strides;
+        air::populateDefaultWrapsAndStrides(
+            rewriter, theOtherChanOp[0].getMemref(), offsets, wraps, strides);
+      }
+      auto adjustedDimIdx = dim;
+      if (wraps.size() != memrefShape.size()) {
+        // Make sure that the number of rank-reducing dimensions and/or
+        // the number of leading singleton dimensions must be equal to
+        // the difference between the number of wraps and the shape of
+        // the memref of the original channel.
+        int numSingletonDimDiff = 0;
+        for (auto wrap : wraps) {
+          if (*getConstantIntValue(wrap) == 1)
+            numSingletonDimDiff++;
+        }
+        for (auto shapeDim : memrefShape) {
+          if (shapeDim == 1)
+            numSingletonDimDiff--;
+        }
+        if (numSingletonDimDiff == (int)(wraps.size() - memrefShape.size())) {
+          // Detected rank reduction (reducing singleton dimensions) between
+          // thisChanOp and theOtherChanOp.
+
+          // Now let's figure out number of rank-reducing dimensions (of size
+          // 1) before 'dim' to compute the appropriate index into
+          // wraps/offsets/strides of the channel op on the other side of the
+          // segment.
+          auto otherShape =
+              air::getTensorShape(theOtherChanOp[0].getMemref().getType());
+          auto orgDim = 0;
+          auto wrapIdx = 0;
+          // The dimension index is computed below
+          adjustedDimIdx = 0;
+          while (orgDim != dim) {
+            auto wrapVal = *getConstantIntValue(wraps[wrapIdx]);
+            if (wrapVal == 1) {
+              // If the memrefShape dimension size is not equal to
+              // the wrap size, this is probably rank-reduced dimension.
+              if (memrefShape[orgDim] != 1)
+                adjustedDimIdx++;
+              else
+                orgDim++;
+              wrapIdx++;
+              continue;
+            }
+            if (memrefShape[orgDim] == 1) {
+              orgDim++;
+              continue;
+            }
+            if (memrefShape[orgDim] == wrapVal ||
+                memrefShape[orgDim] == otherShape[wrapIdx]) {
+              orgDim++;
+              adjustedDimIdx++;
+              wrapIdx++;
+              continue;
+            }
+            chanUserOp->emitOpError(
+                "Failed to split data access pattern along dimension ")
+                << std::to_string(orgDim)
+                << " due to dimension misalignment with channel op at "
+                   "the other side.";
+            return;
+          }
+        }
+      }
+
+      if (adjustedDimIdx >= (int)wraps.size()) {
+        theOtherChanOp[0]->emitOpError(
+            "Failed to split data access pattern due to air.channel op "
+            "having mismatching wraps rank.");
+        return;
+      }
+
+      Value newWaitAll1 = tileChannelOpByFactor(
+          theOtherChanOp[0], targetColTilingFactor,
+          *getConstantIntValue(wraps[adjustedDimIdx]), adjustedDimIdx,
+          infoEntryVec, new_chan, loc, ctx);
+
+      // Update dependency.
+      rewriter.replaceAllUsesWith(air::getAsyncTokenFromOp(theOtherChanOp[0]),
+                                  newWaitAll1);
+      erased.insert(theOtherChanOp[0]);
+      erased.insert(chanUserOp);
     }
   }
 
-  for (auto e : erased) {
-    // Replace all remaining uses of erased op's token with a new wait_all.
-    for (auto res : e->getResults()) {
-      if (isa<air::AsyncTokenType>(res.getType()) && !res.use_empty()) {
-        OpBuilder b(e);
-        res.replaceAllUsesWith(
-            b.create<air::WaitAllOp>(e->getLoc(), air::AsyncTokenType::get(ctx),
-                                     air::getAsyncDependenciesFromOp(e))
-                .getAsyncToken());
-      }
+  // STEP 4: Unroll all remaining scf.parallels in segment.
+  parOps.clear();
+  func.walk([&](scf::ParallelOp parOp) {
+    if (parOp->getParentOfType<air::SegmentOp>()) {
+      parOps.push_back(parOp);
     }
-    e->erase();
+  });
+  for (auto par : parOps) {
+    IRRewriter rewriter(ctx);
+    IRMapping remap;
+    rewriter.setInsertionPoint(par);
+    if (failed(air::unrollScfParallel(rewriter, par, remap)))
+      signalPassFailure();
+    erased.insert(par);
   }
 
   auto context = &getContext();
@@ -1817,7 +1879,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   air::ExecuteOp::getCanonicalizationPatterns(canoPatterns, context);
   (void)applyPatternsGreedily(func, std::move(canoPatterns));
 
-  // Split memrefs.
+  // STEP 5: Split memrefs; mutate all uses of the original memref into the
+  // split ones.
   allocOps.clear();
   func.walk([&](memref::AllocOp allocOp) {
     if (allocOp->hasAttr("split")) {
@@ -1825,12 +1888,11 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
     }
   });
   for (auto allocOp : allocOps) {
-    auto splitInfo = targetMemrefsToInfoMap[allocOp];
-    auto &[splitType, infoEntryMap] = splitInfo;
-    auto &[splitDim, infoEntry] =
+    auto splitInfo = (*targetMemrefsToInfoMap)[allocOp];
+    auto &[splitType, splitFactor, infoEntryMap] = splitInfo;
+    auto &[splitDim, infoEntryVec] =
         infoEntryMap.front(); // TODO: assuming only one dimension is subject to
                               // splitting for now.
-    // auto &[splitFactor, splitAffineMap, splitSize] = infoEntry;
     Value memref = isa<air::ExecuteOp>(allocOp->getParentOp())
                        ? allocOp->getParentOp()->getResult(1)
                        : dyn_cast<Value>(allocOp.getMemref());
@@ -1843,21 +1905,30 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         gets.push_back(get);
     }
     int dim = splitDim;
-    partitionMemref(puts, gets, dim, allocOp, infoEntry);
+    partitionMemref(puts, gets, dim, allocOp, infoEntryVec);
   }
   for (auto allocOp : allocOps) {
     if (auto execOp = dyn_cast<air::ExecuteOp>(allocOp->getParentOp())) {
-      OpBuilder builder(execOp);
-      auto waitAllOp = builder.create<air::WaitAllOp>(
-          allocOp->getLoc(), air::AsyncTokenType::get(allocOp->getContext()),
-          execOp.getAsyncDependencies());
-      execOp.getAsyncToken().replaceAllUsesWith(waitAllOp.getAsyncToken());
-      execOp->erase();
+      erased.insert(execOp);
     } else {
-      assert(allocOp->use_empty());
-      allocOp->erase();
+      erased.insert(allocOp);
     }
   }
+
+  IRMapping waitAllRemap;
+  IRRewriter rewriter(ctx);
+  for (auto e : erased) {
+    // Replace all remaining uses of erased op's token with a new wait_all.
+    if (air::isAsyncOp(e)) {
+      rewriter.setInsertionPoint(e);
+      auto waitAll =
+          air::replaceAsyncOpWithWaitAll(rewriter, waitAllRemap, e, false);
+      rewriter.replaceAllUsesWith(air::getAsyncTokenFromOp(e),
+                                  waitAll.getAsyncToken());
+    }
+  }
+  for (auto e : erased)
+    rewriter.eraseOp(e);
 
   air::renumberChannelOps(&func.getBody().front());
 }
