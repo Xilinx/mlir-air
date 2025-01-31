@@ -888,16 +888,11 @@ FailureOr<Value> tileChannelOpByFactor(
     air::ChannelOp newChanOp, Location loc, MLIRContext *ctx) {
   IRRewriter rewriter(ctx);
   rewriter.setInsertionPoint(originalChanOp);
-  // Operation *affineApplyOp = nullptr;
   Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  // // Get any existing affine map operating on the target split dimension.
-  // if (!originalChanOp.getOffsets().empty()) {
-  //   auto offsetDefOp = originalChanOp.getOffsets()[dim].getDefiningOp();
-  //   if (isa_and_present<affine::AffineApplyOp, air::ExecuteOp>(offsetDefOp))
-  //     affineApplyOp = offsetDefOp;
-  // }
   // Create and apply affine map onto the split channel ops.
   SmallVector<Value> tokens;
+  int memorySpace = dyn_cast<MemRefType>(originalChanOp.getMemref().getType())
+                        .getMemorySpaceAsInt();
   for (int i = 0; i < factor; i++) {
     // Get affine map and split size from splitInfo.
     auto &[splitInfoDimOnOffsets, splitInfoAffineMap, splitInfoSplitOffset,
@@ -1025,7 +1020,9 @@ FailureOr<Value> tileChannelOpByFactor(
     else
       newWraps[splitDimOnOffsets] = rewriter.create<arith::ConstantIndexOp>(
           loc, llvm::divideCeilSigned(originalMemrefSize, factor));
-    if (splitInfoSplitStrideFactor)
+    // Stride manipulation is only allowed for L3 memory: we are not splitting
+    // the L3 memref; we are only splitting its access pattern.
+    if (splitInfoSplitStrideFactor && memorySpace == (int)air::MemorySpace::L3)
       newStrides[splitDimOnOffsets] = rewriter.create<arith::ConstantIndexOp>(
           loc, *getConstantIntValue(newStrides[splitDimOnOffsets]) *
                    (*splitInfoSplitStrideFactor));
@@ -1604,6 +1601,13 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
         putgets[i]->setAttr(
             "split_dim_stride_factor",
             IntegerAttr::get(IntegerType::get(ctx, 32), *splitDimStrideFactor));
+        // Cancel out the non-unit step size on the for loop, to get contiguous
+        // access pattern on memrefs after split.
+        if (auto forOp =
+                getScfForFromVal(putgets[i].getOffsets()[*offsetDimOpt])) {
+          forOp->setAttr("mutate_step_size_to",
+                         IntegerAttr::get(IntegerType::get(ctx, 32), 1));
+        }
       }
       AffineMap applyMap;
       auto apply = getAffineMapOnMemrefSplitDim(putgets[i], *offsetDimOpt);
@@ -2002,6 +2006,21 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   }
   for (auto e : erased)
     rewriter.eraseOp(e);
+  // Mutate the for loops to get contiguous access pattern on memrefs.
+  func.walk([&](scf::ForOp forOp) {
+    if (forOp->hasAttr("mutate_step_size_to")) {
+      rewriter.setInsertionPoint(forOp);
+      int newStep =
+          forOp->getAttrOfType<IntegerAttr>("mutate_step_size_to").getInt();
+      int oldStep = *getConstantIntValue(forOp.getStep());
+      forOp.setStep(
+          rewriter.create<arith::ConstantIndexOp>(forOp->getLoc(), newStep));
+      forOp.setUpperBound(rewriter.create<arith::ConstantIndexOp>(
+          forOp->getLoc(),
+          *getConstantIntValue(forOp.getUpperBound()) / oldStep));
+      forOp->removeAttr("mutate_step_size_to");
+    }
+  });
 
   air::renumberChannelOps(&func.getBody().front());
 }
