@@ -775,8 +775,9 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
 }
 
 // Unroll scf.parallel ops.
-LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
-                                IRMapping remap) {
+LogicalResult unrollScfParallel(
+    OpBuilder builder, scf::ParallelOp par, IRMapping remap,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &opMap) {
   auto loc = par->getLoc();
   auto ctx = par->getContext();
   SmallVector<int, 2> lbs_spatial, ubs_spatial;
@@ -806,6 +807,7 @@ LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
       curr_new_op = builder.clone(op, localRemap);
       if (air::getAsyncTokenFromOp(curr_new_op))
         yieldedTokensInIter.push_back(air::getAsyncTokenFromOp(curr_new_op));
+      opMap[&op].push_back(curr_new_op);
     }
     // Unroll air.wait_all token reduction
     if (getAsyncTokenFromOp(par)) {
@@ -891,9 +893,10 @@ separateScfParallelByDims(RewriterBase &rewriter, scf::ParallelOp par,
 }
 
 // Unroll scf.parallel ops along a specific set of dimensions.
-LogicalResult unrollScfParallelOnDims(RewriterBase &rewriter,
-                                      scf::ParallelOp par, IRMapping remap,
-                                      SmallVector<int> dims) {
+LogicalResult unrollScfParallelOnDims(
+    RewriterBase &rewriter, scf::ParallelOp par, IRMapping remap,
+    SmallVector<int> dims,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &opMap) {
 
   // Separate the parallel op into two parallel ops, with the outer loop
   // containing dimensions specified in dims.
@@ -905,7 +908,7 @@ LogicalResult unrollScfParallelOnDims(RewriterBase &rewriter,
   // Unroll outer parallel.
   rewriter.setInsertionPoint(outerPar);
   IRMapping unrollRemap;
-  if (failed(unrollScfParallel(rewriter, outerPar, unrollRemap)))
+  if (failed(unrollScfParallel(rewriter, outerPar, unrollRemap, opMap)))
     return failure();
 
   if (air::isAsyncOp(outerPar)) {
@@ -935,9 +938,10 @@ struct unrollAIRChannelPutInScfParallelPattern
     if (parOps.empty())
       return failure();
     IRMapping remap;
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> opMap;
     for (auto par : parOps) {
       rewriter.setInsertionPoint(par);
-      auto res = unrollScfParallel(rewriter, par, remap);
+      auto res = unrollScfParallel(rewriter, par, remap, opMap);
       if (res.failed())
         return failure();
       rewriter.eraseOp(par);
@@ -962,9 +966,10 @@ struct unrollAIRChannelGetInScfParallelPattern
     if (parOps.empty())
       return failure();
     IRMapping remap;
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> opMap;
     for (auto par : parOps) {
       rewriter.setInsertionPoint(par);
-      auto res = unrollScfParallel(rewriter, par, remap);
+      auto res = unrollScfParallel(rewriter, par, remap, opMap);
       if (res.failed())
         return failure();
       rewriter.eraseOp(par);
