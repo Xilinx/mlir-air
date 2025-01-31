@@ -19,4 +19,4 @@ set(LIBS
 
 target_link_libraries(air-runner PRIVATE ${LIBS})
 
-export_executable_symbols(mlir-cpu-runner)
+export_executable_symbols(mlir-runner)
