@@ -87,7 +87,7 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
     int64_t offset;
     SmallVector<int64_t, 4> layout_strides;
     auto successStrides =
-        getStridesAndOffset(inferredType, layout_strides, offset);
+        inferredType.getStridesAndOffset(layout_strides, offset);
     if (failed(successStrides)) {
       llvm::outs() << "Failed to get strides\n";
       return; // failure();
@@ -145,7 +145,7 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
   int64_t offset;
   SmallVector<int64_t, 4> layout_strides;
   auto successStrides =
-      getStridesAndOffset(inferredType, layout_strides, offset);
+      inferredType.getStridesAndOffset(layout_strides, offset);
   if (failed(successStrides)) {
     llvm::outs() << "Failed to get strides\n";
     return; // failure();
