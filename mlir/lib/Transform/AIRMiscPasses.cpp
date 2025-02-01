@@ -1743,6 +1743,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   };
 
   // STEP 3: Tile the side accessed by a single air.channel.
+  IRRewriter rewriter(ctx);
   for (auto &[allocOp, splitInfo] : *targetMemrefsToInfoMap) {
     auto &[splitType, splitFactor, infoEntryMap] = splitInfo;
     auto &[splitDim, infoEntryVec] =
@@ -1771,7 +1772,6 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       auto ctx = chanUserOp->getContext();
 
       // Creating a new unique channel for tiling.
-      IRRewriter rewriter(ctx);
       Operation *o =
           &chanUserOp->getParentOfType<ModuleOp>().getBody()->front();
       while (dyn_cast_or_null<air::ChannelOp>(o))
@@ -1816,89 +1816,91 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       // Account for cases where rank reduction results from at least
       // of the dimensions being equal to one.
       SmallVector<Value> wraps = theOtherChanOp[0].getSizes();
+      SmallVector<Value> offsets = theOtherChanOp[0].getOffsets();
+      SmallVector<Value> strides = theOtherChanOp[0].getStrides();
       if (wraps.empty()) {
         // Populate default wraps, if wraps is an empty vector.
-        SmallVector<Value> offsets, strides;
         air::populateDefaultWrapsAndStrides(
             rewriter, theOtherChanOp[0].getMemref(), offsets, wraps, strides);
       }
-      auto adjustedDimIdx = dim;
-      if (wraps.size() != memrefShape.size()) {
-        // Make sure that the number of rank-reducing dimensions and/or
-        // the number of leading singleton dimensions must be equal to
-        // the difference between the number of wraps and the shape of
-        // the memref of the original channel.
-        int numSingletonDimDiff = 0;
-        for (auto wrap : wraps) {
-          if (*getConstantIntValue(wrap) == 1)
-            numSingletonDimDiff++;
-        }
-        for (auto shapeDim : memrefShape) {
-          if (shapeDim == 1)
-            numSingletonDimDiff--;
-        }
-        if (numSingletonDimDiff == (int)(wraps.size() - memrefShape.size())) {
-          // Detected rank reduction (reducing singleton dimensions) between
-          // thisChanOp and theOtherChanOp.
 
-          // Now let's figure out number of rank-reducing dimensions (of size
-          // 1) before 'dim' to compute the appropriate index into
-          // wraps/offsets/strides of the channel op on the other side of the
-          // segment.
-          auto otherShape =
-              air::getTensorShape(theOtherChanOp[0].getMemref().getType());
-          auto orgDim = 0;
-          auto wrapIdx = 0;
-          // The dimension index is computed below
-          adjustedDimIdx = 0;
-          while (orgDim != dim) {
-            auto wrapVal = *getConstantIntValue(wraps[wrapIdx]);
-            if (wrapVal == 1) {
-              // If the memrefShape dimension size is not equal to
-              // the wrap size, this is probably rank-reduced dimension.
-              if (memrefShape[orgDim] != 1)
-                adjustedDimIdx++;
-              else
-                orgDim++;
-              wrapIdx++;
-              continue;
-            }
-            if (memrefShape[orgDim] == 1) {
-              orgDim++;
-              continue;
-            }
-            if (memrefShape[orgDim] == wrapVal ||
-                memrefShape[orgDim] == otherShape[wrapIdx]) {
-              orgDim++;
-              adjustedDimIdx++;
-              wrapIdx++;
-              continue;
-            }
-            chanUserOp->emitOpError(
-                "Failed to split data access pattern along dimension ")
-                << std::to_string(orgDim)
-                << " due to dimension misalignment with channel op at "
-                   "the other side.";
-            return;
+      // Bump up the offset, wrap and stride list to match both sides.
+      SmallVector<Value> refSizes = chanUserOp.getSizes();
+      SmallVector<Value> refOffsets = chanUserOp.getOffsets();
+      SmallVector<Value> refStrides = chanUserOp.getStrides();
+      if (refSizes.empty())
+        air::populateDefaultWrapsAndStrides(rewriter, chanUserOp.getMemref(),
+                                            refOffsets, refSizes, refStrides);
+      SmallVector<int> newSizes, newStrides;
+      rewriter.setInsertionPoint(theOtherChanOp[0]);
+      auto zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      auto oneIdx = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      if (wraps.size() < refSizes.size()) {
+        int currIdx = offsets.size() - 1;
+        for (int i = refSizes.size() - 1; i >= 0; i--) {
+          // Ref size one. Insert a size-one dimension.
+          if (*getConstantIntValue(refSizes[i]) == 1) {
+            offsets.insert(offsets.begin() + currIdx, zeroIdx);
+            wraps.insert(wraps.begin() + currIdx, oneIdx);
+            auto currStride = *getConstantIntValue(strides[currIdx]);
+            strides.insert(
+                strides.begin() + currIdx,
+                rewriter.create<arith::ConstantIndexOp>(loc, currStride));
+            continue;
           }
+          // Ref size equals curr size. Continue.
+          if (*getConstantIntValue(wraps[currIdx]) ==
+              *getConstantIntValue(refSizes[i])) {
+            currIdx = currIdx == 0 ? 0 : currIdx - 1;
+            continue;
+          }
+          if (*getConstantIntValue(wraps[currIdx]) %
+              *getConstantIntValue(refSizes[i]))
+            break; // encountered size not divisible
+          // Ref size neq curr size. Tile curr dimension.
+          int factor = *getConstantIntValue(wraps[currIdx]) /
+                       *getConstantIntValue(refSizes[i]);
+          offsets.insert(offsets.begin() + currIdx, zeroIdx);
+          auto newWrapVal =
+              rewriter.create<arith::ConstantIndexOp>(loc, factor);
+          wraps.insert(wraps.begin() + currIdx, newWrapVal);
+          auto newStrideVal = rewriter.create<arith::ConstantIndexOp>(
+              loc, *getConstantIntValue(refSizes[i]) *
+                       *getConstantIntValue(strides[currIdx]));
+          strides.insert(strides.begin() + currIdx, newStrideVal);
+          wraps[currIdx + 1] = rewriter.create<arith::ConstantIndexOp>(
+              loc, *getConstantIntValue(refSizes[i]));
         }
       }
-
-      if (adjustedDimIdx >= (int)wraps.size()) {
-        theOtherChanOp[0]->emitOpError(
-            "Failed to split data access pattern due to air.channel op "
-            "having mismatching wraps rank.");
-        return;
+      if (auto put =
+              dyn_cast<air::ChannelPutOp>(theOtherChanOp[0].getOperation())) {
+        auto attrs = put->getDiscardableAttrDictionary();
+        erased.insert(put);
+        auto newPut = rewriter.create<air::ChannelPutOp>(
+            loc, put.getResultTypes(), put.getAsyncDependencies(),
+            put.getChanName(), put.getIndices(), put.getMemref(), offsets,
+            wraps, strides);
+        newPut->setAttrs(attrs);
+        rewriter.replaceAllUsesWith(put->getResults(), newPut->getResults());
+        theOtherChanOp[0] = newPut;
+      } else if (auto get = dyn_cast<air::ChannelGetOp>(
+                     theOtherChanOp[0].getOperation())) {
+        auto attrs = get->getDiscardableAttrDictionary();
+        erased.insert(get);
+        auto newGet = rewriter.create<air::ChannelGetOp>(
+            loc, get.getResultTypes(), get.getAsyncDependencies(),
+            get.getChanName(), get.getIndices(), get.getMemref(), offsets,
+            wraps, strides);
+        newGet->setAttrs(attrs);
+        rewriter.replaceAllUsesWith(get->getResults(), newGet->getResults());
+        theOtherChanOp[0] = newGet;
       }
 
-      // Update split dimension index on offsets
-      for (auto &[splitInfoDimOnOffsets, splitAffineMap, splitOffset, splitSize,
-                  splitStride] : infoEntryVec)
-        splitInfoDimOnOffsets = adjustedDimIdx;
       auto newWaitAll1 = tileChannelOpByFactor(
           theOtherChanOp[0], targetColTilingFactor,
-          *getConstantIntValue(wraps[adjustedDimIdx]), infoEntryVec,
+          *getConstantIntValue(wraps[offsetDim]), infoEntryVec,
           opToSplitInfoMap, new_chan, loc, ctx);
+
       if (failed(newWaitAll1))
         return;
 
@@ -1993,7 +1995,6 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   }
 
   IRMapping waitAllRemap;
-  IRRewriter rewriter(ctx);
   for (auto e : erased) {
     // Replace all remaining uses of erased op's token with a new wait_all.
     if (air::isAsyncOp(e)) {
