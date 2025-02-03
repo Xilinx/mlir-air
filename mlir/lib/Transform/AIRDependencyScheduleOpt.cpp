@@ -4121,7 +4121,15 @@ private:
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder builder(a);
     builder.setInsertionPointAfter(a);
-    cloneOpAndOperands(builder, remap, b);
+    auto new_b = cloneOpAndOperands(builder, remap, b);
+    if (air::isAsyncOp(a) && air::isAsyncOp(new_b)) {
+      auto newWaitAll = builder.create<air::WaitAllOp>(
+          a->getLoc(), air::AsyncTokenType::get(a->getContext()),
+          SmallVector<Value>{air::getAsyncTokenFromOp(a),
+                             air::getAsyncTokenFromOp(new_b)});
+      air::getAsyncTokenFromOp(a).replaceAllUsesExcept(
+          newWaitAll.getAsyncToken(), newWaitAll);
+    }
     // Erase b
     if (air::isAsyncOp(b)) {
       IRMapping waitAllRemap;
