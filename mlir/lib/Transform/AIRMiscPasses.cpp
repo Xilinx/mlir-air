@@ -1022,10 +1022,24 @@ FailureOr<Value> tileChannelOpByFactor(
           loc, llvm::divideCeilSigned(originalMemrefSize, factor));
     // Stride manipulation is only allowed for L3 memory: we are not splitting
     // the L3 memref; we are only splitting its access pattern.
-    if (splitInfoSplitStrideFactor && memorySpace == (int)air::MemorySpace::L3)
-      newStrides[splitDimOnOffsets] = rewriter.create<arith::ConstantIndexOp>(
-          loc, *getConstantIntValue(newStrides[splitDimOnOffsets]) *
-                   (*splitInfoSplitStrideFactor));
+    // Strategy: add one dimension to wrap-and-stride list. Rationale: (1) the
+    // stride factor should apply on existing size, (2) original offset must
+    // continue with the original stride.
+    if (splitInfoSplitStrideFactor &&
+        memorySpace == (int)air::MemorySpace::L3) {
+      newStrides.insert(newStrides.begin() + splitDimOnOffsets,
+                        newStrides[splitDimOnOffsets]);
+      newStrides[splitDimOnOffsets + 1] =
+          rewriter.create<arith::ConstantIndexOp>(
+              loc, *getConstantIntValue(newStrides[splitDimOnOffsets]) *
+                       (*splitInfoSplitStrideFactor));
+      newWraps.insert(newWraps.begin() + splitDimOnOffsets,
+                      rewriter.create<arith::ConstantIndexOp>(loc, 1));
+      newOffsets.insert(newOffsets.begin() + splitDimOnOffsets,
+                        newOffsets[splitDimOnOffsets]);
+      newOffsets[splitDimOnOffsets + 1] =
+          rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    }
     auto deps = dyn_cast<air::AsyncOpInterface>(originalChanOp.getOperation())
                     .getAsyncDependencies();
     SmallVector<Type, 4> tys = {air::AsyncTokenType::get(ctx)};
@@ -1791,7 +1805,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
             loc, cname, rewriter.getI64ArrayAttr(channel_sizes));
       }
 
-      // Perform tiling on thsee channel put/get ops which are using the memref.
+      // Perform tiling on these channel put/get ops which are using the memref.
       auto memrefShape = air::getTensorShape(memref.getType());
       int dim = splitDim;
       auto offsetDimOpt = air::getOffsetDimFromMemrefDim(
