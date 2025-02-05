@@ -1046,9 +1046,6 @@ LogicalResult air::canonicalizeWrapAndStrideList(
       auto const_stride = getConstantIntValue(strides[i]);
       if (!const_stride)
         continue;
-      auto const_offset_prev = getConstantIntValue(offsets[i - 1]);
-      if (!const_offset_prev)
-        continue;
       auto const_size_prev = getConstantIntValue(sizes[i - 1]);
       if (!const_size_prev)
         continue;
