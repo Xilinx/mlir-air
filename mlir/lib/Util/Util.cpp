@@ -948,6 +948,26 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
               dyn_cast_if_present<arith::IndexCastOp>(offset_producer)) {
         offsets[i] = castOp.getIn();
         offset_producer = castOp.getIn().getDefiningOp();
+      } else if (auto addOp =
+                     dyn_cast_if_present<arith::AddIOp>(offset_producer)) {
+        auto newAffineApply =
+            air::consructComposedAffineApplyOpFromArithAddI(builder, addOp);
+        if (!newAffineApply) {
+          addOp->emitOpError("failed to convert to affine_apply");
+          return failure();
+        }
+        offsets[i] = newAffineApply.getResult();
+        offset_producer = newAffineApply;
+      } else if (auto mulOp =
+                     dyn_cast_if_present<arith::MulIOp>(offset_producer)) {
+        auto newAffineApply =
+            air::consructComposedAffineApplyOpFromArithMulI(builder, mulOp);
+        if (!newAffineApply) {
+          mulOp->emitOpError("failed to convert to affine_apply");
+          return failure();
+        }
+        offsets[i] = newAffineApply.getResult();
+        offset_producer = newAffineApply;
       }
       if (!offset_producer) {
         if (auto afo = affine::getForInductionVarOwner(offsets[i])) {
@@ -968,6 +988,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
         offset_producer = &exec.getChildOps().front();
       auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
+      assert(!isa<arith::AddIOp>(offset_producer));
       assert(affine_apply && "ssa offset not produced by affine.apply, NYI.");
       if (affine_apply->getNumOperands() > 1)
         continue;
@@ -1887,4 +1908,40 @@ bool air::isEquivalentTo(Operation *lhs, Operation *rhs) {
       return false;
 
   return true;
+}
+
+// Generate composed affine apply op from arith addi op operating on Index
+// values.
+affine::AffineApplyOp
+air::consructComposedAffineApplyOpFromArithAddI(OpBuilder &builder,
+                                                arith::AddIOp addOp) {
+  if (!addOp)
+    return affine::AffineApplyOp();
+  if (llvm::any_of(addOp->getOperands(),
+                   [](Value operand) { return !operand.getType().isIndex(); }))
+    return affine::AffineApplyOp();
+  builder.setInsertionPoint(addOp);
+  auto map = AffineMap::get(
+      0, 2, builder.getAffineSymbolExpr(0) + builder.getAffineSymbolExpr(1));
+  return affine::makeComposedAffineApply(
+      builder, addOp.getLoc(), map,
+      getAsOpFoldResult({addOp.getLhs(), addOp.getRhs()}));
+}
+
+// Generate composed affine apply op from arith muli op operating on Index
+// values.
+affine::AffineApplyOp
+air::consructComposedAffineApplyOpFromArithMulI(OpBuilder &builder,
+                                                arith::MulIOp mulOp) {
+  if (!mulOp)
+    return affine::AffineApplyOp();
+  if (llvm::any_of(mulOp->getOperands(),
+                   [](Value operand) { return !operand.getType().isIndex(); }))
+    return affine::AffineApplyOp();
+  builder.setInsertionPoint(mulOp);
+  auto map = AffineMap::get(
+      0, 2, builder.getAffineSymbolExpr(0) * builder.getAffineSymbolExpr(1));
+  return affine::makeComposedAffineApply(
+      builder, mulOp.getLoc(), map,
+      getAsOpFoldResult({mulOp.getLhs(), mulOp.getRhs()}));
 }

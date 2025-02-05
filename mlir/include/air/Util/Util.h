@@ -276,6 +276,18 @@ bool isRegionEquivalentTo(Region *lhs, Region *rhs);
 // const value equivalences.
 bool isEquivalentTo(Operation *lhs, Operation *rhs);
 
+// Generate composed affine apply op from arith addi op operating on Index
+// values.
+affine::AffineApplyOp
+consructComposedAffineApplyOpFromArithAddI(OpBuilder &builder,
+                                           arith::AddIOp addOp);
+
+// Generate composed affine apply op from arith muli op operating on Index
+// values.
+affine::AffineApplyOp
+consructComposedAffineApplyOpFromArithMulI(OpBuilder &builder,
+                                           arith::MulIOp mulOp);
+
 } // namespace air
 } // namespace xilinx
 
