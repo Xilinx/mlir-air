@@ -1003,11 +1003,9 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
 };
 
 // Canonicalize wrap and stride lists by removing redundant dimensions.
-LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
-                                                 SmallVector<Value> &offsets,
-                                                 SmallVector<Value> &sizes,
-                                                 SmallVector<Value> &strides,
-                                                 int memref_volume) {
+LogicalResult air::canonicalizeWrapAndStrideList(
+    OpBuilder builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
+    SmallVector<Value> &strides, int memref_volume, int maxSize) {
   bool listsHaveChanged = false;
   // Match offsets size with sizes and strides
   auto max_dim_size =
@@ -1048,8 +1046,11 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
       auto const_stride = getConstantIntValue(strides[i]);
       if (!const_stride)
         continue;
-      auto const_offset_prev = getConstantIntValue(offsets[i - 1]);
-      if (!const_offset_prev)
+      auto const_size_prev = getConstantIntValue(sizes[i - 1]);
+      if (!const_size_prev)
+        continue;
+      // Check for max size constraint
+      if (maxSize > 0 && *const_size_prev * (*const_size) > maxSize)
         continue;
       auto const_stride_prev = getConstantIntValue(strides[i - 1]);
       if (!const_stride_prev)
@@ -1135,7 +1136,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
           offsetVal = cast->getOperand(0);
       }
       if (iv && offsetVal == iv) {
-        ind_var_factor = *getConstantIntValue(strides[i]);
+        ind_var_factor = *getConstantIntValue(strides[i]) * stepSize;
         offsets[i] = builder.template create<arith::ConstantIndexOp>(
             loc, loop_lower_bound);
         break;
@@ -1181,7 +1182,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     Value new_wrap =
         builder.template create<arith::ConstantIndexOp>(loc, trip_count);
     int64_t new_stride_value =
-        (stepSize * ind_var_factor) % getTensorVolume(memref.getType());
+        ind_var_factor % getTensorVolume(memref.getType());
     Value new_stride =
         builder.template create<arith::ConstantIndexOp>(loc, new_stride_value);
 
