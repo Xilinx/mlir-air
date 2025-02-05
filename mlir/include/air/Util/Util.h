@@ -271,6 +271,13 @@ void populateBufferMemrefToFuncArgsPattern(RewritePatternSet &patterns);
 Region *findCommonRegionContainingAllAncestors(SmallVector<Operation *> ops,
                                                Operation *until = nullptr);
 
+// A lite version of OperationEquivalence::isRegionEquivalentTo which only
+// checks for const value equivalences.
+bool isRegionEquivalentTo(Region *lhs, Region *rhs);
+// A lite version of OperationEquivalence::isEquivalentTo which only checks for
+// const value equivalences.
+bool isEquivalentTo(Operation *lhs, Operation *rhs);
+
 } // namespace air
 } // namespace xilinx
 
