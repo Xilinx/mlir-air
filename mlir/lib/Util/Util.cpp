@@ -988,8 +988,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
         offset_producer = &exec.getChildOps().front();
       auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
-      assert(!isa<arith::AddIOp>(offset_producer));
-      assert(affine_apply && "ssa offset not produced by affine.apply, NYI.");
+      assert(affine_apply && "unknown ssa offset producer, NYI.");
       if (affine_apply->getNumOperands() > 1)
         continue;
       // Compose affine map
@@ -1007,8 +1006,15 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
           affine_apply.getAffineMap().getResults().end());
       offset_expr = offset_expr.replaceDimsAndSymbols({}, symReplacements);
       auto next_offset_map = AffineMap::get(0, 1, offset_expr);
-      affine_apply.setMap(next_offset_map);
-      offsets[i] = affine_apply;
+      // Apply affine map
+      builder.setInsertionPoint(affine_apply);
+      if (auto exec =
+              dyn_cast_if_present<air::ExecuteOp>(affine_apply->getParentOp()))
+        builder.setInsertionPoint(exec);
+      auto newAffineApply =
+          dyn_cast<affine::AffineApplyOp>(builder.clone(*affine_apply));
+      newAffineApply.setMap(next_offset_map);
+      offsets[i] = newAffineApply->getResult(0);
       offsets[*j] = offsets[i];
     }
     erased |= multiplyAdjWraps(builder, i, sizes);
