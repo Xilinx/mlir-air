@@ -76,6 +76,11 @@ std::unique_ptr<mlir::Pass> createAIRShrinkMemrefSizesByAccess();
 // variables are canonicalized
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns);
 
+// Populate patterns for canonicalizing offsets, sizes and strides in air
+// channel_interface operations.
+void populateAIRCanonicalizeChannelWrapAndStridePatterns(
+    RewritePatternSet &patterns, int &maxSize);
+
 // Apply AIRSpecializeChannelWrapAndStridePattern on region.
 void applyAIRSpecializeChannelWrapAndStridePattern(Region *region,
                                                    int maxNumDims, int maxSize,

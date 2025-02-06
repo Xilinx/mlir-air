@@ -174,8 +174,7 @@ void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
-                                SmallVector<Value> memcpy_strides,
-                                Value memref);
+                                SmallVector<Value> memcpy_strides);
 // Get the memref size along a given dimension, that the access pattern actually
 // covers.
 SmallVector<int64_t>
