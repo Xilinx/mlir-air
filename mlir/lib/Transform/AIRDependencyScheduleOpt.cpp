@@ -3068,9 +3068,8 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet preproc_wns_patterns(ctx);
-  preproc_wns_patterns.insert<AIRCanonicalizeChannelGetOpWrapAndStrideList,
-                              AIRCanonicalizeChannelPutOpWrapAndStrideList>(
-      ctx, maxSize);
+  populateAIRCanonicalizeChannelWrapAndStridePatterns(preproc_wns_patterns,
+                                                      maxSize);
   (void)applyPatternsGreedily(*region, std::move(preproc_wns_patterns));
 
   RewritePatternSet patterns(ctx);
@@ -3094,9 +3093,7 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet cano_patterns(ctx);
-  cano_patterns.insert<AIRCanonicalizeChannelGetOpWrapAndStrideList,
-                       AIRCanonicalizeChannelPutOpWrapAndStrideList>(
-      ctx, maxNumDims);
+  populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, maxSize);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(cano_patterns));
 
@@ -6213,6 +6210,13 @@ std::unique_ptr<Pass> createAIRShrinkMemrefSizesByAccess() {
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
   patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
+}
+
+void populateAIRCanonicalizeChannelWrapAndStridePatterns(
+    RewritePatternSet &patterns, int &maxSize) {
+  MLIRContext *ctx = patterns.getContext();
+  patterns.insert<AIRCanonicalizeChannelPutOpWrapAndStrideList,
+                  AIRCanonicalizeChannelGetOpWrapAndStrideList>(ctx, maxSize);
 }
 
 void applyAIRSpecializeChannelWrapAndStridePattern(
