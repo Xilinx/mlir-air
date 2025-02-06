@@ -848,9 +848,19 @@ are lowered to loops using `linalg::LinalgLoweringPattern`.
 
 The transforms are biased toward aie.core regions and are intended
 to be run after the air-to-aie pass.
+### `-air-opt-memtile-dma-bds`
+
+_Optimize logical air.channel.put/get op into efficient AIE memtile dma block descriptor (BD)_
+
+Optimize the logical data movement by transforming them, represented as air.channel.put/get operations, into explicit representation of physical data movement block descriptors (BDs), also represented as air.channel.put/get operations.
+
+#### Options
+```
+-device : AIE device to target.
+```
 ### `-air-opt-shim-dma-bds`
 
-_Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD)_
+_Optimize logical air.channel.put/get op into efficient AIE shim dma block descriptor (BD)_
 
 Optimize the logical data movement by transforming them, represented as air.channel.put/get operations, into explicit representation of physical data movement block descriptors (BDs), also represented as air.channel.put/get operations.
 
