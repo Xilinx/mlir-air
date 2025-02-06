@@ -1844,7 +1844,7 @@ public:
       auto memref = op.getMemref();
       auto memrefShape = air::getTensorShape(memref.getType());
       // The default data access pattern is contiguous and row major.
-      if (isDefaultDataAccessPattern(op.getSizes(), op.getStrides(), memref))
+      if (isDefaultDataAccessPattern(op.getSizes(), op.getStrides()))
         continue;
       if (op.getStrides().size() != memrefShape.size())
         return false;
@@ -2810,8 +2810,7 @@ public:
     auto wraps_and_strides =
         AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
     bool useDefaultDataAccessPattern =
-        UsesSemaphoreLocks ? isDefaultDataAccessPattern(sizes, strides, memref)
-                           : true;
+        UsesSemaphoreLocks ? isDefaultDataAccessPattern(sizes, strides) : true;
     AIE::DMABDOp aieDmaBdOp = nullptr;
     if (wraps_and_strides.getValue().empty() || useDefaultDataAccessPattern)
       aieDmaBdOp = b.create<AIE::DMABDOp>(

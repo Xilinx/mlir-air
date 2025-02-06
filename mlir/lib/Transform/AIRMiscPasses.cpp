@@ -924,8 +924,7 @@ FailureOr<Value> tileChannelOpByFactor(
             originalApplyOperands = llvm::to_vector(opers);
           } else {
             if (air::isDefaultDataAccessPattern(originalChanOp.getSizes(),
-                                                originalChanOp.getStrides(),
-                                                originalChanOp.getMemref()))
+                                                originalChanOp.getStrides()))
               originalApplyOperands.push_back(zeroIdx);
             else
               originalApplyOperands.push_back(

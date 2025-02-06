@@ -1068,20 +1068,16 @@ LogicalResult air::canonicalizeWrapAndStrideList(
       if (!const_offset)
         continue;
       auto const_size = getConstantIntValue(sizes[i]);
-      if (!const_size)
-        continue;
       auto const_stride = getConstantIntValue(strides[i]);
-      if (!const_stride)
-        continue;
       auto const_size_prev = getConstantIntValue(sizes[i - 1]);
-      if (!const_size_prev)
-        continue;
-      // Check for max size constraint
+      // Check for max size constraint, and skip if the final size exceeds it
+      // after composition. The exception is when the access pattern is in
+      // default access pattern, meaning that the data access pattern is a
+      // single stream without multi-dimensional wrapping and striding.
       if (maxSize > 0 && *const_size_prev * (*const_size) > maxSize)
-        continue;
+        if (!isDefaultDataAccessPattern(sizes, strides))
+          continue;
       auto const_stride_prev = getConstantIntValue(strides[i - 1]);
-      if (!const_stride_prev)
-        continue;
       if (*const_stride_prev == *const_size * *const_stride)
         listsHaveChanged |=
             eraseWrapNStrideDim(builder, SmallVector<int>{i - 1}, offsets,
@@ -1253,8 +1249,7 @@ void air::populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
 bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
-                                     SmallVector<Value> memcpy_strides,
-                                     Value memref) {
+                                     SmallVector<Value> memcpy_strides) {
   if (memcpy_sizes.size() != memcpy_strides.size())
     return false;
   // If the sizes and strides were already accessing the memref in default
@@ -1266,9 +1261,6 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
     if (stepsize && *stepsize == 1)
       return true;
   }
-  SmallVector<int> memref_shape = getTensorShape(memref.getType());
-  if (memcpy_sizes.size() != memref_shape.size())
-    return false;
   unsigned stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
@@ -1276,8 +1268,6 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
     assert(wrap && "non-static wrap");
     if (*stepsize != stride_factor)
-      return false;
-    if (*wrap != memref_shape[i])
       return false;
     stride_factor *= *wrap;
   }
