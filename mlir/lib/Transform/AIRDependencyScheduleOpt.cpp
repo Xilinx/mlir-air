@@ -1888,8 +1888,9 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
-  AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims)
-      : OpRewritePattern(ctx), maxNumDims(maxNumDims) {}
+  AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims,
+                                            int &maxSize)
+      : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize) {}
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
@@ -1912,15 +1913,16 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     SmallVector<Value> wraps = channel_op.getSizes();
     SmallVector<Value> strides = channel_op.getStrides();
 
+    OpBuilder b(channel_op);
     (void)canonicalizeWrapAndStrideList(
-        rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()));
+        b, offsets, wraps, strides,
+        air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
 
     // If empty offsets/sizes/strides, then populate the lists with default
     // values.
     if (offsets.empty() && wraps.empty() && strides.empty())
-      populateDefaultWrapsAndStrides(rewriter, channel_op.getMemref(), offsets,
-                                     wraps, strides);
+      populateDefaultWrapsAndStrides(b, channel_op.getMemref(), offsets, wraps,
+                                     strides);
 
     // Check if the number of wrap-and-stride dims exceed maxNumDims. TODO:
     // expand this to take into account wrap-and-stride constraints.
@@ -1935,9 +1937,9 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
-        air::getTensorVolume(channel_op.getMemref().getType()));
+        air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
 
-    Operation *new_chan_op = nullptr;
+    air::ChannelInterface new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
     if (isAsyncOp(channel_op.getOperation())) {
       tys.push_back(air::AsyncTokenType::get(ctx));
@@ -1985,9 +1987,12 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     for (auto res : for_op.getResults()) {
       if (isa<air::AsyncTokenType>(res.getType())) {
         res.replaceAllUsesWith(
-            dyn_cast<air::AsyncOpInterface>(new_chan_op).getAsyncToken());
+            dyn_cast<air::AsyncOpInterface>(new_chan_op.getOperation())
+                .getAsyncToken());
       }
     }
+    rewriter.replaceAllUsesWith(for_op.getInductionVar(),
+                                for_op.getLowerBound());
     rewriter.eraseOp(for_op.getOperation());
 
     return success();
@@ -1995,6 +2000,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
 private:
   int &maxNumDims;
+  int &maxSize;
 };
 
 // This pattern should be executed after
@@ -2024,11 +2030,6 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
     };
 
     if (!containsOnlyAIRChannels(for_op.getBody()))
-      return failure();
-    // Induction variable isn't used, meaning that the loop body is invariant,
-    // i.e. any bd generated from the body is already specialized wrt the loop.
-    // No need to unroll the loop anymore.
-    if (for_op.getInductionVar().use_empty())
       return failure();
 
     auto unroll_factor = air::getStaticScfForTripCountAsInt(for_op);
@@ -2124,7 +2125,7 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
         rewriter, offsets, wraps, strides,
         air::getTensorVolume(channel_op.getMemref().getType()));
 
-    Operation *new_chan_op = nullptr;
+    air::ChannelInterface new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
     if (isAsyncOp(channel_op.getOperation())) {
       tys.push_back(air::AsyncTokenType::get(ctx));
@@ -2171,9 +2172,13 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
     for (auto res : for_op.getResults()) {
       if (isa<air::AsyncTokenType>(res.getType())) {
         res.replaceAllUsesWith(
-            dyn_cast<air::AsyncOpInterface>(new_chan_op).getAsyncToken());
+            dyn_cast<air::AsyncOpInterface>(new_chan_op.getOperation())
+                .getAsyncToken());
       }
     }
+    rewriter.replaceAllUsesWith(for_op.getInductionVar(),
+                                rewriter.create<arith::ConstantIndexOp>(
+                                    loc, for_op.getConstantLowerBound()));
     rewriter.eraseOp(for_op.getOperation());
 
     return success();
@@ -2185,6 +2190,9 @@ private:
 struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     : public OpRewritePattern<air::ChannelPutOp> {
   using OpRewritePattern<air::ChannelPutOp>::OpRewritePattern;
+
+  AIRCanonicalizeChannelPutOpWrapAndStrideList(MLIRContext *ctx, int &maxSize)
+      : OpRewritePattern(ctx), maxSize(maxSize) {}
 
   LogicalResult matchAndRewrite(air::ChannelPutOp op,
                                 PatternRewriter &rewriter) const override {
@@ -2202,7 +2210,7 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
 
     if (failed(canonicalizeWrapAndStrideList(
             rewriter, offsets, sizes, strides,
-            air::getTensorVolume(op.getMemref().getType()))))
+            air::getTensorVolume(op.getMemref().getType()), maxSize)))
       return failure();
 
     auto new_op = rewriter.create<air::ChannelPutOp>(
@@ -2218,11 +2226,15 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
   }
 
 private:
+  int &maxSize;
 };
 
 struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     : public OpRewritePattern<air::ChannelGetOp> {
   using OpRewritePattern<air::ChannelGetOp>::OpRewritePattern;
+
+  AIRCanonicalizeChannelGetOpWrapAndStrideList(MLIRContext *ctx, int &maxSize)
+      : OpRewritePattern(ctx), maxSize(maxSize) {}
 
   LogicalResult matchAndRewrite(air::ChannelGetOp op,
                                 PatternRewriter &rewriter) const override {
@@ -2240,7 +2252,7 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
 
     if (failed(canonicalizeWrapAndStrideList(
             rewriter, offsets, sizes, strides,
-            air::getTensorVolume(op.getMemref().getType()))))
+            air::getTensorVolume(op.getMemref().getType()), maxSize)))
       return failure();
 
     auto new_op = rewriter.create<air::ChannelGetOp>(
@@ -2256,6 +2268,7 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
   }
 
 private:
+  int &maxSize;
 };
 
 struct UnrollChannelByFactorPattern {
@@ -3039,6 +3052,7 @@ private:
 
 LogicalResult
 AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
+                                      int maxSize = -1,
                                       bool enableForLoopUnrolling = true) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
@@ -3052,13 +3066,21 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
   air::WaitAllOp::getCanonicalizationPatterns(preproc_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(preproc_patterns));
 
+  // Canonicalize wrap and stride list to remove redundant dimensions
+  RewritePatternSet preproc_wns_patterns(ctx);
+  preproc_wns_patterns.insert<AIRCanonicalizeChannelGetOpWrapAndStrideList,
+                              AIRCanonicalizeChannelPutOpWrapAndStrideList>(
+      ctx, maxSize);
+  (void)applyPatternsGreedily(*region, std::move(preproc_wns_patterns));
+
   RewritePatternSet patterns(ctx);
   patterns
       .insert<CanonicalizeAIRExecute, CanonicalizeAffineApplyOnLoopInductionVar,
               CanonicalizeArithMuliOpOnLoopInductionVar,
               CanonicalizeArithAddiOpOnLoopInductionVar,
               AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
-  patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(ctx, maxNumDims);
+  patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(ctx, maxNumDims,
+                                                             maxSize);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
 
@@ -3073,7 +3095,8 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet cano_patterns(ctx);
   cano_patterns.insert<AIRCanonicalizeChannelGetOpWrapAndStrideList,
-                       AIRCanonicalizeChannelPutOpWrapAndStrideList>(ctx);
+                       AIRCanonicalizeChannelPutOpWrapAndStrideList>(
+      ctx, maxNumDims);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(cano_patterns));
 
@@ -5619,12 +5642,66 @@ public:
     }
     int maxNumDims =
         isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? 1 : 4;
+    int maxSize =
+        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? -1 : 1023;
     // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
     // specialization patterns.
     air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getRegion());
     air::applyAIRSpecializeChannelWrapAndStridePattern(
         &func.getRegion(),
-        /*maxNumDims*/ maxNumDims, /*enableForLoopUnrolling*/ false);
+        /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
+        /*enableForLoopUnrolling*/ false);
+  }
+
+private:
+};
+
+// A pass which performs a series of scf.for loop splitting, fusion and
+// specialization, with the goal of generating efficient memtile dma block
+// descriptors (BD).
+class AIROptimizeMemtileDMABDs
+    : public xilinx::air::impl::AIROptimizeMemtileDMABDsBase<
+          AIROptimizeMemtileDMABDs> {
+
+public:
+  AIROptimizeMemtileDMABDs() = default;
+  AIROptimizeMemtileDMABDs(const AIROptimizeMemtileDMABDs &pass) {}
+  AIROptimizeMemtileDMABDs(
+      const ::xilinx::air::AIROptimizeMemtileDMABDsOptions &options)
+      : AIROptimizeMemtileDMABDsBase(options) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect, AIE::AIEDialect>();
+  }
+
+  void runOnOperation() override {
+    auto func = getOperation();
+    auto device = AIE::symbolizeAIEDevice(clDevice);
+    if (!device) {
+      func.emitOpError("Invalid aie.device option");
+      signalPassFailure();
+      return;
+    }
+    if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
+      func.emitOpError("AIE1 architecture does not come with memtiles.");
+      signalPassFailure();
+      return;
+    }
+    int maxNumDims =
+        isa<AIE::AIE2TargetModel>(AIE::getTargetModel(*device)) ? 4 : 4;
+    int maxSize =
+        isa<AIE::AIE2TargetModel>(AIE::getTargetModel(*device)) ? 1023 : 1023;
+    // Preprocess the IR's L2 dma bds by applying loop splitting, fusion and
+    // specialization patterns.
+    llvm::SetVector<air::SegmentOp> segs;
+    func.walk([&](air::SegmentOp seg) { segs.insert(seg); });
+    for (auto seg : segs) {
+      air::applyAIRIsolateAsyncDmaLoopNestsPattern(&seg.getBody());
+      air::applyAIRSpecializeChannelWrapAndStridePattern(
+          &seg.getBody(),
+          /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
+          /*enableForLoopUnrolling*/ true);
+    }
   }
 
 private:
@@ -6117,6 +6194,14 @@ createAIROptimizeShimDMABDs(AIROptimizeShimDMABDsOptions options) {
   return std::make_unique<AIROptimizeShimDMABDs>(options);
 }
 
+std::unique_ptr<Pass> createAIROptimizeMemtileDMABDs() {
+  return std::make_unique<AIROptimizeMemtileDMABDs>();
+}
+std::unique_ptr<Pass>
+createAIROptimizeMemtileDMABDs(AIROptimizeMemtileDMABDsOptions options) {
+  return std::make_unique<AIROptimizeMemtileDMABDs>(options);
+}
+
 std::unique_ptr<Pass> createAIRFuseAllocDealloc() {
   return std::make_unique<AIRFuseAllocDealloc>();
 }
@@ -6131,8 +6216,9 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
 }
 
 void applyAIRSpecializeChannelWrapAndStridePattern(
-    Region *region, int maxNumDims = -1, bool enableForLoopUnrolling = true) {
-  (void)AIRSpecializeChannelWrapAndStrideImpl(region, maxNumDims,
+    Region *region, int maxNumDims = -1, int maxSize = -1,
+    bool enableForLoopUnrolling = true) {
+  (void)AIRSpecializeChannelWrapAndStrideImpl(region, maxNumDims, maxSize,
                                               enableForLoopUnrolling);
 }
 

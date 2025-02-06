@@ -948,6 +948,26 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
               dyn_cast_if_present<arith::IndexCastOp>(offset_producer)) {
         offsets[i] = castOp.getIn();
         offset_producer = castOp.getIn().getDefiningOp();
+      } else if (auto addOp =
+                     dyn_cast_if_present<arith::AddIOp>(offset_producer)) {
+        auto newAffineApply =
+            air::consructComposedAffineApplyOpFromArithAddI(builder, addOp);
+        if (!newAffineApply) {
+          addOp->emitOpError("failed to convert to affine_apply");
+          return failure();
+        }
+        offsets[i] = newAffineApply.getResult();
+        offset_producer = newAffineApply;
+      } else if (auto mulOp =
+                     dyn_cast_if_present<arith::MulIOp>(offset_producer)) {
+        auto newAffineApply =
+            air::consructComposedAffineApplyOpFromArithMulI(builder, mulOp);
+        if (!newAffineApply) {
+          mulOp->emitOpError("failed to convert to affine_apply");
+          return failure();
+        }
+        offsets[i] = newAffineApply.getResult();
+        offset_producer = newAffineApply;
       }
       if (!offset_producer) {
         if (auto afo = affine::getForInductionVarOwner(offsets[i])) {
@@ -968,7 +988,7 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
         offset_producer = &exec.getChildOps().front();
       auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
-      assert(affine_apply && "ssa offset not produced by affine.apply, NYI.");
+      assert(affine_apply && "unknown ssa offset producer, NYI.");
       if (affine_apply->getNumOperands() > 1)
         continue;
       // Compose affine map
@@ -986,8 +1006,15 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
           affine_apply.getAffineMap().getResults().end());
       offset_expr = offset_expr.replaceDimsAndSymbols({}, symReplacements);
       auto next_offset_map = AffineMap::get(0, 1, offset_expr);
-      affine_apply.setMap(next_offset_map);
-      offsets[i] = affine_apply;
+      // Apply affine map
+      builder.setInsertionPoint(affine_apply);
+      if (auto exec =
+              dyn_cast_if_present<air::ExecuteOp>(affine_apply->getParentOp()))
+        builder.setInsertionPoint(exec);
+      auto newAffineApply =
+          dyn_cast<affine::AffineApplyOp>(builder.clone(*affine_apply));
+      newAffineApply.setMap(next_offset_map);
+      offsets[i] = newAffineApply->getResult(0);
       offsets[*j] = offsets[i];
     }
     erased |= multiplyAdjWraps(builder, i, sizes);
@@ -1003,11 +1030,9 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
 };
 
 // Canonicalize wrap and stride lists by removing redundant dimensions.
-LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
-                                                 SmallVector<Value> &offsets,
-                                                 SmallVector<Value> &sizes,
-                                                 SmallVector<Value> &strides,
-                                                 int memref_volume) {
+LogicalResult air::canonicalizeWrapAndStrideList(
+    OpBuilder builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
+    SmallVector<Value> &strides, int memref_volume, int maxSize) {
   bool listsHaveChanged = false;
   // Match offsets size with sizes and strides
   auto max_dim_size =
@@ -1048,8 +1073,11 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
       auto const_stride = getConstantIntValue(strides[i]);
       if (!const_stride)
         continue;
-      auto const_offset_prev = getConstantIntValue(offsets[i - 1]);
-      if (!const_offset_prev)
+      auto const_size_prev = getConstantIntValue(sizes[i - 1]);
+      if (!const_size_prev)
+        continue;
+      // Check for max size constraint
+      if (maxSize > 0 && *const_size_prev * (*const_size) > maxSize)
         continue;
       auto const_stride_prev = getConstantIntValue(strides[i - 1]);
       if (!const_stride_prev)
@@ -1082,7 +1110,9 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
     return failure();
 }
 
-// Fold perfectly nested for loops as extra entries in wraps and strides
+// Fold perfectly nested for loops as extra entries in wraps and strides. This
+// method does not directly mutate the for op nor the data movement operation.
+// It only generates the offsets, wraps and strides list after loop folding.
 LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
@@ -1091,16 +1121,13 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
 
   // Fold for loops into channel op's wrap and stride fields
   SmallVector<Operation *> for_loops;
-  SmallVector<Value> ivs;
   Operation *parent = channel_op;
   while (parent != for_op) {
     parent = parent->getParentOp();
     if (auto sfo = dyn_cast<scf::ForOp>(parent)) {
       for_loops.push_back(parent);
-      ivs.push_back(sfo.getInductionVar());
     } else if (auto afo = dyn_cast<affine::AffineForOp>(parent)) {
       for_loops.push_back(parent);
-      ivs.push_back(afo.getInductionVar());
     }
   }
 
@@ -1135,7 +1162,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
           offsetVal = cast->getOperand(0);
       }
       if (iv && offsetVal == iv) {
-        ind_var_factor = *getConstantIntValue(strides[i]);
+        ind_var_factor = *getConstantIntValue(strides[i]) * stepSize;
         offsets[i] = builder.template create<arith::ConstantIndexOp>(
             loc, loop_lower_bound);
         break;
@@ -1168,9 +1195,6 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
             ind_var_factor *= map_gradient;
           }
         }
-        iv_consumer->replaceUsesOfWith(
-            iv, builder.template create<arith::ConstantIndexOp>(
-                    loc, loop_lower_bound));
       }
     }
     int trip_count = -1;
@@ -1181,7 +1205,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     Value new_wrap =
         builder.template create<arith::ConstantIndexOp>(loc, trip_count);
     int64_t new_stride_value =
-        (stepSize * ind_var_factor) % getTensorVolume(memref.getType());
+        ind_var_factor % getTensorVolume(memref.getType());
     Value new_stride =
         builder.template create<arith::ConstantIndexOp>(loc, new_stride_value);
 
@@ -1886,4 +1910,40 @@ bool air::isEquivalentTo(Operation *lhs, Operation *rhs) {
       return false;
 
   return true;
+}
+
+// Generate composed affine apply op from arith addi op operating on Index
+// values.
+affine::AffineApplyOp
+air::consructComposedAffineApplyOpFromArithAddI(OpBuilder &builder,
+                                                arith::AddIOp addOp) {
+  if (!addOp)
+    return affine::AffineApplyOp();
+  if (llvm::any_of(addOp->getOperands(),
+                   [](Value operand) { return !operand.getType().isIndex(); }))
+    return affine::AffineApplyOp();
+  builder.setInsertionPoint(addOp);
+  auto map = AffineMap::get(
+      0, 2, builder.getAffineSymbolExpr(0) + builder.getAffineSymbolExpr(1));
+  return affine::makeComposedAffineApply(
+      builder, addOp.getLoc(), map,
+      getAsOpFoldResult({addOp.getLhs(), addOp.getRhs()}));
+}
+
+// Generate composed affine apply op from arith muli op operating on Index
+// values.
+affine::AffineApplyOp
+air::consructComposedAffineApplyOpFromArithMulI(OpBuilder &builder,
+                                                arith::MulIOp mulOp) {
+  if (!mulOp)
+    return affine::AffineApplyOp();
+  if (llvm::any_of(mulOp->getOperands(),
+                   [](Value operand) { return !operand.getType().isIndex(); }))
+    return affine::AffineApplyOp();
+  builder.setInsertionPoint(mulOp);
+  auto map = AffineMap::get(
+      0, 2, builder.getAffineSymbolExpr(0) * builder.getAffineSymbolExpr(1));
+  return affine::makeComposedAffineApply(
+      builder, mulOp.getLoc(), map,
+      getAsOpFoldResult({mulOp.getLhs(), mulOp.getRhs()}));
 }

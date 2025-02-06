@@ -154,7 +154,7 @@ pipeline = (
             "canonicalize",
             "cse",
             "air-isolate-async-dma-loop-nests",
-            "air-specialize-channel-wrap-and-stride",
+            "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
             "canonicalize",
             "cse",
         ]

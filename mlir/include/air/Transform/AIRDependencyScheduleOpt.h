@@ -63,6 +63,10 @@ std::unique_ptr<mlir::Pass> createAIROptimizeShimDMABDs();
 std::unique_ptr<Pass>
 createAIROptimizeShimDMABDs(AIROptimizeShimDMABDsOptions options);
 
+std::unique_ptr<mlir::Pass> createAIROptimizeMemtileDMABDs();
+std::unique_ptr<Pass>
+createAIROptimizeMemtileDMABDs(AIROptimizeMemtileDMABDsOptions options);
+
 std::unique_ptr<mlir::Pass> createAIRFuseAllocDealloc();
 
 std::unique_ptr<mlir::Pass> createAIRShrinkMemrefSizesByAccess();
@@ -74,7 +78,7 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns);
 
 // Apply AIRSpecializeChannelWrapAndStridePattern on region.
 void applyAIRSpecializeChannelWrapAndStridePattern(Region *region,
-                                                   int maxNumDims,
+                                                   int maxNumDims, int maxSize,
                                                    bool enableForLoopUnrolling);
 
 // Populate patterns for fusing scf.for loops within air.launch.

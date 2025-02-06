@@ -123,7 +123,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "air-ping-pong-transform{keep-memref-dealloc=true}",
                 "canonicalize",
                 "cse",
-                "air-specialize-channel-wrap-and-stride",
+                "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
                 "canonicalize",
                 "cse",
             ]
