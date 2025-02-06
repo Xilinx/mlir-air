@@ -155,7 +155,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "func.func(air-fuse-alloc-dealloc)",
                 "func.func(air-shrink-memref-sizes-by-access)",
                 # "air-label-scf-for-to-ping-pong", #TODO: Add support for ping pong buffering
-                # "air-ping-pong-transform{keep-memref-dealloc=true}",
+                # "air-ping-pong-transform",
                 "canonicalize",
                 "cse",
                 "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",

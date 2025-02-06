@@ -142,7 +142,7 @@ pipeline = (
             "canonicalize",
             "cse",
             "air-label-scf-for-to-ping-pong",
-            "air-ping-pong-transform{keep-memref-dealloc=true}",
+            "air-ping-pong-transform",
             "air-dealias-memref",
             "canonicalize",
             "cse",

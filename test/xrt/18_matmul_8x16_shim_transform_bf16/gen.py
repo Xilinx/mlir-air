@@ -159,7 +159,7 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
-            "air-ping-pong-transform{keep-memref-dealloc=true}",
+            "air-ping-pong-transform",
             "canonicalize",
             "cse",
             "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
