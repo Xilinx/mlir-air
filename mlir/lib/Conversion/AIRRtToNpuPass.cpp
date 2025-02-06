@@ -869,6 +869,9 @@ struct AIRSpecializeAIRRtDmaWrapAndStrideInAffineFor
         tmp = strides[0];
         strides[0] = strides[i];
         strides[i] = tmp;
+        tmp = offsets[0];
+        offsets[0] = offsets[i];
+        offsets[i] = tmp;
       } else {
         (void)loopUnrollFull(for_op);
         return success();
@@ -915,6 +918,9 @@ struct AIRSpecializeAIRRtDmaWrapAndStrideInAffineFor
         loc, tys, air::lookupOrDefaultRange(opers, remap));
     new_dma->setAttrs(memcpy_op->getDiscardableAttrDictionary());
 
+    rewriter.replaceAllUsesWith(for_op.getInductionVar(),
+                                rewriter.create<arith::ConstantIndexOp>(
+                                    loc, for_op.getConstantLowerBound()));
     rewriter.eraseOp(for_op.getOperation());
 
     return success();

@@ -1110,7 +1110,9 @@ LogicalResult air::canonicalizeWrapAndStrideList(
     return failure();
 }
 
-// Fold perfectly nested for loops as extra entries in wraps and strides
+// Fold perfectly nested for loops as extra entries in wraps and strides. This
+// method does not directly mutate the for op nor the data movement operation.
+// It only generates the offsets, wraps and strides list after loop folding.
 LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
@@ -1119,16 +1121,13 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
 
   // Fold for loops into channel op's wrap and stride fields
   SmallVector<Operation *> for_loops;
-  SmallVector<Value> ivs;
   Operation *parent = channel_op;
   while (parent != for_op) {
     parent = parent->getParentOp();
     if (auto sfo = dyn_cast<scf::ForOp>(parent)) {
       for_loops.push_back(parent);
-      ivs.push_back(sfo.getInductionVar());
     } else if (auto afo = dyn_cast<affine::AffineForOp>(parent)) {
       for_loops.push_back(parent);
-      ivs.push_back(afo.getInductionVar());
     }
   }
 
@@ -1196,9 +1195,6 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
             ind_var_factor *= map_gradient;
           }
         }
-        iv_consumer->replaceUsesOfWith(
-            iv, builder.template create<arith::ConstantIndexOp>(
-                    loc, loop_lower_bound));
       }
     }
     int trip_count = -1;

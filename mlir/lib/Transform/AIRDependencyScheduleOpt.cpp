@@ -1991,6 +1991,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
                 .getAsyncToken());
       }
     }
+    rewriter.replaceAllUsesWith(for_op.getInductionVar(),
+                                for_op.getLowerBound());
     rewriter.eraseOp(for_op.getOperation());
 
     return success();
@@ -2174,6 +2176,9 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
                 .getAsyncToken());
       }
     }
+    rewriter.replaceAllUsesWith(for_op.getInductionVar(),
+                                rewriter.create<arith::ConstantIndexOp>(
+                                    loc, for_op.getConstantLowerBound()));
     rewriter.eraseOp(for_op.getOperation());
 
     return success();
