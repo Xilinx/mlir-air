@@ -10,6 +10,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 
@@ -404,72 +405,6 @@ void push_back_if_unique(std::vector<T> &vec, T entry) {
     vec.push_back(entry);
 }
 
-struct CanonicalizeChannelPutWrapsAndStridesPattern
-    : public OpRewritePattern<air::ChannelPutOp> {
-  using OpRewritePattern<air::ChannelPutOp>::OpRewritePattern;
-
-  CanonicalizeChannelPutWrapsAndStridesPattern(MLIRContext *ctx)
-      : OpRewritePattern(ctx) {}
-
-  LogicalResult matchAndRewrite(air::ChannelPutOp op,
-                                PatternRewriter &rewriter) const override {
-
-    SmallVector<Value> offsets = op.getOffsets();
-    SmallVector<Value> wraps = op.getSizes();
-    SmallVector<Value> strides = op.getStrides();
-    if (canonicalizeWrapAndStrideList(
-            rewriter, offsets, wraps, strides,
-            air::getTensorVolume(op.getMemref().getType()))
-            .failed())
-      return failure();
-    auto new_put = rewriter.create<air::ChannelPutOp>(
-        op->getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
-        op.getChanName(), op.getIndices(), op.getMemref(), offsets, wraps,
-        strides);
-    new_put->setAttr(
-        "id",
-        IntegerAttr::get(IntegerType::get(op->getContext(), 32), op.getId()));
-    assert(op->getNumResults() == new_put->getNumResults());
-    for (unsigned i = 0; i < op->getNumResults(); i++)
-      op->getResult(i).replaceAllUsesWith(new_put->getResult(i));
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct CanonicalizeChannelGetWrapsAndStridesPattern
-    : public OpRewritePattern<air::ChannelGetOp> {
-  using OpRewritePattern<air::ChannelGetOp>::OpRewritePattern;
-
-  CanonicalizeChannelGetWrapsAndStridesPattern(MLIRContext *ctx)
-      : OpRewritePattern(ctx) {}
-
-  LogicalResult matchAndRewrite(air::ChannelGetOp op,
-                                PatternRewriter &rewriter) const override {
-
-    SmallVector<Value> offsets = op.getOffsets();
-    SmallVector<Value> wraps = op.getSizes();
-    SmallVector<Value> strides = op.getStrides();
-    if (canonicalizeWrapAndStrideList(
-            rewriter, offsets, wraps, strides,
-            air::getTensorVolume(op.getMemref().getType()))
-            .failed())
-      return failure();
-    auto new_get = rewriter.create<air::ChannelGetOp>(
-        op->getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
-        op.getChanName(), op.getIndices(), op.getMemref(), offsets, wraps,
-        strides);
-    new_get->setAttr(
-        "id",
-        IntegerAttr::get(IntegerType::get(op->getContext(), 32), op.getId()));
-    assert(op->getNumResults() == new_get->getNumResults());
-    for (unsigned i = 0; i < op->getNumResults(); i++)
-      op->getResult(i).replaceAllUsesWith(new_get->getResult(i));
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 void createAIEModulesAndOutlineCores(
     ModuleOp module,
     std::vector<std::pair<AIE::DeviceOp, xilinx::air::HerdOp>> &aie_modules,
@@ -717,9 +652,9 @@ struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
 void lowerAirExecute(AIE::DeviceOp d) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<LowerAIRExecutePattern,
-                  CanonicalizeChannelPutWrapsAndStridesPattern,
-                  CanonicalizeChannelGetWrapsAndStridesPattern>(ctx);
+  int maxSize = isa<AIE::AIE1TargetModel>(AIE::getTargetModel(d)) ? -1 : 1023;
+  patterns.insert<LowerAIRExecutePattern>(ctx);
+  air::populateAIRCanonicalizeChannelWrapAndStridePatterns(patterns, maxSize);
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
@@ -1367,8 +1302,10 @@ struct SpecializeChannelBundlePattern
   using OpRewritePattern<air::ChannelOp>::OpRewritePattern;
 
   SpecializeChannelBundlePattern(
-      MLIRContext *ctx, std::map<std::string, std::string> &chan_to_chan_map)
-      : OpRewritePattern(ctx), chan_to_chan_map(chan_to_chan_map) {}
+      MLIRContext *ctx, std::map<std::string, std::string> &chan_to_chan_map,
+      int &maxSize)
+      : OpRewritePattern(ctx), chan_to_chan_map(chan_to_chan_map),
+        maxSize(maxSize) {}
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
@@ -1408,8 +1345,8 @@ struct SpecializeChannelBundlePattern
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel put for this channel
           rewriter.setInsertionPoint(put);
-          auto new_put =
-              createChannelPutGetWithoutBundle(rewriter, new_chan, put);
+          auto new_put = createChannelPutGetWithoutBundle(rewriter, new_chan,
+                                                          put, maxSize);
           if (put.getAsyncToken()) {
             replaceAllUsesInRegionWith(put.getAsyncToken(),
                                        new_put.getAsyncToken(),
@@ -1423,8 +1360,8 @@ struct SpecializeChannelBundlePattern
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel get for this channel
           rewriter.setInsertionPoint(get);
-          auto new_get =
-              createChannelPutGetWithoutBundle(rewriter, new_chan, get);
+          auto new_get = createChannelPutGetWithoutBundle(rewriter, new_chan,
+                                                          get, maxSize);
           if (get.getAsyncToken()) {
             replaceAllUsesInRegionWith(get.getAsyncToken(),
                                        new_get.getAsyncToken(),
@@ -1463,6 +1400,7 @@ struct SpecializeChannelBundlePattern
 
 private:
   std::map<std::string, std::string> &chan_to_chan_map;
+  int &maxSize;
   bool areIdenticalVectors(std::vector<unsigned> a,
                            std::vector<unsigned> b) const {
     if (a.empty())
@@ -1486,9 +1424,10 @@ private:
     return output;
   }
 
-  air::ChannelPutOp
-  createChannelPutGetWithoutBundle(OpBuilder builder, air::ChannelOp chan,
-                                   air::ChannelPutOp put) const {
+  air::ChannelPutOp createChannelPutGetWithoutBundle(OpBuilder builder,
+                                                     air::ChannelOp chan,
+                                                     air::ChannelPutOp put,
+                                                     int maxSize) const {
     SmallVector<Type, 4> tys = {};
     SmallVector<Value, 4> deps = {};
     if (put.getAsyncToken()) {
@@ -1502,7 +1441,7 @@ private:
     SmallVector<Value> strides = put.getSrcStrides();
     (void)canonicalizeWrapAndStrideList(
         builder, offsets, wraps, strides,
-        air::getTensorVolume(put.getSrc().getType()));
+        air::getTensorVolume(put.getSrc().getType()), maxSize);
     auto new_put = builder.create<air::ChannelPutOp>(
         put->getLoc(), tys, deps, chan.getSymName(), indices, put.getSrc(),
         offsets, wraps, strides);
@@ -1512,9 +1451,10 @@ private:
     return new_put;
   }
 
-  air::ChannelGetOp
-  createChannelPutGetWithoutBundle(OpBuilder builder, air::ChannelOp chan,
-                                   air::ChannelGetOp get) const {
+  air::ChannelGetOp createChannelPutGetWithoutBundle(OpBuilder builder,
+                                                     air::ChannelOp chan,
+                                                     air::ChannelGetOp get,
+                                                     int maxSize) const {
     SmallVector<Type, 4> tys = {};
     SmallVector<Value, 4> deps = {};
     if (get.getAsyncToken()) {
@@ -1528,7 +1468,7 @@ private:
     SmallVector<Value> strides = get.getDstStrides();
     (void)canonicalizeWrapAndStrideList(
         builder, offsets, wraps, strides,
-        air::getTensorVolume(get.getDst().getType()));
+        air::getTensorVolume(get.getDst().getType()), maxSize);
     auto new_get = builder.create<air::ChannelGetOp>(
         get->getLoc(), tys, deps, chan.getSymName(), indices, get.getDst(),
         offsets, wraps, strides);
@@ -1560,7 +1500,10 @@ void specializeChannelBundle(
     AIE::DeviceOp &d, std::map<std::string, std::string> &chan_to_chan_map) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
+  // Enforce max size constraint
+  int maxSize = isa<AIE::AIE1TargetModel>(AIE::getTargetModel(d)) ? -1 : 1023;
+  patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map,
+                                                  maxSize);
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
@@ -2562,6 +2505,76 @@ public:
     return herd_meta;
   }
 
+  // Checks if the given operation writes to, or deallocates, the specified
+  // buffer.
+  bool isWriteToOrDeallocBuffer(Operation *op, Value destBuffer) {
+    if (!isa_and_present<air::MemcpyInterface, memref::DeallocOp>(op))
+      return false;
+    if (llvm::any_of(
+            *getAllWriteAccessedMemrefOperandsFromOp(op),
+            [destBuffer](auto &entry) { return entry.first == destBuffer; }))
+      return true;
+    return false;
+  }
+
+  // Recursively searches for operations that write to, or deallocate, the
+  // target buffer inside a nested region. Returns `true` if a writer is found,
+  // setting `ancestorOp` to the outermost op under the same region as
+  // `memcpyOp`.
+  bool findMemcpyOpIfLifetimeEndInRegion(Region &region, Value destBuffer,
+                                         Operation *&ancestorOp) {
+    for (Block &block : region) {
+      for (Operation &op : block) {
+        if (isWriteToOrDeallocBuffer(&op, destBuffer)) {
+          ancestorOp = &op; // Found a writer, set it as the closest ancestor
+          return true;
+        }
+        // Recursively check child regions
+        for (Region &nestedRegion : op.getRegions()) {
+          if (findMemcpyOpIfLifetimeEndInRegion(nestedRegion, destBuffer,
+                                                ancestorOp)) {
+            ancestorOp = &op; // Set the ancestor op at this level
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /// Walks ops in the block and finds the end of lifetime for this memcpy op.
+  /// Returns the first operation in the same block that writes to, or
+  /// deallocates, `destBuffer`.
+  Operation *findMemcpyOpIfLifetimeEnd(Operation *memcpyOp, Value destBuffer) {
+    // Ensure the given operation is an air memcpy operation
+    auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(memcpyOp);
+    if (!memcpyOpIf)
+      return nullptr;
+
+    // Ensure that destBuffer is used in mempcy op.
+    if (destBuffer != memcpyOpIf.getSrcMemref() &&
+        destBuffer != memcpyOpIf.getDstMemref())
+      return nullptr;
+
+    // Iterate over operations after the memcpyOp
+    for (Operation *op = memcpyOpIf->getNextNode(); op != nullptr;
+         op = op->getNextNode()) {
+      if (isWriteToOrDeallocBuffer(op, destBuffer)) {
+        return op; // Found the next writer
+      }
+      // Check within any regions of this operation
+      Operation *ancestorOp = nullptr;
+      for (Region &region : op->getRegions()) {
+        if (findMemcpyOpIfLifetimeEndInRegion(region, destBuffer, ancestorOp)) {
+          return op; // Return the ancestor operation at the same level as
+                     // memcpyOp
+        }
+      }
+    }
+
+    return nullptr; // memcpyOp end-of-lifetime not found
+  }
+
   void
   allocateCoreLocksPerMemcpyOp(OpBuilder builder,
                                air::MemcpyInterface memcpyOpIf,
@@ -2609,46 +2622,13 @@ public:
                                        ? AIE::LockAction::AcquireGreaterEqual
                                        : AIE::LockAction::Acquire,
                                    lockAqValue);
-    // try to find a place to put the unlock. If there are deallocs,
-    // replace them with unlock. Otherwise, put them at the end.
-    bool need_unlock = true;
-    for (auto u : alloc.getUsers()) {
-      if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
-        builder.setInsertionPoint(dealloc);
-        builder.create<AIE::UseLockOp>(dealloc->getLoc(), relLockOp,
-                                       AIE::LockAction::Release, lockRelValue);
-        // assume that the deallocs will take care of it when
-        // deallocs are present
-        need_unlock = false;
-      }
-    }
-    // try to insert a lock release before entering a for loop that iteratively
-    // copies data into the same buffer.
-    if (need_unlock)
-      for (auto u : alloc.getUsers()) {
-        auto get = dyn_cast<air::ChannelGetOp>(u);
-        if (!get)
-          continue;
-        if (u == memcpyOpIf)
-          continue;
-        if (u->getParentRegion()->isProperAncestor(
-                memcpyOpIf->getParentRegion()))
-          continue;
-        auto t = u;
-        while (memcpyOpIf->getParentRegion()->isProperAncestor(
-            t->getParentRegion()))
-          t = u->getParentOp();
-        if (t->getBlock() != memcpyOpIf->getBlock())
-          continue;
-        if (t->isBeforeInBlock(memcpyOpIf))
-          continue;
-        builder.setInsertionPoint(t);
-        builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp,
-                                       AIE::LockAction::Release, lockRelValue);
-        need_unlock = false;
-        break;
-      }
-    if (need_unlock) {
+    // Try to find the end of lifetime for the data copied by memcpyOpIf, and
+    // put the unlock.
+    if (auto nextWriter = findMemcpyOpIfLifetimeEnd(memcpyOpIf, alloc)) {
+      builder.setInsertionPoint(nextWriter);
+      builder.create<AIE::UseLockOp>(nextWriter->getLoc(), relLockOp,
+                                     AIE::LockAction::Release, lockRelValue);
+    } else {
       auto t = memcpyOpIf->getBlock()->getTerminator();
       builder.setInsertionPoint(t);
       builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp,
@@ -3247,7 +3227,11 @@ public:
     }
     std::map<std::string, std::string> chan_to_chan_map;
     if (clTestPatterns.find("specialize-channel-bundle") != std::string::npos) {
-      patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
+      // Enforce max size constraint
+      int maxSize =
+          isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? -1 : 1023;
+      patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map,
+                                                      maxSize);
     }
 
     if (patterns.getNativePatterns().size())
