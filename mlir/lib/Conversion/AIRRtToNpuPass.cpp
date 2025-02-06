@@ -666,6 +666,22 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
                      builder.create<arith::ConstantOp>(
                          loc, builder.getI64Type(),
                          IntegerAttr::get(builder.getI64Type(), 0)));
+      // Attempt to find one dummy dimension in the wrap-and-stride list and
+      // erase.
+      auto offsetWrapZip = llvm::zip_equal(offsets, wraps);
+      auto it =
+          llvm::find_if(offsetWrapZip, [](std::tuple<Value, Value> entry) {
+            auto off = getConstantIntValue(std::get<0>(entry));
+            auto siz = getConstantIntValue(std::get<1>(entry));
+            return off && siz && *off == 0 && *siz == 1;
+          });
+      if (it != offsetWrapZip.end()) {
+        offsets.erase(offsets.begin() +
+                      std::distance(offsetWrapZip.begin(), it));
+        wraps.erase(wraps.begin() + std::distance(offsetWrapZip.begin(), it));
+        strides.erase(strides.begin() +
+                      std::distance(offsetWrapZip.begin(), it));
+      }
       i++;
     }
   }
@@ -674,51 +690,48 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   // goes beyond 4.
   SmallVector<affine::AffineForOp> for_loop_nest;
   Value inner_affine_for_iv = nullptr;
-  if (wraps.size() > AIE2_DIM_COUNT) {
+  while (wraps.size() > AIE2_DIM_COUNT) {
     affine::AffineForOp inner_affine_for = nullptr;
-    while (wraps.size() > AIE2_DIM_COUNT) {
-      auto const_offset = *getConstantIntValue(offsets[0]);
-      auto const_lowest_offset = *getConstantIntValue(offsets.back());
-      auto const_wrap = *getConstantIntValue(wraps[0]);
-      auto const_stride = *getConstantIntValue(strides[0]);
+    auto const_offset = *getConstantIntValue(offsets[0]);
+    auto const_lowest_offset = *getConstantIntValue(offsets.back());
+    auto const_wrap = *getConstantIntValue(wraps[0]);
+    auto const_stride = *getConstantIntValue(strides[0]);
 
-      // Convert the outer dimension into an affine.for loop.
-      int const_lower_bound =
-          const_stride ? (const_offset * const_stride + const_lowest_offset)
-                       : 0;
-      auto const_upper_bound =
-          const_stride ? (const_offset * const_stride +
-                          const_wrap * const_stride + const_lowest_offset)
-                       : const_wrap;
-      int const_step = const_stride ? const_stride : 1;
-      auto new_for_op =
-          (inner_affine_for_iv)
-              ? (builder.create<affine::AffineForOp>(
-                    loc,
-                    SmallVector<Value>{builder.create<arith::AddIOp>(
-                        loc, inner_affine_for_iv,
-                        builder.create<arith::ConstantIndexOp>(
-                            loc, const_lower_bound))},
-                    AffineMap::get(ctx),
-                    SmallVector<Value>{builder.create<arith::AddIOp>(
-                        loc, inner_affine_for_iv,
-                        builder.create<arith::ConstantIndexOp>(
-                            loc, const_upper_bound))},
-                    AffineMap::get(ctx), const_step))
-              : (builder.create<affine::AffineForOp>(
-                    loc, const_lower_bound, const_upper_bound, const_step));
-      for_loop_nest.push_back(new_for_op);
-      inner_affine_for = new_for_op;
+    // Convert the outer dimension into an affine.for loop.
+    int const_lower_bound =
+        const_stride ? (const_offset * const_stride + const_lowest_offset) : 0;
+    auto const_upper_bound =
+        const_stride ? (const_offset * const_stride +
+                        const_wrap * const_stride + const_lowest_offset)
+                     : const_wrap;
+    int const_step = const_stride ? const_stride : 1;
+    auto new_for_op =
+        (inner_affine_for_iv)
+            ? (builder.create<affine::AffineForOp>(
+                  loc,
+                  SmallVector<Value>{builder.create<arith::AddIOp>(
+                      loc, inner_affine_for_iv,
+                      builder.create<arith::ConstantIndexOp>(
+                          loc, const_lower_bound))},
+                  AffineMap::get(ctx),
+                  SmallVector<Value>{builder.create<arith::AddIOp>(
+                      loc, inner_affine_for_iv,
+                      builder.create<arith::ConstantIndexOp>(
+                          loc, const_upper_bound))},
+                  AffineMap::get(ctx), const_step))
+            : (builder.create<affine::AffineForOp>(
+                  loc, const_lower_bound, const_upper_bound, const_step));
+    for_loop_nest.push_back(new_for_op);
+    inner_affine_for = new_for_op;
 
-      // Pop front.
-      offsets.erase(offsets.begin());
-      wraps.erase(wraps.begin());
-      strides.erase(strides.begin());
+    // Pop front.
+    offsets.erase(offsets.begin());
+    wraps.erase(wraps.begin());
+    strides.erase(strides.begin());
 
-      builder.setInsertionPointToStart(inner_affine_for.getBody());
-      if (const_stride)
-        inner_affine_for_iv = inner_affine_for.getInductionVar();
-    }
+    builder.setInsertionPointToStart(inner_affine_for.getBody());
+    if (const_stride)
+      inner_affine_for_iv = inner_affine_for.getInductionVar();
   }
 
   // Stride field implicit last element one, pop.
