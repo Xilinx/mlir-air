@@ -83,7 +83,7 @@ pipeline = (
             "air-dma-to-channel",
             "canonicalize",
             "cse",
-            "air-specialize-channel-wrap-and-stride",
+            "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
             "air-linalg-to-func",
             "func.func(air-renumber-dma)",
         ]

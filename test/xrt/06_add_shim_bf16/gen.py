@@ -77,7 +77,7 @@ pipeline = (
             "air-dma-to-channel",
             "canonicalize",
             "cse",
-            "air-specialize-channel-wrap-and-stride",
+            "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
             "func.func(convert-linalg-to-loops)",
             "func.func(air-renumber-dma)",
         ]
