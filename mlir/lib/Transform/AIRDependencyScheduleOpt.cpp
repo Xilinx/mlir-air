@@ -2032,6 +2032,15 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
     if (!containsOnlyAIRChannels(for_op.getBody()))
       return failure();
 
+    // Check if the loop is ping-pong buffered. Ping-pong buffered loop's body
+    // already forms a bd chain.
+    int resAsyncTokenCount = 0;
+    for (auto resTy : for_op->getResultTypes())
+      if (isa<air::AsyncTokenType>(resTy))
+        resAsyncTokenCount++;
+    if (resAsyncTokenCount > 1)
+      return failure();
+
     auto unroll_factor = air::getStaticScfForTripCountAsInt(for_op);
     if (!unroll_factor)
       return failure(); // Dynamic loop bound.
