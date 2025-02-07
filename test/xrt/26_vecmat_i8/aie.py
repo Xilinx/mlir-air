@@ -143,7 +143,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "air-isolate-async-dma-loop-nests",
                 "func.func(air-loop-fusion)",
                 "air-label-scf-for-to-ping-pong",
-                "air-ping-pong-transform{keep-memref-dealloc=true}",
+                "air-ping-pong-transform",
                 "canonicalize",
                 "cse",
                 "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
@@ -189,7 +189,6 @@ with air.ir.Context() as ctx, Location.unknown():
         "builtin.module("
         + ",".join(
             [
-                # "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true insert-trace-packet-flow=true}",
                 "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}",
                 "canonicalize",
             ]
@@ -213,7 +212,6 @@ with air.ir.Context() as ctx, Location.unknown():
                 "symbol-dce",
                 "func.func(air-unroll-outer-affine-loops{depth=4})",
                 "affine-expand-index-ops",
-                # "airrt-to-npu{trace-offset=4096 trace-size=262144}",
                 "airrt-to-npu",
                 "canonicalize",
             ]

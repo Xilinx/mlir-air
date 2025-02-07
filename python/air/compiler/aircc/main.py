@@ -41,7 +41,7 @@ def get_experimental_passes(omit_pingpong=True):
         EXPERIMENTAL_PASSES += [
             "func.func(air-loop-fusion)",
             "air-label-scf-for-to-ping-pong",
-            "air-ping-pong-transform{keep-memref-dealloc=true}",
+            "air-ping-pong-transform",
         ]
     EXPERIMENTAL_PASSES += [
         "air-isolate-async-dma-loop-nests",

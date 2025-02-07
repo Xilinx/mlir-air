@@ -149,7 +149,7 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
-            "air-ping-pong-transform{keep-memref-dealloc=true}",
+            "air-ping-pong-transform",
             "air-dealias-memref",
             "canonicalize",
             "cse",

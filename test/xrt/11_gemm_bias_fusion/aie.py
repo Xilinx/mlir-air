@@ -207,9 +207,15 @@ with air.ir.Context() as ctx, Location.unknown():
                 "air-fuse-channels{aggressive-mode=L1}",
                 "canonicalize",
                 "cse",
+                ### Scaling to 4 AIE columns
+                "func.func(air-split-l2-memref)",
+                "canonicalize",
+                "cse",
+                "air-isolate-async-dma-loop-nests",
+                ###
                 "func.func(air-loop-fusion)",
                 "air-label-scf-for-to-ping-pong",
-                "air-ping-pong-transform{keep-memref-dealloc=true}",
+                "air-ping-pong-transform",
                 "canonicalize",
                 "cse",
                 "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
