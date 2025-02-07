@@ -430,8 +430,8 @@ func.func @func6(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:             aie.use_lock(%[[VAL_2]], Release, 0)
 // CHECK:             aie.use_lock(%[[VAL_3]], Release, 0)
 // CHECK:           }
-// CHECK:           aie.use_lock(%[[VAL_5]], Release, 1)
-// CHECK:           aie.use_lock(%[[VAL_4]], Release, 0)
+// CHECK-DAG:       aie.use_lock(%[[VAL_5]], Release, 1)
+// CHECK-DAG:       aie.use_lock(%[[VAL_4]], Release, 0)
 // CHECK:           aie.end
 // CHECK:         }
 

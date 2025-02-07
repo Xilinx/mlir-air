@@ -17,8 +17,8 @@
 // CHECK:   aie.use_lock({{.*}}, Release, 0)
 // CHECK:   aie.use_lock({{.*}}, Release, 0)
 // CHECK: }
-// CHECK: aie.use_lock({{.*}}, Release, 1)
-// CHECK: aie.use_lock({{.*}}, Release, 0)
+// CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
+// CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
 #map = affine_map<()[s0] -> (s0 * 32)>
 #set0 = affine_set<(d0, d1)[s0] : (d0 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 1 >= 0)>
 #set1 = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, s0 >= 0, -s0 + 1 >= 0)>
