@@ -2506,13 +2506,14 @@ public:
   }
 
   // Checks if the given operation writes to, or deallocates, the specified
-  // buffer.
-  bool isDmaWriteToBuffer(Operation *op, Value destBuffer) {
+  // buffer and all its views.
+  bool isDmaWriteToBuffer(Operation *op, SetVector<Value> &bufferViews) {
     if (!isa_and_present<air::MemcpyInterface>(op))
       return false;
-    if (llvm::any_of(
-            *getAllWriteAccessedMemrefOperandsFromOp(op),
-            [destBuffer](auto &entry) { return entry.first == destBuffer; }))
+    if (llvm::any_of(*getAllWriteAccessedMemrefOperandsFromOp(op),
+                     [&bufferViews](auto &entry) {
+                       return llvm::is_contained(bufferViews, entry.first);
+                     }))
       return true;
     return false;
   }
@@ -2521,25 +2522,22 @@ public:
   // target buffer inside a nested region. Returns `true` if a writer is found,
   // setting `ancestorOp` to the outermost op under the same region as
   // `memcpyOp`.
-  bool findNextDmaWriteOpInRegion(Region &region, Value destBuffer,
+  bool findNextDmaWriteOpInRegion(Region &region, SetVector<Value> &bufferViews,
                                   Operation *&ancestorOp) {
-    for (Block &block : region) {
-      for (Operation &op : block) {
-        if (isDmaWriteToBuffer(&op, destBuffer)) {
-          ancestorOp = &op; // Found a writer, set it as the closest ancestor
-          return true;
-        }
-        // Recursively check child regions
-        for (Region &nestedRegion : op.getRegions()) {
-          if (findNextDmaWriteOpInRegion(nestedRegion, destBuffer,
-                                         ancestorOp)) {
-            ancestorOp = &op; // Set the ancestor op at this level
-            return true;
-          }
-        }
+    bool writeOpFound = false;
+    region.walk([&](Operation *op) {
+      // Save buffer views.
+      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(op)) {
+        if (llvm::is_contained(bufferViews, view.getViewSource()))
+          bufferViews.insert(view->getResult(0));
       }
-    }
-    return false;
+      if (isDmaWriteToBuffer(op, bufferViews)) {
+        ancestorOp = op; // Found a writer, set it as the closest ancestor
+        writeOpFound = true;
+        return;
+      }
+    });
+    return writeOpFound;
   }
 
   /// Walks ops in the block and finds the end of lifetime for this memcpy op.
@@ -2557,21 +2555,42 @@ public:
       return nullptr;
 
     // Iterate over operations after the memcpyOp
+    SetVector<Value> bufferViews;
+    bufferViews.insert(destBuffer);
     for (Operation *op = memcpyOpIf->getNextNode(); op != nullptr;
          op = op->getNextNode()) {
-      if (isDmaWriteToBuffer(op, destBuffer)) {
+      // Save buffer views.
+      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(op)) {
+        if (llvm::is_contained(bufferViews, view.getViewSource()))
+          bufferViews.insert(view->getResult(0));
+      }
+      if (isDmaWriteToBuffer(op, bufferViews)) {
         return op; // Found the next writer
       }
       // Check within any regions of this operation
       Operation *ancestorOp = nullptr;
       for (Region &region : op->getRegions()) {
-        if (findNextDmaWriteOpInRegion(region, destBuffer, ancestorOp)) {
+        if (findNextDmaWriteOpInRegion(region, bufferViews, ancestorOp)) {
           return op; // Return the ancestor operation at the same level as
                      // memcpyOp
         }
       }
     }
     return nullptr; // memcpyOp end-of-lifetime not found
+  }
+
+  /// Checks if an operation reads from or writes to the given buffer.
+  bool isReadOrWriteToBuffer(Operation *op, SetVector<Value> bufferViews) {
+    if (!op)
+      return false;
+    if (air::isPure(op))
+      return false;
+
+    // Check if the op reads from or writes to the buffer
+    for (OpOperand &operand : op->getOpOperands())
+      if (llvm::is_contained(bufferViews, operand.get()))
+        return true;
+    return false;
   }
 
   /// Walks ops in the block and finds the last reader/writer. Returns the last
@@ -2589,16 +2608,30 @@ public:
 
     // Iterate over operations after the memcpyOp
     Operation *lastAccessOp = nullptr;
+    SetVector<Value> bufferViews;
+    bufferViews.insert(destBuffer);
     for (Operation *op = memcpyOpIf->getNextNode(); op != nullptr;
          op = op->getNextNode()) {
-      if (llvm::is_contained(op->getOperands(), destBuffer))
+      // Save buffer views.
+      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(op)) {
+        if (llvm::is_contained(bufferViews, view.getViewSource()))
+          bufferViews.insert(view->getResult(0));
+      }
+
+      if (isReadOrWriteToBuffer(op, bufferViews))
         lastAccessOp = op;
+
       // Check within any regions of this operation
       for (Region &region : op->getRegions()) {
-        llvm::SetVector<Value> usedValsDefedAbove;
-        getUsedValuesDefinedAbove(region, usedValsDefedAbove);
-        if (llvm::is_contained(usedValsDefedAbove, destBuffer))
-          lastAccessOp = op;
+        region.walk([&](Operation *o) {
+          // Save buffer views.
+          if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(o)) {
+            if (llvm::is_contained(bufferViews, view.getViewSource()))
+              bufferViews.insert(view->getResult(0));
+          }
+          if (isReadOrWriteToBuffer(o, bufferViews))
+            lastAccessOp = op;
+        });
       }
     }
     return lastAccessOp;
