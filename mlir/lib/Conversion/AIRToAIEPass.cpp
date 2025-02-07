@@ -2507,8 +2507,8 @@ public:
 
   // Checks if the given operation writes to, or deallocates, the specified
   // buffer.
-  bool isWriteToOrDeallocBuffer(Operation *op, Value destBuffer) {
-    if (!isa_and_present<air::MemcpyInterface, memref::DeallocOp>(op))
+  bool isDmaWriteToBuffer(Operation *op, Value destBuffer) {
+    if (!isa_and_present<air::MemcpyInterface>(op))
       return false;
     if (llvm::any_of(
             *getAllWriteAccessedMemrefOperandsFromOp(op),
@@ -2521,18 +2521,18 @@ public:
   // target buffer inside a nested region. Returns `true` if a writer is found,
   // setting `ancestorOp` to the outermost op under the same region as
   // `memcpyOp`.
-  bool findMemcpyOpIfLifetimeEndInRegion(Region &region, Value destBuffer,
-                                         Operation *&ancestorOp) {
+  bool findNextDmaWriteOpInRegion(Region &region, Value destBuffer,
+                                  Operation *&ancestorOp) {
     for (Block &block : region) {
       for (Operation &op : block) {
-        if (isWriteToOrDeallocBuffer(&op, destBuffer)) {
+        if (isDmaWriteToBuffer(&op, destBuffer)) {
           ancestorOp = &op; // Found a writer, set it as the closest ancestor
           return true;
         }
         // Recursively check child regions
         for (Region &nestedRegion : op.getRegions()) {
-          if (findMemcpyOpIfLifetimeEndInRegion(nestedRegion, destBuffer,
-                                                ancestorOp)) {
+          if (findNextDmaWriteOpInRegion(nestedRegion, destBuffer,
+                                         ancestorOp)) {
             ancestorOp = &op; // Set the ancestor op at this level
             return true;
           }
@@ -2545,7 +2545,7 @@ public:
   /// Walks ops in the block and finds the end of lifetime for this memcpy op.
   /// Returns the first operation in the same block that writes to, or
   /// deallocates, `destBuffer`.
-  Operation *findMemcpyOpIfLifetimeEnd(Operation *memcpyOp, Value destBuffer) {
+  Operation *findNextDmaWriteOp(Operation *memcpyOp, Value destBuffer) {
     // Ensure the given operation is an air memcpy operation
     auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(memcpyOp);
     if (!memcpyOpIf)
@@ -2559,20 +2559,49 @@ public:
     // Iterate over operations after the memcpyOp
     for (Operation *op = memcpyOpIf->getNextNode(); op != nullptr;
          op = op->getNextNode()) {
-      if (isWriteToOrDeallocBuffer(op, destBuffer)) {
+      if (isDmaWriteToBuffer(op, destBuffer)) {
         return op; // Found the next writer
       }
       // Check within any regions of this operation
       Operation *ancestorOp = nullptr;
       for (Region &region : op->getRegions()) {
-        if (findMemcpyOpIfLifetimeEndInRegion(region, destBuffer, ancestorOp)) {
+        if (findNextDmaWriteOpInRegion(region, destBuffer, ancestorOp)) {
           return op; // Return the ancestor operation at the same level as
                      // memcpyOp
         }
       }
     }
-
     return nullptr; // memcpyOp end-of-lifetime not found
+  }
+
+  /// Walks ops in the block and finds the last reader/writer. Returns the last
+  /// operation in the same block that accesses `destBuffer`.
+  Operation *findLastReadOrWriteOp(Operation *memcpyOp, Value destBuffer) {
+    // Ensure the given operation is an air memcpy operation
+    auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(memcpyOp);
+    if (!memcpyOpIf)
+      return nullptr;
+
+    // Ensure that destBuffer is used in mempcy op.
+    if (destBuffer != memcpyOpIf.getSrcMemref() &&
+        destBuffer != memcpyOpIf.getDstMemref())
+      return nullptr;
+
+    // Iterate over operations after the memcpyOp
+    Operation *lastAccessOp = nullptr;
+    for (Operation *op = memcpyOpIf->getNextNode(); op != nullptr;
+         op = op->getNextNode()) {
+      if (llvm::is_contained(op->getOperands(), destBuffer))
+        lastAccessOp = op;
+      // Check within any regions of this operation
+      for (Region &region : op->getRegions()) {
+        llvm::SetVector<Value> usedValsDefedAbove;
+        getUsedValuesDefinedAbove(region, usedValsDefedAbove);
+        if (llvm::is_contained(usedValsDefedAbove, destBuffer))
+          lastAccessOp = op;
+      }
+    }
+    return lastAccessOp;
   }
 
   void
@@ -2622,13 +2651,21 @@ public:
                                        ? AIE::LockAction::AcquireGreaterEqual
                                        : AIE::LockAction::Acquire,
                                    lockAqValue);
+
     // Try to find the end of lifetime for the data copied by memcpyOpIf, and
     // put the unlock.
-    if (auto nextWriter = findMemcpyOpIfLifetimeEnd(memcpyOpIf, alloc)) {
+    if (auto nextWriter = findNextDmaWriteOp(memcpyOpIf, alloc)) {
+      // Lifetime ends if dma writes into the same buffer.
       builder.setInsertionPoint(nextWriter);
       builder.create<AIE::UseLockOp>(nextWriter->getLoc(), relLockOp,
                                      AIE::LockAction::Release, lockRelValue);
+    } else if (auto lastAccessOp = findLastReadOrWriteOp(memcpyOpIf, alloc)) {
+      // Lifetime ends after the last read/write access to buffer.
+      builder.setInsertionPointAfter(lastAccessOp);
+      builder.create<AIE::UseLockOp>(lastAccessOp->getLoc(), relLockOp,
+                                     AIE::LockAction::Release, lockRelValue);
     } else {
+      // Lifetime ends at end of block.
       auto t = memcpyOpIf->getBlock()->getTerminator();
       builder.setInsertionPoint(t);
       builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp,
