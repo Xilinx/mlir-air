@@ -2389,7 +2389,7 @@ private:
     // Update memref size (divide by factor)
     SmallVector<Value, 1> new_sizes = op.getSizes();
     if (new_sizes.empty()) {
-      auto memTy = llvm::cast<MemRefType>(op.getMemref().getType());
+      auto memTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
       for (auto d : getTensorShape(memTy)) {
         new_sizes.push_back(
             builder.create<arith::ConstantIndexOp>(par->getLoc(), d));
@@ -3721,7 +3721,7 @@ private:
   bool hitsMemorySpaceForAggMode(std::vector<air::ChannelPutOp> &puts,
                                  std::vector<air::ChannelGetOp> &gets) {
     for (auto put : puts) {
-      MemRefType ty = llvm::cast<MemRefType>(put.getMemref().getType());
+      BaseMemRefType ty = llvm::cast<BaseMemRefType>(put.getMemref().getType());
       if (llvm::any_of(targetMemorySpaces, [&](unsigned memSpace) {
             return memSpace == ty.getMemorySpaceAsInt();
           })) {
@@ -3729,7 +3729,7 @@ private:
       }
     }
     for (auto get : gets) {
-      MemRefType ty = llvm::cast<MemRefType>(get.getMemref().getType());
+      BaseMemRefType ty = llvm::cast<BaseMemRefType>(get.getMemref().getType());
       if (llvm::any_of(targetMemorySpaces, [&](unsigned memSpace) {
             return memSpace == ty.getMemorySpaceAsInt();
           })) {
@@ -4596,9 +4596,10 @@ struct ShrinkMemrefSizesByAccessPattern
       }
 
       // Replace memref alloc op;
-      Type elemType = llvm::cast<MemRefType>(memref.getType()).getElementType();
+      Type elemType =
+          llvm::cast<BaseMemRefType>(memref.getType()).getElementType();
       Attribute memorySpace =
-          llvm::cast<MemRefType>(memref.getType()).getMemorySpace();
+          llvm::cast<BaseMemRefType>(memref.getType()).getMemorySpace();
       auto newMemrefType = MemRefType::get(overall_access_bounds, elemType,
                                            nullptr, memorySpace);
       if (auto execOp = dyn_cast<air::ExecuteOp>(alloc->getParentOp())) {
@@ -4740,10 +4741,10 @@ private:
     auto static_strides = subViewOp.getStaticStrides();
     auto static_offsets = subViewOp.getStaticOffsets();
     // Get MemRefType after shrinkage.
-    Type elemType = llvm::cast<MemRefType>(subViewOp.getSource().getType())
+    Type elemType = llvm::cast<BaseMemRefType>(subViewOp.getSource().getType())
                         .getElementType();
     Attribute memorySpace =
-        llvm::cast<MemRefType>(subViewOp.getSource().getType())
+        llvm::cast<BaseMemRefType>(subViewOp.getSource().getType())
             .getMemorySpace();
     auto shrunkMemrefType =
         MemRefType::get(overall_access_bounds, elemType, nullptr, memorySpace);
