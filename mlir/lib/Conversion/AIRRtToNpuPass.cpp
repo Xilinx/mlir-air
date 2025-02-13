@@ -958,8 +958,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Unroll any affine for loops
     unrollAffineFors(module);
 
-    // Cast buffers to i32 types; buffer npu.dma_memcpy_nd memref to function's
-    // argument list.
+    // Buffer npu.dma_memcpy_nd memref to function's argument list.
     RewritePatternSet castPattern(ctx);
     air::populateBufferMemrefToFuncArgsPattern(castPattern);
     (void)applyPatternsGreedily(module, std::move(castPattern));
