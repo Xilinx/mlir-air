@@ -761,7 +761,7 @@ struct AIRSpecializeAIRRtDmaWrapAndStrideInAffineFor
       wraps.insert(wraps.begin(), i64_one);
     }
     while (strides.size() < 3) {
-      strides.insert(strides.begin(), i64_one);
+      strides.insert(strides.begin(), i64_zero);
     }
 
     // Stride = 0 means repeat that dimension. If highest dimension (dim 0) is
