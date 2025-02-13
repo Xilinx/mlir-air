@@ -117,7 +117,7 @@ def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", []> {
     ins I32:$id,
         I64:$x,
         I64:$y,
-        AnyMemRef:$memref,
+        AnyRankedOrUnrankedMemRef:$memref,
         I64:$offset3,
         I64:$offset2,
         I64:$offset1,
@@ -149,8 +149,8 @@ def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", []> {
 def AIRRt_MemcpyNdOp: AIRRt_Op<"memcpy_nd", []> {
   let summary = "dma operator";
   let arguments = (
-    ins AnyMemRef:$dst,
-        AnyMemRef:$src,
+    ins AnyRankedOrUnrankedMemRef:$dst,
+        AnyRankedOrUnrankedMemRef:$src,
         I64:$offset3,
         I64:$offset2,
         I64:$offset1,

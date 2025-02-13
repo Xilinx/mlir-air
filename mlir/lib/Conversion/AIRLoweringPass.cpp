@@ -180,8 +180,8 @@ public:
         rewriter.clone(o, remap);
       } else if (auto chanOp = dyn_cast<air::ChannelInterface>(o)) {
         // clone L3 get/put
-        MemRefType memrefTy =
-            llvm::cast<MemRefType>(chanOp.getMemref().getType());
+        BaseMemRefType memrefTy =
+            llvm::cast<BaseMemRefType>(chanOp.getMemref().getType());
         if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
           rewriter.clone(o, remap);
           continue;
@@ -329,8 +329,10 @@ public:
       rewriter.create<airrt::WaitAllOp>(
           op->getLoc(), airrt::EventType::get(op->getContext()), deps);
 
-    MemRefType src = llvm::cast<MemRefType>(op.getSrcMemref().getType());
-    MemRefType dst = llvm::cast<MemRefType>(op.getDstMemref().getType());
+    BaseMemRefType src =
+        llvm::cast<BaseMemRefType>(op.getSrcMemref().getType());
+    BaseMemRefType dst =
+        llvm::cast<BaseMemRefType>(op.getDstMemref().getType());
     bool isFromTile = false;
     bool isFullMemcpy = false;
     if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
@@ -455,8 +457,8 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto loc = thisOp->getLoc();
   auto ctx = thisOp->getContext();
 
-  MemRefType thisMemrefType =
-      llvm::cast<MemRefType>(thisOp.getMemref().getType());
+  BaseMemRefType thisMemrefType =
+      llvm::cast<BaseMemRefType>(thisOp.getMemref().getType());
 
   bool thisOpIsInShim =
       thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
@@ -640,7 +642,7 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto dealloc = cast<memref::DeallocOp>(op);
-    auto type = llvm::cast<MemRefType>(dealloc.getMemref().getType());
+    auto type = llvm::cast<BaseMemRefType>(dealloc.getMemref().getType());
     if (type.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       rewriter.replaceOpWithNewOp<airrt::DeallocOp>(op, SmallVector<Type>{},
                                                     op->getOperands());
@@ -965,7 +967,7 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (llvm::cast<MemRefType>(op.getMemref().getType())
+      return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
                   .getMemorySpaceAsInt() != (int)air::MemorySpace::L2);
     });
 
