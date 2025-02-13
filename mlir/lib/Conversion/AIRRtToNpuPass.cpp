@@ -126,19 +126,7 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
     if (bitwidth != 32 && bitwidth != 16 && bitwidth != 8)
       return failure();
-    unsigned int div = 32 / bitwidth;
-    unsigned int numElements = memrefTy.getNumElements() / div;
-    SmallVector<int64_t> shape{numElements};
-    MemRefType newMemrefTy =
-        MemRefType::get(shape, rewriter.getIntegerType(32));
 
-    Value divV = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), div);
-    auto divOp = [&](Value v) {
-      if (div == 1)
-        return v;
-      return rewriter.create<arith::CeilDivUIOp>(op->getLoc(), v, divV)
-          .getResult();
-    };
     SmallVector<Value> offsets;
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
@@ -154,9 +142,9 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     else
       offsets.push_back(adaptor.getOffset1());
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
-      staticOffsets.push_back(*const_int / div);
+      staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(divOp(adaptor.getOffset0()));
+      offsets.push_back(adaptor.getOffset0());
     SmallVector<Value> sizes;
     SmallVector<int64_t> staticSizes;
     if (auto const_int = getConstantIntValue(adaptor.getLength3()))
@@ -172,23 +160,23 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     else
       sizes.push_back(adaptor.getLength1());
     if (auto const_int = getConstantIntValue(adaptor.getLength0()))
-      staticSizes.push_back(std::max((int64_t)1, *const_int / div));
+      staticSizes.push_back(std::max((int64_t)1, *const_int));
     else
-      sizes.push_back(divOp(adaptor.getLength0()));
+      sizes.push_back(adaptor.getLength0());
     SmallVector<Value> strides;
     SmallVector<int64_t> staticStrides;
     if (auto const_int = getConstantIntValue(adaptor.getStride3()))
-      staticStrides.push_back(*const_int / div);
+      staticStrides.push_back(*const_int);
     else
-      strides.push_back(divOp(adaptor.getStride3()));
+      strides.push_back(adaptor.getStride3());
     if (auto const_int = getConstantIntValue(adaptor.getStride2()))
-      staticStrides.push_back(*const_int / div);
+      staticStrides.push_back(*const_int);
     else
-      strides.push_back(divOp(adaptor.getStride2()));
+      strides.push_back(adaptor.getStride2());
     if (auto const_int = getConstantIntValue(adaptor.getStride1()))
-      staticStrides.push_back(*const_int / div);
+      staticStrides.push_back(*const_int);
     else
-      strides.push_back(divOp(adaptor.getStride1()));
+      strides.push_back(adaptor.getStride1());
     staticStrides.push_back(1);
 
     StringRef metadata;
@@ -200,12 +188,6 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
           FlatSymbolRefAttr::get(op->getContext(),
                                  rewriter.getStringAttr("MetadataNotFound"))
               .getValue();
-
-    if (bitwidth != 32)
-      memref = rewriter
-                   .create<UnrealizedConversionCastOp>(op.getLoc(), newMemrefTy,
-                                                       memref)
-                   .getResult(0);
 
     AIE::PacketInfoAttr packet =
         op->getAttrOfType<AIE::PacketInfoAttr>("packet");
@@ -393,77 +375,6 @@ public:
     return success();
   }
 };
-
-static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
-                                      PatternRewriter &rewriter) {
-  // only run on npu control functions
-  bool hasNpuOps = false;
-  funcOp.walk([&](AIEX::NpuDmaMemcpyNdOp dma) { hasNpuOps = true; });
-  if (!hasNpuOps)
-    return failure();
-
-  // cast all the function args to i32 types.
-  // this is in support of npu.dma_memcpy_nd which only allow 32bit types
-  mlir::FunctionType funcType = funcOp.getFunctionType();
-  SmallVector<Type> argTypes(funcType.getInputs());
-  for (int i = 0, e = argTypes.size(); i < e; i++) {
-    auto memrefTy = dyn_cast<MemRefType>(argTypes[i]);
-    if (!memrefTy)
-      continue;
-
-    unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
-    if (bitwidth != 16 && bitwidth != 8)
-      continue;
-
-    unsigned int div = 32 / bitwidth;
-    unsigned int numElements = memrefTy.getNumElements() / div;
-    SmallVector<int64_t> shape{numElements};
-    MemRefType newMemrefTy =
-        MemRefType::get(shape, rewriter.getIntegerType(32));
-    argTypes[i] = newMemrefTy;
-    auto &entry = funcOp.front();
-    entry.insertArgument(i, newMemrefTy, rewriter.getUnknownLoc());
-    rewriter.setInsertionPointToStart(&entry);
-    auto cast = rewriter.create<UnrealizedConversionCastOp>(
-        rewriter.getUnknownLoc(), memrefTy, entry.getArgument(i));
-    // With memref shape collapsed to 1d, the multi-dimensional offset also
-    // needs to be collapsed.
-    SmallVector<Operation *> users;
-    for (auto user : entry.getArgument(i + 1).getUsers()) {
-      if (auto cast_user = dyn_cast<UnrealizedConversionCastOp>(user)) {
-        assert(cast_user.getNumResults() == 1);
-        for (auto cast_r_user : cast_user.getResult(0).getUsers())
-          users.push_back(cast_r_user);
-      } else
-        users.push_back(user);
-    }
-    for (Operation *user : users) {
-      if (auto dmaUser = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(user)) {
-        int oneDOffset = *getConstantIntValue(dmaUser.getMixedOffsets().back());
-        for (int j = dmaUser.getMixedOffsets().size() - 2; j >= 0; j--)
-          oneDOffset += *getConstantIntValue(dmaUser.getMixedOffsets()[j]) *
-                        *getConstantIntValue(dmaUser.getMixedStrides()[j]);
-        rewriter.setInsertionPoint(dmaUser);
-        const std::vector<int64_t> newStaticOffsets = {0, 0, 0, oneDOffset};
-        AIE::PacketInfoAttr packet =
-            dmaUser.getPacket() ? *dmaUser.getPacket() : nullptr;
-        rewriter.create<AIEX::NpuDmaMemcpyNdOp>(
-            rewriter.getUnknownLoc(), dmaUser.getX(), dmaUser.getY(),
-            dmaUser.getMemref(), SmallVector<Value>{}, dmaUser.getSizes(),
-            dmaUser.getStrides(), ArrayRef(newStaticOffsets),
-            dmaUser.getStaticSizes(), dmaUser.getStaticStrides(), packet,
-            dmaUser.getMetadata(), dmaUser.getId());
-        rewriter.eraseOp(dmaUser);
-      }
-    }
-    entry.getArgument(i + 1).replaceAllUsesWith(cast.getResult(0));
-    entry.eraseArgument(i + 1);
-  }
-  auto newFuncType =
-      FunctionType::get(funcOp.getContext(), argTypes, funcType.getResults());
-  funcOp.setType(newFuncType);
-  return success();
-}
 
 AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
   auto module = s->getParentOfType<ModuleOp>();
@@ -850,7 +761,7 @@ struct AIRSpecializeAIRRtDmaWrapAndStrideInAffineFor
       wraps.insert(wraps.begin(), i64_one);
     }
     while (strides.size() < 3) {
-      strides.insert(strides.begin(), i64_one);
+      strides.insert(strides.begin(), i64_zero);
     }
 
     // Stride = 0 means repeat that dimension. If highest dimension (dim 0) is
@@ -1047,11 +958,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Unroll any affine for loops
     unrollAffineFors(module);
 
-    // Cast buffers to i32 types; buffer npu.dma_memcpy_nd memref to function's
-    // argument list.
+    // Buffer npu.dma_memcpy_nd memref to function's argument list.
     RewritePatternSet castPattern(ctx);
     air::populateBufferMemrefToFuncArgsPattern(castPattern);
-    castPattern.add(CastFunctionArgs);
     (void)applyPatternsGreedily(module, std::move(castPattern));
 
     // Insert sync op after copying data out to host
