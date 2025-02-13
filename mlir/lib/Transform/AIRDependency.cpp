@@ -205,7 +205,7 @@ public:
         else {
           bool isCandidateExecute = false;
           for (auto operand : op->getOperands()) {
-            if (llvm::isa<MemRefType>(operand.getType()) ||
+            if (llvm::isa<BaseMemRefType>(operand.getType()) ||
                 llvm::isa<IndexType>(operand.getType())) {
               isCandidateExecute = true;
             }
@@ -798,7 +798,7 @@ private:
   }
 
   char checkOperandReadOrWrite(mlir::Value operand) {
-    if (!llvm::isa<MemRefType>(operand.getType())) {
+    if (!llvm::isa<BaseMemRefType>(operand.getType())) {
       operand.getDefiningOp()->emitOpError(
           "operand being traced is not a memref");
     }
@@ -843,7 +843,7 @@ private:
   template <typename T>
   void pushDepsAtCurrentScope(mlir::Value operand, T op, char rw = 'n',
                               partialMemref *tile = nullptr) {
-    if (!llvm::isa<MemRefType>(operand.getType())) {
+    if (!llvm::isa<BaseMemRefType>(operand.getType())) {
       operand.getDefiningOp()->emitOpError(
           "operand being traced is not a memref");
     }

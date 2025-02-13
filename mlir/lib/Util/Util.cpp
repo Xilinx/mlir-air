@@ -180,7 +180,7 @@ std::string air::getElementTypeAsString(const mlir::Type ty) {
 
 // An incomplete lookup table of common data types
 uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
-  if (auto memrefTy = llvm::cast<MemRefType>(ty)) {
+  if (auto memrefTy = llvm::cast<BaseMemRefType>(ty)) {
     return memrefTy.getElementTypeBitWidth() / 8;
   }
   auto typeAsString = getElementTypeAsString(ty);
@@ -366,12 +366,12 @@ std::string air::createChannelName(Operation *scope) {
 
 // Return memory space as string
 std::string air::getMemorySpaceAsString(Value memref) {
-  if (!llvm::isa<MemRefType>(memref.getType())) {
+  if (!llvm::isa<BaseMemRefType>(memref.getType())) {
     memref.getDefiningOp()->emitOpError("value returned is not a memref");
     return "";
   }
   auto memory_space_as_int =
-      llvm::dyn_cast<MemRefType>(memref.getType()).getMemorySpaceAsInt();
+      llvm::dyn_cast<BaseMemRefType>(memref.getType()).getMemorySpaceAsInt();
   std::string memorySpaceStr = "";
   if (memory_space_as_int == (int)air::MemorySpace::L1) {
     memorySpaceStr = "L1";
@@ -1449,7 +1449,7 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   [[maybe_unused]] auto vectorTy =
       llvm::cast<VectorType>(readOp.getVector().getType());
   [[maybe_unused]] auto memrefTy =
-      llvm::cast<MemRefType>(readOp.getSource().getType());
+      llvm::cast<BaseMemRefType>(readOp.getSource().getType());
   assert(vectorTy && "Not a vector");
   assert(memrefTy && "Not a memref");
   // Initialize wraps and strides based on the unshrunk memref shape.
@@ -1474,7 +1474,7 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
   [[maybe_unused]] auto memrefTy =
-      llvm::cast<MemRefType>(writeOp.getSource().getType());
+      llvm::cast<BaseMemRefType>(writeOp.getSource().getType());
   [[maybe_unused]] auto vectorTy =
       llvm::cast<VectorType>(writeOp.getVector().getType());
   assert(memrefTy && "Not a memref");
@@ -1774,7 +1774,7 @@ struct BufferMemrefToFuncArgsPattern : public OpRewritePattern<func::FuncOp> {
       if (isa<CastOpInterface, UnrealizedConversionCastOp>(op))
         continue;
       for (auto res : op.getResults()) {
-        MemRefType resType = dyn_cast<MemRefType>(res.getType());
+        BaseMemRefType resType = dyn_cast<BaseMemRefType>(res.getType());
         if (!resType)
           continue;
         if (resType.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)

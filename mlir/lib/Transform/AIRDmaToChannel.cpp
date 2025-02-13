@@ -379,8 +379,8 @@ static void replaceAIRDmaWithAIRChannelPairs(
   auto dst = op.getDstMemref();
   auto ctx = op->getContext();
 
-  auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-  auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
+  auto src_type = llvm::dyn_cast<BaseMemRefType>(src.getType());
+  auto dst_type = llvm::dyn_cast<BaseMemRefType>(dst.getType());
   SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
   SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
   SmallVector<Value, 4> src_sizes = op.getSrcSizes();
@@ -605,16 +605,16 @@ LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
   // Label dependent ops to hoist
   for (auto b : backwardSlice) {
     b->setAttr("hoist", StringAttr::get(ctx, "dep"));
-    if (dyn_cast<air::ExecuteOp>(b)) {
-      auto child_op = &(*b->getRegions().front().op_begin());
-      child_op->setAttr("hoist", StringAttr::get(ctx, "dep"));
+    if (auto exec = dyn_cast<air::ExecuteOp>(b)) {
+      auto &child_op = exec.getChildOps().front();
+      child_op.setAttr("hoist", StringAttr::get(ctx, "dep"));
     }
   }
 
   // Hoist hierarchy op into scf op
   module_builder.setInsertionPoint(hier_op);
-  MemRefType externalMemrefTy =
-      llvm::cast<MemRefType>(externalGetPut[0].getMemref().getType());
+  auto externalMemrefTy =
+      llvm::dyn_cast<BaseMemRefType>(externalGetPut[0].getMemref().getType());
   if (externalMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
       segment) {
     module_builder.setInsertionPoint(segment);
@@ -769,8 +769,8 @@ class AIRDmaToAIRChannelConversion
     auto ctx = op->getContext();
 
     // It must already be a memref
-    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
+    auto src_type = llvm::dyn_cast<BaseMemRefType>(src.getType());
+    auto dst_type = llvm::dyn_cast<BaseMemRefType>(dst.getType());
     if (!src_type)
       return failure();
 
@@ -1068,7 +1068,7 @@ static LogicalResult AIRDemoteMemrefToAIRHierarchy(
       auto memref =
           isa<air::ExecuteOp>(op) ? op->getResult(1) : op->getResult(0);
       auto token = isa<air::ExecuteOp>(op) ? op->getResult(0) : nullptr;
-      auto memref_type = llvm::dyn_cast<MemRefType>(memref.getType());
+      auto memref_type = llvm::dyn_cast<BaseMemRefType>(memref.getType());
 
       if (memref_type.getMemorySpaceAsInt() == hierMemorySpace)
         continue; // Alloc op is already under correct hierarchy
@@ -1153,8 +1153,8 @@ class AIRDemoteDmaToAIRHierarchyConversion
     auto ctx = op->getContext();
 
     // It must already be a memref
-    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
+    auto src_type = llvm::dyn_cast<BaseMemRefType>(src.getType());
+    auto dst_type = llvm::dyn_cast<BaseMemRefType>(dst.getType());
     if (!src_type)
       return failure();
 
@@ -1391,7 +1391,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     std::map<air::HierarchyInterface, std::vector<Operation *>> hier_to_allocs;
     for (auto f : funcOps) {
       f.walk([&](memref::AllocOp alloc) {
-        auto memref_type = dyn_cast<MemRefType>(alloc.getMemref().getType());
+        auto memref_type =
+            dyn_cast<BaseMemRefType>(alloc.getMemref().getType());
         int hierMemorySpace = (int)air::MemorySpace::L3;
         air::HierarchyInterface hier_op =
             alloc->getParentOfType<air::HierarchyInterface>();
@@ -1439,9 +1440,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     target_0.addDynamicallyLegalOp<air::DmaMemcpyNdOp>(
         [&](air::DmaMemcpyNdOp dma) {
           auto src_type =
-              llvm::dyn_cast<MemRefType>(dma.getSrcMemref().getType());
+              llvm::dyn_cast<BaseMemRefType>(dma.getSrcMemref().getType());
           auto dst_type =
-              llvm::dyn_cast<MemRefType>(dma.getDstMemref().getType());
+              llvm::dyn_cast<BaseMemRefType>(dma.getDstMemref().getType());
           if (dma->getParentOfType<air::HerdOp>()) {
             if (src_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1 &&
                 dst_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1)

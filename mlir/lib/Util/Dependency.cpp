@@ -1062,7 +1062,7 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
         return entry;
       };
   auto pushMemrefEntryToVector = [](auto entry, auto &vector) {
-    if (!isa<MemRefType>(entry.first.getType()))
+    if (!isa<BaseMemRefType>(entry.first.getType()))
       return;
     vector.push_back(entry);
   };
@@ -1127,7 +1127,7 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
         return entry;
       };
   auto pushMemrefEntryToVector = [](auto entry, auto &vector) {
-    if (!isa<MemRefType>(entry.first.getType()))
+    if (!isa<BaseMemRefType>(entry.first.getType()))
       return;
     vector.push_back(entry);
   };
@@ -1597,7 +1597,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(alloc_child_op.getMemref());
-      auto ty = llvm::cast<MemRefType>(alloc_child_op.getMemref().getType());
+      auto ty =
+          llvm::cast<BaseMemRefType>(alloc_child_op.getMemref().getType());
       detailed_description += "(" + memorySpaceStr + ", " +
                               std::to_string(getTensorVolume(ty)) + ", " +
                               getElementTypeAsString(ty) + ")";
@@ -1609,7 +1610,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(dealloc_child_op.getMemref());
-      auto ty = llvm::cast<MemRefType>(dealloc_child_op.getMemref().getType());
+      auto ty =
+          llvm::cast<BaseMemRefType>(dealloc_child_op.getMemref().getType());
       detailed_description += "(" + memorySpaceStr + ", " +
                               std::to_string(getTensorVolume(ty)) + ", " +
                               getElementTypeAsString(ty) + ")";
@@ -2321,7 +2323,7 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
 void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
                                               air::AsyncOpInterface op, char rw,
                                               partialMemref *tile) {
-  if (!llvm::isa<MemRefType>(operand.getType()))
+  if (!llvm::isa<BaseMemRefType>(operand.getType()))
     op->emitOpError("operand being traced is not a memref");
   for (auto &u : operand.getUses()) {
     // If used in MemcpyInterface Op
@@ -2531,7 +2533,7 @@ bool dependencyTracer::areEqualIndexPartialMemrefs(partialMemref *tile_0,
 }
 
 char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
-  if (!llvm::isa<MemRefType>(operand.getType()))
+  if (!llvm::isa<BaseMemRefType>(operand.getType()))
     operand.getDefiningOp()->emitOpError(
         "operand being traced is not a memref");
   bool foundWriteAccess = false;

@@ -65,7 +65,7 @@ struct AIRToAIEConversionOptions {
 
 // get memcpy operation volumn (elements) as int
 int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
-  MemRefType memTy = llvm::cast<MemRefType>(memref.getType());
+  BaseMemRefType memTy = llvm::cast<BaseMemRefType>(memref.getType());
   if (sizes.empty())
     return getTensorVolume(memTy);
   else {
@@ -1029,8 +1029,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         return res;
 
       // check if this put is linked to a get from another channel
-      MemRefType memref =
-          llvm::cast<MemRefType>(channelPuts[0].getMemref().getType());
+      BaseMemRefType memref =
+          llvm::cast<BaseMemRefType>(channelPuts[0].getMemref().getType());
       int mem_space = memref.getMemorySpaceAsInt();
       if (mem_space == (int)air::MemorySpace::L2) {
         if (linksToComplete.find(channelPuts[0].getOperation()) !=
@@ -1070,7 +1070,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       consumers.push_back(consumerTile);
 
       // check if this get is linked to a put from another channel
-      MemRefType memref = llvm::cast<MemRefType>(get.getMemref().getType());
+      BaseMemRefType memref =
+          llvm::cast<BaseMemRefType>(get.getMemref().getType());
       int mem_space = memref.getMemorySpaceAsInt();
       if (mem_space == (int)air::MemorySpace::L2) {
         if (linksToComplete.find(get.getOperation()) != linksToComplete.end()) {
@@ -1226,7 +1227,7 @@ private:
                        AIE::ObjectFifoCreateOp objFifo,
                        AIE::ObjectFifoPort port,
                        llvm::SmallSet<Operation *, 2> &erased_allocs) const {
-    MemRefType memref = cast<MemRefType>(op.getMemref().getType());
+    BaseMemRefType memref = cast<BaseMemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
       // add alloc to list of ops to erase
@@ -1260,7 +1261,8 @@ private:
       PatternRewriter &rewriter, MyOp op, AIE::ObjectFifoCreateOp objFifo,
       AIE::ObjectFifoPort port,
       llvm::SmallSet<Operation *, 2> &erased_deallocs) const {
-    MemRefType memref = llvm::cast<MemRefType>(op.getMemref().getType());
+    BaseMemRefType memref =
+        llvm::cast<BaseMemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
       return;
