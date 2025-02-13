@@ -117,16 +117,16 @@ module {
 // Bf16 datatype support.
 
 // CHECK-LABEL: aie.device(npu1_1col)
-// CHECK: aiex.runtime_sequence @func2(%[[VAL_0:.*]]: memref<2097152xi32>, %[[VAL_1:.*]]: memref<2097152xi32>, %[[VAL_2:.*]]: memref<2097152xi32>) {
-// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 0, 0][4, 8, 128, 128][0, 128, 1024, 1]) {id = 0 : i64, metadata = @airMemcpyId4} : memref<2097152xi32>
-// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 0, 131072][4, 8, 128, 128][0, 128, 1024, 1]) {id = 1 : i64, metadata = @airMemcpyId4} : memref<2097152xi32>
-// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 0, 262144][4, 8, 128, 128][0, 128, 1024, 1]) {id = 2 : i64, metadata = @airMemcpyId4} : memref<2097152xi32>
-// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 0, 393216][4, 8, 128, 128][0, 128, 1024, 1]) {id = 3 : i64, metadata = @airMemcpyId4} : memref<2097152xi32>
-// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][4, 4, 512, 64][64, 524288, 1024, 1]) {id = 4 : i64, metadata = @airMemcpyId7} : memref<2097152xi32>
-// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][4, 4, 512, 64][64, 524288, 1024, 1]) {id = 5 : i64, metadata = @airMemcpyId7} : memref<2097152xi32>
-// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][4, 4, 512, 64][64, 524288, 1024, 1]) {id = 6 : i64, metadata = @airMemcpyId7} : memref<2097152xi32>
-// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][4, 4, 512, 64][64, 524288, 1024, 1]) {id = 7 : i64, metadata = @airMemcpyId7} : memref<2097152xi32>
-// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 0][4, 4, 128, 64][131072, 64, 1024, 1]) {id = 8 : i64, metadata = @airMemcpyId26} : memref<2097152xi32>
+// CHECK: aiex.runtime_sequence @func2(%[[VAL_0:.*]]: memref<2048x2048xbf16>, %[[VAL_1:.*]]: memref<2048x2048xbf16>, %[[VAL_2:.*]]: memref<2048x2048xbf16>) {
+// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 0, 0][4, 8, 128, 256][0, 256, 2048, 1]) {id = 0 : i64, metadata = @airMemcpyId4} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 128, 0][4, 8, 128, 256][0, 256, 2048, 1]) {id = 1 : i64, metadata = @airMemcpyId4} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 256, 0][4, 8, 128, 256][0, 256, 2048, 1]) {id = 2 : i64, metadata = @airMemcpyId4} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 384, 0][4, 8, 128, 256][0, 256, 2048, 1]) {id = 3 : i64, metadata = @airMemcpyId4} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][4, 4, 512, 128][128, 1048576, 2048, 1]) {id = 4 : i64, metadata = @airMemcpyId7} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][4, 4, 512, 128][128, 1048576, 2048, 1]) {id = 5 : i64, metadata = @airMemcpyId7} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][4, 4, 512, 128][128, 1048576, 2048, 1]) {id = 6 : i64, metadata = @airMemcpyId7} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][4, 4, 512, 128][128, 1048576, 2048, 1]) {id = 7 : i64, metadata = @airMemcpyId7} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 0][4, 4, 128, 128][262144, 128, 2048, 1]) {id = 8 : i64, metadata = @airMemcpyId26} : memref<2048x2048xbf16>
 
 module {
   aie.device(npu1_1col) {
