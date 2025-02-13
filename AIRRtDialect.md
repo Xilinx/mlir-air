@@ -76,7 +76,7 @@ nd half dma operator
 | `id` | 32-bit signless integer
 | `x` | 64-bit signless integer
 | `y` | 64-bit signless integer
-| `memref` | memref of any type values
+| `memref` | ranked or unranked memref of any type values
 | `offset3` | 64-bit signless integer
 | `offset2` | 64-bit signless integer
 | `offset1` | 64-bit signless integer
@@ -192,8 +192,8 @@ nd memcpy operator
 
 | Operand | Description |
 | :-----: | ----------- |
-| `dst` | memref of any type values
-| `src` | memref of any type values
+| `dst` | ranked or unranked memref of any type values
+| `src` | ranked or unranked memref of any type values
 | `offset3` | 64-bit signless integer
 | `offset2` | 64-bit signless integer
 | `offset1` | 64-bit signless integer
