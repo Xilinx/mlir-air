@@ -236,53 +236,17 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
   }
 };
 
-class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
+// Pattern to rewrite `linalg.copy` to `memref.copy`.
+class LinalgCopyToMemRefCopy : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(linalg::CopyOp op,
+
+  LogicalResult matchAndRewrite(linalg::CopyOp copyOp,
                                 PatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto src = op.getInputs()[0];
-    auto dst = op.getOutputs()[0];
-
-    // It must already be a memref
-    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
-    if (!src_type)
+    if (copyOp.hasIndexSemantics()) {
       return failure();
-
-    if ((src_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) &&
-        (dst_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3))
-      return failure();
-
-    if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
-      return failure();
-
-    SmallVector<Value, 4> src_offsets, dst_offsets;
-    SmallVector<Value, 4> src_strides, dst_strides;
-    SmallVector<Value, 4> src_sizes, dst_sizes;
-
-    if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
-                                 src_strides);
-      src = subview.getSource();
     }
-
-    if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
-                                 dst_strides);
-      dst = subview.getSource();
-    }
-
-    SmallVector<Value, 4> deps;
-    SmallVector<Type, 4> tys;
-    auto dma = rewriter.create<air::DmaMemcpyNdOp>(
-        loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
-        src_offsets, src_sizes, src_strides);
-    dma->setAttr("id", mlir::IntegerAttr::get(
-                           mlir::IntegerType::get(op->getContext(), 32),
-                           ++DmaMemcpyOpID));
-
-    rewriter.eraseOp(op);
+    rewriter.replaceOpWithNewOp<memref::CopyOp>(
+        copyOp, copyOp.getInputs().front(), copyOp.getDpsInits().front());
     return success();
   }
 };
@@ -944,9 +908,8 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
     (void)applyPatternsGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
-    stage2Patterns
-        .insert<LinalgCopyToAIRDmaConversion, MemrefCopyToAIRDmaConversion>(
-            context);
+    stage2Patterns.insert<LinalgCopyToMemRefCopy, MemrefCopyToAIRDmaConversion>(
+        context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(stage2Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
