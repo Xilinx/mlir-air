@@ -120,7 +120,7 @@ Interfaces: `air_AsyncOpInterface`, `air_ChannelInterface`, `air_MemcpyInterface
 | :-----: | ----------- |
 | `async_dependencies` | variadic of async token type
 | `indices` | variadic of index
-| `dst` | memref of any type values
+| `dst` | ranked or unranked memref of any type values
 | `dst_offsets` | variadic of index
 | `dst_sizes` | variadic of index
 | `dst_strides` | variadic of index
@@ -165,7 +165,7 @@ Interfaces: `air_AsyncOpInterface`, `air_ChannelInterface`, `air_MemcpyInterface
 | :-----: | ----------- |
 | `async_dependencies` | variadic of async token type
 | `indices` | variadic of index
-| `src` | memref of any type values
+| `src` | ranked or unranked memref of any type values
 | `src_offsets` | variadic of index
 | `src_sizes` | variadic of index
 | `src_strides` | variadic of index
