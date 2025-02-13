@@ -46,88 +46,6 @@ using namespace xilinx;
 
 static std::atomic<uint64_t> DmaMemcpyOpID;
 
-static FailureOr<air::DmaMemcpyNdOp>
-matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
-  auto loc = op.getLoc();
-  Value src = op.getSource();
-  Value dst = op.getTarget();
-
-  rewriter.setInsertionPoint(op);
-
-  // It must already be a memref
-  auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-  auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
-  if (!src_type)
-    return failure();
-
-  if ((src_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) &&
-      (dst_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3))
-    return failure();
-
-  if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
-    return failure();
-
-  SmallVector<Value, 4> src_offsets, dst_offsets;
-  SmallVector<Value, 4> src_strides, dst_strides;
-  SmallVector<Value, 4> src_sizes, dst_sizes;
-  auto extractOperandsFromSubview = [&](memref::SubViewOp subview,
-                                        auto &offsets, auto &sizes,
-                                        auto &strides) {
-    auto subview_offsets = subview.getOffsets().begin();
-    auto static_offsets = subview.getStaticOffsets();
-    auto static_sizes = subview.getStaticSizes();
-    auto static_strides = subview.getStaticStrides();
-    auto loc = subview.getLoc();
-
-    // get the strides and offsets from the memref type
-    auto inferredType =
-        llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
-            subview.getSourceType(), static_offsets, static_sizes,
-            static_strides));
-    int64_t offset;
-    SmallVector<int64_t, 4> layout_strides;
-    auto successStrides =
-        inferredType.getStridesAndOffset(layout_strides, offset);
-    if (failed(successStrides)) {
-      llvm::outs() << "Failed to get strides\n";
-      return; // failure();
-    }
-
-    for (auto o : static_offsets) {
-      if (o >= 0)
-        offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
-      else
-        offsets.push_back(*subview_offsets++);
-    }
-    for (auto s : static_sizes)
-      sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
-    for (auto s : layout_strides)
-      strides.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
-  };
-
-  if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, src_offsets, src_sizes, src_strides);
-    src = subview.getSource();
-  }
-
-  if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, dst_offsets, dst_sizes, dst_strides);
-    dst = subview.getSource();
-  }
-
-  SmallVector<Value, 4> deps;
-  SmallVector<Type, 4> tys;
-  auto dma = rewriter.create<air::DmaMemcpyNdOp>(
-      loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
-      src_offsets, src_sizes, src_strides);
-  dma->setAttr(
-      "id", mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
-                                   ++DmaMemcpyOpID));
-
-  rewriter.eraseOp(op);
-  return dma;
-}
-
 static void extractOperandsFromSubview(memref::SubViewOp subview,
                                        OpBuilder &builder,
                                        SmallVector<Value, 4> &offsets,
@@ -161,6 +79,127 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
     sizes.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
   for (auto s : layout_strides)
     strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+}
+
+static void extractOperandsFromReinterpretCast(
+    memref::ReinterpretCastOp reinterpretCast, OpBuilder &builder,
+    SmallVector<Value, 4> &offsets, SmallVector<Value, 4> &sizes,
+    SmallVector<Value, 4> &strides) {
+  auto reinterpretCast_offsets = reinterpretCast.getOffsets().begin();
+  auto static_offsets = reinterpretCast.getStaticOffsets();
+  auto static_sizes = reinterpretCast.getStaticSizes();
+  auto loc = reinterpretCast.getLoc();
+
+  // Fixup an issue in the reinterpretCast output memref's strided layout giving
+  // false dynamic strides
+  auto constifyStridesInStridedLayout =
+      [](MemRefType rankedMemRefType,
+         memref::ReinterpretCastOp reinterpretCast) {
+        StridedLayoutAttr stridedLayout =
+            dyn_cast<StridedLayoutAttr>(rankedMemRefType.getLayout());
+        SmallVector<int64_t> correctedStaticStrides(
+            stridedLayout.getStrides().size(), 0);
+        for (auto [index, stride] :
+             llvm::enumerate(reinterpretCast.getMixedStrides())) {
+          if (auto constStride = getConstantIntValue(stride))
+            correctedStaticStrides[index] = *constStride;
+          else
+            correctedStaticStrides[index] = stridedLayout.getStrides()[index];
+        }
+        auto correctedStridedLayout = StridedLayoutAttr::get(
+            reinterpretCast->getContext(), stridedLayout.getOffset(),
+            ArrayRef(correctedStaticStrides));
+        return MemRefType::Builder(rankedMemRefType)
+            .setShape(rankedMemRefType.getShape())
+            .setLayout(correctedStridedLayout);
+      };
+
+  MemRefType reinterpretCastType = constifyStridesInStridedLayout(
+      reinterpretCast.getType(), reinterpretCast);
+
+  // get the strides and offsets from the memref type
+  int64_t offset;
+  SmallVector<int64_t, 4> layout_strides;
+  auto successStrides =
+      reinterpretCastType.getStridesAndOffset(layout_strides, offset);
+  if (failed(successStrides)) {
+    llvm::outs() << "Failed to get strides\n";
+    return; // failure();
+  }
+
+  for (auto o : static_offsets) {
+    if (o >= 0)
+      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      offsets.push_back(*reinterpretCast_offsets++);
+  }
+  for (auto s : static_sizes)
+    sizes.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+  for (auto s : layout_strides)
+    strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+  while (offsets.size() < sizes.size())
+    offsets.insert(offsets.begin(),
+                   builder.create<arith::ConstantIndexOp>(loc, 0));
+}
+
+static FailureOr<air::DmaMemcpyNdOp>
+matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
+  auto loc = op.getLoc();
+  Value src = op.getSource();
+  Value dst = op.getTarget();
+
+  rewriter.setInsertionPoint(op);
+
+  // It must already be a memref
+  auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
+  auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
+  if (!src_type)
+    return failure();
+
+  if ((src_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) &&
+      (dst_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3))
+    return failure();
+
+  if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
+    return failure();
+
+  SmallVector<Value, 4> src_offsets, dst_offsets;
+  SmallVector<Value, 4> src_strides, dst_strides;
+  SmallVector<Value, 4> src_sizes, dst_sizes;
+
+  if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
+    extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
+                               src_strides);
+    src = subview.getSource();
+  } else if (auto reinterpretCast =
+                 src.getDefiningOp<memref::ReinterpretCastOp>()) {
+    extractOperandsFromReinterpretCast(reinterpretCast, rewriter, src_offsets,
+                                       src_sizes, src_strides);
+    src = reinterpretCast.getSource();
+  }
+
+  if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
+    extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
+                               dst_strides);
+    dst = subview.getSource();
+  } else if (auto reinterpretCast =
+                 dst.getDefiningOp<memref::ReinterpretCastOp>()) {
+    extractOperandsFromReinterpretCast(reinterpretCast, rewriter, dst_offsets,
+                                       dst_sizes, dst_strides);
+    dst = reinterpretCast.getSource();
+  }
+
+  SmallVector<Value, 4> deps;
+  SmallVector<Type, 4> tys;
+  auto dma = rewriter.create<air::DmaMemcpyNdOp>(
+      loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
+      src_offsets, src_sizes, src_strides);
+  dma->setAttr(
+      "id", mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
+                                   ++DmaMemcpyOpID));
+
+  rewriter.eraseOp(op);
+  return dma;
 }
 
 static void
@@ -197,53 +236,17 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
   }
 };
 
-class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
+// Pattern to rewrite `linalg.copy` to `memref.copy`.
+class LinalgCopyToMemRefCopy : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(linalg::CopyOp op,
+
+  LogicalResult matchAndRewrite(linalg::CopyOp copyOp,
                                 PatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto src = op.getInputs()[0];
-    auto dst = op.getOutputs()[0];
-
-    // It must already be a memref
-    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
-    if (!src_type)
+    if (copyOp.hasIndexSemantics()) {
       return failure();
-
-    if ((src_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) &&
-        (dst_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3))
-      return failure();
-
-    if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
-      return failure();
-
-    SmallVector<Value, 4> src_offsets, dst_offsets;
-    SmallVector<Value, 4> src_strides, dst_strides;
-    SmallVector<Value, 4> src_sizes, dst_sizes;
-
-    if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
-                                 src_strides);
-      src = subview.getSource();
     }
-
-    if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
-                                 dst_strides);
-      dst = subview.getSource();
-    }
-
-    SmallVector<Value, 4> deps;
-    SmallVector<Type, 4> tys;
-    auto dma = rewriter.create<air::DmaMemcpyNdOp>(
-        loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
-        src_offsets, src_sizes, src_strides);
-    dma->setAttr("id", mlir::IntegerAttr::get(
-                           mlir::IntegerType::get(op->getContext(), 32),
-                           ++DmaMemcpyOpID));
-
-    rewriter.eraseOp(op);
+    rewriter.replaceOpWithNewOp<memref::CopyOp>(
+        copyOp, copyOp.getInputs().front(), copyOp.getDpsInits().front());
     return success();
   }
 };
@@ -905,9 +908,8 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
     (void)applyPatternsGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
-    stage2Patterns
-        .insert<LinalgCopyToAIRDmaConversion, MemrefCopyToAIRDmaConversion>(
-            context);
+    stage2Patterns.insert<LinalgCopyToMemRefCopy, MemrefCopyToAIRDmaConversion>(
+        context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(stage2Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
