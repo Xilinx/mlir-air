@@ -317,11 +317,11 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
   let summary = "dma operator";
   let arguments = (
     ins Variadic<air_AsyncToken>:$async_dependencies,
-        AnyMemRef:$dst,
+        AnyRankedOrUnrankedMemRef:$dst,
         Variadic<Index>:$dst_offsets,
         Variadic<Index>:$dst_sizes,
         Variadic<Index>:$dst_strides,
-        AnyMemRef:$src,
+        AnyRankedOrUnrankedMemRef:$src,
         Variadic<Index>:$src_offsets,
         Variadic<Index>:$src_sizes,
         Variadic<Index>:$src_strides
