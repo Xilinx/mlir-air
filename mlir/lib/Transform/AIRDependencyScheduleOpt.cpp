@@ -2457,11 +2457,13 @@ public:
       int src_memspace = -1;
       int dst_memspace = -1;
       if (dma_op.getSrcMemref())
-        src_memspace = llvm::cast<MemRefType>(dma_op.getSrcMemref().getType())
-                           .getMemorySpaceAsInt();
+        src_memspace =
+            llvm::cast<BaseMemRefType>(dma_op.getSrcMemref().getType())
+                .getMemorySpaceAsInt();
       if (dma_op.getDstMemref())
-        dst_memspace = llvm::cast<MemRefType>(dma_op.getDstMemref().getType())
-                           .getMemorySpaceAsInt();
+        dst_memspace =
+            llvm::cast<BaseMemRefType>(dma_op.getDstMemref().getType())
+                .getMemorySpaceAsInt();
       bool isL1Memcpy = (src_memspace == (int)air::MemorySpace::L1) ||
                         (dst_memspace == (int)air::MemorySpace::L1);
       if (dma_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
