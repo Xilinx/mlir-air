@@ -1527,4 +1527,13 @@ def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
     ```
   }];
 }
+
+def AIRForceL1MemrefInHerdPass : Pass<"air-force-l1-memref-in-herd", "func::FuncOp"> {
+  let summary = "Force all memrefs allocated within air.herd to have memory space L1.";
+  let constructor = "xilinx::air::createAIRForceL1MemrefInHerdPass()";
+  let description = [{
+    Experimental pass. Force all memrefs allocated within air.herd to have memory space L1.
+  }];
+}
+
 #endif // AIR_CONVERSION_PASSES
