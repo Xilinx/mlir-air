@@ -246,6 +246,20 @@ AIR dialect memcpy operations into AIRRt memcpy operations.
     return
   }
 ```
+### `-air-wrap-func-with-parallel`
+
+_Wraps the body of a given func.func operation inside an scf.parallel loop._
+
+Wraps the body of a given func.func operation inside an scf.parallel loop.
+The pass assumes that: 
+(1) The function arguments consist of: M memref arguments, N loop upper bounds, N loop induction variable indices.
+(2) The scf.parallel loop is constructed using the N upper bounds and induction variable indices.
+(3) The scf.parallel loop is inserted at the beginning of the function, wrapping all existing operations.
+
+#### Options
+```
+-loop-bounds : Specify upper bounds for scf.parallel loops
+```
 ### `-airrt-to-llvm`
 
 _Lower AIRRt dialect to LLVM dialect_
