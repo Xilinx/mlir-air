@@ -32,6 +32,10 @@ createParallelToSegmentPass(const ParallelToSegmentOptions &options);
 std::unique_ptr<mlir::Pass> createCopyToDmaPass();
 std::unique_ptr<mlir::Pass> createInsertEmptyLaunchOverHerdPass();
 
+std::unique_ptr<Pass> createAIRWrapFuncWithParallelPass();
+std::unique_ptr<mlir::Pass>
+createAIRWrapFuncWithParallelPass(AIRWrapFuncWithParallelPassOptions options);
+
 } // namespace air
 } // namespace xilinx
 

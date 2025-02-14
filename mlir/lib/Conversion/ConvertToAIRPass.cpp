@@ -1465,6 +1465,215 @@ struct InsertEmptyLaunchOverHerdPass
   }
 };
 
+
+
+// Identifies arith operations where all operands are either constants, or
+// produced by IndexCastOp casting from IndexType. If detected, canonicalize
+// IndexCast ops by changing the arith op's input/output types to IndexType.
+template <typename T>
+LogicalResult canonicalizeArithBinaryOpToIndexType(T arithOp,
+                                                   RewriterBase &rewriter) {
+  Value lhs = arithOp.getLhs();
+  Value rhs = arithOp.getRhs();
+
+  SmallVector<Value> inVals = {lhs, rhs};
+  if (llvm::all_of(inVals, [](Value v) { return isa<IndexType>(v.getType()); }))
+    return failure();
+  if (llvm::any_of(inVals, [](Value v) {
+        if (!v.getDefiningOp())
+          return true;
+        if (getConstantIntValue(v))
+          return false;
+        else if (auto castOp = dyn_cast_if_present<arith::IndexCastOp>(
+                     v.getDefiningOp())) {
+          if (llvm::all_of(castOp->getOperands(), [](Value oper) {
+                return isa<IndexType>(oper.getType());
+              }))
+            return false;
+          else
+            return true;
+        }
+        return true;
+      }))
+    return failure();
+
+  auto loc = arithOp.getLoc();
+  if (!isa<IndexType>(lhs.getType())) {
+    lhs =
+        rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), lhs);
+  }
+  if (!isa<IndexType>(rhs.getType())) {
+    rhs =
+        rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), rhs);
+  }
+  auto newArithOp = rewriter.create<T>(loc, rewriter.getIndexType(), lhs, rhs);
+  rewriter.replaceOpWithNewOp<arith::IndexCastOp>(
+      arithOp, arithOp.getResult().getType(), newArithOp);
+
+  return success();
+}
+
+struct CanonicalizeArithAddIOpToIndexTypePattern
+    : public OpRewritePattern<arith::AddIOp> {
+  using OpRewritePattern<arith::AddIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AddIOp arithOp,
+                                PatternRewriter &rewriter) const override {
+    return canonicalizeArithBinaryOpToIndexType<arith::AddIOp>(arithOp,
+                                                               rewriter);
+  }
+};
+struct CanonicalizeArithMulIOpToIndexTypePattern
+    : public OpRewritePattern<arith::MulIOp> {
+  using OpRewritePattern<arith::MulIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::MulIOp arithOp,
+                                PatternRewriter &rewriter) const override {
+    return canonicalizeArithBinaryOpToIndexType<arith::MulIOp>(arithOp,
+                                                               rewriter);
+  }
+};
+
+// Wraps the body of a given func.func operation inside an scf.parallel loop.
+// The pass assumes that:
+// (1) The function arguments consist of: M memref arguments, N loop upper
+// bounds, N loop induction variable indices. (2) The scf.parallel loop is
+// constructed using the N upper bounds and induction variable indices. (3) The
+// scf.parallel loop is inserted at the beginning of the function, wrapping all
+// existing operations.
+
+struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
+  using OpRewritePattern<func::FuncOp>::OpRewritePattern;
+
+  WrapFuncWithParallelPattern(MLIRContext *context,
+                              SmallVector<int64_t> &bounds)
+      : OpRewritePattern(context), loopBounds(bounds) {}
+
+  LogicalResult matchAndRewrite(func::FuncOp funcOp,
+                                PatternRewriter &rewriter) const override {
+    if (funcOp.isExternal())
+      return failure(); // Ignore external functions
+
+    if (loopBounds.empty()) {
+      funcOp.emitError("Pass option 'loop-bounds' must be specified.");
+      return failure();
+    }
+
+    unsigned N = loopBounds.size(); // Number of loop dimensions
+
+    // Get function arguments
+    auto args = funcOp.getArguments();
+    unsigned numArgs = args.size();
+
+    if (numArgs < 2) {
+      funcOp.emitError(
+          "Expected at least 2 arguments: memrefs and loop bounds.");
+      return failure();
+    }
+
+    // Determine M (memrefs count)
+    unsigned M = 0;
+    for (Type argType : funcOp.getFunctionType().getInputs()) {
+      if (isa<UnrankedMemRefType, MemRefType>(argType))
+        M++;
+      else
+        break;
+    }
+    if (M + N * 2 > numArgs) {
+      funcOp.emitError("Expected func op arguments contain at least M memrefs "
+                       "and N x 2 loop bounds.");
+      return failure();
+    }
+
+    // Extract indices
+    ValueRange inductionVars = args.slice(M + N, N);
+
+    if (llvm::all_of(inductionVars, [](Value iv) { return iv.use_empty(); }))
+      return failure();
+
+    // Store original function body operations
+    SmallVector<Operation *> originalFuncBodyOps;
+    for (auto &op : funcOp.getBody().front().without_terminator())
+      originalFuncBodyOps.push_back(&op);
+
+    // Create scf.parallel loop
+    Location loc = funcOp.getLoc();
+    rewriter.setInsertionPointToStart(&funcOp.getBody().front());
+    SmallVector<Value, 4> lowerBounds(
+        N, rewriter.create<arith::ConstantIndexOp>(loc, 0));
+    SmallVector<Value, 4> steps(
+        N, rewriter.create<arith::ConstantIndexOp>(loc, 1));
+    SmallVector<Value, 4> upperBoundsVals;
+    for (int64_t bound : loopBounds) {
+      upperBoundsVals.push_back(
+          rewriter.create<arith::ConstantIndexOp>(loc, bound));
+    }
+
+    auto parallelOp = rewriter.create<scf::ParallelOp>(loc, lowerBounds,
+                                                       upperBoundsVals, steps);
+
+    // Redirect arguments properly inside the loop
+    Block &loopBlock = parallelOp.getRegion().front();
+    rewriter.setInsertionPointToStart(&loopBlock);
+    IRMapping remap;
+    for (unsigned i = 0; i < N; i++) {
+      Value loopBlockArg = loopBlock.getArgument(i);
+      if (inductionVars[i].getType() != loopBlockArg.getType())
+        loopBlockArg = rewriter.create<arith::IndexCastOp>(
+            loc, inductionVars[i].getType(), loopBlockArg);
+      remap.map(inductionVars[i], loopBlockArg);
+    }
+
+    // Move function body into the loop
+    for (auto op : originalFuncBodyOps) {
+      rewriter.clone(*op, remap);
+    }
+
+    // Erase original function body ops
+    for (auto o : llvm::reverse(originalFuncBodyOps))
+      rewriter.eraseOp(o);
+
+    return success();
+  }
+
+private:
+  SmallVector<int64_t> &loopBounds; // External loop bounds
+};
+
+class AIRWrapFuncWithParallelPass
+    : public air::impl::AIRWrapFuncWithParallelPassBase<
+          AIRWrapFuncWithParallelPass> {
+
+public:
+  AIRWrapFuncWithParallelPass() = default;
+  AIRWrapFuncWithParallelPass(const AIRWrapFuncWithParallelPass &pass){};
+  AIRWrapFuncWithParallelPass(
+      const ::xilinx::air::AIRWrapFuncWithParallelPassOptions &options)
+      : AIRWrapFuncWithParallelPassBase(options) {}
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRWrapFuncWithParallelPass::runOnOperation() {
+  func::FuncOp funcOp = getOperation();
+  MLIRContext *context = &getContext();
+
+  RewritePatternSet wrapParPatterns(context);
+  SmallVector<int64_t> loopBoundsVec;
+  for (auto i : clLoopBounds)
+    loopBoundsVec.push_back(i);
+  wrapParPatterns.add<WrapFuncWithParallelPattern>(context, loopBoundsVec);
+  (void)applyOpPatternsGreedily(SmallVector<Operation *>{funcOp.getOperation()},
+                                std::move(wrapParPatterns));
+
+  RewritePatternSet patterns(context);
+  patterns.add<CanonicalizeArithAddIOpToIndexTypePattern,
+               CanonicalizeArithMulIOpToIndexTypePattern>(context);
+  (void)applyPatternsGreedily(funcOp, std::move(patterns));
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1589,6 +1798,14 @@ std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
 
 std::unique_ptr<mlir::Pass> createInsertEmptyLaunchOverHerdPass() {
   return std::make_unique<InsertEmptyLaunchOverHerdPass>();
+}
+
+std::unique_ptr<Pass> createAIRWrapFuncWithParallelPass() {
+  return std::make_unique<AIRWrapFuncWithParallelPass>();
+}
+std::unique_ptr<Pass>
+createAIRWrapFuncWithParallelPass(AIRWrapFuncWithParallelPassOptions options) {
+  return std::make_unique<AIRWrapFuncWithParallelPass>(options);
 }
 
 } // namespace air
