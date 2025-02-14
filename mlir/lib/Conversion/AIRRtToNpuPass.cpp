@@ -122,7 +122,7 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
       return failure();
 
     Value memref = adaptor.getMemref();
-    MemRefType memrefTy = cast<MemRefType>(memref.getType());
+    BaseMemRefType memrefTy = cast<BaseMemRefType>(memref.getType());
     unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
     if (bitwidth != 32 && bitwidth != 16 && bitwidth != 8)
       return failure();
@@ -251,7 +251,7 @@ public:
   matchAndRewrite(affine::AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
+    auto memrefTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -268,7 +268,7 @@ public:
   matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
+    auto memrefTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -549,9 +549,12 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       // values, as long as stride fits)
       int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
-      int new_a_stride =
-          (const_stride * a_wrap) % air::getTensorVolume(llvm::cast<MemRefType>(
-                                        memcpy_op.getMemref().getType()));
+      int new_a_stride = const_stride * a_wrap;
+      auto volume = air::getTensorVolume(
+          llvm::cast<BaseMemRefType>(memcpy_op.getMemref().getType()));
+      if (volume != 1)
+        new_a_stride %=
+            volume; // Avoids striding out of memory size, if memref is ranked
       int inner_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
                            ? (b_wrap)
                            : (a_wrap);
@@ -565,9 +568,10 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
                    builder.create<arith::ConstantOp>(
                        loc, builder.getI64Type(),
                        IntegerAttr::get(builder.getI64Type(), outer_wrap)));
-      auto new_const_stride = (const_stride * inner_wrap) %
-                              air::getTensorVolume(llvm::cast<MemRefType>(
-                                  memcpy_op.getMemref().getType()));
+      auto new_const_stride = const_stride * inner_wrap;
+      if (volume != 1)
+        new_const_stride %=
+            volume; // Avoids striding out of memory size, if memref is ranked
       strides.insert(
           strides.begin() + i,
           builder.create<arith::ConstantOp>(
@@ -918,14 +922,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         [&](affine::AffineStoreOp op) {
           if (op->getParentOfType<AIE::CoreOp>())
             return true;
-          return (llvm::cast<MemRefType>(op.getMemref().getType())
+          return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
                       .getMemorySpaceAsInt() !=
                   (int)xilinx::air::MemorySpace::L1);
         });
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
       if (op->getParentOfType<AIE::CoreOp>())
         return true;
-      return (llvm::cast<MemRefType>(op.getMemref().getType())
+      return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
                   .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
