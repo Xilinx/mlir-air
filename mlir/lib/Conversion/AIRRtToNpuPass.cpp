@@ -554,7 +554,7 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
           llvm::cast<BaseMemRefType>(memcpy_op.getMemref().getType()));
       if (volume != 1)
         new_a_stride %=
-            volume; // Avoids striding out of memory size, if memre is ranked
+            volume; // Avoids striding out of memory size, if memref is ranked
       int inner_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
                            ? (b_wrap)
                            : (a_wrap);
@@ -571,7 +571,7 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       auto new_const_stride = const_stride * inner_wrap;
       if (volume != 1)
         new_const_stride %=
-            volume; // Avoids striding out of memory size, if memre is ranked
+            volume; // Avoids striding out of memory size, if memref is ranked
       strides.insert(
           strides.begin() + i,
           builder.create<arith::ConstantOp>(
