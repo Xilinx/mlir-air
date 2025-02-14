@@ -1938,6 +1938,82 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   air::renumberChannelOps(&func.getBody().front());
 }
 
+// Experimental: This pattern forces all memrefs allocated within the air.herd
+// to be L1.
+struct ForceL1MemrefInHerdPattern : public OpRewritePattern<memref::AllocOp> {
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocOp alloc,
+                                PatternRewriter &rewriter) const override {
+    auto parentHerdOp = alloc->getParentOfType<air::HerdOp>();
+    if (!parentHerdOp)
+      return failure();
+
+    auto memref = dyn_cast<MemRefType>(alloc.getMemref().getType());
+    if (!memref)
+      return failure();
+    if (memref.getMemorySpaceAsInt() == (int)air::MemorySpace::L1)
+      return failure();
+
+    auto newMemrefType = MemRefType::get(
+        memref.getShape(), memref.getElementType(),
+        memref.getLayout().getAffineMap(), (int)air::MemorySpace::L1);
+
+    rewriter.replaceOpWithNewOp<memref::AllocOp>(alloc, newMemrefType);
+
+    return success();
+  }
+};
+struct correctMemrefSubviewIOMemorySpaces
+    : public OpRewritePattern<memref::SubViewOp> {
+  using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::SubViewOp subview,
+                                PatternRewriter &rewriter) const override {
+    auto srcTy = dyn_cast<MemRefType>(subview.getViewSource().getType());
+    auto destTy = dyn_cast<MemRefType>(subview.getResult().getType());
+
+    auto subviewOutputType =
+        llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
+            srcTy, subview.getMixedOffsets(), subview.getMixedSizes(),
+            subview.getMixedStrides()));
+    if (destTy == subviewOutputType)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<memref::SubViewOp>(
+        subview, subviewOutputType, subview.getViewSource(),
+        subview.getMixedOffsets(), subview.getMixedSizes(),
+        subview.getMixedStrides());
+
+    return success();
+  }
+};
+
+// An experimental pass forcing all memrefs allocated within an air.herd to have
+// memory space L1.
+class AIRForceL1MemrefInHerdPass
+    : public air::impl::AIRForceL1MemrefInHerdPassBase<
+          AIRForceL1MemrefInHerdPass> {
+
+public:
+  AIRForceL1MemrefInHerdPass() = default;
+  AIRForceL1MemrefInHerdPass(const AIRForceL1MemrefInHerdPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRForceL1MemrefInHerdPass::runOnOperation() {
+  func::FuncOp funcOp = getOperation();
+  MLIRContext *context = &getContext();
+
+  RewritePatternSet patterns(context);
+  patterns.add<ForceL1MemrefInHerdPattern, correctMemrefSubviewIOMemorySpaces>(
+      context);
+  (void)applyPatternsGreedily(funcOp, std::move(patterns));
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -1995,6 +2071,10 @@ std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass(
 
 std::unique_ptr<Pass> createAIRSplitL2MemrefForBufferConstraintPass() {
   return std::make_unique<AIRSplitL2MemrefForBufferConstraintPass>();
+}
+
+std::unique_ptr<Pass> createAIRForceL1MemrefInHerdPass() {
+  return std::make_unique<AIRForceL1MemrefInHerdPass>();
 }
 
 } // namespace air
