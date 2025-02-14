@@ -32,6 +32,7 @@ using namespace mlir;
 #define GEN_PASS_DEF_PARALLELTOHERD
 #define GEN_PASS_DEF_PARALLELTOLAUNCH
 #define GEN_PASS_DEF_PARALLELTOSEGMENT
+#define GEN_PASS_DEF_AIRWRAPFUNCWITHPARALLELPASS
 #include "air/Conversion/Passes.h.inc"
 
 } // namespace air

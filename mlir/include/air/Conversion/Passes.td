@@ -430,4 +430,21 @@ def InsertEmptyLaunchOverHerd : Pass<"air-insert-launch-and-segment-around-herd"
   }];
 }
 
+def AIRWrapFuncWithParallelPass : Pass<"air-wrap-func-with-parallel", "func::FuncOp"> {
+  let summary = "Wraps the body of a given func.func operation inside an scf.parallel loop.";
+  let constructor = "xilinx::air::createAIRWrapFuncWithParallelPass()";
+  let description = [{
+    Wraps the body of a given func.func operation inside an scf.parallel loop.
+    The pass assumes that: 
+    (1) The function arguments consist of: M memref arguments, N loop upper bounds, N loop induction variable indices.
+    (2) The scf.parallel loop is constructed using the N upper bounds and induction variable indices.
+    (3) The scf.parallel loop is inserted at the beginning of the function, wrapping all existing operations.
+  }];
+  let options = [
+    ListOption<"clLoopBounds", "loop-bounds", "unsigned",
+               "Specify upper bounds for scf.parallel loops",
+               "llvm::cl::ZeroOrMore">,
+  ];
+}
+
 #endif
