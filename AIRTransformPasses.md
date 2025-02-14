@@ -539,6 +539,11 @@ iteration, by connecting them in the loop-carried dependency path.
 _Skeleton module op pass_
 
 
+### `-air-force-l1-memref-in-herd`
+
+_Force all memrefs allocated within air.herd to have memory space L1._
+
+Experimental pass. Force all memrefs allocated within air.herd to have memory space L1.
 ### `-air-fuse-alloc-dealloc`
 
 _Fuse pairs of memref.alloc/dealloc ops into the inner-most region containing all uses of the memref._
