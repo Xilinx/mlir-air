@@ -34,7 +34,7 @@
 // CHECK: scf.reduce
 // CHECK: scf.yield
 
-// CHECK: %[[EVENT0:.*]]:4 = scf.for
+// CHECK: %[[EVENT0:.*]]:2 = scf.for
 // CHECK: air.channel.get{{.*}}@channel_1
 // CHECK: air.channel.get{{.*}}@channel_1
 // CHECK: air.channel.put{{.*}}@channel_0
@@ -258,8 +258,8 @@ module {
 // CHECK: air.herd @herd_0
 
 // CHECK: scf.for %{{.*}} = %c0 to %c2048 step %c256 iter_args(%{{.*}} = %{{.*}}) -> (!air.async.token) {
-// CHECK: scf.for %{{.*}} = %c0 to %c256 step %c64 iter_args(%{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (!air.async.token, !air.async.token, !air.async.token, !air.async.token) {
-// CHECK: scf.yield %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : !air.async.token, !air.async.token, !air.async.token, !air.async.token
+// CHECK: scf.for %{{.*}} = %c0 to %c256 step %c64 iter_args(%{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (!air.async.token, !air.async.token, !air.async.token) {
+// CHECK: scf.yield %{{.*}}, %{{.*}}, %{{.*}} : !air.async.token, !air.async.token, !air.async.token
 // CHECK: scf.yield %{{.*}} : !air.async.token
 
 module {
