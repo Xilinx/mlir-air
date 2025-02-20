@@ -104,7 +104,7 @@ pipeline = (
         [
             "air-copy-to-dma",
             "air-linalg-to-func{link-with=kernel.o}",
-            "air-par-to-herd{depth=1}",
+            "air-par-to-herd{depth=-1}",
             "air-par-to-launch{has-air-segment=1}",
             "canonicalize",
             "cse",

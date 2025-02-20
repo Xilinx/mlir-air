@@ -110,7 +110,7 @@ with air.ir.Context() as ctx, Location.unknown():
             [
                 "buffer-results-to-out-params",
                 "air-linalg-to-func{link-with=vm.o}",
-                "air-par-to-herd{depth=1}",
+                "air-par-to-herd{depth=-1}",
                 "air-par-to-launch{has-air-segment=true}",
                 "air-copy-to-dma",
                 "canonicalize",
