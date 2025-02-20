@@ -130,6 +130,7 @@ pipeline = (
             "air-linalg-to-func{link-with=mm.o}",
             "air-par-to-herd{depth=-1}",
             "air-par-to-launch{has-air-segment=true}",
+            "scf-forall-to-for",
             "canonicalize",
             "cse",
         ]
