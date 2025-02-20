@@ -174,7 +174,7 @@ with air.ir.Context() as ctx, Location.unknown():
         + ",".join(
             [
                 "buffer-results-to-out-params",
-                "air-par-to-herd{depth=1}",
+                "air-par-to-herd{depth=-1}",
                 "air-par-to-launch{has-air-segment=true}",
                 "scf-forall-to-for",
                 "air-copy-to-dma",
