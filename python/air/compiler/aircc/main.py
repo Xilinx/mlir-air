@@ -411,6 +411,9 @@ def run(mlir_module, args=None):
 
     with mlir_module.context as ctx:
         _, air_mlir_filename = os.path.split(opts.air_mlir_file)
+        air_collapse_herd_to_cols_pass = (
+            "func.func(air-collapse-herd{" + f"max-col-size={opts.num_cols} " + "})"
+        )
         air_place_pass = (
             "air-place-herds{"
             + f"num-rows={opts.num_rows} "
@@ -436,13 +439,14 @@ def run(mlir_module, args=None):
                 if "npu" in opts.device
                 else []
             )
-            + (["air-dma-to-channel"] if "npu" in opts.device else [])
             + [
+                air_collapse_herd_to_cols_pass,
                 "canonicalize",
                 "cse",
-                "air-specialize-channel-wrap-and-stride",
-                "func.func(air-renumber-dma)",
                 air_place_pass,
+                "canonicalize",
+                "cse",
+                "func.func(air-renumber-dma)",
             ]
         )
         air_placed_module = Module.parse(str(mlir_module))
