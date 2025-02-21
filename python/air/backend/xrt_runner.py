@@ -57,14 +57,16 @@ class XRTRunner:
     def __init__(
         self,
         verbose: bool = False,
-        experimental_passes: bool = True,
         omit_while_true_loop: bool = True,
         omit_pingpong: bool = False,
+        lower_linalg_to_func: bool = False,
+        air_loop_fusion: bool = False,
     ):
         self.verbose = verbose
-        self.experimental_passes = experimental_passes
         self.omit_while_true_loop = omit_while_true_loop
         self.omit_pingpong = omit_pingpong
+        self.lower_linalg_to_func = lower_linalg_to_func
+        self.air_loop_fusion = air_loop_fusion
 
     def run_test(
         self,
@@ -79,9 +81,10 @@ class XRTRunner:
 
         backend = XRTBackend(
             verbose=self.verbose,
-            experimental_passes=self.experimental_passes,
             omit_while_true_loop=self.omit_while_true_loop,
             omit_pingpong=self.omit_pingpong,
+            lower_linalg_to_func=self.lower_linalg_to_func,
+            air_loop_fusion=self.air_loop_fusion,
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs

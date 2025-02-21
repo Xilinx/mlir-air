@@ -25,8 +25,22 @@ from air.compiler.aircc.configure import *
 import aie.compiler.aiecc.main as aiecc
 
 
-def get_experimental_passes(omit_pingpong=True):
-    EXPERIMENTAL_PASSES = [
+def get_L2_splitting_analysis_pass():
+    L2_SPLITTING_PASSES = [
+        "func.func(air-split-l2-memref)",
+        "canonicalize",
+        "cse",
+        "air-isolate-async-dma-loop-nests",
+        "canonicalize",
+        "cse",
+    ]
+    return L2_SPLITTING_PASSES
+
+
+def get_air_optimization_pass(
+    device, omit_pingpong=True, lower_linalg_to_func=False, air_loop_fusion=False
+):
+    OPTIMIZATION_PASSES = [
         "air-dependency",
         "air-dependency-schedule-opt",
         "air-specialize-dma-broadcast",
@@ -36,20 +50,46 @@ def get_experimental_passes(omit_pingpong=True):
         "air-dependency-canonicalize",
         "canonicalize",
         "cse",
-    ]
-    if not omit_pingpong:
-        EXPERIMENTAL_PASSES += [
-            "func.func(air-loop-fusion)",
-            "air-label-scf-for-to-ping-pong",
-            "air-ping-pong-transform",
-        ]
-    EXPERIMENTAL_PASSES += [
         "air-isolate-async-dma-loop-nests",
-        "air-linalg-to-func",
+        "canonicalize",
+        "cse",
+        "air-fuse-channels",
         "canonicalize",
         "cse",
     ]
-    return EXPERIMENTAL_PASSES
+    if "npu_1col" not in device:
+        OPTIMIZATION_PASSES += get_L2_splitting_analysis_pass()
+    if air_loop_fusion:
+        OPTIMIZATION_PASSES += [
+            "func.func(air-loop-fusion)",
+        ]
+    else:
+        OPTIMIZATION_PASSES += [
+            "func.func(air-fuse-alloc-dealloc)",
+            "func.func(air-shrink-memref-sizes-by-access)",
+        ]
+    if not omit_pingpong:
+        OPTIMIZATION_PASSES += [
+            "air-label-scf-for-to-ping-pong",
+            "air-ping-pong-transform",
+            "canonicalize",
+            "cse",
+        ]
+    if lower_linalg_to_func:
+        OPTIMIZATION_PASSES += [
+            "air-linalg-to-func",
+        ]
+    else:
+        OPTIMIZATION_PASSES += [
+            "func.func(convert-linalg-to-loops)",
+        ]
+
+    OPTIMIZATION_PASSES += [
+        "func.func(air-opt-memtile-dma-bds{" + f"device={device}" + "})",
+        "canonicalize",
+        "cse",
+    ]
+    return OPTIMIZATION_PASSES
 
 
 def emit_wrapper(herd_name="segment", include_name="aie.inc"):
@@ -387,8 +427,13 @@ def run(mlir_module, args=None):
                 "func.func(air-lower-herd-parallel)",
             ]
             + (
-                get_experimental_passes(opts.omit_pingpong)
-                if "npu" in opts.device and opts.experimental_passes
+                get_air_optimization_pass(
+                    opts.device,
+                    opts.omit_pingpong,
+                    opts.lower_linalg_to_func,
+                    opts.air_loop_fusion,
+                )
+                if "npu" in opts.device
                 else []
             )
             + (["air-dma-to-channel"] if "npu" in opts.device else [])
@@ -397,7 +442,6 @@ def run(mlir_module, args=None):
                 "cse",
                 "air-specialize-channel-wrap-and-stride",
                 "func.func(air-renumber-dma)",
-                "func.func(convert-linalg-to-loops)",
                 air_place_pass,
             ]
         )

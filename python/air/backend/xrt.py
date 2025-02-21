@@ -46,23 +46,26 @@ class XRTBackend(AirBackend):
     def __init__(
         self,
         verbose=False,
-        experimental_passes=False,
         omit_while_true_loop=False,
         omit_pingpong=False,
+        lower_linalg_to_func=False,
+        air_loop_fusion=False,
     ):
         """Constructor for XRTBackend
 
         Args:
             verbose: verbose output
-            experimental_passes: configure aircc to run additional experimental passes
             omit_while_true_loop: configure aircc to omit the while true loop it traditionally emits.
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering.
+            lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
+            air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
         """
         super().__init__()
         self.verbose = verbose
-        self.experimental_passes = experimental_passes
         self.omit_while_true_loop = omit_while_true_loop
         self.omit_pingpong = omit_pingpong
+        self.lower_linalg_to_func = lower_linalg_to_func
+        self.air_loop_fusion = air_loop_fusion
         self.currently_loaded = False
 
     def __del__(self):
@@ -113,14 +116,17 @@ class XRTBackend(AirBackend):
             if self.verbose:
                 aircc_options = aircc_options + ["-v"]
 
-            if self.experimental_passes:
-                aircc_options += ["--experimental-passes"]
-
             if self.omit_while_true_loop:
                 aircc_options += ["--omit-while-true-loop"]
 
             if self.omit_pingpong:
                 aircc_options += ["--omit-ping-pong-transform"]
+
+            if self.lower_linalg_to_func:
+                aircc_options += ["--lower-linalg-to-func"]
+
+            if self.air_loop_fusion:
+                aircc_options += ["--air-loop-fusion"]
 
             aircc.run(air_module, aircc_options)
 
