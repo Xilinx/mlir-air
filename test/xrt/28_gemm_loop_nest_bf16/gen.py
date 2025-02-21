@@ -1,4 +1,4 @@
-# aie.py -*- Python -*-
+# gen.py -*- Python -*-
 #
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
