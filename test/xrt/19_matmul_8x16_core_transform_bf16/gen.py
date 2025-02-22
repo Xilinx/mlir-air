@@ -7,7 +7,7 @@ import air.passmanager
 
 
 ################################################
-## Tiling
+## Input SCF and Linalg IR
 ################################################
 
 air_tiled_ir_string = """
@@ -82,9 +82,6 @@ module {
 
 context = Context()
 air_module = Module.parse(air_tiled_ir_string, context)
-
-with open("air_tiled.mlir", "w") as f:
-    f.write(str(air_module))
 
 ################################################
 ## Binding parallel loops to air hierarchies
