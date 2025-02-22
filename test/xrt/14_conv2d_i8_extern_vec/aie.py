@@ -3,15 +3,9 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-import air
-import air.compiler.util
-from air.dialects import linalg, tensor, arith, func, memref
 from air.ir import *
 import air.passmanager
-from air.dialects import air as airdialect
 from air.dialects.air import module_builder
-from air.compiler.util import run_transform
-import sys
 
 with air.ir.Context() as ctx, Location.unknown():
 
@@ -117,8 +111,22 @@ with air.ir.Context() as ctx, Location.unknown():
                 "air-dependency-canonicalize",
                 "canonicalize",
                 "cse",
-                "func.func(air-split-l2-memref)",
                 "air-isolate-async-dma-loop-nests",
+                "canonicalize",
+                "cse",
+                "air-fuse-channels",
+                "canonicalize",
+                "cse",
+                ### Scaling to 4 AIE columns
+                "func.func(air-split-l2-memref)",
+                "canonicalize",
+                "cse",
+                "air-isolate-async-dma-loop-nests",
+                ###
+                "canonicalize",
+                "cse",
+                "func.func(air-fuse-alloc-dealloc)",
+                "func.func(air-shrink-memref-sizes-by-access)",
                 "func.func(air-loop-fusion)",
                 "air-label-scf-for-to-ping-pong",
                 "air-ping-pong-transform",
