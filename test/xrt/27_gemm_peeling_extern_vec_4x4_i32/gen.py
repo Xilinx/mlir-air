@@ -160,7 +160,6 @@ with air.ir.Context() as ctx, Location.unknown():
     ###############################################
 
     backend = XRTBackend(
-        lower_linalg_to_func=True,
         air_loop_fusion=True,
         runtime_loop_tiling_sizes=[2, 2],
     )
