@@ -50,6 +50,7 @@ class XRTBackend(AirBackend):
         omit_pingpong=False,
         lower_linalg_to_func=False,
         air_loop_fusion=False,
+        runtime_loop_tiling_sizes: list[int] = [4, 4],
     ):
         """Constructor for XRTBackend
 
@@ -66,6 +67,7 @@ class XRTBackend(AirBackend):
         self.omit_pingpong = omit_pingpong
         self.lower_linalg_to_func = lower_linalg_to_func
         self.air_loop_fusion = air_loop_fusion
+        self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.currently_loaded = False
 
     def __del__(self):
@@ -112,6 +114,10 @@ class XRTBackend(AirBackend):
                 "-i",
                 insts,
             ]
+
+            aircc_options += ["--air-runtime-loop-tiling-sizes"]
+            for s in self.runtime_loop_tiling_sizes:
+                aircc_options += [str(s)]
 
             if self.verbose:
                 aircc_options = aircc_options + ["-v"]

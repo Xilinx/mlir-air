@@ -492,7 +492,9 @@ def run(mlir_module, args=None):
                         "func.func(air-opt-shim-dma-bds{device=" + opts.device + "})",
                         "air-to-std",
                         "symbol-dce",
-                        "func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})",
+                        "func.func(affine-loop-opt{affine-opt-tile-sizes="
+                        + ",".join(str(s) for s in opts.runtime_loop_tiling_sizes)
+                        + "})",
                         "func.func(air-unroll-outer-affine-loops{depth=2})",
                         "affine-expand-index-ops",
                         "canonicalize",

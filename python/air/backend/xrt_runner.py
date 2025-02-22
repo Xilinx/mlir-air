@@ -61,12 +61,14 @@ class XRTRunner:
         omit_pingpong: bool = False,
         lower_linalg_to_func: bool = False,
         air_loop_fusion: bool = False,
+        runtime_loop_tiling_sizes: list[int] = [4, 4],
     ):
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
         self.omit_pingpong = omit_pingpong
         self.lower_linalg_to_func = lower_linalg_to_func
         self.air_loop_fusion = air_loop_fusion
+        self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
 
     def run_test(
         self,
@@ -85,6 +87,7 @@ class XRTRunner:
             omit_pingpong=self.omit_pingpong,
             lower_linalg_to_func=self.lower_linalg_to_func,
             air_loop_fusion=self.air_loop_fusion,
+            runtime_loop_tiling_sizes=self.runtime_loop_tiling_sizes,
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs
