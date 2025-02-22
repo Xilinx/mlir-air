@@ -60,6 +60,7 @@ class XRTBackend(AirBackend):
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering.
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
+            runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
         """
         super().__init__()
         self.verbose = verbose
