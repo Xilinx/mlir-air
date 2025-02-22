@@ -411,8 +411,9 @@ def run(mlir_module, args=None):
 
     with mlir_module.context as ctx:
         _, air_mlir_filename = os.path.split(opts.air_mlir_file)
+        # num_tile_rows = 4
         air_collapse_herd_to_cols_pass = (
-            "func.func(air-collapse-herd{" + f"max-col-size={opts.num_cols} " + "})"
+            "func.func(air-collapse-herd{" + f"max-col-size={4} " + "})"
         )
         air_place_pass = (
             "air-place-herds{"
@@ -462,7 +463,7 @@ def run(mlir_module, args=None):
         air_to_aie_pass = air_to_aie_pass + f" row-offset={opts.row_offset}"
         air_to_aie_pass = air_to_aie_pass + f" col-offset={opts.col_offset}"
         air_to_aie_pass = air_to_aie_pass + f" device={opts.device}"
-        if opts.trace_size > 0:
+        if int(opts.trace_size) > 0:
             air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
         air_to_aie_pass = air_to_aie_pass + "}"
         pass_pipeline = ",".join([air_to_aie_pass])
