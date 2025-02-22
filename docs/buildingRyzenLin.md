@@ -20,7 +20,7 @@ git clone https://github.com/Xilinx/mlir-air.git
 cd mlir-air
 ```
 
-Next, run ```utils/setup_python_packages.sh``` to setup the prerequisite python packages. This script creates and installs the python packages listed in [utils/requirements.txt]([utils/requirements.txt](utils/requirements.txt)) in a virtual python environment called ```sandbox```.
+Next, run ```utils/setup_python_packages.sh``` to setup the prerequisite python packages. This script creates and installs the python packages listed in [utils/requirements.txt](https://github.com/Xilinx/mlir-air/blob/main/utils/requirements.txt) in a virtual python environment called ```sandbox```.
 
 ```bash
 source utils/setup_python_packages.sh
