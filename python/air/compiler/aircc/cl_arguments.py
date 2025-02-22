@@ -110,13 +110,6 @@ def parse_args(args=None):
         help="Target AIE device",
     )
     parser.add_argument(
-        "--experimental-passes",
-        dest="experimental_passes",
-        default=False,
-        action="store_true",
-        help="Whether to run experimental passes or not. This will only change the behavior for this program for npu devices",
-    )
-    parser.add_argument(
         "--omit-while-true-loop",
         dest="omit_while_true_loop",
         default=False,
@@ -129,6 +122,28 @@ def parse_args(args=None):
         default=False,
         action="store_true",
         help="Whether to run passes which generate ping-pong buffering patterns or not. This will only change the behavior for this program for npu devices",
+    )
+    parser.add_argument(
+        "--lower-linalg-to-func",
+        dest="lower_linalg_to_func",
+        default=False,
+        action="store_true",
+        help="Whether to run pass which lowers linalg.generic ops to function calls. If False, then they lower to loops.",
+    )
+    parser.add_argument(
+        "--air-loop-fusion",
+        dest="air_loop_fusion",
+        default=False,
+        action="store_true",
+        help="Adds air-loop-fusion pass to the compiler pipeline. It is an experimental pass which tries to enforce loop fusion for lowring to efficient DMA BDs",
+    )
+    parser.add_argument(
+        "--air-runtime-loop-tiling-sizes",
+        type=int,
+        nargs="+",  # Accept one or more integers
+        dest="runtime_loop_tiling_sizes",
+        default=[4, 4],
+        help="Adds tiling factors to be applied to the runtime host affine loop nest. It is an experimental pass which enforces extra innermost tilings at runtime, to comply with constraints of certain hardware",
     )
 
     opts = parser.parse_args(args)
