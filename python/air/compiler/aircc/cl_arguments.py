@@ -155,7 +155,7 @@ def parse_args(args=None):
     parser.add_argument(
         "--air-channel-multiplexing",
         type=str,
-        nargs="+",  # Accept one or more strings
+        nargs="*",  # Accept zero or more strings
         dest="channel_multiplexing",
         default=[],
         help="Adds memory spaces to which air channels shall get time-multiplexed, if operating on them",

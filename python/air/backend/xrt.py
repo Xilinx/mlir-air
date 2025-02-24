@@ -52,7 +52,7 @@ class XRTBackend(AirBackend):
         air_loop_fusion: bool = False,
         runtime_loop_tiling_sizes: list[int] = [4, 4],
         omit_auto_broadcast: bool = False,
-        channel_multiplexing: list[str] = [],
+        channel_multiplexing: list[str] = None,
     ):
         """Constructor for XRTBackend
 
@@ -73,8 +73,8 @@ class XRTBackend(AirBackend):
         self.lower_linalg_to_func = lower_linalg_to_func
         self.air_loop_fusion = air_loop_fusion
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
-        self.omit_auto_broadcast = (omit_auto_broadcast,)
-        self.channel_multiplexing = (channel_multiplexing,)
+        self.omit_auto_broadcast = omit_auto_broadcast
+        self.channel_multiplexing = channel_multiplexing
         self.currently_loaded = False
 
     def __del__(self):
@@ -146,8 +146,7 @@ class XRTBackend(AirBackend):
 
             if len(self.channel_multiplexing) != 0:
                 aircc_options += ["--air-channel-multiplexing"]
-                for s in self.channel_multiplexing:
-                    aircc_options += s
+                aircc_options += self.channel_multiplexing
 
             aircc.run(air_module, aircc_options)
 
