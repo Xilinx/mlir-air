@@ -103,7 +103,6 @@ with air.ir.Context() as ctx, Location.unknown():
         + ",".join(
             [
                 "buffer-results-to-out-params",
-                "air-linalg-to-func{link-with=mm.o}",
                 "air-par-to-herd{depth=-1}",
                 "air-par-to-launch{has-air-segment=true}",
                 "scf-forall-to-for",
@@ -123,6 +122,6 @@ with air.ir.Context() as ctx, Location.unknown():
 
     backend = XRTBackend(
         omit_pingpong=True,
-        lower_linalg_to_func=True,
+        lower_linalg_to_func="mm.o",
     )
     module_function = backend.compile_and_load(air_module)

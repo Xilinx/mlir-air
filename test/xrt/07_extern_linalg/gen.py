@@ -74,7 +74,6 @@ pipeline = (
     + ",".join(
         [
             "func.func(air-lower-herd-parallel)",
-            "air-linalg-to-func",
         ]
     )
     + ")"
@@ -86,5 +85,7 @@ pm.run(module.operation)
 # Run compile and load
 ###############################################
 
-backend = XRTBackend()
+backend = XRTBackend(
+    lower_linalg_to_func="kernel.o",
+)
 module_function = backend.compile_and_load(module)
