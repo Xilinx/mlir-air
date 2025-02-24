@@ -45,12 +45,14 @@ class XRTBackend(AirBackend):
 
     def __init__(
         self,
-        verbose=False,
-        omit_while_true_loop=False,
-        omit_pingpong=False,
-        lower_linalg_to_func=False,
-        air_loop_fusion=False,
+        verbose: bool = False,
+        omit_while_true_loop: bool = False,
+        omit_pingpong: bool = False,
+        lower_linalg_to_func: bool = False,
+        air_loop_fusion: bool = False,
         runtime_loop_tiling_sizes: list[int] = [4, 4],
+        omit_auto_broadcast: bool = False,
+        channel_multiplexing: list[str] = [],
     ):
         """Constructor for XRTBackend
 
@@ -61,6 +63,8 @@ class XRTBackend(AirBackend):
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
             runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
+            omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
+            channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
         """
         super().__init__()
         self.verbose = verbose
@@ -69,6 +73,8 @@ class XRTBackend(AirBackend):
         self.lower_linalg_to_func = lower_linalg_to_func
         self.air_loop_fusion = air_loop_fusion
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
+        self.omit_auto_broadcast = (omit_auto_broadcast,)
+        self.channel_multiplexing = (channel_multiplexing,)
         self.currently_loaded = False
 
     def __del__(self):
@@ -134,6 +140,14 @@ class XRTBackend(AirBackend):
 
             if self.air_loop_fusion:
                 aircc_options += ["--air-loop-fusion"]
+
+            if self.omit_auto_broadcast:
+                aircc_options += ["--omit-auto-broadcast"]
+
+            if len(self.channel_multiplexing) != 0:
+                aircc_options += ["--air-channel-multiplexing"]
+                for s in self.channel_multiplexing:
+                    aircc_options += s
 
             aircc.run(air_module, aircc_options)
 

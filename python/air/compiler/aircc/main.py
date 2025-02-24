@@ -38,12 +38,22 @@ def get_L2_splitting_analysis_pass():
 
 
 def get_air_optimization_pass(
-    device, omit_pingpong=True, lower_linalg_to_func=False, air_loop_fusion=False
+    device,
+    omit_pingpong=False,
+    lower_linalg_to_func=False,
+    air_loop_fusion=False,
+    omit_auto_broadcast=False,
+    channel_multiplexing=[],
 ):
     OPTIMIZATION_PASSES = [
         "air-dependency",
-        "air-dependency-schedule-opt",
-        "air-specialize-dma-broadcast",
+    ]
+    if not omit_auto_broadcast:
+        OPTIMIZATION_PASSES += [
+            "air-dependency-schedule-opt",
+            "air-specialize-dma-broadcast",
+        ]
+    OPTIMIZATION_PASSES += [
         "air-dma-to-channel",
         "canonicalize",
         "cse",
@@ -53,7 +63,18 @@ def get_air_optimization_pass(
         "air-isolate-async-dma-loop-nests",
         "canonicalize",
         "cse",
-        "air-fuse-channels",
+    ]
+    if len(channel_multiplexing) != 0:
+        OPTIMIZATION_PASSES += [
+            "air-fuse-channels{aggressive-mode="
+            + ",".join(s for s in channel_multiplexing)
+            + "}",
+        ]
+    else:
+        OPTIMIZATION_PASSES += [
+            "air-fuse-channels",
+        ]
+    OPTIMIZATION_PASSES += [
         "canonicalize",
         "cse",
     ]
@@ -436,6 +457,8 @@ def run(mlir_module, args=None):
                     opts.omit_pingpong,
                     opts.lower_linalg_to_func,
                     opts.air_loop_fusion,
+                    opts.omit_auto_broadcast,
+                    opts.channel_multiplexing,
                 )
                 if "npu" in opts.device
                 else []

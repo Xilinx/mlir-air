@@ -62,6 +62,8 @@ class XRTRunner:
         lower_linalg_to_func: bool = False,
         air_loop_fusion: bool = False,
         runtime_loop_tiling_sizes: list[int] = [4, 4],
+        omit_auto_broadcast: bool = False,
+        channel_multiplexing: list[str] = [],
     ):
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -69,6 +71,8 @@ class XRTRunner:
         self.lower_linalg_to_func = lower_linalg_to_func
         self.air_loop_fusion = air_loop_fusion
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
+        self.omit_auto_broadcast = omit_auto_broadcast
+        self.channel_multiplexing = channel_multiplexing
 
     def run_test(
         self,
@@ -88,6 +92,8 @@ class XRTRunner:
             lower_linalg_to_func=self.lower_linalg_to_func,
             air_loop_fusion=self.air_loop_fusion,
             runtime_loop_tiling_sizes=self.runtime_loop_tiling_sizes,
+            omit_auto_broadcast=self.omit_auto_broadcast,
+            channel_multiplexing=self.channel_multiplexing,
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs
