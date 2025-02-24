@@ -48,7 +48,7 @@ class XRTBackend(AirBackend):
         verbose: bool = False,
         omit_while_true_loop: bool = False,
         omit_pingpong: bool = False,
-        lower_linalg_to_func: bool = False,
+        lower_linalg_to_func: str = None,
         air_loop_fusion: bool = False,
         runtime_loop_tiling_sizes: list[int] = [4, 4],
         omit_auto_broadcast: bool = False,
@@ -137,6 +137,7 @@ class XRTBackend(AirBackend):
 
             if self.lower_linalg_to_func:
                 aircc_options += ["--lower-linalg-to-func"]
+                aircc_options += [self.lower_linalg_to_func]
 
             if self.air_loop_fusion:
                 aircc_options += ["--air-loop-fusion"]

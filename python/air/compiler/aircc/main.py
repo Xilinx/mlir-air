@@ -40,7 +40,7 @@ def get_L2_splitting_analysis_pass():
 def get_air_optimization_pass(
     device,
     omit_pingpong=False,
-    lower_linalg_to_func=False,
+    lower_linalg_to_func=None,
     air_loop_fusion=False,
     omit_auto_broadcast=False,
     channel_multiplexing=[],
@@ -96,9 +96,9 @@ def get_air_optimization_pass(
             "canonicalize",
             "cse",
         ]
-    if lower_linalg_to_func:
+    if lower_linalg_to_func != None:
         OPTIMIZATION_PASSES += [
-            "air-linalg-to-func",
+            "air-linalg-to-func{link-with=" + f"{lower_linalg_to_func}" + "}",
         ]
     else:
         OPTIMIZATION_PASSES += [
