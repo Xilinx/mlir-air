@@ -52,7 +52,7 @@ class XRTBackend(AirBackend):
         air_loop_fusion: bool = False,
         runtime_loop_tiling_sizes: list[int] = [4, 4],
         omit_auto_broadcast: bool = False,
-        channel_multiplexing: list[str] = None,
+        channel_multiplexing: list[str] = [],
     ):
         """Constructor for XRTBackend
 
