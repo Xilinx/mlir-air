@@ -1079,7 +1079,8 @@ ConvertForallToParallelInFilteredOps(SmallPtrSet<Operation *, 8> &filteredOps,
     fAdded.push_back(newPar);
   }
   for (auto e : fErased)
-    assert(filteredOps.erase(e));
+    if (!filteredOps.erase(e))
+      return failure();
   filteredOps.insert(fAdded.begin(), fAdded.end());
   return success();
 }
@@ -1464,8 +1465,6 @@ struct InsertEmptyLaunchOverHerdPass
     getSegmentNames(module);
   }
 };
-
-
 
 // Identifies arith operations where all operands are either constants, or
 // produced by IndexCastOp casting from IndexType. If detected, canonicalize
