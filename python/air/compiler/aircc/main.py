@@ -436,12 +436,13 @@ def run(mlir_module, args=None):
         air_collapse_herd_to_cols_pass = (
             "func.func(air-collapse-herd{" + f"max-col-size={4} " + "})"
         )
+        trace_col_offset = 1 if int(opts.trace_size) > 0 else 0
         air_place_pass = (
             "air-place-herds{"
             + f"num-rows={opts.num_rows} "
             + f"num-cols={opts.num_cols} "
             + f"row-anchor={opts.row_offset} "
-            + f"col-anchor={opts.col_offset}"
+            + f"col-anchor={opts.col_offset + trace_col_offset}"
             + "}"
         )
 

@@ -53,6 +53,8 @@ class XRTBackend(AirBackend):
         runtime_loop_tiling_sizes: list[int] = [4, 4],
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
+        trace_offset: int = 0,
+        trace_size: int = 0,
     ):
         """Constructor for XRTBackend
 
@@ -65,6 +67,8 @@ class XRTBackend(AirBackend):
             runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
+            trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
+            trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
         """
         super().__init__()
         self.verbose = verbose
@@ -75,6 +79,8 @@ class XRTBackend(AirBackend):
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
+        self.trace_offset = trace_offset
+        self.trace_size = trace_size
         self.currently_loaded = False
 
     def __del__(self):
@@ -148,6 +154,12 @@ class XRTBackend(AirBackend):
             if len(self.channel_multiplexing) != 0:
                 aircc_options += ["--air-channel-multiplexing"]
                 aircc_options += self.channel_multiplexing
+
+            if self.trace_size != 0:
+                aircc_options += ["-trace-size"]
+                aircc_options += [str(self.trace_size)]
+                aircc_options += ["-trace-offset"]
+                aircc_options += [str(self.trace_offset)]
 
             aircc.run(air_module, aircc_options)
 
