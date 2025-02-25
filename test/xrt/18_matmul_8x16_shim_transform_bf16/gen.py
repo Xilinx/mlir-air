@@ -94,7 +94,6 @@ pipeline = (
     + ",".join(
         [
             "air-copy-to-dma",
-            "air-linalg-to-func{link-with=kernel.o}",
             "air-par-to-herd{depth=-1}",
             "air-par-to-launch{has-air-segment=1}",
             "scf-forall-to-for",
@@ -114,7 +113,7 @@ pm.run(air_module.operation)
 
 backend = XRTBackend(
     air_loop_fusion=True,
-    lower_linalg_to_func=True,
+    lower_linalg_to_func="kernel.o",
     runtime_loop_tiling_sizes=[2, 2],
 )
 module_function = backend.compile_and_load(air_module)

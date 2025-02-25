@@ -38,12 +38,22 @@ def get_L2_splitting_analysis_pass():
 
 
 def get_air_optimization_pass(
-    device, omit_pingpong=True, lower_linalg_to_func=False, air_loop_fusion=False
+    device,
+    omit_pingpong=False,
+    lower_linalg_to_func=None,
+    air_loop_fusion=False,
+    omit_auto_broadcast=False,
+    channel_multiplexing=[],
 ):
     OPTIMIZATION_PASSES = [
         "air-dependency",
-        "air-dependency-schedule-opt",
-        "air-specialize-dma-broadcast",
+    ]
+    if not omit_auto_broadcast:
+        OPTIMIZATION_PASSES += [
+            "air-dependency-schedule-opt",
+            "air-specialize-dma-broadcast",
+        ]
+    OPTIMIZATION_PASSES += [
         "air-dma-to-channel",
         "canonicalize",
         "cse",
@@ -53,7 +63,18 @@ def get_air_optimization_pass(
         "air-isolate-async-dma-loop-nests",
         "canonicalize",
         "cse",
-        "air-fuse-channels",
+    ]
+    if len(channel_multiplexing) != 0:
+        OPTIMIZATION_PASSES += [
+            "air-fuse-channels{aggressive-mode="
+            + ",".join(s for s in channel_multiplexing)
+            + "}",
+        ]
+    else:
+        OPTIMIZATION_PASSES += [
+            "air-fuse-channels",
+        ]
+    OPTIMIZATION_PASSES += [
         "canonicalize",
         "cse",
     ]
@@ -75,9 +96,9 @@ def get_air_optimization_pass(
             "canonicalize",
             "cse",
         ]
-    if lower_linalg_to_func:
+    if lower_linalg_to_func != None:
         OPTIMIZATION_PASSES += [
-            "air-linalg-to-func",
+            "air-linalg-to-func{link-with=" + f"{lower_linalg_to_func}" + "}",
         ]
     else:
         OPTIMIZATION_PASSES += [
@@ -415,12 +436,13 @@ def run(mlir_module, args=None):
         air_collapse_herd_to_cols_pass = (
             "func.func(air-collapse-herd{" + f"max-col-size={4} " + "})"
         )
+        trace_col_offset = 1 if int(opts.trace_size) > 0 else 0
         air_place_pass = (
             "air-place-herds{"
             + f"num-rows={opts.num_rows} "
             + f"num-cols={opts.num_cols} "
             + f"row-anchor={opts.row_offset} "
-            + f"col-anchor={opts.col_offset}"
+            + f"col-anchor={opts.col_offset + trace_col_offset}"
             + "}"
         )
 
@@ -436,6 +458,8 @@ def run(mlir_module, args=None):
                     opts.omit_pingpong,
                     opts.lower_linalg_to_func,
                     opts.air_loop_fusion,
+                    opts.omit_auto_broadcast,
+                    opts.channel_multiplexing,
                 )
                 if "npu" in opts.device
                 else []

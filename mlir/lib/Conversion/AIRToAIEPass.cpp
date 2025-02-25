@@ -3679,6 +3679,12 @@ public:
         op, fnNameAttr.getValue(), TypeRange(),
         ValueRange(ArrayRef<Value>(libFnOperands)));
 
+    if (auto herd = op->getParentOfType<air::HerdOp>())
+      rewriter.modifyOpInPlace(herd, [&]() {
+        herd->setAttr("link_with",
+                      StringAttr::get(rewriter.getContext(), linkWith));
+      });
+
     return success();
   }
 
