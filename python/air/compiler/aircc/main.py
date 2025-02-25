@@ -442,7 +442,7 @@ def run(mlir_module, args=None):
             + f"num-rows={opts.num_rows} "
             + f"num-cols={opts.num_cols} "
             + f"row-anchor={opts.row_offset} "
-            + f"col-anchor={opts.col_offset + trace_col_offset}"
+            + f"col-anchor={int(opts.col_offset) + trace_col_offset}"
             + "}"
         )
 
