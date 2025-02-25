@@ -1737,6 +1737,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       SmallVector<Value> strides = theOtherChanOp[0].getStrides();
       if (wraps.empty()) {
         // Populate default wraps, if wraps is an empty vector.
+        rewriter.setInsertionPoint(theOtherChanOp[0]);
         air::populateDefaultWrapsAndStrides(
             rewriter, theOtherChanOp[0].getMemref(), offsets, wraps, strides);
       }
