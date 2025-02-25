@@ -1290,8 +1290,9 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
           assert(apply && "Apply op not found. NYI.");
           // Any const operands to affine map should have been canonicalized
           // away.
-          for (auto oper : apply->getOperands())
-            assert(!getConstantIntValue(oper));
+          assert(llvm::none_of(apply->getOperands(), [](Value oper) {
+            return getConstantIntValue(oper);
+          }));
           // Set map's expressions to cancel out each key's offset
           auto applyExpr = apply.getMap().getResult(0);
           applyExpr = applyExpr - key;
