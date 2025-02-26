@@ -512,8 +512,8 @@ func.func @func5() {
 
 // CHECK-LABEL: func.func @func6
 // CHECK: memref.alloc() : memref<1x1x8x8x4x4xi32, 2 : i32>
-// CHECK: memref.alloc() : memref<1x1x8x4x8x4xi32, 2 : i32>
-// CHECK: memref.alloc() : memref<1x1x4x8x4x8xi32, 2 : i32>
+// CHECK: memref.alloc() : memref<1x1x1x1x8x4xi32, 2 : i32>
+// CHECK: memref.alloc() : memref<1x1x1x1x4x8xi32, 2 : i32>
 // CHECK: air.herd @herd_0
 // CHECK-DAG: %[[CST0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[CSTINT0:.*]] = arith.constant 0 : i32
@@ -521,8 +521,8 @@ func.func @func5() {
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: scf.for
-// CHECK: memref.subview %{{.*}}[0, 0, %{{.*}}, %{{.*}}, 0, 0] [1, 1, 1, 1, 4, 8] [1, 1, 1, 1, 1, 1] : memref<1x1x4x8x4x8xi32, 2 : i32> to memref<1x1x1x1x4x8xi32, strided<[1024, 1024, 256, 32, 8, 1], offset: ?>, 2 : i32>
-// CHECK: memref.subview %{{.*}}[0, 0, %{{.*}}, %{{.*}}, 0, 0] [1, 1, 1, 1, 8, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x8x4x8x4xi32, 2 : i32> to memref<1x1x1x1x8x4xi32, strided<[1024, 1024, 128, 32, 4, 1], offset: ?>, 2 : i32>
+// CHECK: memref.subview %{{.*}}[0, 0, %{{.*}}, %{{.*}}, 0, 0] [1, 1, 1, 1, 4, 8] [1, 1, 1, 1, 1, 1] : memref<1x1x1x1x4x8xi32, 2 : i32> to memref<1x1x1x1x4x8xi32, strided<[32, 32, 32, 32, 8, 1], offset: ?>, 2 : i32>
+// CHECK: memref.subview %{{.*}}[0, 0, %{{.*}}, %{{.*}}, 0, 0] [1, 1, 1, 1, 8, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x1x1x8x4xi32, 2 : i32> to memref<1x1x1x1x8x4xi32, strided<[32, 32, 32, 32, 4, 1], offset: ?>, 2 : i32>
 // CHECK: memref.subview %{{.*}}[%[[CST0]], %[[CST0]], %{{.*}}, %{{.*}}, 0, 0] [1, 1, 1, 1, 4, 4] [1, 1, 1, 1, 1, 1] : memref<1x1x8x8x4x4xi32, 2 : i32> to memref<1x1x1x1x4x4xi32, strided<[1024, 1024, 128, 16, 4, 1], offset: ?>, 2 : i32>
 // CHECK: linalg.generic
 
@@ -940,9 +940,9 @@ func.func @func10(%arg0: memref<8x512xi32>, %arg1: memref<256x512xi32>, %arg2: m
 
 // CHECK-LABEL: func.func @func11
 // CHECK: air.herd
-// CHECK: %[[SUBVIEW0:.*]] = memref.subview{{.*}} : memref<16x16x4x4xf32, 1 : i32> to memref<1x1x4x4xf32, strided<[256, 16, 4, 1], offset: ?>, 1 : i32>
-// CHECK: %[[SUBVIEW1:.*]] = memref.subview{{.*}} : memref<1x16x4xf32, 2 : i32> to memref<1x4xf32, strided<[4, 1], offset: ?>, 2 : i32>
-// CHECK: %[[SUBVIEW2:.*]] = memref.subview{{.*}} : memref<1x1x16x16x4x4xbf16, 2 : i32> to memref<1x1x4x4xbf16, strided<[4096, 4096, 4, 1], offset: ?>, 2 : i32>
+// CHECK: %[[SUBVIEW0:.*]] = memref.subview{{.*}} : memref<1x1x4x4xf32, 1 : i32> to memref<1x1x4x4xf32, strided<[16, 16, 4, 1], offset: ?>, 1 : i32>
+// CHECK: %[[SUBVIEW1:.*]] = memref.subview{{.*}} : memref<1x1x4xf32, 2 : i32> to memref<1x4xf32, strided<[4, 1], offset: ?>, 2 : i32>
+// CHECK: %[[SUBVIEW2:.*]] = memref.subview{{.*}} : memref<1x1x1x1x4x4xbf16, 2 : i32> to memref<1x1x4x4xbf16, strided<[16, 16, 4, 1], offset: ?>, 2 : i32>
 // CHECK: linalg.generic{{.*}} ins(%[[SUBVIEW0]], %[[SUBVIEW1]] {{.*}}outs(%[[SUBVIEW2]]
 
 #map17 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>

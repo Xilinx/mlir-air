@@ -1328,7 +1328,7 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
 static void updateAccessPatternByScfForNest(
     std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
         &pattern,
-    SmallVector<Value> indices, OpBuilder builder) {
+    SmallVector<Value> indices, OpBuilder builder, Region *untilReg = nullptr) {
   auto loc = builder.getUnknownLoc();
   auto updateWrapAndStride = [&](int stepSize, int tripCount, int i) {
     std::get<1>(pattern)[i] =
@@ -1360,15 +1360,20 @@ static void updateAccessPatternByScfForNest(
     dim++;
     if (getConstantIntValue(index))
       continue;
-    if (auto scfForOp = scf::getForInductionVarOwner(index))
+    if (auto scfForOp = scf::getForInductionVarOwner(index)) {
+      if (untilReg && !untilReg->isAncestor(scfForOp->getParentRegion()))
+        continue; // Out of scope
       updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
                           *air::getStaticScfForTripCountAsInt(scfForOp), dim);
+    }
     if (!index.getDefiningOp())
       continue;
     if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
       for (auto &childOp : execOp.getChildOps())
         for (auto oper : childOp.getOperands())
           if (auto scfForOp = scf::getForInductionVarOwner(oper)) {
+            if (untilReg && !untilReg->isAncestor(scfForOp->getParentRegion()))
+              continue; // Out of scope
             int scfForTripCount = inferDataAccessSizes(scfForOp, execOp, index);
             updateWrapAndStride(*getConstantIntValue(scfForOp.getStep()),
                                 scfForTripCount, dim);
@@ -1391,7 +1396,7 @@ air::writeAccessPattern(air::ChannelInterface chanOp) {
 }
 
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-air::writeAccessPattern(memref::SubViewOp subview) {
+air::writeAccessPattern(memref::SubViewOp subview, Region *commonReg) {
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
   auto subview_offsets = subview.getOffsets().begin();
@@ -1437,7 +1442,8 @@ air::writeAccessPattern(memref::SubViewOp subview) {
     else
       std::get<2>(pattern).push_back(*subview_strides++);
   }
-  updateAccessPatternByScfForNest(pattern, std::get<0>(pattern), builder);
+  updateAccessPatternByScfForNest(pattern, std::get<0>(pattern), builder,
+                                  commonReg);
   return pattern;
 }
 
@@ -1508,14 +1514,20 @@ SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
 SmallVector<int64_t>
 air::getDataAccessShapeFromMemcpyOp(Value memref,
                                     SmallVector<Operation *> users) {
+  if (users.empty())
+    return SmallVector<int64_t>();
   SmallVector<
       std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>>
       accessPatterns;
+  // Get a common ancestor region for all users
+  Region *commonAncestorReg = findCommonRegionContainingAllAncestors(
+      users, users.front()->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());
+
   for (auto user : users) {
     if (auto chanUser = dyn_cast<air::ChannelInterface>(user))
       accessPatterns.push_back(writeAccessPattern(chanUser));
     else if (auto svUser = dyn_cast<memref::SubViewOp>(user))
-      accessPatterns.push_back(writeAccessPattern(svUser));
+      accessPatterns.push_back(writeAccessPattern(svUser, commonAncestorReg));
     else if (auto vecReadUser = dyn_cast<mlir::vector::TransferReadOp>(user))
       accessPatterns.push_back(writeAccessPattern(vecReadUser));
     else if (auto vecWriteUser = dyn_cast<mlir::vector::TransferWriteOp>(user))
