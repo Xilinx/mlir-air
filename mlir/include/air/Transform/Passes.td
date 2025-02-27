@@ -1010,16 +1010,6 @@ def AIREnforceLoopCarriedMemrefDeallocPattern: Pass<"air-enforce-loop-carried-me
   }];
 }
 
-def AIRDeAliasMemref: Pass<"air-dealias-memref", "ModuleOp"> {
-  let summary = "De-alias a memref into multiple memrefs";
-  let constructor = "xilinx::air::createAIRDeAliasMemref()";
-  let description = [{
-    This pass detects memrefs which can de-alias into multiple memrefs over time, and
-    generates extra copies of this memref. This process can improve the stability of the
-    memref-to-buffer mappings.
-  }];
-}
-
 def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   let summary = "Fuse multiple air.channel ops into one";
   let constructor = "xilinx::air::createAIRFuseChannels()";

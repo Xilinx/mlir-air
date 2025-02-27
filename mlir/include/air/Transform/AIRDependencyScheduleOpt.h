@@ -49,8 +49,6 @@ std::unique_ptr<mlir::Pass> createAIRUnrollChannelByFactorPattern();
 
 std::unique_ptr<mlir::Pass> createAIREnforceLoopCarriedMemrefDeallocPattern();
 
-std::unique_ptr<mlir::Pass> createAIRDeAliasMemref();
-
 std::unique_ptr<mlir::Pass> createAIRFuseChannels();
 std::unique_ptr<OperationPass<ModuleOp>>
 createAIRFuseChannels(const AIRFuseChannelsOptions &);

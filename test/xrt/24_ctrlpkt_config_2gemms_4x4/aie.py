@@ -185,10 +185,14 @@ with air.ir.Context() as ctx, Location.unknown():
                 "cse",
                 ### Scaling to 4 AIE columns
                 "func.func(air-split-l2-memref)",
+                "canonicalize",
+                "cse",
                 "air-isolate-async-dma-loop-nests",
                 ###
                 "canonicalize",
                 "cse",
+                "func.func(air-fuse-alloc-dealloc)",
+                "func.func(air-shrink-memref-sizes-by-access)",
                 "func.func(air-loop-fusion)",
                 "air-label-scf-for-to-ping-pong",
                 "air-ping-pong-transform",
