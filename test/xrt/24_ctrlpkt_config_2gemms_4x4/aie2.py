@@ -190,6 +190,8 @@ with air.ir.Context() as ctx, Location.unknown():
                 ###
                 "canonicalize",
                 "cse",
+                "func.func(air-fuse-alloc-dealloc)",
+                "func.func(air-shrink-memref-sizes-by-access)",
                 "func.func(air-loop-fusion)",
                 "air-label-scf-for-to-ping-pong",
                 "air-ping-pong-transform",
