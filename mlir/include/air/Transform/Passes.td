@@ -1001,15 +1001,6 @@ def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "Modul
   ];
 }
 
-def AIREnforceLoopCarriedMemrefDeallocPattern: Pass<"air-enforce-loop-carried-memref-dealloc", "ModuleOp"> {
-  let summary = "Enforce memref dealloc ops in loop iterations";
-  let constructor = "xilinx::air::createAIREnforceLoopCarriedMemrefDeallocPattern()";
-  let description = [{
-    This pass enforces memref deallocation events to happen within each loop
-    iteration, by connecting them in the loop-carried dependency path.
-  }];
-}
-
 def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   let summary = "Fuse multiple air.channel ops into one";
   let constructor = "xilinx::air::createAIRFuseChannels()";
