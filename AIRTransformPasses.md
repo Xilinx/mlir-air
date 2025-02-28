@@ -536,13 +536,6 @@ air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 }
 ```
 
-### `-air-enforce-loop-carried-memref-dealloc`
-
-_Enforce memref dealloc ops in loop iterations_
-
-This pass enforces memref deallocation events to happen within each loop
-iteration, by connecting them in the loop-carried dependency path.
-
 ### `-air-example-pass`
 
 _Skeleton module op pass_
