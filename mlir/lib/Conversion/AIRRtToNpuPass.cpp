@@ -492,8 +492,7 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
       // Detected wrap that goes beyond the AIE2 hardware limit.
       if (*const_val >= AIE2_WRAP_UPPER_BOUNDS[i])
         return true;
-    } else
-      assert(false && "has non-static wrap");
+    }
   }
   return false;
 }
@@ -1177,8 +1176,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           return;
         }
       });
-      if (!containsOnlyWaitAll)
-        assert(false && "found scf.parallel op at this IR, NYI");
       builder.setInsertionPoint(par_op);
       auto newWaitAll = builder.create<airrt::WaitAllOp>(
           par_op->getLoc(), airrt::EventType::get(par_op->getContext()),
@@ -1364,11 +1361,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         int srcRowIndex = srcTile.rowIndex();
         int dstColIndex = destTile.colIndex();
         int dstRowIndex = destTile.rowIndex();
-        assert((target_model.isCoreTile(srcColIndex, srcRowIndex) ||
-                target_model.isMemTile(srcColIndex, srcRowIndex)) &&
-               "unsupported trace src");
-        assert(target_model.isShimNOCTile(dstColIndex, dstRowIndex) &&
-               "unsupported trace dest");
+        if (!target_model.isCoreTile(srcColIndex, srcRowIndex) &&
+            !target_model.isMemTile(srcColIndex, srcRowIndex)) {
+          pktFlow->emitOpError("unsupported trace src.");
+          return;
+        }
+        if (!target_model.isCoreTile(dstColIndex, dstRowIndex) &&
+            !target_model.isMemTile(dstColIndex, dstRowIndex)) {
+          pktFlow->emitOpError("unsupported trace dest.");
+          return;
+        }
         int pkt_type = 0;
         if (target_model.isMemTile(srcColIndex, srcRowIndex))
           pkt_type = 3;
@@ -1452,7 +1454,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (chanToIdMap.count(dstColIndex) == 0)
           chanToIdMap[dstColIndex] = 15;
         int bdID = chanToIdMap[dstColIndex];
-        assert(bdID >= 4 && "run out of bd_id");
+        if (bdID >= 4) {
+          pktFlow->emitOpError("runs out of bd_id.");
+          return;
+        }
 
         builder.create<AIEX::NpuWriteBdOp>(
             builder.getUnknownLoc(), dstColIndex, bdID, buff_size, buff_offset,
@@ -1479,8 +1484,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           address = 0x1D204;
         else if (destPort.channel == 1)
           address = 0x1D20C;
-        else
-          assert(false && "unknown trace dest");
+        else {
+          pktFlow->emitOpError("unknown trace dest.");
+          return;
+        }
         builder.create<AIEX::NpuWrite32Op>(
             builder.getUnknownLoc(), address, bdID, nullptr,
             builder.getIntegerAttr(builder.getI32Type(), dstColIndex),
