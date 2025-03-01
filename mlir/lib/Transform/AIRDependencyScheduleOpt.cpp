@@ -1426,10 +1426,15 @@ struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
 
     auto loc = rewriter.getUnknownLoc();
 
-    for (auto lb : par.getLowerBound()) {
-      [[maybe_unused]] auto constLB = getConstantIntValue(lb);
-      assert(constLB && "non-static scf.parallel lb, NYI");
-      assert(*constLB == 0 && "non-zero scf.parallel lb, NYI");
+    if (!llvm::all_of(par.getLowerBound(),
+                      [](Value lb) { return getConstantIntValue(lb); })) {
+      par->emitOpError("non-static scf.parallel lb, NYI");
+      return failure();
+    }
+    if (!llvm::all_of(par.getLowerBound(),
+                      [](Value lb) { return *getConstantIntValue(lb) == 0; })) {
+      par->emitOpError("non-zero scf.parallel lb, NYI");
+      return failure();
     }
 
     // Get parallel loop trip count.
@@ -1484,36 +1489,6 @@ struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
     }
 
     rewriter.eraseOp(par);
-    return success();
-  }
-
-private:
-};
-
-struct CanonicalizeAIRExecute : public OpRewritePattern<air::ExecuteOp> {
-  using OpRewritePattern<air::ExecuteOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(air::ExecuteOp exec,
-                                PatternRewriter &rewriter) const override {
-
-    auto childOp = &exec.getChildOps().front();
-    // Canonicalize air.execute with empty region.
-    if (!childOp->mightHaveTrait<OpTrait::IsTerminator>())
-      return failure();
-    exec.getAsyncToken().replaceAllUsesWith(
-        rewriter
-            .create<air::WaitAllOp>(
-                exec->getLoc(), air::AsyncTokenType::get(rewriter.getContext()),
-                exec.getAsyncDependencies())
-            .getAsyncToken());
-
-    if (childOp->getNumOperands() != 1)
-      return failure();
-    assert(childOp->getNumOperands() == 1 &&
-           "air.execute_terminator doesn't have exactly one operand, NYI");
-    exec.getResult(1).replaceAllUsesWith(childOp->getOperand(0));
-
-    rewriter.eraseOp(exec);
     return success();
   }
 
@@ -1578,7 +1553,14 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
           SmallVector<std::optional<int64_t>>{
               *mlir::getConstantIntValue(sfo.getLowerBound())},
           SmallVector<std::optional<int64_t>>{}, ctx);
-      assert(new_ub && new_lb);
+      if (!new_lb) {
+        apply->emitOpError("failed to evaluate lower bound.");
+        return failure();
+      }
+      if (!new_ub) {
+        apply->emitOpError("failed to evaluate upper bound.");
+        return failure();
+      }
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
       if (auto exec = dyn_cast<air::ExecuteOp>(apply->getParentOp())) {
@@ -1610,7 +1592,14 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{afo.getConstantLowerBound()},
           SmallVector<std::optional<int64_t>>{}, ctx);
-      assert(new_ub && new_lb);
+      if (!new_lb) {
+        apply->emitOpError("failed to evaluate lower bound.");
+        return failure();
+      }
+      if (!new_ub) {
+        apply->emitOpError("failed to evaluate upper bound.");
+        return failure();
+      }
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
       IRMapping remap;
       apply.getResult().replaceAllUsesWith(afo.getInductionVar());
@@ -2990,14 +2979,15 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
                                       bool enableForLoopUnrolling = true) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
-  preproc_patterns.insert<UnrollScfParallel, CanonicalizeAIRExecute,
-                          CanonicalizeAffineApplyOnLoopInductionVar,
-                          CanonicalizeArithMuliOpOnLoopInductionVar,
-                          CanonicalizeArithAddiOpOnLoopInductionVar>(ctx);
+  preproc_patterns
+      .insert<UnrollScfParallel, CanonicalizeAffineApplyOnLoopInductionVar,
+              CanonicalizeArithMuliOpOnLoopInductionVar,
+              CanonicalizeArithAddiOpOnLoopInductionVar>(ctx);
   // Canonicalize constant operands in affine.apply.
   mlir::affine::AffineApplyOp::getCanonicalizationPatterns(preproc_patterns,
                                                            ctx);
   air::WaitAllOp::getCanonicalizationPatterns(preproc_patterns, ctx);
+  air::ExecuteOp::getCanonicalizationPatterns(preproc_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(preproc_patterns));
 
   // Canonicalize wrap and stride list to remove redundant dimensions
@@ -3007,13 +2997,13 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
   (void)applyPatternsGreedily(*region, std::move(preproc_wns_patterns));
 
   RewritePatternSet patterns(ctx);
-  patterns
-      .insert<CanonicalizeAIRExecute, CanonicalizeAffineApplyOnLoopInductionVar,
-              CanonicalizeArithMuliOpOnLoopInductionVar,
-              CanonicalizeArithAddiOpOnLoopInductionVar,
-              AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
+  patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar,
+                  CanonicalizeArithMuliOpOnLoopInductionVar,
+                  CanonicalizeArithAddiOpOnLoopInductionVar,
+                  AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(ctx, maxNumDims,
                                                              maxSize);
+  air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
 
@@ -3409,10 +3399,14 @@ private:
         getChannelGetOpThroughSymbol(chan_a);
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
-    assert(a_puts.size() == 1);
-    assert(b_puts.size() == 1);
-    assert(a_gets.size() == 1);
-    assert(b_gets.size() == 1);
+    if (a_puts.size() != 1 || a_gets.size() != 1) {
+      chan_a->emitOpError("has more than one puts or gets.");
+      return;
+    }
+    if (b_puts.size() != 1 || b_gets.size() != 1) {
+      chan_b->emitOpError("has more than one puts or gets.");
+      return;
+    }
     int a_put_loop_nest_size =
         getParentLoopNest(a_puts[0].getOperation()).size();
     int b_put_loop_nest_size =
@@ -3430,8 +3424,7 @@ private:
       chan_a = chan_b;
       chan_b = temp;
       return;
-    } else
-      assert(false && "NYI");
+    }
   }
 
   // Check whether puts and gets hit the aggressive mode target memory spaces
@@ -3930,7 +3923,10 @@ private:
     OpBuilder builder(mismatchScfFor);
     if (mergeByLBOrUB == "LB") {
       int originalLB = *getConstantIntValue(mismatchScfFor.getLowerBound());
-      assert(originalLB > 0);
+      if (originalLB <= 0) {
+        mismatchScfFor->emitOpError("non-positive loop lower bound, NYI.");
+        return;
+      }
       int currLB = originalLB;
       if (a->hasAttr("setLB"))
         currLB = a->getAttrOfType<IntegerAttr>("setLB").getInt();
@@ -3941,8 +3937,10 @@ private:
       if (a->hasAttr("setUB"))
         currUB = a->getAttrOfType<IntegerAttr>("setUB").getInt();
       a->setAttr("setUB", builder.getI32IntegerAttr(currUB + 1));
-    } else
-      assert(false && "invalid mergeByLBOrUB flag");
+    } else {
+      mismatchScfFor->emitOpError("invalid mergeByLBOrUB flag.");
+      return;
+    }
     // Erase b.
     if (air::isAsyncOp(b)) {
       IRMapping remap;
@@ -5329,7 +5327,10 @@ private:
     StringRef fnName = callOp.getCallee();
     auto fnDecl = dyn_cast_or_null<func::FuncOp>(SymbolTable::lookupSymbolIn(
         callOp->getParentOfType<ModuleOp>(), fnName));
-    assert(fnDecl && "expected function declaration");
+    if (!fnDecl) {
+      callOp->emitOpError("expected function declaration");
+      return;
+    }
 
     // Update function's argument types.
     auto functionType = fnDecl.getFunctionType();
@@ -5808,7 +5809,10 @@ public:
       StringRef fnName = callOp.getCallee();
       auto fnDecl = dyn_cast_or_null<func::FuncOp>(SymbolTable::lookupSymbolIn(
           callOp->getParentOfType<ModuleOp>(), fnName));
-      assert(fnDecl && "expected function declaration");
+      if (!fnDecl) {
+        callOp->emitOpError("expected function declaration");
+        return;
+      }
       // Update function's argument types.
       auto functionType = fnDecl.getFunctionType();
       auto newArgTypes = llvm::to_vector<6>(callOp.getOperandTypes());
