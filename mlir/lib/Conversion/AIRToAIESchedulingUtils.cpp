@@ -1161,16 +1161,11 @@ air::simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L3) {
+      // L3 shim tiles assumed to not be target for broadcast
       if (f.S2MM.size() > 1) {
         f.S2MM.front().front()->emitOpError(
             "found multiple inputs for an aie.flow. Fan-in for aie.flow isn't "
             "supported in current architecture.");
-        return failure();
-      }
-      // L3 shim tiles assumed to not be target for broadcast
-      if (f.MM2S.size() > 1) {
-        f.MM2S.front()->emitOpError(
-            "shim tiles assumed to not be target for broadcast. NYI.");
         return failure();
       }
       for (auto o : f.S2MM.front()) {
