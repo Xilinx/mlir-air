@@ -485,7 +485,11 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   if (!launch) {
     if (auto for_op = thisOp->getParentOfType<scf::ForOp>()) {
       // Broadcast channel control loop
-      assert(theOtherOp->hasAttr("tile"));
+      if (!theOtherOp->hasAttr("tile")) {
+        theOtherOp->emitOpError(
+            "missing 'tile' attribute as compile-time flag.");
+        return nullptr;
+      }
       ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
       auto tile_dict = llvm::cast<DictionaryAttr>(tiles[0]);
       auto row = llvm::cast<IntegerAttr>(tile_dict.get("row")).getInt();
@@ -527,8 +531,11 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     strides.push_back(one_idx);
   }
   // Stride field implicit last element one
-  [[maybe_unused]] auto lastStrideConst = getConstantIntValue(strides.back());
-  assert(lastStrideConst && "the last stride is not static");
+  auto lastStrideConst = getConstantIntValue(strides.back());
+  if (!lastStrideConst) {
+    thisOp->emitOpError("last stride is not static.");
+    return nullptr;
+  }
 
   strides.pop_back();
   while (offsets.size() < 4) {
@@ -863,13 +870,27 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
 
   llvm::SmallSet<Operation *, 8> erased;
   f.walk([&](scf::ParallelOp scf_par) {
-    for (auto v : scf_par.getLowerBound()) {
-      assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 0);
-      (void)v;
+    if (!llvm::all_of(scf_par.getLowerBound(), [](Value v) {
+          auto constV = getConstantIntValue(v);
+          if (!constV)
+            return false;
+          if (*constV != 0)
+            return false;
+          return true;
+        })) {
+      scf_par->emitOpError("has non-zero lower bound.");
+      return;
     }
-    for (auto v : scf_par.getStep()) {
-      assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 1);
-      (void)v;
+    if (!llvm::all_of(scf_par.getStep(), [](Value v) {
+          auto constV = getConstantIntValue(v);
+          if (!constV)
+            return false;
+          if (*constV != 1)
+            return false;
+          return true;
+        })) {
+      scf_par->emitOpError("has non-unit step size.");
+      return;
     }
     std::vector<int> par_sizes = {};
     for (auto v : scf_par.getUpperBound())
@@ -1177,14 +1198,14 @@ private:
       remapLoop(src_for, dst_for, remap);
     } else if (src_par && dst_par) {
       remapLoop(src_par, dst_par, remap);
-    } else
-      assert(false);
+    }
   }
 
   // Get parent loop nest
   std::vector<Operation *> getParentLoopNest(Operation *op,
                                              Operation *outermost) const {
-    assert(op);
+    if (!op)
+      return std::vector<Operation *>();
     std::vector<Operation *> output;
     for (auto parent = op->getParentOp(); parent != outermost;
          parent = parent->getParentOp()) {
@@ -1283,11 +1304,14 @@ private:
         for (unsigned i = 1; i < bucket.size(); i++) {
           IRMapping remap;
           Operation *chan_op = getInnerMostMemcpyFromLoopNest(bucket[i]);
-          assert(chan_op);
+          if (!chan_op) {
+            func->emitOpError("memcpy in innermost loop body not found.");
+            return;
+          }
           auto src_loop_nest = getParentLoopNest(chan_op, bucket[i]);
-          assert(src_loop_nest.size() == dst_loop_nest.size());
-          for (unsigned i = 0; i < src_loop_nest.size(); i++) {
-            remapLoop(src_loop_nest[i], dst_loop_nest[i], remap);
+          for (auto [src_loop, dst_loop] :
+               llvm::zip_equal(src_loop_nest, dst_loop_nest)) {
+            remapLoop(src_loop, dst_loop, remap);
           }
           auto yield_op = dst_loop_nest[0]
                               ->getRegions()
