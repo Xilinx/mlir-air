@@ -238,9 +238,6 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       // mem
       builder.setInsertionPoint(core);
 
-      assert((h.getBody().getBlocks().size() == 1) &&
-             "Launch body can only contain one Block");
-
       // generate the aie.core body
       //
       OpBuilder core_builder(core);
@@ -724,7 +721,6 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
 
     // remove air.async.token from the yield op
     auto yield = new_region.back().getTerminator();
-    assert(isa<scf::YieldOp>(yield));
     rewriter.setInsertionPoint(yield);
     SmallVector<Value, 4> yield_operands;
     SmallVector<Value, 4> token_operands;
@@ -831,7 +827,10 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
       return failure();
 
     // Allocation of L2 memrefs in segment to buffer ops
-    assert(memrefToTileMap.count(alloc));
+    if (!memrefToTileMap.count(alloc)) {
+      alloc->emitOpError("alloc not found in memrefToTileMap.");
+      return failure();
+    }
     AIE::TileOp tile = memrefToTileMap[alloc];
     if (!tile)
       return failure();
@@ -2076,7 +2075,10 @@ public:
         memcpy_flows.push_back(flow);
       } else if (auto putget = dyn_cast<air::ChannelInterface>(o)) {
         auto chan = air::getChannelDeclarationThroughSymbol(putget);
-        assert(chan);
+        if (!chan) {
+          putget->emitOpError("failed to get air.channel declaration.");
+          return failrue();
+        }
         std::string chan_name = putget.getChanName().str();
         // Check if new pair
         bool found_in_flows = false;
@@ -2444,9 +2446,11 @@ public:
                            tile_side_memcpy.getOperation())) {
           memref_ty =
               llvm::cast<MemRefType>(tile_side_chan.getMemref().getType());
+        } else {
+          op->emitOpError(
+              "Memref type for shim DMA allocation not initialized!");
+          return;
         }
-        assert(memref_ty != nullptr &&
-               "Memref type for shim DMA allocation not initialized!");
 
         // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
         auto dmaop_labeled = labelAIRDmaOpsWithMetadata(
@@ -2950,7 +2954,8 @@ public:
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
         if (alloc.foundAlloc(x, y)) {
           for (auto o : alloc.memcpyOps) {
-            assert(o);
+            if (!o)
+              continue;
             auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
             if (!memcpyOpIf)
               return o->emitOpError("does not have air::MemcpyInterface");
@@ -2962,7 +2967,8 @@ public:
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
         if (alloc.foundAlloc(x, y)) {
           for (auto o : alloc.memcpyOps) {
-            assert(o);
+            if (!o)
+              continue;
             auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
             if (!memcpyOpIf)
               return o->emitOpError("does not have air::MemcpyInterface");
@@ -3038,7 +3044,8 @@ public:
       if (tile.isShimTile())
         push_back_if_unique<AIE::TileOp>(shimtiles, tile);
       else {
-        assert(false);
+        tile->emitOpError(
+            "tile is logged for shim DMA allocation, but is not shim tile.");
         return failure();
       }
     }
@@ -3047,7 +3054,8 @@ public:
       if (tile.isMemTile())
         push_back_if_unique<AIE::TileOp>(memTileTiles, tile);
       else {
-        assert(false);
+        tile->emitOpError(
+            "tile is logged for memtile DMA allocation, but is not memtile.");
         return failure();
       }
     }
