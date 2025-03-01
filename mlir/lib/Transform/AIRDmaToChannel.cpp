@@ -30,7 +30,10 @@ static void generateYieldAndOrReduceToScfLoop(OpBuilder builder,
   // Check if scf::YieldOp already exists in scf parallel
   SmallVector<scf::YieldOp, 2> y_ops(scf_par.getOps<scf::YieldOp>());
   if (y_ops.size()) {
-    assert(y_ops.size() == 1);
+    if (y_ops.size() != 1) {
+      scf_par->emitOpError("number of yield op isn't one.");
+      return;
+    }
     builder.setInsertionPoint(y_ops[0]);
   } else {
     builder.setInsertionPointToEnd(scf_par.getBody());
@@ -133,12 +136,12 @@ static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder builder,
       memcpy_ops.push_back(memcpy_op);
     }
   }
-  assert(memcpy_ops.size() <= 1 &&
-         "found multiple memcpy ops in one hoisted for loop");
+  if (memcpy_ops.size() > 1) {
+    scf_loop->emitOpError("found multiple memcpy ops in one hoisted for loop.");
+    return scf::YieldOp();
+  }
   SmallVector<Value, 1> yield_token;
   if (memcpy_ops.size()) {
-    assert(memcpy_ops[0]->getResult(0) &&
-           "found sync memcpy op in async for loop");
     auto wa_op = builder.create<air::WaitAllOp>(
         builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
         SmallVector<Value, 1>{memcpy_ops[0]->getResult(0)});
@@ -324,7 +327,7 @@ static unsigned getScfParDimIdFromBCastDma(air::MemcpyInterface memcpyOp) {
       }
     }
   }
-  assert(false && "cannot trace dependency to parent herd");
+  memcpyOp->emitOpError("cannot trace dependency to parent herd.");
   return 0;
 }
 
@@ -544,10 +547,14 @@ LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
     hier_op = dyn_cast<air::HierarchyInterface>(herd.getOperation());
     innerMemorySpace = (int)air::MemorySpace::L1;
   } else if (segment) {
-    assert(false &&
-           "broadcast lowering with air.segmentOp currently not supported");
-  } else
-    assert(false && "affine if op has no air.hierarchy as parent");
+    segment->emitOpError(
+        "broadcast lowering with air.segmentOp currently not supported.");
+    return failure();
+  } else {
+    op->emitOpError(
+        "broadcast lowering with air.segmentOp currently not supported.");
+    return failure();
+  }
 
   SmallVector<air::ChannelInterface, 1> externalGetPut;
   SmallVector<air::ChannelInterface, 1> internalGetPut;
@@ -1551,8 +1558,10 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
             memcpy_op.getOperation(), sink_op_memref_reads,
             sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs);
 
-        assert((sink_op_memref_reads.size() || sink_op_memref_writes.size()) &&
-               "cannot read memref from channel op");
+        if (sink_op_memref_reads.empty() && sink_op_memref_writes.empty()) {
+          memcpy_op->emitOpError("cannot read memref from channel op.");
+          return;
+        }
 
         if (sink_wait_all_op) {
           // Detect RAW deps

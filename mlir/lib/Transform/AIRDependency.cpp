@@ -193,8 +193,6 @@ public:
           // Alloc can be used to specify shapes for operations such
           // as reshape ops. If this alloc is used to specify shape of
           // a reshap op, ignore this operation.
-          assert(memalloc_op->getNumResults() == 1 &&
-                 "Number of results of alloc op == 1");
           if (!alloc_for_reshape(memalloc_op->getOpResult(0)))
             createAsyncExecute(module_builder, op, "memref::alloc", ExecuteOpID,
                                memalloc_op.getMemref().getType());
@@ -485,8 +483,6 @@ private:
       auto alt_shape_op = operand.getDefiningOp();
       if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
                           memref::CollapseShapeOp>(alt_shape_op)) {
-        assert(alt_shape_op->getNumResults() == 1 &&
-               "Number of results of shape changing op == 1");
         auto *cloned_op = builder.insert(alt_shape_op->clone());
         op->setOperand(idx, cloned_op->getResult(0));
         auto new_shape_val = alt_shape_op->getResult(0);
@@ -1511,32 +1507,41 @@ private:
   air::ExecuteOp getExecuteOpFromVertex(
       ExecuteGraph::VertexId v, ExecuteGraph g,
       llvm::DenseMap<std::pair<StringRef, int>, Operation *> &opIdToOpMap) {
-    assert(g[v].asyncEventType == "execute" &&
-           "This vertex is not a ExecuteOp");
     auto op = opIdToOpMap[std::make_pair("execute", g[v].operationId)];
+    if (g[v].asyncEventType != "execute") {
+      op->emitOpError("vertex is not an ExecuteOp.");
+      return air::ExecuteOp();
+    }
     return dyn_cast_if_present<air::ExecuteOp>(op);
   }
   air::DmaMemcpyNdOp getDmaOpFromVertex(
       ExecuteGraph::VertexId v, ExecuteGraph g,
       llvm::DenseMap<std::pair<StringRef, int>, Operation *> &opIdToOpMap) {
-    assert(g[v].asyncEventType == "dma" && "This vertex is not a DmaMemcpy op");
     auto op = opIdToOpMap[std::make_pair("dma", g[v].operationId)];
+    if (g[v].asyncEventType != "dma") {
+      op->emitOpError("vertex is not a DmaMemcpy op.");
+      return air::DmaMemcpyNdOp();
+    }
     return dyn_cast_if_present<air::DmaMemcpyNdOp>(op);
   }
   air::ChannelInterface getChannelOpFromVertex(
       ExecuteGraph::VertexId v, ExecuteGraph g,
       llvm::DenseMap<std::pair<StringRef, int>, Operation *> &opIdToOpMap) {
-    assert(g[v].asyncEventType == "channel" &&
-           "This vertex is not a Channel op");
     auto op = opIdToOpMap[std::make_pair("channel", g[v].operationId)];
+    if (g[v].asyncEventType != "channel") {
+      op->emitOpError("vertex is not a Channel op.");
+      return air::ChannelInterface();
+    }
     return dyn_cast_if_present<air::ChannelInterface>(op);
   }
   air::HierarchyInterface getHierOpFromVertex(
       ExecuteGraph::VertexId v, ExecuteGraph g,
       llvm::DenseMap<std::pair<StringRef, int>, Operation *> &opIdToOpMap) {
-    assert(g[v].asyncEventType == "hierarchy" &&
-           "This vertex is not a Hierarchy op");
     auto op = opIdToOpMap[std::make_pair("hierarchy", g[v].operationId)];
+    if (g[v].asyncEventType != "hierarchy") {
+      op->emitOpError("vertex is not a Hierarchy op.");
+      return air::HierarchyInterface();
+    }
     return dyn_cast_if_present<air::HierarchyInterface>(op);
   }
 

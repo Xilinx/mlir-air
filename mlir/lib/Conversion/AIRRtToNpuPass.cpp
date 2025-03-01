@@ -1366,8 +1366,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           pktFlow->emitOpError("unsupported trace src.");
           return;
         }
-        if (!target_model.isCoreTile(dstColIndex, dstRowIndex) &&
-            !target_model.isMemTile(dstColIndex, dstRowIndex)) {
+        if (!target_model.isShimNOCTile(dstColIndex, dstRowIndex)) {
           pktFlow->emitOpError("unsupported trace dest.");
           return;
         }
@@ -1454,7 +1453,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (chanToIdMap.count(dstColIndex) == 0)
           chanToIdMap[dstColIndex] = 15;
         int bdID = chanToIdMap[dstColIndex];
-        if (bdID >= 4) {
+        if (bdID < 4) {
           pktFlow->emitOpError("runs out of bd_id.");
           return;
         }

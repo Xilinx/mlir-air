@@ -495,12 +495,12 @@ static void propagateLinkWith(Operation *op, air::HerdOp herdOp) {
         SymbolTable::lookupSymbolIn(moduleOp, fnName));
     if (!fnDecl) {
       callOp->emitOpError("expected function declaration");
-      return;
+      return WalkResult::interrupt();
     }
     if (!fnDecl->hasAttr("link_with")) {
       callOp->emitOpError(
           "expected 'link_with' construct for the function declaration.");
-      return;
+      return WalkResult::interrupt();
     }
     herdOp->setAttr("link_with", fnDecl->getAttr("link_with"));
     return WalkResult::interrupt();

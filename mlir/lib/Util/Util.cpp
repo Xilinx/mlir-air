@@ -742,14 +742,16 @@ air::getRectangularConditionBoundsThroughAffineIfs(
 // Evaluate the integer value of affine set expression if the only symbolic
 // identifier is replaced with zero
 int air::evaluateSymbolEqualityInSet(AffineExpr c, MLIRContext *ctx) {
-  assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
+  if (!c.isSymbolicOrConstant())
+    return 0; // Constraint has dimension identifier.
   SmallVector<AffineExpr, 2> zero_syms{
       getAffineConstantExpr(0, ctx),
       getAffineConstantExpr(0, ctx),
   };
   auto newC = c.replaceSymbols(zero_syms);
   auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
-  assert(expr);
+  if (!expr)
+    return 0;
   int result = expr.getValue();
   // Both + and - constant eval are legal for AffineExpr
   return (result >= 0) ? (result) : (-result);
@@ -929,7 +931,10 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
     if (offsets.begin() + i + 1 == offsets.end())
       continue;
     auto const_stride = getConstantIntValue(strides[i]);
-    assert(const_stride && "non-static stride, NYI.");
+    if (!const_stride) {
+      emitError(builder.getUnknownLoc(), "non-static stride, NYI.");
+      return failure();
+    }
     auto j = findFirstComposableOffsetIdx(i, offsets, strides);
     if (!j)
       continue;
@@ -988,7 +993,10 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
         offset_producer = &exec.getChildOps().front();
       auto affine_apply = dyn_cast<affine::AffineApplyOp>(offset_producer);
-      assert(affine_apply && "unknown ssa offset producer, NYI.");
+      if (!affine_apply) {
+        offset_producer->emitOpError("unknown ssa offset producer, NYI.");
+        return failure();
+      }
       if (affine_apply->getNumOperands() > 1)
         continue;
       // Compose affine map
@@ -1452,12 +1460,16 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   OpBuilder builder(readOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  [[maybe_unused]] auto vectorTy =
-      llvm::cast<VectorType>(readOp.getVector().getType());
-  [[maybe_unused]] auto memrefTy =
-      llvm::cast<BaseMemRefType>(readOp.getSource().getType());
-  assert(vectorTy && "Not a vector");
-  assert(memrefTy && "Not a memref");
+  auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
+  auto memrefTy = llvm::cast<BaseMemRefType>(readOp.getSource().getType());
+  if (!vectorTy) {
+    readOp->emitOpError("Not a vector");
+    return pattern;
+  }
+  if (!memrefTy) {
+    readOp->emitOpError("Not a memref");
+    return pattern;
+  }
   // Initialize wraps and strides based on the unshrunk memref shape.
   populateDefaultWrapsAndStrides(builder, readOp.getSource(),
                                  std::get<0>(pattern), std::get<1>(pattern),
@@ -1479,12 +1491,16 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   OpBuilder builder(writeOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  [[maybe_unused]] auto memrefTy =
-      llvm::cast<BaseMemRefType>(writeOp.getSource().getType());
-  [[maybe_unused]] auto vectorTy =
-      llvm::cast<VectorType>(writeOp.getVector().getType());
-  assert(memrefTy && "Not a memref");
-  assert(vectorTy && "Not a vector");
+  auto memrefTy = llvm::cast<BaseMemRefType>(writeOp.getSource().getType());
+  auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
+  if (!vectorTy) {
+    writeOp->emitOpError("Not a vector");
+    return pattern;
+  }
+  if (!memrefTy) {
+    writeOp->emitOpError("Not a memref");
+    return pattern;
+  }
   // Initialize wraps and strides based on the unshrunk memref shape.
   populateDefaultWrapsAndStrides(builder, writeOp.getSource(),
                                  std::get<0>(pattern), std::get<1>(pattern),
@@ -1592,8 +1608,8 @@ air::getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
         else if (scf::getForInductionVarOwner(offsets[i]))
           continue;
         else
-          assert(false &&
-                 "offset is block argument to an unknown iteration space");
+          return SmallVector<int>(); // Offset is block argument to an unknown
+                                     // iteration space.
       }
     }
   }
@@ -1611,7 +1627,9 @@ air::getMemrefDimFromOffsetDim(int dimOnOffset, SmallVector<Value> offsets,
     return std::nullopt;
   if (offsets.empty())
     return std::nullopt;
-  assert(dimOnOffset < (int)offsets.size() && "Dimension exceeds offsets rank");
+  if (dimOnOffset >= (int)offsets.size()) {
+    return std::nullopt; // Dimension exceeds offsets rank.
+  }
 
   // Get stride value which corresponds to accessing each memref dimension,
   // highest dimension first.
@@ -1625,7 +1643,9 @@ air::getMemrefDimFromOffsetDim(int dimOnOffset, SmallVector<Value> offsets,
 
   // Find the dimension on memref shape with given stride value.
   auto strideVal = getConstantIntValue(strides[dimOnOffset]);
-  assert(strideVal && "Non-static stride value in data access pattern, NYI.");
+  if (!strideVal) {
+    return std::nullopt; // Non-static stride value in data access pattern, NYI.
+  }
   for (unsigned i = 0; i < memrefDimStrides.size(); i++)
     if (*strideVal == memrefDimStrides[i]) {
       output = i;
@@ -1644,8 +1664,9 @@ air::getOffsetDimFromMemrefDim(int dimOnMemref, SmallVector<Value> strides,
     return std::nullopt;
   if (strides.empty())
     return std::nullopt;
-  assert(dimOnMemref < (int)memrefShape.size() &&
-         "Dimension exceeds memref rank");
+  if (dimOnMemref >= (int)memrefShape.size()) {
+    return std::nullopt; // Dimension exceeds memref rank.
+  }
 
   // Get stride value which corresponds to accessing the current memref
   // dimension.
@@ -1657,7 +1678,10 @@ air::getOffsetDimFromMemrefDim(int dimOnMemref, SmallVector<Value> strides,
   // Find the dimension on wrap-and-stride list with given stride value.
   for (unsigned i = 0; i < strides.size(); i++) {
     auto strideVal = getConstantIntValue(strides[i]);
-    assert(strideVal && "Non-static stride value in data access pattern, NYI.");
+    if (!strideVal) {
+      return std::nullopt; // Non-static stride value in data access pattern,
+                           // NYI.
+    }
     if (*strideVal == memrefStride) {
       output = i;
       return output;
