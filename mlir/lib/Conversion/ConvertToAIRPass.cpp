@@ -493,9 +493,15 @@ static void propagateLinkWith(Operation *op, air::HerdOp herdOp) {
     StringRef fnName = callOp.getCallee();
     auto fnDecl = dyn_cast_or_null<func::FuncOp>(
         SymbolTable::lookupSymbolIn(moduleOp, fnName));
-    assert(fnDecl && "expected function declaration");
-    assert(fnDecl->hasAttr("link_with") &&
-           "expected 'link_with' construct for the function declaration");
+    if (!fnDecl) {
+      callOp->emitOpError("expected function declaration");
+      return WalkResult::interrupt();
+    }
+    if (!fnDecl->hasAttr("link_with")) {
+      callOp->emitOpError(
+          "expected 'link_with' construct for the function declaration.");
+      return WalkResult::interrupt();
+    }
     herdOp->setAttr("link_with", fnDecl->getAttr("link_with"));
     return WalkResult::interrupt();
   });
@@ -716,8 +722,10 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
           loc, newL1Subview.getResult(),
           AffineMapAttr::get(tr.getPermutation()));
       remap.map(tr.getResult(), transposeOp.getResult());
-    } else
-      assert(false && "NYI memref operation type on L1 memref");
+    } else {
+      o->emitOpError("memref operation type unsupported on L1 memref.");
+      return failure();
+    }
   }
   // Generate memref subview op leading the tiling of the L2 memref
   SmallVector<int64_t> tilingFactors;
@@ -770,8 +778,10 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
           loc, newL2Subview.getResult(),
           AffineMapAttr::get(tr.getPermutation()));
       remap.map(tr.getResult(), transposeOp.getResult());
-    } else
-      assert(false && "NYI memref operation type on L1 memref");
+    } else {
+      o->emitOpError("memref operation type unsupported on L1 memref.");
+      return failure();
+    }
   }
   builder.clone(*op, remap);
   op->erase();
@@ -915,7 +925,6 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
       module.dump();
-      assert(0);
     }
 
     std::vector<Operation *> waits;
@@ -1031,9 +1040,11 @@ static void getSegmentNames(ModuleOp module) {
       if (auto attr =
               op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
         std::string name = attr.getValue().str();
-        assert((std::find(seg_syms.begin(), seg_syms.end(), name) ==
-                seg_syms.end()) &&
-               "unexpected duplicate symbol");
+        if (std::find(seg_syms.begin(), seg_syms.end(), name) !=
+            seg_syms.end()) {
+          op->emitOpError("unexpected duplicate symbol.");
+          return;
+        }
         seg_syms.push_back(name);
       }
     });
@@ -1044,10 +1055,11 @@ static void getSegmentNames(ModuleOp module) {
         std::string name;
         do {
           std::stringstream ss;
-          assert(
-              f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()) &&
-              "enclosing function of air.sgement op expected to have a symbol "
-              "name");
+          if (!f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+            op->emitOpError("enclosing function of air.sgement op expected to "
+                            "have a symbol name.");
+            return;
+          }
           ss << f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
                     .str()
              << "_" << id++;
@@ -1322,7 +1334,6 @@ struct ParallelToLaunchPass
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
-      assert(0);
     }
     getSegmentNames(module);
 
@@ -1425,7 +1436,6 @@ struct ParallelToSegmentPass
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
-      assert(0);
     }
     getSegmentNames(module);
 

@@ -29,15 +29,13 @@ bool air::isTileInbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt) {
     int dst_memory_space =
         llvm::cast<BaseMemRefType>(memcpyOp.getDstMemref().getType())
             .getMemorySpaceAsInt();
-    assert(src_memory_space !=
-           dst_memory_space); // air.dmaMemcpyNdOp isn't meant to represent
-                              // core-to-core communication
     if (src_memory_space == tileMemSpaceAsInt)
       return false;
     else if (dst_memory_space == tileMemSpaceAsInt)
       return true;
-    else
-      assert(false);
+    memcpyOp->emitOpError(
+        "neither src nor dst use the tile's memory space, indicating a "
+        "potential error in the compilation workflow.");
     return src_memory_space < dst_memory_space;
   } else if (!memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
     return true;
@@ -163,15 +161,11 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
   int64_t one_d_offset = 0;
   for (int i = memcpy_offsets.size() - 1; i >= 0; i--) {
     auto offset = mlir::getConstantIntValue(memcpy_offsets[i]);
-    if (!offset)
-      assert(false && "non-static offset in memcpy op");
     if ((unsigned)i == memcpy_offsets.size() - 1)
       one_d_offset += *offset;
     else {
-      if (auto stride_i = mlir::getConstantIntValue(memcpy_strides[i])) {
-        one_d_offset += (*offset) * (*stride_i);
-      } else
-        assert(false && "non-static size in memcpy op");
+      auto stride_i = mlir::getConstantIntValue(memcpy_strides[i]);
+      one_d_offset += (*offset) * (*stride_i);
     }
   }
   return one_d_offset;
@@ -295,17 +289,12 @@ air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
                         SmallVector<Value> memcpy_strides, MLIRContext *ctx) {
   if (memcpy_sizes.empty() || memcpy_strides.empty())
     return std::vector<AIE::BDDimLayoutAttr>{};
-  assert(memcpy_sizes.size() == memcpy_strides.size() &&
-         "unequal sizes between wrap list and stride list");
   std::vector<AIE::BDDimLayoutAttr> output = {};
-  for (unsigned i = 0; i < memcpy_sizes.size(); i++) {
-    auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
-    assert(stepsize && "non-static stride");
-    int stepsize_v = *stepsize;
-    auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
-    assert(wrap && "non-static wrap");
-    int wrap_v = *wrap;
-    auto tuple = AIE::BDDimLayoutAttr::get(ctx, wrap_v, stepsize_v);
+  for (auto [wrapVal, stepsizeVal] :
+       llvm::zip_equal(memcpy_sizes, memcpy_strides)) {
+    auto stepsize = mlir::getConstantIntValue(stepsizeVal);
+    auto wrap = mlir::getConstantIntValue(wrapVal);
+    auto tuple = AIE::BDDimLayoutAttr::get(ctx, *wrap, *stepsize);
     output.push_back(tuple);
   }
   return output;
@@ -404,10 +393,7 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
 
 bool xilinx::air::allocation_info_t::valid() { return dma_tile != nullptr; }
 
-AIE::TileOp xilinx::air::allocation_info_t::getDmaTile() {
-  assert(valid());
-  return dma_tile;
-}
+AIE::TileOp xilinx::air::allocation_info_t::getDmaTile() { return dma_tile; }
 
 bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
   if (channel_op) {
@@ -504,7 +490,8 @@ DMAAllocator::lookupDMAAllocation(int64_t col, int64_t row,
     if (t.foundAlloc(col, row, memcpyOp))
       return t;
   }
-  assert(false);
+  memcpyOp.emitOpError("failed to look up a DMA allocation. This potentially "
+                       "indicates a failure in the compilation flow.");
   return {};
 }
 
@@ -599,7 +586,11 @@ allocation_info_t
 DMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
                                  AIE::TileOp tile, int chan, int col = -1,
                                  int row = -1, std::vector<int> dma_id = {}) {
-  assert(tile);
+  if (!tile) {
+    memcpyOp.emitOpError("failed to get the AIE tile. This indicates a "
+                         "potential error in the compilation flow.");
+    return {};
+  }
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
   AIE::DMAChannel aie_chan;
@@ -663,7 +654,11 @@ TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int col,
   }
   // Need to allocate a new one
   auto tile = getPhysTileOpOrNull(device, col, row);
-  assert(tile);
+  if (!tile) {
+    memcpyOp.emitOpError("failed to get a tile at specified col and row. This "
+                         "indicates a potential compilation failre.");
+    return {};
+  }
   int tile_dma_channels =
       isMM2S ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
              : tile.getNumDestConnections(AIE::WireBundle::DMA);
@@ -740,9 +735,16 @@ allocation_info_t ShimDMAAllocator::allocNewDmaChannel(
       }
     }
   }
-  assert(dma_channel < shim_dma_channels);
+  if (dma_channel >= shim_dma_channels) {
+    memcpyOp.emitOpError("out of shim dma channels.");
+    return {};
+  }
   tile = getPhysTileOp(device, dma_col, 0);
-  assert(tile);
+  if (!tile) {
+    memcpyOp.emitOpError(
+        "failed to get shim tile for the newly allocated shim dma channel.");
+    return {};
+  }
   // For shim dma allocations, the col, row and dma_id fields record the other
   // side of the flows, for airrt metadata
   std::vector<int> dma_ops_get_id;
@@ -779,7 +781,7 @@ ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
       return t;
     }
   }
-  assert(false);
+  // Code shouldn't have proceeded to this stage.
   return DMAAllocator::allocNewDmaChannel(memcpyOp, existing_alloc.getDmaTile(),
                                           existing_alloc.dma_channel.channel);
 }
@@ -791,7 +793,6 @@ ShimDMAAllocator::getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
   // Allocate external buffers
   auto memref =
       (isMM2S) ? (memcpyOp.getSrcMemref()) : (memcpyOp.getDstMemref());
-  assert(memref);
   MemRefType memrefTy = llvm::cast<MemRefType>(memref.getType());
   // External buffers have memory space L3
   memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(), {},
@@ -864,7 +865,10 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   const int dummy{0};
   AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
   auto tile = buffer.getTileOp();
-  assert(tile);
+  if (!tile) {
+    buffer->emitOpError("failed to get an AIE tile.");
+    return {};
+  }
 
   // Search for existing dma channel allocation
   unsigned num_allocs = 0;
@@ -892,7 +896,10 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   const int dummy{0};
   AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
   auto tile = buffer.getTileOp();
-  assert(tile);
+  if (!tile) {
+    buffer->emitOpError("failed to get AIE tile.");
+    return {};
+  }
 
   for (auto &t : *allocs) {
     if (t.foundAlloc(existing_alloc.getDmaTile(), existing_alloc.dma_channel)) {
@@ -900,7 +907,7 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       return t;
     }
   }
-  assert(false);
+  // Code shouldn't have proceeded to this stage.
   int chan = -1;
   return DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
@@ -1084,8 +1091,11 @@ air::simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
     if (f.MM2S_memspace_as_int == (int)air::MemorySpace::L1) {
       for (auto o : f.MM2S) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-        auto core = o->getParentOfType<AIE::CoreOp>();
-        assert(core);
+        auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
+        if (!core) {
+          memcpyOpIf->emitOpError("memcpy op not outlined in an aie.core op.");
+          return failure();
+        }
         auto tile = core.getTileOp();
         int x = tile.getCol();
         int y = tile.getRow();
@@ -1100,8 +1110,11 @@ air::simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-          auto core = o->getParentOfType<AIE::CoreOp>();
-          assert(core);
+          auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
+          if (!core) {
+            memcpyOpIf->emitOpError(
+                "memcpy op not outlined in an aie.core op.");
+          }
           auto tile = core.getTileOp();
           int x = tile.getCol();
           int y = tile.getRow();
@@ -1149,13 +1162,18 @@ air::simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L3) {
       // L3 shim tiles assumed to not be target for broadcast
-      assert(f.S2MM.size() <= 1);
-      for (auto o : f.S2MM[0]) {
+      if (f.S2MM.size() > 1) {
+        f.S2MM.front().front()->emitOpError(
+            "found multiple inputs for an aie.flow. Fan-in for aie.flow isn't "
+            "supported in current architecture.");
+        return failure();
+      }
+      for (auto o : f.S2MM.front()) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-        f.S2MM_alloc[0] = shim_dma_alloc.allocNewDmaChannel(
+        f.S2MM_alloc.front() = shim_dma_alloc.allocNewDmaChannel(
             memcpyOpIf, f.MM2S_alloc.getDmaTile().getCol(),
             f.MM2S_alloc.getDmaTile().getRow(), f.MM2S);
-        if (!f.S2MM_alloc[0].valid())
+        if (!f.S2MM_alloc.front().valid())
           return failure();
       }
     }
@@ -1231,8 +1249,11 @@ LogicalResult air::groupedByLoopDMAChannelAllocation(
     if (f.MM2S_memspace_as_int == (int)air::MemorySpace::L1) {
       for (auto o : f.MM2S) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-        auto core = o->getParentOfType<AIE::CoreOp>();
-        assert(core);
+        auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
+        if (!core) {
+          memcpyOpIf->emitOpError("memcpy op not outlined in an aie.core op.");
+          return failure();
+        }
         auto tile = core.getTileOp();
         int x = tile.getCol();
         int y = tile.getRow();
@@ -1247,8 +1268,11 @@ LogicalResult air::groupedByLoopDMAChannelAllocation(
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
-          auto core = o->getParentOfType<AIE::CoreOp>();
-          assert(core);
+          auto core = memcpyOpIf->getParentOfType<AIE::CoreOp>();
+          if (!core) {
+            memcpyOpIf->emitOpError("memcpy not outlined in an aie.core op.");
+            return failure();
+          }
           auto tile = core.getTileOp();
           int x = tile.getCol();
           int y = tile.getRow();

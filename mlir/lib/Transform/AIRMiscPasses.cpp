@@ -302,7 +302,7 @@ private:
                 continue;
               if (!eqFlags[i])
                 continue;
-              auto eval = evaluateSymbolEqualityInSet(c, ctx);
+              auto eval = air::evaluateSymbolEqualityInSet(c, ctx);
               current_shape_expr[j] = getAffineConstantExpr(eval, ctx);
               herdDimToDmaOffsetDimMap[j] = std::get<0>(elem);
               op_history.insert(op_history.end(), std::get<2>(elem).begin(),
@@ -354,22 +354,6 @@ private:
     });
   }
 
-  // Evaluate the integer value of affine set expression if the only symbolic
-  // identifier is replaced with zero
-  int evaluateSymbolEqualityInSet(AffineExpr c, MLIRContext *ctx) {
-    assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
-    SmallVector<AffineExpr, 2> zero_syms{
-        getAffineConstantExpr(0, ctx),
-        getAffineConstantExpr(0, ctx),
-    };
-    auto newC = c.replaceSymbols(zero_syms);
-    auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
-    assert(expr);
-    int result = expr.getValue();
-    // Both + and - constant eval are legal for AffineExpr
-    return (result >= 0) ? (result) : (-result);
-  }
-
   // Evaluate the affine expression of affine map if the only symbolic
   // identifier is replaced with zero
   void replaceSymbolAndEvaluateConstantInMap(AffineMap map, AffineExpr &c,
@@ -399,7 +383,10 @@ private:
       return;
     }
     auto acc = add_operand.value();
-    assert(isa<AffineConstantExpr>(c) && "non-constant affine expression");
+    if (!isa<AffineConstantExpr>(c)) {
+      arith_op->emitOpError("non-constant affine expression.");
+      return;
+    }
     acc += dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(acc, ctx);
   }
@@ -424,7 +411,10 @@ private:
       return;
     }
     auto mul = mul_operand.value();
-    assert(isa<AffineConstantExpr>(c) && "non-constant affine expression");
+    if (!isa<AffineConstantExpr>(c)) {
+      arith_op->emitOpError("non-constant affine expression.");
+      return;
+    }
     mul *= dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(mul, ctx);
   }
@@ -1287,12 +1277,19 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
               if (auto apply_child_op =
                       dyn_cast<affine::AffineApplyOp>(child_op))
                 apply = apply_child_op;
-          assert(apply && "Apply op not found. NYI.");
+          if (!apply) {
+            defOp->emitOpError("Apply op not found. NYI.");
+            return;
+          }
           // Any const operands to affine map should have been canonicalized
           // away.
-          assert(llvm::none_of(apply->getOperands(), [](Value oper) {
-            return getConstantIntValue(oper);
-          }));
+          if (llvm::any_of(apply->getOperands(), [](Value oper) {
+                return getConstantIntValue(oper);
+              })) {
+            defOp->emitOpError("found constant operands to affine map, which "
+                               "aren't canonicalized away.");
+            return;
+          }
           // Set map's expressions to cancel out each key's offset
           auto applyExpr = apply.getMap().getResult(0);
           applyExpr = applyExpr - key;

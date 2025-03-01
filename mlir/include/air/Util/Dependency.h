@@ -364,8 +364,10 @@ public:
       dep_tracing_mode = 'w';
     else if (dep_type == "WAW/WAR")
       dep_tracing_mode = 'n';
-    else
-      assert(false && "Unknown dependency type");
+    else {
+      sink_air_op->emitOpError("Unknown dependency type.");
+      return;
+    }
 
     // Detect deps
     for (auto operand : operands) {
