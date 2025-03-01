@@ -493,7 +493,7 @@ static void propagateLinkWith(Operation *op, air::HerdOp herdOp) {
     StringRef fnName = callOp.getCallee();
     auto fnDecl = dyn_cast_or_null<func::FuncOp>(
         SymbolTable::lookupSymbolIn(moduleOp, fnName));
-    if (!fcDecl) {
+    if (!fnDecl) {
       callOp->emitOpError("expected function declaration");
       return;
     }
