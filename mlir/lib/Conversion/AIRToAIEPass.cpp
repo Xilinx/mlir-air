@@ -2077,7 +2077,7 @@ public:
         auto chan = air::getChannelDeclarationThroughSymbol(putget);
         if (!chan) {
           putget->emitOpError("failed to get air.channel declaration.");
-          return failrue();
+          return failure();
         }
         std::string chan_name = putget.getChanName().str();
         // Check if new pair
