@@ -110,16 +110,6 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
       idInt = *const_int;
     else
       return failure();
-    uint64_t xInt = 0;
-    if (auto const_int = getConstantIntValue(adaptor.getX()))
-      xInt = *const_int;
-    else
-      return failure();
-    uint64_t yInt = 0;
-    if (auto const_int = getConstantIntValue(adaptor.getY()))
-      yInt = *const_int;
-    else
-      return failure();
 
     Value memref = adaptor.getMemref();
     BaseMemRefType memrefTy = cast<BaseMemRefType>(memref.getType());
@@ -192,8 +182,8 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     AIE::PacketInfoAttr packet =
         op->getAttrOfType<AIE::PacketInfoAttr>("packet");
     rewriter.replaceOpWithNewOp<AIEX::NpuDmaMemcpyNdOp>(
-        op, xInt, yInt, memref, offsets, sizes, strides, staticOffsets,
-        staticSizes, staticStrides, packet, metadata, idInt);
+        op, memref, offsets, sizes, strides, staticOffsets, staticSizes,
+        staticStrides, packet, metadata, idInt);
 
     return success();
   }
