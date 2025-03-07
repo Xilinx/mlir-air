@@ -117,8 +117,10 @@ public:
 
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        if (air::isAsyncOp(op))
+        if (air::isAsyncOp(op)) {
+          updateAsyncExecuteGraphWithNewNode(op, asyncExecuteGraph);
           return; // Skip if is already async.
+        }
         if (op->getParentOfType<linalg::LinalgOp>())
           return; // Skip if is inside a linalg.generic.
 
@@ -443,17 +445,8 @@ private:
     builder.clone(*op);
     builder.create<air::ExecuteTerminatorOp>(builder.getUnknownLoc());
 
-    auto v = asyncExecuteGraph.addVertex();
-    auto &node = asyncExecuteGraph[v];
-    // Create a vertex out of the current async execute region
-    node.asyncEventName = air::to_string(op);
-    node.asyncEventType = "execute";
-    node.color = "chartreuse";
-    node.shape = "oval";
-    node.operationId = ExecuteOpID;
-
     // Update op-to-graph map
-    region_to_g[async_region.getId()] = v;
+    updateAsyncExecuteGraphWithNewNode(async_region, asyncExecuteGraph);
 
     // Erase op
     if (eraseOpWithCheck(op, "createAsyncExecute (no SSA return)").failed()) {
@@ -491,16 +484,8 @@ private:
     }
     op->replaceAllUsesWith(returnVals);
 
-    // Create a vertex out of the current async execute region
-    auto v = asyncExecuteGraph.addVertex();
-    asyncExecuteGraph[v].asyncEventName = air::to_string(op);
-    asyncExecuteGraph[v].asyncEventType = "execute";
-    asyncExecuteGraph[v].color = "chartreuse";
-    asyncExecuteGraph[v].shape = "oval";
-    asyncExecuteGraph[v].operationId = ExecuteOpID;
-
     // Update op-to-graph map
-    region_to_g[async_region.getId()] = v;
+    updateAsyncExecuteGraphWithNewNode(async_region, asyncExecuteGraph);
 
     // Erase op
     if (eraseOpWithCheck(op, "createAsyncExecute (one SSA return)").failed()) {
@@ -525,16 +510,8 @@ private:
         "id", mlir::IntegerAttr::get(
                   mlir::IntegerType::get(op->getContext(), 32), id));
 
-    // Create a vertex out of the current dmamemcpy2d op
-    auto v = asyncExecuteGraph.addVertex();
-    asyncExecuteGraph[v].asyncEventName = air::to_string(op);
-    asyncExecuteGraph[v].asyncEventType = "dma";
-    asyncExecuteGraph[v].color = "cyan";
-    asyncExecuteGraph[v].shape = "oval";
-    asyncExecuteGraph[v].operationId = id;
-
     // Update op-to-graph map
-    dma_to_g[id] = v;
+    updateAsyncExecuteGraphWithNewNode(new_dmaNd_op, asyncExecuteGraph);
 
     // Erase op
     if (eraseOpWithCheck(op, "createAsyncDMA").failed()) {
@@ -560,6 +537,8 @@ private:
           mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
                                  ++ChannelOpID));
       event_name = "Put";
+      // Update op-to-graph map
+      updateAsyncExecuteGraphWithNewNode(new_channel_put_op, asyncExecuteGraph);
     } else if (auto channel_get_op = dyn_cast<air::ChannelGetOp>(op)) {
       air::ChannelGetOp new_channel_get_op = builder.create<air::ChannelGetOp>(
           loc, air::AsyncTokenType::get(channel_get_op->getContext()), deps,
@@ -571,19 +550,10 @@ private:
           mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
                                  ++ChannelOpID));
       event_name = "Get";
+      // Update op-to-graph map
+      updateAsyncExecuteGraphWithNewNode(new_channel_get_op, asyncExecuteGraph);
     } else
       op->emitOpError("unknown air channel op");
-
-    // Create a vertex out of the current channel op
-    auto v = asyncExecuteGraph.addVertex();
-    asyncExecuteGraph[v].asyncEventName = air::to_string(op);
-    asyncExecuteGraph[v].asyncEventType = "channel";
-    asyncExecuteGraph[v].color = "cyan";
-    asyncExecuteGraph[v].shape = "oval";
-    asyncExecuteGraph[v].operationId = ChannelOpID;
-
-    // Update op-to-graph map
-    channel_to_g[ChannelOpID] = v;
 
     // Erase op
     if (eraseOpWithCheck(op, "createAsyncChannel").failed()) {
@@ -612,41 +582,20 @@ private:
       auto new_launch = createAsyncHierarchy<air::LaunchOp>(
           builder, launch, HierarchyOpID, deps, args, constants);
       new_op = new_launch.getOperation();
-      // Create a vertex out of the current hierarchy op
-      auto v = asyncExecuteGraph.addVertex();
-      asyncExecuteGraph[v].asyncEventName = air::to_string(op);
-      asyncExecuteGraph[v].asyncEventType = "hierarchy";
-      asyncExecuteGraph[v].color = "yellow";
-      asyncExecuteGraph[v].shape = "box";
-      asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
-      hier_to_g[HierarchyOpID] = v;
+      updateAsyncExecuteGraphWithNewNode(new_launch, asyncExecuteGraph);
     } else if (auto segment = dyn_cast<air::SegmentOp>(op.getOperation())) {
       auto new_segment = createAsyncHierarchy<air::SegmentOp>(
           builder, segment, HierarchyOpID, deps, args, constants);
       new_op = new_segment.getOperation();
-      // Create a vertex out of the current hierarchy op
-      auto v = asyncExecuteGraph.addVertex();
-      asyncExecuteGraph[v].asyncEventName = air::to_string(op);
-      asyncExecuteGraph[v].asyncEventType = "hierarchy";
-      asyncExecuteGraph[v].color = "yellow";
-      asyncExecuteGraph[v].shape = "box";
-      asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
-      hier_to_g[HierarchyOpID] = v;
+      updateAsyncExecuteGraphWithNewNode(new_segment, asyncExecuteGraph);
     } else if (auto herd = dyn_cast<air::HerdOp>(op.getOperation())) {
       auto new_herd = createAsyncHierarchy<air::HerdOp>(
           builder, herd, HierarchyOpID, deps, args, constants);
       new_op = new_herd.getOperation();
-      // Create a vertex out of the current hierarchy op
-      auto v = asyncExecuteGraph.addVertex();
-      asyncExecuteGraph[v].asyncEventName = air::to_string(op);
-      asyncExecuteGraph[v].asyncEventType = "hierarchy";
-      asyncExecuteGraph[v].color = "yellow";
-      asyncExecuteGraph[v].shape = "box";
-      asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
-      hier_to_g[HierarchyOpID] = v;
+      updateAsyncExecuteGraphWithNewNode(new_herd, asyncExecuteGraph);
     } else {
       op->emitOpError("unknown hierarchy operation");
     }
@@ -695,6 +644,43 @@ private:
       replaceAllUsesInRegionWith(v, new_kernel_args[i++], new_op.getRegion());
 
     return new_op;
+  }
+
+  void updateAsyncExecuteGraphWithNewNode(Operation *op, ExecuteGraph &graph) {
+    auto v = graph.addVertex();
+    auto &node = graph[v];
+    // Create a vertex out of the current async execute region
+    node.asyncEventName = air::to_string(op);
+    auto setNodeAttrsBasedOnOp = [&node, &v, this](Operation *op) {
+      if (auto execOp = dyn_cast<air::ExecuteOp>(op)) {
+        node.asyncEventType = "execute";
+        node.color = "chartreuse";
+        node.shape = "oval";
+        node.operationId = execOp.getId();
+        region_to_g[node.operationId] = v;
+      } else if (auto dmaOp = dyn_cast<air::DmaMemcpyNdOp>(op)) {
+        node.asyncEventType = "dma";
+        node.color = "cyan";
+        node.shape = "oval";
+        node.operationId = dmaOp.getId();
+        dma_to_g[node.operationId] = v;
+      } else if (auto ciOp = dyn_cast<air::ChannelInterface>(op)) {
+        node.asyncEventName = air::to_string(op);
+        node.asyncEventType = "channel";
+        node.color = "cyan";
+        node.shape = "oval";
+        node.operationId = ciOp.getId();
+        channel_to_g[node.operationId] = v;
+      } else if (auto hiOp = dyn_cast<air::HierarchyInterface>(op)) {
+        node.asyncEventName = air::to_string(op);
+        node.asyncEventType = "hierarchy";
+        node.color = "yellow";
+        node.shape = "box";
+        node.operationId = hiOp.getId();
+        hier_to_g[node.operationId] = v;
+      }
+    };
+    setNodeAttrsBasedOnOp(op);
   }
 
   //===----------------------------------------------------------------------===//
