@@ -117,84 +117,32 @@ public:
 
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        // Create async interface for air.dmamemcpy ops
+        if (air::isAsyncOp(op))
+          return; // Skip if is already async.
+        if (op->getParentOfType<linalg::LinalgOp>())
+          return; // Skip if is inside a linalg.generic.
+
         if (isa<air::DmaMemcpyNdOp>(op))
           createAsyncDMA(module_builder, op);
-
-        // Create async interface for air.channel ops
         else if (isa<air::ChannelInterface>(op))
           createAsyncChannel(module_builder, op, ChannelOpID);
-
-        // Create async execute region for linalg.matmul
-        else if (isa<linalg::MatmulOp>(op))
-          createAsyncExecute(module_builder, op, "linalg::matmul", ExecuteOpID);
-
-        // Create async execute region for linalg.fill
-        else if (isa<linalg::FillOp>(op))
-          createAsyncExecute(module_builder, op, "linalg::fill", ExecuteOpID);
-
-        // Create async execute region for linalg.copy
-        else if (isa<linalg::CopyOp>(op))
-          createAsyncExecute(module_builder, op, "linalg::copy", ExecuteOpID);
-
-        // Create async execute region for linalg op
-        else if (isa<linalg::LinalgOp>(op))
-          createAsyncExecute(module_builder, op, "linalg::unknown",
-                             ExecuteOpID);
-
-        // Create async interface for func.call ops.
-        else if (isa<func::CallOp>(op))
-          createAsyncExecute(module_builder, op, "func::call", ExecuteOpID);
-
-        // Create async execute region for memref.alloc
-        else if (auto memcast_op = dyn_cast<memref::CastOp>(op))
-          createAsyncExecute(module_builder, op, "memref::cast", ExecuteOpID,
-                             memcast_op.getDest().getType());
-
-        // Create async execute region for memref.dealloc
-        else if (isa<memref::DeallocOp>(op))
-          createAsyncExecute(module_builder, op, "memref::dealloc",
-                             ExecuteOpID);
-
-        // Create async execute region for memref.copy
-        else if (isa<memref::CopyOp>(op))
-          createAsyncExecute(module_builder, op, "memref::copy", ExecuteOpID);
-
-        // Create async execute region for arith.muli
-        else if (auto arith_op = dyn_cast<arith::MulIOp>(op)) {
-          if (llvm::isa<IndexType>(arith_op.getResult().getType())) {
-            createAsyncExecute(module_builder, op, "arith::muli", ExecuteOpID,
-                               arith_op.getResult().getType());
-          }
-        }
-
-        // Create async execute region for arith.addi
-        else if (auto arith_op = dyn_cast<arith::AddIOp>(op)) {
-          if (llvm::isa<IndexType>(arith_op.getResult().getType())) {
-            createAsyncExecute(module_builder, op, "arith::addi", ExecuteOpID,
-                               arith_op.getResult().getType());
-          }
-        }
-
-        // Create async execute region for affine.apply
-        else if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(op))
-          createAsyncExecute(module_builder, op, "affine::apply", ExecuteOpID,
-                             apply_op.getResult().getType());
-
-        // Create async execute region for air hierarchy ops (air.launch and
-        // air.segment, TODO: air.herd).
-        else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op)) {
+        else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp,
+                     memref::CopyOp>(op))
+          createAsyncExecute(module_builder, op, ExecuteOpID);
+        else if (isa<memref::CastOp, affine::AffineApplyOp, arith::AddIOp,
+                     arith::MulIOp>(op))
+          createAsyncExecute(module_builder, op, ExecuteOpID,
+                             op->getResult(0).getType());
+        else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op))
           createAsyncHierarchyImpls(module_builder, hierarchy_op,
                                     HierarchyOpID);
-        }
-
         // Create async execute region for memref.alloc
         else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op)) {
           // Alloc can be used to specify shapes for operations such
           // as reshape ops. If this alloc is used to specify shape of
           // a reshap op, ignore this operation.
           if (!alloc_for_reshape(memalloc_op->getOpResult(0)))
-            createAsyncExecute(module_builder, op, "memref::alloc", ExecuteOpID,
+            createAsyncExecute(module_builder, op, ExecuteOpID,
                                memalloc_op.getMemref().getType());
         }
 
@@ -237,10 +185,10 @@ public:
           }
           if (isCandidateExecute) {
             if (op->getNumResults())
-              createAsyncExecute(module_builder, op, "unknown", ExecuteOpID,
+              createAsyncExecute(module_builder, op, ExecuteOpID,
                                  op->getResults().front().getType());
             else
-              createAsyncExecute(module_builder, op, "unknown", ExecuteOpID);
+              createAsyncExecute(module_builder, op, ExecuteOpID);
           }
         }
       });
@@ -460,7 +408,6 @@ private:
   // Create air execute op with async interface (no ssa result returned); update
   // graph
   air::ExecuteOp createAsyncExecute(OpBuilder &builder, Operation *op,
-                                    std::string asyncEventName,
                                     uint64_t &ExecuteOpID) {
     builder.setInsertionPoint(op);
     auto loc = op->getLoc();
@@ -499,7 +446,7 @@ private:
     auto v = asyncExecuteGraph.addVertex();
     auto &node = asyncExecuteGraph[v];
     // Create a vertex out of the current async execute region
-    node.asyncEventName = asyncEventName;
+    node.asyncEventName = air::to_string(op);
     node.asyncEventType = "execute";
     node.color = "chartreuse";
     node.shape = "oval";
@@ -519,7 +466,6 @@ private:
   // Create air execute op with async interface (with one ssa result returned);
   // update graph
   air::ExecuteOp createAsyncExecute(OpBuilder &builder, Operation *op,
-                                    std::string asyncEventName,
                                     uint64_t &ExecuteOpID,
                                     mlir::Type valueType) {
     builder.setInsertionPoint(op);
@@ -547,7 +493,7 @@ private:
 
     // Create a vertex out of the current async execute region
     auto v = asyncExecuteGraph.addVertex();
-    asyncExecuteGraph[v].asyncEventName = asyncEventName;
+    asyncExecuteGraph[v].asyncEventName = air::to_string(op);
     asyncExecuteGraph[v].asyncEventType = "execute";
     asyncExecuteGraph[v].color = "chartreuse";
     asyncExecuteGraph[v].shape = "oval";
@@ -581,7 +527,7 @@ private:
 
     // Create a vertex out of the current dmamemcpy2d op
     auto v = asyncExecuteGraph.addVertex();
-    asyncExecuteGraph[v].asyncEventName = "air::dmaNd";
+    asyncExecuteGraph[v].asyncEventName = air::to_string(op);
     asyncExecuteGraph[v].asyncEventType = "dma";
     asyncExecuteGraph[v].color = "cyan";
     asyncExecuteGraph[v].shape = "oval";
@@ -630,7 +576,7 @@ private:
 
     // Create a vertex out of the current channel op
     auto v = asyncExecuteGraph.addVertex();
-    asyncExecuteGraph[v].asyncEventName = "air::Channel" + event_name;
+    asyncExecuteGraph[v].asyncEventName = air::to_string(op);
     asyncExecuteGraph[v].asyncEventType = "channel";
     asyncExecuteGraph[v].color = "cyan";
     asyncExecuteGraph[v].shape = "oval";
@@ -668,7 +614,7 @@ private:
       new_op = new_launch.getOperation();
       // Create a vertex out of the current hierarchy op
       auto v = asyncExecuteGraph.addVertex();
-      asyncExecuteGraph[v].asyncEventName = "air::launch";
+      asyncExecuteGraph[v].asyncEventName = air::to_string(op);
       asyncExecuteGraph[v].asyncEventType = "hierarchy";
       asyncExecuteGraph[v].color = "yellow";
       asyncExecuteGraph[v].shape = "box";
@@ -681,7 +627,7 @@ private:
       new_op = new_segment.getOperation();
       // Create a vertex out of the current hierarchy op
       auto v = asyncExecuteGraph.addVertex();
-      asyncExecuteGraph[v].asyncEventName = "air::segment";
+      asyncExecuteGraph[v].asyncEventName = air::to_string(op);
       asyncExecuteGraph[v].asyncEventType = "hierarchy";
       asyncExecuteGraph[v].color = "yellow";
       asyncExecuteGraph[v].shape = "box";
@@ -694,7 +640,7 @@ private:
       new_op = new_herd.getOperation();
       // Create a vertex out of the current hierarchy op
       auto v = asyncExecuteGraph.addVertex();
-      asyncExecuteGraph[v].asyncEventName = "air::herd";
+      asyncExecuteGraph[v].asyncEventName = air::to_string(op);
       asyncExecuteGraph[v].asyncEventType = "hierarchy";
       asyncExecuteGraph[v].color = "yellow";
       asyncExecuteGraph[v].shape = "box";
