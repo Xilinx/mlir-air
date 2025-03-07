@@ -55,7 +55,8 @@ namespace {
 // https://github.com/Xilinx/mlir-air/issues/372
 // is open. Once the root cause is found, there should be no ops erased here
 // whose results have users.
-LogicalResult eraseOpWithCheck(Operation *op, std::string_view context = "") {
+LogicalResult eraseOpWithCheck(RewriterBase &rewriter, Operation *op,
+                               std::string_view context = "") {
   for (auto opResult : op->getResults()) {
     for (auto &&user : opResult.getUsers()) {
       auto result =
@@ -67,7 +68,7 @@ LogicalResult eraseOpWithCheck(Operation *op, std::string_view context = "") {
     }
   }
 
-  op->erase();
+  rewriter.eraseOp(op);
   return success();
 }
 
@@ -468,7 +469,8 @@ private:
     updateAsyncExecuteGraphWithNewNode(async_region, asyncExecuteGraph);
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncExecute (no SSA return)").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncExecute (no SSA return)")
+            .failed()) {
       signalPassFailure();
     }
 
@@ -504,7 +506,8 @@ private:
     updateAsyncExecuteGraphWithNewNode(async_region, asyncExecuteGraph);
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncExecute (one SSA return)").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncExecute (one SSA return)")
+            .failed()) {
       signalPassFailure();
     }
     return async_region;
@@ -527,7 +530,7 @@ private:
     updateAsyncExecuteGraphWithNewNode(new_dmaNd_op, asyncExecuteGraph);
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncDMA").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncDMA").failed()) {
       signalPassFailure();
     }
   }
@@ -547,7 +550,7 @@ private:
     updateAsyncExecuteGraphWithNewNode(new_Wait_all_op, asyncExecuteGraph);
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncWaitAll").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncWaitAll").failed()) {
       signalPassFailure();
     }
   }
@@ -582,7 +585,7 @@ private:
       op->emitOpError("unknown air channel op");
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncChannel").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncChannel").failed()) {
       signalPassFailure();
     }
   }
@@ -628,7 +631,7 @@ private:
     auto new_hier = dyn_cast<air::HierarchyInterface>(new_op);
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncHierarchyImpls").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncHierarchyImpls").failed()) {
       signalPassFailure();
     }
     return new_hier;
@@ -1305,11 +1308,11 @@ private:
     }
   }
 
-  void insertLoopCarriedDeps(OpBuilder &builder, scf::ForOp &loop_op,
+  void insertLoopCarriedDeps(RewriterBase &rewriter, scf::ForOp &loop_op,
                              SmallVector<Value, 1> yielded_tokens_in_loop_op) {
     // (1) Create one wait_all event at the end of current for loop body.
     air::WaitAllOp wait_all_op_yielded =
-        insertWaitAllOpBeforeLoopYield<scf::ForOp>(builder, loop_op,
+        insertWaitAllOpBeforeLoopYield<scf::ForOp>(rewriter, loop_op,
                                                    yielded_tokens_in_loop_op);
 
     // Update graph
@@ -1342,18 +1345,18 @@ private:
       }
     }
     air::WaitAllOp wait_all_op_before_loop =
-        insertWaitAllOpAtLoopBegin<scf::ForOp>(builder, loop_op, "for",
+        insertWaitAllOpAtLoopBegin<scf::ForOp>(rewriter, loop_op, "for",
                                                incoming_tokens, constants);
 
     // (3) Create new for op with iter_args.
     scf::ForOp new_loop_op = replaceLoopOpWithNewTerminator(
-        builder, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
+        rewriter, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
 
     // Yield an async token
     SmallVector<Value, 4> yield_token;
     yield_token.push_back(wait_all_op_yielded.getResult(0));
-    builder.setInsertionPointToEnd(new_loop_op.getBody());
-    builder.create<scf::YieldOp>(new_loop_op.getLoc(), yield_token);
+    rewriter.setInsertionPointToEnd(new_loop_op.getBody());
+    rewriter.create<scf::YieldOp>(new_loop_op.getLoc(), yield_token);
 
     // Elevating tokens from inside forOp body to the yielded token, to maintain
     // dominance
@@ -1364,18 +1367,18 @@ private:
     elevateAsyncTokens<scf::ForOp, scf::ParallelOp>(new_loop_op,
                                                     wait_all_op_yielded_v);
 
-    if (eraseOpWithCheck(loop_op, "insertLoopCarriedDeps").failed()) {
+    if (eraseOpWithCheck(rewriter, loop_op, "insertLoopCarriedDeps").failed()) {
       signalPassFailure();
     }
     loop_op = new_loop_op;
   }
 
-  void insertLoopCarriedDeps(OpBuilder &builder, scf::ParallelOp &loop_op,
+  void insertLoopCarriedDeps(RewriterBase &rewriter, scf::ParallelOp &loop_op,
                              SmallVector<Value, 1> yielded_tokens_in_loop_op) {
     // (1) Create one wait_all event at the end of current parallel loop body.
     air::WaitAllOp wait_all_op_yielded =
         insertWaitAllOpBeforeLoopYield<scf::ParallelOp>(
-            builder, loop_op, yielded_tokens_in_loop_op);
+            rewriter, loop_op, yielded_tokens_in_loop_op);
 
     // Update graph
     ExecuteGraph::VertexId wait_all_op_yielded_v =
@@ -1409,21 +1412,21 @@ private:
     }
     air::WaitAllOp wait_all_op_before_loop =
         insertWaitAllOpAtLoopBegin<scf::ParallelOp>(
-            builder, loop_op, "parallel", incoming_tokens, constants);
+            rewriter, loop_op, "parallel", incoming_tokens, constants);
 
     // (3) Create new parallel op with init_val.
     scf::ParallelOp new_loop_op = replaceLoopOpWithNewTerminator(
-        builder, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
+        rewriter, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
 
     // Remove the old scf::YieldOp
     SmallVector<scf::YieldOp, 2> y_ops(new_loop_op.getOps<scf::YieldOp>());
     for (auto y_op : y_ops)
-      if (eraseOpWithCheck(y_op, "insertLoopCarriedDeps").failed())
+      if (eraseOpWithCheck(rewriter, y_op, "insertLoopCarriedDeps").failed())
         signalPassFailure();
 
     // Create scf::ReduceOp
-    builder.setInsertionPointToEnd(new_loop_op.getBody());
-    air::createSCFReduceForAsyncSCFParallel(builder, new_loop_op.getLoc(),
+    rewriter.setInsertionPointToEnd(new_loop_op.getBody());
+    air::createSCFReduceForAsyncSCFParallel(rewriter, new_loop_op.getLoc(),
                                             wait_all_op_yielded.getAsyncToken(),
                                             loop_op->getContext());
 
@@ -1436,7 +1439,7 @@ private:
     elevateAsyncTokens<scf::ParallelOp, scf::ParallelOp>(new_loop_op,
                                                          wait_all_op_yielded_v);
 
-    if (eraseOpWithCheck(loop_op, "insertLoopCarriedDeps 2").failed())
+    if (eraseOpWithCheck(rewriter, loop_op, "insertLoopCarriedDeps 2").failed())
       signalPassFailure();
     loop_op = new_loop_op;
   }
