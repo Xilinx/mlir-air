@@ -108,7 +108,8 @@ public:
 
     // 1st traversal: create async ops with empty dep list.
 
-    OpBuilder module_builder(module);
+    IRRewriter rewriter(module.getContext());
+    rewriter.setInsertionPoint(module);
 
     ExecuteOpID = 0;
     HierarchyOpID = 0;
@@ -127,27 +128,26 @@ public:
           return; // Skip if is inside a linalg.generic.
 
         if (isa<air::DmaMemcpyNdOp>(op))
-          createAsyncDMA(module_builder, op);
+          createAsyncDMA(rewriter, op);
         else if (isa<air::WaitAllOp>(op))
-          createAsyncWaitAll(module_builder, op);
+          createAsyncWaitAll(rewriter, op);
         else if (isa<air::ChannelInterface>(op))
-          createAsyncChannel(module_builder, op);
+          createAsyncChannel(rewriter, op);
         else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp,
                      memref::CopyOp>(op))
-          createAsyncExecute(module_builder, op);
+          createAsyncExecute(rewriter, op);
         else if (isa<memref::CastOp, affine::AffineApplyOp, arith::AddIOp,
                      arith::MulIOp>(op))
-          createAsyncExecute(module_builder, op, op->getResult(0).getType());
+          createAsyncExecute(rewriter, op, op->getResult(0).getType());
         else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op))
-          createAsyncHierarchyImpls(module_builder, hierarchy_op);
+          createAsyncHierarchyImpls(rewriter, hierarchy_op);
         // Create async execute region for memref.alloc
         else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op)) {
           // Alloc can be used to specify shapes for operations such
           // as reshape ops. If this alloc is used to specify shape of
           // a reshap op, ignore this operation.
           if (!alloc_for_reshape(memalloc_op->getOpResult(0)))
-            createAsyncExecute(module_builder, op,
-                               memalloc_op.getMemref().getType());
+            createAsyncExecute(rewriter, op, memalloc_op.getMemref().getType());
         }
 
         // Create async execute region for an unknown op which has memref or
@@ -189,10 +189,10 @@ public:
           }
           if (isCandidateExecute) {
             if (op->getNumResults())
-              createAsyncExecute(module_builder, op,
+              createAsyncExecute(rewriter, op,
                                  op->getResults().front().getType());
             else
-              createAsyncExecute(module_builder, op);
+              createAsyncExecute(rewriter, op);
           }
         }
       });
@@ -354,8 +354,7 @@ public:
           }
 
           if (hasAsyncTokensInBody) {
-            insertLoopCarriedDeps(module_builder, for_op,
-                                  yielded_tokens_in_for_op);
+            insertLoopCarriedDeps(rewriter, for_op, yielded_tokens_in_for_op);
           }
         }
 
@@ -388,7 +387,7 @@ public:
           }
 
           if (hasAsyncTokensInBody) {
-            insertLoopCarriedDeps(module_builder, for_op,
+            insertLoopCarriedDeps(rewriter, for_op,
                                   yielded_tokens_in_parallel_op);
           }
         }
@@ -432,18 +431,18 @@ private:
 
   // Create air execute op with async interface (no ssa result returned); update
   // graph
-  air::ExecuteOp createAsyncExecute(OpBuilder &builder, Operation *op) {
-    builder.setInsertionPoint(op);
+  air::ExecuteOp createAsyncExecute(RewriterBase &rewriter, Operation *op) {
+    rewriter.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::ExecuteOp async_region;
-    async_region = builder.create<air::ExecuteOp>(
+    async_region = rewriter.create<air::ExecuteOp>(
         loc, air::AsyncTokenType::get(op->getContext()), deps);
     assignOpId(async_region);
 
     // Insert op to the new async execute region's body.
-    Block *async_region_bb = builder.createBlock(&async_region.getRegion());
-    builder.setInsertionPointToStart(async_region_bb);
+    Block *async_region_bb = rewriter.createBlock(&async_region.getRegion());
+    rewriter.setInsertionPointToStart(async_region_bb);
 
     // Handle cases when the operand(s) of the given op that is
     // reshape/expand/collapse ops.
@@ -452,7 +451,7 @@ private:
       auto alt_shape_op = operand.getDefiningOp();
       if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
                           memref::CollapseShapeOp>(alt_shape_op)) {
-        auto *cloned_op = builder.insert(alt_shape_op->clone());
+        auto *cloned_op = rewriter.insert(alt_shape_op->clone());
         op->setOperand(idx, cloned_op->getResult(0));
         auto new_shape_val = alt_shape_op->getResult(0);
         if (new_shape_val.use_empty()) {
@@ -462,8 +461,8 @@ private:
       }
     }
 
-    builder.clone(*op);
-    builder.create<air::ExecuteTerminatorOp>(builder.getUnknownLoc());
+    rewriter.clone(*op);
+    rewriter.create<air::ExecuteTerminatorOp>(rewriter.getUnknownLoc());
 
     // Update op-to-graph map
     updateAsyncExecuteGraphWithNewNode(async_region, asyncExecuteGraph);
@@ -478,23 +477,23 @@ private:
 
   // Create air execute op with async interface (with one ssa result returned);
   // update graph
-  air::ExecuteOp createAsyncExecute(OpBuilder &builder, Operation *op,
+  air::ExecuteOp createAsyncExecute(RewriterBase &rewriter, Operation *op,
                                     mlir::Type valueType) {
-    builder.setInsertionPoint(op);
+    rewriter.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::ExecuteOp async_region;
-    async_region = builder.create<air::ExecuteOp>(
+    async_region = rewriter.create<air::ExecuteOp>(
         loc, air::AsyncTokenType::get(op->getContext()),
         op->getResults().getType(), deps);
     assignOpId(async_region);
 
     // Insert op to the new async execute region's body.
-    Block *async_region_bb = builder.createBlock(&async_region.getRegion());
-    builder.setInsertionPointToStart(async_region_bb);
-    auto op_cloned = builder.clone(*op);
-    builder.create<air::ExecuteTerminatorOp>(builder.getUnknownLoc(),
-                                             op_cloned->getResults());
+    Block *async_region_bb = rewriter.createBlock(&async_region.getRegion());
+    rewriter.setInsertionPointToStart(async_region_bb);
+    auto op_cloned = rewriter.clone(*op);
+    rewriter.create<air::ExecuteTerminatorOp>(rewriter.getUnknownLoc(),
+                                              op_cloned->getResults());
     SmallVector<Value, 1> returnVals;
     for (auto val : async_region.getResults()) {
       returnVals.push_back(val);
@@ -512,12 +511,12 @@ private:
   }
 
   // Re-instantiate the dmamemcpy2d op with async interface; update graph
-  void createAsyncDMA(OpBuilder &builder, Operation *op) {
-    builder.setInsertionPoint(op);
+  void createAsyncDMA(RewriterBase &rewriter, Operation *op) {
+    rewriter.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     auto dma_op = mlir::dyn_cast<air::DmaMemcpyNdOp>(op);
-    air::DmaMemcpyNdOp new_dmaNd_op = builder.create<air::DmaMemcpyNdOp>(
+    air::DmaMemcpyNdOp new_dmaNd_op = rewriter.create<air::DmaMemcpyNdOp>(
         loc, air::AsyncTokenType::get(dma_op->getContext()), deps,
         dma_op.getDstMemref(), dma_op.getDstOffsets(), dma_op.getDstSizes(),
         dma_op.getDstStrides(), dma_op.getSrcMemref(), dma_op.getSrcOffsets(),
@@ -534,12 +533,12 @@ private:
   }
 
   // Re-instantiate the wait_all op to ensure an async token is returned.
-  void createAsyncWaitAll(OpBuilder &builder, Operation *op) {
-    builder.setInsertionPoint(op);
+  void createAsyncWaitAll(RewriterBase &rewriter, Operation *op) {
+    rewriter.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     auto wa_op = mlir::dyn_cast<air::WaitAllOp>(op);
-    air::WaitAllOp new_Wait_all_op = builder.create<air::WaitAllOp>(
+    air::WaitAllOp new_Wait_all_op = rewriter.create<air::WaitAllOp>(
         loc, air::AsyncTokenType::get(wa_op->getContext()),
         wa_op.getAsyncDependencies());
     assignOpId(new_Wait_all_op);
@@ -554,13 +553,13 @@ private:
   }
 
   // Re-instantiate the channel op with async interface; update graph
-  void createAsyncChannel(OpBuilder &builder, Operation *op) {
-    builder.setInsertionPoint(op);
+  void createAsyncChannel(RewriterBase &rewriter, Operation *op) {
+    rewriter.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     std::string event_name = "";
     if (auto channel_put_op = dyn_cast<air::ChannelPutOp>(op)) {
-      air::ChannelPutOp new_channel_put_op = builder.create<air::ChannelPutOp>(
+      air::ChannelPutOp new_channel_put_op = rewriter.create<air::ChannelPutOp>(
           loc, air::AsyncTokenType::get(channel_put_op->getContext()), deps,
           channel_put_op.getChanName(), channel_put_op.getIndices(),
           channel_put_op.getSrc(), channel_put_op.getSrcOffsets(),
@@ -570,7 +569,7 @@ private:
       // Update op-to-graph map
       updateAsyncExecuteGraphWithNewNode(new_channel_put_op, asyncExecuteGraph);
     } else if (auto channel_get_op = dyn_cast<air::ChannelGetOp>(op)) {
-      air::ChannelGetOp new_channel_get_op = builder.create<air::ChannelGetOp>(
+      air::ChannelGetOp new_channel_get_op = rewriter.create<air::ChannelGetOp>(
           loc, air::AsyncTokenType::get(channel_get_op->getContext()), deps,
           channel_get_op.getChanName(), channel_get_op.getIndices(),
           channel_get_op.getDst(), channel_get_op.getDstOffsets(),
@@ -590,8 +589,9 @@ private:
 
   // Re-instantiate the hierarchy op with async interface; update graph
   air::HierarchyInterface
-  createAsyncHierarchyImpls(OpBuilder &builder, air::HierarchyInterface op) {
-    builder.setInsertionPoint(op);
+  createAsyncHierarchyImpls(RewriterBase &rewriter,
+                            air::HierarchyInterface op) {
+    rewriter.setInsertionPoint(op);
     SmallVector<Value, 1> deps;
     SmallVector<Value, 4> args;
     SmallVector<Value, 4> constants;
@@ -606,18 +606,18 @@ private:
     Operation *new_op = nullptr;
     if (auto launch = dyn_cast<air::LaunchOp>(op.getOperation())) {
       auto new_launch = createAsyncHierarchy<air::LaunchOp>(
-          builder, launch, deps, args, constants);
+          rewriter, launch, deps, args, constants);
       new_op = new_launch.getOperation();
       // Update op-to-graph map
       updateAsyncExecuteGraphWithNewNode(new_launch, asyncExecuteGraph);
     } else if (auto segment = dyn_cast<air::SegmentOp>(op.getOperation())) {
       auto new_segment = createAsyncHierarchy<air::SegmentOp>(
-          builder, segment, deps, args, constants);
+          rewriter, segment, deps, args, constants);
       new_op = new_segment.getOperation();
       // Update op-to-graph map
       updateAsyncExecuteGraphWithNewNode(new_segment, asyncExecuteGraph);
     } else if (auto herd = dyn_cast<air::HerdOp>(op.getOperation())) {
-      auto new_herd = createAsyncHierarchy<air::HerdOp>(builder, herd, deps,
+      auto new_herd = createAsyncHierarchy<air::HerdOp>(rewriter, herd, deps,
                                                         args, constants);
       new_op = new_herd.getOperation();
       // Update op-to-graph map
@@ -635,12 +635,12 @@ private:
   }
 
   template <typename T>
-  T createAsyncHierarchy(OpBuilder &builder, T op, SmallVector<Value, 1> deps,
-                         SmallVector<Value, 4> args,
+  T createAsyncHierarchy(RewriterBase &rewriter, T op,
+                         SmallVector<Value, 1> deps, SmallVector<Value, 4> args,
                          SmallVector<Value, 4> constants) {
     auto loc = op->getLoc();
-    T new_op = builder.create<T>(loc, deps, op.getSizeOperands(), args, true,
-                                 op->getAttrs());
+    T new_op = rewriter.create<T>(loc, deps, op.getSizeOperands(), args, true,
+                                  op->getAttrs());
     assignOpId(new_op);
 
     auto &bb = new_op.getBody().front();
@@ -654,10 +654,10 @@ private:
     }
     auto &body = op.getBody().front().getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    builder.setInsertionPointToStart(&new_op.getRegion().front());
+    rewriter.setInsertionPointToStart(&new_op.getRegion().front());
     for (auto c : constants) {
       replaceAllUsesInRegionWith(
-          c, builder.clone(*c.getDefiningOp())->getResult(0),
+          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
           new_op.getRegion());
     }
 
