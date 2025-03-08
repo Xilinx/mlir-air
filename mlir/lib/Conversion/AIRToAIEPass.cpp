@@ -2071,7 +2071,8 @@ public:
     for (auto o : dma_memcpy_ops) {
       if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(o)) {
         MemcpyBundleAsFlow flow = MemcpyBundleAsFlow(dma);
-        flow.pushBackMemcpyOpToBundle(dma);
+        if (failed(flow.pushBackMemcpyOpToBundle(dma)))
+          return failure();
         memcpy_flows.push_back(flow);
       } else if (auto putget = dyn_cast<air::ChannelInterface>(o)) {
         auto chan = air::getChannelDeclarationThroughSymbol(putget);
@@ -2085,7 +2086,8 @@ public:
         for (auto &f : memcpy_flows) {
           if (auto air_flow_op_chan = dyn_cast<air::ChannelOp>(f.air_flow_op)) {
             if (chan_name == air_flow_op_chan.getSymName().str()) {
-              f.pushBackMemcpyOpToBundle(putget);
+              if (failed(f.pushBackMemcpyOpToBundle(putget)))
+                return failure();
               found_in_flows = true;
             }
           }
@@ -2093,7 +2095,8 @@ public:
         if (!found_in_flows) {
           // Create new entry in memcpy_flows
           MemcpyBundleAsFlow flow = MemcpyBundleAsFlow(chan);
-          flow.pushBackMemcpyOpToBundle(putget);
+          if (failed(flow.pushBackMemcpyOpToBundle(putget)))
+            return failure();
           memcpy_flows.push_back(flow);
         }
       } else {
@@ -2103,15 +2106,6 @@ public:
     }
 
     // Step 2: Allocate tile DMA channels, shim DMA channels and shim tiles
-    // AIR channel to AIE flow mapping strategy: allocate L1 DMAs first,
-    // followed by L2 and then L3, where outer memory hierarchies reuse existing
-    // AIE flows as possible.
-    // if (groupingMemcpysByLoop(memcpy_flows))
-    //   groupedByLoopDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
-    //                                     memtile_dma_alloc, tile_dma_alloc);
-    // else
-    //   simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
-    //                              memtile_dma_alloc, tile_dma_alloc);
     auto r = simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
                                         memtile_dma_alloc, tile_dma_alloc);
     if (failed(r))
@@ -2652,17 +2646,23 @@ public:
                                TileDMAAllocator &tileDmaAlloc, int x, int y) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
-    AIE::DMAChannel tile_channel =
-        tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf).dma_channel;
+    auto dma_alloc = tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf);
+    if (failed(dma_alloc)) {
+      return memcpyOpIf->emitOpError("failed to look up dma allocation.");
+    }
+    auto tile_channel = dma_alloc.value().dma_channel;
     auto bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
     if (failed(bufferOp)) {
-      memcpyOpIf->emitOpError("failed to get buffer.");
-      return failure();
+      return memcpyOpIf->emitOpError("failed to get buffer.");
     }
     auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, x, y,
                                             bufferOp.value().getOperation());
-    auto acqLockOp = isMM2S(tile_channel) ? locks.second : locks.first;
-    auto relLockOp = isMM2S(tile_channel) ? locks.first : locks.second;
+    if (failed(locks))
+      return memcpyOpIf->emitOpError("failed to get lock for dma.");
+    auto acqLockOp =
+        isMM2S(tile_channel) ? locks.value().second : locks.value().first;
+    auto relLockOp =
+        isMM2S(tile_channel) ? locks.value().first : locks.value().second;
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
     Value alloc = nullptr;
@@ -2791,9 +2791,11 @@ public:
           }
           auto locks = dmaAlloc.getLockForDMA(memcpyOp, x, y,
                                               bufferOp.value().getOperation());
-          auto newBD =
-              generateDmaBd<bufferOpTy>(loc, dir, locks, x, y, targetModel, bd,
-                                        memcpyOp, bufferOp.value(), chan);
+          if (failed(locks))
+            return memcpyOp->emitOpError("failed to get lock for dma.");
+          auto newBD = generateDmaBd<bufferOpTy>(loc, dir, locks.value(), x, y,
+                                                 targetModel, bd, memcpyOp,
+                                                 bufferOp.value(), chan);
           // Attribute task_id is necessary to ensure that BDs do not get shared
           // across tasks, otherwise MLIR may fold BDs and cause BD sharing
           // across tasks.
