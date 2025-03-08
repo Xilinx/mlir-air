@@ -610,11 +610,10 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
 bool isAsyncOp(Operation *op) {
   if (!op)
     return false;
-  for (auto result : op->getResults()) {
-    if (llvm::isa<air::AsyncTokenType>(result.getType())) {
-      return true;
-    }
-  }
+  if (llvm::any_of(op->getResults(), [](Value r) {
+        return isa<air::AsyncTokenType>(r.getType());
+      }))
+    return true;
   return false;
 }
 

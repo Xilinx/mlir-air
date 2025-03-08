@@ -210,3 +210,86 @@ module {
   }
 }
 
+// -----
+
+// Input IR contains a mixture of sync and async ops.
+
+// CHECK: %[[TOKEN0:.*]] = air.channel.get async [{{.*}}]  @ChanA[] (%{{.*}}[] [] [])
+// CHECK: %[[TOKEN1:.*]] = air.channel.get async [{{.*}}]  @ChanB[] (%{{.*}}[] [] [])
+// CHECK: %[[TOKEN2:.*]] = air.channel.put async [{{.*}}]  @ChanC[] (%{{.*}}[] [] [])
+
+module {
+  air.channel @ChanA []
+  air.channel @ChanB []
+  air.channel @ChanC []
+  func.func private @funcCall(memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) attributes {link_with = "mm.o", llvm.emit_c_interface}
+  func.func @func2(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>, %arg2: memref<1024xi32>) {
+    air.launch () in () args(%arg3=%arg0, %arg4=%arg1, %arg5=%arg2) : memref<1024xi32>, memref<1024xi32>, memref<1024xi32> {
+      %2 = air.segment @segment_0 async  {
+        %c1 = arith.constant 1 : index
+        %4 = air.herd @herd_0 async  tile (%arg6, %arg7) in (%arg8=%c1, %arg9=%c1) attributes {link_with = "mm.o"} {
+          %c32 = arith.constant 32 : index
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          scf.for %arg10 = %c0 to %c32 step %c1_0 {
+            %alloc = memref.alloc() : memref<32xi32, 2 : i32>
+            %alloc_1 = memref.alloc() : memref<32xi32, 2 : i32>
+            %alloc_2 = memref.alloc() : memref<32xi32, 2 : i32>
+            %5 = air.channel.get async  @ChanA[] (%alloc[] [] []) : (memref<32xi32, 2 : i32>)
+            %6 = air.channel.get async  @ChanB[] (%alloc_1[] [] []) : (memref<32xi32, 2 : i32>)
+            air.channel.put  @ChanC[] (%alloc_2[] [] []) : (memref<32xi32, 2 : i32>)
+            memref.dealloc %alloc : memref<32xi32, 2 : i32>
+            memref.dealloc %alloc_1 : memref<32xi32, 2 : i32>
+            memref.dealloc %alloc_2 : memref<32xi32, 2 : i32>
+          }
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Input IR containing some async dependency edges; this pass should complete the dependency graph while respecting them.
+
+// CHECK: %[[HERD:.*]] = air.herd @herd_0 async
+// CHECK: %[[TOKEN0:.*]] = air.channel.get async [{{.*}}]  @ChanA[]
+// CHECK-NEXT: %[[TOKEN1:.*]] = air.channel.get async [{{.*}}]  @ChanB[]
+// CHECK-NEXT: air.wait_all async [{{.*}}%[[TOKEN0]], %[[TOKEN1]]]
+// CHECK: air.wait_all async [%[[HERD]]]
+// CHECK: %[[TOKEN2:.*]] = air.channel.get async [{{.*}}]  @ChanC[]
+// CHECK-NEXT: air.wait_all async [%[[TOKEN2]]]
+
+module {
+  air.channel @ChanA []
+  air.channel @ChanB []
+  air.channel @ChanC []
+  func.func @func2(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>, %arg2: memref<1024xi32>) {
+    air.launch () in () args(%arg3=%arg0, %arg4=%arg1, %arg5=%arg2) : memref<1024xi32>, memref<1024xi32>, memref<1024xi32> {
+      %2 = air.segment @segment_0 async  {
+        %c1 = arith.constant 1 : index
+        %4 = air.herd @herd_0 async  tile (%arg6, %arg7) in (%arg8=%c1, %arg9=%c1) attributes {link_with = "mm.o"} {
+          %c32 = arith.constant 32 : index
+          %c0 = arith.constant 0 : index
+          %c1_0 = arith.constant 1 : index
+          scf.for %arg10 = %c0 to %c32 step %c1_0 {
+            %alloc = memref.alloc() : memref<32xi32, 2 : i32>
+            %alloc_1 = memref.alloc() : memref<32xi32, 2 : i32>
+            %5 = air.channel.get async  @ChanA[] (%alloc[] [] []) : (memref<32xi32, 2 : i32>)
+            %6 = air.channel.get async  @ChanB[] (%alloc_1[] [] []) : (memref<32xi32, 2 : i32>)
+            air.wait_all [%5, %6] 
+            memref.dealloc %alloc : memref<32xi32, 2 : i32>
+            memref.dealloc %alloc_1 : memref<32xi32, 2 : i32>
+          }
+        }
+        air.wait_all [%4] 
+      }
+      %3 = air.channel.get async [%2]  @ChanC[] (%arg5[] [] []) : (memref<1024xi32>)
+      air.wait_all [%3] 
+    }
+    return
+  }
+}
+
+

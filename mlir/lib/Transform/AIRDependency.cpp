@@ -55,7 +55,8 @@ namespace {
 // https://github.com/Xilinx/mlir-air/issues/372
 // is open. Once the root cause is found, there should be no ops erased here
 // whose results have users.
-LogicalResult eraseOpWithCheck(Operation *op, std::string_view context = "") {
+LogicalResult eraseOpWithCheck(RewriterBase &rewriter, Operation *op,
+                               std::string_view context = "") {
   for (auto opResult : op->getResults()) {
     for (auto &&user : opResult.getUsers()) {
       auto result =
@@ -67,7 +68,7 @@ LogicalResult eraseOpWithCheck(Operation *op, std::string_view context = "") {
     }
   }
 
-  op->erase();
+  rewriter.eraseOp(op);
   return success();
 }
 
@@ -108,94 +109,46 @@ public:
 
     // 1st traversal: create async ops with empty dep list.
 
-    OpBuilder module_builder(module);
+    IRRewriter rewriter(module.getContext());
+    rewriter.setInsertionPoint(module);
 
     ExecuteOpID = 0;
     HierarchyOpID = 0;
     WaitAllOpID = 0;
     ChannelOpID = 0;
+    DmaOpID = 0;
 
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        // Create async interface for air.dmamemcpy ops
+        if (air::isAsyncOp(op)) {
+          assignOpId(op);
+          updateAsyncExecuteGraphWithNewNode(op, asyncExecuteGraph);
+          return; // Skip if is already async.
+        }
+        if (op->getParentOfType<linalg::LinalgOp>())
+          return; // Skip if is inside a linalg.generic.
+
         if (isa<air::DmaMemcpyNdOp>(op))
-          createAsyncDMA(module_builder, op);
-
-        // Create async interface for air.channel ops
+          createAsyncDMA(rewriter, op);
+        else if (isa<air::WaitAllOp>(op))
+          createAsyncWaitAll(rewriter, op);
         else if (isa<air::ChannelInterface>(op))
-          createAsyncChannel(module_builder, op, ChannelOpID);
-
-        // Create async execute region for linalg.matmul
-        else if (isa<linalg::MatmulOp>(op))
-          createAsyncExecute(module_builder, op, "linalg::matmul", ExecuteOpID);
-
-        // Create async execute region for linalg.fill
-        else if (isa<linalg::FillOp>(op))
-          createAsyncExecute(module_builder, op, "linalg::fill", ExecuteOpID);
-
-        // Create async execute region for linalg.copy
-        else if (isa<linalg::CopyOp>(op))
-          createAsyncExecute(module_builder, op, "linalg::copy", ExecuteOpID);
-
-        // Create async execute region for linalg op
-        else if (isa<linalg::LinalgOp>(op))
-          createAsyncExecute(module_builder, op, "linalg::unknown",
-                             ExecuteOpID);
-
-        // Create async interface for func.call ops.
-        else if (isa<func::CallOp>(op))
-          createAsyncExecute(module_builder, op, "func::call", ExecuteOpID);
-
-        // Create async execute region for memref.alloc
-        else if (auto memcast_op = dyn_cast<memref::CastOp>(op))
-          createAsyncExecute(module_builder, op, "memref::cast", ExecuteOpID,
-                             memcast_op.getDest().getType());
-
-        // Create async execute region for memref.dealloc
-        else if (isa<memref::DeallocOp>(op))
-          createAsyncExecute(module_builder, op, "memref::dealloc",
-                             ExecuteOpID);
-
-        // Create async execute region for memref.copy
-        else if (isa<memref::CopyOp>(op))
-          createAsyncExecute(module_builder, op, "memref::copy", ExecuteOpID);
-
-        // Create async execute region for arith.muli
-        else if (auto arith_op = dyn_cast<arith::MulIOp>(op)) {
-          if (llvm::isa<IndexType>(arith_op.getResult().getType())) {
-            createAsyncExecute(module_builder, op, "arith::muli", ExecuteOpID,
-                               arith_op.getResult().getType());
-          }
-        }
-
-        // Create async execute region for arith.addi
-        else if (auto arith_op = dyn_cast<arith::AddIOp>(op)) {
-          if (llvm::isa<IndexType>(arith_op.getResult().getType())) {
-            createAsyncExecute(module_builder, op, "arith::addi", ExecuteOpID,
-                               arith_op.getResult().getType());
-          }
-        }
-
-        // Create async execute region for affine.apply
-        else if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(op))
-          createAsyncExecute(module_builder, op, "affine::apply", ExecuteOpID,
-                             apply_op.getResult().getType());
-
-        // Create async execute region for air hierarchy ops (air.launch and
-        // air.segment, TODO: air.herd).
-        else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op)) {
-          createAsyncHierarchyImpls(module_builder, hierarchy_op,
-                                    HierarchyOpID);
-        }
-
+          createAsyncChannel(rewriter, op);
+        else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp,
+                     memref::CopyOp>(op))
+          createAsyncExecute(rewriter, op);
+        else if (isa<memref::CastOp, affine::AffineApplyOp, arith::AddIOp,
+                     arith::MulIOp>(op))
+          createAsyncExecute(rewriter, op, op->getResult(0).getType());
+        else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op))
+          createAsyncHierarchyImpls(rewriter, hierarchy_op);
         // Create async execute region for memref.alloc
         else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op)) {
           // Alloc can be used to specify shapes for operations such
           // as reshape ops. If this alloc is used to specify shape of
           // a reshap op, ignore this operation.
           if (!alloc_for_reshape(memalloc_op->getOpResult(0)))
-            createAsyncExecute(module_builder, op, "memref::alloc", ExecuteOpID,
-                               memalloc_op.getMemref().getType());
+            createAsyncExecute(rewriter, op, memalloc_op.getMemref().getType());
         }
 
         // Create async execute region for an unknown op which has memref or
@@ -237,10 +190,10 @@ public:
           }
           if (isCandidateExecute) {
             if (op->getNumResults())
-              createAsyncExecute(module_builder, op, "unknown", ExecuteOpID,
+              createAsyncExecute(rewriter, op,
                                  op->getResults().front().getType());
             else
-              createAsyncExecute(module_builder, op, "unknown", ExecuteOpID);
+              createAsyncExecute(rewriter, op);
           }
         }
       });
@@ -256,14 +209,30 @@ public:
           for (auto &child_op : async_execute_op.getChildOps())
             if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
               sink_op = &child_op;
-        } else if (isa<air::DmaMemcpyNdOp>(op)) {
+        } else if (isa<air::AsyncOpInterface>(op))
           sink_op = op;
-        } else if (isa<air::ChannelInterface>(op)) {
-          sink_op = op;
-        } else if (dyn_cast<air::HierarchyInterface>(op)) {
-          sink_op = op;
-        } else
+        else
           return;
+
+        // Preserve any existing async dependency edges in the input IR, before
+        // creating new ones.
+        if (auto execute_op = dyn_cast<air::ExecuteOp>(op)) {
+          for (auto dep : air::getAsyncDependenciesFromOp(op)) {
+            addAsyncDepToGraphIfNew<air::ExecuteOp>(dep, execute_op);
+          }
+        } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(op)) {
+          for (auto dep : air::getAsyncDependenciesFromOp(op)) {
+            addAsyncDepToGraphIfNew<air::DmaMemcpyNdOp>(dep, dma_op);
+          }
+        } else if (auto channel_op = dyn_cast<air::ChannelInterface>(op)) {
+          for (auto dep : air::getAsyncDependenciesFromOp(op)) {
+            addAsyncDepToGraphIfNew<air::ChannelInterface>(dep, channel_op);
+          }
+        } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
+          for (auto dep : air::getAsyncDependenciesFromOp(op)) {
+            addAsyncDepToGraphIfNew<air::HierarchyInterface>(dep, hier_op);
+          }
+        }
 
         SmallVector<partialMemref, 1> sink_op_memref_reads;
         SmallVector<partialMemref, 1> sink_op_memref_writes;
@@ -342,6 +311,10 @@ public:
           fillAIRDepListUsingGraphTR<air::HierarchyInterface>(hier_op,
                                                               opIdToOpMap);
         }
+        // Fill dep list of air wait_all ops
+        else if (auto wa_op = dyn_cast<air::WaitAllOp>(op)) {
+          fillAIRDepListUsingGraphTR<air::WaitAllOp>(wa_op, opIdToOpMap);
+        }
       });
     }
 
@@ -382,8 +355,7 @@ public:
           }
 
           if (hasAsyncTokensInBody) {
-            insertLoopCarriedDeps(module_builder, for_op,
-                                  yielded_tokens_in_for_op);
+            insertLoopCarriedDeps(rewriter, for_op, yielded_tokens_in_for_op);
           }
         }
 
@@ -416,7 +388,7 @@ public:
           }
 
           if (hasAsyncTokensInBody) {
-            insertLoopCarriedDeps(module_builder, for_op,
+            insertLoopCarriedDeps(rewriter, for_op,
                                   yielded_tokens_in_parallel_op);
           }
         }
@@ -429,6 +401,7 @@ private:
   uint64_t HierarchyOpID;
   uint64_t WaitAllOpID;
   uint64_t ChannelOpID;
+  uint64_t DmaOpID;
 
   //===----------------------------------------------------------------------===//
   // Handling lingering reshape-related ops
@@ -459,22 +432,18 @@ private:
 
   // Create air execute op with async interface (no ssa result returned); update
   // graph
-  air::ExecuteOp createAsyncExecute(OpBuilder &builder, Operation *op,
-                                    std::string asyncEventName,
-                                    uint64_t &ExecuteOpID) {
-    builder.setInsertionPoint(op);
+  air::ExecuteOp createAsyncExecute(RewriterBase &rewriter, Operation *op) {
+    rewriter.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::ExecuteOp async_region;
-    async_region = builder.create<air::ExecuteOp>(
+    async_region = rewriter.create<air::ExecuteOp>(
         loc, air::AsyncTokenType::get(op->getContext()), deps);
-    async_region->setAttr(
-        "id", mlir::IntegerAttr::get(
-                  mlir::IntegerType::get(op->getContext(), 32), ++ExecuteOpID));
+    assignOpId(async_region);
 
     // Insert op to the new async execute region's body.
-    Block *async_region_bb = builder.createBlock(&async_region.getRegion());
-    builder.setInsertionPointToStart(async_region_bb);
+    Block *async_region_bb = rewriter.createBlock(&async_region.getRegion());
+    rewriter.setInsertionPointToStart(async_region_bb);
 
     // Handle cases when the operand(s) of the given op that is
     // reshape/expand/collapse ops.
@@ -483,7 +452,7 @@ private:
       auto alt_shape_op = operand.getDefiningOp();
       if (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
                           memref::CollapseShapeOp>(alt_shape_op)) {
-        auto *cloned_op = builder.insert(alt_shape_op->clone());
+        auto *cloned_op = rewriter.insert(alt_shape_op->clone());
         op->setOperand(idx, cloned_op->getResult(0));
         auto new_shape_val = alt_shape_op->getResult(0);
         if (new_shape_val.use_empty()) {
@@ -493,23 +462,15 @@ private:
       }
     }
 
-    builder.clone(*op);
-    builder.create<air::ExecuteTerminatorOp>(builder.getUnknownLoc());
-
-    auto v = asyncExecuteGraph.addVertex();
-    auto &node = asyncExecuteGraph[v];
-    // Create a vertex out of the current async execute region
-    node.asyncEventName = asyncEventName;
-    node.asyncEventType = "execute";
-    node.color = "chartreuse";
-    node.shape = "oval";
-    node.operationId = ExecuteOpID;
+    rewriter.clone(*op);
+    rewriter.create<air::ExecuteTerminatorOp>(rewriter.getUnknownLoc());
 
     // Update op-to-graph map
-    region_to_g[async_region.getId()] = v;
+    updateAsyncExecuteGraphWithNewNode(async_region, asyncExecuteGraph);
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncExecute (no SSA return)").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncExecute (no SSA return)")
+            .failed()) {
       signalPassFailure();
     }
 
@@ -518,138 +479,122 @@ private:
 
   // Create air execute op with async interface (with one ssa result returned);
   // update graph
-  air::ExecuteOp createAsyncExecute(OpBuilder &builder, Operation *op,
-                                    std::string asyncEventName,
-                                    uint64_t &ExecuteOpID,
+  air::ExecuteOp createAsyncExecute(RewriterBase &rewriter, Operation *op,
                                     mlir::Type valueType) {
-    builder.setInsertionPoint(op);
+    rewriter.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::ExecuteOp async_region;
-    async_region = builder.create<air::ExecuteOp>(
+    async_region = rewriter.create<air::ExecuteOp>(
         loc, air::AsyncTokenType::get(op->getContext()),
         op->getResults().getType(), deps);
-    async_region->setAttr(
-        "id", mlir::IntegerAttr::get(
-                  mlir::IntegerType::get(op->getContext(), 32), ++ExecuteOpID));
+    assignOpId(async_region);
 
     // Insert op to the new async execute region's body.
-    Block *async_region_bb = builder.createBlock(&async_region.getRegion());
-    builder.setInsertionPointToStart(async_region_bb);
-    auto op_cloned = builder.clone(*op);
-    builder.create<air::ExecuteTerminatorOp>(builder.getUnknownLoc(),
-                                             op_cloned->getResults());
+    Block *async_region_bb = rewriter.createBlock(&async_region.getRegion());
+    rewriter.setInsertionPointToStart(async_region_bb);
+    auto op_cloned = rewriter.clone(*op);
+    rewriter.create<air::ExecuteTerminatorOp>(rewriter.getUnknownLoc(),
+                                              op_cloned->getResults());
     SmallVector<Value, 1> returnVals;
     for (auto val : async_region.getResults()) {
       returnVals.push_back(val);
     }
     op->replaceAllUsesWith(returnVals);
 
-    // Create a vertex out of the current async execute region
-    auto v = asyncExecuteGraph.addVertex();
-    asyncExecuteGraph[v].asyncEventName = asyncEventName;
-    asyncExecuteGraph[v].asyncEventType = "execute";
-    asyncExecuteGraph[v].color = "chartreuse";
-    asyncExecuteGraph[v].shape = "oval";
-    asyncExecuteGraph[v].operationId = ExecuteOpID;
-
     // Update op-to-graph map
-    region_to_g[async_region.getId()] = v;
+    updateAsyncExecuteGraphWithNewNode(async_region, asyncExecuteGraph);
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncExecute (one SSA return)").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncExecute (one SSA return)")
+            .failed()) {
       signalPassFailure();
     }
     return async_region;
   }
 
   // Re-instantiate the dmamemcpy2d op with async interface; update graph
-  void createAsyncDMA(OpBuilder &builder, Operation *op) {
-    builder.setInsertionPoint(op);
+  void createAsyncDMA(RewriterBase &rewriter, Operation *op) {
+    rewriter.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     auto dma_op = mlir::dyn_cast<air::DmaMemcpyNdOp>(op);
-    unsigned id = dma_op.getId();
-    air::DmaMemcpyNdOp new_dmaNd_op = builder.create<air::DmaMemcpyNdOp>(
+    air::DmaMemcpyNdOp new_dmaNd_op = rewriter.create<air::DmaMemcpyNdOp>(
         loc, air::AsyncTokenType::get(dma_op->getContext()), deps,
         dma_op.getDstMemref(), dma_op.getDstOffsets(), dma_op.getDstSizes(),
         dma_op.getDstStrides(), dma_op.getSrcMemref(), dma_op.getSrcOffsets(),
         dma_op.getSrcSizes(), dma_op.getSrcStrides());
-    new_dmaNd_op->setAttr(
-        "id", mlir::IntegerAttr::get(
-                  mlir::IntegerType::get(op->getContext(), 32), id));
-
-    // Create a vertex out of the current dmamemcpy2d op
-    auto v = asyncExecuteGraph.addVertex();
-    asyncExecuteGraph[v].asyncEventName = "air::dmaNd";
-    asyncExecuteGraph[v].asyncEventType = "dma";
-    asyncExecuteGraph[v].color = "cyan";
-    asyncExecuteGraph[v].shape = "oval";
-    asyncExecuteGraph[v].operationId = id;
+    assignOpId(new_dmaNd_op);
 
     // Update op-to-graph map
-    dma_to_g[id] = v;
+    updateAsyncExecuteGraphWithNewNode(new_dmaNd_op, asyncExecuteGraph);
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncDMA").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncDMA").failed()) {
+      signalPassFailure();
+    }
+  }
+
+  // Re-instantiate the wait_all op to ensure an async token is returned.
+  void createAsyncWaitAll(RewriterBase &rewriter, Operation *op) {
+    rewriter.setInsertionPoint(op);
+    auto loc = op->getLoc();
+    SmallVector<Value, 1> deps;
+    auto wa_op = mlir::dyn_cast<air::WaitAllOp>(op);
+    air::WaitAllOp new_Wait_all_op = rewriter.create<air::WaitAllOp>(
+        loc, air::AsyncTokenType::get(wa_op->getContext()),
+        wa_op.getAsyncDependencies());
+    assignOpId(new_Wait_all_op);
+
+    // Update op-to-graph map
+    updateAsyncExecuteGraphWithNewNode(new_Wait_all_op, asyncExecuteGraph);
+
+    // Erase op
+    if (eraseOpWithCheck(rewriter, op, "createAsyncWaitAll").failed()) {
       signalPassFailure();
     }
   }
 
   // Re-instantiate the channel op with async interface; update graph
-  void createAsyncChannel(OpBuilder &builder, Operation *op,
-                          uint64_t &ChannelOpID) {
-    builder.setInsertionPoint(op);
+  void createAsyncChannel(RewriterBase &rewriter, Operation *op) {
+    rewriter.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     std::string event_name = "";
     if (auto channel_put_op = dyn_cast<air::ChannelPutOp>(op)) {
-      air::ChannelPutOp new_channel_put_op = builder.create<air::ChannelPutOp>(
+      air::ChannelPutOp new_channel_put_op = rewriter.create<air::ChannelPutOp>(
           loc, air::AsyncTokenType::get(channel_put_op->getContext()), deps,
           channel_put_op.getChanName(), channel_put_op.getIndices(),
           channel_put_op.getSrc(), channel_put_op.getSrcOffsets(),
           channel_put_op.getSrcSizes(), channel_put_op.getSrcStrides());
-      new_channel_put_op->setAttr(
-          "id",
-          mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
-                                 ++ChannelOpID));
+      assignOpId(new_channel_put_op);
       event_name = "Put";
+      // Update op-to-graph map
+      updateAsyncExecuteGraphWithNewNode(new_channel_put_op, asyncExecuteGraph);
     } else if (auto channel_get_op = dyn_cast<air::ChannelGetOp>(op)) {
-      air::ChannelGetOp new_channel_get_op = builder.create<air::ChannelGetOp>(
+      air::ChannelGetOp new_channel_get_op = rewriter.create<air::ChannelGetOp>(
           loc, air::AsyncTokenType::get(channel_get_op->getContext()), deps,
           channel_get_op.getChanName(), channel_get_op.getIndices(),
           channel_get_op.getDst(), channel_get_op.getDstOffsets(),
           channel_get_op.getDstSizes(), channel_get_op.getDstStrides());
-      new_channel_get_op->setAttr(
-          "id",
-          mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
-                                 ++ChannelOpID));
+      assignOpId(new_channel_get_op);
       event_name = "Get";
+      // Update op-to-graph map
+      updateAsyncExecuteGraphWithNewNode(new_channel_get_op, asyncExecuteGraph);
     } else
       op->emitOpError("unknown air channel op");
 
-    // Create a vertex out of the current channel op
-    auto v = asyncExecuteGraph.addVertex();
-    asyncExecuteGraph[v].asyncEventName = "air::Channel" + event_name;
-    asyncExecuteGraph[v].asyncEventType = "channel";
-    asyncExecuteGraph[v].color = "cyan";
-    asyncExecuteGraph[v].shape = "oval";
-    asyncExecuteGraph[v].operationId = ChannelOpID;
-
-    // Update op-to-graph map
-    channel_to_g[ChannelOpID] = v;
-
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncChannel").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncChannel").failed()) {
       signalPassFailure();
     }
   }
 
   // Re-instantiate the hierarchy op with async interface; update graph
-  air::HierarchyInterface createAsyncHierarchyImpls(OpBuilder &builder,
-                                                    air::HierarchyInterface op,
-                                                    uint64_t &HierarchyOpID) {
-    builder.setInsertionPoint(op);
+  air::HierarchyInterface
+  createAsyncHierarchyImpls(RewriterBase &rewriter,
+                            air::HierarchyInterface op) {
+    rewriter.setInsertionPoint(op);
     SmallVector<Value, 1> deps;
     SmallVector<Value, 4> args;
     SmallVector<Value, 4> constants;
@@ -664,65 +609,42 @@ private:
     Operation *new_op = nullptr;
     if (auto launch = dyn_cast<air::LaunchOp>(op.getOperation())) {
       auto new_launch = createAsyncHierarchy<air::LaunchOp>(
-          builder, launch, HierarchyOpID, deps, args, constants);
+          rewriter, launch, deps, args, constants);
       new_op = new_launch.getOperation();
-      // Create a vertex out of the current hierarchy op
-      auto v = asyncExecuteGraph.addVertex();
-      asyncExecuteGraph[v].asyncEventName = "air::launch";
-      asyncExecuteGraph[v].asyncEventType = "hierarchy";
-      asyncExecuteGraph[v].color = "yellow";
-      asyncExecuteGraph[v].shape = "box";
-      asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
-      hier_to_g[HierarchyOpID] = v;
+      updateAsyncExecuteGraphWithNewNode(new_launch, asyncExecuteGraph);
     } else if (auto segment = dyn_cast<air::SegmentOp>(op.getOperation())) {
       auto new_segment = createAsyncHierarchy<air::SegmentOp>(
-          builder, segment, HierarchyOpID, deps, args, constants);
+          rewriter, segment, deps, args, constants);
       new_op = new_segment.getOperation();
-      // Create a vertex out of the current hierarchy op
-      auto v = asyncExecuteGraph.addVertex();
-      asyncExecuteGraph[v].asyncEventName = "air::segment";
-      asyncExecuteGraph[v].asyncEventType = "hierarchy";
-      asyncExecuteGraph[v].color = "yellow";
-      asyncExecuteGraph[v].shape = "box";
-      asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
-      hier_to_g[HierarchyOpID] = v;
+      updateAsyncExecuteGraphWithNewNode(new_segment, asyncExecuteGraph);
     } else if (auto herd = dyn_cast<air::HerdOp>(op.getOperation())) {
-      auto new_herd = createAsyncHierarchy<air::HerdOp>(
-          builder, herd, HierarchyOpID, deps, args, constants);
+      auto new_herd = createAsyncHierarchy<air::HerdOp>(rewriter, herd, deps,
+                                                        args, constants);
       new_op = new_herd.getOperation();
-      // Create a vertex out of the current hierarchy op
-      auto v = asyncExecuteGraph.addVertex();
-      asyncExecuteGraph[v].asyncEventName = "air::herd";
-      asyncExecuteGraph[v].asyncEventType = "hierarchy";
-      asyncExecuteGraph[v].color = "yellow";
-      asyncExecuteGraph[v].shape = "box";
-      asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
-      hier_to_g[HierarchyOpID] = v;
+      updateAsyncExecuteGraphWithNewNode(new_herd, asyncExecuteGraph);
     } else {
       op->emitOpError("unknown hierarchy operation");
     }
     auto new_hier = dyn_cast<air::HierarchyInterface>(new_op);
 
     // Erase op
-    if (eraseOpWithCheck(op, "createAsyncHierarchyImpls").failed()) {
+    if (eraseOpWithCheck(rewriter, op, "createAsyncHierarchyImpls").failed()) {
       signalPassFailure();
     }
     return new_hier;
   }
 
   template <typename T>
-  T createAsyncHierarchy(OpBuilder &builder, T op, uint64_t &OpID,
+  T createAsyncHierarchy(RewriterBase &rewriter, T op,
                          SmallVector<Value, 1> deps, SmallVector<Value, 4> args,
                          SmallVector<Value, 4> constants) {
     auto loc = op->getLoc();
-    T new_op = builder.create<T>(loc, deps, op.getSizeOperands(), args, true,
-                                 op->getAttrs());
-    new_op->setAttr("id",
-                    mlir::IntegerAttr::get(
-                        mlir::IntegerType::get(op->getContext(), 32), ++OpID));
+    T new_op = rewriter.create<T>(loc, deps, op.getSizeOperands(), args, true,
+                                  op->getAttrs());
+    assignOpId(new_op);
 
     auto &bb = new_op.getBody().front();
     for (unsigned i = 0; i < op.getIds().size(); i++) {
@@ -735,10 +657,10 @@ private:
     }
     auto &body = op.getBody().front().getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    builder.setInsertionPointToStart(&new_op.getRegion().front());
+    rewriter.setInsertionPointToStart(&new_op.getRegion().front());
     for (auto c : constants) {
       replaceAllUsesInRegionWith(
-          c, builder.clone(*c.getDefiningOp())->getResult(0),
+          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
           new_op.getRegion());
     }
 
@@ -749,6 +671,66 @@ private:
       replaceAllUsesInRegionWith(v, new_kernel_args[i++], new_op.getRegion());
 
     return new_op;
+  }
+
+  void updateAsyncExecuteGraphWithNewNode(Operation *op, ExecuteGraph &graph) {
+    auto v = graph.addVertex();
+    auto &node = graph[v];
+    // Create a vertex out of the current async execute region
+    node.asyncEventName = air::to_string(op);
+    auto setNodeAttrsBasedOnOp = [&node, &v, this](Operation *op) {
+      if (auto execOp = dyn_cast<air::ExecuteOp>(op)) {
+        node.asyncEventType = "execute";
+        node.color = "chartreuse";
+        node.shape = "oval";
+        node.operationId = execOp.getId();
+        region_to_g[node.operationId] = v;
+      } else if (auto dmaOp = dyn_cast<air::DmaMemcpyNdOp>(op)) {
+        node.asyncEventType = "dma";
+        node.color = "cyan";
+        node.shape = "oval";
+        node.operationId = dmaOp.getId();
+        dma_to_g[node.operationId] = v;
+      } else if (auto ciOp = dyn_cast<air::ChannelInterface>(op)) {
+        node.asyncEventName = air::to_string(op);
+        node.asyncEventType = "channel";
+        node.color = "cyan";
+        node.shape = "oval";
+        node.operationId = ciOp.getId();
+        channel_to_g[node.operationId] = v;
+      } else if (auto hiOp = dyn_cast<air::HierarchyInterface>(op)) {
+        node.asyncEventName = air::to_string(op);
+        node.asyncEventType = "hierarchy";
+        node.color = "yellow";
+        node.shape = "box";
+        node.operationId = hiOp.getId();
+        hier_to_g[node.operationId] = v;
+      }
+    };
+    setNodeAttrsBasedOnOp(op);
+  }
+
+  void assignOpId(Operation *op) {
+    if (isa<air::ExecuteOp>(op))
+      op->setAttr("id", mlir::IntegerAttr::get(
+                            mlir::IntegerType::get(op->getContext(), 32),
+                            ++ExecuteOpID));
+    else if (isa<air::ChannelInterface>(op))
+      op->setAttr("id", mlir::IntegerAttr::get(
+                            mlir::IntegerType::get(op->getContext(), 32),
+                            ++ChannelOpID));
+    else if (isa<air::HierarchyInterface>(op))
+      op->setAttr("id", mlir::IntegerAttr::get(
+                            mlir::IntegerType::get(op->getContext(), 32),
+                            ++HierarchyOpID));
+    else if (isa<air::WaitAllOp>(op))
+      op->setAttr("id", mlir::IntegerAttr::get(
+                            mlir::IntegerType::get(op->getContext(), 32),
+                            ++WaitAllOpID));
+    else if (isa<air::DmaMemcpyNdOp>(op))
+      op->setAttr("id",
+                  mlir::IntegerAttr::get(
+                      mlir::IntegerType::get(op->getContext(), 32), ++DmaOpID));
   }
 
   //===----------------------------------------------------------------------===//
@@ -1326,11 +1308,11 @@ private:
     }
   }
 
-  void insertLoopCarriedDeps(OpBuilder &builder, scf::ForOp &loop_op,
+  void insertLoopCarriedDeps(RewriterBase &rewriter, scf::ForOp &loop_op,
                              SmallVector<Value, 1> yielded_tokens_in_loop_op) {
     // (1) Create one wait_all event at the end of current for loop body.
     air::WaitAllOp wait_all_op_yielded =
-        insertWaitAllOpBeforeLoopYield<scf::ForOp>(builder, loop_op,
+        insertWaitAllOpBeforeLoopYield<scf::ForOp>(rewriter, loop_op,
                                                    yielded_tokens_in_loop_op);
 
     // Update graph
@@ -1363,18 +1345,18 @@ private:
       }
     }
     air::WaitAllOp wait_all_op_before_loop =
-        insertWaitAllOpAtLoopBegin<scf::ForOp>(builder, loop_op, "for",
+        insertWaitAllOpAtLoopBegin<scf::ForOp>(rewriter, loop_op, "for",
                                                incoming_tokens, constants);
 
     // (3) Create new for op with iter_args.
     scf::ForOp new_loop_op = replaceLoopOpWithNewTerminator(
-        builder, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
+        rewriter, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
 
     // Yield an async token
     SmallVector<Value, 4> yield_token;
     yield_token.push_back(wait_all_op_yielded.getResult(0));
-    builder.setInsertionPointToEnd(new_loop_op.getBody());
-    builder.create<scf::YieldOp>(new_loop_op.getLoc(), yield_token);
+    rewriter.setInsertionPointToEnd(new_loop_op.getBody());
+    rewriter.create<scf::YieldOp>(new_loop_op.getLoc(), yield_token);
 
     // Elevating tokens from inside forOp body to the yielded token, to maintain
     // dominance
@@ -1385,18 +1367,18 @@ private:
     elevateAsyncTokens<scf::ForOp, scf::ParallelOp>(new_loop_op,
                                                     wait_all_op_yielded_v);
 
-    if (eraseOpWithCheck(loop_op, "insertLoopCarriedDeps").failed()) {
+    if (eraseOpWithCheck(rewriter, loop_op, "insertLoopCarriedDeps").failed()) {
       signalPassFailure();
     }
     loop_op = new_loop_op;
   }
 
-  void insertLoopCarriedDeps(OpBuilder &builder, scf::ParallelOp &loop_op,
+  void insertLoopCarriedDeps(RewriterBase &rewriter, scf::ParallelOp &loop_op,
                              SmallVector<Value, 1> yielded_tokens_in_loop_op) {
     // (1) Create one wait_all event at the end of current parallel loop body.
     air::WaitAllOp wait_all_op_yielded =
         insertWaitAllOpBeforeLoopYield<scf::ParallelOp>(
-            builder, loop_op, yielded_tokens_in_loop_op);
+            rewriter, loop_op, yielded_tokens_in_loop_op);
 
     // Update graph
     ExecuteGraph::VertexId wait_all_op_yielded_v =
@@ -1430,21 +1412,21 @@ private:
     }
     air::WaitAllOp wait_all_op_before_loop =
         insertWaitAllOpAtLoopBegin<scf::ParallelOp>(
-            builder, loop_op, "parallel", incoming_tokens, constants);
+            rewriter, loop_op, "parallel", incoming_tokens, constants);
 
     // (3) Create new parallel op with init_val.
     scf::ParallelOp new_loop_op = replaceLoopOpWithNewTerminator(
-        builder, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
+        rewriter, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
 
     // Remove the old scf::YieldOp
     SmallVector<scf::YieldOp, 2> y_ops(new_loop_op.getOps<scf::YieldOp>());
     for (auto y_op : y_ops)
-      if (eraseOpWithCheck(y_op, "insertLoopCarriedDeps").failed())
+      if (eraseOpWithCheck(rewriter, y_op, "insertLoopCarriedDeps").failed())
         signalPassFailure();
 
     // Create scf::ReduceOp
-    builder.setInsertionPointToEnd(new_loop_op.getBody());
-    air::createSCFReduceForAsyncSCFParallel(builder, new_loop_op.getLoc(),
+    rewriter.setInsertionPointToEnd(new_loop_op.getBody());
+    air::createSCFReduceForAsyncSCFParallel(rewriter, new_loop_op.getLoc(),
                                             wait_all_op_yielded.getAsyncToken(),
                                             loop_op->getContext());
 
@@ -1457,7 +1439,7 @@ private:
     elevateAsyncTokens<scf::ParallelOp, scf::ParallelOp>(new_loop_op,
                                                          wait_all_op_yielded_v);
 
-    if (eraseOpWithCheck(loop_op, "insertLoopCarriedDeps 2").failed())
+    if (eraseOpWithCheck(rewriter, loop_op, "insertLoopCarriedDeps 2").failed())
       signalPassFailure();
     loop_op = new_loop_op;
   }
@@ -1642,6 +1624,8 @@ private:
           srcNode = getGraphGVertexFromAIROp(channel_op);
         } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(srcOp)) {
           srcNode = getGraphGVertexFromAIROp(hier_op);
+        } else if (auto wa_op = dyn_cast<air::WaitAllOp>(srcOp)) {
+          srcNode = getGraphGVertexFromAIROp(wa_op);
         } else
           srcOp->emitOpError(
               "dependency token should be generated by an async op");
