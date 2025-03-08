@@ -2267,9 +2267,12 @@ dependencyCanonicalizer::toPositionString(std::vector<unsigned> position) {
 }
 
 // Re-trace ops which depend on air.hierarchy
-void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
+LogicalResult
+dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
   air::dependencyTracer depTracer;
-  func.walk([&](air::ExecuteOp exec_op) {
+  SmallVector<air::ExecuteOp> exec_ops;
+  func.walk([&](air::ExecuteOp exec_op) { exec_ops.push_back(exec_op); });
+  for (auto exec_op : exec_ops) {
     // Get partial memref reads/writes
     SmallVector<air::partialMemref, 1> sink_op_memref_reads;
     SmallVector<air::partialMemref, 1> sink_op_memref_writes;
@@ -2288,7 +2291,7 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
                                      sink_op_memref_writes, sink_op_scalar_ins,
                                      sink_op_scalar_outs);
     if (sink_op_memref_reads.empty() && sink_op_memref_writes.empty()) {
-      return;
+      continue;
     }
     // Update dependency to air.hierarchy ops
     bool hasDepToHier = false;
@@ -2302,16 +2305,21 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     }
     if (hasDepToHier) {
       // Trace dependency of op again
-      depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-          sink_op_memref_reads, exec_op, "RAW");
-      depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-          sink_op_memref_writes, exec_op, "WAW/WAR");
+      if (failed(
+              depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                  sink_op_memref_reads, exec_op, "RAW")))
+        return failure();
+      if (failed(
+              depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                  sink_op_memref_writes, exec_op, "WAW/WAR")))
+        return failure();
       // Detect tile index deps
       depTracer.traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
                                  sink_op_scalar_ins, sink_op_scalar_outs,
                                  exec_op);
     }
-  });
+  }
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -2555,7 +2563,7 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
     return 'w';
 }
 
-void dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
+LogicalResult dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
   OpBuilder builder(forOp);
   air::WaitAllOp sink_wait_all_op =
       assignEmptyWaitAllAtScfForIterArg(builder, forOp);
@@ -2575,11 +2583,14 @@ void dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
     getPartialMemrefFromOp(op.getOperation(), sink_op_memref_reads,
                            sink_op_memref_writes, sink_op_scalar_ins,
                            sink_op_scalar_outs);
-    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads,
-                                          sink_wait_all_op, "RAW");
-    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes,
-                                          sink_wait_all_op, "WAW/WAR");
+    if (failed(traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads,
+                                                     sink_wait_all_op, "RAW")))
+      return failure();
+    if (failed(traceDependencyFromOp<air::WaitAllOp>(
+            sink_op_memref_writes, sink_wait_all_op, "WAW/WAR")))
+      return failure();
   }
+  return success();
 }
 
 void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {

@@ -39,7 +39,8 @@ public:
       // Pre processing
       // Re-trace ops which depend on air.hierarchies
       // (Removes obsolete dep edges after -canonicalize)
-      canonicalizer.redoDepTraceIfDepOnHier(func);
+      if (failed(canonicalizer.redoDepTraceIfDepOnHier(func)))
+        signalPassFailure();
 
       // Parse dependency graphs
       hostGraph = dependencyGraph(func, true);

@@ -1328,7 +1328,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
   // Reconnect async dependency of parent scf.for op, if any.
   air::dependencyTracer depTracer;
   for (auto mutatedScfForOp : mutatedScfForOps) {
-    depTracer.traceDependencyFromScfForOp(mutatedScfForOp);
+    if (failed(depTracer.traceDependencyFromScfForOp(mutatedScfForOp)))
+      signalPassFailure();
   }
   if (deallocOp)
     deallocOp->erase();

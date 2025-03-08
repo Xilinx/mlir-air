@@ -964,7 +964,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Configure the tile trace units and the shimDMA
     if (clTraceSize > 0)
-      insertNpuWrite32ForTrace(module, clTraceSize, clTraceOffset);
+      if (failed(insertNpuWrite32ForTrace(module, clTraceSize, clTraceOffset)))
+        signalPassFailure();
 
     RewritePatternSet funcToSeqPatterns(ctx);
     funcToSeqPatterns.add<ControlFuncConversion>(ctx);
@@ -1311,8 +1312,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   // configure events to monitor
-  void insertNpuWrite32ForTrace(ModuleOp module, int64_t trace_size,
-                                int64_t trace_offset) {
+  LogicalResult insertNpuWrite32ForTrace(ModuleOp module, int64_t trace_size,
+                                         int64_t trace_offset) {
     SmallVector<mlir::func::FuncOp> funcOps;
     module.walk([&](mlir::func::FuncOp f) { funcOps.push_back(f); });
 
@@ -1354,11 +1355,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (!target_model.isCoreTile(srcColIndex, srcRowIndex) &&
             !target_model.isMemTile(srcColIndex, srcRowIndex)) {
           pktFlow->emitOpError("unsupported trace src.");
-          return;
+          return failure();
         }
         if (!target_model.isShimNOCTile(dstColIndex, dstRowIndex)) {
           pktFlow->emitOpError("unsupported trace dest.");
-          return;
+          return failure();
         }
         int pkt_type = 0;
         if (target_model.isMemTile(srcColIndex, srcRowIndex))
@@ -1445,7 +1446,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         int bdID = chanToIdMap[dstColIndex];
         if (bdID < 4) {
           pktFlow->emitOpError("runs out of bd_id.");
-          return;
+          return failure();
         }
 
         builder.create<AIEX::NpuWriteBdOp>(
@@ -1475,7 +1476,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           address = 0x1D20C;
         else {
           pktFlow->emitOpError("unknown trace dest.");
-          return;
+          return failure();
         }
         builder.create<AIEX::NpuWrite32Op>(
             builder.getUnknownLoc(), address, bdID, nullptr,
@@ -1493,6 +1494,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x34008, 127,
                                          nullptr, zero, zero);
     }
+    return success();
   }
 
   // Renumber aiex.npu.dma_memcpy_nd ops per column of AIEs.

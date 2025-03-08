@@ -450,7 +450,7 @@ public:
 };
 
 // AIR channel to AIRRT impl.
-Operation *
+FailureOr<Operation *>
 AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
                                          air::ChannelInterface thisOp,
                                          air::ChannelInterface theOtherOp) {
@@ -488,7 +488,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       if (!theOtherOp->hasAttr("tile")) {
         theOtherOp->emitOpError(
             "missing 'tile' attribute as compile-time flag.");
-        return nullptr;
+        return failure();
       }
       ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
       auto tile_dict = llvm::cast<DictionaryAttr>(tiles[0]);
@@ -534,7 +534,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto lastStrideConst = getConstantIntValue(strides.back());
   if (!lastStrideConst) {
     thisOp->emitOpError("last stride is not static.");
-    return nullptr;
+    return failure();
   }
 
   strides.pop_back();
@@ -597,11 +597,14 @@ public:
       return op->emitOpError("failed to find the other side of air.channel");
     auto otherOp = otherOps[0];
 
-    Operation *airrtOp =
+    auto airrtOp =
         AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, otherOp);
 
-    if (airrtOp) {
-      rewriter.replaceOp(op, airrtOp);
+    if (failed(airrtOp))
+      return failure();
+
+    if (*airrtOp != nullptr) {
+      rewriter.replaceOp(op, *airrtOp);
       return success();
     }
 
@@ -869,7 +872,9 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
     return failure();
 
   llvm::SmallSet<Operation *, 8> erased;
-  f.walk([&](scf::ParallelOp scf_par) {
+  SmallVector<scf::ParallelOp> scf_pars;
+  f.walk([&](scf::ParallelOp scf_par) { scf_pars.push_back(scf_par); });
+  for (auto scf_par : scf_pars) {
     if (!llvm::all_of(scf_par.getLowerBound(), [](Value v) {
           auto constV = getConstantIntValue(v);
           if (!constV)
@@ -879,7 +884,7 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
           return true;
         })) {
       scf_par->emitOpError("has non-zero lower bound.");
-      return;
+      return failure();
     }
     if (!llvm::all_of(scf_par.getStep(), [](Value v) {
           auto constV = getConstantIntValue(v);
@@ -890,7 +895,7 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
           return true;
         })) {
       scf_par->emitOpError("has non-unit step size.");
-      return;
+      return failure();
     }
     std::vector<int> par_sizes = {};
     for (auto v : scf_par.getUpperBound())
@@ -921,7 +926,7 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
       }
     }
     erased.insert(scf_par);
-  });
+  }
   for (auto a : erased) {
     if (a->getNumResults())
       for (auto token : a->getResults())
@@ -1072,7 +1077,8 @@ public:
             [&](airrt::DmaMemcpyNdOp c) { hasCandidateSCFParallel = true; });
       }
       if (hasCandidateSCFParallel)
-        serializeAsyncControlFlows(f);
+        if (failed(serializeAsyncControlFlows(f)))
+          signalPassFailure();
 
       // SCF parallel to affine for conversion
       if (failed(ScfParToAffineForConversion(f))) {
@@ -1248,7 +1254,7 @@ private:
 
   // This function is a workaround for vck190 having one single control
   // processor, where all the async. control programs are serialized here.
-  void serializeAsyncControlFlows(func::FuncOp func) const {
+  LogicalResult serializeAsyncControlFlows(func::FuncOp func) const {
 
     // Collect async scf loops in line-by-line order
     std::vector<Operation *> scf_loops;
@@ -1306,7 +1312,7 @@ private:
           Operation *chan_op = getInnerMostMemcpyFromLoopNest(bucket[i]);
           if (!chan_op) {
             func->emitOpError("memcpy in innermost loop body not found.");
-            return;
+            return failure();
           }
           auto src_loop_nest = getParentLoopNest(chan_op, bucket[i]);
           for (auto [src_loop, dst_loop] :
@@ -1339,6 +1345,7 @@ private:
         bucket[i]->erase();
       }
     }
+    return success();
   }
 };
 
