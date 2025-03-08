@@ -2382,7 +2382,7 @@ public:
     });
   }
 
-  void createShimDMAAllocationOps(
+  LogicalResult createShimDMAAllocationOps(
       OpBuilder builder, MLIRContext *ctx, air::HierarchyInterface op,
       std::vector<allocation_info_t> allocs, AIE::DMAChannelDir dir,
       std::map<int, int> chan_renumber_reverse_map) {
@@ -2449,7 +2449,7 @@ public:
         } else {
           op->emitOpError(
               "Memref type for shim DMA allocation not initialized!");
-          return;
+          return failure();
         }
 
         // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
@@ -2477,6 +2477,7 @@ public:
         }
       }
     }
+    return success();
   }
 
   airrt::SegmentMetadataOp
@@ -3459,18 +3460,27 @@ public:
                              ArrayAttr::get(ctx, dma_allocations));
 
           // Control packet generation for AIE1 is not yet implemented.
-          if (options.use_packet_flow_at_shim_dmas)
+          if (options.use_packet_flow_at_shim_dmas) {
             herd->emitOpError("control packet flow generation is not yet "
                               "supported for AIE1.");
+            signalPassFailure();
+            return;
+          }
         } else {
           // AIE2 dma metadata format
           builder.setInsertionPoint(device.getBody()->getTerminator());
-          createShimDMAAllocationOps(
-              builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
-              AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map);
-          createShimDMAAllocationOps(
-              builder, ctx, herd, shimDmaAlloc.mm2s_allocs,
-              AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map);
+          if (failed(createShimDMAAllocationOps(
+                  builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
+                  AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map))) {
+            signalPassFailure();
+            return;
+          }
+          if (failed(createShimDMAAllocationOps(
+                  builder, ctx, herd, shimDmaAlloc.mm2s_allocs,
+                  AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map))) {
+            signalPassFailure();
+            return;
+          }
         }
       }
       for (auto seg : segs) {
@@ -3497,12 +3507,18 @@ public:
         } else {
           // AIE2 memtile dma metadata format
           builder.setInsertionPoint(device.getBody()->getTerminator());
-          createShimDMAAllocationOps(
-              builder, ctx, seg, shimDmaAlloc.s2mm_allocs,
-              AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map);
-          createShimDMAAllocationOps(
-              builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
-              AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map);
+          if (failed(createShimDMAAllocationOps(
+                  builder, ctx, seg, shimDmaAlloc.s2mm_allocs,
+                  AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map))) {
+            signalPassFailure();
+            return;
+          }
+          if (failed(createShimDMAAllocationOps(
+                  builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
+                  AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map))) {
+            signalPassFailure();
+            return;
+          }
         }
       }
 
