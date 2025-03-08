@@ -18,8 +18,10 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
-bool isTileInbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt);
-bool isTileOutbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt);
+FailureOr<bool> isTileInbound(air::MemcpyInterface memcpyOp,
+                              int tileMemSpaceAsInt);
+FailureOr<bool> isTileOutbound(air::MemcpyInterface memcpyOp,
+                               int tileMemSpaceAsInt);
 
 AIE::TileOp getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col, int row);
 
@@ -143,8 +145,8 @@ public:
   allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                           int col, int row, int chan);
 
-  AIE::BufferOp getBuffer(uint64_t, int64_t col, int64_t row,
-                          air::MemcpyInterface &memcpyOp);
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+                                     air::MemcpyInterface &memcpyOp);
 };
 
 class ShimDMAAllocator : public DMAAllocator {
@@ -164,8 +166,9 @@ public:
                                        allocation_info_t existing_alloc,
                                        std::vector<Operation *> &dma_ops);
 
-  AIE::ExternalBufferOp getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
-                                  air::MemcpyInterface &memcpyOp);
+  FailureOr<AIE::ExternalBufferOp> getBuffer(uint64_t &BufferId, int64_t col,
+                                             int64_t row,
+                                             air::MemcpyInterface &memcpyOp);
 
   std::optional<air::allocation_info_t>
   foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,
@@ -184,10 +187,8 @@ public:
   allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                           allocation_info_t &existing_alloc);
 
-  int forecastChannelAlloc(air::MemcpyInterface &memcpyOp);
-
-  AIE::BufferOp getBuffer(uint64_t, int64_t col, int64_t row,
-                          air::MemcpyInterface &memcpyOp);
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+                                     air::MemcpyInterface &memcpyOp);
 
   std::optional<air::allocation_info_t>
   foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,

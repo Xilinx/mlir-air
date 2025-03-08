@@ -21,7 +21,8 @@
 using namespace mlir;
 using namespace xilinx;
 
-bool air::isTileInbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt) {
+FailureOr<bool> air::isTileInbound(air::MemcpyInterface memcpyOp,
+                                   int tileMemSpaceAsInt) {
   if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
     int src_memory_space =
         llvm::cast<BaseMemRefType>(memcpyOp.getSrcMemref().getType())
@@ -36,14 +37,18 @@ bool air::isTileInbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt) {
     memcpyOp->emitOpError(
         "neither src nor dst use the tile's memory space, indicating a "
         "potential error in the compilation workflow.");
-    return src_memory_space < dst_memory_space;
+    return failure();
   } else if (!memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
     return true;
   } else
     return false;
 }
-bool air::isTileOutbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt) {
-  return !isTileInbound(memcpyOp, tileMemSpaceAsInt);
+FailureOr<bool> air::isTileOutbound(air::MemcpyInterface memcpyOp,
+                                    int tileMemSpaceAsInt) {
+  auto isTileInbRes = isTileInbound(memcpyOp, tileMemSpaceAsInt);
+  if (failed(isTileInbRes))
+    return failure();
+  return !(*isTileInbRes);
 }
 
 AIE::TileOp air::getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col,
@@ -484,8 +489,10 @@ allocation_info_t
 DMAAllocator::lookupDMAAllocation(int64_t col, int64_t row,
                                   air::MemcpyInterface &memcpyOp) {
 
-  bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
-  auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  auto isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isMM2S))
+    return {};
+  auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
   for (auto &t : *allocs) {
     if (t.foundAlloc(col, row, memcpyOp))
       return t;
@@ -591,11 +598,13 @@ DMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
                          "potential error in the compilation flow.");
     return {};
   }
-  bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
-  auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  auto isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isMM2S))
+    return {};
+  auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
   AIE::DMAChannel aie_chan;
   aie_chan.direction =
-      isMM2S ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
+      isMM2S.value() ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
   aie_chan.channel = chan;
   for (auto &t : *allocs) {
     if (t.foundAlloc(tile.getCol(), tile.getRow())) {
@@ -637,8 +646,10 @@ void DMAAllocator::sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops) {
 allocation_info_t
 TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int col,
                                         int row, int chan = -1) {
-  bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
-  auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  auto isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isMM2S))
+    return {};
+  auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
 
   // Search for existing dma channel allocation
   unsigned num_allocs = 0;
@@ -660,16 +671,19 @@ TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int col,
     return {};
   }
   int tile_dma_channels =
-      isMM2S ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
-             : tile.getNumDestConnections(AIE::WireBundle::DMA);
+      isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
+                     : tile.getNumDestConnections(AIE::WireBundle::DMA);
   if (chan == -1)
     chan = num_allocs % tile_dma_channels;
   return DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
 
-AIE::BufferOp TileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
-                                          air::MemcpyInterface &memcpyOp) {
-  Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt)
+FailureOr<AIE::BufferOp>
+TileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
+                            air::MemcpyInterface &memcpyOp) {
+  if (failed(isTileInbound(memcpyOp, DMAMemorySpaceAsInt)))
+    return failure();
+  Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt).value()
                      ? (memcpyOp.getDstMemref())
                      : (memcpyOp.getSrcMemref());
   AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
@@ -696,10 +710,12 @@ allocation_info_t ShimDMAAllocator::allocNewDmaChannel(
     air::MemcpyInterface &memcpyOp, int col, int row,
     std::vector<Operation *> &dma_ops,
     std::string colAllocConstraint = "same_column") {
-  bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
-  auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  auto isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isMM2S))
+    return {};
+  auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
   AIE::DMAChannelDir dir =
-      isMM2S ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
+      isMM2S.value() ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
 
   // Search for existing dma channel allocation
   for (auto &t : *allocs) {
@@ -762,8 +778,10 @@ allocation_info_t
 ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
                                      allocation_info_t existing_alloc,
                                      std::vector<Operation *> &dma_ops) {
-  bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
-  auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  auto isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isMM2S))
+    return {};
+  auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
 
   std::vector<int> dma_ops_get_id;
   for (auto op : dma_ops) {
@@ -786,13 +804,15 @@ ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
                                           existing_alloc.dma_channel.channel);
 }
 
-AIE::ExternalBufferOp
+FailureOr<AIE::ExternalBufferOp>
 ShimDMAAllocator::getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
                             air::MemcpyInterface &memcpyOp) {
-  bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  auto isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isMM2S))
+    return failure();
   // Allocate external buffers
   auto memref =
-      (isMM2S) ? (memcpyOp.getSrcMemref()) : (memcpyOp.getDstMemref());
+      (isMM2S.value()) ? (memcpyOp.getSrcMemref()) : (memcpyOp.getDstMemref());
   MemRefType memrefTy = llvm::cast<MemRefType>(memref.getType());
   // External buffers have memory space L3
   memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(), {},
@@ -859,14 +879,20 @@ MemTileDMAAllocator::MemTileDMAAllocator(AIE::DeviceOp device)
 allocation_info_t
 MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                            int chan = -1) {
-  bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
-  auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  auto isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isMM2S))
+    return {};
+  auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
 
   const int dummy{0};
-  AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
-  auto tile = buffer.getTileOp();
+  auto buffer = getBuffer(dummy, -1, -1, memcpyOp);
+  if (failed(buffer)) {
+    memcpyOp->emitOpError("failed to get buffer.");
+    return {};
+  }
+  auto tile = buffer.value().getTileOp();
   if (!tile) {
-    buffer->emitOpError("failed to get an AIE tile.");
+    buffer.value()->emitOpError("failed to get an AIE tile.");
     return {};
   }
 
@@ -880,8 +906,8 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   }
   // Need to allocate a new one
   int memtile_dma_channels =
-      isMM2S ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
-             : tile.getNumDestConnections(AIE::WireBundle::DMA);
+      isMM2S.value() ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
+                     : tile.getNumDestConnections(AIE::WireBundle::DMA);
   if (chan == -1)
     chan = num_allocs % memtile_dma_channels;
   return DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
@@ -890,14 +916,20 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
 allocation_info_t
 MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                            allocation_info_t &existing_alloc) {
-  bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
-  auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+  auto isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isMM2S))
+    return {};
+  auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
 
   const int dummy{0};
-  AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
-  auto tile = buffer.getTileOp();
+  auto buffer = getBuffer(dummy, -1, -1, memcpyOp);
+  if (failed(buffer)) {
+    memcpyOp->emitOpError("failed to get buffer.");
+    return {};
+  }
+  auto tile = buffer.value().getTileOp();
   if (!tile) {
-    buffer->emitOpError("failed to get AIE tile.");
+    buffer.value()->emitOpError("failed to get AIE tile.");
     return {};
   }
 
@@ -950,31 +982,12 @@ MemTileDMAAllocator::foundFlowReuseOpportunity(
   return output;
 }
 
-int MemTileDMAAllocator::forecastChannelAlloc(air::MemcpyInterface &memcpyOp) {
-  bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
-  auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
-
-  const int dummy{0};
-  AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
-  auto tile = buffer.getTileOp();
-
-  // Search for existing dma channel allocation
-  unsigned num_allocs = 0;
-  for (auto &t : *allocs) {
-    if (t.foundAlloc(tile.getCol(), tile.getRow()))
-      num_allocs++;
-    if (t.foundAlloc(tile.getCol(), tile.getRow(), memcpyOp))
-      return t.tile_channel;
-  }
-  int memtile_dma_channels =
-      isMM2S ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
-             : tile.getNumDestConnections(AIE::WireBundle::DMA);
-  return num_allocs % memtile_dma_channels;
-}
-
-AIE::BufferOp MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
-                                             air::MemcpyInterface &memcpyOp) {
-  Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt)
+FailureOr<AIE::BufferOp>
+MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
+                               air::MemcpyInterface &memcpyOp) {
+  if (failed(isTileInbound(memcpyOp, DMAMemorySpaceAsInt)))
+    return failure();
+  Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt).value()
                      ? (memcpyOp.getDstMemref())
                      : (memcpyOp.getSrcMemref());
   AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
