@@ -157,6 +157,7 @@ func.func @segment_async_1() {
 // CHECK-NEXT: }
 // CHECK-NEXT: scf.yield %[[TOKEN4]] : !air.async.token
 // CHECK-NEXT: }
+// CHECK-NEXT: air.wait_all async [%[[TOKEN3]]] 
 // CHECK-NEXT: }
 func.func @segment_async_2() {
   %7 = air.segment @segment_0 async  {

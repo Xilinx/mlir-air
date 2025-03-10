@@ -431,13 +431,23 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
       replaceAllUsesInRegionWith(tok, loopCarriedTokenArg, forOp.getRegion());
     rewriter.setInsertionPoint(forOp);
     regionTokens.insert(forOp.getInitArgs().begin(), forOp.getInitArgs().end());
-    auto newWaitAll = rewriter.create<air::WaitAllOp>(
-        forOp->getLoc(), air::AsyncTokenType::get(forOp->getContext()),
-        regionTokens.takeVector());
-    forOp
-        .getInitsMutable()[loopCarriedTokenArg.getArgNumber() -
-                           forOp.getNumInductionVars()]
-        .assign(newWaitAll.getAsyncToken());
+    // Mutate existing wait_all, or create a new wait_all
+    if (forOp.getInitArgs().size() == 1 &&
+        forOp.getInitArgs()[0].getDefiningOp<air::WaitAllOp>()) {
+      auto existingWaitAll =
+          forOp.getInitArgs()[0].getDefiningOp<air::WaitAllOp>();
+      for (auto tok : regionTokens)
+        if (tok != existingWaitAll.getAsyncToken())
+          existingWaitAll.addAsyncDependency(tok);
+    } else {
+      auto newWaitAll = rewriter.create<air::WaitAllOp>(
+          forOp->getLoc(), air::AsyncTokenType::get(forOp->getContext()),
+          regionTokens.takeVector());
+      forOp
+          .getInitsMutable()[loopCarriedTokenArg.getArgNumber() -
+                             forOp.getNumInductionVars()]
+          .assign(newWaitAll.getAsyncToken());
+    }
   }
   return success();
 }
@@ -1330,6 +1340,11 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
     rewriter.eraseOp(op);
     return success();
   }
+
+  // If the wait_all isn't used by any other ops, then it's a barrier intended
+  // to sync with the host.
+  if (op.use_empty())
+    return success();
 
   // If async wait_all has a single operand, forward it to any uses
   if (op.getAsyncDependencies().size() == 1 && op.getResults().size() == 1) {
