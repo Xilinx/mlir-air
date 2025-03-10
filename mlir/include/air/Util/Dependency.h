@@ -263,7 +263,7 @@ public:
   std::string toPositionString(std::vector<unsigned> position);
   unsigned getIteratorFromPosition(std::vector<unsigned> position,
                                    Operation *hier_op);
-  void redoDepTraceIfDepOnHier(func::FuncOp func);
+  LogicalResult redoDepTraceIfDepOnHier(func::FuncOp func);
 
 private:
   void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
@@ -356,8 +356,8 @@ public:
 
   // Trace dependency from op
   template <typename T>
-  void traceDependencyFromOp(SmallVector<partialMemref, 1> operands,
-                             T sink_air_op, std::string dep_type) {
+  LogicalResult traceDependencyFromOp(SmallVector<partialMemref, 1> operands,
+                                      T sink_air_op, std::string dep_type) {
 
     char dep_tracing_mode = 'n';
     if (dep_type == "RAW")
@@ -366,7 +366,7 @@ public:
       dep_tracing_mode = 'n';
     else {
       sink_air_op->emitOpError("Unknown dependency type.");
-      return;
+      return failure();
     }
 
     // Detect deps
@@ -380,11 +380,12 @@ public:
       pushDepsAtCurrentScope(operand.memrefValue, async_op, dep_tracing_mode,
                              &operand);
     }
+    return success();
   }
 
   // Re-establish async dependency from an scf.for op to all other async ops in
   // the module.
-  void traceDependencyFromScfForOp(scf::ForOp &forOp);
+  LogicalResult traceDependencyFromScfForOp(scf::ForOp &forOp);
 
   // Recursively reconnect loop-carried dependency in scf loop nest
   void reconnectLoopCarriedDependencyFromOp(Operation *op);

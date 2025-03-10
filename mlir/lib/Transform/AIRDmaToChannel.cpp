@@ -1565,11 +1565,13 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
         if (sink_wait_all_op) {
           // Detect RAW deps
-          depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-              sink_op_memref_reads, sink_wait_all_op, "RAW");
+          if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+                  sink_op_memref_reads, sink_wait_all_op, "RAW")))
+            signalPassFailure();
           // Detect WAW and WAR deps
-          depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-              sink_op_memref_writes, sink_wait_all_op, "WAW/WAR");
+          if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+                  sink_op_memref_writes, sink_wait_all_op, "WAW/WAR")))
+            signalPassFailure();
 
           // Rebuild loop-carried dependency in scf loop nest
           air::clearAsyncDependenciesOfAsyncOp(memcpy_op);
@@ -1578,13 +1580,18 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         }
 
         // Trace dependency of external put/get within scf loop
-        depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-            sink_op_memref_reads,
-            dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()), "RAW");
-        depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-            sink_op_memref_writes,
-            dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()),
-            "WAW/WAR");
+        if (failed(
+                depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                    sink_op_memref_reads,
+                    dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()),
+                    "RAW")))
+          signalPassFailure();
+        if (failed(
+                depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                    sink_op_memref_writes,
+                    dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()),
+                    "WAW/WAR")))
+          signalPassFailure();
         // Detect tile index deps
         depTracer.traceTileIndices(
             sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins,
