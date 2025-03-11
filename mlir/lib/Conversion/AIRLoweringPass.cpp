@@ -672,8 +672,21 @@ LogicalResult lowerAirExecute(Operation *op) {
     auto &bb = exe.getRegion().front();
     unsigned idx = 0;
 
+    // If the execute op only contains pure ops (ops that do not touch memory),
+    // or memref.alloc/dealloc, then we shouldn't enforce blocking wait_alls to
+    // it.
+    auto isNonBlockingOp = [](Operation *o) {
+      return air::isPure(o) ||
+             isa<air::WaitAllOp, memref::AllocOp, memref::DeallocOp>(o);
+    };
+    bool isNonBlockingAsyncExecute = false;
+    if (llvm::all_of(exe.getChildOps(), [isNonBlockingOp](Operation &o) {
+          return isNonBlockingOp(&o);
+        }))
+      isNonBlockingAsyncExecute = true;
+
     OpBuilder builder(exe);
-    if (exe.getAsyncDependencies().size())
+    if (!isNonBlockingAsyncExecute && exe.getAsyncDependencies().size())
       builder.create<air::WaitAllOp>(op->getLoc(), Type{},
                                      exe.getAsyncDependencies());
 
