@@ -237,7 +237,8 @@ public:
     SmallVector<Value> args;
     for (int i = 0, e = herd.getNumKernelOperands(); i < e; i++) {
       Value o = herd.getKernelOperand(i);
-      if (o.use_empty())
+      Value arg = herd.getKernelArgument(i);
+      if (arg.use_empty())
         continue;
       if (llvm::isa<IntegerType, IndexType, FloatType>(o.getType()))
         args.push_back(o);
