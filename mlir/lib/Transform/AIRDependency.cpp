@@ -120,7 +120,7 @@ public:
 
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        if (air::isAsyncOp(op)) {
+        if (air::isAsyncOp(op) || isa<air::WaitAllOp>(op)) {
           assignOpId(op);
           updateAsyncExecuteGraphWithNewNode(op, asyncExecuteGraph);
           return; // Skip if is already async.
@@ -130,8 +130,6 @@ public:
 
         if (isa<air::DmaMemcpyNdOp>(op))
           createAsyncDMA(rewriter, op);
-        else if (isa<air::WaitAllOp>(op))
-          createAsyncWaitAll(rewriter, op);
         else if (isa<air::ChannelInterface>(op))
           createAsyncChannel(rewriter, op);
         else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp,
@@ -329,11 +327,11 @@ public:
           bool hasAsyncTokensInBody = false;
           SmallVector<Value, 1> yielded_tokens_in_for_op;
 
-          // Conservative loop-carried dependency: no pipelining
-          // TODO: loop pipelining support
           for (auto async_op : for_op.getOps<air::AsyncOpInterface>()) {
             hasAsyncTokensInBody = true;
-            auto token = async_op.getOperation()->getResult(0);
+            auto token = async_op.getAsyncToken();
+            if (!token)
+              continue;
             if (!isNotLoopCarriedOp(async_op) &&
                 isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody())) {
               yielded_tokens_in_for_op.push_back(token);
@@ -341,17 +339,19 @@ public:
           }
           for (auto child_for_op : for_op.getOps<scf::ForOp>()) {
             hasAsyncTokensInBody = true;
-            if (auto token = child_for_op.getResult(0)) {
-              if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
-                yielded_tokens_in_for_op.push_back(token);
-            }
+            if (child_for_op.getNumResults() == 0)
+              continue;
+            auto token = child_for_op.getResult(0);
+            if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
+              yielded_tokens_in_for_op.push_back(token);
           }
           for (auto child_parallel_op : for_op.getOps<scf::ParallelOp>()) {
             hasAsyncTokensInBody = true;
-            if (auto token = child_parallel_op.getResult(0)) {
-              if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
-                yielded_tokens_in_for_op.push_back(token);
-            }
+            if (child_parallel_op.getNumResults() == 0)
+              continue;
+            auto token = child_parallel_op.getResult(0);
+            if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
+              yielded_tokens_in_for_op.push_back(token);
           }
 
           if (hasAsyncTokensInBody) {
@@ -366,7 +366,9 @@ public:
 
           for (auto async_op : for_op.getOps<air::AsyncOpInterface>()) {
             hasAsyncTokensInBody = true;
-            auto token = async_op.getOperation()->getResult(0);
+            auto token = async_op.getAsyncToken();
+            if (!token)
+              continue;
             if (!isNotLoopCarriedOp(async_op) &&
                 isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody())) {
               yielded_tokens_in_parallel_op.push_back(token);
@@ -374,17 +376,19 @@ public:
           }
           for (auto child_for_op : for_op.getOps<scf::ForOp>()) {
             hasAsyncTokensInBody = true;
-            if (auto token = child_for_op.getResult(0)) {
-              if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
-                yielded_tokens_in_parallel_op.push_back(token);
-            }
+            if (child_for_op.getNumResults() == 0)
+              continue;
+            auto token = child_for_op.getResult(0);
+            if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
+              yielded_tokens_in_parallel_op.push_back(token);
           }
           for (auto child_parallel_op : for_op.getOps<scf::ParallelOp>()) {
             hasAsyncTokensInBody = true;
-            if (auto token = child_parallel_op.getResult(0)) {
-              if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
-                yielded_tokens_in_parallel_op.push_back(token);
-            }
+            if (child_parallel_op.getNumResults() == 0)
+              continue;
+            auto token = child_parallel_op.getResult(0);
+            if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
+              yielded_tokens_in_parallel_op.push_back(token);
           }
 
           if (hasAsyncTokensInBody) {
@@ -531,26 +535,6 @@ private:
 
     // Erase op
     if (eraseOpWithCheck(rewriter, op, "createAsyncDMA").failed()) {
-      signalPassFailure();
-    }
-  }
-
-  // Re-instantiate the wait_all op to ensure an async token is returned.
-  void createAsyncWaitAll(RewriterBase &rewriter, Operation *op) {
-    rewriter.setInsertionPoint(op);
-    auto loc = op->getLoc();
-    SmallVector<Value, 1> deps;
-    auto wa_op = mlir::dyn_cast<air::WaitAllOp>(op);
-    air::WaitAllOp new_Wait_all_op = rewriter.create<air::WaitAllOp>(
-        loc, air::AsyncTokenType::get(wa_op->getContext()),
-        wa_op.getAsyncDependencies());
-    assignOpId(new_Wait_all_op);
-
-    // Update op-to-graph map
-    updateAsyncExecuteGraphWithNewNode(new_Wait_all_op, asyncExecuteGraph);
-
-    // Erase op
-    if (eraseOpWithCheck(rewriter, op, "createAsyncWaitAll").failed()) {
       signalPassFailure();
     }
   }
@@ -1293,6 +1277,8 @@ private:
   void elevateAsyncTokens(T new_loop_op, ExecuteGraph::VertexId wait_all_op) {
     for (auto source : new_loop_op.template getOps<U>()) {
       SmallPtrSet<Operation *, 1> keep;
+      if (source->getNumResults() == 0)
+        continue;
       if (source->getResult(0)) {
         for (auto sink : source->getResult(0).getUsers()) {
           // Keep token if source already dominates sink
@@ -1336,10 +1322,10 @@ private:
           if (v_op.getAsyncToken() == v)
             incoming_tokens.push_back(v);
         } else if (auto v_op = dyn_cast<scf::ForOp>(v.getDefiningOp())) {
-          if (v_op.getResult(0) == v)
+          if (v_op.getNumResults() > 0 && v_op.getResult(0) == v)
             incoming_tokens.push_back(v);
         } else if (auto v_op = dyn_cast<scf::ParallelOp>(v.getDefiningOp())) {
-          if (v_op.getResult(0) == v)
+          if (v_op.getNumResults() > 0 && v_op.getResult(0) == v)
             incoming_tokens.push_back(v);
         }
       }
@@ -1402,10 +1388,10 @@ private:
           if (v_op.getAsyncToken() == v)
             incoming_tokens.push_back(v);
         } else if (auto v_op = dyn_cast<scf::ForOp>(v.getDefiningOp())) {
-          if (v_op.getResult(0) == v)
+          if (v_op.getNumResults() > 0 && v_op.getResult(0) == v)
             incoming_tokens.push_back(v);
         } else if (auto v_op = dyn_cast<scf::ParallelOp>(v.getDefiningOp())) {
-          if (v_op.getResult(0) == v)
+          if (v_op.getNumResults() > 0 && v_op.getResult(0) == v)
             incoming_tokens.push_back(v);
         }
       }

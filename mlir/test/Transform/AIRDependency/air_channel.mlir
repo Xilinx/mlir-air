@@ -256,10 +256,10 @@ module {
 // CHECK: %[[HERD:.*]] = air.herd @herd_0 async
 // CHECK: %[[TOKEN0:.*]] = air.channel.get async [{{.*}}]  @ChanA[]
 // CHECK-NEXT: %[[TOKEN1:.*]] = air.channel.get async [{{.*}}]  @ChanB[]
-// CHECK-NEXT: air.wait_all async [{{.*}}%[[TOKEN0]], %[[TOKEN1]]]
-// CHECK: air.wait_all async [%[[HERD]]]
+// CHECK-NEXT: air.wait_all [{{.*}}%[[TOKEN0]], %[[TOKEN1]]]
+// CHECK: air.wait_all [%[[HERD]]]
 // CHECK: %[[TOKEN2:.*]] = air.channel.get async [{{.*}}]  @ChanC[]
-// CHECK-NEXT: air.wait_all async [%[[TOKEN2]]]
+// CHECK-NEXT: air.wait_all [%[[TOKEN2]]]
 
 module {
   air.channel @ChanA []
