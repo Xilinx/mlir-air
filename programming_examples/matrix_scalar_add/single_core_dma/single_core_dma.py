@@ -69,7 +69,7 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                                     image_width // tile_width
                                 ),
                             )
-                            tile_num = arith.AddIOp(tile_num, tile_index1)
+                            tile_num = arith.AddIOp(tile_num.results[0], tile_index1)
 
                             # Copy a tile from the input image (a) into the L1 memory region (tile_in)
                             dma_memcpy_nd(

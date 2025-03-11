@@ -45,24 +45,42 @@ class XRTBackend(AirBackend):
 
     def __init__(
         self,
-        verbose=False,
-        experimental_passes=False,
-        omit_while_true_loop=False,
-        omit_pingpong=False,
+        verbose: bool = False,
+        omit_while_true_loop: bool = False,
+        omit_pingpong: bool = False,
+        lower_linalg_to_func: str = None,
+        air_loop_fusion: bool = False,
+        runtime_loop_tiling_sizes: list[int] = [4, 4],
+        omit_auto_broadcast: bool = False,
+        channel_multiplexing: list[str] = [],
+        trace_offset: int = 0,
+        trace_size: int = 0,
     ):
         """Constructor for XRTBackend
 
         Args:
             verbose: verbose output
-            experimental_passes: configure aircc to run additional experimental passes
             omit_while_true_loop: configure aircc to omit the while true loop it traditionally emits.
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering.
+            lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
+            air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
+            runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
+            omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
+            channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
+            trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
+            trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
         """
         super().__init__()
         self.verbose = verbose
-        self.experimental_passes = experimental_passes
         self.omit_while_true_loop = omit_while_true_loop
         self.omit_pingpong = omit_pingpong
+        self.lower_linalg_to_func = lower_linalg_to_func
+        self.air_loop_fusion = air_loop_fusion
+        self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
+        self.omit_auto_broadcast = omit_auto_broadcast
+        self.channel_multiplexing = channel_multiplexing
+        self.trace_offset = trace_offset
+        self.trace_size = trace_size
         self.currently_loaded = False
 
     def __del__(self):
@@ -110,17 +128,38 @@ class XRTBackend(AirBackend):
                 insts,
             ]
 
+            aircc_options += ["--air-runtime-loop-tiling-sizes"]
+            for s in self.runtime_loop_tiling_sizes:
+                aircc_options += [str(s)]
+
             if self.verbose:
                 aircc_options = aircc_options + ["-v"]
-
-            if self.experimental_passes:
-                aircc_options += ["--experimental-passes"]
 
             if self.omit_while_true_loop:
                 aircc_options += ["--omit-while-true-loop"]
 
             if self.omit_pingpong:
                 aircc_options += ["--omit-ping-pong-transform"]
+
+            if self.lower_linalg_to_func:
+                aircc_options += ["--lower-linalg-to-func"]
+                aircc_options += [self.lower_linalg_to_func]
+
+            if self.air_loop_fusion:
+                aircc_options += ["--air-loop-fusion"]
+
+            if self.omit_auto_broadcast:
+                aircc_options += ["--omit-auto-broadcast"]
+
+            if len(self.channel_multiplexing) != 0:
+                aircc_options += ["--air-channel-multiplexing"]
+                aircc_options += self.channel_multiplexing
+
+            if self.trace_size != 0:
+                aircc_options += ["-trace-size"]
+                aircc_options += [str(self.trace_size)]
+                aircc_options += ["-trace-offset"]
+                aircc_options += [str(self.trace_offset)]
 
             aircc.run(air_module, aircc_options)
 

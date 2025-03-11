@@ -57,14 +57,26 @@ class XRTRunner:
     def __init__(
         self,
         verbose: bool = False,
-        experimental_passes: bool = True,
         omit_while_true_loop: bool = True,
         omit_pingpong: bool = False,
+        lower_linalg_to_func: bool = False,
+        air_loop_fusion: bool = False,
+        runtime_loop_tiling_sizes: list[int] = [4, 4],
+        omit_auto_broadcast: bool = False,
+        channel_multiplexing: list[str] = [],
+        trace_offset: int = 0,
+        trace_size: int = 0,
     ):
         self.verbose = verbose
-        self.experimental_passes = experimental_passes
         self.omit_while_true_loop = omit_while_true_loop
         self.omit_pingpong = omit_pingpong
+        self.lower_linalg_to_func = lower_linalg_to_func
+        self.air_loop_fusion = air_loop_fusion
+        self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
+        self.omit_auto_broadcast = omit_auto_broadcast
+        self.channel_multiplexing = channel_multiplexing
+        self.trace_offset = trace_offset
+        self.trace_size = trace_size
 
     def run_test(
         self,
@@ -79,9 +91,15 @@ class XRTRunner:
 
         backend = XRTBackend(
             verbose=self.verbose,
-            experimental_passes=self.experimental_passes,
             omit_while_true_loop=self.omit_while_true_loop,
             omit_pingpong=self.omit_pingpong,
+            lower_linalg_to_func=self.lower_linalg_to_func,
+            air_loop_fusion=self.air_loop_fusion,
+            runtime_loop_tiling_sizes=self.runtime_loop_tiling_sizes,
+            omit_auto_broadcast=self.omit_auto_broadcast,
+            channel_multiplexing=self.channel_multiplexing,
+            trace_offset=self.trace_offset,
+            trace_size=self.trace_size,
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs

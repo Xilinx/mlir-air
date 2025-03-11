@@ -968,8 +968,9 @@ module {
 // AGGRESSIVE: air.channel.put{{.*}}@channel_5{{.*}} : (memref<256x32xi8>)
 // AGGRESSIVE: air.segment @segment_0
 // AGGRESSIVE: scf.for %{{.*}} = %c0{{.*}} to %c2{{.*}} step %c1{{.*}}
-// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_5{{.*}} : (memref<1x2x128x16xi8, 1 : i32>)
-// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_5{{.*}} : (memref<2x1x128x128xi8, 1 : i32>)
+// AGGRESSIVE-NEXT: %[[TOK0:.*]] = air.channel.get{{.*}}@channel_5{{.*}} : (memref<1x2x128x16xi8, 1 : i32>)
+// AGGRESSIVE-NEXT: %[[TOK1:.*]] = air.channel.get{{.*}}@channel_5{{.*}} : (memref<2x1x128x128xi8, 1 : i32>)
+// AGGRESSIVE-NEXT: air.wait_all async [%[[TOK0]], %[[TOK1]]] 
 // AGGRESSIVE-NEXT: scf.yield
 // AGGL1: air.launch
 // AGGL1: air.channel.put{{.*}}@channel_4{{.*}} : (memref<512x256xi8>)
@@ -1313,8 +1314,9 @@ module {
 // AGGL1-NEXT: air.channel.get{{.*}}@channel_6
 // AGGL1-NEXT: air.channel.get{{.*}}@channel_6
 // AGGL1: scf.for
-// AGGL1-NEXT: air.channel.get{{.*}}@channel_4
-// AGGL1-NEXT: air.channel.get{{.*}}@channel_5
+// AGGL1-NEXT: %[[TOK0:.*]] = air.channel.get{{.*}}@channel_4
+// AGGL1-NEXT: %[[TOK1:.*]] = air.channel.get{{.*}}@channel_5
+// AGGL1-NEXT: air.wait_all async [%[[TOK0]], %[[TOK1]]] 
 // AGGL1-NEXT: scf.parallel
 // AGGL1: air.channel.put{{.*}}@channel_6
 // AGGL1: air.channel.put{{.*}}@channel_6
@@ -1339,8 +1341,9 @@ module {
 // AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_6
 // AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_6
 // AGGRESSIVE: scf.for
-// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_4
-// AGGRESSIVE-NEXT: air.channel.get{{.*}}@channel_4
+// AGGRESSIVE-NEXT: %[[TOK0:.*]] = air.channel.get{{.*}}@channel_4
+// AGGRESSIVE-NEXT: %[[TOK1:.*]] = air.channel.get{{.*}}@channel_4
+// AGGRESSIVE-NEXT: air.wait_all async [%[[TOK0]], %[[TOK1]]] 
 // AGGRESSIVE-NEXT: scf.parallel
 // AGGRESSIVE: air.channel.put{{.*}}@channel_6
 // AGGRESSIVE: air.channel.put{{.*}}@channel_6

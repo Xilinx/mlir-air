@@ -1001,25 +1001,6 @@ def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "Modul
   ];
 }
 
-def AIREnforceLoopCarriedMemrefDeallocPattern: Pass<"air-enforce-loop-carried-memref-dealloc", "ModuleOp"> {
-  let summary = "Enforce memref dealloc ops in loop iterations";
-  let constructor = "xilinx::air::createAIREnforceLoopCarriedMemrefDeallocPattern()";
-  let description = [{
-    This pass enforces memref deallocation events to happen within each loop
-    iteration, by connecting them in the loop-carried dependency path.
-  }];
-}
-
-def AIRDeAliasMemref: Pass<"air-dealias-memref", "ModuleOp"> {
-  let summary = "De-alias a memref into multiple memrefs";
-  let constructor = "xilinx::air::createAIRDeAliasMemref()";
-  let description = [{
-    This pass detects memrefs which can de-alias into multiple memrefs over time, and
-    generates extra copies of this memref. This process can improve the stability of the
-    memref-to-buffer mappings.
-  }];
-}
-
 def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   let summary = "Fuse multiple air.channel ops into one";
   let constructor = "xilinx::air::createAIRFuseChannels()";
@@ -1069,8 +1050,21 @@ def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
 }
 
 def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
-  let summary = "Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD)";
+  let summary = "Optimize logical air.channel.put/get op into efficient AIE shim dma block descriptor (BD)";
   let constructor = "xilinx::air::createAIROptimizeShimDMABDs()";
+  let description = [{
+    Optimize the logical data movement by transforming them, represented as air.channel.put/get operations, into explicit representation of physical data movement block descriptors (BDs), also represented as air.channel.put/get operations.
+  }];
+  let options = [
+    Option<"clDevice", "device", "std::string",
+          /*default=*/"\"xcvc1902\"",
+           "AIE device to target.">,
+  ];
+}
+
+def AIROptimizeMemtileDMABDs: Pass<"air-opt-memtile-dma-bds", "func::FuncOp"> {
+  let summary = "Optimize logical air.channel.put/get op into efficient AIE memtile dma block descriptor (BD)";
+  let constructor = "xilinx::air::createAIROptimizeMemtileDMABDs()";
   let description = [{
     Optimize the logical data movement by transforming them, represented as air.channel.put/get operations, into explicit representation of physical data movement block descriptors (BDs), also represented as air.channel.put/get operations.
   }];
@@ -1514,4 +1508,13 @@ def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
     ```
   }];
 }
+
+def AIRForceL1MemrefInHerdPass : Pass<"air-force-l1-memref-in-herd", "func::FuncOp"> {
+  let summary = "Force all memrefs allocated within air.herd to have memory space L1.";
+  let constructor = "xilinx::air::createAIRForceL1MemrefInHerdPass()";
+  let description = [{
+    Experimental pass. Force all memrefs allocated within air.herd to have memory space L1.
+  }];
+}
+
 #endif // AIR_CONVERSION_PASSES

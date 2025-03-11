@@ -73,8 +73,13 @@ bool isAsyncDependent(Operation *a, Operation *b);
 scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                                      scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops);
-LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
-                                Operation *originalChanOp, IRMapping remap);
+LogicalResult
+unrollScfParallel(OpBuilder builder, scf::ParallelOp par, IRMapping remap,
+                  llvm::DenseMap<Operation *, SmallVector<Operation *>> &opMap);
+LogicalResult unrollScfParallelOnDims(
+    RewriterBase &rewriter, scf::ParallelOp par, IRMapping remap,
+    SmallVector<int> dims,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &opMap);
 void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
     RewritePatternSet &patterns);
 air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
@@ -258,7 +263,7 @@ public:
   std::string toPositionString(std::vector<unsigned> position);
   unsigned getIteratorFromPosition(std::vector<unsigned> position,
                                    Operation *hier_op);
-  void redoDepTraceIfDepOnHier(func::FuncOp func);
+  LogicalResult redoDepTraceIfDepOnHier(func::FuncOp func);
 
 private:
   void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
@@ -351,16 +356,18 @@ public:
 
   // Trace dependency from op
   template <typename T>
-  void traceDependencyFromOp(SmallVector<partialMemref, 1> operands,
-                             T sink_air_op, std::string dep_type) {
+  LogicalResult traceDependencyFromOp(SmallVector<partialMemref, 1> operands,
+                                      T sink_air_op, std::string dep_type) {
 
     char dep_tracing_mode = 'n';
     if (dep_type == "RAW")
       dep_tracing_mode = 'w';
     else if (dep_type == "WAW/WAR")
       dep_tracing_mode = 'n';
-    else
-      assert(false && "Unknown dependency type");
+    else {
+      sink_air_op->emitOpError("Unknown dependency type.");
+      return failure();
+    }
 
     // Detect deps
     for (auto operand : operands) {
@@ -373,11 +380,12 @@ public:
       pushDepsAtCurrentScope(operand.memrefValue, async_op, dep_tracing_mode,
                              &operand);
     }
+    return success();
   }
 
   // Re-establish async dependency from an scf.for op to all other async ops in
   // the module.
-  void traceDependencyFromScfForOp(scf::ForOp &forOp);
+  LogicalResult traceDependencyFromScfForOp(scf::ForOp &forOp);
 
   // Recursively reconnect loop-carried dependency in scf loop nest
   void reconnectLoopCarriedDependencyFromOp(Operation *op);

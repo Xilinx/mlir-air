@@ -160,11 +160,9 @@ LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
     SmallVector<Value> &strides, Value memref);
 
 // Canonicalize wrap and stride lists, by removing redundant dimensions.
-LogicalResult canonicalizeWrapAndStrideList(OpBuilder builder,
-                                            SmallVector<Value> &offsets,
-                                            SmallVector<Value> &sizes,
-                                            SmallVector<Value> &strides,
-                                            int memref_volume);
+LogicalResult canonicalizeWrapAndStrideList(
+    OpBuilder builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
+    SmallVector<Value> &strides, int memref_volume, int maxSize = -1);
 
 // If wrap-and-stride lists are empty, populate them with default data access
 // layout (contiguous, row-major).
@@ -176,8 +174,7 @@ void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
-                                SmallVector<Value> memcpy_strides,
-                                Value memref);
+                                SmallVector<Value> memcpy_strides);
 // Get the memref size along a given dimension, that the access pattern actually
 // covers.
 SmallVector<int64_t>
@@ -190,7 +187,7 @@ getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 writeAccessPattern(air::ChannelInterface chanOp);
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
-writeAccessPattern(memref::SubViewOp subview);
+writeAccessPattern(memref::SubViewOp subview, Region *commonReg = nullptr);
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 writeAccessPattern(mlir::vector::TransferReadOp readOp);
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
@@ -270,6 +267,25 @@ void populateBufferMemrefToFuncArgsPattern(RewritePatternSet &patterns);
 // specified region.
 Region *findCommonRegionContainingAllAncestors(SmallVector<Operation *> ops,
                                                Operation *until = nullptr);
+
+// A lite version of OperationEquivalence::isRegionEquivalentTo which only
+// checks for const value equivalences.
+bool isRegionEquivalentTo(Region *lhs, Region *rhs);
+// A lite version of OperationEquivalence::isEquivalentTo which only checks for
+// const value equivalences.
+bool isEquivalentTo(Operation *lhs, Operation *rhs);
+
+// Generate composed affine apply op from arith addi op operating on Index
+// values.
+affine::AffineApplyOp
+consructComposedAffineApplyOpFromArithAddI(OpBuilder &builder,
+                                           arith::AddIOp addOp);
+
+// Generate composed affine apply op from arith muli op operating on Index
+// values.
+affine::AffineApplyOp
+consructComposedAffineApplyOpFromArithMulI(OpBuilder &builder,
+                                           arith::MulIOp mulOp);
 
 } // namespace air
 } // namespace xilinx

@@ -69,7 +69,7 @@ def matmul_l1_l2_2x2():
         air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE, context=module.context
     ).run(module.operation)
     PassManager.parse(
-        "builtin.module(air-linalg-codegen{l1-tile-size=32,32,32 l2-tile-size=64,64,64},air-par-to-herd{depth=1},air-copy-to-dma)",
+        "builtin.module(air-linalg-codegen{l1-tile-size=32,32,32 l2-tile-size=64,64,64},air-par-to-herd{depth=-1},air-copy-to-dma)",
         context=module.context,
     ).run(module.operation)
     print(module)

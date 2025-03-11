@@ -9,6 +9,7 @@ from air.ir import *
 import air.passmanager
 from air._mlir_libs._air import run_transform
 from air.dialects.air import module_builder
+from air.backend.xrt import XRTBackend
 
 import argparse
 
@@ -106,9 +107,6 @@ transform.with_pdl_patterns {
 transform_ir = Module.parse(transform_ir_string, context=context)
 run_transform(transform_ir, air_module)
 
-with open("air_tiled.mlir", "w") as f:
-    f.write(str(air_module))
-
 ################################################
 ## Binding parallel loops to air hierarchies
 ################################################
@@ -118,9 +116,9 @@ pipeline = (
     + ",".join(
         [
             "air-copy-to-dma",
-            "air-linalg-to-func{link-with=kernel.o}",
-            "air-par-to-herd{depth=1}",
+            "air-par-to-herd{depth=-1}",
             "air-par-to-launch{has-air-segment=1}",
+            "scf-forall-to-for",
             "canonicalize",
             "cse",
         ]
@@ -131,120 +129,13 @@ pipeline = (
 pm = air.passmanager.PassManager.parse(pipeline, context=context)
 pm.run(air_module.operation)
 
-with open("air_sync.mlir", "w") as f:
-    f.write(str(air_module))
+###############################################
+# Run compile and load
+###############################################
 
-################################################
-## Extract event dependency and optimize schedule
-################################################
-
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "air-dependency",
-            "air-dependency-schedule-opt",
-            "air-specialize-dma-broadcast",
-            "air-dma-to-channel",
-            "canonicalize",
-            "cse",
-            "air-dependency-canonicalize",
-            "canonicalize",
-            "cse",
-            "func.func(air-loop-fusion)",
-            "air-label-scf-for-to-ping-pong",
-            "air-ping-pong-transform{keep-memref-dealloc=true}",
-            "canonicalize",
-            "cse",
-            "air-specialize-channel-wrap-and-stride",
-            "canonicalize",
-            "cse",
-        ]
-    )
-    + ")"
+backend = XRTBackend(
+    air_loop_fusion=True,
+    runtime_loop_tiling_sizes=[1, 1],
+    lower_linalg_to_func="kernel.o",
 )
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-with open("aircc_input.mlir", "w") as f:
-    f.write(str(air_module))
-
-################################################
-## Place herd to segment
-################################################
-
-air_async_module = Module.parse(str(air_module), context=context)
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "func.func(air-collapse-herd)",
-            "canonicalize",
-            "cse",
-            "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor=0}",
-            "canonicalize",
-            "cse",
-            "func.func(air-renumber-dma)",
-        ]
-    )
-    + ")"
-)
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-with open("air_placed.mlir", "w") as f:
-    f.write(str(air_module))
-
-################################################
-## MLIR-AIR to MLIR-AIE
-################################################
-
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true}",
-            "canonicalize",
-        ]
-    )
-    + ")"
-)
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-with open("aircc_decomp_aiecc.mlir", "w") as f:
-    f.write(str(air_module))
-
-################################################
-## MLIR-AIR runtime lowering
-################################################
-
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
-            "air-to-std",
-            "symbol-dce",
-            "airrt-to-npu",
-            "canonicalize",
-        ]
-    )
-    + ")"
-)
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-with open("aie.mlir", "w") as f:
-    f.write(str(air_module))
-
-import aie.compiler.aiecc.main as aiecc
-
-aiecc_options = [
-    "--no-aiesim",
-    "--xchesscc",
-    "--xbridge",
-    "--aie-generate-cdo",
-    "--aie-generate-npu",
-    "--no-compile-host",
-    "--npu-insts-name=insts.txt",
-    "--xclbin-name=aie.xclbin",
-    "aie.mlir",
-]
-aiecc.run(air_module, aiecc_options)
+module_function = backend.compile_and_load(air_module)

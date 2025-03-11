@@ -1376,7 +1376,7 @@ static SmallVector<Value> extractStridesFromMemrefType(MemRefType memrefTy,
   SmallVector<Value> strides;
   int64_t offset;
   SmallVector<int64_t, 4> layout_strides;
-  auto successStrides = getStridesAndOffset(memrefTy, layout_strides, offset);
+  auto successStrides = memrefTy.getStridesAndOffset(layout_strides, offset);
   if (failed(successStrides)) {
     llvm::outs() << "Failed to get strides\n";
     return strides;

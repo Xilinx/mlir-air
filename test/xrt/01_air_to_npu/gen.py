@@ -1,13 +1,17 @@
-import air
-import air.compiler.util
+# gen.py -*- Python -*-
+#
+# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 from air.dialects import linalg, arith, func, memref
-from air.ir import *
-import air.passmanager
 from air.dialects.air import module_builder
 from air.dialects.linalg.opdsl.lang import *
 from air.compiler.util import run_transform
 import argparse
-import sys
+
+from air.backend.xrt import XRTBackend
+from air.ir import *
+import air.passmanager
 
 
 @linalg_structured_op
@@ -104,8 +108,9 @@ pipeline = (
     + ",".join(
         [
             "buffer-results-to-out-params",
-            "air-par-to-herd{depth=1}",
+            "air-par-to-herd{depth=-1}",
             "air-par-to-launch{has-air-segment=true}",
+            "scf-forall-to-for",
             "air-copy-to-dma",
             "canonicalize",
             "cse",
@@ -116,130 +121,13 @@ pipeline = (
 pm = air.passmanager.PassManager.parse(pipeline, context=context)
 pm.run(air_module.operation)
 
-with open("air_sync.mlir", "w") as f:
-    f.write(str(air_module))
+###############################################
+# Run compile and load
+###############################################
 
-################################################
-## Extract event dependency and optimize schedule
-################################################
-
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "air-dependency",
-            "air-dependency-schedule-opt",
-            "air-specialize-dma-broadcast",
-            "air-dma-to-channel",
-            "canonicalize",
-            "cse",
-            "air-dependency-canonicalize",
-            "canonicalize",
-            "cse",
-            "air-label-scf-for-to-ping-pong",
-        ]
-    )
-    + ")"
+backend = XRTBackend(
+    air_loop_fusion=True,
+    trace_offset=opts.trace_offset,
+    trace_size=opts.trace_size,
 )
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-# Not sure why parsing the ir solves the segmentation fault...
-air_module = Module.parse(str(air_module), context=context)
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "air-ping-pong-transform{keep-memref-dealloc=true}",
-            "air-dealias-memref",
-            "canonicalize",
-            "cse",
-            "air-isolate-async-dma-loop-nests",
-            "air-specialize-channel-wrap-and-stride",
-            "canonicalize",
-            "cse",
-        ]
-    )
-    + ")"
-)
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-with open("aircc_input.mlir", "w") as f:
-    f.write(str(air_module))
-
-################################################
-## Place herd to segment
-################################################
-
-air_async_module = Module.parse(str(air_module), context=context)
-col_anchor = 1 if opts.trace_size > 0 else 0
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "func.func(air-collapse-herd)",
-            "canonicalize",
-            "cse",
-            "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor="
-            + str(col_anchor)
-            + "}",
-            "canonicalize",
-            "cse",
-            "func.func(air-renumber-dma)",
-            "func.func(convert-linalg-to-loops)",
-        ]
-    )
-    + ")"
-)
-
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-with open("air_placed.mlir", "w") as f:
-    f.write(str(air_module))
-
-# ################################################
-# ## MLIR-AIR to MLIR-AIE
-# ################################################
-
-air_to_aie_pass = (
-    "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true"
-)
-if opts.trace_size > 0:
-    air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
-air_to_aie_pass = air_to_aie_pass + "}"
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            air_to_aie_pass,
-            "canonicalize",
-        ]
-    )
-    + ")"
-)
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-with open("aircc_decomp_aiecc.mlir", "w") as f:
-    f.write(str(air_module))
-
-################################################
-## MLIR-AIR runtime lowering
-################################################
-
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
-            "air-to-std",
-            "airrt-to-npu{"
-            + f"trace-offset={opts.trace_offset} trace-size={opts.trace_size}"
-            + "}",
-            "canonicalize",
-        ]
-    )
-    + ")"
-)
-pm = air.passmanager.PassManager.parse(pipeline, context=context)
-pm.run(air_module.operation)
-with open("aie.mlir", "w") as f:
-    f.write(str(air_module))
+module_function = backend.compile_and_load(air_module)

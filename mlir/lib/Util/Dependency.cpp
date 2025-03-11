@@ -610,11 +610,10 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
 bool isAsyncOp(Operation *op) {
   if (!op)
     return false;
-  for (auto result : op->getResults()) {
-    if (llvm::isa<air::AsyncTokenType>(result.getType())) {
-      return true;
-    }
-  }
+  if (llvm::any_of(op->getResults(), [](Value r) {
+        return isa<air::AsyncTokenType>(r.getType());
+      }))
+    return true;
   return false;
 }
 
@@ -775,8 +774,9 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
 }
 
 // Unroll scf.parallel ops.
-LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
-                                Operation *originalChanOp, IRMapping remap) {
+LogicalResult unrollScfParallel(
+    OpBuilder builder, scf::ParallelOp par, IRMapping remap,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &opMap) {
   auto loc = par->getLoc();
   auto ctx = par->getContext();
   SmallVector<int, 2> lbs_spatial, ubs_spatial;
@@ -806,6 +806,7 @@ LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
       curr_new_op = builder.clone(op, localRemap);
       if (air::getAsyncTokenFromOp(curr_new_op))
         yieldedTokensInIter.push_back(air::getAsyncTokenFromOp(curr_new_op));
+      opMap[&op].push_back(curr_new_op);
     }
     // Unroll air.wait_all token reduction
     if (getAsyncTokenFromOp(par)) {
@@ -826,6 +827,100 @@ LogicalResult unrollScfParallel(OpBuilder builder, scf::ParallelOp par,
   return success();
 }
 
+// Separate one scf.parallel with multiple loops into two scf.parallels, with
+// the outer parallel containing the specified dimensions.
+FailureOr<std::pair<scf::ParallelOp, scf::ParallelOp>>
+separateScfParallelByDims(RewriterBase &rewriter, scf::ParallelOp par,
+                          IRMapping remap, SmallVector<int> dims) {
+  if (par.getNumLoops() < dims.size())
+    return failure();
+  auto loc = par->getLoc();
+  // Separate scf.parallel into multiple scf.parallel loops
+  SmallVector<Value> lbs = par.getLowerBound();
+  SmallVector<Value> ubs = par.getUpperBound();
+  SmallVector<Value> steps = par.getStep();
+  SmallVector<Value> inits = par.getInitVals();
+
+  SmallVector<Value> outerLbs, outerUbs, outerSteps, innerLbs, innerUbs,
+      innerSteps;
+  for (unsigned i = 0; i < par.getNumLoops(); i++) {
+    if (llvm::is_contained(dims, i)) {
+      outerLbs.push_back(lbs[i]);
+      outerUbs.push_back(ubs[i]);
+      outerSteps.push_back(steps[i]);
+    } else {
+      innerLbs.push_back(lbs[i]);
+      innerUbs.push_back(ubs[i]);
+      innerSteps.push_back(steps[i]);
+    }
+  }
+
+  auto outerPar = rewriter.create<scf::ParallelOp>(loc, outerLbs, outerUbs,
+                                                   outerSteps, inits);
+  rewriter.setInsertionPointToStart(outerPar.getBody());
+  auto innerPar = rewriter.create<scf::ParallelOp>(loc, innerLbs, innerUbs,
+                                                   innerSteps, inits);
+  int innerIdx = 0;
+  int outerIdx = 0;
+  for (unsigned i = 0; i < par.getNumLoops(); i++) {
+    if (llvm::is_contained(dims, i)) {
+      remap.map(par.getInductionVars()[i],
+                outerPar.getInductionVars()[outerIdx]);
+      outerIdx++;
+    } else {
+      remap.map(par.getInductionVars()[i],
+                innerPar.getInductionVars()[innerIdx]);
+      innerIdx++;
+    }
+  }
+
+  // Clone body with remap.
+  rewriter.setInsertionPointToStart(innerPar.getBody());
+  for (auto &o : par.getOps()) {
+    rewriter.clone(o, remap);
+  }
+
+  // Clone the terminator.
+  auto term = innerPar.getBody()->getTerminator();
+  rewriter.setInsertionPointToEnd(&outerPar.getRegion().front());
+  remap.map(term->getOperands(), innerPar->getResults());
+  rewriter.clone(*term, remap);
+
+  rewriter.replaceOp(par, outerPar);
+
+  return std::make_pair(outerPar, innerPar);
+}
+
+// Unroll scf.parallel ops along a specific set of dimensions.
+LogicalResult unrollScfParallelOnDims(
+    RewriterBase &rewriter, scf::ParallelOp par, IRMapping remap,
+    SmallVector<int> dims,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &opMap) {
+
+  // Separate the parallel op into two parallel ops, with the outer loop
+  // containing dimensions specified in dims.
+  auto sepRes = separateScfParallelByDims(rewriter, par, remap, dims);
+  if (failed(sepRes))
+    return failure();
+  auto [outerPar, innerPar] = *sepRes;
+
+  // Unroll outer parallel.
+  rewriter.setInsertionPoint(outerPar);
+  IRMapping unrollRemap;
+  if (failed(unrollScfParallel(rewriter, outerPar, unrollRemap, opMap)))
+    return failure();
+
+  if (air::isAsyncOp(outerPar)) {
+    rewriter.setInsertionPoint(outerPar);
+    auto waitAll =
+        air::replaceAsyncOpWithWaitAll(rewriter, unrollRemap, outerPar, false);
+    air::getAsyncTokenFromOp(outerPar).replaceAllUsesWith(
+        waitAll.getAsyncToken());
+  }
+  rewriter.eraseOp(outerPar);
+  return success();
+}
+
 // Unroll air.channel.put/get in scf.parallel.
 struct unrollAIRChannelPutInScfParallelPattern
     : public OpRewritePattern<air::ChannelPutOp> {
@@ -842,9 +937,10 @@ struct unrollAIRChannelPutInScfParallelPattern
     if (parOps.empty())
       return failure();
     IRMapping remap;
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> opMap;
     for (auto par : parOps) {
       rewriter.setInsertionPoint(par);
-      auto res = unrollScfParallel(rewriter, par, put.getOperation(), remap);
+      auto res = unrollScfParallel(rewriter, par, remap, opMap);
       if (res.failed())
         return failure();
       rewriter.eraseOp(par);
@@ -869,9 +965,10 @@ struct unrollAIRChannelGetInScfParallelPattern
     if (parOps.empty())
       return failure();
     IRMapping remap;
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> opMap;
     for (auto par : parOps) {
       rewriter.setInsertionPoint(par);
-      auto res = unrollScfParallel(rewriter, par, get.getOperation(), remap);
+      auto res = unrollScfParallel(rewriter, par, remap, opMap);
       if (res.failed())
         return failure();
       rewriter.eraseOp(par);
@@ -964,7 +1061,7 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
         return entry;
       };
   auto pushMemrefEntryToVector = [](auto entry, auto &vector) {
-    if (!isa<MemRefType>(entry.first.getType()))
+    if (!isa<BaseMemRefType>(entry.first.getType()))
       return;
     vector.push_back(entry);
   };
@@ -1029,7 +1126,7 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
         return entry;
       };
   auto pushMemrefEntryToVector = [](auto entry, auto &vector) {
-    if (!isa<MemRefType>(entry.first.getType()))
+    if (!isa<BaseMemRefType>(entry.first.getType()))
       return;
     vector.push_back(entry);
   };
@@ -1499,7 +1596,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(alloc_child_op.getMemref());
-      auto ty = llvm::cast<MemRefType>(alloc_child_op.getMemref().getType());
+      auto ty =
+          llvm::cast<BaseMemRefType>(alloc_child_op.getMemref().getType());
       detailed_description += "(" + memorySpaceStr + ", " +
                               std::to_string(getTensorVolume(ty)) + ", " +
                               getElementTypeAsString(ty) + ")";
@@ -1511,7 +1609,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(dealloc_child_op.getMemref());
-      auto ty = llvm::cast<MemRefType>(dealloc_child_op.getMemref().getType());
+      auto ty =
+          llvm::cast<BaseMemRefType>(dealloc_child_op.getMemref().getType());
       detailed_description += "(" + memorySpaceStr + ", " +
                               std::to_string(getTensorVolume(ty)) + ", " +
                               getElementTypeAsString(ty) + ")";
@@ -1552,11 +1651,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
 Graph::VertexId dependencyCanonicalizer::addVertexFromWaitAllOp(
     xilinx::air::WaitAllOp op, dependencyGraph *G, dependencyContext &dep_ctx) {
   // Note: disabled parsing wait_all op inside of reduce op
-  for (auto u : op.getAsyncToken().getUsers()) {
-    if (dyn_cast<scf::ReduceReturnOp>(u)) {
-      return 0;
-    }
-  }
+  if (op->getParentOfType<scf::ReduceOp>())
+    return 0;
   return addVertexFromOp(op, dep_ctx.WaitAllOpID, "wait_all", "WaitAllOp",
                          graphNodeProperties("control"), G, dep_ctx);
 }
@@ -2168,9 +2264,12 @@ dependencyCanonicalizer::toPositionString(std::vector<unsigned> position) {
 }
 
 // Re-trace ops which depend on air.hierarchy
-void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
+LogicalResult
+dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
   air::dependencyTracer depTracer;
-  func.walk([&](air::ExecuteOp exec_op) {
+  SmallVector<air::ExecuteOp> exec_ops;
+  func.walk([&](air::ExecuteOp exec_op) { exec_ops.push_back(exec_op); });
+  for (auto exec_op : exec_ops) {
     // Get partial memref reads/writes
     SmallVector<air::partialMemref, 1> sink_op_memref_reads;
     SmallVector<air::partialMemref, 1> sink_op_memref_writes;
@@ -2189,7 +2288,7 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
                                      sink_op_memref_writes, sink_op_scalar_ins,
                                      sink_op_scalar_outs);
     if (sink_op_memref_reads.empty() && sink_op_memref_writes.empty()) {
-      return;
+      continue;
     }
     // Update dependency to air.hierarchy ops
     bool hasDepToHier = false;
@@ -2203,16 +2302,21 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
     }
     if (hasDepToHier) {
       // Trace dependency of op again
-      depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-          sink_op_memref_reads, exec_op, "RAW");
-      depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-          sink_op_memref_writes, exec_op, "WAW/WAR");
+      if (failed(
+              depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                  sink_op_memref_reads, exec_op, "RAW")))
+        return failure();
+      if (failed(
+              depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                  sink_op_memref_writes, exec_op, "WAW/WAR")))
+        return failure();
       // Detect tile index deps
       depTracer.traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
                                  sink_op_scalar_ins, sink_op_scalar_outs,
                                  exec_op);
     }
-  });
+  }
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -2223,7 +2327,7 @@ void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
 void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
                                               air::AsyncOpInterface op, char rw,
                                               partialMemref *tile) {
-  if (!llvm::isa<MemRefType>(operand.getType()))
+  if (!llvm::isa<BaseMemRefType>(operand.getType()))
     op->emitOpError("operand being traced is not a memref");
   for (auto &u : operand.getUses()) {
     // If used in MemcpyInterface Op
@@ -2433,7 +2537,7 @@ bool dependencyTracer::areEqualIndexPartialMemrefs(partialMemref *tile_0,
 }
 
 char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
-  if (!llvm::isa<MemRefType>(operand.getType()))
+  if (!llvm::isa<BaseMemRefType>(operand.getType()))
     operand.getDefiningOp()->emitOpError(
         "operand being traced is not a memref");
   bool foundWriteAccess = false;
@@ -2456,7 +2560,7 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
     return 'w';
 }
 
-void dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
+LogicalResult dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
   OpBuilder builder(forOp);
   air::WaitAllOp sink_wait_all_op =
       assignEmptyWaitAllAtScfForIterArg(builder, forOp);
@@ -2476,11 +2580,14 @@ void dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
     getPartialMemrefFromOp(op.getOperation(), sink_op_memref_reads,
                            sink_op_memref_writes, sink_op_scalar_ins,
                            sink_op_scalar_outs);
-    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads,
-                                          sink_wait_all_op, "RAW");
-    traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes,
-                                          sink_wait_all_op, "WAW/WAR");
+    if (failed(traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads,
+                                                     sink_wait_all_op, "RAW")))
+      return failure();
+    if (failed(traceDependencyFromOp<air::WaitAllOp>(
+            sink_op_memref_writes, sink_wait_all_op, "WAW/WAR")))
+      return failure();
   }
+  return success();
 }
 
 void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {

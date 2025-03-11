@@ -148,8 +148,9 @@ with air.ir.Context() as ctx, Location.unknown():
             [
                 "buffer-results-to-out-params",
                 "air-linalg-to-func{link-with=mm.o}",
-                "air-par-to-herd{depth=1}",
+                "air-par-to-herd{depth=-1}",
                 "air-par-to-launch{has-air-segment=true}",
+                "scf-forall-to-for",
                 "air-copy-to-dma",
                 "canonicalize",
                 "cse",
@@ -189,12 +190,14 @@ with air.ir.Context() as ctx, Location.unknown():
                 ###
                 "canonicalize",
                 "cse",
+                "func.func(air-fuse-alloc-dealloc)",
+                "func.func(air-shrink-memref-sizes-by-access)",
                 "func.func(air-loop-fusion)",
                 "air-label-scf-for-to-ping-pong",
-                "air-ping-pong-transform{keep-memref-dealloc=true}",
+                "air-ping-pong-transform",
                 "canonicalize",
                 "cse",
-                "air-specialize-channel-wrap-and-stride",
+                "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
                 "canonicalize",
                 "cse",
             ]

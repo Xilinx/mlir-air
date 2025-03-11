@@ -47,10 +47,6 @@ std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass();
 
 std::unique_ptr<mlir::Pass> createAIRUnrollChannelByFactorPattern();
 
-std::unique_ptr<mlir::Pass> createAIREnforceLoopCarriedMemrefDeallocPattern();
-
-std::unique_ptr<mlir::Pass> createAIRDeAliasMemref();
-
 std::unique_ptr<mlir::Pass> createAIRFuseChannels();
 std::unique_ptr<OperationPass<ModuleOp>>
 createAIRFuseChannels(const AIRFuseChannelsOptions &);
@@ -63,6 +59,10 @@ std::unique_ptr<mlir::Pass> createAIROptimizeShimDMABDs();
 std::unique_ptr<Pass>
 createAIROptimizeShimDMABDs(AIROptimizeShimDMABDsOptions options);
 
+std::unique_ptr<mlir::Pass> createAIROptimizeMemtileDMABDs();
+std::unique_ptr<Pass>
+createAIROptimizeMemtileDMABDs(AIROptimizeMemtileDMABDsOptions options);
+
 std::unique_ptr<mlir::Pass> createAIRFuseAllocDealloc();
 
 std::unique_ptr<mlir::Pass> createAIRShrinkMemrefSizesByAccess();
@@ -72,9 +72,14 @@ std::unique_ptr<mlir::Pass> createAIRShrinkMemrefSizesByAccess();
 // variables are canonicalized
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns);
 
+// Populate patterns for canonicalizing offsets, sizes and strides in air
+// channel_interface operations.
+void populateAIRCanonicalizeChannelWrapAndStridePatterns(
+    RewritePatternSet &patterns, int &maxSize);
+
 // Apply AIRSpecializeChannelWrapAndStridePattern on region.
 void applyAIRSpecializeChannelWrapAndStridePattern(Region *region,
-                                                   int maxNumDims,
+                                                   int maxNumDims, int maxSize,
                                                    bool enableForLoopUnrolling);
 
 // Populate patterns for fusing scf.for loops within air.launch.

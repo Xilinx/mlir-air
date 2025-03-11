@@ -180,8 +180,8 @@ public:
         rewriter.clone(o, remap);
       } else if (auto chanOp = dyn_cast<air::ChannelInterface>(o)) {
         // clone L3 get/put
-        MemRefType memrefTy =
-            llvm::cast<MemRefType>(chanOp.getMemref().getType());
+        BaseMemRefType memrefTy =
+            llvm::cast<BaseMemRefType>(chanOp.getMemref().getType());
         if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
           rewriter.clone(o, remap);
           continue;
@@ -335,8 +335,10 @@ public:
       rewriter.create<airrt::WaitAllOp>(
           op->getLoc(), airrt::EventType::get(op->getContext()), deps);
 
-    MemRefType src = llvm::cast<MemRefType>(op.getSrcMemref().getType());
-    MemRefType dst = llvm::cast<MemRefType>(op.getDstMemref().getType());
+    BaseMemRefType src =
+        llvm::cast<BaseMemRefType>(op.getSrcMemref().getType());
+    BaseMemRefType dst =
+        llvm::cast<BaseMemRefType>(op.getDstMemref().getType());
     bool isFromTile = false;
     bool isFullMemcpy = false;
     if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
@@ -454,15 +456,15 @@ public:
 };
 
 // AIR channel to AIRRT impl.
-Operation *
+FailureOr<Operation *>
 AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
                                          air::ChannelInterface thisOp,
                                          air::ChannelInterface theOtherOp) {
   auto loc = thisOp->getLoc();
   auto ctx = thisOp->getContext();
 
-  MemRefType thisMemrefType =
-      llvm::cast<MemRefType>(thisOp.getMemref().getType());
+  BaseMemRefType thisMemrefType =
+      llvm::cast<BaseMemRefType>(thisOp.getMemref().getType());
 
   bool thisOpIsInShim =
       thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
@@ -489,7 +491,11 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   if (!launch) {
     if (auto for_op = thisOp->getParentOfType<scf::ForOp>()) {
       // Broadcast channel control loop
-      assert(theOtherOp->hasAttr("tile"));
+      if (!theOtherOp->hasAttr("tile")) {
+        theOtherOp->emitOpError(
+            "missing 'tile' attribute as compile-time flag.");
+        return failure();
+      }
       ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
       auto tile_dict = llvm::cast<DictionaryAttr>(tiles[0]);
       auto row = llvm::cast<IntegerAttr>(tile_dict.get("row")).getInt();
@@ -531,8 +537,11 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     strides.push_back(one_idx);
   }
   // Stride field implicit last element one
-  [[maybe_unused]] auto lastStrideConst = getConstantIntValue(strides.back());
-  assert(lastStrideConst && "the last stride is not static");
+  auto lastStrideConst = getConstantIntValue(strides.back());
+  if (!lastStrideConst) {
+    thisOp->emitOpError("last stride is not static.");
+    return failure();
+  }
 
   strides.pop_back();
   while (offsets.size() < 4) {
@@ -594,11 +603,14 @@ public:
       return op->emitOpError("failed to find the other side of air.channel");
     auto otherOp = otherOps[0];
 
-    Operation *airrtOp =
+    auto airrtOp =
         AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, otherOp);
 
-    if (airrtOp) {
-      rewriter.replaceOp(op, airrtOp);
+    if (failed(airrtOp))
+      return failure();
+
+    if (*airrtOp != nullptr) {
+      rewriter.replaceOp(op, *airrtOp);
       return success();
     }
 
@@ -646,7 +658,7 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto dealloc = cast<memref::DeallocOp>(op);
-    auto type = llvm::cast<MemRefType>(dealloc.getMemref().getType());
+    auto type = llvm::cast<BaseMemRefType>(dealloc.getMemref().getType());
     if (type.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       rewriter.replaceOpWithNewOp<airrt::DeallocOp>(op, SmallVector<Type>{},
                                                     op->getOperands());
@@ -865,14 +877,30 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
     return failure();
 
   llvm::SmallSet<Operation *, 8> erased;
-  f.walk([&](scf::ParallelOp scf_par) {
-    for (auto v : scf_par.getLowerBound()) {
-      assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 0);
-      (void)v;
+  SmallVector<scf::ParallelOp> scf_pars;
+  f.walk([&](scf::ParallelOp scf_par) { scf_pars.push_back(scf_par); });
+  for (auto scf_par : scf_pars) {
+    if (!llvm::all_of(scf_par.getLowerBound(), [](Value v) {
+          auto constV = getConstantIntValue(v);
+          if (!constV)
+            return false;
+          if (*constV != 0)
+            return false;
+          return true;
+        })) {
+      scf_par->emitOpError("has non-zero lower bound.");
+      return failure();
     }
-    for (auto v : scf_par.getStep()) {
-      assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 1);
-      (void)v;
+    if (!llvm::all_of(scf_par.getStep(), [](Value v) {
+          auto constV = getConstantIntValue(v);
+          if (!constV)
+            return false;
+          if (*constV != 1)
+            return false;
+          return true;
+        })) {
+      scf_par->emitOpError("has non-unit step size.");
+      return failure();
     }
     std::vector<int> par_sizes = {};
     for (auto v : scf_par.getUpperBound())
@@ -903,7 +931,7 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
       }
     }
     erased.insert(scf_par);
-  });
+  }
   for (auto a : erased) {
     if (a->getNumResults())
       for (auto token : a->getResults())
@@ -970,7 +998,7 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (llvm::cast<MemRefType>(op.getMemref().getType())
+      return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
                   .getMemorySpaceAsInt() != (int)air::MemorySpace::L2);
     });
 
@@ -1054,7 +1082,8 @@ public:
             [&](airrt::DmaMemcpyNdOp c) { hasCandidateSCFParallel = true; });
       }
       if (hasCandidateSCFParallel)
-        serializeAsyncControlFlows(f);
+        if (failed(serializeAsyncControlFlows(f)))
+          signalPassFailure();
 
       // SCF parallel to affine for conversion
       if (failed(ScfParToAffineForConversion(f))) {
@@ -1180,14 +1209,14 @@ private:
       remapLoop(src_for, dst_for, remap);
     } else if (src_par && dst_par) {
       remapLoop(src_par, dst_par, remap);
-    } else
-      assert(false);
+    }
   }
 
   // Get parent loop nest
   std::vector<Operation *> getParentLoopNest(Operation *op,
                                              Operation *outermost) const {
-    assert(op);
+    if (!op)
+      return std::vector<Operation *>();
     std::vector<Operation *> output;
     for (auto parent = op->getParentOp(); parent != outermost;
          parent = parent->getParentOp()) {
@@ -1230,7 +1259,7 @@ private:
 
   // This function is a workaround for vck190 having one single control
   // processor, where all the async. control programs are serialized here.
-  void serializeAsyncControlFlows(func::FuncOp func) const {
+  LogicalResult serializeAsyncControlFlows(func::FuncOp func) const {
 
     // Collect async scf loops in line-by-line order
     std::vector<Operation *> scf_loops;
@@ -1286,11 +1315,14 @@ private:
         for (unsigned i = 1; i < bucket.size(); i++) {
           IRMapping remap;
           Operation *chan_op = getInnerMostMemcpyFromLoopNest(bucket[i]);
-          assert(chan_op);
+          if (!chan_op) {
+            func->emitOpError("memcpy in innermost loop body not found.");
+            return failure();
+          }
           auto src_loop_nest = getParentLoopNest(chan_op, bucket[i]);
-          assert(src_loop_nest.size() == dst_loop_nest.size());
-          for (unsigned i = 0; i < src_loop_nest.size(); i++) {
-            remapLoop(src_loop_nest[i], dst_loop_nest[i], remap);
+          for (auto [src_loop, dst_loop] :
+               llvm::zip_equal(src_loop_nest, dst_loop_nest)) {
+            remapLoop(src_loop, dst_loop, remap);
           }
           auto yield_op = dst_loop_nest[0]
                               ->getRegions()
@@ -1318,6 +1350,7 @@ private:
         bucket[i]->erase();
       }
     }
+    return success();
   }
 };
 

@@ -14,7 +14,7 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export commithash=4b06b01e62ab0cfd059f47dceeb6cd0fb96304c9
+export commithash=a66376b0dc3b2ea8a84fda26faca287980986f78
 target_dir=llvm
 
 # clone llvm if it is not there already

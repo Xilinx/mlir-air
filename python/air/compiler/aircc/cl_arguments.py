@@ -110,13 +110,6 @@ def parse_args(args=None):
         help="Target AIE device",
     )
     parser.add_argument(
-        "--experimental-passes",
-        dest="experimental_passes",
-        default=False,
-        action="store_true",
-        help="Whether to run experimental passes or not. This will only change the behavior for this program for npu devices",
-    )
-    parser.add_argument(
         "--omit-while-true-loop",
         dest="omit_while_true_loop",
         default=False,
@@ -129,6 +122,43 @@ def parse_args(args=None):
         default=False,
         action="store_true",
         help="Whether to run passes which generate ping-pong buffering patterns or not. This will only change the behavior for this program for npu devices",
+    )
+    parser.add_argument(
+        "--lower-linalg-to-func",
+        type=str,
+        dest="lower_linalg_to_func",
+        default=None,
+        help="Whether to run pass which lowers linalg.generic ops to function calls. If a string is passed in, then register the string value as the object file name to link with.",
+    )
+    parser.add_argument(
+        "--air-loop-fusion",
+        dest="air_loop_fusion",
+        default=False,
+        action="store_true",
+        help="Adds air-loop-fusion pass to the compiler pipeline. It is an experimental pass which tries to enforce loop fusion for lowring to efficient DMA BDs",
+    )
+    parser.add_argument(
+        "--air-runtime-loop-tiling-sizes",
+        type=int,
+        nargs="+",  # Accept one or more integers
+        dest="runtime_loop_tiling_sizes",
+        default=[4, 4],
+        help="Adds tiling factors to be applied to the runtime host affine loop nest. It is an experimental pass which enforces extra innermost tilings at runtime, to comply with constraints of certain hardware",
+    )
+    parser.add_argument(
+        "--omit-auto-broadcast",
+        dest="omit_auto_broadcast",
+        default=False,
+        action="store_true",
+        help="Omits the air-dependency-schedule-opt pass, which detects and lowers broadcasts",
+    )
+    parser.add_argument(
+        "--air-channel-multiplexing",
+        type=str,
+        nargs="*",  # Accept zero or more strings
+        dest="channel_multiplexing",
+        default=[],
+        help="Adds memory spaces to which air channels shall get time-multiplexed, if operating on them",
     )
 
     opts = parser.parse_args(args)

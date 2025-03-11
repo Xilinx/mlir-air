@@ -46,6 +46,102 @@ using namespace xilinx;
 
 static std::atomic<uint64_t> DmaMemcpyOpID;
 
+static void extractOperandsFromSubview(memref::SubViewOp subview,
+                                       OpBuilder &builder,
+                                       SmallVector<Value, 4> &offsets,
+                                       SmallVector<Value, 4> &sizes,
+                                       SmallVector<Value, 4> &strides) {
+  auto subview_offsets = subview.getOffsets().begin();
+  auto static_offsets = subview.getStaticOffsets();
+  auto static_sizes = subview.getStaticSizes();
+  auto static_strides = subview.getStaticStrides();
+  auto loc = subview.getLoc();
+
+  // get the strides and offsets from the memref type
+  auto inferredType = llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
+      subview.getSourceType(), static_offsets, static_sizes, static_strides));
+  int64_t offset;
+  SmallVector<int64_t, 4> layout_strides;
+  auto successStrides =
+      inferredType.getStridesAndOffset(layout_strides, offset);
+  if (failed(successStrides)) {
+    llvm::outs() << "Failed to get strides\n";
+    return; // failure();
+  }
+
+  for (auto o : static_offsets) {
+    if (o >= 0)
+      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      offsets.push_back(*subview_offsets++);
+  }
+  for (auto s : static_sizes)
+    sizes.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+  for (auto s : layout_strides)
+    strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+}
+
+static void extractOperandsFromReinterpretCast(
+    memref::ReinterpretCastOp reinterpretCast, OpBuilder &builder,
+    SmallVector<Value, 4> &offsets, SmallVector<Value, 4> &sizes,
+    SmallVector<Value, 4> &strides) {
+  auto reinterpretCast_offsets = reinterpretCast.getOffsets().begin();
+  auto static_offsets = reinterpretCast.getStaticOffsets();
+  auto static_sizes = reinterpretCast.getStaticSizes();
+  auto loc = reinterpretCast.getLoc();
+
+  // Fixup an issue in the reinterpretCast output memref's strided layout giving
+  // false dynamic strides
+  auto constifyStridesInStridedLayout =
+      [](MemRefType rankedMemRefType,
+         memref::ReinterpretCastOp reinterpretCast) {
+        StridedLayoutAttr stridedLayout =
+            dyn_cast<StridedLayoutAttr>(rankedMemRefType.getLayout());
+        SmallVector<int64_t> correctedStaticStrides(
+            stridedLayout.getStrides().size(), 0);
+        for (auto [index, stride] :
+             llvm::enumerate(reinterpretCast.getMixedStrides())) {
+          if (auto constStride = getConstantIntValue(stride))
+            correctedStaticStrides[index] = *constStride;
+          else
+            correctedStaticStrides[index] = stridedLayout.getStrides()[index];
+        }
+        auto correctedStridedLayout = StridedLayoutAttr::get(
+            reinterpretCast->getContext(), stridedLayout.getOffset(),
+            ArrayRef(correctedStaticStrides));
+        return MemRefType::Builder(rankedMemRefType)
+            .setShape(rankedMemRefType.getShape())
+            .setLayout(correctedStridedLayout);
+      };
+
+  MemRefType reinterpretCastType = constifyStridesInStridedLayout(
+      reinterpretCast.getType(), reinterpretCast);
+
+  // get the strides and offsets from the memref type
+  int64_t offset;
+  SmallVector<int64_t, 4> layout_strides;
+  auto successStrides =
+      reinterpretCastType.getStridesAndOffset(layout_strides, offset);
+  if (failed(successStrides)) {
+    llvm::outs() << "Failed to get strides\n";
+    return; // failure();
+  }
+
+  for (auto o : static_offsets) {
+    if (o >= 0)
+      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      offsets.push_back(*reinterpretCast_offsets++);
+  }
+  for (auto s : static_sizes)
+    sizes.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+  for (auto s : layout_strides)
+    strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+  while (offsets.size() < sizes.size())
+    offsets.insert(offsets.begin(),
+                   builder.create<arith::ConstantIndexOp>(loc, 0));
+}
+
 static FailureOr<air::DmaMemcpyNdOp>
 matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   auto loc = op.getLoc();
@@ -70,49 +166,27 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   SmallVector<Value, 4> src_offsets, dst_offsets;
   SmallVector<Value, 4> src_strides, dst_strides;
   SmallVector<Value, 4> src_sizes, dst_sizes;
-  auto extractOperandsFromSubview = [&](memref::SubViewOp subview,
-                                        auto &offsets, auto &sizes,
-                                        auto &strides) {
-    auto subview_offsets = subview.getOffsets().begin();
-    auto static_offsets = subview.getStaticOffsets();
-    auto static_sizes = subview.getStaticSizes();
-    auto static_strides = subview.getStaticStrides();
-    auto loc = subview.getLoc();
-
-    // get the strides and offsets from the memref type
-    auto inferredType =
-        llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
-            subview.getSourceType(), static_offsets, static_sizes,
-            static_strides));
-    int64_t offset;
-    SmallVector<int64_t, 4> layout_strides;
-    auto successStrides =
-        getStridesAndOffset(inferredType, layout_strides, offset);
-    if (failed(successStrides)) {
-      llvm::outs() << "Failed to get strides\n";
-      return; // failure();
-    }
-
-    for (auto o : static_offsets) {
-      if (o >= 0)
-        offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
-      else
-        offsets.push_back(*subview_offsets++);
-    }
-    for (auto s : static_sizes)
-      sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
-    for (auto s : layout_strides)
-      strides.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
-  };
 
   if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, src_offsets, src_sizes, src_strides);
+    extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
+                               src_strides);
     src = subview.getSource();
+  } else if (auto reinterpretCast =
+                 src.getDefiningOp<memref::ReinterpretCastOp>()) {
+    extractOperandsFromReinterpretCast(reinterpretCast, rewriter, src_offsets,
+                                       src_sizes, src_strides);
+    src = reinterpretCast.getSource();
   }
 
   if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, dst_offsets, dst_sizes, dst_strides);
+    extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
+                               dst_strides);
     dst = subview.getSource();
+  } else if (auto reinterpretCast =
+                 dst.getDefiningOp<memref::ReinterpretCastOp>()) {
+    extractOperandsFromReinterpretCast(reinterpretCast, rewriter, dst_offsets,
+                                       dst_sizes, dst_strides);
+    dst = reinterpretCast.getSource();
   }
 
   SmallVector<Value, 4> deps;
@@ -126,41 +200,6 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
 
   rewriter.eraseOp(op);
   return dma;
-}
-
-static void extractOperandsFromSubview(memref::SubViewOp subview,
-                                       OpBuilder &builder,
-                                       SmallVector<Value, 4> &offsets,
-                                       SmallVector<Value, 4> &sizes,
-                                       SmallVector<Value, 4> &strides) {
-  auto subview_offsets = subview.getOffsets().begin();
-  auto static_offsets = subview.getStaticOffsets();
-  auto static_sizes = subview.getStaticSizes();
-  auto static_strides = subview.getStaticStrides();
-  auto loc = subview.getLoc();
-
-  // get the strides and offsets from the memref type
-  auto inferredType = llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
-      subview.getSourceType(), static_offsets, static_sizes, static_strides));
-  int64_t offset;
-  SmallVector<int64_t, 4> layout_strides;
-  auto successStrides =
-      getStridesAndOffset(inferredType, layout_strides, offset);
-  if (failed(successStrides)) {
-    llvm::outs() << "Failed to get strides\n";
-    return; // failure();
-  }
-
-  for (auto o : static_offsets) {
-    if (o >= 0)
-      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, o));
-    else
-      offsets.push_back(*subview_offsets++);
-  }
-  for (auto s : static_sizes)
-    sizes.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
-  for (auto s : layout_strides)
-    strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
 }
 
 static void
@@ -197,53 +236,17 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
   }
 };
 
-class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
+// Pattern to rewrite `linalg.copy` to `memref.copy`.
+class LinalgCopyToMemRefCopy : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(linalg::CopyOp op,
+
+  LogicalResult matchAndRewrite(linalg::CopyOp copyOp,
                                 PatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto src = op.getInputs()[0];
-    auto dst = op.getOutputs()[0];
-
-    // It must already be a memref
-    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
-    if (!src_type)
+    if (copyOp.hasIndexSemantics()) {
       return failure();
-
-    if ((src_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) &&
-        (dst_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3))
-      return failure();
-
-    if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
-      return failure();
-
-    SmallVector<Value, 4> src_offsets, dst_offsets;
-    SmallVector<Value, 4> src_strides, dst_strides;
-    SmallVector<Value, 4> src_sizes, dst_sizes;
-
-    if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
-                                 src_strides);
-      src = subview.getSource();
     }
-
-    if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
-                                 dst_strides);
-      dst = subview.getSource();
-    }
-
-    SmallVector<Value, 4> deps;
-    SmallVector<Type, 4> tys;
-    auto dma = rewriter.create<air::DmaMemcpyNdOp>(
-        loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
-        src_offsets, src_sizes, src_strides);
-    dma->setAttr("id", mlir::IntegerAttr::get(
-                           mlir::IntegerType::get(op->getContext(), 32),
-                           ++DmaMemcpyOpID));
-
-    rewriter.eraseOp(op);
+    rewriter.replaceOpWithNewOp<memref::CopyOp>(
+        copyOp, copyOp.getInputs().front(), copyOp.getDpsInits().front());
     return success();
   }
 };
@@ -490,9 +493,15 @@ static void propagateLinkWith(Operation *op, air::HerdOp herdOp) {
     StringRef fnName = callOp.getCallee();
     auto fnDecl = dyn_cast_or_null<func::FuncOp>(
         SymbolTable::lookupSymbolIn(moduleOp, fnName));
-    assert(fnDecl && "expected function declaration");
-    assert(fnDecl->hasAttr("link_with") &&
-           "expected 'link_with' construct for the function declaration");
+    if (!fnDecl) {
+      callOp->emitOpError("expected function declaration");
+      return WalkResult::interrupt();
+    }
+    if (!fnDecl->hasAttr("link_with")) {
+      callOp->emitOpError(
+          "expected 'link_with' construct for the function declaration.");
+      return WalkResult::interrupt();
+    }
     herdOp->setAttr("link_with", fnDecl->getAttr("link_with"));
     return WalkResult::interrupt();
   });
@@ -713,8 +722,10 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
           loc, newL1Subview.getResult(),
           AffineMapAttr::get(tr.getPermutation()));
       remap.map(tr.getResult(), transposeOp.getResult());
-    } else
-      assert(false && "NYI memref operation type on L1 memref");
+    } else {
+      o->emitOpError("memref operation type unsupported on L1 memref.");
+      return failure();
+    }
   }
   // Generate memref subview op leading the tiling of the L2 memref
   SmallVector<int64_t> tilingFactors;
@@ -767,8 +778,10 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
           loc, newL2Subview.getResult(),
           AffineMapAttr::get(tr.getPermutation()));
       remap.map(tr.getResult(), transposeOp.getResult());
-    } else
-      assert(false && "NYI memref operation type on L1 memref");
+    } else {
+      o->emitOpError("memref operation type unsupported on L1 memref.");
+      return failure();
+    }
   }
   builder.clone(*op, remap);
   op->erase();
@@ -905,15 +918,13 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
     (void)applyPatternsGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
-    stage2Patterns
-        .insert<LinalgCopyToAIRDmaConversion, MemrefCopyToAIRDmaConversion>(
-            context);
+    stage2Patterns.insert<LinalgCopyToMemRefCopy, MemrefCopyToAIRDmaConversion>(
+        context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(stage2Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
       module.dump();
-      assert(0);
     }
 
     std::vector<Operation *> waits;
@@ -1029,9 +1040,11 @@ static void getSegmentNames(ModuleOp module) {
       if (auto attr =
               op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
         std::string name = attr.getValue().str();
-        assert((std::find(seg_syms.begin(), seg_syms.end(), name) ==
-                seg_syms.end()) &&
-               "unexpected duplicate symbol");
+        if (std::find(seg_syms.begin(), seg_syms.end(), name) !=
+            seg_syms.end()) {
+          op->emitOpError("unexpected duplicate symbol.");
+          return;
+        }
         seg_syms.push_back(name);
       }
     });
@@ -1042,10 +1055,11 @@ static void getSegmentNames(ModuleOp module) {
         std::string name;
         do {
           std::stringstream ss;
-          assert(
-              f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()) &&
-              "enclosing function of air.sgement op expected to have a symbol "
-              "name");
+          if (!f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+            op->emitOpError("enclosing function of air.sgement op expected to "
+                            "have a symbol name.");
+            return;
+          }
           ss << f->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
                     .str()
              << "_" << id++;
@@ -1077,7 +1091,8 @@ ConvertForallToParallelInFilteredOps(SmallPtrSet<Operation *, 8> &filteredOps,
     fAdded.push_back(newPar);
   }
   for (auto e : fErased)
-    assert(filteredOps.erase(e));
+    if (!filteredOps.erase(e))
+      return failure();
   filteredOps.insert(fAdded.begin(), fAdded.end());
   return success();
 }
@@ -1319,7 +1334,6 @@ struct ParallelToLaunchPass
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
-      assert(0);
     }
     getSegmentNames(module);
 
@@ -1422,7 +1436,6 @@ struct ParallelToSegmentPass
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
-      assert(0);
     }
     getSegmentNames(module);
 
@@ -1462,6 +1475,213 @@ struct InsertEmptyLaunchOverHerdPass
     getSegmentNames(module);
   }
 };
+
+// Identifies arith operations where all operands are either constants, or
+// produced by IndexCastOp casting from IndexType. If detected, canonicalize
+// IndexCast ops by changing the arith op's input/output types to IndexType.
+template <typename T>
+LogicalResult canonicalizeArithBinaryOpToIndexType(T arithOp,
+                                                   RewriterBase &rewriter) {
+  Value lhs = arithOp.getLhs();
+  Value rhs = arithOp.getRhs();
+
+  SmallVector<Value> inVals = {lhs, rhs};
+  if (llvm::all_of(inVals, [](Value v) { return isa<IndexType>(v.getType()); }))
+    return failure();
+  if (llvm::any_of(inVals, [](Value v) {
+        if (!v.getDefiningOp())
+          return true;
+        if (getConstantIntValue(v))
+          return false;
+        else if (auto castOp = dyn_cast_if_present<arith::IndexCastOp>(
+                     v.getDefiningOp())) {
+          if (llvm::all_of(castOp->getOperands(), [](Value oper) {
+                return isa<IndexType>(oper.getType());
+              }))
+            return false;
+          else
+            return true;
+        }
+        return true;
+      }))
+    return failure();
+
+  auto loc = arithOp.getLoc();
+  if (!isa<IndexType>(lhs.getType())) {
+    lhs =
+        rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), lhs);
+  }
+  if (!isa<IndexType>(rhs.getType())) {
+    rhs =
+        rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), rhs);
+  }
+  auto newArithOp = rewriter.create<T>(loc, rewriter.getIndexType(), lhs, rhs);
+  rewriter.replaceOpWithNewOp<arith::IndexCastOp>(
+      arithOp, arithOp.getResult().getType(), newArithOp);
+
+  return success();
+}
+
+struct CanonicalizeArithAddIOpToIndexTypePattern
+    : public OpRewritePattern<arith::AddIOp> {
+  using OpRewritePattern<arith::AddIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::AddIOp arithOp,
+                                PatternRewriter &rewriter) const override {
+    return canonicalizeArithBinaryOpToIndexType<arith::AddIOp>(arithOp,
+                                                               rewriter);
+  }
+};
+struct CanonicalizeArithMulIOpToIndexTypePattern
+    : public OpRewritePattern<arith::MulIOp> {
+  using OpRewritePattern<arith::MulIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::MulIOp arithOp,
+                                PatternRewriter &rewriter) const override {
+    return canonicalizeArithBinaryOpToIndexType<arith::MulIOp>(arithOp,
+                                                               rewriter);
+  }
+};
+
+// Wraps the body of a given func.func operation inside an scf.parallel loop.
+// The pass assumes that:
+// (1) The function arguments consist of: M memref arguments, N loop upper
+// bounds, N loop induction variable indices. (2) The scf.parallel loop is
+// constructed using the N upper bounds and induction variable indices. (3) The
+// scf.parallel loop is inserted at the beginning of the function, wrapping all
+// existing operations.
+
+struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
+  using OpRewritePattern<func::FuncOp>::OpRewritePattern;
+
+  WrapFuncWithParallelPattern(MLIRContext *context,
+                              SmallVector<int64_t> &bounds)
+      : OpRewritePattern(context), loopBounds(bounds) {}
+
+  LogicalResult matchAndRewrite(func::FuncOp funcOp,
+                                PatternRewriter &rewriter) const override {
+    if (funcOp.isExternal())
+      return failure(); // Ignore external functions
+
+    if (loopBounds.empty()) {
+      funcOp.emitError("Pass option 'loop-bounds' must be specified.");
+      return failure();
+    }
+
+    unsigned N = loopBounds.size(); // Number of loop dimensions
+
+    // Get function arguments
+    auto args = funcOp.getArguments();
+    unsigned numArgs = args.size();
+
+    if (numArgs < 2) {
+      funcOp.emitError(
+          "Expected at least 2 arguments: memrefs and loop bounds.");
+      return failure();
+    }
+
+    // Determine M (memrefs count)
+    unsigned M = 0;
+    for (Type argType : funcOp.getFunctionType().getInputs()) {
+      if (isa<UnrankedMemRefType, MemRefType>(argType))
+        M++;
+      else
+        break;
+    }
+    if (M + N * 2 > numArgs) {
+      funcOp.emitError("Expected func op arguments contain at least M memrefs "
+                       "and N x 2 loop bounds.");
+      return failure();
+    }
+
+    // Extract indices
+    ValueRange inductionVars = args.slice(M + N, N);
+
+    if (llvm::all_of(inductionVars, [](Value iv) { return iv.use_empty(); }))
+      return failure();
+
+    // Store original function body operations
+    SmallVector<Operation *> originalFuncBodyOps;
+    for (auto &op : funcOp.getBody().front().without_terminator())
+      originalFuncBodyOps.push_back(&op);
+
+    // Create scf.parallel loop
+    Location loc = funcOp.getLoc();
+    rewriter.setInsertionPointToStart(&funcOp.getBody().front());
+    SmallVector<Value, 4> lowerBounds(
+        N, rewriter.create<arith::ConstantIndexOp>(loc, 0));
+    SmallVector<Value, 4> steps(
+        N, rewriter.create<arith::ConstantIndexOp>(loc, 1));
+    SmallVector<Value, 4> upperBoundsVals;
+    for (int64_t bound : loopBounds) {
+      upperBoundsVals.push_back(
+          rewriter.create<arith::ConstantIndexOp>(loc, bound));
+    }
+
+    auto parallelOp = rewriter.create<scf::ParallelOp>(loc, lowerBounds,
+                                                       upperBoundsVals, steps);
+
+    // Redirect arguments properly inside the loop
+    Block &loopBlock = parallelOp.getRegion().front();
+    rewriter.setInsertionPointToStart(&loopBlock);
+    IRMapping remap;
+    for (unsigned i = 0; i < N; i++) {
+      Value loopBlockArg = loopBlock.getArgument(i);
+      if (inductionVars[i].getType() != loopBlockArg.getType())
+        loopBlockArg = rewriter.create<arith::IndexCastOp>(
+            loc, inductionVars[i].getType(), loopBlockArg);
+      remap.map(inductionVars[i], loopBlockArg);
+    }
+
+    // Move function body into the loop
+    for (auto op : originalFuncBodyOps) {
+      rewriter.clone(*op, remap);
+    }
+
+    // Erase original function body ops
+    for (auto o : llvm::reverse(originalFuncBodyOps))
+      rewriter.eraseOp(o);
+
+    return success();
+  }
+
+private:
+  SmallVector<int64_t> &loopBounds; // External loop bounds
+};
+
+class AIRWrapFuncWithParallelPass
+    : public air::impl::AIRWrapFuncWithParallelPassBase<
+          AIRWrapFuncWithParallelPass> {
+
+public:
+  AIRWrapFuncWithParallelPass() = default;
+  AIRWrapFuncWithParallelPass(const AIRWrapFuncWithParallelPass &pass){};
+  AIRWrapFuncWithParallelPass(
+      const ::xilinx::air::AIRWrapFuncWithParallelPassOptions &options)
+      : AIRWrapFuncWithParallelPassBase(options) {}
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRWrapFuncWithParallelPass::runOnOperation() {
+  func::FuncOp funcOp = getOperation();
+  MLIRContext *context = &getContext();
+
+  RewritePatternSet wrapParPatterns(context);
+  SmallVector<int64_t> loopBoundsVec;
+  for (auto i : clLoopBounds)
+    loopBoundsVec.push_back(i);
+  wrapParPatterns.add<WrapFuncWithParallelPattern>(context, loopBoundsVec);
+  (void)applyOpPatternsGreedily(SmallVector<Operation *>{funcOp.getOperation()},
+                                std::move(wrapParPatterns));
+
+  RewritePatternSet patterns(context);
+  patterns.add<CanonicalizeArithAddIOpToIndexTypePattern,
+               CanonicalizeArithMulIOpToIndexTypePattern>(context);
+  (void)applyPatternsGreedily(funcOp, std::move(patterns));
+}
 
 } // namespace
 
@@ -1587,6 +1807,14 @@ std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
 
 std::unique_ptr<mlir::Pass> createInsertEmptyLaunchOverHerdPass() {
   return std::make_unique<InsertEmptyLaunchOverHerdPass>();
+}
+
+std::unique_ptr<Pass> createAIRWrapFuncWithParallelPass() {
+  return std::make_unique<AIRWrapFuncWithParallelPass>();
+}
+std::unique_ptr<Pass>
+createAIRWrapFuncWithParallelPass(AIRWrapFuncWithParallelPassOptions options) {
+  return std::make_unique<AIRWrapFuncWithParallelPass>(options);
 }
 
 } // namespace air

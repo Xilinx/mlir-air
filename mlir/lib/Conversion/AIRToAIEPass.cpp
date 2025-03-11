@@ -10,6 +10,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 
@@ -65,7 +66,7 @@ struct AIRToAIEConversionOptions {
 
 // get memcpy operation volumn (elements) as int
 int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
-  MemRefType memTy = llvm::cast<MemRefType>(memref.getType());
+  BaseMemRefType memTy = llvm::cast<BaseMemRefType>(memref.getType());
   if (sizes.empty())
     return getTensorVolume(memTy);
   else {
@@ -487,72 +488,6 @@ void push_back_if_unique(std::vector<T> &vec, T entry) {
     vec.push_back(entry);
 }
 
-struct CanonicalizeChannelPutWrapsAndStridesPattern
-    : public OpRewritePattern<air::ChannelPutOp> {
-  using OpRewritePattern<air::ChannelPutOp>::OpRewritePattern;
-
-  CanonicalizeChannelPutWrapsAndStridesPattern(MLIRContext *ctx)
-      : OpRewritePattern(ctx) {}
-
-  LogicalResult matchAndRewrite(air::ChannelPutOp op,
-                                PatternRewriter &rewriter) const override {
-
-    SmallVector<Value> offsets = op.getOffsets();
-    SmallVector<Value> wraps = op.getSizes();
-    SmallVector<Value> strides = op.getStrides();
-    if (canonicalizeWrapAndStrideList(
-            rewriter, offsets, wraps, strides,
-            air::getTensorVolume(op.getMemref().getType()))
-            .failed())
-      return failure();
-    auto new_put = rewriter.create<air::ChannelPutOp>(
-        op->getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
-        op.getChanName(), op.getIndices(), op.getMemref(), offsets, wraps,
-        strides);
-    new_put->setAttr(
-        "id",
-        IntegerAttr::get(IntegerType::get(op->getContext(), 32), op.getId()));
-    assert(op->getNumResults() == new_put->getNumResults());
-    for (unsigned i = 0; i < op->getNumResults(); i++)
-      op->getResult(i).replaceAllUsesWith(new_put->getResult(i));
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct CanonicalizeChannelGetWrapsAndStridesPattern
-    : public OpRewritePattern<air::ChannelGetOp> {
-  using OpRewritePattern<air::ChannelGetOp>::OpRewritePattern;
-
-  CanonicalizeChannelGetWrapsAndStridesPattern(MLIRContext *ctx)
-      : OpRewritePattern(ctx) {}
-
-  LogicalResult matchAndRewrite(air::ChannelGetOp op,
-                                PatternRewriter &rewriter) const override {
-
-    SmallVector<Value> offsets = op.getOffsets();
-    SmallVector<Value> wraps = op.getSizes();
-    SmallVector<Value> strides = op.getStrides();
-    if (canonicalizeWrapAndStrideList(
-            rewriter, offsets, wraps, strides,
-            air::getTensorVolume(op.getMemref().getType()))
-            .failed())
-      return failure();
-    auto new_get = rewriter.create<air::ChannelGetOp>(
-        op->getLoc(), op->getResultTypes(), op.getAsyncDependencies(),
-        op.getChanName(), op.getIndices(), op.getMemref(), offsets, wraps,
-        strides);
-    new_get->setAttr(
-        "id",
-        IntegerAttr::get(IntegerType::get(op->getContext(), 32), op.getId()));
-    assert(op->getNumResults() == new_get->getNumResults());
-    for (unsigned i = 0; i < op->getNumResults(); i++)
-      op->getResult(i).replaceAllUsesWith(new_get->getResult(i));
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 void createAIEModulesAndOutlineCores(
     ModuleOp module,
     std::vector<std::pair<AIE::DeviceOp, xilinx::air::HerdOp>> &aie_modules,
@@ -800,9 +735,9 @@ struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
 void lowerAirExecute(AIE::DeviceOp d) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<LowerAIRExecutePattern,
-                  CanonicalizeChannelPutWrapsAndStridesPattern,
-                  CanonicalizeChannelGetWrapsAndStridesPattern>(ctx);
+  int maxSize = isa<AIE::AIE1TargetModel>(AIE::getTargetModel(d)) ? -1 : 1023;
+  patterns.insert<LowerAIRExecutePattern>(ctx);
+  air::populateAIRCanonicalizeChannelWrapAndStridePatterns(patterns, maxSize);
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
@@ -872,7 +807,6 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
 
     // remove air.async.token from the yield op
     auto yield = new_region.back().getTerminator();
-    assert(isa<scf::YieldOp>(yield));
     rewriter.setInsertionPoint(yield);
     SmallVector<Value, 4> yield_operands;
     SmallVector<Value, 4> token_operands;
@@ -977,7 +911,10 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
       return failure();
 
     // Allocation of L2 memrefs in segment to buffer ops
-    assert(memrefToTileMap.count(alloc));
+    if (!memrefToTileMap.count(alloc)) {
+      alloc->emitOpError("alloc not found in memrefToTileMap.");
+      return failure();
+    }
     AIE::TileOp tile = memrefToTileMap[alloc];
     if (!tile)
       return failure();
@@ -1173,8 +1110,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         return res;
 
       // check if this put is linked to a get from another channel
-      MemRefType memref =
-          llvm::cast<MemRefType>(channelPuts[0].getMemref().getType());
+      BaseMemRefType memref =
+          llvm::cast<BaseMemRefType>(channelPuts[0].getMemref().getType());
       int mem_space = memref.getMemorySpaceAsInt();
       if (mem_space == (int)air::MemorySpace::L2) {
         if (linksToComplete.find(channelPuts[0].getOperation()) !=
@@ -1214,7 +1151,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       consumers.push_back(consumerTile);
 
       // check if this get is linked to a put from another channel
-      MemRefType memref = llvm::cast<MemRefType>(get.getMemref().getType());
+      BaseMemRefType memref =
+          llvm::cast<BaseMemRefType>(get.getMemref().getType());
       int mem_space = memref.getMemorySpaceAsInt();
       if (mem_space == (int)air::MemorySpace::L2) {
         if (linksToComplete.find(get.getOperation()) != linksToComplete.end()) {
@@ -1370,7 +1308,7 @@ private:
                        AIE::ObjectFifoCreateOp objFifo,
                        AIE::ObjectFifoPort port,
                        llvm::SmallSet<Operation *, 2> &erased_allocs) const {
-    MemRefType memref = cast<MemRefType>(op.getMemref().getType());
+    BaseMemRefType memref = cast<BaseMemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
       // add alloc to list of ops to erase
@@ -1404,7 +1342,8 @@ private:
       PatternRewriter &rewriter, MyOp op, AIE::ObjectFifoCreateOp objFifo,
       AIE::ObjectFifoPort port,
       llvm::SmallSet<Operation *, 2> &erased_deallocs) const {
-    MemRefType memref = llvm::cast<MemRefType>(op.getMemref().getType());
+    BaseMemRefType memref =
+        llvm::cast<BaseMemRefType>(op.getMemref().getType());
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
       return;
@@ -1446,8 +1385,10 @@ struct SpecializeChannelBundlePattern
   using OpRewritePattern<air::ChannelOp>::OpRewritePattern;
 
   SpecializeChannelBundlePattern(
-      MLIRContext *ctx, std::map<std::string, std::string> &chan_to_chan_map)
-      : OpRewritePattern(ctx), chan_to_chan_map(chan_to_chan_map) {}
+      MLIRContext *ctx, std::map<std::string, std::string> &chan_to_chan_map,
+      int &maxSize)
+      : OpRewritePattern(ctx), chan_to_chan_map(chan_to_chan_map),
+        maxSize(maxSize) {}
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
@@ -1487,8 +1428,8 @@ struct SpecializeChannelBundlePattern
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel put for this channel
           rewriter.setInsertionPoint(put);
-          auto new_put =
-              createChannelPutGetWithoutBundle(rewriter, new_chan, put);
+          auto new_put = createChannelPutGetWithoutBundle(rewriter, new_chan,
+                                                          put, maxSize);
           if (put.getAsyncToken()) {
             replaceAllUsesInRegionWith(put.getAsyncToken(),
                                        new_put.getAsyncToken(),
@@ -1502,8 +1443,8 @@ struct SpecializeChannelBundlePattern
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel get for this channel
           rewriter.setInsertionPoint(get);
-          auto new_get =
-              createChannelPutGetWithoutBundle(rewriter, new_chan, get);
+          auto new_get = createChannelPutGetWithoutBundle(rewriter, new_chan,
+                                                          get, maxSize);
           if (get.getAsyncToken()) {
             replaceAllUsesInRegionWith(get.getAsyncToken(),
                                        new_get.getAsyncToken(),
@@ -1542,6 +1483,7 @@ struct SpecializeChannelBundlePattern
 
 private:
   std::map<std::string, std::string> &chan_to_chan_map;
+  int &maxSize;
   bool areIdenticalVectors(std::vector<unsigned> a,
                            std::vector<unsigned> b) const {
     if (a.empty())
@@ -1565,9 +1507,10 @@ private:
     return output;
   }
 
-  air::ChannelPutOp
-  createChannelPutGetWithoutBundle(OpBuilder builder, air::ChannelOp chan,
-                                   air::ChannelPutOp put) const {
+  air::ChannelPutOp createChannelPutGetWithoutBundle(OpBuilder builder,
+                                                     air::ChannelOp chan,
+                                                     air::ChannelPutOp put,
+                                                     int maxSize) const {
     SmallVector<Type, 4> tys = {};
     SmallVector<Value, 4> deps = {};
     if (put.getAsyncToken()) {
@@ -1581,7 +1524,7 @@ private:
     SmallVector<Value> strides = put.getSrcStrides();
     (void)canonicalizeWrapAndStrideList(
         builder, offsets, wraps, strides,
-        air::getTensorVolume(put.getSrc().getType()));
+        air::getTensorVolume(put.getSrc().getType()), maxSize);
     auto new_put = builder.create<air::ChannelPutOp>(
         put->getLoc(), tys, deps, chan.getSymName(), indices, put.getSrc(),
         offsets, wraps, strides);
@@ -1591,9 +1534,10 @@ private:
     return new_put;
   }
 
-  air::ChannelGetOp
-  createChannelPutGetWithoutBundle(OpBuilder builder, air::ChannelOp chan,
-                                   air::ChannelGetOp get) const {
+  air::ChannelGetOp createChannelPutGetWithoutBundle(OpBuilder builder,
+                                                     air::ChannelOp chan,
+                                                     air::ChannelGetOp get,
+                                                     int maxSize) const {
     SmallVector<Type, 4> tys = {};
     SmallVector<Value, 4> deps = {};
     if (get.getAsyncToken()) {
@@ -1607,7 +1551,7 @@ private:
     SmallVector<Value> strides = get.getDstStrides();
     (void)canonicalizeWrapAndStrideList(
         builder, offsets, wraps, strides,
-        air::getTensorVolume(get.getDst().getType()));
+        air::getTensorVolume(get.getDst().getType()), maxSize);
     auto new_get = builder.create<air::ChannelGetOp>(
         get->getLoc(), tys, deps, chan.getSymName(), indices, get.getDst(),
         offsets, wraps, strides);
@@ -1639,7 +1583,10 @@ void specializeChannelBundle(
     AIE::DeviceOp &d, std::map<std::string, std::string> &chan_to_chan_map) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
+  // Enforce max size constraint
+  int maxSize = isa<AIE::AIE1TargetModel>(AIE::getTargetModel(d)) ? -1 : 1023;
+  patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map,
+                                                  maxSize);
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
@@ -1980,7 +1927,7 @@ public:
       auto memref = op.getMemref();
       auto memrefShape = air::getTensorShape(memref.getType());
       // The default data access pattern is contiguous and row major.
-      if (isDefaultDataAccessPattern(op.getSizes(), op.getStrides(), memref))
+      if (isDefaultDataAccessPattern(op.getSizes(), op.getStrides()))
         continue;
       if (op.getStrides().size() != memrefShape.size())
         return false;
@@ -2206,18 +2153,23 @@ public:
     for (auto o : dma_memcpy_ops) {
       if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(o)) {
         MemcpyBundleAsFlow flow = MemcpyBundleAsFlow(dma);
-        flow.pushBackMemcpyOpToBundle(dma);
+        if (failed(flow.pushBackMemcpyOpToBundle(dma)))
+          return failure();
         memcpy_flows.push_back(flow);
       } else if (auto putget = dyn_cast<air::ChannelInterface>(o)) {
         auto chan = air::getChannelDeclarationThroughSymbol(putget);
-        assert(chan);
+        if (!chan) {
+          putget->emitOpError("failed to get air.channel declaration.");
+          return failure();
+        }
         std::string chan_name = putget.getChanName().str();
         // Check if new pair
         bool found_in_flows = false;
         for (auto &f : memcpy_flows) {
           if (auto air_flow_op_chan = dyn_cast<air::ChannelOp>(f.air_flow_op)) {
             if (chan_name == air_flow_op_chan.getSymName().str()) {
-              f.pushBackMemcpyOpToBundle(putget);
+              if (failed(f.pushBackMemcpyOpToBundle(putget)))
+                return failure();
               found_in_flows = true;
             }
           }
@@ -2225,7 +2177,8 @@ public:
         if (!found_in_flows) {
           // Create new entry in memcpy_flows
           MemcpyBundleAsFlow flow = MemcpyBundleAsFlow(chan);
-          flow.pushBackMemcpyOpToBundle(putget);
+          if (failed(flow.pushBackMemcpyOpToBundle(putget)))
+            return failure();
           memcpy_flows.push_back(flow);
         }
       } else {
@@ -2235,15 +2188,6 @@ public:
     }
 
     // Step 2: Allocate tile DMA channels, shim DMA channels and shim tiles
-    // AIR channel to AIE flow mapping strategy: allocate L1 DMAs first,
-    // followed by L2 and then L3, where outer memory hierarchies reuse existing
-    // AIE flows as possible.
-    // if (groupingMemcpysByLoop(memcpy_flows))
-    //   groupedByLoopDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
-    //                                     memtile_dma_alloc, tile_dma_alloc);
-    // else
-    //   simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
-    //                              memtile_dma_alloc, tile_dma_alloc);
     auto r = simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
                                         memtile_dma_alloc, tile_dma_alloc);
     if (failed(r))
@@ -2514,7 +2458,7 @@ public:
     });
   }
 
-  void createShimDMAAllocationOps(
+  LogicalResult createShimDMAAllocationOps(
       OpBuilder builder, MLIRContext *ctx, air::HierarchyInterface op,
       std::vector<allocation_info_t> allocs, AIE::DMAChannelDir dir,
       std::map<int, int> chan_renumber_reverse_map) {
@@ -2578,9 +2522,11 @@ public:
                            tile_side_memcpy.getOperation())) {
           memref_ty =
               llvm::cast<MemRefType>(tile_side_chan.getMemref().getType());
+        } else {
+          op->emitOpError(
+              "Memref type for shim DMA allocation not initialized!");
+          return failure();
         }
-        assert(memref_ty != nullptr &&
-               "Memref type for shim DMA allocation not initialized!");
 
         // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
         auto dmaop_labeled = labelAIRDmaOpsWithMetadata(
@@ -2607,6 +2553,7 @@ public:
         }
       }
     }
+    return success();
   }
 
   airrt::SegmentMetadataOp
@@ -2647,7 +2594,139 @@ public:
     return herd_meta;
   }
 
-  void
+  // Checks if the given operation writes to, or deallocates, the specified
+  // buffer and all its views.
+  bool isDmaWriteToBuffer(Operation *op, SetVector<Value> &bufferViews) {
+    if (!isa_and_present<air::MemcpyInterface>(op))
+      return false;
+    if (llvm::any_of(*getAllWriteAccessedMemrefOperandsFromOp(op),
+                     [&bufferViews](auto &entry) {
+                       return llvm::is_contained(bufferViews, entry.first);
+                     }))
+      return true;
+    return false;
+  }
+
+  // Recursively searches for operations that write to, or deallocate, the
+  // target buffer inside a nested region. Returns `true` if a writer is found,
+  // setting `ancestorOp` to the outermost op under the same region as
+  // `memcpyOp`.
+  bool findNextDmaWriteOpInRegion(Region &region, SetVector<Value> &bufferViews,
+                                  Operation *&ancestorOp) {
+    bool writeOpFound = false;
+    region.walk([&](Operation *op) {
+      // Save buffer views.
+      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(op)) {
+        if (llvm::is_contained(bufferViews, view.getViewSource()))
+          bufferViews.insert(view->getResult(0));
+      }
+      if (isDmaWriteToBuffer(op, bufferViews)) {
+        ancestorOp = op; // Found a writer, set it as the closest ancestor
+        writeOpFound = true;
+        return;
+      }
+    });
+    return writeOpFound;
+  }
+
+  /// Walks ops in the block and finds the end of lifetime for this memcpy op.
+  /// Returns the first operation in the same block that writes to, or
+  /// deallocates, `destBuffer`.
+  Operation *findNextDmaWriteOp(Operation *memcpyOp, Value destBuffer) {
+    // Ensure the given operation is an air memcpy operation
+    auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(memcpyOp);
+    if (!memcpyOpIf)
+      return nullptr;
+
+    // Ensure that destBuffer is used in mempcy op.
+    if (destBuffer != memcpyOpIf.getSrcMemref() &&
+        destBuffer != memcpyOpIf.getDstMemref())
+      return nullptr;
+
+    // Iterate over operations after the memcpyOp
+    SetVector<Value> bufferViews;
+    bufferViews.insert(destBuffer);
+    for (Operation *op = memcpyOpIf->getNextNode(); op != nullptr;
+         op = op->getNextNode()) {
+      // Save buffer views.
+      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(op)) {
+        if (llvm::is_contained(bufferViews, view.getViewSource()))
+          bufferViews.insert(view->getResult(0));
+      }
+      if (isDmaWriteToBuffer(op, bufferViews)) {
+        return op; // Found the next writer
+      }
+      // Check within any regions of this operation
+      Operation *ancestorOp = nullptr;
+      for (Region &region : op->getRegions()) {
+        if (findNextDmaWriteOpInRegion(region, bufferViews, ancestorOp)) {
+          return op; // Return the ancestor operation at the same level as
+                     // memcpyOp
+        }
+      }
+    }
+    return nullptr; // memcpyOp end-of-lifetime not found
+  }
+
+  /// Checks if an operation reads from or writes to the given buffer.
+  bool isReadOrWriteToBuffer(Operation *op, SetVector<Value> bufferViews) {
+    if (!op)
+      return false;
+    if (air::isPure(op))
+      return false;
+
+    // Check if the op reads from or writes to the buffer
+    for (OpOperand &operand : op->getOpOperands())
+      if (llvm::is_contained(bufferViews, operand.get()))
+        return true;
+    return false;
+  }
+
+  /// Walks ops in the block and finds the last reader/writer. Returns the last
+  /// operation in the same block that accesses `destBuffer`.
+  Operation *findLastReadOrWriteOp(Operation *memcpyOp, Value destBuffer) {
+    // Ensure the given operation is an air memcpy operation
+    auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(memcpyOp);
+    if (!memcpyOpIf)
+      return nullptr;
+
+    // Ensure that destBuffer is used in mempcy op.
+    if (destBuffer != memcpyOpIf.getSrcMemref() &&
+        destBuffer != memcpyOpIf.getDstMemref())
+      return nullptr;
+
+    // Iterate over operations after the memcpyOp
+    Operation *lastAccessOp = nullptr;
+    SetVector<Value> bufferViews;
+    bufferViews.insert(destBuffer);
+    for (Operation *op = memcpyOpIf->getNextNode(); op != nullptr;
+         op = op->getNextNode()) {
+      // Save buffer views.
+      if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(op)) {
+        if (llvm::is_contained(bufferViews, view.getViewSource()))
+          bufferViews.insert(view->getResult(0));
+      }
+
+      if (isReadOrWriteToBuffer(op, bufferViews))
+        lastAccessOp = op;
+
+      // Check within any regions of this operation
+      for (Region &region : op->getRegions()) {
+        region.walk([&](Operation *o) {
+          // Save buffer views.
+          if (auto view = dyn_cast_if_present<ViewLikeOpInterface>(o)) {
+            if (llvm::is_contained(bufferViews, view.getViewSource()))
+              bufferViews.insert(view->getResult(0));
+          }
+          if (isReadOrWriteToBuffer(o, bufferViews))
+            lastAccessOp = op;
+        });
+      }
+    }
+    return lastAccessOp;
+  }
+
+  LogicalResult
   allocateCoreLocksPerMemcpyOp(OpBuilder builder,
                                air::MemcpyInterface memcpyOpIf,
                                std::unordered_set<Operation *> &allocs_to_remap,
@@ -2655,18 +2734,30 @@ public:
                                TileDMAAllocator &tileDmaAlloc, int x, int y) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
-    AIE::DMAChannel tile_channel =
-        tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf).dma_channel;
-    AIE::BufferOp bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
-    auto locks =
-        tileDmaAlloc.getLockForDMA(memcpyOpIf, x, y, bufferOp.getOperation());
-    auto acqLockOp = isMM2S(tile_channel) ? locks.second : locks.first;
-    auto relLockOp = isMM2S(tile_channel) ? locks.first : locks.second;
+    auto dma_alloc = tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf);
+    if (failed(dma_alloc)) {
+      return memcpyOpIf->emitOpError("failed to look up dma allocation.");
+    }
+    auto tile_channel = dma_alloc.value().dma_channel;
+    auto bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
+    if (failed(bufferOp)) {
+      return memcpyOpIf->emitOpError("failed to get buffer.");
+    }
+    auto locks = tileDmaAlloc.getLockForDMA(memcpyOpIf, x, y,
+                                            bufferOp.value().getOperation());
+    if (failed(locks))
+      return memcpyOpIf->emitOpError("failed to get lock for dma.");
+    auto acqLockOp =
+        isMM2S(tile_channel) ? locks.value().second : locks.value().first;
+    auto relLockOp =
+        isMM2S(tile_channel) ? locks.value().first : locks.value().second;
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
     Value alloc = nullptr;
     auto tileInbound = isTileInbound(memcpyOpIf, (int)air::MemorySpace::L1);
-    if (tileInbound) {
+    if (failed(tileInbound))
+      return failure();
+    if (tileInbound.value()) {
       lockAqValue = UsesSemaphoreLocks ? 1 : 1;
       lockRelValue = UsesSemaphoreLocks ? 1 : 0;
       alloc = memcpyOpIf.getDstMemref();
@@ -2680,7 +2771,8 @@ public:
       builder.setInsertionPoint(bco.getOperand().getDefiningOp());
     else if (isa<memref::AllocaOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(alloc.getDefiningOp());
-    else if (!tileInbound && isa<AIE::BufferOp>(alloc.getDefiningOp())) {
+    else if (!tileInbound.value() &&
+             isa<AIE::BufferOp>(alloc.getDefiningOp())) {
       auto br = dyn_cast<cf::BranchOp>(memcpyOpIf->getBlock()->getTerminator());
       if (br)
         builder.setInsertionPointToStart(br.getDest());
@@ -2694,56 +2786,32 @@ public:
                                        ? AIE::LockAction::AcquireGreaterEqual
                                        : AIE::LockAction::Acquire,
                                    lockAqValue);
-    // try to find a place to put the unlock. If there are deallocs,
-    // replace them with unlock. Otherwise, put them at the end.
-    bool need_unlock = true;
-    for (auto u : alloc.getUsers()) {
-      if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
-        builder.setInsertionPoint(dealloc);
-        builder.create<AIE::UseLockOp>(dealloc->getLoc(), relLockOp,
-                                       AIE::LockAction::Release, lockRelValue);
-        // assume that the deallocs will take care of it when
-        // deallocs are present
-        need_unlock = false;
-      }
-    }
-    // try to insert a lock release before entering a for loop that iteratively
-    // copies data into the same buffer.
-    if (need_unlock)
-      for (auto u : alloc.getUsers()) {
-        auto get = dyn_cast<air::ChannelGetOp>(u);
-        if (!get)
-          continue;
-        if (u == memcpyOpIf)
-          continue;
-        if (u->getParentRegion()->isProperAncestor(
-                memcpyOpIf->getParentRegion()))
-          continue;
-        auto t = u;
-        while (memcpyOpIf->getParentRegion()->isProperAncestor(
-            t->getParentRegion()))
-          t = u->getParentOp();
-        if (t->getBlock() != memcpyOpIf->getBlock())
-          continue;
-        if (t->isBeforeInBlock(memcpyOpIf))
-          continue;
-        builder.setInsertionPoint(t);
-        builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp,
-                                       AIE::LockAction::Release, lockRelValue);
-        need_unlock = false;
-        break;
-      }
-    if (need_unlock) {
+
+    // Try to find the end of lifetime for the data copied by memcpyOpIf, and
+    // put the unlock.
+    if (auto nextWriter = findNextDmaWriteOp(memcpyOpIf, alloc)) {
+      // Lifetime ends if dma writes into the same buffer.
+      builder.setInsertionPoint(nextWriter);
+      builder.create<AIE::UseLockOp>(nextWriter->getLoc(), relLockOp,
+                                     AIE::LockAction::Release, lockRelValue);
+    } else if (auto lastAccessOp = findLastReadOrWriteOp(memcpyOpIf, alloc)) {
+      // Lifetime ends after the last read/write access to buffer.
+      builder.setInsertionPointAfter(lastAccessOp);
+      builder.create<AIE::UseLockOp>(lastAccessOp->getLoc(), relLockOp,
+                                     AIE::LockAction::Release, lockRelValue);
+    } else {
+      // Lifetime ends at end of block.
       auto t = memcpyOpIf->getBlock()->getTerminator();
       builder.setInsertionPoint(t);
       builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp,
                                      AIE::LockAction::Release, lockRelValue);
     }
     allocs_to_remap.insert(alloc.getDefiningOp());
+    return success();
   }
 
   template <typename dmaAllocatorTy, typename bufferOpTy, typename memOpTy>
-  void generateDmaBdProgram(
+  LogicalResult generateDmaBdProgram(
       OpBuilder builder, const AIE::AIETargetModel &targetModel,
       std::map<std::pair<AIE::DMAChannelDir, int>, std::vector<Operation *>>
           dma_memcpys,
@@ -2804,17 +2872,24 @@ public:
             next_bd->insertBefore(end_bb);
             b.create<AIE::NextBDOp>(loc, next_bd);
           }
-          bufferOpTy bufferOp = dmaAlloc.getBuffer(BufferId, x, y, memcpyOp);
-          auto locks =
-              dmaAlloc.getLockForDMA(memcpyOp, x, y, bufferOp.getOperation());
-          auto newBD = generateDmaBd<bufferOpTy>(
-              loc, dir, locks, x, y, targetModel, bd, memcpyOp, bufferOp, chan);
+          auto bufferOp = dmaAlloc.getBuffer(BufferId, x, y, memcpyOp);
+          if (failed(bufferOp)) {
+            memcpyOp->emitOpError("failed to get buffer.");
+            return failure();
+          }
+          auto locks = dmaAlloc.getLockForDMA(memcpyOp, x, y,
+                                              bufferOp.value().getOperation());
+          if (failed(locks))
+            return memcpyOp->emitOpError("failed to get lock for dma.");
+          auto newBD = generateDmaBd<bufferOpTy>(loc, dir, locks.value(), x, y,
+                                                 targetModel, bd, memcpyOp,
+                                                 bufferOp.value(), chan);
           // Attribute task_id is necessary to ensure that BDs do not get shared
           // across tasks, otherwise MLIR may fold BDs and cause BD sharing
           // across tasks.
-          // TODO: check if mlir-aie enables BD sharing across tasks. If so,
-          // then this attribute is no longer necessary.
-          newBD->setAttr(
+          if (failed(newBD))
+            return bufferOp.value()->emitOpError("failed to generate dma bd.");
+          newBD.value()->setAttr(
               "task_id",
               IntegerAttr::get(IntegerType::get(b.getContext(), 32), taskId));
         }
@@ -2837,14 +2912,15 @@ public:
         taskId++;
       }
     }
+    return success();
   }
 
   template <typename bufferOpTy>
-  AIE::DMABDOp generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
-                             std::pair<AIE::LockOp, AIE::LockOp> locks, int x,
-                             int y, const AIE::AIETargetModel &targetModel,
-                             Block *bd, air::MemcpyInterface memcpyOp,
-                             bufferOpTy bufferOp, int chan) {
+  FailureOr<AIE::DMABDOp>
+  generateDmaBd(mlir::Location loc, AIE::DMAChannelDir dir,
+                std::pair<AIE::LockOp, AIE::LockOp> locks, int x, int y,
+                const AIE::AIETargetModel &targetModel, Block *bd,
+                air::MemcpyInterface memcpyOp, bufferOpTy bufferOp, int chan) {
     bool UsesSemaphoreLocks =
         targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
     bool isMM2S = (dir == AIE::DMAChannelDir::MM2S);
@@ -2865,18 +2941,24 @@ public:
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 
-    Value memref = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+    if (failed(isTileInbound(ndcpy, (int)air::MemorySpace::L1)))
+      return failure();
+
+    Value memref = isTileInbound(ndcpy, (int)air::MemorySpace::L1).value()
                        ? ndcpy.getDstMemref()
                        : ndcpy.getSrcMemref();
-    SmallVector<Value> sizes = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-                                   ? ndcpy.getDstSizes()
-                                   : ndcpy.getSrcSizes();
-    SmallVector<Value> offsets = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-                                     ? ndcpy.getDstOffsets()
-                                     : ndcpy.getSrcOffsets();
-    SmallVector<Value> strides = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-                                     ? ndcpy.getDstStrides()
-                                     : ndcpy.getSrcStrides();
+    SmallVector<Value> sizes =
+        isTileInbound(ndcpy, (int)air::MemorySpace::L1).value()
+            ? ndcpy.getDstSizes()
+            : ndcpy.getSrcSizes();
+    SmallVector<Value> offsets =
+        isTileInbound(ndcpy, (int)air::MemorySpace::L1).value()
+            ? ndcpy.getDstOffsets()
+            : ndcpy.getSrcOffsets();
+    SmallVector<Value> strides =
+        isTileInbound(ndcpy, (int)air::MemorySpace::L1).value()
+            ? ndcpy.getDstStrides()
+            : ndcpy.getSrcStrides();
 
     // Skip over repeat pattern at highest dimension; repeat pattern handled at
     // AIE::DMAStartOp.
@@ -2915,8 +2997,7 @@ public:
     auto wraps_and_strides =
         AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
     bool useDefaultDataAccessPattern =
-        UsesSemaphoreLocks ? isDefaultDataAccessPattern(sizes, strides, memref)
-                           : true;
+        UsesSemaphoreLocks ? isDefaultDataAccessPattern(sizes, strides) : true;
     AIE::DMABDOp aieDmaBdOp = nullptr;
     if (wraps_and_strides.getValue().empty() || useDefaultDataAccessPattern)
       aieDmaBdOp = b.create<AIE::DMABDOp>(
@@ -2984,24 +3065,32 @@ public:
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
         if (alloc.foundAlloc(x, y)) {
           for (auto o : alloc.memcpyOps) {
-            assert(o);
+            if (!o)
+              continue;
             auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
             if (!memcpyOpIf)
               return o->emitOpError("does not have air::MemcpyInterface");
-            allocateCoreLocksPerMemcpyOp(builder, memcpyOpIf, allocs_to_remap,
-                                         target_model, tileDmaAlloc, x, y);
+            if (failed(allocateCoreLocksPerMemcpyOp(
+                    builder, memcpyOpIf, allocs_to_remap, target_model,
+                    tileDmaAlloc, x, y))) {
+              return o->emitOpError("failed to allocate core locks");
+            }
           }
         }
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
         if (alloc.foundAlloc(x, y)) {
           for (auto o : alloc.memcpyOps) {
-            assert(o);
+            if (!o)
+              continue;
             auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
             if (!memcpyOpIf)
               return o->emitOpError("does not have air::MemcpyInterface");
-            allocateCoreLocksPerMemcpyOp(builder, memcpyOpIf, allocs_to_remap,
-                                         target_model, tileDmaAlloc, x, y);
+            if (failed(allocateCoreLocksPerMemcpyOp(
+                    builder, memcpyOpIf, allocs_to_remap, target_model,
+                    tileDmaAlloc, x, y))) {
+              return o->emitOpError("failed to allocate core locks");
+            }
           }
         }
       }
@@ -3057,9 +3146,13 @@ public:
         mem = builder.create<AIE::MemOp>(loc, tile);
       }
 
-      generateDmaBdProgram<TileDMAAllocator, AIE::BufferOp, AIE::MemOp>(
-          builder, target_model, tile_dma_memcpys, tileDmaAlloc, loc, mem, x,
-          y);
+      if (failed(
+              generateDmaBdProgram<TileDMAAllocator, AIE::BufferOp, AIE::MemOp>(
+                  builder, target_model, tile_dma_memcpys, tileDmaAlloc, loc,
+                  mem, x, y))) {
+        mem->emitOpError("failed to generate dma bd program.");
+        return failure();
+      }
     }
 
     // Generate L3 DMA program
@@ -3072,7 +3165,8 @@ public:
       if (tile.isShimTile())
         push_back_if_unique<AIE::TileOp>(shimtiles, tile);
       else {
-        assert(false);
+        tile->emitOpError(
+            "tile is logged for shim DMA allocation, but is not shim tile.");
         return failure();
       }
     }
@@ -3081,7 +3175,8 @@ public:
       if (tile.isMemTile())
         push_back_if_unique<AIE::TileOp>(memTileTiles, tile);
       else {
-        assert(false);
+        tile->emitOpError(
+            "tile is logged for memtile DMA allocation, but is not memtile.");
         return failure();
       }
     }
@@ -3128,10 +3223,13 @@ public:
       auto loc = builder.getUnknownLoc();
 
       // Generate DMA BD program
-      generateDmaBdProgram<ShimDMAAllocator, AIE::ExternalBufferOp,
-                           AIE::ShimDMAOp>(builder, target_model,
-                                           shim_dma_memcpys, shimDmaAlloc, loc,
-                                           shimDMA, x, y);
+      if (failed(generateDmaBdProgram<ShimDMAAllocator, AIE::ExternalBufferOp,
+                                      AIE::ShimDMAOp>(
+              builder, target_model, shim_dma_memcpys, shimDmaAlloc, loc,
+              shimDMA, x, y))) {
+        shimDMA->emitOpError("failed to generate dma bd program.");
+        return failure();
+      }
     }
 
     // Generate L2 DMA program
@@ -3175,10 +3273,13 @@ public:
       auto loc = builder.getUnknownLoc();
 
       // Generate DMA BD program
-      generateDmaBdProgram<MemTileDMAAllocator, AIE::BufferOp,
-                           AIE::MemTileDMAOp>(
-          builder, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
-          memTileDMA, x, y);
+      if (failed(generateDmaBdProgram<MemTileDMAAllocator, AIE::BufferOp,
+                                      AIE::MemTileDMAOp>(
+              builder, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
+              memTileDMA, x, y))) {
+        memTileDMA->emitOpError("failed to generate dma bd program.");
+        return failure();
+      }
     }
 
     // Clear allocation_info_t allocations' memcpyOps field
@@ -3332,7 +3433,11 @@ public:
     }
     std::map<std::string, std::string> chan_to_chan_map;
     if (clTestPatterns.find("specialize-channel-bundle") != std::string::npos) {
-      patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
+      // Enforce max size constraint
+      int maxSize =
+          isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? -1 : 1023;
+      patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map,
+                                                      maxSize);
     }
 
     if (patterns.getNativePatterns().size())
@@ -3487,12 +3592,18 @@ public:
         if (isa<AIE::AIE2TargetModel>(device.getTargetModel())) {
           // AIE2 dma metadata format
           builder.setInsertionPoint(device.getBody()->getTerminator());
-          createShimDMAAllocationOps(
-              builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
-              AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map);
-          createShimDMAAllocationOps(
-              builder, ctx, herd, shimDmaAlloc.mm2s_allocs,
-              AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map);
+          if (failed(createShimDMAAllocationOps(
+                  builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
+                  AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map))) {
+            signalPassFailure();
+            return;
+          }
+          if (failed(createShimDMAAllocationOps(
+                  builder, ctx, herd, shimDmaAlloc.mm2s_allocs,
+                  AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map))) {
+            signalPassFailure();
+            return;
+          }
         }
       }
       for (auto seg : segs) {
@@ -3520,12 +3631,18 @@ public:
         if (isa<AIE::AIE2TargetModel>(device.getTargetModel())) {
           // AIE2 memtile dma metadata format
           builder.setInsertionPoint(device.getBody()->getTerminator());
-          createShimDMAAllocationOps(
-              builder, ctx, seg, shimDmaAlloc.s2mm_allocs,
-              AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map);
-          createShimDMAAllocationOps(
-              builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
-              AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map);
+          if (failed(createShimDMAAllocationOps(
+                  builder, ctx, seg, shimDmaAlloc.s2mm_allocs,
+                  AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map))) {
+            signalPassFailure();
+            return;
+          }
+          if (failed(createShimDMAAllocationOps(
+                  builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
+                  AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map))) {
+            signalPassFailure();
+            return;
+          }
         }
       }
 
@@ -3709,6 +3826,12 @@ public:
     rewriter.replaceOpWithNewOp<func::CallOp>(
         op, fnNameAttr.getValue(), TypeRange(),
         ValueRange(ArrayRef<Value>(libFnOperands)));
+
+    if (auto herd = op->getParentOfType<air::HerdOp>())
+      rewriter.modifyOpInPlace(herd, [&]() {
+        herd->setAttr("link_with",
+                      StringAttr::get(rewriter.getContext(), linkWith));
+      });
 
     return success();
   }

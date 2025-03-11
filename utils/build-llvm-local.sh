@@ -59,7 +59,7 @@ CMAKE_CONFIGS="\
     -DLLVM_OPTIMIZED_TABLEGEN=OFF \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
-    -DLLVM_DISTRIBUTION_COMPONENTS=cmake-exports;not;count;FileCheck;MLIRPythonModules;mlir-cpu-runner;mlir-linalg-ods-yaml-gen;mlir-opt;mlir-reduce;mlir-tblgen;mlir-translate;mlir-headers;mlir-cmake-exports"
+    -DLLVM_DISTRIBUTION_COMPONENTS=cmake-exports;not;count;FileCheck;MLIRPythonModules;mlir-runner;mlir-linalg-ods-yaml-gen;mlir-opt;mlir-reduce;mlir-tblgen;mlir-translate;mlir-headers;mlir-cmake-exports"
 
 if [ -x "$(command -v lld)" ]; then
   CMAKE_CONFIGS="${CMAKE_CONFIGS} -DLLVM_USE_LINKER=lld"

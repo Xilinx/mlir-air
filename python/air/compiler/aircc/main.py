@@ -25,31 +25,92 @@ from air.compiler.aircc.configure import *
 import aie.compiler.aiecc.main as aiecc
 
 
-def get_experimental_passes(omit_pingpong=True):
-    EXPERIMENTAL_PASSES = [
+def get_L2_splitting_analysis_pass():
+    L2_SPLITTING_PASSES = [
+        "func.func(air-split-l2-memref)",
+        "canonicalize",
+        "cse",
+        "air-isolate-async-dma-loop-nests",
+        "canonicalize",
+        "cse",
+    ]
+    return L2_SPLITTING_PASSES
+
+
+def get_air_optimization_pass(
+    device,
+    omit_pingpong=False,
+    lower_linalg_to_func=None,
+    air_loop_fusion=False,
+    omit_auto_broadcast=False,
+    channel_multiplexing=[],
+):
+    OPTIMIZATION_PASSES = [
         "air-dependency",
-        "air-dependency-schedule-opt",
-        "air-specialize-dma-broadcast",
+    ]
+    if not omit_auto_broadcast:
+        OPTIMIZATION_PASSES += [
+            "air-dependency-schedule-opt",
+            "air-specialize-dma-broadcast",
+        ]
+    OPTIMIZATION_PASSES += [
         "air-dma-to-channel",
         "canonicalize",
         "cse",
         "air-dependency-canonicalize",
         "canonicalize",
         "cse",
-    ]
-    if not omit_pingpong:
-        EXPERIMENTAL_PASSES += [
-            "func.func(air-loop-fusion)",
-            "air-label-scf-for-to-ping-pong",
-            "air-ping-pong-transform{keep-memref-dealloc=true}",
-        ]
-    EXPERIMENTAL_PASSES += [
         "air-isolate-async-dma-loop-nests",
-        "air-linalg-to-func",
         "canonicalize",
         "cse",
     ]
-    return EXPERIMENTAL_PASSES
+    if len(channel_multiplexing) != 0:
+        OPTIMIZATION_PASSES += [
+            "air-fuse-channels{aggressive-mode="
+            + ",".join(s for s in channel_multiplexing)
+            + "}",
+        ]
+    else:
+        OPTIMIZATION_PASSES += [
+            "air-fuse-channels",
+        ]
+    OPTIMIZATION_PASSES += [
+        "canonicalize",
+        "cse",
+    ]
+    if "npu_1col" not in device:
+        OPTIMIZATION_PASSES += get_L2_splitting_analysis_pass()
+    if air_loop_fusion:
+        OPTIMIZATION_PASSES += [
+            "func.func(air-loop-fusion)",
+        ]
+    else:
+        OPTIMIZATION_PASSES += [
+            "func.func(air-fuse-alloc-dealloc)",
+            "func.func(air-shrink-memref-sizes-by-access)",
+        ]
+    if not omit_pingpong:
+        OPTIMIZATION_PASSES += [
+            "air-label-scf-for-to-ping-pong",
+            "air-ping-pong-transform",
+            "canonicalize",
+            "cse",
+        ]
+    if lower_linalg_to_func != None:
+        OPTIMIZATION_PASSES += [
+            "air-linalg-to-func{link-with=" + f"{lower_linalg_to_func}" + "}",
+        ]
+    else:
+        OPTIMIZATION_PASSES += [
+            "func.func(convert-linalg-to-loops)",
+        ]
+
+    OPTIMIZATION_PASSES += [
+        "func.func(air-opt-memtile-dma-bds{" + f"device={device}" + "})",
+        "canonicalize",
+        "cse",
+    ]
+    return OPTIMIZATION_PASSES
 
 
 def emit_wrapper(herd_name="segment", include_name="aie.inc"):
@@ -371,12 +432,17 @@ def run(mlir_module, args=None):
 
     with mlir_module.context as ctx:
         _, air_mlir_filename = os.path.split(opts.air_mlir_file)
+        # num_tile_rows = 4
+        air_collapse_herd_to_cols_pass = (
+            "func.func(air-collapse-herd{" + f"max-col-size={4} " + "})"
+        )
+        trace_col_offset = 1 if int(opts.trace_size) > 0 else 0
         air_place_pass = (
             "air-place-herds{"
             + f"num-rows={opts.num_rows} "
             + f"num-cols={opts.num_cols} "
             + f"row-anchor={opts.row_offset} "
-            + f"col-anchor={opts.col_offset}"
+            + f"col-anchor={int(opts.col_offset) + trace_col_offset}"
             + "}"
         )
 
@@ -387,18 +453,25 @@ def run(mlir_module, args=None):
                 "func.func(air-lower-herd-parallel)",
             ]
             + (
-                get_experimental_passes(opts.omit_pingpong)
-                if "npu" in opts.device and opts.experimental_passes
+                get_air_optimization_pass(
+                    opts.device,
+                    opts.omit_pingpong,
+                    opts.lower_linalg_to_func,
+                    opts.air_loop_fusion,
+                    opts.omit_auto_broadcast,
+                    opts.channel_multiplexing,
+                )
+                if "npu" in opts.device
                 else []
             )
-            + (["air-dma-to-channel"] if "npu" in opts.device else [])
             + [
+                air_collapse_herd_to_cols_pass,
                 "canonicalize",
                 "cse",
-                "air-specialize-channel-wrap-and-stride",
-                "func.func(air-renumber-dma)",
-                "func.func(convert-linalg-to-loops)",
                 air_place_pass,
+                "canonicalize",
+                "cse",
+                "func.func(air-renumber-dma)",
             ]
         )
         air_placed_module = Module.parse(str(mlir_module))
@@ -414,7 +487,7 @@ def run(mlir_module, args=None):
         air_to_aie_pass = air_to_aie_pass + f" row-offset={opts.row_offset}"
         air_to_aie_pass = air_to_aie_pass + f" col-offset={opts.col_offset}"
         air_to_aie_pass = air_to_aie_pass + f" device={opts.device}"
-        if opts.trace_size > 0:
+        if int(opts.trace_size) > 0:
             air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
         air_to_aie_pass = air_to_aie_pass + "}"
         pass_pipeline = ",".join([air_to_aie_pass])
@@ -444,7 +517,9 @@ def run(mlir_module, args=None):
                         "func.func(air-opt-shim-dma-bds{device=" + opts.device + "})",
                         "air-to-std",
                         "symbol-dce",
-                        "func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})",
+                        "func.func(affine-loop-opt{affine-opt-tile-sizes="
+                        + ",".join(str(s) for s in opts.runtime_loop_tiling_sizes)
+                        + "})",
                         "func.func(air-unroll-outer-affine-loops{depth=2})",
                         "affine-expand-index-ops",
                         "canonicalize",

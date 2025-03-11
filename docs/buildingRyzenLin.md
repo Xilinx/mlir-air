@@ -20,7 +20,7 @@ git clone https://github.com/Xilinx/mlir-air.git
 cd mlir-air
 ```
 
-Next, run ```utils/setup_python_packages.sh``` to setup the prerequisite python packages. This script creates and installs the python packages listed in [utils/requirements.txt](utils/requirements.txt) in a virtual python environment called ```sandbox```.
+Next, run ```utils/setup_python_packages.sh``` to setup the prerequisite python packages. This script creates and installs the python packages listed in [utils/requirements.txt](https://github.com/Xilinx/mlir-air/blob/main/utils/requirements.txt) in a virtual python environment called ```sandbox```.
 
 ```bash
 source utils/setup_python_packages.sh
@@ -41,6 +41,9 @@ Next, clone and build the aienginev2 module.
 ```
 
 Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules repositories.
+MLIR-AIE requires some dependent packages to be installed.
+For details on the MLIR-AIE prerequisites, please refer to the MLIR-AIE [repository](https://github.com/Xilinx/mlir-aie?tab=readme-ov-file#prerequisites).
+Once the prerequisites are set up, run the following commands to build MLIR-AIE.
 ```bash
 ./utils/clone-mlir-aie.sh
 ./utils/build-mlir-aie-local.sh llvm mlir-aie/cmake/modulesXilinx aienginev2 mlir-aie

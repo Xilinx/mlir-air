@@ -355,7 +355,7 @@ struct RemoveExtraAllocPattern : public OpRewritePattern<memref::CopyOp> {
                                 PatternRewriter &rewriter) const override {
 
     auto existingAlloc =
-        dyn_cast<memref::AllocOp>(op.getOperand(0).getDefiningOp());
+        dyn_cast_if_present<memref::AllocOp>(op.getOperand(0).getDefiningOp());
     if (!existingAlloc)
       return failure();
 

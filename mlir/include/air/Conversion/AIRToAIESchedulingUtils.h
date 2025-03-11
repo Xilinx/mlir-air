@@ -18,8 +18,10 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
-bool isTileInbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt);
-bool isTileOutbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt);
+FailureOr<bool> isTileInbound(air::MemcpyInterface memcpyOp,
+                              int tileMemSpaceAsInt);
+FailureOr<bool> isTileOutbound(air::MemcpyInterface memcpyOp,
+                               int tileMemSpaceAsInt);
 
 AIE::TileOp getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col, int row);
 
@@ -55,10 +57,6 @@ getRepeatCounts(std::vector<Operation *> memcpy_ops);
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
                    SmallVector<Value> memcpy_strides, MLIRContext *ctx);
-
-bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
-                                SmallVector<Value> memcpy_strides,
-                                Value memref);
 
 std::pair<int64_t, int64_t>
 getLockValuePair(const AIE::AIETargetModel &targetModel, Value buffer_memref);
@@ -100,10 +98,10 @@ struct MemcpyBundleAsFlow {
   int S2MM_memspace_as_int;
   int numMM2SAllocs = 0;
   int numS2MMAllocs = 0;
-  void pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp);
-  void pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp);
-  void pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp);
-  void pushBackMemcpyOpToBundle(air::ChannelInterface memcpyOp);
+  LogicalResult pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp);
+  LogicalResult pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp);
+  LogicalResult pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp);
+  LogicalResult pushBackMemcpyOpToBundle(air::ChannelInterface memcpyOp);
   MemcpyBundleAsFlow(air::DmaMemcpyNdOp dmaMemcpyOp);
   MemcpyBundleAsFlow(air::ChannelOp chan);
 };
@@ -115,14 +113,14 @@ public:
   DMAAllocator(AIE::DeviceOp device, int dmaMemorySpaceAsInt)
       : device(device), DMAMemorySpaceAsInt(dmaMemorySpaceAsInt) {}
 
-  allocation_info_t lookupDMAAllocation(int64_t col, int64_t row,
-                                        air::MemcpyInterface &memcpyOp);
-  std::pair<AIE::LockOp, AIE::LockOp>
+  FailureOr<allocation_info_t>
+  lookupDMAAllocation(int64_t col, int64_t row, air::MemcpyInterface &memcpyOp);
+  FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
   getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
                 Operation *bufferOp);
-  allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
-                                       AIE::TileOp tile, int chan, int col,
-                                       int row, std::vector<int> dma_id);
+  FailureOr<allocation_info_t>
+  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileOp tile, int chan,
+                     int col, int row, std::vector<int> dma_id);
   void sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops);
 
 protected:
@@ -144,11 +142,12 @@ public:
 
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
-  allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
-                                          int col, int row, int chan);
+  FailureOr<allocation_info_t>
+  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int col, int row,
+                        int chan);
 
-  AIE::BufferOp getBuffer(uint64_t, int64_t col, int64_t row,
-                          air::MemcpyInterface &memcpyOp);
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+                                     air::MemcpyInterface &memcpyOp);
 };
 
 class ShimDMAAllocator : public DMAAllocator {
@@ -159,19 +158,21 @@ public:
 
   ShimDMAAllocator(AIE::DeviceOp device);
 
-  allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col,
-                                       int row,
-                                       std::vector<Operation *> &dma_ops,
-                                       std::string colAllocConstraint);
+  FailureOr<allocation_info_t>
+  allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col, int row,
+                     std::vector<Operation *> &dma_ops,
+                     std::string colAllocConstraint);
 
-  allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
-                                       allocation_info_t existing_alloc,
-                                       std::vector<Operation *> &dma_ops);
+  FailureOr<allocation_info_t>
+  allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
+                     allocation_info_t existing_alloc,
+                     std::vector<Operation *> &dma_ops);
 
-  AIE::ExternalBufferOp getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
-                                  air::MemcpyInterface &memcpyOp);
+  FailureOr<AIE::ExternalBufferOp> getBuffer(uint64_t &BufferId, int64_t col,
+                                             int64_t row,
+                                             air::MemcpyInterface &memcpyOp);
 
-  std::optional<air::allocation_info_t>
+  FailureOr<air::allocation_info_t>
   foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,
                             air::allocation_info_t alloc, bool isMM2S);
 };
@@ -183,17 +184,16 @@ public:
 
   MemTileDMAAllocator(AIE::DeviceOp device);
 
-  allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
-                                          int chan);
-  allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
-                                          allocation_info_t &existing_alloc);
+  FailureOr<allocation_info_t>
+  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int chan);
+  FailureOr<allocation_info_t>
+  simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
+                        allocation_info_t &existing_alloc);
 
-  int forecastChannelAlloc(air::MemcpyInterface &memcpyOp);
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+                                     air::MemcpyInterface &memcpyOp);
 
-  AIE::BufferOp getBuffer(uint64_t, int64_t col, int64_t row,
-                          air::MemcpyInterface &memcpyOp);
-
-  std::optional<air::allocation_info_t>
+  FailureOr<air::allocation_info_t>
   foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,
                             air::allocation_info_t alloc, bool isMM2S);
 };
@@ -207,12 +207,6 @@ template <typename T>
 int foundInVector(T item, std::vector<T> vec);
 int getSCFForLoopDepth(Operation *o);
 bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
-
-LogicalResult
-groupedByLoopDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
-                                  ShimDMAAllocator &shim_dma_alloc,
-                                  MemTileDMAAllocator &memtile_dma_alloc,
-                                  TileDMAAllocator &tile_dma_alloc);
 
 } // namespace air
 } // namespace xilinx

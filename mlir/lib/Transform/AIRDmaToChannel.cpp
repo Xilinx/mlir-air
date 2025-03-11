@@ -30,7 +30,10 @@ static void generateYieldAndOrReduceToScfLoop(OpBuilder builder,
   // Check if scf::YieldOp already exists in scf parallel
   SmallVector<scf::YieldOp, 2> y_ops(scf_par.getOps<scf::YieldOp>());
   if (y_ops.size()) {
-    assert(y_ops.size() == 1);
+    if (y_ops.size() != 1) {
+      scf_par->emitOpError("number of yield op isn't one.");
+      return;
+    }
     builder.setInsertionPoint(y_ops[0]);
   } else {
     builder.setInsertionPointToEnd(scf_par.getBody());
@@ -133,12 +136,12 @@ static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder builder,
       memcpy_ops.push_back(memcpy_op);
     }
   }
-  assert(memcpy_ops.size() <= 1 &&
-         "found multiple memcpy ops in one hoisted for loop");
+  if (memcpy_ops.size() > 1) {
+    scf_loop->emitOpError("found multiple memcpy ops in one hoisted for loop.");
+    return scf::YieldOp();
+  }
   SmallVector<Value, 1> yield_token;
   if (memcpy_ops.size()) {
-    assert(memcpy_ops[0]->getResult(0) &&
-           "found sync memcpy op in async for loop");
     auto wa_op = builder.create<air::WaitAllOp>(
         builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
         SmallVector<Value, 1>{memcpy_ops[0]->getResult(0)});
@@ -324,7 +327,7 @@ static unsigned getScfParDimIdFromBCastDma(air::MemcpyInterface memcpyOp) {
       }
     }
   }
-  assert(false && "cannot trace dependency to parent herd");
+  memcpyOp->emitOpError("cannot trace dependency to parent herd.");
   return 0;
 }
 
@@ -379,8 +382,8 @@ static void replaceAIRDmaWithAIRChannelPairs(
   auto dst = op.getDstMemref();
   auto ctx = op->getContext();
 
-  auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-  auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
+  auto src_type = llvm::dyn_cast<BaseMemRefType>(src.getType());
+  auto dst_type = llvm::dyn_cast<BaseMemRefType>(dst.getType());
   SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
   SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
   SmallVector<Value, 4> src_sizes = op.getSrcSizes();
@@ -544,10 +547,14 @@ LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
     hier_op = dyn_cast<air::HierarchyInterface>(herd.getOperation());
     innerMemorySpace = (int)air::MemorySpace::L1;
   } else if (segment) {
-    assert(false &&
-           "broadcast lowering with air.segmentOp currently not supported");
-  } else
-    assert(false && "affine if op has no air.hierarchy as parent");
+    segment->emitOpError(
+        "broadcast lowering with air.segmentOp currently not supported.");
+    return failure();
+  } else {
+    op->emitOpError(
+        "broadcast lowering with air.segmentOp currently not supported.");
+    return failure();
+  }
 
   SmallVector<air::ChannelInterface, 1> externalGetPut;
   SmallVector<air::ChannelInterface, 1> internalGetPut;
@@ -605,16 +612,16 @@ LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
   // Label dependent ops to hoist
   for (auto b : backwardSlice) {
     b->setAttr("hoist", StringAttr::get(ctx, "dep"));
-    if (dyn_cast<air::ExecuteOp>(b)) {
-      auto child_op = &(*b->getRegions().front().op_begin());
-      child_op->setAttr("hoist", StringAttr::get(ctx, "dep"));
+    if (auto exec = dyn_cast<air::ExecuteOp>(b)) {
+      auto &child_op = exec.getChildOps().front();
+      child_op.setAttr("hoist", StringAttr::get(ctx, "dep"));
     }
   }
 
   // Hoist hierarchy op into scf op
   module_builder.setInsertionPoint(hier_op);
-  MemRefType externalMemrefTy =
-      llvm::cast<MemRefType>(externalGetPut[0].getMemref().getType());
+  auto externalMemrefTy =
+      llvm::dyn_cast<BaseMemRefType>(externalGetPut[0].getMemref().getType());
   if (externalMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
       segment) {
     module_builder.setInsertionPoint(segment);
@@ -769,8 +776,8 @@ class AIRDmaToAIRChannelConversion
     auto ctx = op->getContext();
 
     // It must already be a memref
-    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
+    auto src_type = llvm::dyn_cast<BaseMemRefType>(src.getType());
+    auto dst_type = llvm::dyn_cast<BaseMemRefType>(dst.getType());
     if (!src_type)
       return failure();
 
@@ -1068,7 +1075,7 @@ static LogicalResult AIRDemoteMemrefToAIRHierarchy(
       auto memref =
           isa<air::ExecuteOp>(op) ? op->getResult(1) : op->getResult(0);
       auto token = isa<air::ExecuteOp>(op) ? op->getResult(0) : nullptr;
-      auto memref_type = llvm::dyn_cast<MemRefType>(memref.getType());
+      auto memref_type = llvm::dyn_cast<BaseMemRefType>(memref.getType());
 
       if (memref_type.getMemorySpaceAsInt() == hierMemorySpace)
         continue; // Alloc op is already under correct hierarchy
@@ -1153,8 +1160,8 @@ class AIRDemoteDmaToAIRHierarchyConversion
     auto ctx = op->getContext();
 
     // It must already be a memref
-    auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-    auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
+    auto src_type = llvm::dyn_cast<BaseMemRefType>(src.getType());
+    auto dst_type = llvm::dyn_cast<BaseMemRefType>(dst.getType());
     if (!src_type)
       return failure();
 
@@ -1391,7 +1398,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     std::map<air::HierarchyInterface, std::vector<Operation *>> hier_to_allocs;
     for (auto f : funcOps) {
       f.walk([&](memref::AllocOp alloc) {
-        auto memref_type = dyn_cast<MemRefType>(alloc.getMemref().getType());
+        auto memref_type =
+            dyn_cast<BaseMemRefType>(alloc.getMemref().getType());
         int hierMemorySpace = (int)air::MemorySpace::L3;
         air::HierarchyInterface hier_op =
             alloc->getParentOfType<air::HierarchyInterface>();
@@ -1439,9 +1447,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     target_0.addDynamicallyLegalOp<air::DmaMemcpyNdOp>(
         [&](air::DmaMemcpyNdOp dma) {
           auto src_type =
-              llvm::dyn_cast<MemRefType>(dma.getSrcMemref().getType());
+              llvm::dyn_cast<BaseMemRefType>(dma.getSrcMemref().getType());
           auto dst_type =
-              llvm::dyn_cast<MemRefType>(dma.getDstMemref().getType());
+              llvm::dyn_cast<BaseMemRefType>(dma.getDstMemref().getType());
           if (dma->getParentOfType<air::HerdOp>()) {
             if (src_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1 &&
                 dst_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1)
@@ -1550,16 +1558,20 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
             memcpy_op.getOperation(), sink_op_memref_reads,
             sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs);
 
-        assert((sink_op_memref_reads.size() || sink_op_memref_writes.size()) &&
-               "cannot read memref from channel op");
+        if (sink_op_memref_reads.empty() && sink_op_memref_writes.empty()) {
+          memcpy_op->emitOpError("cannot read memref from channel op.");
+          return;
+        }
 
         if (sink_wait_all_op) {
           // Detect RAW deps
-          depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-              sink_op_memref_reads, sink_wait_all_op, "RAW");
+          if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+                  sink_op_memref_reads, sink_wait_all_op, "RAW")))
+            signalPassFailure();
           // Detect WAW and WAR deps
-          depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-              sink_op_memref_writes, sink_wait_all_op, "WAW/WAR");
+          if (failed(depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+                  sink_op_memref_writes, sink_wait_all_op, "WAW/WAR")))
+            signalPassFailure();
 
           // Rebuild loop-carried dependency in scf loop nest
           air::clearAsyncDependenciesOfAsyncOp(memcpy_op);
@@ -1568,13 +1580,18 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         }
 
         // Trace dependency of external put/get within scf loop
-        depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-            sink_op_memref_reads,
-            dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()), "RAW");
-        depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
-            sink_op_memref_writes,
-            dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()),
-            "WAW/WAR");
+        if (failed(
+                depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                    sink_op_memref_reads,
+                    dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()),
+                    "RAW")))
+          signalPassFailure();
+        if (failed(
+                depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+                    sink_op_memref_writes,
+                    dyn_cast<air::AsyncOpInterface>(memcpy_op.getOperation()),
+                    "WAW/WAR")))
+          signalPassFailure();
         // Detect tile index deps
         depTracer.traceTileIndices(
             sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins,

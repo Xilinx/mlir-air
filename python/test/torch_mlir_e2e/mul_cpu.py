@@ -35,7 +35,7 @@ def pipeline(module):
                     "canonicalize",
                     "cse",
                     "air-linalg-codegen",
-                    "air-par-to-herd{depth=0}",
+                    "air-par-to-herd{depth=-1}",
                     "air-copy-to-dma",
                     "canonicalize",
                     "cse",

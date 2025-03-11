@@ -110,35 +110,13 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
       idInt = *const_int;
     else
       return failure();
-    uint64_t xInt = 0;
-    if (auto const_int = getConstantIntValue(adaptor.getX()))
-      xInt = *const_int;
-    else
-      return failure();
-    uint64_t yInt = 0;
-    if (auto const_int = getConstantIntValue(adaptor.getY()))
-      yInt = *const_int;
-    else
-      return failure();
 
     Value memref = adaptor.getMemref();
-    MemRefType memrefTy = cast<MemRefType>(memref.getType());
+    BaseMemRefType memrefTy = cast<BaseMemRefType>(memref.getType());
     unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
     if (bitwidth != 32 && bitwidth != 16 && bitwidth != 8)
       return failure();
-    unsigned int div = 32 / bitwidth;
-    unsigned int numElements = memrefTy.getNumElements() / div;
-    SmallVector<int64_t> shape{numElements};
-    MemRefType newMemrefTy =
-        MemRefType::get(shape, rewriter.getIntegerType(32));
 
-    Value divV = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), div);
-    auto divOp = [&](Value v) {
-      if (div == 1)
-        return v;
-      return rewriter.create<arith::CeilDivUIOp>(op->getLoc(), v, divV)
-          .getResult();
-    };
     SmallVector<Value> offsets;
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
@@ -154,9 +132,9 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     else
       offsets.push_back(adaptor.getOffset1());
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
-      staticOffsets.push_back(*const_int / div);
+      staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(divOp(adaptor.getOffset0()));
+      offsets.push_back(adaptor.getOffset0());
     SmallVector<Value> sizes;
     SmallVector<int64_t> staticSizes;
     if (auto const_int = getConstantIntValue(adaptor.getLength3()))
@@ -172,23 +150,23 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     else
       sizes.push_back(adaptor.getLength1());
     if (auto const_int = getConstantIntValue(adaptor.getLength0()))
-      staticSizes.push_back(std::max((int64_t)1, *const_int / div));
+      staticSizes.push_back(std::max((int64_t)1, *const_int));
     else
-      sizes.push_back(divOp(adaptor.getLength0()));
+      sizes.push_back(adaptor.getLength0());
     SmallVector<Value> strides;
     SmallVector<int64_t> staticStrides;
     if (auto const_int = getConstantIntValue(adaptor.getStride3()))
-      staticStrides.push_back(*const_int / div);
+      staticStrides.push_back(*const_int);
     else
-      strides.push_back(divOp(adaptor.getStride3()));
+      strides.push_back(adaptor.getStride3());
     if (auto const_int = getConstantIntValue(adaptor.getStride2()))
-      staticStrides.push_back(*const_int / div);
+      staticStrides.push_back(*const_int);
     else
-      strides.push_back(divOp(adaptor.getStride2()));
+      strides.push_back(adaptor.getStride2());
     if (auto const_int = getConstantIntValue(adaptor.getStride1()))
-      staticStrides.push_back(*const_int / div);
+      staticStrides.push_back(*const_int);
     else
-      strides.push_back(divOp(adaptor.getStride1()));
+      strides.push_back(adaptor.getStride1());
     staticStrides.push_back(1);
 
     StringRef metadata;
@@ -201,17 +179,11 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
                                  rewriter.getStringAttr("MetadataNotFound"))
               .getValue();
 
-    if (bitwidth != 32)
-      memref = rewriter
-                   .create<UnrealizedConversionCastOp>(op.getLoc(), newMemrefTy,
-                                                       memref)
-                   .getResult(0);
-
     AIE::PacketInfoAttr packet =
         op->getAttrOfType<AIE::PacketInfoAttr>("packet");
     rewriter.replaceOpWithNewOp<AIEX::NpuDmaMemcpyNdOp>(
-        op, xInt, yInt, memref, offsets, sizes, strides, staticOffsets,
-        staticSizes, staticStrides, packet, metadata, idInt);
+        op, memref, offsets, sizes, strides, staticOffsets, staticSizes,
+        staticStrides, packet, metadata, idInt);
 
     return success();
   }
@@ -329,7 +301,7 @@ public:
   matchAndRewrite(affine::AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
+    auto memrefTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -346,7 +318,7 @@ public:
   matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
+    auto memrefTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
@@ -453,77 +425,6 @@ public:
     return success();
   }
 };
-
-static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
-                                      PatternRewriter &rewriter) {
-  // only run on npu control functions
-  bool hasNpuOps = false;
-  funcOp.walk([&](AIEX::NpuDmaMemcpyNdOp dma) { hasNpuOps = true; });
-  if (!hasNpuOps)
-    return failure();
-
-  // cast all the function args to i32 types.
-  // this is in support of npu.dma_memcpy_nd which only allow 32bit types
-  mlir::FunctionType funcType = funcOp.getFunctionType();
-  SmallVector<Type> argTypes(funcType.getInputs());
-  for (int i = 0, e = argTypes.size(); i < e; i++) {
-    auto memrefTy = dyn_cast<MemRefType>(argTypes[i]);
-    if (!memrefTy)
-      continue;
-
-    unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
-    if (bitwidth != 16 && bitwidth != 8)
-      continue;
-
-    unsigned int div = 32 / bitwidth;
-    unsigned int numElements = memrefTy.getNumElements() / div;
-    SmallVector<int64_t> shape{numElements};
-    MemRefType newMemrefTy =
-        MemRefType::get(shape, rewriter.getIntegerType(32));
-    argTypes[i] = newMemrefTy;
-    auto &entry = funcOp.front();
-    entry.insertArgument(i, newMemrefTy, rewriter.getUnknownLoc());
-    rewriter.setInsertionPointToStart(&entry);
-    auto cast = rewriter.create<UnrealizedConversionCastOp>(
-        rewriter.getUnknownLoc(), memrefTy, entry.getArgument(i));
-    // With memref shape collapsed to 1d, the multi-dimensional offset also
-    // needs to be collapsed.
-    SmallVector<Operation *> users;
-    for (auto user : entry.getArgument(i + 1).getUsers()) {
-      if (auto cast_user = dyn_cast<UnrealizedConversionCastOp>(user)) {
-        assert(cast_user.getNumResults() == 1);
-        for (auto cast_r_user : cast_user.getResult(0).getUsers())
-          users.push_back(cast_r_user);
-      } else
-        users.push_back(user);
-    }
-    for (Operation *user : users) {
-      if (auto dmaUser = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(user)) {
-        int oneDOffset = *getConstantIntValue(dmaUser.getMixedOffsets().back());
-        for (int j = dmaUser.getMixedOffsets().size() - 2; j >= 0; j--)
-          oneDOffset += *getConstantIntValue(dmaUser.getMixedOffsets()[j]) *
-                        *getConstantIntValue(dmaUser.getMixedStrides()[j]);
-        rewriter.setInsertionPoint(dmaUser);
-        const std::vector<int64_t> newStaticOffsets = {0, 0, 0, oneDOffset};
-        AIE::PacketInfoAttr packet =
-            dmaUser.getPacket() ? *dmaUser.getPacket() : nullptr;
-        rewriter.create<AIEX::NpuDmaMemcpyNdOp>(
-            rewriter.getUnknownLoc(), dmaUser.getX(), dmaUser.getY(),
-            dmaUser.getMemref(), SmallVector<Value>{}, dmaUser.getSizes(),
-            dmaUser.getStrides(), ArrayRef(newStaticOffsets),
-            dmaUser.getStaticSizes(), dmaUser.getStaticStrides(), packet,
-            dmaUser.getMetadata(), dmaUser.getId());
-        rewriter.eraseOp(dmaUser);
-      }
-    }
-    entry.getArgument(i + 1).replaceAllUsesWith(cast.getResult(0));
-    entry.eraseArgument(i + 1);
-  }
-  auto newFuncType =
-      FunctionType::get(funcOp.getContext(), argTypes, funcType.getResults());
-  funcOp.setType(newFuncType);
-  return success();
-}
 
 AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
   auto module = s->getParentOfType<ModuleOp>();
@@ -641,8 +542,7 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
       // Detected wrap that goes beyond the AIE2 hardware limit.
       if (*const_val >= AIE2_WRAP_UPPER_BOUNDS[i])
         return true;
-    } else
-      assert(false && "has non-static wrap");
+    }
   }
   return false;
 }
@@ -698,9 +598,12 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       // values, as long as stride fits)
       int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
-      int new_a_stride =
-          (const_stride * a_wrap) % air::getTensorVolume(llvm::cast<MemRefType>(
-                                        memcpy_op.getMemref().getType()));
+      int new_a_stride = const_stride * a_wrap;
+      auto volume = air::getTensorVolume(
+          llvm::cast<BaseMemRefType>(memcpy_op.getMemref().getType()));
+      if (volume != 1)
+        new_a_stride %=
+            volume; // Avoids striding out of memory size, if memref is ranked
       int inner_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
                            ? (b_wrap)
                            : (a_wrap);
@@ -714,9 +617,10 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
                    builder.create<arith::ConstantOp>(
                        loc, builder.getI64Type(),
                        IntegerAttr::get(builder.getI64Type(), outer_wrap)));
-      auto new_const_stride = (const_stride * inner_wrap) %
-                              air::getTensorVolume(llvm::cast<MemRefType>(
-                                  memcpy_op.getMemref().getType()));
+      auto new_const_stride = const_stride * inner_wrap;
+      if (volume != 1)
+        new_const_stride %=
+            volume; // Avoids striding out of memory size, if memref is ranked
       strides.insert(
           strides.begin() + i,
           builder.create<arith::ConstantOp>(
@@ -726,6 +630,22 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
                      builder.create<arith::ConstantOp>(
                          loc, builder.getI64Type(),
                          IntegerAttr::get(builder.getI64Type(), 0)));
+      // Attempt to find one dummy dimension in the wrap-and-stride list and
+      // erase.
+      auto offsetWrapZip = llvm::zip_equal(offsets, wraps);
+      auto it =
+          llvm::find_if(offsetWrapZip, [](std::tuple<Value, Value> entry) {
+            auto off = getConstantIntValue(std::get<0>(entry));
+            auto siz = getConstantIntValue(std::get<1>(entry));
+            return off && siz && *off == 0 && *siz == 1;
+          });
+      if (it != offsetWrapZip.end()) {
+        offsets.erase(offsets.begin() +
+                      std::distance(offsetWrapZip.begin(), it));
+        wraps.erase(wraps.begin() + std::distance(offsetWrapZip.begin(), it));
+        strides.erase(strides.begin() +
+                      std::distance(offsetWrapZip.begin(), it));
+      }
       i++;
     }
   }
@@ -734,51 +654,48 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   // goes beyond 4.
   SmallVector<affine::AffineForOp> for_loop_nest;
   Value inner_affine_for_iv = nullptr;
-  if (wraps.size() > AIE2_DIM_COUNT) {
+  while (wraps.size() > AIE2_DIM_COUNT) {
     affine::AffineForOp inner_affine_for = nullptr;
-    while (wraps.size() > AIE2_DIM_COUNT) {
-      auto const_offset = *getConstantIntValue(offsets[0]);
-      auto const_lowest_offset = *getConstantIntValue(offsets.back());
-      auto const_wrap = *getConstantIntValue(wraps[0]);
-      auto const_stride = *getConstantIntValue(strides[0]);
+    auto const_offset = *getConstantIntValue(offsets[0]);
+    auto const_lowest_offset = *getConstantIntValue(offsets.back());
+    auto const_wrap = *getConstantIntValue(wraps[0]);
+    auto const_stride = *getConstantIntValue(strides[0]);
 
-      // Convert the outer dimension into an affine.for loop.
-      int const_lower_bound =
-          const_stride ? (const_offset * const_stride + const_lowest_offset)
-                       : 0;
-      auto const_upper_bound =
-          const_stride ? (const_offset * const_stride +
-                          const_wrap * const_stride + const_lowest_offset)
-                       : const_wrap;
-      int const_step = const_stride ? const_stride : 1;
-      auto new_for_op =
-          (inner_affine_for_iv)
-              ? (builder.create<affine::AffineForOp>(
-                    loc,
-                    SmallVector<Value>{builder.create<arith::AddIOp>(
-                        loc, inner_affine_for_iv,
-                        builder.create<arith::ConstantIndexOp>(
-                            loc, const_lower_bound))},
-                    AffineMap::get(ctx),
-                    SmallVector<Value>{builder.create<arith::AddIOp>(
-                        loc, inner_affine_for_iv,
-                        builder.create<arith::ConstantIndexOp>(
-                            loc, const_upper_bound))},
-                    AffineMap::get(ctx), const_step))
-              : (builder.create<affine::AffineForOp>(
-                    loc, const_lower_bound, const_upper_bound, const_step));
-      for_loop_nest.push_back(new_for_op);
-      inner_affine_for = new_for_op;
+    // Convert the outer dimension into an affine.for loop.
+    int const_lower_bound =
+        const_stride ? (const_offset * const_stride + const_lowest_offset) : 0;
+    auto const_upper_bound =
+        const_stride ? (const_offset * const_stride +
+                        const_wrap * const_stride + const_lowest_offset)
+                     : const_wrap;
+    int const_step = const_stride ? const_stride : 1;
+    auto new_for_op =
+        (inner_affine_for_iv)
+            ? (builder.create<affine::AffineForOp>(
+                  loc,
+                  SmallVector<Value>{builder.create<arith::AddIOp>(
+                      loc, inner_affine_for_iv,
+                      builder.create<arith::ConstantIndexOp>(
+                          loc, const_lower_bound))},
+                  AffineMap::get(ctx),
+                  SmallVector<Value>{builder.create<arith::AddIOp>(
+                      loc, inner_affine_for_iv,
+                      builder.create<arith::ConstantIndexOp>(
+                          loc, const_upper_bound))},
+                  AffineMap::get(ctx), const_step))
+            : (builder.create<affine::AffineForOp>(
+                  loc, const_lower_bound, const_upper_bound, const_step));
+    for_loop_nest.push_back(new_for_op);
+    inner_affine_for = new_for_op;
 
-      // Pop front.
-      offsets.erase(offsets.begin());
-      wraps.erase(wraps.begin());
-      strides.erase(strides.begin());
+    // Pop front.
+    offsets.erase(offsets.begin());
+    wraps.erase(wraps.begin());
+    strides.erase(strides.begin());
 
-      builder.setInsertionPointToStart(inner_affine_for.getBody());
-      if (const_stride)
-        inner_affine_for_iv = inner_affine_for.getInductionVar();
-    }
+    builder.setInsertionPointToStart(inner_affine_for.getBody());
+    if (const_stride)
+      inner_affine_for_iv = inner_affine_for.getInductionVar();
   }
 
   // Stride field implicit last element one, pop.
@@ -897,7 +814,7 @@ struct AIRSpecializeAIRRtDmaWrapAndStrideInAffineFor
       wraps.insert(wraps.begin(), i64_one);
     }
     while (strides.size() < 3) {
-      strides.insert(strides.begin(), i64_one);
+      strides.insert(strides.begin(), i64_zero);
     }
 
     // Stride = 0 means repeat that dimension. If highest dimension (dim 0) is
@@ -929,6 +846,9 @@ struct AIRSpecializeAIRRtDmaWrapAndStrideInAffineFor
         tmp = strides[0];
         strides[0] = strides[i];
         strides[i] = tmp;
+        tmp = offsets[0];
+        offsets[0] = offsets[i];
+        offsets[i] = tmp;
       } else {
         (void)loopUnrollFull(for_op);
         return success();
@@ -975,6 +895,9 @@ struct AIRSpecializeAIRRtDmaWrapAndStrideInAffineFor
         loc, tys, air::lookupOrDefaultRange(opers, remap));
     new_dma->setAttrs(memcpy_op->getDiscardableAttrDictionary());
 
+    rewriter.replaceAllUsesWith(for_op.getInductionVar(),
+                                rewriter.create<arith::ConstantIndexOp>(
+                                    loc, for_op.getConstantLowerBound()));
     rewriter.eraseOp(for_op.getOperation());
 
     return success();
@@ -1048,14 +971,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         [&](affine::AffineStoreOp op) {
           if (op->getParentOfType<AIE::CoreOp>())
             return true;
-          return (llvm::cast<MemRefType>(op.getMemref().getType())
+          return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
                       .getMemorySpaceAsInt() !=
                   (int)xilinx::air::MemorySpace::L1);
         });
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
       if (op->getParentOfType<AIE::CoreOp>())
         return true;
-      return (llvm::cast<MemRefType>(op.getMemref().getType())
+      return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
                   .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
@@ -1088,11 +1011,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Unroll any affine for loops
     unrollAffineFors(module);
 
-    // Cast buffers to i32 types; buffer npu.dma_memcpy_nd memref to function's
-    // argument list.
+    // Buffer npu.dma_memcpy_nd memref to function's argument list.
     RewritePatternSet castPattern(ctx);
     air::populateBufferMemrefToFuncArgsPattern(castPattern);
-    castPattern.add(CastFunctionArgs);
     (void)applyPatternsGreedily(module, std::move(castPattern));
 
     // Insert sync op after copying data out to host
@@ -1103,7 +1024,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Configure the tile trace units and the shimDMA
     if (clTraceSize > 0)
-      insertNpuWrite32ForTrace(module, clTraceSize, clTraceOffset);
+      if (failed(insertNpuWrite32ForTrace(module, clTraceSize, clTraceOffset)))
+        signalPassFailure();
 
     RewritePatternSet funcToSeqPatterns(ctx);
     funcToSeqPatterns.add<ControlFuncConversion>(ctx);
@@ -1305,8 +1227,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           return;
         }
       });
-      if (!containsOnlyWaitAll)
-        assert(false && "found scf.parallel op at this IR, NYI");
       builder.setInsertionPoint(par_op);
       auto newWaitAll = builder.create<airrt::WaitAllOp>(
           par_op->getLoc(), airrt::EventType::get(par_op->getContext()),
@@ -1456,8 +1376,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   // configure events to monitor
-  void insertNpuWrite32ForTrace(ModuleOp module, int64_t trace_size,
-                                int64_t trace_offset) {
+  LogicalResult insertNpuWrite32ForTrace(ModuleOp module, int64_t trace_size,
+                                         int64_t trace_offset) {
     SmallVector<mlir::func::FuncOp> funcOps;
     module.walk([&](mlir::func::FuncOp f) { funcOps.push_back(f); });
 
@@ -1496,11 +1416,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         int srcRowIndex = srcTile.rowIndex();
         int dstColIndex = destTile.colIndex();
         int dstRowIndex = destTile.rowIndex();
-        assert((target_model.isCoreTile(srcColIndex, srcRowIndex) ||
-                target_model.isMemTile(srcColIndex, srcRowIndex)) &&
-               "unsupported trace src");
-        assert(target_model.isShimNOCTile(dstColIndex, dstRowIndex) &&
-               "unsupported trace dest");
+        if (!target_model.isCoreTile(srcColIndex, srcRowIndex) &&
+            !target_model.isMemTile(srcColIndex, srcRowIndex)) {
+          pktFlow->emitOpError("unsupported trace src.");
+          return failure();
+        }
+        if (!target_model.isShimNOCTile(dstColIndex, dstRowIndex)) {
+          pktFlow->emitOpError("unsupported trace dest.");
+          return failure();
+        }
         int pkt_type = 0;
         if (target_model.isMemTile(srcColIndex, srcRowIndex))
           pkt_type = 3;
@@ -1584,7 +1508,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         if (chanToIdMap.count(dstColIndex) == 0)
           chanToIdMap[dstColIndex] = 15;
         int bdID = chanToIdMap[dstColIndex];
-        assert(bdID >= 4 && "run out of bd_id");
+        if (bdID < 4) {
+          pktFlow->emitOpError("runs out of bd_id.");
+          return failure();
+        }
 
         builder.create<AIEX::NpuWriteBdOp>(
             builder.getUnknownLoc(), dstColIndex, bdID, buff_size, buff_offset,
@@ -1611,8 +1538,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           address = 0x1D204;
         else if (destPort.channel == 1)
           address = 0x1D20C;
-        else
-          assert(false && "unknown trace dest");
+        else {
+          pktFlow->emitOpError("unknown trace dest.");
+          return failure();
+        }
         builder.create<AIEX::NpuWrite32Op>(
             builder.getUnknownLoc(), address, bdID, nullptr,
             builder.getIntegerAttr(builder.getI32Type(), dstColIndex),
@@ -1629,6 +1558,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x34008, 127,
                                          nullptr, zero, zero);
     }
+    return success();
   }
 
   // Renumber aiex.npu.dma_memcpy_nd ops per column of AIEs.

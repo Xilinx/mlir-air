@@ -230,12 +230,6 @@ module {
               %async_token_44 = air.execute [%arg19, %22, %21] {
                 linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%results_40, %results_42 : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%results_34 : memref<32x32xi32, 2>)
               }
-              %async_token_45 = air.execute {
-                memref.dealloc %results_40 : memref<32x32xi32, 2>
-              }
-              %async_token_46 = air.execute {
-                memref.dealloc %results_42 : memref<32x32xi32, 2>
-              }
               %23 = affine.if #set()[%arg12, %arg13] -> !air.async.token {
                 %26 = air.channel.get async [%22, %21, %arg18]  @channel_0[%arg12, %arg13] (%results_38[] [] []) {id = 15 : i32} : (memref<32x32xi32, 2>)
                 affine.yield %26 : !air.async.token
@@ -253,18 +247,18 @@ module {
               %async_token_47 = air.execute [%async_token_44, %24, %23] {
                 linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%results_38, %results_36 : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%results_34 : memref<32x32xi32, 2>)
               }
-              %async_token_48 = air.execute {
-                memref.dealloc %results_38 : memref<32x32xi32, 2>
-              }
-              %async_token_49 = air.execute {
-                memref.dealloc %results_36 : memref<32x32xi32, 2>
-              }
               %25 = air.wait_all async [%23, %24] 
               scf.yield %async_token_44, %async_token_47, %async_token_47, %25 : !air.async.token, !air.async.token, !air.async.token, !air.async.token
             }
             %20 = air.channel.put async [%19#1]  @channel_8[%arg12, %arg13] (%results_34[] [] []) {id = 19 : i32} : (memref<32x32xi32, 2>)
             %async_token_43 = air.execute [%20] {
               memref.dealloc %results_34 : memref<32x32xi32, 2>
+            }
+            %async_token_48 = air.execute {
+              memref.dealloc %results_38 : memref<32x32xi32, 2>
+            }
+            %async_token_49 = air.execute {
+              memref.dealloc %results_36 : memref<32x32xi32, 2>
             }
           }
           %14 = scf.parallel (%arg12, %arg13) = (%c0_16, %c0_16) to (%c2_15, %c2_15) step (%c1_13, %c1_13) init (%arg11) -> !air.async.token {
@@ -341,12 +335,6 @@ module {
             %36 = air.channel.put async [%arg16]  @channel_3[] (%results_28[%arg15, %c32] [%c32, %c32] [%c64_14, %c1_13]) {id = 11 : i32} : (memref<128x64xi32, 1>)
             scf.yield %36 : !air.async.token
           }
-          %async_token_30 = air.execute {
-            memref.dealloc %results_26 : memref<64x128xi32, 1>
-          }
-          %async_token_31 = air.execute {
-            memref.dealloc %results_28 : memref<128x64xi32, 1>
-          }
           %23 = air.wait_all async [%13, %14, %22, %20, %18, %16] 
           %24 = air.channel.get async [%14, %13, %arg12]  @channel_5[] (%results_24[] [] []) {id = 21 : i32} : (memref<64x128xi32, 1>)
           %25 = air.channel.get async [%14, %13, %arg12]  @channel_6[] (%results_22[] [] []) {id = 22 : i32} : (memref<128x64xi32, 1>)
@@ -370,12 +358,6 @@ module {
             %36 = air.channel.put async [%arg16]  @channel_3[] (%results_22[%arg15, %c32] [%c32, %c32] [%c64_14, %c1_13]) {id = 26 : i32} : (memref<128x64xi32, 1>)
             scf.yield %36 : !air.async.token
           }
-          %async_token_32 = air.execute {
-            memref.dealloc %results_24 : memref<64x128xi32, 1>
-          }
-          %async_token_33 = air.execute {
-            memref.dealloc %results_22 : memref<128x64xi32, 1>
-          }
           %34 = air.wait_all async [%24, %25, %33, %31, %29, %27] 
           %35 = air.wait_all async [%24, %25] 
           scf.yield %23, %34, %34, %35 : !air.async.token, !air.async.token, !air.async.token, !air.async.token
@@ -383,6 +365,12 @@ module {
         %12 = air.channel.put async [%10, %11#1]  @channel_9[] (%results_20[] [] []) {id = 20 : i32} : (memref<64x64xi32, 1>)
         %async_token_29 = air.execute [%12] {
           memref.dealloc %results_20 : memref<64x64xi32, 1>
+        }
+        %async_token_32 = air.execute {
+          memref.dealloc %results_24 : memref<64x128xi32, 1>
+        }
+        %async_token_33 = air.execute {
+          memref.dealloc %results_22 : memref<128x64xi32, 1>
         }
       }
     }

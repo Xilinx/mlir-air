@@ -3,13 +3,13 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
+from air.backend.xrt import XRTBackend
 from air.ir import *
 from air.passmanager import *
-from air.dialects import func, linalg
 from air.dialects.air import module_builder
-from air.dialects.linalg.opdsl.lang import *
 from air.compiler.util import run_transform
-import aie.compiler.aiecc.main as aiecc
+from air.dialects import func, linalg
+from air.dialects.linalg.opdsl.lang import *
 
 
 @module_builder
@@ -69,23 +69,11 @@ run_transform(transform_ir, module)
 pm = PassManager.parse("builtin.module(func.func(canonicalize,cse))", context=context)
 pm.run(module.operation)
 
-# print("\nTiled AIR Module:\n\n", module)
-# with open("add.air.mlir", "w") as f:
-#     f.write(str(module))
-
 pipeline = (
     "builtin.module("
     + ",".join(
         [
             "func.func(air-lower-herd-parallel)",
-            # "air-dependency",
-            # "air-dependency-schedule-opt",
-            "air-dma-to-channel",
-            "canonicalize",
-            "cse",
-            "air-specialize-channel-wrap-and-stride",
-            "air-linalg-to-func",
-            "func.func(air-renumber-dma)",
         ]
     )
     + ")"
@@ -93,58 +81,12 @@ pipeline = (
 pm = PassManager.parse(pipeline, context=context)
 pm.run(module.operation)
 
-# print("\nAIE Module:\n\n", module)
-# with open("add.chan.mlir", "w") as f:
-#     f.write(str(module))
+###############################################
+# Run compile and load
+###############################################
 
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "air-to-aie{device=npu1_4col row-offset=2 col-offset=0}",
-            "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
-            "air-to-std",
-            "symbol-dce",
-            "canonicalize",
-            "cse",
-        ]
-    )
-    + ")"
+backend = XRTBackend(
+    lower_linalg_to_func="kernel.o",
+    omit_pingpong=True,
 )
-pm = PassManager.parse(pipeline, context=context)
-pm.run(module.operation)
-
-# print("\nAIE Module:\n\n", module)
-# with open("add.aieairrt.mlir", "w") as f:
-#     f.write(str(module))
-
-pipeline = (
-    "builtin.module("
-    + ",".join(
-        [
-            "airrt-to-npu",
-            "canonicalize",
-            "cse",
-        ]
-    )
-    + ")"
-)
-pm = PassManager.parse(pipeline, context=context)
-pm.run(module.operation)
-
-# print("\nAIE Module:\n\n", module)
-# with open("add.aienpu.mlir", "w") as f:
-#     f.write(str(module))
-
-aiecc_options = [
-    "--no-aiesim",
-    "--xbridge",
-    "--xchesscc",
-    "--aie-generate-cdo",
-    "--aie-generate-npu",
-    "--no-compile-host",
-    "--npu-insts-name=insts.txt",
-    "--xclbin-name=add.xclbin",
-    "aie.mlir",
-]
-aiecc.run(module, aiecc_options)
+module_function = backend.compile_and_load(module)
