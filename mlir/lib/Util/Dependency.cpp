@@ -1651,11 +1651,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
 Graph::VertexId dependencyCanonicalizer::addVertexFromWaitAllOp(
     xilinx::air::WaitAllOp op, dependencyGraph *G, dependencyContext &dep_ctx) {
   // Note: disabled parsing wait_all op inside of reduce op
-  for (auto u : op.getAsyncToken().getUsers()) {
-    if (dyn_cast<scf::ReduceReturnOp>(u)) {
-      return 0;
-    }
-  }
+  if (op->getParentOfType<scf::ReduceOp>())
+    return 0;
   return addVertexFromOp(op, dep_ctx.WaitAllOpID, "wait_all", "WaitAllOp",
                          graphNodeProperties("control"), G, dep_ctx);
 }
