@@ -182,10 +182,6 @@ public:
           if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
             isCandidateExecute = false;
           }
-          // No air execute in linalg.generic
-          if (op->getParentOfType<mlir::linalg::GenericOp>()) {
-            isCandidateExecute = false;
-          }
           if (isCandidateExecute) {
             if (op->getNumResults())
               createAsyncExecute(rewriter, op,
