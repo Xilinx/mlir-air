@@ -544,7 +544,7 @@ def run(mlir_module, args=None):
                 "--no-aiesim",
                 "--xchesscc" if opts.xchesscc else "--no-xchesscc",
                 "--xbridge" if opts.xbridge else "--no-xbridge",
-                "--aie-generate-cdo",
+                "--aie-generate-xclbin",
                 "--aie-generate-npu",
                 "--no-compile-host",
                 "--xclbin-name=" + xclbin_file,
