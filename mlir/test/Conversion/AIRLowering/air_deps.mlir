@@ -10,7 +10,6 @@
 // CHECK-LABEL: func.func @execute
 // CHECK: %[[V0:.*]] = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
 // CHECK: %[[E0:.*]] = airrt.wait_all : !airrt.event
-// CHECK: airrt.wait_all %[[E0]]
 // CHECK: memref.dealloc %[[V0]] : memref<64x64xi32>
 // CHECK: %[[E1:.*]] = airrt.wait_all : !airrt.event
 // CHECK: airrt.wait_all %[[E1]]

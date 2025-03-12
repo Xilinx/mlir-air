@@ -672,8 +672,21 @@ LogicalResult lowerAirExecute(Operation *op) {
     auto &bb = exe.getRegion().front();
     unsigned idx = 0;
 
+    // If the execute op only contains pure ops (ops that do not touch memory),
+    // or memref.alloc/dealloc, then we shouldn't enforce blocking wait_alls to
+    // it.
+    auto isNonBlockingOp = [](Operation *o) {
+      return air::isPure(o) ||
+             isa<air::WaitAllOp, memref::AllocOp, memref::DeallocOp>(o);
+    };
+    bool isNonBlockingAsyncExecute = false;
+    if (llvm::all_of(exe.getChildOps(), [isNonBlockingOp](Operation &o) {
+          return isNonBlockingOp(&o);
+        }))
+      isNonBlockingAsyncExecute = true;
+
     OpBuilder builder(exe);
-    if (exe.getAsyncDependencies().size())
+    if (!isNonBlockingAsyncExecute && exe.getAsyncDependencies().size())
       builder.create<air::WaitAllOp>(op->getLoc(), Type{},
                                      exe.getAsyncDependencies());
 
@@ -699,6 +712,35 @@ LogicalResult lowerAirExecute(Operation *op) {
   });
   for (auto a : erased)
     a->erase();
+  return success();
+}
+
+LogicalResult generateBlockingWaitAllForLaunch(Operation *op) {
+  ModuleOp module = dyn_cast<ModuleOp>(op);
+  if (!module)
+    return failure();
+
+  llvm::SmallSet<Operation *, 8> erased;
+  llvm::SetVector<Value> danglingTokens;
+  module->walk([&](air::LaunchOp launch) {
+    auto &block = launch.getBody().front();
+    for (auto &o : block.getOperations()) {
+      if (!air::isAsyncOp(&o))
+        continue;
+      if (!o.use_empty())
+        continue;
+      auto tok = air::getAsyncTokenFromOp(&o);
+      danglingTokens.insert(tok);
+    }
+    Operation *terminator = block.getTerminator();
+    if (!terminator || terminator == &block.front()) {
+      return; // No operation before terminator
+    }
+    OpBuilder builder(terminator);
+    builder.create<air::WaitAllOp>(terminator->getLoc(),
+                                   /*mlir::Type*/ std::nullopt,
+                                   danglingTokens.takeVector());
+  });
   return success();
 }
 
@@ -982,6 +1024,13 @@ public:
     // AIR ExecuteOp conversion
     if (failed(lowerAirExecute(module))) {
       emitError(UnknownLoc::get(context), "error lowering air.execute\n");
+      signalPassFailure();
+    }
+
+    // Generate blocking air.wait_all at the end of the launch body
+    if (failed(generateBlockingWaitAllForLaunch(module))) {
+      emitError(UnknownLoc::get(context),
+                "error generating blocking air.launch\n");
       signalPassFailure();
     }
 
