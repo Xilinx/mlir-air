@@ -715,6 +715,35 @@ LogicalResult lowerAirExecute(Operation *op) {
   return success();
 }
 
+LogicalResult generateBlockingWaitAllForLaunch(Operation *op) {
+  ModuleOp module = dyn_cast<ModuleOp>(op);
+  if (!module)
+    return failure();
+
+  llvm::SmallSet<Operation *, 8> erased;
+  llvm::SetVector<Value> danglingTokens;
+  module->walk([&](air::LaunchOp launch) {
+    auto &block = launch.getBody().front();
+    for (auto &o : block.getOperations()) {
+      if (!air::isAsyncOp(&o))
+        continue;
+      if (!o.use_empty())
+        continue;
+      auto tok = air::getAsyncTokenFromOp(&o);
+      danglingTokens.insert(tok);
+    }
+    Operation *terminator = block.getTerminator();
+    if (!terminator || terminator == &block.front()) {
+      return; // No operation before terminator
+    }
+    OpBuilder builder(terminator);
+    builder.create<air::WaitAllOp>(terminator->getLoc(),
+                                   /*mlir::Type*/ std::nullopt,
+                                   danglingTokens.takeVector());
+  });
+  return success();
+}
+
 class ScfYieldOpConversion : public OpConversionPattern<scf::YieldOp> {
 public:
   using OpConversionPattern<scf::YieldOp>::OpConversionPattern;
@@ -995,6 +1024,13 @@ public:
     // AIR ExecuteOp conversion
     if (failed(lowerAirExecute(module))) {
       emitError(UnknownLoc::get(context), "error lowering air.execute\n");
+      signalPassFailure();
+    }
+
+    // Generate blocking air.wait_all at the end of the launch body
+    if (failed(generateBlockingWaitAllForLaunch(module))) {
+      emitError(UnknownLoc::get(context),
+                "error generating blocking air.launch\n");
       signalPassFailure();
     }
 
