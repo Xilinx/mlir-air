@@ -330,6 +330,7 @@ def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filena
             + ["--host-target", aiecc_target]
             + ["--tmpdir", aiecc_dir]
             + ["--no-aiesim"]
+            + ["--compile-host"]
             + ["--xbridge" if opts.xbridge else "--no-xbridge"]
             + ["--xchesscc" if opts.xchesscc else "--no-xchesscc"]
             + [aiecc_file]
