@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1_4col" | FileCheck %s
+// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1_4col shim-dma-tile-sizes=2,2" | FileCheck %s --check-prefix=NPUTILED
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=xcvc1902" | FileCheck %s --check-prefix=AIE1
 
 // Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD).
@@ -24,6 +25,16 @@ module {
   // CHECK-NEXT: %[[PUT5:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c65536{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId24} : (memref<512x512xbf16>)
   // CHECK: %[[PUT6:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c98304{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId25} : (memref<512x512xbf16>)
   // CHECK-NEXT: %[[PUT7:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c98304{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId25} : (memref<512x512xbf16>)
+
+  // NPUTILED-LABEL: func0
+  // NPUTILED: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId22} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId22} : (memref<512x512xbf16>)
+  // NPUTILED: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c32768{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId23} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT3:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c32768{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId23} : (memref<512x512xbf16>)
+  // NPUTILED: %[[PUT4:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c65536{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId24} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT5:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c65536{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId24} : (memref<512x512xbf16>)
+  // NPUTILED: %[[PUT6:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c98304{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId25} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT7:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c256{{.*}}, %c98304{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c64{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId25} : (memref<512x512xbf16>)
   
   // AIE1-LABEL: func0
   // AIE1-COUNT-3: scf.for
@@ -81,6 +92,21 @@ module {
   // CHECK-NEXT: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c192{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId29} : (memref<512x512xbf16>)
   // CHECK-NEXT: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c448{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId29} : (memref<512x512xbf16>)
   
+  // NPUTILED-LABEL: func1
+  // NPUTILED: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId26} : (memref<512x512xbf16>)
+  // NPUTILED: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId27} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c320{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId27} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId27} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c320{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId27} : (memref<512x512xbf16>)
+  // NPUTILED: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c128{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId28} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c384{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId28} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c128{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId28} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c384{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId28} : (memref<512x512xbf16>)
+  // NPUTILED: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c192{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId29} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c448{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId29} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c192{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId29} : (memref<512x512xbf16>)
+  // NPUTILED-NEXT: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c448{{.*}}] [%c512{{.*}}, %c64{{.*}}] [%c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId29} : (memref<512x512xbf16>)
+  
   // AIE1-LABEL: func1
   // AIE1-COUNT-3: scf.for
   // AIE1-COUNT-4: air.channel.put
@@ -126,6 +152,12 @@ module {
   // CHECK: air.channel.get async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c128{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId43} : (memref<512x512xbf16>)
   // CHECK: air.channel.get async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c192{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId45} : (memref<512x512xbf16>)
   
+  // NPUTILED-LABEL: func2
+  // NPUTILED: air.channel.get async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId39} : (memref<512x512xbf16>)
+  // NPUTILED: air.channel.get async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c64{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId41} : (memref<512x512xbf16>)
+  // NPUTILED: air.channel.get async{{.*}}@channel_0[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c128{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId43} : (memref<512x512xbf16>)
+  // NPUTILED: air.channel.get async{{.*}}@channel_0[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c192{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c64{{.*}}, %c256{{.*}}] [%c0{{.*}}, %c256{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId45} : (memref<512x512xbf16>)
+
   // AIE1-LABEL: func2
   // AIE1-COUNT-2: scf.for
   // AIE1-COUNT-4: air.channel.get
@@ -168,6 +200,9 @@ module {
   // CHECK-COUNT-4: air.dma_memcpy_nd
   // CHECK-COUNT-4: }
   
+  // NPUTILED-LABEL: func3
+  // NPUTILED-COUNT-256: air.dma_memcpy_nd
+
   // AIE1-LABEL: func3
   // AIE1-COUNT-3: scf.for
   // AIE1: air.herd
@@ -217,6 +252,12 @@ module {
 
   // CHECK: air.channel.put  @channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c4{{.*}}, %c32{{.*}}, %c32{{.*}}] [%c4096{{.*}}, %c32{{.*}}, %c128{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<128x128xbf16>)
   
+  // NPUTILED-LABEL: func4
+  // NPUTILED: air.channel.put  @channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c32{{.*}}, %c32{{.*}}] [%c4096{{.*}}, %c32{{.*}}, %c128{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<128x128xbf16>)
+  // NPUTILED-NEXT: air.channel.put  @channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c64{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c32{{.*}}, %c32{{.*}}] [%c4096{{.*}}, %c32{{.*}}, %c128{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<128x128xbf16>)
+  // NPUTILED-NEXT: air.channel.put  @channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c64{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c32{{.*}}, %c32{{.*}}] [%c4096{{.*}}, %c32{{.*}}, %c128{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<128x128xbf16>)
+  // NPUTILED-NEXT: air.channel.put  @channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c2{{.*}}, %c2{{.*}}, %c32{{.*}}, %c32{{.*}}] [%c4096{{.*}}, %c32{{.*}}, %c128{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<128x128xbf16>)
+
   // AIE1-LABEL: func4
   // AIE1-COUNT-2: scf.for
   // AIE1: air.channel.put
