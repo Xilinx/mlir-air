@@ -5507,15 +5507,22 @@ public:
       return;
     }
 
+    // AIE1 architecture doesn't support multi-dimensional dma bds. Tiling shim
+    // dma for AIE1 does not optimize the schedule.
+    if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
+      // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
+      // specialization patterns.
+      air::applyAIRSpecializeChannelWrapAndStridePattern(
+          &func.getRegion(),
+          /*maxNumDims*/ 1, /*maxSize*/ -1,
+          /*enableForLoopUnrolling*/ false);
+      return;
+    }
+
     // Convert air.launch to scf.parallel.
     RewritePatternSet patterns(ctx);
     patterns.insert<AIRLaunchToScfForPattern>(ctx);
     (void)applyPatternsGreedily(func, std::move(patterns));
-
-    // AIE1 architecture doesn't support multi-dimensional dma bds. Tiling shim
-    // dma for AIE1 does not optimize the schedule.
-    if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)))
-      return;
 
     // Tile all shim dma scf.parallel loops into smaller and repeating tiles.
     SmallVector<scf::ForOp> shimFors;
@@ -5536,6 +5543,8 @@ public:
     }
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
     for (auto forOp : shimFors) {
+      if (optTileSizes.empty())
+        break;
       auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(optTileSizes));
 
       // Fixup loop-carried deps in tiled loops
@@ -5621,7 +5630,6 @@ public:
       if (air::isAsyncOp(launch))
         funcAndLaunchBlocks.push_back(&launch.getRegion().front());
     });
-
     for (auto blk : funcAndLaunchBlocks) {
       {
         OpBuilder::InsertionGuard guard(rewriter);
