@@ -33,6 +33,7 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
@@ -128,14 +129,6 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     air::SegmentOp segment = cast<air::SegmentOp>(op);
-    if (auto attr =
-            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      auto segment_name = attr.getValue().str();
-      rewriter.setInsertionPointToStart(op->getBlock());
-      rewriter.create<airrt::SegmentLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                            segment_name);
-    }
 
     SmallVector<Value> lbs, ubs, steps;
     auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
@@ -230,14 +223,6 @@ public:
       emitError(op->getLoc(),
                 "error lowering air.herd: herd name is undefined.\n");
       return failure();
-    }
-
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(op->getBlock());
-      rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                         herd_name_attr.getValue().str(),
-                                         /* operands */ SmallVector<Value>());
     }
 
     SmallVector<Value, 4> deps;
@@ -481,38 +466,41 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     opers.push_back(zero);
   }
 
-  scf::ParallelOp launch = thisOp->getParentOfType<scf::ParallelOp>();
-  if (!launch) {
-    if (auto for_op = thisOp->getParentOfType<scf::ForOp>()) {
-      // Broadcast channel control loop
-      if (!theOtherOp->hasAttr("tile")) {
-        theOtherOp->emitOpError(
-            "missing 'tile' attribute as compile-time flag.");
-        return failure();
-      }
-      ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
-      auto tile_dict = llvm::cast<DictionaryAttr>(tiles[0]);
-      auto row = llvm::cast<IntegerAttr>(tile_dict.get("row")).getInt();
-      auto col = llvm::cast<IntegerAttr>(tile_dict.get("col")).getInt();
-      opers.push_back(builder.create<arith::ConstantOp>(
-          loc, i64Ty, IntegerAttr::get(i64Ty, col)));
-      opers.push_back(builder.create<arith::ConstantOp>(
-          loc, i64Ty, IntegerAttr::get(i64Ty, row)));
-    } else {
-      opers.push_back(zero);
-      opers.push_back(zero);
-    }
-  } else {
-    opers.push_back(builder.create<arith::IndexCastOp>(
-        loc, IntegerType::get(ctx, 64), launch.getInductionVars()[0]));
-    if (launch.getNumLoops() == 2)
-      opers.push_back(builder.create<arith::IndexCastOp>(
-          loc, IntegerType::get(ctx, 64), launch.getInductionVars()[1]));
-    else if (launch.getNumLoops() == 1)
-      opers.push_back(zero);
-    else
-      opers.push_back(zero);
-  }
+  // scf::ParallelOp launch = thisOp->getParentOfType<scf::ParallelOp>();
+  // if (!launch) {
+  //   if (auto for_op = thisOp->getParentOfType<scf::ForOp>()) {
+  //     // Broadcast channel control loop
+  //     if (!theOtherOp->hasAttr("tile")) {
+  //       theOtherOp->emitOpError(
+  //           "missing 'tile' attribute as compile-time flag.");
+  //       return failure();
+  //     }
+  //     ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
+  //     auto tile_dict = llvm::cast<DictionaryAttr>(tiles[0]);
+  //     auto row = llvm::cast<IntegerAttr>(tile_dict.get("row")).getInt();
+  //     auto col = llvm::cast<IntegerAttr>(tile_dict.get("col")).getInt();
+  //     opers.push_back(builder.create<arith::ConstantOp>(
+  //         loc, i64Ty, IntegerAttr::get(i64Ty, col)));
+  //     opers.push_back(builder.create<arith::ConstantOp>(
+  //         loc, i64Ty, IntegerAttr::get(i64Ty, row)));
+  //   } else {
+  //     opers.push_back(zero);
+  //     opers.push_back(zero);
+  //   }
+  // } else {
+  //   opers.push_back(builder.create<arith::IndexCastOp>(
+  //       loc, IntegerType::get(ctx, 64), launch.getInductionVars()[0]));
+  //   if (launch.getNumLoops() == 2)
+  //     opers.push_back(builder.create<arith::IndexCastOp>(
+  //         loc, IntegerType::get(ctx, 64), launch.getInductionVars()[1]));
+  //   else if (launch.getNumLoops() == 1)
+  //     opers.push_back(zero);
+  //   else
+  //     opers.push_back(zero);
+  // }
+
+  opers.push_back(zero);
+  opers.push_back(zero);
 
   opers.push_back(thisOp.getMemref());
 
@@ -715,31 +703,30 @@ LogicalResult lowerAirExecute(Operation *op) {
   return success();
 }
 
-LogicalResult generateBlockingWaitAllForLaunch(Operation *op) {
+template <typename hierTy, typename loadTy>
+LogicalResult generateLoadForHierarchy(Operation *op) {
   ModuleOp module = dyn_cast<ModuleOp>(op);
   if (!module)
     return failure();
 
-  llvm::SmallSet<Operation *, 8> erased;
-  llvm::SetVector<Value> danglingTokens;
-  module->walk([&](air::LaunchOp launch) {
-    auto &block = launch.getBody().front();
-    for (auto &o : block.getOperations()) {
-      if (!air::isAsyncOp(&o))
-        continue;
-      if (!o.use_empty())
-        continue;
-      auto tok = air::getAsyncTokenFromOp(&o);
-      danglingTokens.insert(tok);
+  module->walk([&](hierTy hier) {
+    if (auto attr = hier->template getAttrOfType<StringAttr>(
+            SymbolTable::getSymbolAttrName())) {
+      OpBuilder b(hier);
+      auto hierarchy_name = attr.getValue().str();
+      if (auto launch = hier->template getParentOfType<air::LaunchOp>())
+        b.setInsertionPointToStart(&launch.getBody().front());
+      else
+        b.setInsertionPointToStart(hier->getBlock());
+      if constexpr (std::is_same<loadTy, airrt::SegmentLoadOp>::value)
+        b.create<airrt::SegmentLoadOp>(hier->getLoc(), b.getI64Type(),
+                                       hierarchy_name);
+
+      else if constexpr (std::is_same<loadTy, airrt::HerdLoadOp>::value)
+        b.create<airrt::HerdLoadOp>(hier->getLoc(), b.getI64Type(),
+                                    hierarchy_name,
+                                    /* operands */ SmallVector<Value>());
     }
-    Operation *terminator = block.getTerminator();
-    if (!terminator || terminator == &block.front()) {
-      return; // No operation before terminator
-    }
-    OpBuilder builder(terminator);
-    builder.create<air::WaitAllOp>(terminator->getLoc(),
-                                   /*mlir::Type*/ std::nullopt,
-                                   danglingTokens.takeVector());
   });
   return success();
 }
@@ -1027,10 +1014,16 @@ public:
       signalPassFailure();
     }
 
-    // Generate blocking air.wait_all at the end of the launch body
-    if (failed(generateBlockingWaitAllForLaunch(module))) {
+    // Generate airrt load op as handle for reloading binaries
+    if (failed(
+            generateLoadForHierarchy<air::HerdOp, airrt::HerdLoadOp>(module))) {
+      emitError(UnknownLoc::get(context), "error generating airrt.herd_load\n");
+      signalPassFailure();
+    }
+    if (failed(generateLoadForHierarchy<air::SegmentOp, airrt::SegmentLoadOp>(
+            module))) {
       emitError(UnknownLoc::get(context),
-                "error generating blocking air.launch\n");
+                "error generating airrt.segment_load\n");
       signalPassFailure();
     }
 
@@ -1147,45 +1140,6 @@ public:
   }
 
 private:
-  // Util function getting child scf.for from scf loop. Note: at the moment only
-  // getting the first child for loop.
-  scf::ForOp getChildSCFForFromSCFLoop(Operation *loop) const {
-    if (!loop)
-      return scf::ForOp();
-    if (auto par_loop = dyn_cast<scf::ParallelOp>(loop)) {
-      for (auto child_for : par_loop.getBody()->getOps<scf::ForOp>()) {
-        return child_for;
-      }
-    } else if (auto for_loop = dyn_cast<scf::ForOp>(loop)) {
-      for (auto child_for : for_loop.getBody()->getOps<scf::ForOp>()) {
-        return child_for;
-      }
-    } else if (auto afor_loop = dyn_cast<affine::AffineForOp>(loop)) {
-      for (auto child_for : afor_loop.getBody()->getOps<scf::ForOp>()) {
-        return child_for;
-      }
-    }
-    return scf::ForOp();
-  }
-
-  // Util function getting child airrt.memcpy from scf loop. Note: at the moment
-  // only getting the first child memcpy op.
-  airrt::DmaMemcpyNdOp getChildDmaMemcpyFromSCFLoop(Operation *loop) const {
-    if (!loop)
-      return airrt::DmaMemcpyNdOp();
-    if (auto par_loop = dyn_cast<scf::ParallelOp>(loop)) {
-      for (auto child : par_loop.getBody()->getOps<airrt::DmaMemcpyNdOp>()) {
-        return child;
-      }
-    }
-    if (auto for_loop = dyn_cast<scf::ForOp>(loop)) {
-      for (auto child : for_loop.getBody()->getOps<airrt::DmaMemcpyNdOp>()) {
-        return child;
-      }
-    }
-    return airrt::DmaMemcpyNdOp();
-  }
-
   // Remap memcpy
   Operation *remapOpAndOperands(OpBuilder builder, Operation *op,
                                 IRMapping &remap) const {
@@ -1206,25 +1160,6 @@ private:
       }
     }
     return builder.clone(*op, remap);
-  }
-
-  // Remap for loop's region
-  void remapLoopRegion(OpBuilder builder, scf::ForOp src_for,
-                       scf::ForOp dst_for, IRMapping &remap) const {
-    remap.map(src_for.getInductionVar(), dst_for.getInductionVar());
-    for (unsigned i = 0; i < src_for.getRegionIterArgs().size(); i++) {
-      remap.map(src_for.getRegionIterArgs()[i], dst_for.getRegionIterArgs()[i]);
-    }
-    if (dst_for.getBody()->empty())
-      builder.setInsertionPointToStart(dst_for.getBody());
-    else if (dst_for.getBody()->getTerminator())
-      builder.setInsertionPoint(dst_for.getBody()->getTerminator());
-    else
-      builder.setInsertionPointToEnd(dst_for.getBody());
-    for (auto &op : src_for.getBody()->getOperations()) {
-      if (!isa<scf::YieldOp>(op))
-        remapOpAndOperands(builder, &op, remap);
-    }
   }
 
   // Remap loop nests
@@ -1289,15 +1224,6 @@ private:
   Operation *getInnerMostMemcpyFromLoopNest(scf::ParallelOp op) const {
     Operation *output = nullptr;
     op.walk([&](airrt::DmaMemcpyNdOp o) { output = o; });
-    return output;
-  }
-
-  SmallVector<Value, 1> lookupOrDefaultRange(SmallVector<Value, 1> vec,
-                                             IRMapping &remap) const {
-    SmallVector<Value, 1> output;
-    for (auto v : vec) {
-      output.push_back(remap.lookupOrDefault(v));
-    }
     return output;
   }
 

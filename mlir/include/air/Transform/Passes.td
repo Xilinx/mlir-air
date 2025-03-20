@@ -1059,6 +1059,11 @@ def AIROptimizeShimDMABDs: Pass<"air-opt-shim-dma-bds", "func::FuncOp"> {
     Option<"clDevice", "device", "std::string",
           /*default=*/"\"xcvc1902\"",
            "AIE device to target.">,
+    ListOption<"clTileSizes", "shim-dma-tile-sizes", "unsigned",
+               "Shim dma tiling sizes, tiling shim dma bds into smaller repeating ones",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clLoopUnrollDepth", "shim-dma-unroll-depth", "unsigned", /*default=*/"0",
+           "Depth of the perfectly nested shim dma control for loop to unroll until">,
   ];
 }
 
