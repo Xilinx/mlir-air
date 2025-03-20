@@ -5341,9 +5341,147 @@ private:
   }
 };
 
+// Air launch is converted to scf parallel here, so as to enable compile-time
+// shim dma bd optimizations.
+struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
+  using OpRewritePattern<air::LaunchOp>::OpRewritePattern;
+
+  AIRLaunchToScfForPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::LaunchOp launch,
+                                PatternRewriter &rewriter) const override {
+    if (launch.getSizeOperands().empty())
+      return failure();
+    auto loc = launch->getLoc();
+    auto context = rewriter.getContext();
+
+    // Create a dummy single-iteration air launch op in place of the original
+    // launch, to preserve the original launch's region which represents the
+    // lifetime of all hardware inside it.
+    auto dummyLaunch = rewriter.create<air::LaunchOp>(
+        loc, /*async_dependencies*/ SmallVector<Value>(),
+        /*sizes*/ SmallVector<Value>(), launch.getKernelOperands(),
+        /*is_async*/ true);
+    dummyLaunch->setAttrs(launch->getDiscardableAttrDictionary());
+    rewriter.setInsertionPointToStart(&dummyLaunch.getBody().front());
+
+    SmallVector<Value> lbs, ubs, steps;
+    auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+    // make scf.parallel to replace air.launch
+    for (auto d : launch.getSizeOperands()) {
+      lbs.push_back(c0);
+      auto const_d = getConstantIntValue(d);
+      ubs.push_back(rewriter.create<arith::ConstantIndexOp>(loc, *const_d));
+      steps.push_back(c1);
+    }
+    if (lbs.empty()) {
+      lbs.push_back(c0);
+      ubs.push_back(c1);
+      steps.push_back(c1);
+    }
+
+    SmallVector<Value> ivs;
+    Block *body = nullptr;
+
+    // Serialize launch into scf.for.
+    SmallVector<Value> iterArgs;
+    if (air::isAsyncOp(launch)) {
+      auto waitAll = rewriter.create<air::WaitAllOp>(
+          loc, air::AsyncTokenType::get(context), SmallVector<Value>{});
+      iterArgs.push_back(waitAll.getAsyncToken());
+    }
+    for (unsigned i = 0; i < lbs.size(); i++) {
+      auto scfFor =
+          rewriter.create<scf::ForOp>(loc, lbs[i], ubs[i], steps[i], iterArgs);
+      if (i != 0 && scfFor->getNumResults())
+        rewriter.create<scf::YieldOp>(loc, scfFor->getResults());
+      iterArgs.clear();
+      for (auto v : scfFor.getRegionIterArgs())
+        iterArgs.push_back(v);
+      body = scfFor.getBody();
+      ivs.push_back(scfFor.getInductionVar());
+      rewriter.setInsertionPointToStart(scfFor.getBody());
+    }
+
+    IRMapping remap;
+
+    // map launch iteration space to scf.for loop nest's ivs
+    for (auto p : llvm::zip(launch.getIds(), ivs))
+      remap.map(std::get<0>(p), std::get<1>(p));
+
+    // map launch size to scf.for loop nest's upper bounds
+    for (auto p : llvm::zip(launch.getSizeOperands(), ubs))
+      remap.map(std::get<0>(p), std::get<1>(p));
+
+    // remap isolated from above launch arguments
+    for (unsigned i = 0; i < launch.getNumKernelOperands(); i++)
+      remap.map(launch.getKernelArgument(i), dummyLaunch.getKernelArgument(i));
+
+    // clone the body
+    rewriter.setInsertionPointToStart(body);
+    auto &launchOps = launch.getBody().front().getOperations();
+    for (auto bi = launchOps.begin(), be = --launchOps.end(); bi != be; ++bi)
+      rewriter.clone(*bi, remap);
+
+    // Generate a wait_all at the end of block, which gathers all dangling async
+    // tokens.
+    auto generateWaitAllToTerminateBlock = [](Block &block, OpBuilder &b,
+                                              bool isBlocking = true) {
+      llvm::SetVector<Value> blockTokens, danglingTokens;
+      blockTokens.insert(block.getArguments().begin(),
+                         block.getArguments().end());
+      for (auto &o : block.getOperations())
+        blockTokens.insert(o.getResults().begin(), o.getResults().end());
+      for (auto t : blockTokens) {
+        if (!t.use_empty())
+          continue;
+        if (!isa<air::AsyncTokenType>(t.getType()))
+          continue;
+        danglingTokens.insert(t);
+      }
+      if (block.mightHaveTerminator())
+        b.setInsertionPoint(block.getTerminator());
+      else
+        b.setInsertionPointToEnd(&block);
+      if (isBlocking)
+        return b.create<air::WaitAllOp>(b.getUnknownLoc(),
+                                        /*result_type*/ std::nullopt,
+                                        danglingTokens.takeVector());
+      else
+        return b.create<air::WaitAllOp>(
+            b.getUnknownLoc(), air::AsyncTokenType::get(b.getContext()),
+            danglingTokens.takeVector());
+    };
+    // Create scf.reduce synchronizing the end of scf.parallel threads.
+    if (air::isAsyncOp(launch)) {
+      air::WaitAllOp wa = air::WaitAllOp();
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        wa = generateWaitAllToTerminateBlock(*body, rewriter,
+                                             /*isBlocking*/ false);
+        rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(),
+                                      wa.getAsyncToken());
+      }
+    }
+
+    // replace output events with air.wait_all
+    if (air::isAsyncOp(launch)) {
+      rewriter.setInsertionPoint(launch);
+      rewriter.replaceOpWithNewOp<air::WaitAllOp>(
+          launch, air::AsyncTokenType::get(context),
+          air::getAsyncDependenciesFromOp(launch));
+    } else
+      rewriter.eraseOp(launch);
+
+    return success();
+  }
+};
+
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient shim dma block
-// descriptors (BD). TODO: generalize this to cover memtile BDs, too.
+// descriptors (BD).
 class AIROptimizeShimDMABDs
     : public xilinx::air::impl::AIROptimizeShimDMABDsBase<
           AIROptimizeShimDMABDs> {
@@ -5361,12 +5499,160 @@ public:
 
   void runOnOperation() override {
     auto func = getOperation();
+    auto ctx = &getContext();
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
       func.emitOpError("Invalid aie.device option");
       signalPassFailure();
       return;
     }
+
+    // AIE1 architecture doesn't support multi-dimensional dma bds. Tiling shim
+    // dma for AIE1 does not optimize the schedule.
+    if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
+      // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
+      // specialization patterns.
+      air::applyAIRSpecializeChannelWrapAndStridePattern(
+          &func.getRegion(),
+          /*maxNumDims*/ 1, /*maxSize*/ -1,
+          /*enableForLoopUnrolling*/ false);
+      return;
+    }
+
+    // Convert air.launch to scf.parallel.
+    RewritePatternSet patterns(ctx);
+    patterns.insert<AIRLaunchToScfForPattern>(ctx);
+    (void)applyPatternsGreedily(func, std::move(patterns));
+
+    // Tile all shim dma scf.parallel loops into smaller and repeating tiles.
+    SmallVector<scf::ForOp> shimFors;
+    func.walk([&shimFors](scf::ForOp forOp) {
+      // Get for loop band outside of any segment or herd region.
+      if (isa<air::LaunchOp, func::FuncOp>(forOp->getParentOp())) {
+        shimFors.push_back(forOp);
+      }
+    });
+    if (shimFors.empty())
+      return;
+    // Helper function converting a vector of unsigned int to a vector of Value.
+    auto convertVecOfIntToVecOfValue = [](OpBuilder &b,
+                                          SmallVector<unsigned> clTileSizes) {
+      OpBuilder::InsertionGuard guard(b);
+      SmallVector<Value> optTileSizes;
+      for (unsigned i = 0; i < clTileSizes.size(); ++i) {
+        optTileSizes.push_back(b.create<arith::ConstantIndexOp>(
+            b.getUnknownLoc(), clTileSizes[i]));
+      }
+      return optTileSizes;
+    };
+    IRRewriter rewriter(ctx);
+    rewriter.setInsertionPoint(shimFors.front());
+    SmallVector<Value> optTileSizes = convertVecOfIntToVecOfValue(
+        rewriter,
+        SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
+    // Helper function getting the actual tiling sizes based on the specified
+    // loop band's depth and trip counts.
+    auto getActualTileSizesPerScfRoot = [](OpBuilder &b, scf::ForOp root,
+                                           SmallVector<Value> optTileSizes) {
+      OpBuilder::InsertionGuard guard(b);
+      SmallVector<scf::ForOp> perfectlyNestedLoops;
+      getPerfectlyNestedLoops(perfectlyNestedLoops, root);
+      SmallVector<Value> actualTileSizes;
+      for (size_t i = 0;
+           i < std::min(perfectlyNestedLoops.size(), optTileSizes.size());
+           i++) {
+        if (*getConstantIntValue(optTileSizes[i]) >
+            *air::getStaticScfForTripCountAsInt(perfectlyNestedLoops[i]))
+          actualTileSizes.push_back(b.create<arith::ConstantIndexOp>(
+              b.getUnknownLoc(),
+              *air::getStaticScfForTripCountAsInt(perfectlyNestedLoops[i])));
+        else
+          actualTileSizes.push_back(optTileSizes[i]);
+      }
+      return actualTileSizes;
+    };
+    // Tile each for loop band operated by shim dma bds.
+    llvm::SetVector<scf::ForOp> forLoopsToUnroll;
+    for (auto forOp : shimFors) {
+      if (optTileSizes.empty())
+        break;
+      SmallVector<Value> actualTileSizes =
+          getActualTileSizesPerScfRoot(rewriter, forOp, optTileSizes);
+      auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(actualTileSizes));
+
+      // Fixup loop-carried deps in tiled loops
+      if (forOp->getNumResults()) {
+        // Forward traversing through tiledLoops, to update iter args.
+        for (size_t i = 0; i < tiledLoops.size(); i++) {
+          scf::ForOp parentFor = tiledLoops[i]->getParentOfType<scf::ForOp>();
+          auto replaceRes = tiledLoops[i].replaceWithAdditionalIterOperands(
+              rewriter, parentFor.getRegionIterArgs(), true);
+          if (failed(replaceRes)) {
+            tiledLoops[i]->emitOpError("adding iter operands failed.");
+            signalPassFailure();
+          }
+          tiledLoops[i] = dyn_cast<scf::ForOp>(replaceRes->getOperation());
+        }
+        // Backward traversing through tiledLoops, to update yields.
+        for (auto tiledLoop : llvm::reverse(tiledLoops)) {
+          auto loopTerm = tiledLoop.getBody()->getTerminator();
+          rewriter.setInsertionPoint(loopTerm);
+          rewriter.replaceOpWithNewOp<scf::YieldOp>(
+              loopTerm, loopTerm->getPrevNode()->getResult(0));
+        }
+        // Fixup the yield connecting the innermost outer-loops to the outermost
+        // inner-loops.
+        rewriter.setInsertionPointAfter(tiledLoops.front());
+        rewriter.replaceOpWithNewOp<scf::YieldOp>(
+            tiledLoops.front()->getNextNode(),
+            tiledLoops.front()->getResult(0));
+      }
+
+      // Unroll for loop nest from root down until shim-dma-unroll-depth.
+      auto forLoopNest = tiledLoops;
+      scf::ForOp newForLoopBand = tiledLoops.front();
+      while (auto parent = dyn_cast_if_present<scf::ForOp>(
+                 newForLoopBand->getParentOp())) {
+        forLoopNest.insert(forLoopNest.begin(), parent);
+        newForLoopBand = parent;
+      }
+      // Perform unrolling on the remainder loop nests after tiling, inner loop
+      // first.
+      for (int i = actualTileSizes.size() - 1; i >= 0; i--) {
+        forLoopsToUnroll.insert(forLoopNest[i]);
+      }
+    }
+
+    auto applyCanonicalizationPatterns = [](MLIRContext *ctx, Region &region) {
+      RewritePatternSet affineArithCanoPatterns(ctx);
+      mlir::affine::AffineApplyOp::getCanonicalizationPatterns(
+          affineArithCanoPatterns, ctx);
+      mlir::affine::AffineMinOp::getCanonicalizationPatterns(
+          affineArithCanoPatterns, ctx);
+      mlir::affine::AffineMaxOp::getCanonicalizationPatterns(
+          affineArithCanoPatterns, ctx);
+      mlir::arith::AddIOp::getCanonicalizationPatterns(affineArithCanoPatterns,
+                                                       ctx);
+      mlir::arith::MulIOp::getCanonicalizationPatterns(affineArithCanoPatterns,
+                                                       ctx);
+      (void)applyPatternsGreedily(region, std::move(affineArithCanoPatterns));
+      return;
+    };
+    // Canonicalize IR to make loop bounds explicitly static.
+    applyCanonicalizationPatterns(ctx, func.getBody());
+
+    // Unroll outer scf.for loop nest.
+    for (auto scfFor : forLoopsToUnroll) {
+      auto unroll_factor = air::getStaticScfForTripCountAsInt(scfFor);
+      if (!unroll_factor) {
+        scfFor->emitOpError("dynamic loop bound.");
+        signalPassFailure();
+      }
+      (void)loopUnrollByFactor(scfFor, *unroll_factor);
+    }
+    // Canonicalize IR to make loop bounds explicitly static.
+    applyCanonicalizationPatterns(ctx, func.getBody());
+
     int maxNumDims =
         isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? 1 : 4;
     int maxSize =
@@ -5377,7 +5663,31 @@ public:
     air::applyAIRSpecializeChannelWrapAndStridePattern(
         &func.getRegion(),
         /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
-        /*enableForLoopUnrolling*/ false);
+        /*enableForLoopUnrolling*/ true);
+
+    // Gather dangling tokens from block, and generate a blocking wait all.
+    SmallVector<Block *> funcAndLaunchBlocks(1, &func.getBody().front());
+    func.walk([&funcAndLaunchBlocks](air::LaunchOp launch) {
+      if (air::isAsyncOp(launch))
+        funcAndLaunchBlocks.push_back(&launch.getRegion().front());
+    });
+    for (auto blk : funcAndLaunchBlocks) {
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        SmallVector<Value> chanTokens;
+        for (auto chan : blk->getOps<air::ChannelInterface>())
+          if (air::isAsyncOp(chan))
+            chanTokens.push_back(air::getAsyncTokenFromOp(chan));
+
+        if (blk->mightHaveTerminator())
+          rewriter.setInsertionPoint(blk->getTerminator());
+        else
+          rewriter.setInsertionPointToEnd(blk);
+        rewriter.create<air::WaitAllOp>(rewriter.getUnknownLoc(),
+                                        /*result_type*/ std::nullopt,
+                                        chanTokens);
+      }
+    }
   }
 
 private:
