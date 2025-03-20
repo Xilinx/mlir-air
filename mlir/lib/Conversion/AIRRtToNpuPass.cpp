@@ -373,7 +373,9 @@ public:
 
   LogicalResult matchAndRewrite(airrt::WaitAllOp op,
                                 PatternRewriter &rewriter) const override {
-    if (op->getNumResults() != 0)
+    if (llvm::none_of(op->getOperands(), [](Value oper) {
+          return (bool)oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
+        }))
       return failure();
     for (auto oper : op->getOperands()) {
       auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
