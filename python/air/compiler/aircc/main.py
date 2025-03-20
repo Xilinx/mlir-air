@@ -511,9 +511,7 @@ def run(mlir_module, args=None):
                 if opts.runtime_loop_tiling_sizes
                 else ""
             )
-            air_opt_shim_dma_bds_pass = (
-                air_opt_shim_dma_bds_pass + " shim-dma-unroll-depth=2})"
-            )
+            air_opt_shim_dma_bds_pass = air_opt_shim_dma_bds_pass + "})"
 
             airrt_to_npu_pass = "airrt-to-npu{"
             airrt_to_npu_pass = airrt_to_npu_pass + f" trace-size={opts.trace_size}"

@@ -5534,18 +5534,51 @@ public:
     });
     if (shimFors.empty())
       return;
-    SmallVector<Value> optTileSizes;
+    // Helper function converting a vector of unsigned int to a vector of Value.
+    auto convertVecOfIntToVecOfValue = [](OpBuilder &b,
+                                          SmallVector<unsigned> clTileSizes) {
+      OpBuilder::InsertionGuard guard(b);
+      SmallVector<Value> optTileSizes;
+      for (unsigned i = 0; i < clTileSizes.size(); ++i) {
+        optTileSizes.push_back(b.create<arith::ConstantIndexOp>(
+            b.getUnknownLoc(), clTileSizes[i]));
+      }
+      return optTileSizes;
+    };
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(shimFors.front());
-    for (unsigned i = 0; i < clTileSizes.size(); ++i) {
-      optTileSizes.push_back(rewriter.create<arith::ConstantIndexOp>(
-          rewriter.getUnknownLoc(), clTileSizes[i]));
-    }
+    SmallVector<Value> optTileSizes = convertVecOfIntToVecOfValue(
+        rewriter,
+        SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
+    // Helper function getting the actual tiling sizes based on the specified
+    // loop band's depth and trip counts.
+    auto getActualTileSizesPerScfRoot = [](OpBuilder &b, scf::ForOp root,
+                                           SmallVector<Value> optTileSizes) {
+      OpBuilder::InsertionGuard guard(b);
+      SmallVector<scf::ForOp> perfectlyNestedLoops;
+      getPerfectlyNestedLoops(perfectlyNestedLoops, root);
+      SmallVector<Value> actualTileSizes;
+      for (size_t i = 0;
+           i < std::min(perfectlyNestedLoops.size(), optTileSizes.size());
+           i++) {
+        if (*getConstantIntValue(optTileSizes[i]) >
+            *air::getStaticScfForTripCountAsInt(perfectlyNestedLoops[i]))
+          actualTileSizes.push_back(b.create<arith::ConstantIndexOp>(
+              b.getUnknownLoc(),
+              *air::getStaticScfForTripCountAsInt(perfectlyNestedLoops[i])));
+        else
+          actualTileSizes.push_back(optTileSizes[i]);
+      }
+      return actualTileSizes;
+    };
+    // Tile each for loop band operated by shim dma bds.
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
     for (auto forOp : shimFors) {
       if (optTileSizes.empty())
         break;
-      auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(optTileSizes));
+      SmallVector<Value> actualTileSizes =
+          getActualTileSizesPerScfRoot(rewriter, forOp, optTileSizes);
+      auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(actualTileSizes));
 
       // Fixup loop-carried deps in tiled loops
       if (forOp->getNumResults()) {
@@ -5583,24 +5616,30 @@ public:
         forLoopNest.insert(forLoopNest.begin(), parent);
         newForLoopBand = parent;
       }
-      forLoopsToUnroll.insert(forLoopNest.begin(),
-                              forLoopNest.begin() + clLoopUnrollDepth);
+      // Perform unrolling on the remainder loop nests after tiling, inner loop
+      // first.
+      for (int i = actualTileSizes.size() - 1; i >= 0; i--) {
+        forLoopsToUnroll.insert(forLoopNest[i]);
+      }
     }
 
-    // Arith and affine op canonicalization, to make static loop bounds
-    // explicit.
-    RewritePatternSet affineArithCanoPatterns(ctx);
-    mlir::affine::AffineApplyOp::getCanonicalizationPatterns(
-        affineArithCanoPatterns, ctx);
-    mlir::affine::AffineMinOp::getCanonicalizationPatterns(
-        affineArithCanoPatterns, ctx);
-    mlir::affine::AffineMaxOp::getCanonicalizationPatterns(
-        affineArithCanoPatterns, ctx);
-    mlir::arith::AddIOp::getCanonicalizationPatterns(affineArithCanoPatterns,
-                                                     ctx);
-    mlir::arith::MulIOp::getCanonicalizationPatterns(affineArithCanoPatterns,
-                                                     ctx);
-    (void)applyPatternsGreedily(func, std::move(affineArithCanoPatterns));
+    auto applyCanonicalizationPatterns = [](MLIRContext *ctx, Region &region) {
+      RewritePatternSet affineArithCanoPatterns(ctx);
+      mlir::affine::AffineApplyOp::getCanonicalizationPatterns(
+          affineArithCanoPatterns, ctx);
+      mlir::affine::AffineMinOp::getCanonicalizationPatterns(
+          affineArithCanoPatterns, ctx);
+      mlir::affine::AffineMaxOp::getCanonicalizationPatterns(
+          affineArithCanoPatterns, ctx);
+      mlir::arith::AddIOp::getCanonicalizationPatterns(affineArithCanoPatterns,
+                                                       ctx);
+      mlir::arith::MulIOp::getCanonicalizationPatterns(affineArithCanoPatterns,
+                                                       ctx);
+      (void)applyPatternsGreedily(region, std::move(affineArithCanoPatterns));
+      return;
+    };
+    // Canonicalize IR to make loop bounds explicitly static.
+    applyCanonicalizationPatterns(ctx, func.getBody());
 
     // Unroll outer scf.for loop nest.
     for (auto scfFor : forLoopsToUnroll) {
@@ -5611,6 +5650,8 @@ public:
       }
       (void)loopUnrollByFactor(scfFor, *unroll_factor);
     }
+    // Canonicalize IR to make loop bounds explicitly static.
+    applyCanonicalizationPatterns(ctx, func.getBody());
 
     int maxNumDims =
         isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? 1 : 4;
