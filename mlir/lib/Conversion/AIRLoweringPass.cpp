@@ -466,41 +466,38 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     opers.push_back(zero);
   }
 
-  // scf::ParallelOp launch = thisOp->getParentOfType<scf::ParallelOp>();
-  // if (!launch) {
-  //   if (auto for_op = thisOp->getParentOfType<scf::ForOp>()) {
-  //     // Broadcast channel control loop
-  //     if (!theOtherOp->hasAttr("tile")) {
-  //       theOtherOp->emitOpError(
-  //           "missing 'tile' attribute as compile-time flag.");
-  //       return failure();
-  //     }
-  //     ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
-  //     auto tile_dict = llvm::cast<DictionaryAttr>(tiles[0]);
-  //     auto row = llvm::cast<IntegerAttr>(tile_dict.get("row")).getInt();
-  //     auto col = llvm::cast<IntegerAttr>(tile_dict.get("col")).getInt();
-  //     opers.push_back(builder.create<arith::ConstantOp>(
-  //         loc, i64Ty, IntegerAttr::get(i64Ty, col)));
-  //     opers.push_back(builder.create<arith::ConstantOp>(
-  //         loc, i64Ty, IntegerAttr::get(i64Ty, row)));
-  //   } else {
-  //     opers.push_back(zero);
-  //     opers.push_back(zero);
-  //   }
-  // } else {
-  //   opers.push_back(builder.create<arith::IndexCastOp>(
-  //       loc, IntegerType::get(ctx, 64), launch.getInductionVars()[0]));
-  //   if (launch.getNumLoops() == 2)
-  //     opers.push_back(builder.create<arith::IndexCastOp>(
-  //         loc, IntegerType::get(ctx, 64), launch.getInductionVars()[1]));
-  //   else if (launch.getNumLoops() == 1)
-  //     opers.push_back(zero);
-  //   else
-  //     opers.push_back(zero);
-  // }
-
-  opers.push_back(zero);
-  opers.push_back(zero);
+  scf::ParallelOp launch = thisOp->getParentOfType<scf::ParallelOp>();
+  if (!launch) {
+    if (auto for_op = thisOp->getParentOfType<scf::ForOp>()) {
+      // Broadcast channel control loop
+      if (!theOtherOp->hasAttr("tile")) {
+        theOtherOp->emitOpError(
+            "missing 'tile' attribute as compile-time flag.");
+        return failure();
+      }
+      ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
+      auto tile_dict = llvm::cast<DictionaryAttr>(tiles[0]);
+      auto row = llvm::cast<IntegerAttr>(tile_dict.get("row")).getInt();
+      auto col = llvm::cast<IntegerAttr>(tile_dict.get("col")).getInt();
+      opers.push_back(builder.create<arith::ConstantOp>(
+          loc, i64Ty, IntegerAttr::get(i64Ty, col)));
+      opers.push_back(builder.create<arith::ConstantOp>(
+          loc, i64Ty, IntegerAttr::get(i64Ty, row)));
+    } else {
+      opers.push_back(zero);
+      opers.push_back(zero);
+    }
+  } else {
+    opers.push_back(builder.create<arith::IndexCastOp>(
+        loc, IntegerType::get(ctx, 64), launch.getInductionVars()[0]));
+    if (launch.getNumLoops() == 2)
+      opers.push_back(builder.create<arith::IndexCastOp>(
+          loc, IntegerType::get(ctx, 64), launch.getInductionVars()[1]));
+    else if (launch.getNumLoops() == 1)
+      opers.push_back(zero);
+    else
+      opers.push_back(zero);
+  }
 
   opers.push_back(thisOp.getMemref());
 
