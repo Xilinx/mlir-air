@@ -75,12 +75,12 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns);
 // Populate patterns for canonicalizing offsets, sizes and strides in air
 // channel_interface operations.
 void populateAIRCanonicalizeChannelWrapAndStridePatterns(
-    RewritePatternSet &patterns, int &maxSize);
+    RewritePatternSet &patterns, int &maxSize, bool &enableRepeatAtHighestDim);
 
 // Apply AIRSpecializeChannelWrapAndStridePattern on region.
-void applyAIRSpecializeChannelWrapAndStridePattern(Region *region,
-                                                   int maxNumDims, int maxSize,
-                                                   bool enableForLoopUnrolling);
+void applyAIRSpecializeChannelWrapAndStridePattern(
+    Region *region, int maxNumDims, int maxSize, bool enableForLoopUnrolling,
+    bool enableRepeatAtHighestDim);
 
 // Populate patterns for fusing scf.for loops within air.launch.
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns);

@@ -657,6 +657,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Enforce AIE2 hardware constraints.
     enforceAIE2WrapLimit(module);
 
+    // Simplify arith ops (from airrt)
+    RewritePatternSet canoPatterns_3(ctx);
+    arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_3, ctx);
+    (void)applyPatternsGreedily(module, std::move(canoPatterns_3));
+
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
     target.addLegalDialect<arith::ArithDialect, AIEX::AIEXDialect,
@@ -1252,7 +1257,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     blk->walk([&](Operation *op) {
       auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op);
       auto sync = dyn_cast<AIEX::NpuSyncOp>(op);
-      if (sync) {
+      auto wait = dyn_cast<AIEX::NpuDmaWaitOp>(op);
+      if (sync || wait) {
         chanToIdMap.clear();
         return;
       }

@@ -1801,8 +1801,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
   AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims,
-                                            int &maxSize)
-      : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize) {}
+                                            int &maxSize,
+                                            bool &enableRepeatAtHighestDim)
+      : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize),
+        enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
@@ -1850,6 +1852,61 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
         air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
+
+    // Whether repeat (i.e. stride = 0) is supported at highest dimension.
+    if (enableRepeatAtHighestDim) {
+      // Force bump up number of dims to maxNumDims.
+      auto zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      auto oneIdx = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      while ((int)offsets.size() < maxNumDims) {
+        offsets.insert(offsets.begin(), zeroIdx);
+      }
+      while ((int)wraps.size() < maxNumDims) {
+        wraps.insert(wraps.begin(), oneIdx);
+      }
+      while ((int)strides.size() < maxNumDims) {
+        strides.insert(strides.begin(), zeroIdx);
+      }
+      // Stride = 0 means repeat that dimension. If highest dimension (dim 0) is
+      // not used, then move the repeat dimension to dim 0, which is the only
+      // dim with repeat capability. Else, fall back to unrolling BDs.
+      unsigned activeDimsInBetween = 0;
+      for (unsigned i = 1; i < strides.size(); i++) {
+        auto constWrap = mlir::getConstantIntValue(wraps[i]);
+        auto constStride = mlir::getConstantIntValue(strides[i]);
+        if (!constWrap)
+          continue;
+        if (!constStride)
+          continue;
+        if (*constWrap <= 1)
+          continue; // Inactive dimension. Continue.
+        if (*constStride) {
+          // Found active dimension after dim 0. Any subsequent repeat dimension
+          // shall not bump to dim 0 anymore.
+          activeDimsInBetween++;
+          continue;
+        }
+        // This is a repeat dimension. Start converting offsets, wraps and
+        // strides...
+        if (mlir::getConstantIntValue(wraps[0]) &&
+            *mlir::getConstantIntValue(wraps[0]) == 1 && !activeDimsInBetween) {
+          // Dimension 0 is available. Move the repeat dimension i to dimension
+          // 0.
+          auto tmp = wraps[0];
+          wraps[0] = wraps[i];
+          wraps[i] = tmp;
+          tmp = strides[0];
+          strides[0] = strides[i];
+          strides[i] = tmp;
+          tmp = offsets[0];
+          offsets[0] = offsets[i];
+          offsets[i] = tmp;
+        } else {
+          (void)loopUnrollFull(for_op);
+          return success();
+        }
+      }
+    }
 
     air::ChannelInterface new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -1913,6 +1970,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 private:
   int &maxNumDims;
   int &maxSize;
+  bool &enableRepeatAtHighestDim;
 };
 
 // This pattern should be executed after
@@ -2112,8 +2170,10 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     : public OpRewritePattern<air::ChannelPutOp> {
   using OpRewritePattern<air::ChannelPutOp>::OpRewritePattern;
 
-  AIRCanonicalizeChannelPutOpWrapAndStrideList(MLIRContext *ctx, int &maxSize)
-      : OpRewritePattern(ctx), maxSize(maxSize) {}
+  AIRCanonicalizeChannelPutOpWrapAndStrideList(MLIRContext *ctx, int &maxSize,
+                                               bool &enableRepeatAtHighestDim)
+      : OpRewritePattern(ctx), maxSize(maxSize),
+        enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
 
   LogicalResult matchAndRewrite(air::ChannelPutOp op,
                                 PatternRewriter &rewriter) const override {
@@ -2128,6 +2188,13 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     SmallVector<Value> offsets = op.getOffsets();
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
+
+    if (enableRepeatAtHighestDim && !strides.empty() &&
+        *getConstantIntValue(strides.front()) == 0) {
+      // If repeat is enabled at the highest dimension, then the highest
+      // dimension must be preserved.
+      return failure();
+    }
 
     if (failed(canonicalizeWrapAndStrideList(
             rewriter, offsets, sizes, strides,
@@ -2148,14 +2215,17 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
 
 private:
   int &maxSize;
+  bool &enableRepeatAtHighestDim;
 };
 
 struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     : public OpRewritePattern<air::ChannelGetOp> {
   using OpRewritePattern<air::ChannelGetOp>::OpRewritePattern;
 
-  AIRCanonicalizeChannelGetOpWrapAndStrideList(MLIRContext *ctx, int &maxSize)
-      : OpRewritePattern(ctx), maxSize(maxSize) {}
+  AIRCanonicalizeChannelGetOpWrapAndStrideList(MLIRContext *ctx, int &maxSize,
+                                               bool &enableRepeatAtHighestDim)
+      : OpRewritePattern(ctx), maxSize(maxSize),
+        enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
 
   LogicalResult matchAndRewrite(air::ChannelGetOp op,
                                 PatternRewriter &rewriter) const override {
@@ -2170,6 +2240,13 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     SmallVector<Value> offsets = op.getOffsets();
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
+
+    if (enableRepeatAtHighestDim && !strides.empty() &&
+        *getConstantIntValue(strides.front()) == 0) {
+      // If repeat is enabled at the highest dimension, then the highest
+      // dimension must be preserved.
+      return failure();
+    }
 
     if (failed(canonicalizeWrapAndStrideList(
             rewriter, offsets, sizes, strides,
@@ -2190,6 +2267,7 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
 
 private:
   int &maxSize;
+  bool &enableRepeatAtHighestDim;
 };
 
 struct UnrollChannelByFactorPattern {
@@ -2973,10 +3051,9 @@ public:
 private:
 };
 
-LogicalResult
-AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
-                                      int maxSize = -1,
-                                      bool enableForLoopUnrolling = true) {
+LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
+    Region *region, int maxNumDims = -1, int maxSize = -1,
+    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
   preproc_patterns
@@ -2992,8 +3069,8 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet preproc_wns_patterns(ctx);
-  populateAIRCanonicalizeChannelWrapAndStridePatterns(preproc_wns_patterns,
-                                                      maxSize);
+  populateAIRCanonicalizeChannelWrapAndStridePatterns(
+      preproc_wns_patterns, maxSize, enableRepeatAtHighestDim);
   (void)applyPatternsGreedily(*region, std::move(preproc_wns_patterns));
 
   RewritePatternSet patterns(ctx);
@@ -3001,8 +3078,8 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
                   CanonicalizeArithMuliOpOnLoopInductionVar,
                   CanonicalizeArithAddiOpOnLoopInductionVar,
                   AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
-  patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(ctx, maxNumDims,
-                                                             maxSize);
+  patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
+      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
@@ -3017,7 +3094,8 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet cano_patterns(ctx);
-  populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, maxSize);
+  populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, maxSize,
+                                                      enableRepeatAtHighestDim);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(cano_patterns));
 
@@ -5515,7 +5593,7 @@ public:
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           &func.getRegion(),
           /*maxNumDims*/ 1, /*maxSize*/ -1,
-          /*enableForLoopUnrolling*/ false);
+          /*enableForLoopUnrolling*/ false, /*enableRepeatAtHighestDim*/ true);
       return;
     }
 
@@ -5561,13 +5639,12 @@ public:
       for (size_t i = 0;
            i < std::min(perfectlyNestedLoops.size(), optTileSizes.size());
            i++) {
-        if (*getConstantIntValue(optTileSizes[i]) >
-            *air::getStaticScfForTripCountAsInt(perfectlyNestedLoops[i]))
-          actualTileSizes.push_back(b.create<arith::ConstantIndexOp>(
-              b.getUnknownLoc(),
-              *air::getStaticScfForTripCountAsInt(perfectlyNestedLoops[i])));
-        else
-          actualTileSizes.push_back(optTileSizes[i]);
+        auto largestFactor = b.create<arith::ConstantIndexOp>(
+            b.getUnknownLoc(),
+            air::findLargestFactor(
+                *air::getStaticScfForTripCountAsInt(perfectlyNestedLoops[i]),
+                *getConstantIntValue(optTileSizes[i])));
+        actualTileSizes.push_back(largestFactor);
       }
       return actualTileSizes;
     };
@@ -5663,7 +5740,7 @@ public:
     air::applyAIRSpecializeChannelWrapAndStridePattern(
         &func.getRegion(),
         /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
-        /*enableForLoopUnrolling*/ true);
+        /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ true);
 
     // Gather dangling tokens from block, and generate a blocking wait all.
     SmallVector<Block *> funcAndLaunchBlocks(1, &func.getBody().front());
@@ -5737,7 +5814,7 @@ public:
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           &seg.getBody(),
           /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
-          /*enableForLoopUnrolling*/ true);
+          /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ false);
     }
   }
 
@@ -6248,17 +6325,19 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
 }
 
 void populateAIRCanonicalizeChannelWrapAndStridePatterns(
-    RewritePatternSet &patterns, int &maxSize) {
+    RewritePatternSet &patterns, int &maxSize, bool &enableRepeatAtHighestDim) {
   MLIRContext *ctx = patterns.getContext();
   patterns.insert<AIRCanonicalizeChannelPutOpWrapAndStrideList,
-                  AIRCanonicalizeChannelGetOpWrapAndStrideList>(ctx, maxSize);
+                  AIRCanonicalizeChannelGetOpWrapAndStrideList>(
+      ctx, maxSize, enableRepeatAtHighestDim);
 }
 
 void applyAIRSpecializeChannelWrapAndStridePattern(
     Region *region, int maxNumDims = -1, int maxSize = -1,
-    bool enableForLoopUnrolling = true) {
+    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false) {
   (void)AIRSpecializeChannelWrapAndStrideImpl(region, maxNumDims, maxSize,
-                                              enableForLoopUnrolling);
+                                              enableForLoopUnrolling,
+                                              enableRepeatAtHighestDim);
 }
 
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {

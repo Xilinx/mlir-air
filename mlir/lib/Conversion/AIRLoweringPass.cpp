@@ -225,6 +225,14 @@ public:
       return failure();
     }
 
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(op->getBlock());
+      rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
+                                         herd_name_attr.getValue().str(),
+                                         /* operands */ SmallVector<Value>());
+    }
+
     SmallVector<Value, 4> deps;
     for (auto &o : operands)
       if (llvm::isa<airrt::EventType>(o.getType()))
@@ -1012,11 +1020,6 @@ public:
     }
 
     // Generate airrt load op as handle for reloading binaries
-    if (failed(
-            generateLoadForHierarchy<air::HerdOp, airrt::HerdLoadOp>(module))) {
-      emitError(UnknownLoc::get(context), "error generating airrt.herd_load\n");
-      signalPassFailure();
-    }
     if (failed(generateLoadForHierarchy<air::SegmentOp, airrt::SegmentLoadOp>(
             module))) {
       emitError(UnknownLoc::get(context),

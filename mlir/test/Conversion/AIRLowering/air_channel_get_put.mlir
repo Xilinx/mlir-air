@@ -59,9 +59,9 @@ module {
 // CHECK: affine.for %{{.*}} 0 to 1
 // CHECK: affine.for %{{.*}} 0 to 1
 // CHECK: airrt.segment_load "segment_0" : i64
-// CHECK: airrt.herd_load "herd_0" () : () -> i64
 // CHECK: airrt.dma_memcpy_nd(%c3_i32, %{{.*}}, %{{.*}}, %arg0[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<32x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 // CHECK: airrt.dma_memcpy_nd(%c4_i32, %{{.*}}, %{{.*}}, %arg1[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<32x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+// CHECK: airrt.herd_load "herd_0" () : () -> i64
 
 module {
   air.channel @channel_3 [2, 2]
@@ -124,13 +124,13 @@ module {
 
 // CHECK-LABEL:   func.func @par_with_for_put_get
 // CHECK: airrt.segment_load "segment_0" : i64
-// CHECK: airrt.herd_load "herd_0" () : () -> i64
 // CHECK: affine.for %{{.*}} 0 to 2
 // CHECK:   affine.for %{{.*}} 0 to 2
 // CHECK:     airrt.dma_memcpy_nd(%{{.*}}, %{{.*}}, %{{.*}}, %arg0[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<32x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 // CHECK:     scf.for
 // CHECK:       airrt.dma_memcpy_nd(%{{.*}}, %{{.*}}, %{{.*}}, %arg1[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<32x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 // CHECK:       scf.yield
+// CHECK: airrt.herd_load "herd_0" () : () -> i64
 module {
   air.channel @channel_5 [2, 2]
   air.channel @channel_4 [2, 2]
@@ -199,8 +199,8 @@ module {
 // CHECK-LABEL:   func.func @one_d_scf_parallel
 // CHECK: affine.for
 // CHECK: airrt.segment_load "segment_0" : i64
-// CHECK: airrt.herd_load "herd_0" () : () -> i64
 // CHECK: airrt.dma_memcpy_nd(%{{.*}}, %{{.*}}, %{{.*}}, %arg0[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<128xf32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK: airrt.herd_load "herd_0" () : () -> i64
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 module {
