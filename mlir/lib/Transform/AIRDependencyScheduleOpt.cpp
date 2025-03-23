@@ -5444,8 +5444,8 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
 
   LogicalResult matchAndRewrite(air::LaunchOp launch,
                                 PatternRewriter &rewriter) const override {
-    if (launch.getSizeOperands().empty())
-      return failure();
+    if (launch->hasAttr("dummyLaunch"))
+      return failure(); // Ignore dummy launch having no iteration space
     auto loc = launch->getLoc();
     auto context = rewriter.getContext();
 
@@ -5457,13 +5457,14 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
         /*sizes*/ SmallVector<Value>(), launch.getKernelOperands(),
         /*is_async*/ true);
     dummyLaunch->setAttrs(launch->getDiscardableAttrDictionary());
+    dummyLaunch->setAttr("dummyLaunch", BoolAttr::get(context, true));
     rewriter.setInsertionPointToStart(&dummyLaunch.getBody().front());
 
     SmallVector<Value> lbs, ubs, steps;
     auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
-    // make scf.parallel to replace air.launch
+    // make scf.for loop nest to replace air.launch
     for (auto d : launch.getSizeOperands()) {
       lbs.push_back(c0);
       auto const_d = getConstantIntValue(d);
@@ -5548,7 +5549,7 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
             b.getUnknownLoc(), air::AsyncTokenType::get(b.getContext()),
             danglingTokens.takeVector());
     };
-    // Create scf.reduce synchronizing the end of scf.parallel threads.
+    // Create scf.yield to terminate scf.for body.
     if (air::isAsyncOp(launch)) {
       air::WaitAllOp wa = air::WaitAllOp();
       {
