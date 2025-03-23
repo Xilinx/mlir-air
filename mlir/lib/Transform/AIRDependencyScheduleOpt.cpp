@@ -2189,8 +2189,16 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
 
-    if (enableRepeatAtHighestDim && !strides.empty() &&
-        *getConstantIntValue(strides.front()) == 0) {
+    // When highest-dimension repeat is active, (1) enableRepeatAtHighestDim
+    // option is switched on, (2) wrap-and-stride list isn't empty (i.e. data
+    // isn't 1-d streamed in), (3) highest stride is zero, and (4) highest wrap
+    // is not one.
+    bool highestDimRepeatActive = enableRepeatAtHighestDim &&
+                                  !strides.empty() &&
+                                  *getConstantIntValue(strides.front()) == 0 &&
+                                  *getConstantIntValue(sizes.front()) != 1;
+
+    if (highestDimRepeatActive) {
       // If repeat is enabled at the highest dimension, then the highest
       // dimension must be preserved.
       return failure();
@@ -2241,8 +2249,16 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
 
-    if (enableRepeatAtHighestDim && !strides.empty() &&
-        *getConstantIntValue(strides.front()) == 0) {
+    // When highest-dimension repeat is active, (1) enableRepeatAtHighestDim
+    // option is switched on, (2) wrap-and-stride list isn't empty (i.e. data
+    // isn't 1-d streamed in), (3) highest stride is zero, and (4) highest wrap
+    // is not one.
+    bool highestDimRepeatActive = enableRepeatAtHighestDim &&
+                                  !strides.empty() &&
+                                  *getConstantIntValue(strides.front()) == 0 &&
+                                  *getConstantIntValue(sizes.front()) != 1;
+
+    if (highestDimRepeatActive) {
       // If repeat is enabled at the highest dimension, then the highest
       // dimension must be preserved.
       return failure();

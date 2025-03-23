@@ -1088,11 +1088,16 @@ LogicalResult air::canonicalizeWrapAndStrideList(
 
   // If maxSize is given, check whether any size value goes beyond maxSize.
   for (int i = sizes.size() - 1; i >= 0; i--) {
+    if (isDefaultDataAccessPattern(sizes, strides))
+      // Default access pattern, despite being multi-dimensional, can get
+      // collapsed into a one-dimensional data stream and not subject to maxSize
+      // limitation.
+      break;
     if (maxSize <= 0)
       break;
     auto const_wrap = *getConstantIntValue(sizes[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
-    if (const_wrap < maxSize)
+    if (const_wrap <= maxSize)
       continue;
     // Found dimension with illegal wrap. Tiling. (Prefers smaller outer wrap
     // values, as long as stride fits)
@@ -1119,19 +1124,6 @@ LogicalResult air::canonicalizeWrapAndStrideList(
                        builder.getUnknownLoc(), new_const_stride));
     offsets.insert(offsets.begin() + i, builder.create<arith::ConstantIndexOp>(
                                             builder.getUnknownLoc(), 0));
-    // Attempt to find one dummy dimension in the wrap-and-stride list and
-    // erase.
-    auto offsetWrapZip = llvm::zip_equal(offsets, sizes);
-    auto it = llvm::find_if(offsetWrapZip, [](std::tuple<Value, Value> entry) {
-      auto off = getConstantIntValue(std::get<0>(entry));
-      auto siz = getConstantIntValue(std::get<1>(entry));
-      return off && siz && *off == 0 && *siz == 1;
-    });
-    if (it != offsetWrapZip.end()) {
-      offsets.erase(offsets.begin() + std::distance(offsetWrapZip.begin(), it));
-      sizes.erase(sizes.begin() + std::distance(offsetWrapZip.begin(), it));
-      strides.erase(strides.begin() + std::distance(offsetWrapZip.begin(), it));
-    }
     i++;
     listsHaveChanged = true;
   }

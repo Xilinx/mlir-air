@@ -330,15 +330,15 @@ module {
   // CHECK-LABEL: func6
   // CHECK: %[[WAITALL0:.*]] = air.wait_all async
   // CHECK: %[[PUT0:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c1{{.*}}, %c128{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<8x16xi32>)
-  // CHECK: %[[PUT1:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c2{{.*}}, %c16{{.*}}, %c16{{.*}}] [%c0{{.*}}, %c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId5} : (memref<16x32xi32>)
-  // CHECK: %[[GET0:.*]] = air.channel.get async [%[[WAITALL0]]]  @channel_2[] (%arg2[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c2{{.*}}, %c8{{.*}}, %c16{{.*}}] [%c0{{.*}}, %c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId12} : (memref<8x32xi32>)
+  // CHECK: %[[PUT1:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c16{{.*}}, %c16{{.*}}] [%c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId5} : (memref<16x32xi32>)
+  // CHECK: %[[GET0:.*]] = air.channel.get async [%[[WAITALL0]]]  @channel_2[] (%arg2[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c16{{.*}}] [%c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId12} : (memref<8x32xi32>)
   // CHECK: air.wait_all [%[[PUT0]], %[[PUT1]], %[[GET0]]] 
 
   // NPUTILED-LABEL: func6
   // NPUTILED: %[[WAITALL0:.*]] = air.wait_all async
   // NPUTILED: %[[PUT0:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c1{{.*}}, %c128{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId4} : (memref<8x16xi32>)
-  // NPUTILED: %[[PUT1:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c2{{.*}}, %c16{{.*}}, %c16{{.*}}] [%c0{{.*}}, %c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId5} : (memref<16x32xi32>)
-  // NPUTILED: %[[GET0:.*]] = air.channel.get async [%[[WAITALL0]]]  @channel_2[] (%arg2[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c2{{.*}}, %c8{{.*}}, %c16{{.*}}] [%c0{{.*}}, %c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId12} : (memref<8x32xi32>)
+  // NPUTILED: %[[PUT1:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_1[] (%arg1[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c16{{.*}}, %c16{{.*}}] [%c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId5} : (memref<16x32xi32>)
+  // NPUTILED: %[[GET0:.*]] = air.channel.get async [%[[WAITALL0]]]  @channel_2[] (%arg2[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c8{{.*}}, %c16{{.*}}] [%c16{{.*}}, %c32{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId12} : (memref<8x32xi32>)
   // NPUTILED: air.wait_all [%[[PUT0]], %[[PUT1]], %[[GET0]]] 
   
   // AIE1-LABEL: func6
@@ -691,12 +691,12 @@ module {
 
   // CHECK-LABEL: func12
   // CHECK: %[[WAITALL0:.*]] = air.wait_all async
-  // CHECK: %[[PUT0:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c16{{.*}}, %c512{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId31} : (memref<2x64x64xi32>)
+  // CHECK: %[[PUT0:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_0[] (%arg0[] [] []) {metadata = @airMemcpyId31} : (memref<2x64x64xi32>)
   // CHECK: air.wait_all [%[[PUT0]]]
 
   // NPUTILED-LABEL: func12
   // NPUTILED: %[[WAITALL0:.*]] = air.wait_all async
-  // NPUTILED: %[[PUT0:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_0[] (%arg0[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c1{{.*}}, %c1{{.*}}, %c16{{.*}}, %c512{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c1{{.*}}]) {metadata = @airMemcpyId31} : (memref<2x64x64xi32>)
+  // NPUTILED: %[[PUT0:.*]] = air.channel.put async [%[[WAITALL0]]]  @channel_0[] (%arg0[] [] []) {metadata = @airMemcpyId31} : (memref<2x64x64xi32>)
   // NPUTILED: air.wait_all [%[[PUT0]]]
   
   // AIE1-LABEL: func12
