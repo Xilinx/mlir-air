@@ -1511,6 +1511,34 @@ void updateScfForBounds(OpBuilder builder, scf::ForOp loop_op, int lb, int ub,
   loop_op.setStep(builder.create<arith::ConstantIndexOp>(loc, step));
 }
 
+// Erase op from within an scf.for loop, and reconstruct ssa value usage in the
+// process.
+LogicalResult eraseOpFromScfFor(RewriterBase &rewriter, scf::ForOp sfo,
+                                Operation *op) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  IRMapping remap;
+  if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp())) {
+    rewriter.replaceAllUsesWith(exec.getResult(1), sfo.getInductionVar());
+    if (sfo.getNumRegionIterArgs())
+      rewriter.replaceAllUsesWith(exec.getAsyncToken(),
+                                  sfo.getRegionIterArgs()[0]);
+    else if (exec.getAsyncDependencies().size() == 1)
+      rewriter.replaceAllUsesWith(exec.getAsyncToken(),
+                                  exec.getAsyncDependencies()[0]);
+    else {
+      rewriter.setInsertionPoint(exec);
+      auto newWaitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, exec);
+      rewriter.replaceAllUsesWith(exec.getAsyncToken(),
+                                  newWaitAll.getAsyncToken());
+    }
+    rewriter.eraseOp(exec);
+  } else {
+    op->getResult(0).replaceAllUsesWith(sfo.getInductionVar());
+    rewriter.eraseOp(op);
+  }
+  return success();
+}
+
 // Fold affine.apply op operating on loop induction variable into loop bounds.
 struct CanonicalizeAffineApplyOnLoopInductionVar
     : public OpRewritePattern<affine::AffineApplyOp> {
@@ -1562,23 +1590,8 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
         return failure();
       }
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
-      IRMapping remap;
-      if (auto exec = dyn_cast<air::ExecuteOp>(apply->getParentOp())) {
-        exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
-        if (sfo.getNumRegionIterArgs())
-          exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
-        else if (exec.getAsyncDependencies().size() == 1)
-          exec.getAsyncToken().replaceAllUsesWith(
-              exec.getAsyncDependencies()[0]);
-        else {
-          exec->emitOpError("failed to reconstruct dependency after its erase");
-          return failure();
-        }
-        rewriter.eraseOp(exec);
-      } else {
-        apply.getResult().replaceAllUsesWith(sfo.getInductionVar());
-        rewriter.eraseOp(apply);
-      }
+      if (failed(eraseOpFromScfFor(rewriter, sfo, apply)))
+        return failure();
       updateScfForBounds(rewriter, sfo, *new_lb, *new_ub, newStepInInt);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
@@ -1667,23 +1680,8 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
       int new_lb =
           *mlir::getConstantIntValue(sfo.getLowerBound()) * muli_factor;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
-      IRMapping remap;
-      if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp())) {
-        exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
-        if (sfo.getNumRegionIterArgs())
-          exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
-        else if (exec.getAsyncDependencies().size() == 1)
-          exec.getAsyncToken().replaceAllUsesWith(
-              exec.getAsyncDependencies()[0]);
-        else {
-          exec->emitOpError("failed to reconstruct dependency after its erase");
-          return failure();
-        }
-        rewriter.eraseOp(exec);
-      } else {
-        op.getResult().replaceAllUsesWith(sfo.getInductionVar());
-        rewriter.eraseOp(op);
-      }
+      if (failed(eraseOpFromScfFor(rewriter, sfo, op)))
+        return failure();
       updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
@@ -1758,23 +1756,8 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
       int new_lb =
           *mlir::getConstantIntValue(sfo.getLowerBound()) + addi_operand;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
-      IRMapping remap;
-      if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp())) {
-        exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
-        if (sfo.getNumRegionIterArgs())
-          exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
-        else if (exec.getAsyncDependencies().size() == 1)
-          exec.getAsyncToken().replaceAllUsesWith(
-              exec.getAsyncDependencies()[0]);
-        else {
-          exec->emitOpError("failed to reconstruct dependency after its erase");
-          return failure();
-        }
-        rewriter.eraseOp(exec);
-      } else {
-        op.getResult().replaceAllUsesWith(sfo.getInductionVar());
-        rewriter.eraseOp(op);
-      }
+      if (failed(eraseOpFromScfFor(rewriter, sfo, op)))
+        return failure();
       updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
@@ -1854,7 +1837,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
 
     // Whether repeat (i.e. stride = 0) is supported at highest dimension.
-    if (enableRepeatAtHighestDim) {
+    if (enableRepeatAtHighestDim && !wraps.empty()) {
       // Force bump up number of dims to maxNumDims.
       auto zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       auto oneIdx = rewriter.create<arith::ConstantIndexOp>(loc, 1);
