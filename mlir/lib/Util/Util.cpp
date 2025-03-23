@@ -1272,9 +1272,7 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
   unsigned stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
-    assert(stepsize && "non-static stride");
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
-    assert(wrap && "non-static wrap");
     if (*stepsize != stride_factor)
       return false;
     stride_factor *= *wrap;

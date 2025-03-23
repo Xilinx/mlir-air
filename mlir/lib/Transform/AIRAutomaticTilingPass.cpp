@@ -175,11 +175,12 @@ constructTiledLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
                                                   std::prev(ops.end()));
 
   // Manage the tiled loop bounds and step sizes.
-  assert(!origLoops.empty());
   OpBuilder b(origLoops[0].getOperation());
-  // unsigned width = origLoops.size();
   unsigned width = setOfPrimeFactors.size();
-  assert(origLoops.size() == width);
+  if (origLoops.size() != width) {
+    origLoops[0]->emitOpError("origLoops.size() != setOfPrimeFactors.size()");
+    return;
+  }
 
   static unsigned forOpLevel = 0;
   for (unsigned i = 0; i < width; i++) {
@@ -251,7 +252,10 @@ void AIRAutomaticTilingPass::tileLoopsAutomatically(
     SmallVector<SmallVector<int64_t, 6>, 3> setOfPrimeFactors;
     for (auto forOp : origLoops) {
       int64_t upperLoopBound = forOp.getConstantUpperBound();
-      assert(upperLoopBound > 1);
+      if (upperLoopBound <= 1) {
+        forOp->emitOpError("upperLoopBound <= 1");
+        return;
+      }
 
       SmallVector<int64_t, 6> primeFactors;
       factorConstant(upperLoopBound, primeFactors);
