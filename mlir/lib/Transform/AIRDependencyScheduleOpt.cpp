@@ -1346,6 +1346,10 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
 
     // Hoist ops out to a new scf.for loop
     hoistTargetOpsToNewSCFFor(rewriter, for_op, target_ops);
+    // Erasing the original ops backwards, to avoid erasing op that still has
+    // valid uses.
+    for (auto o : llvm::reverse(target_ops))
+      rewriter.eraseOp(o);
 
     for_op->setAttr("isolated", rewriter.getBoolAttr(true));
 
@@ -4125,8 +4129,16 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     (void)applyPatternsGreedily(f, std::move(patterns));
 
     // Hoist ops out of each scf.for.
-    for (auto set : target_ops_sets)
-      (void)hoistTargetOpsToNewSCFFor(rewriter, for_op, set.takeVector());
+    llvm::SetVector<Operation *> erasedOps;
+    for (auto set : target_ops_sets) {
+      SmallVector<Operation *> setAsSmallVec = set.takeVector();
+      (void)hoistTargetOpsToNewSCFFor(rewriter, for_op, setAsSmallVec);
+      erasedOps.insert(setAsSmallVec.begin(), setAsSmallVec.end());
+    }
+    // Erasing the original ops backwards, to avoid erasing op that still has
+    // valid uses.
+    for (auto o : llvm::reverse(erasedOps))
+      rewriter.eraseOp(o);
 
     return success();
   }
@@ -5418,8 +5430,38 @@ private:
   }
 };
 
-// Air launch is converted to scf parallel here, so as to enable compile-time
-// shim dma bd optimizations.
+// Generate a wait_all at the end of block, which gathers all dangling async
+// tokens.
+FailureOr<air::WaitAllOp>
+generateWaitAllToTerminateBlock(Block &block, OpBuilder &b,
+                                bool isBlocking = true) {
+  llvm::SetVector<Value> blockTokens, danglingTokens;
+  blockTokens.insert(block.getArguments().begin(), block.getArguments().end());
+  for (auto &o : block.getOperations())
+    blockTokens.insert(o.getResults().begin(), o.getResults().end());
+  for (auto t : blockTokens) {
+    if (!t.use_empty())
+      continue;
+    if (!isa<air::AsyncTokenType>(t.getType()))
+      continue;
+    danglingTokens.insert(t);
+  }
+  if (block.mightHaveTerminator())
+    b.setInsertionPoint(block.getTerminator());
+  else
+    b.setInsertionPointToEnd(&block);
+  if (isBlocking)
+    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
+                                    /*result_type*/ std::nullopt,
+                                    danglingTokens.takeVector());
+  else
+    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
+                                    air::AsyncTokenType::get(b.getContext()),
+                                    danglingTokens.takeVector());
+}
+
+// Air launch is converted to scf for loop nest here, so as to enable
+// compile-time shim dma bd optimizations.
 struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
   using OpRewritePattern<air::LaunchOp>::OpRewritePattern;
 
@@ -5503,45 +5545,15 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
     for (auto bi = launchOps.begin(), be = --launchOps.end(); bi != be; ++bi)
       rewriter.clone(*bi, remap);
 
-    // Generate a wait_all at the end of block, which gathers all dangling async
-    // tokens.
-    auto generateWaitAllToTerminateBlock = [](Block &block, OpBuilder &b,
-                                              bool isBlocking = true) {
-      llvm::SetVector<Value> blockTokens, danglingTokens;
-      blockTokens.insert(block.getArguments().begin(),
-                         block.getArguments().end());
-      for (auto &o : block.getOperations())
-        blockTokens.insert(o.getResults().begin(), o.getResults().end());
-      for (auto t : blockTokens) {
-        if (!t.use_empty())
-          continue;
-        if (!isa<air::AsyncTokenType>(t.getType()))
-          continue;
-        danglingTokens.insert(t);
-      }
-      if (block.mightHaveTerminator())
-        b.setInsertionPoint(block.getTerminator());
-      else
-        b.setInsertionPointToEnd(&block);
-      if (isBlocking)
-        return b.create<air::WaitAllOp>(b.getUnknownLoc(),
-                                        /*result_type*/ std::nullopt,
-                                        danglingTokens.takeVector());
-      else
-        return b.create<air::WaitAllOp>(
-            b.getUnknownLoc(), air::AsyncTokenType::get(b.getContext()),
-            danglingTokens.takeVector());
-    };
     // Create scf.yield to terminate scf.for body.
     if (air::isAsyncOp(launch)) {
-      air::WaitAllOp wa = air::WaitAllOp();
-      {
-        OpBuilder::InsertionGuard guard(rewriter);
-        wa = generateWaitAllToTerminateBlock(*body, rewriter,
-                                             /*isBlocking*/ false);
-        rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(),
-                                      wa.getAsyncToken());
-      }
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto wa = generateWaitAllToTerminateBlock(*body, rewriter,
+                                                /*isBlocking*/ false);
+      if (failed(wa))
+        return failure();
+      rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(),
+                                    wa->getAsyncToken());
     }
 
     // replace output events with air.wait_all
@@ -5577,6 +5589,10 @@ public:
 
   void runOnOperation() override {
     auto func = getOperation();
+
+    if (func.isExternal())
+      return;
+
     auto ctx = &getContext();
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
@@ -5736,7 +5752,7 @@ public:
         isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? -1 : 1023;
     // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
     // specialization patterns.
-    air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getRegion());
+    air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getBody());
     air::applyAIRSpecializeChannelWrapAndStridePattern(
         &func.getRegion(),
         /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
@@ -5815,6 +5831,15 @@ public:
           &seg.getBody(),
           /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
           /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ false);
+
+      // Create wait_all to synchronize body.
+      IRRewriter rewriter(func.getContext());
+      if (air::isAsyncOp(seg)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        if (failed(generateWaitAllToTerminateBlock(
+                seg.getBody().front(), rewriter, /*isBlocking*/ true)))
+          signalPassFailure();
+      }
     }
   }
 

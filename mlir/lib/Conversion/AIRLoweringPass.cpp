@@ -610,6 +610,8 @@ public:
       if (deps.size())
         rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(
             op, xilinx::airrt::EventType::get(op->getContext()), deps);
+      else
+        rewriter.eraseOp(op);
       return success();
     }
 
@@ -905,7 +907,7 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
   if (!f)
     return failure();
 
-  llvm::SmallSet<Operation *, 8> erased;
+  llvm::SetVector<Operation *> erased;
   SmallVector<scf::ParallelOp> scf_pars;
   f.walk([&](scf::ParallelOp scf_par) { scf_pars.push_back(scf_par); });
   for (auto scf_par : scf_pars) {

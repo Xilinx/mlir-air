@@ -762,10 +762,6 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
           newWaitAll.getAsyncToken());
     }
   }
-  // Erasing the original ops backwards, to avoid erasing op that still has
-  // valid uses.
-  for (auto erase_op : llvm::reverse(target_ops))
-    rewriter.eraseOp(erase_op);
   for (auto user : for_op.getResults().front().getUsers()) {
     air::addAsyncDependencyIfNew(user, air::getAsyncTokenFromOp(new_for_op));
   }

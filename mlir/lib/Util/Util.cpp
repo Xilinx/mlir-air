@@ -892,9 +892,8 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
     auto const_size = getConstantIntValue(sizes[erase_dim]);
     if (!const_size)
       return false; // non-static wrap, NYI.
-    if (sizes.size() - 1 == erase_dim)
+    if ((int)sizes.size() - 1 == erase_dim)
       return false; // Already the last wrap dimension.
-    //   return false;
     auto const_size_next = getConstantIntValue(sizes[erase_dim + 1]);
     if (!const_size_next)
       return false; // non-static wrap, NYI.
