@@ -4130,15 +4130,34 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
 
     // Hoist ops out of each scf.for.
     llvm::SetVector<Operation *> erasedOps;
+    SmallVector<scf::ForOp> hoistedScfFors;
     for (auto set : target_ops_sets) {
       SmallVector<Operation *> setAsSmallVec = set.takeVector();
-      (void)hoistTargetOpsToNewSCFFor(rewriter, for_op, setAsSmallVec);
+      // (void)hoistTargetOpsToNewSCFFor(rewriter, for_op, setAsSmallVec);
+      auto hoistedScfFor =
+          hoistTargetOpsToNewSCFFor(rewriter, for_op, setAsSmallVec);
+      hoistedScfFors.push_back(hoistedScfFor);
       erasedOps.insert(setAsSmallVec.begin(), setAsSmallVec.end());
     }
-    // Erasing the original ops backwards, to avoid erasing op that still has
-    // valid uses.
-    for (auto o : llvm::reverse(erasedOps))
-      rewriter.eraseOp(o);
+
+    // Replace for op uses
+    if (air::isAsyncOp(for_op)) {
+      if (hoistedScfFors.size() == 1) {
+        rewriter.replaceOp(for_op, hoistedScfFors.front());
+      } else {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(for_op);
+        SmallVector<Value> deps;
+        for (auto scfFor : hoistedScfFors) {
+          if (air::isAsyncOp(scfFor))
+            deps.push_back(air::getAsyncTokenFromOp(scfFor));
+        }
+        rewriter.replaceOpWithNewOp<air::WaitAllOp>(
+            for_op, air::AsyncTokenType::get(f.getContext()), deps);
+      }
+    } else {
+      rewriter.eraseOp(for_op);
+    }
 
     return success();
   }
@@ -5613,12 +5632,12 @@ public:
       return;
     }
 
-    // Convert air.launch to scf.parallel.
+    // Convert air.launch to scf.for.
     RewritePatternSet patterns(ctx);
     patterns.insert<AIRLaunchToScfForPattern>(ctx);
     (void)applyPatternsGreedily(func, std::move(patterns));
 
-    // Tile all shim dma scf.parallel loops into smaller and repeating tiles.
+    // Tile all shim dma scf.for loops into smaller and repeating tiles.
     SmallVector<scf::ForOp> shimFors;
     func.walk([&shimFors](scf::ForOp forOp) {
       // Get for loop band outside of any segment or herd region.
@@ -5694,11 +5713,19 @@ public:
               loopTerm, loopTerm->getPrevNode()->getResult(0));
         }
         // Fixup the yield connecting the innermost outer-loops to the outermost
-        // inner-loops.
+        // inner-loops; create disconnected async edge between loop iterations
+        // to make it blocking.
         rewriter.setInsertionPointAfter(tiledLoops.front());
-        rewriter.replaceOpWithNewOp<scf::YieldOp>(
-            tiledLoops.front()->getNextNode(),
+        auto blockingWaitAll = rewriter.replaceOpWithNewOp<air::WaitAllOp>(
+            tiledLoops.front()->getNextNode(), /*result_type*/ std::nullopt,
             tiledLoops.front()->getResult(0));
+        rewriter.setInsertionPointAfter(blockingWaitAll);
+        auto disconnectedWaitAll = rewriter.create<air::WaitAllOp>(
+            tiledLoops.front()->getLoc(),
+            air::AsyncTokenType::get(rewriter.getContext()),
+            SmallVector<Value>{});
+        rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(),
+                                      disconnectedWaitAll.getAsyncToken());
       }
 
       // Unroll for loop nest from root down until shim-dma-unroll-depth.
@@ -5758,27 +5785,30 @@ public:
         /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
         /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ true);
 
-    // Gather dangling tokens from block, and generate a blocking wait all.
-    SmallVector<Block *> funcAndLaunchBlocks(1, &func.getBody().front());
-    func.walk([&funcAndLaunchBlocks](air::LaunchOp launch) {
-      if (air::isAsyncOp(launch))
-        funcAndLaunchBlocks.push_back(&launch.getRegion().front());
-    });
-    for (auto blk : funcAndLaunchBlocks) {
-      {
-        OpBuilder::InsertionGuard guard(rewriter);
-        SmallVector<Value> chanTokens;
-        for (auto chan : blk->getOps<air::ChannelInterface>())
-          if (air::isAsyncOp(chan))
-            chanTokens.push_back(air::getAsyncTokenFromOp(chan));
+    if (forLoopsToUnroll.empty()) {
+      // If no loop unrolling was performed, gather all air.channel_put/get
+      // tokens from block, and generate a blocking wait all.
+      SmallVector<Block *> funcAndLaunchBlocks(1, &func.getBody().front());
+      func.walk([&funcAndLaunchBlocks](air::LaunchOp launch) {
+        if (air::isAsyncOp(launch))
+          funcAndLaunchBlocks.push_back(&launch.getRegion().front());
+      });
+      for (auto blk : funcAndLaunchBlocks) {
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          SmallVector<Value> chanTokens;
+          for (auto chan : blk->getOps<air::ChannelInterface>())
+            if (air::isAsyncOp(chan))
+              chanTokens.push_back(air::getAsyncTokenFromOp(chan));
 
-        if (blk->mightHaveTerminator())
-          rewriter.setInsertionPoint(blk->getTerminator());
-        else
-          rewriter.setInsertionPointToEnd(blk);
-        rewriter.create<air::WaitAllOp>(rewriter.getUnknownLoc(),
-                                        /*result_type*/ std::nullopt,
-                                        chanTokens);
+          if (blk->mightHaveTerminator())
+            rewriter.setInsertionPoint(blk->getTerminator());
+          else
+            rewriter.setInsertionPointToEnd(blk);
+          rewriter.create<air::WaitAllOp>(rewriter.getUnknownLoc(),
+                                          /*result_type*/ std::nullopt,
+                                          chanTokens);
+        }
       }
     }
   }

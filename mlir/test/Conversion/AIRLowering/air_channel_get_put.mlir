@@ -250,9 +250,11 @@ module {
 // CHECK: affine.for
 // CHECK: airrt.segment_load "segment_0" : i64
 // CHECK: %[[TOKEN1:.*]] = airrt.dma_memcpy_nd
+// CHECK: %[[WAIT1:.*]] = airrt.wait_all %[[TOKEN1]]
 // CHECK: %[[TOKEN2:.*]] = airrt.dma_memcpy_nd
+// CHECK: %[[WAIT2:.*]] = airrt.wait_all %[[TOKEN2]]
 // CHECK: %[[TOKEN3:.*]] = airrt.dma_memcpy_nd
-// CHECK: airrt.wait_all %[[TOKEN1]], %[[TOKEN2]], %[[TOKEN3]]
+// CHECK: airrt.wait_all %[[TOKEN3]], %[[WAIT1]], %[[WAIT2]]
 
 module {
   air.channel @channel_0 [1, 1]

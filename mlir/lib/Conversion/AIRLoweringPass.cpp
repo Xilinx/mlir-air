@@ -597,8 +597,21 @@ public:
       return failure();
 
     if (*airrtOp != nullptr) {
-      rewriter.replaceOp(op, *airrtOp);
-      return success();
+      // Resolve channel op's dependency list
+      if ((*airrtOp)->getNumResults()) {
+        SmallVector<Value, 4> deps = {(*airrtOp)->getResult(0)};
+        for (auto o : adaptor.getOperands())
+          if (llvm::isa<xilinx::airrt::EventType>(o.getType()))
+            deps.push_back(o);
+        auto wa = rewriter.create<xilinx::airrt::WaitAllOp>(
+            op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
+            deps);
+        rewriter.replaceOp(op, wa);
+        return success();
+      } else {
+        rewriter.replaceOp(op, *airrtOp);
+        return success();
+      }
     }
 
     if (op->getNumResults()) {
