@@ -51,19 +51,25 @@ void AIRRtDialect::printType(Type type, DialectAsmPrinter &os) const {
 
 static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
   SmallVector<Value> operands = op->getOperands();
-  if (op.use_empty() && !operands.size()) {
+  // If wait all has no results, then it is blocking; else, it is not blocking
+  // and is only used to join tokens.
+  if ((op.getNumResults() == 0 && operands.empty()) ||
+      (op.getNumResults() != 0 && op.use_empty())) {
     rewriter.eraseOp(op);
     return success();
   }
 
-  // If an operand of a wait_all is another wait_all, then the event has
-  // already completed. Remove it from the operand list.
-  for (auto i = operands.begin(), e = operands.end(); i != e; ++i) {
+  // If an operand of a wait_all is another wait_all, then fold them into one.
+  llvm::SetVector<Value> newOperands;
+  newOperands.insert(operands.begin(), operands.end());
+  for (auto i = newOperands.begin(), e = newOperands.end(); i != e; ++i) {
     auto wa = llvm::dyn_cast_if_present<WaitAllOp>(i->getDefiningOp());
     if (!wa)
       continue;
-    operands.erase(i);
-    rewriter.replaceOpWithNewOp<WaitAllOp>(op, op.getResultTypes(), operands);
+    newOperands.erase(i);
+    newOperands.insert(wa.getOperands().begin(), wa.getOperands().end());
+    rewriter.replaceOpWithNewOp<WaitAllOp>(op, op.getResultTypes(),
+                                           newOperands.takeVector());
     return success();
   }
 
