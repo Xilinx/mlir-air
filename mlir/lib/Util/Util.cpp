@@ -892,6 +892,8 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
     auto const_size = getConstantIntValue(sizes[erase_dim]);
     if (!const_size)
       return false; // non-static wrap, NYI.
+    if ((int)sizes.size() - 1 == erase_dim)
+      return false; // Already the last wrap dimension.
     auto const_size_next = getConstantIntValue(sizes[erase_dim + 1]);
     if (!const_size_next)
       return false; // non-static wrap, NYI.
@@ -1037,10 +1039,43 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
   return failure();
 };
 
+// Find the largest factor of 'num' which is not larger than 'max'. Ref:
+// https://github.com/nod-ai/iree-amd-aie/blob/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/AMDAIEUtils.cpp#L334
+int air::findLargestFactor(int num, int max) {
+  assert(max > 0 && "No factors less than or equal to 0 exist");
+
+  // Do O(1) instead of O(sqrt(num)) computation for this common case.
+  if (num <= max) {
+    return num;
+  }
+
+  int largestLowFactor = 1;
+  for (int lowFactor = 2; lowFactor <= max; ++lowFactor) {
+    const int highFactor = num / lowFactor;
+
+    // This early exit is what makes this O(sqrt(num)) instead of O(num).
+    if (highFactor < lowFactor)
+      return largestLowFactor;
+
+    const bool areActuallyFactors = num % lowFactor == 0;
+    if (areActuallyFactors) {
+      // We're certain that here lowFactor <= highFactor, and highFactor is
+      // descending in this loop. So we can return immediately if highFactor is
+      // good.
+      if (highFactor <= max)
+        return highFactor;
+      largestLowFactor = lowFactor;
+    }
+  }
+  return largestLowFactor;
+}
+
 // Canonicalize wrap and stride lists by removing redundant dimensions.
 LogicalResult air::canonicalizeWrapAndStrideList(
     OpBuilder builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
     SmallVector<Value> &strides, int memref_volume, int maxSize) {
+  // AIE2 hardware constraints. TODO: import these info from target model.
+  const int AIE2_STRIDE_UPPER_BOUND = 1048576;
   bool listsHaveChanged = false;
   // Match offsets size with sizes and strides
   auto max_dim_size =
@@ -1050,6 +1085,48 @@ LogicalResult air::canonicalizeWrapAndStrideList(
       offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
                                           builder.getUnknownLoc(), 0));
     }
+    listsHaveChanged = true;
+  }
+
+  // If maxSize is given, check whether any size value goes beyond maxSize.
+  for (int i = sizes.size() - 1; i >= 0; i--) {
+    if (isDefaultDataAccessPattern(sizes, strides))
+      // Default access pattern, despite being multi-dimensional, can get
+      // collapsed into a one-dimensional data stream and not subject to maxSize
+      // limitation.
+      break;
+    if (maxSize <= 0)
+      break;
+    auto const_wrap = *getConstantIntValue(sizes[i]);
+    auto const_stride = *getConstantIntValue(strides[i]);
+    if (const_wrap <= maxSize)
+      continue;
+    // Found dimension with illegal wrap. Tiling. (Prefers smaller outer wrap
+    // values, as long as stride fits)
+    int a_wrap = findLargestFactor(const_wrap, maxSize);
+    int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
+    int new_a_stride = const_stride * a_wrap;
+    if (memref_volume != 1)
+      new_a_stride %= memref_volume; // Avoids striding out of memory size, if
+                                     // memref is ranked
+    int inner_wrap =
+        (new_a_stride > AIE2_STRIDE_UPPER_BOUND) ? (b_wrap) : (a_wrap);
+    int outer_wrap =
+        (new_a_stride > AIE2_STRIDE_UPPER_BOUND) ? (a_wrap) : (b_wrap);
+    sizes[i] = builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(),
+                                                      inner_wrap);
+    sizes.insert(sizes.begin() + i, builder.create<arith::ConstantIndexOp>(
+                                        builder.getUnknownLoc(), outer_wrap));
+    auto new_const_stride = const_stride * inner_wrap;
+    if (memref_volume != 1)
+      new_const_stride %= memref_volume; // Avoids striding out of memory size,
+                                         // if memref is ranked
+    strides.insert(strides.begin() + i,
+                   builder.create<arith::ConstantIndexOp>(
+                       builder.getUnknownLoc(), new_const_stride));
+    offsets.insert(offsets.begin() + i, builder.create<arith::ConstantIndexOp>(
+                                            builder.getUnknownLoc(), 0));
+    i++;
     listsHaveChanged = true;
   }
 
@@ -1272,9 +1349,9 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
   unsigned stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
-    assert(stepsize && "non-static stride");
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
-    assert(wrap && "non-static wrap");
+    if (*wrap == 1 && *stepsize == 0)
+      continue; // dummy dimension.
     if (*stepsize != stride_factor)
       return false;
     stride_factor *= *wrap;

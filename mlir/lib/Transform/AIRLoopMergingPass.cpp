@@ -131,12 +131,19 @@ constructReducedLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
   int64_t newLowerBound = 0;
   for (unsigned i = 0; i < reducedSize; i++) {
     unsigned loopLevel = loopMergeLevels[i];
-    assert(origLoops[loopLevel].hasConstantBounds());
+    if (!origLoops[loopLevel].hasConstantBounds()) {
+      origLoops[loopLevel]->emitOpError("non-static loop bounds");
+      return;
+    }
     auto lb_map = origLoops[loopLevel].getLowerBoundMap();
     auto ub_map = origLoops[loopLevel].getUpperBoundMap();
     int64_t lb_const = lb_map.getSingleConstantResult();
     int64_t ub_const = ub_map.getSingleConstantResult();
-    assert(lb_const == newLowerBound);
+    if (lb_const != newLowerBound) {
+      origLoops[loopLevel]->emitOpError(
+          "lower bound mismatch with the newLowerBound");
+      return;
+    }
     newUpperBound = newUpperBound * ub_const;
   }
   reducedLoops[reduceAtLevel].setConstantLowerBound(newLowerBound);
@@ -199,7 +206,10 @@ constructReducedLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
   affine::AffineApplyOp apply_1 = applyBuilder.create<affine::AffineApplyOp>(
       innerFor.getLoc(), map_1, singleFor.getInductionVar());
   restoredIVs.push_back(apply_1);
-  assert(restoredIVs.size() == loopMergeLevels.size());
+  if (restoredIVs.size() != loopMergeLevels.size()) {
+    apply_1->emitOpError("restoredIVs.size() != loopMergeLevels.size()");
+    return;
+  }
 
   // Replace all original reduced subloop IVs with the new single loop IV
   SmallVector<Value, 6> origLoopIVs;

@@ -159,6 +159,9 @@ LogicalResult foldForLoopNestAsExtendedSizesAndStrides(
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
     SmallVector<Value> &strides, Value memref);
 
+// Find the largest factor of 'num' which is not larger than 'max'.
+int findLargestFactor(int num, int max);
+
 // Canonicalize wrap and stride lists, by removing redundant dimensions.
 LogicalResult canonicalizeWrapAndStrideList(
     OpBuilder builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,

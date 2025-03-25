@@ -443,7 +443,10 @@ public:
         // "dma_allocations" attribute is an array of DictAttr
         ArrayAttr shim_attr =
             herd_meta->getAttrOfType<ArrayAttr>("dma_allocations");
-        assert(shim_attr);
+        if (!shim_attr) {
+          op->emitOpError("dma_allocation metadata not found.");
+          return failure();
+        }
         for (auto &shim_alloc : shim_attr) {
           auto shim_alloc_dict = llvm::cast<DictionaryAttr>(shim_alloc);
           auto id = llvm::cast<IntegerAttr>(shim_alloc_dict.get("id")).getInt();
