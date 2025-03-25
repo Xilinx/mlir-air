@@ -77,7 +77,10 @@ func::CallOp AIROutliner::outline(affine::AffineForOp forOp,
 
   auto body_builder = OpBuilder::atBlockBegin(&entryBlock);
   Operation *clone = body_builder.clone(*forOp.getOperation(), mapper);
-  assert(clone);
+  if (!clone) {
+    forOp->emitOpError("clone failed");
+    return func::CallOp();
+  }
   (void)clone;
 
   body_builder.create<func::ReturnOp>(loc);
@@ -101,8 +104,10 @@ func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
   std::vector<Value> outline_args;
 
   for (Operation *op : ops) {
-    assert((!bb || bb == op->getBlock()) &&
-           "operations must be in same basic block");
+    if (bb && bb != op->getBlock()) {
+      op->emitOpError("operations must be in same basic block");
+      return func::CallOp();
+    }
     bb = op->getBlock();
     for (Value v : op->getOperands()) {
       auto def = v.getDefiningOp();

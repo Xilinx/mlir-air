@@ -1015,7 +1015,10 @@ void populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
 // Replace async op with wait_all op
 air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
                                          Operation *op, bool cloneDepList) {
-  assert(air::isAsyncOp(op));
+  if (!air::isAsyncOp(op)) {
+    op->emitOpError("op isn't an async op");
+    return air::WaitAllOp();
+  }
   SmallVector<Value> dep_list_remap;
   if (cloneDepList) {
     for (auto dep : air::getAsyncDependenciesFromOp(op)) {
