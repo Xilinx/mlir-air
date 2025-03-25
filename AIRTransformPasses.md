@@ -891,7 +891,8 @@ Optimize the logical data movement by transforming them, represented as air.chan
 #### Options
 
 ```
--device : AIE device to target.
+-device              : AIE device to target.
+-shim-dma-tile-sizes : Shim dma tiling sizes, tiling shim dma bds into smaller repeating ones
 ```
 
 ### `-air-ping-pong-transform`
