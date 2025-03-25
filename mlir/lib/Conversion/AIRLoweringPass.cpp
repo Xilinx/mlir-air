@@ -33,6 +33,7 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Debug.h"
@@ -128,14 +129,6 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     air::SegmentOp segment = cast<air::SegmentOp>(op);
-    if (auto attr =
-            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      auto segment_name = attr.getValue().str();
-      rewriter.setInsertionPointToStart(op->getBlock());
-      rewriter.create<airrt::SegmentLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                            segment_name);
-    }
 
     SmallVector<Value> lbs, ubs, steps;
     auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
@@ -611,8 +604,21 @@ public:
       return failure();
 
     if (*airrtOp != nullptr) {
-      rewriter.replaceOp(op, *airrtOp);
-      return success();
+      // Resolve channel op's dependency list
+      if ((*airrtOp)->getNumResults()) {
+        SmallVector<Value, 4> deps = {(*airrtOp)->getResult(0)};
+        for (auto o : adaptor.getOperands())
+          if (llvm::isa<xilinx::airrt::EventType>(o.getType()))
+            deps.push_back(o);
+        auto wa = rewriter.create<xilinx::airrt::WaitAllOp>(
+            op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
+            deps);
+        rewriter.replaceOp(op, wa);
+        return success();
+      } else {
+        rewriter.replaceOp(op, *airrtOp);
+        return success();
+      }
     }
 
     if (op->getNumResults()) {
@@ -624,6 +630,8 @@ public:
       if (deps.size())
         rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(
             op, xilinx::airrt::EventType::get(op->getContext()), deps);
+      else
+        rewriter.eraseOp(op);
       return success();
     }
 
@@ -679,8 +687,21 @@ LogicalResult lowerAirExecute(Operation *op) {
     auto &bb = exe.getRegion().front();
     unsigned idx = 0;
 
+    // If the execute op only contains pure ops (ops that do not touch memory),
+    // or memref.alloc/dealloc, then we shouldn't enforce blocking wait_alls to
+    // it.
+    auto isNonBlockingOp = [](Operation *o) {
+      return air::isPure(o) ||
+             isa<air::WaitAllOp, memref::AllocOp, memref::DeallocOp>(o);
+    };
+    bool isNonBlockingAsyncExecute = false;
+    if (llvm::all_of(exe.getChildOps(), [isNonBlockingOp](Operation &o) {
+          return isNonBlockingOp(&o);
+        }))
+      isNonBlockingAsyncExecute = true;
+
     OpBuilder builder(exe);
-    if (exe.getAsyncDependencies().size())
+    if (!isNonBlockingAsyncExecute && exe.getAsyncDependencies().size())
       builder.create<air::WaitAllOp>(op->getLoc(), Type{},
                                      exe.getAsyncDependencies());
 
@@ -706,6 +727,34 @@ LogicalResult lowerAirExecute(Operation *op) {
   });
   for (auto a : erased)
     a->erase();
+  return success();
+}
+
+template <typename hierTy, typename loadTy>
+LogicalResult generateLoadForHierarchy(Operation *op) {
+  ModuleOp module = dyn_cast<ModuleOp>(op);
+  if (!module)
+    return failure();
+
+  module->walk([&](hierTy hier) {
+    if (auto attr = hier->template getAttrOfType<StringAttr>(
+            SymbolTable::getSymbolAttrName())) {
+      OpBuilder b(hier);
+      auto hierarchy_name = attr.getValue().str();
+      if (auto launch = hier->template getParentOfType<air::LaunchOp>())
+        b.setInsertionPointToStart(&launch.getBody().front());
+      else
+        b.setInsertionPointToStart(hier->getBlock());
+      if constexpr (std::is_same<loadTy, airrt::SegmentLoadOp>::value)
+        b.create<airrt::SegmentLoadOp>(hier->getLoc(), b.getI64Type(),
+                                       hierarchy_name);
+
+      else if constexpr (std::is_same<loadTy, airrt::HerdLoadOp>::value)
+        b.create<airrt::HerdLoadOp>(hier->getLoc(), b.getI64Type(),
+                                    hierarchy_name,
+                                    /* operands */ SmallVector<Value>());
+    }
+  });
   return success();
 }
 
@@ -877,7 +926,7 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
   if (!f)
     return failure();
 
-  llvm::SmallSet<Operation *, 8> erased;
+  llvm::SetVector<Operation *> erased;
   SmallVector<scf::ParallelOp> scf_pars;
   f.walk([&](scf::ParallelOp scf_par) { scf_pars.push_back(scf_par); });
   for (auto scf_par : scf_pars) {
@@ -988,6 +1037,14 @@ public:
     // AIR ExecuteOp conversion
     if (failed(lowerAirExecute(module))) {
       emitError(UnknownLoc::get(context), "error lowering air.execute\n");
+      signalPassFailure();
+    }
+
+    // Generate airrt load op as handle for reloading binaries
+    if (failed(generateLoadForHierarchy<air::SegmentOp, airrt::SegmentLoadOp>(
+            module))) {
+      emitError(UnknownLoc::get(context),
+                "error generating airrt.segment_load\n");
       signalPassFailure();
     }
 
@@ -1104,45 +1161,6 @@ public:
   }
 
 private:
-  // Util function getting child scf.for from scf loop. Note: at the moment only
-  // getting the first child for loop.
-  scf::ForOp getChildSCFForFromSCFLoop(Operation *loop) const {
-    if (!loop)
-      return scf::ForOp();
-    if (auto par_loop = dyn_cast<scf::ParallelOp>(loop)) {
-      for (auto child_for : par_loop.getBody()->getOps<scf::ForOp>()) {
-        return child_for;
-      }
-    } else if (auto for_loop = dyn_cast<scf::ForOp>(loop)) {
-      for (auto child_for : for_loop.getBody()->getOps<scf::ForOp>()) {
-        return child_for;
-      }
-    } else if (auto afor_loop = dyn_cast<affine::AffineForOp>(loop)) {
-      for (auto child_for : afor_loop.getBody()->getOps<scf::ForOp>()) {
-        return child_for;
-      }
-    }
-    return scf::ForOp();
-  }
-
-  // Util function getting child airrt.memcpy from scf loop. Note: at the moment
-  // only getting the first child memcpy op.
-  airrt::DmaMemcpyNdOp getChildDmaMemcpyFromSCFLoop(Operation *loop) const {
-    if (!loop)
-      return airrt::DmaMemcpyNdOp();
-    if (auto par_loop = dyn_cast<scf::ParallelOp>(loop)) {
-      for (auto child : par_loop.getBody()->getOps<airrt::DmaMemcpyNdOp>()) {
-        return child;
-      }
-    }
-    if (auto for_loop = dyn_cast<scf::ForOp>(loop)) {
-      for (auto child : for_loop.getBody()->getOps<airrt::DmaMemcpyNdOp>()) {
-        return child;
-      }
-    }
-    return airrt::DmaMemcpyNdOp();
-  }
-
   // Remap memcpy
   Operation *remapOpAndOperands(OpBuilder builder, Operation *op,
                                 IRMapping &remap) const {
@@ -1163,25 +1181,6 @@ private:
       }
     }
     return builder.clone(*op, remap);
-  }
-
-  // Remap for loop's region
-  void remapLoopRegion(OpBuilder builder, scf::ForOp src_for,
-                       scf::ForOp dst_for, IRMapping &remap) const {
-    remap.map(src_for.getInductionVar(), dst_for.getInductionVar());
-    for (unsigned i = 0; i < src_for.getRegionIterArgs().size(); i++) {
-      remap.map(src_for.getRegionIterArgs()[i], dst_for.getRegionIterArgs()[i]);
-    }
-    if (dst_for.getBody()->empty())
-      builder.setInsertionPointToStart(dst_for.getBody());
-    else if (dst_for.getBody()->getTerminator())
-      builder.setInsertionPoint(dst_for.getBody()->getTerminator());
-    else
-      builder.setInsertionPointToEnd(dst_for.getBody());
-    for (auto &op : src_for.getBody()->getOperations()) {
-      if (!isa<scf::YieldOp>(op))
-        remapOpAndOperands(builder, &op, remap);
-    }
   }
 
   // Remap loop nests
@@ -1246,15 +1245,6 @@ private:
   Operation *getInnerMostMemcpyFromLoopNest(scf::ParallelOp op) const {
     Operation *output = nullptr;
     op.walk([&](airrt::DmaMemcpyNdOp o) { output = o; });
-    return output;
-  }
-
-  SmallVector<Value, 1> lookupOrDefaultRange(SmallVector<Value, 1> vec,
-                                             IRMapping &remap) const {
-    SmallVector<Value, 1> output;
-    for (auto v : vec) {
-      output.push_back(remap.lookupOrDefault(v));
-    }
     return output;
   }
 

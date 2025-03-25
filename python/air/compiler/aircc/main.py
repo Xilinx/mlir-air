@@ -330,6 +330,7 @@ def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filena
             + ["--host-target", aiecc_target]
             + ["--tmpdir", aiecc_dir]
             + ["--no-aiesim"]
+            + ["--compile-host"]
             + ["--xbridge" if opts.xbridge else "--no-xbridge"]
             + ["--xchesscc" if opts.xchesscc else "--no-xchesscc"]
             + [aiecc_file]
@@ -502,6 +503,16 @@ def run(mlir_module, args=None):
         )
 
         if "npu" in opts.device:
+            air_opt_shim_dma_bds_pass = "func.func(air-opt-shim-dma-bds{device="
+            air_opt_shim_dma_bds_pass = air_opt_shim_dma_bds_pass + opts.device
+            air_opt_shim_dma_bds_pass = air_opt_shim_dma_bds_pass + (
+                " shim-dma-tile-sizes="
+                + ",".join(str(s) for s in opts.runtime_loop_tiling_sizes)
+                if opts.runtime_loop_tiling_sizes
+                else ""
+            )
+            air_opt_shim_dma_bds_pass = air_opt_shim_dma_bds_pass + "})"
+
             airrt_to_npu_pass = "airrt-to-npu{"
             airrt_to_npu_pass = airrt_to_npu_pass + f" trace-size={opts.trace_size}"
             airrt_to_npu_pass = (
@@ -514,13 +525,9 @@ def run(mlir_module, args=None):
                 "builtin.module("
                 + ",".join(
                     [
-                        "func.func(air-opt-shim-dma-bds{device=" + opts.device + "})",
+                        air_opt_shim_dma_bds_pass,
                         "air-to-std",
                         "symbol-dce",
-                        "func.func(affine-loop-opt{affine-opt-tile-sizes="
-                        + ",".join(str(s) for s in opts.runtime_loop_tiling_sizes)
-                        + "})",
-                        "func.func(air-unroll-outer-affine-loops{depth=2})",
                         "affine-expand-index-ops",
                         "canonicalize",
                         "cse",

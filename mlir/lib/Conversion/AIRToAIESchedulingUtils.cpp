@@ -248,7 +248,7 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     while (opIt != memcpyIOps.end()) {
       // BD repetition found. Check if repeating pattern.
       if (!memcpyIMappedToEquivalentBDs(*opIt, uniqueBDPattern[idx]))
-        return llvm::SetVector<Operation *>{}; // Chain isn't repeating. Return
+        return llvm::SetVector<Operation *>(); // Chain isn't repeating. Return
                                                // an empty vector.
       opIt++;
       idx++;
@@ -296,8 +296,8 @@ std::vector<AIE::BDDimLayoutAttr>
 air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
                         SmallVector<Value> memcpy_strides, MLIRContext *ctx) {
   if (memcpy_sizes.empty() || memcpy_strides.empty())
-    return std::vector<AIE::BDDimLayoutAttr>{};
-  std::vector<AIE::BDDimLayoutAttr> output = {};
+    return std::vector<AIE::BDDimLayoutAttr>();
+  std::vector<AIE::BDDimLayoutAttr> output;
   for (auto [wrapVal, stepsizeVal] :
        llvm::zip_equal(memcpy_sizes, memcpy_strides)) {
     auto stepsize = mlir::getConstantIntValue(stepsizeVal);

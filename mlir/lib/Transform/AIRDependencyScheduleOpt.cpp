@@ -1346,6 +1346,10 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
 
     // Hoist ops out to a new scf.for loop
     hoistTargetOpsToNewSCFFor(rewriter, for_op, target_ops);
+    // Erasing the original ops backwards, to avoid erasing op that still has
+    // valid uses.
+    for (auto o : llvm::reverse(target_ops))
+      rewriter.eraseOp(o);
 
     for_op->setAttr("isolated", rewriter.getBoolAttr(true));
 
@@ -1511,6 +1515,34 @@ void updateScfForBounds(OpBuilder builder, scf::ForOp loop_op, int lb, int ub,
   loop_op.setStep(builder.create<arith::ConstantIndexOp>(loc, step));
 }
 
+// Erase op from within an scf.for loop, and reconstruct ssa value usage in the
+// process.
+LogicalResult eraseOpFromScfFor(RewriterBase &rewriter, scf::ForOp sfo,
+                                Operation *op) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  IRMapping remap;
+  if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp())) {
+    rewriter.replaceAllUsesWith(exec.getResult(1), sfo.getInductionVar());
+    if (sfo.getNumRegionIterArgs())
+      rewriter.replaceAllUsesWith(exec.getAsyncToken(),
+                                  sfo.getRegionIterArgs()[0]);
+    else if (exec.getAsyncDependencies().size() == 1)
+      rewriter.replaceAllUsesWith(exec.getAsyncToken(),
+                                  exec.getAsyncDependencies()[0]);
+    else {
+      rewriter.setInsertionPoint(exec);
+      auto newWaitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, exec);
+      rewriter.replaceAllUsesWith(exec.getAsyncToken(),
+                                  newWaitAll.getAsyncToken());
+    }
+    rewriter.eraseOp(exec);
+  } else {
+    op->getResult(0).replaceAllUsesWith(sfo.getInductionVar());
+    rewriter.eraseOp(op);
+  }
+  return success();
+}
+
 // Fold affine.apply op operating on loop induction variable into loop bounds.
 struct CanonicalizeAffineApplyOnLoopInductionVar
     : public OpRewritePattern<affine::AffineApplyOp> {
@@ -1562,23 +1594,8 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
         return failure();
       }
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
-      IRMapping remap;
-      if (auto exec = dyn_cast<air::ExecuteOp>(apply->getParentOp())) {
-        exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
-        if (sfo.getNumRegionIterArgs())
-          exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
-        else if (exec.getAsyncDependencies().size() == 1)
-          exec.getAsyncToken().replaceAllUsesWith(
-              exec.getAsyncDependencies()[0]);
-        else {
-          exec->emitOpError("failed to reconstruct dependency after its erase");
-          return failure();
-        }
-        rewriter.eraseOp(exec);
-      } else {
-        apply.getResult().replaceAllUsesWith(sfo.getInductionVar());
-        rewriter.eraseOp(apply);
-      }
+      if (failed(eraseOpFromScfFor(rewriter, sfo, apply)))
+        return failure();
       updateScfForBounds(rewriter, sfo, *new_lb, *new_ub, newStepInInt);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
@@ -1667,23 +1684,8 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
       int new_lb =
           *mlir::getConstantIntValue(sfo.getLowerBound()) * muli_factor;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
-      IRMapping remap;
-      if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp())) {
-        exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
-        if (sfo.getNumRegionIterArgs())
-          exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
-        else if (exec.getAsyncDependencies().size() == 1)
-          exec.getAsyncToken().replaceAllUsesWith(
-              exec.getAsyncDependencies()[0]);
-        else {
-          exec->emitOpError("failed to reconstruct dependency after its erase");
-          return failure();
-        }
-        rewriter.eraseOp(exec);
-      } else {
-        op.getResult().replaceAllUsesWith(sfo.getInductionVar());
-        rewriter.eraseOp(op);
-      }
+      if (failed(eraseOpFromScfFor(rewriter, sfo, op)))
+        return failure();
       updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
@@ -1758,23 +1760,8 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
       int new_lb =
           *mlir::getConstantIntValue(sfo.getLowerBound()) + addi_operand;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
-      IRMapping remap;
-      if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp())) {
-        exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
-        if (sfo.getNumRegionIterArgs())
-          exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
-        else if (exec.getAsyncDependencies().size() == 1)
-          exec.getAsyncToken().replaceAllUsesWith(
-              exec.getAsyncDependencies()[0]);
-        else {
-          exec->emitOpError("failed to reconstruct dependency after its erase");
-          return failure();
-        }
-        rewriter.eraseOp(exec);
-      } else {
-        op.getResult().replaceAllUsesWith(sfo.getInductionVar());
-        rewriter.eraseOp(op);
-      }
+      if (failed(eraseOpFromScfFor(rewriter, sfo, op)))
+        return failure();
       updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
@@ -1801,8 +1788,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
   AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims,
-                                            int &maxSize)
-      : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize) {}
+                                            int &maxSize,
+                                            bool &enableRepeatAtHighestDim)
+      : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize),
+        enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
@@ -1850,6 +1839,61 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     (void)canonicalizeWrapAndStrideList(
         rewriter, offsets, wraps, strides,
         air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
+
+    // Whether repeat (i.e. stride = 0) is supported at highest dimension.
+    if (enableRepeatAtHighestDim && !wraps.empty()) {
+      // Force bump up number of dims to maxNumDims.
+      auto zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      auto oneIdx = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      while ((int)offsets.size() < maxNumDims) {
+        offsets.insert(offsets.begin(), zeroIdx);
+      }
+      while ((int)wraps.size() < maxNumDims) {
+        wraps.insert(wraps.begin(), oneIdx);
+      }
+      while ((int)strides.size() < maxNumDims) {
+        strides.insert(strides.begin(), zeroIdx);
+      }
+      // Stride = 0 means repeat that dimension. If highest dimension (dim 0) is
+      // not used, then move the repeat dimension to dim 0, which is the only
+      // dim with repeat capability. Else, fall back to unrolling BDs.
+      unsigned activeDimsInBetween = 0;
+      for (unsigned i = 1; i < strides.size(); i++) {
+        auto constWrap = mlir::getConstantIntValue(wraps[i]);
+        auto constStride = mlir::getConstantIntValue(strides[i]);
+        if (!constWrap)
+          continue;
+        if (!constStride)
+          continue;
+        if (*constWrap <= 1)
+          continue; // Inactive dimension. Continue.
+        if (*constStride) {
+          // Found active dimension after dim 0. Any subsequent repeat dimension
+          // shall not bump to dim 0 anymore.
+          activeDimsInBetween++;
+          continue;
+        }
+        // This is a repeat dimension. Start converting offsets, wraps and
+        // strides...
+        if (mlir::getConstantIntValue(wraps[0]) &&
+            *mlir::getConstantIntValue(wraps[0]) == 1 && !activeDimsInBetween) {
+          // Dimension 0 is available. Move the repeat dimension i to dimension
+          // 0.
+          auto tmp = wraps[0];
+          wraps[0] = wraps[i];
+          wraps[i] = tmp;
+          tmp = strides[0];
+          strides[0] = strides[i];
+          strides[i] = tmp;
+          tmp = offsets[0];
+          offsets[0] = offsets[i];
+          offsets[i] = tmp;
+        } else {
+          (void)loopUnrollFull(for_op);
+          return success();
+        }
+      }
+    }
 
     air::ChannelInterface new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -1913,6 +1957,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 private:
   int &maxNumDims;
   int &maxSize;
+  bool &enableRepeatAtHighestDim;
 };
 
 // This pattern should be executed after
@@ -2112,8 +2157,10 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     : public OpRewritePattern<air::ChannelPutOp> {
   using OpRewritePattern<air::ChannelPutOp>::OpRewritePattern;
 
-  AIRCanonicalizeChannelPutOpWrapAndStrideList(MLIRContext *ctx, int &maxSize)
-      : OpRewritePattern(ctx), maxSize(maxSize) {}
+  AIRCanonicalizeChannelPutOpWrapAndStrideList(MLIRContext *ctx, int &maxSize,
+                                               bool &enableRepeatAtHighestDim)
+      : OpRewritePattern(ctx), maxSize(maxSize),
+        enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
 
   LogicalResult matchAndRewrite(air::ChannelPutOp op,
                                 PatternRewriter &rewriter) const override {
@@ -2128,6 +2175,21 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     SmallVector<Value> offsets = op.getOffsets();
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
+
+    // When highest-dimension repeat is active, (1) enableRepeatAtHighestDim
+    // option is switched on, (2) wrap-and-stride list isn't empty (i.e. data
+    // isn't 1-d streamed in), (3) highest stride is zero, and (4) highest wrap
+    // is not one.
+    bool highestDimRepeatActive = enableRepeatAtHighestDim &&
+                                  !strides.empty() &&
+                                  *getConstantIntValue(strides.front()) == 0 &&
+                                  *getConstantIntValue(sizes.front()) != 1;
+
+    if (highestDimRepeatActive) {
+      // If repeat is enabled at the highest dimension, then the highest
+      // dimension must be preserved.
+      return failure();
+    }
 
     if (failed(canonicalizeWrapAndStrideList(
             rewriter, offsets, sizes, strides,
@@ -2148,14 +2210,17 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
 
 private:
   int &maxSize;
+  bool &enableRepeatAtHighestDim;
 };
 
 struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     : public OpRewritePattern<air::ChannelGetOp> {
   using OpRewritePattern<air::ChannelGetOp>::OpRewritePattern;
 
-  AIRCanonicalizeChannelGetOpWrapAndStrideList(MLIRContext *ctx, int &maxSize)
-      : OpRewritePattern(ctx), maxSize(maxSize) {}
+  AIRCanonicalizeChannelGetOpWrapAndStrideList(MLIRContext *ctx, int &maxSize,
+                                               bool &enableRepeatAtHighestDim)
+      : OpRewritePattern(ctx), maxSize(maxSize),
+        enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
 
   LogicalResult matchAndRewrite(air::ChannelGetOp op,
                                 PatternRewriter &rewriter) const override {
@@ -2170,6 +2235,21 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     SmallVector<Value> offsets = op.getOffsets();
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
+
+    // When highest-dimension repeat is active, (1) enableRepeatAtHighestDim
+    // option is switched on, (2) wrap-and-stride list isn't empty (i.e. data
+    // isn't 1-d streamed in), (3) highest stride is zero, and (4) highest wrap
+    // is not one.
+    bool highestDimRepeatActive = enableRepeatAtHighestDim &&
+                                  !strides.empty() &&
+                                  *getConstantIntValue(strides.front()) == 0 &&
+                                  *getConstantIntValue(sizes.front()) != 1;
+
+    if (highestDimRepeatActive) {
+      // If repeat is enabled at the highest dimension, then the highest
+      // dimension must be preserved.
+      return failure();
+    }
 
     if (failed(canonicalizeWrapAndStrideList(
             rewriter, offsets, sizes, strides,
@@ -2190,6 +2270,7 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
 
 private:
   int &maxSize;
+  bool &enableRepeatAtHighestDim;
 };
 
 struct UnrollChannelByFactorPattern {
@@ -2973,10 +3054,9 @@ public:
 private:
 };
 
-LogicalResult
-AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
-                                      int maxSize = -1,
-                                      bool enableForLoopUnrolling = true) {
+LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
+    Region *region, int maxNumDims = -1, int maxSize = -1,
+    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
   preproc_patterns
@@ -2992,8 +3072,8 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet preproc_wns_patterns(ctx);
-  populateAIRCanonicalizeChannelWrapAndStridePatterns(preproc_wns_patterns,
-                                                      maxSize);
+  populateAIRCanonicalizeChannelWrapAndStridePatterns(
+      preproc_wns_patterns, maxSize, enableRepeatAtHighestDim);
   (void)applyPatternsGreedily(*region, std::move(preproc_wns_patterns));
 
   RewritePatternSet patterns(ctx);
@@ -3001,8 +3081,8 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
                   CanonicalizeArithMuliOpOnLoopInductionVar,
                   CanonicalizeArithAddiOpOnLoopInductionVar,
                   AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
-  patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(ctx, maxNumDims,
-                                                             maxSize);
+  patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
+      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
@@ -3017,7 +3097,8 @@ AIRSpecializeChannelWrapAndStrideImpl(Region *region, int maxNumDims = -1,
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet cano_patterns(ctx);
-  populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, maxSize);
+  populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, maxSize,
+                                                      enableRepeatAtHighestDim);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(cano_patterns));
 
@@ -4048,8 +4129,35 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     (void)applyPatternsGreedily(f, std::move(patterns));
 
     // Hoist ops out of each scf.for.
-    for (auto set : target_ops_sets)
-      (void)hoistTargetOpsToNewSCFFor(rewriter, for_op, set.takeVector());
+    llvm::SetVector<Operation *> erasedOps;
+    SmallVector<scf::ForOp> hoistedScfFors;
+    for (auto set : target_ops_sets) {
+      SmallVector<Operation *> setAsSmallVec = set.takeVector();
+      // (void)hoistTargetOpsToNewSCFFor(rewriter, for_op, setAsSmallVec);
+      auto hoistedScfFor =
+          hoistTargetOpsToNewSCFFor(rewriter, for_op, setAsSmallVec);
+      hoistedScfFors.push_back(hoistedScfFor);
+      erasedOps.insert(setAsSmallVec.begin(), setAsSmallVec.end());
+    }
+
+    // Replace for op uses
+    if (air::isAsyncOp(for_op)) {
+      if (hoistedScfFors.size() == 1) {
+        rewriter.replaceOp(for_op, hoistedScfFors.front());
+      } else {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(for_op);
+        SmallVector<Value> deps;
+        for (auto scfFor : hoistedScfFors) {
+          if (air::isAsyncOp(scfFor))
+            deps.push_back(air::getAsyncTokenFromOp(scfFor));
+        }
+        rewriter.replaceOpWithNewOp<air::WaitAllOp>(
+            for_op, air::AsyncTokenType::get(f.getContext()), deps);
+      }
+    } else {
+      rewriter.eraseOp(for_op);
+    }
 
     return success();
   }
@@ -5341,9 +5449,148 @@ private:
   }
 };
 
+// Generate a wait_all at the end of block, which gathers all dangling async
+// tokens.
+FailureOr<air::WaitAllOp>
+generateWaitAllToTerminateBlock(Block &block, OpBuilder &b,
+                                bool isBlocking = true) {
+  llvm::SetVector<Value> blockTokens, danglingTokens;
+  blockTokens.insert(block.getArguments().begin(), block.getArguments().end());
+  for (auto &o : block.getOperations())
+    blockTokens.insert(o.getResults().begin(), o.getResults().end());
+  for (auto t : blockTokens) {
+    if (!t.use_empty())
+      continue;
+    if (!isa<air::AsyncTokenType>(t.getType()))
+      continue;
+    danglingTokens.insert(t);
+  }
+  if (block.mightHaveTerminator())
+    b.setInsertionPoint(block.getTerminator());
+  else
+    b.setInsertionPointToEnd(&block);
+  if (isBlocking)
+    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
+                                    /*result_type*/ std::nullopt,
+                                    danglingTokens.takeVector());
+  else
+    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
+                                    air::AsyncTokenType::get(b.getContext()),
+                                    danglingTokens.takeVector());
+}
+
+// Air launch is converted to scf for loop nest here, so as to enable
+// compile-time shim dma bd optimizations.
+struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
+  using OpRewritePattern<air::LaunchOp>::OpRewritePattern;
+
+  AIRLaunchToScfForPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::LaunchOp launch,
+                                PatternRewriter &rewriter) const override {
+    if (launch->hasAttr("dummyLaunch"))
+      return failure(); // Ignore dummy launch having no iteration space
+    auto loc = launch->getLoc();
+    auto context = rewriter.getContext();
+
+    // Create a dummy single-iteration air launch op in place of the original
+    // launch, to preserve the original launch's region which represents the
+    // lifetime of all hardware inside it.
+    auto dummyLaunch = rewriter.create<air::LaunchOp>(
+        loc, /*async_dependencies*/ SmallVector<Value>(),
+        /*sizes*/ SmallVector<Value>(), launch.getKernelOperands(),
+        /*is_async*/ true);
+    dummyLaunch->setAttrs(launch->getDiscardableAttrDictionary());
+    dummyLaunch->setAttr("dummyLaunch", BoolAttr::get(context, true));
+    rewriter.setInsertionPointToStart(&dummyLaunch.getBody().front());
+
+    SmallVector<Value> lbs, ubs, steps;
+    auto c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    auto c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+
+    // make scf.for loop nest to replace air.launch
+    for (auto d : launch.getSizeOperands()) {
+      lbs.push_back(c0);
+      auto const_d = getConstantIntValue(d);
+      ubs.push_back(rewriter.create<arith::ConstantIndexOp>(loc, *const_d));
+      steps.push_back(c1);
+    }
+    if (lbs.empty()) {
+      lbs.push_back(c0);
+      ubs.push_back(c1);
+      steps.push_back(c1);
+    }
+
+    SmallVector<Value> ivs;
+    Block *body = nullptr;
+
+    // Serialize launch into scf.for.
+    SmallVector<Value> iterArgs;
+    if (air::isAsyncOp(launch)) {
+      auto waitAll = rewriter.create<air::WaitAllOp>(
+          loc, air::AsyncTokenType::get(context), SmallVector<Value>{});
+      iterArgs.push_back(waitAll.getAsyncToken());
+    }
+    for (unsigned i = 0; i < lbs.size(); i++) {
+      auto scfFor =
+          rewriter.create<scf::ForOp>(loc, lbs[i], ubs[i], steps[i], iterArgs);
+      if (i != 0 && scfFor->getNumResults())
+        rewriter.create<scf::YieldOp>(loc, scfFor->getResults());
+      iterArgs.clear();
+      for (auto v : scfFor.getRegionIterArgs())
+        iterArgs.push_back(v);
+      body = scfFor.getBody();
+      ivs.push_back(scfFor.getInductionVar());
+      rewriter.setInsertionPointToStart(scfFor.getBody());
+    }
+
+    IRMapping remap;
+
+    // map launch iteration space to scf.for loop nest's ivs
+    for (auto p : llvm::zip(launch.getIds(), ivs))
+      remap.map(std::get<0>(p), std::get<1>(p));
+
+    // map launch size to scf.for loop nest's upper bounds
+    for (auto p : llvm::zip(launch.getSizeOperands(), ubs))
+      remap.map(std::get<0>(p), std::get<1>(p));
+
+    // remap isolated from above launch arguments
+    for (unsigned i = 0; i < launch.getNumKernelOperands(); i++)
+      remap.map(launch.getKernelArgument(i), dummyLaunch.getKernelArgument(i));
+
+    // clone the body
+    rewriter.setInsertionPointToStart(body);
+    auto &launchOps = launch.getBody().front().getOperations();
+    for (auto bi = launchOps.begin(), be = --launchOps.end(); bi != be; ++bi)
+      rewriter.clone(*bi, remap);
+
+    // Create scf.yield to terminate scf.for body.
+    if (air::isAsyncOp(launch)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto wa = generateWaitAllToTerminateBlock(*body, rewriter,
+                                                /*isBlocking*/ false);
+      if (failed(wa))
+        return failure();
+      rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(),
+                                    wa->getAsyncToken());
+    }
+
+    // replace output events with air.wait_all
+    if (air::isAsyncOp(launch)) {
+      rewriter.setInsertionPoint(launch);
+      rewriter.replaceOpWithNewOp<air::WaitAllOp>(
+          launch, air::AsyncTokenType::get(context),
+          air::getAsyncDependenciesFromOp(launch));
+    } else
+      rewriter.eraseOp(launch);
+
+    return success();
+  }
+};
+
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient shim dma block
-// descriptors (BD). TODO: generalize this to cover memtile BDs, too.
+// descriptors (BD).
 class AIROptimizeShimDMABDs
     : public xilinx::air::impl::AIROptimizeShimDMABDsBase<
           AIROptimizeShimDMABDs> {
@@ -5361,23 +5608,209 @@ public:
 
   void runOnOperation() override {
     auto func = getOperation();
+
+    if (func.isExternal())
+      return;
+
+    auto ctx = &getContext();
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
       func.emitOpError("Invalid aie.device option");
       signalPassFailure();
       return;
     }
+
+    // AIE1 architecture doesn't support multi-dimensional dma bds. Tiling shim
+    // dma for AIE1 does not optimize the schedule.
+    if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
+      // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
+      // specialization patterns.
+      air::applyAIRSpecializeChannelWrapAndStridePattern(
+          &func.getRegion(),
+          /*maxNumDims*/ 1, /*maxSize*/ -1,
+          /*enableForLoopUnrolling*/ false, /*enableRepeatAtHighestDim*/ true);
+      return;
+    }
+
+    // Convert air.launch to scf.for.
+    RewritePatternSet patterns(ctx);
+    patterns.insert<AIRLaunchToScfForPattern>(ctx);
+    (void)applyPatternsGreedily(func, std::move(patterns));
+
+    // Tile all shim dma scf.for loops into smaller and repeating tiles.
+    SmallVector<scf::ForOp> shimFors;
+    func.walk([&shimFors](scf::ForOp forOp) {
+      // Get for loop band outside of any segment or herd region.
+      if (isa<air::LaunchOp, func::FuncOp>(forOp->getParentOp())) {
+        shimFors.push_back(forOp);
+      }
+    });
+    if (shimFors.empty())
+      return;
+    // Helper function converting a vector of unsigned int to a vector of Value.
+    auto convertVecOfIntToVecOfValue = [](OpBuilder &b,
+                                          SmallVector<unsigned> clTileSizes) {
+      OpBuilder::InsertionGuard guard(b);
+      SmallVector<Value> optTileSizes;
+      for (unsigned i = 0; i < clTileSizes.size(); ++i) {
+        optTileSizes.push_back(b.create<arith::ConstantIndexOp>(
+            b.getUnknownLoc(), clTileSizes[i]));
+      }
+      return optTileSizes;
+    };
+    IRRewriter rewriter(ctx);
+    rewriter.setInsertionPoint(shimFors.front());
+    SmallVector<Value> optTileSizes = convertVecOfIntToVecOfValue(
+        rewriter,
+        SmallVector<unsigned>(clTileSizes.begin(), clTileSizes.end()));
+    // Helper function getting the actual tiling sizes based on the specified
+    // loop band's depth and trip counts.
+    auto getActualTileSizesPerScfRoot = [](OpBuilder &b, scf::ForOp root,
+                                           SmallVector<Value> optTileSizes) {
+      OpBuilder::InsertionGuard guard(b);
+      SmallVector<scf::ForOp> perfectlyNestedLoops;
+      getPerfectlyNestedLoops(perfectlyNestedLoops, root);
+      SmallVector<Value> actualTileSizes;
+      for (size_t i = 0;
+           i < std::min(perfectlyNestedLoops.size(), optTileSizes.size());
+           i++) {
+        auto largestFactor = b.create<arith::ConstantIndexOp>(
+            b.getUnknownLoc(),
+            air::findLargestFactor(
+                *air::getStaticScfForTripCountAsInt(perfectlyNestedLoops[i]),
+                *getConstantIntValue(optTileSizes[i])));
+        actualTileSizes.push_back(largestFactor);
+      }
+      return actualTileSizes;
+    };
+    // Tile each for loop band operated by shim dma bds.
+    llvm::SetVector<scf::ForOp> forLoopsToUnroll;
+    for (auto forOp : shimFors) {
+      if (optTileSizes.empty())
+        break;
+      SmallVector<Value> actualTileSizes =
+          getActualTileSizesPerScfRoot(rewriter, forOp, optTileSizes);
+      auto tiledLoops = tilePerfectlyNested(forOp, ArrayRef(actualTileSizes));
+
+      // Fixup loop-carried deps in tiled loops
+      if (forOp->getNumResults()) {
+        // Forward traversing through tiledLoops, to update iter args.
+        for (size_t i = 0; i < tiledLoops.size(); i++) {
+          scf::ForOp parentFor = tiledLoops[i]->getParentOfType<scf::ForOp>();
+          auto replaceRes = tiledLoops[i].replaceWithAdditionalIterOperands(
+              rewriter, parentFor.getRegionIterArgs(), true);
+          if (failed(replaceRes)) {
+            tiledLoops[i]->emitOpError("adding iter operands failed.");
+            signalPassFailure();
+          }
+          tiledLoops[i] = dyn_cast<scf::ForOp>(replaceRes->getOperation());
+        }
+        // Backward traversing through tiledLoops, to update yields.
+        for (auto tiledLoop : llvm::reverse(tiledLoops)) {
+          auto loopTerm = tiledLoop.getBody()->getTerminator();
+          rewriter.setInsertionPoint(loopTerm);
+          rewriter.replaceOpWithNewOp<scf::YieldOp>(
+              loopTerm, loopTerm->getPrevNode()->getResult(0));
+        }
+        // Fixup the yield connecting the innermost outer-loops to the outermost
+        // inner-loops; create disconnected async edge between loop iterations
+        // to make it blocking.
+        rewriter.setInsertionPointAfter(tiledLoops.front());
+        auto blockingWaitAll = rewriter.replaceOpWithNewOp<air::WaitAllOp>(
+            tiledLoops.front()->getNextNode(), /*result_type*/ std::nullopt,
+            tiledLoops.front()->getResult(0));
+        rewriter.setInsertionPointAfter(blockingWaitAll);
+        auto disconnectedWaitAll = rewriter.create<air::WaitAllOp>(
+            tiledLoops.front()->getLoc(),
+            air::AsyncTokenType::get(rewriter.getContext()),
+            SmallVector<Value>{});
+        rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(),
+                                      disconnectedWaitAll.getAsyncToken());
+      }
+
+      // Unroll for loop nest from root down until shim-dma-unroll-depth.
+      auto forLoopNest = tiledLoops;
+      scf::ForOp newForLoopBand = tiledLoops.front();
+      while (auto parent = dyn_cast_if_present<scf::ForOp>(
+                 newForLoopBand->getParentOp())) {
+        forLoopNest.insert(forLoopNest.begin(), parent);
+        newForLoopBand = parent;
+      }
+      // Perform unrolling on the remainder loop nests after tiling, inner loop
+      // first.
+      for (int i = actualTileSizes.size() - 1; i >= 0; i--) {
+        forLoopsToUnroll.insert(forLoopNest[i]);
+      }
+    }
+
+    auto applyCanonicalizationPatterns = [](MLIRContext *ctx, Region &region) {
+      RewritePatternSet affineArithCanoPatterns(ctx);
+      mlir::affine::AffineApplyOp::getCanonicalizationPatterns(
+          affineArithCanoPatterns, ctx);
+      mlir::affine::AffineMinOp::getCanonicalizationPatterns(
+          affineArithCanoPatterns, ctx);
+      mlir::affine::AffineMaxOp::getCanonicalizationPatterns(
+          affineArithCanoPatterns, ctx);
+      mlir::arith::AddIOp::getCanonicalizationPatterns(affineArithCanoPatterns,
+                                                       ctx);
+      mlir::arith::MulIOp::getCanonicalizationPatterns(affineArithCanoPatterns,
+                                                       ctx);
+      (void)applyPatternsGreedily(region, std::move(affineArithCanoPatterns));
+      return;
+    };
+    // Canonicalize IR to make loop bounds explicitly static.
+    applyCanonicalizationPatterns(ctx, func.getBody());
+
+    // Unroll outer scf.for loop nest.
+    for (auto scfFor : forLoopsToUnroll) {
+      auto unroll_factor = air::getStaticScfForTripCountAsInt(scfFor);
+      if (!unroll_factor) {
+        scfFor->emitOpError("dynamic loop bound.");
+        signalPassFailure();
+      }
+      (void)loopUnrollByFactor(scfFor, *unroll_factor);
+    }
+    // Canonicalize IR to make loop bounds explicitly static.
+    applyCanonicalizationPatterns(ctx, func.getBody());
+
     int maxNumDims =
         isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? 1 : 4;
     int maxSize =
         isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? -1 : 1023;
     // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
     // specialization patterns.
-    air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getRegion());
+    air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getBody());
     air::applyAIRSpecializeChannelWrapAndStridePattern(
         &func.getRegion(),
         /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
-        /*enableForLoopUnrolling*/ false);
+        /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ true);
+
+    if (forLoopsToUnroll.empty()) {
+      // If no loop unrolling was performed, gather all air.channel_put/get
+      // tokens from block, and generate a blocking wait all.
+      SmallVector<Block *> funcAndLaunchBlocks(1, &func.getBody().front());
+      func.walk([&funcAndLaunchBlocks](air::LaunchOp launch) {
+        if (air::isAsyncOp(launch))
+          funcAndLaunchBlocks.push_back(&launch.getRegion().front());
+      });
+      for (auto blk : funcAndLaunchBlocks) {
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          SmallVector<Value> chanTokens;
+          for (auto chan : blk->getOps<air::ChannelInterface>())
+            if (air::isAsyncOp(chan))
+              chanTokens.push_back(air::getAsyncTokenFromOp(chan));
+
+          if (blk->mightHaveTerminator())
+            rewriter.setInsertionPoint(blk->getTerminator());
+          else
+            rewriter.setInsertionPointToEnd(blk);
+          rewriter.create<air::WaitAllOp>(rewriter.getUnknownLoc(),
+                                          /*result_type*/ std::nullopt,
+                                          chanTokens);
+        }
+      }
+    }
   }
 
 private:
@@ -5427,7 +5860,16 @@ public:
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           &seg.getBody(),
           /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
-          /*enableForLoopUnrolling*/ true);
+          /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ false);
+
+      // Create wait_all to synchronize body.
+      IRRewriter rewriter(func.getContext());
+      if (air::isAsyncOp(seg)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        if (failed(generateWaitAllToTerminateBlock(
+                seg.getBody().front(), rewriter, /*isBlocking*/ true)))
+          signalPassFailure();
+      }
     }
   }
 
@@ -5938,17 +6380,19 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
 }
 
 void populateAIRCanonicalizeChannelWrapAndStridePatterns(
-    RewritePatternSet &patterns, int &maxSize) {
+    RewritePatternSet &patterns, int &maxSize, bool &enableRepeatAtHighestDim) {
   MLIRContext *ctx = patterns.getContext();
   patterns.insert<AIRCanonicalizeChannelPutOpWrapAndStrideList,
-                  AIRCanonicalizeChannelGetOpWrapAndStrideList>(ctx, maxSize);
+                  AIRCanonicalizeChannelGetOpWrapAndStrideList>(
+      ctx, maxSize, enableRepeatAtHighestDim);
 }
 
 void applyAIRSpecializeChannelWrapAndStridePattern(
     Region *region, int maxNumDims = -1, int maxSize = -1,
-    bool enableForLoopUnrolling = true) {
+    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false) {
   (void)AIRSpecializeChannelWrapAndStrideImpl(region, maxNumDims, maxSize,
-                                              enableForLoopUnrolling);
+                                              enableForLoopUnrolling,
+                                              enableRepeatAtHighestDim);
 }
 
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {

@@ -241,3 +241,59 @@ module {
     return
   }
 }
+
+// -----
+
+// Check for the generation of a blocking airrt.wait_all at the end of an air.launch.
+
+// CHECK-LABEL:   func.func @air_dep_in_launch
+// CHECK: affine.for
+// CHECK: airrt.segment_load "segment_0" : i64
+// CHECK: %[[TOKEN1:.*]] = airrt.dma_memcpy_nd
+// CHECK: %[[WAIT1:.*]] = airrt.wait_all %[[TOKEN1]]
+// CHECK: %[[TOKEN2:.*]] = airrt.dma_memcpy_nd
+// CHECK: %[[WAIT2:.*]] = airrt.wait_all %[[TOKEN2]]
+// CHECK: %[[TOKEN3:.*]] = airrt.dma_memcpy_nd
+// CHECK: airrt.wait_all %[[TOKEN3]], %[[WAIT1]], %[[WAIT2]]
+
+module {
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
+  air.channel @channel_2 [1, 1]
+  func.func @air_dep_in_launch(%arg0: memref<512xbf16>, %arg1: memref<512xbf16>, %arg2: memref<512xbf16>) {
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async () in () args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg2) : memref<512xbf16>, memref<512xbf16>, memref<512xbf16> {
+      %1 = air.channel.put async  @channel_0[] (%arg7[] [] []) {metadata = @airMemcpyId13} : (memref<512xbf16>)
+      %5 = air.channel.put async  @channel_1[] (%arg8[] [] []) {metadata = @airMemcpyId17} : (memref<512xbf16>)
+      %9 = air.channel.get async [%1, %5]  @channel_2[] (%arg9[] [] []) {metadata = @airMemcpyId94} : (memref<512xbf16>)
+      %13 = air.segment @segment_0 async {
+        %async_token_16, %results_17 = air.execute -> (memref<512xbf16, 1>) {
+          %alloc = memref.alloc() : memref<512xbf16, 1>
+          air.execute_terminator %alloc : memref<512xbf16, 1>
+        }
+        %async_token_30, %results_31 = air.execute -> (memref<512xbf16, 1>) {
+          %alloc = memref.alloc() : memref<512xbf16, 1>
+          air.execute_terminator %alloc : memref<512xbf16, 1>
+        }
+        %async_token_38, %results_39 = air.execute -> (memref<512xbf16, 1>) {
+          %alloc = memref.alloc() : memref<512xbf16, 1>
+          air.execute_terminator %alloc : memref<512xbf16, 1>
+        }
+        %14 = air.channel.get async [%async_token_38]  @channel_0[] (%results_39[] [] []) {id = 13 : i32} : (memref<512xbf16, 1>)
+        %18 = air.channel.get async [%async_token_30]  @channel_1[] (%results_31[] [] []) {id = 17 : i32} : (memref<512xbf16, 1>)
+        %71 = air.channel.put async [%14, %18]  @channel_2[] (%results_17[] [] []) {id = 94 : i32} : (memref<512xbf16, 1>)
+        %async_token_40 = air.execute [%14] {
+          memref.dealloc %results_39 : memref<512xbf16, 1>
+        }
+        %async_token_44 = air.execute [%18] {
+          memref.dealloc %results_31 : memref<512xbf16, 1>
+        }
+        %async_token_51 = air.execute [%71] {
+          memref.dealloc %results_17 : memref<512xbf16, 1>
+        }
+      }
+      %15 = air.wait_all async [%1, %5, %9]
+    }
+    return
+  }
+}

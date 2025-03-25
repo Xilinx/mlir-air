@@ -160,7 +160,8 @@ void AffineLoopOptPass::tileLoops(
   // Tile each band.
   for (auto &band : *bands) {
 
-    assert(!band.empty());
+    if (band.empty())
+      return;
     auto stringAttr = band[0]->getAttrOfType<StringAttr>(
         AffineLoopOptPass::affineOptAttrName);
 

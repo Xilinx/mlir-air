@@ -118,15 +118,9 @@ module {
 
 // CHECK-LABEL: aie.device(npu1_1col)
 // CHECK: aiex.runtime_sequence @func2(%[[VAL_0:.*]]: memref<2048x2048xbf16>, %[[VAL_1:.*]]: memref<2048x2048xbf16>, %[[VAL_2:.*]]: memref<2048x2048xbf16>) {
-// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_0]][0, 0, 0, 0][4, 8, 128, 256][0, 256, 2048, 1]) {id = 0 : i64, metadata = @airMemcpyId4} : memref<2048x2048xbf16>
-// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_0]][0, 0, 128, 0][4, 8, 128, 256][0, 256, 2048, 1]) {id = 1 : i64, metadata = @airMemcpyId4} : memref<2048x2048xbf16>
-// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_0]][0, 0, 256, 0][4, 8, 128, 256][0, 256, 2048, 1]) {id = 2 : i64, metadata = @airMemcpyId4} : memref<2048x2048xbf16>
-// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_0]][0, 0, 384, 0][4, 8, 128, 256][0, 256, 2048, 1]) {id = 3 : i64, metadata = @airMemcpyId4} : memref<2048x2048xbf16>
-// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_1]][0, 0, 0, 0][4, 4, 512, 128][128, 1048576, 2048, 1]) {id = 4 : i64, metadata = @airMemcpyId7} : memref<2048x2048xbf16>
-// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_1]][0, 0, 0, 0][4, 4, 512, 128][128, 1048576, 2048, 1]) {id = 5 : i64, metadata = @airMemcpyId7} : memref<2048x2048xbf16>
-// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_1]][0, 0, 0, 0][4, 4, 512, 128][128, 1048576, 2048, 1]) {id = 6 : i64, metadata = @airMemcpyId7} : memref<2048x2048xbf16>
-// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_1]][0, 0, 0, 0][4, 4, 512, 128][128, 1048576, 2048, 1]) {id = 7 : i64, metadata = @airMemcpyId7} : memref<2048x2048xbf16>
-// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_2]][0, 0, 0, 0][4, 4, 128, 128][262144, 128, 2048, 1]) {id = 8 : i64, metadata = @airMemcpyId26} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_0]][0, 0, 0, 0][1, 8, 128, 256][0, 256, 2048, 1]) {id = 0 : i64, metadata = @airMemcpyId4} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_1]][0, 0, 0, 0][1, 4, 512, 128][0, 1048576, 2048, 1]) {id = 1 : i64, metadata = @airMemcpyId7} : memref<2048x2048xbf16>
+// CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_2]][0, 0, 0, 0][1, 1, 128, 128][0, 0, 2048, 1]) {id = 2 : i64, metadata = @airMemcpyId26} : memref<2048x2048xbf16>
 
 module {
   aie.device(npu1_1col) {
@@ -168,8 +162,8 @@ module {
     memref.assume_alignment %6, 64 : memref<2048x2048xbf16>
     %8 = airrt.wait_all : !airrt.event
     %9 = airrt.wait_all %8, %5, %2 : !airrt.event
-    affine.for %arg0 = 0 to 4 {
-      affine.for %arg1 = 0 to 4 {
+    affine.for %arg0 = 0 to 1 {
+      affine.for %arg1 = 0 to 1 {
         %10 = affine.apply affine_map<()[s0] -> (s0 * 128)>()[%arg0]
         %11 = airrt.wait_all : !airrt.event
         %12 = airrt.wait_all %11 : !airrt.event

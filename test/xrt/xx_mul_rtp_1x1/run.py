@@ -1,4 +1,4 @@
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
 # RUN: %PYTHON %s | FileCheck %s
@@ -25,9 +25,9 @@ sizes = [
 
 dtypes = [
     (np.int32, np.int32),
-    # (np.int16, np.int32),
-    # (np.int16, np.int16),
-    # (np.float32, np.float32),
+    (np.int16, np.int32),
+    (np.int16, np.int16),
+    (np.float32, np.float32),
     # (bfloat16, np.float32),
     # (bfloat16, bfloat16),
 ]
@@ -64,6 +64,7 @@ def build_module(shape, idtype, odtype, tile_size):
             @segment(name="segment_0")
             def segment_body():
                 c = arith.ConstantOp.create_index(tile_size)
+
                 @herd(name="herd_0", sizes=[1, 1], operands=[c])
                 def herd_body(x, y, sx, sy, count):
                     mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
@@ -107,7 +108,7 @@ def run_test(size, idtype, odtype):
     ref = (input_a * input_b).astype(odtype)
     input_c = np.ones_like(ref)
 
-    backend = xrt_backend.XRTBackend(verbose=verbose)
+    backend = xrt_backend.XRTBackend(omit_pingpong=True, verbose=verbose)
 
     # run the module
     with filelock.FileLock("/tmp/npu.lock"):
