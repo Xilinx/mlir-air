@@ -49,7 +49,11 @@ public:
                               llvm::cl::init(0)};
 
   void loopsToParallel(ArrayRef<affine::AffineForOp> nest, int depth) {
-    assert((int)nest.size() > depth + 1);
+    if ((int)nest.size() <= depth + 1) {
+      nest.front()->emitOpError("HerdAssignDepth is greater or equal to the "
+                                "affine for loop nest depth.");
+      return;
+    }
     affine::AffineForOp outer = nest[depth];
     affine::AffineForOp inner = nest[depth + 1];
 
@@ -62,7 +66,14 @@ public:
       auto loc = outer.getLoc();
       auto ub_map_0 = outer.getUpperBoundMap();
       auto ub_map_1 = inner.getUpperBoundMap();
-      assert(ub_map_0.isSingleConstant() && ub_map_1.isSingleConstant());
+      if (!ub_map_0.isSingleConstant()) {
+        outer->emitOpError("upper bound map isn't a single constant");
+        return;
+      }
+      if (!ub_map_1.isSingleConstant()) {
+        inner->emitOpError("upper bound map isn't a single constant");
+        return;
+      }
       int64_t ub_0 = ub_map_0.getSingleConstantResult();
       int64_t ub_1 = ub_map_1.getSingleConstantResult();
 
@@ -110,7 +121,6 @@ public:
         LLVM_DEBUG(module.print(llvm::outs()));
       }
     }
-
   }
 
 private:

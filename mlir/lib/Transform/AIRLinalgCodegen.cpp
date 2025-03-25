@@ -140,8 +140,6 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
                             ty.getMemorySpace()));
     for (auto use : newOp.getUsers()) {
       if (auto launch = dyn_cast<air::HerdOp>(use)) {
-        assert(launch.getKernelArguments().size() ==
-               launch.getOperands().size());
         for (unsigned int i = 0; i < launch.getNumKernelOperands(); i++) {
           auto arg = launch.getKernelArguments()[i];
           auto oper = launch.getKernelOperand(i);
@@ -1214,7 +1212,10 @@ public:
                                SmallVectorImpl<int64_t> *tileSizes,
                                SmallVectorImpl<int64_t> &tripCounts) {
 
-    assert(op.getNumLoops() == tileSizes->size() && "invalid tile size count");
+    if (op.getNumLoops() != tileSizes->size()) {
+      op->emitOpError("invalid tile size count");
+      return;
+    }
     for (unsigned i = 0, e = op.getNumLoops(); i < e; i++) {
       auto &tFactorAdjusted = (*tileSizes)[i];
       tFactorAdjusted = std::max((int64_t)1, tripCounts[i] / tFactorAdjusted);
@@ -1668,11 +1669,15 @@ public:
             getPerfectlyNestedLoops(loops, scfForOp);
       });
 
-      assert(clHerdSize.size() != 0 && "AIE tile dimension can't be zero");
-
-      assert(
-          clHerdSize.size() <= loops.size() &&
-          "AIE tile dimension must be equal or less than Tiled loops number");
+      if (clHerdSize.size() == 0) {
+        funcOp->emitOpError("AIE tile dimension can't be zero");
+        return;
+      }
+      if (clHerdSize.size() > loops.size()) {
+        funcOp->emitOpError(
+            "AIE tile dimension must be equal or less than Tiled loops number");
+        return;
+      }
 
       scf::ForOp outermost = loops[0];
       OpBuilder builder(outermost);

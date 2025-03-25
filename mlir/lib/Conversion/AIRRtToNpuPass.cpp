@@ -430,7 +430,9 @@ bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
 // Find the largest factor of 'num' which is not larger than 'max'. Ref:
 // https://github.com/nod-ai/iree-amd-aie/blob/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/AMDAIEUtils.cpp#L334
 int findLargestFactor(int num, int max) {
-  assert(max > 0 && "No factors less than or equal to 0 exist");
+  // No factors less than or equal to 0 exist
+  if (max <= 0)
+    return 0;
 
   // Do O(1) instead of O(sqrt(num)) computation for this common case.
   if (num <= max) {
@@ -768,7 +770,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     for (auto dma : dmas) {
       if (dma->getNumResults()) {
         OpBuilder builder(dma);
-        SmallVector<Type, 1> tys = {};
+        SmallVector<Type, 1> tys;
         auto newOp = builder.create<DmaMemcpyNdOp>(dma->getLoc(), tys,
                                                    dma->getOperands());
         newOp->setAttrs(dma->getDiscardableAttrDictionary());
