@@ -547,17 +547,53 @@ def run(mlir_module, args=None):
             else:
                 assert xclbin_file.endswith(".xclbin")
                 insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.txt"
-            aiecc_options = (["-v"] if opts.verbose else []) + [
-                "--no-aiesim",
-                "--xchesscc" if opts.xchesscc else "--no-xchesscc",
-                "--xbridge" if opts.xbridge else "--no-xbridge",
-                "--aie-generate-xclbin",
-                "--aie-generate-npu",
-                "--no-compile-host",
-                "--xclbin-name=" + xclbin_file,
-                "--npu-insts-name=" + insts_file,
-                air_to_npu_file,
+            aiecc_output_file_options = [
+                (
+                    "--xclbin-name=" + xclbin_file
+                    if opts.output_format == "xclbin"
+                    else ""
+                ),
+                (
+                    "--xclbin-kernel-name=" + opts.kernel_name
+                    if opts.kernel_name
+                    else ""
+                ),
+                (
+                    "--xclbin-instance-name=" + opts.instance_name
+                    if opts.instance_name
+                    else ""
+                ),
+                ("--xclbin-kernel-id=" + opts.kernel_id if opts.kernel_id else ""),
             ]
+            if opts.output_format == "xclbin":
+                aiecc_output_file_options = aiecc_output_file_options + [
+                    "--aie-generate-xclbin"
+                ]
+            elif opts.output_format == "txn":
+                aiecc_output_file_options = aiecc_output_file_options + [
+                    "--aie-generate-txn"
+                ]
+            else:
+                print("Error: unknown output-format")
+                sys.exit(1)
+            aiecc_existing_xclbin_options = [
+                ("--xclbin-input=" + opts.xclbin_input if opts.xclbin_input else "")
+            ]
+            aiecc_options = (
+                (["-v"] if opts.verbose else [])
+                + [
+                    "--no-aiesim",
+                    "--xchesscc" if opts.xchesscc else "--no-xchesscc",
+                    "--xbridge" if opts.xbridge else "--no-xbridge",
+                    "--aie-generate-npu",
+                    "--no-compile-host",
+                    "--npu-insts-name=" + insts_file,
+                ]
+                + aiecc_output_file_options
+                + aiecc_existing_xclbin_options
+                + [air_to_npu_file]
+            )
+            print(aiecc_options)
             aiecc.run(air_to_npu_module, aiecc_options)
         else:
             lower_airrt_to_airhost(

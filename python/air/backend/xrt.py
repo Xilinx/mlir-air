@@ -55,6 +55,11 @@ class XRTBackend(AirBackend):
         channel_multiplexing: list[str] = [],
         trace_offset: int = 0,
         trace_size: int = 0,
+        output_format: str = "xclbin",
+        kernel_name: str = "",
+        instance_name: str = "",
+        kernel_id: str = "",
+        xclbin_input: str = "",
     ):
         """Constructor for XRTBackend
 
@@ -69,6 +74,11 @@ class XRTBackend(AirBackend):
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
+            output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn].
+            kernel_name: configure aircc to package the kernel with the specified name.
+            instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
+            kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
+            xclbin_input: configure aircc to package the kernel into an existing xclbin with specified xclbin file name.
         """
         super().__init__()
         self.verbose = verbose
@@ -82,6 +92,11 @@ class XRTBackend(AirBackend):
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.currently_loaded = False
+        self.output_format = output_format
+        self.kernel_name = kernel_name
+        self.instance_name = instance_name
+        self.kernel_id = kernel_id
+        self.xclbin_input = xclbin_input
 
     def __del__(self):
         self.unload()
@@ -160,6 +175,22 @@ class XRTBackend(AirBackend):
                 aircc_options += [str(self.trace_size)]
                 aircc_options += ["-trace-offset"]
                 aircc_options += [str(self.trace_offset)]
+
+            if self.output_format != "":
+                aircc_options += ["--output-format"]
+                aircc_options += [self.output_format]
+            if self.kernel_name != "":
+                aircc_options += ["--xclbin-kernel-name"]
+                aircc_options += [self.kernel_name]
+            if self.instance_name != "":
+                aircc_options += ["--xclbin-instance-name"]
+                aircc_options += [self.instance_name]
+            if self.kernel_id != "":
+                aircc_options += ["--xclbin-kernel-id"]
+                aircc_options += [self.kernel_id]
+            if self.xclbin_input != "":
+                aircc_options += ["--xclbin-input"]
+                aircc_options += [self.xclbin_input]
 
             aircc.run(air_module, aircc_options)
 
