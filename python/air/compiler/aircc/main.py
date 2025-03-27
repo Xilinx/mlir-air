@@ -547,7 +547,14 @@ def run(mlir_module, args=None):
             else:
                 assert xclbin_file.endswith(".xclbin")
                 insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.txt"
-            aiecc_output_file_options = [
+            if opts.output_format == "xclbin":
+                aiecc_output_file_options = ["--aie-generate-xclbin"]
+            elif opts.output_format == "txn":
+                aiecc_output_file_options = ["--aie-generate-txn"]
+            else:
+                print("Error: unknown output-format")
+                sys.exit(1)
+            aiecc_output_file_options = aiecc_output_file_options + [
                 (
                     "--xclbin-name=" + xclbin_file
                     if opts.output_format == "xclbin"
@@ -565,17 +572,6 @@ def run(mlir_module, args=None):
                 ),
                 ("--xclbin-kernel-id=" + opts.kernel_id if opts.kernel_id else ""),
             ]
-            if opts.output_format == "xclbin":
-                aiecc_output_file_options = aiecc_output_file_options + [
-                    "--aie-generate-xclbin"
-                ]
-            elif opts.output_format == "txn":
-                aiecc_output_file_options = aiecc_output_file_options + [
-                    "--aie-generate-txn"
-                ]
-            else:
-                print("Error: unknown output-format")
-                sys.exit(1)
             aiecc_existing_xclbin_options = [
                 ("--xclbin-input=" + opts.xclbin_input if opts.xclbin_input else "")
             ]
@@ -593,7 +589,6 @@ def run(mlir_module, args=None):
                 + aiecc_existing_xclbin_options
                 + [air_to_npu_file]
             )
-            print(aiecc_options)
             aiecc.run(air_to_npu_module, aiecc_options)
         else:
             lower_airrt_to_airhost(
