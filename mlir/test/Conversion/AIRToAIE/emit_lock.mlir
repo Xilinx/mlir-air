@@ -45,7 +45,7 @@ module {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(1, 1)
 // CHECK:  %[[LOCK_0:.*]] = aie.lock(%[[VAL_0]],
 // CHECK:  %[[BUF_0:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2> 
-// CHECK:  %[[HERD_LOCK:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
+// CHECK:  %[[HERD_LOCK:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32, sym_name = "__air_herd_lock_1_1"}
 // CHECK:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:    cf.br ^bb1
 // CHECK:  ^bb1:
@@ -95,7 +95,7 @@ module {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(1, 1)
 // CHECK:  %[[LOCK_0:.*]] = aie.lock(%[[VAL_0]],
 // CHECK:  %[[BUF_0:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2> 
-// CHECK:  %[[HERD_LOCK:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
+// CHECK:  %[[HERD_LOCK:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32, sym_name = "__air_herd_lock_1_1"}
 // CHECK:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:    cf.br ^bb1
 // CHECK:  ^bb1:
@@ -145,7 +145,7 @@ module {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(1, 1)
 // CHECK:  %[[LOCK_0:.*]] = aie.lock(%[[VAL_0]],
 // CHECK:  %[[BUF_0:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2> 
-// CHECK:  %[[HERD_LOCK:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
+// CHECK:  %[[HERD_LOCK:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32, sym_name = "__air_herd_lock_1_1"}
 // CHECK:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:    cf.br ^bb1
 // CHECK:  ^bb1:
@@ -213,7 +213,7 @@ module {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(1, 1)
 // CHECK:  %[[LOCK_0:.*]] = aie.lock(%[[VAL_0]],
 // CHECK:  %[[BUF_0:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2> 
-// CHECK:  %[[HERD_LOCK:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
+// CHECK:  %[[HERD_LOCK:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32, sym_name = "__air_herd_lock_1_1"}
 // CHECK:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:    cf.br ^bb1
 // CHECK:  ^bb1:
