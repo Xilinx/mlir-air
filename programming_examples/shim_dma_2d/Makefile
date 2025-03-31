@@ -22,23 +22,23 @@ build/final.py.xclbin: build/air.mlir
 ${targetname}.exe: ${srcdir}/test.cpp
 	rm -rf _build
 	mkdir -p _build
-	cd _build && ${powershell} cmake -E env CXXFLAGS="-std=c++23 -ggdb" cmake ${srcdir} -D CMAKE_C_COMPILER=gcc-13 -D CMAKE_CXX_COMPILER=g++-13 -DTARGET_NAME=${targetname} 
+	cd _build && ${powershell} cmake -E env CXXFLAGS="-std=c++23 -ggdb" cmake ${srcdir} -D CMAKE_C_COMPILER=gcc-13 -D CMAKE_CXX_COMPILER=g++-13 -DTARGET_NAME=${targetname}
 	cd _build && ${powershell} cmake --build . --config Release
 ifeq "${powershell}" "powershell.exe"
 	cp _build/${targetname}.exe $@
 else
-	cp _build/${targetname} $@ 
+	cp _build/${targetname} $@
 endif
 
-run: ${targetname}.exe build/final.xclbin build/final.insts.txt 
-	${powershell} ./$< -x build/final.xclbin -i build/final.insts.txt -k MLIR_AIE
+run: ${targetname}.exe build/final.xclbin build/final.insts.bin 
+	${powershell} ./$< -x build/final.xclbin -i build/final.insts.bin -k MLIR_AIE
 
-run_py: build/final.xclbin build/final.insts.txt 
-	${powershell} python3 ${srcdir}/test.py build/final.xclbin build/final.insts.txt 
+run_py: build/final.xclbin build/final.insts.bin
+	${powershell} python3 ${srcdir}/test.py build/final.xclbin build/final.insts.bin
 
 pyworkflow:
 	mkdir -p pybuild
-	cd pybuild && ${powershell} python3 ${srcdir}/run.py 
+	cd pybuild && ${powershell} python3 ${srcdir}/run.py
 
 clean:
 	rm -rf build _build pybuild tmp ${targetname}.exe
