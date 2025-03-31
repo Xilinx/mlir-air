@@ -277,6 +277,11 @@ module {
     aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
     memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
   } {sym_name = "herd"}
+  airrt.module_metadata{
+    airrt.segment_metadata attributes {sym_name = ""} {
+      airrt.herd_metadata {size_x = 1 : i64, size_y = 1 : i64, loc_x = 0 : i64, loc_y = 0 : i64, sym_name = "herd"}
+    }
+  }
   func.func @func8(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
