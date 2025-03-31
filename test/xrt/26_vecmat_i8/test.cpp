@@ -20,6 +20,8 @@
 #include <sstream>
 #include <stdfloat>
 
+#include "test_utils.h"
+
 #include "xrt/xrt_bo.h"
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
@@ -46,15 +48,6 @@ constexpr bool VERIFY = true;
 
 namespace po = boost::program_options;
 
-void write_out_trace(char *traceOutPtr, size_t trace_size, std::string path) {
-  std::ofstream fout(path);
-  uint32_t *traceOut = (uint32_t *)traceOutPtr;
-  for (int i = 0; i < trace_size / sizeof(traceOut[0]); i++) {
-    fout << std::setfill('0') << std::setw(8) << std::hex << (int)traceOut[i];
-    fout << std::endl;
-  }
-}
-
 int main(int argc, const char *argv[]) {
 
   // Program arguments parsing
@@ -69,7 +62,7 @@ int main(int argc, const char *argv[]) {
   srand(time(NULL));
 
   std::vector<uint32_t> instr_v =
-      matmul_common::load_instr_sequence(vm["instr"].as<std::string>());
+      test_utils::load_instr_binary(vm["instr"].as<std::string>());
   if (verbosity >= 1)
     std::cout << "Sequence instr count: " << instr_v.size() << "\n";
 
@@ -218,8 +211,8 @@ int main(int argc, const char *argv[]) {
   std::cout << "Max NPU gflops: " << macs / (1000 * npu_time_max) << std::endl;
 
   if (trace_size > 0) {
-    write_out_trace(((char *)bufC) + C_SIZE, trace_size,
-                    vm["trace_file"].as<std::string>());
+    test_utils::write_out_trace(((char *)bufC) + C_SIZE, trace_size,
+                                vm["trace_file"].as<std::string>());
   }
 
   if (VERIFY && !errors) {

@@ -546,7 +546,7 @@ def run(mlir_module, args=None):
                 insts_file = opts.insts_file
             else:
                 assert xclbin_file.endswith(".xclbin")
-                insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.txt"
+                insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.bin"
             aiecc_options = (["-v"] if opts.verbose else []) + [
                 "--no-aiesim",
                 "--xchesscc" if opts.xchesscc else "--no-xchesscc",

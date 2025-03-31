@@ -62,6 +62,17 @@ config.substitutions.append(
 )
 config.substitutions.append(("%aietools", config.vitis_aietools_dir))
 
+test_lib_path = os.path.join(
+    config.aie_obj_root, "runtime_lib", config.runtime_test_target, "test_lib"
+)
+config.substitutions.append(
+    (
+        "%test_utils_flags",
+        "-lboost_program_options -lboost_filesystem "
+        + f"-I{test_lib_path}/include -L{test_lib_path}/lib -ltest_utils",
+    )
+)
+
 # for xchesscc_wrapper
 llvm_config.with_environment("AIETOOLS", config.vitis_aietools_dir)
 
