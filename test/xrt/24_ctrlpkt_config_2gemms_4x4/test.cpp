@@ -26,8 +26,8 @@
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
-#include "test_utils.h"
 #include "matrix_multiplication.h"
+#include "test_utils.h"
 
 constexpr int M = 512;
 constexpr int K1 = 512;

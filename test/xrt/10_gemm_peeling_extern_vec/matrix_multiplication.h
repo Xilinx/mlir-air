@@ -59,7 +59,6 @@ void parse_options(int argc, const char *argv[], po::options_description &desc,
   test_utils::check_arg_file_exists(vm, "instr");
 }
 
-
 // --------------------------------------------------------------------------
 // Matrix / Float / Math
 // --------------------------------------------------------------------------

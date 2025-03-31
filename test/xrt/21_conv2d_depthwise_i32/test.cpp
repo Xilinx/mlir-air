@@ -35,7 +35,6 @@ constexpr int TRACE_SIZE = (0 * sizeof(uint32_t));
 
 namespace po = boost::program_options;
 
-
 template <typename T>
 void conv_out_depthwise_nhwc_hwc(std::vector<T> a, std::vector<T> b,
                                  std::vector<T> &r) {
@@ -108,7 +107,7 @@ int main(int argc, const char *argv[]) {
   test_utils::check_arg_file_exists(vm, "instr");
 
   std::vector<uint32_t> instr_v =
-       test_utils::load_instr_binary(vm["instr"].as<std::string>());
+      test_utils::load_instr_binary(vm["instr"].as<std::string>());
 
   int verbosity = vm["verbosity"].as<int>();
   if (verbosity >= 1)

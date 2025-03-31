@@ -39,7 +39,6 @@ constexpr int TRACE_SIZE = (0 * sizeof(uint32_t));
 
 namespace po = boost::program_options;
 
-
 template <typename T>
 void mm_out(std::vector<T> a, std::vector<T> b, std::vector<T> &r) {
   for (size_t m1 = 0; m1 < M; m1++) {
@@ -111,18 +110,18 @@ int main(int argc, const char *argv[]) {
   int verbosity = vm["verbosity"].as<int>();
 
   std::vector<uint32_t> instr_v =
-       test_utils::load_instr_binary(vm["instr"].as<std::string>());
+      test_utils::load_instr_binary(vm["instr"].as<std::string>());
   if (verbosity >= 1)
     std::cout << "Sequence instr count: " << instr_v.size() << "\n";
 
   std::vector<uint32_t> ctrlpkt_instr_v =
-       test_utils::load_instr_binary(vm["ctrlpktInstr"].as<std::string>());
+      test_utils::load_instr_binary(vm["ctrlpktInstr"].as<std::string>());
   if (verbosity >= 1)
     std::cout << "Control packet sequence instr count: "
               << ctrlpkt_instr_v.size() << "\n";
 
   std::vector<uint32_t> ctrlPackets =
-       test_utils::load_instr_binary(vm["ctrlpkts"].as<std::string>());
+      test_utils::load_instr_binary(vm["ctrlpkts"].as<std::string>());
   if (verbosity >= 1)
     std::cout << "Control packet ui32 raw data count: " << ctrlPackets.size()
               << "\n";
