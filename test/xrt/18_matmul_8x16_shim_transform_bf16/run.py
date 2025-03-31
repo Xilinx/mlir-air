@@ -24,7 +24,7 @@ in_a_size_bytes = (in_a_size[0] * in_a_size[1]) * 2
 in_b_size_bytes = (in_b_size[0] * in_b_size[1]) * 2
 out_size_bytes = (out_size[0] * out_size[1]) * 4
 
-with open("air.insts.txt", "r") as f:
+with open("air.insts.bin", "r") as f:
     instr_text = f.read().split("\n")
     instr_text = [l for l in instr_text if l != ""]
     instr_v = np.array([int(i, 16) for i in instr_text], dtype=np.uint32)
