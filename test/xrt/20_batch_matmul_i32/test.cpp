@@ -49,15 +49,6 @@ void bmm_out(std::vector<T> a, std::vector<T> b, std::vector<T> &r) {
   }
 }
 
-void write_out_trace(char *traceOutPtr, size_t trace_size, std::string path) {
-  std::ofstream fout(path);
-  uint32_t *traceOut = (uint32_t *)traceOutPtr;
-  for (int i = 0; i < trace_size / sizeof(traceOut[0]); i++) {
-    fout << std::setfill('0') << std::setw(8) << std::hex << (int)traceOut[i];
-    fout << std::endl;
-  }
-}
-
 int main(int argc, const char *argv[]) {
 
   // Program arguments parsing
@@ -205,8 +196,8 @@ int main(int argc, const char *argv[]) {
   }
 
   if (trace_size > 0) {
-    write_out_trace(((char *)bufC) + C_SIZE, trace_size,
-                    vm["trace_file"].as<std::string>());
+    test_utils::write_out_trace(((char *)bufC) + C_SIZE, trace_size,
+                                vm["trace_file"].as<std::string>());
   }
 
   if (!errors) {
