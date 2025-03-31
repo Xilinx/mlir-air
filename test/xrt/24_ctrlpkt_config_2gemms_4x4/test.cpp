@@ -1,7 +1,7 @@
 //===- test.cpp -------------------------------------------000---*- C++ -*-===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
+// See https://llvm.org/LICENSE.bin for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc.
@@ -21,11 +21,13 @@
 #include <stdfloat>
 
 #include "experimental/xrt_kernel.h"
+
 #include "xrt/xrt_bo.h"
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
 #include "matrix_multiplication.h"
+#include "test_utils.h"
 
 constexpr int M = 512;
 constexpr int K1 = 512;
@@ -67,22 +69,22 @@ int main(int argc, const char *argv[]) {
   srand(time(NULL));
 
   std::vector<uint32_t> instr1_v =
-      matmul_common::load_instr_sequence("aie_run_seq.txt");
+      test_utils::load_instr_binary("aie_run_seq.bin");
 
   std::vector<uint32_t> ctrlpkt_instr1_v =
-      matmul_common::load_instr_sequence("ctrlpkt_dma_seq.txt");
+      test_utils::load_instr_binary("ctrlpkt_dma_seq.bin");
 
   std::vector<uint32_t> ctrlPackets1 =
-      matmul_common::load_instr_sequence("ctrlpkt.txt");
+      test_utils::load_instr_binary("ctrlpkt.bin");
 
   std::vector<uint32_t> instr2_v =
-      matmul_common::load_instr_sequence("aie2_run_seq.txt");
+      test_utils::load_instr_binary("aie2_run_seq.bin");
 
   std::vector<uint32_t> ctrlpkt_instr2_v =
-      matmul_common::load_instr_sequence("aie2_ctrlpkt_dma_seq.txt");
+      test_utils::load_instr_binary("aie2_ctrlpkt_dma_seq.bin");
 
   std::vector<uint32_t> ctrlPackets2 =
-      matmul_common::load_instr_sequence("aie2_ctrlpkt.txt");
+      test_utils::load_instr_binary("aie2_ctrlpkt.bin");
 
   // Start the XRT test code
   // Get a device handle

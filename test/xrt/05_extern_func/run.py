@@ -10,10 +10,9 @@ out_size = 1024
 
 out_size_bytes = out_size * 4
 
-with open("insts.txt", "r") as f:
-    instr_text = f.read().split("\n")
-    instr_text = [l for l in instr_text if l != ""]
-    instr_v = np.array([int(i, 16) for i in instr_text], dtype=np.uint32)
+with open("insts.bin", "rb") as f:
+    instr_data = f.read()
+    instr_v = np.frombuffer(instr_data, dtype=np.uint32)
 
 opts_xclbin = "aie.xclbin"
 opts_kernel = "MLIR_AIE"
