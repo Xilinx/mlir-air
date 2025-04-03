@@ -427,38 +427,38 @@ AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
 //   return false;
 // }
 
-// Find the largest factor of 'num' which is not larger than 'max'. Ref:
-// https://github.com/nod-ai/iree-amd-aie/blob/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/AMDAIEUtils.cpp#L334
-int findLargestFactor(int num, int max) {
-  // No factors less than or equal to 0 exist
-  if (max <= 0)
-    return 0;
+// // Find the largest factor of 'num' which is not larger than 'max'. Ref:
+// // https://github.com/nod-ai/iree-amd-aie/blob/main/compiler/plugins/target/AMD-AIE/iree-amd-aie/Transforms/AMDAIEUtils.cpp#L334
+// int findLargestFactor(int num, int max) {
+//   // No factors less than or equal to 0 exist
+//   if (max <= 0)
+//     return 0;
 
-  // Do O(1) instead of O(sqrt(num)) computation for this common case.
-  if (num <= max) {
-    return num;
-  }
+//   // Do O(1) instead of O(sqrt(num)) computation for this common case.
+//   if (num <= max) {
+//     return num;
+//   }
 
-  int largestLowFactor = 1;
-  for (int lowFactor = 2; lowFactor <= max; ++lowFactor) {
-    const int highFactor = num / lowFactor;
+//   int largestLowFactor = 1;
+//   for (int lowFactor = 2; lowFactor <= max; ++lowFactor) {
+//     const int highFactor = num / lowFactor;
 
-    // This early exit is what makes this O(sqrt(num)) instead of O(num).
-    if (highFactor < lowFactor)
-      return largestLowFactor;
+//     // This early exit is what makes this O(sqrt(num)) instead of O(num).
+//     if (highFactor < lowFactor)
+//       return largestLowFactor;
 
-    const bool areActuallyFactors = num % lowFactor == 0;
-    if (areActuallyFactors) {
-      // We're certain that here lowFactor <= highFactor, and highFactor is
-      // descending in this loop. So we can return immediately if highFactor is
-      // good.
-      if (highFactor <= max)
-        return highFactor;
-      largestLowFactor = lowFactor;
-    }
-  }
-  return largestLowFactor;
-}
+//     const bool areActuallyFactors = num % lowFactor == 0;
+//     if (areActuallyFactors) {
+//       // We're certain that here lowFactor <= highFactor, and highFactor is
+//       // descending in this loop. So we can return immediately if highFactor is
+//       // good.
+//       if (highFactor <= max)
+//         return highFactor;
+//       largestLowFactor = lowFactor;
+//     }
+//   }
+//   return largestLowFactor;
+// }
 
 // void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
 //   auto loc = memcpy_op->getLoc();
