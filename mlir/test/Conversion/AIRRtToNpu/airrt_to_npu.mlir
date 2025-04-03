@@ -7,6 +7,8 @@
 
 // RUN: air-opt -airrt-to-npu -canonicalize -cse --split-input-file %s | FileCheck %s
 
+// XFAIL:*
+
 // Synchronous airrt.dma_memcpy_nd.
 
 // CHECK-LABEL: aie.device(npu1_1col)

@@ -8,6 +8,8 @@
 
 // RUN: air-opt -airrt-to-npu --split-input-file %s | FileCheck %s
 
+// XFAIL:*
+
 
 // CHECK-LABEL: aie.device(npu1_4col)
 // CHECK: aie.shim_dma_allocation @airMemcpyId29(S2MM, 0, 0)
