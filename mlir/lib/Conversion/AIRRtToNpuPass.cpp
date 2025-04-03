@@ -656,8 +656,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Purge dma ops' async tokens
     generateNpuWaitFromAIRRtWaitAll(module);
 
-    // Enforce AIE2 hardware constraints.
-    enforceAIE2WrapLimit(module);
+    // // Enforce AIE2 hardware constraints.
+    // enforceAIE2WrapLimit(module);
 
     // Simplify arith ops (from airrt)
     RewritePatternSet canoPatterns_3(ctx);
