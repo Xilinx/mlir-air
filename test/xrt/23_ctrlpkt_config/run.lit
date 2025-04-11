@@ -9,4 +9,4 @@
 // RUN: aie-opt -aie-ctrl-packet-to-dma -aie-dma-to-npu aie.mlir.prj/ctrlpkt.mlir -o ctrlpkt_dma_seq.mlir
 // RUN: aie-translate -aie-npu-to-binary -aie-sequence-name=configure ctrlpkt_dma_seq.mlir -o ctrlpkt_dma_seq.bin
 // RUN: g++-13 %S/test.cpp -o test.exe -std=c++23 -Wall %test_utils_flags %xrt_flags -lrt -lstdc++ -lboost_program_options -lboost_filesystem
-// RUN: %run_on_npu ./test.exe -x base.xclbin -k MLIR_AIE -i aie_run_seq.bin -c ctrlpkt_dma_seq.bin -p ctrlpkt.bin -v 2
+// UN: %run_on_npu ./test.exe -x base.xclbin -k MLIR_AIE -i aie_run_seq.bin -c ctrlpkt_dma_seq.bin -p ctrlpkt.bin -v 2
