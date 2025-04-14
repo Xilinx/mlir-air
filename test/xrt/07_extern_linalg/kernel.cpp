@@ -5,11 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define __AIENGINE__ 2
-#define NOCPP
-#define __AIEARCH__ 20
-
 #include <aie_api/aie.hpp>
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

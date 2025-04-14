@@ -124,4 +124,4 @@ with air.ir.Context() as ctx, Location.unknown():
         omit_pingpong=True,
         lower_linalg_to_func="mm.o",
     )
-    module_function = backend.compile_and_load(air_module)
+    backend.compile(air_module)

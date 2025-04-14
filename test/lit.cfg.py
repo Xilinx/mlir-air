@@ -107,8 +107,8 @@ else:
     config.excludes.append("airhost")
 
 
-run_on_npu = "echo"
-run_on_2npu = "echo"
+run_on_npu1 = "echo"
+run_on_npu2 = "echo"
 xrt_flags = ""
 
 # XRT
@@ -140,15 +140,16 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
                 model = str(m.group(4))
             print(f"\tmodel: '{model}'")
             config.available_features.add("ryzen_ai")
+            run_on_npu = (
+                f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
+            )
             if model in ["npu1", "Phoenix"]:
-                run_on_npu = (
-                    f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
-                )
+                run_on_npu1 = run_on_npu
+                config.available_features.add("ryzen_ai_npu1")
                 print("Running tests on NPU1 with command line: ", run_on_npu)
             elif model in ["npu4", "Strix"]:
-                run_on_2npu = (
-                    f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
-                )
+                run_on_npu2 = run_on_npu
+                config.available_features.add("ryzen_ai_npu2")
                 print("Running tests on NPU4 with command line: ", run_on_2npu)
             else:
                 print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
@@ -156,12 +157,14 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
     except:
         print("Failed to run xrt-smi")
         pass
-    config.substitutions.append(("%run_on_npu", run_on_npu))
-    config.substitutions.append(("%xrt_flags", xrt_flags))
-    config.substitutions.append(("%XRT_DIR", config.xrt_dir))
 else:
     print("xrt not found or xrt tests disabled")
     config.excludes.append("xrt")
+
+config.substitutions.append(("%run_on_npu1%", run_on_npu1))
+config.substitutions.append(("%run_on_npu2%", run_on_npu2))
+config.substitutions.append(("%xrt_flags", xrt_flags))
+config.substitutions.append(("%XRT_DIR", config.xrt_dir))
 
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
