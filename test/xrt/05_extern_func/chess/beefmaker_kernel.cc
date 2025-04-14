@@ -5,6 +5,8 @@
 //
 //===---------------------------------------------------------------------===//
 
+#include <stdint.h>
+
 extern "C" {
 
 void beefmaker_kernel(uint32_t *buffer) {

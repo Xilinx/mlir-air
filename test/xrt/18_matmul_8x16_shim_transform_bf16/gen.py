@@ -116,4 +116,4 @@ backend = XRTBackend(
     lower_linalg_to_func="kernel.o",
     runtime_loop_tiling_sizes=[2, 2],
 )
-module_function = backend.compile_and_load(air_module)
+backend.compile(air_module)

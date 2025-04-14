@@ -125,15 +125,54 @@ class XRTBackend(AirBackend):
                 "Cannot use XRTBackend to compile while the artifact is currently loaded. Call unload() first."
             )
 
+        target_device = "npu1_4col"
+        try:
+            import subprocess
+            import re
+            xrtsmi = "/opt/xilinx/xrt/bin/xrt-smi"
+            result = subprocess.run(
+                [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            result = result.stdout.decode("utf-8").split("\n")
+            # Older format is "|[0000:41:00.1]  ||RyzenAI-npu1  |"
+            # Newer format is "|[0000:41:00.1]  |NPU Phoenix  |"
+            p = re.compile(r"[\|]?(\[.+:.+:.+\]).+\|(RyzenAI-(npu\d)|NPU (\w+))\W*\|")
+            for l in result:
+                m = p.match(l)
+                if not m:
+                    continue
+                if self.verbose:
+                    print("Found Ryzen AI device:", m.group(1))
+                model = "unknown"
+                if m.group(3):
+                    model = str(m.group(3))
+                if m.group(4):
+                    model = str(m.group(4))
+                if self.verbose:
+                    print(f"\tmodel: '{model}'")
+                if model in ["npu1", "Phoenix"]:
+                    target_device = "npu1_4col"
+                elif model in ["npu4", "Strix"]:
+                    target_device = "npu2_4col"
+                else:
+                    print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
+                break
+        except Exception as e:
+            print("Failed to run xrt-smi")
+            print(e)
+
         with air.ir.Context():
 
             if self.verbose:
                 print("AIR Module:")
                 print(air_module)
 
+
             aircc_options = [
+
+                "-v",
                 "--device",
-                "npu1_4col",
+                target_device,
                 "air.mlir",
                 "-xchesscc",
                 "-xbridge",

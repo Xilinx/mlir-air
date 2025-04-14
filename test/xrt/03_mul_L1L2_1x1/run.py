@@ -145,11 +145,11 @@ def run_test(size, idtype, odtype):
     backend = xrt_backend.XRTBackend(verbose=verbose)
 
     # run the module
+    compiled_module = backend.compile(mlir_module)
     with filelock.FileLock("/tmp/npu.lock"):
-        mul = backend.compile_and_load(mlir_module)
+        mul = backend.load(compiled_module)
         (_, _, output_c) = mul(input_a, input_b, input_c)
-
-    backend.unload()
+        backend.unload()
 
     print("inputA:", input_a)
     print("inputB:", input_b)
