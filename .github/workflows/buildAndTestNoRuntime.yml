@@ -75,7 +75,7 @@ jobs:
         run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-mlir-aie.sh))"
 
       - name: Ccache for C++ compilation
-        uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ matrix.build_type }}-${{ runner.os }}-${{ matrix.ubuntu_version }}
           max-size: 1G
