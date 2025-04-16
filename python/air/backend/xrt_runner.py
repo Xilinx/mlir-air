@@ -66,6 +66,11 @@ class XRTRunner:
         channel_multiplexing: list[str] = [],
         trace_offset: int = 0,
         trace_size: int = 0,
+        output_format: str = "xclbin",
+        kernel_name: str = "",
+        instance_name: str = "",
+        kernel_id: str = "",
+        xclbin_input: str = "",
     ):
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -77,6 +82,11 @@ class XRTRunner:
         self.channel_multiplexing = channel_multiplexing
         self.trace_offset = trace_offset
         self.trace_size = trace_size
+        self.output_format = output_format
+        self.kernel_name = kernel_name
+        self.instance_name = instance_name
+        self.kernel_id = kernel_id
+        self.xclbin_input = xclbin_input
 
     def run_test(
         self,
@@ -100,6 +110,11 @@ class XRTRunner:
             channel_multiplexing=self.channel_multiplexing,
             trace_offset=self.trace_offset,
             trace_size=self.trace_size,
+            output_format=self.output_format,
+            kernel_name=self.kernel_name,
+            instance_name=self.instance_name,
+            kernel_id=self.kernel_id,
+            xclbin_input=self.xclbin_input,
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs
