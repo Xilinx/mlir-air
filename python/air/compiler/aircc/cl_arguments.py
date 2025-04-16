@@ -160,6 +160,38 @@ def parse_args(args=None):
         default=[],
         help="Adds memory spaces to which air channels shall get time-multiplexed, if operating on them",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "txn"],
+        dest="output_format",
+        default="xclbin",
+        help="File format for the generated binary",
+    )
+    parser.add_argument(
+        "--xclbin-kernel-name",
+        dest="kernel_name",
+        default="",
+        help="Kernel name in xclbin file",
+    )
+    parser.add_argument(
+        "--xclbin-instance-name",
+        dest="instance_name",
+        default="",
+        help="Instance name in xclbin metadata",
+    )
+    parser.add_argument(
+        "--xclbin-kernel-id",
+        dest="kernel_id",
+        default="",
+        help="Kernel id in xclbin file",
+    )
+    parser.add_argument(
+        "--xclbin-input",
+        dest="xclbin_input",
+        default=None,
+        help="Generate kernel into existing xclbin file",
+    )
 
     opts = parser.parse_args(args)
     return opts
