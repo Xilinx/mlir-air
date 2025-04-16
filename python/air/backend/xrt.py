@@ -106,7 +106,7 @@ class XRTBackend(AirBackend):
         air_module: air.ir.Module,
         xclbin="air.xclbin",
         kernel="MLIR_AIE",
-        insts="air.insts.txt",
+        insts="air.insts.bin",
     ):
         """Compiles an AIR module for the NPU / XRT Runtime with aircc.
 
@@ -238,10 +238,9 @@ class XRTBackend(AirBackend):
         self.kernel = xrt.kernel(self.context, xkernel.get_name())
 
         # load the instructions as a numpy array
-        with open(artifact.insts, "r") as f:
-            instr_text = f.read().split("\n")
-            instr_text = [l for l in instr_text if l != ""]
-            self.instr_v = np.array([int(i, 16) for i in instr_text], dtype=np.uint32)
+        with open(artifact.insts, "rb") as f:
+            instr_data = f.read()
+            self.instr_v = np.frombuffer(instr_data, dtype=np.uint32)
 
         self.bo_instr = xrt.bo(
             self.device,

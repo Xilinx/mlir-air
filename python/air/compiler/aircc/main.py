@@ -546,7 +546,7 @@ def run(mlir_module, args=None):
                 insts_file = opts.insts_file
             else:
                 assert xclbin_file.endswith(".xclbin")
-                insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.txt"
+                insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.bin"
             if opts.output_format == "xclbin":
                 aiecc_output_file_options = ["--aie-generate-xclbin"]
             elif opts.output_format == "txn":
@@ -581,6 +581,7 @@ def run(mlir_module, args=None):
                     "--no-aiesim",
                     "--xchesscc" if opts.xchesscc else "--no-xchesscc",
                     "--xbridge" if opts.xbridge else "--no-xbridge",
+                    "--aie-generate-xclbin",
                     "--aie-generate-npu",
                     "--no-compile-host",
                     "--npu-insts-name=" + insts_file,

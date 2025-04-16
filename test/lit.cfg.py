@@ -62,6 +62,17 @@ config.substitutions.append(
 )
 config.substitutions.append(("%aietools", config.vitis_aietools_dir))
 
+test_lib_path = os.path.join(
+    config.aie_obj_root, "runtime_lib", config.runtime_test_target, "test_lib"
+)
+config.substitutions.append(
+    (
+        "%test_utils_flags",
+        "-lboost_program_options -lboost_filesystem "
+        + f"-I{test_lib_path}/include -L{test_lib_path}/lib -ltest_utils",
+    )
+)
+
 # for xchesscc_wrapper
 llvm_config.with_environment("AIETOOLS", config.vitis_aietools_dir)
 
@@ -96,6 +107,10 @@ else:
     config.excludes.append("airhost")
 
 
+run_on_npu = "echo"
+run_on_2npu = "echo"
+xrt_flags = ""
+
 # XRT
 if config.xrt_lib_dir and config.enable_run_xrt_tests:
     print("xrt found at", os.path.dirname(config.xrt_lib_dir))
@@ -104,28 +119,42 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
     )
     config.available_features.add("xrt")
 
-    run_on_npu = "echo"
     try:
-        xbutil = os.path.join(config.xrt_bin_dir, "xbutil")
+        xrtsmi = os.path.join(config.xrt_bin_dir, "xrt-smi")
         result = subprocess.run(
-            [xbutil, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         result = result.stdout.decode("utf-8").split("\n")
-        # Starting with Linux 6.8 the format is like "[0000:66:00.1]  :  RyzenAI-npu1"
-        # Starting with Linux 6.10 the format is like "|[0000:41:00.1]  ||RyzenAI-npu1  |"
-        p = re.compile(r"[\|]?(\[.+:.+:.+\]).+(Phoenix|RyzenAI-(npu\d))")
+        # Older format is "|[0000:41:00.1]  ||RyzenAI-npu1  |"
+        # Newer format is "|[0000:41:00.1]  |NPU Phoenix  |"
+        p = re.compile(r"[\|]?(\[.+:.+:.+\]).+\|(RyzenAI-(npu\d)|NPU (\w+))\W*\|")
         for l in result:
             m = p.match(l)
-            if m:
-                print("Found Ryzen AI device:", m.group(1))
-                if len(m.groups()) == 3:
-                    print("\tmodel:", m.group(3))
-                config.available_features.add("ryzen_ai")
+            if not m:
+                continue
+            print("Found Ryzen AI device:", m.group(1))
+            model = "unknown"
+            if m.group(3):
+                model = str(m.group(3))
+            if m.group(4):
+                model = str(m.group(4))
+            print(f"\tmodel: '{model}'")
+            config.available_features.add("ryzen_ai")
+            if model in ["npu1", "Phoenix"]:
                 run_on_npu = (
                     f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
                 )
+                print("Running tests on NPU1 with command line: ", run_on_npu)
+            elif model in ["npu4", "Strix"]:
+                run_on_2npu = (
+                    f"flock /tmp/npu.lock {config.air_src_root}/utils/run_on_npu.sh"
+                )
+                print("Running tests on NPU4 with command line: ", run_on_2npu)
+            else:
+                print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
+            break
     except:
-        print("Failed to run xbutil")
+        print("Failed to run xrt-smi")
         pass
     config.substitutions.append(("%run_on_npu", run_on_npu))
     config.substitutions.append(("%xrt_flags", xrt_flags))
