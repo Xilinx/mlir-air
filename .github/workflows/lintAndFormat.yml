@@ -7,7 +7,6 @@ on:
 
 env:
   # Run apt package manager in the CI in non-interactive mode.
-  # Otherwise, on Ubuntu 20.04 the installation of tzdata asking question
   DEBIAN_FRONTEND: noninteractive
 
 jobs:
