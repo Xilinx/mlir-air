@@ -7,7 +7,6 @@ on:
 
 env:
   # Run apt package manager in the CI in non-interactive mode.
-  # Otherwise, on Ubuntu 20.04 the installation of tzdata asking question
   DEBIAN_FRONTEND: noninteractive
 
 jobs:
@@ -43,7 +42,7 @@ jobs:
         shell: bash
 
       - name: Ccache for C++ compilation
-        uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
+        uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ runner.os }}-lintformat-${{ steps.get-submodule-hash.outputs.hash }}
           max-size: 1G
