@@ -5,4 +5,5 @@
 
 // RUN: xchesscc_wrapper aie2 -c %S/kernel.cpp -o kernel.o
 // RUN: %python %S/gen.py
-// RUN: %run_on_npu %python %S/run.py air.xclbin
+// RUN: %run_on_npu1% %python %S/run.py air.xclbin
+// RUN: %run_on_npu2% %python %S/run.py air.xclbin

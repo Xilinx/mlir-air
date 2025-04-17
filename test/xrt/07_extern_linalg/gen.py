@@ -89,4 +89,4 @@ backend = XRTBackend(
     lower_linalg_to_func="kernel.o",
     omit_pingpong=True,
 )
-module_function = backend.compile_and_load(module)
+module_function = backend.compile(module)

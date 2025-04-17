@@ -26,7 +26,11 @@ jobs:
   build-repo:
     name: Build and Test with AIE tools on Ryzen AI
 
-    runs-on: ryzenai
+    runs-on: ${{ matrix.runner_type }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner_type: [ amd8845hs, amdhx370 ]
 
     steps:
 

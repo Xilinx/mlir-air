@@ -162,4 +162,4 @@ with air.ir.Context() as ctx, Location.unknown():
         air_loop_fusion=True,
         runtime_loop_tiling_sizes=[8, 1],  # Note: [4, 4] gives numeric error. Why?
     )
-    module_function = backend.compile_and_load(air_module)
+    backend.compile(air_module)
