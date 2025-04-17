@@ -260,7 +260,7 @@ class XRTRunner:
                 if expected["values"][0].dtype == bfloat16:
                     expected["values"] = expected["values"].astype(np.float64)
                     actual = actual.astype(np.float64)
-                    actual_stochastic = actual[tuple(expected["indices"])]
+                actual_stochastic = actual[tuple(expected["indices"])]
                 if not np.allclose(actual_stochastic, expected["values"], rtol=rtol):
                     print(f"ERROR: Output {i} does not meet expected output.")
                     print("Expected: ")
