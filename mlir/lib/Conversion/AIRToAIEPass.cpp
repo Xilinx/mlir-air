@@ -382,8 +382,8 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
 
         std::string sym_name = createSymbolName(aie_device, "__air_herd_arg");
         builder.create<memref::GlobalOp>(builder.getUnknownLoc(), sym_name,
-                                   builder.getStringAttr("public"), memrefTy,
-                                   nullptr, false, nullptr);
+                                         builder.getStringAttr("public"),
+                                         memrefTy, nullptr, false, nullptr);
 
         auto m = core_builder.create<memref::GetGlobalOp>(
             hloc, SmallVector<Type, 1>{karg.getType()}, sym_name);
@@ -519,9 +519,8 @@ void createAIEModulesAndOutlineCores(
                      StringAttr::get(builder.getContext(), segment_name));
     AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
                                     aie_dev.getLoc());
-    seg.walk([&](xilinx::air::HerdOp h) {
-      aie_modules.push_back({aie_dev, h});
-    });
+    seg.walk(
+        [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
       outlineAIEMemtiles(builder, aie_dev, seg, options);
@@ -1085,9 +1084,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       return failure();
 
     AIE::AIEObjectFifoType datatype;
-    std::vector<ChannelPutOp> channelPuts =
+    std::vector<air::ChannelPutOp> channelPuts =
         getChannelPutOpThroughSymbol(channel, device);
-    std::vector<ChannelGetOp> channelGets =
+    std::vector<air::ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
 
     channel->print(llvm::outs());
@@ -1106,8 +1105,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       if (channelPuts.size() > 1)
         return channel.emitOpError(
             "channel lowering currently does not support many-to-one/many");
-      auto res = findChannelPutGetTile<ChannelPutOp>(channelPuts[0],
-                                                     &producerTile, &datatype);
+      auto res = findChannelPutGetTile<air::ChannelPutOp>(
+          channelPuts[0], &producerTile, &datatype);
       if (res.failed())
         return res;
 
@@ -1124,7 +1123,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           AIE::BufferOp buff = dyn_cast<AIE::BufferOp>(
               channelPuts[0].getMemref().getDefiningOp());
           for (auto user : buff->getUsers()) {
-            if (auto pairedGet = dyn_cast<ChannelGetOp>(user)) {
+            if (auto pairedGet = dyn_cast<air::ChannelGetOp>(user)) {
               endOfLink = pairedGet.getOperation();
               linkToComplete = true;
             }
@@ -1146,8 +1145,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
     int expectedGets = channel.isBroadcast() ? channel.getBroadcastNum() : 1;
     for (auto get : channelGets) {
-      auto res =
-          findChannelPutGetTile<ChannelGetOp>(get, &consumerTile, &datatype);
+      auto res = findChannelPutGetTile<air::ChannelGetOp>(get, &consumerTile,
+                                                          &datatype);
       if (res.failed())
         return res;
       consumers.push_back(consumerTile);
@@ -1164,7 +1163,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           AIE::BufferOp buff =
               dyn_cast<AIE::BufferOp>(get.getMemref().getDefiningOp());
           for (auto user : buff->getUsers()) {
-            if (auto pairedPut = dyn_cast<ChannelPutOp>(user)) {
+            if (auto pairedPut = dyn_cast<air::ChannelPutOp>(user)) {
               endOfLink = pairedPut.getOperation();
               linkToComplete = true;
             }
@@ -1195,7 +1194,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     // once the corresponding objFifo has been made, complete the link
     if (linkFound) {
       AIE::ObjectFifoCreateOp producerFifo = linksToComplete[endOfLink];
-      if (isa<ChannelGetOp>(endOfLink))
+      if (isa<air::ChannelGetOp>(endOfLink))
         rewriter.create<AIE::ObjectFifoLinkOp>(
             rewriter.getUnknownLoc(),
             rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}),
@@ -1215,11 +1214,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     llvm::SmallSet<Operation *, 2> erased_deallocs;
     llvm::SmallSet<Operation *, 2> erased_allocs;
     for (auto put : channelPuts) {
-      rewriteChannelAllocs<ChannelPutOp>(
+      rewriteChannelAllocs<air::ChannelPutOp>(
           rewriter, put, objFifo, AIE::ObjectFifoPort::Produce, erased_allocs);
-      rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, objFifo,
-                                           AIE::ObjectFifoPort::Produce,
-                                           erased_deallocs);
+      rewriteChannelDeallocs<air::ChannelPutOp>(rewriter, put, objFifo,
+                                                AIE::ObjectFifoPort::Produce,
+                                                erased_deallocs);
       // clear any dependence to put
       if (put.getAsyncToken()) {
         for (auto u : put.getAsyncToken().getUsers()) {
@@ -1230,11 +1229,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       }
     }
     for (auto get : channelGets) {
-      rewriteChannelAllocs<ChannelGetOp>(
+      rewriteChannelAllocs<air::ChannelGetOp>(
           rewriter, get, objFifo, AIE::ObjectFifoPort::Consume, erased_allocs);
-      rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, objFifo,
-                                           AIE::ObjectFifoPort::Consume,
-                                           erased_deallocs);
+      rewriteChannelDeallocs<air::ChannelGetOp>(rewriter, get, objFifo,
+                                                AIE::ObjectFifoPort::Consume,
+                                                erased_deallocs);
       // clear any dependence to get
       if (get.getAsyncToken()) {
         for (auto u : get.getAsyncToken().getUsers()) {
@@ -1402,9 +1401,9 @@ struct SpecializeChannelBundlePattern
     if (channel.getBundleSize() <= 1)
       return failure();
 
-    std::vector<ChannelPutOp> channelPuts =
+    std::vector<air::ChannelPutOp> channelPuts =
         getChannelPutOpThroughSymbol(channel, device);
-    std::vector<ChannelGetOp> channelGets =
+    std::vector<air::ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
 
     // Walk through each element in a channel bundle
@@ -3576,11 +3575,11 @@ public:
 
         // AIE1 dma metadata format
         getDmaAllocationMetadata(builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
-                                  AIE::DMAChannelDir::S2MM,
-                                  chan_renumber_reverse_map, dma_allocations);
+                                 AIE::DMAChannelDir::S2MM,
+                                 chan_renumber_reverse_map, dma_allocations);
         getDmaAllocationMetadata(builder, ctx, herd, shimDmaAlloc.mm2s_allocs,
-                                  AIE::DMAChannelDir::MM2S,
-                                  chan_renumber_reverse_map, dma_allocations);
+                                 AIE::DMAChannelDir::MM2S,
+                                 chan_renumber_reverse_map, dma_allocations);
 
         herd_meta->setAttr("dma_allocations",
                            ArrayAttr::get(ctx, dma_allocations));
@@ -3613,8 +3612,8 @@ public:
 
         // AIE1 memtile dma metadata format
         getDmaAllocationMetadata(builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
-                                  AIE::DMAChannelDir::MM2S,
-                                  chan_renumber_reverse_map, dma_allocations);
+                                 AIE::DMAChannelDir::MM2S,
+                                 chan_renumber_reverse_map, dma_allocations);
 
         auto segment_name =
             device->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
@@ -3892,9 +3891,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /*.ctrl_packet = */ false,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
-  p.walk([&](xilinx::air::HerdOp h) {
-    aie_modules.push_back({aie_module, h});
-  });
+  p.walk(
+      [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
   std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
