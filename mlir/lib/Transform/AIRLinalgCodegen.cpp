@@ -27,6 +27,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/RegionUtils.h"
 
@@ -1466,7 +1467,9 @@ public:
       });
 
       InlinerInterface interface(&getContext());
-      (void)inlineCall(interface, call, called, &called.getRegion(), true);
+      InlinerConfig config;
+      (void)inlineCall(interface, config.getCloneCallback(), call, called,
+                       &called.getRegion(), true);
       call.erase();
       called.erase();
     }
@@ -1594,7 +1597,9 @@ public:
       });
 
       InlinerInterface interface(&getContext());
-      (void)inlineCall(interface, call, called, &called.getRegion(), true);
+      InlinerConfig config;
+      (void)inlineCall(interface, config.getCloneCallback(), call, called,
+                       &called.getRegion(), true);
       call.erase();
       called.erase();
     }
@@ -1717,7 +1722,9 @@ public:
       });
 
       InlinerInterface interface(&getContext());
-      (void)inlineCall(interface, call, called, &called.getRegion(), true);
+      InlinerConfig config;
+      (void)inlineCall(interface, config.getCloneCallback(), call, called,
+                       &called.getRegion(), true);
       call.erase();
       called.erase();
     }
