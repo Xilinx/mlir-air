@@ -188,5 +188,5 @@ jobs:
             ninja check-air-cpp
             ninja check-air-mlir
             ninja check-air-python
-            ninja check-air-e2e
+            ninja check-air-e2e -j1
             popd
