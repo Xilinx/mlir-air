@@ -466,13 +466,15 @@ void InsertEmptyLaunchOverHerd(air::HerdOp op) {
     if (!isa<air::HerdTerminatorOp>(o))
       builder.clone(o, remap);
 
-  // Copy over herd name
+  // Copy over herd attributes
   if (auto attr =
           op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
     std::string name = attr.getValue().str();
     herdOp->setAttr(SymbolTable::getSymbolAttrName(),
                     StringAttr::get(op->getContext(), name));
   }
+  if (op.getLinkWith())
+    herdOp.setLinkWith(op.getLinkWith());
 
   if (auto token = op.getAsyncToken()) {
     replaceAllUsesInRegionWith(token, launch.getAsyncToken(),
