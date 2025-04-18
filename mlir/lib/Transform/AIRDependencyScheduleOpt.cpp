@@ -1826,8 +1826,14 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
                                      strides);
 
     // Check if the number of wrap-and-stride dims exceed maxNumDims. TODO:
-    // expand this to take into account wrap-and-stride constraints.
-    if (maxNumDims >= 0 && (int)wraps.size() > maxNumDims - 1)
+    // expand this to take into account more wrap-and-stride constraints.
+    int numActualWrapDims = 0; // Count the number of actual hardware wrap
+                               // dimensions, with wrap value greater than one.
+    for (auto v : wraps) {
+      if (*getConstantIntValue(v) > 1)
+        numActualWrapDims++;
+    }
+    if (maxNumDims >= 0 && numActualWrapDims > maxNumDims - 1)
       return failure();
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
