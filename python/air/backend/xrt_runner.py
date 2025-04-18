@@ -10,6 +10,7 @@ import filelock
 from typing import List
 from collections import defaultdict
 from ml_dtypes import bfloat16
+import timeit
 
 TYPE_MAP_DICT = defaultdict(
     lambda: None,
@@ -72,6 +73,19 @@ class XRTRunner:
         kernel_id: str = "",
         xclbin_input: str = "",
     ):
+        """
+        Args:
+            verbose: verbose output
+            omit_while_true_loop: configure aircc to omit the while true loop it traditionally emits.
+            omit_pingpong: configure aircc to omit the generation of ping-pong buffering.
+            lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
+            air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
+            runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
+            omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
+            channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
+            trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
+            trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
+        """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
         self.omit_pingpong = omit_pingpong
@@ -92,9 +106,18 @@ class XRTRunner:
         self,
         mlir_module: np.ndarray,
         inputs: List[np.ndarray],
-        expected_outputs: List[np.ndarray],
+        expected_outputs: List[np.ndarray] = [],
+        stochastic_expected_outputs: List[np.ndarray] = [],
         rtol: float = 1e-3,
     ):
+        """
+        Args:
+            mlir_module: input mlir module to test.
+            inputs: input matrices.
+            expected_outputs: expected output matrices.
+            stochastic_expected_outputs: expected output matrices stored in sparse coordinates. Expect each matrix to be a dictionary containing "shape", "indices" and "values" fields.
+            rtol: relative error tolerance.
+        """
         if self.verbose:
             print("Running module: ")
             print(mlir_module)
@@ -118,9 +141,20 @@ class XRTRunner:
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs
-        expanded_inputs = inputs + [
-            np.zeros(o.shape, o.dtype) for o in expected_outputs
-        ]
+        if expected_outputs:
+            expanded_inputs = inputs + [
+                np.zeros(o.shape, o.dtype) for o in expected_outputs
+            ]
+        elif stochastic_expected_outputs:
+            expanded_inputs = inputs + [
+                np.zeros(o["shape"], o["values"][0].dtype)
+                for o in stochastic_expected_outputs
+            ]
+        else:
+            assert (
+                False
+            ), f"Expect one of 'expected_outputs' and 'stochastic_expected_outputs' to not be empty."
+
         with filelock.FileLock("/tmp/npu.lock"):
             module_function = backend.compile_and_load(mlir_module)
             actual_outputs = module_function(*expanded_inputs)
@@ -130,12 +164,28 @@ class XRTRunner:
         # Remove input slots from the received outputs
         actual_outputs = actual_outputs[len(inputs) :]
 
-        if self._check_outputs(actual_outputs, expected_outputs, rtol=rtol):
-            print("PASS!")
-            return_code = 0
-        else:
-            print("failed.")
-            return_code = -1
+        if expected_outputs:
+            if self._check_outputs(
+                actual_outputs=actual_outputs,
+                expected_outputs=expected_outputs,
+                rtol=rtol,
+            ):
+                print("PASS!")
+                return_code = 0
+            else:
+                print("failed.")
+                return_code = -1
+        elif stochastic_expected_outputs:
+            if self._check_outputs_stochastic(
+                actual_outputs=actual_outputs,
+                stochastic_expected_outputs=stochastic_expected_outputs,
+                rtol=rtol,
+            ):
+                print("PASS!")
+                return_code = 0
+            else:
+                print("failed.")
+                return_code = -1
         return return_code
 
     def _check_outputs(
@@ -182,6 +232,65 @@ class XRTRunner:
                     print(expected)
                     print("Actual: ")
                     print(actual)
+                    return False
+
+        return True
+
+    def _check_outputs_stochastic(
+        self,
+        actual_outputs: List[np.ndarray],
+        stochastic_expected_outputs: List[np.ndarray],
+        rtol: float = 1e-3,
+    ):
+        assert len(actual_outputs) == len(
+            stochastic_expected_outputs
+        ), f"Number of actual outputs ({len(actual_outputs)}) does not equal number of expected outputs ({len(stochastic_expected_outputs)})"
+        np.set_printoptions(formatter={"int": hex})
+
+        for i, (actual, expected) in enumerate(
+            zip(actual_outputs, stochastic_expected_outputs)
+        ):
+            actual = np.reshape(actual, expected["shape"])
+
+            if self.verbose:
+                print("Expected: ")
+                if len(expected["shape"]) == 2:
+                    print(np.asmatrix(expected))
+                else:
+                    print("Shape: ", expected["shape"])
+                    print("Indices: ", expected["indices"])
+                    print("Values: ", expected["values"])
+                print("Actual: ")
+                if len(actual.shape) == 2:
+                    print(np.asmatrix(actual))
+                else:
+                    print(actual)
+
+            if expected["values"][0].dtype in [
+                np.float16,
+                np.float32,
+                np.float64,
+                bfloat16,
+            ]:
+                if expected["values"][0].dtype == bfloat16:
+                    expected["values"] = expected["values"].astype(np.float64)
+                    actual = actual.astype(np.float64)
+                actual_stochastic = actual[tuple(expected["indices"])]
+                if not np.allclose(actual_stochastic, expected["values"], rtol=rtol):
+                    print(f"ERROR: Output {i} does not meet expected output.")
+                    print("Expected: ")
+                    print(expected["values"])
+                    print("Actual: ")
+                    print(actual_stochastic)
+                    return False
+            else:
+                actual_stochastic = actual[tuple(expected["indices"])]
+                if not np.array_equal(actual_stochastic, expected["values"]):
+                    print(f"ERROR: Output {i} does not meet expected output.")
+                    print("Expected: ")
+                    print(expected["values"])
+                    print("Actual: ")
+                    print(actual_stochastic)
                     return False
 
         return True

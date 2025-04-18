@@ -139,7 +139,7 @@ jobs:
           ninja check-air-python
 
           export LIT_OPTS="${LIT_OPS} --timeout 600 -j5"
-          ninja check-air-e2e
+          ninja check-air-e2e -j1
           ninja check-programming-examples
 
           popd
