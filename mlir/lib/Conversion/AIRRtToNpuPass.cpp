@@ -35,7 +35,6 @@
 
 using namespace mlir;
 using namespace xilinx;
-using namespace xilinx::airrt;
 
 namespace {
 #define GEN_PASS_DECL_AIRRTTONPU
@@ -95,14 +94,14 @@ struct RelocateAssumeAlignmentOp
   }
 };
 
-struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
-  using OpConversionPattern<DmaMemcpyNdOp>::OpConversionPattern;
+struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
+  using OpConversionPattern<airrt::DmaMemcpyNdOp>::OpConversionPattern;
 
   DmaToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern<DmaMemcpyNdOp>(context, benefit) {}
+      : OpConversionPattern<airrt::DmaMemcpyNdOp>(context, benefit) {}
 
   LogicalResult
-  matchAndRewrite(DmaMemcpyNdOp op, OpAdaptor adaptor,
+  matchAndRewrite(airrt::DmaMemcpyNdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto idOp = adaptor.getOperands().front();
     uint64_t idInt = 0;
@@ -189,14 +188,14 @@ struct DmaToNpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
   }
 };
 
-struct HerdLoadToNpuPattern : public OpConversionPattern<HerdLoadOp> {
-  using OpConversionPattern<HerdLoadOp>::OpConversionPattern;
+struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
+  using OpConversionPattern<airrt::HerdLoadOp>::OpConversionPattern;
 
   HerdLoadToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern<HerdLoadOp>(context, benefit) {}
+      : OpConversionPattern<airrt::HerdLoadOp>(context, benefit) {}
 
   LogicalResult
-  matchAndRewrite(HerdLoadOp op, OpAdaptor adaptor,
+  matchAndRewrite(airrt::HerdLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     auto module = op->getParentOfType<ModuleOp>();
@@ -206,7 +205,7 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<HerdLoadOp> {
     int64_t size_y = -1;
     int64_t loc_x = -1;
     int64_t loc_y = -1;
-    module.walk([&](HerdMetadataOp metadata) {
+    module.walk([&](airrt::HerdMetadataOp metadata) {
       // return the first match by name
       if (metadata.getSymName() != op.getSymName())
         return WalkResult::advance();
@@ -262,14 +261,15 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<HerdLoadOp> {
   }
 };
 
-struct SegmentLoadToNpuPattern : public OpConversionPattern<SegmentLoadOp> {
-  using OpConversionPattern<SegmentLoadOp>::OpConversionPattern;
+struct SegmentLoadToNpuPattern
+    : public OpConversionPattern<airrt::SegmentLoadOp> {
+  using OpConversionPattern<airrt::SegmentLoadOp>::OpConversionPattern;
 
   SegmentLoadToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern<SegmentLoadOp>(context, benefit) {}
+      : OpConversionPattern<airrt::SegmentLoadOp>(context, benefit) {}
 
   LogicalResult
-  matchAndRewrite(SegmentLoadOp op, OpAdaptor adaptor,
+  matchAndRewrite(airrt::SegmentLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.eraseOp(op);
     return success();
@@ -277,14 +277,14 @@ struct SegmentLoadToNpuPattern : public OpConversionPattern<SegmentLoadOp> {
 };
 
 struct ModuleMetadataToNpuPattern
-    : public OpConversionPattern<ModuleMetadataOp> {
-  using OpConversionPattern<ModuleMetadataOp>::OpConversionPattern;
+    : public OpConversionPattern<airrt::ModuleMetadataOp> {
+  using OpConversionPattern<airrt::ModuleMetadataOp>::OpConversionPattern;
 
   ModuleMetadataToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern<ModuleMetadataOp>(context, benefit) {}
+      : OpConversionPattern<airrt::ModuleMetadataOp>(context, benefit) {}
 
   LogicalResult
-  matchAndRewrite(ModuleMetadataOp op, OpAdaptor adaptor,
+  matchAndRewrite(airrt::ModuleMetadataOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.eraseOp(op);
     return success();
@@ -724,7 +724,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     (void)applyPatternsGreedily(module, std::move(canoPatterns_3));
 
     ConversionTarget target(getContext());
-    target.addIllegalDialect<AIRRtDialect>();
+    target.addIllegalDialect<airrt::AIRRtDialect>();
     target.addLegalDialect<arith::ArithDialect, AIEX::AIEXDialect,
                            memref::MemRefDialect>();
     target.addLegalOp<UnrealizedConversionCastOp>();
@@ -800,7 +800,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Move func op to the end of device op's body
     SmallVector<Operation *> segs;
     module.walk([&](Operation *o) {
-      if (isa<SegmentLoadOp, HerdLoadOp>(o)) {
+      if (isa<airrt::SegmentLoadOp, airrt::HerdLoadOp>(o)) {
         segs.push_back(o);
       }
     });
@@ -824,14 +824,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     (void)applyPatternsGreedily(module, std::move(patterns));
 
     // Dma event tokens are no longer needed. Purge them.
-    SmallVector<DmaMemcpyNdOp> dmas;
-    module.walk([&](DmaMemcpyNdOp dma) { dmas.push_back(dma); });
+    SmallVector<airrt::DmaMemcpyNdOp> dmas;
+    module.walk([&](airrt::DmaMemcpyNdOp dma) { dmas.push_back(dma); });
     for (auto dma : dmas) {
       if (dma->getNumResults()) {
         OpBuilder builder(dma);
         SmallVector<Type, 1> tys;
-        auto newOp = builder.create<DmaMemcpyNdOp>(dma->getLoc(), tys,
-                                                   dma->getOperands());
+        auto newOp = builder.create<airrt::DmaMemcpyNdOp>(dma->getLoc(), tys,
+                                                          dma->getOperands());
         newOp->setAttrs(dma->getDiscardableAttrDictionary());
         dma->erase();
       }
@@ -887,7 +887,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
 
     // Replace all uses of metadata to unique
-    module.walk([&](DmaMemcpyNdOp dma) {
+    module.walk([&](airrt::DmaMemcpyNdOp dma) {
       if (!dma->hasAttr("metadata"))
         return;
       StringRef metadata =
