@@ -47,7 +47,7 @@ config.excludes = []
 config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
-config.test_exec_root = os.path.join(config.air_obj_root, "test")
+config.test_exec_root = os.path.join(config.air_obj_root, "programming_examples")
 air_runtime_lib = os.path.join(
     config.air_obj_root, "runtime_lib", config.runtime_test_target
 )

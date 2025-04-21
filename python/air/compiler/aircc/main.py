@@ -347,7 +347,7 @@ def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filena
         with open(cpp_file, "w") as f:
             f.write(emit_wrapper(segment, inc_file))
 
-        cmd = [opts.cc, "-std=c++11", "-g", "-I."]
+        cmd = [opts.cc, "-std=c++17", "-g", "-I."]
 
         # set flags for cross-compilation
         cmd += ["--sysroot=%s" % opts.sysroot] if opts.sysroot else []
