@@ -92,16 +92,18 @@ void vecmat_vectorized(const T_in *__restrict pA, const T_out *__restrict pA_s,
 
           BS0 = aie::load_v<MMUL::size_C>(pB_s1);
           pB_s1 += MMUL::size_C;
-          accfloat_C00 = mac(accfloat_C00,
-                             to_float<float, T_accum, MMUL::size_C>(
-                                 C00.template to_vector<T_accum>()),
-                             mul(pA_s[i], BS0).template to_vector<float>());
+          accfloat_C00 =
+              mac(accfloat_C00,
+                  to_float<float, aie::vector<T_accum, MMUL::size_C>>(
+                      C00.template to_vector<T_accum>()),
+                  mul(pA_s[i], BS0).template to_vector<float>());
           BS1 = aie::load_v<MMUL::size_C>(pB_s2);
           pB_s2 += MMUL::size_C;
-          accfloat_C01 = mac(accfloat_C01,
-                             to_float<float, T_accum, MMUL::size_C>(
-                                 C01.template to_vector<T_accum>()),
-                             mul(pA_s[i], BS1).template to_vector<float>());
+          accfloat_C01 =
+              mac(accfloat_C01,
+                  to_float<float, aie::vector<T_accum, MMUL::size_C>>(
+                      C01.template to_vector<T_accum>()),
+                  mul(pA_s[i], BS1).template to_vector<float>());
 
           C00.zero = true;
           C01.zero = true;
