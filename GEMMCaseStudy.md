@@ -2,7 +2,7 @@
 
 ## MLIR-AIR Compilation Recipe
 
-The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://github.com/Xilinx/mlir-air/blob/main/test/xrt/09_gemm_extern_vec_4x4/aie.py) is listed below.
+The MLIR-AIR compilation pipeline used by the Ryzen AI E2E [board test](https://github.com/Xilinx/mlir-air/blob/main/test/xrt/09_gemm_extern_vec_4x4/gen.py) is listed below.
 
 "buffer-results-to-out-params"  
 ["air-linalg-to-func{link-with=mm.o}"](#air-linalg-to-func)  
