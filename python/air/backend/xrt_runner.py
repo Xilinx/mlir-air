@@ -155,8 +155,9 @@ class XRTRunner:
                 False
             ), f"Expect one of 'expected_outputs' and 'stochastic_expected_outputs' to not be empty."
 
+        compiled_module = backend.compile(mlir_module)
         with filelock.FileLock("/tmp/npu.lock"):
-            module_function = backend.compile_and_load(mlir_module)
+            module_function = backend.load(compiled_module)
             actual_outputs = module_function(*expanded_inputs)
 
         backend.unload()

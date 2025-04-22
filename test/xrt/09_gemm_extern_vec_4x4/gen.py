@@ -127,4 +127,4 @@ with air.ir.Context() as ctx, Location.unknown():
     backend = XRTBackend(
         air_loop_fusion=True,
     )
-    module_function = backend.compile_and_load(air_module)
+    backend.compile(air_module)

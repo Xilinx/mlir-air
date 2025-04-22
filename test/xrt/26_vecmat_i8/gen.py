@@ -124,4 +124,4 @@ with air.ir.Context() as ctx, Location.unknown():
         lower_linalg_to_func="vm.o",
         air_loop_fusion=True,
     )
-    module_function = backend.compile_and_load(air_module)
+    backend.compile(air_module)

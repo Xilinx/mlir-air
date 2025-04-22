@@ -130,4 +130,4 @@ backend = XRTBackend(
     trace_offset=opts.trace_offset,
     trace_size=opts.trace_size,
 )
-module_function = backend.compile_and_load(air_module)
+backend.compile(air_module)

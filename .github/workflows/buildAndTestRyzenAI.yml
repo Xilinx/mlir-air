@@ -27,7 +27,11 @@ jobs:
   build-repo:
     name: Build and Test with AIE tools on Ryzen AI
 
-    runs-on: ryzenai
+    runs-on: ${{ matrix.runner_type }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner_type: [ amd8845hs, amdhx370 ]
 
     steps:
 
@@ -139,8 +143,8 @@ jobs:
           ninja check-air-mlir
           ninja check-air-python
 
-          export LIT_OPTS="${LIT_OPS} --timeout 600 -j5"
-          ninja check-air-e2e -j1
+          export LIT_OPTS="${LIT_OPS} --timeout 600 -j4"
+          ninja check-air-e2e
           ninja check-programming-examples
 
           popd
