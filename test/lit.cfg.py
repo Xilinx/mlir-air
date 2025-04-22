@@ -146,11 +146,11 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
             if model in ["npu1", "Phoenix"]:
                 run_on_npu1 = run_on_npu
                 config.available_features.add("ryzen_ai_npu1")
-                print("Running tests on NPU1 with command line: ", run_on_npu)
+                print("Running tests on NPU1 with command line: ", run_on_npu1)
             elif model in ["npu4", "Strix"]:
                 run_on_npu2 = run_on_npu
                 config.available_features.add("ryzen_ai_npu2")
-                print("Running tests on NPU4 with command line: ", run_on_2npu)
+                print("Running tests on NPU4 with command line: ", run_on_npu2)
             else:
                 print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
             break

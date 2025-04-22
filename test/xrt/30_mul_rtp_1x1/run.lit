@@ -1,5 +1,5 @@
 // (c) Copyright 2025 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// REQUIRES: ryzen_ai
+// REQUIRES: ryzen_ai_npu1
 // RUN: %python %S/run.py aie.xclbin
