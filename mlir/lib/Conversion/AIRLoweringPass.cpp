@@ -1158,6 +1158,21 @@ public:
                          StringAttr::get(f.getContext(), "tiling"));
       }
     });
+
+    // HACK: Remove scf.for loops containing only pure ops
+    // Details: Currently, the scf for canonicalizer is not able to remove empty
+    // loop body with nothing but wait_all, if any of them is merging multiple
+    // iter_arg air async tokens
+    SmallVector<scf::ForOp> forOps;
+    module.walk([&forOps](scf::ForOp fop) { forOps.push_back(fop); });
+    for (auto fop : forOps) {
+      if (!llvm::all_of(fop.getOps(), [](Operation &o) {
+            return air::isPure(&o) || isa<airrt::WaitAllOp>(o);
+          }))
+        continue;
+      IRRewriter rewriter(module.getContext());
+      rewriter.replaceOp(fop, fop.getInitArgs());
+    }
   }
 
 private:
