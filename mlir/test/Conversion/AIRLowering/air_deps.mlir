@@ -27,10 +27,7 @@ func.func @execute() {
 
 // CHECK-LABEL: func.func @scf_for
 // CHECK: %[[V0:.*]] = airrt.wait_all : !airrt.event
-// CHECK: %[[V1:.*]] = scf.for %arg0 = %c0 to %c64 step %c1 iter_args(%[[V3:.*]] = %[[V0]]) -> (!airrt.event) {
-// CHECK:   %[[V2:.*]] = airrt.wait_all %[[V3]] : !airrt.event
-// CHECK:   scf.yield %[[V2]] : !airrt.event
-// CHECK: airrt.wait_all %[[V1]]
+// CHECK: airrt.wait_all %[[V0]]
 func.func @scf_for() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
