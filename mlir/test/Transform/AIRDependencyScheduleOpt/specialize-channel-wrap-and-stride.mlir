@@ -488,8 +488,8 @@ module {
   // Offset propagated from scf.for and air.hier induction vars.
   // CHECK-LABEL: test13
   
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_14[] (%{{.*}}[%c0, %1, %results, %c0] [%c8, %c2_0, %c32, %c32] [%c32, %c8192, %c256, %c1]){{.*}}: (memref<2x128x256xi32>)
-  // CHECK: air.channel.put async [%{{.*}}]  @channel_15[%c0, %c0] (%{{.*}}[%c0, %results, %c32768] [%c8, %c32, %c32] [%c32, %c256, %c1]){{.*}}: (memref<512x512xi32>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_14[] (%{{.*}}[%c0{{.*}}, %results, %1] [%c8{{.*}}, %c64{{.*}}, %c32{{.*}}] [%c32{{.*}}, %c256{{.*}}, %c1{{.*}}]){{.*}}: (memref<2x128x256xi32>)
+  // CHECK: air.channel.put async [%{{.*}}]  @channel_15[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %results, %c32768{{.*}}] [%c8{{.*}}, %c32{{.*}}, %c32{{.*}}] [%c32{{.*}}, %c256{{.*}}, %c1{{.*}}]){{.*}}: (memref<512x512xi32>)
 
   func.func @test13(%arg0: memref<2x128x256xi32>, %arg1: memref<512x512xi32>) {
     %c2 = arith.constant 2 : index

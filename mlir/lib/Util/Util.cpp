@@ -1149,9 +1149,6 @@ LogicalResult air::canonicalizeWrapAndStrideList(
   // Canonicalize adjacent dimensions
   if (!sizes.empty()) {
     for (int i = sizes.size() - 1; i >= 1; i--) {
-      auto const_offset = getConstantIntValue(offsets[i]);
-      if (!const_offset)
-        continue;
       auto const_size = getConstantIntValue(sizes[i]);
       auto const_stride = getConstantIntValue(strides[i]);
       auto const_size_prev = getConstantIntValue(sizes[i - 1]);
