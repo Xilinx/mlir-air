@@ -585,6 +585,7 @@ def run(mlir_module, args=None):
                     "--aie-generate-npu",
                     "--no-compile-host",
                     "--npu-insts-name=" + insts_file,
+                    "--tmpdir=" + opts.tmpdir,
                 ]
                 + aiecc_output_file_options
                 + aiecc_existing_xclbin_options
