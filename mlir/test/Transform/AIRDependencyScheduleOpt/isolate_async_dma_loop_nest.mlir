@@ -1045,3 +1045,91 @@ module {
     return
   }
 }
+
+// -----
+
+// Hoisting memref before hoisting body.
+// Corner case 1: one single subgraph in loop, plus alloc and dealloc.
+// Splitting shouldn't be needed due to having only one subgraph.
+
+// CHECK-LABEL: @func13
+// CHECK: air.segment
+// CHECK: scf.for
+// CHECK-NEXT: air.execute
+// CHECK-NEXT: memref.alloc
+// CHECK-NEXT: air.execute_terminator
+// CHECK-NEXT: }
+// CHECK-NEXT: air.channel.put
+// CHECK-NEXT: air.execute
+// CHECK-NEXT: memref.dealloc
+// CHECK-NEXT: }
+// CHECK-NEXT: scf.yield
+
+module {
+  air.channel @channel_0 [1, 1]
+  func.func @func13() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @vecmat_bf16_0 async  {
+        %c0 = arith.constant 0 : index
+        %c3 = arith.constant 3 : index
+        %c1 = arith.constant 1 : index
+        %2 = air.wait_all async 
+        %3 = scf.for %arg0 = %c0 to %c3 step %c1 iter_args(%arg1 = %2) -> (!air.async.token) {
+          %async_token, %results = air.execute -> (memref<48xbf16, 1 : i32>) {
+            %alloc = memref.alloc() : memref<48xbf16, 1 : i32>
+            air.execute_terminator %alloc : memref<48xbf16, 1 : i32>
+          }
+          %4 = air.channel.put async [%arg1]  @channel_0[] (%results[] [] []) {id = 12 : i32} : (memref<48xbf16, 1 : i32>)
+          %dealloc_async_token = air.execute {
+            memref.dealloc %results : memref<48xbf16, 1 : i32>
+          }
+          scf.yield %4 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Hoisting memref before hoisting body.
+// Corner case 2: two subgraphs in loop, plus alloc and no dealloc.
+// Splitting needs to be performed, after the alloc is hoisted out of the loop.
+
+// CHECK-LABEL: @func14
+// CHECK: air.segment
+// CHECK: air.execute
+// CHECK-NEXT: memref.alloc
+// CHECK-NEXT: air.execute_terminator
+// CHECK-NEXT: }
+// CHECK-NEXT: scf.for
+// CHECK-NEXT: air.channel.put
+// CHECK: scf.for
+// CHECK-NEXT: air.channel.put
+
+module {
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
+  func.func @func14() {
+    %0 = air.launch async () in () {
+      %1 = air.segment @vecmat_bf16_0 async  {
+        %c0 = arith.constant 0 : index
+        %c3 = arith.constant 3 : index
+        %c1 = arith.constant 1 : index
+        %2 = air.wait_all async 
+        %3 = scf.for %arg0 = %c0 to %c3 step %c1 iter_args(%arg1 = %2) -> (!air.async.token) {
+          %async_token, %results = air.execute -> (memref<48xbf16, 1 : i32>) {
+            %alloc = memref.alloc() : memref<48xbf16, 1 : i32>
+            air.execute_terminator %alloc : memref<48xbf16, 1 : i32>
+          }
+          %4 = air.channel.put async [%async_token]  @channel_0[] (%results[] [] []) {id = 12 : i32} : (memref<48xbf16, 1 : i32>)
+          %5 = air.channel.put async [%async_token]  @channel_1[] (%results[] [] []) {id = 12 : i32} : (memref<48xbf16, 1 : i32>)
+          %wa = air.wait_all async [%4, %5]
+          scf.yield %4 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
