@@ -529,23 +529,18 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
       return failure();
 
     // Find dealloc
-    Operation *dealloc_op = nullptr;
+    air::ExecuteOp dealloc_exec = nullptr;
     auto alloc_exec_memref = alloc_exec->getResults()[1];
     if (!llvm::isa<MemRefType>(alloc_exec_memref.getType()))
       alloc_op->emitOpError("the ssa value yielded from execute is not memref");
-    for (auto user : alloc_exec_memref.getUsers()) {
-      if (isa<memref::DeallocOp>(user)) {
-        dealloc_op = user;
-      }
+    auto optDealloc = memref::findDealloc(alloc_exec_memref);
+    if (optDealloc.has_value() && optDealloc.value()) {
+      dealloc_exec = optDealloc.value()->getParentOfType<air::ExecuteOp>();
     }
-    if (!dealloc_op)
-      return failure();
-    auto dealloc_exec = dealloc_op->getParentOfType<air::ExecuteOp>();
-    if (!dealloc_exec)
-      return failure();
 
     // Check if alloc is the target
-    if (!alloc_op->hasAttr("hoist_alloc"))
+    if (!alloc_op->hasAttr("hoist_alloc") &&
+        !alloc_exec->hasAttr("hoist_alloc"))
       return failure();
 
     // Get parent for loop
@@ -565,10 +560,11 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     }
 
     // Reconnect dealloc dependency
-    skipOverOpInDependencyGraph(rewriter, dealloc_exec.getOperation(),
-                                for_op.getRegion());
+    if (dealloc_exec)
+      skipOverOpInDependencyGraph(rewriter, dealloc_exec.getOperation(),
+                                  for_op.getRegion());
 
-    if (!keepMemrefDealloc) {
+    if (dealloc_exec && !keepMemrefDealloc) {
       for (auto for_op_token : for_op->getResults()) {
         dealloc_exec.addAsyncDependency(for_op_token);
       }
@@ -576,7 +572,7 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
 
     // Hoist alloc and dealloc out of for loop
     alloc_exec->moveBefore(for_op);
-    if (!keepMemrefDealloc)
+    if (dealloc_exec && !keepMemrefDealloc)
       dealloc_exec->moveAfter(for_op);
 
     // Erase alloc hoisting attr
@@ -4139,7 +4135,6 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
     SmallVector<scf::ForOp> hoistedScfFors;
     for (auto set : target_ops_sets) {
       SmallVector<Operation *> setAsSmallVec = set.takeVector();
-      // (void)hoistTargetOpsToNewSCFFor(rewriter, for_op, setAsSmallVec);
       auto hoistedScfFor =
           hoistTargetOpsToNewSCFFor(rewriter, for_op, setAsSmallVec);
       hoistedScfFors.push_back(hoistedScfFor);
@@ -4197,6 +4192,17 @@ private:
                   // explicit hoisting.
       if (isa<air::WaitAllOp>(o))
         continue;
+      if (isa<memref::AllocOp, memref::DeallocOp>(o))
+        continue; // Skip over allocs and deallocs; they are hoisted separately
+                  // beforehand.
+      if (auto exec = dyn_cast<air::ExecuteOp>(o)) {
+        if (llvm::any_of(exec.getChildOps(), [](Operation &child) {
+              return isa<memref::AllocOp, memref::DeallocOp>(child);
+            })) {
+          // Same as above.
+          continue;
+        }
+      }
       candidate_ops.push_back(&o);
     }
 
