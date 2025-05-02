@@ -16,44 +16,22 @@
 
 #include "test_utils.h"
 
-#include <boost/program_options.hpp>
+#include "cxxopts.hpp"
 #include <cmath>
 
 namespace matmul_common {
-
-namespace po = boost::program_options;
 
 // --------------------------------------------------------------------------
 // Command Line Argument Handling
 // --------------------------------------------------------------------------
 
-void add_default_options(po::options_description &desc) {
-  desc.add_options()("help,h", "produce help message")(
-      "xclbin,x", po::value<std::string>()->required(),
-      "the input xclbin path")(
-      "kernel,k", po::value<std::string>()->required(),
-      "the kernel name in the XCLBIN (for instance PP_PRE_FD)")(
-      "verbosity,v", po::value<int>()->default_value(0),
-      "the verbosity of the output");
-}
-
-void parse_options(int argc, const char *argv[], po::options_description &desc,
-                   po::variables_map &vm) {
-  try {
-    po::store(po::parse_command_line(argc, argv, desc), vm);
-    po::notify(vm);
-
-    if (vm.count("help")) {
-      std::cout << desc << "\n";
-      std::exit(1);
-    }
-  } catch (const std::exception &ex) {
-    std::cerr << ex.what() << "\n\n";
-    std::cerr << "Usage:\n" << desc << "\n";
-    std::exit(1);
-  }
-
-  test_utils::check_arg_file_exists(vm, "xclbin");
+void add_default_options(cxxopts::Options &options) {
+  options.add_options()("help,h", "produce help message")(
+      "xclbin,x", "the input xclbin path", cxxopts::value<std::string>())(
+      "kernel,k", "the kernel name in the XCLBIN (for instance PP_PRE_FD)",
+      cxxopts::value<std::string>())("verbosity,v",
+                                     "the verbosity of the output",
+                                     cxxopts::value<int>()->default_value("0"));
 }
 
 // --------------------------------------------------------------------------

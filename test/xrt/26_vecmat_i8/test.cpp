@@ -8,8 +8,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "cxxopts.hpp"
 #include <bits/stdc++.h>
-#include <boost/program_options.hpp>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -46,15 +46,13 @@ constexpr int C_SIZE = (C_VOLUME * sizeof(C_DATATYPE));
 
 constexpr bool VERIFY = true;
 
-namespace po = boost::program_options;
-
 int main(int argc, const char *argv[]) {
 
   // Program arguments parsing
-  po::options_description desc("Allowed options");
-  po::variables_map vm;
-  matmul_common::add_default_options(desc);
-  matmul_common::parse_options(argc, argv, desc, vm);
+  cxxopts::Options options("Allowed options");
+  cxxopts::ParseResult vm;
+  matmul_common::add_default_options(options);
+  test_utils::parse_options(argc, argv, options, vm);
   int verbosity = vm["verbosity"].as<int>();
 
   int trace_size = vm["trace_sz"].as<int>();

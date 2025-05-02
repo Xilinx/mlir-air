@@ -1,4 +1,4 @@
-#include <boost/program_options.hpp>
+#include "cxxopts.hpp"
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -30,8 +30,6 @@ constexpr int B_SIZE = (B_VOLUME * sizeof(B_DATATYPE));
 constexpr int C_SIZE = (C_VOLUME * sizeof(C_DATATYPE));
 constexpr int TRACE_SIZE = (0 * sizeof(uint32_t));
 
-namespace po = boost::program_options;
-
 template <typename T>
 void bmm_out(std::vector<T> a, std::vector<T> b, std::vector<T> &r) {
   for (size_t b1 = 0; b1 < B; b1++) {
@@ -52,40 +50,34 @@ void bmm_out(std::vector<T> a, std::vector<T> b, std::vector<T> &r) {
 int main(int argc, const char *argv[]) {
 
   // Program arguments parsing
-  po::options_description desc("Allowed options");
-  desc.add_options()("help,h", "produce help message")(
-      "xclbin,x", po::value<std::string>()->required(),
-      "the input xclbin path")(
-      "kernel,k", po::value<std::string>()->required(),
-      "the kernel name in the XCLBIN (for instance PP_PRE_FD)")(
-      "verbosity,v", po::value<int>()->default_value(0),
-      "the verbosity of the output")(
-      "instr,i", po::value<std::string>()->required(),
-      "path of file containing userspace instructions to be sent to the LX6")(
-      "trace_sz,t", po::value<int>()->default_value(0),
-      "size of trace buffer (in bytes)")(
-      "trace_file", po::value<std::string>()->default_value("trace.txt"),
-      "where to store trace output");
-  po::variables_map vm;
+  cxxopts::Options options("Allowed options");
+  options.add_options()("help,h", "produce help message")(
+      "xclbin,x", "the input xclbin path", cxxopts::value<std::string>())(
+      "kernel,k", "the kernel name in the XCLBIN (for instance PP_PRE_FD)",
+      cxxopts::value<std::string>())("verbosity,v",
+                                     "the verbosity of the output",
+                                     cxxopts::value<int>()->default_value("0"))(
+      "instr,i",
+      "path of file containing userspace instructions to be sent to the LX6",
+      cxxopts::value<std::string>())("trace_sz,t",
+                                     "size of trace buffer (in bytes)",
+                                     cxxopts::value<int>()->default_value("0"))(
+      "trace_file", "where to store trace output",
+      cxxopts::value<std::string>()->default_value("trace.txt"));
+  auto vm = options.parse(argc, argv);
 
-  try {
-    po::store(po::parse_command_line(argc, argv, desc), vm);
-    po::notify(vm);
-
-    if (vm.count("help")) {
-      std::cout << desc << "\n";
-      return 1;
-    }
-  } catch (const std::exception &ex) {
-    std::cerr << ex.what() << "\n\n";
-    std::cerr << "Usage:\n" << desc << "\n";
+  if (vm.count("help")) {
+    std::cout << options.help() << std::endl;
+    return 1;
+  }
+  // Check required options
+  if (!vm.count("xclbin") || !vm.count("kernel") || !vm.count("instr")) {
+    std::cerr << "Error: Required options missing\n\n";
+    std::cerr << "Usage:\n" << options.help() << std::endl;
     return 1;
   }
 
   int trace_size = vm["trace_sz"].as<int>();
-
-  test_utils::check_arg_file_exists(vm, "xclbin");
-  test_utils::check_arg_file_exists(vm, "instr");
 
   std::vector<uint32_t> instr_v =
       test_utils::load_instr_binary(vm["instr"].as<std::string>());
