@@ -14,8 +14,6 @@
 #ifndef MATRIX_MULTIPLICATION_H
 #define MATRIX_MULTIPLICATION_H
 
-#include "test_utils.h"
-
 #include "cxxopts.hpp"
 #include <cmath>
 
@@ -24,6 +22,19 @@ namespace matmul_common {
 // --------------------------------------------------------------------------
 // Command Line Argument Handling
 // --------------------------------------------------------------------------
+
+void check_arg_file_exists(po::variables_map &vm_in, std::string name) {
+  if (!vm_in.count(name)) {
+    throw std::runtime_error("Error: no " + name + " file was provided\n");
+  } else {
+    std::ifstream test(vm_in[name].as<std::string>());
+    if (!test) {
+      throw std::runtime_error("The " + name + " file " +
+                               vm_in[name].as<std::string>() +
+                               " does not exist.\n");
+    }
+  }
+}
 
 void add_default_options(cxxopts::Options &options) {
   options.add_options()("help,h", "produce help message")(
@@ -35,6 +46,25 @@ void add_default_options(cxxopts::Options &options) {
       "instr,i",
       "path of file containing userspace instructions to be sent to the LX6",
       cxxopts::value<std::string>());
+}
+
+// --------------------------------------------------------------------------
+// AIE Specifics
+// --------------------------------------------------------------------------
+
+std::vector<uint32_t> load_instr_sequence(std::string instr_path) {
+  std::ifstream instr_file(instr_path);
+  std::string line;
+  std::vector<uint32_t> instr_v;
+  while (std::getline(instr_file, line)) {
+    std::istringstream iss(line);
+    uint32_t a;
+    if (!(iss >> std::hex >> a)) {
+      throw std::runtime_error("Unable to parse instruction file\n");
+    }
+    instr_v.push_back(a);
+  }
+  return instr_v;
 }
 
 // --------------------------------------------------------------------------
@@ -52,20 +82,64 @@ static inline std::bfloat16_t random_bfloat16_t() {
 }
 
 template <typename Tin, typename Tout>
-void batch_matmul_naive(int BATCH, int M, int N, int K,
-                        const std::vector<Tin> A, const std::vector<Tin> B,
-                        std::vector<Tout> &C) {
-  for (int batch = 0; batch < BATCH; batch++) {
-    for (int row = 0; row < M; row++) {
-      for (int col = 0; col < N; col++) {
-        Tout running_sum = 0;
-        for (int k = 0; k < K; k++) {
-          running_sum += Tout(A[batch * M * K + row * K + k] *
-                              B[batch * K * N + k * N + col]);
-        }
-        C[batch * M * N + row * N + col] = Tout(running_sum);
+void matmul_naive(int M, int N, int K, const std::vector<Tin> A,
+                  const std::vector<Tin> B, std::vector<Tout> &C) {
+  for (int row = 0; row < M; row++) {
+    for (int col = 0; col < N; col++) {
+      Tout running_sum = 0;
+      for (int k = 0; k < K; k++) {
+        running_sum += Tout(A[row * K + k] * B[k * N + col]);
       }
+      C[row * N + col] = Tout(running_sum);
     }
+  }
+}
+
+template <typename Tin, typename Tout>
+void matmul(int M, int N, int K, const std::vector<Tin> A,
+            const std::vector<Tin> B, std::vector<Tout> &C) {
+  // A is an  MxK matrix
+  // B is a   KxN matrix
+  // C is the MxN output matrix, assumed to be zeroed out
+
+  constexpr int K_block_size = 64;
+  const int n_K_blocks = K / K_block_size;
+
+  const Tin *B_origin = B.data(); /* Avoid a calls to B.data() within the loop
+                                     with this const variable. B does not get
+                                     resized, so the pointer remains valid. */
+
+  const Tin *A_base = A.data(); /* Points to start of current row of A,
+                                   monotonically increasing by K. */
+  const Tin *B_base = B_origin; /* Points to start of current column of B;
+                                   increases by 1 in each inner loop, resets
+                                   to B_origin (0) at the start of a new row
+                                   (outer loop). */
+
+  const Tin *A_ptr = A_base;
+  const Tin *B_ptr = B_base;
+  Tout *C_ptr = C.data(); /* Monotonically increasing by 1. */
+
+  for (int row = 0; row < M; row++) {
+    for (int col = 0; col < N; col++) {
+      A_ptr = A_base;
+      B_ptr = B_base;
+      Tout running_sum = 0;
+      for (int k = 0; k < n_K_blocks; k++) {
+        for (int i = 0; i < K_block_size; i++) {
+          running_sum += Tout(*A_ptr) * Tout(*B_ptr);
+          A_ptr += 1; // Advance to right neighbor; next value in this row
+          B_ptr += N; // Advance to bottom neighbor; next value in this column
+        }
+      }
+      *C_ptr = Tout(running_sum);
+      C_ptr += 1;
+      B_base += 1; /* Next iteration: same row of A (A_base unchanged),
+                      next column of B (B_base increases by 1) */
+    }
+    A_base += K;       // Advance to next row of A
+    B_base = B_origin; /* Next row of A means we need to restart at the first
+                          column of B. */
   }
 }
 
@@ -150,29 +224,26 @@ void print_matrix(const std::vector<T> matrix, int n_cols,
 }
 
 template <typename Tin, typename Tout>
-int verify(int BATCH, int M, int N, int K, std::vector<Tin> A,
-           std::vector<Tin> B, std::vector<Tout> C) {
+int verify(int M, int N, int K, std::vector<Tin> A, std::vector<Tin> B,
+           std::vector<Tout> C) {
   int errors = 0;
   int max_printable_errors = 500;
   const float absTol = 0.5;
   const float relTol = 0.5;
 
-  std::vector<Tout> CRef(BATCH * M * N);
-  batch_matmul_naive(BATCH, M, N, K, A, B, CRef);
+  std::vector<Tout> CRef(M * N);
+  matmul(M, N, K, A, B, CRef);
 
-  for (int batch = 0; batch < BATCH; batch++) {
-    for (int row = 0; row < M; row++) {
-      for (int col = 0; col < N; col++) {
-        if (!nearly_equal(CRef[batch * M * N + row * N + col],
-                          C[batch * M * N + row * N + col], relTol, absTol)) {
-          errors++;
-          if (errors < max_printable_errors) {
-            std::cout << "Error in row " << row << ", col " << col << ". "
-                      << "Expected " << std::setw(4)
-                      << (float)CRef[batch * M * N + row * N + col] << ", got "
-                      << std::setw(4) << (float)C[batch * M * N + row * N + col]
-                      << "." << std::endl;
-          }
+  for (int row = 0; row < M; row++) {
+    for (int col = 0; col < N; col++) {
+      if (!nearly_equal(CRef[row * N + col], C[row * N + col], relTol,
+                        absTol)) {
+        errors++;
+        if (errors < max_printable_errors) {
+          std::cout << "Error in row " << row << ", col " << col << ". "
+                    << "Expected " << std::setw(4) << (float)CRef[row * N + col]
+                    << ", got " << std::setw(4) << (float)C[row * N + col]
+                    << "." << std::endl;
         }
       }
     }

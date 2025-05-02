@@ -20,17 +20,15 @@
 #include <sstream>
 #include <stdfloat>
 
-#include "test_utils.h"
-
 #include "xrt/xrt_bo.h"
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
 #include "matrix_multiplication.h"
 
-constexpr int M = 256;
+constexpr int M = 512;
 constexpr int K = 1024;
-constexpr int N = 256;
+constexpr int N = 512;
 
 constexpr int A_VOLUME = M * K;
 constexpr int B_VOLUME = N * K;
@@ -38,7 +36,7 @@ constexpr int C_VOLUME = M * N;
 
 using A_DATATYPE = std::bfloat16_t;
 using B_DATATYPE = std::bfloat16_t;
-using C_DATATYPE = std::bfloat16_t;
+using C_DATATYPE = float;
 
 constexpr int A_SIZE = (A_VOLUME * sizeof(A_DATATYPE));
 constexpr int B_SIZE = (B_VOLUME * sizeof(B_DATATYPE));
@@ -58,7 +56,7 @@ int main(int argc, const char *argv[]) {
   srand(time(NULL));
 
   std::vector<uint32_t> instr_v =
-      test_utils::load_instr_binary(vm["instr"].as<std::string>());
+      matmul_common::load_instr_sequence(vm["instr"].as<std::string>());
   if (verbosity >= 1)
     std::cout << "Sequence instr count: " << instr_v.size() << "\n";
 
