@@ -318,80 +318,67 @@ public:
     // Add wait_all events to collect sinks in loop bodies. Add iter_args to scp
     // for loops representing loop-carried deps.
 
+    auto getYieldedTokens = [&](Region &region) {
+      SmallVector<Value, 1> yielded_tokens;
+      for (auto async_op : region.getOps<air::AsyncOpInterface>()) {
+        auto token = async_op.getAsyncToken();
+        if (!token)
+          continue;
+        if (!isNotLoopCarriedOp(async_op) &&
+            isOnlyUsedByNoLoopCarryOpsInBlock(token, &region.front())) {
+          yielded_tokens.push_back(token);
+        }
+      }
+      for (auto child_for_op : region.front().getOps<scf::ForOp>()) {
+        if (child_for_op.getNumResults() == 0)
+          continue;
+        auto token = child_for_op.getResult(0);
+        if (isOnlyUsedByNoLoopCarryOpsInBlock(token, &region.front()))
+          yielded_tokens.push_back(token);
+      }
+      for (auto child_parallel_op : region.front().getOps<scf::ParallelOp>()) {
+        if (child_parallel_op.getNumResults() == 0)
+          continue;
+        auto token = child_parallel_op.getResult(0);
+        if (isOnlyUsedByNoLoopCarryOpsInBlock(token, &region.front()))
+          yielded_tokens.push_back(token);
+      }
+      return yielded_tokens;
+    };
+
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        if (scf::ForOp for_op = dyn_cast<scf::ForOp>(op)) {
-
-          bool hasAsyncTokensInBody = false;
-          SmallVector<Value, 1> yielded_tokens_in_for_op;
-
-          for (auto async_op : for_op.getOps<air::AsyncOpInterface>()) {
-            hasAsyncTokensInBody = true;
-            auto token = async_op.getAsyncToken();
-            if (!token)
-              continue;
-            if (!isNotLoopCarriedOp(async_op) &&
-                isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody())) {
-              yielded_tokens_in_for_op.push_back(token);
-            }
+        if (LoopLikeOpInterface loop_op = dyn_cast<LoopLikeOpInterface>(op)) {
+          Region &region = *loop_op.getLoopRegions().front();
+          SmallVector<Value, 1> yielded_tokens_in_for_op =
+              getYieldedTokens(region);
+          if (yielded_tokens_in_for_op.empty())
+            return; // No async op in loop successors, continue.
+          auto new_loop_op = createAsyncLoopLikeOp(rewriter, loop_op);
+          if (failed(new_loop_op)) {
+            signalPassFailure();
+            return;
           }
-          for (auto child_for_op : for_op.getOps<scf::ForOp>()) {
-            hasAsyncTokensInBody = true;
-            if (child_for_op.getNumResults() == 0)
-              continue;
-            auto token = child_for_op.getResult(0);
-            if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
-              yielded_tokens_in_for_op.push_back(token);
+          Region &new_region = *new_loop_op->getLoopRegions().front();
+          insertLoopCarriedDepsInRegion(rewriter, new_region,
+                                        yielded_tokens_in_for_op);
+        } else if (RegionBranchOpInterface branch_op =
+                       dyn_cast<RegionBranchOpInterface>(op)) {
+          auto regions = op->getRegions();
+          SmallVector<SmallVector<Value, 1>> yielded_tokens_per_region(
+              regions.size());
+          for (unsigned i = 0; i < regions.size(); i++) {
+            yielded_tokens_per_region[i] = getYieldedTokens(regions[i]);
           }
-          for (auto child_parallel_op : for_op.getOps<scf::ParallelOp>()) {
-            hasAsyncTokensInBody = true;
-            if (child_parallel_op.getNumResults() == 0)
-              continue;
-            auto token = child_parallel_op.getResult(0);
-            if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
-              yielded_tokens_in_for_op.push_back(token);
-          }
-
-          if (hasAsyncTokensInBody) {
-            insertLoopCarriedDeps(rewriter, for_op, yielded_tokens_in_for_op);
-          }
-        }
-
-        else if (scf::ParallelOp for_op = dyn_cast<scf::ParallelOp>(op)) {
-
-          bool hasAsyncTokensInBody = false;
-          SmallVector<Value, 1> yielded_tokens_in_parallel_op;
-
-          for (auto async_op : for_op.getOps<air::AsyncOpInterface>()) {
-            hasAsyncTokensInBody = true;
-            auto token = async_op.getAsyncToken();
-            if (!token)
-              continue;
-            if (!isNotLoopCarriedOp(async_op) &&
-                isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody())) {
-              yielded_tokens_in_parallel_op.push_back(token);
-            }
-          }
-          for (auto child_for_op : for_op.getOps<scf::ForOp>()) {
-            hasAsyncTokensInBody = true;
-            if (child_for_op.getNumResults() == 0)
-              continue;
-            auto token = child_for_op.getResult(0);
-            if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
-              yielded_tokens_in_parallel_op.push_back(token);
-          }
-          for (auto child_parallel_op : for_op.getOps<scf::ParallelOp>()) {
-            hasAsyncTokensInBody = true;
-            if (child_parallel_op.getNumResults() == 0)
-              continue;
-            auto token = child_parallel_op.getResult(0);
-            if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
-              yielded_tokens_in_parallel_op.push_back(token);
-          }
-
-          if (hasAsyncTokensInBody) {
-            insertLoopCarriedDeps(rewriter, for_op,
-                                  yielded_tokens_in_parallel_op);
+          if (llvm::all_of(
+                  yielded_tokens_per_region,
+                  [](SmallVector<Value, 1> toks) { return toks.empty(); }))
+            return; // No async op in branch successors, continue.
+          auto new_branch_op = createAsyncRegionBranchOp(rewriter, branch_op);
+          auto new_regions = (*new_branch_op)->getRegions();
+          for (unsigned i = 0; i < new_regions.size(); i++) {
+            insertLoopCarriedDepsInRegion(rewriter, new_regions[i],
+                                          yielded_tokens_per_region[i]);
           }
         }
       });
@@ -1048,22 +1035,19 @@ private:
     }
   }
 
-  template <typename T>
   air::WaitAllOp insertWaitAllOpBeforeLoopYield(
-      OpBuilder &builder, T loop_op,
+      OpBuilder &builder, Region &region,
       SmallVector<Value, 1> yielded_tokens_in_loop_op) {
     // Create one wait_all event at the end of current loop body.
     // Output token of wait_all shall be yielded
-    auto loop_op_terminator = loop_op.getBody()->getTerminator();
-    builder.setInsertionPoint(loop_op_terminator);
+    builder.setInsertionPointToEnd(&region.front());
     air::WaitAllOp wait_all_op_yielded = builder.create<air::WaitAllOp>(
-        builder.getUnknownLoc(),
-        air::AsyncTokenType::get(loop_op->getContext()),
+        builder.getUnknownLoc(), air::AsyncTokenType::get(builder.getContext()),
         yielded_tokens_in_loop_op);
     wait_all_op_yielded->setAttr(
         "id",
-        mlir::IntegerAttr::get(
-            mlir::IntegerType::get(loop_op->getContext(), 32), ++WaitAllOpID));
+        mlir::IntegerAttr::get(mlir::IntegerType::get(builder.getContext(), 32),
+                               ++WaitAllOpID));
     return wait_all_op_yielded;
   }
 
@@ -1149,15 +1133,14 @@ private:
     return wait_all_op_before_loop;
   }
 
-  scf::ForOp
-  replaceLoopOpWithNewTerminator(OpBuilder &builder, scf::ForOp loop_op,
-                                 air::WaitAllOp wait_all_op_before_loop,
-                                 SmallVector<Value, 4> incoming_tokens,
-                                 SmallVector<Value, 4> constants) {
+  scf::ForOp convertScfForToAsync(RewriterBase &rewriter, scf::ForOp loop_op,
+                                  air::WaitAllOp wait_all_op_before_loop,
+                                  SmallVector<Value, 4> incoming_tokens,
+                                  SmallVector<Value, 4> constants) {
     // Create new for op with iter_args.
     SmallVector<Value, 4> merged_incoming_token;
     merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
-    scf::ForOp new_loop_op = builder.create<scf::ForOp>(
+    scf::ForOp new_loop_op = rewriter.create<scf::ForOp>(
         loop_op.getLoc(), loop_op.getLowerBound(), loop_op.getUpperBound(),
         loop_op.getStep(), merged_incoming_token);
 
@@ -1172,10 +1155,10 @@ private:
 
     auto iv = loop_op.getInductionVar();
     iv.replaceAllUsesWith(new_loop_op.getInductionVar());
-    builder.setInsertionPointToStart(new_loop_op.getBody());
+    rewriter.setInsertionPointToStart(new_loop_op.getBody());
     for (auto c : constants) {
       replaceAllUsesInRegionWith(
-          c, builder.clone(*c.getDefiningOp())->getResult(0),
+          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
           new_loop_op.getRegion());
     }
 
@@ -1194,11 +1177,11 @@ private:
     return new_loop_op;
   }
 
-  scf::ParallelOp
-  replaceLoopOpWithNewTerminator(OpBuilder &builder, scf::ParallelOp loop_op,
-                                 air::WaitAllOp wait_all_op_before_loop,
-                                 SmallVector<Value, 4> incoming_tokens,
-                                 SmallVector<Value, 4> constants) {
+  scf::ParallelOp convertScfParToAsync(RewriterBase &rewriter,
+                                       scf::ParallelOp loop_op,
+                                       air::WaitAllOp wait_all_op_before_loop,
+                                       SmallVector<Value, 4> incoming_tokens,
+                                       SmallVector<Value, 4> constants) {
     if (loop_op.getNumReductions() != 0)
       loop_op->emitOpError(
           "currently only supporting input scf::ParallelOp with no reductions");
@@ -1206,7 +1189,7 @@ private:
     // Create new parallel op with init_val.
     SmallVector<Value, 4> merged_incoming_token;
     merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
-    scf::ParallelOp new_loop_op = builder.create<scf::ParallelOp>(
+    scf::ParallelOp new_loop_op = rewriter.create<scf::ParallelOp>(
         loop_op.getLoc(), loop_op.getLowerBound(), loop_op.getUpperBound(),
         loop_op.getStep(), merged_incoming_token);
 
@@ -1225,10 +1208,10 @@ private:
       iv_old.replaceAllUsesWith(iv_new);
     }
 
-    builder.setInsertionPointToStart(new_loop_op.getBody());
+    rewriter.setInsertionPointToStart(new_loop_op.getBody());
     for (auto c : constants) {
       replaceAllUsesInRegionWith(
-          c, builder.clone(*c.getDefiningOp())->getResult(0),
+          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
           new_loop_op.getRegion());
     }
 
@@ -1268,12 +1251,36 @@ private:
     return new_loop_op;
   }
 
+  scf::IfOp convertScfIfToAsync(RewriterBase &rewriter, scf::IfOp branch_op) {
+    // Create new if op with a yielded async token.
+    SmallVector<Type> yielded_tys = {
+        air::AsyncTokenType::get(rewriter.getContext())};
+    scf::IfOp new_branch_op = rewriter.create<scf::IfOp>(
+        branch_op.getLoc(), yielded_tys, branch_op.getCondition(),
+        /*withElseRegion*/ (bool)branch_op.elseBlock());
+
+    if (auto attr = branch_op->getAttrOfType<StringAttr>(
+            SymbolTable::getSymbolAttrName()))
+      new_branch_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+
+    // Splice the operations inside then and else regions
+    auto old_regions = branch_op->getRegions();
+    auto new_regions = new_branch_op->getRegions();
+    for (auto [o_r, n_r] : llvm::zip_equal(old_regions, new_regions)) {
+      auto &bb = n_r.front().getOperations();
+      auto &body = o_r.front().getOperations();
+      bb.splice(bb.begin(), body, body.begin(), --body.end());
+    }
+
+    return new_branch_op;
+  }
+
   // Elevating tokens from inside loop body to the yielded token, to maintain
   // legal domination T: loop type (scf::ForOp or scf::ParallelOp) U: source op
   // type
-  template <typename T, typename U>
-  void elevateAsyncTokens(T new_loop_op, ExecuteGraph::VertexId wait_all_op) {
-    for (auto source : new_loop_op.template getOps<U>()) {
+  template <typename U>
+  void elevateAsyncTokens(Region &region, ExecuteGraph::VertexId wait_all_op) {
+    for (auto source : region.getOps<U>()) {
       SmallPtrSet<Operation *, 1> keep;
       if (source->getNumResults() == 0)
         continue;
@@ -1288,22 +1295,27 @@ private:
           }
         }
       }
-      source->getResult(0).replaceAllUsesExcept(new_loop_op.getResult(0), keep);
+      source->getResult(0).replaceAllUsesExcept(
+          region.getParentOp()->getResult(0), keep);
     }
   }
 
-  void insertLoopCarriedDeps(RewriterBase &rewriter, scf::ForOp &loop_op,
-                             SmallVector<Value, 1> yielded_tokens_in_loop_op) {
-    // (1) Create one wait_all event at the end of current for loop body.
-    air::WaitAllOp wait_all_op_yielded =
-        insertWaitAllOpBeforeLoopYield<scf::ForOp>(rewriter, loop_op,
-                                                   yielded_tokens_in_loop_op);
-
-    // Update graph
-    ExecuteGraph::VertexId wait_all_op_yielded_v =
-        addVertexWaitAllOpBeforeLoopYield(yielded_tokens_in_loop_op, "for");
-    // Update op-to-graph map for wait_all ops
-    wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
+  FailureOr<LoopLikeOpInterface>
+  createAsyncLoopLikeOp(RewriterBase &rewriter, LoopLikeOpInterface loop_op) {
+    if (auto scfForOp =
+            dyn_cast_if_present<scf::ForOp>(loop_op.getOperation())) {
+      return createAsyncLoopLikeOp(rewriter, scfForOp);
+    } else if (auto scfParOp = dyn_cast_if_present<scf::ParallelOp>(
+                   loop_op.getOperation())) {
+      return createAsyncLoopLikeOp(rewriter, scfParOp);
+    } else {
+      loop_op->emitOpError("unknown LoopLikeOpInterface op type. Currently "
+                           "supports scf.for and scf.parallel");
+      return failure();
+    }
+  }
+  FailureOr<LoopLikeOpInterface> createAsyncLoopLikeOp(RewriterBase &rewriter,
+                                                       scf::ForOp &loop_op) {
 
     // (2) Create a new wait_all event before the for op which collects the
     // incoming deps.
@@ -1319,11 +1331,11 @@ private:
                 mlir::dyn_cast<air::AsyncOpInterface>(v.getDefiningOp())) {
           if (v_op.getAsyncToken() == v)
             incoming_tokens.push_back(v);
-        } else if (auto v_op = dyn_cast<scf::ForOp>(v.getDefiningOp())) {
-          if (v_op.getNumResults() > 0 && v_op.getResult(0) == v)
-            incoming_tokens.push_back(v);
-        } else if (auto v_op = dyn_cast<scf::ParallelOp>(v.getDefiningOp())) {
-          if (v_op.getNumResults() > 0 && v_op.getResult(0) == v)
+        } else if (isa_and_present<LoopLikeOpInterface,
+                                   RegionBranchOpInterface>(
+                       v.getDefiningOp())) {
+          auto v_op = v.getDefiningOp();
+          if (v_op->getNumResults() > 0 && v_op->getResult(0) == v)
             incoming_tokens.push_back(v);
         }
       }
@@ -1333,43 +1345,17 @@ private:
                                                incoming_tokens, constants);
 
     // (3) Create new for op with iter_args.
-    scf::ForOp new_loop_op = replaceLoopOpWithNewTerminator(
+    scf::ForOp new_loop_op = convertScfForToAsync(
         rewriter, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
-
-    // Yield an async token
-    SmallVector<Value, 4> yield_token;
-    yield_token.push_back(wait_all_op_yielded.getResult(0));
-    rewriter.setInsertionPointToEnd(new_loop_op.getBody());
-    rewriter.create<scf::YieldOp>(new_loop_op.getLoc(), yield_token);
-
-    // Elevating tokens from inside forOp body to the yielded token, to maintain
-    // dominance
-    elevateAsyncTokens<scf::ForOp, air::AsyncOpInterface>(
-        new_loop_op, wait_all_op_yielded_v);
-    elevateAsyncTokens<scf::ForOp, scf::ForOp>(new_loop_op,
-                                               wait_all_op_yielded_v);
-    elevateAsyncTokens<scf::ForOp, scf::ParallelOp>(new_loop_op,
-                                                    wait_all_op_yielded_v);
 
     if (eraseOpWithCheck(rewriter, loop_op, "insertLoopCarriedDeps").failed()) {
       signalPassFailure();
     }
-    loop_op = new_loop_op;
+    return dyn_cast<LoopLikeOpInterface>(new_loop_op.getOperation());
   }
 
-  void insertLoopCarriedDeps(RewriterBase &rewriter, scf::ParallelOp &loop_op,
-                             SmallVector<Value, 1> yielded_tokens_in_loop_op) {
-    // (1) Create one wait_all event at the end of current parallel loop body.
-    air::WaitAllOp wait_all_op_yielded =
-        insertWaitAllOpBeforeLoopYield<scf::ParallelOp>(
-            rewriter, loop_op, yielded_tokens_in_loop_op);
-
-    // Update graph
-    ExecuteGraph::VertexId wait_all_op_yielded_v =
-        addVertexWaitAllOpBeforeLoopYield(yielded_tokens_in_loop_op,
-                                          "parallel");
-    // Update op-to-graph map for wait_all ops
-    wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
+  FailureOr<LoopLikeOpInterface>
+  createAsyncLoopLikeOp(RewriterBase &rewriter, scf::ParallelOp &loop_op) {
 
     // (2) Create a new wait_all event before the parallel op which collects
     // the incoming deps.
@@ -1385,11 +1371,11 @@ private:
                 mlir::dyn_cast<air::AsyncOpInterface>(v.getDefiningOp())) {
           if (v_op.getAsyncToken() == v)
             incoming_tokens.push_back(v);
-        } else if (auto v_op = dyn_cast<scf::ForOp>(v.getDefiningOp())) {
-          if (v_op.getNumResults() > 0 && v_op.getResult(0) == v)
-            incoming_tokens.push_back(v);
-        } else if (auto v_op = dyn_cast<scf::ParallelOp>(v.getDefiningOp())) {
-          if (v_op.getNumResults() > 0 && v_op.getResult(0) == v)
+        } else if (isa_and_present<LoopLikeOpInterface,
+                                   RegionBranchOpInterface>(
+                       v.getDefiningOp())) {
+          auto v_op = v.getDefiningOp();
+          if (v_op->getNumResults() > 0 && v_op->getResult(0) == v)
             incoming_tokens.push_back(v);
         }
       }
@@ -1399,33 +1385,109 @@ private:
             rewriter, loop_op, "parallel", incoming_tokens, constants);
 
     // (3) Create new parallel op with init_val.
-    scf::ParallelOp new_loop_op = replaceLoopOpWithNewTerminator(
+    scf::ParallelOp new_loop_op = convertScfParToAsync(
         rewriter, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
-
-    // Remove the old scf::YieldOp
-    SmallVector<scf::YieldOp, 2> y_ops(new_loop_op.getOps<scf::YieldOp>());
-    for (auto y_op : y_ops)
-      if (eraseOpWithCheck(rewriter, y_op, "insertLoopCarriedDeps").failed())
-        signalPassFailure();
-
-    // Create scf::ReduceOp
-    rewriter.setInsertionPointToEnd(new_loop_op.getBody());
-    air::createSCFReduceForAsyncSCFParallel(rewriter, new_loop_op.getLoc(),
-                                            wait_all_op_yielded.getAsyncToken(),
-                                            loop_op->getContext());
-
-    // Elevating tokens from inside forOp body to the yielded token, to maintain
-    // dominance
-    elevateAsyncTokens<scf::ParallelOp, air::AsyncOpInterface>(
-        new_loop_op, wait_all_op_yielded_v);
-    elevateAsyncTokens<scf::ParallelOp, scf::ForOp>(new_loop_op,
-                                                    wait_all_op_yielded_v);
-    elevateAsyncTokens<scf::ParallelOp, scf::ParallelOp>(new_loop_op,
-                                                         wait_all_op_yielded_v);
 
     if (eraseOpWithCheck(rewriter, loop_op, "insertLoopCarriedDeps 2").failed())
       signalPassFailure();
-    loop_op = new_loop_op;
+    return dyn_cast<LoopLikeOpInterface>(new_loop_op.getOperation());
+  }
+
+  FailureOr<RegionBranchOpInterface>
+  createAsyncRegionBranchOp(RewriterBase &rewriter,
+                            RegionBranchOpInterface branch_op) {
+    if (auto scfIfOp =
+            dyn_cast_if_present<scf::IfOp>(branch_op.getOperation())) {
+      return createAsyncRegionBranchOp(rewriter, scfIfOp);
+    } else {
+      branch_op->emitOpError("unknown RegionBranchOpInterface op type. "
+                             "Currently supports scf.if.");
+      return failure();
+    }
+  }
+  FailureOr<RegionBranchOpInterface>
+  createAsyncRegionBranchOp(RewriterBase &rewriter, scf::IfOp &branch_op) {
+
+    // Create a new wait_all event before the for op which collects the incoming
+    // deps.
+    SmallVector<Value, 4> incoming_tokens;
+    SmallVector<Value, 4> constants;
+    llvm::SetVector<Value> region_args;
+    auto regions = branch_op->getRegions();
+    for (auto &region : regions) {
+      getUsedValuesDefinedAbove(region, region_args);
+      for (Value v : region_args) {
+        if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
+          constants.push_back(v);
+        else if (v.getDefiningOp()) {
+          if (auto v_op =
+                  mlir::dyn_cast<air::AsyncOpInterface>(v.getDefiningOp())) {
+            if (v_op.getAsyncToken() == v)
+              incoming_tokens.push_back(v);
+          } else if (isa_and_present<LoopLikeOpInterface,
+                                     RegionBranchOpInterface>(
+                         v.getDefiningOp())) {
+            auto v_op = v.getDefiningOp();
+            if (v_op->getNumResults() > 0 && v_op->getResult(0) == v)
+              incoming_tokens.push_back(v);
+          }
+        }
+      }
+    }
+    insertWaitAllOpAtLoopBegin<scf::IfOp>(rewriter, branch_op, "if",
+                                          incoming_tokens, constants);
+    // Create new for op with iter_args.
+    scf::IfOp new_branch_op = convertScfIfToAsync(rewriter, branch_op);
+
+    if (eraseOpWithCheck(rewriter, branch_op, "insertLoopCarriedDeps 3")
+            .failed()) {
+      signalPassFailure();
+    }
+    return dyn_cast<RegionBranchOpInterface>(new_branch_op.getOperation());
+  }
+
+  void insertLoopCarriedDepsInRegion(
+      RewriterBase &rewriter, Region &region,
+      SmallVector<Value, 1> yielded_tokens_in_loop_op) {
+
+    // Create one wait_all event at the end of current for loop body.
+    air::WaitAllOp wait_all_op_yielded = insertWaitAllOpBeforeLoopYield(
+        rewriter, region, yielded_tokens_in_loop_op);
+
+    // Update graph
+    ExecuteGraph::VertexId wait_all_op_yielded_v =
+        addVertexWaitAllOpBeforeLoopYield(yielded_tokens_in_loop_op,
+                                          air::to_string(region.getParentOp()));
+    // Update op-to-graph map for wait_all ops
+    wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
+
+    if (isa<scf::ForOp, scf::IfOp>(region.getParentOp())) {
+      // Yield an async token
+      SmallVector<Value, 4> yield_token;
+      yield_token.push_back(wait_all_op_yielded.getResult(0));
+      rewriter.setInsertionPointToEnd(&region.front());
+      rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(), yield_token);
+    }
+
+    else if (isa<scf::ParallelOp>(region.getParentOp())) {
+      // Remove the old scf::YieldOp
+      SmallVector<scf::YieldOp, 2> y_ops(region.getOps<scf::YieldOp>());
+      for (auto y_op : y_ops)
+        if (eraseOpWithCheck(rewriter, y_op, "insertLoopCarriedDeps").failed())
+          signalPassFailure();
+
+      // Create scf::ReduceOp
+      rewriter.setInsertionPointToEnd(&region.front());
+      air::createSCFReduceForAsyncSCFParallel(
+          rewriter, rewriter.getUnknownLoc(),
+          wait_all_op_yielded.getAsyncToken(), rewriter.getContext());
+    }
+
+    // Elevating tokens from inside forOp body to the yielded token, to maintain
+    // dominance
+    elevateAsyncTokens<air::AsyncOpInterface>(region, wait_all_op_yielded_v);
+    elevateAsyncTokens<scf::ForOp>(region, wait_all_op_yielded_v);
+    elevateAsyncTokens<scf::ParallelOp>(region, wait_all_op_yielded_v);
   }
 
   // Check if current for op is the single child in a parent for op
