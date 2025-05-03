@@ -161,37 +161,52 @@ if __name__ == "__main__":
         default=N,
         help="N dimension size in a (1xK) * (KxN) matmul",
     )
-    parser.add_argument(
-        "--param",
-        type=int,
-        default=param,
-        help="Runtime variable",
-    )
     args = parser.parse_args()
+
+    ###### Compile and test, param = 0
+    param = 0
 
     mlir_module = build_module(
         args.n,
         INPUT_DATATYPE,
         OUTPUT_DATATYPE,
-        args.param,
+        param,
     )
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
     inputs = np.arange(0, args.n, dtype=INPUT_DATATYPE).reshape(args.n)
-    outputs = np.zeros(shape=(args.n), dtype=OUTPUT_DATATYPE)
-    if args.param == 1:
-        outputs = inputs + 100
-    else:
-        outputs = inputs * 100
+    outputs = inputs * 100
 
-    ###### Compile and test
     runner = XRTRunner(verbose=args.verbose)
-    exit(
-        runner.run_test(
-            mlir_module,
-            inputs=[inputs],
-            expected_outputs=[outputs],
-        )
+    res = runner.run_test(
+        mlir_module,
+        inputs=[inputs],
+        expected_outputs=[outputs],
     )
+    if res == 0:
+        print("Cond. 0 PASS!")
+    else:
+        print("Cond. 0 FAIL!")
+
+    ###### Compile and test, param = 1
+    param = 1
+
+    mlir_module = build_module(
+        args.n,
+        INPUT_DATATYPE,
+        OUTPUT_DATATYPE,
+        param,
+    )
+
+    outputs = inputs + 100
+    res = runner.run_test(
+        mlir_module,
+        inputs=[inputs],
+        expected_outputs=[outputs],
+    )
+    if res == 0:
+        print("Cond. 1 PASS!")
+    else:
+        print("Cond. 1 FAIL!")

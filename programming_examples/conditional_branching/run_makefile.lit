@@ -4,6 +4,6 @@
 // REQUIRES: ryzen_ai
 //
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run0 | FileCheck %s
-// RUN: make -f %S/Makefile run1 | FileCheck %s
-// CHECK: PASS!
+// RUN: make -f %S/Makefile run | FileCheck %s
+// CHECK: Cond. 0 PASS!
+// CHECK: Cond. 1 PASS!

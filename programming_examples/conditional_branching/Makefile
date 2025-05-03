@@ -4,18 +4,14 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 targetname := $(shell basename ${srcdir})
 
-all: run0 run1
+all: run
 
 print:
 	${powershell} python3 ${srcdir}/single_core.py -p
 
-run0:
+run:
 	mkdir -p build
-	cd build && ${powershell} python3 ${srcdir}/single_core.py --param 0
-
-run1:
-	mkdir -p build
-	cd build && ${powershell} python3 ${srcdir}/single_core.py --param 1
+	cd build && ${powershell} python3 ${srcdir}/single_core.py
 
 clean:
 	rm -rf build __pycache__
