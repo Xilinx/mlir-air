@@ -180,15 +180,11 @@ if __name__ == "__main__":
     outputs = inputs * 100
 
     runner = XRTRunner(verbose=args.verbose)
-    res = runner.run_test(
+    res0 = runner.run_test(
         mlir_module,
         inputs=[inputs],
         expected_outputs=[outputs],
     )
-    if res == 0:
-        print("Cond. 0 PASS!")
-    else:
-        print("Cond. 0 FAIL!")
 
     ###### Compile and test, param = 1
     param = 1
@@ -201,12 +197,15 @@ if __name__ == "__main__":
     )
 
     outputs = inputs + 100
-    res = runner.run_test(
+    res1 = runner.run_test(
         mlir_module,
         inputs=[inputs],
         expected_outputs=[outputs],
     )
-    if res == 0:
-        print("Cond. 1 PASS!")
+    if res0 == 0 and res1 == 0:
+        print("Both conditions PASS!")
     else:
-        print("Cond. 1 FAIL!")
+        if res0 != 0:
+            print("Cond. 0 FAIL!")
+        if res1 != 0:
+            print("Cond. 1 FAIL!")
