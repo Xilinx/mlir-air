@@ -50,7 +50,7 @@ module {
             memref.dealloc %alloc_3 : memref<16x4x64xbf16, 2>
             // CHECK: %[[ASYNC_TOKEN_4:.*]] = air.execute [%[[ASYNC_TOKEN_2]]]
             // CHECK-NEXT: memref.dealloc %[[VAL_1]]
-            // CHECK: air.wait_all async [{{.*}}, %[[ASYNC_TOKEN_2]]]
+            // CHECK: air.wait_all async [%[[ASYNC_TOKEN_2]]]
           }
           memref.dealloc %alloc_1 : memref<64x64xf32, 2>
         }

@@ -46,7 +46,7 @@ module {
 // CHECK: %[[EVENT3:.*]] = air.channel.put async [%[[EVENT1]]]{{.*}}@channel_2[]
         air.channel.put @channel_2[] (%arg7[%arg16, %18] [%c64_new, %c64_new] [%c1024_new, %c1_new]) : (memref<1024x1024xbf16>)
       }
-// CHECK: %[[EVENT4:.*]] = air.wait_all async [%[[EVENT1]], %[[EVENT2]], %[[EVENT3]]]
+// CHECK: %[[EVENT4:.*]] = air.wait_all async [%[[EVENT2]], %[[EVENT3]]]
 // CHECK: %[[EVENT5:.*]] = air.channel.put async [%[[EVENT6:.*]], %[[EVENT7:.*]]]{{.*}}@channel_3[]
       air.channel.put @channel_3[] (%arg8[%17, %18] [%c64_new, %c64_new] [%c1024_new, %c1_new]) : (memref<24576x1024xbf16>)
       
@@ -84,7 +84,7 @@ module {
               air.channel.put @channel_6[%arg17, %arg18] (%6[%arg24, %21] [%c64, %c64] [%c1024, %c1]) : (memref<64x64xbf16, 1>)
 // CHECK: %[[EVENT17:.*]] = air.channel.put async [%[[EVENT15]]{{.*}}@channel_6[
             }
-// CHECK: %[[EVENT18:.*]] = air.wait_all async [%[[EVENT15]], %[[EVENT16]], %[[EVENT17]]]
+// CHECK: %[[EVENT18:.*]] = air.wait_all async [%[[EVENT16]], %[[EVENT17]]]
 // CHECK: %[[EVENT19:.*]] = air.channel.put async [{{.*}}@channel_7[
             air.channel.put @channel_7[%arg17, %arg18] (%19[%20, %21] [%c32_new, %c32_new] [%c64, %c1]) : (memref<64x64xbf16, 1>)
           }
