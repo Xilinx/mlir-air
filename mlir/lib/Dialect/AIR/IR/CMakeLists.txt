@@ -12,6 +12,7 @@ add_mlir_dialect_library(
   DEPENDS
   MLIRAIRIncGen
   MLIRAIROpInterfacesIncGen
+  MLIRLinalgDialect
 
   LINK_LIBS PUBLIC
   MLIRIR)
