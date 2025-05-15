@@ -2043,9 +2043,9 @@ public:
       OpBuilder builder(allocOp);
       auto loc = allocOp->getLoc();
       Value newMemref = builder.create<memref::AllocOp>(
-          loc, MemRefType::get(newMemrefShape, ty.getElementType(),
-                               ty.getLayout().getAffineMap(),
-                               ty.getMemorySpaceAsInt()));
+          loc,
+          MemRefType::get(newMemrefShape, ty.getElementType(),
+                          ty.getLayout().getAffineMap(), ty.getMemorySpace()));
       for (auto op : chanOpPartitions[key]) {
         int memrefOperandOffset =
             dyn_cast<air::AsyncOpInterface>(op.getOperation())

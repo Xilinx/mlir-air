@@ -1209,9 +1209,9 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
       break;
     }
 
-    auto newMemrefType = MemRefType::get(newMemrefShape, ty.getElementType(),
-                                         ty.getLayout().getAffineMap(),
-                                         ty.getMemorySpaceAsInt());
+    auto newMemrefType =
+        MemRefType::get(newMemrefShape, ty.getElementType(),
+                        ty.getLayout().getAffineMap(), ty.getMemorySpace());
     Value newMemref = nullptr;
     // Create new alloc ops.
     if (isa<air::ExecuteOp>(allocOp)) {
@@ -1955,9 +1955,10 @@ struct ForceL1MemrefInHerdPattern : public OpRewritePattern<memref::AllocOp> {
     if (memref.getMemorySpaceAsInt() == (int)air::MemorySpace::L1)
       return failure();
 
-    auto newMemrefType = MemRefType::get(
-        memref.getShape(), memref.getElementType(),
-        memref.getLayout().getAffineMap(), (int)air::MemorySpace::L1);
+    auto newMemrefType =
+        MemRefType::get(memref.getShape(), memref.getElementType(),
+                        memref.getLayout().getAffineMap(),
+                        rewriter.getI32IntegerAttr((int)air::MemorySpace::L1));
 
     rewriter.replaceOpWithNewOp<memref::AllocOp>(alloc, newMemrefType);
 

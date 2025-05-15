@@ -16,7 +16,7 @@
 // RUN: air-opt %s -air-linalg-codegen='input-filter=generic1' | FileCheck %s -check-prefix=GENERIC1
 // GENERIC1: linalg.matmul {__internal_linalg_transform__ = "mmult"} ins({{.*}} : memref<128x128xi32>, memref<128x128xi32>) outs({{.*}} : memref<128x128xi32>)
 // GENERIC1: linalg.generic {{.*}} ins({{.*}} : memref<128x128xi32>, memref<128x128xi32>) outs({{.*}} : memref<128x128xi32>) attrs =  {__internal_linalg_transform__ = "generic0"} {
-// GENERIC1: linalg.generic {{.*}} ins({{.*}} : memref<64x32xi32, 2>, memref<64x32xi32, 2>) outs({{.*}} : memref<64x32xi32, 2>) {
+// GENERIC1: linalg.generic {{.*}} ins({{.*}} : memref<64x32xi32, 2 : i32>, memref<64x32xi32, 2 : i32>) outs({{.*}} : memref<64x32xi32, 2 : i32>) {
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module attributes {torch.debug_module_name = "mmult"} {

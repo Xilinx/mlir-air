@@ -202,7 +202,7 @@ struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
         op,
         MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
-                        {}, fast_space),
+                        AffineMap(), rewriter.getI32IntegerAttr(fast_space)),
         op.getSizes());
     alloc.replaceAllUsesWith(newOp);
     return success();
@@ -227,7 +227,7 @@ struct RemoveViewOpsPattern : public OpRewritePattern<memref::ViewOp> {
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
         op,
         MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
-                        {}, fast_space),
+                        AffineMap(), rewriter.getI32IntegerAttr(fast_space)),
         op.getSizes());
     alloc.replaceAllUsesWith(newOp);
     return success();
@@ -842,9 +842,9 @@ static std::optional<Value>
 allocBufferCallBack(OpBuilder &b, memref::SubViewOp subView,
                     ArrayRef<Value> boundingSubViewSize, DataLayout &layout) {
   MemRefType viewType = subView.getType();
-  MemRefType allocType =
-      MemRefType::get(viewType.getShape(), viewType.getElementType(), {},
-                      (unsigned)air::MemorySpace::L1);
+  MemRefType allocType = MemRefType::get(
+      viewType.getShape(), viewType.getElementType(), AffineMap(),
+      b.getI32IntegerAttr((int)air::MemorySpace::L1));
   Value buffer = b.createOrFold<memref::AllocOp>(subView.getLoc(), allocType);
   return buffer;
 }
@@ -965,7 +965,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       auto ty = llvm::cast<MemRefType>(tiledOperands[resultIdx].getType());
       auto alloc = b.create<memref::AllocOp>(
           loc, MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
-                               (int)air::MemorySpace::L1));
+                               b.getI32IntegerAttr((int)air::MemorySpace::L1)));
       tiledOperands[resultIdx] = alloc.getResult();
       SmallVector<Value> src_offsets;
       SmallVector<Value> src_sizes;

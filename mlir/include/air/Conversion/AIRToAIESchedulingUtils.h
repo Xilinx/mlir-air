@@ -29,7 +29,8 @@ AIE::TileOp getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col, int row);
 AIE::TileOp getPhysTileOp(AIE::DeviceOp aie_device, int col, int row);
 
 AIE::LockOp allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
-                           int init = 0, int id = -1, StringAttr name = nullptr);
+                           int init = 0, int id = -1,
+                           StringAttr name = nullptr);
 
 std::stringstream
 generateBufferNameInStringStream(StringRef prefix, uint64_t &BufferId,
@@ -112,6 +113,12 @@ public:
   DMAAllocator() = delete;
   DMAAllocator(AIE::DeviceOp device, int dmaMemorySpaceAsInt)
       : device(device), DMAMemorySpaceAsInt(dmaMemorySpaceAsInt) {}
+  // DMAAllocator(AIE::DeviceOp device, int dmaMemorySpaceAsInt)
+  //     : device(device) {
+  //   mlir::IntegerType i32Ty = mlir::IntegerType::get(device->getContext(),
+  //   32); mlir::Attribute memSpaceAttr = mlir::IntegerAttr::get(i32Ty,
+  //   dmaMemorySpaceAsInt);
+  // }
 
   FailureOr<allocation_info_t>
   lookupDMAAllocation(int64_t col, int64_t row, air::MemcpyInterface &memcpyOp);
@@ -139,6 +146,7 @@ class TileDMAAllocator : public DMAAllocator {
 public:
   TileDMAAllocator(AIE::DeviceOp device)
       : DMAAllocator(device, (int)air::MemorySpace::L1) {}
+  // TileDMAAllocator(AIE::DeviceOp device);
 
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
