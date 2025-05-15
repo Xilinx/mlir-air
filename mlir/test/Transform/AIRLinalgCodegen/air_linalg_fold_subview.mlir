@@ -37,17 +37,17 @@ module  {
             %4 = memref.subview %1[%arg5, 0] [16, 64] [1, 1] : memref<64x64xf32, #map> to memref<16x64xf32, #map>
             %5 = memref.subview %2[0, %arg6] [64, 16] [1, 1] : memref<64x64xf32, #map> to memref<64x16xf32, #map>
             %6 = memref.subview %3[%arg5, %arg6] [16, 16] [1, 1] : memref<64x64xf32, #map> to memref<16x16xf32, #map>
-            %7 = memref.alloc() : memref<16x64xf32, 2>
-            %8 = memref.alloc() : memref<64x16xf32, 2>
-            %9 = memref.alloc() : memref<16x16xf32, 2>
-            linalg.copy ins(%4 :  memref<16x64xf32, #map>) outs(%7 : memref<16x64xf32, 2>)
-            linalg.copy ins(%5 :  memref<64x16xf32, #map>) outs(%8 : memref<64x16xf32, 2>)
-            linalg.copy ins(%6 :  memref<16x16xf32, #map>) outs(%9 : memref<16x16xf32, 2>)
-            linalg.matmul ins(%7, %8 : memref<16x64xf32, 2>, memref<64x16xf32, 2>) outs(%9 : memref<16x16xf32, 2>)
-            linalg.copy ins(%9 : memref<16x16xf32, 2>) outs(%6 : memref<16x16xf32, #map>)
-            memref.dealloc %7 : memref<16x64xf32, 2>
-            memref.dealloc %8 : memref<64x16xf32, 2>
-            memref.dealloc %9 : memref<16x16xf32, 2>
+            %7 = memref.alloc() : memref<16x64xf32, 2 : i32>
+            %8 = memref.alloc() : memref<64x16xf32, 2 : i32>
+            %9 = memref.alloc() : memref<16x16xf32, 2 : i32>
+            linalg.copy ins(%4 :  memref<16x64xf32, #map>) outs(%7 : memref<16x64xf32, 2 : i32>)
+            linalg.copy ins(%5 :  memref<64x16xf32, #map>) outs(%8 : memref<64x16xf32, 2 : i32>)
+            linalg.copy ins(%6 :  memref<16x16xf32, #map>) outs(%9 : memref<16x16xf32, 2 : i32>)
+            linalg.matmul ins(%7, %8 : memref<16x64xf32, 2 : i32>, memref<64x16xf32, 2 : i32>) outs(%9 : memref<16x16xf32, 2 : i32>)
+            linalg.copy ins(%9 : memref<16x16xf32, 2 : i32>) outs(%6 : memref<16x16xf32, #map>)
+            memref.dealloc %7 : memref<16x64xf32, 2 : i32>
+            memref.dealloc %8 : memref<64x16xf32, 2 : i32>
+            memref.dealloc %9 : memref<16x16xf32, 2 : i32>
           }
         }
       }

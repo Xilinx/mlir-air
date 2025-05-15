@@ -815,8 +815,11 @@ ShimDMAAllocator::getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
       (isMM2S.value()) ? (memcpyOp.getSrcMemref()) : (memcpyOp.getDstMemref());
   MemRefType memrefTy = llvm::cast<MemRefType>(memref.getType());
   // External buffers have memory space L3
-  memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(), {},
-                             DMAMemorySpaceAsInt);
+  mlir::IntegerType i32Ty = mlir::IntegerType::get(memcpyOp->getContext(), 32);
+  mlir::Attribute memSpaceAttr =
+      mlir::IntegerAttr::get(i32Ty, DMAMemorySpaceAsInt);
+  memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
+                             AffineMap(), memSpaceAttr);
   AIE::ExternalBufferOp bufferOp = allocateExternalBufferOp(
       BufferId, memrefTy, device,
       memcpyOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),

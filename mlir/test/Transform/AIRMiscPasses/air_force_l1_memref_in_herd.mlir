@@ -8,9 +8,9 @@
 // RUN: air-opt %s -air-force-l1-memref-in-herd | FileCheck %s
 
 // CHECK-LABEL: func.func @func0
-// CHECK: memref.alloc() : memref<32x64xf32, 2>
-// CHECK: memref.alloc() : memref<64x32xf32, 2>
-// CHECK: memref.alloc() : memref<32x32xf32, 2>
+// CHECK: memref.alloc() : memref<32x64xf32, 2 : i32>
+// CHECK: memref.alloc() : memref<64x32xf32, 2 : i32>
+// CHECK: memref.alloc() : memref<32x32xf32, 2 : i32>
 
 module {
   func.func @func0(%arg0: memref<*xf32> {tt.divisibility = 16 : i32}, %arg1: memref<*xf32> {tt.divisibility = 16 : i32}, %arg2: memref<*xf32> {tt.divisibility = 16 : i32}, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32) {

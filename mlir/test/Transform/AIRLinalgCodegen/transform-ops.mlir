@@ -11,8 +11,8 @@
 // XFAIL: *
 
 // CHECK-LABEL: linalg_promote_L1
-// CHECK: memref.copy {{.*}} to memref<{{.*}}, 2>
-// CHECK-NEXT: memref.copy {{.*}} to memref<{{.*}}, 2>
+// CHECK: memref.copy {{.*}} to memref<{{.*}}, 2 : i32>
+// CHECK-NEXT: memref.copy {{.*}} to memref<{{.*}}, 2 : i32>
 // CHECK-NEXT: linalg.matmul
 func.func @linalg_promote_L1(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
   %c0 = arith.constant 0 : index
@@ -57,7 +57,7 @@ transform.with_pdl_patterns {
 // CHECK-LABEL: linalg_promote_one
 // CHECK: %[[SV0:.*]] = memref.subview
 // CHECK: %[[A0:.*]] = memref.alloc
-// CHECK: memref.copy {{.*}} to memref<{{.*}}, 2>
+// CHECK: memref.copy {{.*}} to memref<{{.*}}, 2 : i32>
 // CHECK: linalg.matmul {{.*}} ins(%[[A0]], %[[SV0]]
 func.func @linalg_promote_one(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
   %c0 = arith.constant 0 : index
@@ -78,10 +78,10 @@ transform.with_pdl_patterns {
 // -----
 
 // CHECK-LABEL: linalg_promote_multi_op
-// CHECK: %[[A0:.*]] = memref.alloc() : memref<16x16xf32, 2>
-// CHECK-NEXT: linalg.fill ins(%{{.*}} : f32) outs(%[[A0]] : memref<16x16xf32, 2>)
-// CHECK-NEXT: linalg.matmul {{.*}} outs(%[[A0]] : memref<16x16xf32, 2>)
-// CHECK-NEXT: memref.copy %[[A0]], %{{.*}} : memref<16x16xf32, 2> to memref<16x16xf32, strided<[1024, 1]>>
+// CHECK: %[[A0:.*]] = memref.alloc() : memref<16x16xf32, 2 : i32>
+// CHECK-NEXT: linalg.fill ins(%{{.*}} : f32) outs(%[[A0]] : memref<16x16xf32, 2 : i32>)
+// CHECK-NEXT: linalg.matmul {{.*}} outs(%[[A0]] : memref<16x16xf32, 2 : i32>)
+// CHECK-NEXT: memref.copy %[[A0]], %{{.*}} : memref<16x16xf32, 2 : i32> to memref<16x16xf32, strided<[1024, 1]>>
 func.func @linalg_promote_multi_op(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
   %subview0 = memref.subview %arg0[0, 0] [16, 16] [1, 1] : memref<1024x1024xf32> to memref<16x16xf32, strided<[1024, 1]>>
   %subview1 = memref.subview %arg1[0, 0] [16, 16] [1, 1] : memref<1024x1024xf32> to memref<16x16xf32, strided<[1024, 1]>>
