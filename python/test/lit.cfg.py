@@ -30,12 +30,6 @@ config.environment["PYTHONPATH"] = "{}:{}".format(
 
 try:
     import torch_mlir
-
-    torch_mlir_path = os.path.join(torch_mlir.__path__[0], "..")
-    print("found torch_mlir:", torch_mlir_path)
-    config.environment["PYTHONPATH"] = (
-        config.environment["PYTHONPATH"] + ":" + torch_mlir_path
-    )
     config.available_features.add("torch_mlir")
 except:
     print("torch_mlir not found")

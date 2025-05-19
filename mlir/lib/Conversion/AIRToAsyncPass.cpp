@@ -14,7 +14,6 @@
 #include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -61,14 +60,11 @@ public:
     int64_t herd_size_y =
         cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
+    Value zero = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
+    Value one = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
     SmallVector<Value> empty;
     SmallVector<Type> retTy;
     SmallVector<Value> deps;
-    // for (unsigned i=0; i<launch.getAsyncDependencies().size(); ++i)
-    //   deps.push_back(
-    //     rewriter.create<UnrealizedConversionCastOp>(op->getLoc(),
-    //                                                 async::TokenType::get(op->getContext()),
-    //                                                 operands[i]).getResult(0));
 
     auto herdExeOp = rewriter.create<async::ExecuteOp>(
         op->getLoc(), retTy, launch.getAsyncDependencies(), empty,
@@ -76,9 +72,9 @@ public:
           auto size =
               r.create<arith::ConstantIndexOp>(loc, herd_size_x * herd_size_y);
           auto group = r.create<async::CreateGroupOp>(loc, size);
-          auto outer = r.create<affine::AffineForOp>(loc, 0, herd_size_x);
+          auto outer = r.create<scf::ForOp>(loc, zero, herd_size[0], one);
           r.setInsertionPointToStart(outer.getBody());
-          auto inner = r.create<affine::AffineForOp>(loc, 0, herd_size_y);
+          auto inner = r.create<scf::ForOp>(loc, zero, herd_size[1], one);
 
           outer->setAttr("air.herd",
                          StringAttr::get(op->getContext(), "outer"));
@@ -687,7 +683,7 @@ public:
   AIRToAsyncPass(const AIRToAsyncPass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<affine::AffineDialect>();
+    registry.insert<scf::SCFDialect>();
     registry.insert<async::AsyncDialect>();
   }
 
