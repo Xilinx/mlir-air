@@ -12,13 +12,14 @@ import torch
 from torch_mlir import fx
 
 # this import has side-effect of registering the dialect
-import air.dialects.air 
+import air.dialects.air
 from air.ir import *
 import air.backend.cpu_backend as cpu_backend
 from air.compiler.util import run_transform
 from air.passmanager import PassManager
 
 verbose = False
+
 
 def transform_to_air_0(module):
     with module.context as ctx:
@@ -38,7 +39,7 @@ def transform_to_air_0(module):
         )
         pm = PassManager.parse(pipeline)
         pm.run(module.operation)
-        if (verbose):
+        if verbose:
             print("AIR Module")
             print(module)
         pm = PassManager.parse(cpu_backend.DEFAULT_PIPELINE)
