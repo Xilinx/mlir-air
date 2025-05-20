@@ -23,7 +23,7 @@ ctypes.CDLL(
     f"{install_path()}/runtime_lib/x86_64/aircpu/libaircpu.so", mode=ctypes.RTLD_GLOBAL
 )
 ctypes.CDLL(
-    f"{install_path()}/python/air/_mlir_libs/libmlir_async_runtime.so.21.0git", mode=ctypes.RTLD_GLOBAL
+    f"{install_path()}/python/air/_mlir_libs/libmlir_async_runtime.so", mode=ctypes.RTLD_GLOBAL
 )
 
 __all__ = ["AirCpuBackend", "DEFAULT_PIPELINE"]
