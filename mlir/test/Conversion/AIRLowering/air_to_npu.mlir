@@ -162,8 +162,8 @@ module {
 // CHECK: airrt.dma_memcpy_nd(%[[CST_5]], %{{.*}}, %{{.*}}, %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_16]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) : (i32, i64, i64, memref<16x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 // CHECK: airrt.dma_memcpy_nd(%[[CST_6]], %{{.*}}, %{{.*}}, %[[VAL_2]][%[[CST_0]], %[[CST_0]], %{{.*}}, %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_8]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) : (i32, i64, i64, memref<8x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 
-#map = affine_map<()[s0] -> (s0 * 8)>
-#map1 = affine_map<()[s0] -> (s0 * 16)>
+#map = affine_map<(d0)[] -> (d0 * 8)>
+#map1 = affine_map<(d0)[] -> (d0 * 16)>
 module {
   air.channel @channel_2 [1, 1]
   air.channel @channel_1 [1, 1]
@@ -178,21 +178,21 @@ module {
       %c16 = arith.constant 16 : index
       %c0 = arith.constant 0 : index
       %async_token, %results = air.execute -> (index) {
-        %5 = affine.apply #map()[%arg3]
+        %5 = affine.apply #map(%arg3)[]
         air.execute_terminator %5 : index
       }
       %1 = air.channel.put async [%async_token]  @channel_0[] (%arg7[%results, %c0] [%c8, %c16] [%c16, %c1_0]) {id = 1 : i32} : (memref<8x16xi32>)
       %async_token_1, %results_2 = air.execute -> (index) {
-        %5 = affine.apply #map1()[%arg4]
+        %5 = affine.apply #map1(%arg4)[]
         air.execute_terminator %5 : index
       }
       %2 = air.channel.put async [%async_token_1]  @channel_1[] (%arg8[%c0, %results_2] [%c16, %c16] [%c32, %c1_0]) {id = 2 : i32} : (memref<16x32xi32>)
       %async_token_3, %results_4 = air.execute -> (index) {
-        %5 = affine.apply #map()[%arg3]
+        %5 = affine.apply #map(%arg3)[]
         air.execute_terminator %5 : index
       }
       %async_token_5, %results_6 = air.execute -> (index) {
-        %5 = affine.apply #map1()[%arg4]
+        %5 = affine.apply #map1(%arg4)[]
         air.execute_terminator %5 : index
       }
       %3 = air.channel.get async [%async_token_3, %async_token_5]  @channel_2[] (%arg9[%results_4, %results_6] [%c8, %c16] [%c32, %c1_0]) {id = 3 : i32} : (memref<8x32xi32>)

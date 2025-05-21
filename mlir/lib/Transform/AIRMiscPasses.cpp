@@ -993,7 +993,6 @@ FailureOr<Value> tileChannelOpByFactor(
                                        i);
     newApplyOp =
         rewriter.create<affine::AffineApplyOp>(loc, map, originalApplyOperands);
-
     if (affineApplyOp)
       rewriter.restoreInsertionPoint(checkpoint);
     SmallVector<Value> newOffsets = originalChanOp.getOffsets();
