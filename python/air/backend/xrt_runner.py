@@ -72,6 +72,7 @@ class XRTRunner:
         instance_name: str = "",
         kernel_id: str = "",
         xclbin_input: str = "",
+        use_peano: bool = False,
     ):
         """
         Args:
@@ -85,6 +86,12 @@ class XRTRunner:
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
+            output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn].
+            kernel_name: configure aircc to package the kernel with the specified name.
+            instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
+            kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
+            xclbin_input: configure aircc to package the kernel into an existing xclbin with specified xclbin file name.
+            use_peano: configure aircc to build the kernel using llvm-aie (peano). If false, then use chess.
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -101,6 +108,7 @@ class XRTRunner:
         self.instance_name = instance_name
         self.kernel_id = kernel_id
         self.xclbin_input = xclbin_input
+        self.use_peano = use_peano
 
     def run_test(
         self,
@@ -122,6 +130,28 @@ class XRTRunner:
             print("Running module: ")
             print(mlir_module)
 
+        # Get peano package dir.
+        if self.use_peano:
+            import os, site, glob
+
+            # Search all site-packages dirs (user/system level)
+            site_dirs = site.getsitepackages() + [site.getusersitepackages()]
+
+            peano_package_dir = ""
+            for dir in site_dirs:
+                matches = glob.glob(os.path.join(dir, "llvm-aie"))
+                if matches:
+                    # Use first match found
+                    peano_package_dir = os.path.abspath(matches[0])
+                    break
+
+            if not peano_package_dir:
+                raise RuntimeError(
+                    "llvm-aie package found in site-packages but not importable."
+                )
+        else:
+            peano_package_dir = ""
+
         backend = XRTBackend(
             verbose=self.verbose,
             omit_while_true_loop=self.omit_while_true_loop,
@@ -138,6 +168,7 @@ class XRTRunner:
             instance_name=self.instance_name,
             kernel_id=self.kernel_id,
             xclbin_input=self.xclbin_input,
+            peano_install_dir=peano_package_dir,
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs

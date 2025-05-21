@@ -60,6 +60,7 @@ class XRTBackend(AirBackend):
         instance_name: str = "",
         kernel_id: str = "",
         xclbin_input: str = "",
+        peano_install_dir: str = "",
     ):
         """Constructor for XRTBackend
 
@@ -79,6 +80,7 @@ class XRTBackend(AirBackend):
             instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
             kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
             xclbin_input: configure aircc to package the kernel into an existing xclbin with specified xclbin file name.
+            peano_install_dir: configure aircc to build the kernel using llvm-aie (peano). If empty, then use chess.
         """
         super().__init__()
         self.verbose = verbose
@@ -97,6 +99,7 @@ class XRTBackend(AirBackend):
         self.instance_name = instance_name
         self.kernel_id = kernel_id
         self.xclbin_input = xclbin_input
+        self.peano_install_dir = peano_install_dir
 
     def __del__(self):
         self.unload()
@@ -172,8 +175,6 @@ class XRTBackend(AirBackend):
                 "--device",
                 target_device,
                 "air.mlir",
-                "-xchesscc",
-                "-xbridge",
                 "-o",
                 xclbin,
                 "-i",
@@ -228,6 +229,14 @@ class XRTBackend(AirBackend):
             if self.xclbin_input != "":
                 aircc_options += ["--xclbin-input"]
                 aircc_options += [self.xclbin_input]
+            if self.peano_install_dir != "":
+                aircc_options += ["--peano"]
+                aircc_options += [self.peano_install_dir]
+                aircc_options += ["--no-xchesscc"]
+                aircc_options += ["--no-xbridge"]
+            else:
+                aircc_options += ["--xchesscc"]
+                aircc_options += ["--xbridge"]
 
             aircc.run(air_module, aircc_options)
 
