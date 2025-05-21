@@ -15,7 +15,7 @@
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_1]][0, 0, 0, 0][1, 1, 16, 8][0, 0, 8, 1]) {id = 1 : i64, metadata = @airMemcpyId4} : memref<16x8xi32>
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_2]][0, 0, 0, 0][1, 1, 8, 8][0, 0, 8, 1]) {id = 2 : i64, metadata = @airMemcpyId16} : memref<8x8xi32>
 
-#map = affine_map<()[s0] -> (s0 * 8)>
+#map = affine_map<(d0)[] -> (d0 * 8)>
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
@@ -35,8 +35,8 @@ module {
     %alloc = memref.alloc() : memref<8x8xi32>
     affine.for %arg3 = 0 to 1 {
       affine.for %arg4 = 0 to 1 {
-        %0 = affine.apply #map()[%arg4]
-        %1 = affine.apply #map()[%arg3]
+        %0 = affine.apply #map(%arg4)[]
+        %1 = affine.apply #map(%arg3)[]
         %2 = arith.index_cast %arg3 : index to i64
         %3 = arith.index_cast %arg4 : index to i64
         %4 = arith.index_cast %1 : index to i64
@@ -61,7 +61,7 @@ module {
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_1]][0, 0, 0, 0][1, 1, 16, 8][0, 0, 8, 1]) {id = 1 : i64, metadata = @airMemcpyId4} : memref<16x8xi32>
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_2]][0, 0, 0, 0][1, 1, 8, 8][0, 0, 8, 1]) {id = 2 : i64, metadata = @airMemcpyId16} : memref<8x8xi32>
 
-#map = affine_map<()[s0] -> (s0 * 8)>
+#map = affine_map<(d0)[] -> (d0 * 8)>
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
@@ -87,8 +87,8 @@ module {
     memref.assume_alignment %2, 64 : memref<8x8xi32>
     affine.for %arg0 = 0 to 1 {
       affine.for %arg1 = 0 to 1 {
-        %3 = affine.apply #map()[%arg1]
-        %4 = affine.apply #map()[%arg0]
+        %3 = affine.apply #map(%arg1)[]
+        %4 = affine.apply #map(%arg0)[]
         %5 = arith.index_cast %arg0 : index to i64
         %6 = arith.index_cast %arg1 : index to i64
         %7 = arith.index_cast %4 : index to i64
@@ -98,8 +98,8 @@ module {
         %11 = arith.index_cast %arg1 : index to i64
         %12 = arith.index_cast %3 : index to i64
         %13 = airrt.dma_memcpy_nd(%c4_i32, %10, %11, %1[%c0_i64, %c0_i64, %c0_i64, %12], [%c1_i64, %c1_i64, %c16_i64, %c8_i64], [%c0_i64, %c0_i64, %c8_i64]) {metadata = @airMemcpyId5} : (i32, i64, i64, memref<16x8xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-        %14 = affine.apply #map()[%arg0]
-        %15 = affine.apply #map()[%arg1]
+        %14 = affine.apply #map(%arg0)[]
+        %15 = affine.apply #map(%arg1)[]
         %16 = arith.index_cast %arg0 : index to i64
         %17 = arith.index_cast %arg1 : index to i64
         %18 = arith.index_cast %14 : index to i64
@@ -164,23 +164,23 @@ module {
     %9 = airrt.wait_all %8, %5, %2 : !airrt.event
     affine.for %arg0 = 0 to 1 {
       affine.for %arg1 = 0 to 1 {
-        %10 = affine.apply affine_map<()[s0] -> (s0 * 128)>()[%arg0]
+        %10 = affine.apply affine_map<(d0)[] -> (d0 * 128)>(%arg0)[]
         %11 = airrt.wait_all : !airrt.event
         %12 = airrt.wait_all %11 : !airrt.event
         %13 = arith.index_cast %arg0 : index to i64
         %14 = arith.index_cast %arg1 : index to i64
         %15 = arith.index_cast %10 : index to i64
         %16 = airrt.dma_memcpy_nd(%c4_i32, %13, %14, %0[%c0_i64, %c0_i64, %15, %c0_i64], [%c1_i64, %c8_i64, %c128_i64, %c256_i64], [%c0_i64, %c256_i64, %c2048_i64]) {metadata = @airMemcpyId10} : (i32, i64, i64, memref<2048x2048xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-        %17 = affine.apply affine_map<()[s0] -> (s0 * 128)>()[%arg1]
+        %17 = affine.apply affine_map<(d0)[] -> (d0 * 128)>(%arg1)[]
         %18 = airrt.wait_all : !airrt.event
         %19 = airrt.wait_all %18 : !airrt.event
         %20 = arith.index_cast %arg0 : index to i64
         %21 = arith.index_cast %arg1 : index to i64
         %22 = arith.index_cast %17 : index to i64
         %23 = airrt.dma_memcpy_nd(%c7_i32, %20, %21, %3[%c0_i64, %c0_i64, %c0_i64, %22], [%c1_i64, %c1_i64, %c2048_i64, %c128_i64], [%c0_i64, %c0_i64, %c2048_i64]) {metadata = @airMemcpyId13} : (i32, i64, i64, memref<2048x2048xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-        %24 = affine.apply affine_map<()[s0] -> (s0 * 128)>()[%arg0]
+        %24 = affine.apply affine_map<(d0)[] -> (d0 * 128)>(%arg0)[]
         %25 = airrt.wait_all : !airrt.event
-        %26 = affine.apply affine_map<()[s0] -> (s0 * 128)>()[%arg1]
+        %26 = affine.apply affine_map<(d0)[] -> (d0 * 128)>(%arg1)[]
         %27 = airrt.wait_all : !airrt.event
         %28 = airrt.wait_all %27, %25 : !airrt.event
         %29 = arith.index_cast %arg0 : index to i64

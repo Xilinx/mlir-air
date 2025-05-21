@@ -1575,12 +1575,12 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{
               *mlir::getConstantIntValue(sfo.getUpperBound())},
-          SmallVector<std::optional<int64_t>>{}, ctx);
+          ctx);
       auto new_lb = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{
               *mlir::getConstantIntValue(sfo.getLowerBound())},
-          SmallVector<std::optional<int64_t>>{}, ctx);
+          ctx);
       if (!new_lb) {
         apply->emitOpError("failed to evaluate lower bound.");
         return failure();
@@ -1600,11 +1600,11 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       auto new_ub = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{afo.getConstantUpperBound()},
-          SmallVector<std::optional<int64_t>>{}, ctx);
+          ctx);
       auto new_lb = air::evaluateConstantsInMap(
           apply.getAffineMap(),
           SmallVector<std::optional<int64_t>>{afo.getConstantLowerBound()},
-          SmallVector<std::optional<int64_t>>{}, ctx);
+          ctx);
       if (!new_lb) {
         apply->emitOpError("failed to evaluate lower bound.");
         return failure();

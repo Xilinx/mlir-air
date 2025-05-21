@@ -110,7 +110,7 @@ module {
 // CHECK: }
 // CHECK: } {sym_name = "segment_0"}
 
-#map = affine_map<()[s0] -> (s0 * 32)>
+#map = affine_map<(d0)[] -> (d0 * 32)>
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
@@ -134,8 +134,8 @@ module {
     %c0_i64 = arith.constant 0 : i64
     affine.for %arg3 = 0 to 1 {
       affine.for %arg4 = 0 to 1 {
-        %0 = affine.apply #map()[%arg3]
-        %1 = affine.apply #map()[%arg4]
+        %0 = affine.apply #map(%arg3)[]
+        %1 = affine.apply #map(%arg4)[]
         %2 = arith.index_cast %arg3 : index to i64
         %3 = arith.index_cast %arg4 : index to i64
         %4 = arith.index_cast %0 : index to i64
@@ -167,7 +167,7 @@ module {
 // CHECK:  aiex.npu.dma_memcpy_nd(%[[ARG0]][0, 0, 4, 4][1, 1, 4, 4][0, 0, 8, 1]) {id = 0 : i64, metadata = @airMemcpyId14} : memref<8x8xi32>
 // CHECK:  aiex.npu.dma_wait {symbol = @airMemcpyId14}
 
-#map = affine_map<()[s0] -> (s0 * 4)>
+#map = affine_map<(d0)[] -> (d0 * 4)>
 module {
   aie.device(npu1_2col) {
     aie.shim_dma_allocation @airMemcpyId14(S2MM, 0, 0)
@@ -191,8 +191,8 @@ module {
       affine.for %arg2 = 0 to 1 {
         affine.for %arg3 = 0 to 2 {
           affine.for %arg4 = 0 to 2 {
-            %0 = affine.apply #map()[%arg3]
-            %1 = affine.apply #map()[%arg4]
+            %0 = affine.apply #map(%arg3)[]
+            %1 = affine.apply #map(%arg4)[]
             %2 = arith.index_cast %arg3 : index to i64
             %3 = arith.index_cast %arg4 : index to i64
             %4 = arith.index_cast %0 : index to i64
@@ -223,7 +223,7 @@ module {
 // CHECK:  aiex.npu.dma_memcpy_nd(%[[ARG0]][0, 0, 4, 4][1, 1, 4, 4][0, 0, 8, 1]) {id = 0 : i64, metadata = @air_channel_1} : memref<8x8xi32>
 // CHECK:  aiex.npu.dma_wait {symbol = @air_channel_1}
 
-#map = affine_map<()[s0] -> (s0 * 4)>
+#map = affine_map<(d0)[] -> (d0 * 4)>
 module {
   aie.device(npu1_2col) {
     %tile_0_3 = aie.tile(0, 3)
@@ -249,8 +249,8 @@ module {
       affine.for %arg2 = 0 to 1 {
         affine.for %arg3 = 0 to 2 {
           affine.for %arg4 = 0 to 2 {
-            %0 = affine.apply #map()[%arg3]
-            %1 = affine.apply #map()[%arg4]
+            %0 = affine.apply #map(%arg3)[]
+            %1 = affine.apply #map(%arg4)[]
             %2 = arith.index_cast %arg3 : index to i64
             %3 = arith.index_cast %arg4 : index to i64
             %4 = arith.index_cast %0 : index to i64
@@ -442,7 +442,7 @@ module {
 // CHECK:  aiex.npu.dma_memcpy_nd(%[[ARG0]][0, 0, 192, 128][1, 1, 64, 64][0, 0, 32768, 1]) {id = 14 : i64, metadata = @airMemcpyId26} : memref<8192x32768xi32>
 // CHECK:  aiex.npu.dma_memcpy_nd(%[[ARG0]][0, 0, 192, 192][1, 1, 64, 64][0, 0, 32768, 1]) {id = 15 : i64, metadata = @airMemcpyId26} : memref<8192x32768xi32>
 
-#map = affine_map<()[s0] -> (s0 * 64)>
+#map = affine_map<(d0)[] -> (d0 * 64)>
 module {
   aie.device(npu1_1col) {
     %tile_0_0 = aie.tile(0, 0)
@@ -462,8 +462,8 @@ module {
     %alloc = memref.alloc() : memref<8192x32768xi32>
     affine.for %arg3 = 0 to 4 {
       affine.for %arg4 = 0 to 4 {
-        %10 = affine.apply #map()[%arg3]
-        %11 = affine.apply #map()[%arg4]
+        %10 = affine.apply #map(%arg3)[]
+        %11 = affine.apply #map(%arg4)[]
         %12 = arith.index_cast %arg3 : index to i64
         %13 = arith.index_cast %arg4 : index to i64
         %14 = arith.index_cast %10 : index to i64
@@ -520,7 +520,7 @@ module {
 // CHECK: aiex.npu.dma_memcpy_nd(%arg0[0, 0, 0, 17743872][38, 2, 64, 64][155648, 64, 2432, 1]) {id = 3 : i64, metadata = @airMemcpyId10} : memref<9728x2432xbf16>
 // CHECK: return
 
-#map = affine_map<()[s0] -> (s0 * 128)>
+#map = affine_map<(d0)[] -> (d0 * 128)>
 module {
   aie.device(npu1_4col) {
     aie.shim_dma_allocation @airMemcpyId10(MM2S, 1, 0)
@@ -538,7 +538,7 @@ module {
     %c0_i64 = arith.constant 0 : i64
     affine.for %arg3 = 0 to 1 {
       affine.for %arg4 = 0 to 1 {
-        %0 = affine.apply #map()[%arg4]
+        %0 = affine.apply #map(%arg4)[]
         %1 = arith.index_cast %arg3 : index to i64
         %2 = arith.index_cast %arg4 : index to i64
         %3 = arith.index_cast %0 : index to i64

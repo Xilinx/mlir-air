@@ -96,7 +96,7 @@ func.func @scf_if(%0 : i1) {
 // CHECK:     %[[V4:.*]] = airrt.wait_all %[[V1]], %[[V3]] : !airrt.event
 // CHECK:     scf.reduce(%[[V4]] : !airrt.event) {
 // CHECK:   scf.yield %[[V2]] : !airrt.event
-#map5 = affine_map<()[s0] -> (s0 * 32)>
+#map5 = affine_map<(d0)[] -> (d0 * 32)>
 func.func @scf_for_par(%arg0: memref<1024x512xi8>, %arg1: memref<512x1024xi8>, %arg2: memref<1024x1024xi32>, %arg3: memref<1024x1024xi32>) {
   %c16 = arith.constant 16 : index
   %0 = air.launch async (%arg4, %arg5) in (%arg6=%c16, %arg7=%c16) args(%arg8=%arg3, %arg9=%arg0, %arg10=%arg1, %arg11=%arg2) : memref<1024x1024xi32>, memref<1024x512xi8>, memref<512x1024xi8>, memref<1024x1024xi32> attributes {id = 1 : i32} {
@@ -115,7 +115,7 @@ func.func @scf_for_par(%arg0: memref<1024x512xi8>, %arg1: memref<512x1024xi8>, %
       %14 = scf.for %arg12 = %c0_25 to %c16_22 step %c1_26 iter_args(%arg13 = %8) -> (!air.async.token) {
         %29 = scf.parallel (%arg14, %arg15) = (%c0_25, %c0_25) to (%c2, %c2) step (%c1_26, %c1_26) init (%arg13) -> !air.async.token {
           %async_token_57, %results_58 = air.execute -> (index) {
-            %31 = affine.apply #map5()[%arg14]
+            %31 = affine.apply #map5(%arg14)[]
             air.execute_terminator %31 : index
           }
           %30 = air.wait_all async [%arg13, %async_token_57] 

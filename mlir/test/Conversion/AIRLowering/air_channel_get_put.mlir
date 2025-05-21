@@ -202,7 +202,7 @@ module {
 // CHECK: airrt.dma_memcpy_nd(%{{.*}}, %{{.*}}, %{{.*}}, %arg0[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<128xf32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
 // CHECK: airrt.herd_load "herd_0" () : () -> i64
 
-#map = affine_map<()[s0] -> (s0 * 64)>
+#map = affine_map<(d0)[] -> (d0 * 64)>
 module {
   air.channel @channel_6 [1, 1]
   func.func @one_d_scf_parallel(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
@@ -211,7 +211,7 @@ module {
       %c64 = arith.constant 64 : index
       %c1 = arith.constant 1 : index
       %async_token, %results = air.execute -> (index) {
-        %3 = affine.apply #map()[%arg2]
+        %3 = affine.apply #map(%arg2)[]
         air.execute_terminator %3 : index
       }
       %1 = air.channel.put async [%async_token]  @channel_6[] (%arg4[%results] [%c64] [%c1]) {id = 1 : i32} : (memref<128xf32>)

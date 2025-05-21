@@ -987,8 +987,8 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
           continue;
         // Create a new affine.apply on affine.for ind. vars, as handle for
         // subsequent offset composition.
-        auto sym0_expr = getAffineSymbolExpr(0, builder.getContext());
-        auto iv_map = AffineMap::get(0, 1, sym0_expr);
+        auto dim0_expr = getAffineDimExpr(0, builder.getContext());
+        auto iv_map = AffineMap::get(1, 0, dim0_expr);
         offset_producer = builder.create<affine::AffineApplyOp>(
             builder.getUnknownLoc(), iv_map, offsets[i]);
       }
@@ -1002,20 +1002,34 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
       if (affine_apply->getNumOperands() > 1)
         continue;
       // Compose affine map
-      auto offset_expr = getAffineSymbolExpr(0, builder.getContext());
-      auto stride_expr =
-          getAffineConstantExpr(*const_stride, builder.getContext());
-      auto next_stride_expr =
-          getAffineConstantExpr(*const_stride_next, builder.getContext());
-      offset_expr = offset_expr * stride_expr;
-      offset_expr = offset_expr.ceilDiv(next_stride_expr);
-      offset_expr = offset_expr + getAffineConstantExpr(*const_offset_next,
-                                                        builder.getContext());
-      SmallVector<AffineExpr, 8> symReplacements(
+      SmallVector<AffineExpr, 8> exprReplacements(
           affine_apply.getAffineMap().getResults().begin(),
           affine_apply.getAffineMap().getResults().end());
-      offset_expr = offset_expr.replaceDimsAndSymbols({}, symReplacements);
-      auto next_offset_map = AffineMap::get(0, 1, offset_expr);
+      if (exprReplacements.size() > 1)
+        continue;
+      bool affineApplyOnDim = exprReplacements.front().isFunctionOfDim(0);
+      bool affineApplyOnSymbol = exprReplacements.front().isFunctionOfSymbol(0);
+      AffineExpr offset_expr = AffineExpr();
+      if (affineApplyOnDim)
+        offset_expr = builder.getAffineDimExpr(0);
+      else if (affineApplyOnSymbol)
+        offset_expr = builder.getAffineSymbolExpr(0);
+      else
+        continue;
+      auto stride_expr = builder.getAffineConstantExpr(*const_stride);
+      auto next_stride_expr = builder.getAffineConstantExpr(*const_stride_next);
+      offset_expr = offset_expr * stride_expr;
+      offset_expr = offset_expr.ceilDiv(next_stride_expr);
+      offset_expr =
+          offset_expr + builder.getAffineConstantExpr(*const_offset_next);
+      AffineMap next_offset_map = AffineMap();
+      if (affineApplyOnDim) {
+        offset_expr = offset_expr.replaceDims(exprReplacements);
+        next_offset_map = AffineMap::get(1, 0, offset_expr);
+      } else if (affineApplyOnSymbol) {
+        offset_expr = offset_expr.replaceSymbols(exprReplacements);
+        next_offset_map = AffineMap::get(0, 1, offset_expr);
+      }
       // Apply affine map
       builder.setInsertionPoint(affine_apply);
       if (auto exec =
@@ -1766,6 +1780,20 @@ air::getOffsetDimFromMemrefDim(int dimOnMemref, SmallVector<Value> strides,
 
 // Evaluate the affine expression of affine map on a sparse vector of constant
 // ints.
+std::optional<int64_t>
+air::evaluateConstantsInMap(AffineMap map,
+                            SmallVector<std::optional<int64_t>> symAndDimInputs,
+                            MLIRContext *ctx) {
+  std::optional<int64_t> output = std::nullopt;
+  if (map.getNumSymbols() == symAndDimInputs.size()) {
+    return evaluateConstantsInMap(map, symAndDimInputs,
+                                  SmallVector<std::optional<int64_t>>{}, ctx);
+  } else if (map.getNumDims() == symAndDimInputs.size()) {
+    return evaluateConstantsInMap(map, SmallVector<std::optional<int64_t>>{},
+                                  symAndDimInputs, ctx);
+  } else
+    return output;
+}
 std::optional<int64_t> air::evaluateConstantsInMap(
     AffineMap map, SmallVector<std::optional<int64_t>> symbolInputs,
     SmallVector<std::optional<int64_t>> dimInputs, MLIRContext *ctx) {

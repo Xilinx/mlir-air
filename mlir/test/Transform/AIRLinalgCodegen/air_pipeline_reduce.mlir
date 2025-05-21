@@ -25,14 +25,14 @@
 // CHECK:         air.channel.put  @channel_0[] (%[[VAL_9]][] [] []) : (memref<f32>)
 // CHECK:       }
 // CHECK:       affine.if #set1(){{\[}}%[[VAL_4]], %[[VAL_5]]] {
-// CHECK:         %[[VAL_15:.*]] = memref.alloc() : memref<f32, 2>
-// CHECK:         air.channel.get  @channel_0[] (%[[VAL_15]][] [] []) : (memref<f32, 2>)
-// CHECK:         linalg.generic {indexing_maps = [#map1, #map2], iterator_types = ["reduction"]} ins(%[[VAL_11]] : memref<16xf32, strided<[1], offset: ?>>) outs(%[[VAL_15]] : memref<f32, 2>) {
+// CHECK:         %[[VAL_15:.*]] = memref.alloc() : memref<f32, 2 : i32>
+// CHECK:         air.channel.get  @channel_0[] (%[[VAL_15]][] [] []) : (memref<f32, 2 : i32>)
+// CHECK:         linalg.generic {indexing_maps = [#map1, #map2], iterator_types = ["reduction"]} ins(%[[VAL_11]] : memref<16xf32, strided<[1], offset: ?>>) outs(%[[VAL_15]] : memref<f32, 2 : i32>) {
 // CHECK:         ^bb0(%[[VAL_16:.*]]: f32, %[[VAL_17:.*]]: f32):
 // CHECK:           %[[VAL_18:.*]] = arith.addf %[[VAL_16]], %[[VAL_17]] : f32
 // CHECK:           linalg.yield %[[VAL_18]] : f32
 // CHECK:         }
-// CHECK:         memref.copy %[[VAL_15]], %[[VAL_9]] : memref<f32, 2> to memref<f32>
+// CHECK:         memref.copy %[[VAL_15]], %[[VAL_9]] : memref<f32, 2 : i32> to memref<f32>
 // CHECK:       }
 // CHECK:     }
 // CHECK:     return %[[VAL_3]] : memref<f32>
