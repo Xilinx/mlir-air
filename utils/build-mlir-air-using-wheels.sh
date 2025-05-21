@@ -89,10 +89,12 @@ cmake .. \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
     -DLLVM_DIR=${WHL_MLIR_DIR}/lib/cmake/llvm \
     -DMLIR_DIR=${WHL_MLIR_DIR}/lib/cmake/mlir \
+    -DLLVM_EXTERNAL_LIT=$(which lit) \
     -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
     -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
     -DAIE_DIR=${MLIR_AIE_INSTALL_DIR}/lib/cmake/aie \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
+    -DPython_FIND_VIRTUALENV=ONLY \
     -DPython3_FIND_VIRTUALENV=ONLY \
     -DLibXAIE_ROOT=${LIBXAIE_INSTALL_DIR}/ \
     -DXRT_LIB_DIR=${XRT_DIR}/lib \
@@ -104,7 +106,6 @@ cmake .. \
     -DENABLE_RUN_XRT_TESTS=ON \
     -DLLVM_USE_LINKER=lld \
     -DLLVM_ENABLE_ASSERTIONS=on \
-    -DAIE_ENABLE_BINDINGS_PYTHON=on \
     |& tee cmake.log
 
 ninja |& tee ninja.log
