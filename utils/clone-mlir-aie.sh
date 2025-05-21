@@ -15,6 +15,21 @@
 ##===----------------------------------------------------------------------===##
 
 export HASH=5a67804a8458dfb0afc227ee2f38c8dff7fff62f
+DATETIME=2025052104
+WHEEL_VERSION=0.0.1.$DATETIME+${HASH:0:7}
+
+if [ x"$1" == x--get-wheel-version ]; then
+  echo $WHEEL_VERSION
+  exit 0
+fi
+
+MLIR_PYTHON_EXTRAS_SHORTHASH=f08db06
+
+if [ x"$1" == x--get-mlir-python-extras-version ]; then
+  echo $MLIR_PYTHON_EXTRAS_SHORTHASH
+  exit 0
+fi
+
 target_dir=mlir-aie
 
 if [[ ! -d $target_dir ]]; then
