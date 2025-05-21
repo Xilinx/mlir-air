@@ -129,6 +129,7 @@ class XRTBackend(AirBackend):
         try:
             import subprocess
             import re
+
             xrtsmi = "/opt/xilinx/xrt/bin/xrt-smi"
             result = subprocess.run(
                 [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -167,10 +168,7 @@ class XRTBackend(AirBackend):
                 print("AIR Module:")
                 print(air_module)
 
-
             aircc_options = [
-
-                "-v",
                 "--device",
                 target_device,
                 "air.mlir",
