@@ -3,7 +3,7 @@
 
 ##===- utils/build-mlir-air-using-wheels.sh - Build mlir-air --*- Script -*-===##
 # 
-# Copyright (C) 2023, Advanced Micro Devices, Inc.
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
 # 
@@ -15,61 +15,97 @@
 #       and Python 3.10 and above. For lit tests, please set -DLLVM_EXTERNAL_LIT
 #       path.
 #
+# <xrt dir>    - required, xrt dir.
 # <build dir>    - optional, build dir name, default is 'build'
 # <install dir>  - optional, install dir name, default is 'install'
 #
 ##===----------------------------------------------------------------------===##
 
-BUILD_DIR=${1:-"build"}
-INSTALL_DIR=${2:-"install"}
-MLIR_WHL_DIR="mlir_wheel"
-MLIR_AIE_WHL_DIR="mlir_aie_wheel"
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
+
+# Install llvm from wheel
+VERSION=$($(dirname ${SCRIPT_PATH})/clone-llvm.sh --get-wheel-version)
+
+mkdir -p my_install
+pushd my_install
+pip -q download mlir==$VERSION \
+    -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+unzip -q -u mlir-*.whl
+popd
+WHL_MLIR_DIR=`realpath my_install/mlir`
+echo "WHL_MLIR DIR: $WHL_MLIR_DIR"
+
+# Install mlir-aie dependence: mlir-python-extras
+MLIR_PYTHON_EXTRAS_COMMIT_HASH=$($(dirname ${SCRIPT_PATH})/clone-mlir-aie.sh --get-mlir-python-extras-version)
+HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install git+https://github.com/makslevental/mlir-python-extras@$MLIR_PYTHON_EXTRAS_COMMIT_HASH -f https://github.com/llvm/eudsl/releases/expanded_assets/latest
+
+# Install mlir-aie from wheel
+pushd my_install
+MLIR_AIE_VERSION=$($(dirname ${SCRIPT_PATH})/clone-mlir-aie.sh --get-wheel-version)
+python3 -m pip install mlir_aie==$MLIR_AIE_VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels/
+popd
+export MLIR_AIE_INSTALL_DIR="$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie"
+echo "WHL_AIE DIR: $MLIR_AIE_INSTALL_DIR"
+
+# Environment variables
+export PATH=${MLIR_AIE_INSTALL_DIR}/bin:${PATH} 
+export PYTHONPATH=${MLIR_AIE_INSTALL_DIR}/python:${PYTHONPATH}
+export LD_LIBRARY_PATH=${MLIR_AIE_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}
+
+# Install llvm-aie
+python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+export LLVM_AIE_INSTALL_DIR="$(pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
+echo "WHL_LLVM_AIE DIR: $LLVM_AIE_INSTALL_DIR"
+
+# Install libxaie
+pushd my_install
+bash $(dirname ${SCRIPT_PATH})/github-clone-build-libxaie.sh
+LIBXAIE_INSTALL_DIR=$(pwd)/aienginev2/install
+echo "LIBXAIE INSTALL DIR: $LIBXAIE_INSTALL_DIR"
+popd
+
+# Install modulesXilinx
+pushd my_install
+git clone https://github.com/Xilinx/cmakeModules.git
+CMAKEMODULES_DIR=$(pwd)/cmakeModules
+popd
+
+# Build mlir-air
+XRT_DIR=`realpath $1`
+BUILD_DIR=${2:-"build"}
+INSTALL_DIR=${3:-"install"}
 
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
 cd $BUILD_DIR
-mkdir -p $MLIR_WHL_DIR
-mkdir -p $MLIR_AIE_WHL_DIR
-
-export PIP_FIND_LINKS="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels"
-
-MLIR_DISTRO="18.0.0.2023121521+d36b483"
-MLIR_AIE_DISTRO="0.0.1.2023121602+5631ba5c"
-
-cd $MLIR_WHL_DIR
-pip download mlir_no_rtti==${MLIR_DISTRO}
-find . -type f -name "mlir_no_rtti-${MLIR_DISTRO}*" -print0 | xargs -0 unzip -n
-cd ../$MLIR_AIE_WHL_DIR
-pip download mlir_aie_no_rtti==${MLIR_AIE_DISTRO}
-find . -type f -name "mlir_aie_no_rtti-${MLIR_AIE_DISTRO}*" -print0 | xargs -0 unzip -n
-cd ..
 
 PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
-
-MLIR_WHL_DIR_REAL=`realpath "${MLIR_WHL_DIR}/mlir_no_rtti"`
-MLIR_AIE_WHL_DIR_REAL=`realpath "${MLIR_AIE_WHL_DIR}/mlir_aie_no_rtti"`
 
 cmake .. \
     -GNinja \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
-    -DCMAKE_USE_TOOLCHAIN=FALSE \
-    -DCMAKE_USE_TOOLCHAIN_AIRHOST=TRUE \
-    -DLLVM_DIR=${MLIR_WHL_DIR_REAL}/lib/cmake/llvm \
-    -DMLIR_DIR=${MLIR_WHL_DIR_REAL}/lib/cmake/mlir \
-    -DAIE_DIR=${MLIR_AIE_WHL_DIR_REAL}/lib/cmake/aie \
+    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
+    -DLLVM_DIR=${WHL_MLIR_DIR}/lib/cmake/llvm \
+    -DMLIR_DIR=${WHL_MLIR_DIR}/lib/cmake/mlir \
+    -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
+    -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
+    -DAIE_DIR=${MLIR_AIE_INSTALL_DIR}/lib/cmake/aie \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DLLVM_USE_LINKER=lld \
-    -DCMAKE_MODULE_PATH="../cmake/modules" \
-    -DLLVM_ENABLE_ASSERTIONS=ON \
     -DPython3_FIND_VIRTUALENV=ONLY \
+    -DLibXAIE_ROOT=${LIBXAIE_INSTALL_DIR}/ \
+    -DXRT_LIB_DIR=${XRT_DIR}/lib \
+    -DXRT_BIN_DIR=${XRT_DIR}/bin \
+    -DXRT_INCLUDE_DIR=${XRT_DIR}/include \
     -DCMAKE_BUILD_TYPE=Release \
-    -DLLVM_TARGETS_TO_BUILD=X86 \
-    -DLLVM_HOST_TRIPLE=x86_64-unknown-linux-gnu \
-    -DLLVM_ENABLE_RTTI=OFF \
-    2>&1 | tee cmake.log
+    -DAIR_RUNTIME_TARGETS="x86_64" \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DENABLE_RUN_XRT_TESTS=ON \
+    -DLLVM_USE_LINKER=lld \
+    -DLLVM_ENABLE_ASSERTIONS=on \
+    -DAIE_ENABLE_BINDINGS_PYTHON=on \
+    |& tee cmake.log
 
-ninja 2>&1 | tee ninja.log
-ninja install 2>&1 | tee ninja-install.log
+ninja |& tee ninja.log
+ninja install |& tee ninja-install.log

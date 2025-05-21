@@ -15,6 +15,13 @@
 ##===----------------------------------------------------------------------===##
 
 export commithash=3c709802d31b5bc5ed3af8284b40593ff39b9eec
+DATETIME=2025051423
+WHEEL_VERSION=21.0.0.$DATETIME+${commithash:0:8}
+
+if [ x"$1" == x--get-wheel-version ]; then
+  echo $WHEEL_VERSION
+  exit 0
+fi
 
 target_dir=llvm
 
