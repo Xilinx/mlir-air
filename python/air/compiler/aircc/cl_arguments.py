@@ -90,18 +90,38 @@ def parse_args(args=None):
         help="Generate a shared library (.so) instead of the default of a static library (.a)",
     )
     parser.add_argument(
-        "-xbridge",
+        "--xbridge",
         dest="xbridge",
         default=air_link_with_xchesscc,
         action="store_true",
-        help="pass --xbridge to aiecc, otherwise pass --no-xbridge",
+        help="Link using xbridge",
     )
     parser.add_argument(
-        "-xchesscc",
+        "--no-xbridge",
+        dest="xbridge",
+        default=air_link_with_xchesscc,
+        action="store_false",
+        help="Link using peano",
+    )
+    parser.add_argument(
+        "--xchesscc",
         dest="xchesscc",
         default=air_compile_with_xchesscc,
         action="store_true",
-        help="pass --xchesscc to aiecc, otherwise pass --no-xchesscc",
+        help="Compile using xchesscc",
+    )
+    parser.add_argument(
+        "--no-xchesscc",
+        dest="xchesscc",
+        default=air_compile_with_xchesscc,
+        action="store_false",
+        help="Compile using peano",
+    )
+    parser.add_argument(
+        "--peano",
+        dest="peano_install_dir",
+        default="",
+        help="Root directory where peano compiler is installed",
     )
     parser.add_argument(
         "--device",

@@ -587,6 +587,11 @@ def run(mlir_module, args=None):
                     "--npu-insts-name=" + insts_file,
                     "--tmpdir=" + opts.tmpdir,
                 ]
+                + (
+                    ["--peano"] + [opts.peano_install_dir]
+                    if opts.peano_install_dir
+                    else []
+                )
                 + aiecc_output_file_options
                 + aiecc_existing_xclbin_options
                 + [air_to_npu_file]

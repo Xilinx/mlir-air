@@ -85,6 +85,11 @@ class XRTRunner:
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
+            output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn].
+            kernel_name: configure aircc to package the kernel with the specified name.
+            instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
+            kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
+            xclbin_input: configure aircc to package the kernel into an existing xclbin with specified xclbin file name.
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -122,6 +127,24 @@ class XRTRunner:
             print("Running module: ")
             print(mlir_module)
 
+        # Try to get peano package dir. If failed, then build with chess.
+        import os, site, glob
+
+        # Search all site-packages dirs (user/system level)
+        site_dirs = site.getsitepackages() + [site.getusersitepackages()]
+        peano_package_dir = ""
+        for dir in site_dirs:
+            matches = glob.glob(os.path.join(dir, "llvm-aie"))
+            if matches:
+                # Use first match found
+                peano_package_dir = os.path.abspath(matches[0])
+                print(
+                    "XRTRunner: llvm-aie package detected in",
+                    peano_package_dir,
+                    "Compiling using llvm-aie.]",
+                )
+                break
+
         backend = XRTBackend(
             verbose=self.verbose,
             omit_while_true_loop=self.omit_while_true_loop,
@@ -138,6 +161,7 @@ class XRTRunner:
             instance_name=self.instance_name,
             kernel_id=self.kernel_id,
             xclbin_input=self.xclbin_input,
+            peano_install_dir=peano_package_dir,
         )
 
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs
