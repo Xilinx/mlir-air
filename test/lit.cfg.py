@@ -181,6 +181,8 @@ config.air_tools_dir = os.path.join(config.air_obj_root, "bin")
 # Tweak the PATH to include the tools dir.
 llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 llvm_config.with_environment("PATH", config.peano_tools_dir, append_path=True)
+llvm_config.with_environment("PATH", config.aie_tools_dir, append_path=True)
+llvm_config.with_environment("PATH", config.air_tools_dir, append_path=True)
 
 config.substitutions.append(("%LLVM_TOOLS_DIR", config.llvm_tools_dir))
 
@@ -207,8 +209,8 @@ try:
         config.substitutions.append(("%peano_flags", peano_flags))
     else:
         print("Peano not found, but expected at ", config.peano_tools_dir)
-except Exception as e:
-    print("Peano not found, but expected at ", config.peano_tools_dir)
+except Exception:
+    print("Peano not found.")
 
 if not config.enable_chess_tests:
     print("Chess tests disabled")
