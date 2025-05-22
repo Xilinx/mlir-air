@@ -17,7 +17,7 @@ import numpy as np
 import filelock
 from ml_dtypes import bfloat16
 
-verbose = True
+verbose = False
 
 sizes = [
     [1024],
@@ -26,9 +26,9 @@ sizes = [
 dtypes = [
     (np.int32, np.int32),
     (np.int16, np.int32),
-    (np.int16, np.int16),
+    # (np.int16, np.int16),
     (np.float32, np.float32),
-    # (bfloat16, np.float32),
+    (bfloat16, np.float32),
     # (bfloat16, bfloat16),
 ]
 

@@ -43,7 +43,7 @@ parser = argparse.ArgumentParser(prog="aie.py")
 parser.add_argument(
     "--trace-size",
     dest="trace_size",
-    default=65536,
+    default=131072,
     type=int,
     help="Create packet routed traces for cores and memtiles",
 )
