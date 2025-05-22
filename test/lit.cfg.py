@@ -214,7 +214,7 @@ if not config.enable_chess_tests:
     print("Chess tests disabled")
 else:
     print("Looking for Chess...")
-    result = None
+
     result = shutil.which("xchesscc")
     if result != None:
         print("Chess found: " + result)
