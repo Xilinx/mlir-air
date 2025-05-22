@@ -138,6 +138,11 @@ class XRTRunner:
             if matches:
                 # Use first match found
                 peano_package_dir = os.path.abspath(matches[0])
+                print(
+                    "XRTRunner: llvm-aie package detected in",
+                    peano_package_dir,
+                    "Compiling using llvm-aie.]",
+                )
                 break
 
         backend = XRTBackend(
