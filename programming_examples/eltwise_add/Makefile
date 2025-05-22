@@ -11,7 +11,7 @@ print:
 
 run:
 	mkdir -p build
-	cd build && ${powershell} python3 ${srcdir}/eltwise_add.py
+	cd build && ${powershell} python3 ${srcdir}/eltwise_add.py --compiler_backend chess
 
 clean:
 	rm -rf build __pycache__

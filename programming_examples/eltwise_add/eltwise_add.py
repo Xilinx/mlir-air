@@ -148,6 +148,14 @@ if __name__ == "__main__":
         default="compile-and-run",
         help="Configure to whether to run after compile",
     )
+    parser.add_argument(
+        "--compiler_backend",
+        type=str,
+        choices=["llvm-aie", "chess"],
+        dest="compiler_backend",
+        default="chess",
+        help="Configure to choose the compiler backend",
+    )
     args = parser.parse_args()
 
     mlir_module = build_module(
@@ -188,9 +196,11 @@ if __name__ == "__main__":
         }
 
         ###### Compile and test
+        use_peano = True if args.compiler_backend == "llvm-aie" else False
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            use_peano=use_peano,
         )
         exit(
             runner.run_test(
@@ -207,6 +217,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             omit_auto_broadcast=True,
+            use_peano=use_peano,
         )
         module_function = backend.compile(mlir_module)
 
