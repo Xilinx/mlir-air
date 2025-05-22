@@ -181,14 +181,40 @@ config.air_tools_dir = os.path.join(config.air_obj_root, "bin")
 # Tweak the PATH to include the tools dir.
 llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 llvm_config.with_environment("PATH", config.peano_tools_dir, append_path=True)
-llvm_config.with_environment("PATH", config.aie_tools_dir, append_path=True)
-llvm_config.with_environment("PATH", config.air_tools_dir, append_path=True)
+
+config.substitutions.append(("%LLVM_TOOLS_DIR", config.llvm_tools_dir))
+
+tool_dirs = [config.aie_tools_dir, config.llvm_tools_dir]
+
+# Test to see if we have the peano backend.
+try:
+    result = subprocess.run(
+        [os.path.join(config.peano_tools_dir, "llc"), "-mtriple=aie", "--version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if re.search("Xilinx AI Engine", result.stdout.decode("utf-8")) is not None:
+        config.available_features.add("peano")
+        config.substitutions.append(("%PEANO_INSTALL_DIR", config.peano_tools_dir))
+        print("Peano found: " + os.path.join(config.peano_tools_dir, "llc"))
+        tool_dirs.append(os.path.join(config.peano_tools_dir, "bin"))
+        # Peano compiler flags
+        peano_flags = (
+            "-O2 -std=c++20 --target=aie2-none-unknown-elf -DNDEBUG -I{}".format(
+                os.path.join(config.aie_obj_root, "include")
+            )
+        )
+        config.substitutions.append(("%peano_flags", peano_flags))
+    else:
+        print("Peano not found, but expected at ", config.peano_tools_dir)
+except Exception as e:
+    print("Peano not found, but expected at ", config.peano_tools_dir)
 
 if not config.enable_chess_tests:
     print("Chess tests disabled")
 else:
     print("Looking for Chess...")
-
+    result = None
     result = shutil.which("xchesscc")
     if result != None:
         print("Chess found: " + result)
