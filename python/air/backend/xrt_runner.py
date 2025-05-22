@@ -72,7 +72,6 @@ class XRTRunner:
         instance_name: str = "",
         kernel_id: str = "",
         xclbin_input: str = "",
-        use_peano: bool = False,
     ):
         """
         Args:
@@ -91,7 +90,6 @@ class XRTRunner:
             instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
             kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
             xclbin_input: configure aircc to package the kernel into an existing xclbin with specified xclbin file name.
-            use_peano: configure aircc to build the kernel using llvm-aie (peano). If false, then use chess.
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -108,7 +106,6 @@ class XRTRunner:
         self.instance_name = instance_name
         self.kernel_id = kernel_id
         self.xclbin_input = xclbin_input
-        self.use_peano = use_peano
 
     def run_test(
         self,
@@ -130,27 +127,18 @@ class XRTRunner:
             print("Running module: ")
             print(mlir_module)
 
-        # Get peano package dir.
-        if self.use_peano:
-            import os, site, glob
+        # Try to get peano package dir. If failed, then build with chess.
+        import os, site, glob
 
-            # Search all site-packages dirs (user/system level)
-            site_dirs = site.getsitepackages() + [site.getusersitepackages()]
-
-            peano_package_dir = ""
-            for dir in site_dirs:
-                matches = glob.glob(os.path.join(dir, "llvm-aie"))
-                if matches:
-                    # Use first match found
-                    peano_package_dir = os.path.abspath(matches[0])
-                    break
-
-            if not peano_package_dir:
-                raise RuntimeError(
-                    "llvm-aie package found in site-packages but not importable."
-                )
-        else:
-            peano_package_dir = ""
+        # Search all site-packages dirs (user/system level)
+        site_dirs = site.getsitepackages() + [site.getusersitepackages()]
+        peano_package_dir = ""
+        for dir in site_dirs:
+            matches = glob.glob(os.path.join(dir, "llvm-aie"))
+            if matches:
+                # Use first match found
+                peano_package_dir = os.path.abspath(matches[0])
+                break
 
         backend = XRTBackend(
             verbose=self.verbose,
