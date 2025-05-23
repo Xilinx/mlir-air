@@ -57,13 +57,6 @@ python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/e
 export PEANO_INSTALL_DIR="$(pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
 echo "WHL_LLVM_AIE DIR: $PEANO_INSTALL_DIR"
 
-# Install libxaie
-pushd my_install
-bash $(dirname ${SCRIPT_PATH})/github-clone-build-libxaie.sh
-LIBXAIE_INSTALL_DIR=$(pwd)/aienginev2/install
-echo "LIBXAIE INSTALL DIR: $LIBXAIE_INSTALL_DIR"
-popd
-
 # Install modulesXilinx
 pushd my_install
 git clone https://github.com/Xilinx/cmakeModules.git
@@ -96,7 +89,7 @@ cmake .. \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DPython_FIND_VIRTUALENV=ONLY \
     -DPython3_FIND_VIRTUALENV=ONLY \
-    -DLibXAIE_ROOT=${LIBXAIE_INSTALL_DIR}/ \
+    -DLibXAIE_ROOT=${MLIR_AIE_INSTALL_DIR}/runtime_lib/x86_64/xaiengine/ \
     -DXRT_LIB_DIR=${XRT_DIR}/lib \
     -DXRT_BIN_DIR=${XRT_DIR}/bin \
     -DXRT_INCLUDE_DIR=${XRT_DIR}/include \
