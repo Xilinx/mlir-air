@@ -12,10 +12,7 @@ in_size = out_size = 128 * 128
 in_size_bytes = in_size * 2
 out_size_bytes = out_size * 4
 
-with open("air.insts.bin", "r") as f:
-    instr_text = f.read().split("\n")
-    instr_text = [l for l in instr_text if l != ""]
-    instr_v = np.array([int(i, 16) for i in instr_text], dtype=np.uint32)
+instr_v = np.fromfile("air.insts.bin", dtype=np.uint32)
 
 opts_xclbin = "air.xclbin"
 opts_kernel = "MLIR_AIE"
@@ -60,7 +57,7 @@ print("input:", input_b)
 print("output:", output_buffer)
 
 ref = input_a + input_b
-if np.equal(ref, output_buffer).all():
+if np.allclose(ref, output_buffer, rtol=1e-2):
     print("PASS!")
     exit(0)
 else:

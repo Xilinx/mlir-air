@@ -17,7 +17,7 @@ import numpy as np
 import filelock
 from ml_dtypes import bfloat16
 
-verbose = True
+verbose = False
 
 sizes = [
     [1024],

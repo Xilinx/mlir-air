@@ -1,0 +1,9 @@
+// (c) Copyright 2023 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu1, peano
+// RUN: mkdir -p test_npu1_peano
+// RUN: cd test_npu1_peano
+// RUN: %python %S/gen.py --trace-size 131072 --trace-offset 65536
+// RUN: g++-13 %S/test.cpp -o test.exe -std=c++23 -Wall %test_utils_flags %xrt_flags -lrt -lstdc++ -lboost_program_options -lboost_filesystem
+// RUN: %run_on_npu1% ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin --trace_sz 131072

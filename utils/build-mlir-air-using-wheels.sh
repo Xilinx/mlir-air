@@ -54,8 +54,8 @@ export LD_LIBRARY_PATH=${MLIR_AIE_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}
 
 # Install llvm-aie
 python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
-export LLVM_AIE_INSTALL_DIR="$(pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
-echo "WHL_LLVM_AIE DIR: $LLVM_AIE_INSTALL_DIR"
+export PEANO_INSTALL_DIR="$(pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
+echo "WHL_LLVM_AIE DIR: $PEANO_INSTALL_DIR"
 
 # Install libxaie
 pushd my_install
@@ -106,6 +106,7 @@ cmake .. \
     -DENABLE_RUN_XRT_TESTS=ON \
     -DLLVM_USE_LINKER=lld \
     -DLLVM_ENABLE_ASSERTIONS=on \
+    -DPEANO_INSTALL_DIR=${PEANO_INSTALL_DIR} \
     |& tee cmake.log
 
 ninja |& tee ninja.log
