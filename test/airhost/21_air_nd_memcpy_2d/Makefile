@@ -30,7 +30,7 @@ all: herd.exe
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(ACDC_AIE)/runtime_lib/x86_64/test_lib/src/test_library.cpp test.cpp -Wl,--whole-archive 2d_nd.air.a -Wl,--no-whole-archive
 
 2d_nd.air.a: air.mlir
-	aircc.py -v -xchesscc -xbridge --sysroot= --host-target=x86_64-amd-linux-gnu -row-offset=4 -col-offset=5 $< -o $@
+	aircc.py -v --xchesscc --xbridge --sysroot= --host-target=x86_64-amd-linux-gnu -row-offset=4 -col-offset=5 $< -o $@
 
 clean::
 	rm -rf air_project *.elf *.exe *.o *.a segment*
