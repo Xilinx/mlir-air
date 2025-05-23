@@ -50,57 +50,30 @@ jobs:
       - name: Get mlir-aie
         id: clone-mlir-aie
         run: |
-          utils/clone-mlir-aie.sh
-          source air-venv/bin/activate
-
-          pushd mlir-aie
-          pip install -r python/requirements.txt
-          pip install -r python/requirements_ml.txt
-          HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie pip install -r python/requirements_extras.txt
 
           VERSION=$(utils/clone-llvm.sh --get-wheel-version)
           pip -q download mlir==$VERSION \
             -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
           unzip -q mlir-*.whl
+          echo "WHL_MLIR_DIR=$(pwd)/mlir" >> $GITHUB_ENV
           find mlir -exec touch -a -m -t 201108231405.14 {} \;
 
-          popd
+          MLIR_PYTHON_EXTRAS_COMMIT_HASH=$($(dirname utils/clone-mlir-aie.sh --get-mlir-python-extras-version)
+          HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install git+https://github.com/makslevental/mlir-python-extras@$MLIR_PYTHON_EXTRAS_COMMIT_HASH -f https://github.com/llvm/eudsl/releases/expanded_assets/latest
+          
+          MLIR_AIE_VERSION=$($(dirname utils/clone-mlir-aie.sh --get-wheel-version)
+          python3 -m pip install mlir_aie==$MLIR_AIE_VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels/
+          echo "MLIR_AIE_INSTALL_DIR=$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie" >> $GITHUB_ENV
 
-      - name: Build and Install mlir-aie
+      - name: Get llvm-aie
         run: |
-          source air-venv/bin/activate
-          pushd mlir-aie
+          python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          echo "PEANO_INSTALL_DIR="$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie" >> $GITHUB_ENV
 
-          mkdir build
-          pushd build
-
-          export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
-          cmake .. \
-            -GNinja \
-            -DPython3_EXECUTABLE=$(which python) \
-            -DCMAKE_INSTALL_PREFIX=$PWD/../install \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_ASM_COMPILER=clang \
-            -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
-            -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
-            -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
-            -DCMAKE_MODULE_PATH=$PWD/../cmake/modulesXilinx \
-            -DLLVM_EXTERNAL_LIT=$(which lit) \
-            -DMLIR_DIR=$PWD/../mlir/lib/cmake/mlir \
-            -DXRT_ROOT=/opt/xilinx/xrt \
-            -DAIE_ENABLE_PYTHON_PASSES=OFF \
-            -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON \
-            -DAIE_VITIS_COMPONENTS='AIE2;AIE2P' \
-            -DAIE_INCLUDE_INTEGRATION_TESTS=OFF
-
-          ninja install
-          popd
-
-          rm -rf build
-          popd
+      - name: Get Xilinx cmakeModules
+        run: |
+          git clone https://github.com/Xilinx/cmakeModules.git
+          echo "CMAKEMODULES_DIR=$(pwd)/cmakeModules" >> $GITHUB_ENV
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test mlir-air (Assert)
@@ -110,8 +83,7 @@ jobs:
           pushd build_assert
 
           sudo prlimit -lunlimited --pid $$
-          
-          export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
+
           cmake .. \
             -GNinja \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -126,16 +98,17 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
-            -DCMAKE_MODULE_PATH=$PWD/../mlir-aie/cmake/modulesXilinx \
+            -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
             -DLLVM_EXTERNAL_LIT=$(which lit) \
-            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
-            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
-            -DAIE_DIR=$PWD/../mlir-aie/install/lib/cmake/aie/ \
+            -DLLVM_DIR=${WHL_MLIR_DIR}/lib/cmake/llvm \
+            -DMLIR_DIR=${WHL_MLIR_DIR}/lib/cmake/mlir \
+            -DAIE_DIR=${MLIR_AIE_INSTALL_DIR}/lib/cmake/aie \
             -Dx86_64_TOOLCHAIN_FILE=$PWD/../cmake/modules/toolchain_x86_64.cmake \
-            -DLibXAIE_ROOT=$PWD/../mlir-aie/install/runtime_lib/x86_64/xaiengine \
+            -DLibXAIE_ROOT=${MLIR_AIE_INSTALL_DIR}/runtime_lib/x86_64/xaiengine/ \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -DXRT_ROOT=/opt/xilinx/xrt \
-            -DENABLE_RUN_XRT_TESTS=ON
+            -DENABLE_RUN_XRT_TESTS=ON \
+            -DPEANO_INSTALL_DIR=${PEANO_INSTALL_DIR}
           ninja install
 
           export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random"
