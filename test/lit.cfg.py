@@ -188,7 +188,7 @@ config.substitutions.append(("%LLVM_TOOLS_DIR", config.llvm_tools_dir))
 
 tool_dirs = [config.aie_tools_dir, config.llvm_tools_dir]
 
-# Test to see if we have the peano backend.
+# Test to see if this mlir-air installation is built for peano. If not, then look for Chess in system.
 try:
     result = subprocess.run(
         [os.path.join(config.peano_tools_dir, "llc"), "-mtriple=aie", "--version"],
@@ -209,49 +209,51 @@ try:
         config.substitutions.append(("%peano_flags", peano_flags))
     else:
         print("Peano not found, but expected at ", config.peano_tools_dir)
-except Exception:
+except Exception as e:
     print("Peano not found.")
 
-if not config.enable_chess_tests:
-    print("Chess tests disabled")
-else:
-    print("Looking for Chess...")
-
-    result = shutil.which("xchesscc")
-    if result != None:
-        print("Chess found: " + result)
-        config.available_features.add("chess")
-        config.available_features.add("valid_xchess_license")
-        lm_license_file = os.getenv("LM_LICENSE_FILE")
-        if lm_license_file != None:
-            llvm_config.with_environment("LM_LICENSE_FILE", lm_license_file)
-        xilinxd_license_file = os.getenv("XILINXD_LICENSE_FILE")
-        if xilinxd_license_file != None:
-            llvm_config.with_environment("XILINXD_LICENSE_FILE", xilinxd_license_file)
-
-        # test if LM_LICENSE_FILE valid
-        validate_chess = False
-        if validate_chess:
-            import subprocess
-
-            result = subprocess.run(
-                ["xchesscc", "+v"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            validLMLicense = len(result.stderr.decode("utf-8")) == 0
-        else:
-            validLMLicense = lm_license_file or xilinxd_license_file
-
-        if not lm_license_file and not xilinxd_license_file:
-            print(
-                "WARNING: no valid xchess license that is required by some of the lit tests"
-            )
-    elif os.getenv("XILINXD_LICENSE_FILE") is not None:
-        print("Chess license found")
-        llvm_config.with_environment(
-            "XILINXD_LICENSE_FILE", os.getenv("XILINXD_LICENSE_FILE")
-        )
+    if not config.enable_chess_tests:
+        print("Chess tests disabled")
     else:
-        print("Chess not found")
+        print("Looking for Chess...")
+
+        result = shutil.which("xchesscc")
+        if result != None:
+            print("Chess found: " + result)
+            config.available_features.add("chess")
+            config.available_features.add("valid_xchess_license")
+            lm_license_file = os.getenv("LM_LICENSE_FILE")
+            if lm_license_file != None:
+                llvm_config.with_environment("LM_LICENSE_FILE", lm_license_file)
+            xilinxd_license_file = os.getenv("XILINXD_LICENSE_FILE")
+            if xilinxd_license_file != None:
+                llvm_config.with_environment(
+                    "XILINXD_LICENSE_FILE", xilinxd_license_file
+                )
+
+            # test if LM_LICENSE_FILE valid
+            validate_chess = False
+            if validate_chess:
+                import subprocess
+
+                result = subprocess.run(
+                    ["xchesscc", "+v"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                validLMLicense = len(result.stderr.decode("utf-8")) == 0
+            else:
+                validLMLicense = lm_license_file or xilinxd_license_file
+
+            if not lm_license_file and not xilinxd_license_file:
+                print(
+                    "WARNING: no valid xchess license that is required by some of the lit tests"
+                )
+        elif os.getenv("XILINXD_LICENSE_FILE") is not None:
+            print("Chess license found")
+            llvm_config.with_environment(
+                "XILINXD_LICENSE_FILE", os.getenv("XILINXD_LICENSE_FILE")
+            )
+        else:
+            print("Chess not found")
 
 tool_dirs = [
     config.peano_tools_dir,
