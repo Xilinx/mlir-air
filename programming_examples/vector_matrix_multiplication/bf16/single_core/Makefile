@@ -24,7 +24,7 @@ compile-kernel:
 	@if [ "$(BACKEND)" = "peano" ]; then \
 		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
 			echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)"; \
-			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mv.cc -o build/mv.o; \
+			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/vm.cc -o build/vm.o; \
 		else \
 			echo "Error: llvm-aie pip package not found or invalid."; \
 			exit 1; \
@@ -32,7 +32,7 @@ compile-kernel:
 	elif [ "$(BACKEND)" = "xchesscc" ]; then \
 		if command -v xchesscc_wrapper >/dev/null 2>&1; then \
 			echo "Using xchesscc_wrapper from PATH"; \
-			cd build && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/mv.cc -o mv.o; \
+			cd build && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/vm.cc -o vm.o; \
 		else \
 			echo "Error: xchesscc_wrapper not found in PATH."; \
 			exit 1; \
@@ -40,10 +40,10 @@ compile-kernel:
 	else \
 		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
 			echo "Auto-selected peano backend"; \
-			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mv.cc -o build/mv.o; \
+			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/vm.cc -o build/vm.o; \
 		elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
 			echo "Auto-selected xchesscc backend"; \
-			cd build && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/mv.cc -o mv.o; \
+			cd build && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/vm.cc -o vm.o; \
 		else \
 			echo "Error: no usable backend found."; \
 			exit 1; \
