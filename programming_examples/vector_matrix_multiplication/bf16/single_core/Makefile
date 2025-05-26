@@ -16,6 +16,9 @@ all: run
 print:
 	${powershell} python3 ${srcdir}/single_core.py -p
 
+run: compile-kernel
+	cd build && ${powershell} python3 ${srcdir}/single_core.py
+
 compile-kernel:
 	mkdir -p build
 	@if [ "$(BACKEND)" = "peano" ]; then \
