@@ -78,11 +78,12 @@ jobs:
         run: |
           source air-venv/bin/activate
 
+          source /opt/xilinx/xrt/setup.sh
           WHL_MLIR_DIR=$(pwd)/mlir
           MLIR_AIE_INSTALL_DIR=$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie
           PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
           CMAKEMODULES_DIR=$(pwd)/cmakeModules
-          
+
           mkdir build_assert
           pushd build_assert
 
