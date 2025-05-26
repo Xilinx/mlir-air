@@ -6,7 +6,7 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 BACKEND ?= auto
 
 # Extract PEANO_INSTALL_DIR from the installed llvm-aie pip package
-PEANO_INSTALL_DIR := $(shell python3 -m pip show llvm-aie 2>/dev/null | grep ^Location: | awk '{print $$2}')/llvm_aie
+PEANO_INSTALL_DIR := $(shell python3 -m pip show llvm-aie 2>/dev/null | grep ^Location: | awk '{print $$2}')/llvm-aie
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
