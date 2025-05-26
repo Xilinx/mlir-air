@@ -55,7 +55,7 @@ jobs:
           pip -q download mlir==$VERSION \
             -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
           unzip -q mlir-*.whl
-          echo "WHL_MLIR_DIR=$(pwd)/mlir" >> $GITHUB_ENV
+          echo $(pwd)/mlir
           find mlir -exec touch -a -m -t 201108231405.14 {} \;
 
           MLIR_PYTHON_EXTRAS_COMMIT_HASH=$($(dirname utils/clone-mlir-aie.sh --get-mlir-python-extras-version)
@@ -63,17 +63,14 @@ jobs:
           
           MLIR_AIE_VERSION=$($(dirname utils/clone-mlir-aie.sh --get-wheel-version)
           python3 -m pip install mlir_aie==$MLIR_AIE_VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels/
-          echo "MLIR_AIE_INSTALL_DIR=$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie" >> $GITHUB_ENV
 
       - name: Get llvm-aie
         run: |
           python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
-          echo "PEANO_INSTALL_DIR="$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie" >> $GITHUB_ENV
 
       - name: Get Xilinx cmakeModules
         run: |
           git clone https://github.com/Xilinx/cmakeModules.git
-          echo "CMAKEMODULES_DIR=$(pwd)/cmakeModules" >> $GITHUB_ENV
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test mlir-air (Assert)
@@ -83,6 +80,10 @@ jobs:
           pushd build_assert
 
           sudo prlimit -lunlimited --pid $$
+
+          MLIR_AIE_INSTALL_DIR=$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie
+          PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
+          CMAKEMODULES_DIR=$(pwd)/cmakeModules
 
           cmake .. \
             -GNinja \
