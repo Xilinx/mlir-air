@@ -55,13 +55,12 @@ jobs:
           pip -q download mlir==$VERSION \
             -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
           unzip -q mlir-*.whl
-          echo $(pwd)/mlir
           find mlir -exec touch -a -m -t 201108231405.14 {} \;
 
-          MLIR_PYTHON_EXTRAS_COMMIT_HASH=$($(dirname utils/clone-mlir-aie.sh --get-mlir-python-extras-version)
+          MLIR_PYTHON_EXTRAS_COMMIT_HASH=$(utils/clone-mlir-aie.sh --get-mlir-python-extras-version)
           HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install git+https://github.com/makslevental/mlir-python-extras@$MLIR_PYTHON_EXTRAS_COMMIT_HASH -f https://github.com/llvm/eudsl/releases/expanded_assets/latest
           
-          MLIR_AIE_VERSION=$($(dirname utils/clone-mlir-aie.sh --get-wheel-version)
+          MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
           python3 -m pip install mlir_aie==$MLIR_AIE_VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels/
 
       - name: Get llvm-aie
@@ -81,6 +80,7 @@ jobs:
 
           sudo prlimit -lunlimited --pid $$
 
+          WHL_MLIR_DIR=$(pwd)/mlir
           MLIR_AIE_INSTALL_DIR=$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie
           PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
           CMAKEMODULES_DIR=$(pwd)/cmakeModules
