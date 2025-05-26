@@ -28,14 +28,14 @@ PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS
 
 compile-kernel:
 	mkdir -p build
-	@if [ -n "$$LLVM_AIE_INSTALL_DIR" ]; then \
-		echo "Using clang++ from LLVM_AIE_INSTALL_DIR"; \
-		$$LLVM_AIE_INSTALL_DIR/bin/clang++ ${PEANOWRAP2_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm.cc -o build/mm.o; \
+	@if [ -n "$$PEANO_INSTALL_DIR" ]; then \
+		echo "Using clang++ from PEANO_INSTALL_DIR"; \
+		$$PEANO_INSTALL_DIR/bin/clang++ ${PEANOWRAP2_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm.cc -o build/mm.o; \
 	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
 		echo "Using xchesscc_wrapper from PATH"; \
 		cd build && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/mm.cc -o mm.o; \
 	else \
-		echo "Error: Neither LLVM_AIE_INSTALL_DIR nor xchesscc_wrapper found." >&2; \
+		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found." >&2; \
 		exit 1; \
 	fi
 
