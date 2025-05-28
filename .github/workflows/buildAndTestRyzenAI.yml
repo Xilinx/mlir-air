@@ -114,7 +114,7 @@ jobs:
 
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           source /opt/xilinx/xrt/setup.sh
-          WHL_MLIR_DIR=$(pwd)/mlir
+          WHL_MLIR_DIR=$(pwd)/mlir-aie/mlir
           MLIR_AIE_INSTALL_DIR=$(pwd)/mlir-aie/install
           PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
           CMAKEMODULES_DIR=$(pwd)/cmakeModules
