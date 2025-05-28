@@ -2,7 +2,12 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-targetname := $(shell basename ${srcdir})
+# Determine build dir based on whether PEANO_INSTALL_DIR is set
+ifdef PEANO_INSTALL_DIR
+  BUILD_DIR := build_peano
+else
+  BUILD_DIR := build_chess
+endif
 
 all: run
 
@@ -10,8 +15,8 @@ print:
 	${powershell} python3 ${srcdir}/single_core_dma.py -p
 
 run:
-	mkdir -p build
-	cd build && ${powershell} python3 ${srcdir}/single_core_dma.py
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_core_dma.py
 
 clean:
-	rm -rf build __pycache__
+	rm -rf $(BUILD_DIR) __pycache__
