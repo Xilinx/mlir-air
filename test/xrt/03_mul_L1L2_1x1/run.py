@@ -154,6 +154,7 @@ def run_test(size, idtype, odtype):
         print("failed.")
         return 0
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=["peano", "chess"], required=True)
