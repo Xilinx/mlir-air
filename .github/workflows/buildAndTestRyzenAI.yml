@@ -50,9 +50,9 @@ jobs:
       - name: Get mlir-aie
         id: clone-mlir-aie
         run: |
+
           utils/clone-mlir-aie.sh
           source air-venv/bin/activate
-
           pushd mlir-aie
           pip install -r python/requirements.txt
           pip install -r python/requirements_ml.txt
@@ -70,10 +70,8 @@ jobs:
         run: |
           source air-venv/bin/activate
           pushd mlir-aie
-
           mkdir build
           pushd build
-
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           cmake .. \
             -GNinja \
@@ -95,23 +93,37 @@ jobs:
             -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON \
             -DAIE_VITIS_COMPONENTS='AIE2;AIE2P' \
             -DAIE_INCLUDE_INTEGRATION_TESTS=OFF
-
           ninja install
           popd
-
           rm -rf build
           popd
+
+      - name: Get llvm-aie
+        run: |
+          source air-venv/bin/activate
+          python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+
+      - name: Get Xilinx cmakeModules
+        run: |
+          git clone https://github.com/Xilinx/cmakeModules.git
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test mlir-air (Assert)
         run: |
           source air-venv/bin/activate
+
+          export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
+          source /opt/xilinx/xrt/setup.sh
+          WHL_MLIR_DIR=$(pwd)/mlir-aie/mlir
+          MLIR_AIE_INSTALL_DIR=$(pwd)/mlir-aie/install
+          PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
+          CMAKEMODULES_DIR=$(pwd)/cmakeModules
+
           mkdir build_assert
           pushd build_assert
 
           sudo prlimit -lunlimited --pid $$
-          
-          export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
+
           cmake .. \
             -GNinja \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -126,16 +138,17 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
-            -DCMAKE_MODULE_PATH=$PWD/../mlir-aie/cmake/modulesXilinx \
+            -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
             -DLLVM_EXTERNAL_LIT=$(which lit) \
-            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
-            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
-            -DAIE_DIR=$PWD/../mlir-aie/install/lib/cmake/aie/ \
+            -DLLVM_DIR=${WHL_MLIR_DIR}/lib/cmake/llvm \
+            -DMLIR_DIR=${WHL_MLIR_DIR}/lib/cmake/mlir \
+            -DAIE_DIR=${MLIR_AIE_INSTALL_DIR}/lib/cmake/aie \
             -Dx86_64_TOOLCHAIN_FILE=$PWD/../cmake/modules/toolchain_x86_64.cmake \
-            -DLibXAIE_ROOT=$PWD/../mlir-aie/install/runtime_lib/x86_64/xaiengine \
+            -DLibXAIE_ROOT=${MLIR_AIE_INSTALL_DIR}/runtime_lib/x86_64/xaiengine/ \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -DXRT_ROOT=/opt/xilinx/xrt \
-            -DENABLE_RUN_XRT_TESTS=ON
+            -DENABLE_RUN_XRT_TESTS=ON \
+            -DPEANO_INSTALL_DIR=${PEANO_INSTALL_DIR}
           ninja install
 
           export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random"
@@ -143,9 +156,19 @@ jobs:
           ninja check-air-mlir
           ninja check-air-python
 
+          # E2E test set 1: peano tests
           export LIT_OPTS="${LIT_OPS} --timeout 600 -j4"
-          ninja check-air-e2e
-          ninja check-programming-examples
+          ninja check-air-e2e-peano
+
+          # E2E test set 2: chess tests
+          export LIT_OPTS="${LIT_OPS} --timeout 600 -j4"
+          ninja check-air-e2e-chess
+
+          # Programming examples set 1: peano tests
+          ninja check-programming-examples-peano
+
+          # Programming examples set 2: chess tests
+          ninja check-programming-examples-chess
 
           popd
           rm -rf build_assert

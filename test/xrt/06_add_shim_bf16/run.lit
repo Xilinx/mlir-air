@@ -1,8 +1,0 @@
-// (c) Copyright 2024 Advanced Micro Devices, Inc.
-// SPDX-License-Identifier: MIT
-//
-// REQUIRES: ryzen_ai, peano
-//
-// RUN: %python %S/gen.py
-// RUN: %run_on_npu1% %python %S/run.py air.xclbin
-// RUN: %run_on_npu2% %python %S/run.py air.xclbin

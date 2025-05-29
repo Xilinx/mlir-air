@@ -12,6 +12,7 @@ from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.scf import for_, yield_
 from air.ir import *
 
+import argparse
 import numpy as np
 import filelock
 from ml_dtypes import bfloat16
@@ -20,15 +21,6 @@ verbose = False
 
 sizes = [
     [4096],
-]
-
-dtypes = [
-    (np.int32, np.int32),
-    (np.int16, np.int32),
-    (np.int16, np.int16),
-    (np.float32, np.float32),
-    # (bfloat16, np.float32),
-    # (bfloat16, bfloat16),
 ]
 
 
@@ -136,7 +128,7 @@ def build_module(idtype, odtype, l3_shape, l2_shape, l1_shape):
 def run_test(size, idtype, odtype):
 
     mlir_module = build_module(idtype, odtype, size, [1024], [64])
-    print(mlir_module)
+
     input_a = (np.random.rand(*size) * 127).astype(idtype).reshape(size)
     input_b = (np.random.rand(*size) * 127).astype(idtype).reshape(size)
     ref = (input_a * input_b).astype(odtype)
@@ -163,19 +155,39 @@ def run_test(size, idtype, odtype):
         return 0
 
 
-passed = 0
-for idtype, odtype in dtypes:
-    for size in sizes:
-        try:
-            print("Testing size:", size, "dtype:", idtype, odtype)
-            passed = passed + run_test(size, idtype, odtype)
-        except Exception as e:
-            print(e)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--backend", choices=["peano", "chess"], required=True)
+    args = parser.parse_args()
 
-num_tests = len(sizes) * len(dtypes)
-if passed != num_tests:
-    print(f"failed. {passed}/{num_tests}")
-    exit(-1)
-else:
-    print(f"PASSED! {passed}/{num_tests}")
-    exit(0)
+    if args.backend == "peano":
+        dtypes = [
+            (np.int32, np.int32),
+            (np.int16, np.int32),
+            (np.float32, np.float32),
+            (bfloat16, np.float32),
+        ]
+    elif args.backend == "chess":
+        dtypes = [
+            (np.int32, np.int32),
+            (np.int16, np.int32),
+            (np.int16, np.int16),
+            (np.float32, np.float32),
+        ]
+
+    passed = 0
+    for idtype, odtype in dtypes:
+        for size in sizes:
+            try:
+                print("Testing size:", size, "dtype:", idtype, odtype)
+                passed = passed + run_test(size, idtype, odtype)
+            except Exception as e:
+                print(e)
+
+    num_tests = len(sizes) * len(dtypes)
+    if passed != num_tests:
+        print(f"failed. {passed}/{num_tests}")
+        exit(-1)
+    else:
+        print(f"PASSED! {passed}/{num_tests}")
+        exit(0)

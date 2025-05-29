@@ -163,23 +163,16 @@ class XRTBackend(AirBackend):
             print("Failed to run xrt-smi")
             print(e)
 
-        # Try to get peano package dir. If failed, then build with chess.
         import os, site, glob
 
-        # Search all site-packages dirs (user/system level)
-        site_dirs = site.getsitepackages() + [site.getusersitepackages()]
-        peano_package_dir = ""
-        for dir in site_dirs:
-            matches = glob.glob(os.path.join(dir, "llvm-aie"))
-            if matches:
-                # Use first match found
-                peano_package_dir = os.path.abspath(matches[0])
-                print(
-                    "XRTBackend: llvm-aie package detected in",
-                    peano_package_dir,
-                    "Compiling using llvm-aie.]",
-                )
-                break
+        # Try to get peano package dir from environment variable, fallback to site-packages
+        peano_package_dir = os.environ.get("PEANO_INSTALL_DIR", "")
+
+        if peano_package_dir and os.path.isdir(peano_package_dir):
+            print(
+                "XRTBackend: llvm-aie package detected via PEANO_INSTALL_DIR:",
+                peano_package_dir,
+            )
 
         with air.ir.Context():
 
