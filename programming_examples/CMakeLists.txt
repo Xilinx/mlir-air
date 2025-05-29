@@ -91,7 +91,7 @@ set(TEST_DEPENDS
 add_lit_testsuite(check-programming-examples-peano "Running AIR programming examples (Peano backend only)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS} --filter "peano"
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "peano" --allow-empty-runs
 )
 set_target_properties(check-programming-examples-peano PROPERTIES FOLDER "Tests")
 
@@ -99,7 +99,7 @@ set_target_properties(check-programming-examples-peano PROPERTIES FOLDER "Tests"
 add_lit_testsuite(check-programming-examples-chess "Running AIR programming examples (Chess backend only)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS} --filter "chess"
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "chess" --allow-empty-runs
 )
 set_target_properties(check-programming-examples-chess PROPERTIES FOLDER "Tests")
 
