@@ -21,7 +21,6 @@ print:
 	${powershell} python3 ${srcdir}/passthrough_kernel.py -p
 
 run: compile-kernel
-	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/passthrough_kernel.py
 	
 compile-kernel:
@@ -37,7 +36,7 @@ compile-kernel:
 		fi; \
 	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
 		echo "Using xchesscc_wrapper from PATH"; \
-		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/passThrough.cc -o $(BUILD_DIR)/passThrough.cc.o; \
+		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/passThrough.cc -o passThrough.cc.o; \
 	else \
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \
