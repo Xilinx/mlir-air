@@ -156,8 +156,14 @@ jobs:
           ninja check-air-mlir
           ninja check-air-python
 
+          # Test set 1: peano tests
           export LIT_OPTS="${LIT_OPS} --timeout 600 -j4"
-          ninja check-air-e2e
+          ninja check-air-e2e-peano
+
+          # Test set 2: chess tests
+          export LIT_OPTS="${LIT_OPS} --timeout 600 -j4"
+          ninja check-air-e2e-chess
+
           ninja check-programming-examples
 
           popd
