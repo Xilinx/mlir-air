@@ -87,11 +87,23 @@ set(TEST_DEPENDS
   FileCheck count not
   )
 
-add_lit_testsuite(check-programming-examples "Running the air programming examples"
+# Peano-only test suite
+add_lit_testsuite(check-programming-examples-peano "Running AIR programming examples (Peano backend only)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS}
-  )
-set_target_properties(check-programming-examples PROPERTIES FOLDER "Tests")
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "peano"
+)
+set_target_properties(check-programming-examples-peano PROPERTIES FOLDER "Tests")
+
+# Chess-only test suite
+add_lit_testsuite(check-programming-examples-chess "Running AIR programming examples (Chess backend only)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "chess"
+)
+set_target_properties(check-programming-examples-chess PROPERTIES FOLDER "Tests")
+
+# Meta target to run both
+add_custom_target(check-programming-examples DEPENDS check-programming-examples-peano check-programming-examples-chess)
 
 add_dependencies(check-all check-programming-examples)

@@ -5,7 +5,12 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 all: build/final.xclbin
 
-targetname := $(shell basename ${srcdir})
+# Determine build dir based on whether PEANO_INSTALL_DIR is set
+ifdef PEANO_INSTALL_DIR
+  BUILD_DIR := build_peano
+else
+  BUILD_DIR := build_chess
+endif
 
 build/air.mlir: ${srcdir}/${targetname}.py
 	mkdir -p ${@D}
@@ -13,11 +18,11 @@ build/air.mlir: ${srcdir}/${targetname}.py
 
 build/final.xclbin: build/air.mlir
 	mkdir -p ${@D}
-	cd build && aircc.py -xbridge -o ${@F} --tmpdir tmp --device npu1_1col --host-target x86_64 $(<:%=../%)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && aircc.py -xbridge -o ${@F} --tmpdir tmp --device npu1_1col --host-target x86_64 $(<:%=../%)
 
 build/final.py.xclbin: build/air.mlir
 	mkdir -p ${@D}
-	cd build && python3 build.py $(<:%=../%)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 build.py $(<:%=../%)
 
 ${targetname}.exe: ${srcdir}/test.cpp
 	rm -rf _build
