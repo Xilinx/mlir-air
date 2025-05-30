@@ -104,12 +104,18 @@ add_lit_testsuite(check-air-e2e-chess "Running AIR E2E tests (Chess backend only
 )
 set_target_properties(check-air-e2e-chess PROPERTIES FOLDER "Tests")
 
+# Unfiltered full test suite
+add_lit_testsuite(check-air-e2e "Running AIR E2E tests (all backends)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS}
+)
+set_target_properties(check-air-e2e PROPERTIES FOLDER "Tests")
+
 add_custom_target(build-check-air)
+add_dependencies(check-air-e2e build-check-air)
 add_dependencies(check-air-e2e-peano build-check-air)
 add_dependencies(check-air-e2e-chess build-check-air)
-
-# Meta target to run both
-add_custom_target(check-air-e2e DEPENDS check-air-e2e-peano check-air-e2e-chess)
 
 if(NOT TARGET check-all)
   add_custom_target(check-all)
