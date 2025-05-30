@@ -12,57 +12,65 @@ include_directories(
 add_definitions(-DLIBXAIENGINEV2)
 
 # Only build the runtime if hsa was found
-if (hsa-runtime64_FOUND)
-  include_directories(${XILINX_XAIE_INCLUDE_DIR})
-  link_libraries(${XILINX_XAIE_LIBS})
+if (hsa-runtime64_FOUND AND TARGET hsa-runtime64::hsa-runtime64)
+  # Optionally validate that the library file exists
+  get_target_property(HSA_RUNTIME_LIB hsa-runtime64::hsa-runtime64 IMPORTED_LOCATION)
+  if (EXISTS "${HSA_RUNTIME_LIB}")
 
-  add_library(airhost STATIC
-      memory.cpp
-      queue.cpp
-      runtime.cpp
-      host.cpp
-      pcie-ernic.cpp
-      pcie-ernic-dev-mem-allocator.cpp
-      network.cpp
-  )
-  set_property(TARGET airhost PROPERTY POSITION_INDEPENDENT_CODE ON)
+    include_directories(${XILINX_XAIE_INCLUDE_DIR})
+    link_libraries(${XILINX_XAIE_LIBS})
 
-  add_library(airhost_shared SHARED
-      memory.cpp
-      queue.cpp
-      runtime.cpp
-      host.cpp
-      pcie-ernic.cpp
-      pcie-ernic-dev-mem-allocator.cpp
-      network.cpp
+    add_library(airhost STATIC
+        memory.cpp
+        queue.cpp
+        runtime.cpp
+        host.cpp
+        pcie-ernic.cpp
+        pcie-ernic-dev-mem-allocator.cpp
+        network.cpp
     )
-  set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
+    set_property(TARGET airhost PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-  add_library(libelf_pic STATIC IMPORTED)
-  set_target_properties(libelf_pic PROPERTIES
-    IMPORTED_LOCATION "/lib/x86_64-linux-gnu/libelf.so"
-  )
+    add_library(airhost_shared SHARED
+        memory.cpp
+        queue.cpp
+        runtime.cpp
+        host.cpp
+        pcie-ernic.cpp
+        pcie-ernic-dev-mem-allocator.cpp
+        network.cpp
+      )
+    set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-  target_link_libraries(airhost
-    ${AIR_LIBXAIE_LIBS}
-    dl
-    hsa-runtime64::hsa-runtime64
-  )
+    add_library(libelf_pic STATIC IMPORTED)
+    set_target_properties(libelf_pic PROPERTIES
+      IMPORTED_LOCATION "/lib/x86_64-linux-gnu/libelf.so"
+    )
 
-  target_link_libraries(airhost_shared
-    hsa-runtime64::hsa-runtime64
-    libelf_pic
-  )
+    target_link_libraries(airhost
+      ${AIR_LIBXAIE_LIBS}
+      dl
+      hsa-runtime64::hsa-runtime64
+    )
 
-  set_target_properties(airhost PROPERTIES
-          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost)
-  set_target_properties(airhost PROPERTIES
-          ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost)
-  install(TARGETS airhost DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/airhost)
+    target_link_libraries(airhost_shared
+      hsa-runtime64::hsa-runtime64
+      libelf_pic
+    )
 
-  set_target_properties(airhost_shared PROPERTIES
-          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost)
-  install(TARGETS airhost_shared DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/airhost)
+    set_target_properties(airhost PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost)
+    set_target_properties(airhost PROPERTIES
+            ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost)
+    install(TARGETS airhost DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/airhost)
+
+    set_target_properties(airhost_shared PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/${AIR_RUNTIME_TARGET}/airhost)
+    install(TARGETS airhost_shared DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/airhost)
+
+  else()
+    message(WARNING "hsa-runtime64::hsa-runtime64 target is found, but the library file does not exist at '${HSA_RUNTIME_LIB}'")
+  endif()
 
 endif()
 
