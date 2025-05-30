@@ -92,7 +92,7 @@ set(TEST_DEPENDS
 add_lit_testsuite(check-air-e2e-peano "Running AIR E2E tests (Peano backend only)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS} --filter "peano" --allow-empty-runs
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "peano"
 )
 set_target_properties(check-air-e2e-peano PROPERTIES FOLDER "Tests")
 
@@ -100,7 +100,7 @@ set_target_properties(check-air-e2e-peano PROPERTIES FOLDER "Tests")
 add_lit_testsuite(check-air-e2e-chess "Running AIR E2E tests (Chess backend only)"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS ${AIR_TEST_LIT_ARGS} --filter "chess" --allow-empty-runs
+  ARGS ${AIR_TEST_LIT_ARGS} --filter "chess"
 )
 set_target_properties(check-air-e2e-chess PROPERTIES FOLDER "Tests")
 
