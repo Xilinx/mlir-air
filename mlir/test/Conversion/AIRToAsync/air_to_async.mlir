@@ -87,8 +87,8 @@ func.func @alloc_dealloc() -> () {
 // CHECK:           %[[VAL_10:.*]] = async.execute {{\[}}%[[VAL_11:.*]], %[[VAL_12:.*]]] {
 // CHECK:             %[[VAL_13:.*]] = arith.constant 6 : index
 // CHECK:             %[[VAL_14:.*]] = async.create_group %[[VAL_13]] : !async.group
-// CHECK:             affine.for %[[VAL_15:.*]] = 0 to 2 {
-// CHECK:               affine.for %[[VAL_16:.*]] = 0 to 3 {
+// CHECK:             scf.for %[[VAL_15:.*]] = %c0 to %c2 step %c1 {
+// CHECK:               scf.for %[[VAL_16:.*]] = %c0 to %c3 step %c1 {
 // CHECK:                 %[[VAL_17:.*]] = async.execute {
 // CHECK:                   %[[VAL_18:.*]] = arith.addi %[[VAL_15]], %[[VAL_16]] : index
 // CHECK:                   %[[VAL_19:.*]] = arith.muli %[[VAL_2]], %[[VAL_3]] : index
@@ -161,6 +161,8 @@ func.func @channel_get_put_3_3(%arg0 : memref<9x9xf32>) -> () {
 }
 
 // CHECK-LABEL: @scf_par
+// CHECK: async.execute
+// CHECK: async.execute
 // CHECK: %[[C0:.*]] = arith.constant 0 : index
 // CHECK: %[[C32:.*]] = arith.constant 32 : index
 // CHECK: %[[C128:.*]] = arith.constant 128 : index
