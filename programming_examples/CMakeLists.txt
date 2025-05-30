@@ -103,7 +103,12 @@ add_lit_testsuite(check-programming-examples-chess "Running AIR programming exam
 )
 set_target_properties(check-programming-examples-chess PROPERTIES FOLDER "Tests")
 
-# Meta target to run both
-add_custom_target(check-programming-examples DEPENDS check-programming-examples-peano check-programming-examples-chess)
+# Unfiltered full test suite
+add_lit_testsuite(check-programming-examples "Running AIR programming examples (all backends)"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${TEST_DEPENDS}
+  ARGS ${AIR_TEST_LIT_ARGS}
+)
+set_target_properties(check-programming-examples PROPERTIES FOLDER "Tests")
 
 add_dependencies(check-all check-programming-examples)
