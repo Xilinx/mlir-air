@@ -1094,15 +1094,6 @@ def AIRShrinkMemrefSizesByAccess: Pass<"air-shrink-memref-sizes-by-access", "fun
   }];
 }
 
-def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
-  let summary = "Optimize scheduling based on air async dependency";
-  let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";
-  let description = [{
-    This pass contains multiple passes which optimize the schedule based on the
-    dependency graph generated from -air-dependency pass.
-  }];
-}
-
 def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "ModuleOp"> {
   let summary = "Canonicalize the dependency graph";
   let constructor = "xilinx::air::createAIRDependencyCanonicalizePass()";

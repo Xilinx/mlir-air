@@ -3175,50 +3175,6 @@ public:
 private:
 };
 
-class AIRDependencyScheduleOpt
-    : public xilinx::air::impl::AIRDependencyScheduleOptBase<
-          AIRDependencyScheduleOpt> {
-
-public:
-  AIRDependencyScheduleOpt() = default;
-  AIRDependencyScheduleOpt(const AIRDependencyScheduleOpt &pass) {}
-
-  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<scf::SCFDialect, air::airDialect>();
-  }
-
-  void runOptPatterns(func::FuncOp funcOp) {
-    MLIRContext *ctx = funcOp.getContext();
-    RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistDmaInAccumPattern>(ctx);
-    (void)applyPatternsGreedily(funcOp, std::move(patterns));
-  }
-
-  void runOnFunction(func::FuncOp f) {
-    // HoistDmaInAccumPattern
-    runOptPatterns(f);
-    // BroadcastDetection
-    BroadcastDetection proc;
-    proc.runBroadcastPattern(f);
-    // Remove redundant DMA copying into linalg.generic
-    PruneLinalgGenericInputDma proc_0;
-    proc_0.runLinalgGenericPattern(f);
-  }
-
-  void runOnOperation() override {
-    auto module = getOperation();
-    SmallVector<func::FuncOp, 4> funcOps;
-    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
-    for (auto f : funcOps) {
-      runOnFunction(f);
-      // Renumber the air dma op ids
-      xilinx::air::renumberDmaOps(f, "global");
-    }
-  }
-
-private:
-};
-
 // A pass which transform multiple channel ops into one, where the data movement
 // is time-multiplexed.
 class AIRFuseChannels
@@ -6338,9 +6294,9 @@ std::unique_ptr<Pass> createAIRSpecializeChannelWrapAndStridePattern() {
   return std::make_unique<AIRSpecializeChannelWrapAndStridePattern>();
 }
 
-std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
-  return std::make_unique<AIRDependencyScheduleOpt>();
-}
+// std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
+//   return std::make_unique<AIRDependencyScheduleOpt>();
+// }
 
 std::unique_ptr<Pass> createAIRUnrollChannelByFactorPattern() {
   return std::make_unique<AIRUnrollChannelByFactorPattern>();
