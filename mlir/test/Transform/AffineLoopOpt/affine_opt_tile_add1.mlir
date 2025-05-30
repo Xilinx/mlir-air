@@ -22,7 +22,7 @@ module {
   func.func @graph(%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
     %0 = arith.constant 1.0 : f32
     %1 = memref.alloc() : memref<4x4xf32>
-    %2 = bufferization.to_memref %arg0 : tensor<4x4xf32> to memref<4x4xf32>
+    %2 = bufferization.to_buffer %arg0 : tensor<4x4xf32> to memref<4x4xf32>
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index

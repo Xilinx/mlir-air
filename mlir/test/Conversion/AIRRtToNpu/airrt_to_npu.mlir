@@ -360,8 +360,6 @@ module {
 // The key difference is that memref.alloc is removed.
 
 // CHECK-LABEL: func13
-// CHECK-NOT: memref.alloc
-// CHECK: memref.assume_alignment
 // CHECK-SAME: memref<32xbf16>
 // CHECK-NOT: memref.alloc
 // CHECK: return

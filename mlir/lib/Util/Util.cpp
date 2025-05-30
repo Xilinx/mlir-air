@@ -1887,7 +1887,7 @@ void air::getBackwardSliceInRegion(OpBuilder builder, Region *region,
       continue;
     // Get backward slices
     SetVector<Operation *> valBS;
-    getBackwardSlice(valDefOp, &valBS, bsOptions);
+    (void)getBackwardSlice(valDefOp, &valBS, bsOptions);
     for (auto b : valBS) {
       backwardSlices.insert(b);
     }

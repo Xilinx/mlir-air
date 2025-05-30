@@ -4071,7 +4071,7 @@ private:
     BackwardSliceOptions bsOptions{[&](Operation *o) {
       return !isa<LoopLikeOpInterface>(o) && !isa<air::HierarchyInterface>(o);
     }};
-    getBackwardSlice(op, &backwardSlice, bsOptions);
+    (void)getBackwardSlice(op, &backwardSlice, bsOptions);
     for (auto b : backwardSlice)
       if (air::isPure(b))
         builder.clone(*b, remap);
