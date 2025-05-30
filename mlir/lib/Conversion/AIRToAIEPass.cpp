@@ -2772,7 +2772,7 @@ public:
       alloc = memcpyOpIf.getSrcMemref();
     }
 
-    if (auto bco = dyn_cast<bufferization::ToMemrefOp>(alloc.getDefiningOp()))
+    if (auto bco = dyn_cast<bufferization::ToBufferOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(bco.getOperand().getDefiningOp());
     else if (isa<memref::AllocaOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(alloc.getDefiningOp());

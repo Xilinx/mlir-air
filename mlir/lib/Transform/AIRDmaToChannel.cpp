@@ -599,12 +599,13 @@ LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
   SetVector<Operation *> backwardSlice;
   BackwardSliceOptions bsOptions{[&](Operation *o) { return o != hier_op; }};
   for (auto ext_channel_op : externalGetPut) {
-    getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice, bsOptions);
+    (void)getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice,
+                           bsOptions);
 
     for (auto parent = ext_channel_op->getParentOp();
          !isa<air::HierarchyInterface>(parent);
          parent = parent->getParentOp()) {
-      getBackwardSlice(parent, &backwardSlice, bsOptions);
+      (void)getBackwardSlice(parent, &backwardSlice, bsOptions);
       backwardSlice.insert(parent);
     }
   }
@@ -815,14 +816,14 @@ class AIRDmaToAIRChannelConversion
       BackwardSliceOptions bsOptions{
           [&](Operation *o) { return o != hier_op; }};
       for (auto ext_channel_op : externalGetPut) {
-        getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice,
-                         bsOptions);
+        (void)getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice,
+                               bsOptions);
       }
 
       for (auto parent = op->getParentOp();
            !isa<air::HierarchyInterface>(parent);
            parent = parent->getParentOp()) {
-        getBackwardSlice(parent, &backwardSlice, bsOptions);
+        (void)getBackwardSlice(parent, &backwardSlice, bsOptions);
         backwardSlice.insert(parent);
       }
 
@@ -857,7 +858,7 @@ class AIRDmaToAIRChannelConversion
       for (auto b : backwardSliceCopy) {
         if (dyn_cast<air::ExecuteOp>(b)) {
           for (auto &exec_child_op : b->getRegions().front().getOps()) {
-            getBackwardSlice(&exec_child_op, &backwardSlice, bsOptions);
+            (void)getBackwardSlice(&exec_child_op, &backwardSlice, bsOptions);
             backwardSlice.insert(&exec_child_op);
           }
         }
@@ -1218,7 +1219,7 @@ class AIRDemoteDmaToAIRHierarchyConversion
       // Transitive defs up to scf.for.
       BackwardSliceOptions bsOptions{
           [&](Operation *o) { return o != hier_op && !isa<scf::ForOp>(o); }};
-      getBackwardSlice(op.getOperation(), &backwardSlice, bsOptions);
+      (void)getBackwardSlice(op.getOperation(), &backwardSlice, bsOptions);
 
       if (hoist_herd) {
         // Transitive defs up to air.herd.
@@ -1227,7 +1228,7 @@ class AIRDemoteDmaToAIRHierarchyConversion
         for (auto parent = op->getParentOp();
              !isa<air::HierarchyInterface>(parent);
              parent = parent->getParentOp()) {
-          getBackwardSlice(parent, &backwardSlice, bsOptionsHoistHerd);
+          (void)getBackwardSlice(parent, &backwardSlice, bsOptionsHoistHerd);
           backwardSlice.insert(parent);
         }
       } else {
@@ -1246,7 +1247,7 @@ class AIRDemoteDmaToAIRHierarchyConversion
         if (!execOp)
           continue;
         for (auto &childOp : execOp.getChildOps()) {
-          getBackwardSlice(&childOp, &backwardSlice, bsOptions);
+          (void)getBackwardSlice(&childOp, &backwardSlice, bsOptions);
           backwardSlice.insert(&childOp);
         }
       }

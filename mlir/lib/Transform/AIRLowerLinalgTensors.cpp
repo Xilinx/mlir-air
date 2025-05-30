@@ -33,10 +33,10 @@ using namespace xilinx::air;
 
 // Remove tensor_load followed by buffer_cast
 struct RemoveBufferCastPattern
-    : public OpRewritePattern<bufferization::ToMemrefOp> {
-  using OpRewritePattern<bufferization::ToMemrefOp>::OpRewritePattern;
+    : public OpRewritePattern<bufferization::ToBufferOp> {
+  using OpRewritePattern<bufferization::ToBufferOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(bufferization::ToMemrefOp op,
+  LogicalResult matchAndRewrite(bufferization::ToBufferOp op,
                                 PatternRewriter &rewriter) const override {
 
     auto load = op.getOperand().getDefiningOp<bufferization::ToTensorOp>();
@@ -151,7 +151,8 @@ void AIRLowerLinalgTensors::runOnOperation() {
   bufferization::BufferizationOptions options;
   options.opFilter.allowDialect<linalg::LinalgDialect>();
 
-  if (failed(bufferizeOp(getOperation(), options)))
+  bufferization::BufferizationState state;
+  if (failed(bufferizeOp(getOperation(), options, state)))
     signalPassFailure();
 
   RewritePatternSet patterns1(&context);
