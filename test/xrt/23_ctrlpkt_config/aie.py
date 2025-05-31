@@ -134,7 +134,8 @@ pipeline = (
     + ",".join(
         [
             "air-dependency",
-            "air-dependency-schedule-opt",
+            "air-hoist-dma-in-accum-pattern",
+            "air-broadcast-detection",
             "air-specialize-dma-broadcast",
             "air-dma-to-channel",
             "canonicalize",
