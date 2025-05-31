@@ -47,10 +47,11 @@ def get_air_optimization_pass(
 ):
     OPTIMIZATION_PASSES = [
         "air-dependency",
+        "air-hoist-dma-in-accum-pattern",
     ]
     if not omit_auto_broadcast:
         OPTIMIZATION_PASSES += [
-            "air-dependency-schedule-opt",
+            "air-broadcast-detection",
             "air-specialize-dma-broadcast",
         ]
     OPTIMIZATION_PASSES += [
@@ -573,7 +574,7 @@ def run(mlir_module, args=None):
                 ("--xclbin-kernel-id=" + opts.kernel_id if opts.kernel_id else ""),
             ]
             aiecc_existing_xclbin_options = [
-                ("--xclbin-input=" + opts.xclbin_input if opts.xclbin_input else "")
+                "--xclbin-input=" + opts.xclbin_input if opts.xclbin_input else ""
             ]
             aiecc_options = (
                 (["-v"] if opts.verbose else [])
