@@ -449,13 +449,6 @@ dot files for graph visualization.
 -show-cores : Show the graph of each AIE core.
 ```
 
-### `-air-dependency-schedule-opt`
-
-_Optimize scheduling based on air async dependency_
-
-This pass contains multiple passes which optimize the schedule based on the
-dependency graph generated from -air-dependency pass.
-
 ### `-air-dma-to-channel`
 
 _Convert air.dma_memcpy_nd to air.channel_
