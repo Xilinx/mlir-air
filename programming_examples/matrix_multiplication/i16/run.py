@@ -467,6 +467,8 @@ if __name__ == "__main__":
     TILE_K_L2 = 64
     TILE_K_L1 = 64
     TILE_N = 64
+    HERD_M = 4
+    HERD_N = 4
     INPUT_DATATYPE = np.int16
     OUTPUT_DATATYPE = np.int16
 
