@@ -100,10 +100,9 @@ def run_test(size, idtype, odtype):
 
     # run the module
     compiled_module = backend.compile(mlir_module)
-    with filelock.FileLock("/tmp/npu.lock"):
-        mul = backend.load(compiled_module)
-        (_, _, output_c) = mul(input_a, input_b, input_c)
-        backend.unload()
+    mul = backend.load(compiled_module)
+    (_, _, output_c) = mul(input_a, input_b, input_c)
+    backend.unload()
 
     print("inputA:", input_a)
     print("inputB:", input_b)
@@ -138,13 +137,14 @@ if __name__ == "__main__":
         ]
 
     passed = 0
-    for idtype, odtype in dtypes:
-        for size in sizes:
-            try:
-                print("Testing size:", size, "dtype:", idtype, odtype)
-                passed = passed + run_test(size, idtype, odtype)
-            except Exception as e:
-                print(e)
+    with filelock.FileLock("/tmp/npu.lock"):
+        for idtype, odtype in dtypes:
+            for size in sizes:
+                try:
+                    print("Testing size:", size, "dtype:", idtype, odtype)
+                    passed = passed + run_test(size, idtype, odtype)
+                except Exception as e:
+                    print(e)
 
     num_tests = len(sizes) * len(dtypes)
     if passed != num_tests:
