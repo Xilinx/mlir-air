@@ -169,6 +169,9 @@ jobs:
 
           # Programming examples set 2: chess tests
           ninja check-programming-examples-chess
+          
+          # AIR-Runner test set
+          ninja check-air-runner
 
           popd
           rm -rf build_assert
