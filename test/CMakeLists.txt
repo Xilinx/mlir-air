@@ -112,6 +112,7 @@ add_lit_testsuite(check-air-runner "Running AIR-Runner tests (simulation only)"
 )
 set_target_properties(check-air-e2e-peano PROPERTIES FOLDER "Tests")
 
+add_dependencies(check-all check-air-runner)
 # Unfiltered full test suite
 add_lit_testsuite(check-air-e2e "Running AIR E2E tests (all backends)"
   ${CMAKE_CURRENT_BINARY_DIR}
