@@ -200,7 +200,6 @@ if __name__ == "__main__":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
-            omit_auto_broadcast=True,
         )
         module_function = backend.compile(mlir_module)
 
