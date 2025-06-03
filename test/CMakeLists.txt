@@ -124,7 +124,6 @@ add_custom_target(build-check-air)
 add_dependencies(check-air-e2e build-check-air)
 add_dependencies(check-air-e2e-peano build-check-air)
 add_dependencies(check-air-e2e-chess build-check-air)
-add_dependencies(check-air-runner build-check-air)
 
 if(NOT TARGET check-all)
   add_custom_target(check-all)
