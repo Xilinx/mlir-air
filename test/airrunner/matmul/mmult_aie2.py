@@ -195,7 +195,7 @@ pipeline = (
 pm = air.passmanager.PassManager.parse(pipeline, context=context)
 pm.run(air_module.operation)
 
-with open("aieDebug.mlir", "w") as f:
+with open("air_ir_debug.mlir", "w") as f:
     f.write(str(air_module))
 
 arch = {
