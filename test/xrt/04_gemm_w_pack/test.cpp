@@ -1,3 +1,11 @@
+//===- test.cpp -------------------------------------------------*- C++ -*-===//
+//
+// SPDX-License-Identifier: MIT
+//
+// Copyright (C) 2025, Advanced Micro Devices, Inc.
+//
+//===----------------------------------------------------------------------===//
+
 #include "cxxopts.hpp"
 #include <cstdint>
 #include <fstream>
