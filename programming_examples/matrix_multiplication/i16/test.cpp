@@ -23,9 +23,9 @@
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
-using A_DATATYPE = std::bfloat16_t;
-using B_DATATYPE = std::bfloat16_t;
-using C_DATATYPE = std::bfloat16_t;
+using A_DATATYPE = int16_t;
+using B_DATATYPE = int16_t;
+using C_DATATYPE = int16_t;
 
 void add_default_options(cxxopts::Options &options) {
   options.add_options()("help,h", "produce help message")(
@@ -40,12 +40,6 @@ void add_default_options(cxxopts::Options &options) {
                                      cxxopts::value<int>())(
       "size_n,N", "Matrix size N", cxxopts::value<int>())(
       "size_k,K", "Matrix size K", cxxopts::value<int>());
-}
-
-static inline std::bfloat16_t random_bfloat16_t() {
-  // Random numbers should NOT be uniformly between 0 and 1, because that
-  // would make the matrix product AB always close to 1.
-  return std::bfloat16_t(4.0 * (float)rand() / (float)(RAND_MAX));
 }
 
 int main(int argc, const char *argv[]) {
@@ -134,13 +128,13 @@ int main(int argc, const char *argv[]) {
   A_DATATYPE *bufA = bo_a.map<A_DATATYPE *>();
   std::vector<A_DATATYPE> AVec(A_VOLUME);
   for (int i = 0; i < A_VOLUME; i++) {
-    AVec[i] = random_bfloat16_t();
+    AVec[i] = i;
   }
   memcpy(bufA, AVec.data(), (AVec.size() * sizeof(A_DATATYPE)));
   B_DATATYPE *bufB = bo_b.map<B_DATATYPE *>();
   std::vector<B_DATATYPE> BVec(B_VOLUME);
   for (int i = 0; i < B_VOLUME; i++) {
-    BVec[i] = random_bfloat16_t();
+    BVec[i] = i;
   }
   memcpy(bufB, BVec.data(), (BVec.size() * sizeof(B_DATATYPE)));
   C_DATATYPE *bufC = bo_c.map<C_DATATYPE *>();
