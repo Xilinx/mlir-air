@@ -39,10 +39,7 @@ void add_default_options(cxxopts::Options &options) {
       cxxopts::value<std::string>())("size_m,M", "Matrix size M",
                                      cxxopts::value<int>())(
       "size_n,N", "Matrix size N", cxxopts::value<int>())(
-      "size_k,K", "Matrix size K", cxxopts::value<int>())(
-      "trace_sz,t", "size of trace buffer (in bytes)",
-      cxxopts::value<int>())("trace_file", "where to store trace output",
-                             cxxopts::value<std::string>());
+      "size_k,K", "Matrix size K", cxxopts::value<int>());
 }
 
 static inline std::bfloat16_t random_bfloat16_t() {
