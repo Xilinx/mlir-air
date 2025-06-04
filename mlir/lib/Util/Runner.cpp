@@ -365,7 +365,6 @@ public:
 
     // Walk the launch op and create a graph using dependencyCanonicalizer
     // intepreter
-    canonicalizer.removeDepListRepetition(toplevel);
     hostGraph = dependencyGraph(toplevel, true);
     canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx,
                                      sim_granularity);

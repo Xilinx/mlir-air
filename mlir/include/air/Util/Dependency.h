@@ -250,9 +250,9 @@ public:
                           dependencyGraph &);
 
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
-  void removeDepListRepetition(func::FuncOp func);
-  void removeUnusedExecuteOp(func::FuncOp func);
-  void removeRedundantWaitAllOps(func::FuncOp func);
+  // void removeDepListRepetition(func::FuncOp func);
+  // void removeUnusedExecuteOp(func::FuncOp func);
+  // void removeRedundantWaitAllOps(func::FuncOp func);
   std::pair<VertexId, dependencyGraph *>
   getVertexFromOp(Operation *op, dependencyContext dep_ctx,
                   std::string front_or_back = "front");

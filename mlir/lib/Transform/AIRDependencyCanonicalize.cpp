@@ -53,11 +53,6 @@ public:
       // Post processing
       // Update dependency list
       canonicalizer.updateDepList(func, trHostGraph);
-
-      // Clean up
-      canonicalizer.removeUnusedExecuteOp(func);
-      canonicalizer.removeRedundantWaitAllOps(func);
-      canonicalizer.removeDepListRepetition(func);
     }
   }
 
