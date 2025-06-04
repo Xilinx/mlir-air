@@ -782,3 +782,70 @@ func.func @func4(%arg0: memref<512x512xbf16>, %arg1: memref<512x4096xbf16>, %arg
   %9 = air.channel.get async [%5, %8]  @channel_3[] (%alloc[] [] []) : (memref<8x16x32x32xbf16, 1 : i32>) // WAW, WAR
   return
 }
+
+// Check that affinity edges, arising from shared use of symbol refs, are preserved in ssa tokens.
+
+// Here, although the two channel gets do not have data dependency, they have affinity over shared usage of @channel_0.
+// Therefore, the dependency between them is preserved in canonicalization.
+
+// CHECK-LABEL: func.func @func5
+// CHECK:  %[[GET0:.*]] = air.channel.get async [%{{.*}}]  @channel_0
+// CHECK:  %[[GET1:.*]] = air.channel.get async [{{.*}}%[[GET0]]{{.*}}]  @channel_0
+
+func.func @func5() {
+  %async_token, %results = air.execute -> (memref<64x64xbf16, 2 : i32>) {
+    %alloc = memref.alloc() : memref<64x64xbf16, 2 : i32>
+    air.execute_terminator %alloc : memref<64x64xbf16, 2 : i32>
+  }
+  %async_token_0, %results_1 = air.execute -> (memref<64x64xbf16, 2 : i32>) {
+    %alloc = memref.alloc() : memref<64x64xbf16, 2 : i32>
+    air.execute_terminator %alloc : memref<64x64xbf16, 2 : i32>
+  }
+  %0 = air.channel.get async [%async_token]  @channel_0[] (%results[] [] []) {id = 11 : i32} : (memref<64x64xbf16, 2 : i32>)
+  %1 = air.channel.get async [%async_token_0, %0]  @channel_0[] (%results_1[] [] []) {id = 11 : i32} : (memref<64x64xbf16, 2 : i32>)
+  %async_token_2 = air.execute {
+    memref.dealloc %results : memref<64x64xbf16, 2 : i32>
+  }
+  %async_token_3 = air.execute {
+    memref.dealloc %results_1 : memref<64x64xbf16, 2 : i32>
+  }
+  return
+}
+
+// Same as func5, except that the source op is guarded in an if region.
+// CHECK-LABEL: func.func @func6
+// CHECK:  %[[AIF0:.*]] = affine.if
+// CHECK-NEXT:  air.channel.get async [%{{.*}}]  @channel_0
+// CHECK-NEXT:  affine.yield
+// CHECK-NEXT:  else
+// CHECK-NEXT:  air.channel.get async [%{{.*}}]  @channel_0
+// CHECK-NEXT:  affine.yield
+// CHECK:  %[[GET0:.*]] = air.channel.get async [{{.*}}%[[AIF0]]{{.*}}]  @channel_0
+func.func @func6() {
+  %c2 = arith.constant 2 : index
+  %0 = air.herd @herd_0 async  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) attributes {id = 3 : i32, x_loc = 0 : i64, y_loc = 0 : i64} {
+    %async_token, %results = air.execute -> (memref<64x64xbf16, 2 : i32>) {
+      %alloc = memref.alloc() : memref<64x64xbf16, 2 : i32>
+      air.execute_terminator %alloc : memref<64x64xbf16, 2 : i32>
+    }
+    %async_token_0, %results_1 = air.execute -> (memref<64x64xbf16, 2 : i32>) {
+      %alloc = memref.alloc() : memref<64x64xbf16, 2 : i32>
+      air.execute_terminator %alloc : memref<64x64xbf16, 2 : i32>
+    }
+    %1 = affine.if affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>()[%arg3, %arg4] -> !air.async.token {
+      %3 = air.channel.get async [%async_token]  @channel_0[%arg3, %arg4] (%results[] [] []) {id = 11 : i32} : (memref<64x64xbf16, 2 : i32>)
+      affine.yield %3 : !air.async.token
+    } else {
+      %3 = air.channel.get async [%async_token]  @channel_0[%arg3, %arg4] (%results[] [] []) {id = 11 : i32} : (memref<64x64xbf16, 2 : i32>)
+      affine.yield %3 : !air.async.token
+    }
+    %2 = air.channel.get async [%async_token_0, %1]  @channel_0[%arg3, %arg4] (%results_1[] [] []) {id = 11 : i32} : (memref<64x64xbf16, 2 : i32>)
+    %async_token_2 = air.execute {
+      memref.dealloc %results : memref<64x64xbf16, 2 : i32>
+    }
+    %async_token_3 = air.execute {
+      memref.dealloc %results_1 : memref<64x64xbf16, 2 : i32>
+    }
+  }
+  return
+}
