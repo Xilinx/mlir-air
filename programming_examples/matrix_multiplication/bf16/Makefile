@@ -27,6 +27,18 @@ run2x4: compile-kernel
 run2x2: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 --compile-mode compile-and-run
 
+# Measure the e2e latencies across a range of problem shapes.
+sweep4x4: compile-kernel build-test-exe
+	@for M in 256 512 1024 2048; do \
+		for N in 256 512 1024 2048; do \
+			for K in 256 512 1024 2048; do \
+				echo "Running with M=$$M, N=$$N, K=$$K"; \
+				cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --m $$M --n $$N --k $$K --compile-mode compile-only; \
+				./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $$M -N $$N -K $$K; \
+			done; \
+		done; \
+	done
+
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
 	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
@@ -45,6 +57,35 @@ compile-kernel:
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \
 	fi
+
+build-test-exe:
+	@GPP=$$( \
+		for bin in /usr/bin/g++-*; do \
+			ver=$$(echo $$bin | grep -oE '[0-9]+$$'); \
+			if [ "$$ver" -ge 13 ] 2>/dev/null; then \
+				echo "$$ver $$bin"; \
+			fi; \
+		done | sort -nr | head -n1 | awk '{print $$2}' \
+	); \
+	if [ -z "$$GPP" ]; then \
+		echo "Error: No g++ version >= 13 found in /usr/bin."; \
+		exit 1; \
+	fi; \
+	if [ -z "$$XILINX_XRT" ]; then \
+		echo "Error: XILINX_XRT environment variable not set. Please make sure to have sourced xrt/setup.sh."; \
+		exit 1; \
+	fi; \
+	if [ -z "$$MLIR_AIE_INSTALL_DIR" ]; then \
+		echo "Error: MLIR_AIE_INSTALL_DIR environment variable not set. Please make sure to have sourced utils/env_setup.sh."; \
+		exit 1; \
+	fi; \
+	echo "Using compiler: $$GPP"; \
+	mkdir -p $(BUILD_DIR); \
+	cd $(BUILD_DIR) && $$GPP ${srcdir}/test.cpp -o test.exe -std=c++23 -Wall \
+		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
+		-I$$MLIR_AIE_INSTALL_DIR/runtime_lib/x86_64/test_lib/include \
+		-L$$MLIR_AIE_INSTALL_DIR/runtime_lib/x86_64/test_lib/lib \
+		-luuid -lxrt_coreutil -lrt -lstdc++ -ltest_utils
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
