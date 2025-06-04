@@ -1,4 +1,4 @@
-//===- kernel.cpp -----------------------------------------000---*- C++ -*-===//
+//===- kernel.cpp -----------------------------------------------*- C++ -*-===//
 //
 // Copyright (C) 2024, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
