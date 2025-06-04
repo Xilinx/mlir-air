@@ -29,9 +29,9 @@ run2x2: compile-kernel
 
 # Measure the e2e latencies across a range of problem shapes.
 sweep4x4: compile-kernel build-test-exe
-	@for M in 256; do \
-		for N in 256; do \
-			for K in 256; do \
+	@for M in 256 512 1024 2048; do \
+		for N in 256 512 1024 2048; do \
+			for K in 256 512 1024 2048; do \
 				echo "Running with M=$$M, N=$$N, K=$$K"; \
 				cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --m $$M --n $$N --k $$K --compile-mode compile-only; \
 				./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $$M -N $$N -K $$K; \
