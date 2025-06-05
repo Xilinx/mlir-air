@@ -4600,14 +4600,16 @@ private:
             .getStrides();
     auto memrefVolume = air::getTensorVolume(inferredSubViewOutputTy);
     for (unsigned i = 0; i < outputStrides.size(); i++) {
-      if (outputStrides[i] >= (int)memrefVolume) {
-        subViewOp.getResult().setType(inferredSubViewOutputTy);
-        if (static_offsets[i] >= 0)
-          continue;
-        if (auto updatedOffset =
-                getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
-          subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
-      }
+      if (memrefVolume == 1)
+        continue;
+      if (outputStrides[i] < (int)memrefVolume)
+        continue;
+      subViewOp.getResult().setType(inferredSubViewOutputTy);
+      if (static_offsets[i] >= 0)
+        continue;
+      if (auto updatedOffset =
+              getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
+        subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
     }
 
     // Case 4: offset are directly or indirectly herd induction variables.

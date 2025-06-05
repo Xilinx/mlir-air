@@ -620,4 +620,35 @@ module {
     }
     return
   }
+
+  // Unranked memref.
+  // CHECK-LABEL: test17
+  // CHECK: air.channel.put async {{.*}} @channel_0[] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c64{{.*}}, %c64{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c1024{{.*}}, %c2{{.*}}, %c256{{.*}}, %c1{{.*}}])
+
+  func.func @test17(%arg0: memref<*xf32>) {  
+    air.segment @segment_0 args(%arg7=%arg0) : memref<*xf32> {
+      %c1024 = arith.constant 1024 : index
+      %c131072 = arith.constant 131072 : index
+      %c65536 = arith.constant 65536 : index
+      %c128 = arith.constant 128 : index
+      %c4 = arith.constant 4 : index
+      %c256 = arith.constant 256 : index
+      %c2 = arith.constant 2 : index
+      %c1 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %0 = air.wait_all async 
+      %1 = scf.for %arg2 = %c0 to %c65536 step %c1024 iter_args(%arg3 = %0) -> (!air.async.token) {
+        %17 = scf.for %arg4 = %c0 to %c128 step %c2 iter_args(%arg5 = %arg3) -> (!air.async.token) {
+          %async_token, %results = air.execute [%arg3] -> (index) {
+            %19 = arith.addi %arg2, %arg4 : index
+            air.execute_terminator %19 : index
+          }
+          %18 = air.channel.put async [%async_token]  @channel_0[] (%arg7[%c0, %results] [%c4, %c2] [%c256, %c1]) {id = 1 : i32} : (memref<*xf32>)
+          scf.yield %18 : !air.async.token
+        }
+        scf.yield %17 : !air.async.token
+      }
+    }
+    return
+  }
 }

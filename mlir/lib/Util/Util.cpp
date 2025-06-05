@@ -1265,27 +1265,29 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
         if (auto affop = dyn_cast<affine::AffineApplyOp>(iv_consumer)) {
           auto idx = llvm::find_if(affop.getOperands(),
                                    [iv](Value oper) { return oper == iv; });
-          if (idx != affop.getOperands().end()) {
-            auto map = affop.getAffineMap();
-            int64_t map_offset =
-                evalOffsetFromAffineMap(for_op->getContext(), map).value();
-            ind_var_factor = *getConstantIntValue(strides[i]);
-            SmallVector<std::optional<int64_t>> stepSizeAsSymVec(
-                affop.getMap().getNumSymbols(), std::optional<int64_t>{0});
-            SmallVector<std::optional<int64_t>> stepSizeAsDimVec(
-                affop.getMap().getNumDims(), std::optional<int64_t>{0});
-            if (idx - affop.getOperands().begin() < affop.getMap().getNumDims())
-              stepSizeAsDimVec[idx - affop.getOperands().begin()] = stepSize;
-            else
-              stepSizeAsSymVec[idx - affop.getOperands().begin() -
-                               affop.getMap().getNumDims()] = stepSize;
-            int64_t map_gradient = air::evaluateConstantsInMap(
-                                       map, stepSizeAsSymVec, stepSizeAsDimVec,
-                                       for_op->getContext())
-                                       .value() -
-                                   map_offset;
-            ind_var_factor *= map_gradient;
-          }
+          if (idx == affop.getOperands().end())
+            continue;
+          auto map = affop.getAffineMap();
+          int64_t map_offset =
+              evalOffsetFromAffineMap(for_op->getContext(), map).value();
+          ind_var_factor = *getConstantIntValue(strides[i]);
+          SmallVector<std::optional<int64_t>> stepSizeAsSymVec(
+              affop.getMap().getNumSymbols(), std::optional<int64_t>{0});
+          SmallVector<std::optional<int64_t>> stepSizeAsDimVec(
+              affop.getMap().getNumDims(), std::optional<int64_t>{0});
+          if (idx - affop.getOperands().begin() < affop.getMap().getNumDims())
+            stepSizeAsDimVec[idx - affop.getOperands().begin()] = stepSize;
+          else
+            stepSizeAsSymVec[idx - affop.getOperands().begin() -
+                             affop.getMap().getNumDims()] = stepSize;
+          int64_t map_gradient =
+              air::evaluateConstantsInMap(
+                  map, stepSizeAsSymVec, stepSizeAsDimVec, for_op->getContext())
+                  .value() -
+              map_offset;
+          ind_var_factor *= map_gradient;
+        } else if (auto arithop = dyn_cast<arith::AddIOp>(iv_consumer)) {
+          ind_var_factor = stepSize;
         }
       }
     }
@@ -1296,8 +1298,11 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       trip_count = *getStaticScfForTripCountAsInt(sfo);
     Value new_wrap =
         builder.template create<arith::ConstantIndexOp>(loc, trip_count);
+    // Skip stride modulo if memref is unranked.
     int64_t new_stride_value =
-        ind_var_factor % getTensorVolume(memref.getType());
+        getTensorVolume(memref.getType()) == 1
+            ? ind_var_factor
+            : ind_var_factor % getTensorVolume(memref.getType());
     Value new_stride =
         builder.template create<arith::ConstantIndexOp>(loc, new_stride_value);
 
