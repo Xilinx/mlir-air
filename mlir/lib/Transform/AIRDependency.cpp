@@ -136,7 +136,7 @@ public:
                      memref::CopyOp>(op))
           createAsyncExecute(rewriter, op);
         else if (isa<memref::CastOp, affine::AffineApplyOp, arith::AddIOp,
-                     arith::MulIOp>(op))
+                     arith::MulIOp, arith::IndexCastOp>(op))
           createAsyncExecute(rewriter, op, op->getResult(0).getType());
         else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op))
           createAsyncHierarchyImpls(rewriter, hierarchy_op);
