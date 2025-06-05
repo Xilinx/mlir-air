@@ -651,4 +651,92 @@ module {
     }
     return
   }
+
+  // Scf.for on integer type.
+  // CHECK-LABEL: test18
+  // CHECK: air.channel.put async {{.*}} @channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
+  // CHECK: air.channel.put async {{.*}} @channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c16384{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
+  // CHECK: air.channel.put async {{.*}} @channel_0[%c0{{.*}}, %c1{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c64{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
+  // CHECK: air.channel.put async {{.*}} @channel_0[%c1{{.*}}, %c1{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c16448{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
+
+  func.func @test18(%arg0: memref<*xf32>, %arg1: memref<*xf32>) {
+    %0 = air.segment @kernel_0 async  args(%arg2=%arg0) : memref<*xf32> {
+      %c1_i32 = arith.constant 1 : i32
+      %c32_i32 = arith.constant 32 : i32
+      %c0_i32 = arith.constant 0 : i32
+      %c2_i32 = arith.constant 2 : i32
+      %c4_i32 = arith.constant 4 : i32
+      %c64 = arith.constant 64 : index
+      %c128 = arith.constant 128 : index
+      %c4 = arith.constant 4 : index
+      %c2 = arith.constant 2 : index
+      %c1 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %1 = air.wait_all async 
+      %2 = scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%1) -> !air.async.token {
+        %async_token, %results = air.execute -> (index) {
+          %5 = arith.muli %arg3, %c128 : index
+          air.execute_terminator %5 : index
+        }
+        %async_token_0, %results_1 = air.execute [%async_token] -> (i32) {
+          %5 = arith.index_cast %results : index to i32
+          air.execute_terminator %5 : i32
+        }
+        %async_token_2, %results_3 = air.execute -> (index) {
+          %5 = arith.muli %arg4, %c64 : index
+          air.execute_terminator %5 : index
+        }
+        %async_token_4, %results_5 = air.execute [%async_token_2] -> (i32) {
+          %5 = arith.index_cast %results_3 : index to i32
+          air.execute_terminator %5 : i32
+        }
+        %3 = air.wait_all async [%async_token_0, %async_token_4] 
+        %4 = scf.for %arg5 = %c0_i32 to %c32_i32 step %c1_i32 iter_args(%arg6 = %3) -> (!air.async.token)  : i32 {
+          %async_token_6, %results_7 = air.execute [%arg6] -> (i32) {
+            %6 = arith.muli %arg5, %c4_i32 : i32
+            air.execute_terminator %6 : i32
+          }
+          %async_token_8, %results_9 = air.execute [%async_token_6] -> (i32) {
+            %6 = arith.addi %results_1, %results_7 : i32
+            air.execute_terminator %6 : i32
+          }
+          %5 = scf.for %arg7 = %c0_i32 to %c32_i32 step %c1_i32 iter_args(%arg8 = %async_token_8) -> (!air.async.token)  : i32 {
+            %async_token_10, %results_11 = air.execute [%arg8] -> (i32) {
+              %7 = arith.muli %arg7, %c2_i32 : i32
+              air.execute_terminator %7 : i32
+            }
+            %async_token_12, %results_13 = air.execute [%async_token_10] -> (i32) {
+              %7 = arith.addi %results_5, %results_11 : i32
+              air.execute_terminator %7 : i32
+            }
+            %async_token_14, %results_15 = air.execute [%arg8] -> (index) {
+              %7 = arith.index_cast %results_9 : i32 to index
+              air.execute_terminator %7 : index
+            }
+            %async_token_16, %results_17 = air.execute [%async_token_14] -> (index) {
+              %7 = arith.muli %results_15, %c128 : index
+              air.execute_terminator %7 : index
+            }
+            %async_token_18, %results_19 = air.execute [%async_token_12] -> (index) {
+              %7 = arith.index_cast %results_13 : i32 to index
+              air.execute_terminator %7 : index
+            }
+            %async_token_20, %results_21 = air.execute [%async_token_18, %async_token_16] -> (index) {
+              %7 = arith.addi %results_17, %results_19 : index
+              air.execute_terminator %7 : index
+            }
+            %6 = air.channel.put async [%async_token_20]  @channel_0[%arg3, %arg4] (%arg2[%c0, %results_21] [%c4, %c2] [%c128, %c1]) {id = 1 : i32} : (memref<*xf32>)
+            scf.yield %6 : !air.async.token
+          }
+          scf.yield %5 : !air.async.token
+        }
+        scf.reduce(%4 : !air.async.token) {
+        ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
+          %5 = air.wait_all async [%arg5, %arg6] 
+          scf.reduce.return %5 : !air.async.token
+        }
+      }
+    }
+    return
+  }
 }
