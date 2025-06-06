@@ -421,13 +421,19 @@ def AIRSplitDevices : Pass<"air-split-devices", "ModuleOp"> {
   ];
 }
 
-def InsertEmptyLaunchOverHerd : Pass<"air-insert-launch-and-segment-around-herd", "ModuleOp"> {
-  let summary = "Insert segment and launch ops around herd op";
+def InsertEmptyLaunchOverHerd : Pass<"air-insert-launch-around-herd", "ModuleOp"> {
+  let summary = "Insert launch op (and optionally segment op) around herd op";
   let constructor = "xilinx::air::createInsertEmptyLaunchOverHerdPass()";
   let description =  [{
-    This pass inserts launch and segment operations around herd op, if a herd op 
-    does not have a parent launch or segment operation.
+    This pass inserts an air.launch over air.herd, where an air.launch 
+    is always inserted, and an air.segment is inserted only if 
+    insertSegment is set to true.
   }];
+  let options = [
+    Option<"clInsertSegment", "insert-segment", "bool",
+          /*default=*/"false",
+           "Option to insert an air.segment around the herd. ">,
+  ];
 }
 
 def AIRWrapFuncWithParallelPass : Pass<"air-wrap-func-with-parallel", "func::FuncOp"> {
