@@ -2032,35 +2032,34 @@ void dependencyCanonicalizer::transitiveReductionImpl(
   asyncExecuteGraphTR.applyTransitiveReduction();
 }
 
-// Update dependency list based on transformed graph
+// Recursively purge dependency list from the graph and its subgraphs.
+void dependencyCanonicalizer::purgeAllDependencyLists(dependencyGraph &graph) {
+  purgeAIRDepList(graph);
+  for (auto &subgraph : graph.subgraphs) {
+    purgeAllDependencyLists(subgraph);
+  }
+}
+
+// Recursively fill dependency list using the transitive-reduced graph.
+void dependencyCanonicalizer::fillAllDependencyListsFromTR(
+    dependencyGraph &graph) {
+  fillAIRDepListUsingGraphTR(graph);
+  for (auto &subgraph : graph.subgraphs) {
+    fillAllDependencyListsFromTR(subgraph);
+  }
+}
+
+// Update dependency list based on transformed graph.
 void dependencyCanonicalizer::updateDepList(func::FuncOp func,
                                             dependencyGraph &global_graph) {
 
-  // Purge dependency list
-  purgeAIRDepList(global_graph);
-  for (auto &launchGraph : global_graph.subgraphs) {
-    purgeAIRDepList(launchGraph);
-    for (auto &segmentGraph : launchGraph.subgraphs) {
-      purgeAIRDepList(segmentGraph);
-      for (auto &herdGraph : segmentGraph.subgraphs) {
-        purgeAIRDepList(herdGraph);
-      }
-    }
-  }
+  // Purge dependency list.
+  purgeAllDependencyLists(global_graph);
 
-  // Rewrite dependency list
-  fillAIRDepListUsingGraphTR(global_graph);
-  for (auto &launchGraph : global_graph.subgraphs) {
-    fillAIRDepListUsingGraphTR(launchGraph);
-    for (auto &segmentGraph : launchGraph.subgraphs) {
-      fillAIRDepListUsingGraphTR(segmentGraph);
-      for (auto &herdGraph : segmentGraph.subgraphs) {
-        fillAIRDepListUsingGraphTR(herdGraph);
-      }
-    }
-  }
+  // Rewrite dependency list.
+  fillAllDependencyListsFromTR(global_graph);
 
-  // Cleanup op ids. Only leave dma, execute and hierarchy ids
+  // Cleanup op ids. Only leave dma, execute and hierarchy ids.
   func.walk([&](Operation *op) {
     if (isa<air::DmaMemcpyNdOp>(op)) {
     } else if (isa<air::ChannelInterface>(op)) {

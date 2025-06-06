@@ -322,6 +322,8 @@ private:
   void updatePointerFromHierarchyOpToGraph(dependencyGraph &G);
   void transitiveReductionImpl(const Graph &asyncExecuteGraph,
                                Graph &asyncExecuteGraphTR);
+  void purgeAllDependencyLists(dependencyGraph &graph);
+  void fillAllDependencyListsFromTR(dependencyGraph &graph);
   void purgeAIRDepList(dependencyGraph &graph);
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
   std::vector<VertexId>
