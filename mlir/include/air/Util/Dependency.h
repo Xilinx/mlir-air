@@ -246,6 +246,9 @@ public:
                           dependencyContext &dep_ctx,
                           std::string granularity = "herd",
                           bool dump_dot = false, std::string dump_dir = "");
+  void canonicalizeRecursive(const dependencyGraph &src, dependencyGraph &dst);
+  void buildEmptyGraphStructure(const dependencyGraph &src,
+                                dependencyGraph &dst);
   void canonicalizeGraphs(const dependencyGraph &global_graph,
                           dependencyGraph &);
 
@@ -300,6 +303,11 @@ private:
                                   dependencyContext &dep_ctx);
   std::pair<std::string, unsigned> getTypeIdPairFromOp(Operation *op);
   std::string getOpTypeFromOpImpls(Operation *op);
+  void parseAllDependencyEdges(dependencyGraph &graph,
+                               dependencyContext &dep_ctx);
+  void connectAllTerminators(dependencyGraph &graph);
+  void connectAndUpdateGraphPointers(dependencyGraph &graph,
+                                     dependencyGraph *parent = nullptr);
   void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
   void connectOpToItsDepListImpls(Operation *op, Graph &g,
                                   dependencyContext dep_ctx);

@@ -1154,6 +1154,46 @@ getAllAccessedScalarOperandsFromOp(Operation *op) {
 // Dependency graph
 //===----------------------------------------------------------------------===//
 
+// Recursively parse all dependency edges in the given graph and its subgraphs.
+// This function walks the hierarchy of the dependencyGraph and applies
+// parseDependencyEdgesInGraph to each level.
+void dependencyCanonicalizer::parseAllDependencyEdges(
+    dependencyGraph &graph, dependencyContext &dep_ctx) {
+  parseDependencyEdgesInGraph(graph.g, dep_ctx);
+  for (auto &subgraph : graph.subgraphs) {
+    parseAllDependencyEdges(subgraph, dep_ctx);
+  }
+}
+
+// Recursively connect terminator nodes to all leaf operations in the graph
+// and its subgraphs. This ensures that each command graph is properly
+// terminated.
+void dependencyCanonicalizer::connectAllTerminators(dependencyGraph &graph) {
+  connectTerminatorInGraph(graph.g);
+  for (auto &subgraph : graph.subgraphs) {
+    connectAllTerminators(subgraph);
+  }
+}
+
+// Recursively connect the start node and set up pointer relationships between
+// each graph and its associated hierarchy operation and terminator.
+// If a parent graph is provided, link the child's terminator to the parent's
+// graph.
+void dependencyCanonicalizer::connectAndUpdateGraphPointers(
+    dependencyGraph &graph, dependencyGraph *parent) {
+  connectStartNodeInCommandGraph(graph);
+  updatePointerFromGraphToHierarchyTerminator(graph);
+
+  if (parent)
+    updatePointerFromHierarchyTerminatorToGraph(*parent, graph);
+
+  updatePointerFromHierarchyOpToGraph(graph);
+
+  for (auto &subgraph : graph.subgraphs) {
+    connectAndUpdateGraphPointers(subgraph, &graph);
+  }
+}
+
 void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
                                                  dependencyGraph &global_graph,
                                                  dependencyContext &dep_ctx,
@@ -1196,49 +1236,22 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
     }
   });
 
-  // Adds edges between async ops
-  parseDependencyEdgesInGraph(global_graph.g, dep_ctx);
-  for (auto &G_l : global_graph.subgraphs) {
-    parseDependencyEdgesInGraph(G_l.g, dep_ctx);
-    for (auto &G_p : G_l.subgraphs) {
-      parseDependencyEdgesInGraph(G_p.g, dep_ctx);
-      for (auto &G_h : G_p.subgraphs) {
-        parseDependencyEdgesInGraph(G_h.g, dep_ctx);
-      }
-    }
-  }
+  // Adds edges between async ops.
+  parseAllDependencyEdges(global_graph, dep_ctx);
 
-  // Connect leaf vertices to launch, segment and herd terminators
+  // Connect leaf vertices to launch, segment and herd terminators.
   for (auto &G_l : global_graph.subgraphs) {
-    connectTerminatorInGraph(G_l.g);
-    for (auto &G_p : G_l.subgraphs) {
-      connectTerminatorInGraph(G_p.g);
-      for (auto &G_h : G_p.subgraphs) {
-        connectTerminatorInGraph(G_h.g);
-      }
-    }
+    connectAllTerminators(G_l);
   }
 
   // Connect the start node per graph as graph inception point;
-  // update pointer from graph to air.hierarchy op terminators
+  // update pointer from graph to air.hierarchy op terminators.
   connectStartNodeInCommandGraph(global_graph);
   updatePointerFromGraphToHierarchyTerminator(global_graph);
   updatePointerFromHierarchyOpToGraph(global_graph);
+
   for (auto &launchGraph : global_graph.subgraphs) {
-    connectStartNodeInCommandGraph(launchGraph);
-    updatePointerFromGraphToHierarchyTerminator(launchGraph);
-    updatePointerFromHierarchyTerminatorToGraph(global_graph, launchGraph);
-    updatePointerFromHierarchyOpToGraph(launchGraph);
-    for (auto &segmentGraph : launchGraph.subgraphs) {
-      connectStartNodeInCommandGraph(segmentGraph);
-      updatePointerFromGraphToHierarchyTerminator(segmentGraph);
-      updatePointerFromHierarchyTerminatorToGraph(launchGraph, segmentGraph);
-      updatePointerFromHierarchyOpToGraph(segmentGraph);
-      for (auto &herdGraph : segmentGraph.subgraphs) {
-        connectStartNodeInCommandGraph(herdGraph);
-        updatePointerFromGraphToHierarchyTerminator(herdGraph);
-      }
-    }
+    connectAndUpdateGraphPointers(launchGraph, &global_graph);
   }
 }
 
@@ -1312,6 +1325,7 @@ void dependencyCanonicalizer::addVerticesInLaunch(
 
   launch.walk([&](Operation *launch_childop) {
     if (!launch_childop->getParentOfType<air::SegmentOp>() &&
+        !launch_childop->getParentOfType<air::HerdOp>() &&
         !dyn_cast<air::LaunchOp>(launch_childop)) {
       addVertexFromOpImpls(launch_childop, current_launch_graph, dep_ctx);
       if (auto segment = dyn_cast<air::SegmentOp>(launch_childop)) {
@@ -1976,53 +1990,40 @@ void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
   }
 }
 
-// Perform transitive reduction to canonicalize the dependency graph
+// Perform transitive reduction to canonicalize the dependency graph.
+
+// Recursive canonicalization.
+void dependencyCanonicalizer::canonicalizeRecursive(const dependencyGraph &src,
+                                                    dependencyGraph &dst) {
+
+  // Check for subgraph count.
+  if (src.subgraphs.size() != dst.subgraphs.size())
+    src.hierarchyOp->emitOpError("graph tree size mismatch");
+  transitiveReductionImpl(src.g, dst.g);
+
+  // Recurse into subgraphs.
+  for (unsigned i = 0; i < src.subgraphs.size(); i++) {
+    canonicalizeRecursive(src.subgraphs[i], dst.subgraphs[i]);
+  }
+}
+
+// Recursively copy the structure (hierarchyOp) of the dependencyGraph.
+void dependencyCanonicalizer::buildEmptyGraphStructure(
+    const dependencyGraph &src, dependencyGraph &dst) {
+  for (const auto &childSrc : src.subgraphs) {
+    dst.subgraphs.push_back(dependencyGraph(childSrc.hierarchyOp));
+    buildEmptyGraphStructure(childSrc, dst.subgraphs.back());
+  }
+}
+
+// Entry point.
 void dependencyCanonicalizer::canonicalizeGraphs(
     const dependencyGraph &global_graph, dependencyGraph &tr_graph) {
 
-  // Construct empty post-canonicalization dependency graph, tr_graph
-  for (auto &launchGraph : global_graph.subgraphs) {
-
-    tr_graph.subgraphs.push_back(dependencyGraph(launchGraph.hierarchyOp));
-    dependencyGraph *current_launch_graph = &(tr_graph.subgraphs.back());
-    for (auto &segmentGraph : launchGraph.subgraphs) {
-      current_launch_graph->subgraphs.push_back(
-          dependencyGraph(segmentGraph.hierarchyOp));
-      dependencyGraph *current_segment_graph =
-          &(current_launch_graph->subgraphs.back());
-      for (auto &herdGraph : segmentGraph.subgraphs) {
-        current_segment_graph->subgraphs.push_back(
-            dependencyGraph(herdGraph.hierarchyOp));
-      }
-    }
-  }
-
-  // Transitive reduction
-  auto global_size = global_graph.subgraphs.size();
-  if (global_size != tr_graph.subgraphs.size())
-    global_graph.hierarchyOp->emitOpError("graph tree size mismatch");
-  transitiveReductionImpl(global_graph.g, tr_graph.g);
-  for (unsigned i = 0; i < global_size; i++) {
-    auto &launchGraph = global_graph.subgraphs[i];
-    auto &trLaunchGraph = tr_graph.subgraphs[i];
-    auto launch_size = launchGraph.subgraphs.size();
-    if (launch_size != trLaunchGraph.subgraphs.size())
-      launchGraph.hierarchyOp->emitOpError("graph tree size mismatch");
-    transitiveReductionImpl(launchGraph.g, trLaunchGraph.g);
-    for (unsigned j = 0; j < launch_size; j++) {
-      auto &segmentGraph = launchGraph.subgraphs[j];
-      auto &trSegmentGraph = trLaunchGraph.subgraphs[j];
-      auto segment_size = segmentGraph.subgraphs.size();
-      if (segment_size != trSegmentGraph.subgraphs.size())
-        segmentGraph.hierarchyOp->emitOpError("graph tree size mismatch");
-      transitiveReductionImpl(segmentGraph.g, trSegmentGraph.g);
-      for (unsigned k = 0; k < segment_size; k++) {
-        auto &herdGraph = segmentGraph.subgraphs[k];
-        auto &trHerdGraph = trSegmentGraph.subgraphs[k];
-        transitiveReductionImpl(herdGraph.g, trHerdGraph.g);
-      }
-    }
-  }
+  // Construct empty post-canonicalization dependency graph.
+  buildEmptyGraphStructure(global_graph, tr_graph);
+  // Perform canonicalization recursively.
+  canonicalizeRecursive(global_graph, tr_graph);
 }
 
 void dependencyCanonicalizer::transitiveReductionImpl(
