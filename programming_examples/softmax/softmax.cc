@@ -1,4 +1,4 @@
-//===- softmax.cc -----------------------------------------000---*- C++ -*-===//
+//===- softmax.cc -----------------------------------------------*- C++ -*-===//
 //
 // Copyright (C) 2025, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT

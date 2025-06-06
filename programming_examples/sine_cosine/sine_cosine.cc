@@ -1,4 +1,4 @@
-//===- sine_cosine.cc -------------------------------------000---*- C++ -*-===//
+//===- sine_cosine.cc -------------------------------------------*- C++ -*-===//
 //
 // Copyright (C) 2025, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT

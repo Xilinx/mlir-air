@@ -1,4 +1,4 @@
-//===- test.cpp -------------------------------------------000---*- C++ -*-===//
+//===- test.cpp -------------------------------------------------*- C++ -*-===//
 //
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2025, Advanced Micro Devices, Inc.

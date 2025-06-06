@@ -1508,13 +1508,42 @@ void updateAffineForBounds(affine::AffineForOp loop_op, int lb, int ub,
   loop_op.setStep(step);
 }
 
-void updateScfForBounds(OpBuilder builder, scf::ForOp loop_op, int lb, int ub,
-                        int step) {
-  auto loc = loop_op->getLoc();
-  builder.setInsertionPoint(loop_op);
-  loop_op.setLowerBound(builder.create<arith::ConstantIndexOp>(loc, lb));
-  loop_op.setUpperBound(builder.create<arith::ConstantIndexOp>(loc, ub));
-  loop_op.setStep(builder.create<arith::ConstantIndexOp>(loc, step));
+// Update scf.for with specified loop bounds, steps, and induction variable
+// type.
+FailureOr<scf::ForOp> updateScfForBounds(RewriterBase &rewriter,
+                                         scf::ForOp loopOp, int64_t lb,
+                                         int64_t ub, int64_t step, Type type) {
+  auto loc = loopOp.getLoc();
+  rewriter.setInsertionPoint(loopOp);
+
+  Value lbVal, ubVal, stepVal;
+  if (isa<IntegerType>(type)) {
+    lbVal = rewriter.create<arith::ConstantOp>(
+        loc, type, rewriter.getIntegerAttr(type, lb));
+    ubVal = rewriter.create<arith::ConstantOp>(
+        loc, type, rewriter.getIntegerAttr(type, ub));
+    stepVal = rewriter.create<arith::ConstantOp>(
+        loc, type, rewriter.getIntegerAttr(type, step));
+  } else if (isa<IndexType>(type)) {
+    lbVal = rewriter.create<arith::ConstantIndexOp>(loc, lb);
+    ubVal = rewriter.create<arith::ConstantIndexOp>(loc, ub);
+    stepVal = rewriter.create<arith::ConstantIndexOp>(loc, step);
+  } else {
+    loopOp->emitOpError("Expected index or integer type, but got: ") << type;
+    return failure();
+  }
+
+  auto newFor = rewriter.create<scf::ForOp>(loc, lbVal, ubVal, stepVal,
+                                            loopOp.getInitArgs());
+  auto &bb = newFor.getBody()->getOperations();
+  auto &body = loopOp.getBody()->getOperations();
+  bb.splice(bb.begin(), body, body.begin(), body.end());
+  rewriter.replaceAllUsesWith(loopOp.getInductionVar(),
+                              newFor.getInductionVar());
+  rewriter.replaceAllUsesWith(loopOp.getRegionIterArgs(),
+                              newFor.getRegionIterArgs());
+  rewriter.replaceOp(loopOp, newFor);
+  return newFor;
 }
 
 // Erase op from within an scf.for loop, and reconstruct ssa value usage in the
@@ -1596,9 +1625,13 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
         return failure();
       }
       int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
+      auto valueType = apply.getResult().getType();
       if (failed(eraseOpFromScfFor(rewriter, sfo, apply)))
         return failure();
-      updateScfForBounds(rewriter, sfo, *new_lb, *new_ub, newStepInInt);
+      auto res = updateScfForBounds(rewriter, sfo, *new_lb, *new_ub,
+                                    newStepInInt, valueType);
+      if (failed(res))
+        return failure();
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
@@ -1686,9 +1719,13 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
       int new_lb =
           *mlir::getConstantIntValue(sfo.getLowerBound()) * muli_factor;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
+      auto valueType = op.getResult().getType();
       if (failed(eraseOpFromScfFor(rewriter, sfo, op)))
         return failure();
-      updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt);
+      auto res = updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt,
+                                    valueType);
+      if (failed(res))
+        return failure();
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
@@ -1762,9 +1799,13 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
       int new_lb =
           *mlir::getConstantIntValue(sfo.getLowerBound()) + addi_operand;
       int newStepInInt = llvm::divideCeilSigned(new_ub - new_lb, tripCount);
+      auto valueType = op.getResult().getType();
       if (failed(eraseOpFromScfFor(rewriter, sfo, op)))
         return failure();
-      updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt);
+      auto res = updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt,
+                                    valueType);
+      if (failed(res))
+        return failure();
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
@@ -1777,6 +1818,62 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
       rewriter.eraseOp(op);
       updateAffineForBounds(afo, new_lb, new_ub, newStepInInt);
     } else
+      return failure();
+
+    return success();
+  }
+
+private:
+};
+
+// Fold arith.index_cast op operating on loop induction variable into loop
+// bounds.
+struct CanonicalizeArithIndexCastOpOnLoopInductionVar
+    : public OpRewritePattern<arith::IndexCastOp> {
+  using OpRewritePattern<arith::IndexCastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::IndexCastOp op,
+                                PatternRewriter &rewriter) const override {
+    Operation *containingOp = nullptr;
+    Value var_val = nullptr;
+
+    Value val = op.getOperand();
+    if (!val)
+      return failure();
+    auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+    if (!ivArg)
+      return failure();
+    if (!ivArg.getOwner())
+      return failure();
+    if (!val.hasOneUse())
+      return failure();
+    if (op.getResult().use_empty())
+      return failure();
+    if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp()))
+      if (exec->getResult(1).use_empty())
+        return failure();
+    if (isa<scf::ForOp>(ivArg.getOwner()->getParentOp())) {
+      containingOp = ivArg.getOwner()->getParentOp();
+      var_val = val;
+    } else if (isa<affine::AffineForOp>(ivArg.getOwner()->getParentOp())) {
+      // Affine for op only operates on index type.
+      return failure();
+    } else
+      return failure();
+
+    // Cast back all of the loop's bounds to index type.
+    auto sfo = dyn_cast<scf::ForOp>(containingOp);
+    if (!getStaticScfForTripCountAsInt(sfo))
+      return failure();
+    int new_ub = *mlir::getConstantIntValue(sfo.getUpperBound());
+    int new_lb = *mlir::getConstantIntValue(sfo.getLowerBound());
+    int new_step = *mlir::getConstantIntValue(sfo.getStep());
+    auto valueType = op.getResult().getType();
+    if (failed(eraseOpFromScfFor(rewriter, sfo, op)))
+      return failure();
+    auto res =
+        updateScfForBounds(rewriter, sfo, new_lb, new_ub, new_step, valueType);
+    if (failed(res))
       return failure();
 
     return success();
@@ -1957,6 +2054,12 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     }
     rewriter.replaceAllUsesWith(for_op.getInductionVar(),
                                 for_op.getLowerBound());
+
+    // assert(for_op.getOperation()->use_empty());
+    // if (!for_op->use_empty()){
+    //   for_op->emitOpError("still has uses.");
+    //   return failure();
+    // }
     rewriter.eraseOp(for_op.getOperation());
 
     return success();
@@ -3070,7 +3173,8 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
   preproc_patterns
       .insert<UnrollScfParallel, CanonicalizeAffineApplyOnLoopInductionVar,
               CanonicalizeArithMuliOpOnLoopInductionVar,
-              CanonicalizeArithAddiOpOnLoopInductionVar>(ctx);
+              CanonicalizeArithAddiOpOnLoopInductionVar,
+              CanonicalizeArithIndexCastOpOnLoopInductionVar>(ctx);
   // Canonicalize constant operands in affine.apply.
   mlir::affine::AffineApplyOp::getCanonicalizationPatterns(preproc_patterns,
                                                            ctx);
@@ -3088,6 +3192,7 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
   patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar,
                   CanonicalizeArithMuliOpOnLoopInductionVar,
                   CanonicalizeArithAddiOpOnLoopInductionVar,
+                  CanonicalizeArithIndexCastOpOnLoopInductionVar,
                   AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
       ctx, maxNumDims, maxSize, enableRepeatAtHighestDim);
@@ -4606,14 +4711,16 @@ private:
             .getStrides();
     auto memrefVolume = air::getTensorVolume(inferredSubViewOutputTy);
     for (unsigned i = 0; i < outputStrides.size(); i++) {
-      if (outputStrides[i] >= (int)memrefVolume) {
-        subViewOp.getResult().setType(inferredSubViewOutputTy);
-        if (static_offsets[i] >= 0)
-          continue;
-        if (auto updatedOffset =
-                getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
-          subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
-      }
+      if (memrefVolume == 1)
+        continue;
+      if (outputStrides[i] < (int)memrefVolume)
+        continue;
+      subViewOp.getResult().setType(inferredSubViewOutputTy);
+      if (static_offsets[i] >= 0)
+        continue;
+      if (auto updatedOffset =
+              getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
+        subViewOp->replaceUsesOfWith(*subview_offsets++, updatedOffset);
     }
 
     // Case 4: offset are directly or indirectly herd induction variables.
@@ -5597,12 +5704,9 @@ public:
     // AIE1 architecture doesn't support multi-dimensional dma bds. Tiling shim
     // dma for AIE1 does not optimize the schedule.
     if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
-      // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
-      // specialization patterns.
-      air::applyAIRSpecializeChannelWrapAndStridePattern(
-          &func.getRegion(),
-          /*maxNumDims*/ 1, /*maxSize*/ -1,
-          /*enableForLoopUnrolling*/ false, /*enableRepeatAtHighestDim*/ true);
+      // AIE1 has no multi-dimensional DMA at shim. No need to tile. Apply dma
+      // folding and finish.
+      applyAIRL3DmaFoldingPatterns(func, *device);
       return;
     }
 
@@ -5614,13 +5718,17 @@ public:
     // Tile all shim dma scf.for loops into smaller and repeating tiles.
     SmallVector<scf::ForOp> shimFors;
     func.walk([&shimFors](scf::ForOp forOp) {
-      // Get for loop band outside of any segment or herd region.
+      // Get for loop band outside of any segment or herd region, and directly
+      // nested in a launch or func op.
       if (isa<air::LaunchOp, func::FuncOp>(forOp->getParentOp())) {
         shimFors.push_back(forOp);
       }
     });
-    if (shimFors.empty())
+    if (shimFors.empty()) {
+      // No for loops at shim to tile. Apply dma folding and finish.
+      applyAIRL3DmaFoldingPatterns(func, *device);
       return;
+    }
     // Helper function converting a vector of unsigned int to a vector of Value.
     auto convertVecOfIntToVecOfValue = [](OpBuilder &b,
                                           SmallVector<unsigned> clTileSizes) {
@@ -5747,17 +5855,8 @@ public:
     // Canonicalize IR to make loop bounds explicitly static.
     applyCanonicalizationPatterns(ctx, func.getBody());
 
-    int maxNumDims =
-        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? 1 : 4;
-    int maxSize =
-        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? -1 : 1023;
-    // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
-    // specialization patterns.
-    air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getBody());
-    air::applyAIRSpecializeChannelWrapAndStridePattern(
-        &func.getRegion(),
-        /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
-        /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ true);
+    // Apply DMA folding.
+    applyAIRL3DmaFoldingPatterns(func, *device);
 
     if (forLoopsToUnroll.empty()) {
       // If no loop unrolling was performed, gather all air.channel_put/get
@@ -5788,6 +5887,25 @@ public:
   }
 
 private:
+  void applyAIRL3DmaFoldingPatterns(func::FuncOp func, AIE::AIEDevice device) {
+    // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
+    // specialization patterns.
+    if (isa<AIE::AIE2TargetModel>(AIE::getTargetModel(device)))
+      air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getBody());
+
+    int maxNumDims =
+        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(device)) ? 1 : 4;
+    int maxSize =
+        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(device)) ? -1 : 1023;
+    bool enableForLoopUnrolling =
+        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(device)) ? false : true;
+    air::applyAIRSpecializeChannelWrapAndStridePattern(
+        &func.getRegion(),
+        /*maxNumDims=*/maxNumDims,
+        /*maxSize=*/maxSize,
+        /*enableForLoopUnrolling=*/enableForLoopUnrolling,
+        /*enableRepeatAtHighestDim=*/true);
+  }
 };
 
 // A pass which performs a series of scf.for loop splitting, fusion and

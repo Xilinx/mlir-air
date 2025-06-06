@@ -609,6 +609,16 @@ LogicalResult HoistingAffineIf(affine::AffineIfOp op) {
       backwardSlice.insert(parent);
     }
   }
+  // Get constant values used by backward slices, and add to backward slices.
+  for (auto o : backwardSlice) {
+    for (auto &region : o->getRegions()) {
+      visitUsedValuesDefinedAbove(region, [&backwardSlice](OpOperand *use) {
+        if (getConstantIntValue(use->get())) {
+          backwardSlice.insert(use->get().getDefiningOp());
+        }
+      });
+    }
+  }
 
   // Label dependent ops to hoist
   for (auto b : backwardSlice) {
@@ -825,6 +835,17 @@ class AIRDmaToAIRChannelConversion
            parent = parent->getParentOp()) {
         (void)getBackwardSlice(parent, &backwardSlice, bsOptions);
         backwardSlice.insert(parent);
+      }
+      // Get constant values used by backward slices, and add to backward
+      // slices.
+      for (auto o : backwardSlice) {
+        for (auto &region : o->getRegions()) {
+          visitUsedValuesDefinedAbove(region, [&backwardSlice](OpOperand *use) {
+            if (getConstantIntValue(use->get())) {
+              backwardSlice.insert(use->get().getDefiningOp());
+            }
+          });
+        }
       }
 
       // Hoist hierarchy op into scf op
@@ -1249,6 +1270,17 @@ class AIRDemoteDmaToAIRHierarchyConversion
         for (auto &childOp : execOp.getChildOps()) {
           (void)getBackwardSlice(&childOp, &backwardSlice, bsOptions);
           backwardSlice.insert(&childOp);
+        }
+      }
+      // Get constant values used by backward slices, and add to backward
+      // slices.
+      for (auto o : backwardSlice) {
+        for (auto &region : o->getRegions()) {
+          visitUsedValuesDefinedAbove(region, [&backwardSlice](OpOperand *use) {
+            if (getConstantIntValue(use->get())) {
+              backwardSlice.insert(use->get().getDefiningOp());
+            }
+          });
         }
       }
 

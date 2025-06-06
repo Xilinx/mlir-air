@@ -54,7 +54,7 @@ void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history) {
   for (auto operand : candidate_scalar_operands) {
-    if (!llvm::isa<IndexType>(operand.getType()))
+    if (!llvm::isa<IndexType, IntegerType, FloatType>(operand.getType()))
       continue; // Only tracing scalar operands
     // If parent loop op is an scf.for
     if (auto for_op = mlir::scf::getForInductionVarOwner(operand)) {
@@ -79,7 +79,7 @@ void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
 
   // Recursively trace dependency to loop induction vars
   for (auto operand : candidate_scalar_operands) {
-    if (!llvm::isa<IndexType>(operand.getType()))
+    if (!llvm::isa<IndexType, IntegerType, FloatType>(operand.getType()))
       continue; // Only tracing scalar operands
     if (operand.getDefiningOp() &&
         mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
@@ -1136,15 +1136,16 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
   return operands;
 }
 
-// Get index operands which are accessed by op.
-FailureOr<SmallVector<Value>> getAllAccessedIndexOperandsFromOp(Operation *op) {
+// Get index or scalar operands accessed by op.
+FailureOr<SmallVector<Value>>
+getAllAccessedScalarOperandsFromOp(Operation *op) {
   SmallVector<Value> operands;
   if (!op)
     return failure();
-  for (auto oper : op->getOperands()) {
-    if (!isa<IndexType>(oper.getType()))
-      continue;
-    operands.push_back(oper);
+  for (Value oper : op->getOperands()) {
+    Type type = oper.getType();
+    if (isa<IndexType>(type) || isa<IntegerType>(type) || isa<FloatType>(type))
+      operands.push_back(oper);
   }
   return operands;
 }
@@ -2345,10 +2346,10 @@ void dependencyTracer::getPartialMemrefFromOp(
       air::getAllReadAccessedMemrefOperandsFromOp(sink_op);
   auto writeAccessedMemrefs =
       air::getAllWriteAccessedMemrefOperandsFromOp(sink_op);
-  auto readAccessedIndices = air::getAllAccessedIndexOperandsFromOp(sink_op);
-  auto writeAccessedIndices = air::getAllAccessedIndexOperandsFromOp(sink_op);
+  auto readAccessedScalars = air::getAllAccessedScalarOperandsFromOp(sink_op);
+  auto writeAccessedScalars = air::getAllAccessedScalarOperandsFromOp(sink_op);
   if (failed(readAccessedMemrefs) || failed(writeAccessedMemrefs) ||
-      failed(readAccessedIndices) || failed(writeAccessedIndices)) {
+      failed(readAccessedScalars) || failed(writeAccessedScalars)) {
     sink_op->emitOpError("failed to get read-accessed operands.");
     return;
   }
@@ -2374,8 +2375,8 @@ void dependencyTracer::getPartialMemrefFromOp(
                                             sink_op_memref_reads);
   getPartialMemrefsFromMemrefAccessPatterns(*writeAccessedMemrefs,
                                             sink_op_memref_writes);
-  llvm::append_range(sink_op_scalar_ins, *readAccessedIndices);
-  llvm::append_range(sink_op_scalar_outs, *writeAccessedIndices);
+  llvm::append_range(sink_op_scalar_ins, *readAccessedScalars);
+  llvm::append_range(sink_op_scalar_outs, *writeAccessedScalars);
 }
 
 // Add dependency edge
