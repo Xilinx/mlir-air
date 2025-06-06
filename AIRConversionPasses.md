@@ -7,12 +7,19 @@ _Convert memcpy to air.dma_memcpy_nd_
 Converts memory operations to optimize data transfer through Direct Memory 
 Access (DMA) operations.
 
-### `-air-insert-launch-and-segment-around-herd`
+### `-air-insert-launch-around-herd`
 
-_Insert segment and launch ops around herd op_
+_Insert launch op (and optionally segment op) around herd op_
 
-This pass inserts launch and segment operations around herd op, if a herd op 
-does not have a parent launch or segment operation.
+This pass inserts an air.launch over air.herd, where an air.launch 
+is always inserted, and an air.segment is inserted only if 
+insertSegment is set to true.
+
+#### Options
+
+```
+-insert-segment : Option to insert an air.segment around the herd. 
+```
 
 ### `-air-linalg-to-func`
 
