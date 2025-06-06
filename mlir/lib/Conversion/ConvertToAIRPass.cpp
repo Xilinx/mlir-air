@@ -376,112 +376,102 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
   return success();
 }
 
-void InsertEmptyLaunchOverHerd(air::HerdOp op) {
+void InsertEmptyLaunchOverHerd(air::HerdOp op, bool insertSegment = true) {
   OpBuilder builder(op);
-  if (op->getParentOfType<air::SegmentOp>()) {
+  if (op->getParentOfType<air::SegmentOp>() ||
+      op->getParentOfType<air::LaunchOp>())
     return;
-  }
-  if (op->getParentOfType<air::LaunchOp>()) {
-    return;
-  }
 
   auto loc = op.getLoc();
 
-  SmallVector<Value, 4> args;
-  for (unsigned i = 0; i < op.getNumKernelOperands(); i++) {
-    args.push_back(op.getKernelOperand(i));
-  }
-  SmallVector<Value, 4> sizes;
-  // Generate a surrounding launch op with size of 1.
-  for (unsigned i = 0; i < op.getNumDims(); i++)
-    sizes.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
+  // Collect kernel operands
+  SmallVector<Value, 4> args(op.getKernelOperands());
 
-  // The outermost launch op inherits herd's async interface
-  air::LaunchOp launch = nullptr;
+  // Launch of size 1 in each dimension
+  SmallVector<Value, 4> launchSizes;
+  for (unsigned i = 0; i < op.getNumDims(); ++i)
+    launchSizes.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
+
+  // Create LaunchOp
+  air::LaunchOp launch;
   if (op.getAsyncToken())
-    launch = builder.create<air::LaunchOp>(
-        op.getLoc(), op.getAsyncDependencies(), sizes, args, true);
+    launch = builder.create<air::LaunchOp>(loc, op.getAsyncDependencies(),
+                                           launchSizes, args, true);
   else
-    launch = builder.create<air::LaunchOp>(op.getLoc(), sizes, args);
+    launch = builder.create<air::LaunchOp>(loc, launchSizes, args);
+
   builder.setInsertionPointToStart(&launch.getRegion().front());
-  SmallVector<Value, 1> segmentSizes = {};
-  SmallVector<Value, 4> segmentOpers;
-  for (Value v : launch.getIds()) {
-    segmentOpers.push_back(v);
-  }
-  for (Value v : launch.getSize()) {
-    segmentOpers.push_back(v);
-  }
-  for (Value v : launch.getKernelArguments()) {
-    segmentOpers.push_back(v);
+
+  // Create optional SegmentOp
+  air::SegmentOp segment;
+
+  if (insertSegment) {
+    SmallVector<Value, 4> segmentOpers(launch.getIds());
+    llvm::append_range(segmentOpers, launch.getSize());
+    llvm::append_range(segmentOpers, launch.getKernelArguments());
+    SmallVector<Value> segmentSizes; // TODO: Currently we generate
+                                     // single-iteration segments only.
+    if (op.getAsyncToken())
+      segment = builder.create<air::SegmentOp>(loc, ValueRange{}, segmentSizes,
+                                               segmentOpers, true);
+    else
+      segment = builder.create<air::SegmentOp>(loc, segmentSizes, segmentOpers);
+    builder.setInsertionPointToStart(&segment.getRegion().front());
   }
 
-  air::SegmentOp segment = nullptr;
-  if (op.getAsyncToken())
-    segment = builder.create<air::SegmentOp>(op.getLoc(), SmallVector<Value>{},
-                                             segmentSizes, segmentOpers, true);
-  else
-    segment =
-        builder.create<air::SegmentOp>(op.getLoc(), segmentSizes, segmentOpers);
+  // Construct new HerdOp in the correct region
+  SmallVector<Value, 2> herdSizes;
+  for (auto v : op.getSizeOperands())
+    herdSizes.push_back(builder.clone(*v.getDefiningOp())->getResult(0));
 
-  builder.setInsertionPointToStart(&segment.getRegion().front());
-
-  SmallVector<Value, 2> herdSizes = {};
+  air::HerdOp newHerd;
   SmallVector<Value, 4> herdOpers;
-  for (Value v : segment.getIds()) {
-    herdOpers.push_back(v);
+  if (insertSegment) {
+    llvm::append_range(herdOpers, segment.getIds());
+    llvm::append_range(herdOpers, segment.getSize());
+    llvm::append_range(herdOpers, segment.getKernelArguments());
+  } else {
+    llvm::append_range(herdOpers, launch.getIds());
+    llvm::append_range(herdOpers, launch.getSize());
+    llvm::append_range(herdOpers, launch.getKernelArguments());
   }
-  for (Value v : segment.getSize()) {
-    herdOpers.push_back(v);
-  }
-  for (Value v : segment.getKernelArguments()) {
-    herdOpers.push_back(v);
-  }
-  for (unsigned i = 0; i < op.getNumDims(); i++) {
-    herdSizes.push_back(
-        builder.clone(*op.getSizeOperands()[i].getDefiningOp())->getResult(0));
-  }
-
-  air::HerdOp herdOp = nullptr;
   if (op.getAsyncToken())
-    herdOp = builder.create<air::HerdOp>(op.getLoc(), SmallVector<Value>{},
-                                         herdSizes,
-                                         segment.getKernelArguments(), true);
+    newHerd = builder.create<air::HerdOp>(loc, ValueRange{}, herdSizes,
+                                          herdOpers, true);
   else
-    herdOp = builder.create<air::HerdOp>(op.getLoc(), herdSizes,
-                                         segment.getKernelArguments());
+    newHerd = builder.create<air::HerdOp>(loc, herdSizes, herdOpers);
 
+  // Map values from old Herd to new Herd
   IRMapping remap;
-  for (unsigned i = 0; i < op.getNumDims(); i++) {
-    remap.map(op.getIds()[i], herdOp.getIds()[i]);
-    remap.map(op.getSize()[i], herdOp.getSize()[i]);
+  for (unsigned i = 0; i < op.getNumDims(); ++i) {
+    remap.map(op.getIds()[i], newHerd.getIds()[i]);
+    remap.map(op.getSize()[i], newHerd.getSize()[i]);
   }
   for (unsigned i = 0; i < op.getNumKernelOperands(); i++) {
+    int blockArgOffset = launch.getNumDims() *
+                         2; // Each dim has an induction variable and a size.
+    if (segment)
+      blockArgOffset += segment.getNumDims() * 2;
     remap.map(op.getKernelArgument(i),
-              herdOp.getKernelArgument(launch.getNumDims() * 2 + i));
+              newHerd.getKernelArgument(blockArgOffset + i));
   }
 
-  builder.setInsertionPointToStart(&herdOp.getRegion().front());
-  for (auto &o : op.getBody().front().getOperations())
-    if (!isa<air::HerdTerminatorOp>(o))
-      builder.clone(o, remap);
+  builder.setInsertionPointToStart(&newHerd.getRegion().front());
+  for (Operation &o : op.getBody().front().without_terminator())
+    builder.clone(o, remap);
 
-  // Copy over herd attributes
+  // Copy symbol and attributes
   if (auto attr =
-          op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-    std::string name = attr.getValue().str();
-    herdOp->setAttr(SymbolTable::getSymbolAttrName(),
-                    StringAttr::get(op->getContext(), name));
-  }
+          op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    newHerd->setAttr(SymbolTable::getSymbolAttrName(), attr);
   if (op.getLinkWith())
-    herdOp.setLinkWith(op.getLinkWith());
+    newHerd.setLinkWith(op.getLinkWith());
 
-  if (auto token = op.getAsyncToken()) {
+  if (auto token = op.getAsyncToken())
     replaceAllUsesInRegionWith(token, launch.getAsyncToken(),
                                *op->getParentRegion());
-  }
+
   op->erase();
-  return;
 }
 
 // func.call itself has a `link_with` which we can absorb into air.herd.
@@ -1452,6 +1442,9 @@ struct ParallelToSegmentPass
   }
 };
 
+// Inserts an empty launch over air.herd, where an air.launch is always
+// inserted, and an air.segment is inserted only if insertSegment is set to
+// true.
 struct InsertEmptyLaunchOverHerdPass
     : public air::impl::InsertEmptyLaunchOverHerdBase<
           InsertEmptyLaunchOverHerdPass> {
@@ -1470,9 +1463,9 @@ struct InsertEmptyLaunchOverHerdPass
 
     module.walk([&](air::HerdOp op) {
       if (!op->getParentOfType<air::LaunchOp>())
-        InsertEmptyLaunchOverHerd(op);
+        InsertEmptyLaunchOverHerd(op, /*insertSegment=*/clInsertSegment);
       else if (!op->getParentOfType<air::SegmentOp>())
-        InsertEmptyLaunchOverHerd(op);
+        InsertEmptyLaunchOverHerd(op, /*insertSegment=*/clInsertSegment);
     });
     getSegmentNames(module);
   }

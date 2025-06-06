@@ -451,7 +451,7 @@ def run(mlir_module, args=None):
         air_placed = opts.tmpdir + "/placed." + air_mlir_filename
         pass_pipeline = ",".join(
             [
-                "air-insert-launch-and-segment-around-herd",
+                "air-insert-launch-around-herd{insert-segment=true}",
                 "func.func(air-lower-herd-parallel)",
             ]
             + (
