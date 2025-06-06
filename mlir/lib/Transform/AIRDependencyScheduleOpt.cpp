@@ -1502,9 +1502,11 @@ void updateAffineForBounds(affine::AffineForOp loop_op, int lb, int ub,
   loop_op.setStep(step);
 }
 
-LogicalResult updateScfForBounds(RewriterBase &rewriter, scf::ForOp loopOp,
-                                 int64_t lb, int64_t ub, int64_t step,
-                                 Type type) {
+// Update scf.for with specified loop bounds, steps, and induction variable
+// type.
+FailureOr<scf::ForOp> updateScfForBounds(RewriterBase &rewriter,
+                                         scf::ForOp loopOp, int64_t lb,
+                                         int64_t ub, int64_t step, Type type) {
   auto loc = loopOp.getLoc();
   rewriter.setInsertionPoint(loopOp);
 
@@ -1535,7 +1537,7 @@ LogicalResult updateScfForBounds(RewriterBase &rewriter, scf::ForOp loopOp,
   rewriter.replaceAllUsesWith(loopOp.getRegionIterArgs(),
                               newFor.getRegionIterArgs());
   rewriter.replaceOp(loopOp, newFor);
-  return success();
+  return newFor;
 }
 
 // Erase op from within an scf.for loop, and reconstruct ssa value usage in the
@@ -1622,7 +1624,7 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
         return failure();
       auto res = updateScfForBounds(rewriter, sfo, *new_lb, *new_ub,
                                     newStepInInt, valueType);
-      if (res.failed())
+      if (failed(res))
         return failure();
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
@@ -1716,7 +1718,7 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
         return failure();
       auto res = updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt,
                                     valueType);
-      if (res.failed())
+      if (failed(res))
         return failure();
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
@@ -1796,7 +1798,7 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
         return failure();
       auto res = updateScfForBounds(rewriter, sfo, new_lb, new_ub, newStepInInt,
                                     valueType);
-      if (res.failed())
+      if (failed(res))
         return failure();
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
@@ -1865,7 +1867,7 @@ struct CanonicalizeArithIndexCastOpOnLoopInductionVar
       return failure();
     auto res =
         updateScfForBounds(rewriter, sfo, new_lb, new_ub, new_step, valueType);
-    if (res.failed())
+    if (failed(res))
       return failure();
 
     return success();
@@ -5696,12 +5698,9 @@ public:
     // AIE1 architecture doesn't support multi-dimensional dma bds. Tiling shim
     // dma for AIE1 does not optimize the schedule.
     if (isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device))) {
-      // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
-      // specialization patterns.
-      air::applyAIRSpecializeChannelWrapAndStridePattern(
-          &func.getRegion(),
-          /*maxNumDims*/ 1, /*maxSize*/ -1,
-          /*enableForLoopUnrolling*/ false, /*enableRepeatAtHighestDim*/ true);
+      // AIE1 has no multi-dimensional DMA at shim. No need to tile. Apply dma
+      // folding and finish.
+      applyAIRL3DmaFoldingPatterns(func, *device);
       return;
     }
 
@@ -5713,13 +5712,17 @@ public:
     // Tile all shim dma scf.for loops into smaller and repeating tiles.
     SmallVector<scf::ForOp> shimFors;
     func.walk([&shimFors](scf::ForOp forOp) {
-      // Get for loop band outside of any segment or herd region.
+      // Get for loop band outside of any segment or herd region, and directly
+      // nested in a launch or func op.
       if (isa<air::LaunchOp, func::FuncOp>(forOp->getParentOp())) {
         shimFors.push_back(forOp);
       }
     });
-    if (shimFors.empty())
+    if (shimFors.empty()) {
+      // No for loops at shim to tile. Apply dma folding and finish.
+      applyAIRL3DmaFoldingPatterns(func, *device);
       return;
+    }
     // Helper function converting a vector of unsigned int to a vector of Value.
     auto convertVecOfIntToVecOfValue = [](OpBuilder &b,
                                           SmallVector<unsigned> clTileSizes) {
@@ -5846,17 +5849,8 @@ public:
     // Canonicalize IR to make loop bounds explicitly static.
     applyCanonicalizationPatterns(ctx, func.getBody());
 
-    int maxNumDims =
-        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? 1 : 4;
-    int maxSize =
-        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(*device)) ? -1 : 1023;
-    // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
-    // specialization patterns.
-    air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getBody());
-    air::applyAIRSpecializeChannelWrapAndStridePattern(
-        &func.getRegion(),
-        /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
-        /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ true);
+    // Apply DMA folding.
+    applyAIRL3DmaFoldingPatterns(func, *device);
 
     if (forLoopsToUnroll.empty()) {
       // If no loop unrolling was performed, gather all air.channel_put/get
@@ -5887,6 +5881,25 @@ public:
   }
 
 private:
+  void applyAIRL3DmaFoldingPatterns(func::FuncOp func, AIE::AIEDevice device) {
+    // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
+    // specialization patterns.
+    if (isa<AIE::AIE2TargetModel>(AIE::getTargetModel(device)))
+      air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getBody());
+
+    int maxNumDims =
+        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(device)) ? 1 : 4;
+    int maxSize =
+        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(device)) ? -1 : 1023;
+    bool enableForLoopUnrolling =
+        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(device)) ? false : true;
+    air::applyAIRSpecializeChannelWrapAndStridePattern(
+        &func.getRegion(),
+        /*maxNumDims=*/maxNumDims,
+        /*maxSize=*/maxSize,
+        /*enableForLoopUnrolling=*/enableForLoopUnrolling,
+        /*enableRepeatAtHighestDim=*/true);
+  }
 };
 
 // A pass which performs a series of scf.for loop splitting, fusion and
