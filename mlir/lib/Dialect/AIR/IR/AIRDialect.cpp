@@ -292,8 +292,65 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     }
     return memrefs;
   };
+  auto getAllSymbolRefAccess = [](Operation *o) {
+    SmallVector<SymbolRefAttr> result;
+    for (NamedAttribute attr : o->getAttrs()) {
+      // Skip attributes that define a symbol name
+      if (attr.getName() == "sym_name")
+        continue;
+      if (auto symRef = dyn_cast<SymbolRefAttr>(attr.getValue())) {
+        result.push_back(symRef);
+      }
+      // Also check for ArrayAttr containing SymbolRefAttrs
+      else if (auto arrayAttr = dyn_cast<ArrayAttr>(attr.getValue())) {
+        for (Attribute elem : arrayAttr) {
+          if (auto symRef = dyn_cast<SymbolRefAttr>(elem)) {
+            result.push_back(symRef);
+          }
+        }
+      }
+    }
+    return result;
+  };
+  auto collectAllSymbolRefAttrsInRegion = [](Region &region) {
+    SmallVector<SymbolRefAttr> result;
+    region.walk([&](Operation *op) {
+      for (NamedAttribute attr : op->getAttrs()) {
+        Attribute value = attr.getValue();
+        // Direct SymbolRefAttr
+        if (auto sym = llvm::dyn_cast<SymbolRefAttr>(value))
+          result.push_back(sym);
+        // Array of SymbolRefAttr
+        else if (auto arr = llvm::dyn_cast<ArrayAttr>(value)) {
+          for (Attribute elem : arr) {
+            if (auto sym = llvm::dyn_cast<SymbolRefAttr>(elem))
+              result.push_back(sym);
+          }
+        }
+      }
+    });
+    return result;
+  };
+  auto getSymbolRefsUsedByOp =
+      [getAllSymbolRefAccess, collectAllSymbolRefAttrsInRegion](Operation *o) {
+        llvm::SetVector<SymbolRefAttr> result;
+        auto opSymbolRefAccesses = getAllSymbolRefAccess(o);
+        result.insert(opSymbolRefAccesses.begin(), opSymbolRefAccesses.end());
+        if (isa<air::AsyncOpInterface>(o))
+          return result;
+        // If op isn't an air.async op, then collect symref uses in its regions.
+        SmallVector<Region *> regions;
+        for (auto &region : o->getRegions())
+          regions.push_back(&region);
+        for (auto region : regions) {
+          auto symRefsInRegion = collectAllSymbolRefAttrsInRegion(*region);
+          result.insert(symRefsInRegion.begin(), symRefsInRegion.end());
+        }
+        return result;
+      };
   auto memrefsReadBySinkOp = getAllMemrefsReadByOp(op.getOperation());
   auto memrefsWrittenBySinkOp = getAllMemrefsWrittenByOp(op.getOperation());
+  auto resourcesUsedBySinkOp = getSymbolRefsUsedByOp(op.getOperation());
   // make a list of new async token operands
   std::function<void(SmallVector<Value>, SmallVector<Value> &)>
       getDirectDependenciesGreedily;
@@ -312,12 +369,12 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
   SmallVector<Value> directDeps;
   getDirectDependenciesGreedily(op.getAsyncDependencies(), directDeps);
   for (auto v : directDeps) {
-    // don't include any false dependencies, i.e. sink does not depend on source
-    // in RAW, WAR or WAW; RAR is a false dependency
+    // don't include any false (RAR) dependencies
     if (v.getDefiningOp()) {
       auto memrefsReadBySourceOp = getAllMemrefsReadByOp(v.getDefiningOp());
       auto memrefsWrittenBySourceOp =
           getAllMemrefsWrittenByOp(v.getDefiningOp());
+      auto resourcesUsedBySourceOp = getSymbolRefsUsedByOp(v.getDefiningOp());
       bool sourceOpTouchesMemref =
           llvm::range_size(llvm::concat<Value>(memrefsReadBySourceOp,
                                                memrefsWrittenBySourceOp)) != 0;
@@ -337,7 +394,11 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
             memrefsWrittenBySourceOp, [&memrefsWrittenBySinkOp](Value v) {
               return llvm::is_contained(memrefsWrittenBySinkOp, v);
             });
-        if (RAWNotFound && WARNotFound && WAWNotFound)
+        bool noSharedResource = llvm::none_of(
+            resourcesUsedBySourceOp, [&resourcesUsedBySinkOp](SymbolRefAttr r) {
+              return llvm::is_contained(resourcesUsedBySinkOp, r);
+            });
+        if (RAWNotFound && WARNotFound && WAWNotFound && noSharedResource)
           continue;
       }
     }

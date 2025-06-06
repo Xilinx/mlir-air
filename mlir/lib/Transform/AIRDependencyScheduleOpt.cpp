@@ -999,6 +999,10 @@ struct ConstructPingPongDependencyPattern
     auto alloc_pong_exec = dyn_cast<air::ExecuteOp>(alloc_execs[1]);
     auto alloc_ping_token = alloc_ping_exec.getAsyncToken();
     auto alloc_pong_token = alloc_pong_exec.getAsyncToken();
+    air::WaitAllOp ping_pong_token_wait = rewriter.create<air::WaitAllOp>(
+        rewriter.getUnknownLoc(),
+        air::AsyncTokenType::get(rewriter.getContext()),
+        SmallVector<Value>{alloc_ping_token, alloc_pong_token});
     SmallVector<Value> upstream_tokens = alloc_pong_exec.getAsyncDependencies();
     clearAsyncDependenciesOfAsyncOp(alloc_ping_exec);
     for (auto t : upstream_tokens) {
@@ -1006,8 +1010,10 @@ struct ConstructPingPongDependencyPattern
     }
     alloc_ping_exec->moveBefore(alloc_pong_exec);
 
-    SmallVector<Value, 1> iter_operands = {alloc_ping_token, alloc_pong_token,
-                                           alloc_pong_token, alloc_pong_token};
+    SmallVector<Value, 1> iter_operands = {
+        alloc_ping_token, alloc_pong_token,
+        ping_pong_token_wait.getAsyncToken(),
+        ping_pong_token_wait.getAsyncToken()};
     scf::ForOp new_loop_op =
         replaceForLoopAndAddIterArgs(rewriter, for_op, iter_operands);
     for_op.getResult(0).replaceAllUsesWith(new_loop_op.getResult(1));
