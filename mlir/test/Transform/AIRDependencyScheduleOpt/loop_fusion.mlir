@@ -751,10 +751,10 @@ func.func @func8(%arg0: memref<512x1024xbf16>, %arg1: memref<256x4x4x128xbf16>, 
 // CHECK-NEXT: air.channel.get async [{{.*}}]  @channel_1[]
 // CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c0{{.*}}, %c0{{.*}}]
 // CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c0{{.*}}, %c0{{.*}}]
-// CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c1{{.*}}, %c0{{.*}}]
-// CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c1{{.*}}, %c0{{.*}}]
 // CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c0{{.*}}, %c1{{.*}}]
 // CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c0{{.*}}, %c1{{.*}}]
+// CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c1{{.*}}, %c0{{.*}}]
+// CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c1{{.*}}, %c0{{.*}}]
 // CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c1{{.*}}, %c1{{.*}}]
 // CHECK-NEXT: air.channel.put async [{{.*}}]  @channel_2[%c1{{.*}}, %c1{{.*}}]
 // CHECK: scf.yield
