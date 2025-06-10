@@ -1433,9 +1433,11 @@ struct SpecializeChannelBundlePattern
           rewriter.setInsertionPoint(put);
           auto new_put = createChannelPutGetWithoutBundle(rewriter, new_chan,
                                                           put, maxSize);
+          auto async_new_put =
+              dyn_cast<air::AsyncOpInterface>(new_put.getOperation());
           if (put.getAsyncToken()) {
             replaceAllUsesInRegionWith(put.getAsyncToken(),
-                                       new_put.getAsyncToken(),
+                                       async_new_put.getAsyncToken(),
                                        device.getRegion());
             clearAsyncDependenciesOfAsyncOp(new_put);
           }
@@ -1449,9 +1451,11 @@ struct SpecializeChannelBundlePattern
           rewriter.setInsertionPoint(get);
           auto new_get = createChannelPutGetWithoutBundle(rewriter, new_chan,
                                                           get, maxSize);
+          auto async_new_get =
+              dyn_cast<air::AsyncOpInterface>(new_get.getOperation());
           if (get.getAsyncToken()) {
             replaceAllUsesInRegionWith(get.getAsyncToken(),
-                                       new_get.getAsyncToken(),
+                                       async_new_get.getAsyncToken(),
                                        device.getRegion());
             clearAsyncDependenciesOfAsyncOp(new_get);
           }
@@ -1511,58 +1515,36 @@ private:
     return output;
   }
 
-  air::ChannelPutOp createChannelPutGetWithoutBundle(OpBuilder builder,
-                                                     air::ChannelOp chan,
-                                                     air::ChannelPutOp put,
-                                                     int maxSize) const {
+  air::ChannelInterface
+  createChannelPutGetWithoutBundle(OpBuilder &builder, air::ChannelOp chan,
+                                   air::ChannelInterface ci,
+                                   int maxSize) const {
     SmallVector<Type, 4> tys = {};
     SmallVector<Value, 4> deps = {};
-    if (put.getAsyncToken()) {
-      tys.push_back(air::AsyncTokenType::get(put->getContext()));
-      deps = put.getAsyncDependencies();
+    auto asyncOp = dyn_cast<air::AsyncOpInterface>(ci.getOperation());
+    if (asyncOp.getAsyncToken()) {
+      tys.push_back(air::AsyncTokenType::get(builder.getContext()));
+      deps = asyncOp.getAsyncDependencies();
     }
     SmallVector<Value, 4> indices = {};
     // Canonicalize wrap and stride lists after specialization
-    SmallVector<Value> offsets = put.getSrcOffsets();
-    SmallVector<Value> wraps = put.getSrcSizes();
-    SmallVector<Value> strides = put.getSrcStrides();
+    SmallVector<Value> offsets = ci.getOffsets();
+    SmallVector<Value> wraps = ci.getSizes();
+    SmallVector<Value> strides = ci.getStrides();
     (void)air::canonicalizeWrapAndStrideList(
         builder, offsets, wraps, strides,
-        air::getTensorVolume(put.getSrc().getType()), maxSize);
-    auto new_put = builder.create<air::ChannelPutOp>(
-        put->getLoc(), tys, deps, chan.getSymName(), indices, put.getSrc(),
-        offsets, wraps, strides);
-    new_put->setAttr(
-        "id",
-        IntegerAttr::get(IntegerType::get(put->getContext(), 32), put.getId()));
-    return new_put;
-  }
-
-  air::ChannelGetOp createChannelPutGetWithoutBundle(OpBuilder builder,
-                                                     air::ChannelOp chan,
-                                                     air::ChannelGetOp get,
-                                                     int maxSize) const {
-    SmallVector<Type, 4> tys = {};
-    SmallVector<Value, 4> deps = {};
-    if (get.getAsyncToken()) {
-      tys.push_back(air::AsyncTokenType::get(get->getContext()));
-      deps = get.getAsyncDependencies();
-    }
-    SmallVector<Value, 4> indices = {};
-    // Canonicalize wrap and stride lists after specialization
-    SmallVector<Value> offsets = get.getDstOffsets();
-    SmallVector<Value> wraps = get.getDstSizes();
-    SmallVector<Value> strides = get.getDstStrides();
-    (void)air::canonicalizeWrapAndStrideList(
-        builder, offsets, wraps, strides,
-        air::getTensorVolume(get.getDst().getType()), maxSize);
-    auto new_get = builder.create<air::ChannelGetOp>(
-        get->getLoc(), tys, deps, chan.getSymName(), indices, get.getDst(),
-        offsets, wraps, strides);
-    new_get->setAttr(
-        "id",
-        IntegerAttr::get(IntegerType::get(get->getContext(), 32), get.getId()));
-    return new_get;
+        air::getTensorVolume(ci.getMemref().getType()), maxSize);
+    air::ChannelInterface new_ci = nullptr;
+    if (isa<air::ChannelPutOp>(ci))
+      new_ci = builder.create<air::ChannelPutOp>(
+          ci->getLoc(), tys, deps, chan.getSymName(), indices, ci.getMemref(),
+          offsets, wraps, strides);
+    else if (isa<air::ChannelGetOp>(ci))
+      new_ci = builder.create<air::ChannelGetOp>(
+          ci->getLoc(), tys, deps, chan.getSymName(), indices, ci.getMemref(),
+          offsets, wraps, strides);
+    new_ci->setAttrs(ci->getDiscardableAttrDictionary());
+    return new_ci;
   }
 
   std::vector<Attribute> specializeBroadcastShape(OpBuilder builder,
@@ -2397,28 +2379,7 @@ public:
   }
 
   // AIE2 metadata format is symbolic linked to shim dma ops
-  bool labelAIRDmaOpsWithMetadata(air::HierarchyInterface hier,
-                                  int target_op_id, StringAttr dma_name_attr,
-                                  MemRefType memref_ty) {
-    // Label air.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
-    bool dmaops_labeled = false;
-    hier.walk([&](air::MemcpyInterface o) {
-      if (o.getId() == target_op_id && !o->hasAttr("metadata")) {
-        if (isa<air::DmaMemcpyNdOp>(o.getOperation())) {
-          o->setAttr("metadata",
-                     FlatSymbolRefAttr::get(hier->getContext(), dma_name_attr));
-          dmaops_labeled = true;
-        } else if (auto chan_o =
-                       dyn_cast<air::ChannelInterface>(o.getOperation())) {
-          dmaops_labeled |= annotateMetadataPerShimAIRChannel(chan_o, memref_ty,
-                                                              dma_name_attr);
-        }
-      }
-    });
-    return dmaops_labeled;
-  }
-
-  bool labelAIRDmaOpsWithMetadata(
+  bool labelAIRDmaOpsWithMetadataObjFifo(
       std::vector<air::ChannelInterface> channel_ops,
       std::string specializedChanName,
       std::map<std::string, std::string> chan_to_chan_map) {
@@ -2442,121 +2403,223 @@ public:
     return dmaops_labeled;
   }
 
-  void labelAIRDmaOpsAtShimWithPacketAttrInfo(func::FuncOp funcOp,
-                                              StringAttr dma_name_attr,
-                                              AIE::TileOp tileOp, int chan) {
-    // All air::MemcpyInterface ops with shim_dma_allocation metadata attribute
-    // are shim dma ops.
-    funcOp.walk([&](air::MemcpyInterface o) {
-      if (o->hasAttr("metadata")) {
-        auto metadataAttr =
-            o->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata").getValue();
-        if (metadataAttr.str() != dma_name_attr.str())
-          return;
-        auto pktFlowOp =
-            getExistingPacketFlowOp(tileOp, AIE::WireBundle::DMA, chan);
-        if (!pktFlowOp)
-          return;
-        auto pktInfoAttr = AIE::PacketInfoAttr::get(
-            o->getContext(), /*pkt_type*/ 0, pktFlowOp.getID());
-        o->setAttr("packet", pktInfoAttr);
-      }
-    });
+  // Annotate AIR DMA ops that correspond to a SHIM DMA allocation with packet
+  // information, specifically for MM2S (host-to-AIE) directions.
+  void labelMemcpyOpsWithPacketFlow(air::MemcpyInterface memcpyOpIf,
+                                    StringAttr dmaNameAttr, AIE::TileOp tileOp,
+                                    int channel) {
+    auto pktFlowOp =
+        getExistingPacketFlowOp(tileOp, AIE::WireBundle::DMA, channel);
+    if (!pktFlowOp)
+      return;
+
+    auto pktInfoAttr = AIE::PacketInfoAttr::get(
+        memcpyOpIf->getContext(), /*pkt_type=*/0, pktFlowOp.getID());
+    memcpyOpIf->setAttr("packet", pktInfoAttr);
   }
 
+  // Determine the tile-side memref type of the DMA op.
+  MemRefType getTileSideMemrefTypeForMemcpy(air::MemcpyInterface dmaOp,
+                                            AIE::DMAChannelDir dir) {
+    if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(dmaOp.getOperation()))
+      return cast<MemRefType>((dir == AIE::DMAChannelDir::MM2S)
+                                  ? dma.getDstMemref().getType()
+                                  : dma.getSrcMemref().getType());
+    if (auto chan = dyn_cast<air::ChannelInterface>(dmaOp.getOperation())) {
+      air::ChannelInterface tileSideChannelOp =
+          air::getTheOtherChannelOpThroughSymbol(chan).front();
+      return cast<MemRefType>(tileSideChannelOp.getMemref().getType());
+    }
+    return nullptr;
+  }
+
+  // Create shim DMA allocation ops and annotate the corresponding memcpy
+  // operations with symbolic metadata.
   LogicalResult createShimDMAAllocationOps(
-      OpBuilder builder, MLIRContext *ctx, air::HierarchyInterface op,
+      OpBuilder builder, MLIRContext *ctx,
+      std::vector<air::MemcpyInterface> shimSideMemcpyIfOps,
+      air::ShimDMAAllocator &shimDmaAllocs,
+      std::map<int, int> chanRenumberReverseMap) {
+    std::vector<air::MemcpyInterface> shimMemcpyS2MMOps, shimMemcpyMM2SOps;
+
+    // Separate memcpy ops into S2MM and MM2S based on direction.
+    for (auto memcpyIf : shimSideMemcpyIfOps) {
+      if (auto put = dyn_cast<air::ChannelPutOp>(memcpyIf.getOperation()))
+        shimMemcpyMM2SOps.push_back(memcpyIf);
+      if (auto get = dyn_cast<air::ChannelGetOp>(memcpyIf.getOperation()))
+        shimMemcpyS2MMOps.push_back(memcpyIf);
+      if (auto dmaOp = dyn_cast<air::DmaMemcpyNdOp>(memcpyIf.getOperation())) {
+        auto srcMemrefTy =
+            dyn_cast<BaseMemRefType>(dmaOp.getSrcMemref().getType());
+        auto dstMemrefTy =
+            dyn_cast<BaseMemRefType>(dmaOp.getDstMemref().getType());
+        if (srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+          shimMemcpyMM2SOps.push_back(memcpyIf);
+        if (dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+          shimMemcpyS2MMOps.push_back(memcpyIf);
+      }
+    }
+
+    // Create shim-side S2MM DMA allocs and annotate corresponding ops.
+    if (failed(createShimDMAAllocationOpsImpl(
+            builder, ctx, shimMemcpyS2MMOps, shimDmaAllocs.s2mm_allocs,
+            AIE::DMAChannelDir::S2MM, chanRenumberReverseMap))) {
+      return failure();
+    }
+
+    // Create shim-side MM2S DMA allocs and annotate corresponding ops.
+    if (failed(createShimDMAAllocationOpsImpl(
+            builder, ctx, shimMemcpyMM2SOps, shimDmaAllocs.mm2s_allocs,
+            AIE::DMAChannelDir::MM2S, chanRenumberReverseMap))) {
+      return failure();
+    }
+    return success();
+  }
+
+  // Get the original DMA IDs used on the tile side before any renumbering.
+  // This function reverses any renumbering applied via chanRenumberReverseMap.
+  SmallVector<int32_t>
+  getOriginalTileSideDmaIds(air::allocation_info_t &t,
+                            std::map<int, int> chanRenumberReverseMap) {
+    SmallVector<int32_t> outputs;
+    for (int32_t id : t.dma_id) {
+      int original_id =
+          chanRenumberReverseMap.size() ? chanRenumberReverseMap[id] : id;
+      outputs.push_back(original_id);
+    }
+    return outputs;
+  }
+
+  // New metadata struct format
+  static DictionaryAttr buildMetadataHint(OpBuilder &builder, StringRef base,
+                                          int index) {
+    return DictionaryAttr::get(
+        builder.getContext(),
+        {builder.getNamedAttr("base", builder.getStringAttr(base)),
+         builder.getNamedAttr("index", builder.getI32IntegerAttr(index))});
+  }
+
+  LogicalResult createShimDMAAllocationOpsImpl(
+      OpBuilder builder, MLIRContext *ctx,
+      std::vector<air::MemcpyInterface> shimSideMemcpyIfOps,
       std::vector<air::allocation_info_t> allocs, AIE::DMAChannelDir dir,
-      std::map<int, int> chan_renumber_reverse_map) {
+      std::map<int, int> chanRenumberReverseMap) {
 
-    std::set<int32_t> dma_ids;
-    op.walk([&](air::MemcpyInterface o) {
-      if (isa<air::HerdOp>(op))
-        dma_ids.insert(o.getId());
-      else if (!o->getParentOfType<air::HerdOp>())
-        dma_ids.insert(o.getId());
-    });
+    // Helper function getting dma_name from the air::MemcpyInterface op.
+    auto getDmaNameFromMemcpyIfOp = [](air::MemcpyInterface memcpyIfOp) {
+      std::string dma_name = "";
+      if (auto ci = dyn_cast<air::ChannelInterface>(memcpyIfOp.getOperation()))
+        return "air_" + ci.getChanName().str();
+      else if (auto dmaOp =
+                   dyn_cast<air::DmaMemcpyNdOp>(memcpyIfOp.getOperation()))
+        return "airMemcpyId" + std::to_string(dmaOp.getId());
+      return dma_name;
+    };
 
+    // Get mapping between each shim channel op and shim allocations (one
+    // channel op could map to many, as shim allocations are unrolled, but
+    // channel op isn't).
+    std::map<std::string, std::vector<air::allocation_info_t>>
+        shimChanSymbolToAlloc;
     for (air::allocation_info_t &t : allocs) {
-      AIE::TileOp tileOp = t.getDmaTile();
-      int chan = t.dma_channel.channel;
+      // Currently, air::allocation_info_t only links the shim allocations to
+      // the "internal" (tile-side) data movement op ids.
+      auto memcpyIfOpIt = llvm::find_if(
+          shimSideMemcpyIfOps, [&](air::MemcpyInterface memcpyIfOp) {
+            if (auto ci = dyn_cast<air::ChannelInterface>(
+                    memcpyIfOp.getOperation())) {
+              for (auto tileSideChannelOp :
+                   air::getTheOtherChannelOpThroughSymbol(ci)) {
+                auto linkedTileSideDmaIds =
+                    getOriginalTileSideDmaIds(t, chanRenumberReverseMap);
+                if (llvm::is_contained(linkedTileSideDmaIds,
+                                       tileSideChannelOp.getId()))
+                  return true;
+              }
+            } else if (auto dmaOp = dyn_cast<air::DmaMemcpyNdOp>(
+                           memcpyIfOp.getOperation())) {
+              auto linkedTileSideDmaIds =
+                  getOriginalTileSideDmaIds(t, chanRenumberReverseMap);
+              return llvm::is_contained(linkedTileSideDmaIds, dmaOp.getId());
+            }
+            return false;
+          });
+      if (memcpyIfOpIt != shimSideMemcpyIfOps.end()) {
+        std::string dma_name = getDmaNameFromMemcpyIfOp(*memcpyIfOpIt);
+        shimChanSymbolToAlloc[dma_name].push_back(t);
+      }
+    }
 
-      for (int32_t id : t.dma_id) {
-        int original_id = chan_renumber_reverse_map.size()
-                              ? chan_renumber_reverse_map[id]
-                              : id;
-        if (dma_ids.count(original_id) == 0)
-          continue;
-        original_id = std::max(original_id, 0); // If id is -1, change to 0.
-
-        std::string dma_name = "airMemcpyId" + std::to_string(original_id);
-        std::string sym_name = createSymbolName(
-            tileOp->getParentOfType<AIE::DeviceOp>(), dma_name);
-        if (isa<air::SegmentOp>(op) && (dma_name != sym_name))
-          continue;
-        StringAttr dma_name_attr = builder.getStringAttr(sym_name);
-
-        air::MemcpyInterface tile_side_memcpy = nullptr;
-        op.walk([&](air::MemcpyInterface o) {
-          if (o.getId() == original_id)
-            tile_side_memcpy = o;
+    // Capture errors when any shim memcpy op fails to link to shim allocation.
+    auto unlinkedMemcpyIfOp = llvm::find_if(
+        shimSideMemcpyIfOps, [&](air::MemcpyInterface memcpyIfOp) {
+          std::string dma_name = getDmaNameFromMemcpyIfOp(memcpyIfOp);
+          return !shimChanSymbolToAlloc.count(dma_name);
         });
+    if (unlinkedMemcpyIfOp != shimSideMemcpyIfOps.end()) {
+      unlinkedMemcpyIfOp->emitOpError(
+          "failed to link to any shim dma allocation.");
+      return failure();
+    }
 
-        if (!tile_side_memcpy) {
-          if (isa<air::HerdOp>(op)) {
-            // Just generate a SHIM DMA op
-            builder.create<AIE::ShimDMAAllocationOp>(
-                builder.getUnknownLoc(), SymbolRefAttr::get(ctx, dma_name_attr),
-                AIE::DMAChannelDirAttr::get(ctx, dir),
-                builder.getI64IntegerAttr(chan),
-                builder.getI64IntegerAttr(tileOp.getCol()),
-                builder.getBoolAttr(false));
-          }
-          continue;
-        }
+    // Create shim dma allocation ops.
+    for (auto memcpyIfOp : shimSideMemcpyIfOps) {
+      std::string dma_name = getDmaNameFromMemcpyIfOp(memcpyIfOp);
+      int t_idx = 0;
+      for (air::allocation_info_t &t : shimChanSymbolToAlloc[dma_name]) {
+        auto deviceOp = t.getDmaTile()->getParentOfType<AIE::DeviceOp>();
+        // Create shim allocation symbol name shim_name_attr.
+        std::string shim_name = dma_name;
+        if (shimChanSymbolToAlloc[dma_name].size() > 1)
+          shim_name += "_" + std::to_string(t_idx);
+        StringAttr shim_name_attr = builder.getStringAttr(shim_name);
 
-        // Create memref.global op with memref shape
-        MemRefType memref_ty = nullptr;
-        if (auto tile_side_dmamemcpy = dyn_cast_if_present<air::DmaMemcpyNdOp>(
-                tile_side_memcpy.getOperation())) {
-          memref_ty = llvm::cast<MemRefType>(
-              dir == AIE::DMAChannelDir::MM2S
-                  ? tile_side_dmamemcpy.getDstMemref().getType()
-                  : tile_side_dmamemcpy.getSrcMemref().getType());
-        } else if (auto tile_side_chan =
-                       dyn_cast_if_present<air::ChannelInterface>(
-                           tile_side_memcpy.getOperation())) {
-          memref_ty =
-              llvm::cast<MemRefType>(tile_side_chan.getMemref().getType());
-        } else {
-          op->emitOpError(
-              "Memref type for shim DMA allocation not initialized!");
-          return failure();
-        }
-
-        // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
-        auto dmaop_labeled = labelAIRDmaOpsWithMetadata(
-            op, original_id, dma_name_attr, memref_ty);
-
-        // Label packet header if airrt.dmamemcpynd op is source of a packet
-        // flow
-        if (dir == AIE::DMAChannelDir::MM2S)
-          labelAIRDmaOpsAtShimWithPacketAttrInfo(
-              op->getParentOfType<func::FuncOp>(), dma_name_attr, tileOp, chan);
-
-        // Only create global SHIM DMA allocation op if the relevant
-        // DMA ops have been successfully annotated.
-        if (dmaop_labeled) {
-          builder.create<AIE::ShimDMAAllocationOp>(
-              builder.getUnknownLoc(), SymbolRefAttr::get(ctx, dma_name_attr),
+        // Create shim allocation op.
+        if (!SymbolTable::lookupSymbolIn(deviceOp, shim_name)) {
+          auto shimAllocationOp = builder.create<AIE::ShimDMAAllocationOp>(
+              builder.getUnknownLoc(), SymbolRefAttr::get(ctx, shim_name_attr),
               AIE::DMAChannelDirAttr::get(ctx, dir),
-              builder.getI64IntegerAttr(chan),
-              builder.getI64IntegerAttr(tileOp.getCol()),
+              builder.getI64IntegerAttr(t.dma_channel.channel),
+              builder.getI64IntegerAttr(t.getDmaTile().getCol()),
               builder.getBoolAttr(false));
-          builder.create<memref::GlobalOp>(builder.getUnknownLoc(), sym_name,
-                                           builder.getStringAttr("public"),
-                                           memref_ty, nullptr, false, nullptr);
+
+          // Get the tile-side channel op's MemRefType, needed when creating the
+          // memref.global.
+          MemRefType rankedTileSideMemRefTy =
+              getTileSideMemrefTypeForMemcpy(memcpyIfOp, dir);
+
+          // Create memref.global op.
+          if (rankedTileSideMemRefTy)
+            builder.create<memref::GlobalOp>(
+                builder.getUnknownLoc(), shim_name_attr.getValue(),
+                builder.getStringAttr("public"), rankedTileSideMemRefTy,
+                nullptr, false, nullptr);
+          else
+            return shimAllocationOp->emitOpError(
+                "failed to get MemRefType for memref.global op");
         }
+
+        // Annotate shim DMA packed-flow ops with packet information,
+        // specifically for MM2S (host-to-AIE) directions.
+        if (dir == AIE::DMAChannelDir::MM2S)
+          labelMemcpyOpsWithPacketFlow(memcpyIfOp, shim_name_attr,
+                                       t.getDmaTile(), t.dma_channel.channel);
+
+        // Add metadata to each shim-side channel op, linking to shim
+        // allocation. Get existing array if present
+        ArrayAttr metadataArray =
+            memcpyIfOp->getAttrOfType<ArrayAttr>("metadataArray");
+        SmallVector<Attribute, 4> updatedMetadata;
+
+        if (metadataArray)
+          updatedMetadata.append(metadataArray.begin(), metadataArray.end());
+
+        // Metadata hint format: {base: shim_name_attr, index: t_idx}
+        DictionaryAttr hint =
+            buildMetadataHint(builder, shim_name_attr, t_idx++);
+        updatedMetadata.push_back(hint);
+        memcpyIfOp->setAttr("metadataArray",
+                            builder.getArrayAttr(updatedMetadata));
       }
     }
     return success();
@@ -3411,8 +3474,7 @@ public:
           allocL1Buffers(d, tileToHerdMap, BufferId);
           allocL2Buffers(d, bufferToMemtileMap, BufferId);
           std::map<int, int> chan_renumber_reverse_map;
-          air::renumberChannelOps(&d.getBodyRegion().front(),
-                                  chan_renumber_reverse_map);
+          air::renumberMemcpyIfOps(&d.getRegion(), chan_renumber_reverse_map);
         }
         if (options.insert_trace_packet_flow)
           createTracePacketFlow(d);
@@ -3479,6 +3541,7 @@ public:
       signalPassFailure();
       return;
     }
+    air::renumberMemcpyIfOps(&module.getRegion());
     AIRToAIEConversionOptions options = {
         /* .col_offset = */ clColOffset,
         /* .row_offset = */ clRowOffset,
@@ -3528,7 +3591,7 @@ public:
         lowerAirExecute(device);
         lowerScfAirTokens(device);
         specializeChannelBundle(device, chan_to_chan_map);
-        air::renumberChannelOps(device.getBody());
+        air::renumberMemcpyIfOps(&device.getRegion());
         LowerAIRPingPong(device);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
         lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap);
@@ -3542,8 +3605,8 @@ public:
         specializeL2MemrefsIntoMemtiles(device);
         allocL1Buffers(device, tileToHerdMap, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
-        air::renumberChannelOps(&device.getBodyRegion().front(),
-                                chan_renumber_reverse_map);
+        air::renumberMemcpyIfOps(&device.getRegion(),
+                                 chan_renumber_reverse_map);
         if (failed(lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc,
                                                            options))) {
           signalPassFailure();
@@ -3595,23 +3658,6 @@ public:
             options.use_packet_flow_at_shim_dmas)
           herd->emitOpError("control packet flow generation is not yet "
                             "supported for AIE1.");
-
-        if (isa<AIE::AIE2TargetModel>(device.getTargetModel())) {
-          // AIE2 dma metadata format
-          builder.setInsertionPoint(device.getBody()->getTerminator());
-          if (failed(createShimDMAAllocationOps(
-                  builder, ctx, herd, shimDmaAlloc.s2mm_allocs,
-                  AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map))) {
-            signalPassFailure();
-            return;
-          }
-          if (failed(createShimDMAAllocationOps(
-                  builder, ctx, herd, shimDmaAlloc.mm2s_allocs,
-                  AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map))) {
-            signalPassFailure();
-            return;
-          }
-        }
       }
       for (auto seg : segs) {
         std::vector<Attribute> dma_allocations;
@@ -3634,39 +3680,56 @@ public:
             options.use_packet_flow_at_shim_dmas)
           seg->emitOpError("control packet flow generation is not yet "
                            "supported for AIE1.");
+      }
 
-        if (isa<AIE::AIE2TargetModel>(device.getTargetModel())) {
-          // AIE2 memtile dma metadata format
-          builder.setInsertionPoint(device.getBody()->getTerminator());
-          if (failed(createShimDMAAllocationOps(
-                  builder, ctx, seg, shimDmaAlloc.s2mm_allocs,
-                  AIE::DMAChannelDir::S2MM, chan_renumber_reverse_map))) {
-            signalPassFailure();
-            return;
-          }
-          if (failed(createShimDMAAllocationOps(
-                  builder, ctx, seg, shimDmaAlloc.mm2s_allocs,
-                  AIE::DMAChannelDir::MM2S, chan_renumber_reverse_map))) {
-            signalPassFailure();
-            return;
-          }
+      if (isa<AIE::AIE2TargetModel>(device.getTargetModel()) && !clUseObjFifo) {
+        // Shim dma allocation metadata linkage (AIE2)
+        auto func = h->getParentOfType<func::FuncOp>();
+        std::vector<air::MemcpyInterface> shimMemcpyIfOps;
+        func.walk([&](air::ChannelInterface o) {
+          auto memrefTy = dyn_cast<BaseMemRefType>(o.getMemref().getType());
+          if (memrefTy &&
+              memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+            shimMemcpyIfOps.push_back(
+                dyn_cast<air::MemcpyInterface>(o.getOperation()));
+        });
+        func.walk([&](air::DmaMemcpyNdOp o) {
+          auto srcMemrefTy =
+              dyn_cast<BaseMemRefType>(o.getSrcMemref().getType());
+          if (srcMemrefTy &&
+              srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+            shimMemcpyIfOps.push_back(o);
+          auto dstMemrefTy =
+              dyn_cast<BaseMemRefType>(o.getDstMemref().getType());
+          if (dstMemrefTy &&
+              dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+            shimMemcpyIfOps.push_back(o);
+        });
+        builder.setInsertionPoint(device.getBody()->getTerminator());
+        if (failed(createShimDMAAllocationOps(builder, ctx, shimMemcpyIfOps,
+                                              shimDmaAlloc,
+                                              chan_renumber_reverse_map))) {
+          signalPassFailure();
+          return;
         }
       }
 
-      // ObjectFifo metadata linkage
-      auto f = h->getParentOfType<func::FuncOp>();
+      else if (clUseObjFifo) {
+        // ObjectFifo metadata linkage
+        auto f = h->getParentOfType<func::FuncOp>();
 
-      std::vector<air::ChannelInterface> channel_ops;
-      f.walk([&](air::ChannelInterface o) {
-        if (!o->getParentOfType<air::HerdOp>())
-          channel_ops.push_back(o);
-      });
-      for (auto &t : shimTileAlloc.s2mm_allocs)
-        for (auto n : t.chan_names)
-          labelAIRDmaOpsWithMetadata(channel_ops, n, chan_to_chan_map);
-      for (auto &t : shimTileAlloc.mm2s_allocs)
-        for (auto n : t.chan_names)
-          labelAIRDmaOpsWithMetadata(channel_ops, n, chan_to_chan_map);
+        std::vector<air::ChannelInterface> channel_ops;
+        f.walk([&](air::ChannelInterface o) {
+          if (!o->getParentOfType<air::HerdOp>())
+            channel_ops.push_back(o);
+        });
+        for (auto &t : shimTileAlloc.s2mm_allocs)
+          for (auto n : t.chan_names)
+            labelAIRDmaOpsWithMetadataObjFifo(channel_ops, n, chan_to_chan_map);
+        for (auto &t : shimTileAlloc.mm2s_allocs)
+          for (auto n : t.chan_names)
+            labelAIRDmaOpsWithMetadataObjFifo(channel_ops, n, chan_to_chan_map);
+      }
 
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);

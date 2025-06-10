@@ -1,4 +1,4 @@
-//===- air_to_npu_spatial_add_one.mlir -------------------------*- MLIR -*-===//
+//===- air_to_npu_add_one.mlir ---------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
 // Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
@@ -88,10 +88,10 @@
 // CHECK:   aie.use_lock(%[[VAL3]], Release, 1)
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
-// CHECK: aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
-// CHECK: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
+// CHECK: aie.shim_dma_allocation @air_channel_3(S2MM, 0, 0)
+// CHECK: memref.global "public" @air_channel_3 : memref<64xi32, 1>
+// CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
+// CHECK: memref.global "public" @air_channel_0 : memref<64xi32, 1>
 // CHECK: @func0
 #map2 = affine_map<(d0) -> (d0)>
 air.channel @channel_0 [1, 1]
@@ -218,10 +218,10 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK:   aie.use_lock(%[[VAL3]], Release, 1)
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
-// CHECK: aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
-// CHECK: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
+// CHECK: aie.shim_dma_allocation @air_channel_3(S2MM, 0, 0)
+// CHECK: memref.global "public" @air_channel_3 : memref<64xi32, 1>
+// CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
+// CHECK: memref.global "public" @air_channel_0 : memref<64xi32, 1>
 // CHECK: @func1
 #map = affine_map<(d0) -> (d0)>
 module {
