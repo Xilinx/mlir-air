@@ -128,7 +128,7 @@ public:
     for (auto f : funcOps) {
       runOnFunction(f);
       // Renumber the air dma op ids
-      air::renumberDmaOps(f, "global");
+      air::renumberMemcpyIfOps(&f.getRegion());
     }
   }
 
@@ -599,7 +599,26 @@ private:
 
 void AIRRenumberDmaIdPass::runOnOperation() {
   auto func = getOperation();
-  air::renumberDmaOps(func, clMode);
+  if (clMode == "global") {
+    // Renumber DMA ops in func op.
+    air::renumberMemcpyIfOps(&func.getRegion());
+  } else if (clMode == "herd") {
+    // Renumber DMA ops in herd op.
+    func.walk(
+        [](air::HerdOp herd) { air::renumberMemcpyIfOps(&herd.getBody()); });
+  } else if (clMode == "segment") {
+    // Renumber DMA ops in segment op.
+    func.walk([](air::SegmentOp segment) {
+      air::renumberMemcpyIfOps(&segment.getBody());
+    });
+  } else if (clMode == "launch") {
+    // Renumber DMA ops in launch op.
+    func.walk([](air::LaunchOp launch) {
+      air::renumberMemcpyIfOps(&launch.getBody());
+    });
+  } else
+    func->emitError("Unknown dma renumber mode. Supported modes: global, herd, "
+                    "segment, launch");
 }
 
 class ParallelToForConversion : public OpRewritePattern<scf::ParallelOp> {
@@ -1934,7 +1953,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
     }
   });
 
-  air::renumberChannelOps(&func.getBody().front());
+  air::renumberMemcpyIfOps(&func.getBody());
 }
 
 // Experimental: This pattern forces all memrefs allocated within the air.herd
