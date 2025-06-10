@@ -1461,6 +1461,9 @@ struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
       IRMapping remap;
       std::vector<unsigned> position =
           air::getMDVectorFromIterator(par_size, iter);
+      std::reverse(position.begin(),
+                   position.end()); // scf.parallel induction vars. have LSD at
+                                    // highest index.
       // Create arith.const ops per position
       SmallVector<Value> positionVals;
       for (unsigned i = 0; i < position.size(); i++) {
@@ -1470,21 +1473,20 @@ struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
       }
 
       // Splice
-      for (auto &op : par.getBody()->getOperations()) {
-        if (op.mightHaveTrait<OpTrait::IsTerminator>()) {
-          if (auto yieldOp = dyn_cast<scf::YieldOp>(op)) {
-            SmallVector<Value> tokens;
-            for (auto yieldOper : yieldOp->getOperands())
-              if (isa<air::AsyncTokenType>(yieldOper.getType()))
-                tokens.push_back(yieldOper);
-            auto newWaitAll = rewriter.create<air::WaitAllOp>(
-                loc, air::AsyncTokenType::get(rewriter.getContext()), tokens);
-            yieldedTokens.push_back(newWaitAll.getAsyncToken());
-          }
-          continue;
-        }
+      for (auto &op : par.getBody()->without_terminator()) {
         rewriter.clone(op, remap);
       }
+      if (!par.getBody()->mightHaveTerminator())
+        continue;
+      auto terminator = par.getBody()->getTerminator();
+      SmallVector<Value> tokens;
+      for (auto reducedOper : terminator->getOperands())
+        if (isa<air::AsyncTokenType>(reducedOper.getType()))
+          tokens.push_back(reducedOper);
+      auto newWaitAll = rewriter.create<air::WaitAllOp>(
+          loc, air::AsyncTokenType::get(rewriter.getContext()),
+          lookupOrDefaultRange(tokens, remap));
+      yieldedTokens.push_back(newWaitAll.getAsyncToken());
     }
 
     // Scf.parallel returned token
