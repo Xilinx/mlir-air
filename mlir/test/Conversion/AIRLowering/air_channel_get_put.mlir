@@ -297,3 +297,85 @@ module {
     return
   }
 }
+
+// -----
+
+// Specialize metadata array.
+
+// CHECK-LABEL:   func.func @metadataArray
+// CHECK: airrt.dma_memcpy_nd{{.*}}{metadata = @air_channel_0_0}
+// CHECK: airrt.dma_memcpy_nd{{.*}}{metadata = @air_channel_0_1}
+// CHECK: airrt.dma_memcpy_nd{{.*}}{metadata = @air_channel_0_2}
+// CHECK: airrt.dma_memcpy_nd{{.*}}{metadata = @air_channel_0_3}
+// CHECK: airrt.dma_memcpy_nd{{.*}}{metadata = @air_channel_1_0}
+// CHECK: airrt.dma_memcpy_nd{{.*}}{metadata = @air_channel_1_1}
+// CHECK: airrt.dma_memcpy_nd{{.*}}{metadata = @air_channel_1_2}
+// CHECK: airrt.dma_memcpy_nd{{.*}}{metadata = @air_channel_1_3}
+
+module {
+  aie.device(npu1_4col) {
+    aie.shim_dma_allocation @air_channel_1_0(S2MM, 0, 0)
+    memref.global "public" @air_channel_1_0 : memref<4x2xf32, 2 : i32>
+    aie.shim_dma_allocation @air_channel_1_1(S2MM, 1, 0)
+    memref.global "public" @air_channel_1_1 : memref<4x2xf32, 2 : i32>
+    aie.shim_dma_allocation @air_channel_1_2(S2MM, 0, 1)
+    memref.global "public" @air_channel_1_2 : memref<4x2xf32, 2 : i32>
+    aie.shim_dma_allocation @air_channel_1_3(S2MM, 1, 1)
+    memref.global "public" @air_channel_1_3 : memref<4x2xf32, 2 : i32>
+    aie.shim_dma_allocation @air_channel_0_0(MM2S, 0, 0)
+    memref.global "public" @air_channel_0_0 : memref<4x2xf32, 2 : i32>
+    aie.shim_dma_allocation @air_channel_0_1(MM2S, 1, 0)
+    memref.global "public" @air_channel_0_1 : memref<4x2xf32, 2 : i32>
+    aie.shim_dma_allocation @air_channel_0_2(MM2S, 0, 1)
+    memref.global "public" @air_channel_0_2 : memref<4x2xf32, 2 : i32>
+    aie.shim_dma_allocation @air_channel_0_3(MM2S, 1, 1)
+    memref.global "public" @air_channel_0_3 : memref<4x2xf32, 2 : i32>
+  } {sym_name = "herd_0"}
+  air.channel @channel_0 [2, 2]
+  air.channel @channel_1 [2, 2]
+  func.func @metadataArray(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
+    %0 = air.launch async () in () args(%arg8=%arg0, %arg9=%arg1) : memref<*xf32>, memref<*xf32> attributes {dummyLaunch = true, id = 1 : i32} {
+      %c16448 = arith.constant 16448 : index
+      %c16384 = arith.constant 16384 : index
+      %c64 = arith.constant 64 : index
+      %c512 = arith.constant 512 : index
+      %c32 = arith.constant 32 : index
+      %c2 = arith.constant 2 : index
+      %c4 = arith.constant 4 : index
+      %c128 = arith.constant 128 : index
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %1 = air.channel.put async  @channel_0[%c0, %c0] (%arg8[%c0, %c0, %c0, %c0] [%c32, %c32, %c4, %c2] [%c512, %c2, %c128, %c1]) {id = 1 : i32, metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<*xf32>)
+      %2 = air.channel.put async  @channel_0[%c0, %c1] (%arg8[%c0, %c0, %c0, %c64] [%c32, %c32, %c4, %c2] [%c512, %c2, %c128, %c1]) {id = 1 : i32, metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<*xf32>)
+      %3 = air.channel.put async  @channel_0[%c1, %c0] (%arg8[%c0, %c0, %c0, %c16384] [%c32, %c32, %c4, %c2] [%c512, %c2, %c128, %c1]) {id = 1 : i32, metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<*xf32>)
+      %4 = air.channel.put async  @channel_0[%c1, %c1] (%arg8[%c0, %c0, %c0, %c16448] [%c32, %c32, %c4, %c2] [%c512, %c2, %c128, %c1]) {id = 1 : i32, metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<*xf32>)
+      %5 = air.channel.get async  @channel_1[%c0, %c0] (%arg9[%c0, %c0, %c0, %c0] [%c32, %c32, %c4, %c2] [%c512, %c2, %c128, %c1]) {id = 2 : i32, metadataArray = [{base = "air_channel_1_0", index = 0 : i32}, {base = "air_channel_1_1", index = 1 : i32}, {base = "air_channel_1_2", index = 2 : i32}, {base = "air_channel_1_3", index = 3 : i32}]} : (memref<*xf32>)
+      %6 = air.channel.get async  @channel_1[%c0, %c1] (%arg9[%c0, %c0, %c0, %c64] [%c32, %c32, %c4, %c2] [%c512, %c2, %c128, %c1]) {id = 2 : i32, metadataArray = [{base = "air_channel_1_0", index = 0 : i32}, {base = "air_channel_1_1", index = 1 : i32}, {base = "air_channel_1_2", index = 2 : i32}, {base = "air_channel_1_3", index = 3 : i32}]} : (memref<*xf32>)
+      %7 = air.channel.get async  @channel_1[%c1, %c0] (%arg9[%c0, %c0, %c0, %c16384] [%c32, %c32, %c4, %c2] [%c512, %c2, %c128, %c1]) {id = 2 : i32, metadataArray = [{base = "air_channel_1_0", index = 0 : i32}, {base = "air_channel_1_1", index = 1 : i32}, {base = "air_channel_1_2", index = 2 : i32}, {base = "air_channel_1_3", index = 3 : i32}]} : (memref<*xf32>)
+      %8 = air.channel.get async  @channel_1[%c1, %c1] (%arg9[%c0, %c0, %c0, %c16448] [%c32, %c32, %c4, %c2] [%c512, %c2, %c128, %c1]) {id = 2 : i32, metadataArray = [{base = "air_channel_1_0", index = 0 : i32}, {base = "air_channel_1_1", index = 1 : i32}, {base = "air_channel_1_2", index = 2 : i32}, {base = "air_channel_1_3", index = 3 : i32}]} : (memref<*xf32>)
+      %9 = air.herd @herd_0 async  tile (%arg10, %arg11) in (%arg12=%c1, %arg13=%c4) attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
+        %c1_i32 = arith.constant 1 : i32
+        %c32_i32 = arith.constant 32 : i32
+        %c0_i32 = arith.constant 0 : i32
+        %c2_0 = arith.constant 2 : index
+        %10 = arith.remsi %arg11, %c2_0 : index
+        %11 = arith.divsi %arg11, %c2_0 : index
+        %12 = air.wait_all async 
+        %13 = scf.for %arg14 = %c0_i32 to %c32_i32 step %c1_i32 iter_args(%arg15 = %12) -> (!air.async.token)  : i32 {
+          %14 = scf.for %arg16 = %c0_i32 to %c32_i32 step %c1_i32 iter_args(%arg17 = %arg15) -> (!air.async.token)  : i32 {
+            %async_token, %results = air.execute -> (memref<4x2xf32, 2 : i32>) {
+              %alloc = memref.alloc() : memref<4x2xf32, 2 : i32>
+              air.execute_terminator %alloc : memref<4x2xf32, 2 : i32>
+            }
+            %15 = air.channel.get async [%arg17, %async_token]  @channel_0[%11, %10] (%results[] [] []) {id = 3 : i32} : (memref<4x2xf32, 2 : i32>)
+            %16 = air.channel.put async [%15]  @channel_1[%11, %10] (%results[] [] []) {id = 4 : i32} : (memref<4x2xf32, 2 : i32>)
+            scf.yield %16 : !air.async.token
+          }
+          scf.yield %14 : !air.async.token
+        }
+      }
+      air.wait_all [%9] 
+    }
+    return
+  }
+}
