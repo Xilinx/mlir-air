@@ -286,54 +286,27 @@ int air::getIdAttr(Operation *op) {
     return -1;
 }
 
-// Renumber the DMA ops
-void air::renumberDmaOps(func::FuncOp func, std::string mode) {
+// Re-assign operation ids for air::MemcpyInterface ops.
+void air::renumberMemcpyIfOps(Region *region) {
   unsigned id = 0;
-  if (mode == "global") {
-    // Renumber DMA ops per entire module
-    func->walk([&](Operation *func_dma) {
-      if (isa<xilinx::air::MemcpyInterface>(func_dma)) {
-        func_dma->setAttr(
-            "id",
-            mlir::IntegerAttr::get(
-                mlir::IntegerType::get(func_dma->getContext(), 32), ++id));
-      }
-    });
-  } else if (mode == "herd") {
-    for (auto herd : func.getOps<xilinx::air::HerdOp>()) {
-      id = 0;
-      // Renumber DMA ops per air herd
-      herd->walk([&](Operation *herd_dma) {
-        if (isa<xilinx::air::MemcpyInterface>(herd_dma)) {
-          herd_dma->setAttr(
-              "id",
-              mlir::IntegerAttr::get(
-                  mlir::IntegerType::get(herd_dma->getContext(), 32), ++id));
-        }
-      });
-    }
-  } else
-    func->emitError("Unknown dma renumber mode. Supported modes: global, herd");
-}
-
-void air::renumberChannelOps(Block *blk) {
-  unsigned id = 0;
-  blk->walk([&](air::ChannelInterface chan) {
-    chan->setAttr("id",
-                  mlir::IntegerAttr::get(
-                      mlir::IntegerType::get(chan->getContext(), 32), ++id));
+  region->walk([&](air::MemcpyInterface memcpyOpIf) {
+    memcpyOpIf->setAttr(
+        "id", mlir::IntegerAttr::get(
+                  mlir::IntegerType::get(memcpyOpIf->getContext(), 32), ++id));
   });
 }
-void air::renumberChannelOps(Block *blk, std::map<int, int> &reverse_map) {
+// Re-assign operation ids for air::MemcpyInterface ops, and keep a reverse_map
+// which recovers the original op ids.
+void air::renumberMemcpyIfOps(Region *region, std::map<int, int> &reverse_map) {
   unsigned id = 0;
-  blk->walk([&](air::ChannelInterface chan) {
+  region->walk([&](air::MemcpyInterface memcpyOpIf) {
     // Update a reverse map for op ids
-    if (chan->hasAttr("id")) {
-      reverse_map[id + 1] = chan.getId();
+    if (memcpyOpIf->hasAttr("id")) {
+      reverse_map[id + 1] = memcpyOpIf.getId();
     }
-    chan->setAttr("id",
-                  mlir::IntegerAttr::get(
-                      mlir::IntegerType::get(chan->getContext(), 32), ++id));
+    memcpyOpIf->setAttr(
+        "id", mlir::IntegerAttr::get(
+                  mlir::IntegerType::get(memcpyOpIf->getContext(), 32), ++id));
   });
 }
 

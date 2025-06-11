@@ -33,7 +33,7 @@
 // CHECK:    aie.use_lock(%[[VAL_2]], Release, 1)
 // CHECK:    aie.end
 // CHECK:  aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
-// CHECK:  aie.shim_dma_allocation @airMemcpyId0(MM2S, 0, 0)
+// CHECK:  aie.shim_dma_allocation @airMemcpyId1(MM2S, 0, 0)
 // CHECK: @func1
 func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
@@ -157,10 +157,10 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // CHECK:         aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
-// CHECK:         aie.shim_dma_allocation @airMemcpyId3(S2MM, 0, 0)
-// CHECK:         memref.global "public" @airMemcpyId3 : memref<512xi32, 2>
-// CHECK:         aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-// CHECK:         memref.global "public" @airMemcpyId2 : memref<1024xi32, 2>
+// CHECK:         aie.shim_dma_allocation @air_channel_1(S2MM, 0, 0)
+// CHECK:         memref.global "public" @air_channel_1 : memref<512xi32, 2>
+// CHECK:         aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
+// CHECK:         memref.global "public" @air_channel_0 : memref<1024xi32, 2>
 // CHECK: @func3
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
@@ -265,10 +265,10 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   aie.use_lock(%[[VAL_5]], Release, 1)
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
-// CHECK: aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId7 : memref<1024xi32, 1>
-// CHECK: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId2 : memref<1024xi32, 1>
+// CHECK: aie.shim_dma_allocation @air_channel_5(S2MM, 0, 0)
+// CHECK: memref.global "public" @air_channel_5 : memref<1024xi32, 1>
+// CHECK: aie.shim_dma_allocation @air_channel_2(MM2S, 0, 0)
+// CHECK: memref.global "public" @air_channel_2 : memref<1024xi32, 1>
 // CHECK: @func4
 air.channel @channel_2 [1, 1]
 air.channel @channel_3 [1, 1]
@@ -335,8 +335,8 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 1, %[[VAL_4]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 1, %[[VAL_5]], DMA : 0)
 
-// CHECK:         aie.shim_dma_allocation @airMemcpyId6(MM2S, 0, 0)
-// CHECK:         memref.global "public" @airMemcpyId6 : memref<1024xi32, 1>
+// CHECK:         aie.shim_dma_allocation @air_channel_8(MM2S, 0, 0)
+// CHECK:         memref.global "public" @air_channel_8 : memref<1024xi32, 1>
 // CHECK: @func5
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
 #set1 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 == 0)>
@@ -405,20 +405,20 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
 // CHECK: %[[tile_1_4:.*]] = aie.tile(1, 4)
 
 // CHECK:  aie.flow(%[[tile_0_3]], DMA : 0, %[[tile_0_0]], DMA : 0)
-// CHECK:  aie.flow(%[[tile_1_3]], DMA : 0, %[[tile_1_0]], DMA : 0)
 // CHECK:  aie.flow(%[[tile_0_4]], DMA : 0, %[[tile_0_0]], DMA : 1)
+// CHECK:  aie.flow(%[[tile_1_3]], DMA : 0, %[[tile_1_0]], DMA : 0)
 // CHECK:  aie.flow(%[[tile_1_4]], DMA : 0, %[[tile_1_0]], DMA : 1)
-// CHECK:  aie.shim_dma_allocation @airMemcpyId14(S2MM, 0, 0)
-// CHECK:  memref.global "public" @airMemcpyId14 : memref<4x4xi32, 2>
-// CHECK:  aie.shim_dma_allocation @airMemcpyId14_1(S2MM, 0, 1)
-// CHECK:  memref.global "public" @airMemcpyId14_1 : memref<4x4xi32, 2>
-// CHECK:  aie.shim_dma_allocation @airMemcpyId14_2(S2MM, 1, 0)
-// CHECK:  memref.global "public" @airMemcpyId14_2 : memref<4x4xi32, 2>
-// CHECK:  aie.shim_dma_allocation @airMemcpyId14_3(S2MM, 1, 1)
-// CHECK:  memref.global "public" @airMemcpyId14_3 : memref<4x4xi32, 2>
+// CHECK:  aie.shim_dma_allocation @air_channel_0_0(S2MM, 0, 0)
+// CHECK:  memref.global "public" @air_channel_0_0 : memref<4x4xi32, 2>
+// CHECK:  aie.shim_dma_allocation @air_channel_0_1(S2MM, 1, 0)
+// CHECK:  memref.global "public" @air_channel_0_1 : memref<4x4xi32, 2>
+// CHECK:  aie.shim_dma_allocation @air_channel_0_2(S2MM, 0, 1)
+// CHECK:  memref.global "public" @air_channel_0_2 : memref<4x4xi32, 2>
+// CHECK:  aie.shim_dma_allocation @air_channel_0_3(S2MM, 1, 1)
+// CHECK:  memref.global "public" @air_channel_0_3 : memref<4x4xi32, 2>
 
 // CHECK: @func6
-// CHECK: air.channel.get{{.*}}metadata = @airMemcpyId14} : (memref<8x8xi32>)
+// CHECK: air.channel.get{{.*}}metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<8x8xi32>)
 #map1 = affine_map<()[s0] -> (s0 * 4)>
 air.channel @channel_0 [2, 2]
 func.func @func6(%arg5 : memref<8x8xi32>) {
@@ -1043,19 +1043,19 @@ module {
 // CHECK: aie.flow(%[[tile_1_0]], DMA : 0, %[[tile_1_2]], DMA : 0)
 // CHECK: aie.flow(%[[tile_0_0]], DMA : 1, %[[tile_0_3]], DMA : 0)
 // CHECK: aie.flow(%[[tile_1_0]], DMA : 1, %[[tile_1_3]], DMA : 0)
-// CHECK: aie.shim_dma_allocation @airMemcpyId9(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId9 : memref<16x8xi32, 2 : i32>
-// CHECK: aie.shim_dma_allocation @airMemcpyId9_1(MM2S, 0, 1)
-// CHECK: memref.global "public" @airMemcpyId9_1 : memref<16x8xi32, 2 : i32>
-// CHECK: aie.shim_dma_allocation @airMemcpyId9_2(MM2S, 1, 0)
-// CHECK: memref.global "public" @airMemcpyId9_2 : memref<16x8xi32, 2 : i32>
-// CHECK: aie.shim_dma_allocation @airMemcpyId9_3(MM2S, 1, 1)
-// CHECK: memref.global "public" @airMemcpyId9_3 : memref<16x8xi32, 2 : i32>
+// CHECK: aie.shim_dma_allocation @air_channel_0_0(MM2S, 0, 0)
+// CHECK: memref.global "public" @air_channel_0_0 : memref<16x8xi32, 2 : i32>
+// CHECK: aie.shim_dma_allocation @air_channel_0_1(MM2S, 0, 1)
+// CHECK: memref.global "public" @air_channel_0_1 : memref<16x8xi32, 2 : i32>
+// CHECK: aie.shim_dma_allocation @air_channel_0_2(MM2S, 1, 0)
+// CHECK: memref.global "public" @air_channel_0_2 : memref<16x8xi32, 2 : i32>
+// CHECK: aie.shim_dma_allocation @air_channel_0_3(MM2S, 1, 1)
+// CHECK: memref.global "public" @air_channel_0_3 : memref<16x8xi32, 2 : i32>
 // CHECK: func.func @func14
-// CHECK: air.channel.put  @channel_0{{.*}} metadata = @airMemcpyId9} : (memref<32x16xi32>)
-// CHECK: air.channel.put  @channel_0{{.*}} metadata = @airMemcpyId9_1} : (memref<32x16xi32>)
-// CHECK: air.channel.put  @channel_0{{.*}} metadata = @airMemcpyId9_2} : (memref<32x16xi32>)
-// CHECK: air.channel.put  @channel_0{{.*}} metadata = @airMemcpyId9_3} : (memref<32x16xi32>)
+// CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
+// CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
+// CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
+// CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
 
 module {
   air.channel @channel_0 [2, 2]
@@ -1089,8 +1089,8 @@ module {
 // Ensure redundant shim DMA allocations do not occur
 //
 // CHECK:         aie.flow
-// CHECK-NEXT: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-// CHECK-NEXT: memref.global "public" @airMemcpyId2 : memref<1024xi32, 1>
+// CHECK-NEXT: aie.shim_dma_allocation @air_channel_2(MM2S, 0, 0)
+// CHECK-NEXT: memref.global "public" @air_channel_2 : memref<1024xi32, 1>
 // CHECK: @func15
 air.channel @channel_2 [1, 1]
 air.channel @channel_3 [1, 1]
@@ -1232,4 +1232,184 @@ func.func @func17(%arg0 : memref<5xi32>, %arg1 : memref<96xi32>, %arg2 : memref<
     }
   }
   return
+}
+
+// -----
+
+// Air.launch and air.herd only (no air.segment).
+//
+// CHECK:      %[[shim_noc_tile_0_0:.*]] = aie.tile(0, 0)
+// CHECK:      %[[tile_0_2:.*]] = aie.tile(0, 2)
+// CHECK:      aie.flow(%[[tile_0_2]], DMA : 0, %[[shim_noc_tile_0_0]], DMA : 0)
+// CHECK:      aie.shim_dma_allocation @air_channel_0(S2MM, 0, 0)
+// CHECK:      @func18
+// CHECK:      air.launch
+// CHECK:      scf.for
+// CHECK:      scf.for
+// CHECK:      air.channel.get async{{.*}}@channel_0{{.*}}metadataArray = [{base = "air_channel_0", index = 0 : i32}]
+// CHECK:      scf.yield
+// CHECK:      scf.yield
+
+air.channel @channel_0 [2, 2]
+func.func @func18(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
+  %c1 = arith.constant 1 : index
+  %0 = air.launch async (%arg8, %arg9) in (%arg10=%c1, %arg11=%c1) args(%arg12=%arg1) : memref<*xf32> attributes {id = 1 : i32} {
+    %c1_i32 = arith.constant 1 : i32
+    %c32_i32 = arith.constant 32 : i32
+    %c0_i32 = arith.constant 0 : i32
+    %c2_i32 = arith.constant 2 : i32
+    %c4_i32 = arith.constant 4 : i32
+    %c128 = arith.constant 128 : index
+    %c4 = arith.constant 4 : index
+    %c2 = arith.constant 2 : index
+    %c1_0 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %1 = air.wait_all async 
+    %2 = scf.for %arg13 = %c0_i32 to %c32_i32 step %c1_i32 iter_args(%arg14 = %1) -> (!air.async.token)  : i32 {
+      %async_token, %results = air.execute [%arg14] -> (i32) {
+        %5 = arith.muli %arg13, %c4_i32 : i32
+        air.execute_terminator %5 : i32
+      }
+      %4 = scf.for %arg15 = %c0_i32 to %c32_i32 step %c1_i32 iter_args(%arg16 = %async_token) -> (!air.async.token)  : i32 {
+        %async_token_1, %results_2 = air.execute [%arg16] -> (i32) {
+          %6 = arith.muli %arg15, %c2_i32 : i32
+          air.execute_terminator %6 : i32
+        }
+        %async_token_3, %results_4 = air.execute [%arg16] -> (index) {
+          %6 = arith.index_cast %results : i32 to index
+          air.execute_terminator %6 : index
+        }
+        %async_token_5, %results_6 = air.execute [%async_token_3] -> (index) {
+          %6 = arith.muli %results_4, %c128 : index
+          air.execute_terminator %6 : index
+        }
+        %async_token_7, %results_8 = air.execute [%async_token_1] -> (index) {
+          %6 = arith.index_cast %results_2 : i32 to index
+          air.execute_terminator %6 : index
+        }
+        %async_token_9, %results_10 = air.execute [%async_token_7, %async_token_5] -> (index) {
+          %6 = arith.addi %results_6, %results_8 : index
+          air.execute_terminator %6 : index
+        }
+        %5 = air.channel.get async [%async_token_9]  @channel_0[%c0, %c0] (%arg12[%c0, %results_10] [%c4, %c2] [%c128, %c1_0]) {id = 2 : i32} : (memref<*xf32>)
+        scf.yield %5 : !air.async.token
+      }
+      scf.yield %4 : !air.async.token
+    }
+    %3 = air.herd @herd_0 async  tile (%arg13, %arg14) in (%arg15=%c1_0, %arg16=%c1_0) attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
+      %c1_i32_1 = arith.constant 1 : i32
+      %c32_i32_2 = arith.constant 32 : i32
+      %c0_i32_3 = arith.constant 0 : i32
+      %4 = air.wait_all async 
+      %5 = scf.for %arg17 = %c0_i32_3 to %c32_i32_2 step %c1_i32_1 iter_args(%arg18 = %4) -> (!air.async.token)  : i32 {
+        %6 = scf.for %arg19 = %c0_i32_3 to %c32_i32_2 step %c1_i32_1 iter_args(%arg20 = %arg18) -> (!air.async.token)  : i32 {
+          %async_token, %results = air.execute -> (memref<4x2xf32, 2 : i32>) {
+            %alloc = memref.alloc() : memref<4x2xf32, 2 : i32>
+            air.execute_terminator %alloc : memref<4x2xf32, 2 : i32>
+          }
+          %7 = air.channel.put async [%arg20, %async_token]  @channel_0[%arg13, %arg14] (%results[] [] []) {id = 4 : i32} : (memref<4x2xf32, 2 : i32>)
+          scf.yield %7 : !air.async.token
+        }
+        scf.yield %6 : !air.async.token
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// Air.launch and air.herd only (no air.segment), with time-multiplexed data movement on one DMA channel.
+//
+// CHECK:      %[[shim_noc_tile_0_0:.*]] = aie.tile(0, 0)
+// CHECK:      %[[tile_0_2:.*]] = aie.tile(0, 2)
+// CHECK:      %[[lock_0_2:.*]] = aie.lock(%[[tile_0_2]], 1) {init = 2
+// CHECK:      %[[buf1:.*]] = aie.buffer(%[[tile_0_2]]) {sym_name = "buf1"}
+// CHECK:      %[[buf0:.*]] = aie.buffer(%[[tile_0_2]]) {sym_name = "buf0"}
+// CHECK:      aie.flow(%[[tile_0_2]], DMA : 0, %[[shim_noc_tile_0_0]], DMA : 0)
+// CHECK:      aie.shim_dma_allocation @air_channel_0(S2MM, 0, 0)
+// CHECK:      @func19
+// CHECK:      air.launch
+// CHECK:      scf.for
+// CHECK:      scf.for
+// CHECK:      air.channel.get async{{.*}}@channel_0{{.*}}metadataArray = [{base = "air_channel_0", index = 0 : i32}]
+// CHECK:      scf.yield
+// CHECK:      scf.yield
+
+module {
+  air.channel @channel_0 [2, 2]
+  func.func @func19(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg8, %arg9) in (%arg10=%c1, %arg11=%c1) args(%arg12=%arg1) : memref<*xf32> attributes {id = 1 : i32} {
+      %c1_i32 = arith.constant 1 : i32
+      %c32_i32 = arith.constant 32 : i32
+      %c0_i32 = arith.constant 0 : i32
+      %c2_i32 = arith.constant 2 : i32
+      %c4_i32 = arith.constant 4 : i32
+      %c128 = arith.constant 128 : index
+      %c4 = arith.constant 4 : index
+      %c2 = arith.constant 2 : index
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %1 = air.wait_all async 
+      %2 = scf.for %arg13 = %c0_i32 to %c32_i32 step %c1_i32 iter_args(%arg14 = %1) -> (!air.async.token)  : i32 {
+        %async_token, %results = air.execute [%arg14] -> (i32) {
+          %5 = arith.muli %arg13, %c4_i32 : i32
+          air.execute_terminator %5 : i32
+        }
+        %4 = scf.for %arg15 = %c0_i32 to %c32_i32 step %c1_i32 iter_args(%arg16 = %async_token) -> (!air.async.token)  : i32 {
+          %async_token_1, %results_2 = air.execute [%arg16] -> (i32) {
+            %6 = arith.muli %arg15, %c2_i32 : i32
+            air.execute_terminator %6 : i32
+          }
+          %async_token_3, %results_4 = air.execute [%arg16] -> (index) {
+            %6 = arith.index_cast %results : i32 to index
+            air.execute_terminator %6 : index
+          }
+          %async_token_5, %results_6 = air.execute [%async_token_3] -> (index) {
+            %6 = arith.muli %results_4, %c128 : index
+            air.execute_terminator %6 : index
+          }
+          %async_token_7, %results_8 = air.execute [%async_token_1] -> (index) {
+            %6 = arith.index_cast %results_2 : i32 to index
+            air.execute_terminator %6 : index
+          }
+          %async_token_9, %results_10 = air.execute [%async_token_7, %async_token_5] -> (index) {
+            %6 = arith.addi %results_6, %results_8 : index
+            air.execute_terminator %6 : index
+          }
+          %5 = air.channel.get async [%async_token_9]  @channel_0[%c0, %c0] (%arg12[%c0, %results_10] [%c4, %c2] [%c128, %c1_0]) {id = 2 : i32} : (memref<*xf32>)
+          scf.yield %5 : !air.async.token
+        }
+        scf.yield %4 : !air.async.token
+      }
+      %3 = air.herd @herd_0 async  tile (%arg13, %arg14) in (%arg15=%c1_0, %arg16=%c1_0) attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
+        %c1_i32_1 = arith.constant 1 : i32
+        %c32_i32_2 = arith.constant 32 : i32
+        %c0_i32_3 = arith.constant 0 : i32
+        %c2_i32_4 = arith.constant 2 : i32
+        %4 = air.wait_all async 
+        %5 = scf.for %arg17 = %c0_i32_3 to %c32_i32_2 step %c1_i32_1 iter_args(%arg18 = %4) -> (!air.async.token)  : i32 {
+          %async_token, %results = air.execute [%arg18] -> (memref<4x2xf32, 2 : i32>) {
+            %alloc = memref.alloc() : memref<4x2xf32, 2 : i32>
+            air.execute_terminator %alloc : memref<4x2xf32, 2 : i32>
+          }
+          %async_token_5, %results_6 = air.execute [%arg18] -> (memref<4x2xf32, 2 : i32>) {
+            %alloc = memref.alloc() : memref<4x2xf32, 2 : i32>
+            air.execute_terminator %alloc : memref<4x2xf32, 2 : i32>
+          }
+          %6 = air.wait_all async [%async_token, %async_token_5] 
+          %7 = air.wait_all async [%async_token, %async_token_5] 
+          %8:4 = scf.for %arg19 = %c0_i32_3 to %c32_i32_2 step %c2_i32_4 iter_args(%arg20 = %7, %arg21 = %async_token_5, %arg22 = %6, %arg23 = %6) -> (!air.async.token, !air.async.token, !air.async.token, !air.async.token)  : i32 {
+            %9 = air.channel.put async [%arg23, %arg20, %arg22]  @channel_0[%arg13, %arg14] (%results[] [] []) {id = 4 : i32} : (memref<4x2xf32, 2 : i32>)
+            %10 = air.wait_all async [%arg21, %arg23, %arg20] 
+            %11 = air.channel.put async [%9, %arg21]  @channel_0[%arg13, %arg14] (%results_6[] [] []) {id = 6 : i32} : (memref<4x2xf32, 2 : i32>)
+            scf.yield %9, %11, %11, %10 : !air.async.token, !air.async.token, !air.async.token, !air.async.token
+          }
+          scf.yield %8#1 : !air.async.token
+        }
+      }
+    }
+    return
+  }
 }

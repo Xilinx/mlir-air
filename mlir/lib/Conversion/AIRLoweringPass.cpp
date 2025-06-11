@@ -573,6 +573,49 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   thisOp->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id
                             // has been assigned.
   airrtOp->setAttrs(thisOp->getDiscardableAttrDictionary());
+
+  if (airrtOp->hasAttr("metadata") || !airrtOp->hasAttr("metadataArray")) {
+    return airrtOp;
+  }
+
+  // Choose metadata from metadataArray, by specializing channel bundle indices.
+  std::vector<unsigned> indicesUint =
+      air::convertVecOfConstIndexToVecOfUInt(thisOp.getIndices());
+  auto channelBundleSize =
+      air::getChannelDeclarationThroughSymbol(thisOp).getSize();
+
+  auto arrayAttrToUIntVector =
+      [](mlir::ArrayAttr attr) -> std::vector<unsigned int> {
+    std::vector<unsigned int> vec;
+    for (mlir::Attribute a : attr) {
+      if (auto intAttr = dyn_cast<mlir::IntegerAttr>(a))
+        vec.push_back(static_cast<unsigned int>(intAttr.getInt()));
+      else
+        llvm::errs() << "Warning: Non-integer attribute in ArrayAttr\n";
+    }
+    return vec;
+  };
+
+  int iter = air::getIteratorFromMDVector(
+      arrayAttrToUIntVector(channelBundleSize), indicesUint);
+
+  auto specializeMetadata = [&](Operation *op, unsigned i) {
+    auto metadataArray = op->getAttrOfType<ArrayAttr>("metadataArray");
+    if (!metadataArray || i >= metadataArray.size())
+      return false;
+
+    if (auto dictAttr = dyn_cast<DictionaryAttr>(metadataArray[i])) {
+      if (auto shimNameAttr = dictAttr.getAs<StringAttr>("base")) {
+        op->setAttr("metadata",
+                    FlatSymbolRefAttr::get(op->getContext(), shimNameAttr));
+        op->removeAttr("metadataArray");
+        return true;
+      }
+    }
+    return false;
+  };
+  if (!specializeMetadata(airrtOp, iter))
+    return airrtOp->emitOpError("failed to specialize channel bundle indices");
   return airrtOp;
 }
 

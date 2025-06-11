@@ -742,8 +742,8 @@ module {
 
   // CHECK-LABEL: func13
   // CHECK: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
-  // CHECK: air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c16384{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
   // CHECK: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c1{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c64{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
+  // CHECK: air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c16384{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
   // CHECK: air.channel.put async{{.*}}@channel_0[%c1{{.*}}, %c1{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c16448{{.*}}] [%c32{{.*}}, %c32{{.*}}, %c4{{.*}}, %c2{{.*}}] [%c512{{.*}}, %c2{{.*}}, %c128{{.*}}, %c1{{.*}}])
 
   func.func @func13(%arg0: memref<*xf32>, %arg1: memref<*xf32>) {
@@ -826,4 +826,33 @@ module {
     return
   }
 
+  // Scf.parallel unrolling: reduced tokens must be preserved into the blocking wait_all at launch terminator.
+
+  // CHECK-LABEL: func14
+  // CHECK: %[[PUT0:.*]] = air.channel.put async{{.*}}@channel_0
+  // CHECK: %[[PUT1:.*]] = air.channel.put async{{.*}}@channel_0
+  // CHECK: %[[PUT2:.*]] = air.channel.put async{{.*}}@channel_0
+  // CHECK: %[[PUT3:.*]] = air.channel.put async{{.*}}@channel_0
+  // CHECK: air.wait_all [%[[PUT0]], %[[PUT1]], %[[PUT2]], %[[PUT3]]]
+
+  func.func @func14(%arg0: memref<*xf32>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg9, %arg10) in (%arg11=%c1, %arg12=%c1) args(%arg13=%arg0) : memref<*xf32> attributes {id = 1 : i32} {
+      %c128 = arith.constant 128 : index
+      %c4 = arith.constant 4 : index
+      %c2 = arith.constant 2 : index
+      %c1_0 = arith.constant 1 : index
+      %c0 = arith.constant 0 : index
+      %1 = air.wait_all async 
+      %2 = scf.parallel (%arg14, %arg15) = (%c0, %c0) to (%c2, %c2) step (%c1_0, %c1_0) init (%1) -> !air.async.token {
+        %3 = air.channel.put async  @channel_0[%arg14, %arg15] (%arg13[%c0, %c0] [%c4, %c2] [%c128, %c1_0]) {id = 1 : i32, metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<*xf32>)
+        scf.reduce(%3 : !air.async.token) {
+        ^bb0(%arg16: !air.async.token, %arg17: !air.async.token):
+          %4 = air.wait_all async [%arg16, %arg17] 
+          scf.reduce.return %4 : !air.async.token
+        }
+      }
+    }
+    return
+  }
 }

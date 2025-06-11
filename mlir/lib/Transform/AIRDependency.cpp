@@ -104,7 +104,7 @@ public:
 
     // Preprocessing: renumber the air dma op ids
     for (auto f : module.getOps<func::FuncOp>()) {
-      air::renumberDmaOps(f, "global");
+      air::renumberMemcpyIfOps(&f.getRegion());
     }
 
     // 1st traversal: create async ops with empty dep list.
