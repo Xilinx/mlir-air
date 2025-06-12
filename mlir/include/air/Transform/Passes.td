@@ -1503,12 +1503,19 @@ def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
   }];
 }
 
-def AIRForceL1MemrefInHerdPass : Pass<"air-force-l1-memref-in-herd", "func::FuncOp"> {
-  let summary = "Force all memrefs allocated within air.herd to have memory space L1.";
-  let constructor = "xilinx::air::createAIRForceL1MemrefInHerdPass()";
+def AIROverrideMemRefMemorySpace : Pass<"air-override-memref-memory-space", "func::FuncOp"> {
+  let summary = "Force all memrefs allocated within code region to have the specified memory space.";
+  let constructor = "xilinx::air::createAIROverrideMemRefMemorySpacePass()";
   let description = [{
-    Experimental pass. Force all memrefs allocated within air.herd to have memory space L1.
+    Experimental pass. Force all memrefs allocated within a specified code region to have the specified memory space.
   }];
+  let options = [
+    Option<"clMemorySpace", "memory-space", "unsigned", /*default=*/"0",
+           "Memory space to override to.">,
+    Option<"clScope", "scope", "std::string",
+            /*default=*/"\"launch\"",
+            "AIR hierarchy scope to perform the transform under. Must be one of [herd, segment, launch].">
+  ];
 }
 
 #endif // AIR_CONVERSION_PASSES
