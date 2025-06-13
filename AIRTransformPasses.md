@@ -533,12 +533,6 @@ air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 
 _Skeleton module op pass_
 
-### `-air-force-l1-memref-in-herd`
-
-_Force all memrefs allocated within air.herd to have memory space L1._
-
-Experimental pass. Force all memrefs allocated within air.herd to have memory space L1.
-
 ### `-air-fuse-alloc-dealloc`
 
 _Fuse pairs of memref.alloc/dealloc ops into the inner-most region containing all uses of the memref._
@@ -886,6 +880,19 @@ Optimize the logical data movement by transforming them, represented as air.chan
 ```
 -device              : AIE device to target.
 -shim-dma-tile-sizes : Shim dma tiling sizes, tiling shim dma bds into smaller repeating ones
+```
+
+### `-air-override-memref-memory-space`
+
+_Force all memrefs allocated within code region to have the specified memory space._
+
+Experimental pass. Force all memrefs allocated within a specified code region to have the specified memory space.
+
+#### Options
+
+```
+-memory-space : Memory space to override to.
+-scope        : AIR hierarchy scope to perform the transform under. Must be one of [herd, segment, launch].
 ```
 
 ### `-air-ping-pong-transform`
