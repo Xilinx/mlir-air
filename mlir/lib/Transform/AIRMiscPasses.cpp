@@ -2014,7 +2014,7 @@ struct correctViewLikeOpIOMemorySpacesInScope : public OpRewritePattern<OpTy> {
     if (!IFAOp->template hasTrait<OpTrait::IsIsolatedFromAbove>())
       return failure();
     llvm::DenseMap<ViewLikeOpInterface, SmallVector<OpResult>> viewLikeOpsToRes;
-    IFAOp->template walk([&](ViewLikeOpInterface viewLike) {
+    IFAOp->walk([&](ViewLikeOpInterface viewLike) {
       auto srcTy = dyn_cast<MemRefType>(viewLike.getViewSource().getType());
       if (!srcTy)
         return;
