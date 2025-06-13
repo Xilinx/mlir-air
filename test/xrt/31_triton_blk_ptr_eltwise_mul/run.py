@@ -87,9 +87,7 @@ with air.ir.Context() as ctx, Location.unknown():
 
     ###### Compile and test
     runner = XRTRunner(
-        verbose=False,
         omit_while_true_loop=False,
-        omit_pingpong=True,
     )
     exit(
         runner.run_test(
