@@ -157,6 +157,9 @@ def build_module(n, tile_n, np_dtype_in):
                     arg2_s,
                     l2_out_data,
                 )
+                DeallocOp(l2_a_data)
+                DeallocOp(l2_b_data)
+                DeallocOp(l2_out_data)
 
 
 if __name__ == "__main__":
