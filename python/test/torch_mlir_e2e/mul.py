@@ -5,7 +5,8 @@
 
 # REQUIRES: torch_mlir, ryzen_ai
 
-# RUN: %PYTHON %s | FileCheck %s
+# RUN: mkdir -p mul && cd mul
+# RUN: %run_on_npu1% %PYTHON %s | FileCheck %s
 # CHECK: PASSED!
 
 import torch

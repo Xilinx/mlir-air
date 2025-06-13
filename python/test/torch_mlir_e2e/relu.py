@@ -5,7 +5,8 @@
 
 # REQUIRES: torch_mlir, ryzen_ai
 
-# RUN: %PYTHON %s | FileCheck %s
+# RUN: mkdir -p relu && cd relu
+# RUN: %run_on_npu1% %PYTHON %s | FileCheck %s
 # CHECK: PASSED!
 
 import torch
@@ -42,12 +43,14 @@ def run_test(dtype, shape):
     [_, c_out] = air_program(a.numpy(), c.numpy())
     c_out = c_out.reshape(c_ref.shape)
 
-    print(f"input:\n{a}\noutput:\n{c_out}")
+    print(f"input:\n{a}\noutput:\n{c_out} ref:\n{c_ref}")
 
     if torch.allclose(c_ref, torch.tensor(c_out)):
         print("PASS!")
         return 1
     else:
+        import numpy
+
         errs = c_ref == torch.tensor(c_out)
         print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
@@ -56,7 +59,7 @@ def run_test(dtype, shape):
 
 sizes = [[10 * 1024], [128, 64]]
 
-dtypes = [torch.float]
+dtypes = [torch.int, torch.float]
 
 passed = 0
 for t in dtypes:
