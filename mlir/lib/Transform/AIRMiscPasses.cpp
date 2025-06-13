@@ -1956,81 +1956,128 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   air::renumberMemcpyIfOps(&func.getBody());
 }
 
-// Experimental: This pattern forces all memrefs allocated within the air.herd
-// to be L1.
-struct ForceL1MemrefInHerdPattern : public OpRewritePattern<memref::AllocOp> {
-  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+// Experimental pattern to override the memory space of `memref.alloc`
+// operations when they appear inside a specified parent scope (e.g. herd,
+// segment).
+struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
+  OverrideMemorySpacePattern(MLIRContext *ctx, StringRef scope, int memSpace)
+      : OpRewritePattern<memref::AllocOp>(ctx), clScope(scope),
+        clMemorySpace(memSpace) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc,
                                 PatternRewriter &rewriter) const override {
-    auto parentHerdOp = alloc->getParentOfType<air::HerdOp>();
-    if (!parentHerdOp)
+    Operation *parent = nullptr;
+
+    if (clScope == "herd")
+      parent = alloc->getParentOfType<air::HerdOp>();
+    else if (clScope == "segment")
+      parent = alloc->getParentOfType<air::SegmentOp>();
+    else if (clScope == "launch")
+      parent = alloc->getParentOfType<air::LaunchOp>();
+    else
+      return alloc->emitOpError(
+          "Invalid clScope value: expected one of herd/segment/launch");
+
+    if (!parent)
       return failure();
 
-    auto memref = dyn_cast<MemRefType>(alloc.getMemref().getType());
-    if (!memref)
+    auto memrefTy = dyn_cast<MemRefType>(alloc.getMemref().getType());
+    if (!memrefTy)
       return failure();
-    if (memref.getMemorySpaceAsInt() == (int)air::MemorySpace::L1)
+    if ((int)memrefTy.getMemorySpaceAsInt() == clMemorySpace)
       return failure();
 
     auto newMemrefType =
-        MemRefType::get(memref.getShape(), memref.getElementType(),
-                        memref.getLayout().getAffineMap(),
-                        rewriter.getI32IntegerAttr((int)air::MemorySpace::L1));
+        MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
+                        memrefTy.getLayout().getAffineMap(),
+                        rewriter.getI32IntegerAttr(clMemorySpace));
 
     rewriter.replaceOpWithNewOp<memref::AllocOp>(alloc, newMemrefType);
 
     return success();
   }
+
+private:
+  StringRef clScope; // Parent operation type to match
+  int clMemorySpace; // Target memory space value to assign
 };
-struct correctMemrefSubviewIOMemorySpaces
-    : public OpRewritePattern<memref::SubViewOp> {
-  using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(memref::SubViewOp subview,
+// Pattern to correct memory spaces of view-like operations within a given
+// scope, following the application of OverrideMemorySpacePattern.
+template <typename OpTy>
+struct correctViewLikeOpIOMemorySpacesInScope : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy IFAOp,
                                 PatternRewriter &rewriter) const override {
-    auto srcTy = dyn_cast<MemRefType>(subview.getViewSource().getType());
-    auto destTy = dyn_cast<MemRefType>(subview.getResult().getType());
 
-    auto subviewOutputType =
-        llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
-            srcTy, subview.getMixedOffsets(), subview.getMixedSizes(),
-            subview.getMixedStrides()));
-    if (destTy == subviewOutputType)
+    if (!IFAOp->template hasTrait<OpTrait::IsIsolatedFromAbove>())
       return failure();
-
-    rewriter.replaceOpWithNewOp<memref::SubViewOp>(
-        subview, subviewOutputType, subview.getViewSource(),
-        subview.getMixedOffsets(), subview.getMixedSizes(),
-        subview.getMixedStrides());
-
+    llvm::DenseMap<ViewLikeOpInterface, SmallVector<OpResult>> viewLikeOpsToRes;
+    IFAOp->template walk([&](ViewLikeOpInterface viewLike) {
+      auto srcTy = dyn_cast<MemRefType>(viewLike.getViewSource().getType());
+      if (!srcTy)
+        return;
+      for (auto res : viewLike->getResults()) {
+        auto destTy = dyn_cast<MemRefType>(res.getType());
+        if (!destTy)
+          return;
+        if (srcTy.getMemorySpaceAsInt() == destTy.getMemorySpaceAsInt())
+          continue;
+        viewLikeOpsToRes[viewLike].push_back(res);
+      }
+    });
+    for (auto [viewLike, results] : viewLikeOpsToRes) {
+      for (OpResult res : results) {
+        auto srcTy = dyn_cast<MemRefType>(viewLike.getViewSource().getType());
+        auto destTy = dyn_cast<MemRefType>(res.getType());
+        MemRefType::Builder builder(destTy);
+        builder.setMemorySpace(srcTy.getMemorySpace());
+        rewriter.modifyOpInPlace(viewLike, [&]() { res.setType(builder); });
+      }
+    }
     return success();
   }
 };
 
-// An experimental pass forcing all memrefs allocated within an air.herd to have
-// memory space L1.
-class AIRForceL1MemrefInHerdPass
-    : public air::impl::AIRForceL1MemrefInHerdPassBase<
-          AIRForceL1MemrefInHerdPass> {
+// An experimental pass forcing all memrefs allocated within a specified air
+// code region to have the specified memory space.
+class AIROverrideMemRefMemorySpacePass
+    : public air::impl::AIROverrideMemRefMemorySpaceBase<
+          AIROverrideMemRefMemorySpacePass> {
 
 public:
-  AIRForceL1MemrefInHerdPass() = default;
-  AIRForceL1MemrefInHerdPass(const AIRForceL1MemrefInHerdPass &pass){};
+  AIROverrideMemRefMemorySpacePass() = default;
+  AIROverrideMemRefMemorySpacePass(
+      const AIROverrideMemRefMemorySpacePass &pass){};
+  AIROverrideMemRefMemorySpacePass(
+      const ::xilinx::air::AIROverrideMemRefMemorySpaceOptions &options)
+      : AIROverrideMemRefMemorySpaceBase(options) {}
 
   void runOnOperation() override;
 
 private:
 };
 
-void AIRForceL1MemrefInHerdPass::runOnOperation() {
+void AIROverrideMemRefMemorySpacePass::runOnOperation() {
   func::FuncOp funcOp = getOperation();
   MLIRContext *context = &getContext();
 
   RewritePatternSet patterns(context);
-  patterns.add<ForceL1MemrefInHerdPattern, correctMemrefSubviewIOMemorySpaces>(
-      context);
+  patterns.add<OverrideMemorySpacePattern>(context, clScope, clMemorySpace);
   (void)applyPatternsGreedily(funcOp, std::move(patterns));
+  RewritePatternSet fixResTypePatterns(context);
+  if (clScope == "herd") {
+    fixResTypePatterns.add<correctViewLikeOpIOMemorySpacesInScope<air::HerdOp>>(
+        context);
+  } else if (clScope == "segment") {
+    fixResTypePatterns
+        .add<correctViewLikeOpIOMemorySpacesInScope<air::SegmentOp>>(context);
+  } else if (clScope == "launch") {
+    fixResTypePatterns
+        .add<correctViewLikeOpIOMemorySpacesInScope<air::LaunchOp>>(context);
+  }
+  (void)applyPatternsGreedily(funcOp, std::move(fixResTypePatterns));
 }
 
 } // anonymous namespace
@@ -2092,8 +2139,12 @@ std::unique_ptr<Pass> createAIRSplitL2MemrefForBufferConstraintPass() {
   return std::make_unique<AIRSplitL2MemrefForBufferConstraintPass>();
 }
 
-std::unique_ptr<Pass> createAIRForceL1MemrefInHerdPass() {
-  return std::make_unique<AIRForceL1MemrefInHerdPass>();
+std::unique_ptr<Pass> createAIROverrideMemRefMemorySpacePass() {
+  return std::make_unique<AIROverrideMemRefMemorySpacePass>();
+}
+std::unique_ptr<Pass> createAIROverrideMemRefMemorySpacePass(
+    AIROverrideMemRefMemorySpaceOptions options) {
+  return std::make_unique<AIROverrideMemRefMemorySpacePass>(options);
 }
 
 } // namespace air
