@@ -25,22 +25,8 @@ module {
 // CHECK: %[[EVENT1:.*]] = scf.parallel{{.*}}init
 // CHECK: %[[EVENT2:.*]] = scf.for{{.*}}iter_args
 // CHECK: %[[EVENT3:.*]] = air.channel.put async{{.*}}@channel_0
-// CHECK: scf.yield
-// CHECK: scf.reduce
-// CHECK: scf.reduce.return
-// CHECK: scf.reduce
-// CHECK: scf.reduce.return
-// CHECK: %[[EVENT4:.*]] = scf.parallel{{.*}}init
-// CHECK: %[[EVENT5:.*]] = scf.parallel{{.*}}init
-// CHECK: %[[EVENT6:.*]] = scf.for{{.*}}iter_args
 // CHECK: %[[EVENT7:.*]] = air.channel.put async{{.*}}@channel_1
 // CHECK: scf.yield
-// CHECK: scf.reduce
-// CHECK: scf.reduce.return
-// CHECK: scf.reduce
-// CHECK: scf.reduce.return
-// CHECK: %[[EVENT8:.*]] = scf.parallel{{.*}}init
-// CHECK: %[[EVENT9:.*]] = scf.parallel{{.*}}init
 // CHECK: %[[EVENT10:.*]] = air.channel.get async{{.*}}@channel_2
 // CHECK: scf.reduce
 // CHECK: scf.reduce.return

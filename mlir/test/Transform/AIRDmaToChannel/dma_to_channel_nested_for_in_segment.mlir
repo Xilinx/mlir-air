@@ -91,13 +91,6 @@ module {
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_0
-// CHECK: scf.yield
-// CHECK: scf.yield
-// CHECK: scf.yield
-
-// CHECK: scf.for
-// CHECK: scf.for
-// CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_1
 // CHECK: scf.yield
 // CHECK: scf.yield
