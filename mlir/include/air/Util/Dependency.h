@@ -420,8 +420,8 @@ private:
                               char rw = 'n', partialMemref *tile = nullptr);
 
   // Check if two partial memref tiles have identical indices
-  bool areEqualIndexPartialMemrefs(partialMemref *tile_0,
-                                   partialMemref *tile_1);
+  bool areOverlappingPartialMemrefs(partialMemref *tile_0,
+                                    partialMemref *tile_1);
 
   char checkOperandReadOrWrite(mlir::Value operand);
 

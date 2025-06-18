@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-dma-to-channel | FileCheck %s
+// RUN: air-opt %s -air-dma-to-channel -split-input-file | FileCheck %s
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
@@ -65,5 +65,64 @@ module attributes {torch.debug_module_name = "mmult"} {
       }
     }
     return %alloc_0 : memref<64x64xi32>
+  }
+}
+
+// -----
+
+#map = affine_map<()[s0] -> (s0 * 8)>
+#map1 = affine_map<()[s0] -> (s0 * 16)>
+module {
+// CHECK: air.channel @channel_0 [1, 1]
+// CHECK: air.launch
+// CHECK: scf.parallel (%[[ARG0:.*]], %[[ARG1:.*]]) = ({{.*}}) to ({{.*}}) step ({{.*}}) init (%{{.*}})
+// CHECK: air.channel.get async [%{{.*}}]  @channel_0[%[[ARG0]], %[[ARG1]]]
+// CHECK: scf.reduce
+// CHECK: scf.reduce.return
+// CHECK: air.segment @segment_0
+// CHECK: air.herd @herd_0 async  tile (%[[ARG2:.*]], %[[ARG3:.*]]) in ({{.*}}) args({{.*}})
+// CHECK: air.channel.put async [%{{.*}}]  @channel_0[%[[ARG2]], %[[ARG3]]]
+  func.func @l1tol3(%arg0: memref<16x32xf32>, %arg1: memref<16x32xf32>) {
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async (%arg2, %arg3) in (%arg4=%c2, %arg5=%c2) args(%arg6=%arg1, %arg7=%arg0) : memref<16x32xf32>, memref<16x32xf32> attributes {id = 3 : i32} {
+      %1 = air.segment @segment_0 async  args(%arg8=%arg2, %arg9=%arg3, %arg10=%arg4, %arg11=%arg5, %arg12=%arg6, %arg13=%arg7) : index, index, index, index, memref<16x32xf32>, memref<16x32xf32> attributes {id = 2 : i32} {
+        %c1 = arith.constant 1 : index
+        %async_token, %results = air.execute -> (index) {
+          %3 = affine.apply #map()[%arg8]
+          air.execute_terminator %3 : index
+        } {id = 1 : i32}
+        %async_token_0, %results_1 = air.execute -> (index) {
+          %3 = affine.apply #map1()[%arg9]
+          air.execute_terminator %3 : index
+        } {id = 2 : i32}
+        %subview = memref.subview %arg12[%results, %results_1] [8, 16] [1, 1] : memref<16x32xf32> to memref<8x16xf32, strided<[32, 1], offset: ?>>
+        %async_token_2, %results_3 = air.execute -> (index) {
+          %3 = affine.apply #map()[%arg8]
+          air.execute_terminator %3 : index
+        } {id = 3 : i32}
+        %async_token_4, %results_5 = air.execute -> (index) {
+          %3 = affine.apply #map1()[%arg9]
+          air.execute_terminator %3 : index
+        } {id = 4 : i32}
+        %async_token_6, %results_7 = air.execute -> (memref<8x16xf32, 1 : i32>) {
+          %alloc = memref.alloc() : memref<8x16xf32, 1 : i32>
+          air.execute_terminator %alloc : memref<8x16xf32, 1 : i32>
+        } {id = 5 : i32}
+        %2 = air.herd @herd_0 async  tile (%arg14, %arg15) in (%arg16=%c1, %arg17=%c1) args(%arg18=%results_7, %arg19=%subview) : memref<8x16xf32, 1 : i32>, memref<8x16xf32, strided<[32, 1], offset: ?>> attributes {id = 1 : i32} {
+          %async_token_9, %results_10 = air.execute -> (memref<8x16xf32, 2 : i32>) {
+            %alloc = memref.alloc() : memref<8x16xf32, 2 : i32>
+            air.execute_terminator %alloc : memref<8x16xf32, 2 : i32>
+          } {id = 6 : i32}
+          %3 = air.dma_memcpy_nd async [%async_token_9] (%arg19[] [] [], %results_10[] [] []) {id = 1 : i32} : (memref<8x16xf32, strided<[32, 1], offset: ?>>, memref<8x16xf32, 2 : i32>)
+          %async_token_11 = air.execute [%3] {
+            memref.dealloc %results_10 : memref<8x16xf32, 2 : i32>
+          } {id = 7 : i32}
+        }
+        %async_token_8 = air.execute [%2, %async_token_6] {
+          memref.dealloc %results_7 : memref<8x16xf32, 1 : i32>
+        } {id = 8 : i32}
+      }
+    }
+    return
   }
 }

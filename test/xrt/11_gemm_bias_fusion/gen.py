@@ -190,5 +190,6 @@ with air.ir.Context() as ctx, Location.unknown():
         air_loop_fusion=True,
         omit_auto_broadcast=True,
         channel_multiplexing=["L1",],
+        runtime_loop_tiling_sizes=[2, 2],
     )
     backend.compile(air_module)

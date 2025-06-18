@@ -2265,7 +2265,7 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
         if (u.is(memcpy.getSrcMemref())) {
           if (tile == nullptr) {
             addDependencyBetweenOps(memcpy.getOperation(), op.getOperation());
-          } else if (areEqualIndexPartialMemrefs(tile, &memcpy_src)) {
+          } else if (areOverlappingPartialMemrefs(tile, &memcpy_src)) {
             addDependencyBetweenOps(memcpy.getOperation(), op.getOperation());
           }
         }
@@ -2273,7 +2273,7 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
         if (u.is(memcpy.getDstMemref())) {
           if (tile == nullptr) {
             addDependencyBetweenOps(memcpy.getOperation(), op.getOperation());
-          } else if (areEqualIndexPartialMemrefs(tile, &memcpy_dst)) {
+          } else if (areOverlappingPartialMemrefs(tile, &memcpy_dst)) {
             addDependencyBetweenOps(memcpy.getOperation(), op.getOperation());
           }
         }
@@ -2281,11 +2281,11 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
         if (tile == nullptr) {
           addDependencyBetweenOps(memcpy.getOperation(), op.getOperation());
         } else if (u.is(memcpy.getDstMemref())) {
-          if (areEqualIndexPartialMemrefs(tile, &memcpy_dst)) {
+          if (areOverlappingPartialMemrefs(tile, &memcpy_dst)) {
             addDependencyBetweenOps(memcpy.getOperation(), op.getOperation());
           }
         } else if (u.is(memcpy.getSrcMemref())) {
-          if (areEqualIndexPartialMemrefs(tile, &memcpy_src)) {
+          if (areOverlappingPartialMemrefs(tile, &memcpy_src)) {
             addDependencyBetweenOps(memcpy.getOperation(), op.getOperation());
           }
         }
@@ -2408,8 +2408,8 @@ void dependencyTracer::addDependencyBetweenOps(Operation *source,
 }
 
 // Check if two partial memref tiles have identical indices
-bool dependencyTracer::areEqualIndexPartialMemrefs(partialMemref *tile_0,
-                                                   partialMemref *tile_1) {
+bool dependencyTracer::areOverlappingPartialMemrefs(partialMemref *tile_0,
+                                                    partialMemref *tile_1) {
   // Check if all static offsets of each partialMemref lead to equal overall
   // offset.
   auto getOffsetFromOffsetsAndStrides = [&](partialMemref *tile) {
@@ -2423,6 +2423,13 @@ bool dependencyTracer::areEqualIndexPartialMemrefs(partialMemref *tile_0,
     }
     return offset;
   };
+
+  // If any of the two partialMemrefs have empty offsets list, then that
+  // partialMemref represents the entire memref, and therefore guarantees to
+  // conflict with any other accesses.
+  if (tile_0->offsets.empty() || tile_1->offsets.empty())
+    return true;
+
   if (getOffsetFromOffsetsAndStrides(tile_0) !=
       getOffsetFromOffsetsAndStrides(tile_1))
     return false;

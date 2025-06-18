@@ -86,7 +86,7 @@ module {
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: scf.for
-// CHECK: air.channel.get async{{.*}}@channel_7[%[[VALUE6]], %[[VALUE7]]]  
+// CHECK: air.channel.get async{{.*}}@channel_7[%[[VALUE6]], %[[VALUE7]]]    
   func.func @async(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>) -> memref<64x64xi32> {
     %c2 = arith.constant 2 : index
     %c0_i32 = arith.constant 0 : i32
@@ -231,7 +231,7 @@ module {
           %alloc = memref.alloc() : memref<32x256xi32, 1>
           air.execute_terminator %alloc : memref<32x256xi32, 1>
         }
-        %2 = air.herd @herd_0 async [%async_token_3]  tile (%arg10, %arg11) in (%arg12=%c2, %arg13=%c2) args(%arg14=%results_2, %arg15=%arg9, %arg16=%results_4) : index, memref<2048x2048xi32>, memref<32x256xi32, 1> attributes {id = 3 : i32} {
+        %2 = air.herd @herd_0 async [%async_token_1, %async_token_3]  tile (%arg10, %arg11) in (%arg12=%c2, %arg13=%c2) args(%arg14=%results_2, %arg15=%arg9, %arg16=%results_4) : index, memref<2048x2048xi32>, memref<32x256xi32, 1> attributes {id = 3 : i32} {
           %c1 = arith.constant 1 : index
           %c0 = arith.constant 0 : index
           %c256 = arith.constant 256 : index
