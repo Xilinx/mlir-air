@@ -104,29 +104,29 @@ module {
 // CHECK: air.launch
 // CHECK: scf.for %[[VALUE0:.*]] = %c0{{.*}} to %c8{{.*}} step %c1{{.*}} iter_args(%[[VALUE1:.*]] = %{{.*}})
 // CHECK: affine.apply {{.*}}[%[[VALUE0]]]
-// CHECK: air.channel.put{{.*}}@channel_4
+// CHECK: air.channel.put{{.*}}@channel_0
 // CHECK: scf.yield
 
 // CHECK: air.segment
 // CHECK: scf.for %[[VALUE2:.*]] = %c0{{.*}} to %c8{{.*}} step %c1{{.*}} iter_args(%[[VALUE3:.*]] = %{{.*}})
 // CHECK: affine.apply {{.*}}[%[[VALUE2]]]
-// CHECK: %[[GET0:.*]] = air.channel.get async [%{{.*}}, %[[VALUE3]]]  @channel_4
-// CHECK: %[[PUT0:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_0
-// CHECK: %[[PUT1:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_1
-// CHECK: %[[PUT2:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_2
-// CHECK: %[[PUT3:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_3
+// CHECK: %[[GET0:.*]] = air.channel.get async [%{{.*}}, %[[VALUE3]]]  @channel_0
+// CHECK: %[[PUT0:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_1
+// CHECK: %[[PUT1:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_2
+// CHECK: %[[PUT2:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_3
+// CHECK: %[[PUT3:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_4
 
 // CHECK: air.herd
 // CHECK: affine.if
-// CHECK: air.channel.get async{{.*}}@channel_0
-// CHECK: else
-// CHECK-NEXT: affine.if
 // CHECK: air.channel.get async{{.*}}@channel_1
 // CHECK: else
 // CHECK-NEXT: affine.if
 // CHECK: air.channel.get async{{.*}}@channel_2
 // CHECK: else
+// CHECK-NEXT: affine.if
 // CHECK: air.channel.get async{{.*}}@channel_3
+// CHECK: else
+// CHECK: air.channel.get async{{.*}}@channel_4
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 256)>

@@ -25,8 +25,19 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: scf.parallel
 // CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_0
+
+// CHECK: scf.parallel
+// CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_1
+
+// CHECK: %[[EVENT12:.*]] = air.wait_all async
+// CHECK: scf.parallel
+// CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_2
+
+// CHECK: %[[EVENT18:.*]] = air.wait_all async
+// CHECK: scf.parallel
+// CHECK: scf.for
 // CHECK: air.channel.get{{.*}}@channel_3
     air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c2, %arg5=%c2) args(%arg6=%arg0, %arg7=%arg1, %arg8=%alloc_0) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
       %c1 = arith.constant 1 : index

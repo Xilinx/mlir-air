@@ -91,6 +91,13 @@ module {
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_0
+// CHECK: scf.yield
+// CHECK: scf.yield
+// CHECK: scf.yield
+
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_1
 // CHECK: scf.yield
 // CHECK: scf.yield
@@ -173,7 +180,7 @@ module {
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: scf.for
-// CHECK: air.channel.put{{.*}}@channel_4
+// CHECK: air.channel.put{{.*}}@channel_0
 // CHECK: scf.yield
 // CHECK: scf.yield
 // CHECK: scf.yield
@@ -183,23 +190,23 @@ module {
 // CHECK: scf.for
 // CHECK: scf.for %[[VALUE0:.*]] = %c0{{.*}} to %c8{{.*}} step %c1{{.*}} iter_args(%[[VALUE1:.*]] = %{{.*}})
 // CHECK: affine.apply {{.*}}[%[[VALUE0]]]
-// CHECK: %[[GET0:.*]] = air.channel.get async [%{{.*}}, %[[VALUE1]]]  @channel_4
-// CHECK: %[[PUT0:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_0
-// CHECK: %[[PUT1:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_1
-// CHECK: %[[PUT2:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_2
-// CHECK: %[[PUT3:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_3
+// CHECK: %[[GET0:.*]] = air.channel.get async [%{{.*}}, %[[VALUE1]]]  @channel_0
+// CHECK: %[[PUT0:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_1
+// CHECK: %[[PUT1:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_2
+// CHECK: %[[PUT2:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_3
+// CHECK: %[[PUT3:.*]] = air.channel.put async [{{.*}}%[[GET0]]{{.*}}]  @channel_4
 
 // CHECK: air.herd
 // CHECK: affine.if
-// CHECK: air.channel.get async{{.*}}@channel_0
-// CHECK: else
-// CHECK-NEXT: affine.if
 // CHECK: air.channel.get async{{.*}}@channel_1
 // CHECK: else
 // CHECK-NEXT: affine.if
 // CHECK: air.channel.get async{{.*}}@channel_2
 // CHECK: else
+// CHECK-NEXT: affine.if
 // CHECK: air.channel.get async{{.*}}@channel_3
+// CHECK: else
+// CHECK: air.channel.get async{{.*}}@channel_4
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>

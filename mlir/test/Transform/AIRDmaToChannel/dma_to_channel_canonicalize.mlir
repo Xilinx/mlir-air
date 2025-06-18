@@ -15,7 +15,8 @@ module {
     %c2 = arith.constant 2 : index
 // CHECK: %[[EVENT0:.*]] = scf.parallel (%[[VALUE0:.*]], %[[VALUE1:.*]]) ={{.*}}init
 // CHECK: %[[EVENT1:.*]] = air.channel.put async{{.*}}@channel_0[%[[VALUE0]], %[[VALUE1]]]
-// CHECK: %[[EVENT3:.*]] = air.channel.get async{{.*}}@channel_1[%[[VALUE0]], %[[VALUE1]]]
+// CHECK: %[[EVENT2:.*]] = scf.parallel (%[[VALUE2:.*]], %[[VALUE3:.*]]) ={{.*}}init
+// CHECK: %[[EVENT3:.*]] = air.channel.get async{{.*}}@channel_1[%[[VALUE2]], %[[VALUE3]]]
 // CHECK: %[[EVENT4:.*]] = air.herd @herd_0 async{{.*}}tile (%[[VALUE4:.*]], %[[VALUE5:.*]]) in
     %0 = air.herd @herd_0 async  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg2) : memref<64x64xf32>, memref<64x64xf32>, memref<64x64xf32> attributes {id = 1 : i32, x_loc = 7 : i64, y_loc = 2 : i64} {
       %c1 = arith.constant 1 : index

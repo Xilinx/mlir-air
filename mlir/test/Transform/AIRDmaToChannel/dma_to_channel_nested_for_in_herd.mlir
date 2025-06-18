@@ -25,9 +25,21 @@ module {
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: air.channel.put @channel_0[%[[VALUE0]], %[[VALUE1]]]
-// CHECK: air.channel.put @channel_1[%[[VALUE0]], %[[VALUE1]]]
-// CHECK: air.channel.put @channel_2[%[[VALUE0]], %[[VALUE1]]]
-// CHECK: air.channel.get @channel_3[%[[VALUE0]], %[[VALUE1]]]
+// CHECK: scf.parallel (%[[VALUE2:.*]], %[[VALUE3:.*]]) =
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: air.channel.put @channel_1[%[[VALUE2]], %[[VALUE3]]]
+// CHECK: scf.parallel (%[[VALUE4:.*]], %[[VALUE5:.*]]) =
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: air.channel.put @channel_2[%[[VALUE4]], %[[VALUE5]]]
+// CHECK: scf.parallel (%[[VALUE6:.*]], %[[VALUE7:.*]]) =
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: air.channel.get @channel_3[%[[VALUE6]], %[[VALUE7]]]
     air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c2, %arg5=%c2) args(%arg6=%arg0, %arg7=%arg1, %arg8=%alloc_0) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
       %c1 = arith.constant 1 : index
       %c0 = arith.constant 0 : index
@@ -60,9 +72,21 @@ module {
 // CHECK: scf.for
 // CHECK: scf.for
 // CHECK: air.channel.put async{{.*}}@channel_4[%[[VALUE0]], %[[VALUE1]]]
-// CHECK: air.channel.put async{{.*}}@channel_5[%[[VALUE0]], %[[VALUE1]]]
-// CHECK: air.channel.put async{{.*}}@channel_6[%[[VALUE0]], %[[VALUE1]]]
-// CHECK: air.channel.get async{{.*}}@channel_7[%[[VALUE0]], %[[VALUE1]]]  
+// CHECK: %[[EVENT1:.*]] = scf.parallel (%[[VALUE2:.*]], %[[VALUE3:.*]]) ={{.*}}init
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: air.channel.put async{{.*}}@channel_5[%[[VALUE2]], %[[VALUE3]]]
+// CHECK: %[[EVENT2:.*]] = scf.parallel (%[[VALUE4:.*]], %[[VALUE5:.*]]) ={{.*}}init
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: air.channel.put async{{.*}}@channel_6[%[[VALUE4]], %[[VALUE5]]]
+// CHECK: %[[EVENT3:.*]] = scf.parallel (%[[VALUE6:.*]], %[[VALUE7:.*]]) ={{.*}}init
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: air.channel.get async{{.*}}@channel_7[%[[VALUE6]], %[[VALUE7]]]    
   func.func @async(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>) -> memref<64x64xi32> {
     %c2 = arith.constant 2 : index
     %c0_i32 = arith.constant 0 : i32
@@ -207,7 +231,7 @@ module {
           %alloc = memref.alloc() : memref<32x256xi32, 1>
           air.execute_terminator %alloc : memref<32x256xi32, 1>
         }
-        %2 = air.herd @herd_0 async [%async_token_3]  tile (%arg10, %arg11) in (%arg12=%c2, %arg13=%c2) args(%arg14=%results_2, %arg15=%arg9, %arg16=%results_4) : index, memref<2048x2048xi32>, memref<32x256xi32, 1> attributes {id = 3 : i32} {
+        %2 = air.herd @herd_0 async [%async_token_1, %async_token_3]  tile (%arg10, %arg11) in (%arg12=%c2, %arg13=%c2) args(%arg14=%results_2, %arg15=%arg9, %arg16=%results_4) : index, memref<2048x2048xi32>, memref<32x256xi32, 1> attributes {id = 3 : i32} {
           %c1 = arith.constant 1 : index
           %c0 = arith.constant 0 : index
           %c256 = arith.constant 256 : index

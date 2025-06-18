@@ -5,14 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-dma-to-channel | FileCheck %s
+// RUN: air-opt %s -air-dma-to-channel 2>&1 | FileCheck %s
+
+// CHECK:  warning{{.*}}Attribute broadcast_pattern is set, but data movement isn't specialized via affine if guards. Therefore, the broadcast pattern is ignored.
+// CHECK:  warning{{.*}}Attribute broadcast_pattern is set, but data movement isn't specialized via affine if guards. Therefore, the broadcast pattern is ignored.
 
 #map = affine_map<()[s0] -> (s0 * 256)>
 #set = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, -d1 + 1 >= 0, s0 >= 0, -s0 + 1 >= 0)>
 #set1 = affine_set<(d0, d1)[s0] : (d0 >= 0, -d0 + 1 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 1 >= 0)>
 module {
-// CHECK: air.channel @channel_0 [2, 1] {broadcast_shape = [2, 2]}
-// CHECK: air.channel @channel_1 [1, 2] {broadcast_shape = [2, 2]}
+// CHECK: air.channel @channel_0 [2, 2]
+// CHECK: air.channel @channel_1 [2, 2]
 // CHECK: air.channel @channel_2 [2, 2]
 // CHECK-LABEL: func.func @mmult
   func.func @mmult(%arg0: memref<512x512xi32>, %arg1: memref<512x512xi32>, %arg2: memref<512x512xi32>) {
@@ -25,8 +28,22 @@ module {
 // CHECK: %[[EVENT1:.*]] = scf.parallel{{.*}}init
 // CHECK: %[[EVENT2:.*]] = scf.for{{.*}}iter_args
 // CHECK: %[[EVENT3:.*]] = air.channel.put async{{.*}}@channel_0
+// CHECK: scf.yield
+// CHECK: scf.reduce
+// CHECK: scf.reduce.return
+// CHECK: scf.reduce
+// CHECK: scf.reduce.return
+// CHECK: %[[EVENT4:.*]] = scf.parallel{{.*}}init
+// CHECK: %[[EVENT5:.*]] = scf.parallel{{.*}}init
+// CHECK: %[[EVENT6:.*]] = scf.for{{.*}}iter_args
 // CHECK: %[[EVENT7:.*]] = air.channel.put async{{.*}}@channel_1
 // CHECK: scf.yield
+// CHECK: scf.reduce
+// CHECK: scf.reduce.return
+// CHECK: scf.reduce
+// CHECK: scf.reduce.return
+// CHECK: %[[EVENT8:.*]] = scf.parallel{{.*}}init
+// CHECK: %[[EVENT9:.*]] = scf.parallel{{.*}}init
 // CHECK: %[[EVENT10:.*]] = air.channel.get async{{.*}}@channel_2
 // CHECK: scf.reduce
 // CHECK: scf.reduce.return
