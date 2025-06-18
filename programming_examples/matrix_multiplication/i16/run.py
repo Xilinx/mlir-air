@@ -4,15 +4,30 @@ import argparse
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
+from air.dialects.linalg import fill
 from air.dialects.air import *
 from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
-from air.dialects.func import FuncOp, CallOp
+from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
+from air.extras import types as extrasT
+from air.dialects.linalg.opdsl.lang import *
 
 range_ = for_
+
+
+@linalg_structured_op()
+def block_matmul(
+    A=TensorDef(T, S.a, S.c, S.f, S.d, S.g, S.i),
+    B=TensorDef(T, S.b, S.c, S.e, S.f, S.i, S.h),
+    C=TensorDef(U, S.b, S.a, S.e, S.d, S.g, S.h, output=True),
+):
+    domain(D.a, D.b, D.c, D.d, D.e, D.f, D.g, D.h, D.i)
+    C[D.b, D.a, D.e, D.d, D.g, D.h] += (
+        TypeFn.cast_signed(U, A[D.a, D.c, D.f, D.d, D.g, D.i])
+    ) * (TypeFn.cast_signed(U, B[D.b, D.c, D.e, D.f, D.i, D.h]))
 
 
 @module_builder
@@ -47,7 +62,7 @@ def build_module(
     memrefTyOut = MemRefType.get(c_size, xrt_dtype_out)
 
     # L1 MemRefTypes
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+    l1_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L1)
     a_l1_size = [
         1,
         1,
@@ -113,19 +128,6 @@ def build_module(
         element_type=xrt_dtype_out,
         memory_space=l1_mem_space,
     )
-    linalg_fill_func = FuncOp(
-        "linalg_fill_i16_view1x1x16x16x4x4xi16as2",
-        ([xrt_dtype_out, l1MemrefTyC], []),
-        visibility="private",
-    )
-    matmul_func = FuncOp(
-        "matmul_i16_i16",
-        ([l1MemrefTyA, l1MemrefTyB, l1MemrefTyC], []),
-        visibility="private",
-    )
-    for func in [linalg_fill_func, matmul_func]:
-        func.attributes["link_with"] = StringAttr.get("mm.o")
-        func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
 
     @FuncOp.from_py_func(memrefTyA, memrefTyB, memrefTyOut)
     def matmul_bf16(arg0, arg1, arg2):
@@ -158,7 +160,7 @@ def build_module(
                 a_size_l2 = [herd_m, 1, tile_m, tile_k_l2]
                 b_size_l2 = [1, herd_n, tile_k_l2, tile_n]
                 c_size_l2 = [herd_m, herd_n, tile_m, tile_n]
-                l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
+                l2_mem_space = IntegerAttr.get(extrasT.i32(), MemorySpace.L2)
                 l2MemrefTyA = MemRefType.get(
                     shape=a_size_l2,
                     element_type=xrt_dtype_in,
@@ -238,9 +240,7 @@ def build_module(
                         strides=[1, 1, 1, 1, 1, 1],
                     )
                     zero_const = ConstantOp(IntegerAttr.get(xrt_dtype_out, 0), None)
-                    zero_fill = CallOp(linalg_fill_func, [zero_const, l1_c_subview])
-
-                herd_body.attributes["link_with"] = StringAttr.get("mm.o")
+                    zero_fill = fill(zero_const, outs=[l1_c_subview])
 
                 for i in range_(0, k // tile_k_l2):
                     # Affine map for k (l2) loop iv
@@ -360,13 +360,8 @@ def build_module(
                                 ],
                                 strides=[1, 1, 1, 1, 1, 1],
                             )
-                            matmul = CallOp(
-                                matmul_func,
-                                [_l1_a, _l1_b, l1_c_subview],
-                            )
+                            matmul = block_matmul(_l1_a, _l1_b, outs=[l1_c_subview])
                             yield_([])
-
-                        herd_body.attributes["link_with"] = StringAttr.get("mm.o")
 
                     yield_([])
 
@@ -437,8 +432,6 @@ def build_module(
                         ],
                     )
 
-                herd_body.attributes["link_with"] = StringAttr.get("mm.o")
-
                 dma_memcpy_nd(
                     l3_c_data_s,
                     l2_c_data,
@@ -487,7 +480,7 @@ if __name__ == "__main__":
         action="store_true",
     )
     parser.add_argument(
-        "--m", type=int, default=M, help="K dimension size in a (MxK) * (KxN) matmul"
+        "--m", type=int, default=M, help="M dimension size in a (MxK) * (KxN) matmul"
     )
     parser.add_argument(
         "--k", type=int, default=K, help="K dimension size in a (MxK) * (KxN) matmul"
@@ -598,6 +591,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             runtime_loop_tiling_sizes=[2, 2],
+            lower_linalg_to_func="mm.o",
         )
         exit(
             runner.run_test(
@@ -614,6 +608,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             runtime_loop_tiling_sizes=[2, 2],
+            lower_linalg_to_func="mm.o",
         )
         module_function = backend.compile(mlir_module)
 
