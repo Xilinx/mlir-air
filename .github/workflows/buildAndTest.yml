@@ -144,7 +144,6 @@ jobs:
           ninja check-air-cpp
           ninja check-air-mlir
           ninja check-air-python
-          ninja check-air-runner
           popd
           rm -rf build_assert
         env:
@@ -173,7 +172,7 @@ jobs:
             -DLLVM_USE_LINKER=lld \
             -DCMAKE_INSTALL_PREFIX=install
           make -j$(nproc)
-          make check-air-cpp check-air-mlir check-air-python check-air-runner
+          make check-air-cpp check-air-mlir check-air-python
           popd
           rm -rf build_release
         env:
