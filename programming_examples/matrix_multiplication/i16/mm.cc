@@ -183,8 +183,8 @@ extern "C" {
 
 #define matmul_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,            \
                                  mlir_type_out, r, s, t)                       \
-  void matmul_##mlir_type_in##_##mlir_type_out(ctype_in *a_in, ctype_in *b_in, \
-                                               ctype_out *c_out) {             \
+  void op_has_no_registered_library_name(ctype_in *a_in, ctype_in *b_in,       \
+                                         ctype_out *c_out) {                   \
     matmul_vectorized_##r##x##s##x##t##_##mlir_type_in##_##mlir_type_out<      \
         DIM_M, DIM_K, DIM_N>(a_in, b_in, c_out);                               \
   }
