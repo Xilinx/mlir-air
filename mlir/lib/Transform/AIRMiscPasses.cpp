@@ -1080,12 +1080,15 @@ scf::ForOp getScfForFromVal(Value val) {
   auto defOp = val.getDefiningOp();
   if (!defOp)
     return scf::ForOp();
+  SetVector<Value> opers;
   if (auto exec = dyn_cast<air::ExecuteOp>(defOp)) {
-    SetVector<Value> opers;
     getUsedValuesDefinedAbove(exec.getRegion(), opers);
-    for (auto oper : opers)
-      if (auto res = scf::getForInductionVarOwner(oper))
-        return res;
+  } else {
+    opers.insert(defOp->getOperands().begin(), defOp->getOperands().end());
+  }
+  for (auto oper : opers) {
+    if (auto res = scf::getForInductionVarOwner(oper))
+      return res;
   }
   return scf::ForOp();
 }

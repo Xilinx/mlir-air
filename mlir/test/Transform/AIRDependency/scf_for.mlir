@@ -13,30 +13,18 @@ module {
 
   // CHECK-LABEL: func0
   // CHECK: scf.for{{.*}}iter_args(%[[ITERARG0:.*]] = %{{.*}})
-  // CHECK: %[[EXECTOK0:.*]], %[[EXECVAL0:.*]] = air.execute [%[[ITERARG0]]]
-  // CHECK-NEXT: arith.muli
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK1:.*]], %[[EXECVAL1:.*]] = air.execute [%[[EXECTOK0]], %[[ITERARG0]]]
-  // CHECK-NEXT: arith.addi
-  // CHECK-NEXT: air.execute_terminator
+  // CHECK: arith.muli
+  // CHECK: arith.addi
 
   // CHECK: scf.for{{.*}}iter_args(%[[ITERARG1:.*]] = %{{.*}})
-  // CHECK: %[[EXECTOK2:.*]], %[[EXECVAL2:.*]] = air.execute [%[[ITERARG1]]]
-  // CHECK-NEXT: arith.muli
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK3:.*]], %[[EXECVAL3:.*]] = air.execute [%[[EXECTOK2]], %[[ITERARG1]]]
-  // CHECK-NEXT: arith.addi
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK5:.*]], %[[EXECVAL5:.*]] = air.execute [%[[ITERARG1]]]
-  // CHECK-NEXT: arith.muli
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK7:.*]], %[[EXECVAL7:.*]] = air.execute [%[[ITERARG1]], %[[EXECTOK5]], %[[EXECTOK3]]]
-  // CHECK-NEXT: arith.addi
-  // CHECK-NEXT: air.execute_terminator
+  // CHECK: arith.muli
+  // CHECK: arith.addi
+  // CHECK: arith.muli
+  // CHECK: arith.addi
   // CHECK: %[[EXECTOK8:.*]], %[[EXECVAL8:.*]] = air.execute
   // CHECK-NEXT: memref.alloc
   // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[DMA0:.*]] = air.dma_memcpy_nd async [%[[ITERARG1]], %[[EXECTOK8]], %[[EXECTOK7]]]
+  // CHECK: %[[DMA0:.*]] = air.dma_memcpy_nd async [%[[ITERARG1]], %[[EXECTOK8]]]
   // CHECK: air.dma_memcpy_nd async [%[[ITERARG1]], %[[DMA0]]]
   // CHECK: scf.yield
   // CHECK: scf.yield
@@ -76,36 +64,20 @@ module {
 
   // CHECK-LABEL: func1
   // CHECK: scf.for{{.*}}iter_args(%[[ITERARG0:.*]] = %{{.*}})
-  // CHECK: %[[EXECTOK0:.*]], %[[EXECVAL0:.*]] = air.execute [%[[ITERARG0]]]
-  // CHECK-NEXT: arith.muli
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK1:.*]], %[[EXECVAL1:.*]] = air.execute [%[[EXECTOK0]], %[[ITERARG0]]]
-  // CHECK-NEXT: arith.addi
-  // CHECK-NEXT: air.execute_terminator
+  // CHECK: arith.muli
+  // CHECK: arith.addi
 
   // CHECK: scf.for{{.*}}iter_args(%[[ITERARG1:.*]] = %{{.*}})
-  // CHECK: %[[EXECTOK2:.*]], %[[EXECVAL2:.*]] = air.execute [%[[ITERARG1]]]
-  // CHECK-NEXT: arith.muli
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK3:.*]], %[[EXECVAL3:.*]] = air.execute [%[[EXECTOK2]], %[[ITERARG1]]]
-  // CHECK-NEXT: arith.addi
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK4:.*]], %[[EXECVAL4:.*]] = air.execute [%[[ITERARG1]]]
-  // CHECK-NEXT: arith.index_cast
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK5:.*]], %[[EXECVAL5:.*]] = air.execute [%[[ITERARG1]], %[[EXECTOK4]]]
-  // CHECK-NEXT: arith.muli
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK6:.*]], %[[EXECVAL6:.*]] = air.execute [%[[ITERARG1]], %[[EXECTOK3]]]
-  // CHECK-NEXT: arith.index_cast
-  // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[EXECTOK7:.*]], %[[EXECVAL7:.*]] = air.execute [%[[ITERARG1]], %[[EXECTOK6]], %[[EXECTOK5]]]
-  // CHECK-NEXT: arith.addi
-  // CHECK-NEXT: air.execute_terminator
+  // CHECK: arith.muli
+  // CHECK: arith.addi
+  // CHECK: arith.index_cast
+  // CHECK: arith.muli
+  // CHECK: arith.index_cast
+  // CHECK: arith.addi
   // CHECK: %[[EXECTOK8:.*]], %[[EXECVAL8:.*]] = air.execute
   // CHECK-NEXT: memref.alloc
   // CHECK-NEXT: air.execute_terminator
-  // CHECK: %[[DMA0:.*]] = air.dma_memcpy_nd async [%[[ITERARG1]], %[[EXECTOK8]], %[[EXECTOK7]]]
+  // CHECK: %[[DMA0:.*]] = air.dma_memcpy_nd async [%[[ITERARG1]], %[[EXECTOK8]]]
   // CHECK: air.dma_memcpy_nd async [%[[ITERARG1]], %[[DMA0]]]
   // CHECK: scf.yield
   // CHECK: scf.yield

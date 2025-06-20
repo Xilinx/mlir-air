@@ -47,7 +47,7 @@ module {
         air.channel.put @channel_2[] (%arg7[%arg16, %18] [%c64_new, %c64_new] [%c1024_new, %c1_new]) : (memref<1024x1024xbf16>)
       }
 // CHECK: %[[EVENT4:.*]] = air.wait_all async [%[[EVENT2]], %[[EVENT3]]]
-// CHECK: %[[EVENT5:.*]] = air.channel.put async [%[[EVENT6:.*]], %[[EVENT7:.*]]]{{.*}}@channel_3[]
+// CHECK: %[[EVENT5:.*]] = air.channel.put async{{.*}}@channel_3[]
       air.channel.put @channel_3[] (%arg8[%17, %18] [%c64_new, %c64_new] [%c1024_new, %c1_new]) : (memref<24576x1024xbf16>)
       
       air.segment  args(%arg9=%arg2, %arg10=%arg3, %arg11=%arg4, %arg12=%arg5, %arg13=%arg6, %arg14=%arg7) : index, index, index, index, memref<24576x1024xbf16>, memref<1024x1024xbf16> {
@@ -146,20 +146,16 @@ module {
 // CHECK: %[[VAL1:.*]] = air.channel.get async [%[[VAL0]]]
 // CHECK: %[[VAL2:.*]] = air.channel.get async [%[[VAL0]]]
 // CHECK: scf.for {{.*}}iter_args(%[[VAL3:.*]] = %{{.*}})
-// CHECK: %[[VAL4:.*]], %[[RES0:.*]] = air.execute [%[[VAL3]]]
-// CHECK: air.channel.put async [%[[VAL4]], %[[VAL3]]]
-// CHECK: %[[VAL5:.*]], %[[RES1:.*]] = air.execute [%[[VAL3]]]
-// CHECK: air.channel.put async [%[[VAL5]], %[[VAL3]]]
+// CHECK: air.channel.put async [%[[VAL3]]]
+// CHECK: air.channel.put async [%[[VAL3]]]
 // CHECK: scf.yield
 
 // CHECK: scf.for {{.*}}iter_args(%[[VAL6:.*]] = %{{.*}})
 // CHECK: %[[VAL7:.*]] = air.channel.get async [%[[VAL6]]]
 // CHECK: %[[VAL8:.*]] = air.channel.get async [%[[VAL6]]]
 // CHECK: scf.for {{.*}}iter_args(%[[VAL9:.*]] = %{{.*}})
-// CHECK: %[[VAL10:.*]], %[[RES2:.*]] = air.execute [%[[VAL9]]]
-// CHECK: air.channel.put async [%[[VAL10]], %[[VAL9]]]
-// CHECK: %[[VAL11:.*]], %[[RES3:.*]] = air.execute [%[[VAL9]]]
-// CHECK: air.channel.put async [%[[VAL11]], %[[VAL9]]]
+// CHECK: air.channel.put async [%[[VAL9]]]
+// CHECK: air.channel.put async [%[[VAL9]]]
 // CHECK: scf.yield
 
 #map = affine_map<()[s0] -> (s0 * 96)>

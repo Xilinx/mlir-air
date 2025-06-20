@@ -135,9 +135,6 @@ public:
         else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp,
                      memref::CopyOp>(op))
           createAsyncExecute(rewriter, op);
-        else if (isa<memref::CastOp, affine::AffineApplyOp, arith::AddIOp,
-                     arith::MulIOp, arith::IndexCastOp>(op))
-          createAsyncExecute(rewriter, op, op->getResult(0).getType());
         else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op))
           createAsyncHierarchyImpls(rewriter, hierarchy_op);
         // Create async execute region for memref.alloc
@@ -154,8 +151,7 @@ public:
         else {
           bool isCandidateExecute = false;
           for (auto operand : op->getOperands()) {
-            if (llvm::isa<BaseMemRefType>(operand.getType()) ||
-                llvm::isa<IndexType>(operand.getType())) {
+            if (llvm::isa<BaseMemRefType>(operand.getType())) {
               isCandidateExecute = true;
             }
           }

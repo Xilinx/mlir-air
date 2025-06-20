@@ -45,7 +45,7 @@ void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
 void traceDependentInductionVar(air::MemcpyInterface memcpyif_op,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history);
-void traceDependentInductionVar(air::AsyncOpInterface async_op,
+void traceDependentInductionVar(Operation *op,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history);
 void traceDependentHerdId(air::AsyncOpInterface async_op,

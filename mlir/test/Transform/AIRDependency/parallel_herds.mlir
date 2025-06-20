@@ -10,8 +10,8 @@
 // The second herd should not depend on the first
 
 // CHECK: %[[EVENT0:.*]] = scf.for
-// CHECK: air.execute_terminator {{.*}} : index
-// CHECK: } {id = 14 : i32}
+// CHECK: scf.yield
+// CHECK-NEXT: }
 // CHECK-NOT: %[[EVENT1:.*]] = air.wait_all async [{{.*}}%[[EVENT0]]
 // CHECK: %[[EVENT2:.*]] = scf.for
 
