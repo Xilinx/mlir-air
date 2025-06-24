@@ -145,12 +145,11 @@ class XRTRunner:
             xclbin_input=self.xclbin_input,
         )
 
-        # run the module - slots are input/output for now, assume non-overlapping inputs/outputs
+        # run the module - slots are inputs followed by outputs
         if expected_outputs:
-            expanded_inputs = inputs + [
-                np.zeros(o.shape, o.dtype) for o in expected_outputs
-            ]
+            expanded_inputs = inputs + expected_outputs
         elif stochastic_expected_outputs:
+            # stochastic expected outputs are incomplete for initializing the output buffers; zero initialize the output buffers instead
             expanded_inputs = inputs + [
                 np.zeros(o["shape"], o["values"][0].dtype)
                 for o in stochastic_expected_outputs
@@ -158,7 +157,7 @@ class XRTRunner:
         else:
             assert (
                 False
-            ), f"Expect one of 'expected_outputs' and 'stochastic_expected_outputs' to not be empty."
+            ), f"Expect one of 'expected_outputs' or 'stochastic_expected_outputs' to not be empty."
 
         compiled_module = backend.compile(mlir_module)
         with filelock.FileLock("/tmp/npu.lock"):
