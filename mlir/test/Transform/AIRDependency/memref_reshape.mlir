@@ -44,11 +44,7 @@ module {
       // CHECK-NOT: = air.execute
       // CHECK-NOT: air.execute_terminator
       %3 = arith.muli %arg2, %c8 : index
-      // CHECK: = air.execute
-      // CHECK: air.execute_terminator
       %4 = arith.muli %arg2, %c32_0 : index
-      // CHECK: = air.execute
-      // CHECK: air.execute_terminator
       // CHECK: = air.wait_all async
       scf.for %arg8 = %c0_0 to %c64_0 step %c32_0 {
         %5 = memref.alloc() : memref<8x4x32xi32, 2>

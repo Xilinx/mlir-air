@@ -81,13 +81,10 @@ void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
   for (auto operand : candidate_scalar_operands) {
     if (!llvm::isa<IndexType, IntegerType, FloatType>(operand.getType()))
       continue; // Only tracing scalar operands
-    if (operand.getDefiningOp() &&
-        mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
-      auto ancestor_async_op =
-          dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-      op_history.push_back(ancestor_async_op.getOperation());
-      traceDependentInductionVar(ancestor_async_op, loop_dep_history,
-                                 op_history);
+    auto defOp = operand.getDefiningOp();
+    if (defOp) {
+      op_history.push_back(defOp);
+      traceDependentInductionVar(defOp, loop_dep_history, op_history);
     } else {
       // Trace dependency through a for loop
       if (auto for_op = getForRegionIterArgsOwner(operand)) {
@@ -128,12 +125,11 @@ void traceDependentInductionVar(air::MemcpyInterface memcpyif_op,
 }
 
 // Recursively check for dependency to any loop induction vars
-void traceDependentInductionVar(air::AsyncOpInterface async_op,
+void traceDependentInductionVar(Operation *op,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history) {
-  // Get child op if async_op is air.execute
-  Operation *op = nullptr;
-  if (auto air_region_op = dyn_cast<air::ExecuteOp>(async_op.getOperation())) {
+  // Get child op if op is air.execute
+  if (auto air_region_op = dyn_cast<air::ExecuteOp>(op)) {
     if (air_region_op.getRegion().front().getOperations().size() != 2) {
       air_region_op->emitOpError("air::ExecuteOp should have only one child "
                                  "operation beside the terminator");
@@ -143,8 +139,6 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
       if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
         op = &child_op;
     }
-  } else {
-    op = async_op.getOperation();
   }
   traceDependentInductionVar(op->getOperands(), loop_dep_history, op_history);
 }
@@ -248,42 +242,6 @@ traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
   }
 
   return loop_dep_history;
-}
-
-// Recursively check for dependency to any control token (scf loop or wait all)
-void traceDependentScfLoopToken(air::AsyncOpInterface async_op,
-                                SmallVector<Value, 1> &control_token_history,
-                                std::vector<Operation *> &op_history) {
-
-  // Check for immediate dependency to control tokens
-  for (auto token : async_op.getAsyncDependencies()) {
-    if (auto for_op = getForRegionIterArgsOwner(token)) {
-      control_token_history.push_back(token);
-      return;
-    }
-    if (auto parallel_op =
-            getParallelRegionInitValsOwner(async_op.getOperation(), token)) {
-      control_token_history.push_back(token);
-      return;
-    }
-    if (token.getDefiningOp() &&
-        dyn_cast<air::WaitAllOp>(token.getDefiningOp())) {
-      control_token_history.push_back(token);
-      return;
-    }
-  }
-
-  // Recursively trace dependency to scf loop tokens
-  for (auto token : async_op.getAsyncDependencies()) {
-    if (token.getDefiningOp() &&
-        mlir::dyn_cast<air::AsyncOpInterface>(token.getDefiningOp())) {
-      auto ancestor_async_op =
-          dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
-      op_history.push_back(ancestor_async_op.getOperation());
-      traceDependentScfLoopToken(ancestor_async_op, control_token_history,
-                                 op_history);
-    }
-  }
 }
 
 void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
