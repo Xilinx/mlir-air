@@ -107,7 +107,7 @@ jobs:
         run: |
           git clone https://github.com/Xilinx/cmakeModules.git
 
-      # Build the repo test target in debug mode to build and test.
+      # Build the repo test target in release mode to build and test.
       - name: Build and test mlir-air (Assert)
         run: |
           source air-venv/bin/activate
@@ -126,7 +126,7 @@ jobs:
 
           cmake .. \
             -GNinja \
-            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DPython3_EXECUTABLE=$(which python) \
             -DCMAKE_INSTALL_PREFIX=$PWD/../install \
