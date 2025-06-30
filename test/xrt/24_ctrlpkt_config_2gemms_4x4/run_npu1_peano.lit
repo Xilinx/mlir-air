@@ -1,0 +1,22 @@
+// (c) Copyright 2025 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu1, peano
+// RUN: mkdir -p test_npu1_peano
+// RUN: cd test_npu1_peano
+// RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: %PEANO_INSTALL_DIR/bin/clang++ --target=aie2-none-unknown-elf %peano_flags -c %S/mm.cc -o mm.o
+// RUN: %python %S/aie.py
+// RUN: %python %S/aie2.py
+// RUN: %python aiecc.py --no-xchesscc --no-xbridge --no-aiesim --aie-generate-xclbin --no-compile-host --generate-ctrl-pkt-overlay --xclbin-name=base.xclbin %S/base.mlir
+// RUN: %python aiecc.py --no-xchesscc --no-xbridge --no-aiesim --aie-generate-ctrlpkt --aie-generate-npu --no-compile-host --generate-ctrl-pkt-overlay --npu-insts-name=aie_run_seq.bin aie.mlir
+// RUN: aie-translate -aie-ctrlpkt-to-bin -aie-sequence-name=configure aie.mlir.prj/ctrlpkt.mlir -o ctrlpkt.bin
+// RUN: aie-opt -aie-ctrl-packet-to-dma -aie-dma-to-npu aie.mlir.prj/ctrlpkt.mlir -o ctrlpkt_dma_seq.mlir
+// RUN: aie-translate -aie-npu-to-binary -aie-sequence-name=configure ctrlpkt_dma_seq.mlir -o ctrlpkt_dma_seq.bin
+// RUN: %python %S/aie2.py
+// RUN: %python aiecc.py --no-xchesscc --no-xbridge --no-aiesim --aie-generate-ctrlpkt --aie-generate-npu --no-compile-host --generate-ctrl-pkt-overlay --npu-insts-name=aie2_run_seq.bin aie2.mlir
+// RUN: aie-translate -aie-ctrlpkt-to-bin -aie-sequence-name=configure aie2.mlir.prj/ctrlpkt.mlir -o aie2_ctrlpkt.bin
+// RUN: aie-opt -aie-ctrl-packet-to-dma -aie-dma-to-npu aie2.mlir.prj/ctrlpkt.mlir -o aie2_ctrlpkt_dma_seq.mlir
+// RUN: aie-translate -aie-npu-to-binary -aie-sequence-name=configure aie2_ctrlpkt_dma_seq.mlir -o aie2_ctrlpkt_dma_seq.bin
+// RUN: g++-13 %S/test.cpp -o test.exe -std=c++23 -Wall %test_utils_flags %xrt_flags -lrt -lstdc++ -lboost_program_options -lboost_filesystem
+// UN: %run_on_npu1% ./test.exe -x base.xclbin -k MLIR_AIE
