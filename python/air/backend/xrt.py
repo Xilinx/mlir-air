@@ -126,7 +126,7 @@ class XRTBackend(AirBackend):
             )
 
         # Try to get xrt.
-        target_device = "npu1_4col"
+        target_device = "npu1"
         try:
             import subprocess
             import re
@@ -153,7 +153,7 @@ class XRTBackend(AirBackend):
                 if self.verbose:
                     print(f"\tmodel: '{model}'")
                 if model in ["npu1", "Phoenix"]:
-                    target_device = "npu1_4col"
+                    target_device = "npu1"
                 elif model in ["npu4", "Strix"]:
                     target_device = "npu2_4col"
                 else:

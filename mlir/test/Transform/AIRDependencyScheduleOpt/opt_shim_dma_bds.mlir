@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1_4col" | FileCheck %s
-// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1_4col shim-dma-tile-sizes=2,2" | FileCheck %s --check-prefix=NPUTILED
+// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1" | FileCheck %s
+// RUN: air-opt %s -air-opt-shim-dma-bds="device=npu1 shim-dma-tile-sizes=2,2" | FileCheck %s --check-prefix=NPUTILED
 // RUN: air-opt %s -air-opt-shim-dma-bds="device=xcvc1902" | FileCheck %s --check-prefix=AIE1
 
 // Optimize logical air.channel.put/get op into efficient shim dma block descriptor (BD).
