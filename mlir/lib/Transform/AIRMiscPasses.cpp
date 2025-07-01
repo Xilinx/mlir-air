@@ -1463,6 +1463,39 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     int tilingFactor =
         std::max(getChanCount(MM2SChannels), getChanCount(S2MMChannels));
 
+    // Single-channel side: check if all endpoints of this channel are
+    // splittable. An endpoint is not splittable if operating on an air.herd.
+    auto isSplittingChannelGetsOnHerd = [&MM2SChannels]() {
+      return llvm::any_of(
+          MM2SChannels,
+          [](std::pair<air::ChannelOp, SmallVector<SmallVector<Value>>>
+                 mapEntry) {
+            return llvm::any_of(
+                air::getChannelGetOpThroughSymbol(mapEntry.first),
+                [](Operation *ci) {
+                  return ci->getParentOfType<air::HerdOp>();
+                });
+          });
+    };
+    auto isSplittingChannelPutsOnHerd = [&S2MMChannels]() {
+      return llvm::any_of(
+          S2MMChannels,
+          [](std::pair<air::ChannelOp, SmallVector<SmallVector<Value>>>
+                 mapEntry) {
+            return llvm::any_of(
+                air::getChannelPutOpThroughSymbol(mapEntry.first),
+                [](Operation *ci) {
+                  return ci->getParentOfType<air::HerdOp>();
+                });
+          });
+    };
+    if (getChanCount(MM2SChannels) == 1)
+      if (isSplittingChannelGetsOnHerd())
+        continue;
+    if (getChanCount(S2MMChannels) == 1)
+      if (isSplittingChannelPutsOnHerd())
+        continue;
+
     llvm::MapVector<int, SmallVector<infoEntryTy>> infoEntryMap;
     std::optional<int> splitDimOffset = std::nullopt;
     std::optional<int> splitDimSize = std::nullopt;
