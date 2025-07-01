@@ -527,8 +527,6 @@ air::getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op) {
   };
 
   std::vector<unsigned int> uIntVec = arrayAttrToUIntVector(channelBundleSize);
-  if (uIntVec.empty())
-    return res;
   res = air::getIteratorFromMDVector(uIntVec, indicesUint);
   return res;
 }
