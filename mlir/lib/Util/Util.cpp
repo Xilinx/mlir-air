@@ -505,6 +505,32 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelInterface op) {
     return std::vector<air::ChannelInterface>();
 }
 
+// Get integer index to metadataArray, from channel bundle indices.
+std::optional<int>
+air::getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op) {
+  std::optional<int> res = std::nullopt;
+  std::vector<unsigned> indicesUint =
+      air::convertVecOfConstIndexToVecOfUInt(op.getIndices());
+  auto channelBundleSize =
+      air::getChannelDeclarationThroughSymbol(op).getSize();
+
+  auto arrayAttrToUIntVector =
+      [](mlir::ArrayAttr attr) -> std::vector<unsigned int> {
+    std::vector<unsigned int> vec;
+    for (mlir::Attribute a : attr) {
+      if (auto intAttr = dyn_cast<mlir::IntegerAttr>(a))
+        vec.push_back(static_cast<unsigned int>(intAttr.getInt()));
+      else
+        llvm::errs() << "Warning: Non-integer attribute in ArrayAttr\n";
+    }
+    return vec;
+  };
+
+  std::vector<unsigned int> uIntVec = arrayAttrToUIntVector(channelBundleSize);
+  res = air::getIteratorFromMDVector(uIntVec, indicesUint);
+  return res;
+}
+
 // Get sizes from integerset
 void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
                                  SmallVector<int, 2> &lbs_int,

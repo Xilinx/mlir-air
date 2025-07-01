@@ -2197,3 +2197,58 @@ module {
     return
   }
 }
+
+// -----
+
+// Air.channel connecting multiple physical air.herds: disable channel splitting if operating on air.herd.
+
+// CHECK-LABEL: @func16
+// CHECK: = air.execute -> (memref<16x4xf32, 1 : i32>) {
+// CHECK-NEXT: %[[ALLOC:.*]] = memref.alloc() : memref<16x4xf32, 1 : i32>
+// CHECK-NEXT: air.execute_terminator %[[ALLOC]] : memref<16x4xf32, 1 : i32>
+
+module {
+  air.channel @channel_2 [4, 1]
+  air.channel @channel_3 [1, 1]
+  func.func @func16(%arg0: memref<16x32xf32>, %arg1: memref<16x1xf32>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg2) in (%arg3=%c1) attributes {id = 1 : i32} {
+      %1 = air.segment @segment_0 async  attributes {id = 2 : i32} {
+        %c16 = arith.constant 16 : index
+        %c0 = arith.constant 0 : index
+        %c4 = arith.constant 4 : index
+        %c1_0 = arith.constant 1 : index
+        %async_token, %results = air.execute -> (memref<16x4xf32, 1 : i32>) {
+          %alloc = memref.alloc() : memref<16x4xf32, 1 : i32>
+          air.execute_terminator %alloc : memref<16x4xf32, 1 : i32>
+        }
+        %2 = scf.parallel (%arg4) = (%c0) to (%c4) step (%c1_0) init (%async_token) -> !air.async.token {
+          %6 = air.channel.get async [%async_token]  @channel_2[%arg4, %c0] (%results[%c0, %arg4] [%c16, %c1_0] [%c4, %c1_0]) {id = 5 : i32} : (memref<16x4xf32, 1 : i32>)
+          scf.reduce(%6 : !air.async.token) {
+          ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
+            %7 = air.wait_all async [%arg5, %arg6] 
+            scf.reduce.return %7 : !air.async.token
+          }
+        }
+        %3 = air.herd @herd_0 async [%async_token]  tile (%arg4, %arg5) in (%arg6=%c4, %arg7=%c1_0) attributes {id = 3 : i32, link_with = "mm.o"} {
+          %async_token_1, %results_2 = air.execute -> (memref<16x1xf32, 2 : i32>) {
+            %alloc = memref.alloc() : memref<16x1xf32, 2 : i32>
+            air.execute_terminator %alloc : memref<16x1xf32, 2 : i32>
+          }
+          %6 = air.channel.put async [%async_token_1]  @channel_2[%arg4, %arg5] (%results_2[] [] []) {id = 7 : i32} : (memref<16x1xf32, 2 : i32>)
+        }
+        %4 = air.channel.put async [%2, %3]  @channel_3[%c0, %c0] (%results[] [] []) {id = 8 : i32} : (memref<16x4xf32, 1 : i32>)
+        %5 = air.herd @herd_1 async [%2]  tile (%arg4, %arg5) in (%arg6=%c1_0, %arg7=%c1_0) attributes {id = 4 : i32, link_with = "mm.o"} {
+          %async_token_1, %results_2 = air.execute -> (memref<16x4xf32, 2 : i32>) {
+            %alloc = memref.alloc() : memref<16x4xf32, 2 : i32>
+            air.execute_terminator %alloc : memref<16x4xf32, 2 : i32>
+          }
+          %6 = air.channel.get async [%async_token_1]  @channel_3[%arg4, %arg5] (%results_2[] [] []) {id = 10 : i32} : (memref<16x4xf32, 2 : i32>)
+        }
+      }
+    }
+    return
+  }
+}
+
+

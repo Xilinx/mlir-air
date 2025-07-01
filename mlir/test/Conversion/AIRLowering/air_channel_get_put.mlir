@@ -313,7 +313,7 @@ module {
 // CHECK: airrt.dma_memcpy_nd{{.*}}{metadata = @air_channel_1_3}
 
 module {
-  aie.device(npu1_4col) {
+  aie.device(npu1) {
     aie.shim_dma_allocation @air_channel_1_0(S2MM, 0, 0)
     memref.global "public" @air_channel_1_0 : memref<4x2xf32, 2 : i32>
     aie.shim_dma_allocation @air_channel_1_1(S2MM, 1, 0)

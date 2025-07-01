@@ -92,6 +92,9 @@ std::vector<ChannelGetOp> getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
 std::vector<ChannelPutOp> getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
 std::vector<air::ChannelInterface>
 getTheOtherChannelOpThroughSymbol(air::ChannelInterface op);
+// Get integer index to metadataArray, from channel bundle indices.
+std::optional<int>
+getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op);
 void getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
                             SmallVector<int, 2> &lbs_int,
                             SmallVector<int, 2> &ubs_int);

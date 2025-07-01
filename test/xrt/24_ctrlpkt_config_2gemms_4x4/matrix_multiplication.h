@@ -20,19 +20,6 @@
 namespace matmul_common {
 
 // --------------------------------------------------------------------------
-// Command Line Argument Handling
-// --------------------------------------------------------------------------
-
-void add_default_options(cxxopts::Options &options) {
-  options.add_options()("help,h", "produce help message")(
-      "xclbin,x", "the input xclbin path", cxxopts::value<std::string>())(
-      "kernel,k", "the kernel name in the XCLBIN (for instance PP_PRE_FD)",
-      cxxopts::value<std::string>())("verbosity,v",
-                                     "the verbosity of the output",
-                                     cxxopts::value<int>()->default_value("0"));
-}
-
-// --------------------------------------------------------------------------
 // Matrix / Float / Math
 // --------------------------------------------------------------------------
 

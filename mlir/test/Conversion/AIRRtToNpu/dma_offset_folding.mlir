@@ -12,7 +12,7 @@
 //Test correctness of generated offsets, wraps and strides
 //
 //
-// CHECK-LABEL: aie.device(npu1_4col)
+// CHECK-LABEL: aie.device(npu1)
 // CHECK: aie.shim_dma_allocation @airMemcpyId19(S2MM, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId19 : memref<128x128xf32, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
@@ -87,7 +87,7 @@
 // CHECK: aiex.npu.dma_wait {symbol = @airMemcpyId19}
 
 module {
-  aie.device(npu1_4col) {
+  aie.device(npu1) {
     aie.shim_dma_allocation @airMemcpyId19(S2MM, 0, 0)
     memref.global "public" @airMemcpyId19 : memref<128x128xf32, 1>
     aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)

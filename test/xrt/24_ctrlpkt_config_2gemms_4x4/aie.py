@@ -199,7 +199,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "air-ping-pong-transform",
                 "canonicalize",
                 "cse",
-                "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
+                "func.func(air-opt-memtile-dma-bds{device=npu1})",
                 "canonicalize",
                 "cse",
             ]
@@ -242,7 +242,7 @@ with air.ir.Context() as ctx, Location.unknown():
             [
                 "canonicalize",
                 "cse",
-                "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true use-pkt-flow-at-shim-dma=true}",
+                "air-to-aie{row-offset=2 col-offset=0 device=npu1 emit-while-loop=true use-pkt-flow-at-shim-dma=true}",
                 "canonicalize",
             ]
         )
@@ -259,7 +259,7 @@ with air.ir.Context() as ctx, Location.unknown():
         "builtin.module("
         + ",".join(
             [
-                "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
+                "func.func(air-opt-shim-dma-bds{device=npu1})",
                 "air-to-std",
                 "canonicalize",
                 "symbol-dce",
