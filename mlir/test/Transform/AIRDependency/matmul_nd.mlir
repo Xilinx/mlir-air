@@ -21,8 +21,6 @@ module attributes {torch.debug_module_name = "mmult"}  {
     linalg.fill ins(%c0_i32 : i32) outs(%0 : memref<64x64xi32>)
     // CHECK: = air.execute
     %1 = memref.cast %arg2 : memref<?x?xi32> to memref<64x64xi32>
-    // CHECK: = air.execute
-    // CHECK: air.execute_terminator
     linalg.copy ins(%0 : memref<64x64xi32>) outs(%1 : memref<64x64xi32>)
     // CHECK: = air.execute
     %2 = memref.alloc() : memref<64x64xi32, 1>
@@ -47,11 +45,7 @@ module attributes {torch.debug_module_name = "mmult"}  {
       %c64_1 = arith.constant 64 : index
       %c1_2 = arith.constant 1 : index
       %5 = arith.muli %arg3, %c32 : index
-      // CHECK: = air.execute
-      // CHECK: air.execute_terminator
       %6 = arith.muli %arg4, %c32 : index
-      // CHECK: = air.execute
-      // CHECK: air.execute_terminator
       // CHECK: = air.wait_all async
       scf.for %arg10 = %c0_0 to %c64_1 step %c32 {
         %7 = memref.alloc() : memref<32x32xi32, 2>

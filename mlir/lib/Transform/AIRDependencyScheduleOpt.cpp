@@ -4736,16 +4736,12 @@ private:
       bool offsetIsHerdIndVar = false;
       if (getHerdArgOwner(*subview_offsets))
         offsetIsHerdIndVar = true;
-      if (!(*subview_offsets).getDefiningOp())
+      auto defOp = (*subview_offsets).getDefiningOp();
+      if (!defOp)
         continue;
-      if (auto exec_to_herd_iv =
-              dyn_cast<air::ExecuteOp>((*subview_offsets).getDefiningOp())) {
-        SetVector<Value> opers;
-        getUsedValuesDefinedAbove(exec_to_herd_iv.getRegion(), opers);
-        if (llvm::any_of(opers,
-                         [](Value oper) { return getHerdArgOwner(oper); }))
-          offsetIsHerdIndVar = true;
-      }
+      SetVector<Value> opers = getOperandsToOpOrExecute(defOp);
+      if (llvm::any_of(opers, [](Value oper) { return getHerdArgOwner(oper); }))
+        offsetIsHerdIndVar = true;
       if (offsetIsHerdIndVar)
         if (auto updatedOffset =
                 getUpdatedOffsetAfterShrinkage(*subview_offsets, rewriter))
@@ -4763,21 +4759,16 @@ private:
         else if (static_offsets[i] == 0)
           continue;
         if (!getConstantIntValue(*subview_offsets)) {
-          if (!(*subview_offsets).getDefiningOp())
+          auto defOp = (*subview_offsets).getDefiningOp();
+          if (!defOp)
             return false;
-          if (auto exec = dyn_cast<air::ExecuteOp>(
-                  (*subview_offsets).getDefiningOp())) {
-            SetVector<Value> opers;
-            getUsedValuesDefinedAbove(exec.getRegion(), opers);
-            if (llvm::any_of(opers, [](Value oper) {
-                  return !getConstantIntValue(oper);
-                }))
-              return false;
-            if (llvm::any_of(opers, [](Value oper) {
-                  return *getConstantIntValue(oper) != 0;
-                }))
-              return false;
-          } else
+          SetVector<Value> opers = getOperandsToOpOrExecute(defOp);
+          if (llvm::any_of(
+                  opers, [](Value oper) { return !getConstantIntValue(oper); }))
+            return false;
+          if (llvm::any_of(opers, [](Value oper) {
+                return *getConstantIntValue(oper) != 0;
+              }))
             return false;
         } else if (*getConstantIntValue(*subview_offsets) != 0)
           return false;
@@ -4842,19 +4833,19 @@ private:
       return nullptr;
     if (getConstantIntValue(index))
       return nullptr;
-    if (index.getDefiningOp()) {
-      if (auto execOp = dyn_cast<air::ExecuteOp>(index.getDefiningOp())) {
-        SetVector<Value> opers;
-        getUsedValuesDefinedAbove(execOp.getRegion(), opers);
-        for (auto oper : opers) {
-          auto herdOp = air::getHerdArgOwner(oper);
-          if (!herdOp)
-            continue;
-          rewriter.setInsertionPointToStart(&herdOp.getBody().front());
-          Value constZero = rewriter.create<arith::ConstantIndexOp>(
-              rewriter.getUnknownLoc(), 0);
-          replaceAllUsesInRegionWith(oper, constZero, execOp.getRegion());
-        }
+    auto defOp = index.getDefiningOp();
+    if (defOp) {
+      SetVector<Value> opers = getOperandsToOpOrExecute(defOp);
+      for (auto oper : opers) {
+        auto herdOp = air::getHerdArgOwner(oper);
+        if (!herdOp)
+          continue;
+        rewriter.setInsertionPointToStart(&herdOp.getBody().front());
+        Value constZero = rewriter.create<arith::ConstantIndexOp>(
+            rewriter.getUnknownLoc(), 0);
+        defOp->replaceUsesOfWith(oper, constZero);
+        for (auto &reg : defOp->getRegions())
+          replaceAllUsesInRegionWith(oper, constZero, reg);
       }
     } else if (auto herdOp = air::getHerdArgOwner(index)) {
       rewriter.setInsertionPointToStart(&herdOp.getBody().front());
@@ -4862,6 +4853,17 @@ private:
                                                      0);
     }
     return nullptr;
+  }
+
+  // Get operands to either an operation or an air.execute op. For air.execute
+  // op, get all values being used by its region but defined above.
+  SetVector<Value> getOperandsToOpOrExecute(Operation *op) const {
+    SetVector<Value> opers;
+    if (auto execOp = dyn_cast<air::ExecuteOp>(op))
+      getUsedValuesDefinedAbove(execOp.getRegion(), opers);
+    else
+      opers.insert(op->getOperands().begin(), op->getOperands().end());
+    return opers;
   }
 };
 
