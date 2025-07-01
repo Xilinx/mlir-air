@@ -579,25 +579,12 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   }
 
   // Choose metadata from metadataArray, by specializing channel bundle indices.
-  std::vector<unsigned> indicesUint =
-      air::convertVecOfConstIndexToVecOfUInt(thisOp.getIndices());
-  auto channelBundleSize =
-      air::getChannelDeclarationThroughSymbol(thisOp).getSize();
-
-  auto arrayAttrToUIntVector =
-      [](mlir::ArrayAttr attr) -> std::vector<unsigned int> {
-    std::vector<unsigned int> vec;
-    for (mlir::Attribute a : attr) {
-      if (auto intAttr = dyn_cast<mlir::IntegerAttr>(a))
-        vec.push_back(static_cast<unsigned int>(intAttr.getInt()));
-      else
-        llvm::errs() << "Warning: Non-integer attribute in ArrayAttr\n";
-    }
-    return vec;
-  };
-
-  int iter = air::getIteratorFromMDVector(
-      arrayAttrToUIntVector(channelBundleSize), indicesUint);
+  auto iter = air::getIndexToMetadataArrayFromChannelIndices(thisOp);
+  if (!iter) {
+    thisOp->emitOpError(
+        "channel indices failed to convert to convert to metadataArray index.");
+    return failure();
+  }
 
   auto specializeMetadata = [&](Operation *op, unsigned i) {
     auto metadataArray = op->getAttrOfType<ArrayAttr>("metadataArray");
@@ -614,7 +601,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     }
     return false;
   };
-  if (!specializeMetadata(airrtOp, iter))
+  if (!specializeMetadata(airrtOp, *iter))
     return airrtOp->emitOpError("failed to specialize channel bundle indices");
   return airrtOp;
 }

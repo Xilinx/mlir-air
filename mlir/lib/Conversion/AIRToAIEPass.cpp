@@ -2405,17 +2405,43 @@ public:
 
   // Annotate AIR DMA ops that correspond to a SHIM DMA allocation with packet
   // information, specifically for MM2S (host-to-AIE) directions.
-  void labelMemcpyOpsWithPacketFlow(air::MemcpyInterface memcpyOpIf,
-                                    StringAttr dmaNameAttr, AIE::TileOp tileOp,
-                                    int channel) {
+  LogicalResult labelMemcpyOpsWithPacketFlow(air::MemcpyInterface memcpyOpIf,
+                                             StringAttr dmaNameAttr,
+                                             AIE::TileOp tileOp, int channel) {
     auto pktFlowOp =
         getExistingPacketFlowOp(tileOp, AIE::WireBundle::DMA, channel);
     if (!pktFlowOp)
-      return;
+      return success();
+
+    // If memcpy op is air.channel: filter out channel bundles based on
+    // metadata; get metadata from metadataArray based on channel indices.
+    if (auto ci = dyn_cast<air::ChannelInterface>(memcpyOpIf.getOperation())) {
+      // Get index to metadataArray based on channel indices.
+      auto iter = air::getIndexToMetadataArrayFromChannelIndices(ci);
+      if (!iter) {
+        ci->emitOpError("channel indices failed to convert to convert to "
+                        "metadataArray index.");
+        return failure();
+      }
+      // Get metadata from metadataArray.
+      auto metadataArray = ci->getAttrOfType<ArrayAttr>("metadataArray");
+      if (!metadataArray || (size_t)*iter >= metadataArray.size())
+        return success();
+      auto dictAttr = dyn_cast<DictionaryAttr>(metadataArray[*iter]);
+      if (!dictAttr)
+        return success();
+      auto shimNameAttr = dictAttr.getAs<StringAttr>("base");
+      if (!shimNameAttr)
+        return success();
+      // Check if metadata's shim allocation name matches the target name.
+      if (shimNameAttr.getValue() != dmaNameAttr.getValue())
+        return success();
+    }
 
     auto pktInfoAttr = AIE::PacketInfoAttr::get(
         memcpyOpIf->getContext(), /*pkt_type=*/0, pktFlowOp.getID());
     memcpyOpIf->setAttr("packet", pktInfoAttr);
+    return success();
   }
 
   // Determine the tile-side memref type of the DMA op.
@@ -2599,12 +2625,6 @@ public:
                 "failed to get MemRefType for memref.global op");
         }
 
-        // Annotate shim DMA packed-flow ops with packet information,
-        // specifically for MM2S (host-to-AIE) directions.
-        if (dir == AIE::DMAChannelDir::MM2S)
-          labelMemcpyOpsWithPacketFlow(memcpyIfOp, shim_name_attr,
-                                       t.getDmaTile(), t.dma_channel.channel);
-
         // Add metadata to each shim-side channel op, linking to shim
         // allocation. Get existing array if present
         ArrayAttr metadataArray =
@@ -2620,6 +2640,14 @@ public:
         updatedMetadata.push_back(hint);
         memcpyIfOp->setAttr("metadataArray",
                             builder.getArrayAttr(updatedMetadata));
+
+        // Annotate shim DMA packed-flow ops with packet information,
+        // specifically for MM2S (host-to-AIE) directions.
+        if (dir == AIE::DMAChannelDir::MM2S)
+          if (failed(labelMemcpyOpsWithPacketFlow(memcpyIfOp, shim_name_attr,
+                                                  t.getDmaTile(),
+                                                  t.dma_channel.channel)))
+            return failure();
       }
     }
     return success();

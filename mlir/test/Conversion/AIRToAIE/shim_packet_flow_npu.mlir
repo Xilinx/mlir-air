@@ -1,4 +1,4 @@
-//===- air_to_npu_spatial_add_one.mlir -------------------------*- MLIR -*-===//
+//===- shim_packet_flow_npu.mlir -------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
 // Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
