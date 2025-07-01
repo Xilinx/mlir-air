@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1_4col" --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1" --split-input-file | FileCheck %s
 
-// CHECK-LABEL:   aie.device(npu1_4col) {
+// CHECK-LABEL:   aie.device(npu1) {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(0, 2)
 // CHECK:  %[[VAL_1:.*]] = aie.tile(0, 0)
 // CHECK:  %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 1) {init = 1 : i32}
@@ -51,7 +51,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // -----
 
-// CHECK-LABEL:   aie.device(npu1_4col) {
+// CHECK-LABEL:   aie.device(npu1) {
 // CHECK: %[[VAL_0:.*]] = aie.tile(0, 2)
 // CHECK: %[[VAL_1:.*]] = aie.tile(0, 0)
 // CHECK: %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 3) {init = 1 : i32}
@@ -115,7 +115,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // air.channel to aie.locks.
-// CHECK-LABEL:   aie.device(npu1_4col) {
+// CHECK-LABEL:   aie.device(npu1) {
 // CHECK:         %[[VAL_0:.*]] = aie.tile(0, 0)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(0, 2)
 // CHECK:         %[[VAL_2:.*]] = aie.lock(%[[VAL_1]], 3) {init = 1 : i32}
@@ -187,7 +187,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // air.channel to aie.locks.
-// CHECK-LABEL:   aie.device(npu1_4col) {
+// CHECK-LABEL:   aie.device(npu1) {
 // CHECK:         %[[VAL_2:.*]] = aie.tile(0, 1)
 // CHECK:         %[[VAL_3:.*]] = aie.tile(0, 2)
 // CHECK:         %[[VAL_4:.*]] = aie.tile(0, 0)
@@ -396,7 +396,7 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
 // -----
 
 // L3 to L1 parallel shim dmas
-// CHECK: aie.device(npu1_4col)
+// CHECK: aie.device(npu1)
 // CHECK: %[[tile_0_0:.*]] = aie.tile(0, 0)
 // CHECK: %[[tile_1_0:.*]] = aie.tile(1, 0)
 // CHECK: %[[tile_0_3:.*]] = aie.tile(0, 3)
@@ -466,7 +466,7 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
 // -----
 
 // Multi-dimensional memref copy to wraps and strides
-// CHECK: aie.device(npu1_4col)
+// CHECK: aie.device(npu1)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb5)
 // CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
@@ -522,7 +522,7 @@ func.func @func7(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // -----
 
 // Multi-dimensional memref copy to wraps and strides, with offsets having more dims than memref type.
-// CHECK: aie.device(npu1_4col)
+// CHECK: aie.device(npu1)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
@@ -559,7 +559,7 @@ func.func @func8(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // -----
 
 // 1D scf.parallel iteration space support.
-// CHECK: aie.device(npu1_4col)
+// CHECK: aie.device(npu1)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32xf32, 2>, 0, 32)
@@ -621,7 +621,7 @@ func.func @func9(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // -----
 
 // Tile / memtile DMA repeat count support.
-// CHECK: aie.device(npu1_4col)
+// CHECK: aie.device(npu1)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 2>, 0, 8192)
@@ -683,7 +683,7 @@ func.func @func10(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // -----
 
 // Bf16 datatype support.
-// CHECK: aie.device(npu1_4col)
+// CHECK: aie.device(npu1)
 // CHECK: %[[tileDMA_0_4:.*]] = aie.mem
 // CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xbf16, 2>, 0, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
@@ -747,7 +747,7 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
 // -----
 
 // 4x4 herd support.
-// CHECK: aie.device(npu1_4col)
+// CHECK: aie.device(npu1)
 // CHECK: %[[tile_0_0:.*]] = aie.tile(0, 0)
 // CHECK: %[[tile_1_0:.*]] = aie.tile(1, 0)
 // CHECK: %[[tile_2_0:.*]] = aie.tile(2, 0)
@@ -953,7 +953,7 @@ module {
 // -----
 
 // Wrap-and-stride list canonicalization during herd outlining.
-// CHECK: aie.device(npu1_4col)
+// CHECK: aie.device(npu1)
 // CHECK: %[[tile_2_0:.*]] = aie.tile(0, 0)
 // CHECK: %[[tile_2_1:.*]] = aie.tile(0, 1)
 // CHECK: %[[tile_2_3:.*]] = aie.tile(0, 2)
@@ -1032,7 +1032,7 @@ module {
 // -----
 
 // Unrolled bundle of channels from shim accessing directly to herd.
-// CHECK: aie.device(npu1_4col)
+// CHECK: aie.device(npu1)
 // CHECK: %[[tile_0_0:.*]] = aie.tile(0, 0)
 // CHECK: %[[tile_1_0:.*]] = aie.tile(1, 0)
 // CHECK: %[[tile_0_2:.*]] = aie.tile(0, 2)

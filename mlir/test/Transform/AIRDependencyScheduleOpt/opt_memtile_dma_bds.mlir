@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-opt-memtile-dma-bds="device=npu1_4col" -split-input-file | FileCheck %s
+// RUN: air-opt %s -air-opt-memtile-dma-bds="device=npu1" -split-input-file | FileCheck %s
 
 // RUN: not air-opt %s 2>&1 -air-opt-memtile-dma-bds="device=xcvc1902" -split-input-file | FileCheck %s --check-prefix=AIE1
 
