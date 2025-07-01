@@ -163,7 +163,7 @@ pipeline = (
             "air-ping-pong-transform",
             "canonicalize",
             "cse",
-            "func.func(air-opt-memtile-dma-bds{device=npu1_4col})",
+            "func.func(air-opt-memtile-dma-bds{device=npu1})",
             "canonicalize",
             "cse",
         ]
@@ -209,7 +209,7 @@ with open("air_placed.mlir", "w") as f:
 # ## MLIR-AIR to MLIR-AIE
 # ################################################
 
-air_to_aie_pass = "air-to-aie{row-offset=2 col-offset=0 device=npu1_4col emit-while-loop=true use-pkt-flow-at-shim-dma=true"
+air_to_aie_pass = "air-to-aie{row-offset=2 col-offset=0 device=npu1 emit-while-loop=true use-pkt-flow-at-shim-dma=true"
 if opts.trace_size > 0:
     air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
 air_to_aie_pass = air_to_aie_pass + "}"
@@ -236,7 +236,7 @@ pipeline = (
     "builtin.module("
     + ",".join(
         [
-            "func.func(air-opt-shim-dma-bds{device=npu1_4col})",
+            "func.func(air-opt-shim-dma-bds{device=npu1})",
             "air-to-std",
             "airrt-to-npu{"
             + f"trace-offset={opts.trace_offset} trace-size={opts.trace_size}"

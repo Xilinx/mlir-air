@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie='emit-herd-lock=true' -split-input-file | FileCheck %s
-// RUN: air-opt %s -air-to-aie='emit-herd-lock=false device=npu1_4col row-offset=2' -split-input-file | FileCheck %s --check-prefix=NPU1
+// RUN: air-opt %s -air-to-aie='emit-herd-lock=false device=npu1 row-offset=2' -split-input-file | FileCheck %s --check-prefix=NPU1
 
 // CHECK-LABEL: aie.device(xcvc1902)
 // CHECK:  %[[VAL_0:.*]] = aie.tile
@@ -20,7 +20,7 @@
 // CHECK:    aie.use_lock(%[[VAL_2]], Release, 0)
 // CHECK:    aie.end
 
-// NPU1-LABEL: aie.device(npu1_4col)
+// NPU1-LABEL: aie.device(npu1)
 // NPU1:  %[[VAL_0:.*]] = aie.tile
 // NPU1:  %[[VAL_3:.*]] = aie.core(%[[VAL_0]]) {
 // NPU1:    cf.br ^bb1
@@ -57,7 +57,7 @@ module {
 // CHECK:    aie.use_lock(%[[HERD_LOCK]], Release, 0)
 // CHECK:    aie.end
 
-// NPU1-LABEL: aie.device(npu1_4col)
+// NPU1-LABEL: aie.device(npu1)
 // NPU1:  %[[VAL_0:.*]] = aie.tile(1, 2)
 // NPU1:  %[[LOCK_0:.*]] = aie.lock(%[[VAL_0]],
 // NPU1:  %[[LOCK_1:.*]] = aie.lock(%[[VAL_0]],
@@ -107,7 +107,7 @@ module {
 // CHECK-DAG:    aie.use_lock(%[[HERD_LOCK]], Release, 0)
 // CHECK:    aie.end
 
-// NPU1-LABEL: aie.device(npu1_4col)
+// NPU1-LABEL: aie.device(npu1)
 // NPU1:  %[[VAL_0:.*]] = aie.tile(1, 2)
 // NPU1:  %[[LOCK_0:.*]] = aie.lock(%[[VAL_0]],
 // NPU1:  %[[LOCK_1:.*]] = aie.lock(%[[VAL_0]],
@@ -161,7 +161,7 @@ module {
 // CHECK:    aie.use_lock(%[[HERD_LOCK]], Release, 0)
 // CHECK:    aie.end
 
-// NPU1-LABEL: aie.device(npu1_4col)
+// NPU1-LABEL: aie.device(npu1)
 // NPU1:  %[[VAL_0:.*]] = aie.tile(1, 2)
 // NPU1:  %[[LOCK_0:.*]] = aie.lock(%[[VAL_0]],
 // NPU1:  %[[LOCK_1:.*]] = aie.lock(%[[VAL_0]],
@@ -229,7 +229,7 @@ module {
 // CHECK:    aie.use_lock(%[[HERD_LOCK]], Release, 0)
 // CHECK:    aie.end
 
-// NPU1-LABEL: aie.device(npu1_4col)
+// NPU1-LABEL: aie.device(npu1)
 // NPU1:  %[[VAL_0:.*]] = aie.tile(1, 2)
 // NPU1:  %[[LOCK_0:.*]] = aie.lock(%[[VAL_0]],
 // NPU1:  %[[LOCK_1:.*]] = aie.lock(%[[VAL_0]],

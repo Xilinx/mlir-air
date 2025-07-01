@@ -520,7 +520,7 @@ module {
 
 #map = affine_map<(d0)[] -> (d0 * 128)>
 module {
-  aie.device(npu1_4col) {
+  aie.device(npu1) {
     aie.shim_dma_allocation @airMemcpyId10(MM2S, 1, 0)
     memref.global "public" @airMemcpyId10 : memref<1x2x64x64xbf16, 1 : i32>
   } {sym_name = "matmul_bf16_large_dispatch_0_matmul_308x2432x9728_bf16_0"}
