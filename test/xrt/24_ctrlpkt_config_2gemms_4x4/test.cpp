@@ -55,23 +55,16 @@ constexpr bool VERIFY = true;
 
 int main(int argc, const char *argv[]) {
 
-  // Program arguments parsing
-  cxxopts::Options options("Allowed options");
-  cxxopts::ParseResult vm;
-  matmul_common::add_default_options(options);
-  test_utils::parse_options(argc, argv, options, vm);
-  int verbosity = vm["verbosity"].as<int>();
-
   srand(time(NULL));
 
   std::vector<uint32_t> instr1_v =
-      test_utils::load_instr_binary("aie_run_seq.bin");
+      test_utils::load_instr_binary("aie1_run_seq.bin");
 
   std::vector<uint32_t> ctrlpkt_instr1_v =
-      test_utils::load_instr_binary("ctrlpkt_dma_seq.bin");
+      test_utils::load_instr_binary("aie1_ctrlpkt_dma_seq.bin");
 
   std::vector<uint32_t> ctrlPackets1 =
-      test_utils::load_instr_binary("ctrlpkt.bin");
+      test_utils::load_instr_binary("aie1_ctrlpkt.bin");
 
   std::vector<uint32_t> instr2_v =
       test_utils::load_instr_binary("aie2_run_seq.bin");
@@ -88,40 +81,28 @@ int main(int argc, const char *argv[]) {
   auto device = xrt::device(device_index);
 
   // Load the xclbin
-  if (verbosity >= 1)
-    std::cout << "Loading xclbin: " << vm["xclbin"].as<std::string>() << "\n";
-  auto xclbin = xrt::xclbin(vm["xclbin"].as<std::string>());
+  auto xclbin = xrt::xclbin(std::string("base.xclbin"));
 
-  if (verbosity >= 1)
-    std::cout << "Kernel opcode: " << vm["kernel"].as<std::string>() << "\n";
-  std::string Node = vm["kernel"].as<std::string>();
+  std::string Node = "MLIR_AIE";
 
   // Get the kernel from the xclbin
   auto xkernels = xclbin.get_kernels();
   auto xkernel = *std::find_if(xkernels.begin(), xkernels.end(),
-                               [Node, verbosity](xrt::xclbin::kernel &k) {
+                               [Node](xrt::xclbin::kernel &k) {
                                  auto name = k.get_name();
-                                 if (verbosity >= 1) {
-                                   std::cout << "Name: " << name << std::endl;
-                                 }
+                                 std::cout << "Name: " << name << std::endl;
                                  return name.rfind(Node, 0) == 0;
                                });
   auto kernelName = xkernel.get_name();
 
-  if (verbosity >= 1)
-    std::cout << "Registering xclbin: " << vm["xclbin"].as<std::string>()
-              << "\n";
-
   device.register_xclbin(xclbin);
 
   // get a hardware context
-  if (verbosity >= 1)
-    std::cout << "Getting hardware context.\n";
+  std::cout << "Getting hardware context.\n";
   xrt::hw_context context(device, xclbin.get_uuid());
 
   // get a kernel handle
-  if (verbosity >= 1)
-    std::cout << "Getting handle to kernel:" << kernelName << "\n";
+  std::cout << "Getting handle to kernel:" << kernelName << "\n";
   auto kernel = xrt::kernel(context, kernelName);
 
   auto bo_ctrlpkt_instr1 =
@@ -151,8 +132,7 @@ int main(int argc, const char *argv[]) {
   auto bo_c2 =
       xrt::bo(device, C_SIZE_2, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
 
-  if (verbosity >= 1)
-    std::cout << "Writing data into buffer objects.\n";
+  std::cout << "Writing data into buffer objects.\n";
 
   A_DATATYPE *bufA1 = bo_a1.map<A_DATATYPE *>();
   std::vector<A_DATATYPE> AVec1(A_VOLUME_1);
@@ -229,9 +209,7 @@ int main(int argc, const char *argv[]) {
 
   for (unsigned iter = 0; iter < num_iter; iter++) {
 
-    if (verbosity >= 1) {
-      std::cout << "Running Kernel.\n";
-    }
+    std::cout << "Running Kernel.\n";
     auto start = std::chrono::high_resolution_clock::now();
     unsigned int opcode = 3;
 
@@ -295,9 +273,7 @@ int main(int argc, const char *argv[]) {
     memcpy(CVec1.data(), bufC1, (CVec1.size() * sizeof(C_DATATYPE)));
     std::vector<C_DATATYPE> CVecRef1(C_VOLUME_1);
     if (VERIFY) {
-      if (verbosity >= 1) {
-        std::cout << "Verifying against reference matmul ..." << std::endl;
-      }
+      std::cout << "Verifying against reference matmul ..." << std::endl;
       auto vstart = std::chrono::system_clock::now();
       matmul_common::matmul(M, N, K1, AVec1, BVec1, CVecRef1);
       errors = matmul_common::verify(M, N, K1, AVec1, BVec1, CVec1);
@@ -305,20 +281,15 @@ int main(int argc, const char *argv[]) {
       float vtime =
           std::chrono::duration_cast<std::chrono::seconds>(vstop - vstart)
               .count();
-      if (verbosity >= 1) {
-        std::cout << "Verify time: " << vtime << "secs." << std::endl;
-      }
+      std::cout << "Verify time: " << vtime << "secs." << std::endl;
     } else {
-      if (verbosity >= 1)
-        std::cout << "WARNING: matmul results not verified." << std::endl;
+      std::cout << "WARNING: matmul results not verified." << std::endl;
     }
 
     memcpy(CVec2.data(), bufC2, (CVec2.size() * sizeof(C_DATATYPE)));
     std::vector<C_DATATYPE> CVecRef2(C_VOLUME_2);
     if (VERIFY) {
-      if (verbosity >= 1) {
-        std::cout << "Verifying against reference matmul ..." << std::endl;
-      }
+      std::cout << "Verifying against reference matmul ..." << std::endl;
       auto vstart = std::chrono::system_clock::now();
       matmul_common::matmul(M, N, K2, AVec2, BVec2, CVecRef2);
       errors = matmul_common::verify(M, N, K2, AVec2, BVec2, CVec2);
@@ -326,12 +297,9 @@ int main(int argc, const char *argv[]) {
       float vtime =
           std::chrono::duration_cast<std::chrono::seconds>(vstop - vstart)
               .count();
-      if (verbosity >= 1) {
-        std::cout << "Verify time: " << vtime << "secs." << std::endl;
-      }
+      std::cout << "Verify time: " << vtime << "secs." << std::endl;
     } else {
-      if (verbosity >= 1)
-        std::cout << "WARNING: matmul results not verified." << std::endl;
+      std::cout << "WARNING: matmul results not verified." << std::endl;
     }
 
     float npu_time =
