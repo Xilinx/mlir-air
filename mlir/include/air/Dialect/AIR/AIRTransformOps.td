@@ -246,7 +246,7 @@ def LinalgTileOp : Op<Transform_Dialect, "air.linalg_tile",
                    DefaultValuedOptionalAttr<DenseI64ArrayAttr, "{}">:$interchange
                    );
   let results = (outs PDL_Operation:$tiled_linalg_op,
-                      Variadic<PDL_Operation>:$loops);
+                      PDL_Operation:$loops);
   let builders = [
     OpBuilder<(ins "Value":$target,
                    "ArrayRef<int64_t>":$staticTileSizes,
