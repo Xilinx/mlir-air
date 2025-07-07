@@ -1785,19 +1785,16 @@ DiagnosedSilenceableFailure transform::PipelineReduceOp::applyToOne(
 
 void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
                                     Value target,
-                                    ArrayRef<int64_t> staticTileSizes,
-                                    ArrayRef<int64_t> interchange) {
+                                    ArrayRef<int64_t> staticTileSizes) {
   return build(builder, result,
                /*target=*/target,
                /*mixedTileSizes=*/
-               getAsOpFoldResult(builder.getI64ArrayAttr(staticTileSizes)),
-               interchange);
+               getAsOpFoldResult(builder.getI64ArrayAttr(staticTileSizes)));
 }
 
 void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
                                     Value target,
-                                    ArrayRef<OpFoldResult> mixedTileSizes,
-                                    ArrayRef<int64_t> interchange) {
+                                    ArrayRef<OpFoldResult> mixedTileSizes) {
   SmallVector<int64_t> staticTileSizes;
   SmallVector<Value> dynamicTileSizes;
   dispatchIndexOpFoldResults(mixedTileSizes, dynamicTileSizes, staticTileSizes);
@@ -1811,8 +1808,7 @@ void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
         /*resultTypes=*/TypeRange{operationType, operationType},
         /*target=*/target,
         /*dynamic_sizes=*/dynamicTileSizes,
-        /*static_sizes=*/staticTileSizesAttr,
-        /*interchange=*/builder.getDenseI64ArrayAttr(interchange));
+        /*static_sizes=*/staticTileSizesAttr);
 }
 
 // Return true if all dimensions are integer divisible by the respective tiles.
@@ -1933,33 +1929,6 @@ SmallVector<OpFoldResult> transform::LinalgTileOp::getMixedSizes() {
   return results;
 }
 
-// We want to parse `DenseI64ArrayAttr` using the short form without the
-// `array` prefix to be consistent in the IR with `parseDynamicIndexList`.
-static ParseResult parseInterchange(OpAsmParser &parser,
-                                    OperationState &result) {
-  if (succeeded(parser.parseOptionalLBrace())) {
-    if (failed(parser.parseKeyword("interchange")))
-      return parser.emitError(parser.getNameLoc()) << "expect `interchange`";
-    if (failed(parser.parseEqual()))
-      return parser.emitError(parser.getNameLoc()) << "expect `=`";
-    result.addAttribute("interchange",
-                        DenseI64ArrayAttr::parse(parser, Type{}));
-    if (failed(parser.parseRBrace()))
-      return parser.emitError(parser.getNameLoc()) << "expect `}`";
-  }
-  return success();
-}
-
-static void printInterchange(OpAsmPrinter &p,
-                             ArrayRef<int64_t> interchangeVals) {
-  if (!interchangeVals.empty()) {
-    p << " {interchange = [";
-    llvm::interleaveComma(interchangeVals, p,
-                          [&](int64_t integer) { p << integer; });
-    p << "]}";
-  }
-}
-
 ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
                                            OperationState &result) {
   OpAsmParser::UnresolvedOperand target;
@@ -1972,10 +1941,6 @@ ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
       parser.resolveOperands(dynamicSizes, pdlOperationType, result.operands))
     return ParseResult::failure();
 
-  // Parse optional interchange.
-  if (failed(parseInterchange(parser, result)))
-    return ParseResult::failure();
-
   result.addAttribute(getStaticSizesAttrName(result.name), staticSizes);
   result.addTypes(SmallVector<Type>(2, pdlOperationType));
   return success();
@@ -1984,7 +1949,6 @@ ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
 void transform::LinalgTileOp::print(OpAsmPrinter &p) {
   p << ' ' << getTarget();
   printDynamicIndexList(p, getOperation(), getDynamicSizes(), getStaticSizes());
-  printInterchange(p, getInterchange());
 }
 
 void transform::LinalgTileOp::getEffects(
