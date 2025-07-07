@@ -90,7 +90,7 @@ transform.with_pdl_patterns {
         %ps = transform.merge_handles %fill_0, %matmul_0 : !pdl.operation
         transform.air.linalg_promote %ps {"operands_to_promote"=[1,4], "group_size"=2, "memory_space"="L1"}
 
-        %matmul_1, %loops:3 = transform.air.linalg_tile %matmul_0 [16, 16, 16]
+        %matmul_1, %loop = transform.air.linalg_tile %matmul_0 [16, 16, 16]
 
         transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L1"}
 
@@ -116,8 +116,8 @@ pipeline = (
     + ",".join(
         [
             "air-copy-to-dma",
-            "air-par-to-herd{depth=-1}",
-            "air-par-to-launch{has-air-segment=1}",
+            "air-par-to-launch{depth=0 has-air-segment=true}",
+            "air-par-to-herd{depth=0}",
             "scf-forall-to-for",
             "canonicalize",
             "cse",
