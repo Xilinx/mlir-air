@@ -25,7 +25,6 @@ class LinalgTileOp(LinalgTileOp):
         sizes: Optional[
             Union[Sequence[Union[int, IntegerAttr, Operation, Value]], ArrayAttr]
         ] = None,
-        interchange: OptionalIntList = None,
         loc=None,
         ip=None
     ):
@@ -54,9 +53,6 @@ class LinalgTileOp(LinalgTileOp):
             _get_op_result_or_value(target),
             dynamic_sizes=dynamic_sizes,
             static_sizes=sizes_attr,
-            interchange=(
-                _get_dense_int64_array_attr(interchange) if interchange else None
-            ),
             loc=loc,
             ip=ip,
         )
