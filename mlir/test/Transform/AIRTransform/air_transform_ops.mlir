@@ -14,5 +14,5 @@
 transform.sequence failures(propagate) {
 ^bb1(%arg1: !pdl.operation):
   %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-  %matmul_1, %loops:2 = transform.air.linalg_tile %matmul [64, 64, 0]
+  %matmul_1, %loop = transform.air.linalg_tile %matmul [64, 64, 0]
 }
