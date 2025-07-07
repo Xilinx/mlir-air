@@ -2204,24 +2204,37 @@ static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
   }
   auto sliceOpToTile = cast<memref::SubViewOp>(*it);
 
+  // Try to fuse the producer in-place.
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(sliceOpToTile);
 
   // Tile the producer.
-  FailureOr<linalg::LinalgOp> tiledProducer = generateResultTileValue(
-      producerOp, containingOp, rewriter, sliceOpToTile.getMixedOffsets(),
-      sliceOpToTile.getMixedSizes());
-  if (failed(tiledProducer)) {
+  SmallVector<OpFoldResult> offsets = sliceOpToTile.getMixedOffsets();
+  SmallVector<OpFoldResult> sizes = sliceOpToTile.getMixedSizes();
+
+  FailureOr<TilingResult> tileAndFuseResult =
+      tileableProducer.getTiledImplementation(rewriter, offsets, sizes);
+
+  if (failed(tileAndFuseResult)) {
     diag.attachNote(tileableProducer->getLoc())
         << "failed to tile producer op: " << *tileableProducer;
-    return nullptr;
+    return {};
   }
-  LLVM_DEBUG(llvm::dbgs() << "tiledProducer: " << *tiledProducer << "\n");
+  if (tileAndFuseResult->tiledOps.size() != 1) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "producer op should tile to generate only one op, but got: "
+        << tileAndFuseResult->tiledOps.size();
+    return {};
+  }
+  LLVM_DEBUG(llvm::dbgs() << "tiled producer: "
+                          << tileAndFuseResult->tiledOps.front() << "\n");
 
-  // Replace the extract op.
+  // Replace the subview op.
   rewriter.replaceOp(sliceOpToTile,
-                     tiledProducer.value().getDpsInitOperand(0)->get());
-  return *tiledProducer;
+                     cast<linalg::LinalgOp>(tileAndFuseResult->tiledOps[0])
+                         .getDpsInitOperand(0)
+                         ->get());
+  return tileAndFuseResult->tiledOps.front();
 }
 
 DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
