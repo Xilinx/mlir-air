@@ -48,10 +48,9 @@ class LinalgTileOp(LinalgTileOp):
                     dynamic_sizes.append(_get_op_result_or_value(size))
             sizes_attr = DenseI64ArrayAttr.get(static_sizes)
 
-        num_loops = sum(v if v == 0 else 1 for v in self.__extract_values(sizes_attr))
         super().__init__(
             pdl_operation_type,
-            [pdl_operation_type] * num_loops,
+            [pdl_operation_type],
             _get_op_result_or_value(target),
             dynamic_sizes=dynamic_sizes,
             static_sizes=sizes_attr,

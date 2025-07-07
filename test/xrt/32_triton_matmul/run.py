@@ -81,12 +81,13 @@ with air.ir.Context() as ctx, Location.unknown():
         ^bb1(%arg1: !pdl.operation):
             %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
             %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-            %matmul_1, %loops:2 = transform.air.linalg_tile %matmul [32, 32, 0]
-            %fill_1 = transform.air.fuse_into_containing_op %fill into %loops#1
+            %matmul_1, %loop = transform.air.linalg_tile %matmul [32, 32, 0]
+            %fill_1 = transform.air.fuse_into_containing_op %fill into %loop
             transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L1"}
             transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[2], "memory_space"="L1"}
             %matmul_2, %reduction_loop = transform.air.linalg_tile %matmul_1 [0, 0, 32]
             transform.air.linalg_promote %matmul_2 {"operands_to_promote"=[0,1], "memory_space"="L1"}
+            %scffor = transform.loop.forall_to_for %reduction_loop  : (!pdl.operation) -> !pdl.operation
         }
     }
     """

@@ -58,7 +58,11 @@ def gemm_module():
         transform.sequence %arg0 : !pdl.operation failures(propagate) {
         ^bb1(%arg1: !pdl.operation):
             %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-            %matmul_1, %loops:3 = transform.air.linalg_tile %matmul [64, 64, 64]
+            %matmul_1, %forall = transform.air.linalg_tile %matmul [64, 64, 0]
+            %parallal = transform.loop.forall_to_parallel %forall  : (!pdl.operation) -> !pdl.operation
+            %matmul_2 = transform.structured.match ops{["linalg.generic"]} in %parallal  : (!pdl.operation) -> !pdl.operation
+            %matmul_3, %forall_1 = transform.air.linalg_tile %matmul_2 [0, 0, 64]
+            %scffor = transform.loop.forall_to_for %forall_1  : (!pdl.operation) -> !pdl.operation
         }
     }
     """

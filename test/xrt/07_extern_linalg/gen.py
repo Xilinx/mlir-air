@@ -45,12 +45,14 @@ transform.with_pdl_patterns {
     transform.sequence %arg0 : !pdl.operation failures(propagate) {
     ^bb1(%arg1: !pdl.operation):
     %l0 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-    %l1, %herd_tile_loops = transform.air.linalg_tile %l0 [0,128]
-    %l3, %inner_tile_loops:2 = transform.air.linalg_tile %l1 [32,32]
+    %l1, %herd_tile_loop = transform.air.linalg_tile %l0 [0,128]
+    %l3, %inner_tile_loop = transform.air.linalg_tile %l1 [32,32]
     %name = transform.param.constant "add_bf16" -> !transform.any_param
     transform.annotate %l3 "library_call" = %name : !pdl.operation, !transform.any_param
     transform.air.linalg_promote %l3 {"operands_to_promote"=[0,1,2], "memory_space"="L1"}
-    %herd = transform.air.par_to_herd %herd_tile_loops
+    %inner_tile_par = transform.loop.forall_to_parallel %inner_tile_loop  : (!pdl.operation) -> !pdl.operation
+    %herd_tile_par = transform.loop.forall_to_parallel %herd_tile_loop  : (!pdl.operation) -> !pdl.operation
+    %herd = transform.air.par_to_herd %herd_tile_par
     %library = transform.param.constant "kernel.o" -> !transform.any_param
     transform.annotate %herd "link_with" = %library : !pdl.operation, !transform.any_param
     %copies = transform.pdl_match @match_copy in %arg0 : (!pdl.operation) -> !pdl.operation
