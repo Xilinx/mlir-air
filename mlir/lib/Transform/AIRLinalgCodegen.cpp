@@ -2135,45 +2135,6 @@ void transform::FuseIntoContainingMemrefOp::getEffects(
   modifiesPayload(effects);
 }
 
-static FailureOr<linalg::LinalgOp>
-generateResultTileValue(Operation *op, Operation *scfOp, OpBuilder &b,
-                        ArrayRef<OpFoldResult> offsets,
-                        ArrayRef<OpFoldResult> sizes) {
-  auto linalgOp = cast<linalg::LinalgOp>(op);
-  auto loc = op->getLoc();
-  SmallVector<Value> args;
-  for (auto o : op->getOperands())
-    args.push_back(o);
-  auto allShapeSizes = linalgOp.createFlatListOfOperandDims(b, loc);
-  AffineMap shapeSizesToLoopsMap = linalgOp.getShapesToLoopsMap();
-  if (!shapeSizesToLoopsMap)
-    return failure();
-  SmallVector<OpFoldResult> sizeBounds =
-      affine::makeComposedFoldedMultiResultAffineApply(
-          b, loc, shapeSizesToLoopsMap, allShapeSizes);
-  auto optIvs = cast<LoopLikeOpInterface>(scfOp).getLoopInductionVars();
-  if (!optIvs)
-    return failure();
-  SmallVector<Value> vec = *optIvs;
-  SmallVector<OpFoldResult> ivs{vec.begin(), vec.end()};
-  SmallVector<Value> tiledOperands = linalg::makeTiledShapes(
-      b, op->getLoc(), linalgOp, args, ivs, sizes, sizeBounds, true);
-
-  SmallVector<Value> operands;
-  auto ti = tiledOperands.begin();
-  for (auto o : op->getOperands()) {
-    if (isa<MemRefType>(o.getType()))
-      operands.push_back(*ti);
-    else
-      operands.push_back(o);
-    ti++;
-  }
-
-  linalg::LinalgOp newLinalgOp =
-      cast<linalg::LinalgOp>(clone(b, op, {}, operands));
-  return newLinalgOp;
-}
-
 /// Find the first subview user of `producerOp` and tile it right before its
 /// use. The tiled op is fused under the `containingOp`.
 /// Return this fused op on success or nullptr if anything fails.
