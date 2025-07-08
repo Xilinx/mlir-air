@@ -29,7 +29,6 @@ class LinalgTileOp(LinalgTileOp):
         ip=None
     ):
         pdl_operation_type = pdl.OperationType.get()
-        i64_type = IntegerType.get_signless(64)
 
         if sizes is None:
             sizes = []
@@ -49,15 +48,10 @@ class LinalgTileOp(LinalgTileOp):
 
         super().__init__(
             pdl_operation_type,
-            [pdl_operation_type],
+            pdl_operation_type,
             _get_op_result_or_value(target),
             dynamic_sizes=dynamic_sizes,
             static_sizes=sizes_attr,
             loc=loc,
             ip=ip,
         )
-
-    def __extract_values(self, attr: Optional[DenseI64ArrayAttr]) -> List[int]:
-        if not attr:
-            return []
-        return [element for element in attr]
