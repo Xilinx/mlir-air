@@ -24,6 +24,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OperationSupport.h"
@@ -217,7 +218,7 @@ void getUsedConstsAndArgsDefinedAbove(MutableArrayRef<Region> region,
   llvm::SetVector<Value> region_args;
   getUsedValuesDefinedAbove(region, region_args);
   for (Value v : region_args) {
-    if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
+    if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
       constants.push_back(v);
     else
       args.push_back(v);
@@ -1212,8 +1213,9 @@ struct ParallelToHerdPass
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           air::airDialect, arith::ArithDialect>();
+    target
+        .addLegalDialect<LLVM::LLVMDialect, func::FuncDialect, air::airDialect,
+                         arith::ArithDialect, ub::UBDialect>();
 
     target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
                       affine::AffineLoadOp, affine::AffineStoreOp,
