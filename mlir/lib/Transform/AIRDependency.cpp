@@ -18,6 +18,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dominance.h"
@@ -1320,7 +1321,7 @@ private:
     llvm::SetVector<Value> region_args;
     getUsedValuesDefinedAbove(loop_op.getRegion(), region_args);
     for (Value v : region_args) {
-      if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
+      if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
         constants.push_back(v);
       else if (v.getDefiningOp()) {
         if (auto v_op =
@@ -1360,7 +1361,7 @@ private:
     llvm::SetVector<Value> region_args;
     getUsedValuesDefinedAbove(loop_op.getRegion(), region_args);
     for (Value v : region_args) {
-      if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
+      if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
         constants.push_back(v);
       else if (v.getDefiningOp()) {
         if (auto v_op =
@@ -1413,7 +1414,7 @@ private:
     for (auto &region : regions) {
       getUsedValuesDefinedAbove(region, region_args);
       for (Value v : region_args) {
-        if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
+        if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
           constants.push_back(v);
         else if (v.getDefiningOp()) {
           if (auto v_op =

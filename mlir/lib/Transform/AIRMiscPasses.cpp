@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
@@ -525,7 +526,7 @@ void AIRFuseParallelHerdPass::runOnOperation() {
 
   getUsedValuesDefinedAbove(parOp.getRegion(), region_args);
   for (Value v : region_args) {
-    if (isa_and_present<arith::ConstantOp>(v.getDefiningOp()))
+    if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
       constants.push_back(v);
     else
       args.push_back(v);
