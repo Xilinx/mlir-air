@@ -25,7 +25,6 @@ using namespace mlir;
 #define DEBUG_TYPE "dma-to-channel"
 
 namespace xilinx {
-namespace air {
 
 static void generateYieldAndOrReduceToScfLoop(OpBuilder builder,
                                               MLIRContext *ctx,
@@ -534,7 +533,6 @@ bool isValidExternalChannelOp(air::ChannelInterface getput) {
   return true;
 }
 
-} // namespace air
 } // namespace xilinx
 
 namespace xilinx {
