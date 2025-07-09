@@ -39,9 +39,6 @@
 #define DEBUG_TYPE "air-loop-merging"
 
 using namespace mlir;
-using namespace mlir::affine;
-using namespace xilinx;
-using namespace xilinx::air;
 
 namespace {
 

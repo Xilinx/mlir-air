@@ -42,9 +42,9 @@
 #define DEBUG_TYPE "air-linalg-codegen"
 
 using namespace mlir;
-using namespace xilinx;
 
-namespace {
+namespace xilinx {
+namespace air {
 
 struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
@@ -1757,7 +1757,8 @@ public:
 private:
 };
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 //===----------------------------------------------------------------------===//
 // PipelineReduceOp
@@ -1767,7 +1768,7 @@ DiagnosedSilenceableFailure transform::PipelineReduceOp::applyToOne(
     transform::TransformRewriter &rewriter, linalg::LinalgOp target,
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
-  auto result = pipelineReduceLinalgOp(
+  auto result = xilinx::air::pipelineReduceLinalgOp(
       rewriter, target, extractFromIntegerArrayAttr<int64_t>(getTileSize()),
       getPipelineDepth(), getDirection().str(), getPromote());
   if (failed(result))
@@ -2051,10 +2052,12 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   RewritePatternSet patterns(ctx);
   // promoteSubViews generates extra copies and subviews, these patterns try to
   // simplify them.
-  patterns.insert<RemoveSubViewOpsPattern>(ctx, (int)memorySpace);
-  patterns.insert<FoldSubViewOpsPattern, RemoveViewOpsPattern>(ctx);
-  patterns.insert<RemoveExtraAllocPattern, RemoveDeadCopyPattern,
-                  RemoveAllocCopyLinalgOpCopyPattern>(ctx);
+  patterns.insert<xilinx::air::RemoveSubViewOpsPattern>(ctx, (int)memorySpace);
+  patterns.insert<xilinx::air::FoldSubViewOpsPattern,
+                  xilinx::air::RemoveViewOpsPattern>(ctx);
+  patterns.insert<xilinx::air::RemoveExtraAllocPattern,
+                  xilinx::air::RemoveDeadCopyPattern,
+                  xilinx::air::RemoveAllocCopyLinalgOpCopyPattern>(ctx);
   // canonicalize allocs like:
   //  memref.alloc(%c32, %c32) : memref<?x?xi32, 2>
   // to:

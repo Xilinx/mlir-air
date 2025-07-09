@@ -31,11 +31,11 @@
 #define DEBUG_TYPE "air-herd-assign"
 
 using namespace mlir;
-using namespace xilinx::air;
 
 static llvm::cl::OptionCategory clOptionsCategory(DEBUG_TYPE " options");
 
-namespace {
+namespace xilinx {
+namespace air {
 
 class AIRHerdAssignPass
     : public xilinx::air::impl::AIRHerdAssignBase<AIRHerdAssignPass> {
@@ -126,7 +126,8 @@ public:
 private:
 };
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

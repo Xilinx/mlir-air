@@ -50,9 +50,6 @@
 #define DEBUG_TYPE "air-regularize-loop"
 
 using namespace mlir;
-using namespace mlir::affine;
-using namespace xilinx;
-using namespace xilinx::air;
 
 namespace {
 

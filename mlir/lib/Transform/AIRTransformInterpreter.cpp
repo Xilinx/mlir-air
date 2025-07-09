@@ -20,7 +20,6 @@
 #define DEBUG_TYPE "air-transform-interpreter"
 
 using namespace mlir;
-using namespace xilinx;
 
 /// Utility to parse the content of a `transformFileName` mlir file containing
 /// a transform dialect specification.
@@ -63,7 +62,7 @@ public:
   AIRTransformInterpreterPass(const AIRTransformInterpreterPass &pass){};
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<air::airDialect, transform::TransformDialect>();
+    registry.insert<xilinx::air::airDialect, transform::TransformDialect>();
   }
 
   void runOnOperation() override {

@@ -21,9 +21,10 @@
 #include "mlir/Transforms/RegionUtils.h"
 
 using namespace mlir;
-using namespace xilinx;
 
 #define DEBUG_TYPE "dma-to-channel"
+
+namespace xilinx {
 
 static void generateYieldAndOrReduceToScfLoop(OpBuilder builder,
                                               MLIRContext *ctx,
@@ -532,7 +533,11 @@ bool isValidExternalChannelOp(air::ChannelInterface getput) {
   return true;
 }
 
-namespace {
+} // namespace xilinx
+
+namespace xilinx {
+namespace air {
+
 class AIRDmaToAIRChannelConversion
     : public OpRewritePattern<air::DmaMemcpyNdOp> {
   using OpRewritePattern<air::DmaMemcpyNdOp>::OpRewritePattern;
@@ -807,8 +812,6 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
   }
 };
 
-} // namespace
-
 template <class T>
 static Value insertArgToHierOpImpl(OpBuilder &builder, T op,
                                    SmallVector<Value> vec) {
@@ -963,7 +966,6 @@ static LogicalResult AIRDemoteMemrefToAIRHierarchy(
   return success();
 }
 
-namespace {
 class AIRDemoteDmaToAIRHierarchyConversion
     : public OpRewritePattern<air::DmaMemcpyNdOp> {
   using OpRewritePattern<air::DmaMemcpyNdOp>::OpRewritePattern;
@@ -1413,7 +1415,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
   }
 };
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

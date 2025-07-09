@@ -30,7 +30,8 @@
 #define DEBUG_TYPE "air-util"
 
 using namespace mlir;
-using namespace xilinx;
+
+namespace xilinx {
 
 const StringLiteral air::LinalgTransforms::kLinalgTransformMarker =
     "__internal_linalg_transform__";
@@ -2079,3 +2080,5 @@ air::consructComposedAffineApplyOpFromArithMulI(OpBuilder &builder,
       builder, mulOp.getLoc(), map,
       getAsOpFoldResult({mulOp.getLhs(), mulOp.getRhs()}));
 }
+
+} // namespace xilinx

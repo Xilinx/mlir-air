@@ -15,9 +15,10 @@
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 
 using namespace mlir;
-using namespace xilinx::airrt;
 
 #include "air/Dialect/AIRRt/AIRRtOpsDialect.cpp.inc"
+
+namespace xilinx::airrt {
 
 void AIRRtDialect::initialize() {
   addTypes<EventType>();
@@ -108,3 +109,5 @@ void DeallocOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldDealloc);
 }
+
+} // namespace xilinx::airrt

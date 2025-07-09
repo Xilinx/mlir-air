@@ -44,12 +44,10 @@
 #include <vector>
 
 using namespace mlir;
-using namespace xilinx;
-using namespace air;
-
 #define DEBUG_TYPE "air-dependency"
 
-namespace {
+namespace xilinx {
+namespace air {
 
 // Remove an op if it has no users, else return failure.
 // This is a temporary measure, while the issue
@@ -84,7 +82,7 @@ struct executeNode {
   unsigned operationId;
 };
 
-using ExecuteGraph = air::TypedDirectedAdjacencyMap<::executeNode>;
+using ExecuteGraph = air::TypedDirectedAdjacencyMap<air::executeNode>;
 
 typedef std::map<ExecuteGraph::VertexId, ExecuteGraph::VertexId> vertex_map;
 typedef std::map<unsigned, ExecuteGraph::VertexId> operation_id_to_vertex_map;
@@ -1788,7 +1786,8 @@ private:
   }
 };
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

@@ -41,11 +41,9 @@
 #define DEBUG_TYPE "air-automatic-tiling"
 
 using namespace mlir;
-using namespace mlir::affine;
-using namespace xilinx;
-using namespace xilinx::air;
 
-namespace {
+namespace xilinx {
+namespace air {
 
 class AIRAutomaticTilingPass
     : public xilinx::air::impl::AIRAutomaticTilingBase<AIRAutomaticTilingPass> {
@@ -318,8 +316,6 @@ void AIRAutomaticTilingPass::tileLoopsManually(
 
     auto stringAttr = band[0]->getAttrOfType<StringAttr>(
         AIRAutomaticTilingPass::affineOptAttrName);
-    // StringRef originalLabel = band[0]->getAttrOfType<StringRef>(
-    //   AIRAutomaticTilingPass::affineOptAttrName);
     if (stringAttr) {
       StringAttr postLabel =
           clPostLabel.empty()
@@ -331,7 +327,8 @@ void AIRAutomaticTilingPass::tileLoopsManually(
   }
 }
 
-} // anonymous namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

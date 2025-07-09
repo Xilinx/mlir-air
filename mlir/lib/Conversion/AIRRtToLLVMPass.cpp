@@ -29,9 +29,9 @@
 #define DEBUG_TYPE "airrt-to-llvm-pass"
 
 using namespace mlir;
-using namespace xilinx;
 
-namespace {
+namespace xilinx {
+
 #define GEN_PASS_DEF_AIRRTTOLLVM
 #include "air/Conversion/Passes.h.inc"
 
@@ -1316,7 +1316,7 @@ public:
 private:
 };
 
-} // namespace
+} // namespace xilinx
 
 namespace xilinx {
 namespace airrt {

@@ -38,7 +38,6 @@
 #include "llvm/Support/TargetSelect.h"
 
 using namespace mlir;
-using namespace xilinx;
 
 namespace xilinx {
 namespace air {

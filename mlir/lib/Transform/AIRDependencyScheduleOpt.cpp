@@ -52,12 +52,11 @@
 #include <vector>
 
 using namespace mlir;
-using namespace xilinx;
-using namespace xilinx::air;
 
 #define DEBUG_TYPE "air-dependency-schedule-opt"
 
-namespace {
+namespace xilinx {
+namespace air {
 
 //===----------------------------------------------------------------------===//
 // Utility methods for op hoisting
@@ -6365,7 +6364,8 @@ public:
 private:
 };
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

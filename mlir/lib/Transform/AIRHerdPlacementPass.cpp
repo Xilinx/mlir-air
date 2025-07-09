@@ -33,12 +33,11 @@
 #include <vector>
 
 using namespace mlir;
-using namespace xilinx;
-using namespace xilinx::air;
 
 #define DEBUG_TYPE "air-place-herds"
 
-namespace {
+namespace xilinx {
+namespace air {
 
 class Herd {
 
@@ -330,7 +329,8 @@ private:
 
 }; // end AIRHerdPlacementPass
 
-} // end namespace
+} // end namespace air
+} // end namespace xilinx
 
 namespace xilinx {
 namespace air {
