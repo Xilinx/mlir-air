@@ -231,29 +231,25 @@ def LinalgTileOp : Op<Transform_Dialect, "air.linalg_tile",
        [DeclareOpInterfaceMethods<TransformOpInterface>,
         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let description = [{
-    Tile a linalg operation with the given sizes. Optionally apply an
-    interchange of the resulting loops. The new linalg operantion and all
-    generated loops are returned. Tiling is performed with the
-    `linalg::LinalgTilingLoopType::ParallelLoops` so that `scf.parallel`
-    loops are generated whenever possible.
+    Tile a linalg operation with the given sizes. The new linalg 
+    operantion and the generated loop are returned. Tiling is 
+    performed with the `transform::tileToForallOpImpl` so that an
+    `scf.forall` loop is generated whenever possible.
 
-    This is a variant of `transform.structured.tile`.
+    This is a variant of `transform.structured.tile_using_forall`.
   }];
 
   let arguments = (ins PDL_Operation:$target,
                    Variadic<PDL_Operation>:$dynamic_sizes,
-                   DefaultValuedOptionalAttr<DenseI64ArrayAttr, "{}">:$static_sizes,
-                   DefaultValuedOptionalAttr<DenseI64ArrayAttr, "{}">:$interchange
+                   DefaultValuedOptionalAttr<DenseI64ArrayAttr, "{}">:$static_sizes
                    );
   let results = (outs PDL_Operation:$tiled_linalg_op,
-                      Variadic<PDL_Operation>:$loops);
+                      PDL_Operation:$loops);
   let builders = [
     OpBuilder<(ins "Value":$target,
-                   "ArrayRef<int64_t>":$staticTileSizes,
-                   CArg<"ArrayRef<int64_t>", "{}">:$interchange)>,
+                   "ArrayRef<int64_t>":$staticTileSizes)>,
     OpBuilder<(ins "Value":$target,
-                   "ArrayRef<OpFoldResult>":$mixedTileSizes,
-                   CArg<"ArrayRef<int64_t>", "{}">:$interchange)>
+                   "ArrayRef<OpFoldResult>":$mixedTileSizes)>
   ];
 
   let hasCustomAssemblyFormat = 1;

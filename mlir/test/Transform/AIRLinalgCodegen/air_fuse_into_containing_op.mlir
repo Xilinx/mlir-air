@@ -34,6 +34,6 @@ transform.sequence failures(propagate) {
   // Find the consumer and producer.
   %consumer = transform.structured.match attributes{"__consumer__"} in %arg1 : (!pdl.operation) -> !pdl.operation
   %producers = transform.structured.match attributes{"__producer__"} in %arg1 : (!pdl.operation) -> !pdl.operation
-  %1, %loops:2 = transform.air.linalg_tile %consumer [32, 32]
-  transform.air.fuse_into_containing_op %producers into %loops#0
+  %1, %loop = transform.air.linalg_tile %consumer [32, 32]
+  transform.air.fuse_into_containing_op %producers into %loop
 }

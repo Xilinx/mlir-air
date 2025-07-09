@@ -17,11 +17,13 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
+#include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
@@ -36,6 +38,8 @@
 
 #include <numeric>
 #include <optional>
+
+#include <iostream>
 
 #define DEBUG_TYPE "air-linalg-codegen"
 
@@ -1781,19 +1785,16 @@ DiagnosedSilenceableFailure transform::PipelineReduceOp::applyToOne(
 
 void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
                                     Value target,
-                                    ArrayRef<int64_t> staticTileSizes,
-                                    ArrayRef<int64_t> interchange) {
+                                    ArrayRef<int64_t> staticTileSizes) {
   return build(builder, result,
                /*target=*/target,
                /*mixedTileSizes=*/
-               getAsOpFoldResult(builder.getI64ArrayAttr(staticTileSizes)),
-               interchange);
+               getAsOpFoldResult(builder.getI64ArrayAttr(staticTileSizes)));
 }
 
 void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
                                     Value target,
-                                    ArrayRef<OpFoldResult> mixedTileSizes,
-                                    ArrayRef<int64_t> interchange) {
+                                    ArrayRef<OpFoldResult> mixedTileSizes) {
   SmallVector<int64_t> staticTileSizes;
   SmallVector<Value> dynamicTileSizes;
   dispatchIndexOpFoldResults(mixedTileSizes, dynamicTileSizes, staticTileSizes);
@@ -1807,124 +1808,106 @@ void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
         /*resultTypes=*/TypeRange{operationType, operationType},
         /*target=*/target,
         /*dynamic_sizes=*/dynamicTileSizes,
-        /*static_sizes=*/staticTileSizesAttr,
-        /*interchange=*/builder.getDenseI64ArrayAttr(interchange));
+        /*static_sizes=*/staticTileSizesAttr);
 }
 
-DiagnosedSilenceableFailure
-transform::LinalgTileOp::apply(TransformRewriter &rewriter,
-                               TransformResults &transformResults,
-                               TransformState &state) {
-  ArrayRef<int64_t> tileSizes = getStaticSizes();
+// Return true if all dimensions are integer divisible by the respective tiles.
+static bool validateTilableByInteger(linalg::LinalgOp linalgOp,
+                                     SmallVector<OpFoldResult> &tiles) {
+  if (tiles.empty())
+    return false;
 
-  SmallVector<Operation *> targets =
-      llvm::to_vector(state.getPayloadOps(getTarget()));
-  SmallVector<SmallVector<Operation *>> dynamicSizeProducers;
-  SmallVector<SmallVector<int64_t>> paramSizes;
-  dynamicSizeProducers.reserve(getDynamicSizes().size());
-  paramSizes.reserve(getDynamicSizes().size());
-  for (Value transformValue : getDynamicSizes()) {
-    if (isa<TransformParamTypeInterface>(transformValue.getType())) {
-      dynamicSizeProducers.push_back({});
-      ArrayRef<Attribute> params = state.getParams(transformValue);
-      paramSizes.push_back(
-          llvm::to_vector(llvm::map_range(params, [](Attribute attr) {
-            return cast<IntegerAttr>(attr).getValue().getSExtValue();
-          })));
+  auto tileOp = cast<TilingInterface>(linalgOp.getOperation());
+  OpBuilder builder(tileOp);
+  OpBuilder::InsertionGuard guard(builder);
+  SmallVector<Range> iterationDomain = tileOp.getIterationDomain(builder);
 
-      if (paramSizes.back().size() != targets.size()) {
-        DiagnosedSilenceableFailure diag =
-            emitSilenceableError()
-            << "expected as many parameter values ("
-            << dynamicSizeProducers.back().size() << ") as target ops ("
-            << targets.size() << ")";
-        diag.attachNote(transformValue.getLoc()) << "for this parameter";
-        return diag;
-      }
+  auto getConstantRange = [](const Range &range) {
+    std::optional<int64_t> output = std::nullopt;
+    std::optional<int64_t> stride = getConstantIntValue(range.stride);
+    if (!stride || *stride != 1)
+      return output;
+    std::optional<int64_t> offset = getConstantIntValue(range.offset);
+    if (!offset)
+      return output;
+    std::optional<int64_t> size = getConstantIntValue(range.size);
+    if (!size)
+      return output;
+    output = (*size - *offset);
+    return output;
+  };
 
+  for (unsigned i = 0; i < tiles.size(); i++) {
+    std::optional<int64_t> tileSize = getConstantIntValue(tiles[i]);
+    std::optional<int64_t> rangeOnDim = getConstantRange(iterationDomain[i]);
+
+    // If the tile factor or the range are non-constant, the tile size is
+    // considered to be invalid.
+    if (!tileSize || !rangeOnDim)
+      return false;
+
+    // Skip dimension with zero tile size.
+    if (*tileSize == 0)
+      continue;
+
+    // If tile size is bigger than the range, then set tile size to be equal to
+    // range.
+    if (*tileSize > *rangeOnDim) {
+      tiles[i] = builder.getI64IntegerAttr(*rangeOnDim);
       continue;
     }
 
-    paramSizes.push_back({});
-    if (dynamicSizeProducers.back().size() != targets.size()) {
-      DiagnosedSilenceableFailure diag =
-          emitSilenceableError()
-          << "expected as many dynamic size-producing operations ("
-          << dynamicSizeProducers.back().size() << ") as target ops ("
-          << targets.size() << ")";
-      diag.attachNote(transformValue.getLoc()) << "for this handle";
-      return diag;
-    }
-
-    for (Operation *op : dynamicSizeProducers.back()) {
-      if (op->getNumResults() == 1 &&
-          llvm::isa<IndexType>(op->getResult(0).getType()))
-        continue;
-      DiagnosedSilenceableFailure diag =
-          emitSilenceableError() << "expected sizes to be produced by ops "
-                                    "with a single index-type result";
-      diag.attachNote(op->getLoc()) << "size producer op";
-      diag.attachNote(transformValue.getLoc()) << "for this handle";
-      return diag;
-    }
+    // The dimension must be fully divisible by the tile.
+    if (*rangeOnDim % *tileSize != 0)
+      return false;
   }
 
-  SmallVector<Operation *> tiled;
-  SmallVector<SmallVector<Operation *, 4>, 4> loops;
-  loops.resize(getLoops().size());
-  for (auto [i, op] : llvm::enumerate(targets)) {
-    auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+  return true;
+}
+
+DiagnosedSilenceableFailure
+transform::LinalgTileOp::apply(transform::TransformRewriter &rewriter,
+                               transform::TransformResults &transformResults,
+                               transform::TransformState &state) {
+  auto transformOp = cast<TransformOpInterface>(getOperation());
+
+  // Result payload ops.
+  SmallVector<Operation *> tileOps;
+  SmallVector<Operation *> tiledOps;
+
+  SmallVector<OpFoldResult> mixedTileSizes = getMixedSizes();
+
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    // Check if tiling sizes lead to integer tiling factors; enfore tiling
+    // factor = 1 when tile size is bigger than the problem size.
+    linalg::LinalgOp linalgOp = dyn_cast_if_present<linalg::LinalgOp>(target);
     if (!linalgOp) {
-      DiagnosedSilenceableFailure diag = emitSilenceableError()
-                                         << "only linalg ops are supported";
-      diag.attachNote(op->getLoc()) << "target op";
+      DiagnosedSilenceableFailure diag = transformOp.emitSilenceableError()
+                                         << "only Linalg ops are supported";
+      diag.attachNote(target->getLoc()) << "target op";
+      return diag;
+    }
+    if (!validateTilableByInteger(linalgOp, mixedTileSizes)) {
+      DiagnosedSilenceableFailure diag =
+          transformOp.emitSilenceableError()
+          << "only support tiling in integer factors";
+      diag.attachNote(target->getLoc()) << "target op";
       return diag;
     }
 
-    linalg::LinalgTilingOptions tilingOptions;
-    tilingOptions.setLoopType(linalg::LinalgTilingLoopType::ParallelLoops);
-    unsigned index = i;
-    if (!tileSizes.empty()) {
-      tilingOptions.setTileSizeComputationFunction(
-          [&, index](OpBuilder &b, Operation *) {
-            SmallVector<Value, 4> sizes;
-            sizes.reserve(tileSizes.size());
-            unsigned dynamicIdx = 0;
-            for (OpFoldResult ofr : getMixedSizes()) {
-              if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
-                sizes.push_back(b.create<arith::ConstantIndexOp>(
-                    getLoc(), llvm::cast<IntegerAttr>(attr).getInt()));
-              } else {
-                sizes.push_back(
-                    dynamicSizeProducers[dynamicIdx++][index]->getResult(0));
-              }
-            }
-            return sizes;
-          });
-    }
-
-    SmallVector<unsigned int> inter(getInterchange());
-    tilingOptions.setInterchange(inter);
-    FailureOr<linalg::TiledLinalgOp> maybeTilingResult =
-        linalg::tileLinalgOp(rewriter, linalgOp, tilingOptions);
-    if (failed(maybeTilingResult))
-      return DiagnosedSilenceableFailure::definiteFailure();
-
-    if (linalgOp.hasPureBufferSemantics())
-      rewriter.eraseOp(linalgOp);
-    else
-      rewriter.replaceOp(linalgOp,
-                         maybeTilingResult->loops.front()->getResults());
-
-    tiled.push_back(maybeTilingResult->op);
-    for (const auto &en2 : llvm::enumerate(maybeTilingResult->loops))
-      loops[en2.index()].push_back(en2.value());
+    scf::SCFTilingResult tilingResult;
+    DiagnosedSilenceableFailure diag = transform::tileToForallOpImpl(
+        rewriter, state, transformOp, target,
+        /*mixedNumThreads*/ SmallVector<OpFoldResult>{}, mixedTileSizes,
+        /*getMapping()*/ std::nullopt, tilingResult);
+    if (!diag.succeeded())
+      return diag;
+    tileOps.push_back(tilingResult.loops.front());
+    tiledOps.append(tilingResult.tiledOps);
   }
 
-  transformResults.set(llvm::cast<OpResult>(getTiledLinalgOp()), tiled);
-  for (const auto &en : llvm::enumerate(loops))
-    transformResults.set(llvm::cast<OpResult>(getLoops()[en.index()]),
-                         en.value());
+  transformResults.set(cast<OpResult>(getTiledLinalgOp()), tiledOps);
+  transformResults.set(cast<OpResult>(getLoops()), tileOps);
 
   return DiagnosedSilenceableFailure::success();
 }
@@ -1946,33 +1929,6 @@ SmallVector<OpFoldResult> transform::LinalgTileOp::getMixedSizes() {
   return results;
 }
 
-// We want to parse `DenseI64ArrayAttr` using the short form without the
-// `array` prefix to be consistent in the IR with `parseDynamicIndexList`.
-static ParseResult parseInterchange(OpAsmParser &parser,
-                                    OperationState &result) {
-  if (succeeded(parser.parseOptionalLBrace())) {
-    if (failed(parser.parseKeyword("interchange")))
-      return parser.emitError(parser.getNameLoc()) << "expect `interchange`";
-    if (failed(parser.parseEqual()))
-      return parser.emitError(parser.getNameLoc()) << "expect `=`";
-    result.addAttribute("interchange",
-                        DenseI64ArrayAttr::parse(parser, Type{}));
-    if (failed(parser.parseRBrace()))
-      return parser.emitError(parser.getNameLoc()) << "expect `}`";
-  }
-  return success();
-}
-
-static void printInterchange(OpAsmPrinter &p,
-                             ArrayRef<int64_t> interchangeVals) {
-  if (!interchangeVals.empty()) {
-    p << " {interchange = [";
-    llvm::interleaveComma(interchangeVals, p,
-                          [&](int64_t integer) { p << integer; });
-    p << "]}";
-  }
-}
-
 ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
                                            OperationState &result) {
   OpAsmParser::UnresolvedOperand target;
@@ -1985,21 +1941,14 @@ ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
       parser.resolveOperands(dynamicSizes, pdlOperationType, result.operands))
     return ParseResult::failure();
 
-  // Parse optional interchange.
-  if (failed(parseInterchange(parser, result)))
-    return ParseResult::failure();
-
   result.addAttribute(getStaticSizesAttrName(result.name), staticSizes);
-  size_t numExpectedLoops =
-      staticSizes.size() - llvm::count(staticSizes.asArrayRef(), 0);
-  result.addTypes(SmallVector<Type>(numExpectedLoops + 1, pdlOperationType));
+  result.addTypes(SmallVector<Type>(2, pdlOperationType));
   return success();
 }
 
 void transform::LinalgTileOp::print(OpAsmPrinter &p) {
   p << ' ' << getTarget();
   printDynamicIndexList(p, getOperation(), getDynamicSizes(), getStaticSizes());
-  printInterchange(p, getInterchange());
 }
 
 void transform::LinalgTileOp::getEffects(
@@ -2007,7 +1956,6 @@ void transform::LinalgTileOp::getEffects(
   consumesHandle(getTargetMutable(), effects);
   onlyReadsHandle(getDynamicSizesMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
-  producesHandle(getLoops(), effects);
   modifiesPayload(effects);
 }
 
@@ -2151,42 +2099,6 @@ void transform::FuseIntoContainingMemrefOp::getEffects(
   modifiesPayload(effects);
 }
 
-static FailureOr<linalg::LinalgOp>
-generateResultTileValue(Operation *op, Operation *forOp, OpBuilder &b,
-                        ArrayRef<OpFoldResult> offsets,
-                        ArrayRef<OpFoldResult> sizes) {
-  auto linalgOp = cast<linalg::LinalgOp>(op);
-  auto loc = op->getLoc();
-  SmallVector<Value> args;
-  for (auto o : op->getOperands())
-    args.push_back(o);
-  auto allShapeSizes = linalgOp.createFlatListOfOperandDims(b, loc);
-  AffineMap shapeSizesToLoopsMap = linalgOp.getShapesToLoopsMap();
-  if (!shapeSizesToLoopsMap)
-    return failure();
-  SmallVector<OpFoldResult> sizeBounds =
-      affine::makeComposedFoldedMultiResultAffineApply(
-          b, loc, shapeSizesToLoopsMap, allShapeSizes);
-  SmallVector<Value> vec = cast<scf::ParallelOp>(forOp).getInductionVars();
-  SmallVector<OpFoldResult> ivs{vec.begin(), vec.end()};
-  SmallVector<Value> tiledOperands = linalg::makeTiledShapes(
-      b, op->getLoc(), linalgOp, args, ivs, sizes, sizeBounds, true);
-
-  SmallVector<Value> operands;
-  auto ti = tiledOperands.begin();
-  for (auto o : op->getOperands()) {
-    if (isa<MemRefType>(o.getType()))
-      operands.push_back(*ti);
-    else
-      operands.push_back(o);
-    ti++;
-  }
-
-  linalg::LinalgOp newLinalgOp =
-      cast<linalg::LinalgOp>(clone(b, op, {}, operands));
-  return newLinalgOp;
-}
-
 /// Find the first subview user of `producerOp` and tile it right before its
 /// use. The tiled op is fused under the `containingOp`.
 /// Return this fused op on success or nullptr if anything fails.
@@ -2217,24 +2129,37 @@ static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
   }
   auto sliceOpToTile = cast<memref::SubViewOp>(*it);
 
+  // Try to fuse the producer in-place.
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(sliceOpToTile);
 
   // Tile the producer.
-  FailureOr<linalg::LinalgOp> tiledProducer = generateResultTileValue(
-      producerOp, containingOp, rewriter, sliceOpToTile.getMixedOffsets(),
-      sliceOpToTile.getMixedSizes());
-  if (failed(tiledProducer)) {
+  SmallVector<OpFoldResult> offsets = sliceOpToTile.getMixedOffsets();
+  SmallVector<OpFoldResult> sizes = sliceOpToTile.getMixedSizes();
+
+  FailureOr<TilingResult> tileAndFuseResult =
+      tileableProducer.getTiledImplementation(rewriter, offsets, sizes);
+
+  if (failed(tileAndFuseResult)) {
     diag.attachNote(tileableProducer->getLoc())
         << "failed to tile producer op: " << *tileableProducer;
-    return nullptr;
+    return {};
   }
-  LLVM_DEBUG(llvm::dbgs() << "tiledProducer: " << *tiledProducer << "\n");
+  if (tileAndFuseResult->tiledOps.size() != 1) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "producer op should tile to generate only one op, but got: "
+        << tileAndFuseResult->tiledOps.size();
+    return {};
+  }
+  LLVM_DEBUG(llvm::dbgs() << "tiled producer: "
+                          << tileAndFuseResult->tiledOps.front() << "\n");
 
-  // Replace the extract op.
+  // Replace the subview op.
   rewriter.replaceOp(sliceOpToTile,
-                     tiledProducer.value().getDpsInitOperand(0)->get());
-  return *tiledProducer;
+                     cast<linalg::LinalgOp>(tileAndFuseResult->tiledOps[0])
+                         .getDpsInitOperand(0)
+                         ->get());
+  return tileAndFuseResult->tiledOps.front();
 }
 
 DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
