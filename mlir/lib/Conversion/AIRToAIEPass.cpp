@@ -49,9 +49,10 @@
 #define DEBUG_TYPE "air-to-aie"
 
 using namespace mlir;
-using namespace xilinx;
 
-namespace {
+// namespace {
+namespace xilinx {
+namespace air {
 
 struct AIRToAIEConversionOptions {
   int64_t col_offset;
@@ -166,7 +167,7 @@ AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
 }
 
 void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
-                     xilinx::air::HerdOp h,
+                     air::HerdOp h,
                      std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
                      AIRToAIEConversionOptions &options) {
   builder.setInsertionPointToStart(aie_device.getBody());
@@ -184,8 +185,8 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
   // use the command line offsets unless the attribute is present
   int64_t col_offset = options.col_offset;
   int64_t row_offset = options.row_offset;
-  auto col_name = xilinx::air::HerdOp::getColOffsetAttrName();
-  auto row_name = xilinx::air::HerdOp::getRowOffsetAttrName();
+  auto col_name = air::HerdOp::getColOffsetAttrName();
+  auto row_name = air::HerdOp::getRowOffsetAttrName();
   auto ctx = h->getContext();
   if (auto co = h.getColOffset())
     col_offset = *co;
@@ -444,7 +445,7 @@ std::vector<AIE::TileOp> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
 }
 
 void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
-                        xilinx::air::SegmentOp seg,
+                        air::SegmentOp seg,
                         AIRToAIEConversionOptions &options) {
   builder.setInsertionPointToStart(aie_device.getBody());
 
@@ -490,15 +491,15 @@ void push_back_if_unique(std::vector<T> &vec, T entry) {
 
 void createAIEModulesAndOutlineCores(
     ModuleOp module,
-    std::vector<std::pair<AIE::DeviceOp, xilinx::air::HerdOp>> &aie_modules,
+    std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> &aie_modules,
     std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
     AIRToAIEConversionOptions &options) {
 
   SmallVector<air::SegmentOp> segments;
   SmallVector<air::HerdOp> herds;
-  module.walk([&](xilinx::air::SegmentOp s) { segments.push_back(s); });
-  module.walk([&](xilinx::air::HerdOp h) {
-    if (h->getParentOfType<xilinx::air::SegmentOp>())
+  module.walk([&](air::SegmentOp s) { segments.push_back(s); });
+  module.walk([&](air::HerdOp h) {
+    if (h->getParentOfType<air::SegmentOp>())
       return;
     herds.push_back(h);
   });
@@ -519,9 +520,7 @@ void createAIEModulesAndOutlineCores(
                      StringAttr::get(builder.getContext(), segment_name));
     AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
                                     aie_dev.getLoc());
-    seg.walk([&](xilinx::air::HerdOp h) {
-      aie_modules.push_back({aie_dev, h});
-    });
+    seg.walk([&](air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
       outlineAIEMemtiles(builder, aie_dev, seg, options);
@@ -762,7 +761,7 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
       Value v =
           fop.getOperand(block_arg.getArgNumber() - fop.getNumInductionVars() +
                          fop.getNumControlOperands());
-      if (llvm::isa<xilinx::air::AsyncTokenType>(v.getType())) {
+      if (llvm::isa<air::AsyncTokenType>(v.getType())) {
         block_arg.replaceAllUsesWith(v);
         iter_args_idx.set(block_arg.getArgNumber());
       } else {
@@ -795,12 +794,11 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     // use the new for op's results
     int idx = 0;
     for (auto r : fop.getResults()) {
-      if (llvm::isa<xilinx::air::AsyncTokenType>(r.getType()))
+      if (llvm::isa<air::AsyncTokenType>(r.getType()))
         r.replaceAllUsesWith(
             rewriter
-                .create<xilinx::air::WaitAllOp>(
-                    fop->getLoc(),
-                    xilinx::air::AsyncTokenType::get(fop->getContext()),
+                .create<air::WaitAllOp>(
+                    fop->getLoc(), air::AsyncTokenType::get(fop->getContext()),
                     SmallVector<Value, 1>{})
                 .getResult(0));
       else
@@ -813,13 +811,13 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     SmallVector<Value, 4> yield_operands;
     SmallVector<Value, 4> token_operands;
     for (auto o : yield->getOperands()) {
-      if (llvm::isa<xilinx::air::AsyncTokenType>(o.getType()))
+      if (llvm::isa<air::AsyncTokenType>(o.getType()))
         token_operands.push_back(o);
       else
         yield_operands.push_back(o);
     }
-    rewriter.create<xilinx::air::WaitAllOp>(
-        fop->getLoc(), SmallVector<Type, 1>{}, token_operands);
+    rewriter.create<air::WaitAllOp>(fop->getLoc(), SmallVector<Type, 1>{},
+                                    token_operands);
     rewriter.create<scf::YieldOp>(yield->getLoc(), yield_operands);
     rewriter.eraseOp(yield);
 
@@ -1669,12 +1667,11 @@ class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 public:
   AIRToAIEPass() = default;
   AIRToAIEPass(const AIRToAIEPass &pass) {}
-  AIRToAIEPass(const ::xilinx::air::AIRToAIEOptions &options)
-      : AIRToAIEBase(options) {}
+  AIRToAIEPass(const air::AIRToAIEOptions &options) : AIRToAIEBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<xilinx::air::airDialect>();
-    registry.insert<xilinx::airrt::AIRRtDialect>();
+    registry.insert<air::airDialect>();
+    registry.insert<airrt::AIRRtDialect>();
     registry.insert<xilinx::AIE::AIEDialect>();
     registry.insert<xilinx::AIEX::AIEXDialect>();
     registry.insert<LLVM::LLVMDialect>();
@@ -1890,8 +1887,7 @@ public:
 
     // Unroll scf.parallel
     RewritePatternSet patterns(ctx);
-    xilinx::air::populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
-        patterns);
+    air::populateAIRunrollAIRChannelPutGetInScfParallelPatterns(patterns);
     (void)applyPatternsGreedily(aie_device, std::move(patterns));
 
     // Substituting index operands, such as strides and offsets, to constant
@@ -3399,10 +3395,10 @@ public:
     std::vector<Operation *> memcpy_ops;
     getAIRMemcpyOpInRegion<T>(device.getRegion(), memcpy_ops);
     for (auto o : memcpy_ops) {
-      auto a = dyn_cast<xilinx::air::AsyncOpInterface>(o);
+      auto a = dyn_cast<air::AsyncOpInterface>(o);
       if (a && a.getAsyncToken()) {
         OpBuilder b(o);
-        o->replaceAllUsesWith(b.create<xilinx::air::WaitAllOp>(
+        o->replaceAllUsesWith(b.create<air::WaitAllOp>(
             o->getLoc(), air::AsyncTokenType::get(o->getContext()),
             a.getAsyncDependencies()));
       }
@@ -3586,7 +3582,7 @@ public:
     std::set<AIE::DeviceOp> seen;
     for (auto &p : aie_devices) {
       auto device = std::get<0>(p);
-      xilinx::air::HerdOp h = std::get<1>(p);
+      air::HerdOp h = std::get<1>(p);
       auto ctx = device->getContext();
 
       if (seen.find(device) != seen.end())
@@ -3839,7 +3835,7 @@ public:
       removepatterns.add<OpRemovalPattern<airrt::ModuleMetadataOp>>(ctx);
 
       ConversionTarget target(*ctx);
-      target.addIllegalDialect<xilinx::airrt::AIRRtDialect>();
+      target.addIllegalDialect<airrt::AIRRtDialect>();
       if (failed(applyPartialConversion(aie_module, target,
                                         std::move(removepatterns))))
         signalPassFailure();
@@ -3958,7 +3954,8 @@ void AIRLinalgToFuncPass::runOnOperation() {
     signalPassFailure();
 }
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {
@@ -3988,14 +3985,12 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /*.trace_size = */ 0,
                                        /*.ctrl_packet = */ false,
                                        /* .device = */ *device};
-  std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
-  p.walk([&](xilinx::air::HerdOp h) {
-    aie_modules.push_back({aie_module, h});
-  });
+  std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
+  p.walk([&](air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
   std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
-    xilinx::air::HerdOp h = std::get<1>(p);
+    air::HerdOp h = std::get<1>(p);
     rewriter.setInsertionPointToStart(aie_module.getBody());
     auto devOp = rewriter.create<AIE::DeviceOp>(
         aie_module.getLoc(),

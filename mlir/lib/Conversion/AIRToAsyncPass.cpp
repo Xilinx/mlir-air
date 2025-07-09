@@ -40,11 +40,9 @@
 #define DEBUG_TYPE "air-to-cpu"
 
 using namespace mlir;
-using namespace mlir::arith;
-using namespace xilinx;
-using namespace xilinx::air;
 
-namespace {
+namespace xilinx {
+namespace air {
 
 class AIRHerdOpConversion : public ConversionPattern {
 public:
@@ -812,7 +810,8 @@ public:
   }
 };
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

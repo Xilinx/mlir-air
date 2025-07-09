@@ -20,8 +20,6 @@
 #define DEBUG_TYPE "air-linalg-op-stats"
 
 using namespace mlir;
-using namespace xilinx;
-using namespace xilinx::air;
 
 class AIRLinalgOpStats
     : public xilinx::air::impl::AIRLinalgOpStatsBase<AIRLinalgOpStats> {

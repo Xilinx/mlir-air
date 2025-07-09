@@ -25,12 +25,12 @@
 #include <iostream>
 
 using namespace mlir;
-using namespace xilinx;
-using namespace xilinx::air;
 
 #include "air/Dialect/AIR/AIRDialect.cpp.inc"
 
-void airDialect::initialize() {
+namespace xilinx {
+
+void air::airDialect::initialize() {
   addTypes<AsyncTokenType>();
   addOperations<
 #define GET_OP_LIST
@@ -38,7 +38,7 @@ void airDialect::initialize() {
       >();
 }
 
-Type airDialect::parseType(DialectAsmParser &parser) const {
+Type air::airDialect::parseType(DialectAsmParser &parser) const {
   // Parse the main keyword for the type.
   StringRef keyword;
   if (parser.parseKeyword(&keyword))
@@ -53,7 +53,7 @@ Type airDialect::parseType(DialectAsmParser &parser) const {
   return Type();
 }
 
-void airDialect::printType(Type type, DialectAsmPrinter &os) const {
+void air::airDialect::printType(Type type, DialectAsmPrinter &os) const {
   TypeSwitch<Type>(type)
       .Case<AsyncTokenType>([&](Type) { os << "async.token"; })
       .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
@@ -146,7 +146,7 @@ static ParseResult parseAsyncDependencies(
   if (succeeded(parser.parseOptionalKeyword("async"))) {
     if (parser.getNumResults() == 0)
       return parser.emitError(loc, "needs to be named when marked 'async'");
-    asyncTokenType = parser.getBuilder().getType<AsyncTokenType>();
+    asyncTokenType = parser.getBuilder().getType<air::AsyncTokenType>();
   }
   return parser.parseOperandList(asyncDependencies,
                                  OpAsmParser::Delimiter::OptionalSquare);
@@ -410,7 +410,7 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
     llvm::SetVector<Value> depsOfDeps;
     for (auto v : deps) {
       if (auto asyncOperand =
-              dyn_cast_if_present<AsyncOpInterface>(v.getDefiningOp())) {
+              dyn_cast_if_present<air::AsyncOpInterface>(v.getDefiningOp())) {
         auto deps = asyncOperand.getAsyncDependencies();
         depsOfDeps.insert(deps.begin(), deps.end());
       }
@@ -507,10 +507,10 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
 // LaunchOp
 //
 
-void LaunchOp::build(OpBuilder &builder, OperationState &result,
-                     ValueRange asyncDependencies, ValueRange sizes,
-                     ValueRange launchOperands, bool isAsync,
-                     ArrayRef<NamedAttribute> attrs) {
+void air::LaunchOp::build(OpBuilder &builder, OperationState &result,
+                          ValueRange asyncDependencies, ValueRange sizes,
+                          ValueRange launchOperands, bool isAsync,
+                          ArrayRef<NamedAttribute> attrs) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -544,13 +544,13 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
   LaunchOp::ensureTerminator(*r, builder, result.location);
 }
 
-void LaunchOp::build(OpBuilder &builder, OperationState &result,
-                     ValueRange sizes, ValueRange launchOperands) {
+void air::LaunchOp::build(OpBuilder &builder, OperationState &result,
+                          ValueRange sizes, ValueRange launchOperands) {
 
   build(builder, result, {}, sizes, launchOperands, false);
 }
 
-void LaunchOp::print(OpAsmPrinter &p) {
+void air::LaunchOp::print(OpAsmPrinter &p) {
 
   p << ' ';
 
@@ -614,7 +614,7 @@ void LaunchOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/false);
 }
 
-ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult air::LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
   SmallVector<OpAsmParser::Argument, 4> tileArgs;
@@ -713,52 +713,52 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                           MLIRContext *context) {
+void air::LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
   patterns.add(canonicalizeHierarchyOpArgs<LaunchOp>);
   patterns.add(CanonicalizeAsyncOpDeps<LaunchOp>);
   patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<LaunchOp>);
 }
 
-ArrayRef<BlockArgument> LaunchOp::getIds() {
+ArrayRef<BlockArgument> air::LaunchOp::getIds() {
   auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.take_front(n);
 }
 
-ArrayRef<BlockArgument> LaunchOp::getSize() {
+ArrayRef<BlockArgument> air::LaunchOp::getSize() {
   auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.slice(n, n);
 }
 
-OperandRange LaunchOp::getSizeOperands() {
+OperandRange air::LaunchOp::getSizeOperands() {
   auto start = getAsyncDependencies().size();
   auto n = getNumDims();
   return getOperands().slice(start, n);
 }
 
-unsigned LaunchOp::getNumKernelOperands() {
+unsigned air::LaunchOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
-OperandRange LaunchOp::getKernelOperands() {
+OperandRange air::LaunchOp::getKernelOperands() {
   return getOperands().drop_front(getAsyncDependencies().size() + getNumDims());
 }
 
-Value LaunchOp::getKernelOperand(unsigned i) {
+Value air::LaunchOp::getKernelOperand(unsigned i) {
   return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
 
-ArrayRef<BlockArgument> LaunchOp::getKernelArguments() {
+ArrayRef<BlockArgument> air::LaunchOp::getKernelArguments() {
   return getBody().front().getArguments().drop_front(getNumDims() * 2);
 }
 
-BlockArgument LaunchOp::getKernelArgument(unsigned i) {
+BlockArgument air::LaunchOp::getKernelArgument(unsigned i) {
   return getKernelArguments()[i];
 }
 
-unsigned LaunchOp::getNumDims() {
+unsigned air::LaunchOp::getNumDims() {
   auto size_attr_name = getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
@@ -769,10 +769,10 @@ unsigned LaunchOp::getNumDims() {
 // SegmentOp
 //
 
-void SegmentOp::build(OpBuilder &builder, OperationState &result,
-                      ValueRange asyncDependencies, ValueRange sizes,
-                      ValueRange segmentOperands, bool isAsync,
-                      ArrayRef<NamedAttribute> attrs) {
+void air::SegmentOp::build(OpBuilder &builder, OperationState &result,
+                           ValueRange asyncDependencies, ValueRange sizes,
+                           ValueRange segmentOperands, bool isAsync,
+                           ArrayRef<NamedAttribute> attrs) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -803,16 +803,16 @@ void SegmentOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
-  SegmentOp::ensureTerminator(*r, builder, result.location);
+  air::SegmentOp::ensureTerminator(*r, builder, result.location);
 }
 
-void SegmentOp::build(OpBuilder &builder, OperationState &result,
-                      ValueRange sizes, ValueRange segmentOperands) {
+void air::SegmentOp::build(OpBuilder &builder, OperationState &result,
+                           ValueRange sizes, ValueRange segmentOperands) {
 
   build(builder, result, {}, sizes, segmentOperands, false);
 }
 
-void SegmentOp::print(OpAsmPrinter &p) {
+void air::SegmentOp::print(OpAsmPrinter &p) {
 
   p << ' ';
   auto nameAttr = (*this)->getAttrOfType<StringAttr>(
@@ -878,7 +878,7 @@ void SegmentOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/false);
 }
 
-ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult air::SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
   SmallVector<OpAsmParser::Argument, 4> tileArgs;
@@ -897,7 +897,7 @@ ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Type indexType = parser.getBuilder().getIndexType();
 
-  auto tokenType = AsyncTokenType::get(parser.getBuilder().getContext());
+  auto tokenType = air::AsyncTokenType::get(parser.getBuilder().getContext());
   if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
     return failure();
 
@@ -961,7 +961,7 @@ ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Region *body = result.addRegion();
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  SegmentOp::ensureTerminator(*body, parser.getBuilder(), result.location);
+  air::SegmentOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
@@ -979,52 +979,52 @@ ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-void SegmentOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                            MLIRContext *context) {
-  patterns.add(canonicalizeHierarchyOpArgs<SegmentOp>);
-  patterns.add(CanonicalizeAsyncOpDeps<SegmentOp>);
-  patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<SegmentOp>);
+void air::SegmentOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                 MLIRContext *context) {
+  patterns.add(canonicalizeHierarchyOpArgs<air::SegmentOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<air::SegmentOp>);
+  patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<air::SegmentOp>);
 }
 
-ArrayRef<BlockArgument> SegmentOp::getIds() {
+ArrayRef<BlockArgument> air::SegmentOp::getIds() {
   auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.take_front(n);
 }
 
-ArrayRef<BlockArgument> SegmentOp::getSize() {
+ArrayRef<BlockArgument> air::SegmentOp::getSize() {
   auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.slice(n, n);
 }
 
-OperandRange SegmentOp::getSizeOperands() {
+OperandRange air::SegmentOp::getSizeOperands() {
   auto start = getAsyncDependencies().size();
   auto n = getNumDims();
   return getOperands().slice(start, n);
 }
 
-unsigned SegmentOp::getNumKernelOperands() {
+unsigned air::SegmentOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
-OperandRange SegmentOp::getKernelOperands() {
+OperandRange air::SegmentOp::getKernelOperands() {
   return getOperands().drop_front(getAsyncDependencies().size() + getNumDims());
 }
 
-Value SegmentOp::getKernelOperand(unsigned i) {
+Value air::SegmentOp::getKernelOperand(unsigned i) {
   return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
 
-ArrayRef<BlockArgument> SegmentOp::getKernelArguments() {
+ArrayRef<BlockArgument> air::SegmentOp::getKernelArguments() {
   return getBody().front().getArguments().drop_front(getNumDims() * 2);
 }
 
-BlockArgument SegmentOp::getKernelArgument(unsigned i) {
+BlockArgument air::SegmentOp::getKernelArgument(unsigned i) {
   return getKernelArguments()[i];
 }
 
-unsigned SegmentOp::getNumDims() {
+unsigned air::SegmentOp::getNumDims() {
   auto size_attr_name = getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
@@ -1035,10 +1035,10 @@ unsigned SegmentOp::getNumDims() {
 // HerdOp
 //
 
-void HerdOp::build(OpBuilder &builder, OperationState &result,
-                   ValueRange asyncDependencies, ValueRange sizes,
-                   ValueRange launchOperands, bool isAsync,
-                   ArrayRef<NamedAttribute> attrs) {
+void air::HerdOp::build(OpBuilder &builder, OperationState &result,
+                        ValueRange asyncDependencies, ValueRange sizes,
+                        ValueRange launchOperands, bool isAsync,
+                        ArrayRef<NamedAttribute> attrs) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -1069,16 +1069,16 @@ void HerdOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
-  HerdOp::ensureTerminator(*r, builder, result.location);
+  air::HerdOp::ensureTerminator(*r, builder, result.location);
 }
 
-void HerdOp::build(OpBuilder &builder, OperationState &result, ValueRange sizes,
-                   ValueRange launchOperands) {
+void air::HerdOp::build(OpBuilder &builder, OperationState &result,
+                        ValueRange sizes, ValueRange launchOperands) {
 
   build(builder, result, {}, sizes, launchOperands);
 }
 
-void HerdOp::print(OpAsmPrinter &p) {
+void air::HerdOp::print(OpAsmPrinter &p) {
 
   p << ' ';
 
@@ -1142,7 +1142,7 @@ void HerdOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/false);
 }
 
-ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult air::HerdOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
   SmallVector<OpAsmParser::Argument, 4> tileArgs;
@@ -1226,7 +1226,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   Region *body = result.addRegion();
 
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
-  HerdOp::ensureTerminator(*body, parser.getBuilder(), result.location);
+  air::HerdOp::ensureTerminator(*body, parser.getBuilder(), result.location);
 
   if (!regionResult.has_value()) {
     if (!nameAttr)
@@ -1244,64 +1244,64 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-void HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                         MLIRContext *context) {
+void air::HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                              MLIRContext *context) {
   patterns.add(canonicalizeHierarchyOpArgs<HerdOp>);
   patterns.add(CanonicalizeAsyncOpDeps<HerdOp>);
   patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<HerdOp>);
 }
 
-ArrayRef<BlockArgument> HerdOp::getIds() {
+ArrayRef<BlockArgument> air::HerdOp::getIds() {
   auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.take_front(n);
 }
 
-ArrayRef<BlockArgument> HerdOp::getSize() {
+ArrayRef<BlockArgument> air::HerdOp::getSize() {
   auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.slice(n, n);
 }
 
-OperandRange HerdOp::getSizeOperands() {
+OperandRange air::HerdOp::getSizeOperands() {
   auto start = getAsyncDependencies().size();
   auto n = getNumDims();
   return getOperands().slice(start, n);
 }
 
-unsigned HerdOp::getNumKernelOperands() {
+unsigned air::HerdOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
-OperandRange HerdOp::getKernelOperands() {
+OperandRange air::HerdOp::getKernelOperands() {
   return getOperands().drop_front(getAsyncDependencies().size() + getNumDims());
 }
 
-Value HerdOp::getKernelOperand(unsigned i) {
+Value air::HerdOp::getKernelOperand(unsigned i) {
   return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
 
-ArrayRef<BlockArgument> HerdOp::getKernelArguments() {
+ArrayRef<BlockArgument> air::HerdOp::getKernelArguments() {
   return getBody().front().getArguments().drop_front(4);
 }
 
-BlockArgument HerdOp::getKernelArgument(unsigned i) {
+BlockArgument air::HerdOp::getKernelArgument(unsigned i) {
   return getKernelArguments()[i];
 }
 
-unsigned HerdOp::getNumDims() {
+unsigned air::HerdOp::getNumDims() {
   auto size_attr_name = getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
 }
 
-uint64_t HerdOp::getNumCols() {
+uint64_t air::HerdOp::getNumCols() {
   auto cols = getSizeOperands()[0].getDefiningOp();
   return cast<arith::ConstantIndexOp>(cols).value();
 }
 
-uint64_t HerdOp::getNumRows() {
+uint64_t air::HerdOp::getNumRows() {
   auto rows = getSizeOperands()[1].getDefiningOp();
   return cast<arith::ConstantIndexOp>(rows).value();
 }
@@ -1310,7 +1310,7 @@ uint64_t HerdOp::getNumRows() {
 // Asynchronous execute
 //
 
-LogicalResult ExecuteOp::verify() {
+LogicalResult air::ExecuteOp::verify() {
   if (getOperation()->getNumRegions() != 1)
     return emitOpError("ExecuteOp has zero region.");
   if (getRegion().empty())
@@ -1321,7 +1321,7 @@ LogicalResult ExecuteOp::verify() {
   return success();
 }
 
-static LogicalResult FoldExecute(ExecuteOp op, PatternRewriter &rewriter) {
+static LogicalResult FoldExecute(air::ExecuteOp op, PatternRewriter &rewriter) {
 
   // if the terminator is the only thing in the ExecuteOp,
   // and the op is unused, then it can be removed.
@@ -1363,8 +1363,8 @@ static LogicalResult FoldExecute(ExecuteOp op, PatternRewriter &rewriter) {
   if (op->getNumResults() > 1) {
     op.getResult(0).replaceAllUsesWith(
         rewriter
-            .create<WaitAllOp>(op->getLoc(), op->getResult(0).getType(),
-                               op->getOperands())
+            .create<air::WaitAllOp>(op->getLoc(), op->getResult(0).getType(),
+                                    op->getOperands())
             .getResult(0));
     rewriter.eraseOp(op);
     return success();
@@ -1373,8 +1373,8 @@ static LogicalResult FoldExecute(ExecuteOp op, PatternRewriter &rewriter) {
   return failure();
 }
 
-void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                            MLIRContext *context) {
+void air::ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                 MLIRContext *context) {
   patterns.add(FoldExecute);
   patterns.add(CanonicalizeAsyncOpDeps<ExecuteOp>);
   patterns.add(CanonicalizeAsyncLoopCarriedDepsInRegion<ExecuteOp>);
@@ -1384,7 +1384,7 @@ void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 // WaitAllOp
 //
 
-static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
+static LogicalResult FoldWaitAll(air::WaitAllOp op, PatternRewriter &rewriter) {
 
   // Erase wait_all with no operands and no uses
   if (op.use_empty() && !op->getOperands().size()) {
@@ -1425,10 +1425,10 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
   return failure();
 }
 
-void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                            MLIRContext *context) {
+void air::WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                 MLIRContext *context) {
   patterns.add(FoldWaitAll);
-  patterns.add(CanonicalizeAsyncOpDeps<WaitAllOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<air::WaitAllOp>);
 }
 
 // Get strides from MemRefType.
@@ -1628,7 +1628,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
 //
 
 static LogicalResult
-ComposeMemrefOpOnDmaMemcpyNdSrc(DmaMemcpyNdOp op, PatternRewriter &rewriter) {
+ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
+                                PatternRewriter &rewriter) {
 
   Value memref = op.getSrcMemref();
   if (!memref)
@@ -1658,7 +1659,8 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(DmaMemcpyNdOp op, PatternRewriter &rewriter) {
 }
 
 static LogicalResult
-ComposeMemrefOpOnDmaMemcpyNdDst(DmaMemcpyNdOp op, PatternRewriter &rewriter) {
+ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
+                                PatternRewriter &rewriter) {
 
   Value memref = op.getDstMemref();
   if (!memref)
@@ -1687,11 +1689,11 @@ ComposeMemrefOpOnDmaMemcpyNdDst(DmaMemcpyNdOp op, PatternRewriter &rewriter) {
   return success();
 }
 
-void DmaMemcpyNdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                                MLIRContext *context) {
+void air::DmaMemcpyNdOp::getCanonicalizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *context) {
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdSrc);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdDst);
-  patterns.add(CanonicalizeAsyncOpDeps<DmaMemcpyNdOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<air::DmaMemcpyNdOp>);
 }
 
 //
@@ -1731,27 +1733,27 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   return success();
 }
 
-void ChannelPutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                               MLIRContext *context) {
-  patterns.add(ComposeMemrefOpOnChannelOp<ChannelPutOp>);
-  patterns.add(CanonicalizeAsyncOpDeps<ChannelPutOp>);
+void air::ChannelPutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                    MLIRContext *context) {
+  patterns.add(ComposeMemrefOpOnChannelOp<air::ChannelPutOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<air::ChannelPutOp>);
 }
 
 //
 // Channel get op
 //
 
-void ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                               MLIRContext *context) {
-  patterns.add(ComposeMemrefOpOnChannelOp<ChannelGetOp>);
-  patterns.add(CanonicalizeAsyncOpDeps<ChannelGetOp>);
+void air::ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                    MLIRContext *context) {
+  patterns.add(ComposeMemrefOpOnChannelOp<air::ChannelGetOp>);
+  patterns.add(CanonicalizeAsyncOpDeps<air::ChannelGetOp>);
 }
 
 //
 // Channel op
 //
 
-LogicalResult ChannelOp::verify() {
+LogicalResult air::ChannelOp::verify() {
   if (isBroadcast()) {
     auto bundle_size = getSize();
     auto broadcast_shape = getBroadcastShape();
@@ -1761,7 +1763,7 @@ LogicalResult ChannelOp::verify() {
   return success();
 }
 
-int ChannelOp::getBroadcastDimension() {
+int air::ChannelOp::getBroadcastDimension() {
   int broadcastDim = -1;
   auto bundle_size = getSize();
   auto broadcast_shape = getBroadcastShape();
@@ -1777,7 +1779,7 @@ int ChannelOp::getBroadcastDimension() {
   return broadcastDim;
 }
 
-static LogicalResult FoldChannel(ChannelOp op, PatternRewriter &rewriter) {
+static LogicalResult FoldChannel(air::ChannelOp op, PatternRewriter &rewriter) {
 
   Operation *parent = op;
   std::vector<Operation *> parent_sts;
@@ -1794,8 +1796,8 @@ static LogicalResult FoldChannel(ChannelOp op, PatternRewriter &rewriter) {
       auto attr =
           op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
 
-      std::vector<ChannelPutOp> puts;
-      std::vector<ChannelGetOp> gets;
+      std::vector<air::ChannelPutOp> puts;
+      std::vector<air::ChannelGetOp> gets;
       st->walk([&](Operation *o) {
         if (auto put = dyn_cast<air::ChannelPutOp>(o)) {
           if (put.getChanName() == attr) {
@@ -1816,8 +1818,8 @@ static LogicalResult FoldChannel(ChannelOp op, PatternRewriter &rewriter) {
   return failure();
 }
 
-void ChannelOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                            MLIRContext *context) {
+void air::ChannelOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                 MLIRContext *context) {
   patterns.add(FoldChannel);
 }
 
@@ -1825,9 +1827,10 @@ void ChannelOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 // Custom op
 //
 
-void CustomOp::build(OpBuilder &builder, OperationState &result,
-                     ValueRange asyncDependencies, ValueRange customOperands,
-                     bool isAsync, ArrayRef<NamedAttribute> attrs) {
+void air::CustomOp::build(OpBuilder &builder, OperationState &result,
+                          ValueRange asyncDependencies,
+                          ValueRange customOperands, bool isAsync,
+                          ArrayRef<NamedAttribute> attrs) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -1847,13 +1850,13 @@ void CustomOp::build(OpBuilder &builder, OperationState &result,
       result.addAttribute(attr.getName(), attr.getValue());
 }
 
-void CustomOp::build(OpBuilder &builder, OperationState &result,
-                     ValueRange customOperands) {
+void air::CustomOp::build(OpBuilder &builder, OperationState &result,
+                          ValueRange customOperands) {
 
   build(builder, result, {}, customOperands, false);
 }
 
-void CustomOp::print(OpAsmPrinter &p) {
+void air::CustomOp::print(OpAsmPrinter &p) {
 
   p << ' ';
 
@@ -1900,7 +1903,7 @@ void CustomOp::print(OpAsmPrinter &p) {
   }
 }
 
-ParseResult CustomOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult air::CustomOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
 
@@ -1952,6 +1955,8 @@ ParseResult CustomOp::parse(OpAsmParser &parser, OperationState &result) {
                       parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
   return success();
 }
+
+} // namespace xilinx
 
 #include "air/Dialect/AIR/AIROpInterfaces.cpp.inc"
 

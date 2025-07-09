@@ -28,8 +28,6 @@
 #define DEBUG_TYPE "air-lower-linalg-tensors"
 
 using namespace mlir;
-using namespace xilinx;
-using namespace xilinx::air;
 
 // Remove tensor_load followed by buffer_cast
 struct RemoveBufferCastPattern
@@ -142,7 +140,7 @@ void AIRLowerLinalgTensors::runOnOperation() {
   MLIRContext &context = getContext();
 
   ConversionTarget target(context);
-  target.addLegalDialect<AIE::AIEDialect, affine::AffineDialect,
+  target.addLegalDialect<xilinx::AIE::AIEDialect, affine::AffineDialect,
                          math::MathDialect, memref::MemRefDialect,
                          func::FuncDialect, arith::ArithDialect>();
   target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp,

@@ -45,9 +45,9 @@
 #define DEBUG_TYPE "air-lowering-pass"
 
 using namespace mlir;
-using namespace xilinx;
 
-namespace {
+namespace xilinx {
+namespace air {
 
 class AIRLaunchConversion : public ConversionPattern {
 public:
@@ -1390,7 +1390,8 @@ private:
   }
 };
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

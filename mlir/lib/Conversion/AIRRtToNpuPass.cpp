@@ -34,9 +34,9 @@
 #define DEBUG_TYPE "airrt-to-npu-pass"
 
 using namespace mlir;
-using namespace xilinx;
 
-namespace {
+namespace xilinx {
+
 #define GEN_PASS_DECL_AIRRTTONPU
 #define GEN_PASS_DEF_AIRRTTONPU
 #include "air/Conversion/Passes.h.inc"
@@ -1353,7 +1353,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 };
 
-} // namespace
+} // namespace xilinx
 
 namespace xilinx {
 namespace airrt {

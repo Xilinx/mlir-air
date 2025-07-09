@@ -43,9 +43,8 @@
 #define DEBUG_TYPE "air-misc-passes"
 
 using namespace mlir;
-using namespace xilinx;
 
-namespace {
+namespace xilinx {
 
 class AIRExamplePass : public air::impl::AIRExamplePassBase<AIRExamplePass> {
 
@@ -2117,7 +2116,7 @@ void AIROverrideMemRefMemorySpacePass::runOnOperation() {
   (void)applyPatternsGreedily(funcOp, std::move(fixResTypePatterns));
 }
 
-} // anonymous namespace
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

@@ -41,9 +41,11 @@
 #include "llvm/Support/raw_ostream.h"
 
 using namespace mlir;
-using namespace xilinx;
 
 #define DEBUG_TYPE "convert-to-air"
+
+namespace xilinx {
+namespace air {
 
 static std::atomic<uint64_t> DmaMemcpyOpID;
 
@@ -224,8 +226,6 @@ void getUsedConstsAndArgsDefinedAbove(MutableArrayRef<Region> region,
       args.push_back(v);
   }
 }
-
-namespace {
 
 class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
   using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
@@ -1680,7 +1680,8 @@ void AIRWrapFuncWithParallelPass::runOnOperation() {
   (void)applyPatternsGreedily(funcOp, std::move(patterns));
 }
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 //===----------------------------------------------------------------------===//
 // ParToHerdOp
@@ -1693,16 +1694,16 @@ transform::ParToHerdOp::applyToOne(transform::TransformRewriter &rewriter,
                                    transform::TransformState &state) {
   auto ctx = target->getContext();
   RewritePatternSet patterns(ctx);
-  llvm::SmallSet<air::HerdOp, 2> herdOps;
+  llvm::SmallSet<xilinx::air::HerdOp, 2> herdOps;
   llvm::SmallSet<Operation *, 8> filteredOps;
   filteredOps.insert(target);
-  patterns.add<ScfParToHerdConversion>(ctx, filteredOps, herdOps,
-                                       getFirstDim());
+  patterns.add<xilinx::air::ScfParToHerdConversion>(ctx, filteredOps, herdOps,
+                                                    getFirstDim());
   (void)applyPatternsGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
   for (auto h : herdOps) {
-    getHerdNames(h->getParentOfType<ModuleOp>());
+    xilinx::air::getHerdNames(h->getParentOfType<ModuleOp>());
     results.push_back(h);
   }
   return DiagnosedSilenceableFailure::success();
@@ -1719,11 +1720,11 @@ transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
                                      transform::TransformState &state) {
   auto ctx = target->getContext();
   RewritePatternSet patterns(ctx);
-  llvm::SmallSet<air::LaunchOp, 2> launchOps;
+  llvm::SmallSet<xilinx::air::LaunchOp, 2> launchOps;
   llvm::SmallSet<Operation *, 8> filteredOps;
   filteredOps.insert(target);
-  patterns.add<ScfParToLaunchConversion>(ctx, filteredOps, launchOps,
-                                         getHasAirSegment());
+  patterns.add<xilinx::air::ScfParToLaunchConversion>(
+      ctx, filteredOps, launchOps, getHasAirSegment());
   (void)applyPatternsGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
@@ -1743,10 +1744,11 @@ transform::ParToSegmentOp::applyToOne(transform::TransformRewriter &rewriter,
                                       transform::TransformState &state) {
   auto ctx = target->getContext();
   RewritePatternSet patterns(ctx);
-  llvm::SmallSet<air::SegmentOp, 2> segmentOps;
+  llvm::SmallSet<xilinx::air::SegmentOp, 2> segmentOps;
   llvm::SmallSet<Operation *, 8> filteredOps;
   filteredOps.insert(target);
-  patterns.add<ScfParToSegmentConversion>(ctx, filteredOps, segmentOps);
+  patterns.add<xilinx::air::ScfParToSegmentConversion>(ctx, filteredOps,
+                                                       segmentOps);
   (void)applyPatternsGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
@@ -1764,7 +1766,7 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
                                    memref::CopyOp op,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
-  auto res = matchAndRewriteCopyOp(op, rewriter);
+  auto res = xilinx::air::matchAndRewriteCopyOp(op, rewriter);
   if (failed(res))
     return emitDefaultDefiniteFailure(op);
   results.push_back(*res);

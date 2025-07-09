@@ -41,10 +41,9 @@
 #define DEBUG_TYPE "air-herds-to-json"
 
 using namespace mlir;
-using namespace xilinx;
-using namespace xilinx::air;
 
-namespace {
+namespace xilinx {
+namespace air {
 
 class Herd {
 
@@ -148,7 +147,8 @@ mlir::LogicalResult AIRHerdsToJSONTranslate(mlir::ModuleOp module,
 
 }; // end class
 
-} // end namespace
+} // end namespace air
+} // end namespace xilinx
 
 namespace xilinx {
 namespace air {

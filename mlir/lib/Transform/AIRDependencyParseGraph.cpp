@@ -10,12 +10,11 @@
 #include "air/Util/Dependency.h"
 
 using namespace mlir;
-using namespace xilinx;
-using namespace xilinx::air;
 
 #define DEBUG_TYPE "air-dependency-parse-graph"
 
-namespace {
+namespace xilinx {
+namespace air {
 
 class AIRDependencyParseGraph
     : public xilinx::air::impl::AIRDependencyParseGraphBase<
@@ -42,7 +41,6 @@ public:
                                        graphGranularity);
       // Purge id attribute
       func.walk([&](Operation *op) { op->removeAttr("id"); });
-
     }
   }
 
@@ -53,7 +51,8 @@ private:
       g_to_tr; // Map between graph g and graph tr (post-tr graph)
 };
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

@@ -11,12 +11,11 @@
 #include "air/Util/Dependency.h"
 
 using namespace mlir;
-using namespace xilinx;
-using namespace xilinx::air;
 
 #define DEBUG_TYPE "air-dependency-canonicalize"
 
-namespace {
+namespace xilinx {
+namespace air {
 
 class AIRDependencyCanonicalize
     : public xilinx::air::impl::AIRDependencyCanonicalizeBase<
@@ -61,7 +60,8 @@ private:
   xilinx::air::dependencyContext dep_ctx;
 };
 
-} // namespace
+} // namespace air
+} // namespace xilinx
 
 namespace xilinx {
 namespace air {

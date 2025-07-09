@@ -15,7 +15,6 @@
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 
 using namespace mlir;
-using namespace xilinx::airrt;
 
 namespace xilinx {
 namespace airrt {
