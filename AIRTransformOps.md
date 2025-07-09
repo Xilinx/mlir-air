@@ -181,13 +181,12 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 ### `transform.air.linalg_tile` (transform::LinalgTileOp)
 
-Tile a linalg operation with the given sizes. Optionally apply an
-interchange of the resulting loops. The new linalg operantion and all
-generated loops are returned. Tiling is performed with the
-`linalg::LinalgTilingLoopType::ParallelLoops` so that `scf.parallel`
-loops are generated whenever possible.
+Tile a linalg operation with the given sizes. The new linalg 
+operantion and the generated loop are returned. Tiling is 
+performed with the `transform::tileToForallOpImpl` so that an
+`scf.forall` loop is generated whenever possible.
 
-This is a variant of `transform.structured.tile`.
+This is a variant of `transform.structured.tile_using_forall`.
 
 Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
@@ -196,7 +195,6 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>static_sizes</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
-<tr><td><code>interchange</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
 </table>
 
 #### Operands:
@@ -211,7 +209,7 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 | Result | Description |
 | :----: | ----------- |
 | `tiled_linalg_op` | PDL handle to an `mlir::Operation *` |
-| `loops` | variadic of PDL handle to an `mlir::Operation *` |
+| `loops` | PDL handle to an `mlir::Operation *` |
 
 
 ### `transform.air.par_to_herd` (transform::ParToHerdOp)
