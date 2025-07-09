@@ -39,8 +39,6 @@
 #include <numeric>
 #include <optional>
 
-#include <iostream>
-
 #define DEBUG_TYPE "air-linalg-codegen"
 
 using namespace mlir;
