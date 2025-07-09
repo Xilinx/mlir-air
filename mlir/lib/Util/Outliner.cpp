@@ -8,6 +8,7 @@
 
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -42,7 +43,7 @@ func::CallOp AIROutliner::outline(affine::AffineForOp forOp,
 
   for (Value v : region_args) {
     auto o = v.getDefiningOp();
-    if (isa_and_present<arith::ConstantOp>(o)) {
+    if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(o)) {
       auto builder = OpBuilder::atBlockBegin(forOp.getBody());
       auto c = builder.clone(*o);
       replaceAllUsesInRegionWith(v, c->getResult(0), region);

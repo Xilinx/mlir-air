@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
@@ -3949,7 +3950,7 @@ void AIRLinalgToFuncPass::runOnOperation() {
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
                          func::FuncDialect, memref::MemRefDialect,
                          scf::SCFDialect, air::airDialect, AIE::AIEDialect,
-                         cf::ControlFlowDialect>();
+                         cf::ControlFlowDialect, ub::UBDialect>();
   target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp>();
   RewritePatternSet patterns(&getContext());
   patterns.insert<AIRLinalgOpToLibraryCallRewrite>(&getContext(), clLinkWith);
