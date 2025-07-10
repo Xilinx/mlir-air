@@ -1969,8 +1969,11 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
 
   SmallVector<Operation *> payloadOps =
       llvm::to_vector(state.getPayloadOps(getTarget()));
-  if (!payloadOps.size())
+  if (!payloadOps.size()) {
+    results.set(llvm::cast<OpResult>(getResult()),
+                ArrayRef(payloadOps.begin(), payloadOps.end()));
     return DiagnosedSilenceableFailure::success();
+  }
 
   linalg::LinalgPromotionOptions promotionOptions;
   auto operandsToPromote =
