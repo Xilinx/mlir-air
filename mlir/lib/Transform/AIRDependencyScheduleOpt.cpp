@@ -2110,15 +2110,125 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
     if (resAsyncTokenCount > 1)
       return failure();
 
-    auto unroll_factor = air::getStaticScfForTripCountAsInt(for_op);
-    if (!unroll_factor)
-      return failure(); // Dynamic loop bound.
-    (void)loopUnrollByFactor(for_op, *unroll_factor);
+    // Unroll loop; preserve async tokens after unroll.
+    return loopUnrollFullWithAsyncTokenPreserved(for_op, rewriter);
+  }
+
+private:
+  LogicalResult
+  loopUnrollFullWithAsyncTokenPreserved(scf::ForOp forOp,
+                                        PatternRewriter &rewriter) const {
+    // Label the ops that define values yielded by scf.yield
+    labelYieldDefiningOpsOfForLoop(forOp, "scf.for_result_id", rewriter);
+
+    Block *parentBlock = forOp->getBlock();
+
+    // Fully unroll the loop
+    auto unrollRes = loopUnrollFull(forOp);
+    if (failed(unrollRes)) {
+      forOp->emitOpError("failed to fully unroll.");
+      return failure();
+    }
+
+    // Collect unrolled ops corresponding to each original loop result
+    SmallVector<SmallVector<Operation *>> unrolledOps =
+        collectOpsByScfForResultId(*parentBlock, "scf.for_result_id");
+
+    for (auto &vec : unrolledOps) {
+      auto tokenUsers = getUsersOfAsyncTokens(vec);
+      for (Operation *user : tokenUsers) {
+        if (isa<scf::YieldOp>(user))
+          continue;
+
+        air::AsyncOpInterface asyncUser = dyn_cast<air::AsyncOpInterface>(user);
+        if (!asyncUser) {
+          user->emitWarning(
+              "An async token returned by an unrolled scf.for loop is used by "
+              "an op not in AsyncOpInterface type. Only the last unrolled "
+              "iteration's dependency is preserved.");
+          continue;
+        }
+
+        for (Operation *op : vec) {
+          op->removeAttr("scf.for_result_id");
+          if (!air::isAsyncOp(op))
+            continue;
+
+          // Only add dependency if SSA dominance is preserved
+          DominanceInfo domInfo(op);
+          if (!domInfo.properlyDominates(op, asyncUser))
+            continue;
+
+          asyncUser.addAsyncDependency(air::getAsyncTokenFromOp(op));
+        }
+      }
+    }
 
     return success();
   }
 
-private:
+  // Walk the body of an scf.for loop and attaches an attribute (e.g.,
+  // "scf.for_result_id") to each operation that defines a value yielded by
+  // scf.yield. Each label includes the index of the result it corresponds to
+  // (e.g., 0 for the first result, etc.).
+  void labelYieldDefiningOpsOfForLoop(scf::ForOp forOp, StringRef attrName,
+                                      OpBuilder &builder) const {
+    // Get the yield operation in the loop body.
+    auto yieldOp = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    if (!yieldOp)
+      return;
+
+    for (auto it : llvm::enumerate(yieldOp.getOperands())) {
+      Value yieldedValue = it.value();
+      Operation *defOp = yieldedValue.getDefiningOp();
+
+      // Only label ops that are defined within the loop body
+      if (defOp && forOp.getRegion().isAncestor(defOp->getParentRegion())) {
+        defOp->setAttr(attrName, builder.getI32IntegerAttr(
+                                     static_cast<int32_t>(it.index())));
+      }
+    }
+  }
+
+  // Collect operations with the integer attribute "scf.for_result_id" and
+  // groups them into vectors by the attribute value. Result is a vector of
+  // vectors Operation*, where each sub-vector corresponds to a specific result
+  // index.
+  SmallVector<SmallVector<Operation *>>
+  collectOpsByScfForResultId(Block &block, StringRef attrName) const {
+    llvm::DenseMap<int64_t, SmallVector<Operation *>> resultAsMap;
+
+    for (Operation &op : block.getOperations()) {
+      if (auto attr = op.getAttrOfType<IntegerAttr>(attrName)) {
+        int64_t resultId = attr.getInt();
+        resultAsMap[resultId].push_back(&op);
+      }
+    }
+
+    // Convert to a vector of vectors.
+    SmallVector<SmallVector<Operation *>> groupedOps;
+    for (auto &entry : resultAsMap) {
+      groupedOps.push_back(entry.second);
+    }
+
+    return groupedOps;
+  }
+
+  llvm::SmallDenseSet<Operation *>
+  getUsersOfAsyncTokens(const SmallVector<Operation *> &ops) const {
+    llvm::SmallDenseSet<Operation *> userOps;
+
+    for (Operation *op : ops) {
+      if (!air::isAsyncOp(op))
+        continue;
+      Value token = air::getAsyncTokenFromOp(op);
+      for (OpOperand &use : token.getUses()) {
+        userOps.insert(use.getOwner());
+      }
+    }
+
+    return userOps;
+  }
 };
 
 // Affine for version of the `AIRUnrollScfForIntoBDChain` pattern above.
@@ -3214,6 +3324,7 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
   populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, maxSize,
                                                       enableRepeatAtHighestDim);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
+  // WaitAllOp::getCanonicalizationPatterns(cano_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(cano_patterns));
 
   return success();
