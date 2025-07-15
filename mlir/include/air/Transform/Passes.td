@@ -288,6 +288,21 @@ def AIRTransformInterpreterPass : Pass<"air-transform", "ModuleOp"> {
   ];
 }
 
+def AIRresolveTensorOpOperandConflictsWithNewTensors : Pass<"air-resolve-tensor-opoperand-conflicts", "ModuleOp"> {
+  let summary = "Resolve tensor OpOperands leading to explicit reuse of a buffer for both reading and writing data";
+  let constructor = "xilinx::air::createAIRresolveTensorOpOperandConflictsWithNewTensors()";
+  let description = [{
+    This pass resolves tensor OpOperands which use the same Value for both reads 
+    and writes, leading to explicit reuse of a buffer for both reading and 
+    writing data. This buffer reuse could lead to L2 data movement deadlock 
+    arising from shared use of an L2 buffer by multiple dataflows.
+
+    This pass calls the bufferization::AnalysisState for buffer read-write 
+    analysis. It also calls bufferization::allocateTensorForShapedValue to
+    allocate new buffers.
+  }];
+}
+
 def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
   let summary = "AIR codegen strategies for linalg";
   let constructor = "xilinx::air::createAIRLinalgCodegenPass()";
