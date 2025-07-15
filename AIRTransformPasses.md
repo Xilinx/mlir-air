@@ -1117,6 +1117,19 @@ _Renumber air dma op ids_
 -mode : In which hierarchy level to renumber the dma ops
 ```
 
+### `-air-resolve-tensor-opoperand-conflicts`
+
+_Resolve tensor OpOperands leading to explicit reuse of a buffer for both reading and writing data_
+
+This pass resolves tensor OpOperands which use the same Value for both reads 
+and writes, leading to explicit reuse of a buffer for both reading and 
+writing data. This buffer reuse could lead to L2 data movement deadlock 
+arising from shared use of an L2 buffer by multiple dataflows.
+
+This pass calls the bufferization::AnalysisState for buffer read-write 
+analysis. It also calls bufferization::allocateTensorForShapedValue to
+allocate new buffers.
+
 ### `-air-return-elimination`
 
 _Convert functions to return their values with out parameters_
