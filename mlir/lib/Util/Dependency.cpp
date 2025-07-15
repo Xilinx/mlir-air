@@ -8,6 +8,7 @@
 
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/Iterators.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallSet.h"
@@ -710,6 +711,174 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                    ->getResult(0)});
 
   return new_for_op;
+}
+
+// Walk the body of an scf.for loop and attaches an attribute (e.g.,
+// "scf.for_result_id") to each operation that defines a value yielded by
+// scf.yield. Each label includes the index of the result it corresponds to
+// (e.g., 0 for the first result, etc.).
+void labelYieldDefiningOpsOfForLoop(scf::ForOp forOp, StringRef attrName) {
+  // Get the yield operation in the loop body.
+  auto yieldOp = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  if (!yieldOp)
+    return;
+
+  for (auto it : llvm::enumerate(yieldOp.getOperands())) {
+    Value yieldedValue = it.value();
+    Operation *defOp = yieldedValue.getDefiningOp();
+
+    // Only label ops that are defined within the loop body
+    if (defOp && forOp.getRegion().isAncestor(defOp->getParentRegion())) {
+      defOp->setAttr(attrName,
+                     IntegerAttr::get(IntegerType::get(forOp->getContext(), 32),
+                                      static_cast<int32_t>(it.index())));
+    }
+  }
+}
+
+// Collect operations with the integer attribute "scf.for_result_id" and
+// groups them into vectors by the attribute value. Result is a vector of
+// vectors Operation*, where each sub-vector corresponds to a specific result
+// index.
+SmallVector<SmallVector<Operation *>>
+collectOpsByScfForResultId(Block &block, StringRef attrName) {
+  llvm::DenseMap<int64_t, SmallVector<Operation *>> resultAsMap;
+  block.walk([&](Operation *op) {
+    auto attr = op->getAttrOfType<IntegerAttr>(attrName);
+    if (!attr)
+      return;
+    int64_t resultId = attr.getInt();
+    resultAsMap[resultId].push_back(op);
+    op->removeAttr(attrName);
+  });
+
+  // Convert to a vector of vectors.
+  SmallVector<SmallVector<Operation *>> groupedOps;
+  for (auto &entry : resultAsMap) {
+    groupedOps.push_back(entry.second);
+  }
+
+  return groupedOps;
+}
+
+llvm::SmallDenseSet<Operation *>
+getUsersOfAsyncTokens(const SmallVector<Operation *> &ops) {
+  llvm::SmallDenseSet<Operation *> userOps;
+
+  for (Operation *op : ops) {
+    if (!air::isAsyncOp(op))
+      continue;
+    Value token = air::getAsyncTokenFromOp(op);
+    for (OpOperand &use : token.getUses()) {
+      userOps.insert(use.getOwner());
+    }
+  }
+
+  return userOps;
+}
+
+// Maintain async token dependencies for unrolled loop ops.
+void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
+  // Collect unrolled ops corresponding to each original loop result
+  SmallVector<SmallVector<Operation *>> unrolledOps =
+      collectOpsByScfForResultId(parentBlock, "scf.for_result_id");
+
+  for (auto &vec : unrolledOps) {
+    auto tokenUsers = getUsersOfAsyncTokens(vec);
+
+    for (Operation *user : tokenUsers) {
+      if (isa<scf::YieldOp>(user))
+        continue;
+
+      air::AsyncOpInterface asyncUser = dyn_cast<air::AsyncOpInterface>(user);
+      if (!asyncUser) {
+        user->emitWarning(
+            "An async token returned by an unrolled scf.for loop is used by "
+            "an op not in AsyncOpInterface type. Only the last unrolled "
+            "iteration's dependency is preserved.");
+        continue;
+      }
+
+      for (Operation *op : vec) {
+        if (!air::isAsyncOp(op))
+          continue;
+
+        // Only add dependency if SSA dominance is preserved
+        DominanceInfo domInfo(op);
+        if (!domInfo.properlyDominates(op, asyncUser))
+          continue;
+
+        asyncUser.addAsyncDependency(air::getAsyncTokenFromOp(op));
+      }
+    }
+  }
+}
+
+// Fully unrolls an `scf.for` loop while preserving async token dependencies.
+//
+// This function labels the operations that define the values yielded by
+// `scf.yield`, then performs full unrolling of the loop. After unrolling,
+// it identifies async-producing operations corresponding to each yielded value
+// and ensures that any users of the original loop results (which consume async
+// tokens) are updated to depend on the corresponding unrolled ops that dominate
+// them.
+//
+// If `annotateFn` is provided, it is passed to `loopUnrollByFactor` for result
+// tagging.
+LogicalResult loopUnrollFullWithAsyncTokenPreserved(
+    scf::ForOp forOp,
+    function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn) {
+  // Label the ops that define values yielded by scf.yield
+  labelYieldDefiningOpsOfForLoop(forOp, "scf.for_result_id");
+
+  Block *parentBlock = forOp->getBlock();
+
+  // Fully unroll the loop
+  if (annotateFn) {
+    auto unroll_factor = air::getStaticScfForTripCountAsInt(forOp);
+    if (!unroll_factor) {
+      forOp->emitOpError("failed to fully unroll: dynamic loop bound.");
+      return failure();
+    }
+    if (failed(loopUnrollByFactor(forOp, *unroll_factor, annotateFn))) {
+      forOp->emitOpError("failed to fully unroll.");
+      return failure();
+    }
+  } else {
+    if (failed(loopUnrollFull(forOp))) {
+      forOp->emitOpError("failed to fully unroll.");
+      return failure();
+    }
+  }
+
+  preserveAsyncDependenciesAfterUnroll(*parentBlock);
+  return success();
+}
+
+// Unrolls an `scf.for` loop by a given factor while preserving async token
+// dependencies.
+//
+// This function first labels operations that define yielded values, then
+// performs unrolling by the specified factor using `loopUnrollByFactor`.
+// After unrolling, it ensures that users of async tokens returned by the
+// original loop are properly connected to async-producing ops from unrolled
+// iterations, based on SSA dominance rules.
+LogicalResult loopUnrollByFactorWithAsyncTokenPreserved(
+    scf::ForOp forOp, uint64_t unrollFactor,
+    function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn) {
+  // Label the ops that define values yielded by scf.yield
+  labelYieldDefiningOpsOfForLoop(forOp, "scf.for_result_id");
+
+  Block *parentBlock = forOp->getBlock();
+
+  // Unroll the loop by factor
+  if (failed(loopUnrollByFactor(forOp, unrollFactor, annotateFn))) {
+    forOp->emitOpError("failed to fully unroll.");
+    return failure();
+  }
+
+  preserveAsyncDependenciesAfterUnroll(*parentBlock);
+  return success();
 }
 
 // Unroll scf.parallel ops.

@@ -10,13 +10,13 @@
 // Unroll an scf for loop for pipelining.
 // CHECK: func @unroll_by_two
 // CHECK: %[[EVENT0:.*]] = scf.for {{.*}} iter_args(%[[EVENT1:.*]] =
-// CHECK: %[[EVENT2:.*]], %[[VALUE0:.*]] = air.execute [%[[EVENT1]]]
+// CHECK: %[[EVENT2:.*]], %[[VALUE0:.*]] = air.execute [{{.*}}%[[EVENT1]]{{.*}}]
 // CHECK: memref.alloc()
-// CHECK: %[[EVENT3:.*]] = air.execute [%[[EVENT2]]]
+// CHECK: %[[EVENT3:.*]] = air.execute [{{.*}}%[[EVENT2]]{{.*}}]
 // CHECK: memref.dealloc
-// CHECK: %[[EVENT4:.*]], %[[VALUE1:.*]] = air.execute [%[[EVENT3]]]
+// CHECK: %[[EVENT4:.*]], %[[VALUE1:.*]] = air.execute [{{.*}}%[[EVENT3]]{{.*}}]
 // CHECK: memref.alloc()
-// CHECK: %[[EVENT5:.*]] = air.execute [%[[EVENT4]]]
+// CHECK: %[[EVENT5:.*]] = air.execute [{{.*}}%[[EVENT4]]{{.*}}]
 // CHECK: memref.dealloc
 // CHECK: scf.yield %[[EVENT5]]
 
