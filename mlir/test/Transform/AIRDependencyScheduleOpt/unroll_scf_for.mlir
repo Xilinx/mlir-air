@@ -18,7 +18,8 @@
 // CHECK: memref.alloc()
 // CHECK: %[[EVENT5:.*]] = air.execute [{{.*}}%[[EVENT4]]{{.*}}]
 // CHECK: memref.dealloc
-// CHECK: scf.yield %[[EVENT5]]
+// CHECK: %[[EVENT6:.*]] = air.wait_all async [{{.*}}%[[EVENT5]]{{.*}}]
+// CHECK: scf.yield %[[EVENT6]]
 
 func.func @unroll_by_two(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<1024x1024xbf16>, %arg3: memref<1024x1024xbf16>) {
   %c1 = arith.constant 1 : index

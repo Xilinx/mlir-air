@@ -13,7 +13,7 @@
 // CHECK: %alloc = memref.alloc() : memref<1x256x112x4xi8, 1>
 // CHECK: %alloc = memref.alloc() : memref<1x256x112x4xi8, 1>
 // CHECK: %[[EVENT0:.*]]:4 = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = {{.*}} %[[EVENT2:.*]] = {{.*}} %[[EVENT3:.*]] = {{.*}} %[[EVENT4:.*]] = {{.*}})
-// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_0[]
+// CHECK: %[[EVENT5:.*]] = air.channel.get async [{{.*}}%[[EVENT4]]{{.*}}%[[EVENT1]]{{.*}}] @channel_0[]
 // CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]]
 // CHECK: %[[EVENT7:.*]] = scf.for {{.*}} iter_args(%[[EVENT8:.*]] = %[[EVENT6]])
 // CHECK: %[[EVENT9:.*]] = air.channel.put async [%[[EVENT8]]]  @channel_1
