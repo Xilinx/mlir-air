@@ -527,6 +527,8 @@ def run(mlir_module, args=None):
                 + ",".join(
                     [
                         air_opt_shim_dma_bds_pass,
+                        "canonicalize",
+                        "cse",
                         "air-to-std",
                         "symbol-dce",
                         "affine-expand-index-ops",

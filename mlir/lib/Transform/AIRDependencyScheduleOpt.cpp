@@ -590,29 +590,22 @@ private:
     if (!async_op)
       return;
 
-    auto deps = async_op.getAsyncDependencies();
+    SmallVector<Value> deps;
+    for (Value dep : async_op.getAsyncDependencies())
+      deps.push_back(dep);
+    Value asyncToken = async_op.getAsyncToken();
 
-    for (int i = deps.size() - 1; i >= 0; i--) {
-      for (auto user : async_op.getAsyncToken().getUsers()) {
-        if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
-          eraseAsyncDependencyFromAsyncOp(async_user, async_op.getAsyncToken());
-          addAsyncDependencyIfNew(async_user, deps[i]);
-        }
-        // Else if user is not an air op, and alloc depends on multiple tokens
-        else if (deps.size() > 1) {
-          builder.setInsertionPoint(async_op);
-          air::WaitAllOp wa = builder.create<xilinx::air::WaitAllOp>(
-              async_op->getLoc(),
-              air::AsyncTokenType::get(async_op->getContext()),
-              async_op.getAsyncDependencies());
-          replaceAllUsesInRegionWith(async_op.getAsyncToken(),
-                                     wa.getAsyncToken(), region);
-        } else {
-          replaceAllUsesInRegionWith(async_op.getAsyncToken(), deps[0], region);
-        }
-      }
-      async_op.eraseAsyncDependency(i);
+    if (deps.size() == 1) {
+      replaceAllUsesInRegionWith(asyncToken, deps[0], region);
+    } else if (deps.size() > 1) {
+      builder.setInsertionPoint(async_op);
+      air::WaitAllOp wa = builder.create<xilinx::air::WaitAllOp>(
+          async_op->getLoc(), air::AsyncTokenType::get(async_op->getContext()),
+          deps);
+      replaceAllUsesInRegionWith(asyncToken, wa.getAsyncToken(), region);
     }
+
+    air::clearAsyncDependenciesOfAsyncOp(async_op);
   }
 };
 
@@ -1995,8 +1988,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
           offsets[0] = offsets[i];
           offsets[i] = tmp;
         } else {
-          (void)loopUnrollFull(for_op);
-          return success();
+          return air::loopUnrollFullWithAsyncTokenPreserved(for_op);
         }
       }
     }
@@ -2055,12 +2047,6 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     }
     rewriter.replaceAllUsesWith(for_op.getInductionVar(),
                                 for_op.getLowerBound());
-
-    // assert(for_op.getOperation()->use_empty());
-    // if (!for_op->use_empty()){
-    //   for_op->emitOpError("still has uses.");
-    //   return failure();
-    // }
     rewriter.eraseOp(for_op.getOperation());
 
     return success();
@@ -2110,12 +2096,8 @@ struct AIRUnrollScfForIntoBDChain : public OpRewritePattern<scf::ForOp> {
     if (resAsyncTokenCount > 1)
       return failure();
 
-    auto unroll_factor = air::getStaticScfForTripCountAsInt(for_op);
-    if (!unroll_factor)
-      return failure(); // Dynamic loop bound.
-    (void)loopUnrollByFactor(for_op, *unroll_factor);
-
-    return success();
+    // Unroll loop; preserve async tokens after unroll.
+    return air::loopUnrollFullWithAsyncTokenPreserved(for_op);
   }
 
 private:
@@ -2959,7 +2941,10 @@ public:
         auto annotateFn = [](unsigned i, Operation *op, OpBuilder b) {
           op->setAttr("unrolled_iteration", b.getI32IntegerAttr(i));
         };
-        (void)loopUnrollByFactor(for_op, unroll_factor, annotateFn);
+        OpBuilder builder(for_op);
+        if (failed(air::loopUnrollByFactorWithAsyncTokenPreserved(
+                for_op, unroll_factor, annotateFn)))
+          signalPassFailure();
       }
     });
   }
@@ -3214,6 +3199,7 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
   populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, maxSize,
                                                       enableRepeatAtHighestDim);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
+  // WaitAllOp::getCanonicalizationPatterns(cano_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(cano_patterns));
 
   return success();
@@ -5848,12 +5834,8 @@ public:
 
     // Unroll outer scf.for loop nest.
     for (auto scfFor : forLoopsToUnroll) {
-      auto unroll_factor = air::getStaticScfForTripCountAsInt(scfFor);
-      if (!unroll_factor) {
-        scfFor->emitOpError("dynamic loop bound.");
+      if (failed(air::loopUnrollFullWithAsyncTokenPreserved(scfFor)))
         signalPassFailure();
-      }
-      (void)loopUnrollByFactor(scfFor, *unroll_factor);
     }
     // Canonicalize IR to make loop bounds explicitly static.
     applyCanonicalizationPatterns(ctx, func.getBody());

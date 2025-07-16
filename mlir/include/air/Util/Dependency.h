@@ -73,6 +73,16 @@ bool isAsyncDependent(Operation *a, Operation *b);
 scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                                      scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops);
+// Fully unrolls an `scf.for` loop while preserving async token dependencies.
+LogicalResult loopUnrollFullWithAsyncTokenPreserved(
+    scf::ForOp forOp,
+    function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn = nullptr);
+
+// Unrolls an `scf.for` loop by a given factor while preserving async token
+// dependencies.
+LogicalResult loopUnrollByFactorWithAsyncTokenPreserved(
+    scf::ForOp forOp, uint64_t unrollFactor,
+    function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn = nullptr);
 LogicalResult
 unrollScfParallel(OpBuilder builder, scf::ParallelOp par, IRMapping remap,
                   llvm::DenseMap<Operation *, SmallVector<Operation *>> &opMap);

@@ -12,7 +12,7 @@
 // CHECK: memref.alloc()
 // CHECK: %[[EVENT1:.*]] = scf.for {{.*}} iter_args(%[[EVENT2:.*]] = %[[EVENT0]])
 // CHECK: scf.yield
-// CHECK: %[[EVENT3:.*]] = air.execute [%[[EVENT1]]]
+// CHECK: %[[EVENT3:.*]] = air.execute [{{.*}}%[[EVENT1]]{{.*}}]
 // CHECK: memref.dealloc
 
 module {

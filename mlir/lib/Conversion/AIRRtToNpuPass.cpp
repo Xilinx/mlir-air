@@ -937,7 +937,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     SmallVector<affine::AffineForOp> afos;
     affine_for_op.walk([&](affine::AffineForOp afo) { afos.push_back(afo); });
     for (auto afo : afos)
-      (void)loopUnrollFull(afo);
+      if (failed(loopUnrollFull(afo))) {
+        afo->emitOpError("failed to fully unroll");
+        signalPassFailure();
+      }
   }
 
   void unrollSCFFors(ModuleOp module) {
@@ -953,9 +956,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       std::optional<int64_t> stepCstOp =
           mlir::getConstantIntValue(for_op.getStep());
       if (lbCstOp && ubCstOp && stepCstOp) {
-        int64_t tripCount = llvm::divideCeilSigned(
-            ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
-        (void)loopUnrollByFactor(for_op, tripCount);
+        if (failed(loopUnrollFull(for_op))) {
+          for_op->emitOpError("failed to fully unroll");
+          signalPassFailure();
+        }
       }
     }
   }
