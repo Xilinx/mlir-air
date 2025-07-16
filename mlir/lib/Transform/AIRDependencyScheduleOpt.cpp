@@ -590,29 +590,22 @@ private:
     if (!async_op)
       return;
 
-    auto deps = async_op.getAsyncDependencies();
+    SmallVector<Value> deps;
+    for (Value dep : async_op.getAsyncDependencies())
+      deps.push_back(dep);
+    Value asyncToken = async_op.getAsyncToken();
 
-    for (int i = deps.size() - 1; i >= 0; i--) {
-      for (auto user : async_op.getAsyncToken().getUsers()) {
-        if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
-          eraseAsyncDependencyFromAsyncOp(async_user, async_op.getAsyncToken());
-          addAsyncDependencyIfNew(async_user, deps[i]);
-        }
-        // Else if user is not an air op, and alloc depends on multiple tokens
-        else if (deps.size() > 1) {
-          builder.setInsertionPoint(async_op);
-          air::WaitAllOp wa = builder.create<xilinx::air::WaitAllOp>(
-              async_op->getLoc(),
-              air::AsyncTokenType::get(async_op->getContext()),
-              async_op.getAsyncDependencies());
-          replaceAllUsesInRegionWith(async_op.getAsyncToken(),
-                                     wa.getAsyncToken(), region);
-        } else {
-          replaceAllUsesInRegionWith(async_op.getAsyncToken(), deps[0], region);
-        }
-      }
-      async_op.eraseAsyncDependency(i);
+    if (deps.size() == 1) {
+      replaceAllUsesInRegionWith(asyncToken, deps[0], region);
+    } else if (deps.size() > 1) {
+      builder.setInsertionPoint(async_op);
+      air::WaitAllOp wa = builder.create<xilinx::air::WaitAllOp>(
+          async_op->getLoc(), air::AsyncTokenType::get(async_op->getContext()),
+          deps);
+      replaceAllUsesInRegionWith(asyncToken, wa.getAsyncToken(), region);
     }
+
+    air::clearAsyncDependenciesOfAsyncOp(async_op);
   }
 };
 
