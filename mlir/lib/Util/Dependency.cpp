@@ -761,20 +761,20 @@ collectOpsByScfForResultId(Block &block, StringRef attrName) {
   return groupedOps;
 }
 
-llvm::SmallDenseSet<Operation *>
-getUsersOfAsyncTokens(const SmallVector<Operation *> &ops) {
-  llvm::SmallDenseSet<Operation *> userOps;
+llvm::SmallDenseSet<OpOperand *>
+getUsesOfAsyncTokens(const SmallVector<Operation *> &ops) {
+  llvm::SmallDenseSet<OpOperand *> uses;
 
   for (Operation *op : ops) {
     if (!air::isAsyncOp(op))
       continue;
     Value token = air::getAsyncTokenFromOp(op);
     for (OpOperand &use : token.getUses()) {
-      userOps.insert(use.getOwner());
+      uses.insert(&use);
     }
   }
 
-  return userOps;
+  return uses;
 }
 
 // Maintain async token dependencies for unrolled loop ops.
@@ -784,11 +784,18 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
       collectOpsByScfForResultId(parentBlock, "scf.for_result_id");
 
   for (auto &vec : unrolledOps) {
-    auto tokenUsers = getUsersOfAsyncTokens(vec);
+    auto tokenUses = getUsesOfAsyncTokens(vec);
 
-    for (Operation *user : tokenUsers) {
-      if (isa<scf::YieldOp>(user))
-        continue;
+    for (OpOperand *use : tokenUses) {
+      Operation *user = use->getOwner();
+      if (auto yieldUser = dyn_cast<scf::YieldOp>(user)) {
+        OpBuilder builder(yieldUser);
+        user = builder.create<air::WaitAllOp>(
+            yieldUser->getLoc(),
+            air::AsyncTokenType::get(yieldUser->getContext()),
+            SmallVector<Value>{use->get()});
+        use->assign(user->getResult(0));
+      }
 
       air::AsyncOpInterface asyncUser = dyn_cast<air::AsyncOpInterface>(user);
       if (!asyncUser) {
