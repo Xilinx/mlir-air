@@ -42,7 +42,7 @@ HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install git+https://github.co
 # Install mlir-aie from wheel
 pushd my_install
 MLIR_AIE_VERSION=$($(dirname ${SCRIPT_PATH})/clone-mlir-aie.sh --get-wheel-version)
-python3 -m pip install mlir_aie==$MLIR_AIE_VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels/
+python3 -m pip install mlir_aie==$MLIR_AIE_VERSION -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2/
 popd
 export MLIR_AIE_INSTALL_DIR="$(python3 -m pip show mlir_aie | grep ^Location: | awk '{print $2}')/mlir_aie"
 echo "WHL_AIE DIR: $MLIR_AIE_INSTALL_DIR"
