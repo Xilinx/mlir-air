@@ -491,6 +491,7 @@ def run(mlir_module, args=None):
         air_to_aie_pass = air_to_aie_pass + f" device={opts.device}"
         if int(opts.trace_size) > 0:
             air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
+        air_to_aie_pass = air_to_aie_pass + f" use-lock-race-condition-fix={opts.use_lock_race_condition_fix}"
         air_to_aie_pass = air_to_aie_pass + "}"
         pass_pipeline = ",".join([air_to_aie_pass])
 

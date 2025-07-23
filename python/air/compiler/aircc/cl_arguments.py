@@ -181,6 +181,13 @@ def parse_args(args=None):
         help="Adds memory spaces to which air channels shall get time-multiplexed, if operating on them",
     )
     parser.add_argument(
+        "--use-lock-race-condition-fix",
+        dest="use_lock_race_condition_fix",
+        default=False,
+        action="store_true",
+        help="Switch to enable a fix for lock race condition, which protects against the risk of race condition, at the cost of inserting extra dummy DMA BDs.",
+    )
+    parser.add_argument(
         "--output-format",
         type=str,
         choices=["xclbin", "txn"],
