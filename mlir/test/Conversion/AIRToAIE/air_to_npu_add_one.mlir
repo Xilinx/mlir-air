@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu1_1col})' --split-input-file | FileCheck %s
+// RUN: air-opt %s -pass-pipeline='builtin.module(func.func(convert-linalg-to-affine-loops), air-to-aie{row-offset=2 col-offset=0 device=npu1_1col use-lock-race-condition-fix=true})' --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
 // CHECK: %[[VAL0:.*]] = aie.tile(0, 1)
 // CHECK: %[[VAL1:.*]] = aie.tile(0, 2)
@@ -93,6 +94,7 @@
 // CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
 // CHECK: memref.global "public" @air_channel_0 : memref<64xi32, 1>
 // CHECK: @func0
+// RACECONDFIX: @func0
 #map2 = affine_map<(d0) -> (d0)>
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
@@ -223,6 +225,7 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
 // CHECK: memref.global "public" @air_channel_0 : memref<64xi32, 1>
 // CHECK: @func1
+// RACECONDFIX: @func1
 #map = affine_map<(d0) -> (d0)>
 module {
   air.channel @channel_0 [1, 1]

@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 generate-shim-dma=true" -canonicalize --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 generate-shim-dma=true use-lock-race-condition-fix=true" -canonicalize --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
 // CHECK-LABEL:   aie.device(xcve2802) {
 // CHECK:  %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
@@ -41,6 +42,7 @@
 // CHECK:  ^bb2:
 // CHECK:    aie.end
 // CHECK:  }
+// RACECONDFIX: @func1
 func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
@@ -114,6 +116,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   aie.use_lock(%[[VAL_5]], Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: }
+// RACECONDFIX: @func2
 func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
@@ -194,6 +197,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   aie.use_lock(%[[VAL_4]], Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: }
+// RACECONDFIX: @func3
 
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
@@ -321,6 +325,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   aie.use_lock(%[[VAL_6]], Release, 1)
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
+// RACECONDFIX: @func4
 
 air.channel @channel_2 [1, 1]
 air.channel @channel_3 [1, 1]
