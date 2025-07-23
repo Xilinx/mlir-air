@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1" --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1 use-lock-race-condition-fix=true" --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
 // CHECK-LABEL:   aie.device(npu1) {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(0, 2)
@@ -35,6 +36,7 @@
 // CHECK:  aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
 // CHECK:  aie.shim_dma_allocation @airMemcpyId1(MM2S, 0, 0)
 // CHECK: @func1
+// RACECONDFIX: @func1
 func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
@@ -61,20 +63,20 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: %[[VAL_6:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<1024xi32, 2>
 // CHECK: %[[VAL_7:.*]] = aie.buffer(%[[VAL_0]]) {{.*}} : memref<512xi32, 2>
 // CHECK: %[[VAL_8:.*]] = aie.mem(%[[VAL_0]]) {
-// CHECK:   %[[VAL_9:.*]] = aie.dma_start(S2MM, 0, ^bb1, ^bb3)
+// CHECK:   %[[VAL_9:.*]] = aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:
-// CHECK:   aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, 1)
-// CHECK:   aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2>, 0, 1024)
-// CHECK:   aie.use_lock(%[[VAL_3]], Release, 1)
+// CHECK:   aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
+// CHECK:   aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2>, 0, 512)
+// CHECK:   aie.use_lock(%[[VAL_4]], Release, 1)
 // CHECK:   aie.next_bd ^bb1
 // CHECK: ^bb2:
 // CHECK:   aie.end
 // CHECK: ^bb3:
-// CHECK:   %[[VAL_10:.*]] = aie.dma_start(MM2S, 0, ^bb4, ^bb2)
+// CHECK:   %[[VAL_10:.*]] = aie.dma_start(S2MM, 0, ^bb4, ^bb2)
 // CHECK: ^bb4:
-// CHECK:   aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:   aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2>, 0, 512)
-// CHECK:   aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:   aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, 1)
+// CHECK:   aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2>, 0, 1024)
+// CHECK:   aie.use_lock(%[[VAL_3]], Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: }
 // CHECK: %[[VAL_11:.*]] = aie.core(%[[VAL_0]]) {
@@ -94,6 +96,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: aie.shim_dma_allocation @airMemcpyId1(MM2S, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId1 : memref<1024xi32, 2>
 // CHECK: @func2
+// RACECONDFIX: @func2
 func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
@@ -126,20 +129,20 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         %[[VAL_7:.*]] = aie.buffer(%[[VAL_1]]) {{{.*}}} : memref<512xi32, 2>
 
 // CHECK:    aie.mem(%[[VAL_1]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2>, 0, 1024)
-// CHECK:           aie.use_lock(%[[VAL_3]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2>, 0, 512)
+// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           aie.end
 // CHECK:         ^bb3:
-// CHECK:           aie.dma_start(MM2S, 0, ^bb4, ^bb2)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb4, ^bb2)
 // CHECK:         ^bb4:
-// CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:           aie.dma_bd(%[[VAL_7]] : memref<512xi32, 2>, 0, 512)
-// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_2]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_6]] : memref<1024xi32, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_3]], Release, 1)
 // CHECK:           aie.next_bd ^bb4
 // CHECK:         }
 
@@ -162,6 +165,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
 // CHECK:         memref.global "public" @air_channel_0 : memref<1024xi32, 2>
 // CHECK: @func3
+// RACECONDFIX: @func3
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
 func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
@@ -204,20 +208,20 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         %[[VAL_23:.*]] = aie.buffer(%[[VAL_3]]) {{{.*}}} : memref<1024xi32, 2>
 
 // CHECK:    aie.mem(%[[VAL_3]])  {
-// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           aie.use_lock(%[[VAL_17]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_20]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_23]] : memref<1024xi32, 2>, 0, 1024)
-// CHECK:           aie.use_lock(%[[VAL_18]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_19]], Release, 1)
 // CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           aie.end
 // CHECK:         ^bb3:
-// CHECK:           aie.dma_start(MM2S, 0, ^bb4, ^bb2)
+// CHECK:           aie.dma_start(S2MM, 0, ^bb4, ^bb2)
 // CHECK:         ^bb4:
-// CHECK:           aie.use_lock(%[[VAL_20]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_17]], AcquireGreaterEqual, 1)
 // CHECK:           aie.dma_bd(%[[VAL_23]] : memref<1024xi32, 2>, 0, 1024)
-// CHECK:           aie.use_lock(%[[VAL_19]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_18]], Release, 1)
 // CHECK:           aie.next_bd ^bb4
 // CHECK:         }
 
@@ -235,34 +239,34 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         aie.flow(%[[VAL_2]], DMA : 1, %[[VAL_4]], DMA : 0)
 
 // CHECK: aie.memtile_dma(%[[VAL_2]]) {
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb7)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb7)
 // CHECK: ^bb1:
-// CHECK:   aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
+// CHECK:   aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024)
-// CHECK:   aie.use_lock(%[[VAL_8]], Release, 1)
+// CHECK:   aie.use_lock(%[[VAL_7]], Release, 1)
 // CHECK:   aie.next_bd ^bb1
 // CHECK: ^bb2:
 // CHECK:   aie.end
 // CHECK: ^bb3:
-// CHECK:   aie.dma_start(S2MM, 1, ^bb4, ^bb2)
+// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
 // CHECK: ^bb4:
-// CHECK:   aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024)
-// CHECK:   aie.use_lock(%[[VAL_6]], Release, 1)
-// CHECK:   aie.next_bd ^bb4
-// CHECK: ^bb5:
-// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3)
-// CHECK: ^bb6:
-// CHECK:   aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
-// CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024)
-// CHECK:   aie.use_lock(%[[VAL_7]], Release, 1)
-// CHECK:   aie.next_bd ^bb6
-// CHECK: ^bb7:
-// CHECK:   aie.dma_start(MM2S, 1, ^bb8, ^bb5)
-// CHECK: ^bb8:
 // CHECK:   aie.use_lock(%[[VAL_6]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024)
 // CHECK:   aie.use_lock(%[[VAL_5]], Release, 1)
+// CHECK:   aie.next_bd ^bb4
+// CHECK: ^bb5:
+// CHECK:   aie.dma_start(S2MM, 0, ^bb6, ^bb3)
+// CHECK: ^bb6:
+// CHECK:   aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
+// CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024)
+// CHECK:   aie.use_lock(%[[VAL_8]], Release, 1)
+// CHECK:   aie.next_bd ^bb6
+// CHECK: ^bb7:
+// CHECK:   aie.dma_start(S2MM, 1, ^bb8, ^bb5)
+// CHECK: ^bb8:
+// CHECK:   aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
+// CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024)
+// CHECK:   aie.use_lock(%[[VAL_6]], Release, 1)
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
 // CHECK: aie.shim_dma_allocation @air_channel_5(S2MM, 0, 0)
@@ -270,6 +274,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: aie.shim_dma_allocation @air_channel_2(MM2S, 0, 0)
 // CHECK: memref.global "public" @air_channel_2 : memref<1024xi32, 1>
 // CHECK: @func4
+// RACECONDFIX: @func4
 air.channel @channel_2 [1, 1]
 air.channel @channel_3 [1, 1]
 air.channel @channel_4 [1, 1]
@@ -338,6 +343,38 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         aie.shim_dma_allocation @air_channel_8(MM2S, 0, 0)
 // CHECK:         memref.global "public" @air_channel_8 : memref<1024xi32, 1>
 // CHECK: @func5
+
+// RACECONDFIX: aie.device
+// RACECONDFIX:   aie.memtile_dma(%{{.*}}) {
+// RACECONDFIX:     %0 = aie.dma_start(MM2S, 0, ^bb1, ^bb5)
+// RACECONDFIX:   ^bb1:
+// RACECONDFIX:     aie.use_lock(%[[lock_0_1_2:.*]], AcquireGreaterEqual, 1)
+// RACECONDFIX:     aie.dma_bd(%[[buf32:.*]] : memref<1024xi32, 1>, 0, 1024)
+// RACECONDFIX:     aie.use_lock(%[[lock_0_1_1:.*]], Release, 1)
+// RACECONDFIX:     aie.next_bd ^bb1
+// RACECONDFIX:   ^bb2:
+// RACECONDFIX:     aie.end
+// RACECONDFIX:   ^bb3:
+// RACECONDFIX:     %1 = aie.dma_start(MM2S, 1, ^bb4, ^bb2)
+// RACECONDFIX:   ^bb4:
+// RACECONDFIX:     aie.use_lock(%[[lock_0_1_0:.*]], AcquireGreaterEqual, 1)
+// RACECONDFIX:     aie.dma_bd(%[[buf32]] : memref<1024xi32, 1>, 0, 512)
+// RACECONDFIX:     aie.use_lock(%[[lock_0_1:.*]], Release, 1)
+// RACECONDFIX:     aie.next_bd ^bb4
+// RACECONDFIX:   ^bb5:
+// RACECONDFIX:     %2 = aie.dma_start(S2MM, 0, ^bb6, ^bb3)
+// RACECONDFIX:   ^bb6:
+// RACECONDFIX:     aie.use_lock(%[[lock_0_1_1]], AcquireGreaterEqual, 1)
+// RACECONDFIX:     aie.dma_bd(%[[buf32]] : memref<1024xi32, 1>, 0, 1024)
+// RACECONDFIX:     aie.use_lock(%[[lock_0_1_2]], Release, 1)
+// RACECONDFIX:     aie.next_bd ^bb7
+// RACECONDFIX:   ^bb7:
+// RACECONDFIX:     aie.use_lock(%[[lock_0_1]], AcquireGreaterEqual, 1)
+// RACECONDFIX:     aie.dma_bd(%[[buf32]] : memref<1024xi32, 1>, 0, 0)
+// RACECONDFIX:     aie.use_lock(%[[lock_0_1_0]], Release, 1)
+// RACECONDFIX:     aie.next_bd ^bb6
+// RACECONDFIX: @func5
+
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
 #set1 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 == 0)>
 air.channel @channel_6 [1, 1] {broadcast_shape = [1, 4]}
@@ -419,6 +456,7 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
 
 // CHECK: @func6
 // CHECK: air.channel.get{{.*}}metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<8x8xi32>)
+// RACECONDFIX: @func6
 #map1 = affine_map<()[s0] -> (s0 * 4)>
 air.channel @channel_0 [2, 2]
 func.func @func6(%arg5 : memref<8x8xi32>) {
@@ -468,27 +506,28 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
 // Multi-dimensional memref copy to wraps and strides
 // CHECK: aie.device(npu1)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb5)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb5)
 // CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1>, 0, 16)
 // CHECK:   aie.use_lock({{.*}}, Release, 1)
 // CHECK:   aie.next_bd ^bb1
 // CHECK: ^bb3:  // pred: ^bb5
-// CHECK:   aie.dma_start(S2MM, 1, ^bb4, ^bb2)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb4, ^bb2)
 // CHECK: ^bb4:  // 2 preds: ^bb3, ^bb4
-// CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1>, 0, 16, [<size = 4, stride = 16>, <size = 4, stride = 1>])
-// CHECK:   aie.use_lock({{.*}}, Release, 1)
-// CHECK:   aie.next_bd ^bb4
-// CHECK: ^bb5:  // pred: ^bb0
-// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3)
-// CHECK: ^bb6:  // 2 preds: ^bb5, ^bb6
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1>, 0, 16)
 // CHECK:   aie.use_lock({{.*}}, Release, 1)
+// CHECK:   aie.next_bd ^bb4
+// CHECK: ^bb5:  // pred: ^bb0
+// CHECK:   aie.dma_start(S2MM, 1, ^bb6, ^bb3)
+// CHECK: ^bb6:  // 2 preds: ^bb5, ^bb6
+// CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1>, 0, 16, [<size = 4, stride = 16>, <size = 4, stride = 1>])
+// CHECK:   aie.use_lock({{.*}}, Release, 1)
 // CHECK:   aie.next_bd ^bb6
 // CHECK: @func7
+// RACECONDFIX: @func7
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
 air.channel @channel_2 [1, 1]
@@ -533,6 +572,7 @@ func.func @func7(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // CHECK: ^bb2:  // pred: ^bb0
 // CHECK:   aie.end
 // CHECK: @func8
+// RACECONDFIX: @func8
 air.channel @channel_0 [1, 1]
 func.func @func8(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
   air.segment args(%ext0 = %arg0, %ext1 = %arg1) : memref<8x16xi32>, memref<16x8xi32> attributes {sym_name="segment", id = 2 : i32, x_loc = 0 : i64, x_size = 1 : i64, y_loc = 3 : i64, y_size = 1 : i64} {
@@ -572,6 +612,7 @@ func.func @func8(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 32, 32)
 // CHECK: @func9
+// RACECONDFIX: @func9
 #map = affine_map<()[s0] -> (s0 * 32)>
 air.channel @channel_1 [2, 1]
 func.func @func9(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
@@ -634,6 +675,7 @@ func.func @func9(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
 // CHECK:   aie.dma_bd({{.*}} : memref<32x256xi32, 1>, 0, 8192)
 // CHECK: @func10
+// RACECONDFIX: @func10
 #map = affine_map<()[s0] -> (s0 * 32)>
 air.channel @channel_1 [2, 1]
 func.func @func10(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
@@ -696,6 +738,7 @@ func.func @func10(%arg0: memref<128xf32>, %arg1: memref<128xf32>) {
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
 // CHECK:   memref<32x256xbf16, 1>, 0, 8192)
 // CHECK: @func11
+// RACECONDFIX: @func11
 #map = affine_map<()[s0] -> (s0 * 32)>
 air.channel @channel_1 [2, 1]
 func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
@@ -834,6 +877,15 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
 // CHECK: aie.memtile_dma(%[[tile_3_1]])
 // CHECK: @func12
 
+// RACECONDFIX: aie.device(npu1)
+// RACECONDFIX: aie.memtile_dma(%[[mem_tile_0_1:.*]])
+// RACECONDFIX-COUNT-3: aie.dma_bd(%[[buf19:.*]] : memref<64x256xbf16, 1>, 0, 0)
+// RACECONDFIX: aie.dma_bd(%[[buf19]] : memref<64x256xbf16, 1>, 0, 16384)
+// RACECONDFIX: aie.memtile_dma(%[[mem_tile_1_1:.*]])
+// RACECONDFIX-COUNT-11: aie.dma_bd(%[[buf18:.*]] : memref<64x256xbf16, 1>, 0, 0)
+// RACECONDFIX: aie.dma_bd(%[[buf18]] : memref<64x256xbf16, 1>, 0, 16384)
+// RACECONDFIX: @func12
+
 #map = affine_map<()[s0] -> (s0 * 256)>
 #map1 = affine_map<()[s0] -> (s0 * 256 + 64)>
 #map2 = affine_map<()[s0] -> (s0 * 256 + 128)>
@@ -968,6 +1020,7 @@ module {
 // CHECK:    aie.end
 // CHECK:  }
 // CHECK: @func13
+// RACECONDFIX: @func13
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 16)>
@@ -1056,6 +1109,7 @@ module {
 // CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
 // CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
 // CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
+// RACECONDFIX: @func14
 
 module {
   air.channel @channel_0 [2, 2]
@@ -1092,6 +1146,7 @@ module {
 // CHECK-NEXT: aie.shim_dma_allocation @air_channel_2(MM2S, 0, 0)
 // CHECK-NEXT: memref.global "public" @air_channel_2 : memref<1024xi32, 1>
 // CHECK: @func15
+// RACECONDFIX: @func15
 air.channel @channel_2 [1, 1]
 air.channel @channel_3 [1, 1]
 func.func @func15(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
@@ -1132,6 +1187,7 @@ func.func @func15(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:      aie.dma_bd({{.*}}) {task_id = 1 : i32}
 // CHECK:      aie.next_bd ^bb2
 // CHECK:      @func16
+// RACECONDFIX: @func16
 
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
@@ -1175,17 +1231,18 @@ func.func @func16(%arg0 : memref<5xi32>, %arg1 : memref<96xi32>, %arg2 : memref<
 // Lowering complex loop structures around channel.puts/gets into BD task repeat counts (aie.memtile_dma).
 //
 // CHECK:      aie.memtile_dma
-// CHECK-NEXT: aie.dma_start(S2MM, 0, ^bb1, ^bb7)
+// CHECK-NEXT: aie.dma_start(MM2S, 0, ^bb1, ^bb7)
 // CHECK-NEXT: ^bb1:
 // CHECK:      aie.dma_bd({{.*}}) {task_id = 0 : i32}
 // CHECK:      aie.next_bd ^bb2
 // CHECK-NEXT: ^bb2:
 // CHECK-NEXT: aie.end
 // CHECK-NEXT: ^bb3:
-// CHECK-NEXT: aie.dma_start(S2MM, 0, ^bb4, ^bb2, repeat_count = 7)
+// CHECK-NEXT: aie.dma_start(MM2S, 0, ^bb4, ^bb2, repeat_count = 7)
 // CHECK:      aie.dma_bd({{.*}}) {task_id = 1 : i32}
 // CHECK:      aie.next_bd ^bb2
 // CHECK: @func17
+// RACECONDFIX: @func17
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
 func.func @func17(%arg0 : memref<5xi32>, %arg1 : memref<96xi32>, %arg2 : memref<9xi32>, %ub : index) -> () {
@@ -1249,6 +1306,7 @@ func.func @func17(%arg0 : memref<5xi32>, %arg1 : memref<96xi32>, %arg2 : memref<
 // CHECK:      air.channel.get async{{.*}}@channel_0{{.*}}metadataArray = [{base = "air_channel_0", index = 0 : i32}]
 // CHECK:      scf.yield
 // CHECK:      scf.yield
+// RACECONDFIX: @func18
 
 air.channel @channel_0 [2, 2]
 func.func @func18(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
@@ -1335,6 +1393,7 @@ func.func @func18(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: i32, %arg3:
 // CHECK:      air.channel.get async{{.*}}@channel_0{{.*}}metadataArray = [{base = "air_channel_0", index = 0 : i32}]
 // CHECK:      scf.yield
 // CHECK:      scf.yield
+// RACECONDFIX: @func19
 
 module {
   air.channel @channel_0 [2, 2]

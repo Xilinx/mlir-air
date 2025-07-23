@@ -209,7 +209,7 @@ with open("air_placed.mlir", "w") as f:
 # ## MLIR-AIR to MLIR-AIE
 # ################################################
 
-air_to_aie_pass = "air-to-aie{row-offset=2 col-offset=0 device=npu1 emit-while-loop=true use-pkt-flow-at-shim-dma=true"
+air_to_aie_pass = "air-to-aie{row-offset=2 col-offset=0 device=npu1 emit-while-loop=true use-pkt-flow-at-shim-dma=true use-lock-race-condition-fix=true"
 if opts.trace_size > 0:
     air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
 air_to_aie_pass = air_to_aie_pass + "}"

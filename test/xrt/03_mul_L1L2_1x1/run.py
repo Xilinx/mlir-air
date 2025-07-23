@@ -134,7 +134,10 @@ def run_test(size, idtype, odtype):
     ref = (input_a * input_b).astype(odtype)
     input_c = np.ones_like(ref)
 
-    backend = xrt_backend.XRTBackend(verbose=verbose)
+    backend = xrt_backend.XRTBackend(
+        verbose=verbose,
+        use_lock_race_condition_fix=True,
+    )
 
     # run the module
     compiled_module = backend.compile(mlir_module)

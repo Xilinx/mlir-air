@@ -122,6 +122,6 @@ with air.ir.Context() as ctx, Location.unknown():
 
     backend = XRTBackend(
         lower_linalg_to_func="vm.o",
-        air_loop_fusion=True,
+        use_lock_race_condition_fix=True,
     )
     backend.compile(air_module)

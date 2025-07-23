@@ -118,7 +118,7 @@ public:
   lookupDMAAllocation(int64_t col, int64_t row, air::MemcpyInterface &memcpyOp);
   FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
   getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
-                Operation *bufferOp);
+                Operation *bufferOp, bool lockRaceConditionFix = false);
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp, AIE::TileOp tile, int chan,
                      int col, int row, std::vector<int> dma_id);
@@ -133,6 +133,7 @@ public:
   std::vector<std::tuple<Operation *, air::ChannelOp, AIE::DMAChannel,
                          AIE::LockOp, AIE::LockOp>>
       lock_allocation_list;
+  DenseMap<Value, std::pair<int, int>> passiveSideBufferUseCounters;
 };
 
 class TileDMAAllocator : public DMAAllocator {

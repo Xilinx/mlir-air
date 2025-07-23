@@ -99,9 +99,9 @@ with air.ir.Context() as ctx, Location.unknown():
 
     backend = XRTBackend(
         lower_linalg_to_func="conv.o",
-        air_loop_fusion=True,
         trace_offset=73728,
         trace_size=262144,
         runtime_loop_tiling_sizes=[1, 1],
+        use_lock_race_condition_fix=True,
     )
     backend.compile(air_module)

@@ -136,5 +136,7 @@ with air.ir.Context() as ctx, Location.unknown():
     # Run compile and load
     ###############################################
 
-    backend = XRTBackend()
+    backend = XRTBackend(
+      use_lock_race_condition_fix=True,
+    )
     backend.compile(air_module)

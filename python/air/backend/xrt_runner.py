@@ -65,6 +65,7 @@ class XRTRunner:
         runtime_loop_tiling_sizes: list[int] = [4, 4],
         omit_auto_broadcast: bool = False,
         channel_multiplexing: list[str] = [],
+        use_lock_race_condition_fix: bool = False,
         trace_offset: int = 0,
         trace_size: int = 0,
         output_format: str = "xclbin",
@@ -83,6 +84,7 @@ class XRTRunner:
             runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
             omit_auto_broadcast: configure aircc to omit the detection and lowering of broadcast data movements.
             channel_multiplexing: configure aircc to perform air channel multiplexing on specified memroy spaces.
+            use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
             output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn].
@@ -99,6 +101,7 @@ class XRTRunner:
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
         self.omit_auto_broadcast = omit_auto_broadcast
         self.channel_multiplexing = channel_multiplexing
+        self.use_lock_race_condition_fix = use_lock_race_condition_fix
         self.trace_offset = trace_offset
         self.trace_size = trace_size
         self.output_format = output_format
@@ -136,6 +139,7 @@ class XRTRunner:
             runtime_loop_tiling_sizes=self.runtime_loop_tiling_sizes,
             omit_auto_broadcast=self.omit_auto_broadcast,
             channel_multiplexing=self.channel_multiplexing,
+            use_lock_race_condition_fix = self.use_lock_race_condition_fix,
             trace_offset=self.trace_offset,
             trace_size=self.trace_size,
             output_format=self.output_format,
