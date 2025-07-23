@@ -149,5 +149,6 @@ backend = XRTBackend(
     air_loop_fusion=True,
     trace_offset=opts.trace_offset,
     trace_size=opts.trace_size,
+    use_lock_race_condition_fix=True,
 )
 backend.compile(air_module)

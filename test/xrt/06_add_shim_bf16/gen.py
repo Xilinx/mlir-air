@@ -84,5 +84,6 @@ pm.run(module.operation)
 
 backend = XRTBackend(
     air_loop_fusion=True,
+    use_lock_race_condition_fix=True,
 )
 module_function = backend.compile(module)

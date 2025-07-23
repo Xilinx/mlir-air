@@ -139,5 +139,6 @@ backend = XRTBackend(
     air_loop_fusion=True,
     lower_linalg_to_func="mm.o",
     runtime_loop_tiling_sizes=[1, 1],
+    use_lock_race_condition_fix=True,
 )
 backend.compile(air_module)

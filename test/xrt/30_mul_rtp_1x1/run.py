@@ -99,7 +99,11 @@ def run_test(size, idtype, odtype):
     ref = (input_a * input_b).astype(odtype)
     input_c = np.ones_like(ref)
 
-    backend = xrt_backend.XRTBackend(omit_pingpong=True, verbose=verbose)
+    backend = xrt_backend.XRTBackend(
+        omit_pingpong=True, 
+        verbose=verbose,
+        use_lock_race_condition_fix=True,
+    )
 
     # run the module
     with filelock.FileLock("/tmp/npu.lock"):
