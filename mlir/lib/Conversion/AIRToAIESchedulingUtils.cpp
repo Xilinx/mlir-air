@@ -512,7 +512,8 @@ air::DMAAllocator::lookupDMAAllocation(int64_t col, int64_t row,
 // locks depending on the target device.
 FailureOr<std::pair<AIE::LockOp, AIE::LockOp>>
 air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col,
-                                 int row, Operation *bufferOp) {
+                                 int row, Operation *bufferOp,
+                                 bool lockRaceConditionFix) {
   auto alloc = lookupDMAAllocation(col, row, memcpyOp);
   if (failed(alloc))
     return memcpyOp->emitOpError("failed to look up dma allocation.");
@@ -532,13 +533,66 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col,
       // AIE2's semaphore locks may share by air.channels
       for (size_t i = 0; i < lock_allocation_list.size(); i++) {
         if (target_model.isMemTile(col, row)) {
-          // If memtile, and multiple bds reference the same buffer op, but
-          // different DMA channels, then we assume the scenario of having two
-          // bds, one S2MM and the other MM2S. This scenario is almost always
-          // true due to memtile having no core to communicate data with.
-          if (std::get<0>(lock_allocation_list[i]) == bufferOp) {
-            return std::make_pair(std::get<3>(lock_allocation_list[i]),
+          if (!lockRaceConditionFix) {
+            // If memtile, and multiple bds reference the same buffer op, but
+            // different DMA channels, then we assume the scenario of having two
+            // bds, one S2MM and the other MM2S. This scenario is almost always
+            // true due to memtile having no core to communicate data with.
+            if (std::get<0>(lock_allocation_list[i]) == bufferOp) {
+              return std::make_pair(std::get<3>(lock_allocation_list[i]),
+                                    std::get<4>(lock_allocation_list[i]));
+            }
+          } else {
+            // Determine the opposite direction of the given DMA channel.
+            // MM2S (Memory-to-Stream) ↔ S2MM (Stream-to-Memory)
+            AIE::DMAChannelDir oppo_channel_dir =
+                channel.direction == AIE::DMAChannelDir::MM2S
+                    ? AIE::DMAChannelDir::S2MM
+                    : AIE::DMAChannelDir::MM2S;
+            // Case 1: Exact match on (channel symbol, physical channel number).
+            if (air_chan &&
+                (std::get<1>(lock_allocation_list[i]) == air_chan) &&
+                (std::get<2>(lock_allocation_list[i]) == channel)) {
+              // Reuse the existing lock entry by appending a new BD with the
+              // same locks.
+              auto entry =
+                  std::make_tuple(bufferOp, air_chan, channel,
+                                  std::get<3>(lock_allocation_list[i]),
                                   std::get<4>(lock_allocation_list[i]));
+              lock_allocation_list.push_back(entry);
+              // Return the (acquire, release) lock pair for this op.
+              return std::make_pair(std::get<3>(lock_allocation_list[i]),
+                                    std::get<4>(lock_allocation_list[i]));
+            }
+            // Case 2: Passive-direction DMA op on same buffer (i.e. the
+            // direction that may come with dummy channels).
+            else if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&
+                     (std::get<2>(lock_allocation_list[i]).direction ==
+                      oppo_channel_dir)) {
+              // First time we see this on the passive side
+              if (!passiveSideBufferUseCounters.count(bufferOp->getResult(0))) {
+                passiveSideBufferUseCounters[bufferOp->getResult(0)] =
+                    std::make_pair(1, 0); // (activeCount, passiveCount)
+                return std::make_pair(std::get<3>(lock_allocation_list[i]),
+                                      std::get<4>(lock_allocation_list[i]));
+              }
+              // All previous passive users have matched active counts (balanced
+              // so far)
+              else if (passiveSideBufferUseCounters[bufferOp->getResult(0)]
+                           .first ==
+                       passiveSideBufferUseCounters[bufferOp->getResult(0)]
+                           .second) {
+                passiveSideBufferUseCounters[bufferOp->getResult(0)].first++;
+                passiveSideBufferUseCounters[bufferOp->getResult(0)].second = 0;
+                return std::make_pair(std::get<3>(lock_allocation_list[i]),
+                                      std::get<4>(lock_allocation_list[i]));
+              } else {
+                // Still have unmatched passive users — increment passive side
+                // count
+                passiveSideBufferUseCounters[bufferOp->getResult(0)].second++;
+                continue; // Try next entry in lock_allocation_list
+              }
+            }
           }
         } else if ((std::get<1>(lock_allocation_list[i]) == air_chan) &&
                    (std::get<0>(lock_allocation_list[i])->getOperand(0) ==

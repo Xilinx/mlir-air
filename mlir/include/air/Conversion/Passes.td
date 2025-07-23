@@ -201,6 +201,11 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
           /*default=*/"false",
           "Switch to using packet flows for all data movements at shim DMAs, "
           "to enable time-multiplex sharing with control packet flows.">,
+    Option<"clUseLockRaceConditionFix", "use-lock-race-condition-fix", "bool", 
+          /*default=*/"false",
+          "Switch to enable a fix for lock race condition, which protects "
+          "against the risk of race condition, at the cost of inserting extra "
+          "dummy DMA BDs">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE
