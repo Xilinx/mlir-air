@@ -14,8 +14,6 @@
 #include "llvm/ADT/SmallSet.h"
 #include <sys/stat.h>
 
-#include <iostream>
-
 #define DEBUG_TYPE "air-dependency-util"
 
 using namespace mlir;
@@ -1871,30 +1869,6 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
   return output;
 }
 
-// Create a vector of vertices which remain after affine.if filtering, if
-// showing cores
-std::vector<Graph::VertexId> dependencyCanonicalizer::getVerticesWithAffineIf(
-    const Graph &g, const std::vector<unsigned> &position) {
-  std::vector<Graph::VertexId> output;
-  auto vp = g.getVertices();
-  if (position.size()) {
-    for (auto v : vp) {
-      if (!g[v].op) {
-        output.push_back(v);
-      } else if (!g[v].op->getParentOfType<affine::AffineIfOp>()) {
-        output.push_back(v);
-      } else if (positionHitsAffineIfCondition(g[v].op, position)) {
-        output.push_back(v);
-      }
-    }
-  } else {
-    for (auto v : vp) {
-      output.push_back(v);
-    }
-  }
-  return output;
-}
-
 // Trace dependency of every op in a graph
 void dependencyCanonicalizer::parseDependencyEdgesInGraph(
     Graph &g, dependencyContext dep_ctx) {
@@ -2234,27 +2208,35 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
     auto incoming_deps = graph.g.inverseAdjacentVertices(dstTRVertex);
     for (auto TRVertex : incoming_deps) {
       auto src_op = graph.g[TRVertex].op;
-      if (src_op && op != src_op) { // Avoid dep to itself
-        if (graph.g[TRVertex].asyncEventType == "for_loop") {
-          auto value = dyn_cast<scf::ForOp>(src_op).getRegionIterArgs()[0];
-          async_op.addAsyncDependency(value);
-        } else if (graph.g[TRVertex].asyncEventType == "parallel_loop") {
-          auto value = dyn_cast<scf::ParallelOp>(src_op).getInitVals()[0];
-          async_op.addAsyncDependency(value);
-        } else if (graph.g[TRVertex].asyncEventType == "terminator") {
-          auto parent_op = src_op->getParentOp();
-          auto value = parent_op->getResult(0);
-          async_op.addAsyncDependency(value);
-        } else if (auto async_src_op =
-                       dyn_cast<xilinx::air::AsyncOpInterface>(src_op)) {
-          // Elevate src token if src op is in affine if
-          while (dyn_cast<affine::AffineIfOp>(src_op->getParentOp())) {
-            auto parent_affine_if_op =
-                dyn_cast<affine::AffineIfOp>(src_op->getParentOp());
-            src_op = parent_affine_if_op.getOperation();
+      if (!src_op)
+        continue;
+      if (op == src_op)
+        continue; // Avoid dep to itself
+      if (graph.g[TRVertex].asyncEventType == "for_loop") {
+        auto value = dyn_cast<scf::ForOp>(src_op).getRegionIterArgs()[0];
+        async_op.addAsyncDependency(value);
+      } else if (graph.g[TRVertex].asyncEventType == "parallel_loop") {
+        auto value = dyn_cast<scf::ParallelOp>(src_op).getInitVals()[0];
+        async_op.addAsyncDependency(value);
+      } else if (graph.g[TRVertex].asyncEventType == "terminator") {
+        auto parent_op = src_op->getParentOp();
+        auto value = parent_op->getResult(0);
+        async_op.addAsyncDependency(value);
+      } else if (auto async_src_op =
+                     dyn_cast<xilinx::air::AsyncOpInterface>(src_op)) {
+        // Elevate src token if src op is in affine if
+        while (auto parent_affine_if_op =
+                   dyn_cast<affine::AffineIfOp>(src_op->getParentOp())) {
+          DominanceInfo domInfo(src_op);
+          if (domInfo.properlyDominates(src_op, async_op)) {
+            // SSA dominance check passed. Jump to adding dependency edge.
+            break;
           }
-          async_op.addAsyncDependency(src_op->getResult(0));
+          src_op = parent_affine_if_op.getOperation();
         }
+        if (src_op->isAncestor(async_op))
+          continue; // Avoid depending on its ancestor.
+        async_op.addAsyncDependency(src_op->getResult(0));
       }
     }
   }
