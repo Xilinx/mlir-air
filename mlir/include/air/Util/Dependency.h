@@ -336,9 +336,6 @@ private:
   void fillAllDependencyListsFromTR(dependencyGraph &graph);
   void purgeAIRDepList(dependencyGraph &graph);
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
-  std::vector<VertexId>
-  getVerticesWithAffineIf(const Graph &g,
-                          const std::vector<unsigned> &position);
 };
 
 //===----------------------------------------------------------------------===//
