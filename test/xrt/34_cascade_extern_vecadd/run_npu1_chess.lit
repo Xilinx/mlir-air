@@ -1,0 +1,8 @@
+// (c) Copyright 2025 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu1, valid_xchess_license
+// RUN: mkdir -p test_npu1_chess
+// RUN: cd test_npu1_chess
+// RUN: xchesscc_wrapper aie2 -c %S/cascade.cc -o cascade.o
+// RUN: %python %S/run.py
