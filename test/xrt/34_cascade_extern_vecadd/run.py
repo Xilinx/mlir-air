@@ -93,18 +93,11 @@ with air.ir.Context() as ctx, Location.unknown():
     input_a = np.arange(0, 2048, dtype=np.int32)
     if args.compile_mode == "compile-and-run":
         num_samples = 100
-        sampled_indices = np.vstack(
-            [
-                np.random.randint(0, 2048, num_samples)
-            ]
-        )
+        sampled_indices = np.vstack([np.random.randint(0, 2048, num_samples)])
 
         # Compute reference results for sampled indices
         sampled_values = np.array(
-            [
-                input_a[i] + 4
-                for i in zip(*sampled_indices)
-            ],
+            [input_a[i] + 4 for i in zip(*sampled_indices)],
             dtype=np.int32,
         )
 
