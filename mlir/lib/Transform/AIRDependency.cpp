@@ -22,6 +22,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -1270,6 +1271,32 @@ private:
     return new_branch_op;
   }
 
+  affine::AffineIfOp convertAffineIfToAsync(RewriterBase &rewriter,
+                                            affine::AffineIfOp branch_op) {
+    // Create new if op with a yielded async token.
+    SmallVector<Type> yielded_tys = {
+        air::AsyncTokenType::get(rewriter.getContext())};
+    affine::AffineIfOp new_branch_op = rewriter.create<affine::AffineIfOp>(
+        branch_op.getLoc(), yielded_tys, branch_op.getIntegerSet(),
+        branch_op.getOperands(),
+        /*withElseRegion*/ (bool)branch_op.hasElse());
+
+    if (auto attr = branch_op->getAttrOfType<StringAttr>(
+            SymbolTable::getSymbolAttrName()))
+      new_branch_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+
+    // Splice the operations inside then and else regions
+    auto old_regions = branch_op->getRegions();
+    auto new_regions = new_branch_op->getRegions();
+    for (auto [o_r, n_r] : llvm::zip_equal(old_regions, new_regions)) {
+      auto &bb = n_r.front().getOperations();
+      auto &body = o_r.front().getOperations();
+      bb.splice(bb.begin(), body, body.begin(), --body.end());
+    }
+
+    return new_branch_op;
+  }
+
   // Elevating tokens from inside loop body to the yielded token, to maintain
   // legal domination T: loop type (scf::ForOp or scf::ParallelOp) U: source op
   // type
@@ -1394,6 +1421,9 @@ private:
     if (auto scfIfOp =
             dyn_cast_if_present<scf::IfOp>(branch_op.getOperation())) {
       return createAsyncRegionBranchOp(rewriter, scfIfOp);
+    } else if (auto affineIfOp = dyn_cast_if_present<affine::AffineIfOp>(
+                   branch_op.getOperation())) {
+      return createAsyncRegionBranchOp(rewriter, affineIfOp);
     } else {
       branch_op->emitOpError("unknown RegionBranchOpInterface op type. "
                              "Currently supports scf.if.");
@@ -1403,8 +1433,8 @@ private:
   FailureOr<RegionBranchOpInterface>
   createAsyncRegionBranchOp(RewriterBase &rewriter, scf::IfOp &branch_op) {
 
-    // Create a new wait_all event before the for op which collects the incoming
-    // deps.
+    // Create a new wait_all event before the branch op which collects the
+    // incoming deps.
     SmallVector<Value, 4> incoming_tokens;
     SmallVector<Value, 4> constants;
     llvm::SetVector<Value> region_args;
@@ -1438,6 +1468,59 @@ private:
             .failed()) {
       signalPassFailure();
     }
+    return dyn_cast<RegionBranchOpInterface>(new_branch_op.getOperation());
+  }
+
+  FailureOr<RegionBranchOpInterface>
+  createAsyncRegionBranchOp(RewriterBase &rewriter,
+                            affine::AffineIfOp &branch_op) {
+
+    // Create a new wait_all event before the branch op which collects the
+    // incoming deps.
+    SmallVector<Value, 4> incoming_tokens;
+    SmallVector<Value, 4> constants;
+    llvm::SetVector<Value> region_args;
+    auto regions = branch_op->getRegions();
+    for (auto &region : regions) {
+      getUsedValuesDefinedAbove(region, region_args);
+      for (Value v : region_args) {
+        if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
+          constants.push_back(v);
+        else if (v.getDefiningOp()) {
+          if (auto v_op =
+                  mlir::dyn_cast<air::AsyncOpInterface>(v.getDefiningOp())) {
+            if (v_op.getAsyncToken() == v)
+              incoming_tokens.push_back(v);
+          } else if (isa_and_present<LoopLikeOpInterface,
+                                     RegionBranchOpInterface>(
+                         v.getDefiningOp())) {
+            auto v_op = v.getDefiningOp();
+            if (v_op->getNumResults() > 0 && v_op->getResult(0) == v)
+              incoming_tokens.push_back(v);
+          }
+        }
+      }
+    }
+    air::WaitAllOp waAtLoopBegin =
+        insertWaitAllOpAtLoopBegin<affine::AffineIfOp>(
+            rewriter, branch_op, "if", incoming_tokens, constants);
+    // Create new for op with iter_args.
+    affine::AffineIfOp new_branch_op =
+        convertAffineIfToAsync(rewriter, branch_op);
+
+    if (eraseOpWithCheck(rewriter, branch_op, "insertLoopCarriedDeps 4")
+            .failed()) {
+      signalPassFailure();
+    }
+
+    // Connect branch op regions to the overall dependency graph.
+    for (Region &branchReg : new_branch_op->getRegions()) {
+      for (Value tok : incoming_tokens) {
+        replaceAllUsesInRegionWith(tok, waAtLoopBegin.getAsyncToken(),
+                                   branchReg);
+      }
+    }
+
     return dyn_cast<RegionBranchOpInterface>(new_branch_op.getOperation());
   }
 
@@ -1476,6 +1559,15 @@ private:
       air::createSCFReduceForAsyncSCFParallel(
           rewriter, rewriter.getUnknownLoc(),
           wait_all_op_yielded.getAsyncToken(), rewriter.getContext());
+    }
+
+    else if (isa<affine::AffineIfOp>(region.getParentOp())) {
+      // Yield an async token
+      SmallVector<Value, 4> yield_token;
+      yield_token.push_back(wait_all_op_yielded.getResult(0));
+      rewriter.setInsertionPointToEnd(&region.front());
+      rewriter.create<affine::AffineYieldOp>(rewriter.getUnknownLoc(),
+                                             yield_token);
     }
 
     // Elevating tokens from inside forOp body to the yielded token, to maintain
