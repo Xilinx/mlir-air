@@ -21,10 +21,8 @@ template <typename T_in, int num_elem>
 void cascade_put_impl(const T_in *__restrict a) {
   event0();
   constexpr int vec_size = 16;
-  const T_in *__restrict pA1 = a;
-  for (int i = 0; i < num_elem; i+=vec_size) {
-    aie::vector<T_in, vec_size> v16 = aie::load_v<vec_size>(pA1);
-    pA1 += vec_size;
+  for (int i = 0; i < num_elem; i += vec_size) {
+    aie::vector<T_in, vec_size> v16 = aie::load_v<vec_size>(a + i);
     put_mcd(v16);
   }
   event1();
@@ -34,23 +32,19 @@ template <typename T_in, int num_elem>
 void cascade_get_impl(T_in *__restrict a) {
   event0();
   constexpr int vec_size = 16;
-  T_in *__restrict pA1 = a;
-  for (int i = 0; i < num_elem; i+=vec_size) {
+  for (int i = 0; i < num_elem; i += vec_size) {
     aie::vector<T_in, vec_size> v16 = get_scd_v16int32();
-    aie::store_v(pA1, v16);
-    pA1 += vec_size;
+    aie::store_v(a + i, v16);
   }
   event1();
 }
 
 extern "C" {
 
-void cascade_put(const int32_t *__restrict a){
+void cascade_put(const int32_t *__restrict a) {
   cascade_put_impl<int32_t, 2048>(a);
 }
 
-void cascade_get(int32_t *__restrict a){
-  cascade_get_impl<int32_t, 2048>(a);
-}
+void cascade_get(int32_t *__restrict a) { cascade_get_impl<int32_t, 2048>(a); }
 
 } // extern "C"
