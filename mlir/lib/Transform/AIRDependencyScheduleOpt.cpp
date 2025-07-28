@@ -3311,35 +3311,78 @@ public:
           }
         };
     std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
+    std::vector<std::pair<air::ChannelOp, air::ChannelOp>> nfl_merge_pairs;
+
+    // Identify mergeable channel pairs and classify fusion type.
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
-        std::tuple<bool, std::string> checkScfForMergeableRes =
+        // Check if channels [i] and [j] are temporally mergeable, and get the
+        // merge type.
+        auto [mergeable, mergeType] =
             checkIfTemporalMergeable(channelOps[i], channelOps[j]);
-        if (!std::get<0>(checkScfForMergeableRes))
+        if (!mergeable)
           continue;
         air::ChannelOp chanA = channelOps[i];
         air::ChannelOp chanB = channelOps[j];
-        if (std::get<1>(checkScfForMergeableRes) == "LB" ||
-            std::get<1>(checkScfForMergeableRes) == "UB") {
-          // Fuse air.channels by scf.for loop unpeeling, i.e. recovering any
-          // missing zeroth/last iterations in scf.for loops.
+        if (mergeType == "LB" || mergeType == "UB") {
+          // Case 1: Merge via loop unpeeling (recover missing first/last
+          // iterations).
           sortChannelsByLoopNests(chanA, chanB);
-          mergeChannelOpsTemporally(chanA, chanB,
-                                    std::get<1>(checkScfForMergeableRes));
+          mergeChannelOpsTemporally(chanA, chanB, mergeType);
           chan_merge_map[chanB] = chanA;
-        } else if (std::get<1>(checkScfForMergeableRes) == "NFL") {
-          // Fuse air.channels temporally, if there isn't any for loop to fuse
-          // into.
-          createDummyForOpsAroundOps<air::ChannelPutOp>(
-              getChannelPutsFusableByFor(chanA, chanB));
-          createDummyForOpsAroundOps<air::ChannelGetOp>(
-              getChannelGetsFusableByFor(chanA, chanB));
-          mergeChannelOpsTemporally(chanA, chanB, "UB");
-          // Fuse both channel ops into the loop
+        } else if (mergeType == "NFL") {
+          // Case 2: Fuse channels into a new loop (requires creating an
+          // scf.for).
           chan_merge_map[chanB] = chanA;
+          nfl_merge_pairs.push_back(std::make_pair(chanA, chanB));
         }
       }
     }
+
+    // Collect channel interface ops to fuse and erase for NFL (loop-based)
+    // merges.
+    llvm::SetVector<Operation *> nfl_merge_destinations, nfl_erased_ops;
+    for (auto &[destChan, srcChan] : nfl_merge_pairs) {
+      auto [toFuse, toErase] = getChannelIfOpsFusableByFor(destChan, srcChan);
+      for (auto chanIf : toFuse) {
+        nfl_merge_destinations.insert(chanIf);
+      }
+      for (auto chanIf : toErase) {
+        nfl_erased_ops.insert(chanIf);
+      }
+    }
+    // Find minimal enclosing regions for the destinations that need wrapping.
+    auto nfl_merge_regions =
+        findMinimalChannelIfOpContainingRegions(nfl_merge_destinations);
+    IRRewriter rewriter(f.getContext());
+
+    // Apply transformations: create dummy loops or wrap existing regions.
+    if (nfl_merge_regions.empty()) {
+      // No enclosing regions -> create dummy scf.for loops around fusable ops.
+      for (auto &[destChan, srcChan] : nfl_merge_pairs) {
+        createDummyForOpsAroundOps<air::ChannelPutOp>(
+            getChannelPutsFusableByFor(destChan, srcChan));
+        createDummyForOpsAroundOps<air::ChannelGetOp>(
+            getChannelGetsFusableByFor(destChan, srcChan));
+        // Merge temporally after wrapping with dummy loops.
+        mergeChannelOpsTemporally(destChan, srcChan, "UB");
+      }
+    } else {
+      // Found enclosing regions → wrap them with scf.for loops.
+      wrapRegionsWithForLoops(rewriter, nfl_merge_regions);
+      // Erase obsolete ops (nfl_erased_ops) and replace async semantics.
+      for (auto e : nfl_erased_ops) {
+        if (air::isAsyncOp(e)) {
+          IRMapping remap;
+          rewriter.setInsertionPoint(e);
+          auto waitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, e);
+          air::getAsyncTokenFromOp(e).replaceAllUsesWith(
+              waitAll.getAsyncToken());
+        }
+        rewriter.eraseOp(e);
+      }
+    }
+
     renameSymbols(channelOps, chan_merge_map);
     if (!targetMemorySpaces.empty()) {
       for (unsigned i = 0; i < channelOps.size() - 1; i++) {
@@ -3456,13 +3499,13 @@ private:
     SmallVector<Value> sizes = a_vec[0].getSizes();
     SmallVector<Value> strides = a_vec[0].getStrides();
     for (unsigned i = 1; i < a_vec.size(); i++)
-      if ((!areTheSameMemref(memref, a_vec[i].getMemref())) ||
+      if ((!memrefsAreAffinitiveToSameChannel(memref, a_vec[i].getMemref())) ||
           (!areTheSameSSAValueLists(offsets, a_vec[i].getOffsets())) ||
           (!areTheSameSSAValueLists(sizes, a_vec[i].getSizes())) ||
           (!areTheSameSSAValueLists(strides, a_vec[i].getStrides())))
         return false; // Inconsistent memory use for all puts
     for (unsigned i = 0; i < b_vec.size(); i++)
-      if ((!areTheSameMemref(memref, b_vec[i].getMemref())) ||
+      if ((!memrefsAreAffinitiveToSameChannel(memref, b_vec[i].getMemref())) ||
           (!areTheSameSSAValueLists(offsets, b_vec[i].getOffsets())) ||
           (!areTheSameSSAValueLists(sizes, b_vec[i].getSizes())) ||
           (!areTheSameSSAValueLists(strides, b_vec[i].getStrides())))
@@ -3488,6 +3531,67 @@ private:
       return a_gets;
     else
       return std::vector<air::ChannelGetOp>{};
+  }
+
+  /// Analyzes two channel symbols (`chanA` and `chanB`) and determines which
+  /// channel operations can be fused when wrapping them with a `scf.for` loop.
+  ///
+  /// This function checks both `ChannelPutOp`s and `ChannelGetOp`s associated
+  /// with the given channels. If the memory access patterns between the
+  /// operations from `chanA` and `chanB` are consistent, it classifies:
+  ///   - The ops from `chanA` as **fusableOps** (to be preserved and fused).
+  ///   - The ops from `chanB` as **erasedOps** (to be removed after fusion).
+  ///
+  /// Additionally, any channel ops located under an `air::HerdOp` are excluded
+  /// from fusion because they reside in a special execution context.
+  ///
+  /// \returns A pair `(fusableOps, erasedOps)`:
+  ///   - `fusableOps`: channel ops to keep and fuse.
+  ///   - `erasedOps`: channel ops to be eliminated after fusion.
+  std::pair<std::vector<air::ChannelInterface>,
+            std::vector<air::ChannelInterface>>
+  getChannelIfOpsFusableByFor(air::ChannelOp chanA, air::ChannelOp chanB) {
+    // Collect all channel put/get ops associated with chanA and chanB via
+    // symbol references.
+    std::vector<air::ChannelPutOp> a_puts = getChannelPutOpThroughSymbol(chanA);
+    std::vector<air::ChannelPutOp> b_puts = getChannelPutOpThroughSymbol(chanB);
+    std::vector<air::ChannelGetOp> a_gets = getChannelGetOpThroughSymbol(chanA);
+    std::vector<air::ChannelGetOp> b_gets = getChannelGetOpThroughSymbol(chanB);
+    std::vector<air::ChannelInterface> fusableOps, erasedOps;
+
+    // Step 1: Check if the memory access patterns of all puts (A vs. B) are
+    // consistent.
+    //   - If consistent, mark puts from A as fusable and puts from B as
+    //   erasable.
+    //   - Skip any put ops under a HerdOp (cannot fuse them).
+    if (areConsistentMemoryAccessPattern<air::ChannelPutOp>(a_puts, b_puts)) {
+      for (auto put : a_puts) {
+        if (put->getParentOfType<air::HerdOp>())
+          continue;
+        fusableOps.push_back(put);
+      }
+      for (auto put : b_puts) {
+        if (put->getParentOfType<air::HerdOp>())
+          continue;
+        erasedOps.push_back(put);
+      }
+    }
+    // Step 2: Perform the same analysis as Step 1 with all gets.
+    if (areConsistentMemoryAccessPattern<air::ChannelGetOp>(a_gets, b_gets)) {
+      for (auto get : a_gets) {
+        if (get->getParentOfType<air::HerdOp>())
+          continue;
+        fusableOps.push_back(get);
+      }
+      for (auto get : b_gets) {
+        if (get->getParentOfType<air::HerdOp>())
+          continue;
+        erasedOps.push_back(get);
+      }
+    }
+    // Return the pair of (to-fuse ops, to-erase ops) to guide further
+    // transformation.
+    return std::make_pair(fusableOps, erasedOps);
   }
   // Create single-iteration for loops around a vector of operations of type T.
   template <typename T>
@@ -3702,23 +3806,43 @@ private:
       return tiedOper;
     return nullptr;
   }
-  // Check if two values represent the same memref. TODO: Need async dependency
-  // to ensure that the *data* is also the same.
-  bool areTheSameMemref(Value a, Value b) {
+  // Returns true if the two memref values are affinitive to the same DMA
+  // channel. This is used to determine whether DMA operations between them can
+  // share the same channel.
+  bool memrefsAreAffinitiveToSameChannel(Value a, Value b) {
+    // Extract the memory space (e.g., L1, L2, L3) from the memref types.
+    int aMemorySpace =
+        llvm::cast<BaseMemRefType>(a.getType()).getMemorySpaceAsInt();
+    int bMemorySpace =
+        llvm::cast<BaseMemRefType>(b.getType()).getMemorySpaceAsInt();
+    // If both memrefs are in L3 (DDR), they are considered affinitive to all
+    // shim DMA channels.
+    if (aMemorySpace == (int)air::MemorySpace::L3 &&
+        bMemorySpace == (int)air::MemorySpace::L3)
+      return true;
+    // For non-L3 cases, memrefs are only guaranteed to share a channel if they
+    // are the same. First, check if both values are proper MemRefType values.
     if (!isa<MemRefType>(a.getType()))
       return false;
     if (!isa<MemRefType>(b.getType()))
       return false;
+    // If both values are exactly the same SSA value, they clearly share
+    // affinity.
     if (a == b)
       return true;
+    // Try to resolve their defining operations through hierarchy, if they're
+    // block arguments.
     auto aHierOper =
         getHierOperandFromHierBlockArgument(llvm::dyn_cast<BlockArgument>(a));
     auto bHierOper =
         getHierOperandFromHierBlockArgument(llvm::dyn_cast<BlockArgument>(b));
+    // If either couldn't be resolved, conservatively assume no affinity.
     if (!(aHierOper && bHierOper))
       return false;
+    // If both resolved to the same defining operation, they share affinity.
     if (aHierOper == bHierOper)
       return true;
+    // Otherwise, they are assumed to be affinitive to different channels.
     return false;
   }
   // Check if two ssa value lists are identical.
@@ -3800,7 +3924,8 @@ private:
     SmallVector<Value> aSizes = a_puts[0].getSizes();
     SmallVector<Value> aStrides = a_puts[0].getStrides();
     for (unsigned i = 1; i < a_puts.size(); i++)
-      if ((!areTheSameMemref(aMemref, a_puts[i].getMemref())) ||
+      if ((!memrefsAreAffinitiveToSameChannel(aMemref,
+                                              a_puts[i].getMemref())) ||
           (!areTheSameSSAValueLists(aOffsets, a_puts[i].getOffsets())) ||
           (!areTheSameSSAValueLists(aSizes, a_puts[i].getSizes())) ||
           (!areTheSameSSAValueLists(aStrides, a_puts[i].getStrides())))
@@ -3810,19 +3935,21 @@ private:
     SmallVector<Value> bSizes = b_puts[0].getSizes();
     SmallVector<Value> bStrides = b_puts[0].getStrides();
     for (unsigned i = 1; i < b_puts.size(); i++)
-      if ((!areTheSameMemref(bMemref, b_puts[i].getMemref())) ||
+      if ((!memrefsAreAffinitiveToSameChannel(bMemref,
+                                              b_puts[i].getMemref())) ||
           (!areTheSameSSAValueLists(bOffsets, b_puts[i].getOffsets())) ||
           (!areTheSameSSAValueLists(bSizes, b_puts[i].getSizes())) ||
           (!areTheSameSSAValueLists(bStrides, b_puts[i].getStrides())))
         return notMergeable; // Inconsistent memory use for all puts
-    if ((!areTheSameMemref(aMemref, bMemref)))
+    if ((!memrefsAreAffinitiveToSameChannel(aMemref, bMemref)))
       return notMergeable;
     aMemref = a_gets[0].getMemref();
     aOffsets = a_gets[0].getOffsets();
     aSizes = a_gets[0].getSizes();
     aStrides = a_gets[0].getStrides();
     for (unsigned i = 1; i < a_gets.size(); i++)
-      if ((!areTheSameMemref(aMemref, a_gets[i].getMemref())) ||
+      if ((!memrefsAreAffinitiveToSameChannel(aMemref,
+                                              a_gets[i].getMemref())) ||
           (!areTheSameSSAValueLists(aOffsets, a_gets[i].getOffsets())) ||
           (!areTheSameSSAValueLists(aSizes, a_gets[i].getSizes())) ||
           (!areTheSameSSAValueLists(aStrides, a_gets[i].getStrides())))
@@ -3832,12 +3959,13 @@ private:
     bSizes = b_gets[0].getSizes();
     bStrides = b_gets[0].getStrides();
     for (unsigned i = 1; i < b_gets.size(); i++)
-      if ((!areTheSameMemref(bMemref, b_gets[i].getMemref())) ||
+      if ((!memrefsAreAffinitiveToSameChannel(bMemref,
+                                              b_gets[i].getMemref())) ||
           (!areTheSameSSAValueLists(bOffsets, b_gets[i].getOffsets())) ||
           (!areTheSameSSAValueLists(bSizes, b_gets[i].getSizes())) ||
           (!areTheSameSSAValueLists(bStrides, b_gets[i].getStrides())))
         return notMergeable; // Inconsistent memory use for all gets
-    if ((!areTheSameMemref(aMemref, bMemref)) ||
+    if ((!memrefsAreAffinitiveToSameChannel(aMemref, bMemref)) ||
         (!areTheSameSSAValueLists(aOffsets, bOffsets)) ||
         (!areTheSameSSAValueLists(aSizes, bSizes)) ||
         (!areTheSameSSAValueLists(aStrides, bStrides)))
@@ -4157,6 +4285,153 @@ private:
             remap.map(b_par.getInitVals()[j], a_par.getInitVals()[j]);
         }
       }
+    }
+  }
+
+  /// Finds a minimal set of regions in the IR that collectively contain all the
+  /// target channel operations (`opSet`). The resulting regions must:
+  ///   - Contain **all** the specified channel operations from `opSet`.
+  ///   - Not contain any unrelated (non-target) channel operations.
+  ///   - Be minimal, meaning if a parent region already qualifies, its
+  ///     sub-regions are not included.
+  SmallVector<Region *> findMinimalChannelIfOpContainingRegions(
+      const llvm::SetVector<Operation *> &opSet) {
+
+    // Helper to check whether a region:
+    //   (1) Contains at least one of the target channel operations.
+    //   (2) Does not contain any unrelated channel operations.
+    auto isValidRegion = [&](Region *region) -> bool {
+      bool foundTarget = false;
+      for (auto &op : region->getOps()) {
+        if (opSet.contains(&op)) {
+          foundTarget = true;
+        } else if (isa<air::ChannelInterface>(&op)) {
+          // Region contains a channel op not in the target set -> invalid.
+          return false;
+        }
+      }
+      return foundTarget;
+    };
+
+    // Step 1: For each target op, walk up its parent regions to find the
+    //         innermost region that is "valid" according to the above criteria.
+    //         Collect all such candidate regions.
+    SmallVector<Region *> candidateRegions;
+    for (auto op : opSet) {
+      Region *region = op->getParentRegion();
+      while (region) {
+        if (isValidRegion(region)) {
+          candidateRegions.push_back(region);
+          break; // Stop at the first valid region found for this op.
+        }
+        // Move up to the next enclosing region.
+        Operation *parentOp = region->getParentOp();
+        if (!parentOp)
+          break;
+        region = parentOp->getParentRegion();
+      }
+    }
+
+    // Step 2: Deduplicate candidate regions and remove any region that is
+    //         strictly nested inside another already-selected region.
+    //         This ensures minimality: only outermost valid regions are kept.
+    llvm::SmallPtrSet<Region *, 4> seen;
+    SmallVector<Region *> result;
+
+    // Sort by region number (a stable property of regions within an op),
+    // so that outer regions tend to be considered before their nested ones.
+    llvm::sort(candidateRegions, [](Region *a, Region *b) {
+      return a->getRegionNumber() < b->getRegionNumber();
+    });
+
+    for (Region *r : candidateRegions) {
+      bool skip = false;
+      for (Region *other : result) {
+        if (other->isAncestor(r)) {
+          // If an already-chosen region is an ancestor of this one,
+          // we skip the nested region to enforce minimality.
+          skip = true;
+          break;
+        }
+      }
+      if (!skip)
+        result.push_back(r);
+    }
+
+    return result;
+  }
+
+  /// Wraps the given regions with `scf.for` loops.
+  ///
+  /// For each region in `regions`, this function:
+  ///   1. Inserts a new `scf.for` loop with lower bound = 0, upper bound = 2,
+  ///   and step = 1
+  ///      **before** the operation that owns the region.
+  ///   2. Moves (clones) the parent operation of the region into the body of
+  ///   the new loop.
+  ///   3. Properly handles asynchronous dependencies if the parent operation
+  ///   produces or
+  ///      consumes `air::AsyncTokenType`.
+  ///   4. Replaces the original parent operation with the new loop and erases
+  ///   the old op.
+  void wrapRegionsWithForLoops(OpBuilder &builder,
+                               const SmallVector<Region *> &regions) {
+    for (Region *region : regions) {
+      if (!region || region->empty())
+        continue;
+
+      // Get the operation that owns this region.
+      Operation *parentOp = region->getParentOp();
+
+      // Insert the new `scf.for` loop *before* the parent operation.
+      builder.setInsertionPoint(parentOp);
+
+      // Create constant bounds: lb = 0, ub = 2, step = 1.
+      auto loc = parentOp->getLoc();
+      auto lb = builder.create<arith::ConstantIndexOp>(loc, 0);
+      auto ub = builder.create<arith::ConstantIndexOp>(loc, 2);
+      auto step = builder.create<arith::ConstantIndexOp>(loc, 1);
+
+      // Prepare to create the new loop. Also set up a remapping for SSA values
+      // (used when cloning the original op to preserve async dependencies).
+      auto newForOp = scf::ForOp();
+      IRMapping remap;
+
+      // Handle the case where the parent operation has an async token:
+      //   - Create a `WaitAllOp` to aggregate its dependencies.
+      //   - Pass the resulting token as the loop's iter_arg.
+      //   - Map original async dependencies to the loop's iter_arg.
+      if (air::getAsyncTokenFromOp(parentOp)) {
+        newForOp = builder.create<scf::ForOp>(
+            loc, lb, ub, step,
+            builder
+                .create<air::WaitAllOp>(
+                    loc, air::AsyncTokenType::get(builder.getContext()),
+                    air::getAsyncDependenciesFromOp(parentOp))
+                .getAsyncToken());
+        for (auto dep : air::getAsyncDependenciesFromOp(parentOp))
+          remap.map(dep, newForOp.getRegionIterArgs()[0]);
+      } else // Create a standard for loop with no async iter_args.
+        newForOp = builder.create<scf::ForOp>(loc, lb, ub, step);
+      // Set insertion point to the start of the loop body so that we can clone
+      // the op.
+      builder.setInsertionPointToStart(newForOp.getBody());
+      // Clone the original parent operation into the loop body, applying the
+      // SSA remap.
+      auto newOp = builder.clone(*parentOp, remap);
+
+      // Emit the yield from the loop body:
+      //   - If the cloned op produces an async token, yield it.
+      //   - Replace all uses of the old async token with the loop's result.
+      if (auto oldAsyncToken = air::getAsyncTokenFromOp(parentOp)) {
+        builder.create<scf::YieldOp>(loc, air::getAsyncTokenFromOp(newOp));
+        oldAsyncToken.replaceAllUsesWith(newForOp->getResult(0));
+      } else
+        builder.create<scf::YieldOp>(loc);
+
+      // Finally, erase the original parent operation since it has been replaced
+      // by the loop.
+      parentOp->erase();
     }
   }
 };
