@@ -2247,18 +2247,34 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
 private:
 };
 
-struct AIRCanonicalizeChannelPutOpWrapAndStrideList
-    : public OpRewritePattern<air::ChannelPutOp> {
-  using OpRewritePattern<air::ChannelPutOp>::OpRewritePattern;
+/// This pattern canonicalizes the offset/size/stride lists of `OpT` channel
+/// put/get operations.
+///
+/// **Main transformations**:
+/// 1. Detect whether a "highest-dimension repeat" pattern is active (special
+///    case where the highest dimension repeats and requires padding to
+///    `maxNumDims`).
+/// 2. Canonicalize the wrap-and-stride list by invoking
+///    `canonicalizeWrapAndStrideList()`, which normalizes
+///    offsets/sizes/strides.
+/// 3. If highest-dimension repeat is active, extend the rank of
+///    offsets/sizes/strides to `maxNumDims` by inserting zeros/ones.
+/// 4. Recreate the `OpT` operation with the canonicalized parameters and
+///    replace the original operation.
+template <typename OpT>
+struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
+    : public OpRewritePattern<OpT> {
+  using OpRewritePattern<OpT>::OpRewritePattern;
 
-  AIRCanonicalizeChannelPutOpWrapAndStrideList(MLIRContext *ctx, int &maxSize,
-                                               bool &enableRepeatAtHighestDim)
-      : OpRewritePattern(ctx), maxSize(maxSize),
+  AIRCanonicalizeChannelPutGetOpWrapAndStrideList(
+      MLIRContext *ctx, int &maxSize, int &maxNumDims,
+      bool &enableRepeatAtHighestDim)
+      : OpRewritePattern<OpT>(ctx), maxSize(maxSize), maxNumDims(maxNumDims),
         enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
 
-  LogicalResult matchAndRewrite(air::ChannelPutOp op,
+  LogicalResult matchAndRewrite(OpT op,
                                 PatternRewriter &rewriter) const override {
-
+    // Collect async token types and dependencies if the op is asynchronous.
     SmallVector<Value, 1> deps;
     SmallVector<Type, 1> tys;
     if (isAsyncOp(op)) {
@@ -2266,104 +2282,65 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
       deps = op.getAsyncDependencies();
     }
 
+    // Extract offsets, sizes, and strides from the op.
     SmallVector<Value> offsets = op.getOffsets();
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
 
-    // When highest-dimension repeat is active, (1) enableRepeatAtHighestDim
-    // option is switched on, (2) wrap-and-stride list isn't empty (i.e. data
-    // isn't 1-d streamed in), (3) highest stride is zero, and (4) highest wrap
-    // is not one.
+    // Detect if highest-dimension repeat logic should be applied.
+    // This is true when:
+    //  (1) The option enableRepeatAtHighestDim is set,
+    //  (2) The stride list is not empty,
+    //  (3) The highest (first) stride is 0, indicating repeat dimension,
+    //  (4) The highest (first) size is not 1, indicating non-zero repetition.
     bool highestDimRepeatActive = enableRepeatAtHighestDim &&
                                   !strides.empty() &&
                                   *getConstantIntValue(strides.front()) == 0 &&
                                   *getConstantIntValue(sizes.front()) != 1;
-
-    if (highestDimRepeatActive) {
-      // If repeat is enabled at the highest dimension, then the highest
-      // dimension must be preserved.
+    // If highest-dimension repeat is active but the op already has the maximum
+    // number of dimensions, no rewrite is needed.
+    if (highestDimRepeatActive && (int)offsets.size() == maxNumDims) {
       return failure();
+    } else {
+      // Canonicalize offsets/sizes/strides using a helper function.
+      if (failed(canonicalizeWrapAndStrideList(
+              rewriter, offsets, sizes, strides,
+              air::getTensorVolume(op.getMemref().getType()), maxSize)))
+        return failure();
+
+      // When highest-dimension repeat is active, pad offsets/sizes/strides to
+      // match maxNumDims by inserting:
+      //  - offset = 0
+      //  - size   = 1
+      //  - stride = 0
+      if (highestDimRepeatActive) {
+        auto zeroIdx = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
+        auto oneIdx = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
+        while ((int)offsets.size() < maxNumDims) {
+          offsets.insert(offsets.begin() + 1, zeroIdx);
+        }
+        while ((int)sizes.size() < maxNumDims) {
+          sizes.insert(sizes.begin() + 1, oneIdx);
+        }
+        while ((int)strides.size() < maxNumDims) {
+          strides.insert(strides.begin() + 1, zeroIdx);
+        }
+      }
     }
 
-    if (failed(canonicalizeWrapAndStrideList(
-            rewriter, offsets, sizes, strides,
-            air::getTensorVolume(op.getMemref().getType()), maxSize)))
-      return failure();
-
-    auto new_op = rewriter.create<air::ChannelPutOp>(
-        op->getLoc(), tys, deps, op.getChanName(), op.getIndices(),
-        op.getMemref(), offsets, sizes, strides);
-    new_op->setAttrs(op->getDiscardableAttrDictionary());
-    for (unsigned i = 0; i < op->getResults().size(); i++)
-      op->getResults()[i].replaceAllUsesWith(new_op->getResults()[i]);
-
-    rewriter.eraseOp(op);
+    // Create a new op with the canonicalized attributes and operands.
+    auto attrs = op->getDiscardableAttrDictionary();
+    auto new_op = rewriter.replaceOpWithNewOp<OpT>(
+        op, tys, deps, op.getChanName(), op.getIndices(), op.getMemref(),
+        offsets, sizes, strides);
+    new_op->setAttrs(attrs);
 
     return success();
   }
 
 private:
   int &maxSize;
-  bool &enableRepeatAtHighestDim;
-};
-
-struct AIRCanonicalizeChannelGetOpWrapAndStrideList
-    : public OpRewritePattern<air::ChannelGetOp> {
-  using OpRewritePattern<air::ChannelGetOp>::OpRewritePattern;
-
-  AIRCanonicalizeChannelGetOpWrapAndStrideList(MLIRContext *ctx, int &maxSize,
-                                               bool &enableRepeatAtHighestDim)
-      : OpRewritePattern(ctx), maxSize(maxSize),
-        enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
-
-  LogicalResult matchAndRewrite(air::ChannelGetOp op,
-                                PatternRewriter &rewriter) const override {
-
-    SmallVector<Value, 1> deps;
-    SmallVector<Type, 1> tys;
-    if (isAsyncOp(op)) {
-      tys.push_back(air::AsyncTokenType::get(op->getContext()));
-      deps = op.getAsyncDependencies();
-    }
-
-    SmallVector<Value> offsets = op.getOffsets();
-    SmallVector<Value> sizes = op.getSizes();
-    SmallVector<Value> strides = op.getStrides();
-
-    // When highest-dimension repeat is active, (1) enableRepeatAtHighestDim
-    // option is switched on, (2) wrap-and-stride list isn't empty (i.e. data
-    // isn't 1-d streamed in), (3) highest stride is zero, and (4) highest wrap
-    // is not one.
-    bool highestDimRepeatActive = enableRepeatAtHighestDim &&
-                                  !strides.empty() &&
-                                  *getConstantIntValue(strides.front()) == 0 &&
-                                  *getConstantIntValue(sizes.front()) != 1;
-
-    if (highestDimRepeatActive) {
-      // If repeat is enabled at the highest dimension, then the highest
-      // dimension must be preserved.
-      return failure();
-    }
-
-    if (failed(canonicalizeWrapAndStrideList(
-            rewriter, offsets, sizes, strides,
-            air::getTensorVolume(op.getMemref().getType()), maxSize)))
-      return failure();
-
-    auto new_op = rewriter.create<air::ChannelGetOp>(
-        op->getLoc(), tys, deps, op.getChanName(), op.getIndices(),
-        op.getMemref(), offsets, sizes, strides);
-    new_op->setAttrs(op->getDiscardableAttrDictionary());
-    for (unsigned i = 0; i < op->getResults().size(); i++)
-      op->getResults()[i].replaceAllUsesWith(new_op->getResults()[i]);
-
-    rewriter.eraseOp(op);
-
-    return success();
-  }
-
-private:
-  int &maxSize;
+  int &maxNumDims;
   bool &enableRepeatAtHighestDim;
 };
 
@@ -3171,7 +3148,7 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet preproc_wns_patterns(ctx);
   populateAIRCanonicalizeChannelWrapAndStridePatterns(
-      preproc_wns_patterns, maxSize, enableRepeatAtHighestDim);
+      preproc_wns_patterns, maxSize, maxNumDims, enableRepeatAtHighestDim);
   (void)applyPatternsGreedily(*region, std::move(preproc_wns_patterns));
 
   RewritePatternSet patterns(ctx);
@@ -3196,10 +3173,9 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
 
   // Canonicalize wrap and stride list to remove redundant dimensions
   RewritePatternSet cano_patterns(ctx);
-  populateAIRCanonicalizeChannelWrapAndStridePatterns(cano_patterns, maxSize,
-                                                      enableRepeatAtHighestDim);
+  populateAIRCanonicalizeChannelWrapAndStridePatterns(
+      cano_patterns, maxSize, maxNumDims, enableRepeatAtHighestDim);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
-  // WaitAllOp::getCanonicalizationPatterns(cano_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(cano_patterns));
 
   return success();
@@ -6733,11 +6709,13 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
 }
 
 void populateAIRCanonicalizeChannelWrapAndStridePatterns(
-    RewritePatternSet &patterns, int &maxSize, bool &enableRepeatAtHighestDim) {
+    RewritePatternSet &patterns, int &maxSize, int &maxNumDims,
+    bool &enableRepeatAtHighestDim) {
   MLIRContext *ctx = patterns.getContext();
-  patterns.insert<AIRCanonicalizeChannelPutOpWrapAndStrideList,
-                  AIRCanonicalizeChannelGetOpWrapAndStrideList>(
-      ctx, maxSize, enableRepeatAtHighestDim);
+  patterns.insert<
+      AIRCanonicalizeChannelPutGetOpWrapAndStrideList<air::ChannelPutOp>,
+      AIRCanonicalizeChannelPutGetOpWrapAndStrideList<air::ChannelGetOp>>(
+      ctx, maxSize, maxNumDims, enableRepeatAtHighestDim);
 }
 
 void applyAIRSpecializeChannelWrapAndStridePattern(

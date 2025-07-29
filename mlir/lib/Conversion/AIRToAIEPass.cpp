@@ -736,10 +736,11 @@ void lowerAirExecute(AIE::DeviceOp d) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
   int maxSize = isa<AIE::AIE1TargetModel>(AIE::getTargetModel(d)) ? -1 : 1023;
+  int maxNumDims = isa<AIE::AIE1TargetModel>(AIE::getTargetModel(d)) ? 1 : 4;
   patterns.insert<LowerAIRExecutePattern>(ctx);
   bool enableRepeatAtHighestDim = false;
   air::populateAIRCanonicalizeChannelWrapAndStridePatterns(
-      patterns, maxSize, enableRepeatAtHighestDim);
+      patterns, maxSize, maxNumDims, enableRepeatAtHighestDim);
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 

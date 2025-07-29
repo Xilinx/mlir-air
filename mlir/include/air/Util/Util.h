@@ -166,7 +166,7 @@ int findLargestFactor(int num, int max);
 
 // Canonicalize wrap and stride lists, by removing redundant dimensions.
 LogicalResult canonicalizeWrapAndStrideList(
-    OpBuilder builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
+    OpBuilder &builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
     SmallVector<Value> &strides, int memref_volume, int maxSize = -1);
 
 // If wrap-and-stride lists are empty, populate them with default data access
