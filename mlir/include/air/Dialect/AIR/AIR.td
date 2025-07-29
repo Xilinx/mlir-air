@@ -377,21 +377,49 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
 
 def air_ChannelOp : air_Op<"channel", [Symbol]>,
     Arguments<(ins SymbolNameAttr:$sym_name,
-                   DefaultValuedAttr<I64ArrayAttr, "{}">:$size)> {
+                   DefaultValuedAttr<I64ArrayAttr, "{}">:$size,
+                   DefaultValuedAttr<StrAttr, "\"dma_stream\"">:$channel_type)> {
   let assemblyFormat = [{
     $sym_name $size attr-dict
   }];
   let summary = "Channel for data movement.";
   let description = [{
-    Operation to represent a channel as a point-to-point connection between two memrefs. The array
-    following the channel name symbol represents the channel sizes. If each channel is broadcasting
-    to multiple destinations, then the optional 'broadcast_shape' attribute annotates the output 
-    sizes after broadcasting.
+    Operation to represent a communication channel as a point-to-point connection between two memrefs.
+    The array following the channel name symbol represents the channel's dimensional sizes. Default
+    size, with empty size array, is 1. The data movement mechanism that the channel uses is controlled 
+    by the `channel_type` attribute.
+
+    ### Channel Types
+    The `channel_type` attribute is a string that determines the mechanism used for data movement:
+    - **"dma_stream"** (default):  
+      Use DMA engines to send and receive data, with routing performed over a streaming interconnect.
+    - **"dma_packet"**:  
+      Use DMA engines to send and receive data, with routing performed over a packet-switched network.
+    - **"cascade"**:  
+      Use processor cores to send and receive data via cascade connections between adjacent tiles.
+
+    ### Broadcasting
+    If a channel broadcasts to multiple destinations, the optional `broadcast_shape` attribute  
+    annotates the output sizes after broadcasting. Broadcasting follows NumPy's broadcasting rules.
 
     Example:
 
     ```mlir
-    air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
+    // An array of 4 x 4 streaming DMA channels
+    air.channel @channel_0 [4, 4] {channel_type = "dma_stream"}
+
+    // A streaming DMA channel broadcasting to 4 destinations
+    air.channel @channel_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_stream"}
+
+    // An array of 1 x 4 streaming DMA channels broadcasting to 4 x 4 destinations.
+    // Broadcasting follows NumPy's rules.
+    air.channel @channel_2 [1, 4] {broadcast_shape = [4, 4], channel_type = "dma_stream"}
+
+    // A packet-switched DMA channel
+    air.channel @channel_3 [] {channel_type = "dma_packet"}
+
+    // A cascade channel using core-to-core cascade connections
+    air.channel @channel_4 [] {channel_type = "cascade"}
     ```
   }];
   let extraClassDeclaration = [{
@@ -445,7 +473,37 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
     Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Push for air channels.";
   let description = [{
-    Experimental operation to represent copying data from a memref to a channel.
+    The `air.channel.put` operation represents a **push** (send) operation that copies data from a 
+    source memref into a specified channel.
+
+    This operation models one-way data movement into a channel endpoint, enabling asynchronous 
+    communication between producer and consumer operations. It is typically paired with 
+    `air.channel.get` operations on the receiving side.
+
+    ### Semantics
+    - The source data is specified by the `src` memref, along with its associated 
+      `src_offsets`, `src_sizes`, and `src_strides` which describe the subview being transferred.
+    - The channel being targeted is identified by the symbol referenced by `chan_name`.
+    - The channel must have been declared earlier via an `air.channel` operation.
+    - The operation may be asynchronous: if an async token is produced, it can be used to 
+      synchronize with subsequent dependent operations.
+    - The specific channel it operates on, when `chan_name` references an array of channels, is
+      identified by `indices`.
+
+    ### Interfaces
+    - Implements `air_AsyncOpInterface`, allowing it to participate in async dependency chains.
+    - Implements `air_MemcpyInterface`, enabling it to behave like a DMA/memcpy operation.
+    - Implements `air_ChannelInterface`, allowing inspection of channel properties.
+
+    ### Example
+
+    ```mlir
+    // Send a 4x4 tile from %src into channel @chan_0
+    air.channel.put @chan_0(%src[%c0, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>)
+    
+    // Asynchronous put with dependency on %t0
+    %t1 = air.channel.put async [%t0] @chan_1(%src[%c8, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>)
+    ```
   }];
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($async_token), $async_dependencies)
@@ -487,7 +545,37 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
     Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Get for air channels.";
   let description = [{
-    Experimental operation to represent copying from a channel to a memref.
+    The `air.channel.get` operation represents a **pull** (receive) operation that copies data from a 
+    specified channel into a destination memref.
+
+    This operation models one-way data movement from a channel endpoint into memory, enabling 
+    asynchronous communication where data previously sent by a corresponding 
+    `air.channel.put` becomes available to the consumer.
+
+    ### Semantics
+    - The destination buffer is specified by the `dst` memref, along with its associated 
+      `dst_offsets`, `dst_sizes`, and `dst_strides` which describe the subview being written to.
+    - The channel being read is identified by the symbol referenced by `chan_name`.
+    - The channel must have been declared earlier via an `air.channel` operation.
+    - The operation may be asynchronous: if an async token is produced, it can be used to 
+      synchronize with subsequent dependent operations.
+    - The specific channel it operates on, when `chan_name` references an array of channels, is
+      identified by `indices`.
+
+    ### Interfaces
+    - Implements `air_AsyncOpInterface`, enabling participation in async dependency chains.
+    - Implements `air_MemcpyInterface`, allowing it to behave like a DMA/memcpy operation.
+    - Implements `air_ChannelInterface`, allowing inspection of channel properties.
+
+    ### Example
+
+    ```mlir
+    // Receive a 4x4 tile into %dst from channel @chan_0
+    air.channel.get @chan_0(%dst[%c0, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>)
+    
+    // Asynchronous get with dependency on %t1
+    %t2 = air.channel.get async [%t1] @chan_1(%dst[%c8, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>)
+    ```
   }];
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($async_token), $async_dependencies)

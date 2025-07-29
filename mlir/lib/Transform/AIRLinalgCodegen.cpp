@@ -1027,8 +1027,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       auto module = op->getParentOfType<ModuleOp>();
       auto cname = createChannelName(module);
       b.setInsertionPointToStart(module.getBody());
-      auto channel_op =
-          b.create<air::ChannelOp>(loc, cname, b.getI64ArrayAttr({1}));
+      auto channel_op = b.create<air::ChannelOp>(
+          loc, cname, b.getI64ArrayAttr({1}), b.getStringAttr("dma_stream"));
       b.setInsertionPoint(stageBlock->getTerminator());
       SmallVector<Value> src_offsets;
       SmallVector<Value> src_sizes;

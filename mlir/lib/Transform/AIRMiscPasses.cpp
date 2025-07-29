@@ -1757,7 +1757,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       } else {
         SmallVector<int64_t, 2> channel_sizes = {targetColTilingFactor, 1};
         new_chan = rewriter.create<air::ChannelOp>(
-            loc, cname, rewriter.getI64ArrayAttr(channel_sizes));
+            loc, cname, rewriter.getI64ArrayAttr(channel_sizes),
+            rewriter.getStringAttr("dma_stream"));
       }
 
       // Perform tiling on these channel put/get ops which are using the memref.

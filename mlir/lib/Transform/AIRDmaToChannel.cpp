@@ -320,7 +320,8 @@ createChannelOpWithBCast(OpBuilder builder, ModuleOp module, std::string cname,
   builder.setInsertionPoint(o);
 
   auto channel_op = builder.create<air::ChannelOp>(
-      loc, cname, builder.getI64ArrayAttr(bcast_sizes));
+      loc, cname, builder.getI64ArrayAttr(bcast_sizes),
+      builder.getStringAttr("dma_stream"));
 
   builder.restoreInsertionPoint(insertionCheckpoint);
 
