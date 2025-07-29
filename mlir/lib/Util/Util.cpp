@@ -1086,11 +1086,12 @@ int air::findLargestFactor(int num, int max) {
 
 // Canonicalize wrap and stride lists by removing redundant dimensions.
 LogicalResult air::canonicalizeWrapAndStrideList(
-    OpBuilder builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
+    OpBuilder &builder, SmallVector<Value> &offsets, SmallVector<Value> &sizes,
     SmallVector<Value> &strides, int memref_volume, int maxSize) {
   // AIE2 hardware constraints. TODO: import these info from target model.
   const int AIE2_STRIDE_UPPER_BOUND = 1048576;
   bool listsHaveChanged = false;
+  OpBuilder::InsertionGuard guard(builder);
   // Match offsets size with sizes and strides
   auto max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());

@@ -73,7 +73,8 @@ void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns);
 // Populate patterns for canonicalizing offsets, sizes and strides in air
 // channel_interface operations.
 void populateAIRCanonicalizeChannelWrapAndStridePatterns(
-    RewritePatternSet &patterns, int &maxSize, bool &enableRepeatAtHighestDim);
+    RewritePatternSet &patterns, int &maxSize, int &maxNumDims,
+    bool &enableRepeatAtHighestDim);
 
 // Apply AIRSpecializeChannelWrapAndStridePattern on region.
 void applyAIRSpecializeChannelWrapAndStridePattern(

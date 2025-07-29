@@ -855,4 +855,29 @@ module {
     }
     return
   }
+
+  // Canonicalizing repeat dimension at highest dimension.
+
+  // CHECK-LABEL: func15
+  // CHECK: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c320{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c1{{.*}}])
+  // NPUTILED-LABEL: func15
+  // NPUTILED: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c320{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c1{{.*}}])
+  // AIE1-LABEL: func15
+  // AIE1: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c320{{.*}}] [%c2{{.*}}, %c1{{.*}}, %c512{{.*}}, %c64{{.*}}] [%c0{{.*}}, %c0{{.*}}, %c512{{.*}}, %c1{{.*}}])
+
+  func.func @func15(%arg0: memref<512x512xbf16>) {
+    %0 = air.launch async () in () args(%arg8=%arg0) : memref<512x512xbf16> {
+      %c65536 = arith.constant 65536 : index
+      %c4 = arith.constant 4 : index
+      %c256 = arith.constant 256 : index
+      %c64 = arith.constant 64 : index
+      %c128 = arith.constant 128 : index
+      %c512 = arith.constant 512 : index
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %1 = air.channel.put async  @channel_0[%c0, %c0] (%arg8[%c0, %c0, %c1, %c0, %c256] [%c2, %c4, %c1, %c128, %c64] [%c0, %c65536, %c64, %c512, %c1]) {id = 6 : i32, metadataArray = [{base = "air_channel_13_0", index = 0 : i32}, {base = "air_channel_13_1", index = 1 : i32}, {base = "air_channel_13_2", index = 2 : i32}, {base = "air_channel_13_3", index = 3 : i32}]} : (memref<512x512xbf16>)
+    }
+    return
+  }
 }
