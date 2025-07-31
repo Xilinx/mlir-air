@@ -99,6 +99,9 @@ struct MemcpyBundleAsFlow {
   int S2MM_memspace_as_int;
   int numMM2SAllocs = 0;
   int numS2MMAllocs = 0;
+  std::string
+      memcpyResourceType; // The type of mechanism used for the memcpy op,
+                          // including dma_stream, dma_packet, and cascade.
   LogicalResult pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp);
   LogicalResult pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp);
   LogicalResult pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp);
@@ -200,11 +203,35 @@ public:
                             air::allocation_info_t alloc, bool isMM2S);
 };
 
+class CascadeAllocator {
+
+public:
+  CascadeAllocator() = delete;
+  // CascadeAllocator constructor: only core-to-core (L1-level) cascade
+  // connection supported.
+  CascadeAllocator(AIE::DeviceOp device)
+      : device(device), DMAMemorySpaceAsInt((int)air::MemorySpace::L1) {}
+  FailureOr<allocation_info_t> coreCascadeAlloc(air::MemcpyInterface &memcpyOp);
+  FailureOr<allocation_info_t> allocNewCascade(air::MemcpyInterface &memcpyOp,
+                                               AIE::TileOp tile);
+
+  FailureOr<AIE::BufferOp> getBuffer(uint64_t, int64_t col, int64_t row,
+                                     air::MemcpyInterface &memcpyOp);
+
+protected:
+  AIE::DeviceOp device;
+  int DMAMemorySpaceAsInt;
+
+public:
+  std::vector<allocation_info_t> cascade_put_allocs, cascade_get_allocs;
+};
+
 LogicalResult
 simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
                            ShimDMAAllocator &shim_dma_alloc,
                            MemTileDMAAllocator &memtile_dma_alloc,
-                           TileDMAAllocator &tile_dma_alloc);
+                           TileDMAAllocator &tile_dma_alloc,
+                           air::CascadeAllocator &core_cascade_alloc);
 template <typename T>
 int foundInVector(T item, std::vector<T> vec);
 int getSCFForLoopDepth(Operation *o);

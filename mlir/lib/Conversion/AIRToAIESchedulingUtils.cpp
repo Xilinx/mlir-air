@@ -398,6 +398,28 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
                         unique_write_buffers.size());
 }
 
+// Helper function that tries to retrieve the underlying AIE::BufferOp by
+// unwrapping common memref wrappers (cast or subview)
+AIE::BufferOp getUnderlyingBufferOp(Value buffer) {
+  // Case 1: Directly defined by an AIE::BufferOp
+  if (auto bufferOp = buffer.getDefiningOp<AIE::BufferOp>())
+    return bufferOp;
+
+  // Case 2: Defined by a cast (e.g., memref.cast)
+  if (auto castOp = buffer.getDefiningOp<CastOpInterface>())
+    if (auto innerBuffer = castOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
+      return innerBuffer;
+
+  // Case 3: Defined by a view-like op (e.g., memref.subview)
+  if (auto viewLikeOp = buffer.getDefiningOp<ViewLikeOpInterface>())
+    if (auto innerBuffer =
+            viewLikeOp->getOperand(0).getDefiningOp<AIE::BufferOp>())
+      return innerBuffer;
+
+  // No underlying BufferOp found
+  return nullptr;
+}
+
 // allocation_info_t impl.
 
 bool xilinx::air::allocation_info_t::valid() { return dma_tile != nullptr; }
@@ -745,12 +767,7 @@ air::TileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
   Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt).value()
                      ? (memcpyOp.getDstMemref())
                      : (memcpyOp.getSrcMemref());
-  AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
-  // Memref cast
-  memref::CastOp castOp = buffer.getDefiningOp<memref::CastOp>();
-  if (!bufferOp && castOp)
-    bufferOp = castOp.getOperand().getDefiningOp<AIE::BufferOp>();
-  return bufferOp;
+  return getUnderlyingBufferOp(buffer);
 }
 
 // ShimDMAAllocator impl.
@@ -1040,12 +1057,102 @@ air::MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
   Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt).value()
                      ? (memcpyOp.getDstMemref())
                      : (memcpyOp.getSrcMemref());
-  AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
-  // Memref cast
-  memref::CastOp castOp = buffer.getDefiningOp<memref::CastOp>();
-  if (!bufferOp && castOp)
-    bufferOp = castOp.getOperand().getDefiningOp<AIE::BufferOp>();
-  return bufferOp;
+  return getUnderlyingBufferOp(buffer);
+}
+
+// CascadeAllocator impl.
+
+// Attempts to allocate (or reuse) a cascade flow for the given memcpyOp.
+FailureOr<air::allocation_info_t>
+air::CascadeAllocator::coreCascadeAlloc(air::MemcpyInterface &memcpyOp) {
+  // Determine if the operation is a cascade put (outbound)
+  auto isCascadePut = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isCascadePut))
+    return failure();
+
+  // Select allocation list based on direction
+  auto allocs =
+      isCascadePut.value() ? &cascade_put_allocs : &cascade_get_allocs;
+
+  // Retrieve the buffer and the tile where this memcpyOp operates
+  const int dummy{0};
+  auto buffer = getBuffer(dummy, -1, -1, memcpyOp);
+  if (failed(buffer)) {
+    return memcpyOp->emitOpError("failed to get buffer.");
+  }
+  auto tile = buffer.value().getTileOp();
+  if (!tile) {
+    return buffer.value()->emitOpError("failed to get AIE tile.");
+  }
+
+  // Search for an existing allocation for this tile and memcpyOp
+  for (auto &t : *allocs) {
+    if (t.foundAlloc(tile.getCol(), tile.getRow(), memcpyOp))
+      return t;
+  }
+
+  // No existing allocation found, create a new one
+  return air::CascadeAllocator::allocNewCascade(memcpyOp, tile);
+}
+
+// Creates a new cascade allocation entry when no matching allocation exists.
+FailureOr<air::allocation_info_t>
+air::CascadeAllocator::allocNewCascade(air::MemcpyInterface &memcpyOp,
+                                       AIE::TileOp tile) {
+  if (!tile) {
+    return memcpyOp.emitOpError("failed to get the AIE tile. This indicates a "
+                                "potential error in the compilation flow.");
+  }
+
+  // Determine if this is a cascade put or get
+  auto isCascadePut = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
+  if (failed(isCascadePut))
+    return failure();
+  auto allocs =
+      isCascadePut.value() ? &cascade_put_allocs : &cascade_get_allocs;
+
+  // Check if allocation already exists for this tile
+  for (auto &t : *allocs) {
+    if (t.foundAlloc(tile.getCol(), tile.getRow())) {
+      t.memcpyOps.push_back(memcpyOp.getOperation());
+      return t;
+    }
+    // Also check for an allocation tied to the channel declaration
+    if (t.foundAlloc(
+            tile.getCol(), tile.getRow(),
+            getChannelDeclarationThroughSymbol(
+                dyn_cast<air::ChannelInterface>(memcpyOp.getOperation())))) {
+      t.memcpyOps.push_back(memcpyOp.getOperation());
+      return t;
+    }
+  }
+
+  // Create a new allocation_info_t entry for this tile
+  air::allocation_info_t output = {tile,
+                                   /*col*/ -1,
+                                   /*row*/ -1,
+                                   /*aie_chan*/ AIE::DMAChannel(),
+                                   /*chan*/ -1,
+                                   /*dma_id*/ std::vector<int>{},
+                                   {memcpyOp.getOperation()}};
+  allocs->push_back(output);
+  return output;
+}
+
+// Retrieves the underlying AIE::BufferOp associated with the given memcpyOp.
+FailureOr<AIE::BufferOp>
+air::CascadeAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
+                                 air::MemcpyInterface &memcpyOp) {
+  if (failed(isTileInbound(memcpyOp, DMAMemorySpaceAsInt)))
+    return failure();
+
+  // Select source or destination buffer depending on inbound/outbound
+  Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt).value()
+                     ? (memcpyOp.getDstMemref())
+                     : (memcpyOp.getSrcMemref());
+
+  // Resolve the actual underlying buffer op
+  return getUnderlyingBufferOp(buffer);
 }
 
 // MemcpyBundleAsFlow impl.
@@ -1061,6 +1168,7 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp) {
   MM2S_memspace_as_int =
       llvm::cast<BaseMemRefType>(memcpyOp.getSrcMemref().getType())
           .getMemorySpaceAsInt();
+  memcpyResourceType = "dma_stream";
   return success();
 }
 
@@ -1095,6 +1203,7 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
   S2MM_memspace_as_int =
       llvm::cast<BaseMemRefType>(memcpyOp.getMemref().getType())
           .getMemorySpaceAsInt();
+  memcpyResourceType = chan.getChannelType().str();
   return success();
 }
 
@@ -1106,6 +1215,7 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
   MM2S_memspace_as_int =
       llvm::cast<BaseMemRefType>(memcpyOp.getMemref().getType())
           .getMemorySpaceAsInt();
+  memcpyResourceType = chan.getChannelType().str();
   return success();
 }
 
@@ -1128,6 +1238,7 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::DmaMemcpyNdOp dmaMemcpyOp) {
                                            std::vector<Operation *>());
   S2MM = v1;
   S2MM_alloc = std::vector<air::allocation_info_t>(numS2MMAllocs);
+  memcpyResourceType = "dma_stream";
 }
 
 air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
@@ -1146,6 +1257,7 @@ air::MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
                                            std::vector<Operation *>());
   S2MM = v1;
   S2MM_alloc = std::vector<air::allocation_info_t>(numS2MMAllocs);
+  memcpyResourceType = chan.getChannelType().str();
 }
 
 } // namespace xilinx
@@ -1158,7 +1270,8 @@ LogicalResult air::simpleDMAChannelAllocation(
     std::vector<air::MemcpyBundleAsFlow> &memcpy_flows,
     air::ShimDMAAllocator &shim_dma_alloc,
     air::MemTileDMAAllocator &memtile_dma_alloc,
-    TileDMAAllocator &tile_dma_alloc) {
+    TileDMAAllocator &tile_dma_alloc,
+    air::CascadeAllocator &core_cascade_alloc) {
   for (auto &f : memcpy_flows) {
     if (f.MM2S_memspace_as_int == (int)air::MemorySpace::L1) {
       for (auto o : f.MM2S) {
@@ -1172,10 +1285,18 @@ LogicalResult air::simpleDMAChannelAllocation(
         int x = tile.getCol();
         int y = tile.getRow();
 
-        auto alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
-            memcpyOpIf, x, y, f.MM2S_alloc.dma_channel.channel);
-        if (failed(alloc_res))
-          return failure();
+        FailureOr<air::allocation_info_t> alloc_res;
+        if (f.memcpyResourceType == "dma_stream" ||
+            f.memcpyResourceType == "dma_packet") {
+          alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
+              memcpyOpIf, x, y, f.MM2S_alloc.dma_channel.channel);
+          if (failed(alloc_res))
+            return failure();
+        } else if (f.memcpyResourceType == "cascade") {
+          alloc_res = core_cascade_alloc.coreCascadeAlloc(memcpyOpIf);
+          if (failed(alloc_res))
+            return failure();
+        }
 
         f.MM2S_alloc = alloc_res.value();
         if (!f.MM2S_alloc.valid())
@@ -1195,10 +1316,19 @@ LogicalResult air::simpleDMAChannelAllocation(
           int x = tile.getCol();
           int y = tile.getRow();
 
-          auto alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
-              memcpyOpIf, x, y, f.S2MM_alloc[i].dma_channel.channel);
-          if (failed(alloc_res))
-            return failure();
+          FailureOr<air::allocation_info_t> alloc_res;
+          if (f.memcpyResourceType == "dma_stream" ||
+              f.memcpyResourceType == "dma_packet") {
+            alloc_res = tile_dma_alloc.simpleDmaChannelAlloc(
+                memcpyOpIf, x, y, f.S2MM_alloc[i].dma_channel.channel);
+            if (failed(alloc_res))
+              return failure();
+          } else if (f.memcpyResourceType == "cascade") {
+            alloc_res = core_cascade_alloc.coreCascadeAlloc(memcpyOpIf);
+            if (failed(alloc_res))
+              return failure();
+          }
+
           f.S2MM_alloc[i] = alloc_res.value();
           if (!f.S2MM_alloc[i].valid())
             return failure();
@@ -1210,6 +1340,12 @@ LogicalResult air::simpleDMAChannelAllocation(
     if (f.MM2S_memspace_as_int == (int)air::MemorySpace::L2) {
       for (auto o : f.MM2S) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
+        // Report error if the data movement lowers to neither dma stream
+        // (aie.flow) nor dma packet flow (aie.packet_flow).
+        if (f.memcpyResourceType != "dma_stream" &&
+            f.memcpyResourceType != "dma_packet")
+          return memcpyOpIf->emitOpError("only supports dma_stream or "
+                                         "dma_packet connections at L2 memory");
         auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
         if (failed(alloc_res) || !alloc_res->valid())
           return failure();
@@ -1220,6 +1356,13 @@ LogicalResult air::simpleDMAChannelAllocation(
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
+          // Report error if the data movement lowers to neither dma stream
+          // (aie.flow) nor dma packet flow (aie.packet_flow).
+          if (f.memcpyResourceType != "dma_stream" &&
+              f.memcpyResourceType != "dma_packet")
+            return memcpyOpIf->emitOpError(
+                "only supports dma_stream or dma_packet connections at L2 "
+                "memory");
           auto alloc_res = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
@@ -1233,6 +1376,13 @@ LogicalResult air::simpleDMAChannelAllocation(
       for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.MM2S) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
+          // Report error if the data movement lowers to neither dma stream
+          // (aie.flow) nor dma packet flow (aie.packet_flow).
+          if (f.memcpyResourceType != "dma_stream" &&
+              f.memcpyResourceType != "dma_packet")
+            return memcpyOpIf->emitOpError(
+                "only supports dma_stream or dma_packet connections at L3 "
+                "memory");
           auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
               memcpyOpIf, f.S2MM_alloc[i].getDmaTile().getCol(),
               f.S2MM_alloc[i].getDmaTile().getRow(), f.S2MM[i]);
@@ -1251,6 +1401,12 @@ LogicalResult air::simpleDMAChannelAllocation(
       }
       for (auto o : f.S2MM.front()) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
+        // Report error if the data movement lowers to neither dma stream
+        // (aie.flow) nor dma packet flow (aie.packet_flow).
+        if (f.memcpyResourceType != "dma_stream" &&
+            f.memcpyResourceType != "dma_packet")
+          return memcpyOpIf->emitOpError("only supports dma_stream or "
+                                         "dma_packet connections at L3 memory");
         auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
             memcpyOpIf, f.MM2S_alloc.getDmaTile().getCol(),
             f.MM2S_alloc.getDmaTile().getRow(), f.MM2S);
