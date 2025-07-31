@@ -1555,7 +1555,7 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
   auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
-  auto memrefTy = llvm::cast<BaseMemRefType>(readOp.getSource().getType());
+  auto memrefTy = llvm::cast<BaseMemRefType>(readOp.getBase().getType());
   if (!vectorTy) {
     readOp->emitOpError("Not a vector");
     return pattern;
@@ -1565,7 +1565,7 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
     return pattern;
   }
   // Initialize wraps and strides based on the unshrunk memref shape.
-  populateDefaultWrapsAndStrides(builder, readOp.getSource(),
+  populateDefaultWrapsAndStrides(builder, readOp.getBase(),
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
   // Update wraps based on vector shape and vector access patterns.
@@ -1585,7 +1585,7 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   OpBuilder builder(writeOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  auto memrefTy = llvm::cast<BaseMemRefType>(writeOp.getSource().getType());
+  auto memrefTy = llvm::cast<BaseMemRefType>(writeOp.getBase().getType());
   auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
   if (!vectorTy) {
     writeOp->emitOpError("Not a vector");
@@ -1596,7 +1596,7 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
     return pattern;
   }
   // Initialize wraps and strides based on the unshrunk memref shape.
-  populateDefaultWrapsAndStrides(builder, writeOp.getSource(),
+  populateDefaultWrapsAndStrides(builder, writeOp.getBase(),
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
   // Update wraps based on vector shape and vector access patterns.
