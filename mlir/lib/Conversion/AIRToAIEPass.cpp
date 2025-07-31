@@ -1419,7 +1419,7 @@ struct SpecializeChannelBundlePattern
       SmallVector<int64_t, 2> channel_sizes = {1, 1};
       auto new_chan = rewriter.create<air::ChannelOp>(
           channel->getLoc(), cname, rewriter.getI64ArrayAttr(channel_sizes),
-          rewriter.getStringAttr("dma_stream"));
+          channel.getChannelType());
       if (channel->hasAttr("broadcast_shape")) {
         auto broadcast_shape = specializeBroadcastShape(rewriter, channel);
         new_chan->setAttr("broadcast_shape",
@@ -1812,6 +1812,37 @@ public:
       packetFlowOp = pktFlowOp;
     });
     return packetFlowOp;
+  }
+
+  // Cascade flow.
+
+  // This helper function looks up or creates an AIE::CascadeFlowOp that
+  // connects a given source tile to a destination tile.
+  AIE::CascadeFlowOp getCascadeFlowOp(AIE::DeviceOp aie_device,
+                                      mlir::Value source,
+                                      xilinx::AIE::WireBundle sourceBundle,
+                                      uint32_t sourceChannel, mlir::Value dest,
+                                      xilinx::AIE::WireBundle destBundle,
+                                      uint32_t destChannel) {
+    AIE::CascadeFlowOp flowOp = nullptr;
+
+    // Search the device for an existing CascadeFlowOp that matches the
+    // source/dest tiles.
+    aie_device.walk([&](Operation *op) {
+      if (auto fop = dyn_cast<AIE::CascadeFlowOp>(op))
+        if (source == fop.getSourceTile() && dest == fop.getDestTile())
+          flowOp = fop;
+    });
+
+    // If found, return the existing flow.
+    if (flowOp)
+      return flowOp;
+
+    // Otherwise, create a new CascadeFlowOp at the end of the device body.
+    OpBuilder builder(aie_device);
+    builder.setInsertionPoint(aie_device.getBody()->getTerminator());
+    return builder.create<AIE::CascadeFlowOp>(builder.getUnknownLoc(), source,
+                                              dest);
   }
 
   template <typename T>
@@ -2234,6 +2265,7 @@ public:
                                 air::ShimDMAAllocator &shim_dma_alloc,
                                 air::MemTileDMAAllocator &memtile_dma_alloc,
                                 air::TileDMAAllocator &tile_dma_alloc,
+                                air::CascadeAllocator &core_cascade_alloc,
                                 AIRToAIEConversionOptions options) {
 
     std::vector<Operation *> dma_memcpy_ops;
@@ -2246,11 +2278,13 @@ public:
     std::vector<air::MemcpyBundleAsFlow> memcpy_flows;
     for (auto o : dma_memcpy_ops) {
       if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(o)) {
+        // DMA memcpy always creates a new flow bundle.
         air::MemcpyBundleAsFlow flow = air::MemcpyBundleAsFlow(dma);
         if (failed(flow.pushBackMemcpyOpToBundle(dma)))
           return failure();
         memcpy_flows.push_back(flow);
       } else if (auto putget = dyn_cast<air::ChannelInterface>(o)) {
+        // Lookup channel declaration.
         auto chan = air::getChannelDeclarationThroughSymbol(putget);
         if (!chan) {
           putget->emitOpError("failed to get air.channel declaration.");
@@ -2260,13 +2294,14 @@ public:
         // Check if new pair
         bool found_in_flows = false;
         for (auto &f : memcpy_flows) {
-          if (auto air_flow_op_chan = dyn_cast<air::ChannelOp>(f.air_flow_op)) {
-            if (chan_name == air_flow_op_chan.getSymName().str()) {
-              if (failed(f.pushBackMemcpyOpToBundle(putget)))
-                return failure();
-              found_in_flows = true;
-            }
-          }
+          auto air_flow_op_chan = dyn_cast<air::ChannelOp>(f.air_flow_op);
+          if (!air_flow_op_chan)
+            continue;
+          if (chan_name != air_flow_op_chan.getSymName().str())
+            continue;
+          if (failed(f.pushBackMemcpyOpToBundle(putget)))
+            return failure();
+          found_in_flows = true;
         }
         if (!found_in_flows) {
           // Create new entry in memcpy_flows
@@ -2283,7 +2318,8 @@ public:
 
     // Step 2: Allocate tile DMA channels, shim DMA channels and shim tiles
     auto r = simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
-                                        memtile_dma_alloc, tile_dma_alloc);
+                                        memtile_dma_alloc, tile_dma_alloc,
+                                        core_cascade_alloc);
     if (failed(r))
       return r;
 
@@ -2303,11 +2339,24 @@ public:
               (uint32_t)f.MM2S_alloc.dma_channel.channel,
               f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
               (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-        else
+        else if (f.memcpyResourceType == "dma_packet")
+          getPacketFlowOp(
+              aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
+              (uint32_t)f.MM2S_alloc.dma_channel.channel,
+              f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
+              (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+        else if (f.memcpyResourceType == "dma_stream")
           getFlowOp(aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
                     (uint32_t)f.MM2S_alloc.dma_channel.channel,
                     f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
                     (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        else if (f.memcpyResourceType == "cascade") {
+          getCascadeFlowOp(aie_device, f.MM2S_alloc.getDmaTile(),
+                           AIE::WireBundle::DMA,
+                           (uint32_t)f.MM2S_alloc.dma_channel.channel,
+                           f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
+                           (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        }
       }
     }
     return success();
@@ -3290,10 +3339,12 @@ public:
     // need to export to airrt.metadata
     air::TileDMAAllocator tileDmaAlloc(device);
     air::MemTileDMAAllocator memTileDmaAlloc(device);
+    air::CascadeAllocator core_cascade_alloc(device);
 
     // Place memcpy ops onto DMA tiles, channels and flows
-    auto r = placeDMAChannelsAndRouteFlows<T>(
-        device, shimDmaAlloc, memTileDmaAlloc, tileDmaAlloc, options);
+    auto r = placeDMAChannelsAndRouteFlows<T>(device, shimDmaAlloc,
+                                              memTileDmaAlloc, tileDmaAlloc,
+                                              core_cascade_alloc, options);
     if (failed(r))
       return r;
 
