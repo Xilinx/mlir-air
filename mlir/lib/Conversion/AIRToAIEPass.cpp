@@ -1418,7 +1418,8 @@ struct SpecializeChannelBundlePattern
       chan_to_chan_map[cname] = channel.getName().str();
       SmallVector<int64_t, 2> channel_sizes = {1, 1};
       auto new_chan = rewriter.create<air::ChannelOp>(
-          channel->getLoc(), cname, rewriter.getI64ArrayAttr(channel_sizes));
+          channel->getLoc(), cname, rewriter.getI64ArrayAttr(channel_sizes),
+          rewriter.getStringAttr("dma_stream"));
       if (channel->hasAttr("broadcast_shape")) {
         auto broadcast_shape = specializeBroadcastShape(rewriter, channel);
         new_chan->setAttr("broadcast_shape",
