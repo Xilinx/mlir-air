@@ -15,7 +15,9 @@ set(LIBS
     AIRConversionPasses
     AIRTransformPasses
     AIRInitAll
-    MLIRSupport)
+    MLIRRegisterAllDialects
+    MLIRSupport
+)
 
 target_link_libraries(air-runner PRIVATE ${LIBS})
 

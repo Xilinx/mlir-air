@@ -10,7 +10,9 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1555,7 +1557,7 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
   auto vectorTy = llvm::cast<VectorType>(readOp.getVector().getType());
-  auto memrefTy = llvm::cast<BaseMemRefType>(readOp.getSource().getType());
+  auto memrefTy = llvm::cast<BaseMemRefType>(readOp.getBase().getType());
   if (!vectorTy) {
     readOp->emitOpError("Not a vector");
     return pattern;
@@ -1565,7 +1567,7 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
     return pattern;
   }
   // Initialize wraps and strides based on the unshrunk memref shape.
-  populateDefaultWrapsAndStrides(builder, readOp.getSource(),
+  populateDefaultWrapsAndStrides(builder, readOp.getBase(),
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
   // Update wraps based on vector shape and vector access patterns.
@@ -1585,7 +1587,7 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   OpBuilder builder(writeOp);
   std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
       pattern;
-  auto memrefTy = llvm::cast<BaseMemRefType>(writeOp.getSource().getType());
+  auto memrefTy = llvm::cast<BaseMemRefType>(writeOp.getBase().getType());
   auto vectorTy = llvm::cast<VectorType>(writeOp.getVector().getType());
   if (!vectorTy) {
     writeOp->emitOpError("Not a vector");
@@ -1596,7 +1598,7 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
     return pattern;
   }
   // Initialize wraps and strides based on the unshrunk memref shape.
-  populateDefaultWrapsAndStrides(builder, writeOp.getSource(),
+  populateDefaultWrapsAndStrides(builder, writeOp.getBase(),
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
   // Update wraps based on vector shape and vector access patterns.
@@ -2080,6 +2082,20 @@ air::consructComposedAffineApplyOpFromArithMulI(OpBuilder &builder,
   return affine::makeComposedAffineApply(
       builder, mulOp.getLoc(), map,
       getAsOpFoldResult({mulOp.getLhs(), mulOp.getRhs()}));
+}
+
+/// Get bands of loops that are valid to tile from the top-level of `f`.
+/// Ref: mlir/lib/Dialect/Affine/Transforms/LoopTiling.cpp
+void air::getTopLevelTileableBands(
+    func::FuncOp f, std::vector<SmallVector<affine::AffineForOp, 6>> &bands) {
+  // Get maximal perfect nest of 'affine.for' ops starting from root
+  // (inclusive).
+  for (affine::AffineForOp forOp : f.getOps<affine::AffineForOp>()) {
+    SmallVector<affine::AffineForOp, 6> band;
+    getPerfectlyNestedLoops(band, forOp);
+    if (isTilingValid(band))
+      bands.push_back(band);
+  }
 }
 
 } // namespace xilinx

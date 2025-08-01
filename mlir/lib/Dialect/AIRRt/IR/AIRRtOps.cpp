@@ -34,7 +34,7 @@ ParseResult ModuleMetadataOp::parse(OpAsmParser &parser,
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
   auto *body = result.addRegion();
-  if (parser.parseRegion(*body, std::nullopt, false))
+  if (parser.parseRegion(*body, {}, false))
     return failure();
   ModuleMetadataOp::ensureTerminator(*body, parser.getBuilder(),
                                      result.location);
@@ -52,7 +52,7 @@ ParseResult SegmentMetadataOp::parse(OpAsmParser &parser,
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
   auto *body = result.addRegion();
-  if (parser.parseRegion(*body, std::nullopt, false))
+  if (parser.parseRegion(*body, {}, false))
     return failure();
   SegmentMetadataOp::ensureTerminator(*body, parser.getBuilder(),
                                       result.location);

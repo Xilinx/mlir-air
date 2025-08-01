@@ -12,7 +12,6 @@
 
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -109,7 +108,7 @@ public:
 
     for (auto f : module.getOps<func::FuncOp>()) {
       std::vector<SmallVector<affine::AffineForOp, 6>> bands;
-      getTileableBands(f, &bands);
+      air::getTopLevelTileableBands(f, bands);
       for (auto &band : bands) {
         auto stringAttr =
             band[0]->getAttrOfType<StringAttr>("affine_opt_label");

@@ -296,6 +296,11 @@ affine::AffineApplyOp
 consructComposedAffineApplyOpFromArithMulI(OpBuilder &builder,
                                            arith::MulIOp mulOp);
 
+/// Get bands of loops that are valid to tile from the top-level of `f`.
+/// Ref: mlir/lib/Dialect/Affine/Transforms/LoopTiling.cpp
+void getTopLevelTileableBands(
+    func::FuncOp f, std::vector<SmallVector<affine::AffineForOp, 6>> &bands);
+
 } // namespace air
 } // namespace xilinx
 
