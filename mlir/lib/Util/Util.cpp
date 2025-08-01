@@ -10,7 +10,9 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -2080,6 +2082,20 @@ air::consructComposedAffineApplyOpFromArithMulI(OpBuilder &builder,
   return affine::makeComposedAffineApply(
       builder, mulOp.getLoc(), map,
       getAsOpFoldResult({mulOp.getLhs(), mulOp.getRhs()}));
+}
+
+/// Get bands of loops that are valid to tile from the top-level of `f`.
+/// Ref: mlir/lib/Dialect/Affine/Transforms/LoopTiling.cpp
+void air::getTopLevelTileableBands(
+    func::FuncOp f, std::vector<SmallVector<affine::AffineForOp, 6>> &bands) {
+  // Get maximal perfect nest of 'affine.for' ops starting from root
+  // (inclusive).
+  for (affine::AffineForOp forOp : f.getOps<affine::AffineForOp>()) {
+    SmallVector<affine::AffineForOp, 6> band;
+    getPerfectlyNestedLoops(band, forOp);
+    if (isTilingValid(band))
+      bands.push_back(band);
+  }
 }
 
 } // namespace xilinx

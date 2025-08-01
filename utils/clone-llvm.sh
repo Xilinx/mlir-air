@@ -14,9 +14,9 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export commithash=77914c96dfc55562404d18c1ab777137055679db
-DATETIME=2025073017
-WHEEL_VERSION=21.0.0.$DATETIME+${commithash:0:8}
+export commithash=d1e43f6c1a28c3c64b3655be1fc1aff1029c48c8
+DATETIME=2025073104
+WHEEL_VERSION=22.0.0.$DATETIME+${commithash:0:8}
 
 if [ x"$1" == x--get-wheel-version ]; then
   echo $WHEEL_VERSION
