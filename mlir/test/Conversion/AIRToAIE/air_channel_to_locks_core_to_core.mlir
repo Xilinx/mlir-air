@@ -194,13 +194,15 @@ func.func @one_to_two() {
 // CHECK:         %[[tile_2_5:.*]] = aie.tile(2, 5)
 // CHECK:         %[[tile_2_6:.*]] = aie.tile(2, 6)
 // CHECK:         aie.core(%[[tile_2_6]])
+// CHECK:           %[[poison:.*]] = ub.poison : i32
 // CHECK:           linalg.add
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[%[[arg6]]] [16] [1]
-// CHECK-NEXT:        %[[vecread:.*]] = vector.transfer_read %[[subview_12]][%c0{{.*}}], %cst{{.*}} {in_bounds = [true]}
+// CHECK-NEXT:        %[[vecread:.*]] = vector.transfer_read %[[subview_12]][%c0{{.*}}], %[[poison]] {in_bounds = [true]}
 // CHECK-NEXT:        aie.put_cascade(%[[vecread]]
 // CHECK-NEXT:      }
 // CHECK:         aie.core(%[[tile_2_5]])
+// CHECK:           %[[poison:.*]] = ub.poison : i32
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[%[[arg6]]] [16] [1]
 // CHECK-NEXT:        %[[cascade_get:.*]] = aie.get_cascade()
@@ -209,10 +211,11 @@ func.func @one_to_two() {
 // CHECK:           linalg.add
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[%[[arg6]]] [16] [1]
-// CHECK-NEXT:        %[[vecread:.*]] = vector.transfer_read %[[subview_12]][%c0{{.*}}], %cst{{.*}} {in_bounds = [true]}
+// CHECK-NEXT:        %[[vecread:.*]] = vector.transfer_read %[[subview_12]][%c0{{.*}}], %[[poison]] {in_bounds = [true]}
 // CHECK-NEXT:        aie.put_cascade(%[[vecread]]
 // CHECK-NEXT:      }
 // CHECK:         aie.core(%[[tile_2_4]])
+// CHECK:           %[[poison:.*]] = ub.poison : i32
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[%[[arg6]]] [16] [1]
 // CHECK-NEXT:        %[[cascade_get:.*]] = aie.get_cascade()
@@ -221,7 +224,7 @@ func.func @one_to_two() {
 // CHECK:           linalg.add
 // CHECK:           scf.for %[[arg6:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
 // CHECK-NEXT:        %[[subview_12:.*]] = memref.subview %{{.*}}[%[[arg6]]] [16] [1]
-// CHECK-NEXT:        %[[vecread:.*]] = vector.transfer_read %[[subview_12]][%c0{{.*}}], %cst{{.*}} {in_bounds = [true]}
+// CHECK-NEXT:        %[[vecread:.*]] = vector.transfer_read %[[subview_12]][%c0{{.*}}], %[[poison]] {in_bounds = [true]}
 // CHECK-NEXT:        aie.put_cascade(%[[vecread]]
 // CHECK-NEXT:      }
 // CHECK:         aie.core(%[[tile_2_3]])
@@ -241,7 +244,7 @@ func.func @one_to_two() {
 air.channel @channel_0 [3] {channel_type = "cascade"}
 air.channel @channel_1 [1]
 air.channel @channel_2 [1]
-func.func @scf1(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
+func.func @cascade(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
   %c1 = arith.constant 1 : index
   %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0, %arg7=%arg1) : memref<2048xi32>, memref<2048xi32> attributes {id = 1 : i32} {
     %c4 = arith.constant 4 : index
