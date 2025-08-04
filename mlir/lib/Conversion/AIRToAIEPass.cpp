@@ -3340,15 +3340,16 @@ public:
 
       // Create the vector.transfer_write to store cascade data into the
       // destination
+      SmallVector<Value> indices(memrefTy.getRank(), c0);
       rewriter.create<vector::TransferWriteOp>(loc, cascadeData, memref,
-                                               ValueRange{c0}, inBounds);
+                                               indices, inBounds);
     } else if (isa<air::ChannelPutOp>(op.getOperation())) {
       // Create a constant 0 index for writing at the beginning of the memref
       Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       // Create the vector.transfer_read to read cascade data from the source
+      SmallVector<Value> indices(memrefTy.getRank(), c0);
       Value cascadeData = rewriter.create<vector::TransferReadOp>(
-          loc, vecTy, memref, ValueRange{c0}, /*padding*/ std::nullopt,
-          inBounds);
+          loc, vecTy, memref, indices, /*padding*/ std::nullopt, inBounds);
       rewriter.create<AIE::PutCascadeOp>(loc, cascadeData);
     }
 
