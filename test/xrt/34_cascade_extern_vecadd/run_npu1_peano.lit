@@ -5,5 +5,4 @@
 // RUN: mkdir -p test_npu1_peano
 // RUN: cd test_npu1_peano
 // RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
-// RUN: %PEANO_INSTALL_DIR/bin/clang++ --target=aie2-none-unknown-elf %peano_flags -c %S/cascade.cc -o cascade.o
 // RUN: %python %S/run.py
