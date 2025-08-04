@@ -3347,7 +3347,8 @@ public:
       Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       // Create the vector.transfer_read to read cascade data from the source
       Value cascadeData = rewriter.create<vector::TransferReadOp>(
-          loc, vecTy, memref, ValueRange{c0}, inBounds);
+          loc, vecTy, memref, ValueRange{c0}, /*padding*/ std::nullopt,
+          inBounds);
       rewriter.create<AIE::PutCascadeOp>(loc, cascadeData);
     }
 
