@@ -9,7 +9,23 @@ from air.passmanager import *
 from air.dialects.air import module_builder
 from air.compiler.util import run_transform
 from air.dialects import func, linalg
-from air.dialects.linalg.opdsl.lang import *
+import air.dialects.linalg.opdsl.lang as linalg_lang
+
+
+# elemwise_binary (with operand type cast) is deprecated from upstream. Definition is moved here as a custom linalg structured op.
+@linalg_lang.linalg_structured_op
+def elemwise_binary(
+    lhs=linalg_lang.TensorDef(linalg_lang.TV.T1),
+    rhs=linalg_lang.TensorDef(linalg_lang.TV.T2),
+    O=linalg_lang.TensorDef(linalg_lang.U, output=True),
+    fun=linalg_lang.BinaryFnAttrDef(default=linalg_lang.BinaryFn.add),
+    cast=linalg_lang.TypeFnAttrDef(default=linalg_lang.TypeFn.cast_signed),
+):
+    """Applies the binary function fun elementwise.
+    Numeric casting is performed on the input operand, promoting it to the same
+    data type as the accumulator/output.
+    """
+    O[None] = fun(cast(linalg_lang.U, lhs[None]), cast(linalg_lang.U, rhs[None]))
 
 
 @module_builder
@@ -22,8 +38,12 @@ def generate_add_module(shape):
         MemRefType.get(shape, F32Type.get()),
     )
     def mul(lhs, rhs, out):
-        linalg.elemwise_binary(
-            lhs, rhs, outs=[out], fun=BinaryFn.add, cast=TypeFn.cast_unsigned
+        elemwise_binary(
+            lhs,
+            rhs,
+            outs=[out],
+            fun=linalg_lang.BinaryFn.add,
+            cast=linalg_lang.TypeFn.cast_unsigned,
         )
         return
 
