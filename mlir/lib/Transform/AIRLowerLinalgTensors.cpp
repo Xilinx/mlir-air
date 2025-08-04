@@ -41,7 +41,7 @@ struct RemoveBufferCastPattern
     if (!load)
       return failure();
 
-    auto buffer = load.getMemref();
+    auto buffer = load.getBuffer();
     if (!buffer)
       return failure();
     rewriter.replaceOp(op, buffer);

@@ -5,8 +5,7 @@ import numpy as np
 
 from air.ir import *
 from air.dialects.air import *
-from air.dialects.linalg import elemwise_binary
-from air.dialects.linalg.opdsl.lang import BinaryFn, TypeFn
+import air.dialects.linalg.opdsl.lang as linalg_lang
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
@@ -19,6 +18,22 @@ IMAGE_HEIGHT = 16
 IMAGE_SIZE = [IMAGE_HEIGHT, IMAGE_WIDTH]
 
 INOUT_DATATYPE = np.int32
+
+
+# elemwise_binary (with operand type cast) is deprecated from upstream. Definition is moved here as a custom linalg structured op.
+@linalg_lang.linalg_structured_op
+def elemwise_binary(
+    lhs=linalg_lang.TensorDef(linalg_lang.TV.T1),
+    rhs=linalg_lang.TensorDef(linalg_lang.TV.T2),
+    O=linalg_lang.TensorDef(linalg_lang.U, output=True),
+    fun=linalg_lang.BinaryFnAttrDef(default=linalg_lang.BinaryFn.add),
+    cast=linalg_lang.TypeFnAttrDef(default=linalg_lang.TypeFn.cast_signed),
+):
+    """Applies the binary function fun elementwise.
+    Numeric casting is performed on the input operand, promoting it to the same
+    data type as the accumulator/output.
+    """
+    O[None] = fun(cast(linalg_lang.U, lhs[None]), cast(linalg_lang.U, rhs[None]))
 
 
 @module_builder
@@ -74,8 +89,8 @@ def build_module():
                         image_in,
                         image_in,
                         outs=[image_out],
-                        fun=BinaryFn.mul,
-                        cast=TypeFn.cast_unsigned,
+                        fun=linalg_lang.BinaryFn.mul,
+                        cast=linalg_lang.TypeFn.cast_unsigned,
                     )
 
                     ChannelPut("Herd2Herd", image_out)
