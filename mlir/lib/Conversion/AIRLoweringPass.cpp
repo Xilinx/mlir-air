@@ -19,7 +19,6 @@
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
-#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -1182,7 +1181,7 @@ public:
       // Label root of perfectly nested affine for loops for affine
       // optimizations.
       std::vector<SmallVector<mlir::affine::AffineForOp, 6>> bands;
-      mlir::affine::getTileableBands(f, &bands);
+      air::getTopLevelTileableBands(f, bands);
       for (auto &band : bands) {
         band[0]->setAttr("affine_opt_label",
                          StringAttr::get(f.getContext(), "tiling"));

@@ -29,6 +29,9 @@ set(LIBS
   MLIROptLib
   MLIRParser
   MLIRPass
+  MLIRRegisterAllDialects
+  MLIRRegisterAllExtensions
+  MLIRRegisterAllPasses
   MLIRTransforms
   MLIRTransformUtils
   MLIRSupport

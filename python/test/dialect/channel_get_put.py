@@ -6,8 +6,7 @@
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.func import FuncOp
-from air.dialects.linalg import elemwise_binary
-from air.dialects.linalg.opdsl.lang import BinaryFn, TypeFn
+import air.dialects.linalg.opdsl.lang as linalg_lang
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.scf import for_, yield_
 
@@ -18,6 +17,22 @@ def to_type(dtype):
     if dtype == np.int32:
         return T.i32()
     return None
+
+
+# elemwise_binary (with operand type cast) is deprecated from upstream. Definition is moved here as a custom linalg structured op.
+@linalg_lang.linalg_structured_op
+def elemwise_binary(
+    lhs=linalg_lang.TensorDef(linalg_lang.TV.T1),
+    rhs=linalg_lang.TensorDef(linalg_lang.TV.T2),
+    O=linalg_lang.TensorDef(linalg_lang.U, output=True),
+    fun=linalg_lang.BinaryFnAttrDef(default=linalg_lang.BinaryFn.add),
+    cast=linalg_lang.TypeFnAttrDef(default=linalg_lang.TypeFn.cast_signed),
+):
+    """Applies the binary function fun elementwise.
+    Numeric casting is performed on the input operand, promoting it to the same
+    data type as the accumulator/output.
+    """
+    O[None] = fun(cast(linalg_lang.U, lhs[None]), cast(linalg_lang.U, rhs[None]))
 
 
 @module_builder
@@ -65,8 +80,8 @@ def build_module(shape, idtype, odtype):
                             tile_a,
                             tile_b,
                             outs=[tile_c],
-                            fun=BinaryFn.mul,
-                            cast=TypeFn.cast_unsigned,
+                            fun=linalg_lang.BinaryFn.mul,
+                            cast=linalg_lang.TypeFn.cast_unsigned,
                         )
                         DeallocOp(tile_a)
                         DeallocOp(tile_b)
