@@ -1704,8 +1704,42 @@ template <typename OpT>
 static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
                                                 PatternRewriter &rewriter) {
 
+  // Lambda version of `getChannelDeclarationThroughSymbol` method defined in
+  // `Util/Utils.cpp`. It is duplicated here because `Util/Utils.cpp` depends on
+  // this file, so direct inclusion is not possible.
+  auto getChannelDeclarationThroughSymbol = [](air::ChannelInterface op) {
+    if (!op)
+      // Return an empty ChannelOp if the input operation is invalid.
+      return air::ChannelOp();
+
+    // Traverse up through the operation's parents until a symbol table is
+    // found.
+    Operation *parent = op;
+    while ((parent = parent->getParentOp())) {
+      if (parent->hasTrait<OpTrait::SymbolTable>()) {
+        auto st = mlir::SymbolTable::lookupSymbolIn(parent, op.getChanName());
+        if (auto chanOp = dyn_cast_if_present<air::ChannelOp>(st))
+          return chanOp;
+      }
+    }
+
+    // No matching channel declaration found in any enclosing symbol tables.
+    return air::ChannelOp();
+  };
+
+  // Extract the memref operand from the operation.
   Value memref = op.getMemref();
   if (!memref)
+    // If there is no associated memref, signal a failure.
+    return failure();
+  // Resolve the channel declaration for the given channel interface operation.
+  air::ChannelOp chan = getChannelDeclarationThroughSymbol(op);
+  if (!chan)
+    // If the channel declaration cannot be resolved, signal a failure.
+    return failure();
+  // If the channel is of type "cascade", multi-dimensional affine map access
+  // pattern is not supported, so skip it.
+  if (chan.getChannelType() == "cascade")
     return failure();
 
   // Init. memref type and offsets from memref's defining op's input type

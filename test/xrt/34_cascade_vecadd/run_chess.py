@@ -1,4 +1,4 @@
-# run.py -*- Python -*-
+# run_chess.py -*- Python -*-
 #
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
@@ -40,6 +40,8 @@ with air.ir.Context() as ctx, Location.unknown():
     ################################################
     ## Tiling
     ################################################
+
+    # Chess version: lowers cascade air.channel.put/get to func.calls to external functions.
 
     air_tiled_ir_string = """
     #set = affine_set<()[s0] : (s0 - 3 == 0)>

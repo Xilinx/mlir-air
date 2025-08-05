@@ -1419,7 +1419,7 @@ struct SpecializeChannelBundlePattern
       SmallVector<int64_t, 2> channel_sizes = {1, 1};
       auto new_chan = rewriter.create<air::ChannelOp>(
           channel->getLoc(), cname, rewriter.getI64ArrayAttr(channel_sizes),
-          rewriter.getStringAttr("dma_stream"));
+          channel.getChannelType());
       if (channel->hasAttr("broadcast_shape")) {
         auto broadcast_shape = specializeBroadcastShape(rewriter, channel);
         new_chan->setAttr("broadcast_shape",
@@ -1679,6 +1679,7 @@ public:
     registry.insert<xilinx::AIEX::AIEXDialect>();
     registry.insert<LLVM::LLVMDialect>();
     registry.insert<cf::ControlFlowDialect>();
+    registry.insert<vector::VectorDialect>();
   }
 
   // Circuit-switched flow.
@@ -1812,6 +1813,37 @@ public:
       packetFlowOp = pktFlowOp;
     });
     return packetFlowOp;
+  }
+
+  // Cascade flow.
+
+  // This helper function looks up or creates an AIE::CascadeFlowOp that
+  // connects a given source tile to a destination tile.
+  AIE::CascadeFlowOp getCascadeFlowOp(AIE::DeviceOp aie_device,
+                                      mlir::Value source,
+                                      xilinx::AIE::WireBundle sourceBundle,
+                                      uint32_t sourceChannel, mlir::Value dest,
+                                      xilinx::AIE::WireBundle destBundle,
+                                      uint32_t destChannel) {
+    AIE::CascadeFlowOp flowOp = nullptr;
+
+    // Search the device for an existing CascadeFlowOp that matches the
+    // source/dest tiles.
+    aie_device.walk([&](Operation *op) {
+      if (auto fop = dyn_cast<AIE::CascadeFlowOp>(op))
+        if (source == fop.getSourceTile() && dest == fop.getDestTile())
+          flowOp = fop;
+    });
+
+    // If found, return the existing flow.
+    if (flowOp)
+      return flowOp;
+
+    // Otherwise, create a new CascadeFlowOp at the end of the device body.
+    OpBuilder builder(aie_device);
+    builder.setInsertionPoint(aie_device.getBody()->getTerminator());
+    return builder.create<AIE::CascadeFlowOp>(builder.getUnknownLoc(), source,
+                                              dest);
   }
 
   template <typename T>
@@ -2234,6 +2266,7 @@ public:
                                 air::ShimDMAAllocator &shim_dma_alloc,
                                 air::MemTileDMAAllocator &memtile_dma_alloc,
                                 air::TileDMAAllocator &tile_dma_alloc,
+                                air::CascadeAllocator &core_cascade_alloc,
                                 AIRToAIEConversionOptions options) {
 
     std::vector<Operation *> dma_memcpy_ops;
@@ -2246,11 +2279,13 @@ public:
     std::vector<air::MemcpyBundleAsFlow> memcpy_flows;
     for (auto o : dma_memcpy_ops) {
       if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(o)) {
+        // DMA memcpy always creates a new flow bundle.
         air::MemcpyBundleAsFlow flow = air::MemcpyBundleAsFlow(dma);
         if (failed(flow.pushBackMemcpyOpToBundle(dma)))
           return failure();
         memcpy_flows.push_back(flow);
       } else if (auto putget = dyn_cast<air::ChannelInterface>(o)) {
+        // Lookup channel declaration.
         auto chan = air::getChannelDeclarationThroughSymbol(putget);
         if (!chan) {
           putget->emitOpError("failed to get air.channel declaration.");
@@ -2260,13 +2295,14 @@ public:
         // Check if new pair
         bool found_in_flows = false;
         for (auto &f : memcpy_flows) {
-          if (auto air_flow_op_chan = dyn_cast<air::ChannelOp>(f.air_flow_op)) {
-            if (chan_name == air_flow_op_chan.getSymName().str()) {
-              if (failed(f.pushBackMemcpyOpToBundle(putget)))
-                return failure();
-              found_in_flows = true;
-            }
-          }
+          auto air_flow_op_chan = dyn_cast<air::ChannelOp>(f.air_flow_op);
+          if (!air_flow_op_chan)
+            continue;
+          if (chan_name != air_flow_op_chan.getSymName().str())
+            continue;
+          if (failed(f.pushBackMemcpyOpToBundle(putget)))
+            return failure();
+          found_in_flows = true;
         }
         if (!found_in_flows) {
           // Create new entry in memcpy_flows
@@ -2283,7 +2319,8 @@ public:
 
     // Step 2: Allocate tile DMA channels, shim DMA channels and shim tiles
     auto r = simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
-                                        memtile_dma_alloc, tile_dma_alloc);
+                                        memtile_dma_alloc, tile_dma_alloc,
+                                        core_cascade_alloc);
     if (failed(r))
       return r;
 
@@ -2303,11 +2340,24 @@ public:
               (uint32_t)f.MM2S_alloc.dma_channel.channel,
               f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
               (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-        else
+        else if (f.memcpyResourceType == "dma_packet")
+          getPacketFlowOp(
+              aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
+              (uint32_t)f.MM2S_alloc.dma_channel.channel,
+              f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
+              (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
+        else if (f.memcpyResourceType == "dma_stream")
           getFlowOp(aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
                     (uint32_t)f.MM2S_alloc.dma_channel.channel,
                     f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
                     (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        else if (f.memcpyResourceType == "cascade") {
+          getCascadeFlowOp(aie_device, f.MM2S_alloc.getDmaTile(),
+                           AIE::WireBundle::DMA,
+                           (uint32_t)f.MM2S_alloc.dma_channel.channel,
+                           f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
+                           (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
+        }
       }
     }
     return success();
@@ -3259,6 +3309,61 @@ public:
     return aieDmaBdOp;
   }
 
+  // Converts an air.channel.put/get operation with channel_type = "cascade"
+  // into aie.get/put_cascade + vector.transfer_read/write sequence.
+  LogicalResult ConvertCascadeChannelIfToAIE(RewriterBase &rewriter,
+                                             air::ChannelInterface op) {
+    // Match only if the associated channel has channel_type = "cascade".
+    auto chan = air::getChannelDeclarationThroughSymbol(op);
+    if (!chan)
+      return op->emitOpError("cannot resolve channel symbol");
+
+    if (chan.getChannelType().str() != "cascade")
+      return op->emitOpError("channel_type is not cascade");
+
+    Location loc = op.getLoc();
+    Value memref = op.getMemref();
+
+    // Infer vector type from the destination memref's shape
+    MemRefType memrefTy = cast<MemRefType>(memref.getType());
+    VectorType vecTy =
+        VectorType::get(memrefTy.getShape(), memrefTy.getElementType());
+    // Prepare inBounds vector<bool> with true for each dimension
+    SmallVector<bool> inBounds(memrefTy.getRank(), true);
+
+    // Create the aie.get_cascade operation
+    rewriter.setInsertionPoint(op);
+    if (isa<air::ChannelGetOp>(op.getOperation())) {
+      Value cascadeData = rewriter.create<AIE::GetCascadeOp>(loc, vecTy);
+      // Create a constant 0 index for writing at the beginning of the memref
+      Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
+      // Create the vector.transfer_write to store cascade data into the
+      // destination
+      SmallVector<Value> indices(memrefTy.getRank(), c0);
+      rewriter.create<vector::TransferWriteOp>(loc, cascadeData, memref,
+                                               indices, inBounds);
+    } else if (isa<air::ChannelPutOp>(op.getOperation())) {
+      // Create a constant 0 index for writing at the beginning of the memref
+      Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      // Create the vector.transfer_read to read cascade data from the source
+      SmallVector<Value> indices(memrefTy.getRank(), c0);
+      Value cascadeData = rewriter.create<vector::TransferReadOp>(
+          loc, vecTy, memref, indices, /*padding*/ std::nullopt, inBounds);
+      rewriter.create<AIE::PutCascadeOp>(loc, cascadeData);
+    }
+
+    // Remove the original air.channel.get op
+    if (air::isAsyncOp(op)) {
+      IRMapping remap;
+      auto newWaitAll = air::replaceAsyncOpWithWaitAll(rewriter, remap, op);
+      rewriter.replaceOp(op, newWaitAll.getAsyncToken());
+    } else
+      rewriter.eraseOp(op);
+
+    return success();
+  }
+
   AIE::ShimDMAOp getShimDMAOp(AIE::TileOp tile) {
     auto users = tile.getResult().getUsers();
     for (auto user : users)
@@ -3284,16 +3389,19 @@ public:
       cores.push_back(c);
 
     const auto &target_model = device.getTargetModel();
-    OpBuilder builder(device);
+    // OpBuilder builder(device);
+    IRRewriter rewriter(device->getContext());
 
     // Unlike shimDmaAlloc, tileDmaAlloc is local to device because it does not
     // need to export to airrt.metadata
     air::TileDMAAllocator tileDmaAlloc(device);
     air::MemTileDMAAllocator memTileDmaAlloc(device);
+    air::CascadeAllocator core_cascade_alloc(device);
 
     // Place memcpy ops onto DMA tiles, channels and flows
-    auto r = placeDMAChannelsAndRouteFlows<T>(
-        device, shimDmaAlloc, memTileDmaAlloc, tileDmaAlloc, options);
+    auto r = placeDMAChannelsAndRouteFlows<T>(device, shimDmaAlloc,
+                                              memTileDmaAlloc, tileDmaAlloc,
+                                              core_cascade_alloc, options);
     if (failed(r))
       return r;
 
@@ -3307,34 +3415,34 @@ public:
       std::unordered_set<Operation *> allocs_to_remap;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
-        if (alloc.foundAlloc(x, y)) {
-          for (auto o : alloc.memcpyOps) {
-            if (!o)
-              continue;
-            auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
-            if (!memcpyOpIf)
-              return o->emitOpError("does not have air::MemcpyInterface");
-            if (failed(allocateCoreLocksPerMemcpyOp(
-                    builder, memcpyOpIf, allocs_to_remap, target_model,
-                    tileDmaAlloc, x, y))) {
-              return o->emitOpError("failed to allocate core locks");
-            }
+        if (!alloc.foundAlloc(x, y))
+          continue;
+        for (auto o : alloc.memcpyOps) {
+          if (!o)
+            continue;
+          auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
+          if (!memcpyOpIf)
+            return o->emitOpError("does not have air::MemcpyInterface");
+          if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
+                                                  allocs_to_remap, target_model,
+                                                  tileDmaAlloc, x, y))) {
+            return o->emitOpError("failed to allocate core locks");
           }
         }
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
-        if (alloc.foundAlloc(x, y)) {
-          for (auto o : alloc.memcpyOps) {
-            if (!o)
-              continue;
-            auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
-            if (!memcpyOpIf)
-              return o->emitOpError("does not have air::MemcpyInterface");
-            if (failed(allocateCoreLocksPerMemcpyOp(
-                    builder, memcpyOpIf, allocs_to_remap, target_model,
-                    tileDmaAlloc, x, y))) {
-              return o->emitOpError("failed to allocate core locks");
-            }
+        if (!alloc.foundAlloc(x, y))
+          continue;
+        for (auto o : alloc.memcpyOps) {
+          if (!o)
+            continue;
+          auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
+          if (!memcpyOpIf)
+            return o->emitOpError("does not have air::MemcpyInterface");
+          if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
+                                                  allocs_to_remap, target_model,
+                                                  tileDmaAlloc, x, y))) {
+            return o->emitOpError("failed to allocate core locks");
           }
         }
       }
@@ -3364,21 +3472,21 @@ public:
           tile_dma_memcpys;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
-        if (alloc.foundAlloc(x, y)) {
-          std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
-              alloc.dma_channel.direction, alloc.dma_channel.channel};
-          for (auto &o : alloc.memcpyOps) {
-            tile_dma_memcpys[mm2s_chan].push_back(o);
-          }
+        if (!alloc.foundAlloc(x, y))
+          continue;
+        std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
+            alloc.dma_channel.direction, alloc.dma_channel.channel};
+        for (auto &o : alloc.memcpyOps) {
+          tile_dma_memcpys[mm2s_chan].push_back(o);
         }
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
-        if (alloc.foundAlloc(x, y)) {
-          std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
-              alloc.dma_channel.direction, alloc.dma_channel.channel};
-          for (auto &o : alloc.memcpyOps) {
-            tile_dma_memcpys[s2mm_chan].push_back(o);
-          }
+        if (!alloc.foundAlloc(x, y))
+          continue;
+        std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
+            alloc.dma_channel.direction, alloc.dma_channel.channel};
+        for (auto &o : alloc.memcpyOps) {
+          tile_dma_memcpys[s2mm_chan].push_back(o);
         }
       }
 
@@ -3387,16 +3495,36 @@ public:
       // make a aie.mem for the tile dma
       auto mem = tile.getMemOp();
       if (!mem && tile_dma_memcpys.size()) {
-        builder.setInsertionPoint(core);
-        mem = builder.create<AIE::MemOp>(loc, tile);
+        rewriter.setInsertionPoint(core);
+        mem = rewriter.create<AIE::MemOp>(loc, tile);
       }
 
       if (failed(generateDmaBdProgram<air::TileDMAAllocator, AIE::BufferOp,
                                       AIE::MemOp>(
-              builder, target_model, tile_dma_memcpys, tileDmaAlloc, loc, mem,
+              rewriter, target_model, tile_dma_memcpys, tileDmaAlloc, loc, mem,
               x, y))) {
         mem->emitOpError("failed to generate dma bd program.");
         return failure();
+      }
+
+      // Materialize cascade put and get allocated on cores into put_ and
+      // get_cascade ops.
+      for (auto *allocList : {&core_cascade_alloc.cascade_put_allocs,
+                              &core_cascade_alloc.cascade_get_allocs}) {
+        for (auto &alloc : *allocList) {
+          if (!alloc.foundAlloc(x, y))
+            continue;
+          for (auto o : alloc.memcpyOps) {
+            if (!o)
+              continue;
+            auto channelOpIf = dyn_cast<air::ChannelInterface>(o);
+            if (!channelOpIf)
+              return o->emitOpError("does not have air::ChannelInterface");
+            if (failed(ConvertCascadeChannelIfToAIE(rewriter, channelOpIf))) {
+              return o->emitOpError("failed to generate cascade program");
+            }
+          }
+        }
       }
     }
 
@@ -3461,17 +3589,17 @@ public:
       // Generate aie.shim_dma op
       AIE::ShimDMAOp shimDMA = getShimDMAOp(tile);
       if (!shimDMA) {
-        builder.setInsertionPoint(device.getBody()->getTerminator());
-        shimDMA = builder.create<AIE::ShimDMAOp>(builder.getUnknownLoc(),
-                                                 builder.getIndexType(), tile);
+        rewriter.setInsertionPoint(device.getBody()->getTerminator());
+        shimDMA = rewriter.create<AIE::ShimDMAOp>(
+            rewriter.getUnknownLoc(), rewriter.getIndexType(), tile);
       }
 
-      auto loc = builder.getUnknownLoc();
+      auto loc = rewriter.getUnknownLoc();
 
       // Generate DMA BD program
       if (failed(generateDmaBdProgram<air::ShimDMAAllocator,
                                       AIE::ExternalBufferOp, AIE::ShimDMAOp>(
-              builder, target_model, shim_dma_memcpys, shimDmaAlloc, loc,
+              rewriter, target_model, shim_dma_memcpys, shimDmaAlloc, loc,
               shimDMA, x, y))) {
         shimDMA->emitOpError("failed to generate dma bd program.");
         return failure();
@@ -3512,17 +3640,17 @@ public:
       // Generate aie.memtile_dma op
       AIE::MemTileDMAOp memTileDMA = getMemTileDMAOp(tile);
       if (!memTileDMA) {
-        builder.setInsertionPoint(device.getBody()->getTerminator());
-        memTileDMA = builder.create<AIE::MemTileDMAOp>(
-            builder.getUnknownLoc(), builder.getIndexType(), tile);
+        rewriter.setInsertionPoint(device.getBody()->getTerminator());
+        memTileDMA = rewriter.create<AIE::MemTileDMAOp>(
+            rewriter.getUnknownLoc(), rewriter.getIndexType(), tile);
       }
 
-      auto loc = builder.getUnknownLoc();
+      auto loc = rewriter.getUnknownLoc();
 
       // Generate DMA BD program
       if (failed(generateDmaBdProgram<air::MemTileDMAAllocator, AIE::BufferOp,
                                       AIE::MemTileDMAOp>(
-              builder, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
+              rewriter, target_model, memtile_dma_memcpys, memTileDmaAlloc, loc,
               memTileDMA, x, y, options.use_lock_race_condition_fix))) {
         memTileDMA->emitOpError("failed to generate dma bd program.");
         return failure();
