@@ -5,4 +5,4 @@
 // RUN: mkdir -p test_npu1_peano
 // RUN: cd test_npu1_peano
 // RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
-// RUN: %python %S/run.py
+// RUN: %python %S/run_peano.py

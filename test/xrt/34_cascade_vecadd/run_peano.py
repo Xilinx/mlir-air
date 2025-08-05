@@ -1,4 +1,4 @@
-# run.py -*- Python -*-
+# run_peano.py -*- Python -*-
 #
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
@@ -40,6 +40,8 @@ with air.ir.Context() as ctx, Location.unknown():
     ################################################
     ## Tiling
     ################################################
+
+    # Peano version: lowers cascade air.channel.put/get to aie.put/get_cascade ops.
 
     air_tiled_ir_string = """
     #set = affine_set<()[s0] : (s0 == 3)>
