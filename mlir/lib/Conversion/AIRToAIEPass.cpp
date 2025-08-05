@@ -3311,6 +3311,8 @@ public:
 
   // Converts an air.channel.put/get operation with channel_type = "cascade"
   // into aie.get/put_cascade + vector.transfer_read/write sequence.
+  // The conversion flattens the entire memref into a 1-D vector to match
+  // the cascade data format expected by the AIE put/get_cascade ops.
   LogicalResult ConvertCascadeChannelIfToAIE(RewriterBase &rewriter,
                                              air::ChannelInterface op) {
     // Match only if the associated channel has channel_type = "cascade".
@@ -3323,33 +3325,58 @@ public:
 
     Location loc = op.getLoc();
     Value memref = op.getMemref();
-
-    // Infer vector type from the destination memref's shape
     MemRefType memrefTy = cast<MemRefType>(memref.getType());
-    VectorType vecTy =
-        VectorType::get(memrefTy.getShape(), memrefTy.getElementType());
-    // Prepare inBounds vector<bool> with true for each dimension
-    SmallVector<bool> inBounds(memrefTy.getRank(), true);
 
     // Create the aie.get_cascade operation
     rewriter.setInsertionPoint(op);
     if (isa<air::ChannelGetOp>(op.getOperation())) {
-      Value cascadeData = rewriter.create<AIE::GetCascadeOp>(loc, vecTy);
+      // For channel.get: Read data from the cascade interface into the memref.
+
+      // Collapse the multi-dimensional shape into a 1D vector type to represent
+      // the contiguous cascade payload.
+      VectorType collapsedVecTy = VectorType::get(
+          {std::accumulate(memrefTy.getShape().begin(),
+                           memrefTy.getShape().end(), 1, std::multiplies<>())},
+          memrefTy.getElementType());
+
+      // Create the AIE get_cascade op to fetch cascade data as a single vector.
+      Value cascadeData =
+          rewriter.create<AIE::GetCascadeOp>(loc, collapsedVecTy);
+
+      // Collapse the destination memref into a 1D memref to match the data
+      // layout.
+      memref =
+          collapseInnermostNDims(rewriter, loc, memrefTy.getRank(), memref);
+
       // Create a constant 0 index for writing at the beginning of the memref
       Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
 
-      // Create the vector.transfer_write to store cascade data into the
-      // destination
-      SmallVector<Value> indices(memrefTy.getRank(), c0);
-      rewriter.create<vector::TransferWriteOp>(loc, cascadeData, memref,
-                                               indices, inBounds);
+      // Write the cascade vector into the memref.
+      rewriter.create<vector::TransferWriteOp>(
+          loc, cascadeData, memref, ValueRange(c0),
+          /*inBounds*/ SmallVector<bool>{true});
     } else if (isa<air::ChannelPutOp>(op.getOperation())) {
+      // For channel.put: Read data from the memref and send it over the
+      // cascade.
+
+      // Collapse the source memref into a 1D memref to read out the full data.
+      memref =
+          collapseInnermostNDims(rewriter, loc, memrefTy.getRank(), memref);
+      VectorType collapsedVecTy = VectorType::get(
+          {std::accumulate(memrefTy.getShape().begin(),
+                           memrefTy.getShape().end(), 1, std::multiplies<>())},
+          memrefTy.getElementType());
+
       // Create a constant 0 index for writing at the beginning of the memref
       Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      // Create the vector.transfer_read to read cascade data from the source
-      SmallVector<Value> indices(memrefTy.getRank(), c0);
+
+      // Read the entire data payload as a 1D vector.
       Value cascadeData = rewriter.create<vector::TransferReadOp>(
-          loc, vecTy, memref, indices, /*padding*/ std::nullopt, inBounds);
+          loc, collapsedVecTy, memref, ValueRange(c0), /*padding*/
+          arith::getZeroConstant(rewriter, loc, memrefTy.getElementType()),
+          /*inBounds*/ SmallVector<bool>{true});
+
+      // Send the vector data via AIE put_cascade.
       rewriter.create<AIE::PutCascadeOp>(loc, cascadeData);
     }
 
@@ -4065,6 +4092,49 @@ public:
 
   // Static flow id to ensure unique packet header per packet flow.
   int flowID = 0;
+
+private:
+  // Collapses the innermost `numDims` dimensions of a MemRef `val` into a
+  // single dimension.
+  //
+  // Example:
+  //   Input shape:  [2, 3, 4]
+  //   numDims:      2
+  //   Result shape: [2, 12]
+  //
+  // This is achieved by multiplying the sizes of the innermost `numDims`
+  // dimensions and creating a `memref.collapse_shape` operation with the
+  // appropriate reassociation indices.
+  Value collapseInnermostNDims(RewriterBase &b, Location loc, int numDims,
+                               Value val) {
+    if (numDims < 2)
+      return val;
+    // Ensure the value has a MemRefType.
+    auto memRefTy = dyn_cast<MemRefType>(val.getType());
+    if (!memRefTy)
+      return nullptr;
+
+    // Get the original shape of the memref.
+    auto shape = memRefTy.getShape();
+
+    // Compute the new collapsed dimension as the product of the last `numDims`
+    // sizes.
+    int64_t newInnerMostDim = std::accumulate(
+        shape.end() - numDims, shape.end(), 1, std::multiplies<>());
+
+    // Build the new shape: same as original except that the last `numDims` are
+    // collapsed into one.
+    SmallVector<int64_t, 4> newShape{shape.begin(), shape.end() - numDims + 1};
+    newShape[shape.size() - numDims] = newInnerMostDim;
+
+    // Compute reassociation indices required by `memref.collapse_shape`.
+    auto reassocIndices =
+        getReassociationIndicesForCollapse(shape, newShape).value();
+
+    // Create a `memref.collapse_shape` op at the specified location.
+    ImplicitLocOpBuilder iBuilder(loc, b);
+    return memref::CollapseShapeOp::create(iBuilder, val, reassocIndices);
+  }
 };
 
 class SplitAIEDevicesPass
