@@ -1697,6 +1697,190 @@ void air::DmaMemcpyNdOp::getCanonicalizationPatterns(
 }
 
 //
+// Channel put/get utilities
+//
+
+/// Return a `memref.dim` or `tensor.dim` for the shape of `v` at `dim`.
+static OpFoldResult getDimValue(OpBuilder &builder, Location loc, Value v,
+                                int64_t dim) {
+  auto type = cast<ShapedType>(v.getType());
+  if (!type.isDynamicDim(dim))
+    return builder.getIndexAttr(type.getDimSize(dim));
+
+  return getAsOpFoldResult(
+      TypeSwitch<Type, Value>(v.getType())
+          .Case<RankedTensorType>([&](RankedTensorType t) -> Value {
+            return tensor::DimOp::create(builder, loc, v, dim);
+          })
+          .Case<MemRefType>([&](MemRefType t) -> Value {
+            return memref::DimOp::create(builder, loc, v, dim);
+          }));
+}
+
+/// Returns a memref.subview or a tensor.extract_slice based on the type of the
+/// `source`.
+static Operation *getSlice(OpBuilder &b, Location loc, Value source,
+                           ArrayRef<OpFoldResult> offsets,
+                           ArrayRef<OpFoldResult> sizes,
+                           ArrayRef<OpFoldResult> strides) {
+  return TypeSwitch<Type, Operation *>(source.getType())
+      .Case<RankedTensorType>([&](RankedTensorType t) -> Operation * {
+        return tensor::ExtractSliceOp::create(b, loc, source, offsets, sizes,
+                                              strides);
+      })
+      .Case<MemRefType>([&](MemRefType type) -> Operation * {
+        return memref::SubViewOp::create(b, loc, source, offsets, sizes,
+                                         strides);
+      })
+      .Default([&](Type t) -> Operation * { return nullptr; });
+}
+
+/// Materialize the OpFoldResults into Values.
+SmallVector<Value> materializeOpFoldResultAsValues(ArrayRef<OpFoldResult> ofrs,
+                                                   Location loc,
+                                                   OpBuilder &builder) {
+  SmallVector<Value> values;
+  for (OpFoldResult ofr : ofrs) {
+    if (auto val = dyn_cast<Value>(ofr)) {
+      values.push_back(val);
+    } else if (auto attr = dyn_cast<Attribute>(ofr)) {
+      // Create an arith.constant if the OpFoldResult is an Attribute.
+      auto constAttr = cast<IntegerAttr>(attr);
+      values.push_back(
+          builder.create<arith::ConstantIndexOp>(loc, constAttr.getInt()));
+    }
+  }
+  return values;
+}
+
+// Required by TilingInterface.
+//
+// Constructs the iteration domain (i.e., a list of Ranges) for a given
+// air::ChannelInterface op. This domain represents the loop bounds to iterate
+// over the tensor or memref involved in the channel operation.
+//
+// If the channel op does not explicitly define `sizes`, it infers the domain
+// from the full shape of the memref. Otherwise, it uses the (offset, size,
+// stride) attributes encoded in the op.
+SmallVector<Range> getIterationDomainFromChanIf(OpBuilder &builder,
+                                                air::ChannelInterface op) {
+  Location loc = op.getLoc();
+  Value source = op.getMemref();
+
+  if (op.getSizes().empty()) {
+    // Case 1: Sizes are not explicitly provided: use full shape of the memref.
+    int64_t operandRank =
+        dyn_cast<MemRefType>(op.getMemref().getType()).getRank();
+    SmallVector<Range> loopBounds(operandRank);
+    Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+    for (auto dim : llvm::seq<int64_t>(0, operandRank)) {
+      loopBounds[dim].offset = zero;
+      loopBounds[dim].size = getDimValue(builder, loc, source, dim);
+      loopBounds[dim].stride = one;
+    }
+    return loopBounds;
+  } else {
+    // Case 2: Sizes are explicitly provided: construct the domain directly from
+    // op attributes.
+    int64_t operandRank = op.getSizes().size();
+    SmallVector<Range> loopBounds(operandRank);
+    for (auto dim : llvm::seq<int64_t>(0, operandRank)) {
+      loopBounds[dim].offset = op.getOffsets()[dim];
+      loopBounds[dim].size = op.getSizes()[dim];
+      loopBounds[dim].stride = op.getStrides()[dim];
+    }
+    return loopBounds;
+  }
+}
+
+// Required by TilingInterface.
+//
+// Returns a vector of `IteratorType::parallel` for each dimension in the
+// channel op. The rank is either derived from the full memref shape or the
+// explicit sizes if provided.
+SmallVector<utils::IteratorType>
+getLoopIteratorTypesFromChanIf(air::ChannelInterface op) {
+  int64_t operandRank = 0;
+
+  // If sizes are not provided, infer rank from the memref type.
+  if (op.getSizes().empty())
+    operandRank = dyn_cast<MemRefType>(op.getMemref().getType()).getRank();
+  else
+    operandRank = op.getSizes().size();
+
+  // All dimensions are marked as parallel iterators.
+  SmallVector<utils::IteratorType> iteratorTypes(operandRank,
+                                                 utils::IteratorType::parallel);
+  return iteratorTypes;
+}
+
+// Required by TilingInterface.
+//
+// Instantiates a tiled version of an air::ChannelPut or ChannelGet operation.
+//
+// It creates a sliced view of the original memref using (offsets, sizes,
+// strides), and uses that slice to construct a new instance of the same channel
+// operation.
+//
+// Template parameter PutGetTy should be either air::ChannelPutOp or
+// air::ChannelGetOp.
+template <typename PutGetTy>
+FailureOr<TilingResult> getTiledImplementationFromChanIf(
+    OpBuilder &builder, ArrayRef<OpFoldResult> offsets,
+    ArrayRef<OpFoldResult> sizes, air::ChannelInterface op) {
+  int64_t rank = 0;
+  auto oneAttr = builder.getI64IntegerAttr(1);
+
+  // Determine the rank from memref or explicit sizes.
+  if (op.getSizes().empty())
+    rank = dyn_cast<MemRefType>(op.getMemref().getType()).getRank();
+  else
+    rank = op.getSizes().size();
+
+  // Compute strides for slicing — use op's strides if available.
+  SmallVector<OpFoldResult> strides(rank, oneAttr);
+  if (!op.getSizes().empty()) {
+    for (auto dim : llvm::seq<int64_t>(0, rank)) {
+      strides[dim] = op.getStrides()[dim];
+    }
+  }
+
+  // Compute a sliced subview of the memref.
+  Operation *inputSlice =
+      getSlice(builder, op.getLoc(), op.getMemref(), offsets, sizes, strides);
+  if (!inputSlice) {
+    return op.emitOpError("failed to compute input slice");
+  }
+
+  // Convert strides to Values.
+  SmallVector<Value> stridesAsValues(rank);
+  for (auto dim : llvm::seq<int64_t>(0, rank)) {
+    if (op.getStrides().empty())
+      stridesAsValues[dim] =
+          arith::ConstantIndexOp::create(builder, op.getLoc(), 1);
+    else
+      stridesAsValues[dim] = op.getStrides()[dim];
+  }
+
+  // Clone a new tiled op with the sliced subview and same async/channel
+  // attributes.
+  air::AsyncOpInterface asyncIf =
+      dyn_cast<air::AsyncOpInterface>(op.getOperation());
+  PutGetTy tiledOp = builder.create<PutGetTy>(
+      op.getLoc(), op->getResultTypes(), asyncIf.getAsyncDependencies(),
+      op.getChanName(), op.getIndices(), inputSlice->getResult(0),
+      materializeOpFoldResultAsValues(offsets, op.getLoc(), builder),
+      materializeOpFoldResultAsValues(sizes, op.getLoc(), builder),
+      materializeOpFoldResultAsValues(strides, op.getLoc(), builder));
+
+  // Return the tiling result, including the new op and the sliced input.
+  return TilingResult{{tiledOp},
+                      SmallVector<Value>{},
+                      llvm::to_vector(ArrayRef<Operation *>{inputSlice})};
+}
+
+//
 // Channel put op
 //
 
@@ -1767,6 +1951,35 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   return success();
 }
 
+// The following methods are required by TilingInterface.
+SmallVector<Range> air::ChannelPutOp::getIterationDomain(OpBuilder &builder) {
+  air::ChannelInterface put = dyn_cast<air::ChannelInterface>(getOperation());
+  return getIterationDomainFromChanIf(builder, put);
+}
+
+SmallVector<utils::IteratorType> air::ChannelPutOp::getLoopIteratorTypes() {
+  air::ChannelInterface put = dyn_cast<air::ChannelInterface>(getOperation());
+  return getLoopIteratorTypesFromChanIf(put);
+}
+
+FailureOr<TilingResult>
+air::ChannelPutOp::getTiledImplementation(OpBuilder &builder,
+                                          ArrayRef<OpFoldResult> offsets,
+                                          ArrayRef<OpFoldResult> sizes) {
+  air::ChannelInterface put = dyn_cast<air::ChannelInterface>(getOperation());
+  return getTiledImplementationFromChanIf<air::ChannelPutOp>(builder, offsets,
+                                                             sizes, put);
+}
+
+LogicalResult air::ChannelPutOp::getResultTilePosition(
+    OpBuilder &builder, unsigned resultNumber, ArrayRef<OpFoldResult> offsets,
+    ArrayRef<OpFoldResult> sizes, SmallVector<OpFoldResult> &resultOffsets,
+    SmallVector<OpFoldResult> &resultSizes) {
+  // An optional result (air::AsyncTokenType) may be returned, but it doesn't
+  // represent any tile.
+  return success();
+}
+
 void air::ChannelPutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                     MLIRContext *context) {
   patterns.add(ComposeMemrefOpOnChannelOp<air::ChannelPutOp>);
@@ -1776,6 +1989,35 @@ void air::ChannelPutOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 //
 // Channel get op
 //
+
+// The following methods are required by TilingInterface.
+SmallVector<Range> air::ChannelGetOp::getIterationDomain(OpBuilder &builder) {
+  air::ChannelInterface get = dyn_cast<air::ChannelInterface>(getOperation());
+  return getIterationDomainFromChanIf(builder, get);
+}
+
+SmallVector<utils::IteratorType> air::ChannelGetOp::getLoopIteratorTypes() {
+  air::ChannelInterface get = dyn_cast<air::ChannelInterface>(getOperation());
+  return getLoopIteratorTypesFromChanIf(get);
+}
+
+FailureOr<TilingResult>
+air::ChannelGetOp::getTiledImplementation(OpBuilder &builder,
+                                          ArrayRef<OpFoldResult> offsets,
+                                          ArrayRef<OpFoldResult> sizes) {
+  air::ChannelInterface get = dyn_cast<air::ChannelInterface>(getOperation());
+  return getTiledImplementationFromChanIf<air::ChannelGetOp>(builder, offsets,
+                                                             sizes, get);
+}
+
+LogicalResult air::ChannelGetOp::getResultTilePosition(
+    OpBuilder &builder, unsigned resultNumber, ArrayRef<OpFoldResult> offsets,
+    ArrayRef<OpFoldResult> sizes, SmallVector<OpFoldResult> &resultOffsets,
+    SmallVector<OpFoldResult> &resultSizes) {
+  // An optional result (air::AsyncTokenType) may be returned, but it doesn't
+  // represent any tile.
+  return success();
+}
 
 void air::ChannelGetOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                     MLIRContext *context) {

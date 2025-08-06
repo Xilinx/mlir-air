@@ -14,6 +14,7 @@ include "air/Dialect/AIR/AIROpBase.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/TilingInterface.td"
 
 class air_Op<string mnemonic, list<Trait> traits = []> :
     Op<air_Dialect, mnemonic, traits>;
@@ -462,7 +463,13 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
 def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, 
                                               air_MemcpyInterface, 
                                               air_ChannelInterface, 
-                                              AttrSizedOperandSegments]>,
+                                              AttrSizedOperandSegments,
+                                              DeclareOpInterfaceMethods<TilingInterface,
+                                                ["getIterationDomain",
+                                                "getLoopIteratorTypes",
+                                                "getResultTilePosition",
+                                                "getTiledImplementation"
+                                                ]>]>,
     Arguments<(ins Variadic<air_AsyncToken>:$async_dependencies,
         FlatSymbolRefAttr:$chan_name,
         Variadic<Index>:$indices,
@@ -534,7 +541,13 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
 def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface, 
                                               air_MemcpyInterface, 
                                               air_ChannelInterface, 
-                                              AttrSizedOperandSegments]>,
+                                              AttrSizedOperandSegments,
+                                              DeclareOpInterfaceMethods<TilingInterface,
+                                                ["getIterationDomain",
+                                                "getLoopIteratorTypes",
+                                                "getResultTilePosition",
+                                                "getTiledImplementation"
+                                                ]>]>,
     Arguments<(ins Variadic<air_AsyncToken>:$async_dependencies,
         FlatSymbolRefAttr:$chan_name,
         Variadic<Index>:$indices,
