@@ -50,65 +50,40 @@ with air.ir.Context() as ctx, Location.unknown():
     air.channel @channel_0 [3] {channel_type = "cascade"}
       air.channel @channel_1 [1]
       air.channel @channel_2 [1]
-      func.func @scf1(%arg0: memref<2048xi32>, %arg1: memref<2048xi32>) {
+      func.func @scf1(%arg0: memref<1x1x2048xi32>, %arg1: memref<1x1x2048xi32>) {
         %c1 = arith.constant 1 : index
-        air.launch (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0, %arg7=%arg1) : memref<2048xi32>, memref<2048xi32> {
+        air.launch (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0, %arg7=%arg1) : memref<1x1x2048xi32>, memref<1x1x2048xi32> {
           %c4 = arith.constant 4 : index
           %c1_0 = arith.constant 1 : index
-          air.channel.put  @channel_1[] (%arg6[] [] []) : (memref<2048xi32>)
+          air.channel.put  @channel_1[] (%arg6[] [] []) : (memref<1x1x2048xi32>)
           air.herd @herd_0  tile (%arg8, %arg9) in (%arg10=%c1_0, %arg11=%c4) {
             %c1_i32 = arith.constant 1 : i32
-            %alloc = memref.alloc() : memref<2048xi32, 2 : i32>
-            linalg.fill ins(%c1_i32 : i32) outs(%alloc : memref<2048xi32, 2 : i32>)
+            %alloc = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
+            linalg.fill ins(%c1_i32 : i32) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
             affine.if #set()[%arg9] {
-              %alloc_1 = memref.alloc() : memref<2048xi32, 2 : i32>
-              air.channel.get  @channel_1[] (%alloc_1[] [] []) : (memref<2048xi32, 2 : i32>)
-              linalg.add ins(%alloc_1, %alloc : memref<2048xi32, 2 : i32>, memref<2048xi32, 2 : i32>) outs(%alloc : memref<2048xi32, 2 : i32>)
+              %alloc_1 = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
+              air.channel.get  @channel_1[] (%alloc_1[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
+              linalg.add ins(%alloc_1, %alloc : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
               %c1_1 = arith.constant 1 : index
               %iv_sub1 = arith.subi %arg9, %c1_1 : index
-              %c0 = arith.constant 0 : index
-              %c16 = arith.constant 16 : index
-              %c2048 = arith.constant 2048 : index
-              scf.for %arg600 = %c0 to %c2048 step %c16 {
-                %subview_12 = memref.subview %alloc[%arg600] [16] [1] : memref<2048xi32, 2 : i32> to memref<16xi32, strided<[1], offset: ?>, 2 : i32>
-                air.channel.put @channel_0[%iv_sub1] (%subview_12[] [] []) {id = 3 : i32} : (memref<16xi32, strided<[1], offset: ?>, 2 : i32>)
-              }
-              //air.channel.put  @channel_0[%iv_sub1] (%alloc[] [] []) : (memref<2048xi32, 2 : i32>)
+              air.channel.put  @channel_0[%iv_sub1] (%alloc[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
             } else {
               affine.if #set1()[%arg9] {
-                %alloc_1 = memref.alloc() : memref<2048xi32, 2 : i32>
+                %alloc_1 = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
                 %c1_1 = arith.constant 1 : index
                 %iv_sub1 = arith.subi %arg9, %c1_1 : index
-                %c0 = arith.constant 0 : index
-                %c16 = arith.constant 16 : index
-                %c2048 = arith.constant 2048 : index
-                scf.for %arg600 = %c0 to %c2048 step %c16 {
-                  %subview_12 = memref.subview %alloc_1[%arg600] [16] [1] : memref<2048xi32, 2 : i32> to memref<16xi32, strided<[1], offset: ?>, 2 : i32>
-                  air.channel.get @channel_0[%arg9] (%subview_12[] [] []) {id = 3 : i32} : (memref<16xi32, strided<[1], offset: ?>, 2 : i32>)
-                }
-                //air.channel.get  @channel_0[%arg9] (%alloc_1[] [] []) : (memref<2048xi32, 2 : i32>)
-                linalg.add ins(%alloc_1, %alloc : memref<2048xi32, 2 : i32>, memref<2048xi32, 2 : i32>) outs(%alloc : memref<2048xi32, 2 : i32>)
-                scf.for %arg600 = %c0 to %c2048 step %c16 {
-                  %subview_12 = memref.subview %alloc[%arg600] [16] [1] : memref<2048xi32, 2 : i32> to memref<16xi32, strided<[1], offset: ?>, 2 : i32>
-                  air.channel.put @channel_0[%iv_sub1] (%subview_12[] [] []) {id = 3 : i32} : (memref<16xi32, strided<[1], offset: ?>, 2 : i32>)
-                }
-                //air.channel.put  @channel_0[%iv_sub1] (%alloc[] [] []) : (memref<2048xi32, 2 : i32>)
+                air.channel.get  @channel_0[%arg9] (%alloc_1[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
+                linalg.add ins(%alloc_1, %alloc : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
+                air.channel.put  @channel_0[%iv_sub1] (%alloc[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
               } else {
-                %alloc_1 = memref.alloc() : memref<2048xi32, 2 : i32>
-                %c0 = arith.constant 0 : index
-                %c16 = arith.constant 16 : index
-                %c2048 = arith.constant 2048 : index
-                scf.for %arg600 = %c0 to %c2048 step %c16 {
-                  %subview_12 = memref.subview %alloc_1[%arg600] [16] [1] : memref<2048xi32, 2 : i32> to memref<16xi32, strided<[1], offset: ?>, 2 : i32>
-                  air.channel.get @channel_0[%arg9] (%subview_12[] [] []) {id = 3 : i32} : (memref<16xi32, strided<[1], offset: ?>, 2 : i32>)
-                }
-                //air.channel.get  @channel_0[%arg9] (%alloc_1[] [] []) : (memref<2048xi32, 2 : i32>)
-                linalg.add ins(%alloc_1, %alloc : memref<2048xi32, 2 : i32>, memref<2048xi32, 2 : i32>) outs(%alloc : memref<2048xi32, 2 : i32>)
-                air.channel.put  @channel_2[] (%alloc[] [] []) : (memref<2048xi32, 2 : i32>)
+                %alloc_1 = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
+                air.channel.get  @channel_0[%arg9] (%alloc_1[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
+                linalg.add ins(%alloc_1, %alloc : memref<1x1x2048xi32, 2 : i32>, memref<1x1x2048xi32, 2 : i32>) outs(%alloc : memref<1x1x2048xi32, 2 : i32>)
+                air.channel.put  @channel_2[] (%alloc[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
               }
             }
           }
-          air.channel.get  @channel_2[] (%arg7[] [] []) : (memref<2048xi32>)
+          air.channel.get  @channel_2[] (%arg7[] [] []) : (memref<1x1x2048xi32>)
         }
         return
       }

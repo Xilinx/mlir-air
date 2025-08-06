@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/IRMapping.h"
@@ -3391,6 +3392,60 @@ public:
     return success();
   }
 
+  FailureOr<air::ChannelInterface> TileCascadeChannelIfUsingScfFor(
+      RewriterBase &rewriter, air::ChannelInterface op, unsigned cascadeWidth) {
+    // Match only if the associated channel has channel_type = "cascade".
+    auto chan = air::getChannelDeclarationThroughSymbol(op);
+    if (!chan)
+      return op->emitOpError("cannot resolve channel symbol");
+
+    if (chan.getChannelType().str() != "cascade")
+      return op->emitOpError("channel_type is not cascade");
+
+    Value memref = op.getMemref();
+    MemRefType memrefTy = cast<MemRefType>(memref.getType());
+
+    // Create the aie.get_cascade operation
+    rewriter.setInsertionPoint(op);
+
+    scf::SCFTilingOptions options;
+    options.setLoopType(scf::SCFTilingOptions::LoopType::ForOp);
+
+    SmallVector<int64_t> tileSizes;
+    unsigned innermostTileableDim = 0;
+    if (op.getSizes().empty()) {
+      for (auto dim : llvm::seq<int64_t>(0, memrefTy.getRank())) {
+        tileSizes.push_back(1);
+        if (memrefTy.getShape()[dim] > 1)
+          innermostTileableDim = dim;
+      }
+    } else {
+      for (auto dim : llvm::seq<int64_t>(0, op.getSizes().size())) {
+        tileSizes.push_back(1);
+        auto constSize = *getConstantIntValue(op.getSizes()[dim]);
+        if (constSize > 1)
+          innermostTileableDim = dim;
+      }
+    }
+    unsigned elementWidth = memrefTy.getElementType().getIntOrFloatBitWidth();
+    tileSizes[innermostTileableDim] =
+        llvm::divideCeil(cascadeWidth, elementWidth);
+    SmallVector<OpFoldResult> tileSizesOfr =
+        getAsIndexOpFoldResult(rewriter.getContext(), tileSizes);
+    options.setTileSizes(tileSizesOfr);
+
+    if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation())) {
+      FailureOr<scf::SCFTilingResult> tilingResult =
+          scf::tileUsingSCF(rewriter, put, options);
+      return dyn_cast<air::ChannelInterface>(tilingResult->tiledOps.front());
+    } else if (auto get = dyn_cast<air::ChannelGetOp>(op.getOperation())) {
+      FailureOr<scf::SCFTilingResult> tilingResult =
+          scf::tileUsingSCF(rewriter, get, options);
+      return dyn_cast<air::ChannelInterface>(tilingResult->tiledOps.front());
+    }
+    return failure();
+  }
+
   AIE::ShimDMAOp getShimDMAOp(AIE::TileOp tile) {
     auto users = tile.getResult().getUsers();
     for (auto user : users)
@@ -3547,7 +3602,13 @@ public:
             auto channelOpIf = dyn_cast<air::ChannelInterface>(o);
             if (!channelOpIf)
               return o->emitOpError("does not have air::ChannelInterface");
-            if (failed(ConvertCascadeChannelIfToAIE(rewriter, channelOpIf))) {
+            auto tiledChannelIf = TileCascadeChannelIfUsingScfFor(
+                rewriter, channelOpIf,
+                target_model.getAccumulatorCascadeSize());
+            if (failed(tiledChannelIf))
+              continue;
+            if (failed(
+                    ConvertCascadeChannelIfToAIE(rewriter, *tiledChannelIf))) {
               return o->emitOpError("failed to generate cascade program");
             }
           }
