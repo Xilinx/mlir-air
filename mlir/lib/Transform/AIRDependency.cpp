@@ -1575,6 +1575,7 @@ private:
     elevateAsyncTokens<air::AsyncOpInterface>(region, wait_all_op_yielded_v);
     elevateAsyncTokens<scf::ForOp>(region, wait_all_op_yielded_v);
     elevateAsyncTokens<scf::ParallelOp>(region, wait_all_op_yielded_v);
+    elevateAsyncTokens<affine::AffineIfOp>(region, wait_all_op_yielded_v);
   }
 
   // Check if current for op is the single child in a parent for op
