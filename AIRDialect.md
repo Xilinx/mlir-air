@@ -163,7 +163,7 @@ air.channel.get @chan_0(%dst[%c0, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>
 
 Traits: `AttrSizedOperandSegments`
 
-Interfaces: `air_AsyncOpInterface`, `air_ChannelInterface`, `air_MemcpyInterface`
+Interfaces: `TilingInterface`, `air_AsyncOpInterface`, `air_ChannelInterface`, `air_MemcpyInterface`
 
 #### Attributes:
 
@@ -238,7 +238,7 @@ air.channel.put @chan_0(%src[%c0, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>
 
 Traits: `AttrSizedOperandSegments`
 
-Interfaces: `air_AsyncOpInterface`, `air_ChannelInterface`, `air_MemcpyInterface`
+Interfaces: `TilingInterface`, `air_AsyncOpInterface`, `air_ChannelInterface`, `air_MemcpyInterface`
 
 #### Attributes:
 
