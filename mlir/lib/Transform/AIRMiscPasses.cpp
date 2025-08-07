@@ -983,9 +983,15 @@ FailureOr<Value> tileChannelOpByFactor(
       int const_in = offset ? *offset : 0;
       if (affineMap) {
         auto original_map = affineMap;
-        original_map =
-            original_map.replace(getAffineSymbolExpr(0, ctx),
-                                 getAffineConstantExpr(const_in, ctx), 0, 1);
+        if (original_map.getNumSymbols() > 0) {
+          original_map =
+              original_map.replace(getAffineSymbolExpr(0, ctx),
+                                   getAffineConstantExpr(const_in, ctx), 0, 1);
+        } else if (original_map.getNumDims() > 0) {
+          original_map =
+              original_map.replace(getAffineDimExpr(0, ctx),
+                                   getAffineConstantExpr(const_in, ctx), 1, 0);
+        }
         AffineExpr add = originalExpr + original_map.getResult(0);
         return AffineMap::get(0, 1, add);
       }
