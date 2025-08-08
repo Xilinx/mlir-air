@@ -256,25 +256,27 @@ SmallVector<Operation *> air::cloneScfLoopUsingRemap<LoopLikeOpInterface>(
 
 static scf::ParallelOp
 hoistAIRHierToScfParallel(OpBuilder builder, Location loc, MLIRContext *ctx,
-                          air::HierarchyInterface hierOp) {
+                          air::HierarchyInterface hierOp,
+                          SmallVector<Operation *> targetOpsToHoist) {
 
   auto step = builder.create<arith::ConstantIndexOp>(loc, 1);
   SmallVector<Value, 2> steps;
   SmallVector<Value, 2> lbs;
   SmallVector<Value, 2> ubs;
 
-  auto hier_size = hierOp.getSizeOperands();
-  auto lb = builder.create<arith::ConstantIndexOp>(loc, 0);
-  for (unsigned i = 0; i < hier_size.size(); i++) {
-    lbs.push_back(lb);
-    ubs.push_back(hier_size[i]);
-    steps.push_back(step);
-  }
-
-  // Default scf.parallel size to have one single iteration;
-  if (steps.empty()) {
-    lbs.push_back(lb);
-    ubs.push_back(step);
+  // Infer the scf.parallel shape through any affine.if nest around the target
+  // ops, until it reaches a parent spatial loop (e.g. scf.parallel or
+  // air.hierarchy).
+  std::vector<Operation *> affine_if_nest;
+  Operation *spatial_loop = nullptr;
+  (void)air::getAffineIfNestAndSpatialLoopFromOp(targetOpsToHoist.front(),
+                                                 affine_if_nest, spatial_loop);
+  SmallVector<std::pair<int, int>> conditionBounds =
+      air::getRectangularConditionBoundsThroughAffineIfs(
+          targetOpsToHoist.front(), spatial_loop, affine_if_nest);
+  for (auto [lbs_int, ubs_int] : conditionBounds) {
+    lbs.push_back(builder.create<arith::ConstantIndexOp>(loc, lbs_int));
+    ubs.push_back(builder.create<arith::ConstantIndexOp>(loc, ubs_int + 1));
     steps.push_back(step);
   }
 
@@ -683,8 +685,10 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
       if (hier_op.getNumDims()) {
         // Hoist air.hierarchy as scf.parallel; scf.parallel shape is equal to
         // air.hierarchy shape.
-        scf::ParallelOp scf_par =
-            hoistAIRHierToScfParallel(rewriter, loc, ctx, hier_op);
+        SmallVector<Operation *> targetOpsToHoist(externalGetPuts.begin(),
+                                                  externalGetPuts.end());
+        scf::ParallelOp scf_par = hoistAIRHierToScfParallel(
+            rewriter, loc, ctx, hier_op, targetOpsToHoist);
         scf_loop = scf_par.getOperation();
       } else {
         // Air.hierarchy op has no dimensions. No need to hoist into any
@@ -1092,7 +1096,9 @@ class AIRDemoteDmaToAIRHierarchyConversion
       scf::ParallelOp scf_par = nullptr;
       rewriter.setInsertionPoint(hier_op);
       if (herd && hoist_herd) {
-        scf_par = hoistAIRHierToScfParallel(rewriter, loc, ctx, herd);
+        scf_par = hoistAIRHierToScfParallel(
+            rewriter, loc, ctx, herd,
+            SmallVector<Operation *>{op.getOperation()});
       } else if (segment) {
         // Since segment doesn't have iteration space, it doesn't hoist a loop
       }

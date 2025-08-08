@@ -126,3 +126,53 @@ module {
     return
   }
 }
+
+// -----
+
+// Hoisting external channel.put/get op to scf.parallel, with affine.if guarding those ops.
+
+// CHECK: air.channel @channel_0 [2, 4]
+// CHECK: air.launch
+// CHECK: air.segment @segment_0
+// CHECK: scf.parallel (%[[ARG0:.*]], %[[ARG1:.*]]) = (%c0{{.*}}, %c0{{.*}}) to (%c2{{.*}}, %c1{{.*}}) step (%c1{{.*}}, %c1{{.*}})
+// CHECK: air.channel.get  @channel_0[%[[ARG0]], %[[ARG1]]]
+// CHECK: scf.reduce
+// CHECK: air.herd @herd_0  tile (%[[ARG2:.*]], %[[ARG3:.*]]) in
+// CHECK: affine.if
+// CHECK: else
+// CHECK: affine.if
+// CHECK: else
+// CHECK: air.channel.put  @channel_0[%[[ARG2]], %[[ARG3]]]
+#map = affine_map<()[s0] -> (s0 * 32)>
+#set = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 - 3 == 0)>
+#set1 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 - 1 >= 0, -s1 + 2 >= 0)>
+module {
+  func.func @affine_if(%arg0: memref<512xi32>, %arg1: memref<512x256xi32>) -> memref<256xi32> {
+    %c4 = arith.constant 4 : index
+    %alloc = memref.alloc() : memref<256xi32>
+    air.launch (%arg2) in (%arg3=%c4) {
+      %c1 = arith.constant 1 : index
+      air.segment @segment_0  unroll(%arg4) in (%arg5=%c1) {
+        %c4_0 = arith.constant 4 : index
+        %c2 = arith.constant 2 : index
+        %alloc_1 = memref.alloc() : memref<64xi32, 1 : i32>
+        air.herd @herd_0  tile (%arg6, %arg7) in (%arg8=%c2, %arg9=%c4_0) args(%arg10=%alloc_1) : memref<64xi32, 1 : i32> {
+          %c32 = arith.constant 32 : index
+          %c1_2 = arith.constant 1 : index
+          %0 = affine.apply #map()[%arg6]
+          %alloc_3 = memref.alloc() : memref<32xi32, 2 : i32>
+          affine.if #set()[%arg6, %arg7] {
+          } else {
+            affine.if #set1()[%arg6, %arg7] {
+            } else {
+              air.dma_memcpy_nd (%arg10[%0] [%c32] [%c1_2], %alloc_3[] [] []) {id = 5 : i32} : (memref<64xi32, 1 : i32>, memref<32xi32, 2 : i32>)
+            }
+          }
+          memref.dealloc %alloc_3 : memref<32xi32, 2 : i32>
+        }
+        memref.dealloc %alloc_1 : memref<64xi32, 1 : i32>
+      }
+    }
+    return %alloc : memref<256xi32>
+  }
+}

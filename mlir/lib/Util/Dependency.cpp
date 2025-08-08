@@ -66,7 +66,7 @@ void traceDependentInductionVar(SmallVector<Value, 1> candidate_scalar_operands,
           loop_dep_history.push_back(ind_var);
     }
 
-    // If parent loop op is an air.launch_herd
+    // If parent loop op is an air.herd
     if (auto hl_op = getHerdArgOwner(operand)) {
       for (auto id : hl_op.getIds()) {
         if (operand == id) {
@@ -119,6 +119,18 @@ void traceDependentInductionVar(air::MemcpyInterface memcpyif_op,
       candidate_scalar_operands.push_back(memcpyif_op.getDstStrides()[i]);
     }
   }
+
+  // Check for dependency through any parent affine if guards
+  if (auto parentAffineIf =
+          memcpyif_op->getParentOfType<affine::AffineIfOp>()) {
+    if (parentAffineIf->getParentOfType<air::HerdOp>()) {
+      candidate_scalar_operands.insert(candidate_scalar_operands.end(),
+                                       parentAffineIf.getOperands().begin(),
+                                       parentAffineIf.getOperands().end());
+    }
+  }
+
+  // Start recursion.
   traceDependentInductionVar(candidate_scalar_operands, loop_dep_history,
                              op_history);
 }
@@ -127,6 +139,7 @@ void traceDependentInductionVar(air::MemcpyInterface memcpyif_op,
 void traceDependentInductionVar(Operation *op,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history) {
+  SmallVector<Value, 1> candidate_scalar_operands;
   // Get child op if op is air.execute
   if (auto air_region_op = dyn_cast<air::ExecuteOp>(op)) {
     if (air_region_op.getRegion().front().getOperations().size() != 2) {
@@ -139,6 +152,20 @@ void traceDependentInductionVar(Operation *op,
         op = &child_op;
     }
   }
+  candidate_scalar_operands.insert(candidate_scalar_operands.end(),
+                                   op->getOperands().begin(),
+                                   op->getOperands().end());
+
+  // Check for dependency through any parent affine if guards
+  if (auto parentAffineIf = op->getParentOfType<affine::AffineIfOp>()) {
+    if (parentAffineIf->getParentOfType<air::HerdOp>()) {
+      candidate_scalar_operands.insert(candidate_scalar_operands.end(),
+                                       parentAffineIf.getOperands().begin(),
+                                       parentAffineIf.getOperands().end());
+    }
+  }
+
+  // Start recursion.
   traceDependentInductionVar(op->getOperands(), loop_dep_history, op_history);
 }
 
