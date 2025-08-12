@@ -22,7 +22,8 @@ func.func @par0()  {
 // -----
 
 func.func @par1()  {
-  // expected-error@+1 {{'affine.parallel' op failed conversion to 'air.herd': only 2d loops are supported}}
+  // expected-error@+2 {{'affine.parallel' op failed conversion to 'air.herd': only 2d loops are supported}}
+  // expected-error@+1 {{failed to legalize}}
   affine.parallel (%x,%y,%z) = (0,0,0) to (1,2,3) {
     %2 = arith.addi %x, %y : index
     affine.yield
