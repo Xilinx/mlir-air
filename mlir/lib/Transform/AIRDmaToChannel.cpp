@@ -300,21 +300,10 @@ hoistAIRHierToScfParallel(OpBuilder builder, Location loc, MLIRContext *ctx,
   return scf_par;
 }
 
-// Create channel name as string
-static std::string createChannelName(ModuleOp module) {
-  std::string new_cname = "channel_0";
-  std::string cname = "channel";
-  int which_try = 0;
-  while (module.lookupSymbol(new_cname))
-    new_cname = cname + "_" + std::to_string(++which_try);
-  cname = new_cname;
-  return cname;
-}
-
 // Create channel symbol
 static air::ChannelOp
-createChannelOpWithBCast(OpBuilder builder, ModuleOp module, std::string cname,
-                         Location loc, SmallVector<int64_t, 2> bcast_sizes) {
+createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
+                Location loc, SmallVector<int64_t, 2> channel_bundle_sizes) {
   auto insertionCheckpoint = builder.saveInsertionPoint();
   Operation *o = &module.getBody()->front();
   while (dyn_cast_or_null<air::ChannelOp>(o))
@@ -322,7 +311,7 @@ createChannelOpWithBCast(OpBuilder builder, ModuleOp module, std::string cname,
   builder.setInsertionPoint(o);
 
   auto channel_op = builder.create<air::ChannelOp>(
-      loc, cname, builder.getI64ArrayAttr(bcast_sizes),
+      loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
       builder.getStringAttr("dma_stream"));
 
   builder.restoreInsertionPoint(insertionCheckpoint);
@@ -363,7 +352,7 @@ static void replaceAIRDmaWithAIRChannelPairs(
 
   // Create channel symbol
   auto module = op->getParentOfType<ModuleOp>();
-  auto cname = createChannelName(module);
+  std::string cname = air::createChannelName(module);
 
   if (op->hasAttr("broadcast_set")) {
     // If the data movement is subject to a broadcasting pattern, then
@@ -379,7 +368,7 @@ static void replaceAIRDmaWithAIRChannelPairs(
     SmallVector<int64_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1,
                                            ubs_int[1] - lbs_int[1] + 1};
     auto channel_op =
-        createChannelOpWithBCast(builder, module, cname, loc, channel_sizes);
+        createChannelOp(builder, module, cname, loc, channel_sizes);
     channel_op->setAttr("broadcast_shape",
                         builder.getI64ArrayAttr(bcast_sizes));
   } else {
@@ -398,7 +387,7 @@ static void replaceAIRDmaWithAIRChannelPairs(
       for (unsigned i = 0; i < ubs_spatial.size(); i++)
         channel_sizes[i] = ubs_spatial[i] - lbs_spatial[i] + 1;
     }
-    createChannelOpWithBCast(builder, module, cname, loc, channel_sizes);
+    createChannelOp(builder, module, cname, loc, channel_sizes);
 
     // Issue warnings.
     if (op->hasAttr("broadcast_pattern"))
