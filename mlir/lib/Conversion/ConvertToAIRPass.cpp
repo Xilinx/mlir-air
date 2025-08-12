@@ -1453,10 +1453,6 @@ struct ParallelToHerdPass
       // skip parallel op already inside herd
       if (op->getParentOfType<air::HerdOp>())
         return;
-      // skip parallel ops already containing herd/segment/launch
-      if (llvm::any_of(hierOps,
-                       [op](Operation *h) { return op->isProperAncestor(h); }))
-        return;
       // Depth = -1 means converting the innermost parallel ops
       if (clAssignDepth == -1) {
         SmallVector<Operation *> parOpsInOp;
