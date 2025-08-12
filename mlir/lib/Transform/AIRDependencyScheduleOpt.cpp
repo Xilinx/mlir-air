@@ -3367,7 +3367,7 @@ public:
           if (!checkIfMergeable(channelOps[i], channelOps[j]))
             continue;
           // Aggressively fuse air.channels by time multiplexing.
-          mergeChannels(channelOps[i], channelOps[j]);
+          mergeChannels(rewriter, channelOps[i], channelOps[j]);
           chan_merge_map[channelOps[j]] = channelOps[i];
         }
       }
@@ -4095,18 +4095,22 @@ private:
     }
     return false;
   }
-  void mergeChannelOps(air::ChannelInterface a, air::ChannelInterface b) {
+  void mergeChannelOps(RewriterBase &rewriter, air::ChannelInterface a,
+                       air::ChannelInterface b) {
     // fuse a and b under the same loop nest, if a and b are under different
     // loop nests
     if (a->getParentRegion() == b->getParentRegion())
       return;
     IRMapping remap;
     remapAllParentLoopArgs(remap, a, b);
-    OpBuilder builder(a);
-    builder.setInsertionPointAfter(a);
-    auto new_b = cloneOpAndOperands(builder, remap, b);
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointAfter(a);
+    function_ref<bool(Operation *)> canClone = [](Operation *o) {
+      return !isa<LoopLikeOpInterface>(o) && !isa<air::HierarchyInterface>(o);
+    };
+    auto new_b = air::cloneOpAndOperands(rewriter, remap, b, canClone);
     if (air::isAsyncOp(a) && air::isAsyncOp(new_b)) {
-      auto newWaitAll = builder.create<air::WaitAllOp>(
+      auto newWaitAll = rewriter.create<air::WaitAllOp>(
           a->getLoc(), air::AsyncTokenType::get(a->getContext()),
           SmallVector<Value>{air::getAsyncTokenFromOp(a),
                              air::getAsyncTokenFromOp(new_b)});
@@ -4116,8 +4120,8 @@ private:
     // Erase b
     if (air::isAsyncOp(b)) {
       IRMapping waitAllRemap;
-      builder.setInsertionPoint(b);
-      auto waitAll = air::replaceAsyncOpWithWaitAll(builder, waitAllRemap, b);
+      rewriter.setInsertionPoint(b);
+      auto waitAll = air::replaceAsyncOpWithWaitAll(rewriter, waitAllRemap, b);
       air::getAsyncTokenFromOp(b).replaceAllUsesWith(waitAll.getAsyncToken());
     }
     b->erase();
@@ -4125,7 +4129,8 @@ private:
   // Fuse parent region nests to both a and b, interleaving pairs of
   // air::ChannelInterface ops, originating from a and b loop nests
   // respectively, into the fused loop nest.
-  void fuseParentRegionNestByIneterleaving(Operation *a, Operation *b) {
+  void fuseParentRegionNestByIneterleaving(RewriterBase &rewriter, Operation *a,
+                                           Operation *b) {
     if (!a->getParentOfType<LoopLikeOpInterface>())
       return;
     if (!b->getParentOfType<LoopLikeOpInterface>())
@@ -4148,7 +4153,7 @@ private:
     if (aChanOps.size() != bChanOps.size())
       return;
     for (auto [aOtherOp, bOtherOp] : llvm::zip_equal(aChanOps, bChanOps))
-      mergeChannelOps(aOtherOp, bOtherOp);
+      mergeChannelOps(rewriter, aOtherOp, bOtherOp);
     return;
   }
   void mergeChannelOpsTemporally(air::ChannelInterface a,
@@ -4192,7 +4197,8 @@ private:
     }
     b->erase();
   }
-  void mergeChannels(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+  void mergeChannels(RewriterBase &rewriter, air::ChannelOp chan_a,
+                     air::ChannelOp chan_b) {
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
     std::vector<air::ChannelPutOp> b_puts =
@@ -4203,9 +4209,9 @@ private:
         getChannelGetOpThroughSymbol(chan_b);
     // Interleave puts and gets
     for (unsigned i = 0; i < a_puts.size(); i++)
-      fuseParentRegionNestByIneterleaving(a_puts[i], b_puts[i]);
+      fuseParentRegionNestByIneterleaving(rewriter, a_puts[i], b_puts[i]);
     for (unsigned i = 0; i < a_gets.size(); i++)
-      fuseParentRegionNestByIneterleaving(a_gets[i], b_gets[i]);
+      fuseParentRegionNestByIneterleaving(rewriter, a_gets[i], b_gets[i]);
   }
   void mergeChannelOpsTemporally(air::ChannelOp chan_a, air::ChannelOp chan_b,
                                  std::string mergeByLBOrUB) {
@@ -4223,19 +4229,6 @@ private:
     if (!b_gets[0]->getParentOfType<air::HerdOp>()) {
       mergeChannelOpsTemporally(a_gets[0], b_gets[0], mergeByLBOrUB);
     }
-  }
-  Operation *cloneOpAndOperands(OpBuilder builder, IRMapping remap,
-                                Operation *op) {
-    SetVector<Operation *> backwardSlice;
-    BackwardSliceOptions bsOptions{[&](Operation *o) {
-      return !isa<LoopLikeOpInterface>(o) && !isa<air::HierarchyInterface>(o);
-    }};
-    (void)getBackwardSlice(op, &backwardSlice, bsOptions);
-    for (auto b : backwardSlice)
-      if (air::isPure(b))
-        builder.clone(*b, remap);
-    auto new_op = builder.clone(*op, remap);
-    return new_op;
   }
   void remapAllParentLoopArgs(IRMapping &remap, Operation *a, Operation *b) {
     auto a_loop_nest = getParentLoopNest(a);
