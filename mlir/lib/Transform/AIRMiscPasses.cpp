@@ -804,6 +804,223 @@ void AIRCollapseHerdPass::runOnOperation() {
   }
 }
 
+// Controls the dimension ordering for the fused herd:
+// - OuterInner: outer herd's non-unit dimension first, then inner's
+// - InnerOuter: inner herd's non-unit dimension first, then outer's
+enum class DimOrder { OuterInner, InnerOuter };
+
+class AIRFuseNestedHerdPass
+    : public air::impl::AIRFuseNestedHerdPassBase<AIRFuseNestedHerdPass> {
+
+public:
+  AIRFuseNestedHerdPass() = default;
+  AIRFuseNestedHerdPass(const AIRFuseNestedHerdPass &pass){};
+  AIRFuseNestedHerdPass(
+      const ::xilinx::air::AIRFuseNestedHerdPassOptions &options)
+      : AIRFuseNestedHerdPassBase(options) {}
+
+  void runOnOperation() override;
+
+private:
+};
+
+// Pattern that matches an outer air.herd directly containing a single inner
+// air.herd, with no intervening side-effecting ops, and collapses them into
+// a single fused herd with a 2D tile space.
+//
+// Preconditions:
+//  - The outer and inner herds must each have exactly one non-unit dimension
+//    (either rows > 1, cols == 1 OR rows == 1, cols > 1).
+//  - No other herds or non-pure ops between outer herd start and inner herd.
+//  - The fusion order is determined by the DimOrder enum.
+struct NestedHerdCollapsePattern : public OpRewritePattern<air::HerdOp> {
+  NestedHerdCollapsePattern(MLIRContext *ctx, DimOrder &order)
+      : OpRewritePattern<air::HerdOp>(ctx), order(order) {}
+
+  LogicalResult matchAndRewrite(air::HerdOp outer,
+                                PatternRewriter &rewriter) const override {
+    Location loc = outer.getLoc();
+    //===------------------------------------------------------------------===//
+    // Step 1: Identify inner herd and check for "perfect nesting".
+    // Perfect nesting here means: exactly one inner herd, and no side-effecting
+    // ops between the outer herd entry and that inner herd.
+    //===------------------------------------------------------------------===//
+    auto &outerBody = outer.getBody().front();
+    air::HerdOp inner = nullptr;
+    for (Operation &op : outerBody.without_terminator()) {
+      if (auto h = dyn_cast<air::HerdOp>(&op)) {
+        if (inner)
+          return rewriter.notifyMatchFailure(
+              outer, "multiple inner herds, not perfect");
+        inner = h;
+      } else if (!mlir::isMemoryEffectFree(&op))
+        return rewriter.notifyMatchFailure(
+            outer, "side effects in between outer and inner herds");
+    }
+    if (!inner)
+      return failure();
+
+    //===------------------------------------------------------------------===//
+    // Step 2: Validate shapes. Each herd must have exactly one non-unit dim.
+    // This constraint ensures that the fused herd is still 2D.
+    //===------------------------------------------------------------------===//
+    auto nonUnitDims = [&](air::HerdOp h) {
+      int n = (h.getNumRows() > 1) + (h.getNumCols() > 1);
+      return n;
+    };
+    if (nonUnitDims(outer) != 1 || nonUnitDims(inner) != 1) {
+      return rewriter.notifyMatchFailure(
+          outer, "one of the herds to be fused has more than one non-unit "
+                 "dimensions, so that they cannot fuse into one 2D herd");
+    }
+
+    // Determine extents (number of tiles) for each herd’s non-unit dimension.
+    uint64_t oTx =
+        outer.getNumCols() > 1 ? outer.getNumCols() : outer.getNumRows();
+    uint64_t iTx =
+        inner.getNumCols() > 1 ? inner.getNumCols() : inner.getNumRows();
+
+    // Determine which tile-id in each herd is the “target” (non-unit) dimension
+    // and which is the dummy (unit) dimension.
+    std::pair<Value, Value> outerTargetIVAndDummyIVPair =
+        outer.getNumCols() > 1
+            ? std::make_pair(outer.getIds()[0], outer.getIds()[1])
+            : std::make_pair(outer.getIds()[1], outer.getIds()[0]);
+    std::pair<Value, Value> innerTargetIVAndDummyIVPair =
+        inner.getNumCols() > 1
+            ? std::make_pair(inner.getIds()[0], inner.getIds()[1])
+            : std::make_pair(inner.getIds()[1], inner.getIds()[0]);
+
+    // Compute fused herd dimensions based on DimOrder.
+    uint64_t newTy = (order == DimOrder::OuterInner) ? oTx : iTx;
+    uint64_t newTx = (order == DimOrder::OuterInner) ? iTx : oTx;
+    Value newTyVal = getValueOrCreateConstantIndexOp(
+        rewriter, loc, rewriter.getIndexAttr(newTy));
+    Value newTxVal = getValueOrCreateConstantIndexOp(
+        rewriter, loc, rewriter.getIndexAttr(newTx));
+
+    //===------------------------------------------------------------------===//
+    // Step 3: Create fused herd op. Inherit operands from outer herd, as herd
+    // has `IsolatedFromAbove` trait.
+    //===------------------------------------------------------------------===//
+    OpBuilder::InsertionGuard g(rewriter);
+    rewriter.setInsertionPoint(outer);
+
+    SetVector<Value> fusedOpers;
+    fusedOpers.insert(outer.getKernelOperands().begin(),
+                      outer.getKernelOperands().end());
+
+    auto fused =
+        rewriter.create<air::HerdOp>(loc,
+                                     /*grid*/ ValueRange{newTyVal, newTxVal},
+                                     /*args*/ fusedOpers.takeVector());
+
+    //===------------------------------------------------------------------===//
+    // Step 4: Map tile IDs and tied kernel arguments.
+    // Map the "target" IV of each herd to the correct fused herd IV based on
+    // DimOrder, and map the "dummy" IVs to constant 0.
+    //===------------------------------------------------------------------===//
+    Value t0 = fused.getIds()[0];
+    Value t1 = fused.getIds()[1];
+    Value c0 = getValueOrCreateConstantIndexOp(rewriter, loc,
+                                               rewriter.getIndexAttr(0));
+    auto [to0, to1] = outerTargetIVAndDummyIVPair;
+    auto [ti0, ti1] = innerTargetIVAndDummyIVPair;
+
+    IRMapping map;
+    if (order == DimOrder::OuterInner) {
+      map.map(to0, t0);
+      map.map(to1, c0);
+      BlockArgument tiTied0 = inner.getTiedKernelArgument(to0);
+      if (tiTied0)
+        map.map(tiTied0, t0);
+      BlockArgument tiTied1 = inner.getTiedKernelArgument(to1);
+      if (tiTied1)
+        map.map(tiTied1, c0);
+
+      map.map(ti0, t1);
+      map.map(ti1, c0);
+    } else { // InnerOuter
+      map.map(ti0, t0);
+      map.map(ti1, c0);
+
+      map.map(to0, t1);
+      map.map(to1, c0);
+      BlockArgument tiTied0 = inner.getTiedKernelArgument(to0);
+      if (tiTied0)
+        map.map(tiTied0, t1);
+      BlockArgument tiTied1 = inner.getTiedKernelArgument(to1);
+      if (tiTied1)
+        map.map(tiTied1, c0);
+    }
+
+    //===------------------------------------------------------------------===//
+    // Step 5: Map kernel arguments from outer/inner to fused.
+    // This loop maps outer herd kernel arguments that were tied to outer's
+    // kernel arguments to the corresponding fused arguments.
+    //===------------------------------------------------------------------===//
+    auto fusedArgsIt = fused.getKernelArguments().begin();
+
+    for (auto old : outer.getKernelArguments()) {
+      BlockArgument innerOld = inner.getTiedKernelArgument(old);
+      if (!innerOld)
+        continue;
+      map.map(innerOld, *fusedArgsIt++);
+    }
+
+    //===------------------------------------------------------------------===//
+    // Step 6: Inline bodies into fused herd.
+    // Clone outer body ops (except inner herd) and then all inner body ops,
+    // applying the mapping from old operands to new fused operands.
+    //===------------------------------------------------------------------===//
+    rewriter.setInsertionPointToStart(&fused.getBody().front());
+    for (Operation &op :
+         llvm::make_early_inc_range(outerBody.without_terminator())) {
+      if (&op == inner)
+        continue;
+      rewriter.clone(op, map);
+    }
+    Block &innerBody = inner.getBody().front();
+    for (Operation &op : innerBody.without_terminator())
+      rewriter.clone(op, map);
+
+    //===------------------------------------------------------------------===//
+    // Step 7: Replace outer herd with fused herd.
+    // Copy over discardable attributes and symbol name.
+    //===------------------------------------------------------------------===//
+    fused->setDiscardableAttrs(outer->getDiscardableAttrDictionary());
+    fused->setDiscardableAttrs(inner->getDiscardableAttrDictionary());
+    fused.setSymName(outer.getSymName());
+    rewriter.replaceOp(outer, fused);
+
+    return success();
+  }
+
+private:
+  DimOrder &order;
+};
+
+void AIRFuseNestedHerdPass::runOnOperation() {
+  func::FuncOp func = getOperation();
+
+  DimOrder dimOrder = DimOrder::OuterInner;
+  if (clOrder == "inner-outer")
+    dimOrder = DimOrder::InnerOuter;
+  else if (clOrder == "outer-inner")
+    dimOrder = DimOrder::OuterInner;
+  else {
+    func->emitOpError("-air-fuse-nested-herd pass's 'order' option only "
+                      "accepts one of 'inner-outer' and 'outer-inner'.");
+    return signalPassFailure();
+  }
+
+  MLIRContext *ctx = func.getContext();
+
+  RewritePatternSet patterns(ctx);
+  patterns.add<NestedHerdCollapsePattern>(ctx, dimOrder);
+  (void)applyPatternsGreedily(func, std::move(patterns));
+}
+
 class AIRUnrollOuterPerfectlyNestedLoopsPass
     : public air::impl::AIRUnrollOuterPerfectlyNestedLoopsPassBase<
           AIRUnrollOuterPerfectlyNestedLoopsPass> {
@@ -2167,6 +2384,15 @@ std::unique_ptr<Pass> createAIRCollapseHerdPass() {
 std::unique_ptr<Pass>
 createAIRCollapseHerdPass(AIRCollapseHerdPassOptions options) {
   return std::make_unique<AIRCollapseHerdPass>(options);
+}
+
+std::unique_ptr<Pass> createAIRFuseNestedHerdPass() {
+  return std::make_unique<AIRFuseNestedHerdPass>();
+}
+
+std::unique_ptr<Pass>
+createAIRFuseNestedHerdPass(AIRFuseNestedHerdPassOptions options) {
+  return std::make_unique<AIRFuseNestedHerdPass>(options);
 }
 
 std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass() {
