@@ -4105,10 +4105,7 @@ private:
     remapAllParentLoopArgs(remap, a, b);
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointAfter(a);
-    function_ref<bool(Operation *)> canClone = [](Operation *o) {
-      return !isa<LoopLikeOpInterface>(o) && !isa<air::HierarchyInterface>(o);
-    };
-    auto new_b = air::cloneOpAndOperands(rewriter, remap, b, canClone);
+    auto new_b = air::cloneOpAndOperands(rewriter, remap, b);
     if (air::isAsyncOp(a) && air::isAsyncOp(new_b)) {
       auto newWaitAll = rewriter.create<air::WaitAllOp>(
           a->getLoc(), air::AsyncTokenType::get(a->getContext()),
