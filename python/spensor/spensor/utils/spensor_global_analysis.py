@@ -22,7 +22,7 @@ class Memory:
     shape: ArrayAttr[IntegerAttr]
     """
     Specifies the dimensions constraints of the memory. For example, 
-    L1 in NPU may be organized into 4x4 tiles [6,4] for Phoenix, 
+    L1 in NPU may be organized into 4x4 tiles [4,4] for Phoenix, 
     or 8x4 tiles [8, 4] for Strix. 
     An empty array [] indicates no constraint on shape such as external L3.
     """
