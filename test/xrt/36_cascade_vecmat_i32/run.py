@@ -48,7 +48,6 @@ with air.ir.Context() as ctx, Location.unknown():
     #set = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 3)>
     #set1 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 - 1 >= 0, -s1 + 2 >= 0)>
     module {
-      air.channel @channel_0 [3] {channel_type = "cascade"}
       func.func @forward(%arg0: memref<512xi32>, %arg1: memref<512x256xi32>) -> memref<256xi32> {
         %c4 = arith.constant 4 : index
         %alloc = memref.alloc() : memref<256xi32>
@@ -78,63 +77,50 @@ with air.ir.Context() as ctx, Location.unknown():
             %c256 = arith.constant 256 : index
             %c1_6 = arith.constant 1 : index
             air.dma_memcpy_nd (%alloc_5[] [] [], %arg10[%c0, %3] [%c512, %c64] [%c256, %c1_6]) {id = 2 : i32} : (memref<512x64xi32, 1 : i32>, memref<512x256xi32>)
-            air.herd @herd_0  tile (%arg14, %arg15) in (%arg16=%c2, %arg17=%c4_0) args(%arg18=%alloc_3, %arg19=%alloc_4, %arg20=%alloc_5) : memref<64xi32, 1 : i32>, memref<512xi32, 1 : i32>, memref<512x64xi32, 1 : i32> {
-              %c0_i32 = arith.constant 0 : i32
-              %c0_9 = arith.constant 0 : index
-              %c16 = arith.constant 16 : index
-              %c4_10 = arith.constant 4 : index
-              %c1_10 = arith.constant 1 : index
-              %6 = affine.apply #map1(%arg14)
-              %7 = affine.apply #map1(%arg14)
-              %subview_11 = memref.subview %arg18[%7] [32] [1] : memref<64xi32, 1 : i32> to memref<32xi32, strided<[1], offset: ?>, 1 : i32>
-              %alloc_12 = memref.alloc() : memref<32xi32, 2 : i32>
-              linalg.fill ins(%c0_i32 : i32) outs(%alloc_12 : memref<32xi32, 2 : i32>)
-              scf.for %arg21 = %c0_9 to %c4_10 step %c1_10 {
-                %8 = affine.apply #map2(%arg21, %arg15)
-                %subview_14 = memref.subview %arg19[%8] [32] [1] : memref<512xi32, 1 : i32> to memref<32xi32, strided<[1], offset: ?>, 1 : i32>
-                %subview_15 = memref.subview %arg20[%8, %6] [32, 32] [1, 1] : memref<512x64xi32, 1 : i32> to memref<32x32xi32, strided<[64, 1], offset: ?>, 1 : i32>
-                %subview_16 = memref.subview %alloc_12[0] [32] [1] : memref<32xi32, 2 : i32> to memref<32xi32, strided<[1]>, 2 : i32>
-                %alloc_17 = memref.alloc() : memref<32xi32, 2 : i32>
-                %alloc_18 = memref.alloc() : memref<32x32xi32, 2 : i32>
-                %c32_19 = arith.constant 32 : index
-                %c1_20 = arith.constant 1 : index
-                air.dma_memcpy_nd (%alloc_17[] [] [], %arg19[%8] [%c32_19] [%c1_20]) {id = 3 : i32} : (memref<32xi32, 2 : i32>, memref<512xi32, 1 : i32>)
-                %c32_21 = arith.constant 32 : index
-                %c32_22 = arith.constant 32 : index
-                %c64_23 = arith.constant 64 : index
-                %c1_24 = arith.constant 1 : index
-                air.dma_memcpy_nd (%alloc_18[] [] [], %arg20[%8, %6] [%c32_21, %c32_22] [%c64_23, %c1_24]) {id = 4 : i32} : (memref<32x32xi32, 2 : i32>, memref<512x64xi32, 1 : i32>)
-                linalg.vecmat ins(%alloc_17, %alloc_18 : memref<32xi32, 2 : i32>, memref<32x32xi32, 2 : i32>) outs(%subview_16 : memref<32xi32, strided<[1]>, 2 : i32>)
-                memref.dealloc %alloc_17 : memref<32xi32, 2 : i32>
-                memref.dealloc %alloc_18 : memref<32x32xi32, 2 : i32>
-              }
-              %c32 = arith.constant 32 : index
-              %c1_13 = arith.constant 1 : index
-              
-              affine.if #set()[%arg14, %arg15] {
-                %alloc_1 = memref.alloc() : memref<32xi32, 2 : i32>
-                linalg.fill ins(%c0_i32 : i32) outs(%alloc_1 : memref<32xi32, 2 : i32>)
-                linalg.add ins(%alloc_1, %alloc_12 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%alloc_12 : memref<32xi32, 2 : i32>)
-                %c1_1 = arith.constant 1 : index
-                %iv_sub1 = arith.subi %arg15, %c1_1 : index
-                air.channel.put  @channel_0[%iv_sub1] (%alloc_12[] [] []) : (memref<32xi32, 2 : i32>)
-              } else {
-                affine.if #set1()[%arg14, %arg15] {
-                  %alloc_1 = memref.alloc() : memref<32xi32, 2 : i32>
-                  %c1_1 = arith.constant 1 : index
-                  %iv_sub1 = arith.subi %arg15, %c1_1 : index
-                  air.channel.get  @channel_0[%arg15] (%alloc_1[] [] []) : (memref<32xi32, 2 : i32>)
-                  linalg.add ins(%alloc_1, %alloc_12 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%alloc_12 : memref<32xi32, 2 : i32>)
-                  air.channel.put  @channel_0[%iv_sub1] (%alloc_12[] [] []) : (memref<32xi32, 2 : i32>)
-                } else {
-                  %alloc_1 = memref.alloc() : memref<32xi32, 2 : i32>
-                  air.channel.get  @channel_0[%arg15] (%alloc_1[] [] []) : (memref<32xi32, 2 : i32>)
-                  linalg.add ins(%alloc_1, %alloc_12 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%alloc_12 : memref<32xi32, 2 : i32>)
-                  air.dma_memcpy_nd (%arg18[%7] [%c32] [%c1_13], %alloc_12[] [] []) {id = 5 : i32} : (memref<64xi32, 1 : i32>, memref<32xi32, 2 : i32>)
+
+            %cst = arith.constant 0 : i32
+            scf.parallel (%y) = (%c0) to (%c2) step (%c1_0){
+              %cascade_buffer = memref.alloc() : memref<32xi32, 2 : i32>
+              linalg.fill ins(%cst : i32) outs(%cascade_buffer : memref<32xi32, 2 : i32>)
+              %sum = scf.parallel (%x) = (%c0) to (%c4_0) step (%c1_0) init (%cascade_buffer) -> memref<32xi32, 2 : i32> {
+                %c0_i32 = arith.constant 0 : i32
+                %c0_9 = arith.constant 0 : index
+                %c16 = arith.constant 16 : index
+                %c4_10 = arith.constant 4 : index
+                %c1_10 = arith.constant 1 : index
+                %6 = affine.apply #map1(%y)
+                %7 = affine.apply #map1(%y)
+                %subview_11 = memref.subview %alloc_3[%7] [32] [1] : memref<64xi32, 1 : i32> to memref<32xi32, strided<[1], offset: ?>, 1 : i32>
+                %alloc_12 = memref.alloc() : memref<32xi32, 2 : i32>
+                linalg.fill ins(%c0_i32 : i32) outs(%alloc_12 : memref<32xi32, 2 : i32>)
+                scf.for %arg21 = %c0_9 to %c4_10 step %c1_10 {
+                  %8 = affine.apply #map2(%arg21, %x)
+                  %subview_14 = memref.subview %alloc_4[%8] [32] [1] : memref<512xi32, 1 : i32> to memref<32xi32, strided<[1], offset: ?>, 1 : i32>
+                  %subview_15 = memref.subview %alloc_5[%8, %6] [32, 32] [1, 1] : memref<512x64xi32, 1 : i32> to memref<32x32xi32, strided<[64, 1], offset: ?>, 1 : i32>
+                  %subview_16 = memref.subview %alloc_12[0] [32] [1] : memref<32xi32, 2 : i32> to memref<32xi32, strided<[1]>, 2 : i32>
+                  %alloc_17 = memref.alloc() : memref<32xi32, 2 : i32>
+                  %alloc_18 = memref.alloc() : memref<32x32xi32, 2 : i32>
+                  %c32_19 = arith.constant 32 : index
+                  %c1_20 = arith.constant 1 : index
+                  air.dma_memcpy_nd (%alloc_17[] [] [], %alloc_4[%8] [%c32_19] [%c1_20]) {id = 3 : i32} : (memref<32xi32, 2 : i32>, memref<512xi32, 1 : i32>)
+                  %c32_21 = arith.constant 32 : index
+                  %c32_22 = arith.constant 32 : index
+                  %c64_23 = arith.constant 64 : index
+                  %c1_24 = arith.constant 1 : index
+                  air.dma_memcpy_nd (%alloc_18[] [] [], %alloc_5[%8, %6] [%c32_21, %c32_22] [%c64_23, %c1_24]) {id = 4 : i32} : (memref<32x32xi32, 2 : i32>, memref<512x64xi32, 1 : i32>)
+                  linalg.vecmat ins(%alloc_17, %alloc_18 : memref<32xi32, 2 : i32>, memref<32x32xi32, 2 : i32>) outs(%subview_16 : memref<32xi32, strided<[1]>, 2 : i32>)
+                  memref.dealloc %alloc_17 : memref<32xi32, 2 : i32>
+                  memref.dealloc %alloc_18 : memref<32x32xi32, 2 : i32>
+                }                
+                
+                scf.reduce(%alloc_12 : memref<32xi32, 2 : i32>) {
+                ^bb0(%a4: memref<32xi32, 2 : i32>, %a5: memref<32xi32, 2 : i32>):
+                  linalg.add ins(%a4, %a5 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%a4 : memref<32xi32, 2 : i32>)
+                  scf.reduce.return %a4 : memref<32xi32, 2 : i32>
                 }
               }
-    
-              memref.dealloc %alloc_12 : memref<32xi32, 2 : i32>
+              %77 = affine.apply #map1(%y)
+              air.dma_memcpy_nd (%alloc_3[%77] [%c32_33] [%c1_0], %sum[] [] []) : (memref<64xi32, 1 : i32>, memref<32xi32, 2 : i32>)
             }
             memref.dealloc %alloc_4 : memref<512xi32, 1 : i32>
             memref.dealloc %alloc_5 : memref<512x64xi32, 1 : i32>
@@ -149,6 +135,25 @@ with air.ir.Context() as ctx, Location.unknown():
     }
     """
     air_module = Module.parse(air_tiled_ir_string)
+
+    ################################################
+    ## Binding scf.paralell to air hierarchies
+    ################################################
+
+    pipeline = (
+        "builtin.module("
+        + ",".join(
+            [
+                "buffer-results-to-out-params",
+                "air-par-to-herd{depth=-1}",
+                "air-par-to-herd{depth=-1}",
+                "func.func(air-fuse-nested-herd)",
+            ]
+        )
+        + ")"
+    )
+    pm = air.passmanager.PassManager.parse(pipeline)
+    pm.run(air_module.operation)
 
     ###############################################
     # Compile, run and compare results
