@@ -1,3 +1,8 @@
+# ./python/spensor/spensor/utils/spensor_util.py -*- Python -*-
+#
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 from typing import Iterable
 from xdsl.dialects.builtin import (
     ArrayAttr,

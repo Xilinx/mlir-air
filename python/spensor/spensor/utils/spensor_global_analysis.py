@@ -1,3 +1,8 @@
+# ./python/spensor/spensor/utils/spensor_global_analysis.py -*- Python -*-
+#
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 from dataclasses import dataclass, field
 from typing import Self
 from xdsl.dialects.builtin import ArrayAttr, StringAttr, IntegerAttr
