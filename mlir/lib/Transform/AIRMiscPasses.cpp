@@ -1000,6 +1000,118 @@ private:
   DimOrder &order;
 };
 
+/// Lift a 1-symbol, 0-dim IntegerSet to a 2-symbol, 0-dim set:
+/// - Original constraints E(s0) are remapped to E(s[newIdx])
+/// - The "other" symbol gets full-range constraints [0, extent-1]
+static IntegerSet lift1DTo2D(IntegerSet orig, unsigned newIdx,
+                             int64_t otherExtent, MLIRContext *ctx) {
+  if (orig.getNumDims() != 0)
+    llvm::report_fatal_error("lift1DTo2D: expected 0 dims");
+  if (orig.getNumSymbols() != 1)
+    llvm::report_fatal_error("lift1DTo2D: expected 1 symbol");
+  if (otherExtent <= 0)
+    llvm::report_fatal_error("lift1DTo2D: otherExtent must be > 0");
+
+  SmallVector<AffineExpr> cons;
+  SmallVector<bool> eqs;
+
+  // Remap the single original symbol s0 to s[newIdx], and increase the symbol
+  // count from 1 to 2. All original constraints are updated accordingly.
+  for (auto [e, isEq] : llvm::zip(orig.getConstraints(), orig.getEqFlags())) {
+    AffineExpr mapped = e.replaceSymbols(getAffineSymbolExpr(newIdx, ctx));
+    cons.push_back(mapped);
+    eqs.push_back(isEq);
+  }
+
+  // Add an unconstrained range for the "other" symbol: s_other ∈ [0,
+  // otherExtent-1]. This ensures the new symbol is valid for all iterations of
+  // its loop.
+  unsigned otherIdx = 1u - newIdx;
+  int64_t ub = otherExtent - 1;
+  cons.push_back(getAffineSymbolExpr(otherIdx, ctx) -
+                 getAffineConstantExpr(0, ctx)); // s_other - 0 >= 0
+  eqs.push_back(false);
+  cons.push_back(getAffineConstantExpr(ub, ctx) -
+                 getAffineSymbolExpr(otherIdx, ctx)); // ub - s_other >= 0
+  eqs.push_back(false);
+
+  return IntegerSet::get(/*dims=*/0, /*syms=*/2, cons, eqs);
+}
+
+/// Pattern to complete herd IV usage in affine.if conditions.
+///
+/// Matches `affine.if` ops inside a static `air.herd` whose condition depends
+/// on exactly one of the herd's induction variables (IVs). Rewrites them to
+/// depend on *both* herd IVs by:
+///  1. Adding the unused IV as an extra symbol operand.
+///  2. Lifting the condition's IntegerSet from 1 symbol to 2 symbols, using
+///     `lift1DTo2D` so the new symbol has a full-range constraint.
+struct CompleteIfHerdIVsPattern : OpRewritePattern<affine::AffineIfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    auto herd = ifOp->getParentOfType<xilinx::air::HerdOp>();
+    if (!herd)
+      return rewriter.notifyMatchFailure(ifOp, "not inside air.herd");
+
+    // Require static grid sizes so we can encode full-range constraints.
+    int64_t rows = herd.getNumRows();
+    int64_t cols = herd.getNumCols();
+    if (rows <= 0 || cols <= 0)
+      return rewriter.notifyMatchFailure(
+          ifOp, "dynamic or non-positive herd extents");
+
+    Value id0 = herd.getIds()[0];
+    Value id1 = herd.getIds()[1];
+
+    IntegerSet is = ifOp.getIntegerSet();
+    // Only handle simple form: set<()[s0]: ...>
+    if (is.getNumDims() != 0 || is.getNumSymbols() != 1)
+      return rewriter.notifyMatchFailure(
+          ifOp, "expects set<()[s0]:...> (0 dims, 1 sym)");
+
+    // Operand list must contain exactly one symbol operand, which must be one
+    // of the herd IVs.
+    if (ifOp.getOperands().size() != 1)
+      return rewriter.notifyMatchFailure(ifOp,
+                                         "expects exactly one symbol operand");
+    Value only = ifOp.getOperands().front();
+
+    bool usesId0 = (only == id0);
+    bool usesId1 = (only == id1);
+    if (!(usesId0 ^ usesId1))
+      return rewriter.notifyMatchFailure(
+          ifOp, "operand must be exactly one of herd IVs");
+
+    // Build lifted 2D set:
+    //   if uses id0 -> original constraints on s0, s1 full range [0, cols-1]
+    //   if uses id1 -> original constraints on s1, s0 full range [0, rows-1]
+    MLIRContext *ctx = ifOp.getContext();
+    IntegerSet newIS = lift1DTo2D(is,
+                                  /*newIdxForOrig=*/usesId0 ? 0u : 1u,
+                                  /*otherExtent=*/usesId0 ? rows : cols, ctx);
+
+    // New operands map directly to [s0, s1] = [id0, id1].
+    SmallVector<Value> newOperands{id0, id1};
+
+    // Create new affine.if op with lifted set and both IVs as operands.
+    auto newIf = rewriter.create<affine::AffineIfOp>(
+        ifOp.getLoc(), ifOp.getResultTypes(), newIS, newOperands,
+        /*withElseRegion=*/ifOp.hasElse());
+
+    // Move (not clone) regions to preserve body contents and attributes.
+    newIf.getThenRegion().takeBody(ifOp.getThenRegion());
+    if (ifOp.hasElse())
+      newIf.getElseRegion().takeBody(ifOp.getElseRegion());
+
+    // Replace the old op with the new one, preserving results if any.
+    rewriter.replaceOp(ifOp, newIf);
+
+    return success();
+  }
+};
+
 void AIRFuseNestedHerdPass::runOnOperation() {
   func::FuncOp func = getOperation();
 
@@ -1019,6 +1131,10 @@ void AIRFuseNestedHerdPass::runOnOperation() {
   RewritePatternSet patterns(ctx);
   patterns.add<NestedHerdCollapsePattern>(ctx, dimOrder);
   (void)applyPatternsGreedily(func, std::move(patterns));
+
+  RewritePatternSet postProcPatterns(ctx);
+  postProcPatterns.add<CompleteIfHerdIVsPattern>(ctx);
+  (void)applyPatternsGreedily(func, std::move(postProcPatterns));
 }
 
 class AIRUnrollOuterPerfectlyNestedLoopsPass
