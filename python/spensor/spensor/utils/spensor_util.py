@@ -20,7 +20,8 @@ import spensor.utils.spensor_global_analysis as spensor_global
 
 def getIndexConstant(val: int) -> arith.ConstantOp:
     """
-    Given a constant integer, returns an arith.ConstantOp with that value
+    Given a constant integer, returns an arith.ConstantOp with the specified value.
+    This operation generates a constant of type IndexType.
     """
     const_op = arith.ConstantOp.from_int_and_width(val, IndexType())
     const_op.result.name_hint = "autogen_" + str(val) + "_index"
@@ -29,7 +30,9 @@ def getIndexConstant(val: int) -> arith.ConstantOp:
 
 def getShape(shape: tuple[int, ...]) -> tuple[list[Operation], list[SSAValue]]:
     """
-    Given a tensor shape, transfer it into a list of arith.Constant operations with their values
+    Converts a given tensor shape tuple into a tuple of lists containing 
+    arith.Constant operations and their corresponding SSA values.
+    Each dimension of the shape is converted into a constant operation.
     """
     result_ops: list[Operation] = []
     result: list[SSAValue] = []
@@ -42,7 +45,8 @@ def getShape(shape: tuple[int, ...]) -> tuple[list[Operation], list[SSAValue]]:
 
 def getConstantFromSSA(val: SSAValue) -> int:
     """
-    Given a constant integer from arith.ConstantOp, fetch the integer
+    Retrieves the integer value from a given SSAValue that originates from an 
+    arith.ConstantOp. Assumes the SSAValue owner is indeed a ConstantOp.
     """
     assert isinstance(val.owner, arith.ConstantOp)
     const = val.owner.value
@@ -53,7 +57,9 @@ def getConstantFromSSA(val: SSAValue) -> int:
 
 def toTupleInt(array_attr: ArrayAttr[IntegerAttr]) -> tuple[int, ...]:
     """
-    Given an ArrayAttr of IntegerArry, return the contained data as an int tuple
+    Converts an ArrayAttr of IntegerAttr elements into a tuple of integers.
+    This function extracts the integer data from each IntegerAttr in the 
+    provided ArrayAttr and returns it as a tuple of ints.
     """
     attr_list: list[IntegerAttr] = [attr for attr in array_attr]
     value_list = [attr.value.data for attr in attr_list]
@@ -62,7 +68,9 @@ def toTupleInt(array_attr: ArrayAttr[IntegerAttr]) -> tuple[int, ...]:
 
 def toIntegerArrayAttr(int_list: Iterable[int | IntegerAttr]) -> ArrayAttr[IntegerAttr]:
     """
-    Given an iterable of int or IntegerAttr, construct them as an arrayAttr
+    Constructs an ArrayAttr of IntegerAttr elements from an iterable of ints 
+    or IntegerAttr objects. Each int is converted to an IntegerAttr with 
+    a width of 64 bits if necessary.
     """
     attr_list = [
         x if isinstance(x, IntegerAttr) else IntegerAttr.from_int_and_width(x, 64)
@@ -73,9 +81,11 @@ def toIntegerArrayAttr(int_list: Iterable[int | IntegerAttr]) -> ArrayAttr[Integ
 
 def getConstantOpByIndex(index: int) -> arith.ConstantOp:
     """
-    Given an index, return the corresponding arith.ConstantOp
-    This function contains a side effect on index_to_constant
-    Must call by AppendConstant Pass to insert all operations
+    Retrieves the arith.ConstantOp corresponding to the specified index.
+    This function has a side effect on the index_to_constant_op global dictionary,
+    ensuring the index is associated with an arith.ConstantOp. It should be 
+    used in conjunction with the AppendConstant Pass to ensure all operations 
+    are properly inserted.
     """
     if index not in spensor_global.index_to_constant_op:
         spensor_global.index_to_constant_op[index] = getIndexConstant(index)
@@ -86,17 +96,21 @@ def getNestedForLoop(
     upper_bounds: tuple[int, ...]
 ) -> tuple[list[Operation], Block, list[SSAValue]]:
     """
-    Given a list of upper bounds [2,3,4], construct nested scf.for loops as :
-    for i 0 -> 2,
-      for j 0 -> 3,
-        for k 0 -> 4
+    Constructs nested scf.for loops given a list of upper bounds.
+    
+    For example, with upper_bounds = [2,3,4], the function will generate:
+    scf.for i 0 -> 2,
+      scf.for j 0 -> 3,
+        scf.for k 0 -> 4
           inner_block:
 
-    and the result is (scf.for, inner_block, [i,j,k])
-    return the outest for loop, the inner most block, and a list of induction variables
+    Returns a tuple containing:
+    - The outermost scf.for loop operation.
+    - The innermost block where operations can be inserted.
+    - A list of induction variables corresponding to each loop level.
 
-    Noite: This function calls getConstantOpByIndex
-    Must call by AppendConstant Pass to insert all constant operations
+    Note: This function uses getConstantOpByIndex, thus AppendConstant Pass
+    is needed at the end to ensure all constant operations are inserted.
     """
     assert len(upper_bounds) >= 1
     zero = getConstantOpByIndex(0)
@@ -126,7 +140,7 @@ def getNestedForLoop(
 
 def replaceUse(old_val: SSAValue, new_val: SSAValue):
     """
-    Replace all uses of an old SSA value by the provided one
+    Replaces all uses of an old SSA value by the provided one
     """
     for use in list(old_val.uses):
         use.operation.operands[use.index] = new_val
@@ -134,8 +148,11 @@ def replaceUse(old_val: SSAValue, new_val: SSAValue):
 
 def copyToBlock(source: Block, dest: Block, new_arg_vals: list[SSAValue]):
     """
-    Copy all operations from the source block into the dest block.
-    Args in the source block is replaced by values in new_arg_vals
+    Copies all operations from the source block into the destination block,
+    replacing the source block's arguments with the specified new argument values.
+
+    Preconditions:
+    - The length of source.args must match the length of new_arg_vals.
     """
     assert len(source.args) == len(new_arg_vals)
     for old_arg, new_arg in zip(source.args, new_arg_vals):
@@ -151,9 +168,9 @@ def findOpWithParentMemoryTag(
     op: Operation, memory_tag: StringAttr
 ) -> Operation | None:
     """
-    Given an operation and a memory_tag
-    Return its parent with the memory_tag specified
-    This function is intended to find a scf.ParallelOp parent (not consider scf.for)
+    Finds the parent operation with the specified memory_tag for a given operation,
+    searching specifically for a parent scf.ParallelOp. scf.For operations are not considered.
+    Note: It checks op's parent memory tag, not memory tag on op itself. 
     """
     cur_op = op
     parent_op = cur_op.parent_op()
@@ -168,7 +185,9 @@ def findOpWithParentMemoryTag(
 
 def addFront(op: Operation, block: Block | None):
     """
-    Given an operation, insert it after the first op in the block or directly add it if no ops in the block
+    Inserts the given operation at the beginning of the specified block.
+    If the block contains existing operations, the new operation is inserted 
+    immediately after the first one; otherwise, it is added directly.
     """
     assert block is not None
     first_op = block.first_op
@@ -180,7 +199,8 @@ def addFront(op: Operation, block: Block | None):
 
 def getMemorySpace(op: Operation) -> Attribute | None:
     """
-    Given an operatoin, find the nearest memory tag from its parent
+    Finds and returns the memory space attribute from the nearest parent 
+    operation that contains a memory tag.
     """
     parent_op = op.parent_op()
     while parent_op is not None:
@@ -198,8 +218,7 @@ def getAllocTensorOpWithMemorySpace(
     result_type: TensorType, memory_space: Attribute | None
 ):
     """
-    A helper function when creating bufferization.AllocTensorOp
-    Add memory space attr by given the memory_space attr
+    Creates a bufferization.AllocTensorOp with an optional memory space attribute.
     """
     tensor_op = bufferization.AllocTensorOp(result_type)
     if memory_space is not None:
