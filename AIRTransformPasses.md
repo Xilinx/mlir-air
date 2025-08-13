@@ -556,6 +556,21 @@ air.channel symbol.
 -aggressive-mode : List of memory spaces to enable aggressive channel fusion with. Available options include ['L1', 'L2', 'L3'].
 ```
 
+### `-air-fuse-nested-herd`
+
+_Fuse a perfectly nested pair of air.herd loops into a single air.herd._
+
+Fuse a perfectly nested pair of air.herd loops into a single air.herd, 
+preserving iteration space and semantics. The new herd's 2D tile shape is 
+formed from the chosen ordering of the outer and inner herd dimensions 
+(e.g., outer x inner -> 2x4, or inner x outer -> 4x2).
+
+#### Options
+
+```
+-order : The order of tile sizes, must be one of outer-inner (default) or inner-outer.
+```
+
 ### `-air-fuse-parallel-launch`
 
 _Fuse parallel launch pass_
