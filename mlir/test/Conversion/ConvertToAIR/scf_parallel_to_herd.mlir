@@ -432,14 +432,14 @@ module {
 // CHECK: affine.if [[$SET1]]()
 // CHECK: %[[alloc_5:.*]] = memref.alloc()
 // CHECK: linalg.fill{{.*}}outs(%[[alloc_5]]
-// CHECK: air.channel.get  @channel_0[%[[arg0]]] (%alloc_4[] [] [])
+// CHECK: air.channel.get  @channel_0[%[[arg0]]] (%alloc_5[] [] [])
 // CHECK: linalg.add ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
 // CHECK: %[[idx:.*]] = arith.subi %[[arg0]], %c1{{.*}}
 // CHECK: air.channel.put  @channel_0[%[[idx]]] (%[[alloc_4]][] [] [])
 // CHECK: } else {
 // CHECK: %[[alloc_5:.*]] = memref.alloc()
 // CHECK: linalg.fill{{.*}}outs(%[[alloc_5]]
-// CHECK: air.channel.get  @channel_0[%[[arg0]]] (%[[alloc_4]][] [] [])
+// CHECK: air.channel.get  @channel_0[%[[arg0]]] (%[[alloc_5]][] [] [])
 // CHECK: linalg.add ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
 // CHECK: }
 // CHECK: }

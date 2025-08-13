@@ -767,7 +767,7 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
     for (int64_t dim = 0, N = VecOfProducer.size(); dim < N; ++dim) {
       cloneOps(VecOfProducer[dim], pplBodyRemap);
       emitChannelGet(newCascadeChannel.getSymName(), ifOpers,
-                     reduceOp.getOperands()[dim]);
+                     pplBodyRemap.lookupOrDefault(parInitValues[dim]));
       cloneReductionBody(dim, pplBodyRemap);
       emitChannelPut(newCascadeChannel.getSymName(), decIndices(ifOpers),
                      reduceOp.getOperands()[dim]);
@@ -787,7 +787,7 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
     for (int64_t dim = 0, N = VecOfProducer.size(); dim < N; ++dim) {
       cloneOps(VecOfProducer[dim], epilogRemap);
       emitChannelGet(newCascadeChannel.getSymName(), ifOpers,
-                     reduceOp.getOperands()[dim]);
+                     epilogRemap.lookupOrDefault(parInitValues[dim]));
       cloneReductionBody(dim, epilogRemap);
 
       // Map final reduction results to parallel loop results for consumer
