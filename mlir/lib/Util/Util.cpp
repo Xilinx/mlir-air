@@ -2098,4 +2098,20 @@ void air::getTopLevelTileableBands(
   }
 }
 
+Operation *air::cloneOpAndOperands(RewriterBase &rewriter, IRMapping &remap,
+                                   Operation *op,
+                                   function_ref<bool(Operation *)> canClone) {
+  // 1) Collect backward slice of 'op' (producers).
+  SetVector<Operation *> backwardSlice;
+  BackwardSliceOptions bsOptions{/*filter=*/canClone};
+  (void)getBackwardSlice(op, &backwardSlice, bsOptions);
+  // 2) Clone producers if not already mapped.
+  for (auto b : backwardSlice)
+    if (air::isPure(b))
+      rewriter.clone(*b, remap);
+  // 3) Finally clone the target op itself.
+  auto new_op = rewriter.clone(*op, remap);
+  return new_op;
+}
+
 } // namespace xilinx

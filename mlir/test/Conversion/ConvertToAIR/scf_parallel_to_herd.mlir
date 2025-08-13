@@ -1,4 +1,4 @@
-//===- scf_parallel_to_herd_launch.mlir ------------------------*- MLIR -*-===//
+//===- scf_parallel_to_herd.mlir -------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
 // Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
@@ -403,5 +403,80 @@ module {
       scf.reduce 
     }
     return
+  }
+}
+
+// -----
+
+// Lowering scf.parallel with an scf.reduce region to an air.herd representing a hardware reduction pipeline.
+
+// CHECK: [[$SET0:#set[0-9]*]] = affine_set<()[s0] : (s0 - 3 == 0)>
+// CHECK: [[$SET1:#set[0-9]+]] = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
+// CHECK: air.channel @channel_0 [3] {channel_type = "cascade"}
+// CHECK-LABEL: scf_reduce
+// CHECK: air.herd @herd_0  tile (%[[arg0:.*]], %[[arg1:.*]]) in (%{{.*}}=%c4{{.*}}, %{{.*}}=%c1{{.*}})
+// CHECK: %[[alloc_4:.*]] = memref.alloc() : memref<32xi32, 2 : i32>
+// CHECK: linalg.fill{{.*}}outs(%[[alloc_4]]
+// CHECK: scf.for
+// CHECK: air.dma_memcpy_nd
+// CHECK: air.dma_memcpy_nd
+// CHECK: linalg.vecmat
+// CHECK: }
+// CHECK: affine.if [[$SET0]]()
+// CHECK: %[[alloc_5:.*]] = memref.alloc()
+// CHECK: linalg.fill{{.*}}outs(%[[alloc_5]]
+// CHECK: linalg.add ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
+// CHECK: %[[idx:.*]] = arith.subi %[[arg0]], %c1{{.*}}
+// CHECK: air.channel.put  @channel_0[%[[idx]]] (%[[alloc_4]][] [] [])
+// CHECK: } else {
+// CHECK: affine.if [[$SET1]]()
+// CHECK: %[[alloc_5:.*]] = memref.alloc()
+// CHECK: linalg.fill{{.*}}outs(%[[alloc_5]]
+// CHECK: air.channel.get  @channel_0[%[[arg0]]] (%alloc_5[] [] [])
+// CHECK: linalg.add ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
+// CHECK: %[[idx:.*]] = arith.subi %[[arg0]], %c1{{.*}}
+// CHECK: air.channel.put  @channel_0[%[[idx]]] (%[[alloc_4]][] [] [])
+// CHECK: } else {
+// CHECK: %[[alloc_5:.*]] = memref.alloc()
+// CHECK: linalg.fill{{.*}}outs(%[[alloc_5]]
+// CHECK: air.channel.get  @channel_0[%[[arg0]]] (%[[alloc_5]][] [] [])
+// CHECK: linalg.add ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
+// CHECK: }
+// CHECK: }
+
+#map = affine_map<(d0, d1) -> (d0 * 32 + d1 * 128)>
+module {
+  func.func @scf_reduce() -> memref<256xi32> {
+    %c0_i32 = arith.constant 0 : i32
+    %c32 = arith.constant 32 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c0 = arith.constant 0 : index
+    %alloc = memref.alloc() : memref<256xi32>
+    %alloc_0 = memref.alloc() : memref<512xi32, 1 : i32>
+    %alloc_1 = memref.alloc() : memref<512x64xi32, 1 : i32>
+    %alloc_2 = memref.alloc() : memref<32xi32, 2 : i32>
+    linalg.fill ins(%c0_i32 : i32) outs(%alloc_2 : memref<32xi32, 2 : i32>)
+    %0 = scf.parallel (%arg2) = (%c0) to (%c4) step (%c1) init (%alloc_2) -> memref<32xi32, 2 : i32> {
+      %alloc_3 = memref.alloc() : memref<32xi32, 2 : i32>
+      linalg.fill ins(%c0_i32 : i32) outs(%alloc_3 : memref<32xi32, 2 : i32>)
+      scf.for %arg3 = %c0 to %c4 step %c1 {
+        %1 = affine.apply #map(%arg3, %arg2)
+        %alloc_4 = memref.alloc() : memref<32xi32, 2 : i32>
+        %alloc_5 = memref.alloc() : memref<32x32xi32, 2 : i32>
+        air.dma_memcpy_nd (%alloc_4[] [] [], %alloc_0[%1] [%c32] [%c1]) {id = 3 : i32} : (memref<32xi32, 2 : i32>, memref<512xi32, 1 : i32>)
+        air.dma_memcpy_nd (%alloc_5[] [] [], %alloc_1[%1, %c0] [%c32, %c32] [%c64, %c1]) {id = 4 : i32} : (memref<32x32xi32, 2 : i32>, memref<512x64xi32, 1 : i32>)
+        linalg.vecmat ins(%alloc_4, %alloc_5 : memref<32xi32, 2 : i32>, memref<32x32xi32, 2 : i32>) outs(%alloc_3 : memref<32xi32, 2 : i32>)
+        memref.dealloc %alloc_4 : memref<32xi32, 2 : i32>
+        memref.dealloc %alloc_5 : memref<32x32xi32, 2 : i32>
+      }
+      scf.reduce(%alloc_3 : memref<32xi32, 2 : i32>) {
+      ^bb0(%arg3: memref<32xi32, 2 : i32>, %arg4: memref<32xi32, 2 : i32>):
+        linalg.add ins(%arg3, %arg4 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%arg3 : memref<32xi32, 2 : i32>)
+        scf.reduce.return %arg3 : memref<32xi32, 2 : i32>
+      }
+    }
+    return %alloc : memref<256xi32>
   }
 }

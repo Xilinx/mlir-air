@@ -1223,6 +1223,21 @@ def AIRCollapseHerdPass : Pass<"air-collapse-herd", "func::FuncOp"> {
   }];
 }
 
+def AIRFuseNestedHerdPass : Pass<"air-fuse-nested-herd", "func::FuncOp"> {
+  let summary = "Fuse a perfectly nested pair of air.herd loops into a single air.herd.";
+  let constructor = "xilinx::air::createAIRFuseNestedHerdPass()";
+  let options = [
+    Option<"clOrder", "order", "std::string", /*default=*/"\"outer-inner\"",
+           "The order of tile sizes, must be one of outer-inner (default) or inner-outer.">
+  ];
+  let description = [{
+    Fuse a perfectly nested pair of air.herd loops into a single air.herd, 
+    preserving iteration space and semantics. The new herd's 2D tile shape is 
+    formed from the chosen ordering of the outer and inner herd dimensions 
+    (e.g., outer x inner -> 2x4, or inner x outer -> 4x2).
+  }];
+}
+
 def AIRUnrollOuterPerfectlyNestedLoopsPass : Pass<"air-unroll-outer-affine-loops", "func::FuncOp"> {
   let summary = "Unroll loops in a perfectly nested affine for loop nest, outer to inner.";
   let constructor = "xilinx::air::createAIRUnrollOuterPerfectlyNestedLoopsPass()";

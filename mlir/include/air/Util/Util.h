@@ -301,6 +301,16 @@ consructComposedAffineApplyOpFromArithMulI(OpBuilder &builder,
 void getTopLevelTileableBands(
     func::FuncOp f, std::vector<SmallVector<affine::AffineForOp, 6>> &bands);
 
+// clones a given operation along with all of its dependency operations (from
+// its backward slice) that satisfy a user-defined filter, remapping their
+// operands and results in the process.
+Operation *cloneOpAndOperands(
+    RewriterBase &rewriter, IRMapping &remap, Operation *op,
+    function_ref<bool(Operation *)> canClone = [](Operation *o) {
+      // default: only pure ops; avoid loops/hierarchy
+      return !isa<LoopLikeOpInterface>(o) && !isa<air::HierarchyInterface>(o);
+    });
+
 } // namespace air
 } // namespace xilinx
 

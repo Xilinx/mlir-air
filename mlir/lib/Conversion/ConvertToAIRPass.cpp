@@ -27,6 +27,7 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -214,17 +215,31 @@ replaceAllUsesOfConstsInRegionWithNew(SmallVector<Value, 4> constants,
   }
 }
 
-void getUsedConstsAndArgsDefinedAbove(MutableArrayRef<Region> region,
-                                      SmallVector<Value, 4> &constants,
-                                      SmallVector<Value, 4> &args) {
+void getUsedConstsDefinedAbove(MutableArrayRef<Region> region,
+                               SmallVector<Value, 4> &constants) {
   llvm::SetVector<Value> region_args;
   getUsedValuesDefinedAbove(region, region_args);
   for (Value v : region_args) {
     if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
       constants.push_back(v);
-    else
+  }
+}
+
+void getUsedArgsDefinedAbove(MutableArrayRef<Region> region,
+                             SmallVector<Value, 4> &args) {
+  llvm::SetVector<Value> region_args;
+  getUsedValuesDefinedAbove(region, region_args);
+  for (Value v : region_args) {
+    if (!isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
       args.push_back(v);
   }
+}
+
+void getUsedConstsAndArgsDefinedAbove(MutableArrayRef<Region> region,
+                                      SmallVector<Value, 4> &constants,
+                                      SmallVector<Value, 4> &args) {
+  getUsedConstsDefinedAbove(region, constants);
+  getUsedConstsDefinedAbove(region, args);
 }
 
 class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
@@ -541,6 +556,264 @@ separateScfParallel(scf::ParallelOp op, unsigned innerNumLoops,
   return std::make_pair(outerLoop, innerLoop);
 }
 
+// Create a new air.channel symbol in the module for the cascade pipeline.
+// The symbol name is unique in the module, and the channel is tagged with
+// the "cascade" attribute.
+air::ChannelOp
+createCascadeChannelOp(OpBuilder &builder, ModuleOp module, Location loc,
+                       SmallVector<int64_t> channel_bundle_sizes) {
+
+  // Generate a unique channel symbol name within the module.
+  std::string cname = air::createChannelName(module);
+
+  // Insert the channel op at the top of the module body, but *after* any
+  // existing channel ops (so channels are grouped together).
+  OpBuilder::InsertionGuard guard(builder);
+  Operation *o = &module.getBody()->front();
+  while (dyn_cast_or_null<air::ChannelOp>(o))
+    o = o->getNextNode();
+  builder.setInsertionPoint(o);
+
+  // Create the channel op with the given bundle sizes and "cascade" tag.
+  auto channel_op = builder.create<air::ChannelOp>(
+      loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
+      builder.getStringAttr("cascade"));
+
+  return channel_op;
+}
+
+// Transform an scf.reduce inside an scf.parallel into an affine.if pipeline
+// split into prologue, steady-state (pipeline body), and epilogue, connected
+// by cascade channels. Clones necessary producers/consumers into each stage.
+LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
+                                  air::HierarchyInterface hierOp,
+                                  PatternRewriter &rewriter) {
+  Location loc = hierOp.getLoc();
+
+  // Ensure the reduce is under an scf.parallel and collect initial values.
+  auto parallelOp = reduceOp->getParentOfType<scf::ParallelOp>();
+  auto parInitValues = parallelOp.getInitVals();
+  if (!parallelOp)
+    return rewriter.notifyMatchFailure(reduceOp,
+                                       "reduce not under scf.parallel");
+  if (parallelOp.getNumLoops() != static_cast<int64_t>(parInitValues.size()))
+    return rewriter.notifyMatchFailure(reduceOp, "init vals size mismatch");
+
+  // Get constant upper bounds for each parallel dimension (must be > 0).
+  // Subtract one so that bounds represent the last iteration index.
+  SmallVector<int64_t> ubCsts;
+  for (Value ub : parallelOp.getUpperBound()) {
+    auto c = getConstantIntValue(ub);
+    if (!c)
+      return rewriter.notifyMatchFailure(parallelOp,
+                                         "non-constant upper bound");
+    if (*c <= 0)
+      return rewriter.notifyMatchFailure(parallelOp, "upper bound <= 0");
+    ubCsts.push_back(*c - 1);
+  }
+
+  // Create a cascade channel op sized according to the upper bounds.
+  air::ChannelOp newCascadeChannel =
+      createCascadeChannelOp(rewriter, hierOp->getParentOfType<ModuleOp>(), loc,
+                             /*channel_bundle_sizes*/ ubCsts);
+
+  // === Identify ops to clone into each pipeline stage ===
+
+  SmallVector<SetVector<Operation *>> VecOfProducer, VecOfConsumers;
+
+  // For each init value, record its defining op (if any) and any other
+  // user ops except the parallel op itself -- these are "producers" to clone.
+  for (auto val : parInitValues) {
+    SetVector<Operation *> producers;
+    if (auto defOp = val.getDefiningOp())
+      producers.insert(defOp);
+    for (auto user : val.getUsers()) {
+      if (user == parallelOp)
+        continue;
+      producers.insert(user);
+    }
+    VecOfProducer.push_back(producers);
+  }
+
+  // For each parallel result, record all of its users -- these are "consumers".
+  for (auto res : parallelOp->getResults()) {
+    auto resUsers = res.getUsers();
+    SetVector<Operation *> consumers(resUsers.begin(), resUsers.end());
+    VecOfConsumers.push_back(consumers);
+  }
+
+  // === Small helper lambdas for code reuse ===
+
+  // Compute "decremented" index values (iv - 1) for channel index operands.
+  auto decIndices = [&](ValueRange ifOpers) {
+    SmallVector<Value> idx;
+    idx.reserve(ifOpers.size());
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    for (Value v : ifOpers)
+      idx.push_back(rewriter.create<arith::SubIOp>(loc, v, c1));
+    return idx;
+  };
+
+  // Emit a ChannelPutOp with given channel name, indices, and value.
+  auto emitChannelPut = [&](StringRef ch, ValueRange idx, Value val) {
+    rewriter.create<air::ChannelPutOp>(
+        loc, /*types*/ TypeRange{}, /*async_deps*/ ValueRange{}, ch, idx, val,
+        /*offsets*/ ValueRange{},
+        /*sizes*/ ValueRange{},
+        /*strides*/ ValueRange{});
+  };
+
+  // Emit a ChannelGetOp with given channel name, indices, and value.
+  auto emitChannelGet = [&](StringRef ch, ValueRange idx, Value val) {
+    rewriter.create<air::ChannelGetOp>(
+        loc, /*types*/ TypeRange{}, /*async_deps*/ ValueRange{}, ch, idx, val,
+        /*offsets*/ ValueRange{},
+        /*sizes*/ ValueRange{},
+        /*strides*/ ValueRange{});
+  };
+
+  // Clone a list of ops into the current insertion point using a remap.
+  auto cloneOps = [&](const auto &ops, IRMapping &map) {
+    for (Operation *o : ops)
+      rewriter.clone(*o, map);
+  };
+
+  // Clone the body of the reduction for the given dim, remapping lhs/rhs.
+  auto cloneReductionBody = [&](int64_t dim, IRMapping &map) {
+    Block &blk = reduceOp.getReductions()[dim].front();
+    BlockArgument lhs = blk.getArgument(0);
+    BlockArgument rhs = blk.getArgument(1);
+    map.map(lhs, reduceOp.getOperands()[dim]);
+    map.map(rhs, map.lookupOrDefault(parInitValues[dim]));
+    for (Operation &o : blk.without_terminator())
+      rewriter.clone(o, map);
+  };
+
+  // === Prologue stage ===
+  // Builds an IntegerSet that selects the last iteration of the parallel loop.
+  auto makePrologueSet = [](scf::ParallelOp parallelOp) {
+    auto ctx = parallelOp->getContext();
+    SmallVector<AffineExpr> constraints;
+    SmallVector<bool> eqFlags;
+    for (auto dim : llvm::seq<int64_t>(0, parallelOp.getNumLoops())) {
+      auto ubCst = getConstantIntValue(parallelOp.getUpperBound()[dim]);
+      constraints.push_back(getAffineSymbolExpr(dim, ctx) -
+                            getAffineConstantExpr(*ubCst - 1, ctx));
+      eqFlags.push_back(true);
+    }
+    return IntegerSet::get(0, parallelOp.getNumLoops(), constraints, eqFlags);
+  };
+  IntegerSet prologIS = makePrologueSet(parallelOp);
+
+  // Condition operands for the if-ops: hierarchy IDs for each parallel IV.
+  SmallVector<Value> ifOpers(hierOp.getIds().begin(),
+                             hierOp.getIds().begin() +
+                                 parallelOp.getNumLoops());
+
+  // Outer if: prologue vs everything else.
+  auto ifTop = rewriter.create<affine::AffineIfOp>(loc, prologIS, ifOpers,
+                                                   /*has_else*/ true);
+  rewriter.setInsertionPointToStart(ifTop.getThenBlock());
+
+  // Prologue execution: clone producers and first reduction step, then put into
+  // channel.
+  auto runProlog = [&] {
+    IRMapping prologRemap;
+    for (auto dim : llvm::seq<int64_t>(0, parallelOp.getNumLoops())) {
+      prologRemap.map(parallelOp.getInductionVars()[dim], hierOp.getIds()[dim]);
+    }
+    for (int64_t dim = 0, N = VecOfProducer.size(); dim < N; ++dim) {
+      cloneOps(VecOfProducer[dim], prologRemap);
+      cloneReductionBody(dim, prologRemap);
+      emitChannelPut(newCascadeChannel.getSymName(), decIndices(ifOpers),
+                     reduceOp.getOperands()[dim]);
+    }
+  };
+  runProlog();
+
+  // === Pipeline body (steady state) ===
+  // IntegerSet selects iterations that are neither first nor last.
+  auto makePplBodySet = [](scf::ParallelOp parallelOp) {
+    auto ctx = parallelOp->getContext();
+    SmallVector<AffineExpr> constraints;
+    SmallVector<bool> eqFlags;
+    for (auto dim : llvm::seq<int64_t>(0, parallelOp.getNumLoops())) {
+      auto ubCst = getConstantIntValue(parallelOp.getUpperBound()[dim]);
+      auto symbolExpr = getAffineSymbolExpr(dim, ctx);
+      constraints.push_back(symbolExpr - getAffineConstantExpr(1, ctx));
+      eqFlags.push_back(false);
+      constraints.push_back(getAffineConstantExpr(*ubCst - 2, ctx) -
+                            symbolExpr);
+      eqFlags.push_back(false);
+    }
+
+    return IntegerSet::get(0, parallelOp.getNumLoops(), constraints, eqFlags);
+  };
+  IntegerSet pplBodyIS = makePplBodySet(parallelOp);
+
+  // Else branch of prologue: steady state vs epilogue.
+  rewriter.setInsertionPointToStart(ifTop.getElseBlock());
+  auto elIfTop = rewriter.create<affine::AffineIfOp>(loc, pplBodyIS, ifOpers,
+                                                     /*has_else*/ true);
+  rewriter.setInsertionPointToStart(elIfTop.getThenBlock());
+
+  // Steady-state: clone producers, get from channel, do reduction, put back.
+  auto runPipelineBody = [&] {
+    IRMapping pplBodyRemap;
+    for (auto dim : llvm::seq<int64_t>(0, parallelOp.getNumLoops())) {
+      pplBodyRemap.map(parallelOp.getInductionVars()[dim],
+                       hierOp.getIds()[dim]);
+    }
+    for (int64_t dim = 0, N = VecOfProducer.size(); dim < N; ++dim) {
+      cloneOps(VecOfProducer[dim], pplBodyRemap);
+      emitChannelGet(newCascadeChannel.getSymName(), ifOpers,
+                     pplBodyRemap.lookupOrDefault(parInitValues[dim]));
+      cloneReductionBody(dim, pplBodyRemap);
+      emitChannelPut(newCascadeChannel.getSymName(), decIndices(ifOpers),
+                     reduceOp.getOperands()[dim]);
+    }
+  };
+  runPipelineBody();
+
+  // === Epilogue ===
+  // Else branch of steady-state: final iteration of pipeline.
+  rewriter.setInsertionPointToStart(elIfTop.getElseBlock());
+
+  auto runEpilog = [&] {
+    IRMapping epilogRemap;
+    for (auto dim : llvm::seq<int64_t>(0, parallelOp.getNumLoops())) {
+      epilogRemap.map(parallelOp.getInductionVars()[dim], hierOp.getIds()[dim]);
+    }
+    for (int64_t dim = 0, N = VecOfProducer.size(); dim < N; ++dim) {
+      cloneOps(VecOfProducer[dim], epilogRemap);
+      emitChannelGet(newCascadeChannel.getSymName(), ifOpers,
+                     epilogRemap.lookupOrDefault(parInitValues[dim]));
+      cloneReductionBody(dim, epilogRemap);
+
+      // Map final reduction results to parallel loop results for consumer
+      // cloning.
+      epilogRemap.map(parallelOp->getResult(dim), reduceOp.getOperands()[dim]);
+      for (auto *o : VecOfConsumers[dim]) {
+        air::cloneOpAndOperands(rewriter, epilogRemap, o);
+      }
+    }
+  };
+  runEpilog();
+
+  // === Cleanup ===
+  // Remove original producer and consumer ops that have been cloned into
+  // stages.
+  llvm::SetVector<Operation *> toErase;
+  for (auto &sv : VecOfProducer)
+    toErase.insert(sv.begin(), sv.end());
+  for (auto &sv : VecOfConsumers)
+    toErase.insert(sv.begin(), sv.end());
+  for (Operation *op : toErase)
+    rewriter.eraseOp(op);
+
+  return success();
+}
+
 template <typename hierTy>
 FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
     scf::ParallelOp parOp, SmallPtrSet<Operation *, 8> &filteredOps,
@@ -582,7 +855,7 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
   }
   SmallVector<Value, 4> args;
   SmallVector<Value, 4> constants;
-  getUsedConstsAndArgsDefinedAbove(op.getRegion(), constants, args);
+  getUsedArgsDefinedAbove(op.getRegion(), args);
   SmallVector<int> ids;
   for (int i = 0; i < newHierNumLoops; i++) {
     ids.push_back((firstDim + i) % newHierNumLoops);
@@ -600,7 +873,18 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
     ivs[i].replaceAllUsesWith(hierOp.getIds()[ids[i]]);
   }
   bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
+
+  // If scf.parallel has scf.reduce with non-empty region, then convert to
+  // affine.if.
+  auto reduceOp = dyn_cast<scf::ReduceOp>(op.getBody()->getTerminator());
+  if (!reduceOp.getReductions().empty()) {
+    rewriter.setInsertionPoint(bb.getTerminator());
+    if (failed(ScfReduceToAffineIf(reduceOp, hierOp, rewriter)))
+      return failure();
+  }
+
   rewriter.setInsertionPointToStart(&hierOp.getRegion().front());
+  getUsedConstsDefinedAbove(hierOp.getRegion(), constants);
   replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
                                         hierOp.getRegion());
   int arg_idx = 0;
@@ -1169,10 +1453,6 @@ struct ParallelToHerdPass
       // skip parallel op already inside herd
       if (op->getParentOfType<air::HerdOp>())
         return;
-      // skip parallel ops already containing herd/segment/launch
-      if (llvm::any_of(hierOps,
-                       [op](Operation *h) { return op->isProperAncestor(h); }))
-        return;
       // Depth = -1 means converting the innermost parallel ops
       if (clAssignDepth == -1) {
         SmallVector<Operation *> parOpsInOp;
@@ -1213,16 +1493,15 @@ struct ParallelToHerdPass
 
     ConversionTarget target(*context);
 
-    target
-        .addLegalDialect<LLVM::LLVMDialect, func::FuncDialect, air::airDialect,
-                         arith::ArithDialect, ub::UBDialect>();
-
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
-                      affine::AffineLoadOp, affine::AffineStoreOp,
-                      affine::AffineYieldOp, scf::YieldOp, scf::ReduceOp>();
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           air::airDialect, arith::ArithDialect, ub::UBDialect,
+                           affine::AffineDialect, memref::MemRefDialect,
+                           scf::SCFDialect, linalg::LinalgDialect>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
+    target.addDynamicallyLegalOp<affine::AffineParallelOp>(
+        [&](affine::AffineParallelOp p) { return !filteredOps.contains(p); });
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
