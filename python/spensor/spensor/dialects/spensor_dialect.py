@@ -43,7 +43,7 @@ from xdsl.irdl import (
     AttrSizedOperandSegments,
 )
 from xdsl.utils.hints import isa
-from spensor.utils.spensor_util.spensor_util import (
+from spensor.utils.spensor_util import (
     toIntegerArrayAttr,
     toTupleInt,
     getConstantFromSSA,
@@ -606,11 +606,11 @@ class DeclareMemoryOp(IRDLOperation):
         store_list: list[StringAttr] = [
             (x if isinstance(x, StringAttr) else StringAttr(x)) for x in store
         ]
-        if isinstance(memory_shape, Iterable):
-            memory_shape = toIntegerArrayAttr(memory_shape)
-        if memory_space is not None:
-            if isinstance(memory_space, int):
-                memory_space = IntegerAttr.from_int_and_width(memory_space, 64)
+        
+        if memory_space is None:
+            memory_space = 0
+        if isinstance(memory_space, int):
+            memory_space = IntegerAttr.from_int_and_width(memory_space, 64)
 
         super().__init__(
             properties={
