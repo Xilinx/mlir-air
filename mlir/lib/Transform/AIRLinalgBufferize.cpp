@@ -227,6 +227,13 @@ LogicalResult AIRDuplicateAndEliminateEmptyTensors(RewriterBase &rewriter,
   return success();
 }
 
+} // namespace air
+} // namespace xilinx
+
+//===----------------------------------------------------------------------===//
+// AIRBufferizeOp
+//===----------------------------------------------------------------------===//
+
 // Create a linalg::GenericOp version of an n-D copy that can further tile,
 // lower to loops or vectorize, unlike the current implementation of
 // memref::CopyOp.
@@ -258,13 +265,6 @@ Operation *createLinalgCopyOp(OpBuilder &b, Location loc, Value from, Value to,
       },
       attributes);
 }
-
-} // namespace air
-} // namespace xilinx
-
-//===----------------------------------------------------------------------===//
-// AIRBufferizeOp
-//===----------------------------------------------------------------------===//
 
 // Default allocation callback: materialize a memref::AllocOp of the requested
 // type/sizes. The `alignment` is ignored by this default (many backends do).
