@@ -257,6 +257,69 @@ class XRTBackend(AirBackend):
 
         return XRTCompileArtifact(xclbin, kernel, insts)
 
+    def compile_from_torch_mlir(
+        self,
+        imported_module,
+        pipeline=None,
+        verbose=False,
+    ):
+        import torch_mlir
+        import torch_mlir.passmanager
+
+        if type(imported_module) is torch_mlir.ir.Module:
+            with imported_module.operation.context:
+                pm = torch_mlir.passmanager.PassManager.parse(
+                    "builtin.module(refback-mlprogram-bufferize)"
+                )
+                pm.run(imported_module.operation)
+
+        with air.ir.Context():
+            linalg_module = air.ir.Module.parse(str(imported_module))
+            pm = air.passmanager.PassManager.parse(
+                air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE
+            )
+            if verbose:
+                print(
+                    "Running MLIR pass pipeline: ",
+                    air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE,
+                )
+            pm.run(linalg_module.operation)
+
+            if verbose:
+                print("Linalg Module:")
+                print(linalg_module)
+
+            DEFAULT_PIPELINE = (
+                "builtin.module("
+                + ",".join(
+                    [
+                        "buffer-results-to-out-params",
+                        "air-linalg-codegen",
+                        "air-par-to-herd{depth=-1}",
+                        "air-par-to-launch{has-air-segment=true}",
+                        "air-copy-to-dma",
+                        "canonicalize",
+                        "cse",
+                    ]
+                )
+                + ")"
+            )
+            if pipeline is None:
+                pipeline = DEFAULT_PIPELINE
+
+            if callable(pipeline):
+                air_module = pipeline(linalg_module)
+            else:
+                pm = air.passmanager.PassManager.parse(pipeline)
+                pm.run(linalg_module.operation)
+                air_module = linalg_module
+
+            if verbose:
+                print("Air Module:")
+                print(air_module)
+
+        return self.compile(air_module)
+
     def load(self, artifact: XRTCompileArtifact):
         """Load a compiled artifact into the air runtime.
 
