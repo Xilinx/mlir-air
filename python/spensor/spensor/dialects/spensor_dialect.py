@@ -43,7 +43,7 @@ from xdsl.irdl import (
     AttrSizedOperandSegments,
 )
 from xdsl.utils.hints import isa
-from spensor.utils.spensor_util.spensor_util import (
+from spensor.utils.spensor_util import (
     toIntegerArrayAttr,
     toTupleInt,
     getConstantFromSSA,

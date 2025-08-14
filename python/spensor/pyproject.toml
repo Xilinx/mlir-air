@@ -1,0 +1,39 @@
+[project]
+name = "spensor"
+version = "0.0.0"
+dependencies = [
+  "xdsl==0.46.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pyright",
+  "lit",
+  "pytest",
+  "filecheck",
+  "pre-commit",
+  "typing-extensions",
+]
+
+[tool.setuptools]
+platforms = ["Linux", "Mac OS-X", "Unix"]
+zip-safe = false
+
+[tool.setuptools.package-data]
+spensor = ["py.typed"]
+
+[project.scripts]
+spensor-opt = "spensor.cli.spensor_opt:main"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pyright]
+enableExperimentalFeatures = true
+reportImportCycles = false
+reportUnnecessaryIsInstance = false
+typeCheckingMode = "strict"
+include = ["spensor"]
+ignore = [
+]
