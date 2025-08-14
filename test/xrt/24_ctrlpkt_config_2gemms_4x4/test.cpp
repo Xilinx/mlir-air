@@ -18,7 +18,7 @@
 #include <sstream>
 #include <stdfloat>
 
-#include "experimental/xrt_kernel.h"
+#include "xrt/experimental/xrt_kernel.h"
 
 #include "xrt/xrt_bo.h"
 #include "xrt/xrt_device.h"
