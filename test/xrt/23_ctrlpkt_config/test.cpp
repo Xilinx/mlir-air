@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "experimental/xrt_kernel.h"
+#include "xrt/experimental/xrt_kernel.h"
 #include "test_utils.h"
 
 #include "xrt/xrt_bo.h"
