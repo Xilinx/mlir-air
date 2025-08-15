@@ -299,4 +299,84 @@ def FuseIntoContainingMemrefOp :
   ];
 }
 
+// Ops implemented in mlir/lib/Transform/AIRLinalgBufferize.cpp
+//
+
+def AIRDuplicateAndEliminateEmptyTensorsOp
+    : Op<Transform_Dialect, "air.duplicate_and_eliminate_empty_tensors",
+        [DeclareOpInterfaceMethods<TransformOpInterface>,
+         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let description = [{
+    This transform op duplicates all multi-use `tensor.empty` operations
+    within the target payload operation and then eliminates them via the
+    One-Shot Bufferization "empty tensor elimination" step.
+
+    The transform performs the following actions in sequence:
+
+    1. **Duplicate**: For each `tensor.empty` with more than one use, clones
+       the operation so that each use has a distinct producer.
+    2. **Destination Style Conversion**: Applies Linalg conversion patterns
+       to rewrite eligible operations into destination-passing style.
+    3. **Bufferization Analysis**: Runs One-Shot Bufferization analysis with
+       target-specific options to prepare for empty tensor elimination.
+    4. **Elimination**: Replaces `tensor.empty` with buffer-backed allocations
+       or forwards them to existing buffers, based on the analysis.
+
+    This transform modifies the payload IR but does not change the transform
+    IR except for reading the `target` handle.
+
+    The `target` must be a handle to one or more operations containing
+    `tensor.empty` producers that are eligible for bufferization.
+  }];
+
+  let arguments = (ins PDL_Operation:$target);
+
+  let results = (outs);
+
+  let assemblyFormat = "$target attr-dict `:` type($target)";
+}
+
+def AIRBufferizeOp
+    : Op<Transform_Dialect, "air.bufferize",
+        [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+         DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let description = [{
+    Bufferizes the payload IR rooted at `target` using One-Shot Bufferization
+    with AIR defaults, then performs a light cleanup.
+
+    Specifically, this transform:
+    - Runs One-Shot Bufferization on the target operation with AIR options
+      (e.g., custom `allocationFn`/`memCpyFn`, disabled parallel-region checks).
+      By default, allocations are created with `memref.alloc` and copies are
+      emitted as `linalg.generic` elementwise copies to enable tiling/vectorization.
+    - Applies canonical cleanups to erase unused operands and results that may
+      appear after destination-passing rewrites.
+
+    The transform **modifies the payload IR** but only **reads** the transform
+    handle. On failure, emits a diagnostic attached to the target.
+
+    **Operands**
+    - `target` — A handle to the operation(s) to bufferize.
+
+    **Results**
+    - `result` — A handle to the same operation(s) after bufferization.
+
+    This op is functional-style: the result type matches the handle type and
+    the printer/parser use a functional signature:
+      `air.bufferize %t : (!pdl.operation) -> !pdl.operation`
+  }];
+
+  let arguments = (
+      ins PDL_Operation:$target
+  );
+
+  let results = (outs PDL_Operation:$result);
+
+  let assemblyFormat = "attr-dict $target `:` functional-type($target, results)";
+
+  let builders = [
+    OpBuilder<(ins "Value":$target)>
+  ];
+}
+
 #endif // AIR_TRANSFORM_OPS
