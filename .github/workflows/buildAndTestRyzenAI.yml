@@ -152,6 +152,8 @@ jobs:
             -DPEANO_INSTALL_DIR=${PEANO_INSTALL_DIR}
           ninja install
 
+          pip install $PWD/../python/spensor
+
           export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random"
           ninja check-air-cpp
           ninja check-air-mlir
