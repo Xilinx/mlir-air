@@ -1,3 +1,8 @@
+# ./python/spensor/spensor/passes/append_constant.py -*- Python -*-
+#
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 from xdsl.dialects.builtin import (
     ModuleOp,
 )
@@ -18,7 +23,7 @@ import spensor.utils.spensor_global_analysis as spensor_global
 class FuncAddConstantPattern(RewritePattern):
     """
     Insert all arith.ConstantOp in spensor_global.index_to_constant_op
-    before the matched function
+    into the beginning of the matched function.
     """
 
     @op_type_rewrite_pattern
