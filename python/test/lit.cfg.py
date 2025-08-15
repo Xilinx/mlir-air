@@ -45,6 +45,7 @@ except:
 spensor_name = "spensor"
 # If spensor is already imported or can be imported
 if spensor_name in sys.modules or importlib.util.find_spec(spensor_name):
+    print(spensor_name + " found")
     config.available_features.add("spensor")
 
 print("Running with PYTHONPATH", config.environment["PYTHONPATH"])
