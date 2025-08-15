@@ -1,3 +1,8 @@
+# ./python/spensor/spensor/passes/expand_parallel.py -*- Python -*-
+#
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 import enum
 from functools import reduce
 from operator import sub

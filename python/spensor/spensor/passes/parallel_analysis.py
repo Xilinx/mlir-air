@@ -1,4 +1,8 @@
-import pre_commit
+# ./python/spensor/spensor/passes/parallel_analysis.py -*- Python -*-
+#
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 from xdsl.dialects.builtin import (
     ModuleOp,
 )

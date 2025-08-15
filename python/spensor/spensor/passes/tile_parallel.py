@@ -1,3 +1,8 @@
+# ./python/spensor/spensor/passes/tile_parallel.py -*- Python -*-
+#
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 from xdsl.dialects.builtin import (
     ModuleOp,
     IndexType,
