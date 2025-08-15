@@ -1,6 +1,5 @@
 # ./python/test/spensor/spensor_ops.py -*- Python -*-
 #
-# Copyright (C) 2025, Xilinx Inc.
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
@@ -43,6 +42,7 @@ def getReduceCascade(ctx: Context) -> ModuleOp:
         ],
         [spensor_output_type],
     )
+    # function(arg0: <<16x32xf32>, L3>) -> <<16x1xf32>, L1>
     func_op = func.FuncOp("reduce", function_type)
     block = func_op.body.block
     arg0 = block.args[0]
@@ -51,7 +51,6 @@ def getReduceCascade(ctx: Context) -> ModuleOp:
     const_0 = getConsantIndex(0)
     const_4 = getConsantIndex(4)
 
-    # arg0: <16x32xf32> at L3
     split_arg0 = spensor.SplitOp(arg0, num_partitions=const_4, dim=const_1)
     arg0_l2 = spensor.MoveOp(split_arg0, L2_memory)
 
