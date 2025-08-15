@@ -7,6 +7,8 @@
 # -*- Python -*-
 
 import os
+import sys
+import importlib.util
 
 import lit.formats
 import lit.util
@@ -38,6 +40,12 @@ try:
 except:
     print("torch_mlir not found")
     pass
+
+
+spensor_name = "spensor"
+# If spensor is already imported or can be imported
+if spensor_name in sys.modules or importlib.util.find_spec(spensor_name):
+    config.available_features.add("spensor")
 
 print("Running with PYTHONPATH", config.environment["PYTHONPATH"])
 
