@@ -941,6 +941,7 @@ SpensorDialect = Dialect(
         MoveToOp,
         SplitOp,
         SplitAllOp,
+        SubviewOp,
         DeclareMemoryOp,
         GetMemoryOp,
         AllocSpensorOp,
