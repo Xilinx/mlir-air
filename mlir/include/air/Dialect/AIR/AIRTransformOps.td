@@ -299,4 +299,50 @@ def FuseIntoContainingMemrefOp :
   ];
 }
 
+// Ops implemented in mlir/lib/Transform/AIRLinalgBufferize.cpp
+//
+
+def AIRBufferizeOp
+    : Op<Transform_Dialect, "air.bufferize",
+        [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+         DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let description = [{
+    Bufferizes the payload IR rooted at `target` using One-Shot Bufferization
+    with AIR defaults, then performs a light cleanup.
+
+    Specifically, this transform:
+    - Runs One-Shot Bufferization on the target operation with AIR options
+      (e.g., custom `allocationFn`/`memCpyFn`, disabled parallel-region checks).
+      By default, allocations are created with `memref.alloc` and copies are
+      emitted as `linalg.generic` elementwise copies to enable tiling/vectorization.
+    - Applies canonical cleanups to erase unused operands and results that may
+      appear after destination-passing rewrites.
+
+    The transform **modifies the payload IR** but only **reads** the transform
+    handle. On failure, emits a diagnostic attached to the target.
+
+    **Operands**
+    - `target` — A handle to the operation(s) to bufferize.
+
+    **Results**
+    - `result` — A handle to the same operation(s) after bufferization.
+
+    This op is functional-style: the result type matches the handle type and
+    the printer/parser use a functional signature:
+      `air.bufferize %t : (!pdl.operation) -> !pdl.operation`
+  }];
+
+  let arguments = (
+      ins PDL_Operation:$target
+  );
+
+  let results = (outs PDL_Operation:$result);
+
+  let assemblyFormat = "attr-dict $target `:` functional-type($target, results)";
+
+  let builders = [
+    OpBuilder<(ins "Value":$target)>
+  ];
+}
+
 #endif // AIR_TRANSFORM_OPS
