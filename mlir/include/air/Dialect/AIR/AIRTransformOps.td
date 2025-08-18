@@ -302,40 +302,6 @@ def FuseIntoContainingMemrefOp :
 // Ops implemented in mlir/lib/Transform/AIRLinalgBufferize.cpp
 //
 
-def AIRDuplicateAndEliminateEmptyTensorsOp
-    : Op<Transform_Dialect, "air.duplicate_and_eliminate_empty_tensors",
-        [DeclareOpInterfaceMethods<TransformOpInterface>,
-         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
-  let description = [{
-    This transform op duplicates all multi-use `tensor.empty` operations
-    within the target payload operation and then eliminates them via the
-    One-Shot Bufferization "empty tensor elimination" step.
-
-    The transform performs the following actions in sequence:
-
-    1. **Duplicate**: For each `tensor.empty` with more than one use, clones
-       the operation so that each use has a distinct producer.
-    2. **Destination Style Conversion**: Applies Linalg conversion patterns
-       to rewrite eligible operations into destination-passing style.
-    3. **Bufferization Analysis**: Runs One-Shot Bufferization analysis with
-       target-specific options to prepare for empty tensor elimination.
-    4. **Elimination**: Replaces `tensor.empty` with buffer-backed allocations
-       or forwards them to existing buffers, based on the analysis.
-
-    This transform modifies the payload IR but does not change the transform
-    IR except for reading the `target` handle.
-
-    The `target` must be a handle to one or more operations containing
-    `tensor.empty` producers that are eligible for bufferization.
-  }];
-
-  let arguments = (ins PDL_Operation:$target);
-
-  let results = (outs);
-
-  let assemblyFormat = "$target attr-dict `:` type($target)";
-}
-
 def AIRBufferizeOp
     : Op<Transform_Dialect, "air.bufferize",
         [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,

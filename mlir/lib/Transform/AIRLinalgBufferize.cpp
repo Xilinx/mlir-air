@@ -160,73 +160,6 @@ static bufferization::OneShotBufferizationOptions getBufferizationOptions() {
   return options;
 }
 
-// Duplicate a `tensor.empty` if it has multiple uses so each use can be
-// rewritten independently by downstream passes (e.g., dest-style, CSE).
-// Returns success if all duplicates are created and wired to users.
-LogicalResult duplicateTensorEmptyOps(OpBuilder &b, tensor::EmptyOp emptyOp) {
-  OpBuilder::InsertionGuard g(b);
-  b.setInsertionPoint(emptyOp);
-
-  // Snapshot uses because we'll mutate operands below.
-  SmallVector<OpOperand *> uses = llvm::map_to_vector(
-      emptyOp->getUses(), [](OpOperand &use) { return &use; });
-
-  // Keep the first use attached to the original op; clone for the rest.
-  for (auto use : llvm::make_range(std::next(uses.begin()), uses.end())) {
-    auto newOp = cast<tensor::EmptyOp>(b.clone(*emptyOp.getOperation()));
-    Operation *user = use->getOwner();
-    user->setOperand(use->getOperandNumber(), newOp);
-  }
-  return success();
-}
-
-// End-to-end helper that:
-//   1) Duplicates multi-use `tensor.empty` ops,
-//   2) Converts eligible Linalg ops to destination style,
-//   3) Runs one-shot bufferization analysis,
-//   4) Eliminates `tensor.empty` producers where possible.
-//
-// This is intended to be invoked on a target `Operation *op` that owns the IR
-// region(s) to clean up.
-LogicalResult AIRDuplicateAndEliminateEmptyTensors(RewriterBase &rewriter,
-                                                   Operation *op) {
-  MLIRContext *context = rewriter.getContext();
-
-  // Step 1: duplicate multi-use `tensor.empty` so each user can get a distinct
-  // producer (enables better folding and bufferization).
-  SmallVector<tensor::EmptyOp> emptyOps;
-  op->walk([&](tensor::EmptyOp emptyOp) { emptyOps.push_back(emptyOp); });
-  if (llvm::any_of(emptyOps, [&](tensor::EmptyOp emptyOp) {
-        return failed(duplicateTensorEmptyOps(rewriter, emptyOp));
-      })) {
-    return op->emitError("Failed to duplicate empty tensors");
-  }
-
-  // Step 2: run "convert to destination style" patterns. This rewrites ops to
-  // take explicit output buffers, which makes later bufferization more precise.
-  {
-    RewritePatternSet patterns(context);
-    linalg::populateConvertToDestinationStylePatterns(patterns);
-    if (failed(applyPatternsGreedily(op, std::move(patterns)))) {
-      return op->emitOpError(
-          "Failed in conversion to destination style patterns");
-    }
-  }
-
-  // Step 3: configure and run one-shot bufferization analysis on `op`.
-  auto bufferizationOptions = getBufferizationOptions();
-  bufferization::OneShotAnalysisState state(op, bufferizationOptions);
-  if (failed(analyzeOp(op, state)))
-    return op->emitOpError("Failed in anaylzing op");
-
-  // Step 4: eliminate `tensor.empty` by forwarding to in-place buffers or by
-  // replacing with buffer-backed allocations where justified by the analysis.
-  if (failed(bufferization::eliminateEmptyTensors(rewriter, op, state)))
-    return op->emitOpError("Failed to eliminate empty tensors");
-
-  return success();
-}
-
 } // namespace air
 } // namespace xilinx
 
@@ -330,29 +263,6 @@ transform::AIRBufferizeOp::apply(transform::TransformRewriter &rewriter,
 
   results.set(getOperation()->getOpResult(0), {target});
   return listener.checkAndResetError();
-}
-
-//===----------------------------------------------------------------------===//
-// AIRDuplicateAndEliminateEmptyTensorsOp
-//===----------------------------------------------------------------------===//
-
-void transform::AIRDuplicateAndEliminateEmptyTensorsOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  onlyReadsHandle(getTargetMutable(), effects);
-  modifiesPayload(effects);
-}
-
-DiagnosedSilenceableFailure
-transform::AIRDuplicateAndEliminateEmptyTensorsOp::apply(
-    transform::TransformRewriter &rewriter, TransformResults &transformResults,
-    TransformState &state) {
-  for (Operation *target : state.getPayloadOps(getTarget())) {
-    if (failed(xilinx::air::AIRDuplicateAndEliminateEmptyTensors(rewriter,
-                                                                 target)))
-      return mlir::emitSilenceableFailure(target->getLoc())
-             << "empty tensor elimination failed";
-  }
-  return DiagnosedSilenceableFailure::success();
 }
 
 namespace xilinx {
