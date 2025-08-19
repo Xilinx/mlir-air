@@ -5,6 +5,7 @@
 add_subdirectory(CAPI)
 add_subdirectory(Conversion)
 add_subdirectory(Dialect)
+add_subdirectory(Interfaces)
 add_subdirectory(Targets)
 add_subdirectory(Transform)
 add_subdirectory(Util)
@@ -22,6 +23,7 @@ add_mlir_library(
   AIRTransformOpsIncGen
   AIRConversionPasses
   AIRTransformPasses
+  AIRInterface
 
   LINK_LIBS
   AIRConversionPasses
@@ -30,6 +32,7 @@ add_mlir_library(
   AIRDialect
   AIRRtDialect
   AIRUtil
+  AIRInterface
   MLIRSupport
   ${conversion_libs}
   ${dialect_libs})
