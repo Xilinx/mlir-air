@@ -8,6 +8,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1444,8 +1445,8 @@ static SmallVector<Value> extractStridesFromMemrefType(MemRefType memrefTy,
   }
 
   for (auto s : layout_strides)
-    strides.push_back(
-        builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(), s));
+    strides.push_back(getValueOrCreateConstantIndexOp(
+        builder, builder.getUnknownLoc(), builder.getIndexAttr(s)));
 
   return strides;
 }
@@ -1455,8 +1456,8 @@ static SmallVector<Value> extractSizesFromMemrefType(MemRefType memrefTy,
                                                      OpBuilder &builder) {
   SmallVector<Value> sizes;
   for (auto s : memrefTy.getShape())
-    sizes.push_back(
-        builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(), s));
+    sizes.push_back(getValueOrCreateConstantIndexOp(
+        builder, builder.getUnknownLoc(), builder.getIndexAttr(s)));
   return sizes;
 }
 
@@ -1470,9 +1471,27 @@ static void extractOffsetsFromSubview(memref::SubViewOp subview,
 
   for (auto o : static_offsets) {
     if (o >= 0)
-      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, o));
+      offsets.push_back(getValueOrCreateConstantIndexOp(
+          builder, loc, builder.getIndexAttr(o)));
     else
       offsets.push_back(*subview_offsets++);
+  }
+}
+
+// Get strides from memref::SubviewOp.
+static void extractStridesFromSubview(memref::SubViewOp subview,
+                                      OpBuilder &builder,
+                                      SmallVector<Value> &strides) {
+  auto subview_strides = subview.getStrides().begin();
+  auto static_strides = subview.getStaticStrides();
+  auto loc = subview.getLoc();
+
+  for (auto o : static_strides) {
+    if (o >= 0)
+      strides.push_back(getValueOrCreateConstantIndexOp(
+          builder, loc, builder.getIndexAttr(o)));
+    else
+      strides.push_back(*subview_strides++);
   }
 }
 
@@ -1484,19 +1503,21 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   // Increase vector sizes up to memref size. When offsets, sizes and strides
   // are all empty, then it implies that the whole memref is accessed in the
   // default order.
+  auto loc = builder.getUnknownLoc();
   auto max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
   auto target_dim_size = std::max(max_dim_size, (size_t)memref.getRank());
   if (max_dim_size && offsets.size() < target_dim_size) {
     for (unsigned i = offsets.size(); i < target_dim_size; i++) {
-      offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
-                                          builder.getUnknownLoc(), 0));
+      offsets.insert(offsets.begin(),
+                     getValueOrCreateConstantIndexOp(builder, loc,
+                                                     builder.getIndexAttr(0)));
     }
   }
   if (max_dim_size && sizes.size() < target_dim_size) {
     for (unsigned i = sizes.size(); i < target_dim_size; i++) {
-      sizes.insert(sizes.begin(), builder.create<arith::ConstantIndexOp>(
-                                      builder.getUnknownLoc(), 1));
+      sizes.insert(sizes.begin(), getValueOrCreateConstantIndexOp(
+                                      builder, loc, builder.getIndexAttr(1)));
     }
   }
   int memref_size = 1;
@@ -1505,8 +1526,8 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   if (max_dim_size && strides.size() < target_dim_size) {
     for (unsigned i = strides.size(); i < target_dim_size; i++) {
       strides.insert(strides.begin(),
-                     builder.create<arith::ConstantIndexOp>(
-                         builder.getUnknownLoc(), memref_size));
+                     getValueOrCreateConstantIndexOp(
+                         builder, loc, builder.getIndexAttr(memref_size)));
     }
   }
 
@@ -1529,6 +1550,98 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
     return failure();
 
   return success();
+}
+
+/// Combine a subview's op offset with its source offset/stride in-place:
+///   offsets[i] = sourceOffset[i] + opOffset[i] * stride[i]
+///
+/// - Folds fully-static cases to an index constant.
+/// - Uses affine.apply when the stride is a known constant (to keep it affine).
+/// - Falls back to arith ops otherwise.
+template <typename SubViewLikeOp>
+static void combineSubviewOffsetsInPlace(mlir::PatternRewriter &rewriter,
+                                         SubViewLikeOp subviewOp,
+                                         SmallVectorImpl<mlir::Value> &offsets,
+                                         ArrayRef<mlir::Value> strides) {
+
+  const auto loc = subviewOp.getLoc();
+  assert(offsets.size() == strides.size() &&
+         "offsets/strides must have same length");
+  assert(offsets.size() == subviewOp.getMixedOffsets().size() &&
+         "offsets/strides must match subview rank");
+
+  auto makeIndexCst = [&](int64_t v) -> Value {
+    return getValueOrCreateConstantIndexOp(rewriter, loc,
+                                           rewriter.getIndexAttr(v));
+  };
+
+  for (auto it : llvm::enumerate(subviewOp.getMixedOffsets())) {
+    const unsigned i = it.index();
+    OpFoldResult opOffset = it.value();
+    Value sourceOffset = offsets[i];
+    Value sourceStride = strides[i];
+
+    // Static opOffset?
+    Attribute opOffsetAttr = llvm::dyn_cast_if_present<Attribute>(opOffset);
+
+    // Try to read constants from Value-typed sourceOffset/sourceStride.
+    IntegerAttr sourceOffsetConst, sourceStrideConst;
+    (void)mlir::matchPattern(sourceOffset,
+                             mlir::m_Constant(&sourceOffsetConst));
+    (void)mlir::matchPattern(sourceStride,
+                             mlir::m_Constant(&sourceStrideConst));
+
+    // Case 1: everything static -> fold to a constant Value and overwrite.
+    if (opOffsetAttr && sourceOffsetConst && sourceStrideConst) {
+      auto opOff = mlir::cast<IntegerAttr>(opOffsetAttr).getInt();
+      auto srcOff = sourceOffsetConst.getInt();
+      auto srcStr = sourceStrideConst.getInt();
+      offsets[i] = makeIndexCst(opOff * srcStr + srcOff);
+      continue;
+    }
+
+    // Case 2: stride is a known constant -> use affine.apply.
+    if (sourceStrideConst) {
+      AffineExpr expr;
+      SmallVector<Value> affineOperands;
+
+      // Start with sourceOffset (const or symbol).
+      if (sourceOffsetConst) {
+        expr = rewriter.getAffineConstantExpr(sourceOffsetConst.getInt());
+      } else {
+        expr = rewriter.getAffineSymbolExpr(affineOperands.size());
+        affineOperands.push_back(sourceOffset);
+      }
+
+      // Add opOffset * strideConst.
+      int64_t k = sourceStrideConst.getInt();
+      if (opOffsetAttr) {
+        expr = expr + mlir::cast<IntegerAttr>(opOffsetAttr).getInt() * k;
+      } else {
+        expr = expr + rewriter.getAffineSymbolExpr(affineOperands.size()) * k;
+        affineOperands.push_back(mlir::cast<Value>(opOffset));
+      }
+
+      AffineMap map = AffineMap::get(/*dimCount=*/0,
+                                     /*symCount=*/affineOperands.size(), expr);
+      offsets[i] =
+          rewriter.create<affine::AffineApplyOp>(loc, map, affineOperands)
+              .getResult();
+      continue;
+    }
+
+    // Case 3: general dynamic -> arith: sourceOffset + opOffset * sourceStride.
+    Value mulTerm;
+    if (opOffsetAttr) {
+      Value opOffCst =
+          makeIndexCst(mlir::cast<IntegerAttr>(opOffsetAttr).getInt());
+      mulTerm = rewriter.create<arith::MulIOp>(loc, opOffCst, sourceStride);
+    } else {
+      Value opOffsetVal = mlir::cast<Value>(opOffset);
+      mulTerm = rewriter.create<arith::MulIOp>(loc, opOffsetVal, sourceStride);
+    }
+    offsets[i] = rewriter.create<arith::AddIOp>(loc, sourceOffset, mulTerm);
+  }
 }
 
 static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
@@ -1566,21 +1679,31 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   std::reverse(memrefOpVec.begin(), memrefOpVec.end());
 
   // Init. source memref and offsets at the front of the vector of memref ops.
-  auto constZero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  auto constZero =
+      getValueOrCreateConstantIndexOp(rewriter, loc, rewriter.getIndexAttr(0));
+  auto constOne =
+      getValueOrCreateConstantIndexOp(rewriter, loc, rewriter.getIndexAttr(1));
   if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOpVec[0])) {
     input_memref = subviewOp.getViewSource();
     extractOffsetsFromSubview(subviewOp, rewriter, offsets);
+    extractStridesFromSubview(subviewOp, rewriter, strides);
   } else if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOpVec[0])) {
     input_memref = transposeOp.getIn();
     offsets.clear();
-    for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++)
+    strides.clear();
+    for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++) {
       offsets.push_back(constZero);
+      strides.push_back(constOne);
+    }
   } else if (auto viewLikeOp = dyn_cast<ViewLikeOpInterface>(memrefOpVec[0])) {
     input_memref = viewLikeOp.getViewSource();
     offsets.clear();
+    strides.clear();
     for (unsigned i = 0;
-         i < llvm::cast<MemRefType>(input_memref.getType()).getRank(); i++)
+         i < llvm::cast<MemRefType>(input_memref.getType()).getRank(); i++) {
       offsets.push_back(constZero);
+      strides.push_back(constOne);
+    }
   } else
     return failure();
 
@@ -1592,22 +1715,23 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
         continue;
       offsets =
           applyPermutationMap<Value>(transposeOp.getPermutation(), offsets);
+      strides =
+          applyPermutationMap<Value>(transposeOp.getPermutation(), strides);
     } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(memrefOp)) {
       for (int i = (int)expandShapeOp.getReassociationIndices().size() - 1;
            i >= 0; i--) {
         if (expandShapeOp.getReassociationIndices()[i].size() <= 1)
           continue;
         for (unsigned j = 1;
-             j < expandShapeOp.getReassociationIndices()[i].size(); j++)
-          offsets.insert(offsets.begin() + i,
-                         rewriter.create<arith::ConstantIndexOp>(loc, 0));
+             j < expandShapeOp.getReassociationIndices()[i].size(); j++) {
+          offsets.insert(offsets.begin() + i, constZero);
+          strides.insert(strides.begin() + i, constOne);
+        }
       }
     } else if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOp)) {
-      if (subviewOp != memrefOpVec.front() && !subviewOp.hasZeroOffset())
-        subviewOp->emitOpError(
-            "is not the source op in a chain of memref layout transformation "
-            "ops, but applies a non-zero offset. This feature is NYI, and "
-            "leads to unexpected behaviour.");
+      if (subviewOp != memrefOpVec.front() && !subviewOp.hasZeroOffset()) {
+        combineSubviewOffsetsInPlace(rewriter, subviewOp, offsets, strides);
+      }
     }
   }
 
