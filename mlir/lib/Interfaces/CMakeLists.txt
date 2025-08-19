@@ -6,9 +6,12 @@ add_mlir_library(
   AIRInterfaces.cpp
   AIRBufferizationInterfaces.cpp
 
+  DEPENDS
+  AIRDialect
+
   LINK_LIBS PUBLIC
-    MLIRIR
-    MLIRSupport
+  MLIRIR
+  MLIRSupport
 )
 
 # Make headers visible to dependents
