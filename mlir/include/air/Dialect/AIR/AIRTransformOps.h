@@ -15,6 +15,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 
 namespace mlir {
 class DialectRegistry;

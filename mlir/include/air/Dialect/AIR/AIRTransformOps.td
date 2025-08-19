@@ -299,4 +299,76 @@ def FuseIntoContainingMemrefOp :
   ];
 }
 
+// Ops implemented in mlir/lib/Transform/AIRLinalgBufferize.cpp
+//
+
+def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     TransformEachOpTrait,
+     TransformOpInterface,
+     ReportTrackingListenerFailuresOpTrait]> {
+  let summary = [{Hoist static allocations.}];
+  let description = [{
+    Moves certain statically-sized `memref.alloc` operations from inner blocks
+    to the entry block of the target function. This shortens and unifies buffer
+    lifetimes, which can unlock reuse and downstream optimizations.
+
+    ### Notes / limitations
+
+    * Currently targets `memref.alloc` buffers with static shapes.
+    * Uses that require exact type equality across region boundaries (e.g.,
+      `scf.yield`, `func.return`) are **not** rewritten; such allocations are skipped.
+    * Hoisting increases the buffer's lifetime; apply with care on large buffers.
+
+    ### Example
+
+    Before:
+    ```mlir
+    func.func @foo(%arg0: memref<64xi32>) {
+      scf.for %i = %c0 to %c4 step %c1 {
+        %tmp = memref.alloc() : memref<64xi32>
+        linalg.fill ins(%cst : i32) outs(%tmp : memref<64xi32>)
+        memref.dealloc %tmp : memref<64xi32>
+      }
+      return
+    }
+    ```
+
+    After:
+    ```mlir
+    func.func @foo(%arg0: memref<64xi32>) {
+      %tmp.hoisted = memref.alloc() : memref<64xi32>
+      scf.for %i = %c0 to %c4 step %c1 {
+        linalg.fill ins(%cst : i32) outs(%tmp.hoisted : memref<64xi32>)
+      }
+      memref.dealloc %tmp.hoisted : memref<64xi32>
+      return
+    }
+    ```
+
+    ### Usage (Transform dialect)
+
+    ```mlir
+    transform.sequence %arg0 : !pdl.operation failures(propagate) {
+    ^bb0(%f: !pdl.operation):
+      transform.air.hoist_static_alloc %f
+        : (!pdl.operation) -> ()
+    }
+    ```
+  }];
+
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs);
+
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::FunctionOpInterface funcOp,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
 #endif // AIR_TRANSFORM_OPS
