@@ -849,3 +849,31 @@ func.func @func6() {
   }
   return
 }
+
+// Memref op chain on air::DmaMemcpyNdOp's src/dst memrefs: folding adjacent memref.subviews.
+// CHECK: func.func @func7
+// CHECK: scf.forall (%[[arg2:.*]], %[[arg3:.*]]) in (2, 2) {
+// CHECK: %[[apply0:.*]] = affine.apply {{.*}}(%[[arg2]])
+// CHECK: scf.for %[[arg4:.*]] = %c1{{.*}} to %c32{{.*}} step %c1{{.*}} {
+// CHECK: %[[apply1:.*]] = affine.apply {{.*}}(%[[arg4]])
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%c0{{.*}}, %c0{{.*}}, %[[apply0]], %[[apply1]]] [
+
+func.func @func7(%arg0: memref<512x1024xi32>){
+  %c32 = arith.constant 32 : index
+  %c1 = arith.constant 1 : index
+  %alloc_2 = memref.alloc() : memref<4x1x64x32xi32, 1>
+  scf.forall (%arg2, %arg3) in (2, 2) {
+    %0 = affine.apply affine_map<(d0) -> (d0 * 256)>(%arg2)
+    %subview = memref.subview %arg0[%0, 0] [256, 1024] [1, 1] : memref<512x1024xi32> to memref<256x1024xi32, strided<[1024, 1], offset: ?>>
+    scf.for %arg4 = %c1 to %c32 step %c1 {
+      %3 = affine.apply affine_map<(d0) -> (d0 * 32)>(%arg4)
+      %subview_14 = memref.subview %subview[0, %3] [256, 32] [1, 1] : memref<256x1024xi32, strided<[1024, 1], offset: ?>> to memref<256x32xi32, strided<[1024, 1], offset: ?>>
+      %expand_shape_15 = memref.expand_shape %subview_14 [[0, 1], [2, 3]] output_shape [4, 64, 1, 32] : memref<256x32xi32, strided<[1024, 1], offset: ?>> into memref<4x64x1x32xi32, strided<[65536, 1024, 32, 1], offset: ?>>
+      %transpose_16 = memref.transpose %expand_shape_15 (d0, d1, d2, d3) -> (d0, d2, d1, d3) : memref<4x64x1x32xi32, strided<[65536, 1024, 32, 1], offset: ?>> to memref<4x1x64x32xi32, strided<[65536, 32, 1024, 1], offset: ?>>
+      air.dma_memcpy_nd (%alloc_2[] [] [], %transpose_16[] [] []) : (memref<4x1x64x32xi32, 1>, memref<4x1x64x32xi32, strided<[65536, 32, 1024, 1], offset: ?>>)
+    }
+  }
+  memref.dealloc %alloc_2 : memref<4x1x64x32xi32, 1>
+  return
+}
+
