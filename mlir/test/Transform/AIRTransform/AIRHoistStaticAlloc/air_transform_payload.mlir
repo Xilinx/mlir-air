@@ -12,14 +12,14 @@
 // CHECK: }
 // CHECK: memref.dealloc
 func.func @func0(%arg0: memref<64xi32>) {
-  %tmp.hoisted = memref.alloc() : memref<64xi32>
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
   %cst = arith.constant 0 : i32
   scf.for %i = %c0 to %c4 step %c1 {
-    linalg.fill ins(%cst : i32) outs(%tmp.hoisted : memref<64xi32>)
+    %tmp = memref.alloc() : memref<64xi32>
+    linalg.fill ins(%cst : i32) outs(%tmp : memref<64xi32>)
+    memref.dealloc %tmp : memref<64xi32>
   }
-  memref.dealloc %tmp.hoisted : memref<64xi32>
   return
 }
