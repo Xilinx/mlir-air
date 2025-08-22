@@ -1,6 +1,7 @@
 // Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+transform.with_pdl_patterns {
 ^bb0(%arg0: !pdl.operation):
     pdl.pattern @match_copy : benefit(1) {
         %args = pdl.operands
@@ -155,27 +156,14 @@
 
         // Peel the for loop
         %for_op = transform.structured.match ops{["scf.for"]} in %arg1 : (!pdl.operation) -> !transform.op<"scf.for">
-        %peeled_outer_loop, %remainder = transform.loop.peel %for_op {peel_front = true}
-          : (!transform.op<"scf.for">) -> (!pdl.operation, !pdl.operation)
 
-        // Run canonicalization
-        %func4 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        transform.apply_patterns to %func4 {
-            transform.apply_patterns.linalg.tiling_canonicalization
-            transform.apply_patterns.scf.for_loop_canonicalization
-            transform.apply_patterns.canonicalization
-        } : !pdl.operation
-        transform.apply_cse to %func4 : !pdl.operation
-
-        // Find the fill operation to fuse
+        // Find the producer operation (fill), and tile using for_all, as the prologue.
         %fill_op = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        // Get the consumers of the fill. It has to be a scf.forall op.
-        %peeled_loop = transform.get_consumers_of_result %fill_op[0] : (!pdl.operation) -> (!transform.op<"scf.forall">)
+        %prologue_tiled_fill, %prologue_forall =
+          transform.structured.tile_using_forall %fill_op tile_sizes [1, 1]
+            : (!pdl.operation) -> (!pdl.operation, !pdl.operation)
 
-        // Fuse the fill within the loop.
-        %peel_fused, %13 = transform.structured.fuse_into_containing_op %fill_op into %peeled_loop : (!pdl.operation, !transform.op<"scf.forall">) -> (!pdl.operation, !pdl.operation)
-
-        // Find the consumer operation, and tile using for_all, as the epilogue for the peeled for loop.
+        // Find the consumer operation (unpack), and tile using for_all, as the epilogue.
         %unpack_ops = transform.structured.match ops{["linalg.unpack"]} in %arg1 : (!pdl.operation) -> !pdl.operation
         %l1_to_l2_unpack, %l2_to_l3_unpack = transform.split_handle %unpack_ops : (!pdl.operation<"linalg.unpack">) -> (!pdl.operation<"linalg.unpack">, !pdl.operation<"linalg.unpack">)
         %epilogue_tiled_unpack, %epilogue_forall =
