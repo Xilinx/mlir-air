@@ -17,6 +17,7 @@ from air.backend.xrt_runner import XRTRunner
 from air.backend.xrt import XRTBackend
 
 from ml_dtypes import bfloat16
+import numpy as np
 
 parser = argparse.ArgumentParser(
     prog="run.py",
@@ -41,6 +42,24 @@ parser.add_argument(
     dest="transform_script",
     default="transform.mlir",
     help="Transform script path",
+)
+parser.add_argument(
+    "--M",
+    type=int,
+    default=512,
+    help="Matrix dimension M (rows of A, rows of C)",
+)
+parser.add_argument(
+    "--K",
+    type=int,
+    default=1024,
+    help="Matrix dimension K (cols of A, rows of B)",
+)
+parser.add_argument(
+    "--N",
+    type=int,
+    default=512,
+    help="Matrix dimension N (cols of B, cols of C)",
 )
 args = parser.parse_args()
 
@@ -86,7 +105,7 @@ def matmul_on_tensors(m, k, n):
         return result_memref
 
 
-air_module = matmul_on_tensors(512, 1024, 512)
+air_module = matmul_on_tensors(args.M, args.K, args.N)
 context = air_module.context
 
 with open("air_input.mlir", "w") as f:
@@ -129,10 +148,10 @@ pm.run(air_module.operation)
 ###############################################
 
 
-# Default values.
-M = 512
-K = 1024
-N = 512
+# Use parsed arguments for matrix dimensions.
+M = args.M
+K = args.K
+N = args.N
 input_a = np.arange(0, M * K, dtype=bfloat16).reshape(M, K)
 input_b = np.arange(0, K * N, dtype=bfloat16).reshape(K, N)
 if args.compile_mode == "compile-and-run":
