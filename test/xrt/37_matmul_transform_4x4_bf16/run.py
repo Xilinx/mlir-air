@@ -35,6 +35,13 @@ parser.add_argument(
     default="compile-and-run",
     help="Configure to whether to run after compile",
 )
+parser.add_argument(
+    "--transform-script",
+    type=str,
+    dest="transform_script",
+    default="transform.mlir",
+    help="Transform script path",
+)
 args = parser.parse_args()
 
 
@@ -90,7 +97,7 @@ with open("air_input.mlir", "w") as f:
 ################################################
 
 # Load the MLIR transform IR from an external file
-with open("transform.mlir", "r") as f:
+with open(args.transform_script, "r") as f:
     transform_ir_string = f.read()
 transform_ir = Module.parse(transform_ir_string, context=context)
 run_transform(transform_ir, air_module)
