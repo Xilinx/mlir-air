@@ -155,15 +155,39 @@ N = args.N
 input_a = np.arange(0, M * K, dtype=bfloat16).reshape(M, K)
 input_b = np.arange(0, K * N, dtype=bfloat16).reshape(K, N)
 if args.compile_mode == "compile-and-run":
-    output_c = np.dot(input_a.astype(bfloat16), input_b.astype(bfloat16)).astype(
-        np.float32
+    # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
+    num_samples = 100
+    sampled_indices = np.vstack(
+        [
+            np.random.randint(0, args.M, num_samples),  # i indices
+            np.random.randint(0, args.N, num_samples),  # j indices
+        ]
     )
+
+    # Compute reference results for sampled indices
+    sampled_values = np.array(
+        [
+            np.sum(
+                (input_a[i, :].astype(np.float32) * input_b[:, j].astype(np.float32)),
+                dtype=np.float32,
+            )
+            for i, j in zip(*sampled_indices)
+        ],
+        dtype=np.float32,
+    )
+
+    # Store as a dictionary
+    sampled_data = {
+        "shape": (args.M, args.N),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
     runner = XRTRunner(verbose=args.verbose, omit_while_true_loop=False)
     exit(
         runner.run_test(
             air_module,
             inputs=[input_a, input_b],
-            expected_outputs=[output_c],
+            stochastic_expected_outputs=[sampled_data],
             rtol=1e-1,
         )
     )
