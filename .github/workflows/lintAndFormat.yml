@@ -58,6 +58,7 @@ jobs:
         run: |
           pushd mlir-aie
           pip install -r python/requirements.txt
+          pip install -r python/requirements_dev.txt
           pip install -r python/requirements_ml.txt
           HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie pip install -r python/requirements_extras.txt
 

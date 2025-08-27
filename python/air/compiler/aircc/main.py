@@ -491,7 +491,10 @@ def run(mlir_module, args=None):
         air_to_aie_pass = air_to_aie_pass + f" device={opts.device}"
         if int(opts.trace_size) > 0:
             air_to_aie_pass = air_to_aie_pass + " insert-trace-packet-flow=true"
-        air_to_aie_pass = air_to_aie_pass + f" use-lock-race-condition-fix={opts.use_lock_race_condition_fix}"
+        air_to_aie_pass = (
+            air_to_aie_pass
+            + f" use-lock-race-condition-fix={opts.use_lock_race_condition_fix}"
+        )
         air_to_aie_pass = air_to_aie_pass + "}"
         pass_pipeline = ",".join([air_to_aie_pass])
 
@@ -600,6 +603,7 @@ def run(mlir_module, args=None):
                 + aiecc_existing_xclbin_options
                 + [air_to_npu_file]
             )
+            aiecc_options = [a for a in aiecc_options if a != ""]
             aiecc.run(air_to_npu_module, aiecc_options)
         else:
             lower_airrt_to_airhost(
