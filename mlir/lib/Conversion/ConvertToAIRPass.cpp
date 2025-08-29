@@ -893,6 +893,24 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
     replaceAllUsesInRegionWith(v, kernel_args[arg_idx++], hierOp.getRegion());
   if (op != parOp)
     rewriter.eraseOp(op);
+
+  // Final step: Ensure IsolatedFromAbove trait compliance by checking for any
+  // remaining external dependencies that may have been introduced during
+  // region transformations (e.g., by ScfReduceToAffineIf)
+  SmallVector<Value, 4> remainingExternalDeps;
+  getUsedArgsDefinedAbove(hierOp.getRegion(), remainingExternalDeps);
+
+  // Add any newly discovered external dependencies as kernel operands
+  hierOp.appendKernelOperands(remainingExternalDeps);
+
+  // Remap the external dependencies to their corresponding kernel arguments
+  // to satisfy the IsolatedFromAbove trait requirement
+  for (auto externalDep : remainingExternalDeps) {
+    replaceAllUsesInRegionWith(externalDep,
+                               hierOp.getTiedKernelArgument(externalDep),
+                               hierOp.getBody());
+  }
+
   return hierOp;
 }
 
@@ -2049,6 +2067,226 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
   if (failed(res))
     return emitDefaultDefiniteFailure(op);
   results.push_back(*res);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// ForallWithReduceToParallel
+//===----------------------------------------------------------------------===//
+
+LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
+                                             scf::ForallOp forallOp,
+                                             scf::ParallelOp *result) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(forallOp);
+
+  Location loc = forallOp.getLoc();
+
+  // Convert mixed bounds and steps to SSA values.
+  SmallVector<Value> lbs = forallOp.getLowerBound(rewriter);
+  SmallVector<Value> ubs = forallOp.getUpperBound(rewriter);
+  SmallVector<Value> steps = forallOp.getStep(rewriter);
+
+  // Get shared_outs to use as init_vals for scf.parallel
+  ValueRange sharedOuts = forallOp.getOutputs();
+
+  // Find the linalg.reduce operation that uses the forall result
+  linalg::ReduceOp linalgReduceOp = nullptr;
+  for (auto user : forallOp->getUsers()) {
+    auto reduceOp = dyn_cast<linalg::ReduceOp>(user);
+    if (!reduceOp)
+      continue;
+    // Check if this reduce uses the forall result as input
+    if (llvm::any_of(reduceOp.getInputs(), [&](Value input) {
+          return llvm::any_of(forallOp->getResults(), [&](Value forallRes) {
+            return input == forallRes;
+          });
+        })) {
+      linalgReduceOp = reduceOp;
+      break;
+    }
+  }
+
+  // Check if we need to modify shared_outs shape to match reduction
+  // requirements
+  SmallVector<Value> modifiedInitVals;
+  if (linalgReduceOp && !sharedOuts.empty()) {
+    for (unsigned i = 0; i < forallOp.getRank(); i++) {
+      Type expectedOutputType = linalgReduceOp.getDpsInits()[i].getType();
+      if (auto tensorType = dyn_cast<RankedTensorType>(expectedOutputType)) {
+        auto newInitMemrefTy =
+            MemRefType::get(tensorType.getShape(), tensorType.getElementType(),
+                            AffineMap(), (int)xilinx::air::MemorySpace::L1);
+        Value bufferInitVal = bufferization::ToBufferOp::create(
+            rewriter, loc, newInitMemrefTy, linalgReduceOp.getDpsInits()[i]);
+        modifiedInitVals.push_back(bufferInitVal);
+      } else {
+        modifiedInitVals.push_back(linalgReduceOp.getDpsInits()[i]);
+      }
+    }
+  }
+
+  // Create scf.parallel op with modified init_vals
+  auto parallelOp =
+      rewriter.create<scf::ParallelOp>(loc, lbs, ubs, steps, modifiedInitVals);
+
+  // Clone the forall body into the parallel body, but skip the terminator
+  Block &forallBody = forallOp.getRegion().front();
+  Block &parallelBody = parallelOp.getRegion().front();
+  rewriter.setInsertionPointToStart(&parallelBody);
+
+  // Create mapping from forall block args to parallel block args
+  IRMapping mapping;
+  // Map induction variables
+  for (auto [forallIV, parallelIV] :
+       llvm::zip(forallOp.getInductionVars(), parallelOp.getInductionVars())) {
+    mapping.map(forallIV, parallelIV);
+  }
+  // Map shared_outs block arguments to parallel init_vals
+  auto forallSharedOutArgs = forallOp.getRegionOutArgs();
+  for (auto forallSharedOutArg : forallSharedOutArgs)
+    mapping.map(forallSharedOutArg,
+                forallOp.getTiedOpOperand(forallSharedOutArg)->get());
+
+  // Clone operations from forall body to parallel body (except terminator)
+  for (auto &op : forallBody.without_terminator()) {
+    rewriter.clone(op, mapping);
+  }
+
+  // Process the forall terminator to create scf.reduce operations
+  auto forallTerminator = cast<scf::InParallelOp>(forallBody.getTerminator());
+
+  // Collect all the values to be reduced
+  SmallVector<Value> reduceValues;
+  for (const auto &[i, yieldingOp] :
+       llvm::enumerate(forallTerminator.getYieldingOps())) {
+    if (auto insertOp = dyn_cast<tensor::ParallelInsertSliceOp>(yieldingOp)) {
+      Value sourceValue = mapping.lookupOrDefault(insertOp.getSource());
+      Value sourceBufferValue = bufferization::ToBufferOp::create(
+          rewriter, insertOp.getLoc(), modifiedInitVals[i].getType(),
+          sourceValue, /*read_only=*/true);
+      reduceValues.push_back(sourceBufferValue);
+    }
+  }
+
+  // Create a single scf.reduce operation with all values
+  if (!reduceValues.empty()) {
+    auto reduceOp = rewriter.create<scf::ReduceOp>(loc, reduceValues);
+
+    // For each reduction value, populate the corresponding reduction region
+    for (auto [i, reduceValue] : llvm::enumerate(reduceValues)) {
+      Region &reduceRegion = reduceOp.getReductions()[i];
+      Block &reduceBlock = reduceRegion.front(); // Use the existing empty block
+
+      // The scf.reduce operation automatically creates the block arguments
+      // We should not add them manually - they are already there
+
+      rewriter.setInsertionPointToStart(&reduceBlock);
+
+      // If we found a linalg.reduce, create appropriate tensor-level reduction
+      if (linalgReduceOp) {
+        // Check what kind of reduction operation this is
+        Block &linalgReduceBody = linalgReduceOp.getCombiner().front();
+
+        // Look for the reduction operation in the linalg.reduce body
+        Operation *reductionOp = nullptr;
+        for (auto &op : linalgReduceBody.without_terminator()) {
+          if (isa<arith::AddIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp>(
+                  &op)) {
+            reductionOp = &op;
+            break;
+          }
+        }
+
+        if (reductionOp && isa<arith::AddIOp>(reductionOp)) {
+          // For addition reduction, use linalg.add
+          rewriter.create<linalg::AddOp>(
+              loc,
+              ValueRange{reduceBlock.getArgument(0),
+                         reduceBlock.getArgument(1)},
+              ValueRange{reduceBlock.getArgument(0)});
+          rewriter.create<scf::ReduceReturnOp>(loc, reduceBlock.getArgument(0));
+        } else if (reductionOp && isa<arith::MulIOp>(reductionOp)) {
+          // For multiplication reduction, use linalg.mul
+          rewriter.create<linalg::MulOp>(
+              loc,
+              ValueRange{reduceBlock.getArgument(0),
+                         reduceBlock.getArgument(1)},
+              ValueRange{reduceBlock.getArgument(0)});
+          rewriter.create<scf::ReduceReturnOp>(loc, reduceBlock.getArgument(0));
+        } else {
+          return rewriter.notifyMatchFailure(
+              linalgReduceOp,
+              "unsupported reduction type. Currently supports add and mul.");
+        }
+      } else {
+        // Default reduction: just return the first argument (no actual
+        // reduction)
+        rewriter.create<scf::ReduceReturnOp>(loc, reduceBlock.getArgument(0));
+      }
+    }
+  }
+
+  // If the mapping attribute is present, propagate to the new parallelOp.
+  if (forallOp.getMapping())
+    parallelOp->setAttr("mapping", *forallOp.getMapping());
+
+  // Replace users of linalg.reduce with scf.parallel result
+  if (linalgReduceOp) {
+    rewriter.setInsertionPointAfter(parallelOp);
+    // The scf.parallel should have the same number of results as the
+    // linalg.reduce
+    for (auto [linalgResult, parallelResult] :
+         llvm::zip(linalgReduceOp->getResults(), parallelOp->getResults())) {
+      Value parallelResultTensor = bufferization::ToTensorOp::create(
+          rewriter, loc, linalgResult.getType(), parallelResult,
+          /*restrict=*/true, /*writable=*/true);
+      linalgResult.replaceAllUsesWith(parallelResultTensor);
+    }
+    // Erase the linalg.reduce operation
+    rewriter.eraseOp(linalgReduceOp);
+  }
+
+  // Erase the scf.forall op.
+  rewriter.eraseOp(forallOp);
+
+  if (result)
+    *result = parallelOp;
+
+  return success();
+}
+
+DiagnosedSilenceableFailure transform::ForallWithReduceToParallelOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+  auto payload = state.getPayloadOps(getTarget());
+  if (!llvm::hasSingleElement(payload))
+    return emitSilenceableError() << "expected a single payload op";
+
+  auto target = dyn_cast<scf::ForallOp>(*payload.begin());
+  if (!target) {
+    DiagnosedSilenceableFailure diag =
+        emitSilenceableError() << "expected the payload to be scf.forall";
+    diag.attachNote((*payload.begin())->getLoc()) << "payload op";
+    return diag;
+  }
+
+  if (getNumResults() != 1) {
+    DiagnosedSilenceableFailure diag = emitSilenceableError()
+                                       << "op expects one result, given "
+                                       << getNumResults();
+    diag.attachNote(target.getLoc()) << "payload op";
+    return diag;
+  }
+
+  scf::ParallelOp opResult;
+  if (failed(forallWithReduceToParallelLoop(rewriter, target, &opResult))) {
+    DiagnosedSilenceableFailure diag =
+        emitSilenceableError() << "failed to convert forall into parallel";
+    return diag;
+  }
+
+  results.set(cast<OpResult>(getTransformed()[0]), {opResult});
   return DiagnosedSilenceableFailure::success();
 }
 
