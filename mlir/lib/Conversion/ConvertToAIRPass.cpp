@@ -2208,7 +2208,7 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
           rewriter.create<scf::ReduceReturnOp>(loc, reduceBlock.getArgument(0));
         } else if (reductionOp && isa<arith::MulIOp>(reductionOp)) {
           // For multiplication reduction, use linalg.mul
-          auto mulOp = rewriter.create<linalg::MulOp>(
+          rewriter.create<linalg::MulOp>(
               loc,
               ValueRange{reduceBlock.getArgument(0),
                          reduceBlock.getArgument(1)},
