@@ -959,13 +959,14 @@ struct NestedHerdCollapsePattern : public OpRewritePattern<air::HerdOp> {
     // This loop maps outer herd kernel arguments that were tied to outer's
     // kernel arguments to the corresponding fused arguments.
     //===------------------------------------------------------------------===//
+    for (auto bbarg : inner.getKernelArguments()) {
+      bbarg.replaceAllUsesWith(inner.getTiedKernelOperand(bbarg));
+    }
+
     auto fusedArgsIt = fused.getKernelArguments().begin();
 
     for (auto old : outer.getKernelArguments()) {
-      BlockArgument innerOld = inner.getTiedKernelArgument(old);
-      if (!innerOld)
-        continue;
-      map.map(innerOld, *fusedArgsIt++);
+      map.map(old, *fusedArgsIt++);
     }
 
     //===------------------------------------------------------------------===//
@@ -1908,9 +1909,12 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
       // Infer stride (factor) at splitDim. If the root comes from an scf.for
       // loop, and if the loop has non-unit step size, then that multiplier
       // should be applied to other split channe put/get ops.
-      if (auto rootStrideFactor =
-              getRootStrideFactor(putgets[i].getOffsets()[*offsetDimOpt],
-                                  putgets[i].getStrides()[*offsetDimOpt])) {
+      // Note: 1d access pattern is disabled (leads to inserting stride!=1
+      // dimension at inner-most dimension).
+      auto rootStrideFactor =
+          getRootStrideFactor(putgets[i].getOffsets()[*offsetDimOpt],
+                              putgets[i].getStrides()[*offsetDimOpt]);
+      if (rootStrideFactor && putgets[i].getOffsets().size() > 1) {
         splitDimStrideFactor = *rootStrideFactor;
         // Cancel out the non-unit step size on the for loop, to get contiguous
         // access pattern on memrefs after split.
