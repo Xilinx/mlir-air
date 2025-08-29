@@ -480,3 +480,40 @@ module {
     return %alloc : memref<256xi32>
   }
 }
+
+// -----
+
+// Lowering scf.parallel with an scf.reduce: maintain air.herd's IsolateFromAbove trait.
+
+// CHECK-LABEL: scf_reduce_1
+// CHECK: air.herd @herd_0  tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%c4{{.*}}, %{{.*}}=%c1{{.*}}) args(%{{.*}}=%{{.*}}) : index
+
+#map = affine_map<()[s0] -> (s0 * 32)>
+module {
+  func.func @scf_reduce_1(%arg0: memref<512xi32>, %arg1: memref<512x256xi32>, %arg2: memref<256xi32>, %arg3: index) {
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c32 = arith.constant 32 : index
+    %c0 = arith.constant 0 : index
+    %c0_i32 = arith.constant 0 : i32
+    %0 = affine.apply #map()[%arg3]
+    %alloc = memref.alloc() : memref<64xi32, 1>
+    %alloc_0 = memref.alloc() : memref<32xi32, 2>
+    linalg.fill ins(%c0_i32 : i32) outs(%alloc_0 : memref<32xi32, 2>)
+    %1 = scf.parallel (%arg4) = (%c0) to (%c4) step (%c1) init (%alloc_0) -> memref<32xi32, 2> {
+      %alloc_1 = memref.alloc() : memref<32x1xi32, 2>
+      %subview = memref.subview %alloc_1[0, 0] [32, 1] [1, 1] : memref<32x1xi32, 2> to memref<32xi32, strided<[1]>, 2>
+      %cast = memref.cast %subview : memref<32xi32, strided<[1]>, 2> to memref<32xi32, 2>
+      memref.dealloc %alloc_1 : memref<32x1xi32, 2>
+      scf.reduce(%cast : memref<32xi32, 2>) {
+      ^bb0(%arg5: memref<32xi32, 2>, %arg6: memref<32xi32, 2>):
+        linalg.add ins(%arg5, %arg6 : memref<32xi32, 2>, memref<32xi32, 2>) outs(%arg5 : memref<32xi32, 2>)
+        scf.reduce.return %arg5 : memref<32xi32, 2>
+      }
+    }
+    air.dma_memcpy_nd (%alloc[%0] [%c32] [%c1], %1[] [] []) {id = 5 : i32} : (memref<64xi32, 1>, memref<32xi32, 2>)
+    memref.dealloc %alloc_0 : memref<32xi32, 2>
+    memref.dealloc %alloc : memref<64xi32, 1>
+    return
+  }
+}
