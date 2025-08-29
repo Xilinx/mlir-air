@@ -83,6 +83,14 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
         return {};
       return getKernelOperand(std::distance(args.begin(), it));
     }
+
+    /// Append the given values to kernel operands.
+    void appendKernelOperands(ValueRange operands){
+      getLaunchOperandsMutable().append(operands);
+      for (auto oper : operands){
+        getBody().addArgument(oper.getType(), getLoc());
+      }
+    }
   }];
   let hasCanonicalizer = 1;
 }
@@ -195,6 +203,14 @@ def air_SegmentOp : air_Op<"segment", [air_AsyncOpInterface,
         return {};
       return getKernelOperand(std::distance(args.begin(), it));
     }
+
+    /// Append the given values to kernel operands.
+    void appendKernelOperands(ValueRange operands){
+      getSegmentOperandsMutable().append(operands);
+      for (auto oper : operands){
+        getBody().addArgument(oper.getType(), getLoc());
+      }
+    }
   }];
   let hasCanonicalizer = 1;
 }
@@ -294,6 +310,14 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
       if (it == args.end())
         return {};
       return getKernelOperand(std::distance(args.begin(), it));
+    }
+
+    /// Append the given values to kernel operands.
+    void appendKernelOperands(ValueRange operands){
+      getHerdOperandsMutable().append(operands);
+      for (auto oper : operands){
+        getBody().addArgument(oper.getType(), getLoc());
+      }
     }
   }];
   let hasCanonicalizer = 1;
