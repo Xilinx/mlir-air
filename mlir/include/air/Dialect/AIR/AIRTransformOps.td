@@ -146,6 +146,19 @@ def CopyToDmaOp : Op<Transform_Dialect, "air.copy_to_dma",
   }];
 }
 
+def ForallWithReduceToParallelOp : Op<Transform_Dialect, "air.forall_with_reduce_to_parallel",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Converts a pattern of scf.forall and linalg.reduce to scf.parallel";
+  let description = [{
+    .
+  }];
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs Variadic<PDL_Operation>:$transformed);
+
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
 // Ops implemented in mlir/lib/Transform/AIRLinalgCodegen.cpp
 //
 

@@ -1666,6 +1666,9 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     if (auto transposeOp = dyn_cast<memref::TransposeOp>(defop)) {
       memrefOpVec.push_back(defop);
       defop = transposeOp.getIn().getDefiningOp();
+    } else if (auto castOp = dyn_cast<memref::CastOp>(defop)) {
+      memrefOpVec.push_back(defop);
+      defop = castOp.getSource().getDefiningOp();
     } else if (auto viewLikeOp = dyn_cast<ViewLikeOpInterface>(defop)) {
       memrefOpVec.push_back(defop);
       defop = viewLikeOp.getViewSource().getDefiningOp();
@@ -1695,6 +1698,15 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       offsets.push_back(constZero);
       strides.push_back(constOne);
     }
+  } else if (auto castOp = dyn_cast<memref::CastOp>(memrefOpVec[0])) {
+    input_memref = castOp.getSource();
+    offsets.clear();
+    strides.clear();
+    for (unsigned i = 0;
+         i < llvm::cast<MemRefType>(input_memref.getType()).getRank(); i++) {
+      offsets.push_back(constZero);
+      strides.push_back(constOne);
+    }
   } else if (auto viewLikeOp = dyn_cast<ViewLikeOpInterface>(memrefOpVec[0])) {
     input_memref = viewLikeOp.getViewSource();
     offsets.clear();
@@ -1717,6 +1729,10 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
           applyPermutationMap<Value>(transposeOp.getPermutation(), offsets);
       strides =
           applyPermutationMap<Value>(transposeOp.getPermutation(), strides);
+    } else if (auto castOp = dyn_cast<memref::CastOp>(memrefOp)) {
+      // memref.cast doesn't change data layout, so no offset/stride adjustments
+      // needed
+      continue;
     } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(memrefOp)) {
       for (int i = (int)expandShapeOp.getReassociationIndices().size() - 1;
            i >= 0; i--) {
@@ -2008,6 +2024,34 @@ FailureOr<TilingResult> getTiledImplementationFromChanIf(
 // Channel put op
 //
 
+// Fold memref.cast operations for cascade channels (simplified version)
+template <typename OpT>
+static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
+                                               PatternRewriter &rewriter) {
+  Value memref = op.getMemref();
+  if (!memref)
+    return failure();
+
+  // Check if the memref is directly produced by a memref.cast
+  auto castOp = dyn_cast_if_present<memref::CastOp>(memref.getDefiningOp());
+  if (!castOp)
+    return failure();
+
+  // Only proceed if offsets, sizes, and strides are empty (no explicit access
+  // pattern)
+  if (!op.getOffsets().empty() || !op.getSizes().empty() ||
+      !op.getStrides().empty())
+    return failure();
+
+  // Replace the channel op with a new one using the cast's source
+  rewriter.replaceOpWithNewOp<OpT>(
+      op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
+      op.getIndices(), castOp.getSource(), op.getOffsets(), op.getSizes(),
+      op.getStrides());
+
+  return success();
+}
+
 template <typename OpT>
 static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
                                                 PatternRewriter &rewriter) {
@@ -2045,10 +2089,10 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   if (!chan)
     // If the channel declaration cannot be resolved, signal a failure.
     return failure();
-  // If the channel is of type "cascade", multi-dimensional affine map access
-  // pattern is not supported, so skip it.
+  // If the channel is of type "cascade", try to fold memref.cast but skip full
+  // composition
   if (chan.getChannelType() == "cascade")
-    return failure();
+    return FoldMemrefCastOnChannelOp(op, rewriter);
 
   // Init. memref type and offsets from memref's defining op's input type
   Value input_memref;

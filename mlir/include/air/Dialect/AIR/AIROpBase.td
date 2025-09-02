@@ -151,44 +151,47 @@ def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
   }];
   let cppNamespace = "xilinx::air";
   let methods = [
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the block arguments representing the iteration space indices (e.g., %x, %y for a 2D herd)",
     "ArrayRef<BlockArgument>", "getIds"
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the block arguments representing the iteration space sizes (e.g., %sx, %sy for a 2D herd)",
     "ArrayRef<BlockArgument>", "getSize"
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the operands that define the iteration space sizes",
     "OperandRange", "getSizeOperands"
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the number of kernel operands passed to the hierarchy operation",
     "unsigned", "getNumKernelOperands"
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get all block arguments representing kernel operands (arguments passed from outside)",
     "ArrayRef<BlockArgument>", "getKernelArguments"
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get all operands passed as kernel arguments to the hierarchy operation",
     "OperandRange", "getKernelOperands"
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the i-th kernel operand",
     "Value", "getKernelOperand", (ins "unsigned":$i)
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the i-th kernel argument (block argument corresponding to kernel operand)",
     "BlockArgument", "getKernelArgument", (ins "unsigned":$i)
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the number of dimensions in the iteration space",
     "unsigned", "getNumDims"
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the unique identifier for this hierarchy operation",
     "int32_t", "getId"
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the block argument that corresponds to the given kernel operand",
     "BlockArgument", "getTiedKernelArgument", (ins "Value":$i)
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the kernel operand that corresponds to the given block argument",
     "Value", "getTiedKernelOperand", (ins "BlockArgument":$i)
     >,
-    InterfaceMethod<"description",
+    InterfaceMethod<"Get the body region of the hierarchy operation",
     "Region&", "getBody"
+    >,
+    InterfaceMethod<"Append new kernel operands to the hierarchy operation",
+    "void", "appendKernelOperands", (ins "ValueRange":$i)
     >,
   ];
 }
