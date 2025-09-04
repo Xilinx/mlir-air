@@ -1495,6 +1495,65 @@ static void extractStridesFromSubview(memref::SubViewOp subview,
   }
 }
 
+// Check if the access pattern represents the default (contiguous, row-major)
+// data access pattern.
+static bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
+                                       SmallVector<Value> memcpy_strides) {
+  if (memcpy_sizes.size() != memcpy_strides.size())
+    return false;
+  // If the sizes and strides were already accessing the memref in default
+  // order, then wraps and strides are not needed
+  if (memcpy_sizes.empty() || memcpy_strides.empty())
+    return true;
+  if (memcpy_sizes.size() == 1 && memcpy_strides.size() == 1) {
+    auto stepsize = mlir::getConstantIntValue(memcpy_strides[0]);
+    if (stepsize && *stepsize == 1)
+      return true;
+  }
+  unsigned stride_factor = 1;
+  for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
+    auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
+    if (!stepsize)
+      return false;
+    auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
+    if (!wrap)
+      return false;
+    if (*wrap == 1 && *stepsize == 0)
+      continue; // dummy dimension.
+    if (*stepsize != stride_factor)
+      return false;
+    stride_factor *= *wrap;
+  }
+  return true;
+}
+
+// Check if the volume of sizes equals the volume of the memref.
+// Return true if equal, and return false if any size value is not constant,
+// or memref shape isn't static.
+static bool isVolumeEqualToMemrefVolume(SmallVector<Value> memcpy_sizes,
+                                        MemRefType memref) {
+  // Return false if memref doesn't have static shape
+  if (!memref.hasStaticShape())
+    return false;
+
+  // Calculate memref volume
+  int64_t memref_volume = 1;
+  for (auto dim : memref.getShape()) {
+    memref_volume *= dim;
+  }
+
+  // Calculate sizes volume
+  int64_t sizes_volume = 1;
+  for (auto size : memcpy_sizes) {
+    auto constant_size = mlir::getConstantIntValue(size);
+    if (!constant_size)
+      return false; // Size value is not constant
+    sizes_volume *= *constant_size;
+  }
+
+  return memref_volume == sizes_volume;
+}
+
 static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
                                                 SmallVector<Value> &offsets,
                                                 SmallVector<Value> &sizes,
@@ -1548,6 +1607,15 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
 
   if (offsets.size() != sizes.size() || sizes.size() != strides.size())
     return failure();
+
+  // Check if the access pattern represents the default (contiguous, row-major)
+  // data access pattern. If so, clear all lists to their canonical empty form.
+  if (isDefaultDataAccessPattern(sizes, strides) &&
+      isVolumeEqualToMemrefVolume(sizes, memref)) {
+    offsets.clear();
+    sizes.clear();
+    strides.clear();
+  }
 
   return success();
 }
@@ -1829,10 +1897,65 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
   return success();
 }
 
+static LogicalResult
+CanonicalizeDefaultAccessPattern(air::DmaMemcpyNdOp op,
+                                 PatternRewriter &rewriter) {
+  // Check if this DMA operation represents a default access pattern
+  // and can be simplified by removing explicit offsets, sizes, strides
+
+  auto srcOffsets = op.getSrcOffsets();
+  auto srcSizes = op.getSrcSizes();
+  auto srcStrides = op.getSrcStrides();
+  auto dstOffsets = op.getDstOffsets();
+  auto dstSizes = op.getDstSizes();
+  auto dstStrides = op.getDstStrides();
+
+  // Only process if both src and dst have explicit access patterns
+  if (srcOffsets.empty() || srcSizes.empty() || srcStrides.empty() ||
+      dstOffsets.empty() || dstSizes.empty() || dstStrides.empty())
+    return failure();
+
+  auto srcMemrefType = llvm::dyn_cast<MemRefType>(op.getSrcMemref().getType());
+  auto dstMemrefType = llvm::dyn_cast<MemRefType>(op.getDstMemref().getType());
+
+  if (!srcMemrefType || !dstMemrefType)
+    return failure();
+
+  bool srcCanonical = isDefaultDataAccessPattern(srcSizes, srcStrides) &&
+                      isVolumeEqualToMemrefVolume(srcSizes, srcMemrefType);
+  bool dstCanonical = isDefaultDataAccessPattern(dstSizes, dstStrides) &&
+                      isVolumeEqualToMemrefVolume(dstSizes, dstMemrefType);
+
+  if (srcCanonical || dstCanonical) {
+    SmallVector<Value> newSrcOffsets =
+        srcCanonical ? SmallVector<Value>{} : srcOffsets;
+    SmallVector<Value> newSrcSizes =
+        srcCanonical ? SmallVector<Value>{} : srcSizes;
+    SmallVector<Value> newSrcStrides =
+        srcCanonical ? SmallVector<Value>{} : srcStrides;
+    SmallVector<Value> newDstOffsets =
+        dstCanonical ? SmallVector<Value>{} : dstOffsets;
+    SmallVector<Value> newDstSizes =
+        dstCanonical ? SmallVector<Value>{} : dstSizes;
+    SmallVector<Value> newDstStrides =
+        dstCanonical ? SmallVector<Value>{} : dstStrides;
+
+    rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
+        op, op->getResultTypes(), op.getAsyncDependencies(), op.getDstMemref(),
+        newDstOffsets, newDstSizes, newDstStrides, op.getSrcMemref(),
+        newSrcOffsets, newSrcSizes, newSrcStrides);
+
+    return success();
+  }
+
+  return failure();
+}
+
 void air::DmaMemcpyNdOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *context) {
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdSrc);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdDst);
+  patterns.add(CanonicalizeDefaultAccessPattern);
   patterns.add(CanonicalizeAsyncOpDeps<air::DmaMemcpyNdOp>);
 }
 
