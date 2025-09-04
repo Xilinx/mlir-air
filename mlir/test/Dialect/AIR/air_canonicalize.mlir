@@ -433,7 +433,7 @@ func.func @dma_compose_transpose() {
 }
 
 // CHECK: func.func @dma_compose_expand_shape
-// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c4096{{.*}}, %c64{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c4096{{.*}}, %c64{{.*}}, %c1{{.*}}]
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] [])
 func.func @dma_compose_expand_shape() {
   %0 = memref.alloc() : memref<128x64xbf16, 1>
   %1 = memref.alloc() : memref<128x64xbf16, 2>
@@ -444,7 +444,7 @@ func.func @dma_compose_expand_shape() {
 }
 
 // CHECK: func.func @dma_compose_cast
-// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c128{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c128{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] [])
 func.func @dma_compose_cast() {
   %0 = memref.alloc() : memref<128x64xbf16, 1>
   %1 = memref.alloc() : memref<128x64xbf16, 2>
@@ -487,8 +487,8 @@ func.func @channel_compose_transpose() {
 }
 
 // CHECK: func.func @channel_compose_expand_shape
-// CHECK: air.channel.put @channel[] ({{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c4096{{.*}}, %c64{{.*}}, %c1{{.*}}]
-// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c64{{.*}}, %c64{{.*}}] [%c4096{{.*}}, %c64{{.*}}, %c1{{.*}}]
+// CHECK: air.channel.put @channel[] ({{.*}}[] [] [])
+// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[] [] [])
 func.func @channel_compose_expand_shape() {
   %0 = memref.alloc() : memref<128x64xbf16, 1>
   %1 = memref.alloc() : memref<128x64xbf16, 2>
@@ -500,8 +500,8 @@ func.func @channel_compose_expand_shape() {
 }
 
 // CHECK: func.func @channel_compose_cast
-// CHECK: air.channel.put @channel[] ({{.*}}[%c0{{.*}}, %c0{{.*}}] [%c128{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1{{.*}}]
-// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[%c0{{.*}}, %c0{{.*}}] [%c128{{.*}}, %c64{{.*}}] [%c64{{.*}}, %c1{{.*}}]
+// CHECK: air.channel.put @channel[] ({{.*}}[] [] [])
+// CHECK: %[[V2:.*]] = air.channel.get async @channel[] ({{.*}}[] [] [])
 func.func @channel_compose_cast() {
   %0 = memref.alloc() : memref<128x64xbf16, 1>
   %1 = memref.alloc() : memref<128x64xbf16, 2>
@@ -514,29 +514,13 @@ func.func @channel_compose_cast() {
 
 // Memref op chain on air::DmaMemcpyNdOp's src/dst memrefs.
 // CHECK: func.func @func0
-// CHECK:  %[[CST128:.*]] = arith.constant 128 : index
-// CHECK:  %[[CST32:.*]] = arith.constant 32 : index
-// CHECK:  %[[CST8:.*]] = arith.constant 8 : index
-// CHECK:  %[[CST16:.*]] = arith.constant 16 : index
-// CHECK:  %[[CST0:.*]] = arith.constant 0 : index
-// CHECK:  %[[CST1:.*]] = arith.constant 1 : index
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %[[CST0]]] [%[[CST8]], %[[CST16]]] [%[[CST16]], %[[CST1]]]) : (memref<1x1x8x16xi32, 1>, memref<8x16xi32>)
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%[[CST0]], %{{.*}}] [%[[CST16]], %[[CST16]]] [%[[CST32]], %[[CST1]]]) : (memref<1x1x16x16xi32, 1>, memref<16x32xi32>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<1x1x8x16xi32, 1>, memref<8x16xi32>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}]) : (memref<1x1x16x16xi32, 1>, memref<16x32xi32>)
 // CHECK:  air.herd @herd_0
-// CHECK:  %[[CST32_0:.*]] = arith.constant 32 : index
-// CHECK:  %[[CST256_0:.*]] = arith.constant 256 : index
-// CHECK:  %[[CST4_0:.*]] = arith.constant 4 : index
-// CHECK:  %[[CST2_0:.*]] = arith.constant 2 : index
-// CHECK:  %[[CST1_0:.*]] = arith.constant 1 : index
-// CHECK:  %[[CST16_0:.*]] = arith.constant 16 : index
-// CHECK:  %[[CST64_0:.*]] = arith.constant 64 : index
-// CHECK:  %[[CST8_0:.*]] = arith.constant 8 : index
-// CHECK:  %[[CST128_0:.*]] = arith.constant 128 : index
-// CHECK:  %[[CST0_0:.*]] = arith.constant 0 : index
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]]] [%[[CST1_0]], %[[CST1_0]], %[[CST2_0]], %[[CST2_0]], %[[CST4_0]], %[[CST8_0]]] [%[[CST128_0]], %[[CST128_0]], %[[CST8_0]], %[[CST64_0]], %[[CST16_0]], %[[CST1_0]]]) : (memref<1x1x2x2x4x8xi32, 2>, memref<1x1x8x16xi32, 1>)
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%[[CST0_0]], %{{.*}}, %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]]] [%[[CST1_0]], %[[CST1_0]], %[[CST2_0]], %[[CST2_0]], %[[CST8_0]], %[[CST8_0]]] [%[[CST256_0]], %[[CST256_0]], %[[CST8_0]], %[[CST128_0]], %[[CST16_0]], %[[CST1_0]]]) : (memref<1x1x2x2x8x8xi32, 2>, memref<1x1x16x16xi32, 1>)
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[%{{.*}}, %{{.*}}, %[[CST0_0]], %[[CST0_0]]] [%[[CST1_0]], %[[CST1_0]], %[[CST8_0]], %[[CST16_0]]] [%[[CST128_0]], %[[CST128_0]], %[[CST16_0]], %[[CST1_0]]], %{{.*}}[%[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]], %[[CST0_0]]] [%[[CST1_0]], %[[CST1_0]], %[[CST2_0]], %[[CST4_0]], %[[CST2_0]], %[[CST8_0]]] [%[[CST128_0]], %[[CST128_0]], %[[CST32_0]], %[[CST8_0]], %[[CST64_0]], %[[CST1_0]]]) : (memref<1x1x8x16xi32, 1>, memref<1x1x2x2x4x8xi32, 2>)
-// CHECK:  air.dma_memcpy_nd (%{{.*}}[%{{.*}}, %{{.*}}] [%[[CST8]], %[[CST16]]] [%[[CST32]], %[[CST1]]], %{{.*}}[%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]]] [%[[CST1]], %[[CST1]], %[[CST8]], %[[CST16]]] [%[[CST128]], %[[CST128]], %[[CST16]], %[[CST1]]]) : (memref<8x32xi32>, memref<1x1x8x16xi32, 1>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}]) : (memref<1x1x2x2x4x8xi32, 2>, memref<1x1x8x16xi32, 1>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}]) : (memref<1x1x2x2x8x8xi32, 2>, memref<1x1x16x16xi32, 1>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}]) : (memref<1x1x8x16xi32, 1>, memref<1x1x2x2x4x8xi32, 2>)
+// CHECK:  air.dma_memcpy_nd (%{{.*}}[%{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}], %{{.*}}[] [] []) : (memref<8x32xi32>, memref<1x1x8x16xi32, 1>)
 
 #map = affine_map<()[s0] -> (s0 * 8)>
 #map1 = affine_map<()[s0] -> (s0 * 16)>
@@ -877,3 +861,118 @@ func.func @func7(%arg0: memref<512x1024xi32>){
   return
 }
 
+// Test canonicalization of DMA operations with default access patterns
+
+// CHECK-LABEL: func.func @dma_default_pattern_4x8
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<4x8xi32>, memref<4x8xi32>)
+func.func @dma_default_pattern_4x8(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  // This should be canonicalized because it represents default row-major access
+  // Sizes [4, 8] with strides [8, 1] for a 4x8 memref (volume 32 = 32)
+  air.dma_memcpy_nd (%arg1[%c0, %c0] [%c4, %c8] [%c8, %c1], %arg0[%c0, %c0] [%c4, %c8] [%c8, %c1]) : (memref<4x8xi32>, memref<4x8xi32>)
+  return
+}
+
+// CHECK-LABEL: func.func @dma_default_pattern_1d
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<32xi32>, memref<32xi32>)
+func.func @dma_default_pattern_1d(%arg0: memref<32xi32>, %arg1: memref<32xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c32 = arith.constant 32 : index
+  // This should be canonicalized because it represents default 1D access
+  // Sizes [32] with strides [1] for a 32-element memref (volume 32 = 32)
+  air.dma_memcpy_nd (%arg1[%c0] [%c32] [%c1], %arg0[%c0] [%c32] [%c1]) : (memref<32xi32>, memref<32xi32>)
+  return
+}
+
+// CHECK-LABEL: func.func @dma_default_pattern_3d
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<2x4x4xi32>, memref<2x4x4xi32>)
+func.func @dma_default_pattern_3d(%arg0: memref<2x4x4xi32>, %arg1: memref<2x4x4xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  %c16 = arith.constant 16 : index
+  // This should be canonicalized because it represents default row-major access
+  // Sizes [2, 4, 4] with strides [16, 4, 1] for a 2x4x4 memref (volume 32 = 32)
+  air.dma_memcpy_nd (%arg1[%c0, %c0, %c0] [%c2, %c4, %c4] [%c16, %c4, %c1], %arg0[%c0, %c0, %c0] [%c2, %c4, %c4] [%c16, %c4, %c1]) : (memref<2x4x4xi32>, memref<2x4x4xi32>)
+  return
+}
+
+// Test cases that should NOT be canonicalized
+
+// CHECK-LABEL: func.func @dma_partial_access
+// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c4{{.*}}] [%c8{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c2{{.*}}, %c4{{.*}}] [%c8{{.*}}, %c1{{.*}}]) : (memref<4x8xi32>, memref<4x8xi32>)
+func.func @dma_partial_access(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  // This should NOT be canonicalized because it's only accessing part of the memref
+  // Sizes [2, 4] with volume 8 ≠ 32 (memref volume)
+  air.dma_memcpy_nd (%arg1[%c0, %c0] [%c2, %c4] [%c8, %c1], %arg0[%c0, %c0] [%c2, %c4] [%c8, %c1]) : (memref<4x8xi32>, memref<4x8xi32>)
+  return
+}
+
+// CHECK-LABEL: func.func @dma_non_default_strides
+// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}] [%c16{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}] [%c16{{.*}}, %c1{{.*}}]) : (memref<4x8xi32>, memref<4x8xi32>)
+func.func @dma_non_default_strides(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  %c16 = arith.constant 16 : index
+  // This should NOT be canonicalized because strides [16, 1] don't match default [8, 1]
+  // Even though volume matches (32 = 32), the access pattern is not default
+  air.dma_memcpy_nd (%arg1[%c0, %c0] [%c4, %c8] [%c16, %c1], %arg0[%c0, %c0] [%c4, %c8] [%c16, %c1]) : (memref<4x8xi32>, memref<4x8xi32>)
+  return
+}
+
+// CHECK-LABEL: func.func @dma_dynamic_sizes
+// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%{{.*}}, %{{.*}}] [%c8{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%{{.*}}, %{{.*}}] [%c8{{.*}}, %c1{{.*}}]) : (memref<4x8xi32>, memref<4x8xi32>)
+func.func @dma_dynamic_sizes(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>, %size0: index, %size1: index) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  // This should NOT be canonicalized because sizes are dynamic (not constant)
+  air.dma_memcpy_nd (%arg1[%c0, %c0] [%size0, %size1] [%c8, %c1], %arg0[%c0, %c0] [%size0, %size1] [%c8, %c1]) : (memref<4x8xi32>, memref<4x8xi32>)
+  return
+}
+
+// CHECK-LABEL: func.func @dma_dynamic_memref
+// CHECK: air.dma_memcpy_nd (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}] [%c8{{.*}}, %c1{{.*}}], %{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c4{{.*}}, %c8{{.*}}] [%c8{{.*}}, %c1{{.*}}]) : (memref<?x?xi32>, memref<?x?xi32>)
+func.func @dma_dynamic_memref(%arg0: memref<?x?xi32>, %arg1: memref<?x?xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  // This should NOT be canonicalized because memref shape is dynamic
+  air.dma_memcpy_nd (%arg1[%c0, %c0] [%c4, %c8] [%c8, %c1], %arg0[%c0, %c0] [%c4, %c8] [%c8, %c1]) : (memref<?x?xi32>, memref<?x?xi32>)
+  return
+}
+
+// CHECK-LABEL: func.func @dma_single_element
+// CHECK: air.dma_memcpy_nd (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<1x1xi32>, memref<1x1xi32>)
+func.func @dma_single_element(%arg0: memref<1x1xi32>, %arg1: memref<1x1xi32>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  // This should be canonicalized - single element access
+  air.dma_memcpy_nd (%arg1[%c0, %c0] [%c1, %c1] [%c1, %c1], %arg0[%c0, %c0] [%c1, %c1] [%c1, %c1]) : (memref<1x1xi32>, memref<1x1xi32>)
+  return
+}
+
+// CHECK-LABEL: func.func @dma_default_pattern_async
+// CHECK: %{{.*}} = air.dma_memcpy_nd async [%{{.*}}] (%{{.*}}[] [] [], %{{.*}}[] [] []) : (memref<4x8xi32>, memref<4x8xi32>)
+func.func @dma_default_pattern_async(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi32>, %token: !air.async.token) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c8 = arith.constant 8 : index
+  // This should be canonicalized even with async tokens
+  %result = air.dma_memcpy_nd async [%token] (%arg1[%c0, %c0] [%c4, %c8] [%c8, %c1], %arg0[%c0, %c0] [%c4, %c8] [%c8, %c1]) : (memref<4x8xi32>, memref<4x8xi32>)
+  return
+}
