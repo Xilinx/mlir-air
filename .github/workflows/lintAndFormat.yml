@@ -165,7 +165,7 @@ jobs:
           tool_name: clang-format
           level: error
           cleanup: true
-          fail_on_error: true
+          fail_level: any
 
       - name: Run black format
         if: success() || failure()
@@ -187,4 +187,4 @@ jobs:
         with:
           tool_name: black
           level: error
-          fail_on_error: true
+          fail_level: any
