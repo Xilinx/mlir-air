@@ -1554,6 +1554,24 @@ static bool isVolumeEqualToMemrefVolume(SmallVector<Value> memcpy_sizes,
   return memref_volume == sizes_volume;
 }
 
+static LogicalResult canonicalizeEmptyLists(SmallVector<Value> &offsets,
+                                            SmallVector<Value> &sizes,
+                                            SmallVector<Value> &strides,
+                                            MemRefType memref) {
+  // Check if the access pattern represents the default (contiguous, row-major)
+  // data access pattern. If so, clear all lists to their canonical empty form.
+  if (offsets.empty() && sizes.empty() && strides.empty())
+    return failure();
+  if (isDefaultDataAccessPattern(sizes, strides) &&
+      isVolumeEqualToMemrefVolume(sizes, memref)) {
+    offsets.clear();
+    sizes.clear();
+    strides.clear();
+    return success();
+  }
+  return failure();
+}
+
 static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
                                                 SmallVector<Value> &offsets,
                                                 SmallVector<Value> &sizes,
@@ -1565,7 +1583,7 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   auto loc = builder.getUnknownLoc();
   auto max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
-  auto target_dim_size = std::max(max_dim_size, (size_t)memref.getRank());
+  auto target_dim_size = max_dim_size;
   if (max_dim_size && offsets.size() < target_dim_size) {
     for (unsigned i = offsets.size(); i < target_dim_size; i++) {
       offsets.insert(offsets.begin(),
@@ -1590,32 +1608,8 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
     }
   }
 
-  // Reduce highest dimensions if more than memref size
-  while (strides.size() > target_dim_size && getConstantIntValue(strides[0]) &&
-         *getConstantIntValue(strides[0]) == memref_size) {
-    strides.erase(strides.begin());
-  }
-  while (sizes.size() > target_dim_size && getConstantIntValue(sizes[0]) &&
-         *getConstantIntValue(sizes[0]) == 1) {
-    sizes.erase(sizes.begin());
-  }
-  while (offsets.size() > std::min(sizes.size(), strides.size()) &&
-         getConstantIntValue(offsets[0]) &&
-         *getConstantIntValue(offsets[0]) == 0) {
-    offsets.erase(offsets.begin());
-  }
-
   if (offsets.size() != sizes.size() || sizes.size() != strides.size())
     return failure();
-
-  // Check if the access pattern represents the default (contiguous, row-major)
-  // data access pattern. If so, clear all lists to their canonical empty form.
-  if (isDefaultDataAccessPattern(sizes, strides) &&
-      isVolumeEqualToMemrefVolume(sizes, memref)) {
-    offsets.clear();
-    sizes.clear();
-    strides.clear();
-  }
 
   return success();
 }
@@ -1720,10 +1714,11 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
 
   auto memref_type = llvm::dyn_cast<MemRefType>(memref.getType());
   if (!memref_type)
-    return failure();
+    return rewriter.notifyMatchFailure(rewriter.getUnknownLoc(),
+                                       "not operating on MemRef");
   auto defop = memref.getDefiningOp();
   if (!defop)
-    return failure();
+    return canonicalizeEmptyLists(offsets, sizes, strides, memref_type);
   auto loc = defop->getLoc();
 
   // Get a chain of memref ops that produce the memref consumed by the memcpy
@@ -1743,8 +1738,9 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     } else
       exit = true;
   }
-  if (memrefOpVec.empty())
-    return failure();
+  if (memrefOpVec.empty() || !offsets.empty()) {
+    return canonicalizeEmptyLists(offsets, sizes, strides, memref_type);
+  }
 
   // Revert the vector of memref ops, as it was built with push_back.
   std::reverse(memrefOpVec.begin(), memrefOpVec.end());
@@ -1784,8 +1780,9 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       offsets.push_back(constZero);
       strides.push_back(constOne);
     }
-  } else
-    return failure();
+  } else {
+    return canonicalizeEmptyLists(offsets, sizes, strides, memref_type);
+  }
 
   // Compose offsets as the memref type propagates through the chain of memref
   // ops.
@@ -1827,8 +1824,14 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   strides = extractStridesFromMemrefType(sink_memref_ty, rewriter);
   sizes = extractSizesFromMemrefType(sink_memref_ty, rewriter);
 
-  return canonicalizeAIRDmaOperands(rewriter, offsets, sizes, strides,
-                                    sink_memref_ty);
+  auto res1 = canonicalizeAIRDmaOperands(rewriter, offsets, sizes, strides,
+                                         sink_memref_ty);
+  MemRefType input_memref_ty = llvm::cast<MemRefType>(input_memref.getType());
+  auto res2 = canonicalizeEmptyLists(offsets, sizes, strides, input_memref_ty);
+  if (succeeded(res1) || succeeded(res2))
+    return success();
+  else
+    return failure();
 }
 
 //
@@ -1842,17 +1845,11 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
   Value memref = op.getSrcMemref();
   if (!memref)
     return failure();
-  Value input_memref;
+  Value input_memref = memref;
   SmallVector<Value> offsets, sizes, strides;
   offsets = op.getSrcOffsets();
-  if (!offsets.empty())
-    return failure();
   sizes = op.getSrcSizes();
-  if (!sizes.empty())
-    return failure();
   strides = op.getSrcStrides();
-  if (!strides.empty())
-    return failure();
 
   if (failed(ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes,
                              strides))) {
@@ -1873,17 +1870,11 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
   Value memref = op.getDstMemref();
   if (!memref)
     return failure();
-  Value input_memref;
+  Value input_memref = memref;
   SmallVector<Value> offsets, sizes, strides;
   offsets = op.getDstOffsets();
-  if (!offsets.empty())
-    return failure();
   sizes = op.getDstSizes();
-  if (!sizes.empty())
-    return failure();
   strides = op.getDstStrides();
-  if (!strides.empty())
-    return failure();
 
   if (failed(ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes,
                              strides))) {
@@ -1897,65 +1888,10 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
   return success();
 }
 
-static LogicalResult
-CanonicalizeDefaultAccessPattern(air::DmaMemcpyNdOp op,
-                                 PatternRewriter &rewriter) {
-  // Check if this DMA operation represents a default access pattern
-  // and can be simplified by removing explicit offsets, sizes, strides
-
-  auto srcOffsets = op.getSrcOffsets();
-  auto srcSizes = op.getSrcSizes();
-  auto srcStrides = op.getSrcStrides();
-  auto dstOffsets = op.getDstOffsets();
-  auto dstSizes = op.getDstSizes();
-  auto dstStrides = op.getDstStrides();
-
-  // Only process if both src and dst have explicit access patterns
-  if (srcOffsets.empty() || srcSizes.empty() || srcStrides.empty() ||
-      dstOffsets.empty() || dstSizes.empty() || dstStrides.empty())
-    return failure();
-
-  auto srcMemrefType = llvm::dyn_cast<MemRefType>(op.getSrcMemref().getType());
-  auto dstMemrefType = llvm::dyn_cast<MemRefType>(op.getDstMemref().getType());
-
-  if (!srcMemrefType || !dstMemrefType)
-    return failure();
-
-  bool srcCanonical = isDefaultDataAccessPattern(srcSizes, srcStrides) &&
-                      isVolumeEqualToMemrefVolume(srcSizes, srcMemrefType);
-  bool dstCanonical = isDefaultDataAccessPattern(dstSizes, dstStrides) &&
-                      isVolumeEqualToMemrefVolume(dstSizes, dstMemrefType);
-
-  if (srcCanonical || dstCanonical) {
-    SmallVector<Value> newSrcOffsets =
-        srcCanonical ? SmallVector<Value>{} : srcOffsets;
-    SmallVector<Value> newSrcSizes =
-        srcCanonical ? SmallVector<Value>{} : srcSizes;
-    SmallVector<Value> newSrcStrides =
-        srcCanonical ? SmallVector<Value>{} : srcStrides;
-    SmallVector<Value> newDstOffsets =
-        dstCanonical ? SmallVector<Value>{} : dstOffsets;
-    SmallVector<Value> newDstSizes =
-        dstCanonical ? SmallVector<Value>{} : dstSizes;
-    SmallVector<Value> newDstStrides =
-        dstCanonical ? SmallVector<Value>{} : dstStrides;
-
-    rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
-        op, op->getResultTypes(), op.getAsyncDependencies(), op.getDstMemref(),
-        newDstOffsets, newDstSizes, newDstStrides, op.getSrcMemref(),
-        newSrcOffsets, newSrcSizes, newSrcStrides);
-
-    return success();
-  }
-
-  return failure();
-}
-
 void air::DmaMemcpyNdOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *context) {
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdSrc);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdDst);
-  patterns.add(CanonicalizeDefaultAccessPattern);
   patterns.add(CanonicalizeAsyncOpDeps<air::DmaMemcpyNdOp>);
 }
 
@@ -2218,7 +2154,7 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
     return FoldMemrefCastOnChannelOp(op, rewriter);
 
   // Init. memref type and offsets from memref's defining op's input type
-  Value input_memref;
+  Value input_memref = memref;
   SmallVector<Value> offsets, sizes, strides;
   offsets = op.getOffsets();
   if (!offsets.empty())
