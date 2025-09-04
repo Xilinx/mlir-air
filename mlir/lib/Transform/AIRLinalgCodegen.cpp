@@ -25,8 +25,10 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Inliner.h"
@@ -2235,6 +2237,167 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
 
   results.set(llvm::cast<OpResult>(getFusedOp()), ArrayRef<Operation *>());
   return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
+}
+
+//===----------------------------------------------------------------------===//
+// RemoveUninitializedMemrefCopyOp
+//===----------------------------------------------------------------------===//
+
+/// Trace a value back through subview operations to find the original
+/// allocation
+static memref::AllocOp traceToAlloc(Value value) {
+  Value current = value;
+  while (current) {
+    if (auto allocOp = current.getDefiningOp<memref::AllocOp>()) {
+      return allocOp;
+    }
+    if (auto subviewOp = current.getDefiningOp<memref::SubViewOp>()) {
+      current = subviewOp.getSource();
+      continue;
+    }
+    // Handle other view-like operations if needed
+    break;
+  }
+  return nullptr;
+}
+
+/// Check if an operation has a write effect on the given value or any value
+/// derived from it
+static bool hasWriteEffectOn(Operation *op, Value allocResult) {
+  SmallVector<MemoryEffects::EffectInstance> effects;
+  auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!memInterface) {
+    // If the operation doesn't implement the memory effect interface,
+    // conservatively assume it might have side effects unless it's pure
+    return !op->hasTrait<OpTrait::IsIsolatedFromAbove>() &&
+           !op->hasTrait<OpTrait::HasRecursiveMemoryEffects>();
+  }
+
+  memInterface.getEffects(effects);
+
+  for (auto &effect : effects) {
+    // Check if this is a write effect
+    if (!isa<MemoryEffects::Write>(effect.getEffect())) {
+      continue;
+    }
+
+    // Check if the effect is on the value we're interested in
+    Value effectValue = effect.getValue();
+    if (!effectValue) {
+      // Effect on unknown memory - conservatively assume it could affect our
+      // value
+      return true;
+    }
+
+    // Check if the effect is on our allocation or a derived value
+    if (effectValue == allocResult ||
+        traceToAlloc(effectValue) == traceToAlloc(allocResult)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/// Check if there are any write operations to the memref between allocation and
+/// the given operation Uses DominanceInfo for proper dominance analysis
+static bool hasWritesBetween(memref::AllocOp allocOp, Operation *beforeOp) {
+  Value allocResult = allocOp.getResult();
+
+  // Get the function containing both operations
+  auto funcOp = allocOp->getParentOfType<func::FuncOp>();
+  if (!funcOp || funcOp != beforeOp->getParentOfType<func::FuncOp>()) {
+    // If they're in different functions, conservatively return true
+    return true;
+  }
+
+  // Create dominance info for the function
+  DominanceInfo domInfo(funcOp);
+
+  // Walk through all operations in the function to find writes
+  bool foundWrite = false;
+  funcOp.walk([&](Operation *op) {
+    // Skip if we've already found a write
+    if (foundWrite)
+      return;
+
+    // Skip the allocation itself
+    if (op == allocOp)
+      return;
+
+    // Only consider operations that are dominated by the allocation
+    // and that dominate the beforeOp
+    if (!domInfo.properlyDominates(allocOp.getOperation(), op)) {
+      return;
+    }
+
+    if (!domInfo.properlyDominates(op, beforeOp)) {
+      return;
+    }
+
+    // Check if this operation writes to our allocation
+    if (hasWriteEffectOn(op, allocResult)) {
+      foundWrite = true;
+      return;
+    }
+  });
+
+  return foundWrite;
+}
+
+/// Check if a memref.copy operation copies from an uninitialized memref
+static bool isUninitializedMemrefCopy(memref::CopyOp copyOp) {
+  Value source = copyOp.getSource();
+
+  // Trace the source back to its allocation
+  memref::AllocOp allocOp = traceToAlloc(source);
+  if (!allocOp) {
+    return false;
+  }
+
+  // Check if there are any writes to the allocated memref before this copy
+  return !hasWritesBetween(allocOp, copyOp);
+}
+
+DiagnosedSilenceableFailure transform::RemoveUninitializedMemrefCopyOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    auto funcOp = dyn_cast<func::FuncOp>(target);
+    if (!funcOp) {
+      return emitDefiniteFailure() << "target must be a func.func operation";
+    }
+
+    SmallVector<memref::CopyOp> copiesToErase;
+
+    // Walk the function to find memref.copy operations
+    funcOp.walk([&](memref::CopyOp copyOp) {
+      if (isUninitializedMemrefCopy(copyOp)) {
+        copiesToErase.push_back(copyOp);
+      }
+    });
+
+    // Erase the identified copy operations
+    for (auto copyOp : copiesToErase) {
+      rewriter.eraseOp(copyOp);
+    }
+
+    transformedOps.push_back(funcOp);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
 }
 
 namespace xilinx {
