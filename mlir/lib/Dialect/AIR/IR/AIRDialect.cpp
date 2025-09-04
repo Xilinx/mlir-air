@@ -1531,7 +1531,7 @@ static bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
 // Return true if equal, and return false if any size value is not constant,
 // or memref shape isn't static.
 static bool isVolumeEqualToMemrefVolume(SmallVector<Value> memcpy_sizes,
-                                        MemRefType memref) {
+                                        BaseMemRefType memref) {
   // Return false if memref doesn't have static shape
   if (!memref.hasStaticShape())
     return false;
@@ -1557,7 +1557,7 @@ static bool isVolumeEqualToMemrefVolume(SmallVector<Value> memcpy_sizes,
 static LogicalResult canonicalizeEmptyLists(SmallVector<Value> &offsets,
                                             SmallVector<Value> &sizes,
                                             SmallVector<Value> &strides,
-                                            MemRefType memref) {
+                                            BaseMemRefType memref) {
   // Check if the access pattern represents the default (contiguous, row-major)
   // data access pattern. If so, clear all lists to their canonical empty form.
   if (offsets.empty() && sizes.empty() && strides.empty())
@@ -1845,8 +1845,9 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
-  auto canonicalizeListsRes = canonicalizeEmptyLists(
-      offsets, sizes, strides, dyn_cast<MemRefType>(input_memref.getType()));
+  auto canonicalizeListsRes =
+      canonicalizeEmptyLists(offsets, sizes, strides,
+                             dyn_cast<BaseMemRefType>(input_memref.getType()));
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
@@ -1874,8 +1875,9 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
-  auto canonicalizeListsRes = canonicalizeEmptyLists(
-      offsets, sizes, strides, dyn_cast<MemRefType>(input_memref.getType()));
+  auto canonicalizeListsRes =
+      canonicalizeEmptyLists(offsets, sizes, strides,
+                             dyn_cast<BaseMemRefType>(input_memref.getType()));
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
@@ -2167,8 +2169,9 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
-  auto canonicalizeListsRes = canonicalizeEmptyLists(
-      offsets, sizes, strides, dyn_cast<MemRefType>(input_memref.getType()));
+  auto canonicalizeListsRes =
+      canonicalizeEmptyLists(offsets, sizes, strides,
+                             dyn_cast<BaseMemRefType>(input_memref.getType()));
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
