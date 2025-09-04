@@ -1718,7 +1718,7 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
                                        "not operating on MemRef");
   auto defop = memref.getDefiningOp();
   if (!defop)
-    return canonicalizeEmptyLists(offsets, sizes, strides, memref_type);
+    return failure();
   auto loc = defop->getLoc();
 
   // Get a chain of memref ops that produce the memref consumed by the memcpy
@@ -1738,9 +1738,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     } else
       exit = true;
   }
-  if (memrefOpVec.empty() || !offsets.empty()) {
-    return canonicalizeEmptyLists(offsets, sizes, strides, memref_type);
-  }
+  if (memrefOpVec.empty() || !offsets.empty())
+    return failure();
 
   // Revert the vector of memref ops, as it was built with push_back.
   std::reverse(memrefOpVec.begin(), memrefOpVec.end());
@@ -1780,9 +1779,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       offsets.push_back(constZero);
       strides.push_back(constOne);
     }
-  } else {
-    return canonicalizeEmptyLists(offsets, sizes, strides, memref_type);
-  }
+  } else
+    return failure();
 
   // Compose offsets as the memref type propagates through the chain of memref
   // ops.
@@ -1824,14 +1822,8 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   strides = extractStridesFromMemrefType(sink_memref_ty, rewriter);
   sizes = extractSizesFromMemrefType(sink_memref_ty, rewriter);
 
-  auto res1 = canonicalizeAIRDmaOperands(rewriter, offsets, sizes, strides,
-                                         sink_memref_ty);
-  MemRefType input_memref_ty = llvm::cast<MemRefType>(input_memref.getType());
-  auto res2 = canonicalizeEmptyLists(offsets, sizes, strides, input_memref_ty);
-  if (succeeded(res1) || succeeded(res2))
-    return success();
-  else
-    return failure();
+  return canonicalizeAIRDmaOperands(rewriter, offsets, sizes, strides,
+                                    sink_memref_ty);
 }
 
 //
@@ -1851,10 +1843,14 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
   sizes = op.getSrcSizes();
   strides = op.getSrcStrides();
 
-  if (failed(ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes,
-                             strides))) {
+  auto composeMemrefRes =
+      ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
+  auto canonicalizeListsRes = canonicalizeEmptyLists(
+      offsets, sizes, strides, dyn_cast<MemRefType>(input_memref.getType()));
+
+  if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
-  }
+
   rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getDstMemref(),
       op.getDstOffsets(), op.getDstSizes(), op.getDstStrides(), input_memref,
@@ -1876,10 +1872,13 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
   sizes = op.getDstSizes();
   strides = op.getDstStrides();
 
-  if (failed(ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes,
-                             strides))) {
+  auto composeMemrefRes =
+      ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
+  auto canonicalizeListsRes = canonicalizeEmptyLists(
+      offsets, sizes, strides, dyn_cast<MemRefType>(input_memref.getType()));
+
+  if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
-  }
   rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
       op, op->getResultTypes(), op.getAsyncDependencies(), input_memref,
       offsets, sizes, strides, op.getSrcMemref(), op.getSrcOffsets(),
@@ -2166,10 +2165,13 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   if (!strides.empty())
     return failure();
 
-  if (failed(ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes,
-                             strides))) {
+  auto composeMemrefRes =
+      ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
+  auto canonicalizeListsRes = canonicalizeEmptyLists(
+      offsets, sizes, strides, dyn_cast<MemRefType>(input_memref.getType()));
+
+  if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
-  }
 
   rewriter.replaceOpWithNewOp<OpT>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
