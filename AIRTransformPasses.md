@@ -925,7 +925,7 @@ Experimental pass. Force all memrefs allocated within a specified code region to
 
 ```
 -memory-space : Memory space to override to.
--scope        : AIR hierarchy scope to perform the transform under. Must be one of [herd, segment, launch].
+-scope        : AIR hierarchy scope to perform the transform under. Must be one of [herd, segment, launch, func].
 ```
 
 ### `-air-ping-pong-transform`
