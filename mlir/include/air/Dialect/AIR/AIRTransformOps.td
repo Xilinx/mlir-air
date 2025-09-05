@@ -375,6 +375,32 @@ def EliminateCascadeMemcpyOp : Op<Transform_Dialect, "air.eliminate_cascade_memc
   let assemblyFormat = "$target attr-dict";
 }
 
+def ConvertMemrefCopyToLinalgCopyOp : Op<Transform_Dialect, "air.convert_memref_copy_to_linalg_copy",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Convert memref.copy operations to linalg.copy operations";
+  let description = [{
+    This transform converts `memref.copy` operations to `linalg.copy` operations.
+    This can be useful for enabling further linalg-based optimizations and transformations.
+    
+    The transformation replaces:
+    ```mlir
+    memref.copy %source, %dest : memref<...> to memref<...>
+    ```
+    
+    With:
+    ```mlir
+    linalg.copy ins(%source : memref<...>) outs(%dest : memref<...>)
+    ```
+    
+    Returns a handle to the modified operation containing the transformed copies.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
 // Ops implemented in mlir/lib/Transform/AIRLinalgBufferize.cpp
 //
 

@@ -790,18 +790,8 @@ private:
       operand.getDefiningOp()->emitOpError(
           "operand being traced is not a memref");
     }
-    auto opOrAncestorIsDominantOver = [](Operation *a, Operation *b) {
-      Region *commonRegion = air::findCommonRegionContainingAllAncestors(
-          SmallVector<Operation *>{a, b}, nullptr);
-      auto aAncestor = commonRegion->findAncestorOpInRegion(*a);
-      auto bAncestor = commonRegion->findAncestorOpInRegion(*b);
-      if (!aAncestor || !bAncestor)
-        return false;
-      DominanceInfo domInfo(aAncestor);
-      return domInfo.properlyDominates(aAncestor, bAncestor);
-    };
     for (auto &u : operand.getUses()) {
-      if (!opOrAncestorIsDominantOver(u.getOwner(), op))
+      if (!air::opOrAncestorIsDominantOver(u.getOwner(), op))
         continue;
       // If used in MemcpyInterface Op
       if (auto memcpy = dyn_cast<air::MemcpyInterface>(u.getOwner())) {

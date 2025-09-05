@@ -2141,4 +2141,15 @@ Operation *air::cloneOpAndOperands(RewriterBase &rewriter, IRMapping &remap,
   return new_op;
 }
 
+bool air::opOrAncestorIsDominantOver(Operation *a, Operation *b) {
+  Region *commonRegion = air::findCommonRegionContainingAllAncestors(
+      SmallVector<Operation *>{a, b}, nullptr);
+  auto aAncestor = commonRegion->findAncestorOpInRegion(*a);
+  auto bAncestor = commonRegion->findAncestorOpInRegion(*b);
+  if (!aAncestor || !bAncestor)
+    return false;
+  DominanceInfo domInfo(aAncestor);
+  return domInfo.properlyDominates(aAncestor, bAncestor);
+}
+
 } // namespace xilinx

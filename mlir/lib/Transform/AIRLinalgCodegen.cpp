@@ -567,6 +567,22 @@ struct RemoveAllocCopyLinalgOpCopyPattern
 //  #map1> memref.dealloc %11 : memref<1x32x16x16xf32, 2>
 //}
 
+struct ConvertMemrefCopyToLinalgCopyPattern
+    : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::CopyOp copyOp,
+                                PatternRewriter &rewriter) const override {
+    Value source = copyOp.getSource();
+    Value target = copyOp.getTarget();
+
+    // Create linalg.copy operation
+    rewriter.replaceOpWithNewOp<linalg::CopyOp>(copyOp, source, target);
+
+    return success();
+  }
+};
+
 // Eliminate intermediate memref in cascaded DMA operations
 // Replace a pattern like this:
 //  air.dma_memcpy_nd (%intermediate[] [] [], %source[] [] []) : (memref<...>,
@@ -590,17 +606,6 @@ struct EliminateIntermediateMemrefPattern
     if (std::distance(intermediate.use_begin(), intermediate.use_end()) != 2)
       return failure();
 
-    auto opOrAncestorIsDominantOver = [](Operation *a, Operation *b) {
-      Region *commonRegion = air::findCommonRegionContainingAllAncestors(
-          SmallVector<Operation *>{a, b}, nullptr);
-      auto aAncestor = commonRegion->findAncestorOpInRegion(*a);
-      auto bAncestor = commonRegion->findAncestorOpInRegion(*b);
-      if (!aAncestor || !bAncestor)
-        return false;
-      DominanceInfo domInfo(aAncestor);
-      return domInfo.properlyDominates(aAncestor, bAncestor);
-    };
-
     // Find the second memcpy that uses the intermediate buffer as source
     air::DmaMemcpyNdOp secondMemcpy = nullptr;
     for (auto user : intermediate.getUsers()) {
@@ -609,7 +614,7 @@ struct EliminateIntermediateMemrefPattern
         continue;
       if (memcpyOp.getSrcMemref() != intermediate)
         continue;
-      if (opOrAncestorIsDominantOver(memcpyOp, firstMemcpy))
+      if (air::opOrAncestorIsDominantOver(memcpyOp, firstMemcpy))
         continue;
       secondMemcpy = memcpyOp;
       break;
@@ -2438,13 +2443,10 @@ static bool hasWritesBetween(memref::AllocOp allocOp, Operation *beforeOp) {
 
     // Only consider operations that are dominated by the allocation
     // and that dominate the beforeOp
-    if (!domInfo.properlyDominates(allocOp.getOperation(), op)) {
+    if (!xilinx::air::opOrAncestorIsDominantOver(allocOp.getOperation(), op))
       return;
-    }
-
-    if (!domInfo.properlyDominates(op, beforeOp)) {
+    if (!xilinx::air::opOrAncestorIsDominantOver(op, beforeOp))
       return;
-    }
 
     // Check if this operation writes to our allocation
     if (hasWriteEffectOn(op, allocResult)) {
@@ -2537,6 +2539,41 @@ DiagnosedSilenceableFailure transform::EliminateCascadeMemcpyOp::apply(
     patterns.insert<xilinx::air::EliminateIntermediateMemrefPattern>(ctx);
 
     // Apply the pattern to eliminate cascade memcpy operations
+    (void)applyPatternsGreedily(target, std::move(patterns));
+
+    transformedOps.push_back(target);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// ConvertMemrefCopyToLinalgCopyOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::ConvertMemrefCopyToLinalgCopyOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    MLIRContext *ctx = target->getContext();
+    RewritePatternSet patterns(ctx);
+
+    // Use the ConvertMemrefCopyToLinalgCopyPattern
+    patterns.insert<xilinx::air::ConvertMemrefCopyToLinalgCopyPattern>(ctx);
+
+    // Apply the pattern to convert memref.copy to linalg.copy operations
     (void)applyPatternsGreedily(target, std::move(patterns));
 
     transformedOps.push_back(target);
