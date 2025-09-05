@@ -96,6 +96,84 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 | `result` | PDL handle to an `mlir::Operation *` |
 
 
+### `transform.air.eliminate_cascade_memcpy` (transform::EliminateCascadeMemcpyOp)
+
+_Eliminate intermediate memref buffers in cascaded DMA operations_
+
+Syntax:
+
+```
+operation ::= `transform.air.eliminate_cascade_memcpy` $target attr-dict
+```
+
+This transform identifies and eliminates intermediate memref buffers in cascaded 
+air.dma_memcpy_nd operations. It looks for the pattern where an intermediate buffer
+is used exactly twice: once as the destination of a DMA operation and once as the
+source of another DMA operation, with both operations using default access patterns
+(empty offsets, sizes, and strides).
+
+The transformation replaces:
+```mlir
+air.dma_memcpy_nd (%intermediate[] [] [], %source[] [] []) : (memref<...>, memref<...>)
+air.dma_memcpy_nd (%dest[] [] [], %intermediate[] [] []) : (memref<...>, memref<...>)
+```
+
+With:
+```mlir
+air.dma_memcpy_nd (%dest[] [] [], %source[] [] []) : (memref<...>, memref<...>)
+```
+
+This optimization eliminates unnecessary intermediate memory allocations and reduces
+memory traffic, which is particularly beneficial for cascade patterns in AIR programs.
+
+Returns a handle to the modified operation.
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *` |
+
+
+### `transform.air.forall_with_reduce_to_parallel` (transform::ForallWithReduceToParallelOp)
+
+_Converts a pattern of scf.forall and linalg.reduce to scf.parallel_
+
+Syntax:
+
+```
+operation ::= `transform.air.forall_with_reduce_to_parallel` $target attr-dict `:` functional-type(operands, results)
+```
+
+.
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `transformed` | variadic of PDL handle to an `mlir::Operation *` |
+
+
 ### `transform.air.fuse_into_containing_op` (transform::FuseIntoContainingMemrefOp)
 
 _Fuse a producer into a containing operation._
@@ -410,6 +488,52 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 <tr><td><code>direction</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
 <tr><td><code>promote</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
 </table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *` |
+
+
+### `transform.air.remove_uninitialized_memref_copy` (transform::RemoveUninitializedMemrefCopyOp)
+
+_Remove memref.copy operations that copy from uninitialized memrefs_
+
+Syntax:
+
+```
+operation ::= `transform.air.remove_uninitialized_memref_copy` $target attr-dict
+```
+
+This transform walks through a func.func operation and identifies memref.copy 
+operations where the source is an uninitialized memref (allocated but not written to).
+Such copy operations are erased as they copy undefined data.
+
+The transform detects the pattern where:
+1. A memref is allocated with memref.alloc
+2. A subview of that memref is created (optional)
+3. The memref/subview is used as source in memref.copy before any write operations
+
+Returns a handle to the modified function.
+
+Example:
+```mlir
+%alloc = memref.alloc() : memref<2x16x8xi32, 1>
+%subview = memref.subview %alloc[0, 0, 0] [1, 16, 8] [1, 1, 1] : ...
+%target = memref.alloc() : memref<1x16x8xi32, 2>
+memref.copy %subview, %target  // <- This copy will be erased
+```
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 #### Operands:
 
