@@ -1234,8 +1234,9 @@ FailureOr<Value> tileChannelOpByFactor(
   Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   // Create and apply affine map onto the split channel ops.
   SmallVector<Value> tokens;
-  int memorySpace = dyn_cast<MemRefType>(originalChanOp.getMemref().getType())
-                        .getMemorySpaceAsInt();
+  int memorySpace =
+      dyn_cast<BaseMemRefType>(originalChanOp.getMemref().getType())
+          .getMemorySpaceAsInt();
   for (int i = 0; i < factor; i++) {
     // Get affine map and split size from splitInfo.
     auto &[splitInfoDimOnOffsets, splitInfoAffineMap, splitInfoSplitOffset,
@@ -2354,9 +2355,11 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
       parent = alloc->getParentOfType<air::SegmentOp>();
     else if (clScope == "launch")
       parent = alloc->getParentOfType<air::LaunchOp>();
+    else if (clScope == "func")
+      parent = alloc->getParentOfType<func::FuncOp>();
     else
       return alloc->emitOpError(
-          "Invalid clScope value: expected one of herd/segment/launch");
+          "Invalid clScope value: expected one of herd/segment/launch/func");
 
     if (!parent)
       return failure();
@@ -2440,12 +2443,12 @@ private:
 };
 
 void AIROverrideMemRefMemorySpacePass::runOnOperation() {
-  func::FuncOp funcOp = getOperation();
+  auto moduleOp = getOperation();
   MLIRContext *context = &getContext();
 
   RewritePatternSet patterns(context);
   patterns.add<OverrideMemorySpacePattern>(context, clScope, clMemorySpace);
-  (void)applyPatternsGreedily(funcOp, std::move(patterns));
+  (void)applyPatternsGreedily(moduleOp, std::move(patterns));
   RewritePatternSet fixResTypePatterns(context);
   if (clScope == "herd") {
     fixResTypePatterns.add<correctViewLikeOpIOMemorySpacesInScope<air::HerdOp>>(
@@ -2456,8 +2459,11 @@ void AIROverrideMemRefMemorySpacePass::runOnOperation() {
   } else if (clScope == "launch") {
     fixResTypePatterns
         .add<correctViewLikeOpIOMemorySpacesInScope<air::LaunchOp>>(context);
+  } else if (clScope == "func") {
+    fixResTypePatterns
+        .add<correctViewLikeOpIOMemorySpacesInScope<func::FuncOp>>(context);
   }
-  (void)applyPatternsGreedily(funcOp, std::move(fixResTypePatterns));
+  (void)applyPatternsGreedily(moduleOp, std::move(fixResTypePatterns));
 }
 
 } // namespace xilinx

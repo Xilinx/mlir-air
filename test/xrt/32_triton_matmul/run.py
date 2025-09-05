@@ -62,7 +62,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "one-shot-bufferize",
                 f"func.func(air-wrap-func-with-parallel{{loop-bounds={launch_size[0]},{launch_size[1]},{launch_size[2]}}})",
                 "air-par-to-launch{depth=0 has-air-segment=true}",
-                "func.func(air-override-memref-memory-space{scope=launch memory-space=1})",
+                "air-override-memref-memory-space{scope=launch memory-space=1}",
             ]
         )
         + ")"

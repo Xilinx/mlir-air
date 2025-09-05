@@ -1533,7 +1533,7 @@ def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
   }];
 }
 
-def AIROverrideMemRefMemorySpace : Pass<"air-override-memref-memory-space", "func::FuncOp"> {
+def AIROverrideMemRefMemorySpace : Pass<"air-override-memref-memory-space", "ModuleOp"> {
   let summary = "Force all memrefs allocated within code region to have the specified memory space.";
   let constructor = "xilinx::air::createAIROverrideMemRefMemorySpacePass()";
   let description = [{
@@ -1544,7 +1544,7 @@ def AIROverrideMemRefMemorySpace : Pass<"air-override-memref-memory-space", "fun
            "Memory space to override to.">,
     Option<"clScope", "scope", "std::string",
             /*default=*/"\"launch\"",
-            "AIR hierarchy scope to perform the transform under. Must be one of [herd, segment, launch].">
+            "AIR hierarchy scope to perform the transform under. Must be one of [herd, segment, launch, func].">
   ];
 }
 
