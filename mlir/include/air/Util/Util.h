@@ -316,6 +316,8 @@ Operation *cloneOpAndOperands(
       return !isa<LoopLikeOpInterface>(o) && !isa<air::HierarchyInterface>(o);
     });
 
+bool opOrAncestorIsDominantOver(Operation *a, Operation *b);
+
 } // namespace air
 } // namespace xilinx
 
