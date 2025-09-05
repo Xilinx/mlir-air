@@ -68,6 +68,48 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 | `target` | PDL handle to an `mlir::Operation *` |
 
 
+### `transform.air.convert_memref_copy_to_linalg_copy` (transform::ConvertMemrefCopyToLinalgCopyOp)
+
+_Convert memref.copy operations to linalg.copy operations_
+
+Syntax:
+
+```
+operation ::= `transform.air.convert_memref_copy_to_linalg_copy` $target attr-dict
+```
+
+This transform converts `memref.copy` operations to `linalg.copy` operations.
+This can be useful for enabling further linalg-based optimizations and transformations.
+
+The transformation replaces:
+```mlir
+memref.copy %source, %dest : memref<...> to memref<...>
+```
+
+With:
+```mlir
+linalg.copy ins(%source : memref<...>) outs(%dest : memref<...>)
+```
+
+Returns a handle to the modified operation containing the transformed copies.
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *` |
+
+
 ### `transform.air.copy_to_dma` (transform::CopyToDmaOp)
 
 Syntax:
