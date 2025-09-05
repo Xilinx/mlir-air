@@ -1548,4 +1548,26 @@ def AIROverrideMemRefMemorySpace : Pass<"air-override-memref-memory-space", "fun
   ];
 }
 
+def AIRHerdVectorizePass : Pass<"air-herd-vectorize", "func::FuncOp"> {
+  let summary = "Vectorize operations inside air.herd operations";
+  let constructor = "xilinx::air::createAIRHerdVectorizePass()";
+  let description = [{
+    This pass vectorizes operations inside air.herd operations using pattern matching.
+    It applies vectorization patterns similar to VectorizeChildrenAndApplyPatternsOp
+    but specifically targets operations within air.herd regions.
+  }];
+  let options = [
+    Option<"vectorizeNdExtract", "vectorize-nd-extract", "bool", /*default=*/"false",
+           "Controls whether to vectorize tensor.extract when the input tensor is rank >= 2.">,
+    Option<"flatten1dDepthwiseConv", "flatten-1d-depthwise-conv", "bool", /*default=*/"false",
+           "Controls whether to flatten the channel dimension when vectorising 1D depthwise convolutions.">,
+    Option<"disableTransferPermutationMapLoweringPatterns", "disable-transfer-permutation-map-lowering-patterns", "bool", /*default=*/"false",
+           "Disable vector transfer permutation map lowering patterns.">,
+    Option<"disableMultiReductionToContractPatterns", "disable-multi-reduction-to-contract-patterns", "bool", /*default=*/"false",
+           "Disable vector multi-reduction to contract patterns.">,
+    Option<"vectorizePadding", "vectorize-padding", "bool", /*default=*/"false",
+           "Enable vectorization of tensor.pad operations.">
+  ];
+}
+
 #endif // AIR_CONVERSION_PASSES

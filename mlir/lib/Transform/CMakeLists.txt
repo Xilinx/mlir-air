@@ -12,6 +12,7 @@ add_mlir_library(
   AIRDmaToChannel.cpp
   AIRHerdAssignPass.cpp
   AIRHerdPlacementPass.cpp
+  AIRHerdVectorize.cpp
   AIRLinalgBufferize.cpp
   AIRLinalgCodegen.cpp
   AIRLinalgOpStats.cpp
