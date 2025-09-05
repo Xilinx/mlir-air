@@ -579,6 +579,24 @@ _Fuse parallel launch pass_
 
 _Transfor affine.for to affine.parallel_
 
+### `-air-herd-vectorize`
+
+_Vectorize operations inside air.herd operations_
+
+This pass vectorizes operations inside air.herd operations using pattern matching.
+It applies vectorization patterns similar to VectorizeChildrenAndApplyPatternsOp
+but specifically targets operations within air.herd regions.
+
+#### Options
+
+```
+-vectorize-nd-extract                               : Controls whether to vectorize tensor.extract when the input tensor is rank >= 2.
+-flatten-1d-depthwise-conv                          : Controls whether to flatten the channel dimension when vectorising 1D depthwise convolutions.
+-disable-transfer-permutation-map-lowering-patterns : Disable vector transfer permutation map lowering patterns.
+-disable-multi-reduction-to-contract-patterns       : Disable vector multi-reduction to contract patterns.
+-vectorize-padding                                  : Enable vectorization of tensor.pad operations.
+```
+
 ### `-air-hoist-alloc-in-for-pattern`
 
 _Hoist pairs of alloc and dealloc ops out of for loop_
