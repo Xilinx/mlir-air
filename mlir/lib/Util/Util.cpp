@@ -1378,6 +1378,33 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
   return true;
 }
 
+// Check if the volume of sizes equals the volume of the memref.
+// Return true if equal, and return false if any size value is not constant,
+// or memref shape isn't static.
+bool air::isVolumeEqualToMemrefVolume(SmallVector<Value> memcpy_sizes,
+                                      BaseMemRefType memref) {
+  // Return false if memref doesn't have static shape
+  if (!memref.hasStaticShape())
+    return false;
+
+  // Calculate memref volume
+  int64_t memref_volume = 1;
+  for (auto dim : memref.getShape()) {
+    memref_volume *= dim;
+  }
+
+  // Calculate sizes volume
+  int64_t sizes_volume = 1;
+  for (auto size : memcpy_sizes) {
+    auto constant_size = mlir::getConstantIntValue(size);
+    if (!constant_size)
+      return false; // Size value is not constant
+    sizes_volume *= *constant_size;
+  }
+
+  return memref_volume == sizes_volume;
+}
+
 // Get the memref size along a given dimension, that the access pattern actually
 // covers.
 SmallVector<int64_t>

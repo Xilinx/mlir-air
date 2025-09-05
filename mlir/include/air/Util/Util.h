@@ -180,6 +180,11 @@ void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
 // access pattern.
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
                                 SmallVector<Value> memcpy_strides);
+// Check if the volume of sizes equals the volume of the memref.
+// Return true if equal, and return false if any size value is not constant,
+// or memref shape isn't static.
+bool isVolumeEqualToMemrefVolume(SmallVector<Value> memcpy_sizes,
+                                 BaseMemRefType memref);
 // Get the memref size along a given dimension, that the access pattern actually
 // covers.
 SmallVector<int64_t>

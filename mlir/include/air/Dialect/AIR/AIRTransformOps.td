@@ -342,6 +342,39 @@ def RemoveUninitializedMemrefCopyOp : Op<Transform_Dialect, "air.remove_uninitia
   let assemblyFormat = "$target attr-dict";
 }
 
+def EliminateCascadeMemcpyOp : Op<Transform_Dialect, "air.eliminate_cascade_memcpy",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Eliminate intermediate memref buffers in cascaded DMA operations";
+  let description = [{
+    This transform identifies and eliminates intermediate memref buffers in cascaded 
+    air.dma_memcpy_nd operations. It looks for the pattern where an intermediate buffer
+    is used exactly twice: once as the destination of a DMA operation and once as the
+    source of another DMA operation, with both operations using default access patterns
+    (empty offsets, sizes, and strides).
+    
+    The transformation replaces:
+    ```mlir
+    air.dma_memcpy_nd (%intermediate[] [] [], %source[] [] []) : (memref<...>, memref<...>)
+    air.dma_memcpy_nd (%dest[] [] [], %intermediate[] [] []) : (memref<...>, memref<...>)
+    ```
+    
+    With:
+    ```mlir
+    air.dma_memcpy_nd (%dest[] [] [], %source[] [] []) : (memref<...>, memref<...>)
+    ```
+    
+    This optimization eliminates unnecessary intermediate memory allocations and reduces
+    memory traffic, which is particularly beneficial for cascade patterns in AIR programs.
+    
+    Returns a handle to the modified operation.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
 // Ops implemented in mlir/lib/Transform/AIRLinalgBufferize.cpp
 //
 
