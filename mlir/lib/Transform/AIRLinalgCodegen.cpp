@@ -566,6 +566,116 @@ struct RemoveAllocCopyLinalgOpCopyPattern
 //  linalg.copy(%11, %6) : memref<1x32x16x16xf32, 2>, memref<1x32x16x16xf32,
 //  #map1> memref.dealloc %11 : memref<1x32x16x16xf32, 2>
 //}
+
+// Eliminate intermediate memref in cascaded DMA operations
+// Replace a pattern like this:
+//  air.dma_memcpy_nd (%intermediate[] [] [], %source[] [] []) : (memref<...>,
+//  memref<...>) air.dma_memcpy_nd (%dest[] [] [], %intermediate[] [] []) :
+//  (memref<...>, memref<...>)
+// where %intermediate is only used by these two operations and has default
+// access patterns with this:
+//  air.dma_memcpy_nd (%dest[] [] [], %source[] [] []) : (memref<...>,
+//  memref<...>)
+struct EliminateIntermediateMemrefPattern
+    : public OpRewritePattern<air::DmaMemcpyNdOp> {
+  using OpRewritePattern<air::DmaMemcpyNdOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(air::DmaMemcpyNdOp firstMemcpy,
+                                PatternRewriter &rewriter) const override {
+
+    // Get the destination of the first memcpy (potential intermediate buffer)
+    Value intermediate = firstMemcpy.getDstMemref();
+
+    // Check if the intermediate buffer has exactly two uses
+    if (std::distance(intermediate.use_begin(), intermediate.use_end()) != 2)
+      return failure();
+
+    auto opOrAncestorIsDominantOver = [](Operation *a, Operation *b) {
+      Region *commonRegion = air::findCommonRegionContainingAllAncestors(
+          SmallVector<Operation *>{a, b}, nullptr);
+      auto aAncestor = commonRegion->findAncestorOpInRegion(*a);
+      auto bAncestor = commonRegion->findAncestorOpInRegion(*b);
+      if (!aAncestor || !bAncestor)
+        return false;
+      DominanceInfo domInfo(aAncestor);
+      return domInfo.properlyDominates(aAncestor, bAncestor);
+    };
+
+    // Find the second memcpy that uses the intermediate buffer as source
+    air::DmaMemcpyNdOp secondMemcpy = nullptr;
+    for (auto user : intermediate.getUsers()) {
+      auto memcpyOp = dyn_cast<air::DmaMemcpyNdOp>(user);
+      if (!memcpyOp)
+        continue;
+      if (memcpyOp.getSrcMemref() != intermediate)
+        continue;
+      if (opOrAncestorIsDominantOver(memcpyOp, firstMemcpy))
+        continue;
+      secondMemcpy = memcpyOp;
+      break;
+    }
+
+    if (!secondMemcpy)
+      return failure();
+
+    // Check that both operations have default access patterns using existing
+    // utility
+    SmallVector<Value> firstDstOffsets(firstMemcpy.getDstOffsets());
+    SmallVector<Value> firstDstSizes(firstMemcpy.getDstSizes());
+    SmallVector<Value> firstDstStrides(firstMemcpy.getDstStrides());
+
+    SmallVector<Value> secondSrcOffsets(secondMemcpy.getSrcOffsets());
+    SmallVector<Value> secondSrcSizes(secondMemcpy.getSrcSizes());
+    SmallVector<Value> secondSrcStrides(secondMemcpy.getSrcStrides());
+
+    auto isDefaultAccess = [](SmallVector<Value> offsets,
+                              SmallVector<Value> sizes,
+                              SmallVector<Value> strides) {
+      return offsets.empty() && sizes.empty() && strides.empty();
+    };
+    if (!isDefaultAccess(firstDstOffsets, firstDstSizes, firstDstStrides) ||
+        !isDefaultAccess(secondSrcOffsets, secondSrcSizes, secondSrcStrides))
+      return failure();
+    if (firstMemcpy.getDstMemref() != secondMemcpy.getSrcMemref())
+      return failure();
+
+    // Create a new memcpy that directly copies from the source of the first
+    // memcpy to the destination of the second memcpy
+    rewriter.setInsertionPoint(firstMemcpy);
+
+    SmallVector<Value> emptyOffsets, emptySizes, emptyStrides;
+    SmallVector<Type> emptyTypes;
+
+    if (!firstMemcpy.getAsyncDependencies().empty()) {
+      emptyTypes.push_back(air::AsyncTokenType::get(rewriter.getContext()));
+    }
+
+    auto newMemcpy = rewriter.create<air::DmaMemcpyNdOp>(
+        firstMemcpy.getLoc(),
+        emptyTypes,                         // result types
+        firstMemcpy.getAsyncDependencies(), // async dependencies
+        secondMemcpy.getDstMemref(),        // destination from second memcpy
+        emptyOffsets, emptySizes, emptyStrides, // dst access pattern
+        firstMemcpy.getSrcMemref(),             // source from first memcpy
+        emptyOffsets, emptySizes, emptyStrides  // src access pattern
+    );
+
+    // Replace the async token of the second memcpy with the new one if needed
+    if (secondMemcpy.getAsyncToken() && newMemcpy.getAsyncToken()) {
+      if (!secondMemcpy.getAsyncToken().use_empty()) {
+        secondMemcpy.getAsyncToken().replaceAllUsesWith(
+            newMemcpy.getAsyncToken());
+      }
+    }
+
+    // Erase both original memcpy operations
+    rewriter.eraseOp(secondMemcpy);
+    rewriter.eraseOp(firstMemcpy);
+
+    return success();
+  }
+};
+
 struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
 
@@ -1148,7 +1258,8 @@ public:
                     RemoveViewOpsPattern, HoistReduceBufferPattern,
                     RemoveAllocLinalgOpCopyPattern, RemoveExtraAllocPattern,
                     RemoveAllocCopyLinalgOpCopyPattern, RemoveDeadCopyPattern,
-                    RemoveFillCopyLinalgPattern>(ctx);
+                    RemoveFillCopyLinalgPattern,
+                    EliminateIntermediateMemrefPattern>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
@@ -2394,6 +2505,41 @@ DiagnosedSilenceableFailure transform::RemoveUninitializedMemrefCopyOp::apply(
     }
 
     transformedOps.push_back(funcOp);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// EliminateCascadeMemcpyOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::EliminateCascadeMemcpyOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    MLIRContext *ctx = target->getContext();
+    RewritePatternSet patterns(ctx);
+
+    // Use the existing EliminateIntermediateMemrefPattern
+    patterns.insert<xilinx::air::EliminateIntermediateMemrefPattern>(ctx);
+
+    // Apply the pattern to eliminate cascade memcpy operations
+    (void)applyPatternsGreedily(target, std::move(patterns));
+
+    transformedOps.push_back(target);
   }
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
