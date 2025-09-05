@@ -67,7 +67,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "cse",
                 "air-par-to-herd{depth=-1}",
                 "air-insert-launch-around-herd{insert-segment=false}",
-                "func.func(air-override-memref-memory-space{scope=herd memory-space=2})",
+                "air-override-memref-memory-space{scope=herd memory-space=2}",
                 "air-copy-to-dma",
                 "canonicalize",
                 "cse",
