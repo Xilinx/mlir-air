@@ -151,7 +151,6 @@ transform.with_pdl_patterns {
         // Hoist static alloc out of the loops
         %func8 = transform.structured.match ops{["func.func"]} in %arg1
           : (!pdl.operation) -> !pdl.operation
-        // transform.bufferization.buffer_loop_hoisting %func8 : !pdl.operation
         transform.air.hoist_static_alloc %func8 : (!pdl.operation) -> ()
 
         // Peel the for loop
@@ -195,6 +194,7 @@ transform.with_pdl_patterns {
             transform.apply_patterns.canonicalization
         } : !pdl.operation
         %func_op_updated = transform.air.remove_uninitialized_memref_copy %func6
+        %func_op_updated_1 = transform.air.eliminate_cascade_memcpy %func_op_updated
 
         // Tile linalg.generics for vectorization
         %linalg_generics = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!pdl.operation) -> !pdl.operation
@@ -207,10 +207,5 @@ transform.with_pdl_patterns {
         %inner_most_fills, %vec_fill_loops:4 =
           transform.structured.tile_using_for %linalg_fills tile_sizes [1, 1, 1, 1]
           : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation) 
-        
-        // Vectorization
-        %func_op_for_vectorization = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        %func_op_vectorized = transform.structured.vectorize_children_and_apply_patterns %func_op_for_vectorization { vectorize_padding } : (!pdl.operation) -> !pdl.operation
-
     }
 }
