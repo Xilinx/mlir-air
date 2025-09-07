@@ -2764,7 +2764,8 @@ public:
               AIE::DMAChannelDirAttr::get(ctx, dir),
               builder.getI64IntegerAttr(t.dma_channel.channel),
               builder.getI64IntegerAttr(t.getDmaTile().getCol()),
-              builder.getBoolAttr(false));
+              /*plio*/ builder.getBoolAttr(false),
+              /*packet*/ nullptr);
 
           // Get the tile-side channel op's MemRefType, needed when creating the
           // memref.global.
