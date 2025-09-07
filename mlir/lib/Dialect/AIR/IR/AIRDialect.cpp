@@ -1461,37 +1461,37 @@ static SmallVector<Value> extractSizesFromMemrefType(MemRefType memrefTy,
   return sizes;
 }
 
-// Get offsets from memref::SubviewOp.
-static void extractOffsetsFromSubview(memref::SubViewOp subview,
-                                      OpBuilder &builder,
-                                      SmallVector<Value> &offsets) {
-  auto subview_offsets = subview.getOffsets().begin();
-  auto static_offsets = subview.getStaticOffsets();
-  auto loc = subview.getLoc();
+// Generic template to extract offsets from memref operations.
+template <typename OpType>
+static void extractOffsetsFromOp(OpType op, OpBuilder &builder,
+                                 SmallVector<Value> &offsets) {
+  auto op_offsets = op.getOffsets().begin();
+  auto static_offsets = op.getStaticOffsets();
+  auto loc = op.getLoc();
 
   for (auto o : static_offsets) {
     if (o >= 0)
       offsets.push_back(getValueOrCreateConstantIndexOp(
           builder, loc, builder.getIndexAttr(o)));
     else
-      offsets.push_back(*subview_offsets++);
+      offsets.push_back(*op_offsets++);
   }
 }
 
-// Get strides from memref::SubviewOp.
-static void extractStridesFromSubview(memref::SubViewOp subview,
-                                      OpBuilder &builder,
-                                      SmallVector<Value> &strides) {
-  auto subview_strides = subview.getStrides().begin();
-  auto static_strides = subview.getStaticStrides();
-  auto loc = subview.getLoc();
+// Generic template to extract strides from memref operations.
+template <typename OpType>
+static void extractStridesFromOp(OpType op, OpBuilder &builder,
+                                 SmallVector<Value> &strides) {
+  auto op_strides = op.getStrides().begin();
+  auto static_strides = op.getStaticStrides();
+  auto loc = op.getLoc();
 
   for (auto o : static_strides) {
     if (o >= 0)
       strides.push_back(getValueOrCreateConstantIndexOp(
           builder, loc, builder.getIndexAttr(o)));
     else
-      strides.push_back(*subview_strides++);
+      strides.push_back(*op_strides++);
   }
 }
 
@@ -1614,30 +1614,41 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   return success();
 }
 
-/// Combine a subview's op offset with its source offset/stride in-place:
-///   offsets[i] = sourceOffset[i] + opOffset[i] * stride[i]
+/// Combine mixed offsets with existing offsets and strides in-place:
+///   offsets[i] = sourceOffset[i] + opOffset[i] *
+///   (applyStrideWhenFoldingOffsets ? stride[i] : 1)
 ///
-/// - Folds fully-static cases to an index constant.
-/// - Uses affine.apply when the stride is a known constant (to keep it affine).
-/// - Falls back to arith ops otherwise.
-template <typename SubViewLikeOp>
-static void combineSubviewOffsetsInPlace(mlir::PatternRewriter &rewriter,
-                                         SubViewLikeOp subviewOp,
-                                         SmallVectorImpl<mlir::Value> &offsets,
-                                         ArrayRef<mlir::Value> strides) {
+/// This function handles offset composition for memref operations like subview
+/// and reinterpret_cast.
+/// - When applyStrideWhenFoldingOffsets=true: applies stride scaling (for
+/// reinterpret_cast/subview)
+/// - When applyStrideWhenFoldingOffsets=false: no stride scaling (for air
+/// offset folding)
+/// - Folds fully-static cases to index constants
+/// - Uses affine.apply when stride is a known constant (to keep it affine)
+/// - Falls back to arith ops for general dynamic cases
+static void combineMixedOffsetsInPlace(
+    mlir::PatternRewriter &rewriter, SmallVector<OpFoldResult> mixedOffsets,
+    SmallVectorImpl<mlir::Value> &offsets, ArrayRef<mlir::Value> strides,
+    bool applyStrideWhenFoldingOffsets = false) {
 
-  const auto loc = subviewOp.getLoc();
+  const auto loc = rewriter.getUnknownLoc();
   assert(offsets.size() == strides.size() &&
          "offsets/strides must have same length");
-  assert(offsets.size() == subviewOp.getMixedOffsets().size() &&
-         "offsets/strides must match subview rank");
+  assert(offsets.size() == mixedOffsets.size() &&
+         "offsets/strides must match reinterpret_cast rank");
 
   auto makeIndexCst = [&](int64_t v) -> Value {
     return getValueOrCreateConstantIndexOp(rewriter, loc,
                                            rewriter.getIndexAttr(v));
   };
 
-  for (auto it : llvm::enumerate(subviewOp.getMixedOffsets())) {
+  auto addExprToExpr = [](AffineExpr &exprA, AffineExpr exprB) {
+    exprA = (exprA) ? (exprA + exprB) : (exprB);
+    return;
+  };
+
+  for (auto it : llvm::enumerate(mixedOffsets)) {
     const unsigned i = it.index();
     OpFoldResult opOffset = it.value();
     Value sourceOffset = offsets[i];
@@ -1647,42 +1658,42 @@ static void combineSubviewOffsetsInPlace(mlir::PatternRewriter &rewriter,
     Attribute opOffsetAttr = llvm::dyn_cast_if_present<Attribute>(opOffset);
 
     // Try to read constants from Value-typed sourceOffset/sourceStride.
-    IntegerAttr sourceOffsetConst, sourceStrideConst;
-    (void)mlir::matchPattern(sourceOffset,
-                             mlir::m_Constant(&sourceOffsetConst));
-    (void)mlir::matchPattern(sourceStride,
-                             mlir::m_Constant(&sourceStrideConst));
-
+    auto sourceOffsetConst = getConstantIntValue(sourceOffset);
+    auto sourceStrideConst = getConstantIntValue(sourceStride);
     // Case 1: everything static -> fold to a constant Value and overwrite.
     if (opOffsetAttr && sourceOffsetConst && sourceStrideConst) {
       auto opOff = mlir::cast<IntegerAttr>(opOffsetAttr).getInt();
-      auto srcOff = sourceOffsetConst.getInt();
-      auto srcStr = sourceStrideConst.getInt();
+      auto srcOff = *sourceOffsetConst;
+      auto srcStr = *sourceStrideConst;
       offsets[i] = makeIndexCst(opOff * srcStr + srcOff);
       continue;
     }
 
     // Case 2: stride is a known constant -> use affine.apply.
     if (sourceStrideConst) {
-      AffineExpr expr;
+      AffineExpr expr, newExpr;
       SmallVector<Value> affineOperands;
 
       // Start with sourceOffset (const or symbol).
       if (sourceOffsetConst) {
-        expr = rewriter.getAffineConstantExpr(sourceOffsetConst.getInt());
+        newExpr = rewriter.getAffineConstantExpr(*sourceOffsetConst);
       } else {
-        expr = rewriter.getAffineSymbolExpr(affineOperands.size());
+        newExpr = rewriter.getAffineSymbolExpr(affineOperands.size());
         affineOperands.push_back(sourceOffset);
       }
+      addExprToExpr(expr, newExpr);
 
       // Add opOffset * strideConst.
-      int64_t k = sourceStrideConst.getInt();
+      newExpr = AffineExpr();
+      int64_t k = (applyStrideWhenFoldingOffsets) ? *sourceStrideConst : 1;
       if (opOffsetAttr) {
-        expr = expr + mlir::cast<IntegerAttr>(opOffsetAttr).getInt() * k;
+        newExpr = rewriter.getAffineConstantExpr(
+            mlir::cast<IntegerAttr>(opOffsetAttr).getInt() * k);
       } else {
-        expr = expr + rewriter.getAffineSymbolExpr(affineOperands.size()) * k;
+        newExpr = rewriter.getAffineSymbolExpr(affineOperands.size()) * k;
         affineOperands.push_back(mlir::cast<Value>(opOffset));
       }
+      addExprToExpr(expr, newExpr);
 
       AffineMap map = AffineMap::get(/*dimCount=*/0,
                                      /*symCount=*/affineOperands.size(), expr);
@@ -1706,13 +1717,46 @@ static void combineSubviewOffsetsInPlace(mlir::PatternRewriter &rewriter,
   }
 }
 
+/// Combine a reinterpret_cast's offset with the first dimension's existing
+/// offset:
+///   offsets[0] = sourceOffset[0] + reinterpretCastOffset
+///
+/// - Folds fully-static cases to an index constant.
+/// - Falls back to arith ops otherwise.
+static void
+combineReinterpretCastOffsetInPlace(mlir::PatternRewriter &rewriter,
+                                    memref::ReinterpretCastOp reinterpretCastOp,
+                                    SmallVectorImpl<mlir::Value> &offsets,
+                                    ArrayRef<mlir::Value> strides) {
+
+  combineMixedOffsetsInPlace(rewriter, reinterpretCastOp.getMixedOffsets(),
+                             offsets, strides,
+                             /*applyStrideWhenFoldingOffsets*/ true);
+}
+
+/// Combine a subview's op offset with its source offset/stride in-place:
+///   offsets[i] = sourceOffset[i] + opOffset[i] * stride[i]
+///
+/// - Folds fully-static cases to an index constant.
+/// - Uses affine.apply when the stride is a known constant (to keep it affine).
+/// - Falls back to arith ops otherwise.
+template <typename SubViewLikeOp>
+static void combineSubviewOffsetsInPlace(mlir::PatternRewriter &rewriter,
+                                         SubViewLikeOp subviewOp,
+                                         SmallVectorImpl<mlir::Value> &offsets,
+                                         ArrayRef<mlir::Value> strides) {
+
+  combineMixedOffsetsInPlace(rewriter, subviewOp.getMixedOffsets(), offsets,
+                             strides, /*applyStrideWhenFoldingOffsets*/ true);
+}
+
 static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
                                      Value &input_memref,
                                      SmallVector<Value> &offsets,
                                      SmallVector<Value> &sizes,
                                      SmallVector<Value> &strides) {
 
-  auto memref_type = llvm::dyn_cast<MemRefType>(memref.getType());
+  auto memref_type = llvm::dyn_cast<BaseMemRefType>(memref.getType());
   if (!memref_type)
     return rewriter.notifyMatchFailure(rewriter.getUnknownLoc(),
                                        "not operating on MemRef");
@@ -1738,7 +1782,7 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
     } else
       exit = true;
   }
-  if (memrefOpVec.empty() || !offsets.empty())
+  if (memrefOpVec.empty())
     return failure();
 
   // Revert the vector of memref ops, as it was built with push_back.
@@ -1749,35 +1793,30 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       getValueOrCreateConstantIndexOp(rewriter, loc, rewriter.getIndexAttr(0));
   auto constOne =
       getValueOrCreateConstantIndexOp(rewriter, loc, rewriter.getIndexAttr(1));
-  if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOpVec[0])) {
-    input_memref = subviewOp.getViewSource();
-    extractOffsetsFromSubview(subviewOp, rewriter, offsets);
-    extractStridesFromSubview(subviewOp, rewriter, strides);
+  SmallVector<Value> initialOffsets, initialStrides;
+  if (isa<ViewLikeOpInterface>(memrefOpVec[0]) &&
+      isa<OffsetSizeAndStrideOpInterface>(memrefOpVec[0])) {
+    auto viewLikeOp = dyn_cast<ViewLikeOpInterface>(memrefOpVec[0]);
+    auto offSizStrOp = dyn_cast<OffsetSizeAndStrideOpInterface>(memrefOpVec[0]);
+    input_memref = viewLikeOp.getViewSource();
+    extractOffsetsFromOp(offSizStrOp, rewriter, initialOffsets);
+    extractStridesFromOp(offSizStrOp, rewriter, initialStrides);
   } else if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOpVec[0])) {
     input_memref = transposeOp.getIn();
-    offsets.clear();
-    strides.clear();
+    initialOffsets.clear();
+    initialStrides.clear();
     for (unsigned i = 0; i < transposeOp.getPermutation().getNumInputs(); i++) {
-      offsets.push_back(constZero);
-      strides.push_back(constOne);
+      initialOffsets.push_back(constZero);
+      initialStrides.push_back(constOne);
     }
   } else if (auto castOp = dyn_cast<memref::CastOp>(memrefOpVec[0])) {
     input_memref = castOp.getSource();
-    offsets.clear();
-    strides.clear();
+    initialOffsets.clear();
+    initialStrides.clear();
     for (unsigned i = 0;
          i < llvm::cast<MemRefType>(input_memref.getType()).getRank(); i++) {
-      offsets.push_back(constZero);
-      strides.push_back(constOne);
-    }
-  } else if (auto viewLikeOp = dyn_cast<ViewLikeOpInterface>(memrefOpVec[0])) {
-    input_memref = viewLikeOp.getViewSource();
-    offsets.clear();
-    strides.clear();
-    for (unsigned i = 0;
-         i < llvm::cast<MemRefType>(input_memref.getType()).getRank(); i++) {
-      offsets.push_back(constZero);
-      strides.push_back(constOne);
+      initialOffsets.push_back(constZero);
+      initialStrides.push_back(constOne);
     }
   } else
     return failure();
@@ -1786,16 +1825,25 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   // ops.
   for (auto memrefOp : memrefOpVec) {
     if (auto transposeOp = dyn_cast<memref::TransposeOp>(memrefOp)) {
-      if (transposeOp.getPermutation().getNumInputs() != offsets.size())
+      if (transposeOp.getPermutation().getNumInputs() != initialOffsets.size())
         continue;
-      offsets =
-          applyPermutationMap<Value>(transposeOp.getPermutation(), offsets);
-      strides =
-          applyPermutationMap<Value>(transposeOp.getPermutation(), strides);
+      initialOffsets = applyPermutationMap<Value>(transposeOp.getPermutation(),
+                                                  initialOffsets);
+      initialStrides = applyPermutationMap<Value>(transposeOp.getPermutation(),
+                                                  initialStrides);
     } else if (auto castOp = dyn_cast<memref::CastOp>(memrefOp)) {
       // memref.cast doesn't change data layout, so no offset/stride adjustments
       // needed
       continue;
+    } else if (auto reinterpretCastOp =
+                   dyn_cast<memref::ReinterpretCastOp>(memrefOp)) {
+      // For reinterpret_cast operations that aren't the first in the chain,
+      // we need to combine their offset with existing offsets
+      if (reinterpretCastOp != memrefOpVec.front() &&
+          !reinterpretCastOp.hasZeroOffset()) {
+        combineReinterpretCastOffsetInPlace(rewriter, reinterpretCastOp,
+                                            initialOffsets, initialStrides);
+      }
     } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(memrefOp)) {
       for (int i = (int)expandShapeOp.getReassociationIndices().size() - 1;
            i >= 0; i--) {
@@ -1803,13 +1851,14 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
           continue;
         for (unsigned j = 1;
              j < expandShapeOp.getReassociationIndices()[i].size(); j++) {
-          offsets.insert(offsets.begin() + i, constZero);
-          strides.insert(strides.begin() + i, constOne);
+          initialOffsets.insert(initialOffsets.begin() + i, constZero);
+          initialStrides.insert(initialStrides.begin() + i, constOne);
         }
       }
     } else if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOp)) {
       if (subviewOp != memrefOpVec.front() && !subviewOp.hasZeroOffset()) {
-        combineSubviewOffsetsInPlace(rewriter, subviewOp, offsets, strides);
+        combineSubviewOffsetsInPlace(rewriter, subviewOp, initialOffsets,
+                                     initialStrides);
       }
     }
   }
@@ -1818,9 +1867,21 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   MemRefType sink_memref_ty =
       llvm::cast<MemRefType>(memrefOpVec.back()->getResultTypes().front());
 
-  // Compose sizes and strides from the output memref type's layout.
-  strides = extractStridesFromMemrefType(sink_memref_ty, rewriter);
-  sizes = extractSizesFromMemrefType(sink_memref_ty, rewriter);
+  // // Compose sizes and strides from the output memref type's layout.
+  if (strides.empty())
+    strides = extractStridesFromMemrefType(sink_memref_ty, rewriter);
+  if (sizes.empty())
+    sizes = extractSizesFromMemrefType(sink_memref_ty, rewriter);
+
+  // Compose offsets with any offsets already in place.
+  if (initialOffsets.size() && offsets.size()) {
+    while (initialOffsets.size() < initialStrides.size()) {
+      initialOffsets.insert(initialOffsets.begin(), constZero);
+    }
+    combineMixedOffsetsInPlace(rewriter, mlir::getAsOpFoldResult(offsets),
+                               initialOffsets, initialStrides);
+  }
+  offsets = initialOffsets;
 
   return canonicalizeAIRDmaOperands(rewriter, offsets, sizes, strides,
                                     sink_memref_ty);
@@ -2158,14 +2219,8 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
   Value input_memref = memref;
   SmallVector<Value> offsets, sizes, strides;
   offsets = op.getOffsets();
-  if (!offsets.empty())
-    return failure();
   sizes = op.getSizes();
-  if (!sizes.empty())
-    return failure();
   strides = op.getStrides();
-  if (!strides.empty())
-    return failure();
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
