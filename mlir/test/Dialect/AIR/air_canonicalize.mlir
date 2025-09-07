@@ -976,3 +976,114 @@ func.func @dma_default_pattern_async(%arg0: memref<4x8xi32>, %arg1: memref<4x8xi
   %result = air.dma_memcpy_nd async [%token] (%arg1[%c0, %c0] [%c4, %c8] [%c8, %c1], %arg0[%c0, %c0] [%c4, %c8] [%c8, %c1]) : (memref<4x8xi32>, memref<4x8xi32>)
   return
 }
+
+// Test memref.reinterpret_cast folding in air.channel.put operations
+
+air.channel @channel_reinterpret_put [4, 1]
+
+// CHECK-LABEL: func.func @channel_put_fold_reinterpret_cast
+// CHECK: air.channel.put @channel_reinterpret_put[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%{{.*}}, %c0{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+func.func @channel_put_fold_reinterpret_cast(%arg0: memref<*xbf16>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c64 = arith.constant 64 : index
+  %c256 = arith.constant 256 : index
+  %c1024 = arith.constant 1024 : index
+  %offset = arith.muli %c0, %c256 : index
+  
+  // This reinterpret_cast should be folded into the channel.put operation
+  %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%offset], sizes: [512, 256], strides: [1024, 1] : memref<*xbf16> to memref<512x256xbf16, strided<[1024, 1], offset: ?>>
+  air.channel.put @channel_reinterpret_put[%c0, %c0] (%reinterpret_cast[%offset, %c0] [%c256, %c64] [%c1024, %c1]) : (memref<512x256xbf16, strided<[1024, 1], offset: ?>>)
+  return
+}
+
+// CHECK-LABEL: func.func @channel_put_fold_reinterpret_cast_async
+// CHECK: %{{.*}} = air.channel.put async [%{{.*}}] @channel_reinterpret_put[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%{{.*}}, %c0{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+func.func @channel_put_fold_reinterpret_cast_async(%arg0: memref<*xbf16>, %token: !air.async.token) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c64 = arith.constant 64 : index
+  %c256 = arith.constant 256 : index
+  %c1024 = arith.constant 1024 : index
+  %offset = arith.muli %c0, %c256 : index
+  
+  // This reinterpret_cast should be folded into the async channel.put operation
+  %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%offset], sizes: [512, 256], strides: [1024, 1] : memref<*xbf16> to memref<512x256xbf16, strided<[1024, 1], offset: ?>>
+  %result = air.channel.put async [%token] @channel_reinterpret_put[%c0, %c0] (%reinterpret_cast[%offset, %c0] [%c256, %c64] [%c1024, %c1]) {id = 5 : i32} : (memref<512x256xbf16, strided<[1024, 1], offset: ?>>)
+  return
+}
+
+// Test complex case with multiple reinterpret_cast operations in a loop (similar to the original issue)
+
+air.channel @channel_reinterpret_loop [4, 1]
+
+// CHECK-LABEL: func.func @channel_fold_reinterpret_cast_loop
+// CHECK: scf.for %[[IV:.*]] = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[ARG:.*]] = %{{.*}}) -> (!air.async.token) {
+// CHECK-DAG: %[[PUT0:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], %c0{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+// CHECK-DAG: %[[PUT1:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c1{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], %c64{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+// CHECK-DAG: %[[PUT2:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c2{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], %c128{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+// CHECK-DAG: %[[PUT3:.*]] = air.channel.put async [%[[ARG]]] @channel_reinterpret_loop[%c3{{.*}}, %c0{{.*}}] (%{{.*}}[%[[IV]], %c192{{.*}}] [%c256{{.*}}, %c64{{.*}}] [%c1024{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+// CHECK: %[[WAIT:.*]] = air.wait_all async [%[[PUT0]], %[[PUT1]], %[[PUT2]], %[[PUT3]]]
+// CHECK: scf.yield %[[WAIT]] : !air.async.token
+func.func @channel_fold_reinterpret_cast_loop(%arg0: memref<*xbf16>) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  %c64 = arith.constant 64 : index
+  %c128 = arith.constant 128 : index
+  %c192 = arith.constant 192 : index
+  %c256 = arith.constant 256 : index
+  %c512 = arith.constant 512 : index
+  %c1024 = arith.constant 1024 : index
+  
+  %offset = arith.muli %c0, %c256 : index
+  %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%offset], sizes: [512, 256], strides: [1024, 1] : memref<*xbf16> to memref<512x256xbf16, strided<[1024, 1], offset: ?>>
+  
+  %init_token = air.wait_all async 
+  %final_token = scf.for %arg1 = %c0 to %c512 step %c256 iter_args(%arg2 = %init_token) -> (!air.async.token) {
+    // All these reinterpret_cast operations should be folded
+    %put0 = air.channel.put async [%arg2] @channel_reinterpret_loop[%c0, %c0] (%reinterpret_cast[%arg1, %c0] [%c256, %c64] [%c1024, %c1]) {id = 5 : i32} : (memref<512x256xbf16, strided<[1024, 1], offset: ?>>)
+    %put1 = air.channel.put async [%arg2] @channel_reinterpret_loop[%c1, %c0] (%reinterpret_cast[%arg1, %c64] [%c256, %c64] [%c1024, %c1]) {id = 6 : i32} : (memref<512x256xbf16, strided<[1024, 1], offset: ?>>)
+    %put2 = air.channel.put async [%arg2] @channel_reinterpret_loop[%c2, %c0] (%reinterpret_cast[%arg1, %c128] [%c256, %c64] [%c1024, %c1]) {id = 7 : i32} : (memref<512x256xbf16, strided<[1024, 1], offset: ?>>)
+    %put3 = air.channel.put async [%arg2] @channel_reinterpret_loop[%c3, %c0] (%reinterpret_cast[%arg1, %c192] [%c256, %c64] [%c1024, %c1]) {id = 8 : i32} : (memref<512x256xbf16, strided<[1024, 1], offset: ?>>)
+    %wait_token = air.wait_all async [%put0, %put1, %put2, %put3] 
+    scf.yield %wait_token : !air.async.token
+  }
+  return
+}
+
+// Test edge case: empty offsets/sizes/strides should still allow folding
+
+air.channel @channel_reinterpret_empty [1, 1]
+
+// CHECK-LABEL: func.func @channel_fold_reinterpret_cast_empty_access
+// CHECK: air.channel.put @channel_reinterpret_empty[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[%c0{{.*}}, %c0{{.*}}] [%c256{{.*}}, %c256{{.*}}] [%c256{{.*}}, %c1{{.*}}]) : (memref<*xbf16>)
+func.func @channel_fold_reinterpret_cast_empty_access(%arg0: memref<*xbf16>) {
+  %c0 = arith.constant 0 : index
+  %offset = arith.constant 0 : index
+  
+  // This reinterpret_cast should be folded even with empty access pattern
+  %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%offset], sizes: [256, 256], strides: [256, 1] : memref<*xbf16> to memref<256x256xbf16, strided<[256, 1], offset: ?>>
+  air.channel.put @channel_reinterpret_empty[%c0, %c0] (%reinterpret_cast[] [] []) : (memref<256x256xbf16, strided<[256, 1], offset: ?>>)
+  return
+}
+
+// Test cascade channel type (should only fold memref.cast, not full composition)
+
+air.channel @channel_cascade [3] {channel_type = "cascade"}
+
+// CHECK-LABEL: func.func @channel_cascade_fold_cast_only
+// CHECK-NOT: %[[CAST:.*]] = memref.cast %{{.*}} : memref<256x256xbf16> to memref<256x256xbf16, strided<[256, 1], offset: ?>>
+// CHECK: %[[REINTERPRET:.*]] = memref.reinterpret_cast %{{.*}} to offset: [%c0{{.*}}], sizes: [256, 256], strides: [256, 1] : memref<256x256xbf16> to memref<256x256xbf16, strided<[256, 1], offset: ?>>
+// CHECK: air.channel.put @channel_cascade[%c0{{.*}}] (%[[REINTERPRET]][] [] []) : (memref<256x256xbf16, strided<[256, 1], offset: ?>>)
+func.func @channel_cascade_fold_cast_only(%arg0: memref<256x256xbf16>) {
+  %c0 = arith.constant 0 : index
+  %offset = arith.constant 0 : index
+  
+  // For cascade channels, only memref.cast should be folded, not the full composition
+  %cast = memref.cast %arg0 : memref<256x256xbf16> to memref<256x256xbf16, strided<[256, 1], offset: ?>>
+  %reinterpret_cast = memref.reinterpret_cast %cast to offset: [%offset], sizes: [256, 256], strides: [256, 1] : memref<256x256xbf16, strided<[256, 1], offset: ?>> to memref<256x256xbf16, strided<[256, 1], offset: ?>>
+  air.channel.put @channel_cascade[%c0] (%reinterpret_cast[] [] []) : (memref<256x256xbf16, strided<[256, 1], offset: ?>>)
+  return
+}
