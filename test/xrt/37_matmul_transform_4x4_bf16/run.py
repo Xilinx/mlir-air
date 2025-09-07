@@ -136,6 +136,7 @@ pipeline = (
             "air-copy-to-dma",
             "air-par-to-herd{depth=-1}",
             "air-par-to-launch{depth=-1 has-air-segment=true}",
+            "func.func(air-herd-vectorize)",
         ]
     )
     + ")"
