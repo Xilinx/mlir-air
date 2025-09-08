@@ -2458,9 +2458,25 @@ static bool hasWritesBetween(memref::AllocOp allocOp, Operation *beforeOp) {
   return foundWrite;
 }
 
-/// Check if a memref.copy operation copies from an uninitialized memref
-static bool isUninitializedMemrefCopy(memref::CopyOp copyOp) {
-  Value source = copyOp.getSource();
+/// Helper functions to extract source and target from different copy operation
+/// types
+static Value getCopySource(memref::CopyOp copyOp) { return copyOp.getSource(); }
+
+static Value getCopySource(linalg::CopyOp copyOp) {
+  return copyOp.getInputs()[0];
+}
+
+static Value getCopyTarget(memref::CopyOp copyOp) { return copyOp.getTarget(); }
+
+static Value getCopyTarget(linalg::CopyOp copyOp) {
+  return copyOp.getOutputs()[0];
+}
+
+/// Template function to check if a copy operation copies from an uninitialized
+/// memref
+template <typename CopyOpType>
+static bool isUninitializedCopy(CopyOpType copyOp) {
+  Value source = getCopySource(copyOp);
 
   // Trace the source back to its allocation
   memref::AllocOp allocOp = traceToAlloc(source);
@@ -2472,7 +2488,12 @@ static bool isUninitializedMemrefCopy(memref::CopyOp copyOp) {
   return !hasWritesBetween(allocOp, copyOp);
 }
 
-DiagnosedSilenceableFailure transform::RemoveUninitializedMemrefCopyOp::apply(
+/// Backward compatibility wrapper for memref.copy
+static bool isUninitializedMemrefCopy(memref::CopyOp copyOp) {
+  return isUninitializedCopy(copyOp);
+}
+
+DiagnosedSilenceableFailure transform::RemoveUninitializedCopyOp::apply(
     transform::TransformRewriter &rewriter,
     transform::TransformResults &results, transform::TransformState &state) {
 
@@ -2492,17 +2513,28 @@ DiagnosedSilenceableFailure transform::RemoveUninitializedMemrefCopyOp::apply(
       return emitDefiniteFailure() << "target must be a func.func operation";
     }
 
-    SmallVector<memref::CopyOp> copiesToErase;
+    SmallVector<memref::CopyOp> memrefCopiesToErase;
+    SmallVector<linalg::CopyOp> linalgCopiesToErase;
 
     // Walk the function to find memref.copy operations
     funcOp.walk([&](memref::CopyOp copyOp) {
       if (isUninitializedMemrefCopy(copyOp)) {
-        copiesToErase.push_back(copyOp);
+        memrefCopiesToErase.push_back(copyOp);
+      }
+    });
+
+    // Walk the function to find linalg.copy operations
+    funcOp.walk([&](linalg::CopyOp copyOp) {
+      if (isUninitializedCopy(copyOp)) {
+        linalgCopiesToErase.push_back(copyOp);
       }
     });
 
     // Erase the identified copy operations
-    for (auto copyOp : copiesToErase) {
+    for (auto copyOp : memrefCopiesToErase) {
+      rewriter.eraseOp(copyOp);
+    }
+    for (auto copyOp : linalgCopiesToErase) {
       rewriter.eraseOp(copyOp);
     }
 
