@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s | FileCheck %s
 
-// CHECK: transform.air.remove_uninitialized_memref_copy
+// CHECK: transform.air.remove_uninitialized_copy
 
 transform.with_pdl_patterns {
 ^bb0(%arg0: !pdl.operation):
@@ -15,6 +15,6 @@ transform.with_pdl_patterns {
     ^bb1(%arg1: !pdl.operation):
         // Bufferize
         %func_op = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        %func_op_updated = transform.air.remove_uninitialized_memref_copy %func_op
+        %func_op_updated = transform.air.remove_uninitialized_copy %func_op
     }
 }
