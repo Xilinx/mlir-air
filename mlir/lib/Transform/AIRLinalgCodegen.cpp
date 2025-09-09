@@ -2466,12 +2466,6 @@ static Value getCopySource(linalg::CopyOp copyOp) {
   return copyOp.getInputs()[0];
 }
 
-static Value getCopyTarget(memref::CopyOp copyOp) { return copyOp.getTarget(); }
-
-static Value getCopyTarget(linalg::CopyOp copyOp) {
-  return copyOp.getOutputs()[0];
-}
-
 /// Template function to check if a copy operation copies from an uninitialized
 /// memref
 template <typename CopyOpType>
