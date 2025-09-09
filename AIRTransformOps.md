@@ -544,33 +544,40 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 | `result` | PDL handle to an `mlir::Operation *` |
 
 
-### `transform.air.remove_uninitialized_memref_copy` (transform::RemoveUninitializedMemrefCopyOp)
+### `transform.air.remove_uninitialized_copy` (transform::RemoveUninitializedCopyOp)
 
-_Remove memref.copy operations that copy from uninitialized memrefs_
+_Remove copy operations that copy from uninitialized memrefs_
 
 Syntax:
 
 ```
-operation ::= `transform.air.remove_uninitialized_memref_copy` $target attr-dict
+operation ::= `transform.air.remove_uninitialized_copy` $target attr-dict
 ```
 
 This transform walks through a func.func operation and identifies memref.copy 
-operations where the source is an uninitialized memref (allocated but not written to).
-Such copy operations are erased as they copy undefined data.
+and linalg.copy operations where the source is an uninitialized memref 
+(allocated but not written to). Such copy operations are erased as they copy 
+undefined data.
 
 The transform detects the pattern where:
 1. A memref is allocated with memref.alloc
 2. A subview of that memref is created (optional)
-3. The memref/subview is used as source in memref.copy before any write operations
+3. The memref/subview is used as source in memref.copy or linalg.copy before any write operations
 
 Returns a handle to the modified function.
 
-Example:
+Examples:
 ```mlir
+// memref.copy case
 %alloc = memref.alloc() : memref<2x16x8xi32, 1>
 %subview = memref.subview %alloc[0, 0, 0] [1, 16, 8] [1, 1, 1] : ...
 %target = memref.alloc() : memref<1x16x8xi32, 2>
 memref.copy %subview, %target  // <- This copy will be erased
+
+// linalg.copy case
+%alloc2 = memref.alloc() : memref<16x8xi32, 1>
+%target2 = memref.alloc() : memref<16x8xi32, 2>
+linalg.copy ins(%alloc2 : memref<16x8xi32, 1>) outs(%target2 : memref<16x8xi32, 2>)  // <- This copy will be erased
 ```
 
 Traits: `FunctionalStyleTransformOpTrait`
