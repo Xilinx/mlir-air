@@ -172,3 +172,68 @@ func.func @test_multiple_uninitialized_copies() {
   }
   return
 }
+
+// -----
+
+// Test basic uninitialized linalg.copy removal
+// CHECK-LABEL: @test_basic_uninitialized_linalg_copy
+// CHECK: %[[ALLOC_6:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
+// CHECK: %[[SUBVIEW_11:.*]] = memref.subview %[[ALLOC_6]][0, 0, 0] [1, 16, 8] [1, 1, 1]
+// CHECK: %[[ALLOC_12:.*]] = memref.alloc() : memref<1x16x8xi32, 2>
+// CHECK-NOT: linalg.copy ins(%[[SUBVIEW_11]] : {{.*}}) outs(%[[ALLOC_12]] : {{.*}})
+// CHECK: linalg.fill ins(%{{.*}} : i32) outs(%[[ALLOC_12]] : memref<1x16x8xi32, 2>)
+func.func @test_basic_uninitialized_linalg_copy() {
+  %c0_i32 = arith.constant 0 : i32
+  %alloc_6 = memref.alloc() : memref<2x16x8xi32, 1>
+  %subview_11 = memref.subview %alloc_6[0, 0, 0] [1, 16, 8] [1, 1, 1] : memref<2x16x8xi32, 1> to memref<1x16x8xi32, strided<[128, 8, 1], offset: 0>, 1>
+  %alloc_12 = memref.alloc() : memref<1x16x8xi32, 2>
+  linalg.copy ins(%subview_11 : memref<1x16x8xi32, strided<[128, 8, 1], offset: 0>, 1>) outs(%alloc_12 : memref<1x16x8xi32, 2>)
+  linalg.fill ins(%c0_i32 : i32) outs(%alloc_12 : memref<1x16x8xi32, 2>)
+  return
+}
+
+// -----
+
+// Test that initialized linalg.copy is NOT removed
+// CHECK-LABEL: @test_initialized_linalg_copy_not_removed
+// CHECK: %[[ALLOC_6:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
+// CHECK: linalg.fill ins(%{{.*}} : i32) outs(%[[ALLOC_6]] : memref<2x16x8xi32, 1>)
+// CHECK: %[[SUBVIEW_11:.*]] = memref.subview %[[ALLOC_6]][0, 0, 0] [1, 16, 8] [1, 1, 1]
+// CHECK: %[[ALLOC_12:.*]] = memref.alloc() : memref<1x16x8xi32, 2>
+// CHECK: linalg.copy ins(%[[SUBVIEW_11]] : {{.*}}) outs(%[[ALLOC_12]] : {{.*}})
+func.func @test_initialized_linalg_copy_not_removed() {
+  %c0_i32 = arith.constant 0 : i32
+  %alloc_6 = memref.alloc() : memref<2x16x8xi32, 1>
+  linalg.fill ins(%c0_i32 : i32) outs(%alloc_6 : memref<2x16x8xi32, 1>)
+  %subview_11 = memref.subview %alloc_6[0, 0, 0] [1, 16, 8] [1, 1, 1] : memref<2x16x8xi32, 1> to memref<1x16x8xi32, strided<[128, 8, 1], offset: 0>, 1>
+  %alloc_12 = memref.alloc() : memref<1x16x8xi32, 2>
+  linalg.copy ins(%subview_11 : memref<1x16x8xi32, strided<[128, 8, 1], offset: 0>, 1>) outs(%alloc_12 : memref<1x16x8xi32, 2>)
+  return
+}
+
+// -----
+
+// Test mixed memref.copy and linalg.copy removal
+// CHECK-LABEL: @test_mixed_copy_types
+// CHECK: %[[ALLOC_1:.*]] = memref.alloc() : memref<16x8xi32, 1>
+// CHECK: %[[ALLOC_2:.*]] = memref.alloc() : memref<16x8xi32, 1>
+// CHECK: %[[ALLOC_DST_1:.*]] = memref.alloc() : memref<16x8xi32, 2>
+// CHECK: %[[ALLOC_DST_2:.*]] = memref.alloc() : memref<16x8xi32, 2>
+// CHECK-NOT: memref.copy %[[ALLOC_1]], %[[ALLOC_DST_1]]
+// CHECK-NOT: linalg.copy ins(%[[ALLOC_2]] : {{.*}}) outs(%[[ALLOC_DST_2]] : {{.*}})
+// CHECK: linalg.generic
+func.func @test_mixed_copy_types() {
+  %alloc_1 = memref.alloc() : memref<16x8xi32, 1>
+  %alloc_2 = memref.alloc() : memref<16x8xi32, 1>
+  %alloc_dst_1 = memref.alloc() : memref<16x8xi32, 2>
+  %alloc_dst_2 = memref.alloc() : memref<16x8xi32, 2>
+  
+  memref.copy %alloc_1, %alloc_dst_1 : memref<16x8xi32, 1> to memref<16x8xi32, 2>
+  linalg.copy ins(%alloc_2 : memref<16x8xi32, 1>) outs(%alloc_dst_2 : memref<16x8xi32, 2>)
+  
+  linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%alloc_dst_1 : memref<16x8xi32, 2>) outs(%alloc_dst_2 : memref<16x8xi32, 2>) {
+  ^bb0(%in: i32, %out: i32):
+    linalg.yield %in : i32
+  }
+  return
+}

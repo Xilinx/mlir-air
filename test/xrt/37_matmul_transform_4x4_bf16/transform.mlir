@@ -193,7 +193,7 @@ transform.with_pdl_patterns {
         transform.apply_patterns to %func6 {
             transform.apply_patterns.canonicalization
         } : !pdl.operation
-        %func_op_updated = transform.air.remove_uninitialized_memref_copy %func6
+        %func_op_updated = transform.air.remove_uninitialized_copy %func6
         %func_op_updated_1 = transform.air.eliminate_cascade_memcpy %func_op_updated
 
         // Tile linalg.generics for vectorization
