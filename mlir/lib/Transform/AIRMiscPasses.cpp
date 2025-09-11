@@ -1863,7 +1863,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     if (!splitDim) {
       allocOp->emitWarning(
           "memref splitting analysis failed to get the split dimension.");
-      return failure();
+      continue;
     }
 
     // Methods to get root offset/size/stride from air.channel's operands, where
