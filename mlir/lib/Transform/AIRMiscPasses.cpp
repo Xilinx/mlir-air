@@ -1861,9 +1861,9 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     splitDim =
         getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
     if (!splitDim) {
-      allocOp->emitOpError(
+      allocOp->emitWarning(
           "memref splitting analysis failed to get the split dimension.");
-      return failure();
+      continue;
     }
 
     // Methods to get root offset/size/stride from air.channel's operands, where
