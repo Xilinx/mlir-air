@@ -1861,7 +1861,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     splitDim =
         getMemrefSplitDim(putgets, air::getTensorShape(memref.getType()));
     if (!splitDim) {
-      allocOp->emitOpError(
+      allocOp->emitWarning(
           "memref splitting analysis failed to get the split dimension.");
       return failure();
     }
