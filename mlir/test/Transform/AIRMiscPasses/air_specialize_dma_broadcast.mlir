@@ -15,22 +15,15 @@
 // CHECK: [[$SET3:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 - 1 == 0)>
 // CHECK-LABEL: @func0
 // CHECK: air.herd @herd_0
-// CHECK-DAG: %[[CST1:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[CST64:.*]] = arith.constant 64 : index
-// CHECK-DAG: %[[CST32:.*]] = arith.constant 32 : index
 // CHECK: %[[EVENT0:.*]] = affine.if [[$SET0]]
-// CHECK: %[[CST0:.*]] = arith.constant 0 : index
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[%[[CST0]], {{.*}}] [%[[CST32]], %[[CST32]]] [%[[CST64]], %[[CST1]]]) {broadcast_set = [[$SET0]]{{.*}}id = [[#ID0:]]
+// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[%c0{{.*}}, {{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]) {broadcast_set = [[$SET0]]{{.*}}id = [[#ID0:]]
 // CHECK: affine.yield %[[EVENT1]]
-// CHECK: %[[CST32_1:.*]] = arith.constant 32 : index
-// CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[%[[CST32_1]], {{.*}}] [%[[CST32]], %[[CST32]]] [%[[CST64]], %[[CST1]]]) {broadcast_set = [[$SET1]]{{.*}}id = [[#ID0+1]]
+// CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[%c32{{.*}}, {{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]) {broadcast_set = [[$SET1]]{{.*}}id = [[#ID0+1]]
 // CHECK: affine.yield %[[EVENT2]]
 // CHECK: %[[EVENT3:.*]] = affine.if [[$SET2]]
-// CHECK: %[[CST0:.*]] = arith.constant 0 : index
-// CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[{{.*}}, %[[CST0]]] [%[[CST32]], %[[CST32]]] [%[[CST64]], %[[CST1]]]) {broadcast_set = [[$SET2]]{{.*}}id = [[#ID1:]]
+// CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[{{.*}}, %c0{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]) {broadcast_set = [[$SET2]]{{.*}}id = [[#ID1:]]
 // CHECK: affine.yield %[[EVENT4]]
-// CHECK: %[[CST32_1:.*]] = arith.constant 32 : index
-// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[{{.*}}, %[[CST32_1]]] [%[[CST32]], %[[CST32]]] [%[[CST64]], %[[CST1]]]) {broadcast_set = [[$SET3]]{{.*}}id = [[#ID1+1]]
+// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[{{.*}}, %c32{{.*}}] [%c32{{.*}}, %c32{{.*}}] [%c64{{.*}}, %c1{{.*}}]) {broadcast_set = [[$SET3]]{{.*}}id = [[#ID1+1]]
 // CHECK: affine.yield %[[EVENT5]]
 
 #map = affine_map<()[s0] -> (s0 * 32)>
@@ -259,14 +252,11 @@ module {
 // CHECK: [[$SET1:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 - 1 == 0)>
 // CHECK-LABEL: @func3
 // CHECK: air.herd
-// CHECK: %[[CST0:.*]] = arith.constant 0 : index
 // CHECK: %[[EVENT0:.*]] = affine.if [[$SET0]]
-// CHECK: %[[CST0_0:.*]] = arith.constant 0 : index
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}(%{{.*}}[] [] [], %{{.*}}[%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0_0]], %{{.*}}, %[[CST0]]]{{.*}}broadcast_set = [[$SET0]]{{.*}}
+// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}(%{{.*}}[] [] [], %{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %{{.*}}, %c0{{.*}}]{{.*}}broadcast_set = [[$SET0]]{{.*}}
 // CHECK: affine.yield %[[EVENT1]]
 // CHECK-NEXT: } else {
-// CHECK: %[[CST1:.*]] = arith.constant 1 : index
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}(%{{.*}}[] [] [], %{{.*}}[%[[CST0]], %[[CST0]], %[[CST0]], %[[CST1]], %{{.*}}, %[[CST0]]]{{.*}}broadcast_set = [[$SET1]]{{.*}}
+// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}(%{{.*}}[] [] [], %{{.*}}[%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %c1{{.*}}, %{{.*}}, %c0{{.*}}]{{.*}}broadcast_set = [[$SET1]]{{.*}}
 // CHECK-NEXT: affine.yield
 
 #map = affine_map<()[s0] -> (s0 * 8)>
