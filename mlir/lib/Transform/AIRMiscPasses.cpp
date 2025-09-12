@@ -113,6 +113,313 @@ void AIRRemoveLinalgNamePass::runOnOperation() {
 }
 
 // AIRSpecializeDmaBroadcast
+namespace {
+/**
+ * Pattern to simplify DMA indices for air::DmaMemcpyNdOp with a broadcast_set
+ * attribute.
+ * - Propagates constant affine expressions through dependency chains.
+ * - Replaces operands with constants when possible.
+ * - Removes async dependencies as needed.
+ */
+class SimplifyDmaIndicesWithAffineSetPattern
+    : public OpRewritePattern<air::DmaMemcpyNdOp> {
+public:
+  using OpRewritePattern<air::DmaMemcpyNdOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(air::DmaMemcpyNdOp memcpyOp,
+                                PatternRewriter &rewriter) const override {
+    auto *ctx = memcpyOp->getContext();
+    if (!memcpyOp->hasAttr("broadcast_set"))
+      return failure();
+    auto broadcastSet =
+        memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set");
+    if (!broadcastSet)
+      return failure();
+
+    // Gather dependency history and broadcast pattern constraints
+    std::vector<Operation *> depOpHistory;
+    auto depTuples = traceDependentHerdId(memcpyOp);
+    const auto is = broadcastSet.getValue();
+    const auto &constraints = is.getConstraints();
+    const auto &eqFlags = is.getEqFlags();
+
+    // Map from herd dimension to constant affine expr and corresponding DMA
+    // operand
+    SmallVector<AffineExpr, 2> herdDimConstExpr = {nullptr, nullptr};
+    SmallVector<Value, 2> herdDimToDmaOperand = {nullptr, nullptr};
+
+    // Analyze dependency tuples to extract constant expressions for herd dims
+    for (const auto &depTuple : depTuples) {
+      for (Value v : std::get<1>(depTuple)) {
+        auto herdArgOwner = air::getHerdArgOwner(v);
+        if (!herdArgOwner)
+          continue;
+        for (unsigned j = 0; j < herdDimConstExpr.size(); ++j) {
+          if (v != herdArgOwner.getIds()[j])
+            continue;
+          for (unsigned i = 0; i < constraints.size(); ++i) {
+            const auto &c = constraints[i];
+            if (!c.isFunctionOfSymbol(j) || !eqFlags[i])
+              continue;
+            int eval = air::evaluateSymbolEqualityInSet(c, ctx);
+            herdDimConstExpr[j] = getAffineConstantExpr(eval, ctx);
+            herdDimToDmaOperand[j] = std::get<0>(depTuple);
+            depOpHistory.insert(depOpHistory.end(),
+                                std::get<2>(depTuple).begin(),
+                                std::get<2>(depTuple).end());
+          }
+        }
+      }
+    }
+
+    // Helper lambdas for arith ops
+    auto propagateAdd = [&](arith::AddIOp arithOp, unsigned j) {
+      arith::ConstantIndexOp addOperand = nullptr;
+      if (arithOp.getLhs().getDefiningOp() &&
+          dyn_cast<arith::ConstantIndexOp>(arithOp.getLhs().getDefiningOp())) {
+        addOperand =
+            dyn_cast<arith::ConstantIndexOp>(arithOp.getLhs().getDefiningOp());
+      } else if (arithOp.getRhs().getDefiningOp() &&
+                 dyn_cast<arith::ConstantIndexOp>(
+                     arithOp.getRhs().getDefiningOp())) {
+        addOperand =
+            dyn_cast<arith::ConstantIndexOp>(arithOp.getRhs().getDefiningOp());
+      } else {
+        herdDimConstExpr[j] = nullptr;
+        return;
+      }
+      int64_t acc = addOperand.value();
+      if (!isa<AffineConstantExpr>(herdDimConstExpr[j])) {
+        arithOp->emitOpError("non-constant affine expression.");
+        herdDimConstExpr[j] = nullptr;
+        return;
+      }
+      acc += dyn_cast<AffineConstantExpr>(herdDimConstExpr[j]).getValue();
+      herdDimConstExpr[j] = getAffineConstantExpr(acc, ctx);
+    };
+    auto propagateMul = [&](arith::MulIOp arithOp, unsigned j) {
+      arith::ConstantIndexOp mulOperand = nullptr;
+      if (arithOp.getLhs().getDefiningOp() &&
+          dyn_cast<arith::ConstantIndexOp>(arithOp.getLhs().getDefiningOp())) {
+        mulOperand =
+            dyn_cast<arith::ConstantIndexOp>(arithOp.getLhs().getDefiningOp());
+      } else if (arithOp.getRhs().getDefiningOp() &&
+                 dyn_cast<arith::ConstantIndexOp>(
+                     arithOp.getRhs().getDefiningOp())) {
+        mulOperand =
+            dyn_cast<arith::ConstantIndexOp>(arithOp.getRhs().getDefiningOp());
+      } else {
+        herdDimConstExpr[j] = nullptr;
+        return;
+      }
+      int64_t mul = mulOperand.value();
+      if (!isa<AffineConstantExpr>(herdDimConstExpr[j])) {
+        arithOp->emitOpError("non-constant affine expression.");
+        herdDimConstExpr[j] = nullptr;
+        return;
+      }
+      mul *= dyn_cast<AffineConstantExpr>(herdDimConstExpr[j]).getValue();
+      herdDimConstExpr[j] = getAffineConstantExpr(mul, ctx);
+    };
+
+    // Propagate constants through dependency op history (reverse order)
+    for (auto it = depOpHistory.rbegin(); it != depOpHistory.rend(); ++it) {
+      if (auto execOp = dyn_cast<air::ExecuteOp>(*it)) {
+        Operation *op = &execOp.getChildOps().front();
+        if (auto applyOp = dyn_cast<affine::AffineApplyOp>(op)) {
+          if (applyOp.getNumOperands() != 1)
+            return failure();
+          auto map = applyOp.getAffineMap();
+          for (unsigned j = 0; j < herdDimConstExpr.size(); ++j) {
+            if (herdDimConstExpr[j]) {
+              auto newMap = map.replace(getAffineSymbolExpr(0, ctx),
+                                        herdDimConstExpr[j], 0, 1);
+              int constInt =
+                  simplifyAffineMap(newMap).getSingleConstantResult();
+              herdDimConstExpr[j] = getAffineConstantExpr(constInt, ctx);
+              auto asyncMemcpyOp =
+                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+              eraseAsyncDependencyFromAsyncOp(asyncMemcpyOp,
+                                              execOp.getAsyncToken());
+            }
+          }
+        } else if (auto addOp = dyn_cast<arith::AddIOp>(op)) {
+          for (unsigned j = 0; j < herdDimConstExpr.size(); ++j) {
+            if (herdDimConstExpr[j]) {
+              propagateAdd(addOp, j);
+              auto asyncMemcpyOp =
+                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+              eraseAsyncDependencyFromAsyncOp(asyncMemcpyOp,
+                                              execOp.getAsyncToken());
+            }
+          }
+        } else if (auto mulOp = dyn_cast<arith::MulIOp>(op)) {
+          for (unsigned j = 0; j < herdDimConstExpr.size(); ++j) {
+            if (herdDimConstExpr[j]) {
+              propagateMul(mulOp, j);
+              auto asyncMemcpyOp =
+                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+              eraseAsyncDependencyFromAsyncOp(asyncMemcpyOp,
+                                              execOp.getAsyncToken());
+            }
+          }
+        }
+      }
+    }
+
+    // Mutate memcpy op: replace operands with constants if possible
+    OpBuilder builder(memcpyOp);
+    const Location loc = memcpyOp->getLoc();
+    bool opIsUpdated = false;
+    for (unsigned i = 0; i < herdDimConstExpr.size(); ++i) {
+      if (!herdDimConstExpr[i] || !herdDimToDmaOperand[i])
+        continue;
+      int opOperandId = -1;
+      for (unsigned j = 0; j < memcpyOp->getNumOperands(); ++j)
+        if (memcpyOp->getOperand(j) == herdDimToDmaOperand[i])
+          opOperandId = j;
+      if (opOperandId < 0)
+        continue;
+      auto val = dyn_cast<AffineConstantExpr>(herdDimConstExpr[i]).getValue();
+      auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
+      memcpyOp->getOpOperand(opOperandId).assign(cop);
+      opIsUpdated = true;
+    }
+    // If any update was made, signal success so the pattern infra will re-run
+    return opIsUpdated ? success() : failure();
+  }
+};
+
+class SpecializeDmaBroadcastPattern
+    : public OpRewritePattern<air::DmaMemcpyNdOp> {
+public:
+  using OpRewritePattern<air::DmaMemcpyNdOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(air::DmaMemcpyNdOp memcpyOp,
+                                PatternRewriter &rewriter) const override {
+    // Check for required context: inside a herd, has broadcast_pattern
+    auto *ctx = memcpyOp->getContext();
+    auto herdOp = memcpyOp->getParentOfType<air::HerdOp>();
+    if (!herdOp)
+      return rewriter.notifyMatchFailure(memcpyOp, "not inside air.herd");
+    auto broadcastPatternAttr =
+        memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
+    if (!broadcastPatternAttr)
+      return rewriter.notifyMatchFailure(memcpyOp, "missing broadcast_pattern");
+    const auto herdIds = herdOp.getIds();
+    const Location loc = memcpyOp->getLoc();
+    const IntegerSet is = broadcastPatternAttr.getValue();
+    const auto &constraints = is.getConstraints();
+    const auto &eqFlags = is.getEqFlags();
+
+    // Compute number of segments
+    unsigned numSegments = 1;
+    const SmallVector<AffineExpr, 1> zeroSyms{getAffineConstantExpr(0, ctx)};
+    for (const AffineExpr &c : constraints) {
+      if (c.isSymbolicOrConstant()) {
+        auto newC = c.replaceSymbols(zeroSyms);
+        if (auto expr =
+                dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1))) {
+          if (expr.getValue() != 0)
+            numSegments = expr.getValue() + 1;
+        }
+      }
+    }
+
+    // Helper to clone and yield a DMA op with updated attributes
+    auto cloneAndYield = [&](PatternRewriter &rewriter, Operation *origOp,
+                             IntegerSet intSet) -> Value {
+      auto cloned = rewriter.clone(*origOp);
+      cloned->removeAttr("broadcast_pattern");
+      cloned->setAttr("broadcast_set", mlir::IntegerSetAttr::get(intSet));
+      auto asyncIface = dyn_cast<air::AsyncOpInterface>(cloned);
+      SmallVector<Value, 1> yieldToken{asyncIface.getAsyncToken()};
+      rewriter.create<affine::AffineYieldOp>(cloned->getLoc(), yieldToken);
+      return asyncIface.getAsyncToken();
+    };
+
+    // If only one segment, avoid unnecessary loop
+    if (numSegments == 1) {
+      // Build constraints for the single segment
+      SmallVector<AffineExpr, 2> newConstraints;
+      SmallVector<bool, 2> newEqFlags;
+      const SmallVector<AffineExpr, 1> iSyms{getAffineConstantExpr(0, ctx)};
+      const SmallVector<AffineExpr, 2> syms{getAffineSymbolExpr(0, ctx),
+                                            getAffineSymbolExpr(1, ctx)};
+      int cIter = 0;
+      for (const AffineExpr &c : constraints) {
+        if (!c.isSymbolicOrConstant()) {
+          auto newC = c.replaceSymbols(iSyms).replaceDims(syms);
+          newConstraints.push_back(newC);
+          newEqFlags.push_back(eqFlags[cIter]);
+        }
+        ++cIter;
+      }
+      auto intSet = IntegerSet::get(0, 2, newConstraints, newEqFlags);
+      SmallVector<Value, 2> intSetArgs{herdIds[0], herdIds[1]};
+      auto aif = rewriter.create<affine::AffineIfOp>(
+          loc, air::AsyncTokenType::get(ctx), intSet, intSetArgs, true);
+      rewriter.setInsertionPointToStart(aif.getThenBlock());
+      cloneAndYield(rewriter, memcpyOp.getOperation(), intSet);
+      // Reconnect dependency graph
+      auto asyncMemcpyOp =
+          dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+      asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
+      rewriter.setInsertionPointToStart(aif.getElseBlock());
+      auto waitAllOp = rewriter.create<air::WaitAllOp>(
+          loc, air::AsyncTokenType::get(ctx), memcpyOp.getAsyncDependencies());
+      rewriter.create<affine::AffineYieldOp>(
+          loc, SmallVector<Value>{waitAllOp.getAsyncToken()});
+      rewriter.eraseOp(memcpyOp);
+      return success();
+    }
+
+    // Multi-segment case
+    for (unsigned i = 0; i < numSegments; ++i) {
+      SmallVector<AffineExpr, 2> newConstraints;
+      SmallVector<bool, 2> newEqFlags;
+      const SmallVector<AffineExpr, 1> iSyms{getAffineConstantExpr(i, ctx)};
+      const SmallVector<AffineExpr, 2> syms{getAffineSymbolExpr(0, ctx),
+                                            getAffineSymbolExpr(1, ctx)};
+      int cIter = 0;
+      for (const AffineExpr &c : constraints) {
+        if (!c.isSymbolicOrConstant()) {
+          auto newC = c.replaceSymbols(iSyms).replaceDims(syms);
+          newConstraints.push_back(newC);
+          newEqFlags.push_back(eqFlags[cIter]);
+        }
+        ++cIter;
+      }
+      auto intSet = IntegerSet::get(0, 2, newConstraints, newEqFlags);
+      SmallVector<Value, 2> intSetArgs{herdIds[0], herdIds[1]};
+      if (i == 0) {
+        auto aif = rewriter.create<affine::AffineIfOp>(
+            loc, air::AsyncTokenType::get(ctx), intSet, intSetArgs, true);
+        rewriter.setInsertionPointToStart(aif.getThenBlock());
+        cloneAndYield(rewriter, memcpyOp.getOperation(), intSet);
+        auto asyncMemcpyOp =
+            dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+        asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
+        rewriter.setInsertionPointToStart(aif.getElseBlock());
+      } else if (i < numSegments - 1) {
+        auto aif = rewriter.create<affine::AffineIfOp>(
+            loc, air::AsyncTokenType::get(ctx), intSet, intSetArgs, true);
+        rewriter.setInsertionPointToStart(aif.getThenBlock());
+        cloneAndYield(rewriter, memcpyOp.getOperation(), intSet);
+        rewriter.setInsertionPointAfter(aif);
+        SmallVector<Value, 1> parentBlockYieldToken{aif.getResult(0)};
+        rewriter.create<affine::AffineYieldOp>(loc, parentBlockYieldToken);
+        rewriter.setInsertionPointToStart(aif.getElseBlock());
+      } else {
+        cloneAndYield(rewriter, memcpyOp.getOperation(), intSet);
+      }
+    }
+    rewriter.eraseOp(memcpyOp);
+    return success();
+  }
+};
+} // end anonymous namespace
+
 class AIRSpecializeDmaBroadcast
     : public air::impl::AIRSpecializeDmaBroadcastBase<
           AIRSpecializeDmaBroadcast> {
@@ -133,338 +440,21 @@ public:
   }
 
   void runOnFunction(func::FuncOp f) {
-    // Specialize broadcastable DMA into affine.if regions
-    specializeDmaBroadcastWithAffineIf(f);
-    // Walk the affine.if's affine.set and simplify DMA source indices
-    simplifyDmaIndicesWithAffineSet(f);
+    // Phase 1: Specialize broadcastable DMA
+    {
+      RewritePatternSet patterns(f.getContext());
+      patterns.add<SpecializeDmaBroadcastPattern>(f.getContext());
+      (void)applyPatternsGreedily(f, std::move(patterns));
+    }
+    // Phase 2: Simplify DMA indices with affine set
+    {
+      RewritePatternSet patterns(f.getContext());
+      patterns.add<SimplifyDmaIndicesWithAffineSetPattern>(f.getContext());
+      (void)applyPatternsGreedily(f, std::move(patterns));
+    }
   }
 
 private:
-  void specializeDmaBroadcastWithAffineIf(func::FuncOp f) {
-    f.walk([&](air::DmaMemcpyNdOp memcpyOp) {
-      auto herdOp = memcpyOp->getParentOfType<air::HerdOp>();
-      if (!herdOp)
-        return;
-      auto herd_id = herdOp.getIds();
-      OpBuilder builder(memcpyOp);
-      auto loc = memcpyOp->getLoc();
-      auto broadcast_pattern =
-          memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
-      auto ctx = memcpyOp->getContext();
-      if (!broadcast_pattern)
-        return;
-      auto is = broadcast_pattern.getValue();
-      auto constraints = is.getConstraints();
-      auto eqFlags = is.getEqFlags();
-      unsigned numSegments = 1;
-      // Get symbol range (i.e. segment range)
-      SmallVector<AffineExpr, 1> zero_syms{
-          getAffineConstantExpr(0, ctx),
-      };
-      for (auto c : constraints) {
-        if (c.isSymbolicOrConstant()) {
-          auto newC = c.replaceSymbols(zero_syms);
-          auto expr =
-              dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
-          if (!expr) {
-            continue;
-          }
-          if (expr.getValue() != 0) {
-            numSegments = expr.getValue() + 1;
-          }
-        }
-      }
-      // Walk each set in the patitioning scheme
-      // Specialize each affine set
-      for (unsigned i = 0; i < numSegments; i++) {
-        SmallVector<AffineExpr, 2> newConstraints;
-        SmallVector<bool, 2> newEqflags;
-        SmallVector<AffineExpr, 1> i_syms{
-            getAffineConstantExpr(i, ctx),
-        };
-        SmallVector<AffineExpr, 2> syms{
-            getAffineSymbolExpr(0, ctx),
-            getAffineSymbolExpr(1, ctx),
-        };
-        int c_iter = 0;
-        for (auto c : constraints) {
-          if (!c.isSymbolicOrConstant()) {
-            // Substitute segment id i_syms into inequalities
-            auto newC = c.replaceSymbols(i_syms);
-            // Replace all dims with symbols
-            newC = newC.replaceDims(syms);
-            newConstraints.push_back(newC);
-            newEqflags.push_back(eqFlags[c_iter]);
-          }
-          c_iter++;
-        }
-        auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
-        SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
-        // Duplicate dma ops per spatial segment
-        if (i == 0) {
-          affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
-              loc, air::AsyncTokenType::get(ctx), int_set, int_set_args, true);
-          builder.setInsertionPointToStart(aif.getThenBlock());
-          auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-          memcpyOp_cloned->removeAttr("broadcast_pattern");
-          memcpyOp_cloned->setAttr("broadcast_set",
-                                   mlir::IntegerSetAttr::get(int_set));
-          SmallVector<Value, 1> yield_token;
-          yield_token.push_back(
-              dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-          builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                                yield_token);
-          // Reconnect dependency graph using the outermost affine.if's
-          // token
-          auto async_memcpyOp =
-              dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
-          async_memcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
-          builder.setInsertionPointToStart(aif.getElseBlock());
-          // If single segment, then create an empty else block.
-          if (numSegments == 1) {
-            auto waitAllOp = builder.create<air::WaitAllOp>(
-                memcpyOp_cloned->getLoc(),
-                air::AsyncTokenType::get(memcpyOp_cloned->getContext()),
-                memcpyOp.getAsyncDependencies());
-            builder.create<affine::AffineYieldOp>(
-                memcpyOp_cloned->getLoc(),
-                SmallVector<Value>{waitAllOp.getAsyncToken()});
-          }
-        } else if (i < numSegments - 1) {
-          affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
-              builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), int_set,
-              int_set_args, (i != numSegments - 1));
-          builder.setInsertionPointToStart(aif.getThenBlock());
-          auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-          memcpyOp_cloned->removeAttr("broadcast_pattern");
-          memcpyOp_cloned->setAttr("broadcast_set",
-                                   mlir::IntegerSetAttr::get(int_set));
-          SmallVector<Value, 1> yield_token;
-          yield_token.push_back(
-              dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-          builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                                yield_token);
-          builder.setInsertionPointAfter(aif);
-          SmallVector<Value, 1> parent_block_yield_token = {aif.getResult(0)};
-          builder.create<affine::AffineYieldOp>(builder.getUnknownLoc(),
-                                                parent_block_yield_token);
-          builder.setInsertionPointToStart(aif.getElseBlock());
-        } else {
-          auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-          memcpyOp_cloned->removeAttr("broadcast_pattern");
-          memcpyOp_cloned->setAttr("broadcast_set",
-                                   mlir::IntegerSetAttr::get(int_set));
-          SmallVector<Value, 1> yield_token;
-          yield_token.push_back(
-              dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-          builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                                yield_token);
-        }
-      }
-      memcpyOp.erase();
-    });
-  }
-
-  void simplifyDmaIndicesWithAffineSet(func::FuncOp f) {
-
-    f.walk([&](air::DmaMemcpyNdOp memcpyOp) {
-      auto ctx = memcpyOp->getContext();
-      if (!memcpyOp->hasAttr("broadcast_set"))
-        return;
-      auto broadcast_set =
-          memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set");
-      // Get all ops on the dependency connection between dma and herd launch
-      std::vector<Operation *> op_history;
-      auto loop_dep_history = traceDependentHerdId(memcpyOp);
-      // "loop_dep_history" tuple fields: value, ancestors and producers to
-      // those ancestors.
-
-      // Walk constraints in broadcast pattern, and get shape of the broadcast
-      // pattern
-      auto is = broadcast_set.getValue();
-      auto constraints = is.getConstraints();
-      auto eqFlags = is.getEqFlags();
-
-      // Check which dimension op operates on; initialize current_shape_expr
-      SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
-      SmallVector<Value, 2> herdDimToDmaOffsetDimMap = {nullptr, nullptr};
-      for (auto &elem : loop_dep_history) {
-        for (auto v : std::get<1>(elem)) {
-          if (!air::getHerdArgOwner(v))
-            continue;
-          auto hl_op = air::getHerdArgOwner(v);
-          for (unsigned j = 0; j < current_shape_expr.size(); j++) {
-            if (v != hl_op.getIds()[j])
-              continue;
-            for (unsigned i = 0; i < constraints.size(); i++) {
-              auto c = constraints[i];
-              if (!c.isFunctionOfSymbol(j))
-                continue;
-              if (!eqFlags[i])
-                continue;
-              auto eval = air::evaluateSymbolEqualityInSet(c, ctx);
-              current_shape_expr[j] = getAffineConstantExpr(eval, ctx);
-              herdDimToDmaOffsetDimMap[j] = std::get<0>(elem);
-              op_history.insert(op_history.end(), std::get<2>(elem).begin(),
-                                std::get<2>(elem).end());
-            }
-          }
-        }
-      }
-
-      // Evaluate broadcast pattern by propagating expr through scalar
-      // operations in op history, last-in-first-out
-      for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin();
-           i != op_history.rend(); ++i) {
-        if (auto exec_op = dyn_cast<air::ExecuteOp>(*i)) {
-          Operation *op = &exec_op.getChildOps().front();
-          // If the async op is affine.apply
-          if (auto apply_op = dyn_cast<affine::AffineApplyOp>(op)) {
-            // Can only propagate affine.apply ops with single operand.
-            if (apply_op.getNumOperands() != 1)
-              return;
-            auto map = apply_op.getAffineMap();
-            for (unsigned j = 0; j < current_shape_expr.size(); j++) {
-              if (current_shape_expr[j]) {
-                replaceSymbolAndEvaluateConstantInMap(
-                    map, current_shape_expr[j], ctx);
-                // Remove dependence from scalar op to memcpyOp if present
-                auto async_memcpyOp =
-                    dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
-                eraseAsyncDependencyFromAsyncOp(async_memcpyOp,
-                                                exec_op.getAsyncToken());
-              }
-            }
-          }
-
-          // If the async op is arith op
-          else if (auto arith_op = dyn_cast<arith::AddIOp>(op)) {
-            propagateAffineConstantExprThroughArithOp<arith::AddIOp>(
-                arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
-          } else if (auto arith_op = dyn_cast<arith::MulIOp>(op)) {
-            propagateAffineConstantExprThroughArithOp<arith::MulIOp>(
-                arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
-          }
-        }
-      }
-
-      // Mutate memcpy op.
-      (void)replaceMemcpyOpWithSimplifiedOperands(memcpyOp, current_shape_expr,
-                                                  herdDimToDmaOffsetDimMap);
-    });
-  }
-
-  // Evaluate the affine expression of affine map if the only symbolic
-  // identifier is replaced with zero
-  void replaceSymbolAndEvaluateConstantInMap(AffineMap map, AffineExpr &c,
-                                             MLIRContext *ctx) {
-    auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
-    auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
-    c = getAffineConstantExpr(const_int, ctx);
-  }
-
-  // AddI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op, AffineExpr &c,
-                                        MLIRContext *ctx) {
-    arith::ConstantIndexOp add_operand = nullptr;
-    if (arith_op.getLhs().getDefiningOp() &&
-        dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {
-      add_operand =
-          dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
-    } else if (arith_op.getRhs().getDefiningOp() &&
-               dyn_cast<arith::ConstantIndexOp>(
-                   arith_op.getRhs().getDefiningOp())) {
-      add_operand =
-          dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-    } else {
-      // arith::AddIOp has no arith::ConstantIndexOp operand. Abort trying to
-      // specialize the expr
-      c = nullptr;
-      return;
-    }
-    auto acc = add_operand.value();
-    if (!isa<AffineConstantExpr>(c)) {
-      arith_op->emitOpError("non-constant affine expression.");
-      return;
-    }
-    acc += dyn_cast<AffineConstantExpr>(c).getValue();
-    c = getAffineConstantExpr(acc, ctx);
-  }
-
-  // MulI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op, AffineExpr &c,
-                                        MLIRContext *ctx) {
-    arith::ConstantIndexOp mul_operand = nullptr;
-    if (arith_op.getLhs().getDefiningOp() &&
-        dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {
-      mul_operand =
-          dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
-    } else if (arith_op.getRhs().getDefiningOp() &&
-               dyn_cast<arith::ConstantIndexOp>(
-                   arith_op.getRhs().getDefiningOp())) {
-      mul_operand =
-          dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-    } else {
-      // arith::MulIOp has no arith::ConstantIndexOp operand. Abort trying to
-      // specialize the expr
-      c = nullptr;
-      return;
-    }
-    auto mul = mul_operand.value();
-    if (!isa<AffineConstantExpr>(c)) {
-      arith_op->emitOpError("non-constant affine expression.");
-      return;
-    }
-    mul *= dyn_cast<AffineConstantExpr>(c).getValue();
-    c = getAffineConstantExpr(mul, ctx);
-  }
-
-  // Propagate AffineConstantExpr through arith addi/muli op
-  template <typename T>
-  void propagateAffineConstantExprThroughArithOp(
-      T arith_op, SmallVector<AffineExpr, 2> &current_shape_expr,
-      Operation *memcpyOp, MLIRContext *ctx) {
-    air::ExecuteOp parent_region_op =
-        arith_op->template getParentOfType<air::ExecuteOp>();
-    for (unsigned j = 0; j < current_shape_expr.size(); j++) {
-      if (current_shape_expr[j]) {
-        applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[j], ctx);
-        // Remove dependence from scalar op to memcpyOp if present
-        auto async_memcpyOp = dyn_cast<air::AsyncOpInterface>(memcpyOp);
-        eraseAsyncDependencyFromAsyncOp(async_memcpyOp,
-                                        parent_region_op.getAsyncToken());
-      }
-    }
-  }
-
-  // Replace memcpyOp's dependent operand with const
-  LogicalResult replaceMemcpyOpWithSimplifiedOperands(
-      air::DmaMemcpyNdOp &memcpyOp,
-      SmallVector<AffineExpr, 2> current_shape_expr,
-      SmallVector<Value, 2> herdDimToDmaOffsetDimMap) {
-    OpBuilder builder(memcpyOp);
-    auto loc = memcpyOp->getLoc();
-    bool opIsUpdated = false;
-    for (unsigned i = 0; i < current_shape_expr.size(); i++) {
-      if (!current_shape_expr[i])
-        continue;
-      if (!herdDimToDmaOffsetDimMap[i])
-        continue;
-      int opOperandId = -1;
-      for (unsigned j = 0; j < memcpyOp->getNumOperands(); j++)
-        if (memcpyOp->getOperand(j) == herdDimToDmaOffsetDimMap[i])
-          opOperandId = j;
-      if (opOperandId < 0)
-        continue;
-      auto val = dyn_cast<AffineConstantExpr>(current_shape_expr[i]).getValue();
-      auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
-      memcpyOp->getOpOperand(opOperandId).assign(cop);
-      opIsUpdated = true;
-    }
-    if (opIsUpdated)
-      return success();
-    return failure();
-  }
 };
 
 class AIRFuseParallelHerdPass
