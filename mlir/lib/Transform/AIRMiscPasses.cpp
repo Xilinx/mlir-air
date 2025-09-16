@@ -114,6 +114,244 @@ void AIRRemoveLinalgNamePass::runOnOperation() {
 
 // AIRSpecializeDmaBroadcast
 namespace {
+
+/**
+ * Pattern to specialize air.channel ops with broadcast_shape into multiple
+ * specialized channels, and rewrite all channel.put/channel.get users
+ * accordingly. (Stub for implementation)
+ */
+class SpecializeChannelBroadcastPattern
+    : public OpRewritePattern<air::ChannelOp> {
+public:
+  using OpRewritePattern<air::ChannelOp>::OpRewritePattern;
+
+  // Helper: Check if all elements of an ArrayAttr are IntegerAttr and fill
+  // vector
+  static bool getIntArrayAttr(ArrayAttr arr, SmallVectorImpl<int64_t> &out) {
+    for (Attribute a : arr) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(a))
+        out.push_back(intAttr.getInt());
+      else
+        return false;
+    }
+    return true;
+  }
+
+  // Helper: Check if all elements of an ArrayAttr are IntegerAttr and fill
+  // vector<Attribute>
+  static bool getAttrArrayAttr(ArrayAttr arr, SmallVectorImpl<Attribute> &out) {
+    for (Attribute a : arr) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(a))
+        out.push_back(intAttr);
+      else
+        return false;
+    }
+    return true;
+  }
+
+  // Helper: Get IntegerAttr from ArrayAttr at index, with type check
+  static IntegerAttr getIntegerAttrAt(ArrayAttr arr, size_t idx) {
+    if (idx >= arr.size())
+      return nullptr;
+    return dyn_cast<IntegerAttr>(arr[idx]);
+  }
+
+  // Helper: Find first dimension with size > 1, with type check
+  static std::optional<std::pair<size_t, int64_t>>
+  findSpecializeDim(ArrayAttr sizeAttr,
+                    const SmallVector<int64_t, 4> &bcastShape) {
+    for (size_t d = 0; d < sizeAttr.size(); ++d) {
+      if (auto chanSizeAttr = dyn_cast<IntegerAttr>(sizeAttr[d])) {
+        int64_t chanSize = chanSizeAttr.getInt();
+        if (chanSize > 1) {
+          return std::make_pair(d, bcastShape[d]);
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
+  // Helper: Rewrite all channel.put users
+  static void
+  rewriteChannelPutUsers(air::ChannelOp channelOp, ModuleOp moduleOp,
+                         int64_t specializeDim,
+                         MutableArrayRef<air::ChannelOp> specializedChannels,
+                         PatternRewriter &rewriter, Location loc) {
+    for (auto put : air::getChannelPutOpThroughSymbol(channelOp, moduleOp)) {
+      OpBuilder::InsertionGuard g(rewriter);
+      rewriter.setInsertionPoint(put);
+      if (put.getIndices().size() <= (size_t)specializeDim)
+        continue;
+      auto idxVal = put.getIndices()[specializeDim];
+      auto idxOpt = getConstantIntValue(idxVal);
+      if (!idxOpt || *idxOpt < 0 ||
+          *idxOpt >= (int64_t)specializedChannels.size())
+        continue;
+      int64_t idx = *idxOpt;
+      put.setChanName(specializedChannels[idx].getSymName());
+      if ((int64_t)put.getIndices().size() > specializeDim)
+        put->setOperand(put.getAsyncDependencies().size() + specializeDim,
+                        getValueOrCreateConstantIndexOp(
+                            rewriter, loc, rewriter.getIndexAttr(0)));
+    }
+  }
+
+  // Helper: Rewrite all channel.get users
+  static LogicalResult rewriteChannelGetUsers(
+      air::ChannelOp channelOp, ModuleOp moduleOp, int64_t specializeDim,
+      int64_t numSegments, MutableArrayRef<air::ChannelOp> specializedChannels,
+      PatternRewriter &rewriter, Location loc, MLIRContext *ctx) {
+    for (auto get : air::getChannelGetOpThroughSymbol(channelOp, moduleOp)) {
+      auto herd = get->getParentOfType<air::HerdOp>();
+      if (!herd) {
+        return get->emitOpError(
+            "air.channel.get with broadcast_shape must be inside air.herd");
+      }
+      OpBuilder::InsertionGuard g(rewriter);
+      rewriter.setInsertionPoint(get);
+
+      SmallVector<Value, 4> herdIds;
+      for (BlockArgument arg : herd.getIds())
+        herdIds.push_back(Value(arg));
+      for (int64_t i = 0; i < numSegments; ++i) {
+        SmallVector<AffineExpr, 4> exprs;
+        SmallVector<bool, 4> eqFlags;
+        for (size_t d = 0; d < herdIds.size(); ++d) {
+          if ((int64_t)d == specializeDim) {
+            exprs.push_back(getAffineSymbolExpr(d, ctx) -
+                            getAffineConstantExpr(i, ctx));
+            eqFlags.push_back(true);
+            continue;
+          }
+          // Add unconstrained range for other symbols (TODO: remove this
+          // requirement)
+          exprs.push_back(getAffineSymbolExpr(d, ctx));
+          eqFlags.push_back(false);
+          exprs.push_back(herd.getNumCols() - 1 - getAffineSymbolExpr(d, ctx));
+          eqFlags.push_back(false);
+        }
+        auto intSet = IntegerSet::get(0, herdIds.size(), exprs, eqFlags);
+        SmallVector<Value, 4> setArgs = herdIds;
+        if (i == 0) {
+          auto aif = rewriter.create<affine::AffineIfOp>(
+              loc, get.getResultTypes(), intSet, setArgs, true);
+          rewriter.setInsertionPointToStart(aif.getThenBlock());
+          auto newGet = rewriter.create<air::ChannelGetOp>(
+              loc, get.getResultTypes(), get.getAsyncDependencies(),
+              rewriter.getStringAttr(specializedChannels[i].getSymName()),
+              get.getIndices(), get.getMemref(), get.getOffsets(),
+              get.getSizes(), get.getStrides());
+          rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+          rewriter.replaceAllUsesWith(get.getAsyncToken(), aif.getResult(0));
+          rewriter.setInsertionPointToStart(aif.getElseBlock());
+        } else if (i < numSegments - 1) {
+          auto aif = rewriter.create<affine::AffineIfOp>(
+              loc, get.getResultTypes(), intSet, setArgs, true);
+          rewriter.setInsertionPointToStart(aif.getThenBlock());
+          auto newGet = rewriter.create<air::ChannelGetOp>(
+              loc, get.getResultTypes(), get.getAsyncDependencies(),
+              rewriter.getStringAttr(specializedChannels[i].getSymName()),
+              get.getIndices(), get.getMemref(), get.getOffsets(),
+              get.getSizes(), get.getStrides());
+          rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+          rewriter.setInsertionPointAfter(aif);
+          SmallVector<Value, 1> parentBlockYieldToken{aif.getResult(0)};
+          rewriter.create<affine::AffineYieldOp>(loc, parentBlockYieldToken);
+          rewriter.setInsertionPointToStart(aif.getElseBlock());
+        } else {
+          auto newGet = rewriter.create<air::ChannelGetOp>(
+              loc, get.getResultTypes(), get.getAsyncDependencies(),
+              rewriter.getStringAttr(specializedChannels[i].getSymName()),
+              get.getIndices(), get.getMemref(), get.getOffsets(),
+              get.getSizes(), get.getStrides());
+          rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+        }
+      }
+      rewriter.eraseOp(get);
+    }
+    return success();
+  }
+
+  LogicalResult matchAndRewrite(air::ChannelOp channelOp,
+                                PatternRewriter &rewriter) const override {
+    auto loc = rewriter.getUnknownLoc();
+    auto ctx = rewriter.getContext();
+
+    // Only match channels with a nontrivial broadcast_shape
+    auto bcastShapeAttr =
+        channelOp->getAttrOfType<ArrayAttr>("broadcast_shape");
+    if (!bcastShapeAttr)
+      return failure();
+    SmallVector<int64_t, 4> bcastShape;
+    if (!getIntArrayAttr(bcastShapeAttr, bcastShape))
+      return failure();
+
+    // Only specialize if shape is not empty and not all ones
+    if (bcastShape.empty() ||
+        llvm::all_of(bcastShape, [](int64_t d) { return d == 1; }))
+      return failure();
+
+    // Require broadcast_shape rank to match channel indices rank (empty indices
+    // means rank 1)
+    ArrayAttr sizeAttr = channelOp.getSize();
+    unsigned channelRank = sizeAttr.empty() ? 1 : sizeAttr.size();
+    if (bcastShape.size() != channelRank)
+      return failure();
+
+    // Find the first dimension with size >1 (with type check)
+    auto specializeDimOpt = findSpecializeDim(sizeAttr, bcastShape);
+    if (!specializeDimOpt)
+      return failure();
+    int64_t specializeDim = specializeDimOpt->first;
+    int64_t numSegments = specializeDimOpt->second;
+    if (specializeDim < 0 || numSegments <= 1)
+      return failure();
+
+    // Create specialized channels
+    SmallVector<air::ChannelOp, 4> specializedChannels;
+    auto moduleOp = channelOp->getParentOfType<ModuleOp>();
+    auto baseName = channelOp.getSymName().str();
+
+    // Copy the original channel's size attribute and set the specialized dim to
+    // 1
+    SmallVector<Attribute> newSize(sizeAttr.begin(), sizeAttr.end());
+    if ((int64_t)newSize.size() > specializeDim)
+      newSize[specializeDim] = rewriter.getI64IntegerAttr(1);
+
+    // Prepare new broadcast_shape: original broadcast_shape with specialized
+    // dim set to 1
+    SmallVector<Attribute> newBcastShapeAttrs;
+    if (!getAttrArrayAttr(bcastShapeAttr, newBcastShapeAttrs))
+      return failure();
+    if ((int64_t)newBcastShapeAttrs.size() > specializeDim)
+      newBcastShapeAttrs[specializeDim] = rewriter.getI64IntegerAttr(1);
+
+    for (int64_t i = 0; i < numSegments; ++i) {
+      std::string newName = baseName + "_" + std::to_string(i);
+      auto newChan = rewriter.create<air::ChannelOp>(
+          loc, rewriter.getStringAttr(newName), rewriter.getArrayAttr(newSize),
+          channelOp.getChannelType());
+      newChan->setAttr("broadcast_shape", ArrayAttr::get(rewriter.getContext(),
+                                                         newBcastShapeAttrs));
+      specializedChannels.push_back(newChan);
+    }
+
+    // Rewrite all channel.put users to use the specialized channels
+    rewriteChannelPutUsers(channelOp, moduleOp, specializeDim,
+                           specializedChannels, rewriter, loc);
+
+    // Rewrite all channel.get users to use the specialized channels
+    if (failed(rewriteChannelGetUsers(channelOp, moduleOp, specializeDim,
+                                      numSegments, specializedChannels,
+                                      rewriter, loc, ctx)))
+      return failure();
+
+    // Remove the original channel op
+    rewriter.eraseOp(channelOp);
+    return success();
+  }
+};
+
 /**
  * Pattern to simplify DMA indices for air::DmaMemcpyNdOp with a broadcast_set
  * attribute.
@@ -437,10 +675,15 @@ public:
       // Renumber the air dma op ids
       air::renumberMemcpyIfOps(&f.getRegion());
     }
+    {
+      RewritePatternSet patterns(module.getContext());
+      patterns.add<SpecializeChannelBroadcastPattern>(module.getContext());
+      (void)applyPatternsGreedily(module, std::move(patterns));
+    }
   }
 
   void runOnFunction(func::FuncOp f) {
-    // Phase 1: Specialize broadcastable DMA
+    // Phase 1: Specialize broadcastable air.dma_memcpy_nd and air.channel
     {
       RewritePatternSet patterns(f.getContext());
       patterns.add<SpecializeDmaBroadcastPattern>(f.getContext());
