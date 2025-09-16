@@ -4,6 +4,6 @@
 // REQUIRES: ryzen_ai_npu1, valid_xchess_license
 // RUN: mkdir -p test_npu1_chess
 // RUN: cd test_npu1_chess
-// RUN: %python %S/gen.py --trace-size 65536 --trace-offset 65536
-// RUN: g++-13 %S/test.cpp -o test.exe -std=c++23 -Wall %test_utils_flags %xrt_flags -lrt -lstdc++ -lboost_program_options -lboost_filesystem
-// RUN: %run_on_npu1% ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin --trace_sz 65536
+// RUN: %python %S/gen.py --trace-size 65536 --trace-offset 65536 --trace-file trace.txt
+// RUN: %python /home/erweiw/mlir-air/utils/mlir-aie/programming_examples/utils/parse_trace.py --input trace.txt --mlir %S/air_project/input_with_addresses.mlir --output parse_eventIR_vs.json
+// RUN: jq . parse_eventIR_vs.json | FileCheck %S/parse_eventIR_vs.json.check

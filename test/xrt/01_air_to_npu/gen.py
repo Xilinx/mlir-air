@@ -10,6 +10,7 @@ from air.compiler.util import run_transform
 import argparse
 
 from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner
 from air.ir import *
 import air.passmanager
 
@@ -53,6 +54,13 @@ parser.add_argument(
     default=65536,
     type=int,
     help="Trace buffer offset appended to output",
+)
+parser.add_argument(
+    "--trace-file-name",
+    dest="trace_file",
+    default="trace.txt",
+    type=str,
+    help="Name of the trace file generated",
 )
 
 opts = parser.parse_args()
@@ -145,10 +153,24 @@ pm.run(air_module.operation)
 # Run compile and load
 ###############################################
 
-backend = XRTBackend(
+# Matrix A: (128, 256)
+A = np.random.randint(-10, 10, size=(128, 256), dtype=np.int32)
+
+# Matrix B: (256, 128)
+B = np.random.randint(-10, 10, size=(256, 128), dtype=np.int32)
+C = np.matmul(A, B)
+runner = XRTRunner(
     air_loop_fusion=True,
+    omit_while_true_loop=False,
+    use_lock_race_condition_fix=True,
     trace_offset=opts.trace_offset,
     trace_size=opts.trace_size,
-    use_lock_race_condition_fix=True,
+    trace_file=opts.trace_file,
 )
-backend.compile(air_module)
+exit(
+    runner.run_test(
+        air_module,
+        inputs=[A, B],
+        expected_outputs=[C],
+    )
+)
