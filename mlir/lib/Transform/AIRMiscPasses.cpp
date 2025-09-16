@@ -196,6 +196,27 @@ public:
     }
   }
 
+  // Helper: Build broadcast affine set constraints (extracted from lambda)
+  static void makeBroadcastAffineSetConstraints(
+      size_t dimCount, int64_t specializeDim, int64_t specializeIdx,
+      int64_t numCols, MLIRContext *ctx, SmallVectorImpl<AffineExpr> &exprs,
+      SmallVectorImpl<bool> &eqFlags) {
+    for (size_t d = 0; d < dimCount; ++d) {
+      if ((int64_t)d == specializeDim) {
+        exprs.push_back(getAffineSymbolExpr(d, ctx) -
+                        getAffineConstantExpr(specializeIdx, ctx));
+        eqFlags.push_back(true);
+        continue;
+      }
+      // Add unconstrained range for other symbols (TODO: remove this
+      // requirement)
+      exprs.push_back(getAffineSymbolExpr(d, ctx));
+      eqFlags.push_back(false);
+      exprs.push_back(numCols - 1 - getAffineSymbolExpr(d, ctx));
+      eqFlags.push_back(false);
+    }
+  }
+
   // Helper: Rewrite all channel.get users
   static LogicalResult rewriteChannelGetUsers(
       air::ChannelOp channelOp, ModuleOp moduleOp, int64_t specializeDim,
@@ -213,58 +234,43 @@ public:
       SmallVector<Value, 4> herdIds;
       for (BlockArgument arg : herd.getIds())
         herdIds.push_back(Value(arg));
+      // Helper lambda to create and yield a ChannelGetOp
+      auto createAndYieldChannelGet = [&](int idx) -> Value {
+        auto newGet = rewriter.create<air::ChannelGetOp>(
+            loc, get.getResultTypes(), get.getAsyncDependencies(),
+            rewriter.getStringAttr(specializedChannels[idx].getSymName()),
+            get.getIndices(), get.getMemref(), get.getOffsets(), get.getSizes(),
+            get.getStrides());
+        rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+        return newGet.getAsyncToken();
+      };
+
       for (int64_t i = 0; i < numSegments; ++i) {
         SmallVector<AffineExpr, 4> exprs;
         SmallVector<bool, 4> eqFlags;
-        for (size_t d = 0; d < herdIds.size(); ++d) {
-          if ((int64_t)d == specializeDim) {
-            exprs.push_back(getAffineSymbolExpr(d, ctx) -
-                            getAffineConstantExpr(i, ctx));
-            eqFlags.push_back(true);
-            continue;
-          }
-          // Add unconstrained range for other symbols (TODO: remove this
-          // requirement)
-          exprs.push_back(getAffineSymbolExpr(d, ctx));
-          eqFlags.push_back(false);
-          exprs.push_back(herd.getNumCols() - 1 - getAffineSymbolExpr(d, ctx));
-          eqFlags.push_back(false);
-        }
+        makeBroadcastAffineSetConstraints(herdIds.size(), specializeDim, i,
+                                          herd.getNumCols(), ctx, exprs,
+                                          eqFlags);
         auto intSet = IntegerSet::get(0, herdIds.size(), exprs, eqFlags);
         SmallVector<Value, 4> setArgs = herdIds;
         if (i == 0) {
           auto aif = rewriter.create<affine::AffineIfOp>(
               loc, get.getResultTypes(), intSet, setArgs, true);
           rewriter.setInsertionPointToStart(aif.getThenBlock());
-          auto newGet = rewriter.create<air::ChannelGetOp>(
-              loc, get.getResultTypes(), get.getAsyncDependencies(),
-              rewriter.getStringAttr(specializedChannels[i].getSymName()),
-              get.getIndices(), get.getMemref(), get.getOffsets(),
-              get.getSizes(), get.getStrides());
-          rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+          createAndYieldChannelGet(i);
           rewriter.replaceAllUsesWith(get.getAsyncToken(), aif.getResult(0));
           rewriter.setInsertionPointToStart(aif.getElseBlock());
         } else if (i < numSegments - 1) {
           auto aif = rewriter.create<affine::AffineIfOp>(
               loc, get.getResultTypes(), intSet, setArgs, true);
           rewriter.setInsertionPointToStart(aif.getThenBlock());
-          auto newGet = rewriter.create<air::ChannelGetOp>(
-              loc, get.getResultTypes(), get.getAsyncDependencies(),
-              rewriter.getStringAttr(specializedChannels[i].getSymName()),
-              get.getIndices(), get.getMemref(), get.getOffsets(),
-              get.getSizes(), get.getStrides());
-          rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+          createAndYieldChannelGet(i);
           rewriter.setInsertionPointAfter(aif);
           SmallVector<Value, 1> parentBlockYieldToken{aif.getResult(0)};
           rewriter.create<affine::AffineYieldOp>(loc, parentBlockYieldToken);
           rewriter.setInsertionPointToStart(aif.getElseBlock());
         } else {
-          auto newGet = rewriter.create<air::ChannelGetOp>(
-              loc, get.getResultTypes(), get.getAsyncDependencies(),
-              rewriter.getStringAttr(specializedChannels[i].getSymName()),
-              get.getIndices(), get.getMemref(), get.getOffsets(),
-              get.getSizes(), get.getStrides());
-          rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+          createAndYieldChannelGet(i);
         }
       }
       rewriter.eraseOp(get);
