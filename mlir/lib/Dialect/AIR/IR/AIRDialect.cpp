@@ -1809,6 +1809,26 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       initialOffsets.push_back(constZero);
       initialStrides.push_back(constOne);
     }
+  } else if (auto expandShapeOp =
+                 dyn_cast<memref::ExpandShapeOp>(memrefOpVec[0])) {
+    input_memref = expandShapeOp.getSrc();
+    initialOffsets.clear();
+    initialStrides.clear();
+    for (unsigned i = 0;
+         i < llvm::cast<MemRefType>(input_memref.getType()).getRank(); i++) {
+      initialOffsets.push_back(constZero);
+      initialStrides.push_back(constOne);
+    }
+  } else if (auto collapseShapeOp =
+                 dyn_cast<memref::CollapseShapeOp>(memrefOpVec[0])) {
+    input_memref = collapseShapeOp.getSrc();
+    initialOffsets.clear();
+    initialStrides.clear();
+    for (unsigned i = 0;
+         i < llvm::cast<MemRefType>(input_memref.getType()).getRank(); i++) {
+      initialOffsets.push_back(constZero);
+      initialStrides.push_back(constOne);
+    }
   } else if (auto castOp = dyn_cast<memref::CastOp>(memrefOpVec[0])) {
     input_memref = castOp.getSource();
     initialOffsets.clear();
@@ -1855,6 +1875,23 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
           initialStrides.insert(initialStrides.begin() + i, constOne);
         }
       }
+    } else if (auto collapseShapeOp =
+                   dyn_cast<memref::CollapseShapeOp>(memrefOp)) {
+      // For each collapsed dimension, keep the offset/stride of the first
+      // source dim in the group.
+      SmallVector<Value> newOffsets, newStrides;
+      size_t srcIdx = 0;
+      for (size_t i = 0; i < collapseShapeOp.getReassociationIndices().size();
+           ++i) {
+        // The first source dim in the group determines the collapsed
+        // offset/stride.
+        newOffsets.push_back(initialOffsets[srcIdx]);
+        newStrides.push_back(initialStrides[srcIdx]);
+        // Skip to the next group.
+        srcIdx += collapseShapeOp.getReassociationIndices()[i].size();
+      }
+      initialOffsets = newOffsets;
+      initialStrides = newStrides;
     } else if (auto subviewOp = dyn_cast<memref::SubViewOp>(memrefOp)) {
       if (subviewOp != memrefOpVec.front() && !subviewOp.hasZeroOffset()) {
         combineSubviewOffsetsInPlace(rewriter, subviewOp, initialOffsets,
