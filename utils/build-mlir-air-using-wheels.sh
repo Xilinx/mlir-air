@@ -89,7 +89,6 @@ cmake .. \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DPython_FIND_VIRTUALENV=ONLY \
     -DPython3_FIND_VIRTUALENV=ONLY \
-    -DLibXAIE_ROOT=${MLIR_AIE_INSTALL_DIR}/runtime_lib/x86_64/xaiengine/ \
     -DXRT_LIB_DIR=${XRT_DIR}/lib \
     -DXRT_BIN_DIR=${XRT_DIR}/bin \
     -DXRT_INCLUDE_DIR=${XRT_DIR}/include \
