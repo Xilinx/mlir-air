@@ -297,7 +297,7 @@ uint64_t air_segment_load(const char *name) {
   // Setting the driver libxaie backend back up
   // Currently only targetting device 0
   _air_host_active_libxaie->XAieConfig->Backend = XAIE_IO_BACKEND_AMDAIR;
-  _air_host_active_libxaie->XAieDevInst.IOInst =
+  _air_host_active_libxaie->XAieDevInst->IOInst =
       (void *)"/sys/class/amdair/amdair/00";
 
   XAie_CfgInitialize(_air_host_active_libxaie->XAieDevInst,
