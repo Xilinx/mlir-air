@@ -133,18 +133,18 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
   if (!xaie)
     return (air_libxaie_ctx_t) nullptr;
 
-  xaie->AieConfigPtr.AieGen = XAIE_DEV_GEN_AIE;
-  xaie->AieConfigPtr.ColShift = XAIE_COL_SHIFT;
-  xaie->AieConfigPtr.RowShift = XAIE_ROW_SHIFT;
-  xaie->AieConfigPtr.NumRows = XAIE_NUM_ROWS;
-  xaie->AieConfigPtr.NumCols = XAIE_NUM_COLS;
-  xaie->AieConfigPtr.ShimRowNum = XAIE_SHIM_ROW;
-  xaie->AieConfigPtr.MemTileRowStart = XAIE_RES_TILE_ROW_START;
-  xaie->AieConfigPtr.MemTileNumRows = XAIE_RES_TILE_NUM_ROWS;
-  xaie->AieConfigPtr.AieTileRowStart = XAIE_AIE_TILE_ROW_START;
-  xaie->AieConfigPtr.AieTileNumRows = XAIE_AIE_TILE_NUM_ROWS;
-  xaie->AieConfigPtr.PartProp = {0};
-  xaie->DevInst = {0};
+  xaie->XAieConfigPtr.AieGen = XAIE_DEV_GEN_AIE;
+  xaie->XAieConfigPtr.ColShift = XAIE_COL_SHIFT;
+  xaie->XAieConfigPtr.RowShift = XAIE_ROW_SHIFT;
+  xaie->XAieConfigPtr.NumRows = XAIE_NUM_ROWS;
+  xaie->XAieConfigPtr.NumCols = XAIE_NUM_COLS;
+  xaie->XAieConfigPtr.ShimRowNum = XAIE_SHIM_ROW;
+  xaie->XAieConfigPtr.MemTileRowStart = XAIE_RES_TILE_ROW_START;
+  xaie->XAieConfigPtr.MemTileNumRows = XAIE_RES_TILE_NUM_ROWS;
+  xaie->XAieConfigPtr.AieTileRowStart = XAIE_AIE_TILE_ROW_START;
+  xaie->XAieConfigPtr.AieTileNumRows = XAIE_AIE_TILE_NUM_ROWS;
+  xaie->XAieConfigPtr.PartProp = {0};
+  xaie->XAieDevInst = {0};
 
   char sysfs_path[SYSFS_PATH_MAX + 1];
   if (snprintf(sysfs_path, SYSFS_PATH_MAX, "/sys/class/amdair/amdair/%02u",
@@ -152,17 +152,18 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
     sysfs_path[SYSFS_PATH_MAX] = 0;
 
   XAie_BackendType backend;
-  xaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_AMDAIR;
+  xaie->XAieConfigPtr.Backend = XAIE_IO_BACKEND_AMDAIR;
   backend = XAIE_IO_BACKEND_AMDAIR;
-  xaie->AieConfigPtr.BaseAddr = 0;
-  xaie->DevInst.IOInst = (void *)sysfs_path;
+  xaie->XAieConfigPtr.BaseAddr = 0;
+  xaie->XAieDevInst.IOInst = (void *)sysfs_path;
 
-  if (XAie_CfgInitialize(&(xaie->DevInst), &(xaie->AieConfigPtr)) != XAIE_OK) {
+  if (XAie_CfgInitialize(&(xaie->XAieDevInst), &(xaie->XAieConfigPtr)) !=
+      XAIE_OK) {
     printf("[ERROR] Failed to configure libxaie\n");
     return (air_libxaie_ctx_t) nullptr;
   }
 
-  XAie_PmRequestTiles(&(xaie->DevInst), NULL, 0);
+  XAie_PmRequestTiles(&(xaie->XAieDevInst), NULL, 0);
 
   _air_host_active_libxaie = xaie;
   return (air_libxaie_ctx_t)xaie;
@@ -171,10 +172,10 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
 void air_deinit_libxaie(air_libxaie_ctx_t _xaie) {
   aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)_xaie;
   if (xaie == _air_host_active_libxaie) {
-    XAie_Finish(&(xaie->DevInst));
+    XAie_Finish(&(xaie->XAieDevInst));
 
-    if (xaie->AieConfigPtr.BaseAddr)
-      munmap((void *)xaie->AieConfigPtr.BaseAddr, 0x20000000);
+    if (xaie->XAieConfigPtr.BaseAddr)
+      munmap((void *)xaie->XAieConfigPtr.BaseAddr, 0x20000000);
 
     _air_host_active_libxaie = nullptr;
   }
@@ -292,17 +293,17 @@ uint64_t air_segment_load(const char *name) {
     assert(0);
   }
 
-  XAie_Finish(&(_air_host_active_libxaie->DevInst));
+  XAie_Finish(&(_air_host_active_libxaie->XAieDevInst));
 
   // Setting the driver libxaie backend back up
   // Currently only targetting device 0
-  _air_host_active_libxaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_AMDAIR;
-  _air_host_active_libxaie->DevInst.IOInst =
+  _air_host_active_libxaie->XAieConfigPtr.Backend = XAIE_IO_BACKEND_AMDAIR;
+  _air_host_active_libxaie->XAieDevInst.IOInst =
       (void *)"/sys/class/amdair/amdair/00";
 
-  XAie_CfgInitialize(&(_air_host_active_libxaie->DevInst),
-                     &(_air_host_active_libxaie->AieConfigPtr));
-  XAie_PmRequestTiles(&(_air_host_active_libxaie->DevInst), NULL, 0);
+  XAie_CfgInitialize(&(_air_host_active_libxaie->XAieDevInst),
+                     &(_air_host_active_libxaie->XAieConfigPtr));
+  XAie_PmRequestTiles(&(_air_host_active_libxaie->XAieDevInst), NULL, 0);
 
   //
   // Set up a 1x3 herd starting 7,0
@@ -460,7 +461,7 @@ uint64_t air_wait_all(std::vector<uint64_t> &signals) {
 uint64_t air_get_tile_addr(uint32_t col, uint32_t row) {
   if (_air_host_active_libxaie == NULL)
     return -1;
-  return _XAie_GetTileAddr(&(_air_host_active_libxaie->DevInst), row, col);
+  return _XAie_GetTileAddr(&(_air_host_active_libxaie->XAieDevInst), row, col);
 }
 
 /// Read the AIE registers at the given physical address.
@@ -468,7 +469,7 @@ uint32_t air_read32(uint64_t addr) {
   if (_air_host_active_libxaie == NULL)
     return -1;
   uint32_t val;
-  XAie_Read32(&(_air_host_active_libxaie->DevInst), addr, &val);
+  XAie_Read32(&(_air_host_active_libxaie->XAieDevInst), addr, &val);
   return val;
 }
 
@@ -478,7 +479,7 @@ uint32_t air_read32(uint64_t addr) {
 void air_write32(uint64_t addr, uint32_t val) {
   if (_air_host_active_libxaie == NULL)
     return;
-  XAie_Write32(&(_air_host_active_libxaie->DevInst), addr, val);
+  XAie_Write32(&(_air_host_active_libxaie->XAieDevInst), addr, val);
 }
 
 extern "C" {
