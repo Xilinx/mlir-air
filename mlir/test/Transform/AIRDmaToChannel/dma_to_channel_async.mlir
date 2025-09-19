@@ -11,7 +11,7 @@
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
 module {
-// CHECK: air.channel @channel_0 [1, 1]
+// CHECK: air.channel @channel_0 []
 // CHECK: air.channel @channel_1 [2, 2]
 // CHECK-LABEL: func.func @func0
   func.func @func0(%arg0: memref<512x512xbf16>) {
