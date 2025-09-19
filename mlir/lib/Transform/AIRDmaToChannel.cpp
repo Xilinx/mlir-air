@@ -374,18 +374,18 @@ static void replaceAIRDmaWithAIRChannelPairs(
   } else {
     // Else, infer channel's input shape from parent spatial loop, i.e. herd if
     // within a herd, or scf.parallel if within an scf.parallel.
-    SmallVector<int64_t, 2> channel_sizes = {1, 1};
+    SmallVector<int64_t, 2> channel_sizes;
     if (auto parent_herd_op = op->getParentOfType<air::HerdOp>()) {
       auto herd_size = parent_herd_op.getSizeOperands();
       for (unsigned i = 0; i < herd_size.size(); i++) {
-        channel_sizes[i] =
-            herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
+        channel_sizes.push_back(
+            herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value());
       }
     } else if (auto parent_par_op = op->getParentOfType<scf::ParallelOp>()) {
       SmallVector<int, 2> lbs_spatial, ubs_spatial;
       air::getSizesFromSpatialLoop(parent_par_op, lbs_spatial, ubs_spatial);
       for (unsigned i = 0; i < ubs_spatial.size(); i++)
-        channel_sizes[i] = ubs_spatial[i] - lbs_spatial[i] + 1;
+        channel_sizes.push_back(ubs_spatial[i] - lbs_spatial[i] + 1);
     }
     createChannelOp(builder, module, cname, loc, channel_sizes);
 
