@@ -145,7 +145,6 @@ jobs:
             -DMLIR_DIR=${WHL_MLIR_DIR}/lib/cmake/mlir \
             -DAIE_DIR=${MLIR_AIE_INSTALL_DIR}/lib/cmake/aie \
             -Dx86_64_TOOLCHAIN_FILE=$PWD/../cmake/modules/toolchain_x86_64.cmake \
-            -DLibXAIE_ROOT=${MLIR_AIE_INSTALL_DIR}/runtime_lib/x86_64/xaiengine/ \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -DXRT_ROOT=/opt/xilinx/xrt \
             -DENABLE_RUN_XRT_TESTS=ON \
