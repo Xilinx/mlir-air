@@ -453,6 +453,7 @@ def run(mlir_module, args=None):
             [
                 "air-insert-launch-around-herd{insert-segment=true}",
                 "func.func(air-lower-herd-parallel)",
+                "scf-forall-to-parallel",
             ]
             + (
                 get_air_optimization_pass(
