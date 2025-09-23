@@ -102,7 +102,7 @@ def build_module(M_SIZE, N_SIZE):
     channel("L1ToL2Chan1", size=[NUM_COLUMNS, 1])  # Output from herd_2 to L2
 
     @FuncOp.from_py_func(memrefMxN, memrefMxN, memrefMxN)
-    def three_herd_dataflow_bf16(arg0, arg1, arg2):
+    def func1(arg0, arg1, arg2):
         """
         Top-level function: runtime dispatch over a "launch" iteration space (not necessarily hardware parallelism).
         Compute the three-stage dataflow using vector addition, copy, and external function call kernels.
