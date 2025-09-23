@@ -32,21 +32,19 @@ This example demonstrates several key abstractions in mlir-air for expressing da
 ### 1. Data Movement: `air.dma_memcpy_nd` vs. `air.channel`
 
 Two forms of data movement are used:
-- **`air.dma_memcpy_nd`**: Directly describes multi-dimensional DMA transfers between memory spaces (e.g., L2 to L1, L1 to L2). This is a synchronous, explicit data movement operation.
-- **`air.channel`**: Declares FIFO-like communication channels between regions of the design. Channels decouple data movement from computation, allowing the compiler to schedule DMA and compute independently. This decoupling exposes locality and enables back-pressure, guaranteeing correctness even when DMA and compute are overlapped.
+- **`air.dma_memcpy_nd`**: Directly describes multi-dimensional DMA transfers between memory spaces (e.g., L2 to L1, L1 to L2). This is a synchronous, explicit data movement operation, with source and destination coupled together.
+- **`air.channel`**: Declares communication channels between regions of the design. Channels decouple data movement from computation, allowing the compiler to schedule data movement and compute independently. This decoupling exposes locality and enables back-pressure, guaranteeing correctness even when data movement and compute are overlapped.
 
-Channels can be configured with different `channel_type` attributes:
-- `dma_streaming_interconnect`: For DMA-based streaming between memory and tiles.
-- `packet_flow_interconnect`: For packet-based communication.
-- `cascade` (peer-to-peer): For direct core-to-core communication, leveraging the spatial hardware's efficient intra-array movement.
+Channels can be configured with different `channel_type` attributes, to represent (1) circuit-switched, (2) packet-switched or (3) cascase (peer-to-peer) data movement mechanisms supported by the target device.
 
 By placing `put`/`get` operations at the correct hierarchy boundaries, the design exposes opportunities for the compiler to optimize and overlap communication and computation.
 
 ### 2. Resource Scoping & Dispatch: `air.launch`, `air.segment`, and `air.herd`
 
-- **`air.launch`**: Offloads a region of code to the accelerator. Its iteration space is managed by the runtime and can be scheduled in parallel.
+- **`air.launch`**: Offloads a region of code to the accelerator. Its iteration space is managed by the runtime and can be scheduled in parallel or in sequence.
 - **`air.segment`**: Reserves a resource pool (such as a region of tiles or memory) for the nested work, providing explicit scoping of resources.
-- **`air.herd`**: Defines a group of compute tiles working in parallel to execute the same kernel. Each `herd` represents a stage in the pipeline, mapped to a row of compute tiles in the hardware array.
+- **`air.herd`**: Defines a group of compute tiles working in parallel to execute the same kernel. In this design, each `herd` represents a stage in the pipeline, mapped to a row of compute tiles in the hardware array.
+- **`scf.parallel` / `scf.forall`**: Represents parallelism in code regions, such as parallel data movement. In this example, the use of `scf.parallel` (or `scf.forall`) provides the compiler with more information about how data movement can be partitioned and executed concurrently, enabling better optimization and mapping to hardware.
 
 At the top level, the example creates a tiled launch space and a segment that owns resources for the pipeline, then instantiates three herds for the three pipeline stages.
 
@@ -68,9 +66,8 @@ These constructs together enable the design to express complex, tiled, and pipel
 
 ### Prerequisites
 
-- MLIR and mlir-air installed and in your environment
-- Python 3 with required packages (see mlir-air documentation)
-- (Optional) AIE toolchain for hardware execution
+- Mlir-air installed and in your environment
+- Python with required packages (see mlir-air documentation)
 
 ### Building and Running
 
@@ -110,28 +107,18 @@ make clean
 
 ## Explanation of Key Parameters
 
-- **M_SIZE**: Number of rows in the input matrix (must be multiple of 64)
-- **N_SIZE**: Number of columns in the input matrix (must be multiple of 256)
-- **NUM_COLUMNS**: Number of columns in the hardware array (set to 4 in this example)
-- **L1_BUFFER_SIZE_M/N**: Tile-local buffer sizes in number of elements (64)
+- **M_SIZE**: Number of rows in the input matrix
+- **N_SIZE**: Number of columns in the input matrix
+- **NUM_COLUMNS**: Number of columns in the hardware array
+- **L1_BUFFER_SIZE_M/N**: Tile-local buffer sizes in number of elements
+- **L2_BUFFER_SIZE_M/N**: Shared buffer sizes in number of elements
 - **VECTOR_SIZE**: Number of elements processed in a single vector operation (16, matches hardware vector width)
 - **CHANNEL_STRIDE**: Stride in the column dimension for channel and DMA operations (1 = contiguous)
 
-## Understanding the AIR Dialect
-
-mlir-air extends MLIR with constructs for mapping computations to AIE hardware:
-- **herd**: Like a parallel loop, but maps to a rectangular region of compute tiles.
-- **segment**: Code that runs on a single tile.
-- **channel**: FIFO for communication between tiles or between memory and tiles.
-- **dma_memcpy_nd**: Multi-dimensional DMA transfer.
-
-If you are familiar with MLIR's affine and scf dialects, you will find many similarities, but AIR adds explicit hardware mapping and communication primitives.
-
 ## Customizing the Example
 
-- You can modify `air.mlir` to experiment with different dataflow patterns or pipeline stages.
-- You can edit `run.py` to prototype new designs using the Python API.
-- The Makefile can be extended to add new build or run targets.
+- You can modify `air.mlir` to experiment with new designs in *mlir-air* dialect.
+- You can modify `run.py` to experiment with new designs using the *Python API*.
 
 ## Further Reading
 
