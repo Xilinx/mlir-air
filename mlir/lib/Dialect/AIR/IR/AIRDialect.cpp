@@ -1919,6 +1919,9 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
       initialOffsets.insert(initialOffsets.begin(), constZero);
       initialStrides.insert(initialStrides.begin(), constOne);
     }
+    while (offsets.size() < initialOffsets.size()) {
+      offsets.insert(offsets.begin(), constZero);
+    }
     combineMixedOffsetsInPlace(rewriter, mlir::getAsOpFoldResult(offsets),
                                initialOffsets, initialStrides);
   }
