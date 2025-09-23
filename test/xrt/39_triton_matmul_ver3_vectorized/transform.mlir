@@ -3,12 +3,6 @@
 
 transform.with_pdl_patterns {
 ^bb0(%arg0: !pdl.operation):
-    pdl.pattern @match_copy : benefit(1) {
-        %args = pdl.operands
-        %results = pdl.types
-        %op = pdl.operation "memref.copy"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
-        pdl.rewrite %op with "transform.dialect"
-    }
     transform.sequence %arg0 : !pdl.operation failures(propagate) {
     ^bb1(%arg1: !pdl.operation):
         %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
@@ -18,19 +12,7 @@ transform.with_pdl_patterns {
         %buffer_res_shared, %new_fill = transform.structured.bufferize_to_allocation %fill
           {memory_space = 1, bufferize_destination_only, emit_dealloc} : !pdl.operation
 
-        // Find the copy operations to tile using for.
-        %func_1 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        transform.air.convert_memref_copy_to_linalg_copy %func_1
-        %copies = transform.structured.match ops{["linalg.copy"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        %copy_1, %copy_2 = transform.split_handle %copies : (!pdl.operation<"linalg.copy">) -> (!pdl.operation<"linalg.copy">, !pdl.operation<"linalg.copy">)
-        %tiled_copy_1, %tiled_copy_for_loop_1 =
-          transform.structured.tile_using_for %copy_1 tile_sizes [0, 256]
-          : (!pdl.operation) -> (!pdl.operation, !transform.op<"scf.for">)
-        %tiled_copy_2, %tiled_copy_for_loop_2 =
-          transform.structured.tile_using_for %copy_2 tile_sizes [256, 0]
-          : (!pdl.operation) -> (!pdl.operation, !transform.op<"scf.for">)
-
-        // Second level tile to forall with tile_sizes.
+        // Tile to forall with tile_sizes.
         %matmul_1 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
         %tiled_matmul_1, %forall_1 =
           transform.structured.tile_using_forall %matmul_1 tile_sizes [64, 64] : (!pdl.operation) -> (!pdl.operation, !pdl.operation)

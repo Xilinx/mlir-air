@@ -86,6 +86,8 @@ with air.ir.Context() as ctx, Location.unknown():
     transform_ir = Module.parse(transform_ir_string)
     run_transform(transform_ir, air_module)
 
+    print(air_module)
+
     ################################################
     ## Binding scf.paralell to air hierarchies
     ################################################
@@ -125,7 +127,6 @@ with air.ir.Context() as ctx, Location.unknown():
     ###### Compile and test
     runner = XRTRunner(
         omit_while_true_loop=False,
-        air_loop_fusion=True,
     )
     exit(
         runner.run_test(
