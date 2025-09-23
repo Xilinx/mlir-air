@@ -125,7 +125,6 @@ with air.ir.Context() as ctx, Location.unknown():
     ###### Compile and test
     runner = XRTRunner(
         omit_while_true_loop=False,
-        air_loop_fusion=True,
     )
     exit(
         runner.run_test(
