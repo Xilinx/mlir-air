@@ -86,8 +86,6 @@ with air.ir.Context() as ctx, Location.unknown():
     transform_ir = Module.parse(transform_ir_string)
     run_transform(transform_ir, air_module)
 
-    print(air_module)
-
     ################################################
     ## Binding scf.paralell to air hierarchies
     ################################################
