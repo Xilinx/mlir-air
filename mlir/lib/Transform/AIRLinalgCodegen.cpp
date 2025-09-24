@@ -2482,10 +2482,19 @@ static bool isUninitializedCopy(CopyOpType copyOp) {
   return !hasWritesBetween(allocOp, copyOp);
 }
 
-/// Backward compatibility wrapper for memref.copy
-static bool isUninitializedMemrefCopy(memref::CopyOp copyOp) {
-  return isUninitializedCopy(copyOp);
-}
+template <typename CopyOpType>
+struct RemoveUninitializedCopyOpPattern : public OpRewritePattern<CopyOpType> {
+  using OpRewritePattern<CopyOpType>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CopyOpType copyOp,
+                                PatternRewriter &rewriter) const override {
+    if (isUninitializedCopy(copyOp)) {
+      rewriter.eraseOp(copyOp);
+      return success();
+    }
+    return failure();
+  }
+};
 
 DiagnosedSilenceableFailure transform::RemoveUninitializedCopyOp::apply(
     transform::TransformRewriter &rewriter,
@@ -2507,30 +2516,13 @@ DiagnosedSilenceableFailure transform::RemoveUninitializedCopyOp::apply(
       return emitDefiniteFailure() << "target must be a func.func operation";
     }
 
-    SmallVector<memref::CopyOp> memrefCopiesToErase;
-    SmallVector<linalg::CopyOp> linalgCopiesToErase;
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(ctx);
 
-    // Walk the function to find memref.copy operations
-    funcOp.walk([&](memref::CopyOp copyOp) {
-      if (isUninitializedMemrefCopy(copyOp)) {
-        memrefCopiesToErase.push_back(copyOp);
-      }
-    });
-
-    // Walk the function to find linalg.copy operations
-    funcOp.walk([&](linalg::CopyOp copyOp) {
-      if (isUninitializedCopy(copyOp)) {
-        linalgCopiesToErase.push_back(copyOp);
-      }
-    });
-
-    // Erase the identified copy operations
-    for (auto copyOp : memrefCopiesToErase) {
-      rewriter.eraseOp(copyOp);
-    }
-    for (auto copyOp : linalgCopiesToErase) {
-      rewriter.eraseOp(copyOp);
-    }
+    // Apply the pattern to remove memcpy operations with uninitialized sources.
+    patterns.insert<RemoveUninitializedCopyOpPattern<memref::CopyOp>,
+                    RemoveUninitializedCopyOpPattern<linalg::CopyOp>>(ctx);
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
 
     transformedOps.push_back(funcOp);
   }

@@ -9,10 +9,8 @@
 
 // Test basic uninitialized memref copy removal
 // CHECK-LABEL: @test_basic_uninitialized_copy
-// CHECK: %[[ALLOC_6:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
-// CHECK: %[[SUBVIEW_11:.*]] = memref.subview %[[ALLOC_6]][0, 0, 0] [1, 16, 8] [1, 1, 1]
 // CHECK: %[[ALLOC_12:.*]] = memref.alloc() : memref<1x16x8xi32, 2>
-// CHECK-NOT: memref.copy %[[SUBVIEW_11]], %[[ALLOC_12]]
+// CHECK-NOT: memref.copy %{{.*}}, %[[ALLOC_12]]
 // CHECK: linalg.fill ins(%{{.*}} : i32) outs(%[[ALLOC_12]] : memref<1x16x8xi32, 2>)
 func.func @test_basic_uninitialized_copy() {
   %c0_i32 = arith.constant 0 : i32
@@ -68,10 +66,8 @@ func.func @test_copy_with_intermediate_write() {
 // Test nested scf.forall with uninitialized copy
 // CHECK-LABEL: @test_nested_scf_forall
 // CHECK: scf.forall (%[[ARG3:.*]]) in (2) {
-// CHECK: %[[ALLOC_6:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
-// CHECK: %[[SUBVIEW_11:.*]] = memref.subview %[[ALLOC_6]][%[[ARG3]], 0, 0] [1, 16, 8] [1, 1, 1]
 // CHECK: %[[ALLOC_12:.*]] = memref.alloc() : memref<1x16x8xi32, 2>
-// CHECK-NOT: memref.copy %[[SUBVIEW_11]], %[[ALLOC_12]]
+// CHECK-NOT: memref.copy %{{.*}}, %[[ALLOC_12]]
 // CHECK: linalg.fill ins(%{{.*}} : i32) outs(%[[ALLOC_12]] : memref<1x16x8xi32, 2>)
 func.func @test_nested_scf_forall() {
   %c0_i32 = arith.constant 0 : i32
@@ -100,13 +96,9 @@ func.func @test_copy_from_function_arg(%arg0: memref<16x8xi32>) {
 
 // Test complex pattern from the original example
 // CHECK-LABEL: @test_complex_pattern
-// CHECK: %[[ALLOC_2:.*]] = memref.alloc() : memref<2x16x128x128xi32, 1>
-// CHECK: %[[ALLOC_6:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
 // CHECK: scf.forall (%[[ARG3:.*]]) in (2) {
-// CHECK: %[[SUBVIEW_10:.*]] = memref.subview %[[ALLOC_2]][%[[ARG3]], 0, 0, 0] [1, 16, 128, 128] [1, 1, 1, 1]
-// CHECK: %[[SUBVIEW_11:.*]] = memref.subview %[[ALLOC_6]][%[[ARG3]], 0, 0] [1, 16, 8] [1, 1, 1]
 // CHECK: %[[ALLOC_12:.*]] = memref.alloc() : memref<1x16x8xi32, 2>
-// CHECK-NOT: memref.copy %[[SUBVIEW_11]], %[[ALLOC_12]]
+// CHECK-NOT: memref.copy %{{.*}}, %[[ALLOC_12]]
 // CHECK: linalg.fill ins(%{{.*}} : i32) outs(%[[ALLOC_12]] : memref<1x16x8xi32, 2>)
 func.func @test_complex_pattern() {
   %c0_i32 = arith.constant 0 : i32
@@ -126,11 +118,7 @@ func.func @test_complex_pattern() {
 
 // Test multiple levels of subviews
 // CHECK-LABEL: @test_multiple_subview_levels
-// CHECK: %[[ALLOC_BASE:.*]] = memref.alloc() : memref<4x32x16xi32, 1>
-// CHECK: %[[SUBVIEW_1:.*]] = memref.subview %[[ALLOC_BASE]][0, 0, 0] [2, 16, 8] [1, 1, 1]
-// CHECK: %[[SUBVIEW_2:.*]] = memref.subview %[[SUBVIEW_1]][0, 0, 0] [1, 16, 8] [1, 1, 1]
-// CHECK: %[[ALLOC_DST:.*]] = memref.alloc() : memref<1x16x8xi32, 2>
-// CHECK-NOT: memref.copy %[[SUBVIEW_2]], %[[ALLOC_DST]]
+// CHECK-NOT: memref.copy %{{.*}}, %{{.*}}
 func.func @test_multiple_subview_levels() {
   %alloc_base = memref.alloc() : memref<4x32x16xi32, 1>
   %subview_1 = memref.subview %alloc_base[0, 0, 0] [2, 16, 8] [1, 1, 1] : memref<4x32x16xi32, 1> to memref<2x16x8xi32, strided<[512, 16, 1]>, 1>
@@ -144,14 +132,10 @@ func.func @test_multiple_subview_levels() {
 
 // Test multiple uninitialized copies removal
 // CHECK-LABEL: @test_multiple_uninitialized_copies
-// CHECK: %[[ALLOC_1:.*]] = memref.alloc() : memref<16x128xi32, 1>
-// CHECK: %[[ALLOC_2:.*]] = memref.alloc() : memref<2x16x128x128xi32, 1>
-// CHECK: %[[SUBVIEW_1:.*]] = memref.subview %[[ALLOC_1]][0, 0] [4, 128] [1, 1]
-// CHECK: %[[SUBVIEW_2:.*]] = memref.subview %[[ALLOC_2]][0, 0, 0, 0] [1, 4, 128, 128] [1, 1, 1, 1]
 // CHECK: %[[ALLOC_DST_1:.*]] = memref.alloc() : memref<4x128xi32, 2>
 // CHECK: %[[ALLOC_DST_2:.*]] = memref.alloc() : memref<1x4x128x128xi32, 2>
-// CHECK-NOT: memref.copy %[[SUBVIEW_1]], %[[ALLOC_DST_1]]
-// CHECK-NOT: memref.copy %[[SUBVIEW_2]], %[[ALLOC_DST_2]]
+// CHECK-NOT: memref.copy %{{.*}}, %[[ALLOC_DST_1]]
+// CHECK-NOT: memref.copy %{{.*}}, %[[ALLOC_DST_2]]
 // CHECK: linalg.generic
 func.func @test_multiple_uninitialized_copies() {
   %alloc_1 = memref.alloc() : memref<16x128xi32, 1>
@@ -177,10 +161,8 @@ func.func @test_multiple_uninitialized_copies() {
 
 // Test basic uninitialized linalg.copy removal
 // CHECK-LABEL: @test_basic_uninitialized_linalg_copy
-// CHECK: %[[ALLOC_6:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
-// CHECK: %[[SUBVIEW_11:.*]] = memref.subview %[[ALLOC_6]][0, 0, 0] [1, 16, 8] [1, 1, 1]
 // CHECK: %[[ALLOC_12:.*]] = memref.alloc() : memref<1x16x8xi32, 2>
-// CHECK-NOT: linalg.copy ins(%[[SUBVIEW_11]] : {{.*}}) outs(%[[ALLOC_12]] : {{.*}})
+// CHECK-NOT: linalg.copy ins(%{{.*}} : {{.*}}) outs(%[[ALLOC_12]] : {{.*}})
 // CHECK: linalg.fill ins(%{{.*}} : i32) outs(%[[ALLOC_12]] : memref<1x16x8xi32, 2>)
 func.func @test_basic_uninitialized_linalg_copy() {
   %c0_i32 = arith.constant 0 : i32
@@ -215,12 +197,10 @@ func.func @test_initialized_linalg_copy_not_removed() {
 
 // Test mixed memref.copy and linalg.copy removal
 // CHECK-LABEL: @test_mixed_copy_types
-// CHECK: %[[ALLOC_1:.*]] = memref.alloc() : memref<16x8xi32, 1>
-// CHECK: %[[ALLOC_2:.*]] = memref.alloc() : memref<16x8xi32, 1>
 // CHECK: %[[ALLOC_DST_1:.*]] = memref.alloc() : memref<16x8xi32, 2>
 // CHECK: %[[ALLOC_DST_2:.*]] = memref.alloc() : memref<16x8xi32, 2>
-// CHECK-NOT: memref.copy %[[ALLOC_1]], %[[ALLOC_DST_1]]
-// CHECK-NOT: linalg.copy ins(%[[ALLOC_2]] : {{.*}}) outs(%[[ALLOC_DST_2]] : {{.*}})
+// CHECK-NOT: memref.copy %{{.*}}, %[[ALLOC_DST_1]]
+// CHECK-NOT: linalg.copy ins(%{{.*}} : {{.*}}) outs(%[[ALLOC_DST_2]] : {{.*}})
 // CHECK: linalg.generic
 func.func @test_mixed_copy_types() {
   %alloc_1 = memref.alloc() : memref<16x8xi32, 1>
