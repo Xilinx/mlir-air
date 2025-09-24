@@ -2191,14 +2191,14 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
         // Look for the reduction operation in the linalg.reduce body
         Operation *reductionOp = nullptr;
         for (auto &op : linalgReduceBody.without_terminator()) {
-          if (isa<arith::AddIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp>(
-                  &op)) {
+          if (isa<arith::AddIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp,
+                  arith::AddFOp, arith::MulFOp>(&op)) {
             reductionOp = &op;
             break;
           }
         }
 
-        if (reductionOp && isa<arith::AddIOp>(reductionOp)) {
+        if (reductionOp && isa<arith::AddIOp, arith::AddFOp>(reductionOp)) {
           // For addition reduction, use linalg.add
           rewriter.create<linalg::AddOp>(
               loc,
@@ -2206,7 +2206,8 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
                          reduceBlock.getArgument(1)},
               ValueRange{reduceBlock.getArgument(0)});
           rewriter.create<scf::ReduceReturnOp>(loc, reduceBlock.getArgument(0));
-        } else if (reductionOp && isa<arith::MulIOp>(reductionOp)) {
+        } else if (reductionOp &&
+                   isa<arith::MulIOp, arith::MulFOp>(reductionOp)) {
           // For multiplication reduction, use linalg.mul
           rewriter.create<linalg::MulOp>(
               loc,
