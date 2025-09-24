@@ -12,6 +12,8 @@ from collections import defaultdict
 from ml_dtypes import bfloat16
 import timeit
 
+from aie.utils.xrt import write_out_trace, extract_trace
+
 TYPE_MAP_DICT = defaultdict(
     lambda: None,
     {
@@ -73,6 +75,7 @@ class XRTRunner:
         instance_name: str = "",
         kernel_id: str = "",
         xclbin_input: str = "",
+        trace_file: str = "trace_data.txt",
     ):
         """
         Args:
@@ -92,6 +95,7 @@ class XRTRunner:
             instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
             kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
             xclbin_input: configure aircc to package the kernel into an existing xclbin with specified xclbin file name.
+            trace_file: default filename for saving trace data.
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -109,6 +113,7 @@ class XRTRunner:
         self.instance_name = instance_name
         self.kernel_id = kernel_id
         self.xclbin_input = xclbin_input
+        self.trace_file = trace_file
 
     def run_test(
         self,
@@ -117,6 +122,7 @@ class XRTRunner:
         expected_outputs: List[np.ndarray] = [],
         stochastic_expected_outputs: List[np.ndarray] = [],
         rtol: float = 1e-3,
+        trace_file: str = None,
     ):
         """
         Args:
@@ -125,6 +131,7 @@ class XRTRunner:
             expected_outputs: expected output matrices.
             stochastic_expected_outputs: expected output matrices stored in sparse coordinates. Expect each matrix to be a dictionary containing "shape", "indices" and "values" fields.
             rtol: relative error tolerance.
+            trace_file: optional override for trace data filename. If None, uses instance default.
         """
         if self.verbose:
             print("Running module: ")
@@ -139,7 +146,7 @@ class XRTRunner:
             runtime_loop_tiling_sizes=self.runtime_loop_tiling_sizes,
             omit_auto_broadcast=self.omit_auto_broadcast,
             channel_multiplexing=self.channel_multiplexing,
-            use_lock_race_condition_fix = self.use_lock_race_condition_fix,
+            use_lock_race_condition_fix=self.use_lock_race_condition_fix,
             trace_offset=self.trace_offset,
             trace_size=self.trace_size,
             output_format=self.output_format,
@@ -149,20 +156,76 @@ class XRTRunner:
             xclbin_input=self.xclbin_input,
         )
 
+        # Use per-test trace file if provided, otherwise use instance default
+        active_trace_file = trace_file if trace_file is not None else self.trace_file
+
         # run the module - slots are input/output for now, assume non-overlapping inputs/outputs
-        if expected_outputs:
-            expanded_inputs = inputs + [
-                np.zeros(o.shape, o.dtype) for o in expected_outputs
-            ]
-        elif stochastic_expected_outputs:
-            expanded_inputs = inputs + [
-                np.zeros(o["shape"], o["values"][0].dtype)
-                for o in stochastic_expected_outputs
-            ]
+        # Handle different scenarios for trace data
+        if self.trace_size > 0:
+            if expected_outputs:
+                # Case 1: Both outputs and trace
+                # Add trace_size bytes to first output
+                total_bytes = expected_outputs[0].nbytes + self.trace_size
+                first_output_with_trace = np.zeros(total_bytes, dtype=np.uint8)
+                remaining_outputs = [
+                    np.zeros(o.shape, o.dtype) for o in expected_outputs[1:]
+                ]
+                output_placeholders = [first_output_with_trace] + remaining_outputs
+                if self.verbose:
+                    print(
+                        f"Allocated {total_bytes} bytes for first output + {self.trace_size} bytes for trace data"
+                    )
+                # Record the expected_outputs[0]'s shape and dtype, to be used to split actual outputs from trace.
+                expected_outputs_0_shape = expected_outputs[0].shape
+                expected_outputs_0_dtype = expected_outputs[0].dtype
+            elif stochastic_expected_outputs:
+                # Case 2: Stochastic outputs and trace
+                first_output_elements = np.prod(stochastic_expected_outputs[0]["shape"])
+                first_output_bytes = (
+                    first_output_elements
+                    * stochastic_expected_outputs[0]["values"][0].dtype.itemsize
+                )
+                total_bytes = first_output_bytes + self.trace_size
+                first_output_with_trace = np.zeros(total_bytes, dtype=np.uint8)
+                remaining_outputs = [
+                    np.zeros(o["shape"], o["values"][0].dtype)
+                    for o in stochastic_expected_outputs[1:]
+                ]
+                output_placeholders = [first_output_with_trace] + remaining_outputs
+                if self.verbose:
+                    print(
+                        f"Allocated {first_output_bytes} bytes for first stochastic output + {self.trace_size} bytes for trace data"
+                    )
+                # Record the expected_outputs[0]'s shape and dtype, to be used to split actual outputs from trace.
+                expected_outputs_0_shape = stochastic_expected_outputs[0]["shape"]
+                expected_outputs_0_dtype = stochastic_expected_outputs[0][
+                    "values"
+                ].dtype
+            else:
+                # Case 3: Trace only, no expected outputs
+                trace_only_output = np.zeros(self.trace_size, dtype=np.uint8)
+                output_placeholders = [trace_only_output]
+                if self.verbose:
+                    print(
+                        f"Trace-only mode: allocated {self.trace_size} bytes for trace data"
+                    )
         else:
-            assert (
-                False
-            ), f"Expect one of 'expected_outputs' and 'stochastic_expected_outputs' to not be empty."
+            # Case 4: No trace, original behavior
+            if expected_outputs:
+                output_placeholders = [
+                    np.zeros(o.shape, o.dtype) for o in expected_outputs
+                ]
+            elif stochastic_expected_outputs:
+                output_placeholders = [
+                    np.zeros(o["shape"], o["values"][0].dtype)
+                    for o in stochastic_expected_outputs
+                ]
+            else:
+                assert (
+                    False
+                ), f"Expect one of 'expected_outputs' and 'stochastic_expected_outputs' to not be empty, or trace_size > 0."
+
+        expanded_inputs = inputs + output_placeholders
 
         compiled_module = backend.compile(mlir_module)
         with filelock.FileLock("/tmp/npu.lock"):
@@ -171,10 +234,23 @@ class XRTRunner:
 
         backend.unload()
 
-        # Remove input slots from the received outputs
-        actual_outputs = actual_outputs[len(inputs) :]
+        # Remove input slots from the received outputs first
+        actual_outputs = list(actual_outputs[len(inputs) :])
 
-        if expected_outputs:
+        # Handle trace data extraction and saving
+        if self.trace_size > 0:
+            actual_outputs[0], trace = extract_trace(
+                actual_outputs[0],
+                expected_outputs_0_shape,
+                expected_outputs_0_dtype,
+                self.trace_size,
+            )
+            write_out_trace(trace, active_trace_file)
+
+            print(f"Trace data ({self.trace_size} bytes) saved to {active_trace_file}")
+
+        # Perform result checking only if we have expected outputs
+        if expected_outputs and actual_outputs:
             if self._check_outputs(
                 actual_outputs=actual_outputs,
                 expected_outputs=expected_outputs,
@@ -185,7 +261,7 @@ class XRTRunner:
             else:
                 print("failed.")
                 return_code = -1
-        elif stochastic_expected_outputs:
+        elif stochastic_expected_outputs and actual_outputs:
             if self._check_outputs_stochastic(
                 actual_outputs=actual_outputs,
                 stochastic_expected_outputs=stochastic_expected_outputs,
@@ -196,6 +272,16 @@ class XRTRunner:
             else:
                 print("failed.")
                 return_code = -1
+        elif self.trace_size > 0 and not (
+            expected_outputs or stochastic_expected_outputs
+        ):
+            # Trace-only case
+            print("Trace data extracted successfully!")
+            return_code = 0
+        else:
+            print("No outputs to validate.")
+            return_code = 0
+
         return return_code
 
     def _check_outputs(
