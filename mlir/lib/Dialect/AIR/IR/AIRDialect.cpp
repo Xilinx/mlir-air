@@ -1636,7 +1636,7 @@ static void combineMixedOffsetsInPlace(
   assert(offsets.size() == strides.size() &&
          "offsets/strides must have same length");
   assert(offsets.size() == mixedOffsets.size() &&
-         "offsets/strides must match reinterpret_cast rank");
+         "offsets/strides must match the memref op's rank");
 
   auto makeIndexCst = [&](int64_t v) -> Value {
     return getValueOrCreateConstantIndexOp(rewriter, loc,
@@ -1914,6 +1914,13 @@ static LogicalResult ComposeMemrefOp(Value memref, PatternRewriter &rewriter,
   if (initialOffsets.size() && offsets.size()) {
     while (initialOffsets.size() < initialStrides.size()) {
       initialOffsets.insert(initialOffsets.begin(), constZero);
+    }
+    while (initialOffsets.size() < offsets.size()) {
+      initialOffsets.insert(initialOffsets.begin(), constZero);
+      initialStrides.insert(initialStrides.begin(), constOne);
+    }
+    while (offsets.size() < initialOffsets.size()) {
+      offsets.insert(offsets.begin(), constZero);
     }
     combineMixedOffsetsInPlace(rewriter, mlir::getAsOpFoldResult(offsets),
                                initialOffsets, initialStrides);
