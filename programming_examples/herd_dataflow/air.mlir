@@ -12,7 +12,7 @@ module {
   air.channel @L1ToL2Chan1 [4, 1]         // Output from herd_2 to L2
 
   // Top-level function: runtime dispatch over a 4x1 iteration space (not necessarily hardware parallelism)
-  func.func @attention_bf16(%arg0: memref<256x256xbf16>, %arg1: memref<256x256xbf16>, %arg2: memref<256x256xbf16>) {
+  func.func @func1(%arg0: memref<256x256xbf16>, %arg1: memref<256x256xbf16>, %arg2: memref<256x256xbf16>) {
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
     // air.launch: runtime dispatch over a 4x1 iteration space (may be sequential or parallel depending on runtime)
