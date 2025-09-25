@@ -54,6 +54,40 @@ def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
   }];
 }
 
+def LinalgToLibraryCallOp : Op<Transform_Dialect, "air.linalg_to_library_call",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     TransformOpInterface, TransformEachOpTrait]> {
+  let summary = "Convert a linalg op to a function call (library call)";
+  let description = [{
+    Replaces a linalg op with a call to a function. If the `function_name`
+    attribute is provided, it is used as the function name. Otherwise, the
+    linalg op's `library_call` attribute is used. The function is created if
+    it does not exist. If the `link_with` attribute is provided, it is used
+    to link the function call to a prebuilt object that contains the 
+    implementation of the function. If the linalg op is inside a herd, the 
+    `link_with` attribute is propagated to the herd.
+
+    Example:
+    ```
+    %matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!pdl.operation) -> !pdl.operation
+    %call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!pdl.operation) -> !pdl.operation
+    ```
+  }];
+  let arguments = (ins PDL_Operation:$target,
+                   OptionalAttr<StrAttr>:$function_name,
+                   OptionalAttr<StrAttr>:$link_with);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::Operation *target,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
 // Ops implemented in mlir/lib/Conversion/ConvertToAIRPass.cpp
 //
 
