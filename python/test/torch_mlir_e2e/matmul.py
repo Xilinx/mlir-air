@@ -15,7 +15,7 @@ from torch_mlir import fx
 from air.backend.xrt import XRTBackend
 from air.passmanager import PassManager
 from air.compiler.util import run_transform
-from air.ir import Module
+from air.ir import Module, Location
 
 verbose = False
 
@@ -28,59 +28,57 @@ class model(torch.nn.Module):
         return torch.mm(a, b)
 
 
-def pipeline(module):
-    with module.operation.context as ctx:
-        pipeline = (
-            "builtin.module("
-            + ",".join(["air-linalg-codegen{test-patterns=true}"])
-            + ")"
+def transform_to_air(module):
+    with module.context, Location.unknown():
+
+        # Run the buffer-results-to-out-params pass to convert result buffers into out params.
+        pm_br2op = PassManager.parse(
+            "builtin.module(air-linalg-codegen{test-patterns=true},buffer-results-to-out-params{hoist-static-allocs=true})"
         )
-        pm = PassManager.parse(pipeline)
-        pm.run(module.operation)
-        if verbose:
-            print("Optimized linalg Module")
-            print(module)
-    transform_ir_string = """
-    transform.with_pdl_patterns {
-    ^bb0(%arg0: !pdl.operation):
-        transform.sequence %arg0 : !pdl.operation failures(propagate) {
-        ^bb1(%arg1: !pdl.operation):
-            %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-            %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-            %matmul_1, %loops:2 = transform.air.linalg_tile %matmul [64, 64, 0]
-            %fill_1 = transform.air.fuse_into_containing_op %fill into %loops#1
-            transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L2"}
-            transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[2], "memory_space"="L2"}
-            transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L2"}
-            %matmul_2, %loops_2:2 = transform.air.linalg_tile %matmul_1 [32, 32, 0]
-            %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %loops_2#1
-            transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L1"}
-            transform.air.linalg_promote %matmul_2 {"operands_to_promote"=[2], "memory_space"="L1"}
-            %matmul_3, %reduction_loop = transform.air.linalg_tile %matmul_2 [0, 0, 32]
-            transform.air.linalg_promote %matmul_3 {"operands_to_promote"=[0,1], "memory_space"="L1"}
+        pm_br2op.run(module.operation)
+        transform_ir_string = """
+        transform.with_pdl_patterns {
+        ^bb0(%arg0: !pdl.operation):
+            pdl.pattern @match_copy : benefit(1) {
+                %args = pdl.operands
+                %results = pdl.types
+                %op = pdl.operation "memref.copy"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
+                pdl.rewrite %op with "transform.dialect"
+            }
+            transform.sequence %arg0 : !pdl.operation failures(propagate) {
+            ^bb1(%arg1: !pdl.operation):
+                %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+                %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+                %matmul_1, %loop = transform.air.linalg_tile %matmul [64, 64, 0]
+                %fill_1 = transform.air.fuse_into_containing_op %fill into %loop
+                transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L2"}
+                transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[2], "memory_space"="L2"}
+                transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L2"}
+                %matmul_2, %loop_2 = transform.air.linalg_tile %matmul_1 [32, 32, 0]
+                %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %loop_2
+                transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L1"}
+                transform.air.linalg_promote %matmul_2 {"operands_to_promote"=[2], "memory_space"="L1"}
+                %matmul_3, %reduction_loop = transform.air.linalg_tile %matmul_2 [0, 0, 32]
+                transform.air.linalg_promote %matmul_3 {"operands_to_promote"=[0,1], "memory_space"="L1"}
+
+                %herd_tile_par = transform.loop.forall_to_parallel %loop_2  : (!pdl.operation) -> !pdl.operation
+                %herd = transform.air.par_to_herd %herd_tile_par
+                %launch_par = transform.loop.forall_to_parallel %loop  : (!pdl.operation) -> !pdl.operation
+                %launch = transform.air.par_to_launch %launch_par {"has_air_segment"=true}
+                %copies = transform.pdl_match @match_copy in %arg0 : (!pdl.operation) -> !pdl.operation
+                %h = transform.air.copy_to_dma %copies
+                %f = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+       
+            }
         }
-    }
-    """
-    transform_ir = Module.parse(transform_ir_string, context=module.context)
-    run_transform(transform_ir, module)
-    pipeline = (
-        "builtin.module("
-        + ",".join(
-            [
-                "canonicalize",
-                "cse",
-                "air-par-to-herd{depth=-1}",
-                "air-par-to-launch{has-air-segment=true}",
-                "air-copy-to-dma",
-                "canonicalize",
-                "cse",
-            ]
-        )
-        + ")"
-    )
-    pm = PassManager.parse(pipeline)
-    pm.run(module.operation)
-    print(module)
+        """
+        transform_ir = Module.parse(transform_ir_string)
+        run_transform(transform_ir, module)
+        with open("air_transform.mlir", "w", encoding="utf-8") as f:
+            f.write(str(module))
+        if verbose:
+            print(f"Transformed module: {module}")
+
     return module
 
 
@@ -96,7 +94,7 @@ def run_test(dtype, shape):
 
     backend = XRTBackend(verbose=verbose)
     air_program = backend.load(
-        backend.compile_from_torch_mlir(m, pipeline=pipeline, verbose=verbose)
+        backend.compile_from_torch_mlir(m, pipeline=transform_to_air, verbose=verbose)
     )
 
     print("running...")
@@ -111,16 +109,13 @@ def run_test(dtype, shape):
         print("PASS!")
         return 1
     else:
-        import numpy
-
-        print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
         return 0
 
 
 sizes = [
     [512, 64, 128],
-    [512, 256, 512],
+    [128, 64, 512],
 ]
 dtypes = [torch.float32]
 

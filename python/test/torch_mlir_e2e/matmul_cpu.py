@@ -8,6 +8,7 @@
 # RUN: %PYTHON %s | FileCheck %s
 # CHECK: PASSED
 
+from aie.dialects._gpu_ops_gen import module
 import torch
 from torch_mlir import fx
 
@@ -20,172 +21,63 @@ from air.passmanager import PassManager
 
 verbose = False
 
+def transform_to_air(module):
+    with module.context, Location.unknown():
 
-def transform_to_air_0(module):
-    with module.context as ctx:
-        pipeline = (
-            "builtin.module("
-            + ",".join(
-                [
-                    "air-linalg-codegen",
-                    "air-par-to-herd{depth=-1}",
-                    "air-copy-to-dma",
-                    "air-return-elimination",
-                    "canonicalize",
-                    "cse",
-                ]
-            )
-            + ")"
-        )
-        pm = PassManager.parse(pipeline)
+        # Run the buffer-results-to-out-params pass to convert result buffers into out params.
+        pm_br2op = PassManager.parse("builtin.module(air-linalg-codegen{test-patterns=true},buffer-results-to-out-params{hoist-static-allocs=true})")
+        pm_br2op.run(module.operation)
+        transform_ir_string = """
+        transform.with_pdl_patterns {
+        ^bb0(%arg0: !pdl.operation):
+            pdl.pattern @match_copy : benefit(1) {
+                %args = pdl.operands
+                %results = pdl.types
+                %op = pdl.operation "memref.copy"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
+                pdl.rewrite %op with "transform.dialect"
+            }
+            transform.sequence %arg0 : !pdl.operation failures(propagate) {
+            ^bb1(%arg1: !pdl.operation):
+                %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+                %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+                %matmul_1, %loop = transform.air.linalg_tile %matmul [64, 64, 0]
+                %fill_1 = transform.air.fuse_into_containing_op %fill into %loop
+                transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L2"}
+                transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[2], "memory_space"="L2"}
+                transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L2"}
+                %matmul_2, %loop_2 = transform.air.linalg_tile %matmul_1 [32, 32, 0]
+                %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %loop_2
+                transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L1"}
+                transform.air.linalg_promote %matmul_2 {"operands_to_promote"=[2], "memory_space"="L1"}
+                %matmul_3, %reduction_loop = transform.air.linalg_tile %matmul_2 [0, 0, 32]
+                transform.air.linalg_promote %matmul_3 {"operands_to_promote"=[0,1], "memory_space"="L1"}
+
+                %herd_tile_par = transform.loop.forall_to_parallel %loop_2  : (!pdl.operation) -> !pdl.operation
+                %herd = transform.air.par_to_herd %herd_tile_par
+                %launch_par = transform.loop.forall_to_parallel %loop  : (!pdl.operation) -> !pdl.operation
+                %launch = transform.air.par_to_launch %launch_par
+                %copies = transform.pdl_match @match_copy in %arg0 : (!pdl.operation) -> !pdl.operation
+                %h = transform.air.copy_to_dma %copies
+                %f = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+       
+            }
+        }
+        """
+        transform_ir = Module.parse(transform_ir_string)
+        run_transform(transform_ir, module)
+        pm = PassManager.parse("builtin.module(lower-affine, canonicalize, cse)")
         pm.run(module.operation)
+        with open("air_transform.mlir", "w", encoding="utf-8") as f:
+            f.write(str(module))
         if verbose:
-            print("AIR Module")
-            print(module)
-        pm = PassManager.parse(cpu_backend.DEFAULT_PIPELINE)
-        pm.run(module.operation)
-    return module
+            print(f"Transformed module: {module}")
 
-
-def transform_to_air_1(module):
-    with module.context as ctx:
-        pipeline = (
-            "builtin.module("
-            + ",".join(["air-linalg-codegen{test-patterns=true}"])
-            + ")"
-        )
-        pm = PassManager.parse(pipeline)
-        pm.run(module.operation)
-        transform_ir_string = """
-        transform.with_pdl_patterns {
-        ^bb0(%arg0: !pdl.operation):
-        pdl.pattern @match_copy : benefit(1) {
-            %args = pdl.operands
-            %results = pdl.types
-            %op = pdl.operation "memref.copy"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
-            pdl.rewrite %op with "transform.dialect"
-        }
-
-        transform.sequence %arg0 : !pdl.operation failures(propagate) {
-        ^bb1(%arg1: !pdl.operation):
-            %fill = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-            %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-            %matmul_1, %outer_tile_loops:2 = transform.air.linalg_tile %matmul [16, 16, 0]
-            %fill_1 = transform.air.fuse_into_containing_op %fill into %outer_tile_loops#1
-
-            %2 = transform.merge_handles %fill_1, %matmul_1 : !pdl.operation
-            transform.air.linalg_promote %2 {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
-
-            %herd_matmuls = transform.foreach %outer_tile_loops#0 : !pdl.operation -> !pdl.operation {
-            ^bb2(%herd: !pdl.operation):
-                %matmul_herd = transform.structured.match ops{["linalg.matmul"]} in %herd : (!pdl.operation) -> !pdl.operation
-                transform.yield %matmul_herd : !pdl.operation
-            }
-            %inner_matmul, %reduction_loop = transform.air.linalg_tile %herd_matmuls [0, 0, 16]
-            transform.air.linalg_promote %inner_matmul {"operands_to_promote"=[0,1], "memory_space"="L1"}
-        }
-        }
-        """
-        transform_ir = Module.parse(transform_ir_string)
-        run_transform(transform_ir, module)
-        pipeline = (
-            "builtin.module("
-            + ",".join(
-                [
-                    "canonicalize",
-                    "cse",
-                    "air-linalg-codegen",
-                    "air-par-to-herd{depth=0}",
-                    "air-copy-to-dma",
-                    "air-return-elimination",
-                    "canonicalize",
-                    "cse",
-                ]
-            )
-            + ")"
-        )
-        pm = PassManager.parse(pipeline)
-        pm.run(module.operation)
         pm = PassManager.parse(cpu_backend.DEFAULT_PIPELINE)
         pm.run(module.operation)
 
     if verbose:
         print(module)
     return module
-
-
-# module -> module
-def transform_to_air_2(module):
-    grid_size = [2, 2]
-    with module.context as ctx:
-        pipeline = (
-            "builtin.module("
-            + ",".join(["air-linalg-codegen{test-patterns=true}"])
-            + ")"
-        )
-        pm = PassManager.parse(pipeline)
-        pm.run(module.operation)
-        transform_ir_string = """
-        transform.with_pdl_patterns {
-        ^bb0(%arg0: !pdl.operation):
-        pdl.pattern @match_copy : benefit(1) {
-            %args = pdl.operands
-            %results = pdl.types
-            %op = pdl.operation "memref.copy"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
-            pdl.rewrite %op with "transform.dialect"
-        }
-
-        transform.sequence %arg0 : !pdl.operation failures(propagate) {
-        ^bb1(%arg1: !pdl.operation):
-            %fill = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-            %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-            %matmul_1, %outer_tile_loops:2 = transform.air.linalg_tile %matmul [32, 32, 0]
-            //%fill_1 = transform.air.fuse_into_containing_op %fill into %outer_tile_loops#1
-
-            %matmul_2, %inner_tile_loops:2 = transform.air.linalg_tile %matmul_1 [16, 16, 0]
-            //%fill_2 = transform.air.fuse_into_containing_op %fill_1 into %outer_tile_loops#1
-
-            //%2 = transform.merge_handles %fill_2, %matmul_2 : !pdl.operation
-            //transform.air.linalg_promote %2 {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
-
-            %herd_matmuls = transform.foreach %outer_tile_loops#0 : !pdl.operation -> !pdl.operation {
-            ^bb2(%herd: !pdl.operation):
-                %matmul_herd = transform.structured.match ops{["linalg.matmul"]} in %herd : (!pdl.operation) -> !pdl.operation
-                transform.yield %matmul_herd : !pdl.operation
-            }
-            %inner_matmul, %reduction_loop = transform.air.linalg_tile %herd_matmuls [0, 0, 16]
-            transform.air.linalg_promote %inner_matmul {"operands_to_promote"=[0,1,2], "memory_space"="L1"}
-        }
-        }
-        """
-        transform_ir = Module.parse(transform_ir_string)
-        run_transform(transform_ir, module)
-        pipeline = (
-            "builtin.module("
-            + ",".join(
-                [
-                    "canonicalize",
-                    "cse",
-                    "air-par-to-herd{depth=-1}",
-                    "air-par-to-launch{depth=0}",
-                    "air-copy-to-dma",
-                    "air-dma-to-channel",
-                    "air-return-elimination",
-                    "canonicalize",
-                    "cse",
-                ]
-            )
-            + ")"
-        )
-        pm = PassManager.parse(pipeline)
-        pm.run(module.operation)
-        pm = PassManager.parse(cpu_backend.DEFAULT_PIPELINE)
-        pm.run(module.operation)
-
-    if verbose:
-        print(module)
-    return module
-
 
 class model_mm(torch.nn.Module):
     def __init__(self):
@@ -207,7 +99,7 @@ def run_test(dtype, shape):
 
     backend = cpu_backend.AirCpuBackend()
     air_program = backend.load(
-        backend.compile_from_torch_mlir(m, pipeline=transform_to_air_1, verbose=verbose)
+        backend.compile_from_torch_mlir(m, pipeline=transform_to_air, verbose=verbose)
     )
 
     c_ref = torch_model(a, b)
@@ -227,10 +119,10 @@ def run_test(dtype, shape):
 
 import random
 
-sizes = [[64, 64, 64]]
+sizes = [[128, 128, 128], [128, 128, 128]]
 # for i in range(0, 4):
 #     m = [random.randint(2, 8), random.randint(2, 8), random.randint(2, 8)]
-#     s = [i * 32 for i in m]
+#     s = [i * 64 for i in m]
 #     sizes.append(s)
 print(sizes)
 dtypes = [

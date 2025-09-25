@@ -1,6 +1,6 @@
 # ./python/air/backend/cpu_backend.py -*- Python -*-
 #
-# Copyright (C) 2023, Advanced Micro Devices, Inc.
+# Copyright (C) 2023-2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
 import torch_mlir.ir
@@ -202,7 +202,7 @@ class AirCpuBackend(AirBackend):
         def wrapped_function(*args):
             """Wrap the function"""
             try:
-                with aieir.Context():
+                with aieir.Context(), aieir.Location.unknown():
                     loaded = self.backend.load(module)
                     f = getattr(loaded, "forward")
                     return f(*args)
@@ -215,5 +215,5 @@ class AirCpuBackend(AirBackend):
 
     def unload(self):
         """Unload any loaded module and release resources."""
-        self.backend = None
+        #self.backend = None
         pass
