@@ -11,6 +11,7 @@ import air.ir
 import air.passmanager
 
 import os
+
 # override the default library paths for the mlir extras refbackend
 os.environ["ASYNC_RUNTIME_LIB_PATH"] = (
     f"{install_path()}/python/air/_mlir_libs/libmlir_async_runtime.so"
@@ -215,5 +216,5 @@ class AirCpuBackend(AirBackend):
 
     def unload(self):
         """Unload any loaded module and release resources."""
-        #self.backend = None
+        # self.backend = None
         pass

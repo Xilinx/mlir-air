@@ -21,11 +21,14 @@ from air.passmanager import PassManager
 
 verbose = False
 
+
 def transform_to_air(module):
     with module.context, Location.unknown():
 
         # Run the buffer-results-to-out-params pass to convert result buffers into out params.
-        pm_br2op = PassManager.parse("builtin.module(air-linalg-codegen{test-patterns=true},buffer-results-to-out-params{hoist-static-allocs=true})")
+        pm_br2op = PassManager.parse(
+            "builtin.module(air-linalg-codegen{test-patterns=true},buffer-results-to-out-params{hoist-static-allocs=true})"
+        )
         pm_br2op.run(module.operation)
         transform_ir_string = """
         transform.with_pdl_patterns {
@@ -78,6 +81,7 @@ def transform_to_air(module):
     if verbose:
         print(module)
     return module
+
 
 class model_mm(torch.nn.Module):
     def __init__(self):
