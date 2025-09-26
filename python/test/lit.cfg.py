@@ -59,6 +59,11 @@ config.substitutions.append(("%PATH%", config.environment["PATH"]))
 config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
 config.substitutions.append(("%PYTHON", config.python_executable))
 
+# excludes: A list of directories to exclude from the testsuite. The 'Inputs'
+# subdirectories contain auxiliary inputs for various tests in their parent
+# directories.
+config.excludes = []
+
 run_on_npu1 = "echo"
 run_on_npu2 = "echo"
 xrt_flags = ""
@@ -120,10 +125,7 @@ llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
 llvm_config.use_default_substitutions()
 
-# excludes: A list of directories to exclude from the testsuite. The 'Inputs'
-# subdirectories contain auxiliary inputs for various tests in their parent
-# directories.
-config.excludes = ["lit.cfg.py"]
+config.excludes.append("lit.cfg.py")
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
