@@ -43,11 +43,25 @@ transform.with_pdl_patterns {
         // PHASE 2: Operation Preparation and Handle Splitting
         //===================================================================
         // Assumption: The softmax computation contains linalg.reduce operations
-        // that need to be generalized to linalg.generic for uniform handling.
+        // that need to be transformed and generalized for uniform handling.
         
-        // Convert linalg.reduce to linalg.generic for consistent processing
+        // Transform and convert linalg.reduce operations for consistent processing
+        // 1. First apply transpose_reduce transformation to optimize reduction patterns
+        // 2. Then generalize the transformed operations to linalg.generic for uniform handling
         %reduces = transform.structured.match ops{["linalg.reduce"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-        %generalized_reduces = transform.structured.generalize %reduces  : (!pdl.operation) -> !pdl.operation
+        %transformed_reduces = transform.air.transpose_reduce %reduces
+        %generalized_reduces = transform.structured.generalize %transformed_reduces  : (!pdl.operation) -> !pdl.operation
+        
+        // Run canonicalization after transformation and generalization
+        // This additional canonicalization stage cleans up the IR after the transpose_reduce
+        // transformation and generalization, ensuring optimal patterns before fusion
+        %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+        transform.apply_patterns to %func1 {
+            transform.apply_patterns.linalg.tiling_canonicalization
+            transform.apply_patterns.scf.for_loop_canonicalization
+            transform.apply_patterns.canonicalization
+        } : !pdl.operation
+        transform.apply_cse to %func1 : !pdl.operation
 
         // Split operation handles for individual manipulation
         // Assumption: There are exactly 2 fill operations and 7 generic operations
@@ -88,13 +102,13 @@ transform.with_pdl_patterns {
         // Clean up the IR after fusion to remove redundant operations
         
         // Run canonicalization after fusion
-        %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        transform.apply_patterns to %func1 {
+        %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+        transform.apply_patterns to %func2 {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
         } : !pdl.operation
-        transform.apply_cse to %func1 : !pdl.operation
+        transform.apply_cse to %func2 : !pdl.operation
         
         //===================================================================
         // PHASE 5: L2 Memory Allocation Strategy

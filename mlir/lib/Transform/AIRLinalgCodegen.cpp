@@ -2601,6 +2601,163 @@ DiagnosedSilenceableFailure transform::ConvertMemrefCopyToLinalgCopyOp::apply(
   return DiagnosedSilenceableFailure::success();
 }
 
+//===----------------------------------------------------------------------===//
+// TransposeReduceOp
+//===----------------------------------------------------------------------===//
+
+/// Check if reduction dimensions are innermost in the given linalg.reduce op
+static bool areReductionDimensionsInnermost(linalg::ReduceOp reduceOp) {
+  ArrayRef<int64_t> reductionDims = reduceOp.getDimensions();
+  if (reductionDims.empty())
+    return true;
+
+  // Get the input tensor rank
+  auto inputType = llvm::cast<ShapedType>(reduceOp.getInputs()[0].getType());
+  int64_t rank = inputType.getRank();
+
+  // Check if all reduction dimensions are at the end (innermost)
+  SmallVector<int64_t> sortedReductionDims(reductionDims.begin(),
+                                           reductionDims.end());
+  llvm::sort(sortedReductionDims);
+
+  // The reduction dimensions should be consecutive and end at rank-1
+  for (size_t i = 0; i < sortedReductionDims.size(); ++i) {
+    if (sortedReductionDims[i] !=
+        (int64_t)(rank - sortedReductionDims.size() + i)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Create a transpose operation to move reduction dimensions to the end
+static Value
+createTransposeToMakeReductionInnermost(OpBuilder &builder, Location loc,
+                                        Value input,
+                                        ArrayRef<int64_t> reductionDims) {
+
+  auto inputType = llvm::cast<ShapedType>(input.getType());
+  int64_t rank = inputType.getRank();
+
+  // Create permutation: non-reduction dims first, then reduction dims
+  SmallVector<int64_t> permutation;
+  SmallVector<bool> isReductionDim(rank, false);
+
+  // Mark reduction dimensions
+  for (int64_t dim : reductionDims) {
+    isReductionDim[dim] = true;
+  }
+
+  // Add non-reduction dimensions first
+  for (int64_t i = 0; i < rank; ++i) {
+    if (!isReductionDim[i]) {
+      permutation.push_back(i);
+    }
+  }
+
+  // Add reduction dimensions at the end
+  for (int64_t dim : reductionDims) {
+    permutation.push_back(dim);
+  }
+
+  // Create the transpose operation
+  SmallVector<int64_t> transposedShape;
+  for (int64_t dim : permutation) {
+    transposedShape.push_back(inputType.getDimSize(dim));
+  }
+
+  // Create linalg.transpose operation
+  auto transposeOp = builder.create<linalg::TransposeOp>(
+      loc, input,
+      builder.create<tensor::EmptyOp>(loc, transposedShape,
+                                      inputType.getElementType()),
+      builder.getDenseI64ArrayAttr(permutation));
+
+  return transposeOp.getResult()[0];
+}
+
+/// Update reduction dimensions after transpose
+static SmallVector<int64_t>
+updateReductionDimsAfterTranspose(ArrayRef<int64_t> originalReductionDims,
+                                  int64_t rank) {
+
+  SmallVector<int64_t> newReductionDims;
+  int64_t numReductionDims = originalReductionDims.size();
+
+  // After transpose, reduction dimensions are at the end
+  for (int64_t i = 0; i < numReductionDims; ++i) {
+    newReductionDims.push_back(rank - numReductionDims + i);
+  }
+
+  return newReductionDims;
+}
+
+DiagnosedSilenceableFailure
+transform::TransposeReduceOp::apply(transform::TransformRewriter &rewriter,
+                                    transform::TransformResults &results,
+                                    transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    auto reduceOp = dyn_cast<linalg::ReduceOp>(target);
+    if (!reduceOp) {
+      return emitDefiniteFailure()
+             << "target must be a linalg.reduce operation";
+    }
+
+    // Check if reduction dimensions are already innermost
+    if (areReductionDimensionsInnermost(reduceOp)) {
+      // No transformation needed
+      transformedOps.push_back(target);
+      continue;
+    }
+
+    // Get reduction dimensions and input
+    ArrayRef<int64_t> reductionDims = reduceOp.getDimensions();
+    Value input = reduceOp.getInputs()[0];
+    auto inputType = llvm::cast<ShapedType>(input.getType());
+    int64_t rank = inputType.getRank();
+
+    // Create transpose operation to move reduction dimensions to the end
+    rewriter.setInsertionPoint(reduceOp);
+    Value transposedInput = createTransposeToMakeReductionInnermost(
+        rewriter, reduceOp.getLoc(), input, reductionDims);
+
+    // Update reduction dimensions for the new layout
+    SmallVector<int64_t> newReductionDims =
+        updateReductionDimsAfterTranspose(reductionDims, rank);
+
+    // Create new reduce operation with transposed input and updated dimensions
+    auto newReduceOp = rewriter.create<linalg::ReduceOp>(
+        reduceOp.getLoc(), reduceOp.getResultTypes(),
+        ValueRange{transposedInput}, reduceOp.getInits(),
+        rewriter.getDenseI64ArrayAttr(newReductionDims));
+
+    // Copy the reduction body from the original operation
+    rewriter.cloneRegionBefore(reduceOp.getCombiner(),
+                               newReduceOp.getCombiner(),
+                               newReduceOp.getCombiner().begin());
+
+    // Replace the original operation
+    rewriter.replaceOp(reduceOp, newReduceOp.getResults());
+    transformedOps.push_back(newReduceOp);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+
 namespace xilinx {
 namespace air {
 
