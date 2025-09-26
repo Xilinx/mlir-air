@@ -70,9 +70,10 @@ with air.ir.Context() as ctx, Location.unknown():
         memref.copy %reinterpret_cast, %alloc : memref<4x256xf32, strided<[256, 1], offset: ?>> to memref<4x256xf32>
         %3 = bufferization.to_tensor %alloc restrict writable : memref<4x256xf32> to tensor<4x256xf32>
         %4 = tensor.empty() : tensor<256x4xf32>
+        %transposed = linalg.transpose ins(%3 : tensor<4x256xf32>) outs(%4 : tensor<256x4xf32>) permutation = [1, 0] 
         %5 = tensor.empty() : tensor<4xf32>
         %6 = linalg.fill ins(%cst : f32) outs(%5 : tensor<4xf32>) -> tensor<4xf32>
-        %reduced = linalg.reduce ins(%3 : tensor<4x256xf32>) outs(%6 : tensor<4xf32>) dimensions = [1] 
+        %reduced = linalg.reduce ins(%transposed : tensor<256x4xf32>) outs(%6 : tensor<4xf32>) dimensions = [0] 
           (%in: f32, %init: f32) {
             %14 = arith.maxnumf %in, %init : f32
             linalg.yield %14 : f32
@@ -84,8 +85,8 @@ with air.ir.Context() as ctx, Location.unknown():
           linalg.yield %in : f32
         } -> tensor<4x256xf32>
         %9 = linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel", "parallel"]} ins(%3, %8 : tensor<4x256xf32>, tensor<4x256xf32>) outs(%3 : tensor<4x256xf32>) {
-        ^bb0(%in: f32, %in_4: f32, %out: f32):
-          %14 = arith.subf %in, %in_4 : f32
+        ^bb0(%in: f32, %in_5: f32, %out: f32):
+          %14 = arith.subf %in, %in_5 : f32
           linalg.yield %14 : f32
         } -> tensor<4x256xf32>
         %10 = linalg.generic {indexing_maps = [#map1, #map1], iterator_types = ["parallel", "parallel"]} ins(%9 : tensor<4x256xf32>) outs(%9 : tensor<4x256xf32>) {
@@ -93,24 +94,25 @@ with air.ir.Context() as ctx, Location.unknown():
           %14 = math.exp %in : f32
           linalg.yield %14 : f32
         } -> tensor<4x256xf32>
+        %transposed_1 = linalg.transpose ins(%10 : tensor<4x256xf32>) outs(%4 : tensor<256x4xf32>) permutation = [1, 0] 
         %11 = linalg.fill ins(%cst_0 : f32) outs(%5 : tensor<4xf32>) -> tensor<4xf32>
-        %reduced_1 = linalg.reduce ins(%10 : tensor<4x256xf32>) outs(%11 : tensor<4xf32>) dimensions = [1] 
+        %reduced_2 = linalg.reduce ins(%transposed_1 : tensor<256x4xf32>) outs(%11 : tensor<4xf32>) dimensions = [0] 
           (%in: f32, %init: f32) {
             %14 = arith.addf %in, %init : f32
             linalg.yield %14 : f32
           }
-        %expanded_2 = tensor.expand_shape %reduced_1 [[0, 1]] output_shape [4, 1] : tensor<4xf32> into tensor<4x1xf32>
-        %12 = linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel"]} ins(%expanded_2 : tensor<4x1xf32>) outs(%7 : tensor<4x256xf32>) attrs =  {broadcastDims = array<i64: 1>} {
+        %expanded_3 = tensor.expand_shape %reduced_2 [[0, 1]] output_shape [4, 1] : tensor<4xf32> into tensor<4x1xf32>
+        %12 = linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel"]} ins(%expanded_3 : tensor<4x1xf32>) outs(%7 : tensor<4x256xf32>) attrs =  {broadcastDims = array<i64: 1>} {
         ^bb0(%in: f32, %out: f32):
           linalg.yield %in : f32
         } -> tensor<4x256xf32>
         %13 = linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel", "parallel"]} ins(%10, %12 : tensor<4x256xf32>, tensor<4x256xf32>) outs(%10 : tensor<4x256xf32>) {
-        ^bb0(%in: f32, %in_4: f32, %out: f32):
-          %14 = arith.divf %in, %in_4 : f32
+        ^bb0(%in: f32, %in_5: f32, %out: f32):
+          %14 = arith.divf %in, %in_5 : f32
           linalg.yield %14 : f32
         } -> tensor<4x256xf32>
-        %reinterpret_cast_3 = memref.reinterpret_cast %arg1 to offset: [%2], sizes: [4, 256], strides: [256, 1] : memref<*xf32> to memref<4x256xf32, strided<[256, 1], offset: ?>>
-        bufferization.materialize_in_destination %13 in writable %reinterpret_cast_3 : (tensor<4x256xf32>, memref<4x256xf32, strided<[256, 1], offset: ?>>) -> ()
+        %reinterpret_cast_4 = memref.reinterpret_cast %arg1 to offset: [%2], sizes: [4, 256], strides: [256, 1] : memref<*xf32> to memref<4x256xf32, strided<[256, 1], offset: ?>>
+        bufferization.materialize_in_destination %13 in writable %reinterpret_cast_4 : (tensor<4x256xf32>, memref<4x256xf32, strided<[256, 1], offset: ?>>) -> ()
         return
       }
     }
