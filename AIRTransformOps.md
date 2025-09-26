@@ -672,3 +672,51 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 | :----: | ----------- |
 | `transformed` | PDL handle to an `mlir::Operation *` |
 
+
+### `transform.air.transpose_reduce` (transform::TransposeReduceOp)
+
+_Transpose inputs of linalg.reduce ops to make reduction dimensions innermost_
+
+Syntax:
+
+```
+operation ::= `transform.air.transpose_reduce` $target attr-dict
+```
+
+This transform takes a handle to linalg.reduce operations and checks if the 
+reduction dimensions are at the innermost (last/lowest) dimensions. If any 
+reduction dimension has non-reduction dimensions to the right, it transposes 
+the corresponding inputs to ensure all reduction dimensions are innermost.
+
+For example, if a linalg.reduce operation reduces along dimension 1 in a 3D tensor
+(shape [M, N, K] reducing along N), this transform will transpose the input to 
+[M, K, N] so that the reduction dimension N becomes innermost.
+
+This optimization is beneficial for hardware accelerators that perform more 
+efficient reductions when the reduction dimensions are contiguous and innermost.
+
+The transformation:
+1. Analyzes each linalg.reduce operation's reduction dimensions
+2. Determines if any reduction dimension has non-reduction dimensions to its right
+3. If so, creates a transpose operation to move reduction dimensions to the end
+4. Updates the linalg.reduce operation to work with the transposed input
+5. Optionally transposes the output back to the original layout if needed
+
+Returns a handle to the transformed linalg.reduce operations.
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *` |
+
