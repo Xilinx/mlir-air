@@ -53,9 +53,9 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
 
-    air::HerdOp launch = cast<air::HerdOp>(op);
+    air::HerdOp herd = cast<air::HerdOp>(op);
 
-    auto herd_size = launch.getSizeOperands();
+    auto herd_size = herd.getSizeOperands();
     int64_t herd_size_x =
         cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
     int64_t herd_size_y =
@@ -64,14 +64,9 @@ public:
     SmallVector<Value> empty;
     SmallVector<Type> retTy;
     SmallVector<Value> deps;
-    // for (unsigned i=0; i<launch.getAsyncDependencies().size(); ++i)
-    //   deps.push_back(
-    //     rewriter.create<UnrealizedConversionCastOp>(op->getLoc(),
-    //                                                 async::TokenType::get(op->getContext()),
-    //                                                 operands[i]).getResult(0));
 
     auto herdExeOp = rewriter.create<async::ExecuteOp>(
-        op->getLoc(), retTy, launch.getAsyncDependencies(), empty,
+        op->getLoc(), retTy, herd.getAsyncDependencies(), empty,
         [&](OpBuilder &r, Location loc, ValueRange v) {
           auto size =
               r.create<arith::ConstantIndexOp>(loc, herd_size_x * herd_size_y);
@@ -86,23 +81,24 @@ public:
                          StringAttr::get(op->getContext(), "inner"));
 
           IRMapping mapper;
-          mapper.map(launch.getSize()[0], herd_size[0]);
-          mapper.map(launch.getSize()[1], herd_size[1]);
+          mapper.map(herd.getSize()[0], herd_size[0]);
+          mapper.map(herd.getSize()[1], herd_size[1]);
 
-          mapper.map(launch.getIds()[0], outer.getInductionVar());
-          mapper.map(launch.getIds()[1], inner.getInductionVar());
+          mapper.map(herd.getIds()[0], outer.getInductionVar());
+          mapper.map(herd.getIds()[1], inner.getInductionVar());
 
-          int i = launch.getAsyncDependencies().size() + 2;
-          for (auto arg : launch.getKernelArguments())
+          int i = herd.getAsyncDependencies().size() + 2;
+          for (auto arg : herd.getKernelArguments())
             mapper.map(arg, operands[i++]);
 
           r.setInsertionPointToStart(inner.getBody());
           auto coreExeOp = r.create<async::ExecuteOp>(
               loc, retTy, empty, empty,
               [&](OpBuilder &b, Location loc, ValueRange v) {
-                for (auto &o : launch.getBody().front().getOperations())
+                for (auto &o : herd.getBody().front().getOperations()) {
                   if (!isa<air::HerdTerminatorOp>(o))
                     b.clone(o, mapper);
+                }
                 b.create<async::YieldOp>(loc, empty);
               });
           r.create<async::AddToGroupOp>(loc, coreExeOp.getResult(0), group);
@@ -114,8 +110,80 @@ public:
     rewriter.setInsertionPointAfter(herdExeOp);
     rewriter.create<async::AwaitOp>(op->getLoc(), herdExeOp.getResult(0));
 
-    if (auto t = launch.getAsyncToken())
+    if (auto t = herd.getAsyncToken())
       t.replaceAllUsesWith(herdExeOp.getResult(0));
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
+class AIRLaunchOpConversion : public ConversionPattern {
+public:
+  explicit AIRLaunchOpConversion(MLIRContext *context)
+      : ConversionPattern(air::LaunchOp::getOperationName(), 1, context) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    air::LaunchOp launch = cast<air::LaunchOp>(op);
+
+    auto launch_size = launch.getSizeOperands();
+
+    SmallVector<Value> empty;
+    SmallVector<Type> retTy;
+    SmallVector<Value> deps;
+    auto loc = op->getLoc();
+
+    SmallVector<int64_t, 4> dimSizes;
+    dimSizes.reserve(launch_size.size());
+
+    for (auto sv : launch_size) {
+      auto ci = dyn_cast<arith::ConstantIndexOp>(sv.getDefiningOp());
+      int64_t v = ci ? ci.value() : 1;
+      dimSizes.push_back(v);
+    }
+
+    // create nested scf.for loops for N dimensions
+    SmallVector<scf::ForOp, 4> loops;
+    loops.reserve(dimSizes.size());
+    for (unsigned d = 0; d < dimSizes.size(); ++d) {
+      auto ub = dimSizes[d];
+      // create constant index operands for lb, ub and step
+      auto lbConst = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      auto ubConst = rewriter.create<arith::ConstantIndexOp>(loc, ub);
+      auto stepConst = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      auto loop = rewriter.create<scf::ForOp>(loc, lbConst, ubConst, stepConst);
+      // set insertion point to start of this loop for nesting the next
+      // one
+      rewriter.setInsertionPointToStart(loop.getBody());
+      // tag the loop with a dimension-specific attribute
+      loop->setAttr("air.launch",
+                    StringAttr::get(op->getContext(),
+                                    ("dim" + std::to_string(d)).c_str()));
+      loops.push_back(loop);
+    }
+
+    IRMapping mapper;
+    // map sizes and ids for each dimension
+    for (unsigned d = 0; d < launch.getSize().size(); ++d) {
+      if (d < launch_size.size())
+        mapper.map(launch.getSize()[d], launch_size[d]);
+      if (d < loops.size())
+        mapper.map(launch.getIds()[d], loops[d].getInductionVar());
+    }
+
+    // map kernel arguments (skip async deps and two size operands)
+    int i = launch.getAsyncDependencies().size() + 2;
+    for (auto arg : launch.getKernelArguments())
+      mapper.map(arg, operands[i++]);
+
+    for (auto &o : launch.getBody().front().getOperations()) {
+      if (!isa<air::LaunchTerminatorOp>(o))
+        rewriter.clone(o, mapper);
+    }
+
     rewriter.eraseOp(op);
 
     return success();
@@ -741,6 +809,15 @@ public:
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_herd_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.herd\n");
+      signalPassFailure();
+    }
+
+    target.addIllegalOp<air::LaunchOp>();
+    RewritePatternSet air_launch_patterns(context);
+    air_launch_patterns.add<AIRLaunchOpConversion>(context);
+    if (failed(applyPartialConversion(module, target,
+                                      std::move(air_launch_patterns)))) {
+      emitError(UnknownLoc::get(context), "error lowering air.launch\n");
       signalPassFailure();
     }
 

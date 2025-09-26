@@ -46,6 +46,9 @@ jobs:
           pip cache purge
           pip install --upgrade pip
           pip install lit cmake joblib
+          pip install --pre torch-mlir torchvision \
+            --index-url https://download.pytorch.org/whl/nightly/cpu \
+            -f https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels
 
       - name: Get mlir-aie
         id: clone-mlir-aie
@@ -153,17 +156,15 @@ jobs:
 
           pip install $PWD/../python/spensor
 
-          export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random"
+          export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random --timeout 600 -j4"
           ninja check-air-cpp
           ninja check-air-mlir
           ninja check-air-python
 
           # E2E test set 1: peano tests
-          export LIT_OPTS="${LIT_OPS} --timeout 600 -j4"
           ninja check-air-e2e-peano
 
           # E2E test set 2: chess tests
-          export LIT_OPTS="${LIT_OPS} --timeout 600 -j4"
           ninja check-air-e2e-chess
 
           # Programming examples set 1: peano tests
