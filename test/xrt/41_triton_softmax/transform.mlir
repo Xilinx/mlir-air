@@ -224,8 +224,5 @@ transform.with_pdl_patterns {
         // Convert memory copies to DMA operations for efficient data movement
         %copies_in_herd = transform.structured.match ops{["memref.copy", "linalg.copy"]} in %herd : (!pdl.operation) -> !pdl.operation
         %dmas_from_copies = transform.air.copy_to_dma %copies_in_herd
-        
-        // Apply vectorization to optimize for AIE vector units
-        %vectorized_herd = transform.air.herd_vectorize %herd
     }
 }
