@@ -1,20 +1,20 @@
 # ./python/test/torch_mlir_e2e/relu.py -*- Python -*-
 
-# Copyright (C) 2022, Xilinx Inc.
-# Copyright (C) 2022, Advanced Micro Devices, Inc.
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-# REQUIRES: torch_mlir, needs_update
+# REQUIRES: torch_mlir, ryzen_ai
 
-# RUN: %PYTHON %s | FileCheck %s
-# CHECK: PASSED
+# RUN: mkdir -p relu && cd relu
+# RUN: %run_on_npu1% %PYTHON %s
+# RUN: %run_on_npu2% %PYTHON %s
 
 import torch
-import torch._dynamo as dynamo
-import numpy
-from air.backend import linalg_on_tensors as backend
+from torch_mlir import fx
 
-air_backend = backend.make_dynamo_backend()
+from air.backend.xrt import XRTBackend
+
+verbose = False
 
 
 class model(torch.nn.Module):
@@ -27,20 +27,31 @@ class model(torch.nn.Module):
 
 
 def run_test(dtype, shape):
+    print("building...")
     program = model()
-    dynamo_program = dynamo.optimize(air_backend)(program)
 
     a = torch.randint(size=shape, low=-100, high=100, dtype=dtype)
-    c = dynamo_program(a)
+    m = fx.export_and_import(
+        program, a, output_type="linalg-on-tensors", func_name="forward"
+    )
+
+    backend = XRTBackend(verbose=verbose)
+    air_program = backend.load(backend.compile_from_torch_mlir(m, verbose=verbose))
+
     c_ref = program(a)
+    c = torch.ones_like(c_ref)
+    [_, c_out] = air_program(a.numpy(), c.numpy())
+    c_out = c_out.reshape(c_ref.shape)
 
-    print(f"input:\n{a}\noutput:\n{c}")
+    print(f"input:\n{a}\noutput:\n{c_out} ref:\n{c_ref}")
 
-    if torch.allclose(c_ref, c):
+    if torch.allclose(c_ref, torch.tensor(c_out)):
         print("PASS!")
         return 1
     else:
-        errs = c_ref == c
+        import numpy
+
+        errs = c_ref == torch.tensor(c_out)
         print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
     return 0
@@ -48,7 +59,7 @@ def run_test(dtype, shape):
 
 sizes = [[10 * 1024], [128, 64]]
 
-dtypes = [torch.float]
+dtypes = [torch.int, torch.float]
 
 passed = 0
 for t in dtypes:

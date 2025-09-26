@@ -1,31 +1,25 @@
-# ./python/test/torch_mlir_e2e/matmul.py -*- Python -*-
+# ./python/test/torch_mlir_e2e/matmul_cpu.py -*- Python -*-
 
-# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# Copyright (C) 2023, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-# REQUIRES: torch_mlir, ryzen_ai
+# REQUIRES: torch_mlir, dont_run
 
-# RUN: mkdir -p matmul && cd matmul
-# RUN: %run_on_npu1% %PYTHON %s
-# RUN: %run_on_npu2% %PYTHON %s
+# RUN: %PYTHON %s | FileCheck %s
+# CHECK: PASSED
 
+from aie.dialects._gpu_ops_gen import module
 import torch
 from torch_mlir import fx
 
-from air.backend.xrt import XRTBackend
-from air.passmanager import PassManager
+# this import has side-effect of registering the dialect
+import air.dialects.air
+from air.ir import *
+import air.backend.cpu_backend as cpu_backend
 from air.compiler.util import run_transform
-from air.ir import Module, Location
+from air.passmanager import PassManager
 
 verbose = False
-
-
-class model(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, a, b):
-        return torch.mm(a, b)
 
 
 def transform_to_air(module):
@@ -64,7 +58,7 @@ def transform_to_air(module):
                 %herd_tile_par = transform.loop.forall_to_parallel %loop_2  : (!pdl.operation) -> !pdl.operation
                 %herd = transform.air.par_to_herd %herd_tile_par
                 %launch_par = transform.loop.forall_to_parallel %loop  : (!pdl.operation) -> !pdl.operation
-                %launch = transform.air.par_to_launch %launch_par {"has_air_segment"=true}
+                %launch = transform.air.par_to_launch %launch_par
                 %copies = transform.pdl_match @match_copy in %arg0 : (!pdl.operation) -> !pdl.operation
                 %h = transform.air.copy_to_dma %copies
                 %f = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
@@ -74,61 +68,82 @@ def transform_to_air(module):
         """
         transform_ir = Module.parse(transform_ir_string)
         run_transform(transform_ir, module)
+        pm = PassManager.parse("builtin.module(lower-affine, canonicalize, cse)")
+        pm.run(module.operation)
         with open("air_transform.mlir", "w", encoding="utf-8") as f:
             f.write(str(module))
         if verbose:
             print(f"Transformed module: {module}")
 
+        pm = PassManager.parse(cpu_backend.DEFAULT_PIPELINE)
+        pm.run(module.operation)
+
+    if verbose:
+        print(module)
     return module
 
 
-def run_test(dtype, shape):
-    print("building...")
-    torch_model = model()
+class model_mm(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
 
-    a = torch.randint(100, [shape[0], shape[1]], dtype=dtype)
-    b = torch.randint(100, [shape[1], shape[2]], dtype=dtype)
+    def forward(self, a, b):
+        return torch.mm(a, b)
+
+
+def run_test(dtype, shape):
+    torch_model = model_mm()
+
+    # shape = [s*4 for s in shape]
+    a = torch.randint(10, [shape[0], shape[1]], dtype=dtype) + 1
+    b = torch.randint(10, [shape[1], shape[2]], dtype=dtype) + 1
     m = fx.export_and_import(
         torch_model, a, b, output_type="linalg-on-tensors", func_name="forward"
     )
 
-    backend = XRTBackend(verbose=verbose)
+    backend = cpu_backend.AirCpuBackend()
     air_program = backend.load(
         backend.compile_from_torch_mlir(m, pipeline=transform_to_air, verbose=verbose)
     )
 
-    print("running...")
     c_ref = torch_model(a, b)
     c = torch.ones_like(c_ref)
-    [_, _, c_out] = air_program(a.numpy(), b.numpy(), c.numpy())
-    c_out = c_out.reshape(c_ref.shape)
-    if verbose:
-        print(f"input:\n{a}\n{b}\noutput:\n{c_out}")
+    air_program(a.numpy(), b.numpy(), c.numpy())
 
-    if torch.allclose(c_ref, torch.tensor(c_out)):
-        print("PASS!")
+    if verbose:
+        print(f"input:\n{a}\n{b}\noutput:\n{c}\nref:\n{c_ref}")
+
+    if torch.allclose(c_ref, c):
+        print(dtype, shape, "PASS!")
         return 1
     else:
         print("failed.")
         return 0
 
 
-sizes = [
-    [512, 64, 128],
-    [128, 64, 512],
+import random
+
+sizes = [[128, 128, 128], [128, 128, 128]]
+# for i in range(0, 4):
+#     m = [random.randint(2, 8), random.randint(2, 8), random.randint(2, 8)]
+#     s = [i * 64 for i in m]
+#     sizes.append(s)
+print(sizes)
+dtypes = [
+    torch.float,
+    # torch.int32,
+    # torch.int8,
 ]
-dtypes = [torch.float32]
 
 passed = 0
 num_tests = 0
 for t in dtypes:
     for s in sizes:
-        print(f"running test for {t} and {s}")
-        num_tests = num_tests + 1
         try:
+            num_tests = num_tests + 1
             passed = passed + run_test(t, s)
         except Exception as e:
-            print("test failed:", e)
+            print(e)
             pass
 
 if passed != num_tests:

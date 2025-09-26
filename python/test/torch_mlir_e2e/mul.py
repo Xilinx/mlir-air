@@ -1,23 +1,23 @@
-# ./python/test/torch_mlir_e2e/mul.py -*- Python -*-
+# ./python/test/torch_mlir_e2e/mul_cpu.py -*- Python -*-
 #
-# Copyright (C) 2022, Xilinx Inc.
-# Copyright (C) 2022, Advanced Micro Devices, Inc.
+# Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-# REQUIRES: torch_mlir, needs_update
+# REQUIRES: torch_mlir, ryzen_ai
 
-# RUN: %PYTHON %s | FileCheck %s
-# CHECK: PASSED
+# RUN: mkdir -p mul && cd mul
+# RUN: %run_on_npu1% %PYTHON %s
+# RUN: %run_on_npu2% %PYTHON %s
 
 import torch
-import torch._dynamo as dynamo
-import numpy
-from air.backend import linalg_on_tensors as backend
+from torch_mlir import fx
 
-air_backend = backend.make_dynamo_backend()
+from air.backend.xrt import XRTBackend
+
+verbose = False
 
 
-class model(torch.nn.Module):
+class model_mul(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
@@ -26,37 +26,51 @@ class model(torch.nn.Module):
         return x
 
 
-def run_test(dtype, shape):
-    program = model()
-    dynamo_program = dynamo.optimize(air_backend)(program)
+def run_test(model, dtype, shape):
+    print("building...")
+    torch_model = model()
 
     a = torch.randint(size=shape, low=1, high=100, dtype=dtype)
     b = torch.randint(size=shape, low=1, high=100, dtype=dtype)
-    c = dynamo_program(a, b)
-    c_ref = program(a, b)
+    m = fx.export_and_import(
+        torch_model, a, b, output_type="linalg-on-tensors", func_name="forward"
+    )
 
-    print(f"input:\n{a}\n{b}\noutput:\n{c}")
+    backend = XRTBackend(verbose=verbose)
+    air_program = backend.load(backend.compile_from_torch_mlir(m, verbose=verbose))
 
-    if torch.allclose(c_ref, c):
+    print("running...")
+    c_ref = torch_model(a, b)
+    c = torch.ones_like(c_ref)
+    [_, _, c_out] = air_program(a.numpy(), b.numpy(), c.numpy())
+    c_out = c_out.reshape(c_ref.shape)
+    if verbose:
+        print(f"input:\n{a}\n{b}\noutput:\n{c_out}")
+
+    if torch.allclose(c_ref, torch.tensor(c_out)):
         print("PASS!")
         return 1
     else:
-        errs = c_ref == c
+        import numpy
+
+        errs = c_ref == torch.tensor(c_out)
         print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
     return 0
 
 
-sizes = [[64, 64, 32], [16, 32, 8, 64], [4096], [128, 128]]
+sizes = [[128, 128], [32, 32, 32], [1024 * 32]]
 
 dtypes = [torch.int32, torch.float]
 
 passed = 0
+num_tests = 0
 for t in dtypes:
     for s in sizes:
-        passed = passed + run_test(t, s)
+        print(f"running test for {t} and {s}")
+        num_tests = num_tests + 1
+        passed = passed + run_test(model_mul, t, s)
 
-num_tests = len(sizes) * len(dtypes)
 if passed != num_tests:
     print(f"failed. {passed}/{num_tests}")
 else:
