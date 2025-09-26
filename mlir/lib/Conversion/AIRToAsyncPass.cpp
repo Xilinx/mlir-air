@@ -123,8 +123,9 @@ public:
   explicit AIRLaunchOpConversion(MLIRContext *context)
       : ConversionPattern(air::LaunchOp::getOperationName(), 1, context) {}
 
-  LogicalResult matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
 
     air::LaunchOp launch = cast<air::LaunchOp>(op);
 
