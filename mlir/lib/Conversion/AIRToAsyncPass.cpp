@@ -803,7 +803,6 @@ public:
       signalPassFailure();
     }
 
-    target.addIllegalOp<air::HerdOp>();
     RewritePatternSet air_herd_patterns(context);
     air_herd_patterns.add<AIRHerdOpConversion>(context);
     if (failed(applyPartialConversion(module, target,
