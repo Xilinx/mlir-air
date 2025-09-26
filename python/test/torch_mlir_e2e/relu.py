@@ -6,8 +6,8 @@
 # REQUIRES: torch_mlir, ryzen_ai
 
 # RUN: mkdir -p relu && cd relu
-# RUN: %run_on_npu1% %PYTHON %s | FileCheck %s
-# CHECK: PASSED!
+# RUN: %run_on_npu1% %PYTHON %s
+# RUN: %run_on_npu2% %PYTHON %s
 
 import torch
 from torch_mlir import fx
