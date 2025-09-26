@@ -2666,9 +2666,6 @@ createTransposeToMakeReductionInnermost(OpBuilder &builder, Location loc,
     transposedShape.push_back(inputType.getDimSize(dim));
   }
 
-  auto transposedType =
-      RankedTensorType::get(transposedShape, inputType.getElementType());
-
   // Create linalg.transpose operation
   auto transposeOp = builder.create<linalg::TransposeOp>(
       loc, input,
