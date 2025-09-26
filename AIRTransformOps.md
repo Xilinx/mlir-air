@@ -400,6 +400,55 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 | `loops` | PDL handle to an `mlir::Operation *` |
 
 
+### `transform.air.linalg_to_library_call` (transform::LinalgToLibraryCallOp)
+
+_Convert a linalg op to a function call (library call)_
+
+Syntax:
+
+```
+operation ::= `transform.air.linalg_to_library_call` $target attr-dict `:` functional-type(operands, results)
+```
+
+Replaces a linalg op with a call to a function. If the `function_name`
+attribute is provided, it is used as the function name. Otherwise, the
+linalg op's `library_call` attribute is used. The function is created if
+it does not exist. If the `link_with` attribute is provided, it is used
+to link the function call to a prebuilt object that contains the 
+implementation of the function. If the linalg op is inside a herd, the 
+`link_with` attribute is propagated to the herd.
+
+Example:
+```
+%matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!pdl.operation) -> !pdl.operation
+%call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!pdl.operation) -> !pdl.operation
+```
+
+Traits: `FunctionalStyleTransformOpTrait`, `TransformEachOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>function_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+<tr><td><code>link_with</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *` |
+
+
 ### `transform.air.par_to_herd` (transform::ParToHerdOp)
 
 Syntax:
