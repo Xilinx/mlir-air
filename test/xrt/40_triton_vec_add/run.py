@@ -99,9 +99,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "air-par-to-launch{depth=0 has-air-segment=true}",
                 "canonicalize",
                 "cse",
-                "air-par-to-herd{depth=-1}",
                 "air-copy-to-dma",
-                "func.func(air-herd-vectorize)",
                 "canonicalize",
                 "cse",
             ]

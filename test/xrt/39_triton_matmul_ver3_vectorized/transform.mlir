@@ -163,6 +163,20 @@ transform.with_pdl_patterns {
         %linalg_fills = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
         %inner_most_fills, %vec_fill_loops:2 =
           transform.structured.tile_using_for %linalg_fills tile_sizes [1, 1]
-          : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation)         
+          : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation)   
+
+    // Step 19: AIR Constructs Mapping
+    // Purpose: Convert high-level parallel constructs to AIE-specific operations for hardware execution.
+    // Convert parallel loops to AIE herd operations for multi-core execution
+        %forall_as_herd = transform.structured.match ops{["scf.forall"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+        %parallel = transform.loop.forall_to_parallel %forall_as_herd  : (!pdl.operation) -> !pdl.operation
+        %herd = transform.air.par_to_herd %parallel
+
+    // Convert memory copies to DMA operations for efficient data movement
+        %copies_in_herd = transform.structured.match ops{["memref.copy", "linalg.copy"]} in %herd : (!pdl.operation) -> !pdl.operation
+        %dmas_from_copies = transform.air.copy_to_dma %copies_in_herd
+        
+    // Apply vectorization to optimize for AIE vector units
+        %vectorized_herd = transform.air.herd_vectorize %herd
     }
 }

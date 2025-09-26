@@ -159,7 +159,6 @@ with air.ir.Context() as ctx, Location.unknown():
         + ",".join(
             [
                 f"func.func(air-wrap-func-with-parallel{{loop-bounds={launch_size[0]},{launch_size[1]},1}})",
-                "air-par-to-herd{depth=-1}",
                 "air-par-to-launch{depth=-1 has-air-segment=true}",
                 "air-copy-to-dma",
                 "canonicalize",
