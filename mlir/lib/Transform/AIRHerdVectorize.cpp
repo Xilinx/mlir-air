@@ -17,6 +17,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/Transforms.h"
+#include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
@@ -25,6 +26,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Transform/PassDetail.h"
 
 using namespace mlir;
@@ -68,6 +70,42 @@ private:
 
 namespace xilinx {
 namespace air {
+
+// Helper function to populate vectorization patterns for air.herd operations
+static void populateAIRHerdVectorizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *ctx, bool vectorizeNdExtract,
+    bool flatten1dDepthwiseConv,
+    bool disableTransferPermutationMapLoweringPatterns,
+    bool disableMultiReductionToContractPatterns, bool vectorizePadding) {
+
+  patterns.add<VectorizationPattern>(ctx, vectorizeNdExtract,
+                                     flatten1dDepthwiseConv);
+
+  if (!disableTransferPermutationMapLoweringPatterns)
+    vector::populateVectorTransferPermutationMapLoweringPatterns(patterns);
+
+  if (!disableMultiReductionToContractPatterns)
+    vector::populateVectorReductionToContractPatterns(patterns);
+
+  vector::populateSinkVectorOpsPatterns(patterns);
+
+  patterns.add<linalg::LinalgCopyVTRForwardingPattern,
+               linalg::LinalgCopyVTWForwardingPattern>(ctx,
+                                                       /*benefit=*/2);
+  vector::TransferReadOp::getCanonicalizationPatterns(patterns, ctx);
+  vector::TransferWriteOp::getCanonicalizationPatterns(patterns, ctx);
+  tensor::populateFoldTensorSubsetIntoVectorTransferPatterns(patterns);
+
+  patterns.add<linalg::CopyVectorizationPattern>(ctx);
+
+  if (vectorizePadding) {
+    linalg::populatePadOpVectorizationPatterns(patterns);
+    // This creates an alternative path for lowering tensor.pad - by
+    // decomposing it into e.g. linalg.fill.
+    linalg::populateDecomposePadPatterns(patterns);
+  }
+  vector::populateVectorStepLoweringPatterns(patterns);
+}
 
 class AIRHerdVectorizePass
     : public air::impl::AIRHerdVectorizePassBase<AIRHerdVectorizePass> {
@@ -118,33 +156,10 @@ void AIRHerdVectorizePass::runOnOperation() {
     }
 
     RewritePatternSet patterns(ctx);
-    patterns.add<VectorizationPattern>(ctx, vectorizeNdExtract,
-                                       flatten1dDepthwiseConv);
-
-    if (!disableTransferPermutationMapLoweringPatterns)
-      vector::populateVectorTransferPermutationMapLoweringPatterns(patterns);
-
-    if (!disableMultiReductionToContractPatterns)
-      vector::populateVectorReductionToContractPatterns(patterns);
-
-    vector::populateSinkVectorOpsPatterns(patterns);
-
-    patterns.add<linalg::LinalgCopyVTRForwardingPattern,
-                 linalg::LinalgCopyVTWForwardingPattern>(ctx,
-                                                         /*benefit=*/2);
-    vector::TransferReadOp::getCanonicalizationPatterns(patterns, ctx);
-    vector::TransferWriteOp::getCanonicalizationPatterns(patterns, ctx);
-    tensor::populateFoldTensorSubsetIntoVectorTransferPatterns(patterns);
-
-    patterns.add<linalg::CopyVectorizationPattern>(ctx);
-
-    if (vectorizePadding) {
-      linalg::populatePadOpVectorizationPatterns(patterns);
-      // This creates an alternative path for lowering tensor.pad - by
-      // decomposing it into e.g. linalg.fill.
-      linalg::populateDecomposePadPatterns(patterns);
-    }
-    vector::populateVectorStepLoweringPatterns(patterns);
+    populateAIRHerdVectorizationPatterns(
+        patterns, ctx, vectorizeNdExtract, flatten1dDepthwiseConv,
+        disableTransferPermutationMapLoweringPatterns,
+        disableMultiReductionToContractPatterns, vectorizePadding);
 
     if (failed(applyPatternsGreedily(herdOp, std::move(patterns))))
       return signalPassFailure();
@@ -168,3 +183,46 @@ createAIRHerdVectorizePass(bool vectorizeNdExtract, bool flatten1dDepthwiseConv,
 
 } // namespace air
 } // namespace xilinx
+
+//===----------------------------------------------------------------------===//
+// Transform dialect AIRHerdVectorizeOp
+//===----------------------------------------------------------------------===//
+
+namespace mlir {
+namespace transform {
+
+DiagnosedSilenceableFailure
+AIRHerdVectorizeOp::applyToOne(transform::TransformRewriter &rewriter,
+                               Operation *target,
+                               transform::ApplyToEachResultList &results,
+                               transform::TransformState &state) {
+
+  // Cast the target to HerdOp and verify it's the right type
+  auto herdOp = dyn_cast<xilinx::air::HerdOp>(target);
+  if (!herdOp) {
+    return emitDefiniteFailure() << "expected air.herd operation";
+  }
+
+  if (!herdOp->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+    return emitDefiniteFailure() << "requires isolated-from-above targets";
+  }
+
+  MLIRContext *ctx = rewriter.getContext();
+  RewritePatternSet patterns(ctx);
+
+  xilinx::air::populateAIRHerdVectorizationPatterns(
+      patterns, ctx, getVectorizeNdExtract(), getFlatten_1dDepthwiseConv(),
+      getDisableTransferPermutationMapLoweringPatterns(),
+      getDisableMultiReductionToContractPatterns(), getVectorizePadding());
+
+  // Apply patterns to the herd operation
+  if (failed(applyPatternsGreedily(herdOp, std::move(patterns)))) {
+    return emitDefiniteFailure() << "failed to apply vectorization patterns";
+  }
+
+  results.push_back(herdOp);
+  return DiagnosedSilenceableFailure::success();
+}
+
+} // namespace transform
+} // namespace mlir
