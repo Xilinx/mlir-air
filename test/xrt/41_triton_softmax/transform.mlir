@@ -213,5 +213,19 @@ transform.with_pdl_patterns {
         %math_exp_linalg = transform.get_parent_op %math_exp { op_name = "linalg.generic" } : (!pdl.operation) -> !pdl.operation
         %call = transform.air.linalg_to_library_call %math_exp_linalg { function_name = "exp_vec16_f32", link_with = "extern_func.o" } : (!pdl.operation) -> !pdl.operation
 
+        //===================================================================
+        // PHASE 10: AIR Constructs Mapping
+        //===================================================================
+        // Convert parallel loops to AIE herd operations for multi-core execution
+        %forall_as_herd = transform.structured.match ops{["scf.forall"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+        %parallel = transform.loop.forall_to_parallel %forall_as_herd  : (!pdl.operation) -> !pdl.operation
+        %herd = transform.air.par_to_herd %parallel
+
+        // Convert memory copies to DMA operations for efficient data movement
+        %copies_in_herd = transform.structured.match ops{["memref.copy", "linalg.copy"]} in %herd : (!pdl.operation) -> !pdl.operation
+        %dmas_from_copies = transform.air.copy_to_dma %copies_in_herd
+        
+        // Apply vectorization to optimize for AIE vector units
+        %vectorized_herd = transform.air.herd_vectorize %herd
     }
 }
