@@ -14,6 +14,7 @@
 #include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -2599,6 +2600,205 @@ DiagnosedSilenceableFailure transform::ConvertMemrefCopyToLinalgCopyOp::apply(
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// FuseExtfLinalgOp
+//===----------------------------------------------------------------------===//
+
+/// Check if a linalg op contains only arith.extf as its body operation
+/// (apart from terminator)
+static bool containsOnlyExtfOp(linalg::LinalgOp linalgOp) {
+  Block *body = linalgOp.getBlock();
+  if (!body)
+    return false;
+
+  // Should have exactly one non-terminator operation, and it should be extf
+  if (llvm::range_size(body->without_terminator()) != 1)
+    return false;
+  return llvm::any_of(body->without_terminator(),
+                      [](Operation &o) { return isa<arith::ExtFOp>(o); });
+}
+
+/// Check if the second op directly consumes the result of the first op
+static bool directlyConsumesResult(linalg::LinalgOp firstOp,
+                                   linalg::LinalgOp secondOp) {
+  // Get the result of the first op (assuming it has one DPS init)
+  if (firstOp.getNumDpsInits() != 1)
+    return false;
+
+  Value firstOpResult = firstOp.getTiedOpResult(firstOp.getDpsInitOperand(0));
+
+  // Check if the second op uses this result as an input
+  return llvm::is_contained(secondOp.getDpsInputs(), firstOpResult);
+}
+
+/// Get the input type of the first op (before arith.extf type change)
+static Type getInputTypeBeforeExtf(linalg::LinalgOp linalgOp) {
+  Block *body = linalgOp.getBlock();
+  if (!body)
+    return nullptr;
+
+  for (Operation &op : body->getOperations()) {
+    if (auto extfOp = dyn_cast<arith::ExtFOp>(op)) {
+      return extfOp.getIn().getType();
+    }
+  }
+
+  return nullptr;
+}
+
+/// Fuse two linalg ops by creating a new fused operation
+static FailureOr<linalg::GenericOp>
+fuseExtfLinalgOps(RewriterBase &rewriter, linalg::LinalgOp firstOp,
+                  linalg::LinalgOp secondOp) {
+  // Get the input type before extf conversion
+  Type originalType = getInputTypeBeforeExtf(firstOp);
+  if (!originalType)
+    return failure();
+
+  // Get the result of the first op
+  Value firstOpResult = firstOp.getTiedOpResult(firstOp.getDpsInitOperand(0));
+
+  // Find which input of the second op corresponds to the first op's result
+  int64_t targetInputIndex = -1;
+  for (auto [index, input] : llvm::enumerate(secondOp.getDpsInputs())) {
+    if (input == firstOpResult) {
+      targetInputIndex = static_cast<int64_t>(index);
+      break;
+    }
+  }
+
+  if (targetInputIndex == -1)
+    return failure();
+
+  // Get the original input from the first op
+  Value originalInput = firstOp.getDpsInputs()[0];
+
+  // Create new input list for the fused operation
+  SmallVector<Value> newInputs;
+  for (auto [index, input] : llvm::enumerate(secondOp.getDpsInputs())) {
+    if (static_cast<int64_t>(index) == targetInputIndex) {
+      newInputs.push_back(
+          originalInput); // Use original input instead of first op's result
+    } else {
+      newInputs.push_back(input);
+    }
+  }
+
+  // Create the new fused operation
+  rewriter.setInsertionPoint(secondOp);
+  auto fusedOp = rewriter.create<linalg::GenericOp>(
+      secondOp.getLoc(), secondOp->getResultTypes(), newInputs,
+      secondOp.getDpsInits(), secondOp.getIndexingMapsArray(),
+      secondOp.getIteratorTypesArray());
+
+  // Clone the body from the second operation and modify it
+  Block *newBody = &fusedOp.getRegion().emplaceBlock();
+
+  // Create block arguments with updated types
+  SmallVector<Type> blockArgTypes;
+  for (auto [index, input] : llvm::enumerate(newInputs)) {
+    Type elementType;
+    if ((int)index == targetInputIndex) {
+      elementType = originalType; // Use original type for fused input
+    } else {
+      elementType = cast<ShapedType>(input.getType()).getElementType();
+    }
+    blockArgTypes.push_back(elementType);
+  }
+  // Add output argument types
+  for (Value output : secondOp.getDpsInits()) {
+    blockArgTypes.push_back(
+        cast<ShapedType>(output.getType()).getElementType());
+  }
+
+  for (Type argType : blockArgTypes) {
+    newBody->addArgument(argType, fusedOp.getLoc());
+  }
+
+  // Clone the body from the second operation
+  IRMapping mapping;
+  Block *secondOpBody = secondOp.getBlock();
+
+  // Map block arguments, adding extf for the fused input
+  for (auto [index, oldArg] : llvm::enumerate(secondOpBody->getArguments())) {
+    if ((int)index == targetInputIndex) {
+      // For the fused input, we need to add an extf operation
+      rewriter.setInsertionPointToStart(newBody);
+      auto extfOp = rewriter.create<arith::ExtFOp>(
+          fusedOp.getLoc(),
+          cast<ShapedType>(firstOpResult.getType()).getElementType(),
+          newBody->getArgument(index));
+      mapping.map(oldArg, extfOp.getResult());
+    } else {
+      mapping.map(oldArg, newBody->getArgument(index));
+    }
+  }
+
+  // Clone operations from the second op's body
+  for (Operation &op : secondOpBody->getOperations()) {
+    rewriter.clone(op, mapping);
+  }
+
+  // Replace the second operation with the fused operation
+  rewriter.replaceOp(secondOp, fusedOp);
+
+  return fusedOp;
+}
+
+DiagnosedSilenceableFailure
+transform::FuseExtfLinalgOp::apply(transform::TransformRewriter &rewriter,
+                                   transform::TransformResults &results,
+                                   transform::TransformState &state) {
+
+  SmallVector<Operation *> firstOps =
+      llvm::to_vector(state.getPayloadOps(getFirstOp()));
+  SmallVector<Operation *> secondOps =
+      llvm::to_vector(state.getPayloadOps(getSecondOp()));
+
+  if (firstOps.size() != 1 || secondOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one first_op and one second_op handle";
+  }
+
+  auto firstLinalgOp = dyn_cast<linalg::LinalgOp>(firstOps[0]);
+  auto secondLinalgOp = dyn_cast<linalg::LinalgOp>(secondOps[0]);
+
+  if (!firstLinalgOp || !secondLinalgOp) {
+    return emitDefiniteFailure() << "both operations must be linalg operations";
+  }
+
+  // Check condition 1: first op contains only arith.extf
+  if (!containsOnlyExtfOp(firstLinalgOp)) {
+    return emitDefiniteFailure()
+           << "first operation must contain only arith.extf in its body";
+  }
+
+  // Check condition 2: second op directly consumes result of first op
+  if (!directlyConsumesResult(firstLinalgOp, secondLinalgOp)) {
+    return emitDefiniteFailure() << "second operation must directly consume "
+                                    "the result of the first operation";
+  }
+
+  // Perform the fusion
+  FailureOr<linalg::GenericOp> fusedOp =
+      fuseExtfLinalgOps(rewriter, firstLinalgOp, secondLinalgOp);
+  if (failed(fusedOp)) {
+    return emitDefiniteFailure() << "failed to fuse the operations";
+  }
+
+  SmallVector<Operation *> resultOps = {*fusedOp};
+  results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::FuseExtfLinalgOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getFirstOpMutable(), effects);
+  onlyReadsHandle(getSecondOpMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
 }
 
 //===----------------------------------------------------------------------===//
