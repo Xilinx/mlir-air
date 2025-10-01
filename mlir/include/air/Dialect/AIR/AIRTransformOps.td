@@ -474,6 +474,57 @@ def TransposeReduceOp : Op<Transform_Dialect, "air.transpose_reduce",
   let assemblyFormat = "$target attr-dict";
 }
 
+def FuseExtfLinalgOp : Op<Transform_Dialect, "air.fuse_extf_linalg",
+    [FunctionalStyleTransformOpTrait, DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Fuse a linalg operation containing only arith.extf with its consumer";
+  let description = [{
+    This transform fuses two linalg operations where:
+    1. The first operation contains only an arith.extf operation in its body (apart from terminator)
+    2. The second operation directly consumes the result of the first operation
+    
+    The fusion is performed by:
+    1. Removing the arith.extf from the first operation
+    2. Updating the input type in the second operation to use the original (narrower) type
+    3. Adding arith.extf operations as needed to maintain type consistency
+    4. Erasing the first operation
+    
+    This optimization folds the arithmetic extensions into the linalg ops, and enables the use of
+    native native intrinsics on narrower datatypes, such as AMD AIEs.
+    
+    Example:
+    ```mlir
+    // Before fusion:
+    %0 = linalg.generic {
+      ^bb0(%arg0: f16):
+        %1 = arith.extf %arg0 : f16 to f32
+        linalg.yield %1 : f32
+    } ins(%input : tensor<16xf16>) outs(%temp : tensor<16xf32>)
+    
+    %result = linalg.generic {
+      ^bb0(%arg0: f32, %arg1: f32):
+        %2 = arith.addf %arg0, %arg1 : f32
+        linalg.yield %2 : f32
+    } ins(%0, %other : tensor<16xf32>, tensor<16xf32>) outs(%output : tensor<16xf32>)
+    
+    // After fusion:
+    %result = linalg.generic {
+      ^bb0(%arg0: f16, %arg1: f32):
+        %1 = arith.extf %arg0 : f16 to f32
+        %2 = arith.addf %1, %arg1 : f32
+        linalg.yield %2 : f32
+    } ins(%input, %other : tensor<16xf16>, tensor<16xf32>) outs(%output : tensor<16xf32>)
+    ```
+    
+    Returns a handle to the fused operation (the second operation after modification).
+  }];
+  
+  let arguments = (ins PDL_Operation:$first_op,
+                       PDL_Operation:$second_op);
+  let results = (outs PDL_Operation:$fused_op);
+  let assemblyFormat = "$first_op `,` $second_op attr-dict";
+}
+
 def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      TransformOpInterface, TransformEachOpTrait]> {
