@@ -8,6 +8,6 @@
 // RUN: aie-opt -aie-generate-column-control-overlay="route-shim-to-tile-ctrl=true" %S/base.mlir -o base_overlay.mlir
 // RUN: %python aiecc.py --aie-generate-xclbin --xclbin-name=base.xclbin base_overlay.mlir
 // RUN: aie-opt -aie-generate-column-control-overlay="route-shim-to-tile-ctrl=true" aie.mlir -o aie_overlay.mlir
-// RUN: %python aiecc.py --aie-generate-ctrlpkt --aie-generate-npu-insts --npu-insts-name=aie_run_seq.bin aie_overlay.mlir
+// RUN: %python aiecc.py --aie-generate-ctrlpkt --ctrlpkt-name=ctrlpkt.bin --ctrlpkt-dma-seq-name=ctrlpkt_dma_seq.bin --aie-generate-npu-insts --npu-insts-name=aie_run_seq.bin aie_overlay.mlir
 // RUN: g++-13 %S/test.cpp -o test.exe -std=c++23 -Wall %test_utils_flags %xrt_flags -lrt -lstdc++ -lboost_program_options -lboost_filesystem
 // RUN: %run_on_npu1% ./test.exe -x base.xclbin -k MLIR_AIE -i aie_run_seq.bin -c ctrlpkt_dma_seq.bin -p ctrlpkt.bin -v 2
