@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s --air-to-aie='test-patterns=lower-air-channels' | FileCheck %s
+// RUN: air-opt %s --air-to-aie='test-patterns=lower-air-channels' --split-input-file | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcvc1902) {
 // CHECK:   %[[VAL_0:.*]] = aie.tile(1, 1)
@@ -20,7 +20,7 @@
 // CHECK:     aie.objectfifo.release @[[VAL_2]](Consume, 1)
 // CHECK:     aie.objectfifo.release @[[VAL_3]](Consume, 1)
 // CHECK:     aie.end
-// CHECK:   } {elf_file = "partition_0_core_1_2.elf"}
+// CHECK:   }
 // CHECK:   %[[VAL_9:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:     %[[VAL_10:.*]] = aie.objectfifo.acquire @[[VAL_3]](Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
 // CHECK:     %[[VAL_11:.*]] = aie.objectfifo.subview.access %[[VAL_10]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
@@ -29,7 +29,7 @@
 // CHECK:     aie.objectfifo.release @[[VAL_2]](Produce, 1)
 // CHECK:     aie.objectfifo.release @[[VAL_3]](Produce, 1)
 // CHECK:     aie.end
-// CHECK:   } {elf_file = "partition_0_core_1_1.elf"}
+// CHECK:   }
 // CHECK: }
 
 aie.device(xcvc1902) {
@@ -47,7 +47,7 @@ aie.device(xcvc1902) {
     memref.dealloc %alloc : memref<32xi32, 2>
     memref.dealloc %alloc2 : memref<32xi32, 2>
     aie.end
-  } {elf_file = "partition_0_core_1_2.elf"}
+  }
   %3 = aie.core(%0) {
     %c32 = arith.constant 32 : index
     %c0 = arith.constant 0 : index
@@ -58,8 +58,10 @@ aie.device(xcvc1902) {
     memref.dealloc %alloc : memref<32xi32, 2>
     memref.dealloc %alloc2 : memref<32xi32, 2>
     aie.end
-  } {elf_file = "partition_0_core_1_1.elf"}
+  }
 }
+
+// -----
 
 // CHECK-LABEL:   aie.device(xcvc1902) {
 // CHECK:   %[[VAL_0:.*]] = aie.tile(1, 1)
@@ -73,7 +75,7 @@ aie.device(xcvc1902) {
 // CHECK:     %[[VAL_8:.*]] = aie.objectfifo.subview.access %[[VAL_7]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_3]](Consume, 1)
 // CHECK:     aie.end
-// CHECK:   } {elf_file = "partition_0_core_1_2.elf"}
+// CHECK:   }
 // CHECK:   %[[VAL_9:.*]] = aie.core(%[[VAL_0]]) {
 // CHECK:     %[[VAL_10:.*]] = aie.objectfifo.acquire @[[VAL_3]](Produce, 1) : !aie.objectfifosubview<memref<32xi32>>
 // CHECK:     %[[VAL_11:.*]] = aie.objectfifo.subview.access %[[VAL_10]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
@@ -81,7 +83,7 @@ aie.device(xcvc1902) {
 // CHECK:     %[[VAL_13:.*]] = aie.objectfifo.subview.access %[[VAL_12]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:     aie.objectfifo.release @[[VAL_2]](Produce, 1)
 // CHECK:     aie.end
-// CHECK:   } {elf_file = "partition_0_core_1_1.elf"}
+// CHECK:   }
 // CHECK: }
 
 aie.device(xcvc1902) {
@@ -99,7 +101,7 @@ aie.device(xcvc1902) {
     memref.dealloc %alloc : memref<32xi32, 2>
     memref.dealloc %alloc2 : memref<32xi32, 2>
     aie.end
-  } {elf_file = "partition_0_core_1_2.elf"}
+  }
   %3 = aie.core(%0) {
     %c32 = arith.constant 32 : index
     %c0 = arith.constant 0 : index
@@ -110,5 +112,5 @@ aie.device(xcvc1902) {
     memref.dealloc %alloc : memref<32xi32, 2>
     memref.dealloc %alloc2 : memref<32xi32, 2>
     aie.end
-  } {elf_file = "partition_0_core_1_1.elf"}
+  }
 }

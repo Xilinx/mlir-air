@@ -14,8 +14,8 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export commithash=064f02dac0c81c19350a74415b3245f42fed09dc
-DATETIME=2025090500
+export commithash=37637120af80672002a97c330077e31df7432261
+DATETIME=2025100118
 WHEEL_VERSION=22.0.0.$DATETIME+${commithash:0:8}
 
 if [ x"$1" == x--get-wheel-version ]; then
