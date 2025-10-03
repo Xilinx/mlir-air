@@ -849,3 +849,70 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 | :----: | ----------- |
 | `result` | PDL handle to an `mlir::Operation *` |
 
+
+### `transform.air.vector_type_cast` (transform::VectorTypeCastOp)
+
+_Cast vector operands and results of vector operations to a user-provided datatype_
+
+Syntax:
+
+```
+operation ::= `transform.air.vector_type_cast` $target attr-dict
+```
+
+This transform takes a handle to vector dialect operations and casts all input operands
+of vector type to a user-provided datatype, updates the operation to use the new type
+for all its operands and results, and casts the result back to the original result type.
+
+The transformation works by:
+1. Finding vector dialect operations within the target
+2. For each vector operation, examining its operands and results
+3. Creating cast operations to convert vector operands to the target element type
+4. Updating the operation to work with the new vector types
+5. Creating cast operations to convert results back to the original types
+
+This optimization is useful for hardware accelerators that can perform vector operations
+natively on specific data types (e.g., bf16, f16) while maintaining compatibility with
+the original precision through selective casting.
+
+Example:
+```mlir
+// Before:
+%result = vector.fma %a, %b, %c : vector<8xf32>
+
+// After (with target_element_type = f16):
+%a_cast = arith.truncf %a : vector<8xf32> to vector<8xf16>
+%b_cast = arith.truncf %b : vector<8xf32> to vector<8xf16>
+%c_cast = arith.truncf %c : vector<8xf32> to vector<8xf16>
+%result_f16 = vector.fma %a_cast, %b_cast, %c_cast : vector<8xf16>
+%result = arith.extf %result_f16 : vector<8xf16> to vector<8xf32>
+```
+
+The target_element_type attribute specifies the element type to cast to.
+Supported types include f16, bf16, f32, f64, i8, i16, i32, i64.
+
+Returns a handle to the modified operations containing the transformed vector operations.
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>target_element_type</code></td><td>::mlir::TypeAttr</td><td>any type attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *` |
+
