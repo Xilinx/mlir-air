@@ -20,13 +20,13 @@
 // CHECK:      %[[VAL_10:.*]] = aie.objectfifo.subview.access %[[VAL_9]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
-// CHECK:    } {elf_file = "segment_0_core_5_4.elf"}
+// CHECK:    }
 // CHECK:    %[[VAL_7:.*]] = aie.core(%[[VAL_2]]) {
 // CHECK:      %[[VAL_8:.*]] = aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
 // CHECK:      %[[VAL_9:.*]] = aie.objectfifo.subview.access %[[VAL_8]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
-// CHECK:    } {elf_file = "segment_0_core_5_3.elf"}
+// CHECK:    }
 // CHECK:  }
 
 module {

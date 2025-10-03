@@ -19,7 +19,7 @@
 // CHECK:      %[[VAL_6:.*]] = aie.objectfifo.subview.access %[[VAL_5]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
-// CHECK:    } {elf_file = "segment_0_core_5_3.elf"}
+// CHECK:    }
 // CHECK:  }
 
 module {

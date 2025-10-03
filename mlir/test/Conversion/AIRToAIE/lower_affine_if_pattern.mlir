@@ -87,7 +87,7 @@ module @aie.segment_0 {
       }
     }
     aie.end
-  } {elf_file = "segment_0_core_1_1.elf"}
+  }
   memref.global "public" @__air_herd_arg_6 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_7 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_8 : memref<64x64xi32>
@@ -131,7 +131,7 @@ module @aie.segment_0 {
       }
     }
     aie.end
-  } {elf_file = "segment_0_core_0_1.elf"}
+  }
   memref.global "public" @__air_herd_arg_3 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_4 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_5 : memref<64x64xi32>
@@ -175,7 +175,7 @@ module @aie.segment_0 {
       }
     }
     aie.end
-  } {elf_file = "segment_0_core_1_0.elf"}
+  }
   memref.global "public" @__air_herd_arg_0 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_1 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_2 : memref<64x64xi32>
@@ -219,6 +219,6 @@ module @aie.segment_0 {
       }
     }
     aie.end
-  } {elf_file = "segment_0_core_0_0.elf"}
+  }
 }
 

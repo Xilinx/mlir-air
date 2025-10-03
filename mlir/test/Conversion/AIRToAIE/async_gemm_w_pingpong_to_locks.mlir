@@ -40,7 +40,7 @@
 // CHECK:     }
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
-// CHECK:   } {elf_file = 
+// CHECK:   }
 // CHECK:   aie.mem(%[[VAL_4]])
 // CHECK:   aie.core(%[[VAL_4]])
 // CHECK:     aie.use_lock({{.*}}, Acquire, 0)
@@ -59,7 +59,7 @@
 // CHECK:     }
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
-// CHECK:   } {elf_file = 
+// CHECK:   }
 // CHECK:   aie.mem(%[[VAL_3]])
 // CHECK:   aie.core(%[[VAL_3]])
 // CHECK:     aie.use_lock({{.*}}, Acquire, 0)
@@ -78,7 +78,7 @@
 // CHECK:     }
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
-// CHECK:   } {elf_file = 
+// CHECK:   }
 // CHECK:   aie.mem(%[[VAL_2]])
 // CHECK:   aie.core(%[[VAL_2]])
 // CHECK:     aie.use_lock({{.*}}, Acquire, 0)
@@ -97,7 +97,7 @@
 // CHECK:     }
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
-// CHECK:   } {elf_file = 
+// CHECK:   }
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
