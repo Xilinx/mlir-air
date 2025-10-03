@@ -102,10 +102,11 @@ jobs:
           rm -rf build
           popd
 
+      # TODO: Use nightly latest llvm-aie once it is fixed
       - name: Get llvm-aie
         run: |
           source air-venv/bin/activate
-          python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/download/nightly/llvm_aie-19.0.0.2025071101+b3cd09d3-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 
       - name: Get Xilinx cmakeModules
         run: |

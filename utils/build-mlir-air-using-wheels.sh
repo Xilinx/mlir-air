@@ -53,7 +53,8 @@ export PYTHONPATH=${MLIR_AIE_INSTALL_DIR}/python:${PYTHONPATH}
 export LD_LIBRARY_PATH=${MLIR_AIE_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}
 
 # Install llvm-aie
-python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+# TODO: Use nightly latest llvm-aie once it is fixed
+python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/download/nightly/llvm_aie-19.0.0.2025071101+b3cd09d3-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 PEANO_INSTALL_DIR="$(pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie"
 echo "WHL_LLVM_AIE DIR: $PEANO_INSTALL_DIR"
 
