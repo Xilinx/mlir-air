@@ -525,6 +525,51 @@ def FuseExtfLinalgOp : Op<Transform_Dialect, "air.fuse_extf_linalg",
   let assemblyFormat = "$first_op `,` $second_op attr-dict";
 }
 
+def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Cast vector operands and results of vector operations to a user-provided datatype";
+  let description = [{
+    This transform takes a handle to vector dialect operations and casts all input operands
+    of vector type to a user-provided datatype, updates the operation to use the new type
+    for all its operands and results, and casts the result back to the original result type.
+
+    The transformation works by:
+    1. Finding vector dialect operations within the target
+    2. For each vector operation, examining its operands and results
+    3. Creating cast operations to convert vector operands to the target element type
+    4. Updating the operation to work with the new vector types
+    5. Creating cast operations to convert results back to the original types
+
+    This optimization is useful for hardware accelerators that can perform vector operations
+    natively on specific data types (e.g., bf16, f16) while maintaining compatibility with
+    the original precision through selective casting.
+
+    Example:
+    ```mlir
+    // Before:
+    %result = vector.fma %a, %b, %c : vector<8xf32>
+
+    // After (with target_element_type = f16):
+    %a_cast = arith.truncf %a : vector<8xf32> to vector<8xf16>
+    %b_cast = arith.truncf %b : vector<8xf32> to vector<8xf16>
+    %c_cast = arith.truncf %c : vector<8xf32> to vector<8xf16>
+    %result_f16 = vector.fma %a_cast, %b_cast, %c_cast : vector<8xf16>
+    %result = arith.extf %result_f16 : vector<8xf16> to vector<8xf32>
+    ```
+
+    The target_element_type attribute specifies the element type to cast to.
+    Supported types include f16, bf16, f32, f64, i8, i16, i32, i64.
+
+    Returns a handle to the modified operations containing the transformed vector operations.
+  }];
+
+  let arguments = (ins PDL_Operation:$target,
+                       TypeAttr:$target_element_type);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
 def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      TransformOpInterface, TransformEachOpTrait]> {

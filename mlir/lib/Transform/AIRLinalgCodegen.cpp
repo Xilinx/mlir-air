@@ -26,6 +26,7 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
@@ -2950,6 +2951,268 @@ transform::TransposeReduceOp::apply(transform::TransformRewriter &rewriter,
     // Replace the original operation
     rewriter.replaceOp(reduceOp, newReduceOp.getResults());
     transformedOps.push_back(newReduceOp);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// VectorTypeCastOp
+//===----------------------------------------------------------------------===//
+
+/// Helper function to create cast operations for both scalar and vector types
+static Value createTypeCast(OpBuilder &builder, Location loc, Value input,
+                            Type targetElementType, bool isExtension) {
+  Type inputType = input.getType();
+
+  // Determine the source element type and target type
+  Type sourceElementType;
+  Type targetType;
+
+  if (auto inputVectorType = dyn_cast<VectorType>(inputType)) {
+    // Handle vector types
+    sourceElementType = inputVectorType.getElementType();
+    targetType = VectorType::get(inputVectorType.getShape(), targetElementType);
+  } else {
+    // Handle scalar types
+    sourceElementType = inputType;
+    targetType = targetElementType;
+  }
+
+  // Create the appropriate cast operation based on element types and operation
+  if (isExtension) {
+    // Extension: narrow to wide type
+    if (isa<FloatType>(sourceElementType) &&
+        isa<FloatType>(targetElementType)) {
+      return builder.create<arith::ExtFOp>(loc, targetType, input);
+    } else if (isa<IntegerType>(sourceElementType) &&
+               isa<IntegerType>(targetElementType)) {
+      // For integer types, use sign extension
+      return builder.create<arith::ExtSIOp>(loc, targetType, input);
+    }
+  } else {
+    // Truncation: wide to narrow type
+    if (isa<FloatType>(sourceElementType) &&
+        isa<FloatType>(targetElementType)) {
+      return builder.create<arith::TruncFOp>(loc, targetType, input);
+    } else if (isa<IntegerType>(sourceElementType) &&
+               isa<IntegerType>(targetElementType)) {
+      return builder.create<arith::TruncIOp>(loc, targetType, input);
+    }
+  }
+
+  // If no cast is needed or supported, return the original value
+  return input;
+}
+
+/// Helper function to determine if a cast is an extension (narrow to wide)
+static bool isExtensionCast(Type fromType, Type toType) {
+  // Use getIntOrFloatBitWidth for both integer and float types
+  unsigned fromWidth = fromType.getIntOrFloatBitWidth();
+  unsigned toWidth = toType.getIntOrFloatBitWidth();
+
+  // Extension is when we go from smaller to larger bit width
+  return fromWidth < toWidth;
+}
+
+/// Helper function to apply vector type casting to a single operation
+static FailureOr<Operation *> applyVectorTypeCastToOp(Operation *op,
+                                                      Type targetElementType,
+                                                      RewriterBase &rewriter) {
+
+  // Skip if operation doesn't have vector operands or results
+  bool hasVectorOperands = false;
+  bool hasVectorResults = false;
+  bool needsTransformation = false;
+
+  for (Value operand : op->getOperands()) {
+    if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+      hasVectorOperands = true;
+      if (vectorType.getElementType() != targetElementType) {
+        needsTransformation = true;
+      }
+    }
+  }
+
+  for (Value result : op->getResults()) {
+    if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
+      hasVectorResults = true;
+      if (vectorType.getElementType() != targetElementType) {
+        needsTransformation = true;
+      }
+    }
+  }
+
+  if (!hasVectorOperands && !hasVectorResults) {
+    return failure();
+  }
+
+  if (!needsTransformation) {
+    return failure();
+  }
+
+  auto loc = op->getLoc();
+  rewriter.setInsertionPoint(op);
+
+  // Cast input operands to target type
+  SmallVector<Value> newOperands;
+  SmallVector<Type> originalOperandTypes;
+
+  for (Value operand : op->getOperands()) {
+    originalOperandTypes.push_back(operand.getType());
+
+    if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+      Type currentElementType = vectorType.getElementType();
+
+      if (currentElementType != targetElementType) {
+        bool isExt = isExtensionCast(currentElementType, targetElementType);
+        Value castOperand =
+            createTypeCast(rewriter, loc, operand, targetElementType, isExt);
+        newOperands.push_back(castOperand);
+      } else {
+        newOperands.push_back(operand);
+      }
+    } else {
+      newOperands.push_back(operand);
+    }
+  }
+
+  // Determine new result types using target element type
+  SmallVector<Type> newResultTypes;
+  SmallVector<Type> originalResultTypes;
+
+  for (Type resultType : op->getResultTypes()) {
+    originalResultTypes.push_back(resultType);
+
+    if (auto vectorType = dyn_cast<VectorType>(resultType)) {
+      auto newVectorType =
+          VectorType::get(vectorType.getShape(), targetElementType);
+      newResultTypes.push_back(newVectorType);
+    } else {
+      newResultTypes.push_back(targetElementType);
+    }
+  }
+
+  // Clone the operation with new operands and result types
+  OperationState newState(loc, op->getName());
+  newState.addOperands(newOperands);
+  newState.addTypes(newResultTypes);
+  newState.addAttributes(op->getAttrs());
+
+  // Clone regions if any
+  for (Region &region : op->getRegions()) {
+    Region *newRegion = newState.addRegion();
+    rewriter.cloneRegionBefore(region, *newRegion, newRegion->begin());
+  }
+
+  Operation *newOp = rewriter.create(newState);
+
+  // Cast results back to original types
+  SmallVector<Value> finalResults;
+  for (auto [originalType, newResult] :
+       llvm::zip(originalResultTypes, newOp->getResults())) {
+
+    Type originalElementType = originalType;
+
+    if (auto originalVectorType = dyn_cast<VectorType>(originalType)) {
+      originalElementType = originalVectorType.getElementType();
+    }
+
+    if (originalElementType != targetElementType) {
+      bool isExt = isExtensionCast(targetElementType, originalElementType);
+      Value castResult =
+          createTypeCast(rewriter, loc, newResult, originalElementType, isExt);
+      finalResults.push_back(castResult);
+    } else {
+      finalResults.push_back(newResult);
+    }
+  }
+
+  // Replace the original operation
+  rewriter.replaceOp(op, finalResults);
+  return newOp;
+}
+
+DiagnosedSilenceableFailure
+transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
+                                   transform::TransformResults &results,
+                                   transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  Type targetElementType = getTargetElementType();
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    // Check if this operation has vector operands or results
+    bool hasVectorTypes = false;
+    for (Value operand : target->getOperands()) {
+      if (isa<VectorType>(operand.getType())) {
+        hasVectorTypes = true;
+        break;
+      }
+    }
+    if (!hasVectorTypes) {
+      for (Value result : target->getResults()) {
+        if (isa<VectorType>(result.getType())) {
+          hasVectorTypes = true;
+          break;
+        }
+      }
+    }
+
+    if (!hasVectorTypes) {
+      return emitDefiniteFailure()
+             << "target operation must have vector operands or results, but "
+                "operation '"
+             << target->getName()
+             << "' operates on scalar types. Vector type casting "
+             << "can only be applied to operations that work with vector "
+                "types.";
+    }
+
+    // Check if this operation has vector types that need casting
+    bool needsTransformation = false;
+    for (Value operand : target->getOperands()) {
+      if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+        if (vectorType.getElementType() != targetElementType) {
+          needsTransformation = true;
+          break;
+        }
+      }
+    }
+    if (!needsTransformation) {
+      for (Value result : target->getResults()) {
+        if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
+          if (vectorType.getElementType() != targetElementType) {
+            needsTransformation = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (needsTransformation) {
+      // Apply transformation directly to the target operation
+      FailureOr<Operation *> castedOpOnVector =
+          applyVectorTypeCastToOp(target, targetElementType, rewriter);
+      if (failed(castedOpOnVector)) {
+        return emitDefiniteFailure()
+               << "failed to apply vector type cast to operation: "
+               << target->getName();
+      }
+      transformedOps.push_back(*castedOpOnVector);
+    }
+
+    else
+      transformedOps.push_back(target);
   }
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
