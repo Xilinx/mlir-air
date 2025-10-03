@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='use-objectfifo=true device=xcve2802' --canonicalize | FileCheck %s
 
-// CHECK-LABEL:   aie.device(xcve2802) {
+// CHECK-LABEL:   aie.device(xcve2802) @segment_0 {
 // CHECK:    %[[VAL_0:.*]] = aie.tile(1, 1)
 // CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
 // CHECK:    %[[VAL_3:.*]] = aie.tile(5, 4)

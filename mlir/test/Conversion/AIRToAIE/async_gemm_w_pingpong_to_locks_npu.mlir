@@ -7,7 +7,7 @@
 
 // RUN: air-opt -air-fuse-channels="aggressive-mode=L1,L2,L3" -air-to-aie="row-offset=2 col-offset=0 device=npu1" -canonicalize -cse %s | FileCheck %s
 
-// CHECK-LABEL:   aie.device(npu1) {
+// CHECK-LABEL:   aie.device(npu1) @segment_0 {
 // CHECK:   %[[tile_0_0:.*]] = aie.tile(0, 0)
 // CHECK:   %[[tile_1_0:.*]] = aie.tile(1, 0)
 // CHECK:   %[[tile_0_1:.*]] = aie.tile(0, 1)

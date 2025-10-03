@@ -8,7 +8,7 @@
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 generate-shim-dma=true" -canonicalize --split-input-file | FileCheck %s
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802 generate-shim-dma=true use-lock-race-condition-fix=true" -canonicalize --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
-// CHECK-LABEL:   aie.device(xcve2802) {
+// CHECK-LABEL:   aie.device(xcve2802) @herd1 {
 // CHECK:  %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK:  %[[VAL_1:.*]] = aie.tile(2, 3)
 // CHECK:  %[[VAL_2:.*]] = aie.tile(2, 0)
@@ -59,7 +59,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // -----
 
-// CHECK-LABEL:   aie.device(xcve2802) {
+// CHECK-LABEL:   aie.device(xcve2802) @herd1 {
 // CHECK: %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK: %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK: %[[VAL_2:.*]] = aie.tile(2, 3)
@@ -138,7 +138,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // air.channel to aie.locks.
-// CHECK-LABEL:   aie.device(xcve2802) {
+// CHECK-LABEL:   aie.device(xcve2802) @herd1 {
 // CHECK:         %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK:         %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK:         %[[VAL_2:.*]] = aie.tile(2, 0)
@@ -224,7 +224,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // air.channel to aie.locks.
-// CHECK-LABEL:   aie.device(xcve2802) {
+// CHECK-LABEL:   aie.device(xcve2802) @segment0 {
 // CHECK:         %[[VAL_0:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK:         %[[VAL_1:.*]] = aie.external_buffer {{{.*}}} : memref<1024xi32>
 // CHECK:         %[[VAL_2:.*]] = aie.tile(2, 1)

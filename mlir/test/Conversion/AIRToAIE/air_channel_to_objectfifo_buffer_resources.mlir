@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s --air-to-aie='test-patterns=lower-air-channels' | FileCheck %s
+// RUN: air-opt %s --air-to-aie='test-patterns=lower-air-channels' --split-input-file | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcvc1902) {
 // CHECK:   %[[VAL_0:.*]] = aie.tile(1, 1)
@@ -60,6 +60,8 @@ aie.device(xcvc1902) {
     aie.end
   }
 }
+
+// -----
 
 // CHECK-LABEL:   aie.device(xcvc1902) {
 // CHECK:   %[[VAL_0:.*]] = aie.tile(1, 1)
