@@ -48,8 +48,8 @@ cmake -GNinja \
     -DPython_FIND_VIRTUALENV=ONLY \
     -DPython3_FIND_VIRTUALENV=ONLY \
     -DLLVM_EXTERNAL_LIT=$(which lit) \
-    -DLLVM_DIR=${LLVM_DIR}/lib/cmake/llvm \
-    -DMLIR_DIR=${LLVM_DIR}/lib/cmake/mlir \
+    -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
+    -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
     -DLibXAIE_x86_64_DIR=${LIBXAIE_DIR} \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
