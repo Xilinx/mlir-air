@@ -4640,7 +4640,8 @@ public:
 private:
 };
 
-// A pattern which attempts to fix memref.subview output type.
+// A pattern which attempts to fix memref.subview output type, after memref
+// shrinkage changes the memref shapes being allocated.
 struct UpdateSubViewOutputTypeAfterMemrefShrinkage
     : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
@@ -4902,9 +4903,6 @@ private:
             subViewOp.getType().getShape(), shrunkMemrefType,
             subViewOp.getStaticOffsets(), subViewOp.getStaticSizes(),
             subViewOp.getStaticStrides()));
-
-    // subViewOp.getResult().setType(inferredSubViewOutputTy);
-
     // Case 1: static size mismatches the shrunk shape.
     for (unsigned i = 0; i < static_sizes.size(); i++) {
       if (static_sizes[i] < 0) {
