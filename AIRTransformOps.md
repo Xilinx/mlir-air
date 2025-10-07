@@ -391,6 +391,74 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 | `fused_op` | PDL handle to an `mlir::Operation *` |
 
 
+### `transform.air.fuse_truncf_linalg` (transform::FuseTruncfLinalgOp)
+
+_Fuse a linalg operation containing only arith.truncf into its producer_
+
+Syntax:
+
+```
+operation ::= `transform.air.fuse_truncf_linalg` $truncf_op `,` $producer_op attr-dict
+```
+
+This transform fuses two linalg operations where:
+1. The truncf operation contains only an arith.truncf operation in its body (apart from terminator)
+2. The producer operation produces a result that is consumed by the truncf operation
+
+The fusion is performed by:
+1. Taking the producer operation's body
+2. Adding arith.truncf operation before the terminator
+3. Updating the output type to use the truncated (narrower) type
+4. Erasing both the original truncf operation and producer operation
+
+This optimization folds the arithmetic truncations into the producer linalg ops, enabling
+the use of native intrinsics on narrower datatypes, such as AMD AIEs, and reducing
+intermediate memory storage requirements.
+
+Example:
+```mlir
+// Before fusion:
+%0 = linalg.generic {
+  ^bb0(%arg0: f32, %arg1: f32):
+    %1 = arith.addf %arg0, %arg1 : f32
+    linalg.yield %1 : f32
+} ins(%input1, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%temp : tensor<16xf32>)
+
+%result = linalg.generic {
+  ^bb0(%arg0: f32):
+    %2 = arith.truncf %arg0 : f32 to f16
+    linalg.yield %2 : f16
+} ins(%0 : tensor<16xf32>) outs(%output : tensor<16xf16>)
+
+// After fusion:
+%result = linalg.generic {
+  ^bb0(%arg0: f32, %arg1: f32):
+    %1 = arith.addf %arg0, %arg1 : f32
+    %2 = arith.truncf %1 : f32 to f16
+    linalg.yield %2 : f16
+} ins(%input1, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%output : tensor<16xf16>)
+```
+
+Returns a handle to the fused operation (the producer operation after modification).
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `truncf_op` | PDL handle to an `mlir::Operation *` |
+| `producer_op` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `fused_op` | PDL handle to an `mlir::Operation *` |
+
+
 ### `transform.air.get_segment_for` (transform::GetSegmentForOp)
 
 _Gets a handle to the parent 'air.segment' of the given operation_
