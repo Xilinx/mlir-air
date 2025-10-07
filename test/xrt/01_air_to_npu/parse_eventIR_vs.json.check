@@ -1,0 +1,9 @@
+// Check for key event names and structure in the trace JSON
+CHECK: "name": "INSTR_LOCK_ACQUIRE_REQ"
+CHECK: "name": "INSTR_LOCK_RELEASE_REQ"
+CHECK: "name": "PORT_RUNNING_0"
+CHECK: "name": "PORT_RUNNING_1"
+CHECK: "name": "TRUE"
+CHECK: "ph": "B"
+CHECK: "ph": "E"
+CHECK: "args": {
