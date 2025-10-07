@@ -2958,6 +2958,191 @@ transform::TransposeReduceOp::apply(transform::TransformRewriter &rewriter,
 }
 
 //===----------------------------------------------------------------------===//
+// FuseTruncfLinalgOp
+//===----------------------------------------------------------------------===//
+
+/// Check if a linalg op contains only arith.truncf as its body operation
+/// (apart from terminator)
+static bool containsOnlyTruncfOp(linalg::LinalgOp linalgOp) {
+  Block *body = linalgOp.getBlock();
+  if (!body)
+    return false;
+
+  // Should have exactly one non-terminator operation, and it should be truncf
+  if (llvm::range_size(body->without_terminator()) != 1)
+    return false;
+  return llvm::any_of(body->without_terminator(),
+                      [](Operation &o) { return isa<arith::TruncFOp>(o); });
+}
+
+/// Check if the first op (producer) produces a result that is consumed by the
+/// second op (truncf consumer)
+static bool producesResultForOp(linalg::LinalgOp producerOp,
+                                linalg::LinalgOp truncfOp) {
+  // Get the result of the producer op (assuming it has one DPS init)
+  if (producerOp.getNumDpsInits() != 1)
+    return false;
+
+  Value producerResult =
+      producerOp.getTiedOpResult(producerOp.getDpsInitOperand(0));
+
+  // Check if the truncf op uses this result as an input
+  return llvm::is_contained(truncfOp.getDpsInputs(), producerResult);
+}
+
+/// Get the output type of the truncf op (after arith.truncf type change)
+static Type getOutputTypeAfterTruncf(linalg::LinalgOp linalgOp) {
+  Block *body = linalgOp.getBlock();
+  if (!body)
+    return nullptr;
+
+  for (Operation &op : body->getOperations()) {
+    if (auto truncfOp = dyn_cast<arith::TruncFOp>(op)) {
+      return truncfOp.getOut().getType();
+    }
+  }
+
+  return nullptr;
+}
+
+/// Fuse truncf linalg op into its producer by creating a new fused operation
+static FailureOr<linalg::GenericOp>
+fuseTruncfIntoProducer(RewriterBase &rewriter, linalg::LinalgOp producerOp,
+                       linalg::LinalgOp truncfOp) {
+  // Get the output type after truncf conversion
+  Type truncatedType = getOutputTypeAfterTruncf(truncfOp);
+  if (!truncatedType)
+    return failure();
+
+  // Get the output of the truncf op
+  Value truncfOutput = truncfOp.getTiedOpResult(truncfOp.getDpsInitOperand(0));
+
+  // Create new output for the fused operation (with truncated type)
+  rewriter.setInsertionPoint(producerOp);
+
+  // Get the truncf op's init to use directly
+  Value truncfInit = truncfOp.getDpsInits()[0];
+
+  auto fusedOp = rewriter.create<linalg::GenericOp>(
+      producerOp.getLoc(), truncfOp->getResultTypes(),
+      producerOp.getDpsInputs(), ValueRange{truncfInit},
+      producerOp.getIndexingMapsArray(), producerOp.getIteratorTypesArray());
+
+  // Clone the producer region directly - this preserves all types and
+  // operations
+  rewriter.cloneRegionBefore(producerOp->getRegion(0), fusedOp.getRegion(),
+                             fusedOp.getRegion().begin());
+
+  Block *clonedBody = &fusedOp.getRegion().front();
+
+  // Get the original type of the output argument before we change it
+  size_t numInputs = producerOp.getDpsInputs().size();
+  BlockArgument outputArg = clonedBody->getArgument(numInputs);
+  Type originalOutputType = outputArg.getType();
+
+  // Change the output block argument type to match the truncated output
+  outputArg.setType(truncatedType);
+
+  // If the producer uses its output argument (e.g., for accumulation in
+  // matmul), we need to insert extf operations where the argument is used
+  if (producerOp.payloadUsesValueFromOperand(producerOp.getDpsInitOperand(0))) {
+    // Collect all uses of the output argument before we modify them
+    SmallVector<OpOperand *> outputArgUses;
+    for (OpOperand &use : outputArg.getUses()) {
+      outputArgUses.push_back(&use);
+    }
+
+    // For each use of the output argument, insert an extf to cast it back to
+    // original type
+    for (OpOperand *use : outputArgUses) {
+      Operation *user = use->getOwner();
+      // Skip if the user is the yield operation we're about to modify
+      if (isa<linalg::YieldOp>(user))
+        continue;
+
+      rewriter.setInsertionPoint(user);
+      auto extfOp = rewriter.create<arith::ExtFOp>(
+          fusedOp.getLoc(), originalOutputType, outputArg);
+      use->set(extfOp.getResult());
+    }
+  }
+
+  // Now add the truncf before the terminator and update the yield
+  auto yieldOp = cast<linalg::YieldOp>(clonedBody->getTerminator());
+  Value yieldValue = yieldOp.getValues()[0];
+
+  rewriter.setInsertionPoint(yieldOp);
+  auto truncfOpInBody = rewriter.create<arith::TruncFOp>(
+      fusedOp.getLoc(), truncatedType, yieldValue);
+
+  // Update the yield to use the truncated value
+  yieldOp.getValuesMutable().assign(truncfOpInBody.getResult());
+
+  // Replace uses of truncf op's output with the fused op's output
+  rewriter.replaceAllUsesWith(truncfOutput, fusedOp.getResult(0));
+
+  // Erase both original operations
+  rewriter.eraseOp(truncfOp);
+  rewriter.eraseOp(producerOp);
+
+  return fusedOp;
+}
+
+DiagnosedSilenceableFailure
+transform::FuseTruncfLinalgOp::apply(transform::TransformRewriter &rewriter,
+                                     transform::TransformResults &results,
+                                     transform::TransformState &state) {
+
+  SmallVector<Operation *> truncfOps =
+      llvm::to_vector(state.getPayloadOps(getTruncfOp()));
+  SmallVector<Operation *> producerOps =
+      llvm::to_vector(state.getPayloadOps(getProducerOp()));
+
+  if (truncfOps.size() != 1 || producerOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one truncf_op and one producer_op handle";
+  }
+
+  auto truncfLinalgOp = dyn_cast<linalg::LinalgOp>(truncfOps[0]);
+  auto producerLinalgOp = dyn_cast<linalg::LinalgOp>(producerOps[0]);
+
+  if (!truncfLinalgOp || !producerLinalgOp) {
+    return emitDefiniteFailure() << "both operations must be linalg operations";
+  }
+
+  // Check condition 1: truncf op contains only arith.truncf
+  if (!containsOnlyTruncfOp(truncfLinalgOp)) {
+    return emitDefiniteFailure()
+           << "truncf_op must contain only arith.truncf in its body";
+  }
+
+  // Check condition 2: producer op produces result consumed by truncf op
+  if (!producesResultForOp(producerLinalgOp, truncfLinalgOp)) {
+    return emitDefiniteFailure() << "producer_op must produce a result that "
+                                    "is consumed by truncf_op";
+  }
+
+  // Perform the fusion
+  FailureOr<linalg::GenericOp> fusedOp =
+      fuseTruncfIntoProducer(rewriter, producerLinalgOp, truncfLinalgOp);
+  if (failed(fusedOp)) {
+    return emitDefiniteFailure() << "failed to fuse the operations";
+  }
+
+  SmallVector<Operation *> resultOps = {*fusedOp};
+  results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::FuseTruncfLinalgOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getTruncfOpMutable(), effects);
+  consumesHandle(getProducerOpMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
 // VectorTypeCastOp
 //===----------------------------------------------------------------------===//
 

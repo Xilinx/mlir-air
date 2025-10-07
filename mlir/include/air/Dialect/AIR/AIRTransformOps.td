@@ -525,6 +525,58 @@ def FuseExtfLinalgOp : Op<Transform_Dialect, "air.fuse_extf_linalg",
   let assemblyFormat = "$first_op `,` $second_op attr-dict";
 }
 
+def FuseTruncfLinalgOp : Op<Transform_Dialect, "air.fuse_truncf_linalg",
+    [FunctionalStyleTransformOpTrait, DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Fuse a linalg operation containing only arith.truncf into its producer";
+  let description = [{
+    This transform fuses two linalg operations where:
+    1. The truncf operation contains only an arith.truncf operation in its body (apart from terminator)
+    2. The producer operation produces a result that is consumed by the truncf operation
+    
+    The fusion is performed by:
+    1. Taking the producer operation's body
+    2. Adding arith.truncf operation before the terminator
+    3. Updating the output type to use the truncated (narrower) type
+    4. Erasing both the original truncf operation and producer operation
+    
+    This optimization folds the arithmetic truncations into the producer linalg ops, enabling
+    the use of native intrinsics on narrower datatypes, such as AMD AIEs, and reducing
+    intermediate memory storage requirements.
+    
+    Example:
+    ```mlir
+    // Before fusion:
+    %0 = linalg.generic {
+      ^bb0(%arg0: f32, %arg1: f32):
+        %1 = arith.addf %arg0, %arg1 : f32
+        linalg.yield %1 : f32
+    } ins(%input1, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%temp : tensor<16xf32>)
+    
+    %result = linalg.generic {
+      ^bb0(%arg0: f32):
+        %2 = arith.truncf %arg0 : f32 to f16
+        linalg.yield %2 : f16
+    } ins(%0 : tensor<16xf32>) outs(%output : tensor<16xf16>)
+    
+    // After fusion:
+    %result = linalg.generic {
+      ^bb0(%arg0: f32, %arg1: f32):
+        %1 = arith.addf %arg0, %arg1 : f32
+        %2 = arith.truncf %1 : f32 to f16
+        linalg.yield %2 : f16
+    } ins(%input1, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%output : tensor<16xf16>)
+    ```
+    
+    Returns a handle to the fused operation (the producer operation after modification).
+  }];
+  
+  let arguments = (ins PDL_Operation:$truncf_op,
+                       PDL_Operation:$producer_op);
+  let results = (outs PDL_Operation:$fused_op);
+  let assemblyFormat = "$truncf_op `,` $producer_op attr-dict";
+}
+
 def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
