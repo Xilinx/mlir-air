@@ -45,8 +45,11 @@ cd $MLIR_AIE_DIR/$BUILD_DIR
 cmake -GNinja \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
-    -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
-    -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
+    -DPython_FIND_VIRTUALENV=ONLY \
+    -DPython3_FIND_VIRTUALENV=ONLY \
+    -DLLVM_EXTERNAL_LIT=$(which lit) \
+    -DLLVM_DIR=${LLVM_DIR}/lib/cmake/llvm \
+    -DMLIR_DIR=${LLVM_DIR}/lib/cmake/mlir \
     -DLibXAIE_x86_64_DIR=${LIBXAIE_DIR} \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
