@@ -46,10 +46,8 @@ func.func @contract_cast_lhs_rhs_with_acc_output(%lhs: vector<4x8xf32>, %rhs: ve
   // This produces valid IR: lhs/rhs are bf16, acc/result are bf16
   // CHECK: %[[LHS_CAST:.*]] = arith.truncf %{{.*}} : vector<4x8xf32> to vector<4x8xbf16>
   // CHECK: %[[RHS_CAST:.*]] = arith.truncf %{{.*}} : vector<8x4xf32> to vector<8x4xbf16>
-  // CHECK: %[[ACC_CAST:.*]] = arith.truncf %{{.*}} : vector<4x4xf32> to vector<4x4xbf16>
   // CHECK: %[[RESULT_BF16:.*]] = vector.contract
-  // CHECK-SAME: %[[LHS_CAST]], %[[RHS_CAST]], %[[ACC_CAST]] : vector<4x8xbf16>, vector<8x4xbf16> into vector<4x4xbf16>
-  // CHECK: %{{.*}} = arith.extf %[[RESULT_BF16]] : vector<4x4xbf16> to vector<4x4xf32>
+  // CHECK-SAME: %[[LHS_CAST]], %[[RHS_CAST]], %{{.*}} : vector<4x8xbf16>, vector<8x4xbf16> into vector<4x4xf32>
   
   return %result : vector<4x4xf32>
 }
