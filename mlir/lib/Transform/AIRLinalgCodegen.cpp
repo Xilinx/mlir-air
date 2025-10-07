@@ -3017,28 +3017,42 @@ static bool isExtensionCast(Type fromType, Type toType) {
 }
 
 /// Helper function to apply vector type casting to a single operation
-static FailureOr<Operation *> applyVectorTypeCastToOp(Operation *op,
-                                                      Type targetElementType,
-                                                      RewriterBase &rewriter) {
+static FailureOr<Operation *> applyVectorTypeCastToOp(
+    Operation *op, Type targetElementType, ArrayRef<int64_t> inputIndicesToCast,
+    ArrayRef<int64_t> outputIndicesToCast, RewriterBase &rewriter) {
 
   // Skip if operation doesn't have vector operands or results
   bool hasVectorOperands = false;
   bool hasVectorResults = false;
   bool needsTransformation = false;
 
-  for (Value operand : op->getOperands()) {
+  // Determine if we should cast all inputs/outputs (default behavior)
+  bool castAllInsAndOuts =
+      inputIndicesToCast.empty() && outputIndicesToCast.empty();
+
+  // Create sets for quick lookup of indices to cast
+  llvm::SmallDenseSet<int64_t> inputIndicesToCastSet(inputIndicesToCast.begin(),
+                                                     inputIndicesToCast.end());
+  llvm::SmallDenseSet<int64_t> outputIndicesToCastSet(
+      outputIndicesToCast.begin(), outputIndicesToCast.end());
+
+  for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
     if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
       hasVectorOperands = true;
-      if (vectorType.getElementType() != targetElementType) {
+      bool shouldCast =
+          castAllInsAndOuts || inputIndicesToCastSet.contains((int64_t)idx);
+      if (shouldCast && vectorType.getElementType() != targetElementType) {
         needsTransformation = true;
       }
     }
   }
 
-  for (Value result : op->getResults()) {
+  for (auto [idx, result] : llvm::enumerate(op->getResults())) {
     if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
       hasVectorResults = true;
-      if (vectorType.getElementType() != targetElementType) {
+      bool shouldCast =
+          castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
+      if (shouldCast && vectorType.getElementType() != targetElementType) {
         needsTransformation = true;
       }
     }
@@ -3055,17 +3069,19 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(Operation *op,
   auto loc = op->getLoc();
   rewriter.setInsertionPoint(op);
 
-  // Cast input operands to target type
+  // Cast input operands to target type (selectively)
   SmallVector<Value> newOperands;
   SmallVector<Type> originalOperandTypes;
 
-  for (Value operand : op->getOperands()) {
+  for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
     originalOperandTypes.push_back(operand.getType());
 
     if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
       Type currentElementType = vectorType.getElementType();
+      bool shouldCast =
+          castAllInsAndOuts || inputIndicesToCastSet.contains((int64_t)idx);
 
-      if (currentElementType != targetElementType) {
+      if (shouldCast && currentElementType != targetElementType) {
         bool isExt = isExtensionCast(currentElementType, targetElementType);
         Value castOperand =
             createTypeCast(rewriter, loc, operand, targetElementType, isExt);
@@ -3078,19 +3094,38 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(Operation *op,
     }
   }
 
-  // Determine new result types using target element type
+  // Determine new result types using target element type (selectively)
   SmallVector<Type> newResultTypes;
   SmallVector<Type> originalResultTypes;
 
-  for (Type resultType : op->getResultTypes()) {
+  for (auto [idx, resultType] : llvm::enumerate(op->getResultTypes())) {
     originalResultTypes.push_back(resultType);
 
     if (auto vectorType = dyn_cast<VectorType>(resultType)) {
-      auto newVectorType =
-          VectorType::get(vectorType.getShape(), targetElementType);
-      newResultTypes.push_back(newVectorType);
+      bool shouldCast =
+          castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
+
+      if (shouldCast) {
+        auto newVectorType =
+            VectorType::get(vectorType.getShape(), targetElementType);
+        newResultTypes.push_back(newVectorType);
+      } else {
+        newResultTypes.push_back(resultType);
+      }
     } else {
-      newResultTypes.push_back(targetElementType);
+      // Handle scalar result types (e.g., for vector.reduction)
+      // For operations like vector.reduction, the scalar result type must match
+      // the input vector's element type
+      bool shouldCast =
+          castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
+
+      if (shouldCast &&
+          (isa<FloatType>(resultType) || isa<IntegerType>(resultType))) {
+        // Change scalar result type to match target element type
+        newResultTypes.push_back(targetElementType);
+      } else {
+        newResultTypes.push_back(resultType);
+      }
     }
   }
 
@@ -3108,10 +3143,11 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(Operation *op,
 
   Operation *newOp = rewriter.create(newState);
 
-  // Cast results back to original types
+  // Cast results back to original types (selectively)
   SmallVector<Value> finalResults;
-  for (auto [originalType, newResult] :
-       llvm::zip(originalResultTypes, newOp->getResults())) {
+  for (auto [idx, pair] :
+       llvm::enumerate(llvm::zip(originalResultTypes, newOp->getResults()))) {
+    auto [originalType, newResult] = pair;
 
     Type originalElementType = originalType;
 
@@ -3119,7 +3155,10 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(Operation *op,
       originalElementType = originalVectorType.getElementType();
     }
 
-    if (originalElementType != targetElementType) {
+    bool shouldCast =
+        castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
+
+    if (shouldCast && originalElementType != targetElementType) {
       bool isExt = isExtensionCast(targetElementType, originalElementType);
       Value castResult =
           createTypeCast(rewriter, loc, newResult, originalElementType, isExt);
@@ -3148,6 +3187,13 @@ transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
   }
 
   Type targetElementType = getTargetElementType();
+
+  // Extract input and output indices from attributes
+  SmallVector<int64_t> inputIndicesToCast =
+      extractFromIntegerArrayAttr<int64_t>(getInputIndices());
+  SmallVector<int64_t> outputIndicesToCast =
+      extractFromIntegerArrayAttr<int64_t>(getOutputIndices());
+
   SmallVector<Operation *> transformedOps;
 
   for (Operation *target : targets) {
@@ -3200,9 +3246,11 @@ transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
     }
 
     if (needsTransformation) {
-      // Apply transformation directly to the target operation
+      // Apply transformation directly to the target operation with selective
+      // casting
       FailureOr<Operation *> castedOpOnVector =
-          applyVectorTypeCastToOp(target, targetElementType, rewriter);
+          applyVectorTypeCastToOp(target, targetElementType, inputIndicesToCast,
+                                  outputIndicesToCast, rewriter);
       if (failed(castedOpOnVector)) {
         return emitDefiniteFailure()
                << "failed to apply vector type cast to operation: "
