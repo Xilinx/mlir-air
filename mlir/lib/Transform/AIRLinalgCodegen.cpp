@@ -3027,8 +3027,8 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   bool needsTransformation = false;
 
   // Determine if we should cast all inputs/outputs (default behavior)
-  bool castAllInputs = inputIndicesToCast.empty();
-  bool castAllOutputs = outputIndicesToCast.empty();
+  bool castAllInsAndOuts =
+      inputIndicesToCast.empty() && outputIndicesToCast.empty();
 
   // Create sets for quick lookup of indices to cast
   llvm::SmallDenseSet<int64_t> inputIndicesToCastSet(inputIndicesToCast.begin(),
@@ -3040,7 +3040,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
     if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
       hasVectorOperands = true;
       bool shouldCast =
-          castAllInputs || inputIndicesToCastSet.contains((int64_t)idx);
+          castAllInsAndOuts || inputIndicesToCastSet.contains((int64_t)idx);
       if (shouldCast && vectorType.getElementType() != targetElementType) {
         needsTransformation = true;
       }
@@ -3051,7 +3051,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
     if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
       hasVectorResults = true;
       bool shouldCast =
-          castAllOutputs || outputIndicesToCastSet.contains((int64_t)idx);
+          castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
       if (shouldCast && vectorType.getElementType() != targetElementType) {
         needsTransformation = true;
       }
@@ -3079,7 +3079,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
     if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
       Type currentElementType = vectorType.getElementType();
       bool shouldCast =
-          castAllInputs || inputIndicesToCastSet.contains((int64_t)idx);
+          castAllInsAndOuts || inputIndicesToCastSet.contains((int64_t)idx);
 
       if (shouldCast && currentElementType != targetElementType) {
         bool isExt = isExtensionCast(currentElementType, targetElementType);
@@ -3103,7 +3103,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
 
     if (auto vectorType = dyn_cast<VectorType>(resultType)) {
       bool shouldCast =
-          castAllOutputs || outputIndicesToCastSet.contains((int64_t)idx);
+          castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
 
       if (shouldCast) {
         auto newVectorType =
@@ -3113,7 +3113,19 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
         newResultTypes.push_back(resultType);
       }
     } else {
-      newResultTypes.push_back(resultType);
+      // Handle scalar result types (e.g., for vector.reduction)
+      // For operations like vector.reduction, the scalar result type must match
+      // the input vector's element type
+      bool shouldCast =
+          castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
+
+      if (shouldCast &&
+          (isa<FloatType>(resultType) || isa<IntegerType>(resultType))) {
+        // Change scalar result type to match target element type
+        newResultTypes.push_back(targetElementType);
+      } else {
+        newResultTypes.push_back(resultType);
+      }
     }
   }
 
@@ -3144,7 +3156,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
     }
 
     bool shouldCast =
-        castAllOutputs || outputIndicesToCastSet.contains((int64_t)idx);
+        castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
 
     if (shouldCast && originalElementType != targetElementType) {
       bool isExt = isExtensionCast(targetElementType, originalElementType);
