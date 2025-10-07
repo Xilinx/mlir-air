@@ -1,6 +1,8 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 import argparse
+import os
+import sys
 from ml_dtypes import bfloat16
 
 from air.ir import *
@@ -15,15 +17,16 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 from air.extras import types as extrasT
 from air.dialects.linalg.opdsl.lang import *
+import air.dialects.linalg.opdsl.lang as linalg_lang
 
 range_ = for_
 
 
 @linalg_structured_op()
 def block_matmul(
-    A=TensorDef(T, S.a, S.c, S.f, S.d, S.g, S.i),
-    B=TensorDef(T, S.b, S.c, S.e, S.f, S.i, S.h),
-    C=TensorDef(T, S.b, S.a, S.e, S.d, S.g, S.h, output=True),
+    A=TensorDef(linalg_lang.TV.T1, S.a, S.c, S.f, S.d, S.g, S.i),
+    B=TensorDef(linalg_lang.TV.T1, S.b, S.c, S.e, S.f, S.i, S.h),
+    C=TensorDef(linalg_lang.TV.U, S.b, S.a, S.e, S.d, S.g, S.h, output=True),
 ):
     domain(D.a, D.b, D.c, D.d, D.e, D.f, D.g, D.h, D.i)
     C[D.b, D.a, D.e, D.d, D.g, D.h] += (
@@ -464,7 +467,7 @@ if __name__ == "__main__":
     HERD_M = 4
     HERD_N = 4
     INPUT_DATATYPE = bfloat16
-    OUTPUT_DATATYPE = bfloat16
+    OUTPUT_DATATYPE = bfloat16  # also supports np.float32
 
     parser = argparse.ArgumentParser(
         prog="run.py",
@@ -530,7 +533,22 @@ if __name__ == "__main__":
         default="compile-and-run",
         help="Configure to whether to run after compile",
     )
+    parser.add_argument(
+        "--direct-codegen",
+        action="store_true",
+        help="Enable direct code generation mode (compiles directly without extra kernel library)",
+    )
     args = parser.parse_args()
+
+    # Check for PEANO_INSTALL_DIR if direct codegen is enabled
+    if args.direct_codegen:
+        if not os.environ.get("PEANO_INSTALL_DIR"):
+            print(
+                "Error: PEANO_INSTALL_DIR environment variable is not set.",
+                file=sys.stderr,
+            )
+            print("Peano is needed for direct code generation mode.", file=sys.stderr)
+            sys.exit(1)
 
     mlir_module = build_module(
         args.m,
@@ -545,6 +563,46 @@ if __name__ == "__main__":
         INPUT_DATATYPE,
         OUTPUT_DATATYPE,
     )
+
+    # Vectorization - only run if direct codegen mode is enabled
+    if args.direct_codegen:
+        transform_ir_string = """
+        transform.with_pdl_patterns {
+        ^bb0(%arg0: !pdl.operation):
+            transform.sequence %arg0 : !pdl.operation failures(propagate) {
+            ^bb1(%arg1: !pdl.operation):
+
+                %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+                transform.apply_patterns to %func0 {
+                    transform.apply_patterns.linalg.tiling_canonicalization
+                    transform.apply_patterns.scf.for_loop_canonicalization
+                    transform.apply_patterns.canonicalization
+                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
+                } : !pdl.operation
+
+
+                %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+                %inner_most_matmul, %vec_loops:3 =
+                  transform.structured.tile_using_for %matmul tile_sizes [1, 1, 1, 0, 0, 0]
+                  : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)  
+                %linalg_fills = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+                %inner_most_fills, %vec_fill_loops:2 =
+                  transform.structured.tile_using_for %linalg_fills tile_sizes [0, 0, 1, 1]
+                  : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation)  
+
+
+                %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+                %vectorized_herds = transform.air.herd_vectorize %herds
+        
+                %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+                %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]}
+
+            }
+        }
+        """
+        transform_ir = Module.parse(transform_ir_string, context=mlir_module.context)
+        run_transform(transform_ir, mlir_module)
+
     if args.print_module_only:
         print(mlir_module)
         exit(0)
@@ -589,12 +647,16 @@ if __name__ == "__main__":
         }
 
         ###### Compile and test
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[2, 2],
-            lower_linalg_to_func="mm.o",
-        )
+        runner_kwargs = {
+            "verbose": args.verbose,
+            "omit_while_true_loop": False,
+            "runtime_loop_tiling_sizes": [2, 2],
+        }
+        # Only use external kernel library if NOT in direct codegen mode
+        if not args.direct_codegen:
+            runner_kwargs["lower_linalg_to_func"] = "mm.o"
+
+        runner = XRTRunner(**runner_kwargs)
         exit(
             runner.run_test(
                 mlir_module,
@@ -606,12 +668,16 @@ if __name__ == "__main__":
 
     elif args.compile_mode == "compile-only":
         ###### Compile only
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[2, 2],
-            lower_linalg_to_func="mm.o",
-        )
+        backend_kwargs = {
+            "verbose": args.verbose,
+            "omit_while_true_loop": False,
+            "runtime_loop_tiling_sizes": [2, 2],
+        }
+        # Only use external kernel library if NOT in direct codegen mode
+        if not args.direct_codegen:
+            backend_kwargs["lower_linalg_to_func"] = "mm.o"
+
+        backend = XRTBackend(**backend_kwargs)
         module_function = backend.compile(mlir_module)
 
         backend.unload()

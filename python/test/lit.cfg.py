@@ -9,13 +9,12 @@
 import os
 import sys
 import importlib.util
+import subprocess
+import re
 
 import lit.formats
-import lit.util
 
 from lit.llvm import llvm_config
-from lit.llvm.subst import ToolSubst
-from lit.llvm.subst import FindTool
 
 # Configuration file for the 'lit' test runner.
 
@@ -23,19 +22,15 @@ from lit.llvm.subst import FindTool
 config.name = "AIRPYTHON"
 
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
-config.environment["PYTHONPATH"] = "{}:{}".format(
+config.environment["PYTHONPATH"] = "{}:{}:{}".format(
     os.path.join(config.air_obj_root, "python"),
     os.path.join(config.aie_obj_root, "python"),
+    os.path.join(config.xrt_dir, "python"),
 )
 
 try:
     import torch_mlir
 
-    torch_mlir_path = os.path.join(torch_mlir.__path__[0], "..")
-    print("found torch_mlir:", torch_mlir_path)
-    config.environment["PYTHONPATH"] = (
-        config.environment["PYTHONPATH"] + ":" + torch_mlir_path
-    )
     config.available_features.add("torch_mlir")
 except:
     print("torch_mlir not found")
@@ -64,20 +59,77 @@ config.substitutions.append(("%PATH%", config.environment["PATH"]))
 config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
 config.substitutions.append(("%PYTHON", config.python_executable))
 
+# excludes: A list of directories to exclude from the testsuite. The 'Inputs'
+# subdirectories contain auxiliary inputs for various tests in their parent
+# directories.
+config.excludes = []
+
+run_on_npu1 = "echo"
+run_on_npu2 = "echo"
+xrt_flags = ""
+
+# XRT
+if config.xrt_lib_dir and config.enable_run_xrt_tests:
+    print("xrt found at", os.path.dirname(config.xrt_lib_dir))
+    xrt_flags = "-I{} -L{} -luuid -lxrt_coreutil".format(
+        config.xrt_include_dir, config.xrt_lib_dir
+    )
+    config.available_features.add("xrt")
+
+    try:
+        xrtsmi = os.path.join(config.xrt_bin_dir, "xrt-smi")
+        result = subprocess.run(
+            [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        result = result.stdout.decode("utf-8").split("\n")
+        # Older format is "|[0000:41:00.1]  ||RyzenAI-npu1  |"
+        # Newer format is "|[0000:41:00.1]  |NPU Phoenix  |"
+        p = re.compile(r"[\|]?(\[.+:.+:.+\]).+\|(RyzenAI-(npu\d)|NPU (\w+))\W*\|")
+        for l in result:
+            m = p.match(l)
+            if not m:
+                continue
+            print("Found Ryzen AI device:", m.group(1))
+            model = "unknown"
+            if m.group(3):
+                model = str(m.group(3))
+            if m.group(4):
+                model = str(m.group(4))
+            print(f"\tmodel: '{model}'")
+            config.available_features.add("ryzen_ai")
+            run_on_npu = f"{config.air_src_root}/utils/run_on_npu.sh"
+            if model in ["npu1", "Phoenix"]:
+                run_on_npu1 = run_on_npu
+                config.available_features.add("ryzen_ai_npu1")
+                print("Running tests on NPU1 with command line: ", run_on_npu1)
+            elif model in ["npu4", "Strix"]:
+                run_on_npu2 = run_on_npu
+                config.available_features.add("ryzen_ai_npu2")
+                print("Running tests on NPU4 with command line: ", run_on_npu2)
+            else:
+                print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
+            break
+    except:
+        print("Failed to run xrt-smi")
+        pass
+else:
+    print("xrt not found or xrt tests disabled")
+    config.excludes.append("xrt")
+
+config.substitutions.append(("%run_on_npu1%", run_on_npu1))
+config.substitutions.append(("%run_on_npu2%", run_on_npu2))
+config.substitutions.append(("%xrt_flags", xrt_flags))
+config.substitutions.append(("%XRT_DIR", config.xrt_dir))
+
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
 llvm_config.use_default_substitutions()
 
-# excludes: A list of directories to exclude from the testsuite. The 'Inputs'
-# subdirectories contain auxiliary inputs for various tests in their parent
-# directories.
-config.excludes = ["lit.cfg.py"]
+config.excludes.append("lit.cfg.py")
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
 
-# test_exec_root: The root path where tests should be run.
-config.test_exec_root = os.path.join(config.air_obj_root, "test")
 config.aie_tools_dir = os.path.join(config.aie_obj_root, "bin")
 config.air_tools_dir = os.path.join(config.air_obj_root, "bin")
 

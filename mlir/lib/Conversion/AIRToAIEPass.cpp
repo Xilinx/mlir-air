@@ -226,10 +226,6 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       if (!core) {
         core = builder.create<AIE::CoreOp>(hloc, tile);
         tileToHerdMap[tile] = h;
-        core->setAttr(
-            "elf_file",
-            StringAttr::get(ctx, herd_name + "_core_" + std::to_string(phys_x) +
-                                     "_" + std::to_string(phys_y) + ".elf"));
         if (auto a = h->getAttrOfType<StringAttr>("link_with"))
           core->setAttr("link_with", a);
       }

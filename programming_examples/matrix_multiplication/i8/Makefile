@@ -27,6 +27,9 @@ run2x4: compile-kernel
 run2x2: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 --compile-mode compile-and-run
 
+run3x3: compile-kernel
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 32 --compile-mode compile-and-run
+
 # Measure the e2e latencies across a range of problem shapes.
 sweep4x4: compile-kernel build-test-exe
 	@for M in 256 512 1024 2048; do \

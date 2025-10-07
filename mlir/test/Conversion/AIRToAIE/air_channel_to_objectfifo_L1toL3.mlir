@@ -28,7 +28,7 @@
 // CHECK:       aie.objectfifo.release @[[VAL_3]](Consume, 1)
 // CHECK:     }
 // CHECK:     aie.end
-// CHECK:   } {elf_file = "segment_0_core_1_1.elf"}
+// CHECK:   }
 // CHECK: }
 
 aie.device(xcvc1902) {
@@ -51,5 +51,5 @@ aie.device(xcvc1902) {
     memref.dealloc %alloc_0 : memref<32xi32, 2>
     memref.dealloc %alloc : memref<32xi32, 2>
     aie.end
-  } {elf_file = "segment_0_core_1_1.elf"}
+  }
 }

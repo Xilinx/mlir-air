@@ -1,0 +1,8 @@
+// (c) Copyright 2025 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu1, peano
+// RUN: mkdir -p test_npu1_peano
+// RUN: cd test_npu1_peano
+// RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: %python %S/run.py --transform-script %S/transform.mlir

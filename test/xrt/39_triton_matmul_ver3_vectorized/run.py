@@ -102,9 +102,7 @@ with air.ir.Context() as ctx, Location.unknown():
                 "air-par-to-launch{depth=0 has-air-segment=true}",
                 "canonicalize",
                 "cse",
-                "air-par-to-herd{depth=-1}",
                 "air-copy-to-dma",
-                "func.func(air-herd-vectorize)",
             ]
         )
         + ")"
@@ -125,7 +123,6 @@ with air.ir.Context() as ctx, Location.unknown():
     ###### Compile and test
     runner = XRTRunner(
         omit_while_true_loop=False,
-        air_loop_fusion=True,
     )
     exit(
         runner.run_test(

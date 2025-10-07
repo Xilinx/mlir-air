@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 module {
+  aie.device(xcvc1902) {
   %t72 = aie.tile(7, 2)
   %buf72_0 = aie.buffer(%t72) {sym_name="buffer"}: memref<4xi32>
   %lock = aie.lock(%t72, 0)
@@ -29,4 +30,5 @@ module {
     aie.end
   }
   
+  }
 }

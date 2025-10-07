@@ -14,6 +14,7 @@
 #include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -25,6 +26,7 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
@@ -2482,10 +2484,19 @@ static bool isUninitializedCopy(CopyOpType copyOp) {
   return !hasWritesBetween(allocOp, copyOp);
 }
 
-/// Backward compatibility wrapper for memref.copy
-static bool isUninitializedMemrefCopy(memref::CopyOp copyOp) {
-  return isUninitializedCopy(copyOp);
-}
+template <typename CopyOpType>
+struct RemoveUninitializedCopyOpPattern : public OpRewritePattern<CopyOpType> {
+  using OpRewritePattern<CopyOpType>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CopyOpType copyOp,
+                                PatternRewriter &rewriter) const override {
+    if (isUninitializedCopy(copyOp)) {
+      rewriter.eraseOp(copyOp);
+      return success();
+    }
+    return failure();
+  }
+};
 
 DiagnosedSilenceableFailure transform::RemoveUninitializedCopyOp::apply(
     transform::TransformRewriter &rewriter,
@@ -2507,30 +2518,13 @@ DiagnosedSilenceableFailure transform::RemoveUninitializedCopyOp::apply(
       return emitDefiniteFailure() << "target must be a func.func operation";
     }
 
-    SmallVector<memref::CopyOp> memrefCopiesToErase;
-    SmallVector<linalg::CopyOp> linalgCopiesToErase;
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(ctx);
 
-    // Walk the function to find memref.copy operations
-    funcOp.walk([&](memref::CopyOp copyOp) {
-      if (isUninitializedMemrefCopy(copyOp)) {
-        memrefCopiesToErase.push_back(copyOp);
-      }
-    });
-
-    // Walk the function to find linalg.copy operations
-    funcOp.walk([&](linalg::CopyOp copyOp) {
-      if (isUninitializedCopy(copyOp)) {
-        linalgCopiesToErase.push_back(copyOp);
-      }
-    });
-
-    // Erase the identified copy operations
-    for (auto copyOp : memrefCopiesToErase) {
-      rewriter.eraseOp(copyOp);
-    }
-    for (auto copyOp : linalgCopiesToErase) {
-      rewriter.eraseOp(copyOp);
-    }
+    // Apply the pattern to remove memcpy operations with uninitialized sources.
+    patterns.insert<RemoveUninitializedCopyOpPattern<memref::CopyOp>,
+                    RemoveUninitializedCopyOpPattern<linalg::CopyOp>>(ctx);
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
 
     transformedOps.push_back(funcOp);
   }
@@ -2608,6 +2602,857 @@ DiagnosedSilenceableFailure transform::ConvertMemrefCopyToLinalgCopyOp::apply(
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 }
+
+//===----------------------------------------------------------------------===//
+// FuseExtfLinalgOp
+//===----------------------------------------------------------------------===//
+
+/// Check if a linalg op contains only arith.extf as its body operation
+/// (apart from terminator)
+static bool containsOnlyExtfOp(linalg::LinalgOp linalgOp) {
+  Block *body = linalgOp.getBlock();
+  if (!body)
+    return false;
+
+  // Should have exactly one non-terminator operation, and it should be extf
+  if (llvm::range_size(body->without_terminator()) != 1)
+    return false;
+  return llvm::any_of(body->without_terminator(),
+                      [](Operation &o) { return isa<arith::ExtFOp>(o); });
+}
+
+/// Check if the second op directly consumes the result of the first op
+static bool directlyConsumesResult(linalg::LinalgOp firstOp,
+                                   linalg::LinalgOp secondOp) {
+  // Get the result of the first op (assuming it has one DPS init)
+  if (firstOp.getNumDpsInits() != 1)
+    return false;
+
+  Value firstOpResult = firstOp.getTiedOpResult(firstOp.getDpsInitOperand(0));
+
+  // Check if the second op uses this result as an input
+  return llvm::is_contained(secondOp.getDpsInputs(), firstOpResult);
+}
+
+/// Get the input type of the first op (before arith.extf type change)
+static Type getInputTypeBeforeExtf(linalg::LinalgOp linalgOp) {
+  Block *body = linalgOp.getBlock();
+  if (!body)
+    return nullptr;
+
+  for (Operation &op : body->getOperations()) {
+    if (auto extfOp = dyn_cast<arith::ExtFOp>(op)) {
+      return extfOp.getIn().getType();
+    }
+  }
+
+  return nullptr;
+}
+
+/// Fuse two linalg ops by creating a new fused operation
+static FailureOr<linalg::GenericOp>
+fuseExtfLinalgOps(RewriterBase &rewriter, linalg::LinalgOp firstOp,
+                  linalg::LinalgOp secondOp) {
+  // Get the input type before extf conversion
+  Type originalType = getInputTypeBeforeExtf(firstOp);
+  if (!originalType)
+    return failure();
+
+  // Get the result of the first op
+  Value firstOpResult = firstOp.getTiedOpResult(firstOp.getDpsInitOperand(0));
+
+  // Find which input of the second op corresponds to the first op's result
+  int64_t targetInputIndex = -1;
+  for (auto [index, input] : llvm::enumerate(secondOp.getDpsInputs())) {
+    if (input == firstOpResult) {
+      targetInputIndex = static_cast<int64_t>(index);
+      break;
+    }
+  }
+
+  if (targetInputIndex == -1)
+    return failure();
+
+  // Get the original input from the first op
+  Value originalInput = firstOp.getDpsInputs()[0];
+
+  // Create new input list for the fused operation
+  SmallVector<Value> newInputs;
+  for (auto [index, input] : llvm::enumerate(secondOp.getDpsInputs())) {
+    if (static_cast<int64_t>(index) == targetInputIndex) {
+      newInputs.push_back(
+          originalInput); // Use original input instead of first op's result
+    } else {
+      newInputs.push_back(input);
+    }
+  }
+
+  // Create the new fused operation
+  rewriter.setInsertionPoint(secondOp);
+  auto fusedOp = rewriter.create<linalg::GenericOp>(
+      secondOp.getLoc(), secondOp->getResultTypes(), newInputs,
+      secondOp.getDpsInits(), secondOp.getIndexingMapsArray(),
+      secondOp.getIteratorTypesArray());
+
+  // Clone the body from the second operation and modify it
+  Block *newBody = &fusedOp.getRegion().emplaceBlock();
+
+  // Create block arguments with updated types
+  SmallVector<Type> blockArgTypes;
+  for (auto [index, input] : llvm::enumerate(newInputs)) {
+    Type elementType;
+    if ((int)index == targetInputIndex) {
+      elementType = originalType; // Use original type for fused input
+    } else {
+      elementType = cast<ShapedType>(input.getType()).getElementType();
+    }
+    blockArgTypes.push_back(elementType);
+  }
+  // Add output argument types
+  for (Value output : secondOp.getDpsInits()) {
+    blockArgTypes.push_back(
+        cast<ShapedType>(output.getType()).getElementType());
+  }
+
+  for (Type argType : blockArgTypes) {
+    newBody->addArgument(argType, fusedOp.getLoc());
+  }
+
+  // Clone the body from the second operation
+  IRMapping mapping;
+  Block *secondOpBody = secondOp.getBlock();
+
+  // Map block arguments, adding extf for the fused input
+  for (auto [index, oldArg] : llvm::enumerate(secondOpBody->getArguments())) {
+    if ((int)index == targetInputIndex) {
+      // For the fused input, we need to add an extf operation
+      rewriter.setInsertionPointToStart(newBody);
+      auto extfOp = rewriter.create<arith::ExtFOp>(
+          fusedOp.getLoc(),
+          cast<ShapedType>(firstOpResult.getType()).getElementType(),
+          newBody->getArgument(index));
+      mapping.map(oldArg, extfOp.getResult());
+    } else {
+      mapping.map(oldArg, newBody->getArgument(index));
+    }
+  }
+
+  // Clone operations from the second op's body
+  for (Operation &op : secondOpBody->getOperations()) {
+    rewriter.clone(op, mapping);
+  }
+
+  // Replace the second operation with the fused operation
+  rewriter.replaceOp(secondOp, fusedOp);
+
+  return fusedOp;
+}
+
+DiagnosedSilenceableFailure
+transform::FuseExtfLinalgOp::apply(transform::TransformRewriter &rewriter,
+                                   transform::TransformResults &results,
+                                   transform::TransformState &state) {
+
+  SmallVector<Operation *> firstOps =
+      llvm::to_vector(state.getPayloadOps(getFirstOp()));
+  SmallVector<Operation *> secondOps =
+      llvm::to_vector(state.getPayloadOps(getSecondOp()));
+
+  if (firstOps.size() != 1 || secondOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one first_op and one second_op handle";
+  }
+
+  auto firstLinalgOp = dyn_cast<linalg::LinalgOp>(firstOps[0]);
+  auto secondLinalgOp = dyn_cast<linalg::LinalgOp>(secondOps[0]);
+
+  if (!firstLinalgOp || !secondLinalgOp) {
+    return emitDefiniteFailure() << "both operations must be linalg operations";
+  }
+
+  // Check condition 1: first op contains only arith.extf
+  if (!containsOnlyExtfOp(firstLinalgOp)) {
+    return emitDefiniteFailure()
+           << "first operation must contain only arith.extf in its body";
+  }
+
+  // Check condition 2: second op directly consumes result of first op
+  if (!directlyConsumesResult(firstLinalgOp, secondLinalgOp)) {
+    return emitDefiniteFailure() << "second operation must directly consume "
+                                    "the result of the first operation";
+  }
+
+  // Perform the fusion
+  FailureOr<linalg::GenericOp> fusedOp =
+      fuseExtfLinalgOps(rewriter, firstLinalgOp, secondLinalgOp);
+  if (failed(fusedOp)) {
+    return emitDefiniteFailure() << "failed to fuse the operations";
+  }
+
+  SmallVector<Operation *> resultOps = {*fusedOp};
+  results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::FuseExtfLinalgOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getFirstOpMutable(), effects);
+  onlyReadsHandle(getSecondOpMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// TransposeReduceOp
+//===----------------------------------------------------------------------===//
+
+/// Check if reduction dimensions are innermost in the given linalg.reduce op
+static bool areReductionDimensionsInnermost(linalg::ReduceOp reduceOp) {
+  ArrayRef<int64_t> reductionDims = reduceOp.getDimensions();
+  if (reductionDims.empty())
+    return true;
+
+  // Get the input tensor rank
+  auto inputType = llvm::cast<ShapedType>(reduceOp.getInputs()[0].getType());
+  int64_t rank = inputType.getRank();
+
+  // Check if all reduction dimensions are at the end (innermost)
+  SmallVector<int64_t> sortedReductionDims(reductionDims.begin(),
+                                           reductionDims.end());
+  llvm::sort(sortedReductionDims);
+
+  // The reduction dimensions should be consecutive and end at rank-1
+  for (size_t i = 0; i < sortedReductionDims.size(); ++i) {
+    if (sortedReductionDims[i] !=
+        (int64_t)(rank - sortedReductionDims.size() + i)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Create a transpose operation to move reduction dimensions to the end
+static Value
+createTransposeToMakeReductionInnermost(OpBuilder &builder, Location loc,
+                                        Value input,
+                                        ArrayRef<int64_t> reductionDims) {
+
+  auto inputType = llvm::cast<ShapedType>(input.getType());
+  int64_t rank = inputType.getRank();
+
+  // Create permutation: non-reduction dims first, then reduction dims
+  SmallVector<int64_t> permutation;
+  SmallVector<bool> isReductionDim(rank, false);
+
+  // Mark reduction dimensions
+  for (int64_t dim : reductionDims) {
+    isReductionDim[dim] = true;
+  }
+
+  // Add non-reduction dimensions first
+  for (int64_t i = 0; i < rank; ++i) {
+    if (!isReductionDim[i]) {
+      permutation.push_back(i);
+    }
+  }
+
+  // Add reduction dimensions at the end
+  for (int64_t dim : reductionDims) {
+    permutation.push_back(dim);
+  }
+
+  // Create the transpose operation
+  SmallVector<int64_t> transposedShape;
+  for (int64_t dim : permutation) {
+    transposedShape.push_back(inputType.getDimSize(dim));
+  }
+
+  // Create linalg.transpose operation
+  auto transposeOp = builder.create<linalg::TransposeOp>(
+      loc, input,
+      builder.create<tensor::EmptyOp>(loc, transposedShape,
+                                      inputType.getElementType()),
+      builder.getDenseI64ArrayAttr(permutation));
+
+  return transposeOp.getResult()[0];
+}
+
+/// Update reduction dimensions after transpose
+static SmallVector<int64_t>
+updateReductionDimsAfterTranspose(ArrayRef<int64_t> originalReductionDims,
+                                  int64_t rank) {
+
+  SmallVector<int64_t> newReductionDims;
+  int64_t numReductionDims = originalReductionDims.size();
+
+  // After transpose, reduction dimensions are at the end
+  for (int64_t i = 0; i < numReductionDims; ++i) {
+    newReductionDims.push_back(rank - numReductionDims + i);
+  }
+
+  return newReductionDims;
+}
+
+DiagnosedSilenceableFailure
+transform::TransposeReduceOp::apply(transform::TransformRewriter &rewriter,
+                                    transform::TransformResults &results,
+                                    transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    auto reduceOp = dyn_cast<linalg::ReduceOp>(target);
+    if (!reduceOp) {
+      return emitDefiniteFailure()
+             << "target must be a linalg.reduce operation";
+    }
+
+    // Check if reduction dimensions are already innermost
+    if (areReductionDimensionsInnermost(reduceOp)) {
+      // No transformation needed
+      transformedOps.push_back(target);
+      continue;
+    }
+
+    // Get reduction dimensions and input
+    ArrayRef<int64_t> reductionDims = reduceOp.getDimensions();
+    Value input = reduceOp.getInputs()[0];
+    auto inputType = llvm::cast<ShapedType>(input.getType());
+    int64_t rank = inputType.getRank();
+
+    // Create transpose operation to move reduction dimensions to the end
+    rewriter.setInsertionPoint(reduceOp);
+    Value transposedInput = createTransposeToMakeReductionInnermost(
+        rewriter, reduceOp.getLoc(), input, reductionDims);
+
+    // Update reduction dimensions for the new layout
+    SmallVector<int64_t> newReductionDims =
+        updateReductionDimsAfterTranspose(reductionDims, rank);
+
+    // Create new reduce operation with transposed input and updated dimensions
+    auto newReduceOp = rewriter.create<linalg::ReduceOp>(
+        reduceOp.getLoc(), reduceOp.getResultTypes(),
+        ValueRange{transposedInput}, reduceOp.getInits(),
+        rewriter.getDenseI64ArrayAttr(newReductionDims));
+
+    // Copy the reduction body from the original operation
+    rewriter.cloneRegionBefore(reduceOp.getCombiner(),
+                               newReduceOp.getCombiner(),
+                               newReduceOp.getCombiner().begin());
+
+    // Replace the original operation
+    rewriter.replaceOp(reduceOp, newReduceOp.getResults());
+    transformedOps.push_back(newReduceOp);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// FuseTruncfLinalgOp
+//===----------------------------------------------------------------------===//
+
+/// Check if a linalg op contains only arith.truncf as its body operation
+/// (apart from terminator)
+static bool containsOnlyTruncfOp(linalg::LinalgOp linalgOp) {
+  Block *body = linalgOp.getBlock();
+  if (!body)
+    return false;
+
+  // Should have exactly one non-terminator operation, and it should be truncf
+  if (llvm::range_size(body->without_terminator()) != 1)
+    return false;
+  return llvm::any_of(body->without_terminator(),
+                      [](Operation &o) { return isa<arith::TruncFOp>(o); });
+}
+
+/// Check if the first op (producer) produces a result that is consumed by the
+/// second op (truncf consumer)
+static bool producesResultForOp(linalg::LinalgOp producerOp,
+                                linalg::LinalgOp truncfOp) {
+  // Get the result of the producer op (assuming it has one DPS init)
+  if (producerOp.getNumDpsInits() != 1)
+    return false;
+
+  Value producerResult =
+      producerOp.getTiedOpResult(producerOp.getDpsInitOperand(0));
+
+  // Check if the truncf op uses this result as an input
+  return llvm::is_contained(truncfOp.getDpsInputs(), producerResult);
+}
+
+/// Get the output type of the truncf op (after arith.truncf type change)
+static Type getOutputTypeAfterTruncf(linalg::LinalgOp linalgOp) {
+  Block *body = linalgOp.getBlock();
+  if (!body)
+    return nullptr;
+
+  for (Operation &op : body->getOperations()) {
+    if (auto truncfOp = dyn_cast<arith::TruncFOp>(op)) {
+      return truncfOp.getOut().getType();
+    }
+  }
+
+  return nullptr;
+}
+
+/// Fuse truncf linalg op into its producer by creating a new fused operation
+static FailureOr<linalg::GenericOp>
+fuseTruncfIntoProducer(RewriterBase &rewriter, linalg::LinalgOp producerOp,
+                       linalg::LinalgOp truncfOp) {
+  // Get the output type after truncf conversion
+  Type truncatedType = getOutputTypeAfterTruncf(truncfOp);
+  if (!truncatedType)
+    return failure();
+
+  // Get the output of the truncf op
+  Value truncfOutput = truncfOp.getTiedOpResult(truncfOp.getDpsInitOperand(0));
+
+  // Create new output for the fused operation (with truncated type)
+  rewriter.setInsertionPoint(producerOp);
+
+  // Get the truncf op's init to use directly
+  Value truncfInit = truncfOp.getDpsInits()[0];
+
+  auto fusedOp = rewriter.create<linalg::GenericOp>(
+      producerOp.getLoc(), truncfOp->getResultTypes(),
+      producerOp.getDpsInputs(), ValueRange{truncfInit},
+      producerOp.getIndexingMapsArray(), producerOp.getIteratorTypesArray());
+
+  // Clone the producer region directly - this preserves all types and
+  // operations
+  rewriter.cloneRegionBefore(producerOp->getRegion(0), fusedOp.getRegion(),
+                             fusedOp.getRegion().begin());
+
+  Block *clonedBody = &fusedOp.getRegion().front();
+
+  // Get the original type of the output argument before we change it
+  size_t numInputs = producerOp.getDpsInputs().size();
+  BlockArgument outputArg = clonedBody->getArgument(numInputs);
+  Type originalOutputType = outputArg.getType();
+
+  // Change the output block argument type to match the truncated output
+  outputArg.setType(truncatedType);
+
+  // If the producer uses its output argument (e.g., for accumulation in
+  // matmul), we need to insert extf operations where the argument is used
+  if (producerOp.payloadUsesValueFromOperand(producerOp.getDpsInitOperand(0))) {
+    // Collect all uses of the output argument before we modify them
+    SmallVector<OpOperand *> outputArgUses;
+    for (OpOperand &use : outputArg.getUses()) {
+      outputArgUses.push_back(&use);
+    }
+
+    // For each use of the output argument, insert an extf to cast it back to
+    // original type
+    for (OpOperand *use : outputArgUses) {
+      Operation *user = use->getOwner();
+      // Skip if the user is the yield operation we're about to modify
+      if (isa<linalg::YieldOp>(user))
+        continue;
+
+      rewriter.setInsertionPoint(user);
+      auto extfOp = rewriter.create<arith::ExtFOp>(
+          fusedOp.getLoc(), originalOutputType, outputArg);
+      use->set(extfOp.getResult());
+    }
+  }
+
+  // Now add the truncf before the terminator and update the yield
+  auto yieldOp = cast<linalg::YieldOp>(clonedBody->getTerminator());
+  Value yieldValue = yieldOp.getValues()[0];
+
+  rewriter.setInsertionPoint(yieldOp);
+  auto truncfOpInBody = rewriter.create<arith::TruncFOp>(
+      fusedOp.getLoc(), truncatedType, yieldValue);
+
+  // Update the yield to use the truncated value
+  yieldOp.getValuesMutable().assign(truncfOpInBody.getResult());
+
+  // Replace uses of truncf op's output with the fused op's output
+  rewriter.replaceAllUsesWith(truncfOutput, fusedOp.getResult(0));
+
+  // Erase both original operations
+  rewriter.eraseOp(truncfOp);
+  rewriter.eraseOp(producerOp);
+
+  return fusedOp;
+}
+
+DiagnosedSilenceableFailure
+transform::FuseTruncfLinalgOp::apply(transform::TransformRewriter &rewriter,
+                                     transform::TransformResults &results,
+                                     transform::TransformState &state) {
+
+  SmallVector<Operation *> truncfOps =
+      llvm::to_vector(state.getPayloadOps(getTruncfOp()));
+  SmallVector<Operation *> producerOps =
+      llvm::to_vector(state.getPayloadOps(getProducerOp()));
+
+  if (truncfOps.size() != 1 || producerOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one truncf_op and one producer_op handle";
+  }
+
+  auto truncfLinalgOp = dyn_cast<linalg::LinalgOp>(truncfOps[0]);
+  auto producerLinalgOp = dyn_cast<linalg::LinalgOp>(producerOps[0]);
+
+  if (!truncfLinalgOp || !producerLinalgOp) {
+    return emitDefiniteFailure() << "both operations must be linalg operations";
+  }
+
+  // Check condition 1: truncf op contains only arith.truncf
+  if (!containsOnlyTruncfOp(truncfLinalgOp)) {
+    return emitDefiniteFailure()
+           << "truncf_op must contain only arith.truncf in its body";
+  }
+
+  // Check condition 2: producer op produces result consumed by truncf op
+  if (!producesResultForOp(producerLinalgOp, truncfLinalgOp)) {
+    return emitDefiniteFailure() << "producer_op must produce a result that "
+                                    "is consumed by truncf_op";
+  }
+
+  // Perform the fusion
+  FailureOr<linalg::GenericOp> fusedOp =
+      fuseTruncfIntoProducer(rewriter, producerLinalgOp, truncfLinalgOp);
+  if (failed(fusedOp)) {
+    return emitDefiniteFailure() << "failed to fuse the operations";
+  }
+
+  SmallVector<Operation *> resultOps = {*fusedOp};
+  results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::FuseTruncfLinalgOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getTruncfOpMutable(), effects);
+  consumesHandle(getProducerOpMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// VectorTypeCastOp
+//===----------------------------------------------------------------------===//
+
+/// Helper function to create cast operations for both scalar and vector types
+static Value createTypeCast(OpBuilder &builder, Location loc, Value input,
+                            Type targetElementType, bool isExtension) {
+  Type inputType = input.getType();
+
+  // Determine the source element type and target type
+  Type sourceElementType;
+  Type targetType;
+
+  if (auto inputVectorType = dyn_cast<VectorType>(inputType)) {
+    // Handle vector types
+    sourceElementType = inputVectorType.getElementType();
+    targetType = VectorType::get(inputVectorType.getShape(), targetElementType);
+  } else {
+    // Handle scalar types
+    sourceElementType = inputType;
+    targetType = targetElementType;
+  }
+
+  // Create the appropriate cast operation based on element types and operation
+  if (isExtension) {
+    // Extension: narrow to wide type
+    if (isa<FloatType>(sourceElementType) &&
+        isa<FloatType>(targetElementType)) {
+      return builder.create<arith::ExtFOp>(loc, targetType, input);
+    } else if (isa<IntegerType>(sourceElementType) &&
+               isa<IntegerType>(targetElementType)) {
+      // For integer types, use sign extension
+      return builder.create<arith::ExtSIOp>(loc, targetType, input);
+    }
+  } else {
+    // Truncation: wide to narrow type
+    if (isa<FloatType>(sourceElementType) &&
+        isa<FloatType>(targetElementType)) {
+      return builder.create<arith::TruncFOp>(loc, targetType, input);
+    } else if (isa<IntegerType>(sourceElementType) &&
+               isa<IntegerType>(targetElementType)) {
+      return builder.create<arith::TruncIOp>(loc, targetType, input);
+    }
+  }
+
+  // If no cast is needed or supported, return the original value
+  return input;
+}
+
+/// Helper function to determine if a cast is an extension (narrow to wide)
+static bool isExtensionCast(Type fromType, Type toType) {
+  // Use getIntOrFloatBitWidth for both integer and float types
+  unsigned fromWidth = fromType.getIntOrFloatBitWidth();
+  unsigned toWidth = toType.getIntOrFloatBitWidth();
+
+  // Extension is when we go from smaller to larger bit width
+  return fromWidth < toWidth;
+}
+
+/// Helper function to apply vector type casting to a single operation
+static FailureOr<Operation *> applyVectorTypeCastToOp(
+    Operation *op, Type targetElementType, ArrayRef<int64_t> inputIndicesToCast,
+    ArrayRef<int64_t> outputIndicesToCast, RewriterBase &rewriter) {
+
+  // Skip if operation doesn't have vector operands or results
+  bool hasVectorOperands = false;
+  bool hasVectorResults = false;
+  bool needsTransformation = false;
+
+  // Determine if we should cast all inputs/outputs (default behavior)
+  bool castAllInsAndOuts =
+      inputIndicesToCast.empty() && outputIndicesToCast.empty();
+
+  // Create sets for quick lookup of indices to cast
+  llvm::SmallDenseSet<int64_t> inputIndicesToCastSet(inputIndicesToCast.begin(),
+                                                     inputIndicesToCast.end());
+  llvm::SmallDenseSet<int64_t> outputIndicesToCastSet(
+      outputIndicesToCast.begin(), outputIndicesToCast.end());
+
+  for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
+    if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+      hasVectorOperands = true;
+      bool shouldCast =
+          castAllInsAndOuts || inputIndicesToCastSet.contains((int64_t)idx);
+      if (shouldCast && vectorType.getElementType() != targetElementType) {
+        needsTransformation = true;
+      }
+    }
+  }
+
+  for (auto [idx, result] : llvm::enumerate(op->getResults())) {
+    if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
+      hasVectorResults = true;
+      bool shouldCast =
+          castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
+      if (shouldCast && vectorType.getElementType() != targetElementType) {
+        needsTransformation = true;
+      }
+    }
+  }
+
+  if (!hasVectorOperands && !hasVectorResults) {
+    return failure();
+  }
+
+  if (!needsTransformation) {
+    return failure();
+  }
+
+  auto loc = op->getLoc();
+  rewriter.setInsertionPoint(op);
+
+  // Cast input operands to target type (selectively)
+  SmallVector<Value> newOperands;
+  SmallVector<Type> originalOperandTypes;
+
+  for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
+    originalOperandTypes.push_back(operand.getType());
+
+    if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+      Type currentElementType = vectorType.getElementType();
+      bool shouldCast =
+          castAllInsAndOuts || inputIndicesToCastSet.contains((int64_t)idx);
+
+      if (shouldCast && currentElementType != targetElementType) {
+        bool isExt = isExtensionCast(currentElementType, targetElementType);
+        Value castOperand =
+            createTypeCast(rewriter, loc, operand, targetElementType, isExt);
+        newOperands.push_back(castOperand);
+      } else {
+        newOperands.push_back(operand);
+      }
+    } else {
+      newOperands.push_back(operand);
+    }
+  }
+
+  // Determine new result types using target element type (selectively)
+  SmallVector<Type> newResultTypes;
+  SmallVector<Type> originalResultTypes;
+
+  for (auto [idx, resultType] : llvm::enumerate(op->getResultTypes())) {
+    originalResultTypes.push_back(resultType);
+
+    if (auto vectorType = dyn_cast<VectorType>(resultType)) {
+      bool shouldCast =
+          castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
+
+      if (shouldCast) {
+        auto newVectorType =
+            VectorType::get(vectorType.getShape(), targetElementType);
+        newResultTypes.push_back(newVectorType);
+      } else {
+        newResultTypes.push_back(resultType);
+      }
+    } else {
+      // Handle scalar result types (e.g., for vector.reduction)
+      // For operations like vector.reduction, the scalar result type must match
+      // the input vector's element type
+      bool shouldCast =
+          castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
+
+      if (shouldCast &&
+          (isa<FloatType>(resultType) || isa<IntegerType>(resultType))) {
+        // Change scalar result type to match target element type
+        newResultTypes.push_back(targetElementType);
+      } else {
+        newResultTypes.push_back(resultType);
+      }
+    }
+  }
+
+  // Clone the operation with new operands and result types
+  OperationState newState(loc, op->getName());
+  newState.addOperands(newOperands);
+  newState.addTypes(newResultTypes);
+  newState.addAttributes(op->getAttrs());
+
+  // Clone regions if any
+  for (Region &region : op->getRegions()) {
+    Region *newRegion = newState.addRegion();
+    rewriter.cloneRegionBefore(region, *newRegion, newRegion->begin());
+  }
+
+  Operation *newOp = rewriter.create(newState);
+
+  // Cast results back to original types (selectively)
+  SmallVector<Value> finalResults;
+  for (auto [idx, pair] :
+       llvm::enumerate(llvm::zip(originalResultTypes, newOp->getResults()))) {
+    auto [originalType, newResult] = pair;
+
+    Type originalElementType = originalType;
+
+    if (auto originalVectorType = dyn_cast<VectorType>(originalType)) {
+      originalElementType = originalVectorType.getElementType();
+    }
+
+    bool shouldCast =
+        castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
+
+    if (shouldCast && originalElementType != targetElementType) {
+      bool isExt = isExtensionCast(targetElementType, originalElementType);
+      Value castResult =
+          createTypeCast(rewriter, loc, newResult, originalElementType, isExt);
+      finalResults.push_back(castResult);
+    } else {
+      finalResults.push_back(newResult);
+    }
+  }
+
+  // Replace the original operation
+  rewriter.replaceOp(op, finalResults);
+  return newOp;
+}
+
+DiagnosedSilenceableFailure
+transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
+                                   transform::TransformResults &results,
+                                   transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  Type targetElementType = getTargetElementType();
+
+  // Extract input and output indices from attributes
+  SmallVector<int64_t> inputIndicesToCast =
+      extractFromIntegerArrayAttr<int64_t>(getInputIndices());
+  SmallVector<int64_t> outputIndicesToCast =
+      extractFromIntegerArrayAttr<int64_t>(getOutputIndices());
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    // Check if this operation has vector operands or results
+    bool hasVectorTypes = false;
+    for (Value operand : target->getOperands()) {
+      if (isa<VectorType>(operand.getType())) {
+        hasVectorTypes = true;
+        break;
+      }
+    }
+    if (!hasVectorTypes) {
+      for (Value result : target->getResults()) {
+        if (isa<VectorType>(result.getType())) {
+          hasVectorTypes = true;
+          break;
+        }
+      }
+    }
+
+    if (!hasVectorTypes) {
+      return emitDefiniteFailure()
+             << "target operation must have vector operands or results, but "
+                "operation '"
+             << target->getName()
+             << "' operates on scalar types. Vector type casting "
+             << "can only be applied to operations that work with vector "
+                "types.";
+    }
+
+    // Check if this operation has vector types that need casting
+    bool needsTransformation = false;
+    for (Value operand : target->getOperands()) {
+      if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+        if (vectorType.getElementType() != targetElementType) {
+          needsTransformation = true;
+          break;
+        }
+      }
+    }
+    if (!needsTransformation) {
+      for (Value result : target->getResults()) {
+        if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
+          if (vectorType.getElementType() != targetElementType) {
+            needsTransformation = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (needsTransformation) {
+      // Apply transformation directly to the target operation with selective
+      // casting
+      FailureOr<Operation *> castedOpOnVector =
+          applyVectorTypeCastToOp(target, targetElementType, inputIndicesToCast,
+                                  outputIndicesToCast, rewriter);
+      if (failed(castedOpOnVector)) {
+        return emitDefiniteFailure()
+               << "failed to apply vector type cast to operation: "
+               << target->getName();
+      }
+      transformedOps.push_back(*castedOpOnVector);
+    }
+
+    else
+      transformedOps.push_back(target);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
 
 namespace xilinx {
 namespace air {

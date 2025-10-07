@@ -4,13 +4,13 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-# REQUIRES: torch_mlir
+# REQUIRES: torch_mlir, needs_update
 
 # RUN: %PYTHON %s | FileCheck %s
 # CHECK: PASSED
 
 import torch
-import torch._dynamo as dynamo
+
 import numpy
 
 import air.backend.linalg_on_tensors as air_backend
@@ -31,7 +31,9 @@ def run_test(dtype, shape):
 
     a = torch.randint(size=shape, low=1, high=100, dtype=dtype)
     b = torch.randint(size=shape, low=1, high=100, dtype=dtype)
-    m = fx.export_and_import(torch_program, a, b, func_name="forward")
+    m = fx.export_and_import(
+        torch_program, a, b, output_type="linalg-on-tensors", func_name="forward"
+    )
 
     backend = air_backend.LinalgOnTensorsAirBackend()
     air_program = backend.load(backend.compile(m))

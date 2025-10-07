@@ -2191,14 +2191,14 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
         // Look for the reduction operation in the linalg.reduce body
         Operation *reductionOp = nullptr;
         for (auto &op : linalgReduceBody.without_terminator()) {
-          if (isa<arith::AddIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp>(
-                  &op)) {
+          if (isa<arith::AddIOp, arith::MulIOp, arith::MaxSIOp, arith::MinSIOp,
+                  arith::AddFOp, arith::MulFOp>(&op)) {
             reductionOp = &op;
             break;
           }
         }
 
-        if (reductionOp && isa<arith::AddIOp>(reductionOp)) {
+        if (reductionOp && isa<arith::AddIOp, arith::AddFOp>(reductionOp)) {
           // For addition reduction, use linalg.add
           rewriter.create<linalg::AddOp>(
               loc,
@@ -2206,7 +2206,8 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
                          reduceBlock.getArgument(1)},
               ValueRange{reduceBlock.getArgument(0)});
           rewriter.create<scf::ReduceReturnOp>(loc, reduceBlock.getArgument(0));
-        } else if (reductionOp && isa<arith::MulIOp>(reductionOp)) {
+        } else if (reductionOp &&
+                   isa<arith::MulIOp, arith::MulFOp>(reductionOp)) {
           // For multiplication reduction, use linalg.mul
           rewriter.create<linalg::MulOp>(
               loc,
@@ -2287,6 +2288,92 @@ DiagnosedSilenceableFailure transform::ForallWithReduceToParallelOp::apply(
   }
 
   results.set(cast<OpResult>(getTransformed()[0]), {opResult});
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// LinalgToLibraryCallOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::LinalgToLibraryCallOp::applyToOne(
+    transform::TransformRewriter &rewriter, Operation *target,
+    transform::ApplyToEachResultList &results,
+    transform::TransformState &state) {
+  using namespace mlir;
+  using namespace mlir::linalg;
+
+  auto linalgOp = dyn_cast<LinalgOp>(target);
+  if (!linalgOp)
+    return emitSilenceableError() << "expected linalg op as target";
+
+  // Get function name: from transform op attribute or linalg op attribute.
+  std::string fnName;
+  if (auto attr = getOperation()->getAttrOfType<StringAttr>("function_name")) {
+    fnName = attr.getValue().str();
+  } else {
+    fnName = linalgOp.getLibraryCallName();
+  }
+  if (fnName.empty())
+    return emitSilenceableError() << "no function name provided and linalg op "
+                                     "has no library_call attribute";
+
+  // Collect operands, handling reshape/expand/collapse.
+  auto getLibFnOperands = [](LinalgOp op) {
+    SmallVector<Value> operands;
+    for (auto operand : op->getOperands()) {
+      auto operation = operand.getDefiningOp();
+      if (operation &&
+          (isa_and_present<memref::ReshapeOp, memref::ExpandShapeOp,
+                           memref::CollapseShapeOp>(operation))) {
+        operands.push_back(operation->getOperand(0));
+        continue;
+      }
+      operands.push_back(operand);
+    }
+    return operands;
+  };
+  auto libFnOperands = getLibFnOperands(linalgOp);
+
+  // Create function if needed.
+  auto module = linalgOp->getParentOfType<ModuleOp>();
+  FlatSymbolRefAttr fnNameAttr =
+      SymbolRefAttr::get(rewriter.getContext(), fnName);
+  auto sym = module.lookupSymbol(fnNameAttr.getAttr());
+  if (!sym) {
+    auto libFnType = rewriter.getFunctionType(
+        ValueRange(ArrayRef<Value>(libFnOperands)).getTypes(), {});
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(module.getBody(),
+                               std::prev(module.getBody()->end()));
+    func::FuncOp funcOp = rewriter.create<func::FuncOp>(
+        linalgOp->getLoc(), fnNameAttr.getValue(), libFnType);
+    funcOp->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
+                    UnitAttr::get(linalgOp->getContext()));
+    if (auto linkWithAttr =
+            getOperation()->getAttrOfType<StringAttr>("link_with")) {
+      funcOp->setAttr("link_with", linkWithAttr);
+    } else if (auto herd = linalgOp->getParentOfType<xilinx::air::HerdOp>()) {
+      if (auto herdLinkWith = herd->getAttrOfType<StringAttr>("link_with"))
+        funcOp->setAttr("link_with", herdLinkWith);
+    }
+    funcOp.setPrivate();
+  }
+
+  // Replace linalg op with call.
+  auto callOp = rewriter.replaceOpWithNewOp<func::CallOp>(
+      linalgOp, fnNameAttr.getValue(), TypeRange(),
+      ValueRange(ArrayRef<Value>(libFnOperands)));
+
+  // If inside herd, propagate link_with.
+  if (auto herd = linalgOp->getParentOfType<xilinx::air::HerdOp>()) {
+    if (auto linkWithAttr =
+            getOperation()->getAttrOfType<StringAttr>("link_with")) {
+      rewriter.modifyOpInPlace(
+          herd, [&]() { herd->setAttr("link_with", linkWithAttr); });
+    }
+  }
+
+  results.push_back(callOp);
   return DiagnosedSilenceableFailure::success();
 }
 

@@ -4640,6 +4640,25 @@ public:
 private:
 };
 
+// A pattern which attempts to fix memref.subview output type, after memref
+// shrinkage changes the memref shapes being allocated.
+struct UpdateSubViewOutputTypeAfterMemrefShrinkage
+    : public OpRewritePattern<memref::SubViewOp> {
+  using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::SubViewOp op,
+                                PatternRewriter &rewriter) const override {
+    MemRefType newResultType = memref::SubViewOp::inferRankReducedResultType(
+        op.getType().getShape(), op.getSourceType(), op.getMixedOffsets(),
+        op.getMixedSizes(), op.getMixedStrides());
+    if (newResultType != op.getType()) {
+      op.getResult().setType(newResultType);
+      return success();
+    } else
+      return failure();
+  }
+};
+
 // A pattern which attempts to shrink the memref sizes, based on the access
 // patterns of all its uses.
 struct ShrinkMemrefSizesByAccessPattern
@@ -5028,8 +5047,6 @@ private:
     if (allOffsetsAreZeros() && allStridesAreOnes() &&
         memrefVolumeUnchanged()) {
       subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
-      for (auto newUser : subViewOp.getSource().getUsers())
-        push_back_if_unique<Operation *>(users, newUser);
       rewriter.eraseOp(subViewOp);
     }
     return success();
@@ -5679,7 +5696,8 @@ public:
   void runPostProcPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
+    patterns.insert<ShrinkMemrefSizesByAccessPattern,
+                    UpdateSubViewOutputTypeAfterMemrefShrinkage>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration post memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
@@ -6530,7 +6548,8 @@ public:
     MLIRContext *ctx = &getContext();
     auto funcOp = getOperation();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
+    patterns.insert<ShrinkMemrefSizesByAccessPattern,
+                    UpdateSubViewOutputTypeAfterMemrefShrinkage>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration after memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;

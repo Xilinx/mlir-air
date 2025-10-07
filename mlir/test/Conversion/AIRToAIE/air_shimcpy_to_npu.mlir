@@ -9,7 +9,7 @@
 // RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1" --split-input-file | FileCheck %s
 // RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1 use-lock-race-condition-fix=true" --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
-// CHECK-LABEL:   aie.device(npu1) {
+// CHECK-LABEL:   aie.device(npu1) @herd1 {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(0, 2)
 // CHECK:  %[[VAL_1:.*]] = aie.tile(0, 0)
 // CHECK:  %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 1) {init = 1 : i32}
@@ -53,7 +53,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // -----
 
-// CHECK-LABEL:   aie.device(npu1) {
+// CHECK-LABEL:   aie.device(npu1) @herd1 {
 // CHECK: %[[VAL_0:.*]] = aie.tile(0, 2)
 // CHECK: %[[VAL_1:.*]] = aie.tile(0, 0)
 // CHECK: %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 3) {init = 1 : i32}
@@ -118,7 +118,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // air.channel to aie.locks.
-// CHECK-LABEL:   aie.device(npu1) {
+// CHECK-LABEL:   aie.device(npu1) @herd1 {
 // CHECK:         %[[VAL_0:.*]] = aie.tile(0, 0)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(0, 2)
 // CHECK:         %[[VAL_2:.*]] = aie.lock(%[[VAL_1]], 3) {init = 1 : i32}
@@ -191,7 +191,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // air.channel to aie.locks.
-// CHECK-LABEL:   aie.device(npu1) {
+// CHECK-LABEL:   aie.device(npu1) @segment0 {
 // CHECK:         %[[VAL_2:.*]] = aie.tile(0, 1)
 // CHECK:         %[[VAL_3:.*]] = aie.tile(0, 2)
 // CHECK:         %[[VAL_4:.*]] = aie.tile(0, 0)

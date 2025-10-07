@@ -196,6 +196,27 @@ public:
     }
   }
 
+  // Helper: Build broadcast affine set constraints (extracted from lambda)
+  static void makeBroadcastAffineSetConstraints(
+      size_t dimCount, int64_t specializeDim, int64_t specializeIdx,
+      int64_t numCols, MLIRContext *ctx, SmallVectorImpl<AffineExpr> &exprs,
+      SmallVectorImpl<bool> &eqFlags) {
+    for (size_t d = 0; d < dimCount; ++d) {
+      if ((int64_t)d == specializeDim) {
+        exprs.push_back(getAffineSymbolExpr(d, ctx) -
+                        getAffineConstantExpr(specializeIdx, ctx));
+        eqFlags.push_back(true);
+        continue;
+      }
+      // Add unconstrained range for other symbols (TODO: remove this
+      // requirement)
+      exprs.push_back(getAffineSymbolExpr(d, ctx));
+      eqFlags.push_back(false);
+      exprs.push_back(numCols - 1 - getAffineSymbolExpr(d, ctx));
+      eqFlags.push_back(false);
+    }
+  }
+
   // Helper: Rewrite all channel.get users
   static LogicalResult rewriteChannelGetUsers(
       air::ChannelOp channelOp, ModuleOp moduleOp, int64_t specializeDim,
@@ -213,58 +234,43 @@ public:
       SmallVector<Value, 4> herdIds;
       for (BlockArgument arg : herd.getIds())
         herdIds.push_back(Value(arg));
+      // Helper lambda to create and yield a ChannelGetOp
+      auto createAndYieldChannelGet = [&](int idx) -> Value {
+        auto newGet = rewriter.create<air::ChannelGetOp>(
+            loc, get.getResultTypes(), get.getAsyncDependencies(),
+            rewriter.getStringAttr(specializedChannels[idx].getSymName()),
+            get.getIndices(), get.getMemref(), get.getOffsets(), get.getSizes(),
+            get.getStrides());
+        rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+        return newGet.getAsyncToken();
+      };
+
       for (int64_t i = 0; i < numSegments; ++i) {
         SmallVector<AffineExpr, 4> exprs;
         SmallVector<bool, 4> eqFlags;
-        for (size_t d = 0; d < herdIds.size(); ++d) {
-          if ((int64_t)d == specializeDim) {
-            exprs.push_back(getAffineSymbolExpr(d, ctx) -
-                            getAffineConstantExpr(i, ctx));
-            eqFlags.push_back(true);
-            continue;
-          }
-          // Add unconstrained range for other symbols (TODO: remove this
-          // requirement)
-          exprs.push_back(getAffineSymbolExpr(d, ctx));
-          eqFlags.push_back(false);
-          exprs.push_back(herd.getNumCols() - 1 - getAffineSymbolExpr(d, ctx));
-          eqFlags.push_back(false);
-        }
+        makeBroadcastAffineSetConstraints(herdIds.size(), specializeDim, i,
+                                          herd.getNumCols(), ctx, exprs,
+                                          eqFlags);
         auto intSet = IntegerSet::get(0, herdIds.size(), exprs, eqFlags);
         SmallVector<Value, 4> setArgs = herdIds;
         if (i == 0) {
           auto aif = rewriter.create<affine::AffineIfOp>(
               loc, get.getResultTypes(), intSet, setArgs, true);
           rewriter.setInsertionPointToStart(aif.getThenBlock());
-          auto newGet = rewriter.create<air::ChannelGetOp>(
-              loc, get.getResultTypes(), get.getAsyncDependencies(),
-              rewriter.getStringAttr(specializedChannels[i].getSymName()),
-              get.getIndices(), get.getMemref(), get.getOffsets(),
-              get.getSizes(), get.getStrides());
-          rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+          createAndYieldChannelGet(i);
           rewriter.replaceAllUsesWith(get.getAsyncToken(), aif.getResult(0));
           rewriter.setInsertionPointToStart(aif.getElseBlock());
         } else if (i < numSegments - 1) {
           auto aif = rewriter.create<affine::AffineIfOp>(
               loc, get.getResultTypes(), intSet, setArgs, true);
           rewriter.setInsertionPointToStart(aif.getThenBlock());
-          auto newGet = rewriter.create<air::ChannelGetOp>(
-              loc, get.getResultTypes(), get.getAsyncDependencies(),
-              rewriter.getStringAttr(specializedChannels[i].getSymName()),
-              get.getIndices(), get.getMemref(), get.getOffsets(),
-              get.getSizes(), get.getStrides());
-          rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+          createAndYieldChannelGet(i);
           rewriter.setInsertionPointAfter(aif);
           SmallVector<Value, 1> parentBlockYieldToken{aif.getResult(0)};
           rewriter.create<affine::AffineYieldOp>(loc, parentBlockYieldToken);
           rewriter.setInsertionPointToStart(aif.getElseBlock());
         } else {
-          auto newGet = rewriter.create<air::ChannelGetOp>(
-              loc, get.getResultTypes(), get.getAsyncDependencies(),
-              rewriter.getStringAttr(specializedChannels[i].getSymName()),
-              get.getIndices(), get.getMemref(), get.getOffsets(),
-              get.getSizes(), get.getStrides());
-          rewriter.create<affine::AffineYieldOp>(loc, newGet.getAsyncToken());
+          createAndYieldChannelGet(i);
         }
       }
       rewriter.eraseOp(get);
@@ -1444,9 +1450,8 @@ private:
   getTargetMemrefAllocs(
       func::FuncOp func,
       llvm::MapVector<air::ChannelInterface, infoEntryTy> &opToSplitInfoMap);
-  std::optional<int>
-  getMemrefSplitDim(SmallVector<air::ChannelInterface> putgets,
-                    SmallVector<int> memrefShape);
+  std::optional<int> getMemrefSplitDim(SetVector<air::ChannelInterface> putgets,
+                                       SmallVector<int> memrefShape);
 };
 
 template <typename T>
@@ -1933,14 +1938,15 @@ void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(
 // Infer the dimension to which the join / distribute pattern happens, as basis
 // for memref splitting.
 std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
-    SmallVector<air::ChannelInterface> putgets, SmallVector<int> memrefShape) {
+    SetVector<air::ChannelInterface> putgets, SmallVector<int> memrefShape) {
   std::optional<int> memrefDim = std::nullopt;
   for (unsigned i = 0; i < putgets.size() - 1; i++) {
     for (unsigned j = i + 1; j < putgets.size(); j++) {
-      if (putgets[i].getOffsets().size() != putgets[j].getOffsets().size())
+      air::ChannelInterface ci = putgets[i];
+      air::ChannelInterface cj = putgets[j];
+      if (ci.getOffsets().size() != cj.getOffsets().size())
         continue;
-      auto offsetZip =
-          llvm::zip_equal(putgets[i].getOffsets(), putgets[j].getOffsets());
+      auto offsetZip = llvm::zip_equal(ci.getOffsets(), cj.getOffsets());
       auto d =
           llvm::find_if(offsetZip, [](std::tuple<Value, Value> offsetPair) {
             auto [o1, o2] = offsetPair;
@@ -1961,8 +1967,9 @@ std::optional<int> AIRSplitL2MemrefForBufferConstraintPass::getMemrefSplitDim(
   // Match offset dims with memref dims.
   if (!memrefDim)
     return std::nullopt;
-  return air::getMemrefDimFromOffsetDim(*memrefDim, putgets[0].getOffsets(),
-                                        putgets[0].getStrides(), memrefShape);
+  air::ChannelInterface c0 = putgets[0];
+  return air::getMemrefDimFromOffsetDim(*memrefDim, c0.getOffsets(),
+                                        c0.getStrides(), memrefShape);
 }
 
 // Get a vector of allocs whose memrefs require splitting; label the single
@@ -2032,9 +2039,12 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     // Single-in-single-out. Skip.
     if (getChanCount(MM2SChannels) <= 1 && getChanCount(S2MMChannels) <= 1)
       continue;
-    // Multiple-in-multiple-out. Skip.
-    if (getChanCount(MM2SChannels) > 1 && getChanCount(S2MMChannels) > 1)
-      continue;
+    // Multiple-in-multiple-out (MIMO).
+    if (getChanCount(MM2SChannels) > 1 && getChanCount(S2MMChannels) > 1) {
+      // MIMO with different number of actors on each side. Skip.
+      if (getChanCount(MM2SChannels) != getChanCount(S2MMChannels))
+        continue;
+    }
 
     // Get tiling factor.
     int tilingFactor =
@@ -2079,16 +2089,17 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     std::optional<int> splitDimStrideFactor = std::nullopt;
     std::optional<int> splitDim = std::nullopt;
 
-    // Get all puts or gets, whichever direction has multiple operators.
-    SmallVector<air::ChannelInterface> putgets;
+    // Get all puts and/or gets, whichever direction has multiple operators.
+    SetVector<air::ChannelInterface> putgets;
     if (getChanCount(MM2SChannels) > 1) {
       for (auto &[chanOp, __] : MM2SChannels)
         for (auto put : air::getChannelPutOpThroughSymbol(chanOp))
-          putgets.push_back(put);
-    } else {
+          putgets.insert(put);
+    }
+    if (getChanCount(S2MMChannels) > 1) {
       for (auto &[chanOp, __] : S2MMChannels)
         for (auto get : air::getChannelGetOpThroughSymbol(chanOp))
-          putgets.push_back(get);
+          putgets.insert(get);
     }
 
     splitDim =
@@ -2129,37 +2140,34 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     for (unsigned i = 0; i < putgets.size(); i++) {
       // Infer the size at splitDim for both overlapping and non-overlapping
       // access pattern.
-      auto offsetDimOpt =
-          air::getOffsetDimFromMemrefDim(*splitDim, putgets[i].getStrides(),
-                                         air::getTensorShape(memref.getType()));
+      air::ChannelInterface ci = putgets[i];
+      auto offsetDimOpt = air::getOffsetDimFromMemrefDim(
+          *splitDim, ci.getStrides(), air::getTensorShape(memref.getType()));
       // Infer offset at splitDim.
-      if (auto rootOffset =
-              getRootOffset(putgets[i].getOffsets()[*offsetDimOpt]))
+      if (auto rootOffset = getRootOffset(ci.getOffsets()[*offsetDimOpt]))
         splitDimOffset = *rootOffset;
       // Infer size at splitDim.
-      if (auto rootSize = getRootSize(putgets[i].getOffsets()[*offsetDimOpt],
-                                      putgets[i].getSizes()[*offsetDimOpt]))
+      if (auto rootSize = getRootSize(ci.getOffsets()[*offsetDimOpt],
+                                      ci.getSizes()[*offsetDimOpt]))
         splitDimSize = *rootSize;
       // Infer stride (factor) at splitDim. If the root comes from an scf.for
       // loop, and if the loop has non-unit step size, then that multiplier
       // should be applied to other split channe put/get ops.
       // Note: 1d access pattern is disabled (leads to inserting stride!=1
       // dimension at inner-most dimension).
-      auto rootStrideFactor =
-          getRootStrideFactor(putgets[i].getOffsets()[*offsetDimOpt],
-                              putgets[i].getStrides()[*offsetDimOpt]);
-      if (rootStrideFactor && putgets[i].getOffsets().size() > 1) {
+      auto rootStrideFactor = getRootStrideFactor(
+          ci.getOffsets()[*offsetDimOpt], ci.getStrides()[*offsetDimOpt]);
+      if (rootStrideFactor && ci.getOffsets().size() > 1) {
         splitDimStrideFactor = *rootStrideFactor;
         // Cancel out the non-unit step size on the for loop, to get contiguous
         // access pattern on memrefs after split.
-        if (auto forOp =
-                getScfForFromVal(putgets[i].getOffsets()[*offsetDimOpt])) {
+        if (auto forOp = getScfForFromVal(ci.getOffsets()[*offsetDimOpt])) {
           forOp->setAttr("mutate_step_size_to",
                          IntegerAttr::get(IntegerType::get(ctx, 32), 1));
         }
       }
       AffineMap applyMap;
-      auto apply = getAffineMapOnMemrefSplitDim(putgets[i], *offsetDimOpt);
+      auto apply = getAffineMapOnMemrefSplitDim(ci, *offsetDimOpt);
       if (apply)
         applyMap = apply.getAffineMap();
 
@@ -2170,12 +2178,17 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
     }
 
     // Get output map.
-    if (getChanCount(MM2SChannels) > 1) {
-      targetMemrefsToInfoMap[allocOp] = {"MM2SChannels", tilingFactor,
+    if (getChanCount(MM2SChannels) > 1 && getChanCount(S2MMChannels) > 1) {
+      targetMemrefsToInfoMap[allocOp] = {"MM2SAndS2MMChannels", tilingFactor,
                                          infoEntryMap};
     } else {
-      targetMemrefsToInfoMap[allocOp] = {"S2MMChannels", tilingFactor,
-                                         infoEntryMap};
+      if (getChanCount(MM2SChannels) > 1) {
+        targetMemrefsToInfoMap[allocOp] = {"MM2SChannels", tilingFactor,
+                                           infoEntryMap};
+      } else {
+        targetMemrefsToInfoMap[allocOp] = {"S2MMChannels", tilingFactor,
+                                           infoEntryMap};
+      }
     }
   }
   return targetMemrefsToInfoMap;
@@ -2306,9 +2319,11 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       if (!isa<air::ChannelInterface>(user))
         continue;
       // Multiple-channel side. Skip.
-      if (isa<air::ChannelPutOp>(user) && splitType == "MM2SChannels")
+      if (isa<air::ChannelPutOp>(user) &&
+          (splitType == "MM2SChannels" || splitType == "MM2SAndS2MMChannels"))
         continue;
-      if (isa<air::ChannelGetOp>(user) && splitType == "S2MMChannels")
+      if (isa<air::ChannelGetOp>(user) &&
+          (splitType == "S2MMChannels" || splitType == "MM2SAndS2MMChannels"))
         continue;
 
       // Single-channel side found. Perform tiling on put/get ops operating on
