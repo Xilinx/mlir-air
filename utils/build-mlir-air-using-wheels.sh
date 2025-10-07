@@ -37,7 +37,7 @@ echo "WHL_MLIR DIR: $WHL_MLIR_DIR"
 
 # Install mlir-aie dependence: mlir-python-extras
 MLIR_PYTHON_EXTRAS_COMMIT_HASH=$($(dirname ${SCRIPT_PATH})/clone-mlir-aie.sh --get-mlir-python-extras-version)
-HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install git+https://github.com/makslevental/mlir-python-extras@$MLIR_PYTHON_EXTRAS_COMMIT_HASH -f https://github.com/llvm/eudsl/releases/expanded_assets/latest
+HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install git+https://github.com/erwei-xilinx/mlir-python-extras@$MLIR_PYTHON_EXTRAS_COMMIT_HASH -f https://github.com/llvm/eudsl/releases/expanded_assets/latest
 
 # Install mlir-aie from wheel
 pushd my_install
