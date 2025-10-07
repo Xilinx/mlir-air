@@ -5,8 +5,11 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
+  # DIRECT_CODEGEN_FLAG can be overridden from command line (e.g., make DIRECT_CODEGEN_FLAG= run4x4)
+  DIRECT_CODEGEN_FLAG ?= --direct-codegen
 else
   BUILD_DIR := build_chess
+  DIRECT_CODEGEN_FLAG ?=
 endif
 
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
@@ -16,19 +19,19 @@ PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS
 all: run4x4
 
 print:
-	${powershell} python3 ${srcdir}/run.py -p
+	${powershell} python3 ${srcdir}/run.py -p --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 48 $(DIRECT_CODEGEN_FLAG)
 
 run4x4: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run $(DIRECT_CODEGEN_FLAG)
 
 run2x4: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run $(DIRECT_CODEGEN_FLAG)
 
 run2x2: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 --compile-mode compile-and-run
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 --compile-mode compile-and-run $(DIRECT_CODEGEN_FLAG)
 
 run3x3: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 32 --compile-mode compile-and-run
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 48 --compile-mode compile-and-run $(DIRECT_CODEGEN_FLAG)
 
 # Measure the e2e latencies across a range of problem shapes.
 sweep4x4: compile-kernel build-test-exe
@@ -36,7 +39,7 @@ sweep4x4: compile-kernel build-test-exe
 		for N in 256 512 1024 2048; do \
 			for K in 256 512 1024 2048; do \
 				echo "Running with M=$$M, N=$$N, K=$$K"; \
-				cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --m $$M --n $$N --k $$K --compile-mode compile-only; \
+				cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --m $$M --n $$N --k $$K --compile-mode compile-only $(DIRECT_CODEGEN_FLAG); \
 				./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $$M -N $$N -K $$K; \
 			done; \
 		done; \
