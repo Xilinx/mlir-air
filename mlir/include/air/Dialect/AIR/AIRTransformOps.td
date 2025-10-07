@@ -531,7 +531,7 @@ def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
   let summary = "Cast vector operands and results of vector operations to a user-provided datatype";
   let description = [{
     This transform takes a handle to vector dialect operations and casts input operands
-    and/or results of vector type to a user-provided datatype. By default, if no 
+    and/or results of vector type to a user-provided datatype. By default, if none of 
     input_indices or output_indices are specified, all vector operands and results are cast.
 
     The transformation works by:
