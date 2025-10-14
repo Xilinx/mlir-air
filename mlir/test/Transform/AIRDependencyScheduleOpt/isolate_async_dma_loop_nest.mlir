@@ -750,31 +750,34 @@ module {
 // CHECK: air.segment
 
 // CHECK: air.herd
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK: air.execute {
-// CHECK: linalg.fill
+// CHECK: %[[for_loop_1:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[arg11:.*]] =
+// CHECK: %[[for_loop_2:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[arg13:.*]] = %[[arg11]]
+// CHECK: air.execute [%[[arg13]]] {
+// CHECK-NEXT: linalg.fill
+// CHECK-NEXT: }
+
+// CHECK: %[[for_loop_3:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}} iter_args(%[[arg15:.*]] = %[[arg13]]
+// CHECK: air.execute [%[[arg15]]] {
+// CHECK-NEXT: linalg.fill
+// CHECK-NEXT: }
+// CHECK-NEXT: scf.yield
+// CHECK-NEXT: }
+
+// CHECK: air.execute [%[[arg13]]] {
+// CHECK-NEXT: linalg.fill
+// CHECK-NEXT: }
+
+// CHECK: }
+// CHECK: }
 // CHECK: }
 
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c8{{.*}} step %c1{{.*}}
-// CHECK: air.execute {
-// CHECK: linalg.fill
-// CHECK: }
-// CHECK: }
-
-// CHECK: air.execute {
-// CHECK: linalg.fill
-// CHECK: }
-
-// CHECK: }
-// CHECK: }
-// CHECK: }
-
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK: scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}}
-// CHECK: air.channel.put{{.*}}@channel_0
-// CHECK: }
-// CHECK: }
+// CHECK: %[[for_loop_4:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[arg6:.*]] =
+// CHECK: %[[for_loop_5:.*]] = scf.for %{{.*}} = %c0{{.*}} to %c512{{.*}} step %c256{{.*}} iter_args(%[[arg8:.*]] = %[[arg6]]
+// CHECK: air.channel.put async [%[[arg8]]] @channel_0
+// CHECK-NEXT: scf.yield
+// CHECK-NEXT: }
+// CHECK-NEXT: scf.yield
+// CHECK-NEXT: }
 
 module {
   air.channel @channel_0 [1, 1]
