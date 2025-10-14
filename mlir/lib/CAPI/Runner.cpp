@@ -43,7 +43,7 @@ void airRunnerRun(MlirModule module, const char *jsonFileName,
     return;
   }
 
-  xilinx::air::AIRRunner runner(output->os(), *jsonModel, simGranularity,
+  xilinx::air::AIRRunner runner(output->os(), *jsonModel, simGranularity, "all",
                                 verbose);
 
   auto toplevel = moduleOp.lookupSymbol<mlir::func::FuncOp>(topLevelFunction);
