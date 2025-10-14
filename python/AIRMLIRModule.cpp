@@ -56,8 +56,9 @@ NB_MODULE(_air, m) {
   air_runner.def("run", [](MlirModule module, const std::string &json,
                            const std::string &outfile,
                            const std::string &function,
-                           const std::string &sim_granularity, bool verbose) {
+                           const std::string &sim_granularity,
+                           const std::string &launch_iterations, bool verbose) {
     airRunnerRun(module, json.c_str(), outfile.c_str(), function.c_str(),
-                 sim_granularity.c_str(), verbose);
+                 sim_granularity.c_str(), launch_iterations.c_str(), verbose);
   });
 }
