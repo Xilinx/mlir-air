@@ -70,6 +70,8 @@ void addAsyncDependencyIfNew(Operation *op, Value token);
 bool isAsyncOp(Operation *op);
 bool areAsyncDependent(Operation *a, Operation *b);
 bool isAsyncDependent(Operation *a, Operation *b);
+air::WaitAllOp generateWaitAllToTerminateBlock(Block &block, OpBuilder &b,
+                                               bool isBlocking = true);
 scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
                                      scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops);
