@@ -84,6 +84,13 @@ struct allocation_info_t {
   bool foundAlloc(int32_t col, int32_t row);
   bool foundAlloc(int32_t col, int32_t row, air::ChannelOp channel_op);
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
+  bool foundPacketFlowAllocInTile(int32_t col, int32_t row);
+
+  bool operator==(const allocation_info_t &other) const {
+    return dma_tile == other.dma_tile && col == other.col && row == other.row &&
+           dma_channel == other.dma_channel &&
+           tile_channel == other.tile_channel;
+  }
 };
 
 // Bundling up memcpy ops into MM2S and S2MM ops sharing the same aie.flow
