@@ -3664,6 +3664,12 @@ private:
     }
   }
 
+  // Helper function to check if two channels have the same channel_type
+  // attribute
+  bool haveSameChannelType(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    return chan_a.getChannelType() == chan_b.getChannelType();
+  }
+
   // Check whether puts and gets hit the aggressive mode target memory spaces
   bool hitsMemorySpaceForAggMode(std::vector<air::ChannelPutOp> &puts,
                                  std::vector<air::ChannelGetOp> &gets) {
@@ -3687,6 +3693,10 @@ private:
   }
 
   bool checkIfMergeable(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    // Check if channels have the same channel_type
+    if (!haveSameChannelType(chan_a, chan_b))
+      return false;
+
     // Check which memory space to time-multiplex channels onto.
     if (targetMemorySpaces.empty())
       return false;
@@ -3894,6 +3904,12 @@ private:
   // for loop (NFL).
   std::tuple<bool, std::string>
   checkIfTemporalMergeable(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    std::tuple<bool, std::string> notMergeable = {false, ""};
+
+    // Check if channels have the same channel_type
+    if (!haveSameChannelType(chan_a, chan_b))
+      return notMergeable;
+
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
     std::vector<air::ChannelPutOp> b_puts =
@@ -3902,7 +3918,6 @@ private:
         getChannelGetOpThroughSymbol(chan_a);
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
-    std::tuple<bool, std::string> notMergeable = {false, ""};
     std::tuple<bool, std::string> mergeableToLB = {true, "LB"};
     std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
     std::tuple<bool, std::string> mergeableNoForLoop = {true, "NFL"};
