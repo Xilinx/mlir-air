@@ -572,6 +572,39 @@ void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
     addAsyncDependencyIfNewImpl(wait_all_op_before_loop, token);
   }
 }
+void addAsyncDependencyIfNewImpl(affine::AffineIfOp op, Value token) {
+  // Process operations in the then block
+  for (auto &nested_op : op.getThenBlock()->getOperations()) {
+    // Skip affine.yield terminators
+    if (isa<affine::AffineYieldOp>(nested_op))
+      continue;
+
+    // Recursively process nested affine.if operations
+    if (auto nested_affine_if = dyn_cast<affine::AffineIfOp>(nested_op)) {
+      addAsyncDependencyIfNewImpl(nested_affine_if, token);
+    } else {
+      // For non-affine.if operations, call addAsyncDependencyIfNew
+      addAsyncDependencyIfNew(&nested_op, token);
+    }
+  }
+
+  // Process operations in the else block if it exists
+  if (op.hasElse()) {
+    for (auto &nested_op : op.getElseBlock()->getOperations()) {
+      // Skip affine.yield terminators
+      if (isa<affine::AffineYieldOp>(nested_op))
+        continue;
+
+      // Recursively process nested affine.if operations
+      if (auto nested_affine_if = dyn_cast<affine::AffineIfOp>(nested_op)) {
+        addAsyncDependencyIfNewImpl(nested_affine_if, token);
+      } else {
+        // For non-affine.if operations, call addAsyncDependencyIfNew
+        addAsyncDependencyIfNew(&nested_op, token);
+      }
+    }
+  }
+}
 void addAsyncDependencyIfNew(Operation *op, Value token) {
   if (!op)
     return;
@@ -587,6 +620,8 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
     addAsyncDependencyIfNewImpl(for_op, token);
   } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
     addAsyncDependencyIfNewImpl(parallel_op, token);
+  } else if (auto affine_if_op = dyn_cast<affine::AffineIfOp>(op)) {
+    addAsyncDependencyIfNewImpl(affine_if_op, token);
   } else
     op->emitOpError("unknown async op");
 }
