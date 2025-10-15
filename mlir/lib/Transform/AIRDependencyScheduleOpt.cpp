@@ -692,6 +692,25 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   auto &body = herdOp.getBody().front().getOperations();
   bb.splice(bb.begin(), body, body.begin(), --body.end());
 
+  // Connect spliced body ops with the inner-most loop's loop-carried token, to
+  // synchronize the herd body operations with the inner-most loop's
+  // loop-carried dependency.
+  if (air::isAsyncOp(innerMostLoop)) {
+    for (auto &bodyOp : innerMostLoop.getBody()->without_terminator()) {
+      if (!air::getAsyncDependenciesFromOp(&bodyOp).empty())
+        continue;
+      addAsyncDependencyIfNew(&bodyOp, air::getLoopCarriedTokenFromScfOp(
+                                           innerMostLoop, "argument"));
+    }
+    // Generate a wait_all op that collects all dangling async tokens in the
+    // loop body.
+    auto waitAllOp = generateWaitAllToTerminateBlock(
+        *innerMostLoop.getBody(), builder, /*isBlocking*/ false);
+    // Assign the wait_all token to the loop's terminator (scf.yield).
+    innerMostLoop.getBody()->getTerminator()->getOpOperand(0).assign(
+        waitAllOp.getAsyncToken());
+  }
+
   builder.setInsertionPoint(herdOp);
   for (auto res : herdOp->getResults())
     remap.map(res,
@@ -5794,36 +5813,6 @@ private:
   }
 };
 
-// Generate a wait_all at the end of block, which gathers all dangling async
-// tokens.
-FailureOr<air::WaitAllOp>
-generateWaitAllToTerminateBlock(Block &block, OpBuilder &b,
-                                bool isBlocking = true) {
-  llvm::SetVector<Value> blockTokens, danglingTokens;
-  blockTokens.insert(block.getArguments().begin(), block.getArguments().end());
-  for (auto &o : block.getOperations())
-    blockTokens.insert(o.getResults().begin(), o.getResults().end());
-  for (auto t : blockTokens) {
-    if (!t.use_empty())
-      continue;
-    if (!isa<air::AsyncTokenType>(t.getType()))
-      continue;
-    danglingTokens.insert(t);
-  }
-  if (block.mightHaveTerminator())
-    b.setInsertionPoint(block.getTerminator());
-  else
-    b.setInsertionPointToEnd(&block);
-  if (isBlocking)
-    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
-                                    /*result_type*/ std::nullopt,
-                                    danglingTokens.takeVector());
-  else
-    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
-                                    air::AsyncTokenType::get(b.getContext()),
-                                    danglingTokens.takeVector());
-}
-
 // Air launch is converted to scf for loop nest here, so as to enable
 // compile-time shim dma bd optimizations.
 struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
@@ -5914,10 +5903,8 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       auto wa = generateWaitAllToTerminateBlock(*body, rewriter,
                                                 /*isBlocking*/ false);
-      if (failed(wa))
-        return failure();
       rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(),
-                                    wa->getAsyncToken());
+                                    wa.getAsyncToken());
     }
 
     // replace output events with air.wait_all
@@ -6218,8 +6205,8 @@ public:
       IRRewriter rewriter(func.getContext());
       if (air::isAsyncOp(seg)) {
         OpBuilder::InsertionGuard guard(rewriter);
-        if (failed(generateWaitAllToTerminateBlock(
-                seg.getBody().front(), rewriter, /*isBlocking*/ true)))
+        if (!generateWaitAllToTerminateBlock(seg.getBody().front(), rewriter,
+                                             /*isBlocking*/ true))
           signalPassFailure();
       }
     }

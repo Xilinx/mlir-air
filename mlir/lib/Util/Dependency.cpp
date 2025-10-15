@@ -572,6 +572,39 @@ void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
     addAsyncDependencyIfNewImpl(wait_all_op_before_loop, token);
   }
 }
+void addAsyncDependencyIfNewImpl(affine::AffineIfOp op, Value token) {
+  // Process operations in the then block
+  for (auto &nested_op : op.getThenBlock()->getOperations()) {
+    // Skip affine.yield terminators
+    if (isa<affine::AffineYieldOp>(nested_op))
+      continue;
+
+    // Recursively process nested affine.if operations
+    if (auto nested_affine_if = dyn_cast<affine::AffineIfOp>(nested_op)) {
+      addAsyncDependencyIfNewImpl(nested_affine_if, token);
+    } else {
+      // For non-affine.if operations, call addAsyncDependencyIfNew
+      addAsyncDependencyIfNew(&nested_op, token);
+    }
+  }
+
+  // Process operations in the else block if it exists
+  if (op.hasElse()) {
+    for (auto &nested_op : op.getElseBlock()->getOperations()) {
+      // Skip affine.yield terminators
+      if (isa<affine::AffineYieldOp>(nested_op))
+        continue;
+
+      // Recursively process nested affine.if operations
+      if (auto nested_affine_if = dyn_cast<affine::AffineIfOp>(nested_op)) {
+        addAsyncDependencyIfNewImpl(nested_affine_if, token);
+      } else {
+        // For non-affine.if operations, call addAsyncDependencyIfNew
+        addAsyncDependencyIfNew(&nested_op, token);
+      }
+    }
+  }
+}
 void addAsyncDependencyIfNew(Operation *op, Value token) {
   if (!op)
     return;
@@ -587,6 +620,8 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
     addAsyncDependencyIfNewImpl(for_op, token);
   } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
     addAsyncDependencyIfNewImpl(parallel_op, token);
+  } else if (auto affine_if_op = dyn_cast<affine::AffineIfOp>(op)) {
+    addAsyncDependencyIfNewImpl(affine_if_op, token);
   } else
     op->emitOpError("unknown async op");
 }
@@ -667,6 +702,35 @@ bool isAsyncDependent(Operation *a, Operation *b) {
   return false;
 }
 
+// Generate a wait_all at the end of block, which gathers all dangling async
+// tokens.
+air::WaitAllOp generateWaitAllToTerminateBlock(Block &block, OpBuilder &b,
+                                               bool isBlocking) {
+  llvm::SetVector<Value> blockTokens, danglingTokens;
+  blockTokens.insert(block.getArguments().begin(), block.getArguments().end());
+  for (auto &o : block.getOperations())
+    blockTokens.insert(o.getResults().begin(), o.getResults().end());
+  for (auto t : blockTokens) {
+    if (!t.use_empty())
+      continue;
+    if (!isa<air::AsyncTokenType>(t.getType()))
+      continue;
+    danglingTokens.insert(t);
+  }
+  if (block.mightHaveTerminator())
+    b.setInsertionPoint(block.getTerminator());
+  else
+    b.setInsertionPointToEnd(&block);
+  if (isBlocking)
+    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
+                                    /*result_type*/ std::nullopt,
+                                    danglingTokens.takeVector());
+  else
+    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
+                                    air::AsyncTokenType::get(b.getContext()),
+                                    danglingTokens.takeVector());
+}
+
 // Splits an SCF for loop into two for loops, by hoisting target operations in
 // for loop to a new for loop located at the same scope.
 scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
@@ -703,7 +767,6 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
   rewriter.setInsertionPointToStart(new_for_op.getBody());
-  SmallVector<Value> yield_operands;
   // Build up a log of ops to be cloned; using SetVector to avoid repetition.
   llvm::SetVector<Operation *> ops_to_be_cloned;
   for (auto op : target_ops) {
@@ -722,18 +785,34 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
     ops_to_be_cloned.insert(backwardSlices.begin(), backwardSlices.end());
     ops_to_be_cloned.insert(op);
   }
-  Operation *back_of_dep_chain;
-  for (auto o : ops_to_be_cloned)
-    back_of_dep_chain = rewriter.clone(*o, remap);
-  yield_operands.push_back(getAsyncTokenFromOp(back_of_dep_chain));
 
-  rewriter.create<scf::YieldOp>(
-      loc, SmallVector<Value>{
-               rewriter
-                   .create<air::WaitAllOp>(
-                       loc, air::AsyncTokenType::get(rewriter.getContext()),
-                       yield_operands)
-                   ->getResult(0)});
+  // Clone all collected operations into the new for loop body
+  for (auto o : ops_to_be_cloned)
+    rewriter.clone(*o, remap);
+
+  SmallVector<Value> yield_operands;
+  // If the new for loop is async, we need to properly terminate it with async
+  // tokens
+  if (air::isAsyncOp(new_for_op)) {
+    // Generate a wait_all op that collects all dangling async tokens in the
+    // loop body. This ensures all async operations within the loop are properly
+    // synchronized.
+    auto waitAllOp = generateWaitAllToTerminateBlock(
+        *new_for_op.getBody(), rewriter, /*isBlocking*/ false);
+    yield_operands.push_back(getAsyncTokenFromOp(waitAllOp));
+
+    // Create the scf.yield operation for the loop, yielding a wait_all token.
+    // The yielded wait_all synchronizes on all operations collected by
+    // waitAllOp, allowing the for loop to properly propagate async dependencies
+    // to subsequent iterations.
+    rewriter.create<scf::YieldOp>(
+        loc, SmallVector<Value>{
+                 rewriter
+                     .create<air::WaitAllOp>(
+                         loc, air::AsyncTokenType::get(rewriter.getContext()),
+                         yield_operands)
+                     ->getResult(0)});
+  }
 
   return new_for_op;
 }
