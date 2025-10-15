@@ -29,6 +29,7 @@
 
 static bool verbose = false;
 static std::string sim_granularity = "herd";
+static std::string launch_iterations = "all";
 
 using namespace mlir;
 
@@ -58,6 +59,10 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
                      "from herd and core)"),
       llvm::cl::value_desc("string"), llvm::cl::init("herd"));
 
+  static llvm::cl::opt<std::string> clLaunchIterations(
+      "l", llvm::cl::desc("launch iteration mode (pick from single or all)"),
+      llvm::cl::value_desc("string"), llvm::cl::init("all"));
+
   static llvm::cl::opt<bool> clVerbose("v", llvm::cl::desc("verbose"),
                                        llvm::cl::value_desc("bool"),
                                        llvm::cl::init(false));
@@ -67,6 +72,7 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
 
   verbose = clVerbose;
   sim_granularity = clSimGranularity;
+  launch_iterations = clLaunchIterations;
   // herd_slots = clHerdSlots;
   // dispatch_slots = clDispatchSlots;
 
@@ -125,7 +131,8 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
     if (!jsonModel)
       llvm_unreachable("failed to parse model json\n");
 
-    xilinx::air::AIRRunner runner(os, *jsonModel, sim_granularity, clVerbose);
+    xilinx::air::AIRRunner runner(os, *jsonModel, sim_granularity,
+                                  launch_iterations, clVerbose);
 
     // The number of outputs of the function in the IR.
     unsigned numOutputs = 0;
