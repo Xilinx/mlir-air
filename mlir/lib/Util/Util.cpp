@@ -482,6 +482,20 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
   return getChannelGetOpThroughSymbol(channel_op);
 }
 
+// Get channel type from air.channel_interface ops.
+FailureOr<StringRef> air::getChannelType(air::MemcpyInterface memcpyIfOp) {
+  if (!memcpyIfOp)
+    return failure();
+  auto chanIfOp = dyn_cast<air::ChannelInterface>(memcpyIfOp.getOperation());
+  if (!chanIfOp)
+    return StringRef("dma_stream");
+  auto chanOp = getChannelDeclarationThroughSymbol(chanIfOp);
+  if (chanOp) {
+    return chanOp.getChannelType();
+  }
+  return failure();
+}
+
 // Get the other channel op through channel symbol
 std::vector<air::ChannelPutOp>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
