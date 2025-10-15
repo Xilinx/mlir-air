@@ -87,9 +87,10 @@ class AIRRunner::AIRRunner_impl {
 
 public:
   AIRRunner_impl(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model,
-                 std::string sim_granularity = "herd", bool verbose = false)
+                 std::string sim_granularity = "herd",
+                 std::string launch_iterations = "all", bool verbose = false)
       : traceStream(trace_stream), jsonModel(json_model),
-        sim_granularity(sim_granularity) {
+        sim_granularity(sim_granularity), launch_iterations(launch_iterations) {
 
     auto model = jsonModel.getAsObject();
 
@@ -389,7 +390,13 @@ public:
         iter_count *= s;
       }
 
-      for (unsigned i = 0; i < iter_count; i++) {
+      // Determine iteration count based on launch_iterations option
+      int64_t actual_iter_count = iter_count;
+      if (launch_iterations == "single") {
+        actual_iter_count = 1;
+      }
+
+      for (unsigned i = 0; i < actual_iter_count; i++) {
 
         // Reset controllers
         launch_runner_node = runnerNode(nullptr, &launchGraph, "launch",
@@ -482,6 +489,7 @@ private:
   llvm::raw_ostream &traceStream;
   llvm::json::Value &jsonModel;
   std::string sim_granularity;
+  std::string launch_iterations;
 
   unsigned dispatch_slots;
   unsigned dispatch_dma_slots;
@@ -753,9 +761,9 @@ private:
 
 AIRRunner::AIRRunner(llvm::raw_ostream &trace_stream,
                      llvm::json::Value &json_model, std::string sim_granularity,
-                     bool verbose) {
-  impl = std::make_unique<AIRRunner_impl>(trace_stream, json_model,
-                                          sim_granularity, verbose);
+                     std::string launch_iterations, bool verbose) {
+  impl = std::make_unique<AIRRunner_impl>(
+      trace_stream, json_model, sim_granularity, launch_iterations, verbose);
   if (verbose) {
     llvm::DebugFlag = true;
     llvm::setCurrentDebugType(DEBUG_TYPE);
