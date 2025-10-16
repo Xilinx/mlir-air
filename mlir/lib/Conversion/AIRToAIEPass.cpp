@@ -3289,6 +3289,7 @@ public:
               loc, dir, chan, rep, first_bd,
               channel_head->getTerminator()->getSuccessor(1));
           channel_head->getTerminator()->setSuccessor(start_bb, 1);
+          channel_head = start_bb;
         }
         taskId++;
       }
