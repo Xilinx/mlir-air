@@ -176,17 +176,19 @@ config.test_source_root = os.path.dirname(__file__)
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = os.path.join(config.air_obj_root, "test")
 config.aie_tools_dir = os.path.join(config.aie_obj_root, "bin")
+config.aie_python_tools_dir = os.path.join(config.aie_obj_root, "python/aie/utils")
 config.air_tools_dir = os.path.join(config.air_obj_root, "bin")
 
 # Tweak the PATH to include the tools dir.
 llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 llvm_config.with_environment("PATH", config.peano_tools_dir, append_path=True)
 llvm_config.with_environment("PATH", config.aie_tools_dir, append_path=True)
+llvm_config.with_environment("PATH", config.aie_python_tools_dir, append_path=True)
 llvm_config.with_environment("PATH", config.air_tools_dir, append_path=True)
 
 config.substitutions.append(("%LLVM_TOOLS_DIR", config.llvm_tools_dir))
 
-tool_dirs = [config.aie_tools_dir, config.llvm_tools_dir]
+tool_dirs = [config.aie_tools_dir, config.aie_python_tools_dir, config.llvm_tools_dir]
 
 # Test if Peano is available
 try:
@@ -255,6 +257,7 @@ else:
 tool_dirs = [
     config.peano_tools_dir,
     config.aie_tools_dir,
+    config.aie_python_tools_dir,
     config.air_tools_dir,
     config.llvm_tools_dir,
 ]
@@ -269,6 +272,7 @@ tools = [
     "llvm-objdump",
     "mlir-translate",
     "opt",
+    "parse_trace.py",
 ]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)
