@@ -168,31 +168,35 @@ foreach(target ${AIR_RUNTIME_TARGETS})
   message(
     "Building AIR runtime for ${target} with TOOLCHAIN=${${target}_TOOLCHAIN_FILE}"
   )
-  ExternalProject_Add(
-    air_runtime_lib_${target}
-    PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
-    SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
-    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
-    CMAKE_CACHE_ARGS -DCMAKE_MODULE_PATH:STRING=${CMAKE_MODULE_PATH}
-    CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${${target}_TOOLCHAIN_FILE}
-               -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-               -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-               -DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
-               -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-               -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
-               -DLibXAIE_ROOT=${LibXAIE_ROOT}
-               -Dhsa-runtime64_DIR=${hsa-runtime64_DIR}
-               -Dhsakmt_DIR=${hsakmt_DIR}
-               -DAIR_RUNTIME_TARGET=${target}
-               -DAIE_DIR=${AIE_DIR}
-    BUILD_ALWAYS true
-    STEP_TARGETS clean build install test
-    USES_TERMINAL_CONFIGURE true
-    USES_TERMINAL_BUILD true
-    USES_TERMINAL_TEST true
-    USES_TERMINAL_INSTALL true
-    TEST_BEFORE_INSTALL true
-    TEST_EXCLUDE_FROM_MAIN true)
+  if(LibXAIE_ROOT)
+    ExternalProject_Add(
+      air_runtime_lib_${target}
+      PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
+      SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
+      BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
+      CMAKE_CACHE_ARGS -DCMAKE_MODULE_PATH:STRING=${CMAKE_MODULE_PATH}
+      CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${${target}_TOOLCHAIN_FILE}
+                 -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+                 -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+                 -DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
+                 -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+                 -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
+                 -DLibXAIE_ROOT=${LibXAIE_ROOT}
+                 -Dhsa-runtime64_DIR=${hsa-runtime64_DIR}
+                 -Dhsakmt_DIR=${hsakmt_DIR}
+                 -DAIR_RUNTIME_TARGET=${target}
+                 -DAIE_DIR=${AIE_DIR}
+      BUILD_ALWAYS true
+      STEP_TARGETS clean build install test
+      USES_TERMINAL_CONFIGURE true
+      USES_TERMINAL_BUILD true
+      USES_TERMINAL_TEST true
+      USES_TERMINAL_INSTALL true
+      TEST_BEFORE_INSTALL true
+      TEST_EXCLUDE_FROM_MAIN true)
+  else()
+    message(WARNING "Skipping AIR runtime build for ${target}: LibXAIE_ROOT is not set")
+  endif()
 endforeach()
 
 add_subdirectory(python)
