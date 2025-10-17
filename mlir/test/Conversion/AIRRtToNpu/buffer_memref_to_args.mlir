@@ -19,11 +19,8 @@
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId16 : memref<8x8xi32, 1>
     aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId4 : memref<8x16xi32, 1>
     aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId5 : memref<16x8xi32, 1>
   } {sym_name = "segment_0"}
   func.func @func0(%arg0: memref<8x16xi32>, %arg1: memref<16x8xi32>, %arg2: memref<8x8xi32>) {
     %c8_i64 = arith.constant 8 : i64
@@ -65,11 +62,8 @@ module {
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId16 : memref<8x8xi32, 1>
     aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId4 : memref<8x16xi32, 1>
     aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId5 : memref<16x8xi32, 1>
   } {sym_name = "segment_0"}
   func.func @func1() {
     %c8_i64 = arith.constant 8 : i64
@@ -125,15 +119,10 @@ module {
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId26(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId26 : memref<128x128xbf16, 1 : i32>
     aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId4 : memref<128x256xbf16, 1 : i32>
     aie.shim_dma_allocation @airMemcpyId10(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId10 : memref<128x256xbf16, 1 : i32>
     aie.shim_dma_allocation @airMemcpyId7(MM2S, 1, 0)
-    memref.global "public" @airMemcpyId7 : memref<256x128xbf16, 1 : i32>
     aie.shim_dma_allocation @airMemcpyId13(MM2S, 1, 0)
-    memref.global "public" @airMemcpyId13 : memref<256x128xbf16, 1 : i32>
   } {sym_name = "segment_0"}
   func.func @func2() {
     %c128_i64 = arith.constant 128 : i64

@@ -19,9 +19,7 @@
 // CHECK: aie.flow(%[[VAL1]], DMA : 0, %[[VAL0]], DMA : 1)
 // CHECK: aie.flow(%[[VAL0]], DMA : 1, %[[VAL2]], DMA : 0)
 // CHECK: aie.shim_dma_allocation @air_channel_3(S2MM, 0, 0)
-// CHECK: memref.global "public" @air_channel_3 : memref<64xi32, 1>
 // CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
-// CHECK: memref.global "public" @air_channel_0 : memref<64xi32, 1>
 // CHECK: @func0
 // CHECK: air.channel.put  @channel_0[] {{.*}} metadataArray = [{base = "air_channel_0", index = 0 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
 #map2 = affine_map<(d0) -> (d0)>
@@ -80,9 +78,7 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK: aie.flow(%[[VAL1]], DMA : 0, %[[VAL0]], DMA : 1)
 // CHECK: aie.flow(%[[VAL0]], DMA : 1, %[[VAL2]], DMA : 0)
 // CHECK: aie.shim_dma_allocation @air_channel_3(S2MM, 0, 0)
-// CHECK: memref.global "public" @air_channel_3 : memref<64xi32, 1>
 // CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
-// CHECK: memref.global "public" @air_channel_0 : memref<64xi32, 1>
 // CHECK: @func1
 // CHECK: air.channel.put async @channel_0[] {{.*}} metadataArray = [{base = "air_channel_0", index = 0 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
 #map = affine_map<(d0) -> (d0)>

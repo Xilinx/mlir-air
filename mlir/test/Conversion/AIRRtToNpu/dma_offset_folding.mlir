@@ -14,11 +14,8 @@
 //
 // CHECK-LABEL: aie.device(npu1)
 // CHECK: aie.shim_dma_allocation @airMemcpyId19(S2MM, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId19 : memref<128x128xf32, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId4 : memref<128x128xbf16, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId5(MM2S, 1, 0)
-// CHECK: memref.global "public" @airMemcpyId5 : memref<16x8x8x16xbf16, 1>
 
 
 // CHECK: aiex.npu.dma_memcpy_nd(%arg0[0, 0, 0, 0][1, 4, 128, 32][0, 32, 128, 1]) {id = 0 : i64, metadata = @airMemcpyId4} : memref<512x128xbf16>
@@ -89,11 +86,8 @@
 module {
   aie.device(npu1) {
     aie.shim_dma_allocation @airMemcpyId19(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId19 : memref<128x128xf32, 1>
     aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId4 : memref<128x128xbf16, 1>
     aie.shim_dma_allocation @airMemcpyId5(MM2S, 1, 0)
-    memref.global "public" @airMemcpyId5 : memref<16x8x8x16xbf16, 1>
   } {sym_name = "forward_0"}
   airrt.module_metadata{
     airrt.segment_metadata attributes {sym_name = "forward_0"} {

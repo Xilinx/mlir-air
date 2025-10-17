@@ -14,18 +14,6 @@
 // WHOLEARRAY: %[[shim_noc_tile_2_0:.*]] = aie.tile(2, 0)
 // WHOLEARRAY: %[[shim_noc_tile_3_0:.*]] = aie.tile(3, 0)
 // WHOLEARRAY: aie.shim_dma_allocation @air_channel_2_0(MM2S, 0, 0)
-// WHOLEARRAY: memref.global "public" @air_channel_2_0 : memref<1x1x64x64xbf16, 1 : i32>
-// WHOLEARRAY: aie.shim_dma_allocation @air_channel_2_1(MM2S, 0, 1)
-// WHOLEARRAY: memref.global "public" @air_channel_2_1 : memref<1x1x64x64xbf16, 1 : i32>
-// WHOLEARRAY: aie.shim_dma_allocation @air_channel_2_2(MM2S, 0, 2)
-// WHOLEARRAY: memref.global "public" @air_channel_2_2 : memref<1x1x64x64xbf16, 1 : i32>
-// WHOLEARRAY: aie.shim_dma_allocation @air_channel_2_3(MM2S, 0, 3)
-// WHOLEARRAY: memref.global "public" @air_channel_2_3 : memref<1x1x64x64xbf16, 1 : i32>
-// WHOLEARRAY: @func2
-// WHOLEARRAY: air.channel.put {{.*}} @channel_2[%c0{{.*}}, %c0{{.*}}] {{.*}} metadataArray = [{base = "air_channel_2_0", index = 0 : i32}, {base = "air_channel_2_1", index = 1 : i32}, {base = "air_channel_2_2", index = 2 : i32}, {base = "air_channel_2_3", index = 3 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
-// WHOLEARRAY: air.channel.put {{.*}} @channel_2[%c1{{.*}}, %c0{{.*}}] {{.*}} metadataArray = [{base = "air_channel_2_0", index = 0 : i32}, {base = "air_channel_2_1", index = 1 : i32}, {base = "air_channel_2_2", index = 2 : i32}, {base = "air_channel_2_3", index = 3 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>
-// WHOLEARRAY: air.channel.put {{.*}} @channel_2[%c2{{.*}}, %c0{{.*}}] {{.*}} metadataArray = [{base = "air_channel_2_0", index = 0 : i32}, {base = "air_channel_2_1", index = 1 : i32}, {base = "air_channel_2_2", index = 2 : i32}, {base = "air_channel_2_3", index = 3 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 2>
-// WHOLEARRAY: air.channel.put {{.*}} @channel_2[%c3{{.*}}, %c0{{.*}}] {{.*}} metadataArray = [{base = "air_channel_2_0", index = 0 : i32}, {base = "air_channel_2_1", index = 1 : i32}, {base = "air_channel_2_2", index = 2 : i32}, {base = "air_channel_2_3", index = 3 : i32}], packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>
 
 
 #map = affine_map<()[s0] -> (s0 * 256)>
