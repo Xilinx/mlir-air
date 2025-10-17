@@ -150,25 +150,25 @@ set(AIR_RUNTIME_TEST_TARGET
     CACHE STRING "Runtime architecture to test with.")
 set(AIR_RUNTIME_TEST_TARGET_VAL ${AIR_RUNTIME_TEST_TARGET})
 
-foreach(target ${AIR_RUNTIME_TARGETS})
-  # By default, we test the first architecture in AIR_RUNTIME_TARGETS.
-  # Alternatively, this can be defined to force testing with a particular
-  # architecture.
-  if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
-    set(AIR_RUNTIME_TEST_TARGET_VAL ${target})
-    message("Testing with AIR runtime target: ${AIR_RUNTIME_TEST_TARGET_VAL}")
-  endif()
+if(LibXAIE_FOUND)
+  foreach(target ${AIR_RUNTIME_TARGETS})
+    # By default, we test the first architecture in AIR_RUNTIME_TARGETS.
+    # Alternatively, this can be defined to force testing with a particular
+    # architecture.
+    if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
+      set(AIR_RUNTIME_TEST_TARGET_VAL ${target})
+      message("Testing with AIR runtime target: ${AIR_RUNTIME_TEST_TARGET_VAL}")
+    endif()
 
-  if(NOT EXISTS ${${target}_TOOLCHAIN_FILE})
+    if(NOT EXISTS ${${target}_TOOLCHAIN_FILE})
+      message(
+        FATAL_ERROR
+          "Toolchain file ${${target}_TOOLCHAIN_FILE} not found! Cannot build target ${target}."
+      )
+    endif()
     message(
-      FATAL_ERROR
-        "Toolchain file ${${target}_TOOLCHAIN_FILE} not found! Cannot build target ${target}."
+      "Building AIR runtime for ${target} with TOOLCHAIN=${${target}_TOOLCHAIN_FILE}"
     )
-  endif()
-  message(
-    "Building AIR runtime for ${target} with TOOLCHAIN=${${target}_TOOLCHAIN_FILE}"
-  )
-  if(LibXAIE_ROOT)
     ExternalProject_Add(
       air_runtime_lib_${target}
       PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
@@ -194,10 +194,12 @@ foreach(target ${AIR_RUNTIME_TARGETS})
       USES_TERMINAL_INSTALL true
       TEST_BEFORE_INSTALL true
       TEST_EXCLUDE_FROM_MAIN true)
-  else()
-    message(WARNING "Skipping AIR runtime build for ${target}: LibXAIE_ROOT is not set")
+  endforeach()
+else()
+  if(AIR_RUNTIME_TARGETS)
+    message(WARNING "Skipping AIR runtime build: LibXAIE was not found")
   endif()
-endforeach()
+endif()
 
 add_subdirectory(python)
 if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
