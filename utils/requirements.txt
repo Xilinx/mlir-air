@@ -7,7 +7,7 @@ ipykernel
 psutil
 rich
 pybind11
-nanobind
+nanobind>=2.9
 numpy<2
 cmake
-bfloat16
+ml_dtypes
