@@ -11,8 +11,8 @@ include_directories(
 
 add_definitions(-DLIBXAIENGINEV2)
 
-# Only build the runtime if hsa was found
-if (hsa-runtime64_FOUND)
+# Only build the runtime if hsa was found and XAIE variables are set
+if (hsa-runtime64_FOUND AND XILINX_XAIE_INCLUDE_DIR AND XILINX_XAIE_LIBS)
   include_directories(${XILINX_XAIE_INCLUDE_DIR})
   link_libraries(${XILINX_XAIE_LIBS})
 
