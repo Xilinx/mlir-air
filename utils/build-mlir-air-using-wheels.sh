@@ -75,32 +75,39 @@ cd $BUILD_DIR
 
 PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 
-cmake .. \
-    -GNinja \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
-    -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
-    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
-    -DLLVM_DIR=${WHL_MLIR_DIR}/lib/cmake/llvm \
-    -DMLIR_DIR=${WHL_MLIR_DIR}/lib/cmake/mlir \
-    -DLLVM_EXTERNAL_LIT=$(which lit) \
-    -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
-    -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
-    -DAIE_DIR=${MLIR_AIE_INSTALL_DIR}/lib/cmake/aie \
-    -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
-    -DPython_FIND_VIRTUALENV=ONLY \
-    -DPython3_FIND_VIRTUALENV=ONLY \
-    -DXRT_LIB_DIR=${XRT_DIR}/lib \
-    -DXRT_BIN_DIR=${XRT_DIR}/bin \
-    -DXRT_INCLUDE_DIR=${XRT_DIR}/include \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DAIR_RUNTIME_TARGETS="x86_64" \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DENABLE_RUN_XRT_TESTS=ON \
-    -DLLVM_USE_LINKER=lld \
-    -DLLVM_ENABLE_ASSERTIONS=on \
-    -DPEANO_INSTALL_DIR=${PEANO_INSTALL_DIR} \
-    |& tee cmake.log
+CMAKE_ARGS="-GNinja"
+CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER=clang"
+CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CXX_COMPILER=clang++"
+CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=../${INSTALL_DIR}"
+CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/"
+CMAKE_ARGS="$CMAKE_ARGS -DLLVM_DIR=${WHL_MLIR_DIR}/lib/cmake/llvm"
+CMAKE_ARGS="$CMAKE_ARGS -DMLIR_DIR=${WHL_MLIR_DIR}/lib/cmake/mlir"
+CMAKE_ARGS="$CMAKE_ARGS -DLLVM_EXTERNAL_LIT=$(which lit)"
+CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake"
+CMAKE_ARGS="$CMAKE_ARGS -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake"
+CMAKE_ARGS="$CMAKE_ARGS -DAIE_DIR=${MLIR_AIE_INSTALL_DIR}/lib/cmake/aie"
+CMAKE_ARGS="$CMAKE_ARGS -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11"
+CMAKE_ARGS="$CMAKE_ARGS -DPython_FIND_VIRTUALENV=ONLY"
+CMAKE_ARGS="$CMAKE_ARGS -DPython3_FIND_VIRTUALENV=ONLY"
+CMAKE_ARGS="$CMAKE_ARGS -DXRT_LIB_DIR=${XRT_DIR}/lib"
+CMAKE_ARGS="$CMAKE_ARGS -DXRT_BIN_DIR=${XRT_DIR}/bin"
+CMAKE_ARGS="$CMAKE_ARGS -DXRT_INCLUDE_DIR=${XRT_DIR}/include"
+CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release"
+CMAKE_ARGS="$CMAKE_ARGS -DAIR_RUNTIME_TARGETS=x86_64"
+CMAKE_ARGS="$CMAKE_ARGS -DBUILD_SHARED_LIBS=OFF"
+CMAKE_ARGS="$CMAKE_ARGS -DENABLE_RUN_XRT_TESTS=ON"
+CMAKE_ARGS="$CMAKE_ARGS -DLLVM_ENABLE_ASSERTIONS=on"
+CMAKE_ARGS="$CMAKE_ARGS -DPEANO_INSTALL_DIR=${PEANO_INSTALL_DIR}"
+
+if [ -x "$(command -v lld)" ]; then
+  CMAKE_ARGS="$CMAKE_ARGS -DLLVM_USE_LINKER=lld"
+fi
+
+if [ -x "$(command -v ccache)" ]; then
+  CMAKE_ARGS="$CMAKE_ARGS -DLLVM_CCACHE_BUILD=ON"
+fi
+
+cmake $CMAKE_ARGS .. |& tee cmake.log
 
 ninja |& tee ninja.log
 ninja install |& tee ninja-install.log
