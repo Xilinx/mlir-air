@@ -8,7 +8,6 @@
 - **gcc >= 11**
 - **pip** (Python package manager)
 - **XRT** installed (you must provide the path to your XRT installation)
-- (Optional but recommended) A Python virtual environment
 
 ### Steps
 
@@ -18,15 +17,19 @@
    cd mlir-air
    ```
 
-2. **(Optional) Set up a Python virtual environment:**
+2. **Install the following packages needed for MLIR-AIR:**
    ```bash
-   python3 -m venv sandbox
-   source sandbox/bin/activate
+   sudo apt-get install -y ninja-build clang lld
    ```
 
-3. **Run the build script:**
+3. **Set up a Python virtual environment with the prerequisite python packages :**
    ```bash
-   utils/build-mlir-air-using-wheels.sh <xrt_dir> [build_dir] [install_dir]
+   source utils/setup_python_packages.sh
+   ```
+
+4. **Run the build script:**
+   ```bash
+   ./utils/build-mlir-air-using-wheels.sh <xrt_dir> [build_dir] [install_dir]
    ```
    - `<xrt_dir>`: Path to your XRT installation (required)
    - `[build_dir]`: Build directory (optional, default: `build`)
@@ -39,11 +42,17 @@
    - Clone required CMake modules
    - Configure and build MLIR-AIR using CMake and Ninja
 
-4. **Environment Setup:**
-   The script sets up environment variables for MLIR-AIE, Python, and libraries.  
-   If you start a new terminal, you may need to re-source your Python environment and set variables as needed.
+5. **Environment Setup:**
+   To setup your environment after building:
+   ```bash
+   source utils/env_setup.sh [install_dir] $(python3 -m pip show mlir_aie | grep Location | awk '{print $2}')/mlir_aie my_install/mlir
+   source [xrt_dir]/setup.sh
+   ```
+   The first command automatically detects the installation directories of the `mlir-aie` Python package, and sets up environment variables for MLIR-AIE, Python, and MLIR libraries.  
+   The second command sets up the PATHs for XRT.
+   If you start a new terminal, you may need to re-source the above setup scripts as needed.
 
-5. **Testing:**
+6. **Testing:**
    After building, you can run tests as follows:
    ```bash
    cd <build_dir>   # default is 'build'
