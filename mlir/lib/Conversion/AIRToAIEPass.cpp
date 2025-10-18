@@ -2847,7 +2847,7 @@ public:
         // Create shim allocation op.
         if (!SymbolTable::lookupSymbolIn(deviceOp, shim_name)) {
           auto shimAllocationOp = builder.create<AIE::ShimDMAAllocationOp>(
-              builder.getUnknownLoc(), SymbolRefAttr::get(ctx, shim_name_attr),
+              builder.getUnknownLoc(), shim_name_attr,
               AIE::DMAChannelDirAttr::get(ctx, dir),
               builder.getI64IntegerAttr(t.dma_channel.channel),
               builder.getI64IntegerAttr(t.getDmaTile().getCol()),
@@ -2859,13 +2859,7 @@ public:
           MemRefType rankedTileSideMemRefTy =
               getTileSideMemrefTypeForMemcpy(memcpyIfOp, dir);
 
-          // Create memref.global op.
-          if (rankedTileSideMemRefTy)
-            builder.create<memref::GlobalOp>(
-                builder.getUnknownLoc(), shim_name_attr.getValue(),
-                builder.getStringAttr("public"), rankedTileSideMemRefTy,
-                nullptr, false, nullptr);
-          else
+          if (!rankedTileSideMemRefTy)
             return shimAllocationOp->emitOpError(
                 "failed to get MemRefType for memref.global op");
         }

@@ -11,9 +11,7 @@
 
 // CHECK-LABEL: aie.device(npu1_1col) @segment0
 // CHECK: aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
 // CHECK: aiex.runtime_sequence @func0(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_0]][0, 0, 0, 0][1, 1, 1, 64][0, 0, 0, 1]) {id = 0 : i64, metadata = @airMemcpyId2} : memref<64xi32>
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_1]][0, 0, 0, 0][1, 1, 1, 64][0, 0, 0, 1]) {id = 1 : i64, metadata = @airMemcpyId7} : memref<64xi32>
@@ -22,9 +20,7 @@
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
     aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
   } {sym_name = "segment0"}
   air.channel @channel_0 [1, 1]
   air.channel @channel_1 [1, 1]
@@ -49,9 +45,7 @@ module {
 
 // CHECK-LABEL: aie.device(npu1_1col) @segment0 {
 // CHECK: aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
 // CHECK: aiex.runtime_sequence @func1(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_0]][0, 0, 0, 0][1, 1, 1, 64][0, 0, 0, 1]) {id = 0 : i64, metadata = @airMemcpyId2} : memref<64xi32>
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_1]][0, 0, 0, 0][1, 1, 1, 64][0, 0, 0, 1]) {id = 1 : i64, metadata = @airMemcpyId7} : memref<64xi32>
@@ -62,9 +56,7 @@ module {
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
     aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
   } {sym_name = "segment0"}
   airrt.module_metadata{
   }
@@ -93,13 +85,9 @@ module {
 
 // CHECK-LABEL: aie.device(npu1_1col) @segment_0 {
 // CHECK: aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId16 : memref<32x32xi32, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId5 : memref<32x32xi32, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId6(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId6 : memref<32x32xi32, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId7(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId7 : memref<32x32xi32, 1>
 // CHECK: aiex.runtime_sequence @func2(%[[VAL_0:.*]]: memref<32x32xi32>, %[[VAL_1:.*]]: memref<32x32xi32>, %[[VAL_2:.*]]: memref<32x32xi32>) {
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_2]][0, 0, 0, 0][1, 1, 32, 32][0, 0, 32, 1]) {id = 0 : i64, metadata = @airMemcpyId5} : memref<32x32xi32>
 // CHECK:   aiex.npu.dma_memcpy_nd(%[[VAL_0]][0, 0, 0, 0][1, 1, 32, 32][0, 0, 32, 1]) {id = 1 : i64, metadata = @airMemcpyId5} : memref<32x32xi32>
@@ -113,13 +101,9 @@ module {
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId16 : memref<32x32xi32, 1>
     aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId5 : memref<32x32xi32, 1>
     aie.shim_dma_allocation @airMemcpyId6(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId6 : memref<32x32xi32, 1>
     aie.shim_dma_allocation @airMemcpyId7(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId7 : memref<32x32xi32, 1>
   } {sym_name = "segment_0"}
   airrt.module_metadata{
   }
@@ -170,13 +154,9 @@ module {
 module {
   aie.device(npu1_2col) {
     aie.shim_dma_allocation @airMemcpyId14(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId14 : memref<4x4xi32, 2>
     aie.shim_dma_allocation @airMemcpyId14_1(S2MM, 1, 0)
-    memref.global "public" @airMemcpyId14_1 : memref<4x4xi32, 2>
     aie.shim_dma_allocation @airMemcpyId14_2(S2MM, 0, 1)
-    memref.global "public" @airMemcpyId14_2 : memref<4x4xi32, 2>
     aie.shim_dma_allocation @airMemcpyId14_3(S2MM, 1, 1)
-    memref.global "public" @airMemcpyId14_3 : memref<4x4xi32, 2>
   } {sym_name = "segment_0"}
   airrt.module_metadata{
   }
@@ -274,7 +254,6 @@ module {
 module {
   aie.device(npu1_1col) {
     aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
   } {sym_name = "herd"}
   airrt.module_metadata{
     airrt.segment_metadata attributes {sym_name = ""} {
@@ -444,7 +423,6 @@ module {
   aie.device(npu1_1col) {
     %tile_0_0 = aie.tile(0, 0)
     aie.shim_dma_allocation @airMemcpyId26(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId26 : memref<64x64xi32, 1>
   } {sym_name = "segment_0"}
   func.func @func18() {
     %c32768_i64 = arith.constant 32768 : i64
@@ -521,7 +499,6 @@ module {
 module {
   aie.device(npu1) {
     aie.shim_dma_allocation @airMemcpyId10(MM2S, 1, 0)
-    memref.global "public" @airMemcpyId10 : memref<1x2x64x64xbf16, 1 : i32>
   } {sym_name = "matmul_bf16_large_dispatch_0_matmul_308x2432x9728_bf16_0"}
   airrt.module_metadata{
   }

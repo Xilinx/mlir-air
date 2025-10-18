@@ -90,9 +90,7 @@
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
 // CHECK: aie.shim_dma_allocation @air_channel_3(S2MM, 0, 0)
-// CHECK: memref.global "public" @air_channel_3 : memref<64xi32, 1>
 // CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
-// CHECK: memref.global "public" @air_channel_0 : memref<64xi32, 1>
 // CHECK: @func0
 // RACECONDFIX: @func0
 #map2 = affine_map<(d0) -> (d0)>
@@ -221,9 +219,7 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
 // CHECK: aie.shim_dma_allocation @air_channel_3(S2MM, 0, 0)
-// CHECK: memref.global "public" @air_channel_3 : memref<64xi32, 1>
 // CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
-// CHECK: memref.global "public" @air_channel_0 : memref<64xi32, 1>
 // CHECK: @func1
 // RACECONDFIX: @func1
 #map = affine_map<(d0) -> (d0)>

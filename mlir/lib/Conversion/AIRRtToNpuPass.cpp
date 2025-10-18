@@ -168,15 +168,12 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       strides.push_back(adaptor.getStride1());
     staticStrides.push_back(1);
 
-    StringRef metadata;
+    SymbolRefAttr metadata;
     if (op->hasAttr("metadata"))
-      metadata =
-          op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata").getValue();
+      metadata = op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
     else
-      metadata =
-          FlatSymbolRefAttr::get(op->getContext(),
-                                 rewriter.getStringAttr("MetadataNotFound"))
-              .getValue();
+      metadata = SymbolRefAttr::get(op->getContext(),
+                                    rewriter.getStringAttr("MetadataNotFound"));
 
     AIE::PacketInfoAttr packet =
         op->getAttrOfType<AIE::PacketInfoAttr>("packet");
@@ -1028,30 +1025,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
           shimDmaAllocOps.push_back(shimDmaAllocOp);
         });
-      // Performance optimization: instead of repeating calls to
-      // getAllocOpForSymbol with the same symbol name, cache the result of the
-      // first call and use the cache for subsequent calls. This dramatically
-      // improves compile time for some designs.
       llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
           allocationCache;
-      auto getAllocOpForSymbolWithCaching = [&](StringRef sym_name) {
-        auto iter = allocationCache.find(sym_name);
-        if (iter != allocationCache.end()) {
-          return iter->second;
-        }
-        auto infaOp = getAllocOpForSymbol(shimDmaAllocOps, sym_name);
-        allocationCache.insert({sym_name, infaOp});
-        return infaOp;
-      };
 
       if (!d)
         continue;
       OpBuilder builder(f);
       for (auto wait : waits) {
-        auto infoOp = getAllocOpForSymbolWithCaching(wait.getSymbol());
+        auto infoOp =
+            AIE::ShimDMAAllocationOp::getForSymbol(d, wait.getSymbol());
         if (!infoOp)
           continue;
-        if (infoOp->getChannelDir() != AIE::DMAChannelDir::MM2S)
+        if (infoOp.getChannelDir() != AIE::DMAChannelDir::MM2S)
           continue;
         // Found dma op copying results from host to device
         wait->erase();
@@ -1298,21 +1283,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       d.walk([&](AIE::ShimDMAAllocationOp shimDmaAllocOp) {
         shimDmaAllocOps.push_back(shimDmaAllocOp);
       });
-    // Performance optimization: instead of repeating calls to
-    // getAllocOpForSymbol with the same symbol name, cache the result of the
-    // first call and use the cache for subsequent calls. This dramatically
-    // improves compile time for some designs.
     llvm::DenseMap<StringRef, std::optional<AIE::ShimDMAAllocationOp>>
         allocationCache;
-    auto getAllocOpForSymbolWithCaching = [&](StringRef sym_name) {
-      auto iter = allocationCache.find(sym_name);
-      if (iter != allocationCache.end()) {
-        return iter->second;
-      }
-      auto infaOp = getAllocOpForSymbol(shimDmaAllocOps, sym_name);
-      allocationCache.insert({sym_name, infaOp});
-      return infaOp;
-    };
     SmallVector<AIE::ObjectFifoCreateOp> objectFifoCreateOps;
     if (d)
       d.walk([&](AIE::ObjectFifoCreateOp objectFifoCreateOp) {
@@ -1332,10 +1304,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       builder.setInsertionPoint(dma);
       int col = -1;
       if (d) {
-        if (auto infoOp = getAllocOpForSymbolWithCaching(dma.getMetadata())) {
-          col = infoOp->getCol();
+        if (auto infoOp = AIE::ShimDMAAllocationOp::getForSymbol(
+                d, dma.getMetadata().getRootReference())) {
+          col = infoOp.getCol();
         } else if (auto objFifoCreateOp = getObjectFifoCreateOpForSymbol(
-                       objectFifoCreateOps, dma.getMetadata())) {
+                       objectFifoCreateOps,
+                       dma.getMetadata().getLeafReference().getValue())) {
           auto prodTileOp =
               objFifoCreateOp->getProducerTile().getDefiningOp<AIE::TileOp>();
           if (prodTileOp.isShimTile())
