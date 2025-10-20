@@ -315,21 +315,13 @@ module {
 module {
   aie.device(npu1) {
     aie.shim_dma_allocation @air_channel_1_0(S2MM, 0, 0)
-    memref.global "public" @air_channel_1_0 : memref<4x2xf32, 2 : i32>
     aie.shim_dma_allocation @air_channel_1_1(S2MM, 1, 0)
-    memref.global "public" @air_channel_1_1 : memref<4x2xf32, 2 : i32>
     aie.shim_dma_allocation @air_channel_1_2(S2MM, 0, 1)
-    memref.global "public" @air_channel_1_2 : memref<4x2xf32, 2 : i32>
     aie.shim_dma_allocation @air_channel_1_3(S2MM, 1, 1)
-    memref.global "public" @air_channel_1_3 : memref<4x2xf32, 2 : i32>
     aie.shim_dma_allocation @air_channel_0_0(MM2S, 0, 0)
-    memref.global "public" @air_channel_0_0 : memref<4x2xf32, 2 : i32>
     aie.shim_dma_allocation @air_channel_0_1(MM2S, 1, 0)
-    memref.global "public" @air_channel_0_1 : memref<4x2xf32, 2 : i32>
     aie.shim_dma_allocation @air_channel_0_2(MM2S, 0, 1)
-    memref.global "public" @air_channel_0_2 : memref<4x2xf32, 2 : i32>
     aie.shim_dma_allocation @air_channel_0_3(MM2S, 1, 1)
-    memref.global "public" @air_channel_0_3 : memref<4x2xf32, 2 : i32>
   } {sym_name = "herd_0"}
   air.channel @channel_0 [2, 2]
   air.channel @channel_1 [2, 2]

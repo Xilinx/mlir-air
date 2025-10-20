@@ -1939,3 +1939,57 @@ module {
   }
 }
 
+// -----
+
+// Prevent fusing channels with different channel_type attributes.
+// Channels with "dma_stream" and "dma_packet" should not be fused.
+
+// CHECK-LABEL: func14
+// CHECK: air.launch
+// CHECK: air.channel.put{{.*}}@channel_stream
+// CHECK: air.channel.put{{.*}}@channel_packet
+// CHECK: air.segment
+// CHECK: air.channel.get{{.*}}@channel_stream
+// CHECK: air.channel.get{{.*}}@channel_packet
+// AGGRESSIVE-LABEL: func14
+// AGGRESSIVE: air.launch
+// AGGRESSIVE: air.channel.put{{.*}}@channel_stream
+// AGGRESSIVE: air.channel.put{{.*}}@channel_packet
+// AGGRESSIVE: air.segment
+// AGGRESSIVE: air.channel.get{{.*}}@channel_stream
+// AGGRESSIVE: air.channel.get{{.*}}@channel_packet
+// AGGL1-LABEL: func14
+// AGGL1: air.launch
+// AGGL1: air.channel.put{{.*}}@channel_stream
+// AGGL1: air.channel.put{{.*}}@channel_packet
+// AGGL1: air.segment
+// AGGL1: air.channel.get{{.*}}@channel_stream
+// AGGL1: air.channel.get{{.*}}@channel_packet
+
+module {
+  air.channel @channel_stream [1, 1] {channel_type = "dma_stream"}
+  air.channel @channel_packet [1, 1] {channel_type = "dma_packet"}
+  func.func @func14(){
+    %c1 = arith.constant 1 : index
+    air.launch (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) {
+      %alloc_0 = memref.alloc() : memref<4x4xi32>
+      %alloc_1 = memref.alloc() : memref<4x4xi32>
+      air.channel.put @channel_stream[%arg3, %arg4] (%alloc_0[] [] []) : (memref<4x4xi32>)
+      air.channel.put @channel_packet[%arg3, %arg4] (%alloc_1[] [] []) : (memref<4x4xi32>)
+      air.segment {
+        %c2 = arith.constant 2 : index
+        %alloc_2 = memref.alloc() : memref<4x4xi32, 1>
+        %alloc_3 = memref.alloc() : memref<4x4xi32, 1>
+        air.channel.get @channel_stream[] (%alloc_2[] [] []) : (memref<4x4xi32, 1>)
+        air.channel.get @channel_packet[] (%alloc_3[] [] []) : (memref<4x4xi32, 1>)
+        air.herd @herd_0 tile (%arg12, %arg13) in (%arg14=%c2, %arg15=%c2) {
+        }
+        memref.dealloc %alloc_2 : memref<4x4xi32, 1>
+        memref.dealloc %alloc_3 : memref<4x4xi32, 1>
+      }
+      memref.dealloc %alloc_0 : memref<4x4xi32>
+      memref.dealloc %alloc_1 : memref<4x4xi32>
+    }
+    return
+  }
+}

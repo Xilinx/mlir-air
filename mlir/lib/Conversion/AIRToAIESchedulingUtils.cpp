@@ -486,6 +486,22 @@ bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row,
   return foundAlloc(col, row) && foundAlloc(channel_op);
 }
 
+// Found existence of a packet flow allocation in provided coordinates.
+bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(int32_t col,
+                                                                int32_t row) {
+  if (!foundAlloc(col, row))
+    return false;
+  for (auto o : memcpyOps) {
+    auto memcpy_op = dyn_cast<air::MemcpyInterface>(o);
+    if (!memcpy_op)
+      continue;
+    auto chanTypeRes = air::getChannelType(memcpy_op);
+    if (succeeded(chanTypeRes))
+      return chanTypeRes.value().str() == "dma_packet";
+  }
+  return false;
+}
+
 // DMAAllocator impl.
 
 // A simple selection sorting implementation.
@@ -732,6 +748,14 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     return failure();
   auto allocs = isMM2S.value() ? &mm2s_allocs : &s2mm_allocs;
 
+  // Check if allocating for a packet flow (packet flow supports channel time
+  // multiplexing)
+  bool isPacketFlowOp = false;
+  auto chanTypeRes = getChannelType(memcpyOp);
+  if (succeeded(chanTypeRes)) {
+    isPacketFlowOp = chanTypeRes.value().str() == "dma_packet";
+  }
+
   // Search for existing dma channel allocation
   unsigned num_allocs = 0;
   for (auto &t : *allocs) {
@@ -740,6 +764,12 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     if (t.foundAlloc(col, row, memcpyOp))
       return t;
     if (t.foundAlloc(col, row, chan)) {
+      t.memcpyOps.push_back(memcpyOp.getOperation());
+      return t;
+    }
+    // Search for existing packet-flow allocations on this tile, and try to
+    // reuse the channel allocation.
+    if (isPacketFlowOp && t.foundPacketFlowAllocInTile(col, row)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -968,13 +998,30 @@ air::MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
     return buffer.value()->emitOpError("failed to get an AIE tile.");
   }
 
+  // Check if allocating for a packet flow (packet flow supports channel time
+  // multiplexing)
+  bool isPacketFlowOp = false;
+  auto chanTypeRes = getChannelType(memcpyOp);
+  if (succeeded(chanTypeRes)) {
+    isPacketFlowOp = chanTypeRes.value().str() == "dma_packet";
+  }
+
   // Search for existing dma channel allocation
   unsigned num_allocs = 0;
   for (auto &t : *allocs) {
     if (t.foundAlloc(tile.getCol(), tile.getRow()))
       num_allocs++;
-    if (t.foundAlloc(tile.getCol(), tile.getRow(), memcpyOp))
+    if (t.foundAlloc(tile.getCol(), tile.getRow(), memcpyOp)) {
+      t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
+    }
+    // Search for existing packet-flow allocations on this tile, and try to
+    // reuse the channel allocation.
+    if (isPacketFlowOp &&
+        t.foundPacketFlowAllocInTile(tile.getCol(), tile.getRow())) {
+      t.memcpyOps.push_back(memcpyOp.getOperation());
+      return t;
+    }
   }
   // Need to allocate a new one
   int memtile_dma_channels =

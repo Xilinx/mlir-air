@@ -7,7 +7,7 @@
 
 // RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcvc1902" %s | FileCheck %s
 
-// CHECK-LABEL:   aie.device(xcvc1902) {
+// CHECK-LABEL:   aie.device(xcvc1902) @herd_0 {
 // CHECK:   %[[VAL_0:.*]] = aie.tile(2, 0)
 // CHECK:   %[[VAL_1:.*]] = aie.tile(3, 0)
 // CHECK:   %[[VAL_2:.*]] = aie.tile(5, 3)
@@ -40,7 +40,7 @@
 // CHECK:     }
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
-// CHECK:   } {elf_file = 
+// CHECK:   }
 // CHECK:   aie.mem(%[[VAL_4]])
 // CHECK:   aie.core(%[[VAL_4]])
 // CHECK:     aie.use_lock({{.*}}, Acquire, 0)
@@ -59,7 +59,7 @@
 // CHECK:     }
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
-// CHECK:   } {elf_file = 
+// CHECK:   }
 // CHECK:   aie.mem(%[[VAL_3]])
 // CHECK:   aie.core(%[[VAL_3]])
 // CHECK:     aie.use_lock({{.*}}, Acquire, 0)
@@ -78,7 +78,7 @@
 // CHECK:     }
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
-// CHECK:   } {elf_file = 
+// CHECK:   }
 // CHECK:   aie.mem(%[[VAL_2]])
 // CHECK:   aie.core(%[[VAL_2]])
 // CHECK:     aie.use_lock({{.*}}, Acquire, 0)
@@ -97,7 +97,7 @@
 // CHECK:     }
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 1)
 // CHECK-DAG: aie.use_lock({{.*}}, Release, 0)
-// CHECK:   } {elf_file = 
+// CHECK:   }
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>

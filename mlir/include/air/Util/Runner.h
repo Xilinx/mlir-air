@@ -21,7 +21,8 @@ namespace air {
 struct AIRRunner {
 
   AIRRunner(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model,
-            std::string sim_granularity = "herd", bool verbose = false);
+            std::string sim_granularity = "herd",
+            std::string launch_iterations = "all", bool verbose = false);
   ~AIRRunner();
 
   void emitTraceStart(llvm::raw_ostream &s);
@@ -44,7 +45,8 @@ std::string to_string(mlir::Type t);
 std::string getElementTypeAsString(const mlir::Type ty);
 std::string lookUpMemorySpaceFromInt(unsigned memory_space);
 unsigned lookUpMemorySpaceIntFromString(std::string memory_space);
-template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry);
+template <typename T>
+void push_back_if_unique(std::vector<T> &vec, T entry);
 
 } // namespace air
 } // namespace xilinx

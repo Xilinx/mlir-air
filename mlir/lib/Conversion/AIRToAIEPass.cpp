@@ -226,10 +226,6 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       if (!core) {
         core = builder.create<AIE::CoreOp>(hloc, tile);
         tileToHerdMap[tile] = h;
-        core->setAttr(
-            "elf_file",
-            StringAttr::get(ctx, herd_name + "_core_" + std::to_string(phys_x) +
-                                     "_" + std::to_string(phys_y) + ".elf"));
         if (auto a = h->getAttrOfType<StringAttr>("link_with"))
           core->setAttr("link_with", a);
       }
@@ -1770,6 +1766,8 @@ public:
       auto pktSrcChannel = pktSrcOp.getChannel();
       if (pktSrcChannel != (int)sourceChannel)
         return;
+      if (pktFlowOp.getID() != flowID)
+        return;
       packetFlowOp = pktFlowOp;
     });
 
@@ -1794,28 +1792,107 @@ public:
                               sourceChannel, dest, destBundle, destChannel);
   }
 
+  /// Query an existing packet flow operation from within the AIE device.
+  ///
+  /// This method is used when looking up packet flows from operations that are
+  /// already lowered within the aie.device operation. Since air.channel
+  /// declarations are duplicated between the aie.device and its parent module,
+  /// this method performs symbol name resolution to match the correct flow ID.
+  ///
+  /// \note Only air::ChannelInterface operations support packet-flow routing.
+  ///       For non-channel memcpy operations, this returns null.
+  AIE::PacketFlowOp getExistingPacketFlowOpFromDevice(
+      mlir::Value source, xilinx::AIE::WireBundle sourceBundle,
+      uint32_t sourceChannel, air::MemcpyInterface memcpyOp) {
+    auto chanIfOp = dyn_cast<air::ChannelInterface>(memcpyOp.getOperation());
+    if (!chanIfOp)
+      return AIE::PacketFlowOp(); // Only air.channel_interface ops support
+                                  // packet-flow routing.
+
+    // Convert flowOpToFlowIdMap from Operation pointers to channel symbol
+    // names. This is necessary because air.channel declarations are duplicated
+    // under aie.device op and its parent module op, requiring symbol-based
+    // matching.
+    std::vector<std::string> flowOpStringsToFlowIdMap;
+    for (auto op : flowOpToFlowIdMap) {
+      auto flowChanOp = dyn_cast<air::ChannelOp>(op);
+      if (!flowChanOp) {
+        flowOpStringsToFlowIdMap.push_back("");
+        continue;
+      }
+      flowOpStringsToFlowIdMap.push_back(flowChanOp.getSymName().str());
+    }
+
+    // Find the flowID by matching the channel name
+    auto it =
+        llvm::find(flowOpStringsToFlowIdMap, chanIfOp.getChanName().str());
+    if (it == flowOpStringsToFlowIdMap.end()) {
+      return AIE::PacketFlowOp();
+    }
+    int flowID = std::distance(flowOpStringsToFlowIdMap.begin(), it);
+
+    // Search for the packet flow with matching source and flowID
+    return findPacketFlowOp(source, sourceBundle, sourceChannel,
+                            /*checkFlowID=*/true, flowID);
+  }
+
+  /// Query an existing packet flow operation from the runtime function.
+  ///
+  /// This method is used when looking up packet flows from operations in the
+  /// runtime func.func representation, where air.channel symbol linking works
+  /// differently than within aie.device. No flowID matching is implemented
+  /// because of that(TODO).
+  ///
+  /// \note This is a simpler lookup than getExistingPacketFlowOpFromDevice
+  ///       because it doesn't need to resolve flowID through channel symbols.
   AIE::PacketFlowOp
-  getExistingPacketFlowOp(mlir::Value source,
-                          xilinx::AIE::WireBundle sourceBundle,
-                          uint32_t sourceChannel) {
+  getExistingPacketFlowOpFromRuntime(mlir::Value source,
+                                     xilinx::AIE::WireBundle sourceBundle,
+                                     uint32_t sourceChannel) {
+    // Search for the packet flow without flowID checking
+    return findPacketFlowOp(source, sourceBundle, sourceChannel,
+                            /*checkFlowID=*/false, /*flowID=*/-1);
+  }
+
+private:
+  /// Core packet flow search logic shared by both device and runtime queries.
+  ///
+  /// This helper method encapsulates the common packet flow lookup logic,
+  /// allowing both getExistingPacketFlowOpFromDevice and
+  /// getExistingPacketFlowOpFromRuntime to reuse the same search implementation
+  /// while differing only in whether they check the flowID.
+  AIE::PacketFlowOp findPacketFlowOp(mlir::Value source,
+                                     xilinx::AIE::WireBundle sourceBundle,
+                                     uint32_t sourceChannel, bool checkFlowID,
+                                     int flowID) {
     AIE::DeviceOp aieDeviceOp =
         source.getParentRegion()->getParentOfType<AIE::DeviceOp>();
     AIE::PacketFlowOp packetFlowOp = nullptr;
+
     aieDeviceOp.walk([&](AIE::PacketFlowOp pktFlowOp) {
       auto pktSrcOp = getPacketSourceOpInPacketFlowOp(pktFlowOp, source);
       if (!pktSrcOp)
         return;
+
       auto pktSrcBundle = pktSrcOp.getBundle();
       if (pktSrcBundle != sourceBundle)
         return;
+
       auto pktSrcChannel = pktSrcOp.getChannel();
       if (pktSrcChannel != (int)sourceChannel)
         return;
+
+      // Only check flowID if requested (device context requires it)
+      if (checkFlowID && pktFlowOp.getID() != flowID)
+        return;
+
       packetFlowOp = pktFlowOp;
     });
+
     return packetFlowOp;
   }
 
+public:
   // Cascade flow.
 
   // This helper function looks up or creates an AIE::CascadeFlowOp that
@@ -2333,21 +2410,31 @@ public:
     for (auto &f : memcpy_flows) {
       for (int i = 0; i < f.numS2MMAllocs; i++) {
         if (options.use_packet_flow_at_shim_dmas &&
-            f.MM2S_alloc.getDmaTile().isShimNOCorPLTile())
+            f.MM2S_alloc.getDmaTile().isShimNOCorPLTile()) {
           // use_packet_flow_at_shim_dmas mode: use packet flow for all shim dma
           // mm2s, to enable dma channel sharing with control packets
+          flowOpToFlowIdMap.insert(f.air_flow_op);
+          auto it = llvm::find(flowOpToFlowIdMap, f.air_flow_op);
+          int flowID = std::distance(flowOpToFlowIdMap.begin(), it);
           getPacketFlowOp(
               aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
               (uint32_t)f.MM2S_alloc.dma_channel.channel,
               f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
               (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-        else if (f.memcpyResourceType == "dma_packet")
+          // Update global packet flow ID following the local packet assignment.
+          globalFlowID = std::max(globalFlowID, flowID);
+        } else if (f.memcpyResourceType == "dma_packet") {
+          flowOpToFlowIdMap.insert(f.air_flow_op);
+          auto it = llvm::find(flowOpToFlowIdMap, f.air_flow_op);
+          int flowID = std::distance(flowOpToFlowIdMap.begin(), it);
           getPacketFlowOp(
               aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
               (uint32_t)f.MM2S_alloc.dma_channel.channel,
               f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
               (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-        else if (f.memcpyResourceType == "dma_stream")
+          // Update global packet flow ID following the local packet assignment.
+          globalFlowID = std::max(globalFlowID, flowID);
+        } else if (f.memcpyResourceType == "dma_stream")
           getFlowOp(aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
                     (uint32_t)f.MM2S_alloc.dma_channel.channel,
                     f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
@@ -2565,8 +2652,8 @@ public:
   LogicalResult labelMemcpyOpsWithPacketFlow(air::MemcpyInterface memcpyOpIf,
                                              StringAttr dmaNameAttr,
                                              AIE::TileOp tileOp, int channel) {
-    auto pktFlowOp =
-        getExistingPacketFlowOp(tileOp, AIE::WireBundle::DMA, channel);
+    auto pktFlowOp = getExistingPacketFlowOpFromRuntime(
+        tileOp, AIE::WireBundle::DMA, channel);
     if (!pktFlowOp)
       return success();
 
@@ -2760,7 +2847,7 @@ public:
         // Create shim allocation op.
         if (!SymbolTable::lookupSymbolIn(deviceOp, shim_name)) {
           auto shimAllocationOp = builder.create<AIE::ShimDMAAllocationOp>(
-              builder.getUnknownLoc(), SymbolRefAttr::get(ctx, shim_name_attr),
+              builder.getUnknownLoc(), shim_name_attr,
               AIE::DMAChannelDirAttr::get(ctx, dir),
               builder.getI64IntegerAttr(t.dma_channel.channel),
               builder.getI64IntegerAttr(t.getDmaTile().getCol()),
@@ -2772,13 +2859,7 @@ public:
           MemRefType rankedTileSideMemRefTy =
               getTileSideMemrefTypeForMemcpy(memcpyIfOp, dir);
 
-          // Create memref.global op.
-          if (rankedTileSideMemRefTy)
-            builder.create<memref::GlobalOp>(
-                builder.getUnknownLoc(), shim_name_attr.getValue(),
-                builder.getStringAttr("public"), rankedTileSideMemRefTy,
-                nullptr, false, nullptr);
-          else
+          if (!rankedTileSideMemRefTy)
             return shimAllocationOp->emitOpError(
                 "failed to get MemRefType for memref.global op");
         }
@@ -3202,6 +3283,7 @@ public:
               loc, dir, chan, rep, first_bd,
               channel_head->getTerminator()->getSuccessor(1));
           channel_head->getTerminator()->setSuccessor(start_bb, 1);
+          channel_head = start_bb;
         }
         taskId++;
       }
@@ -3279,8 +3361,8 @@ public:
     // Packet flow routing: get packet flow id.
     auto aie_device = bufferOp->template getParentOfType<AIE::DeviceOp>();
     auto tileOp = air::getPhysTileOpOrNull(aie_device, x, y);
-    auto pktFlowOp =
-        getExistingPacketFlowOp(tileOp, AIE::WireBundle::DMA, chan);
+    auto pktFlowOp = getExistingPacketFlowOpFromDevice(
+        tileOp, AIE::WireBundle::DMA, chan, memcpyOp);
     AIE::PacketInfoAttr pktInfoAttr = nullptr;
     if (isMM2S && pktFlowOp) {
       auto packetID = pktFlowOp.getID();
@@ -3812,7 +3894,7 @@ public:
         builder.setInsertionPoint(device.getBody()->getTerminator());
         auto keep_pkt_header = builder.getBoolAttr(true);
         (void)createPacketFlowOp(
-            builder, flowID, srcTile, AIE::WireBundle::Trace, 0, destTile,
+            builder, globalFlowID, srcTile, AIE::WireBundle::Trace, 0, destTile,
             AIE::WireBundle::DMA, destChan, keep_pkt_header);
       }
     }
@@ -4153,7 +4235,10 @@ public:
   }
 
   // Static flow id to ensure unique packet header per packet flow.
-  int flowID = 0;
+  int globalFlowID = 0;
+  SetVector<Operation *>
+      flowOpToFlowIdMap; // Ordered set of memcpy_flows.air_flow_op, flowID is
+                         // index.
 
 private:
   // Collapses the innermost `numDims` dimensions of a MemRef `val` into a

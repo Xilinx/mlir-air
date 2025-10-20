@@ -92,6 +92,7 @@ std::vector<ChannelGetOp> getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
 std::vector<ChannelPutOp> getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
 std::vector<air::ChannelInterface>
 getTheOtherChannelOpThroughSymbol(air::ChannelInterface op);
+FailureOr<StringRef> getChannelType(air::MemcpyInterface chanIfOp);
 // Get integer index to metadataArray, from channel bundle indices.
 std::optional<int>
 getIndexToMetadataArrayFromChannelIndices(air::ChannelInterface op);

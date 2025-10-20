@@ -20,9 +20,7 @@ module {
       aie.packet_dest<%tile_0_0, DMA : 1>
     } {keep_pkt_header = true}
     aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-    memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
     aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
-    memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
   } {sym_name = "segment0"}
   air.channel @channel_0 [1, 1]
   air.channel @channel_1 [1, 1]

@@ -134,6 +134,43 @@ if(hsa-runtime64_FOUND)
   )
 endif()
 
+# Copy the runtime libs into the _mlir_libs directory for convenience.
+set(_runtime_deps
+  mlir_async_runtime
+  mlir_c_runner_utils
+  mlir_float16_utils
+  mlir_runner_utils
+)
+
+set(HAS_MLIR_RUNTIME_LIBRARIES ON PARENT_SCOPE)
+foreach(r ${_runtime_deps})
+  if(NOT TARGET ${r})
+    set(HAS_MLIR_RUNTIME_LIBRARIES OFF PARENT_SCOPE)
+    break()
+  endif()
+  # build dir lib/
+  add_custom_command(
+    TARGET AirPythonModules PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+    $<TARGET_FILE:${r}>
+    "${CMAKE_BINARY_DIR}/lib"
+  )
+  # build dir aie/_mlir_libs
+  add_custom_command(
+    TARGET AirPythonModules PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+    $<TARGET_FILE:${r}>
+    "${CMAKE_CURRENT_BINARY_DIR}/air/_mlir_libs"
+  )
+  # install dir
+  install(IMPORTED_RUNTIME_ARTIFACTS
+    ${r}
+    COMPONENT air-python
+    LIBRARY
+    DESTINATION "${AIR_PYTHON_INSTALL_DIR}/air/_mlir_libs"
+  )
+endforeach()
+
 add_dependencies(AirPythonModules AirBackendPythonModules)
 add_subdirectory(air/backend)
 

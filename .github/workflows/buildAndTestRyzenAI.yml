@@ -46,6 +46,9 @@ jobs:
           pip cache purge
           pip install --upgrade pip
           pip install lit cmake joblib
+          pip install --pre torch-mlir torchvision \
+            --index-url https://download.pytorch.org/whl/nightly/cpu \
+            -f https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels
 
       - name: Get mlir-aie
         id: clone-mlir-aie
@@ -99,14 +102,11 @@ jobs:
           rm -rf build
           popd
 
+      # TODO: Use nightly latest llvm-aie once it is fixed
       - name: Get llvm-aie
         run: |
           source air-venv/bin/activate
-          python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
-
-      - name: Get Xilinx cmakeModules
-        run: |
-          git clone https://github.com/Xilinx/cmakeModules.git
+          python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/download/nightly/llvm_aie-19.0.0.2025071101+b3cd09d3-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test mlir-air (Assert)
@@ -118,7 +118,7 @@ jobs:
           WHL_MLIR_DIR=$(pwd)/mlir-aie/mlir
           MLIR_AIE_INSTALL_DIR=$(pwd)/mlir-aie/install
           PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
-          CMAKEMODULES_DIR=$(pwd)/cmakeModules
+          CMAKEMODULES_DIR=$(pwd)/mlir-aie/cmake/modulesXilinx
 
           mkdir build_assert
           pushd build_assert
@@ -153,17 +153,15 @@ jobs:
 
           pip install $PWD/../python/spensor
 
-          export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random"
+          export LIT_OPTS="-sv --time-tests --show-unsupported --show-excluded --order random --timeout 600 -j4"
           ninja check-air-cpp
           ninja check-air-mlir
           ninja check-air-python
 
           # E2E test set 1: peano tests
-          export LIT_OPTS="${LIT_OPS} --timeout 600 -j4"
           ninja check-air-e2e-peano
 
           # E2E test set 2: chess tests
-          export LIT_OPTS="${LIT_OPS} --timeout 600 -j4"
           ninja check-air-e2e-chess
 
           # Programming examples set 1: peano tests

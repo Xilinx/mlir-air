@@ -57,11 +57,17 @@ class CostModel:
 
 class Runner:
     def __init__(
-        self, json_model, trace_filename=None, sim_granularity="herd", verbose=False
+        self,
+        json_model,
+        trace_filename=None,
+        sim_granularity="herd",
+        launch_iterations="all",
+        verbose=False,
     ):
         self.json_model = json_model
         self.trace_filename = trace_filename
         self.sim_granularity = sim_granularity
+        self.launch_iterations = launch_iterations
         self.verbose = verbose
 
     def run(self, module, function):
@@ -95,6 +101,7 @@ class Runner:
             trace_filename,
             function,
             self.sim_granularity,
+            self.launch_iterations,
             self.verbose,
         )
 

@@ -54,6 +54,40 @@ def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
   }];
 }
 
+def LinalgToLibraryCallOp : Op<Transform_Dialect, "air.linalg_to_library_call",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     TransformOpInterface, TransformEachOpTrait]> {
+  let summary = "Convert a linalg op to a function call (library call)";
+  let description = [{
+    Replaces a linalg op with a call to a function. If the `function_name`
+    attribute is provided, it is used as the function name. Otherwise, the
+    linalg op's `library_call` attribute is used. The function is created if
+    it does not exist. If the `link_with` attribute is provided, it is used
+    to link the function call to a prebuilt object that contains the 
+    implementation of the function. If the linalg op is inside a herd, the 
+    `link_with` attribute is propagated to the herd.
+
+    Example:
+    ```
+    %matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!pdl.operation) -> !pdl.operation
+    %call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!pdl.operation) -> !pdl.operation
+    ```
+  }];
+  let arguments = (ins PDL_Operation:$target,
+                   OptionalAttr<StrAttr>:$function_name,
+                   OptionalAttr<StrAttr>:$link_with);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::Operation *target,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
 // Ops implemented in mlir/lib/Conversion/ConvertToAIRPass.cpp
 //
 
@@ -406,6 +440,262 @@ def ConvertMemrefCopyToLinalgCopyOp : Op<Transform_Dialect, "air.convert_memref_
   let arguments = (ins PDL_Operation:$target);
   let results = (outs PDL_Operation:$result);
   let assemblyFormat = "$target attr-dict";
+}
+
+def TransposeReduceOp : Op<Transform_Dialect, "air.transpose_reduce",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Transpose inputs of linalg.reduce ops to make reduction dimensions innermost";
+  let description = [{
+    This transform takes a handle to linalg.reduce operations and checks if the 
+    reduction dimensions are at the innermost (last/lowest) dimensions. If any 
+    reduction dimension has non-reduction dimensions to the right, it transposes 
+    the corresponding inputs to ensure all reduction dimensions are innermost.
+    
+    For example, if a linalg.reduce operation reduces along dimension 1 in a 3D tensor
+    (shape [M, N, K] reducing along N), this transform will transpose the input to 
+    [M, K, N] so that the reduction dimension N becomes innermost.
+    
+    This optimization is beneficial for hardware accelerators that perform more 
+    efficient reductions when the reduction dimensions are contiguous and innermost.
+    
+    The transformation:
+    1. Analyzes each linalg.reduce operation's reduction dimensions
+    2. Determines if any reduction dimension has non-reduction dimensions to its right
+    3. If so, creates a transpose operation to move reduction dimensions to the end
+    4. Updates the linalg.reduce operation to work with the transposed input
+    5. Optionally transposes the output back to the original layout if needed
+    
+    Returns a handle to the transformed linalg.reduce operations.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
+def FuseExtfLinalgOp : Op<Transform_Dialect, "air.fuse_extf_linalg",
+    [FunctionalStyleTransformOpTrait, DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Fuse a linalg operation containing only arith.extf with its consumer";
+  let description = [{
+    This transform fuses two linalg operations where:
+    1. The first operation contains only an arith.extf operation in its body (apart from terminator)
+    2. The second operation directly consumes the result of the first operation
+    
+    The fusion is performed by:
+    1. Removing the arith.extf from the first operation
+    2. Updating the input type in the second operation to use the original (narrower) type
+    3. Adding arith.extf operations as needed to maintain type consistency
+    4. Erasing the first operation
+    
+    This optimization folds the arithmetic extensions into the linalg ops, and enables the use of
+    native native intrinsics on narrower datatypes, such as AMD AIEs.
+    
+    Example:
+    ```mlir
+    // Before fusion:
+    %0 = linalg.generic {
+      ^bb0(%arg0: f16):
+        %1 = arith.extf %arg0 : f16 to f32
+        linalg.yield %1 : f32
+    } ins(%input : tensor<16xf16>) outs(%temp : tensor<16xf32>)
+    
+    %result = linalg.generic {
+      ^bb0(%arg0: f32, %arg1: f32):
+        %2 = arith.addf %arg0, %arg1 : f32
+        linalg.yield %2 : f32
+    } ins(%0, %other : tensor<16xf32>, tensor<16xf32>) outs(%output : tensor<16xf32>)
+    
+    // After fusion:
+    %result = linalg.generic {
+      ^bb0(%arg0: f16, %arg1: f32):
+        %1 = arith.extf %arg0 : f16 to f32
+        %2 = arith.addf %1, %arg1 : f32
+        linalg.yield %2 : f32
+    } ins(%input, %other : tensor<16xf16>, tensor<16xf32>) outs(%output : tensor<16xf32>)
+    ```
+    
+    Returns a handle to the fused operation (the second operation after modification).
+  }];
+  
+  let arguments = (ins PDL_Operation:$first_op,
+                       PDL_Operation:$second_op);
+  let results = (outs PDL_Operation:$fused_op);
+  let assemblyFormat = "$first_op `,` $second_op attr-dict";
+}
+
+def FuseTruncfLinalgOp : Op<Transform_Dialect, "air.fuse_truncf_linalg",
+    [FunctionalStyleTransformOpTrait, DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Fuse a linalg operation containing only arith.truncf into its producer";
+  let description = [{
+    This transform fuses two linalg operations where:
+    1. The truncf operation contains only an arith.truncf operation in its body (apart from terminator)
+    2. The producer operation produces a result that is consumed by the truncf operation
+    
+    The fusion is performed by:
+    1. Taking the producer operation's body
+    2. Adding arith.truncf operation before the terminator
+    3. Updating the output type to use the truncated (narrower) type
+    4. Erasing both the original truncf operation and producer operation
+    
+    This optimization folds the arithmetic truncations into the producer linalg ops, enabling
+    the use of native intrinsics on narrower datatypes, such as AMD AIEs, and reducing
+    intermediate memory storage requirements.
+    
+    Example:
+    ```mlir
+    // Before fusion:
+    %0 = linalg.generic {
+      ^bb0(%arg0: f32, %arg1: f32):
+        %1 = arith.addf %arg0, %arg1 : f32
+        linalg.yield %1 : f32
+    } ins(%input1, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%temp : tensor<16xf32>)
+    
+    %result = linalg.generic {
+      ^bb0(%arg0: f32):
+        %2 = arith.truncf %arg0 : f32 to f16
+        linalg.yield %2 : f16
+    } ins(%0 : tensor<16xf32>) outs(%output : tensor<16xf16>)
+    
+    // After fusion:
+    %result = linalg.generic {
+      ^bb0(%arg0: f32, %arg1: f32):
+        %1 = arith.addf %arg0, %arg1 : f32
+        %2 = arith.truncf %1 : f32 to f16
+        linalg.yield %2 : f16
+    } ins(%input1, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%output : tensor<16xf16>)
+    ```
+    
+    Returns a handle to the fused operation (the producer operation after modification).
+  }];
+  
+  let arguments = (ins PDL_Operation:$truncf_op,
+                       PDL_Operation:$producer_op);
+  let results = (outs PDL_Operation:$fused_op);
+  let assemblyFormat = "$truncf_op `,` $producer_op attr-dict";
+}
+
+def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Cast vector operands and results of vector operations to a user-provided datatype";
+  let description = [{
+    This transform takes a handle to vector dialect operations and casts input operands
+    and/or results of vector type to a user-provided datatype. By default, if none of 
+    input_indices or output_indices are specified, all vector operands and results are cast.
+
+    The transformation works by:
+    1. Finding vector dialect operations within the target
+    2. For each vector operation, examining its operands and results
+    3. Creating cast operations to convert selected vector operands to the target element type
+    4. Updating the operation to work with the new vector types
+    5. Creating cast operations to convert selected results back to the original types
+
+    This optimization is useful for hardware accelerators that can perform vector operations
+    natively on specific data types (e.g., bf16, f16) while maintaining compatibility with
+    the original precision through selective casting.
+
+    Example 1 - Cast all inputs and outputs (default behavior):
+    ```mlir
+    // Before:
+    %result = vector.fma %a, %b, %c : vector<8xf32>
+
+    // After (with target_element_type = f16):
+    %a_cast = arith.truncf %a : vector<8xf32> to vector<8xf16>
+    %b_cast = arith.truncf %b : vector<8xf32> to vector<8xf16>
+    %c_cast = arith.truncf %c : vector<8xf32> to vector<8xf16>
+    %result_f16 = vector.fma %a_cast, %b_cast, %c_cast : vector<8xf16>
+    %result = arith.extf %result_f16 : vector<8xf16> to vector<8xf32>
+    ```
+
+    Example 2 - Cast only specific inputs:
+    ```mlir
+    // Before:
+    %result = vector.fma %a, %b, %c : vector<8xf32>
+
+    // After (with target_element_type = f16, input_indices = [0, 1]):
+    %a_cast = arith.truncf %a : vector<8xf32> to vector<8xf16>
+    %b_cast = arith.truncf %b : vector<8xf32> to vector<8xf16>
+    %result_f16 = vector.fma %a_cast, %b_cast, %c : vector<8xf16, f32, f32>
+    %result = arith.extf %result_f16 : vector<8xf16> to vector<8xf32>
+    ```
+
+    Example 3 - Cast only outputs:
+    ```mlir
+    // Transform only the output
+    transform.air.vector_type_cast %op {
+      target_element_type = f16,
+      output_indices = [0]
+    }
+    ```
+
+    Attributes:
+    - target_element_type: The element type to cast to (required). Supported types 
+      include f16, bf16, f32, f64, i8, i16, i32, i64.
+    - input_indices: Optional array of input operand indices to cast. If empty, all 
+      vector inputs are cast.
+    - output_indices: Optional array of output result indices to cast. If empty, all 
+      vector results are cast.
+
+    Returns a handle to the modified operations containing the transformed vector operations.
+  }];
+
+  let arguments = (ins PDL_Operation:$target,
+                       TypeAttr:$target_element_type,
+                       DefaultValuedAttr<I64ArrayAttr, "{}">:$input_indices,
+                       DefaultValuedAttr<I64ArrayAttr, "{}">:$output_indices);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
+def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     TransformOpInterface, TransformEachOpTrait]> {
+  let summary = "Vectorize operations inside air.herd operations";
+  let description = [{
+    This transform takes a handle to air.herd operations and vectorizes the operations
+    inside their bodies using the same logic as the AIRHerdVectorizePass. It walks the
+    body of each herd operation and applies vectorization patterns to linalg operations
+    and other vectorizable operations.
+    
+    The transform supports the same options as the AIRHerdVectorizePass:
+    - vectorize_nd_extract: Controls whether to vectorize tensor.extract when the input tensor is rank >= 2
+    - flatten_1d_depthwise_conv: Controls whether to "flatten" the channel dimension when vectorizing 1D depthwise convolutions
+    - disable_transfer_permutation_map_lowering_patterns: Disables vector transfer permutation map lowering patterns
+    - disable_multi_reduction_to_contract_patterns: Disables multi-reduction to contract patterns
+    - vectorize_padding: Enables vectorization of padding operations
+    
+    Example:
+    ```mlir
+    %herd = transform.structured.match ops{["air.herd"]} in %f : (!pdl.operation) -> !pdl.operation
+    %vectorized = transform.air.herd_vectorize %herd {
+      vectorize_nd_extract = false,
+      flatten_1d_depthwise_conv = false,
+      vectorize_padding = true
+    } : (!pdl.operation) -> !pdl.operation
+    ```
+    
+    Returns a handle to the transformed air.herd operations.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target,
+                   DefaultValuedAttr<BoolAttr, "false">:$vectorize_nd_extract,
+                   DefaultValuedAttr<BoolAttr, "false">:$flatten_1d_depthwise_conv,
+                   DefaultValuedAttr<BoolAttr, "false">:$disable_transfer_permutation_map_lowering_patterns,
+                   DefaultValuedAttr<BoolAttr, "false">:$disable_multi_reduction_to_contract_patterns,
+                   DefaultValuedAttr<BoolAttr, "false">:$vectorize_padding);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::Operation *target,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
 }
 
 // Ops implemented in mlir/lib/Transform/AIRLinalgBufferize.cpp

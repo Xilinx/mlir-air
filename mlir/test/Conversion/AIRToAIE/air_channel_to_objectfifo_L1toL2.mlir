@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='use-objectfifo=true device=xcve2802' --canonicalize | FileCheck %s
 
-// CHECK-LABEL:   aie.device(xcve2802) {
+// CHECK-LABEL:   aie.device(xcve2802) @segment_0 {
 // CHECK:    %[[VAL_0:.*]] = aie.tile(1, 1)
 // CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
 // CHECK:    %[[VAL_3:.*]] = aie.tile(2, 0)
@@ -19,7 +19,7 @@
 // CHECK:      %[[VAL_6:.*]] = aie.objectfifo.subview.access %[[VAL_5]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
-// CHECK:    } {elf_file = "segment_0_core_5_3.elf"}
+// CHECK:    }
 // CHECK:  }
 
 module {

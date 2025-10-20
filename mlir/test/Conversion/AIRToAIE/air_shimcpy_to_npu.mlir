@@ -9,7 +9,7 @@
 // RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1" --split-input-file | FileCheck %s
 // RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=0 device=npu1 use-lock-race-condition-fix=true" --split-input-file | FileCheck %s  --check-prefix=RACECONDFIX
 
-// CHECK-LABEL:   aie.device(npu1) {
+// CHECK-LABEL:   aie.device(npu1) @herd1 {
 // CHECK:  %[[VAL_0:.*]] = aie.tile(0, 2)
 // CHECK:  %[[VAL_1:.*]] = aie.tile(0, 0)
 // CHECK:  %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 1) {init = 1 : i32}
@@ -53,7 +53,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // -----
 
-// CHECK-LABEL:   aie.device(npu1) {
+// CHECK-LABEL:   aie.device(npu1) @herd1 {
 // CHECK: %[[VAL_0:.*]] = aie.tile(0, 2)
 // CHECK: %[[VAL_1:.*]] = aie.tile(0, 0)
 // CHECK: %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 3) {init = 1 : i32}
@@ -92,9 +92,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
 // CHECK: aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
 // CHECK: aie.shim_dma_allocation @airMemcpyId2(S2MM, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId2 : memref<512xi32, 2>
 // CHECK: aie.shim_dma_allocation @airMemcpyId1(MM2S, 0, 0)
-// CHECK: memref.global "public" @airMemcpyId1 : memref<1024xi32, 2>
 // CHECK: @func2
 // RACECONDFIX: @func2
 func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
@@ -118,7 +116,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // air.channel to aie.locks.
-// CHECK-LABEL:   aie.device(npu1) {
+// CHECK-LABEL:   aie.device(npu1) @herd1 {
 // CHECK:         %[[VAL_0:.*]] = aie.tile(0, 0)
 // CHECK:         %[[VAL_1:.*]] = aie.tile(0, 2)
 // CHECK:         %[[VAL_2:.*]] = aie.lock(%[[VAL_1]], 3) {init = 1 : i32}
@@ -161,9 +159,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
 // CHECK:         aie.shim_dma_allocation @air_channel_1(S2MM, 0, 0)
-// CHECK:         memref.global "public" @air_channel_1 : memref<512xi32, 2>
 // CHECK:         aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
-// CHECK:         memref.global "public" @air_channel_0 : memref<1024xi32, 2>
 // CHECK: @func3
 // RACECONDFIX: @func3
 air.channel @channel_0 [1, 1]
@@ -191,7 +187,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // air.channel to aie.locks.
-// CHECK-LABEL:   aie.device(npu1) {
+// CHECK-LABEL:   aie.device(npu1) @segment0 {
 // CHECK:         %[[VAL_2:.*]] = aie.tile(0, 1)
 // CHECK:         %[[VAL_3:.*]] = aie.tile(0, 2)
 // CHECK:         %[[VAL_4:.*]] = aie.tile(0, 0)
@@ -239,7 +235,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         aie.flow(%[[VAL_2]], DMA : 1, %[[VAL_4]], DMA : 0)
 
 // CHECK: aie.memtile_dma(%[[VAL_2]]) {
-// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb7)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:
 // CHECK:   aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024)
@@ -248,21 +244,21 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: ^bb2:
 // CHECK:   aie.end
 // CHECK: ^bb3:
-// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
+// CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb5)
 // CHECK: ^bb4:
 // CHECK:   aie.use_lock(%[[VAL_6]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024)
 // CHECK:   aie.use_lock(%[[VAL_5]], Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: ^bb5:
-// CHECK:   aie.dma_start(S2MM, 0, ^bb6, ^bb3)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb6, ^bb7)
 // CHECK: ^bb6:
 // CHECK:   aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024)
 // CHECK:   aie.use_lock(%[[VAL_8]], Release, 1)
 // CHECK:   aie.next_bd ^bb6
 // CHECK: ^bb7:
-// CHECK:   aie.dma_start(S2MM, 1, ^bb8, ^bb5)
+// CHECK:   aie.dma_start(S2MM, 1, ^bb8, ^bb2)
 // CHECK: ^bb8:
 // CHECK:   aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024)
@@ -270,9 +266,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
 // CHECK: aie.shim_dma_allocation @air_channel_5(S2MM, 0, 0)
-// CHECK: memref.global "public" @air_channel_5 : memref<1024xi32, 1>
 // CHECK: aie.shim_dma_allocation @air_channel_2(MM2S, 0, 0)
-// CHECK: memref.global "public" @air_channel_2 : memref<1024xi32, 1>
 // CHECK: @func4
 // RACECONDFIX: @func4
 air.channel @channel_2 [1, 1]
@@ -341,12 +335,11 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 1, %[[VAL_5]], DMA : 0)
 
 // CHECK:         aie.shim_dma_allocation @air_channel_8(MM2S, 0, 0)
-// CHECK:         memref.global "public" @air_channel_8 : memref<1024xi32, 1>
 // CHECK: @func5
 
 // RACECONDFIX: aie.device
 // RACECONDFIX:   aie.memtile_dma(%{{.*}}) {
-// RACECONDFIX:     %0 = aie.dma_start(MM2S, 0, ^bb1, ^bb5)
+// RACECONDFIX:     %0 = aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // RACECONDFIX:   ^bb1:
 // RACECONDFIX:     aie.use_lock(%[[lock_0_1_2:.*]], AcquireGreaterEqual, 1)
 // RACECONDFIX:     aie.dma_bd(%[[buf32:.*]] : memref<1024xi32, 1>, 0, 1024)
@@ -355,14 +348,14 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // RACECONDFIX:   ^bb2:
 // RACECONDFIX:     aie.end
 // RACECONDFIX:   ^bb3:
-// RACECONDFIX:     %1 = aie.dma_start(MM2S, 1, ^bb4, ^bb2)
+// RACECONDFIX:     %1 = aie.dma_start(MM2S, 1, ^bb4, ^bb5)
 // RACECONDFIX:   ^bb4:
 // RACECONDFIX:     aie.use_lock(%[[lock_0_1_0:.*]], AcquireGreaterEqual, 1)
 // RACECONDFIX:     aie.dma_bd(%[[buf32]] : memref<1024xi32, 1>, 0, 512)
 // RACECONDFIX:     aie.use_lock(%[[lock_0_1:.*]], Release, 1)
 // RACECONDFIX:     aie.next_bd ^bb4
 // RACECONDFIX:   ^bb5:
-// RACECONDFIX:     %2 = aie.dma_start(S2MM, 0, ^bb6, ^bb3)
+// RACECONDFIX:     %2 = aie.dma_start(S2MM, 0, ^bb6, ^bb2)
 // RACECONDFIX:   ^bb6:
 // RACECONDFIX:     aie.use_lock(%[[lock_0_1_1]], AcquireGreaterEqual, 1)
 // RACECONDFIX:     aie.dma_bd(%[[buf32]] : memref<1024xi32, 1>, 0, 1024)
@@ -446,13 +439,9 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
 // CHECK:  aie.flow(%[[tile_1_3]], DMA : 0, %[[tile_1_0]], DMA : 0)
 // CHECK:  aie.flow(%[[tile_1_4]], DMA : 0, %[[tile_1_0]], DMA : 1)
 // CHECK:  aie.shim_dma_allocation @air_channel_0_0(S2MM, 0, 0)
-// CHECK:  memref.global "public" @air_channel_0_0 : memref<4x4xi32, 2>
 // CHECK:  aie.shim_dma_allocation @air_channel_0_1(S2MM, 1, 0)
-// CHECK:  memref.global "public" @air_channel_0_1 : memref<4x4xi32, 2>
 // CHECK:  aie.shim_dma_allocation @air_channel_0_2(S2MM, 0, 1)
-// CHECK:  memref.global "public" @air_channel_0_2 : memref<4x4xi32, 2>
 // CHECK:  aie.shim_dma_allocation @air_channel_0_3(S2MM, 1, 1)
-// CHECK:  memref.global "public" @air_channel_0_3 : memref<4x4xi32, 2>
 
 // CHECK: @func6
 // CHECK: air.channel.get{{.*}}metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<8x8xi32>)
@@ -506,21 +495,21 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
 // Multi-dimensional memref copy to wraps and strides
 // CHECK: aie.device(npu1)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
-// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb5)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1>, 0, 16)
 // CHECK:   aie.use_lock({{.*}}, Release, 1)
 // CHECK:   aie.next_bd ^bb1
-// CHECK: ^bb3:  // pred: ^bb5
-// CHECK:   aie.dma_start(S2MM, 0, ^bb4, ^bb2)
+// CHECK: ^bb3:  // pred: ^bb0
+// CHECK:   aie.dma_start(S2MM, 0, ^bb4, ^bb5)
 // CHECK: ^bb4:  // 2 preds: ^bb3, ^bb4
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<4x4xi32, 1>, 0, 16)
 // CHECK:   aie.use_lock({{.*}}, Release, 1)
 // CHECK:   aie.next_bd ^bb4
-// CHECK: ^bb5:  // pred: ^bb0
-// CHECK:   aie.dma_start(S2MM, 1, ^bb6, ^bb3)
+// CHECK: ^bb5:  // pred: ^bb3
+// CHECK:   aie.dma_start(S2MM, 1, ^bb6, ^bb2)
 // CHECK: ^bb6:  // 2 preds: ^bb5, ^bb6
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1>, 0, 16, [<size = 4, stride = 16>, <size = 4, stride = 1>])
@@ -1097,13 +1086,9 @@ module {
 // CHECK: aie.flow(%[[tile_0_0]], DMA : 1, %[[tile_0_3]], DMA : 0)
 // CHECK: aie.flow(%[[tile_1_0]], DMA : 1, %[[tile_1_3]], DMA : 0)
 // CHECK: aie.shim_dma_allocation @air_channel_0_0(MM2S, 0, 0)
-// CHECK: memref.global "public" @air_channel_0_0 : memref<16x8xi32, 2 : i32>
 // CHECK: aie.shim_dma_allocation @air_channel_0_1(MM2S, 0, 1)
-// CHECK: memref.global "public" @air_channel_0_1 : memref<16x8xi32, 2 : i32>
 // CHECK: aie.shim_dma_allocation @air_channel_0_2(MM2S, 1, 0)
-// CHECK: memref.global "public" @air_channel_0_2 : memref<16x8xi32, 2 : i32>
 // CHECK: aie.shim_dma_allocation @air_channel_0_3(MM2S, 1, 1)
-// CHECK: memref.global "public" @air_channel_0_3 : memref<16x8xi32, 2 : i32>
 // CHECK: func.func @func14
 // CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
 // CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
@@ -1144,7 +1129,6 @@ module {
 //
 // CHECK:         aie.flow
 // CHECK-NEXT: aie.shim_dma_allocation @air_channel_2(MM2S, 0, 0)
-// CHECK-NEXT: memref.global "public" @air_channel_2 : memref<1024xi32, 1>
 // CHECK: @func15
 // RACECONDFIX: @func15
 air.channel @channel_2 [1, 1]
@@ -1231,14 +1215,14 @@ func.func @func16(%arg0 : memref<5xi32>, %arg1 : memref<96xi32>, %arg2 : memref<
 // Lowering complex loop structures around channel.puts/gets into BD task repeat counts (aie.memtile_dma).
 //
 // CHECK:      aie.memtile_dma
-// CHECK-NEXT: aie.dma_start(MM2S, 0, ^bb1, ^bb7)
+// CHECK-NEXT: aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK-NEXT: ^bb1:
 // CHECK:      aie.dma_bd({{.*}}) {task_id = 0 : i32}
 // CHECK:      aie.next_bd ^bb2
 // CHECK-NEXT: ^bb2:
 // CHECK-NEXT: aie.end
 // CHECK-NEXT: ^bb3:
-// CHECK-NEXT: aie.dma_start(MM2S, 0, ^bb4, ^bb2, repeat_count = 7)
+// CHECK-NEXT: aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
 // CHECK:      aie.dma_bd({{.*}}) {task_id = 1 : i32}
 // CHECK:      aie.next_bd ^bb2
 // CHECK: @func17
@@ -1466,6 +1450,314 @@ module {
             scf.yield %9, %11, %11, %10 : !air.async.token, !air.async.token, !air.async.token, !air.async.token
           }
           scf.yield %8#1 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Packet flow fusion and allocation to shared DMA channels, using DMA task queues and repeat count.
+//
+// CHECK:      aie.packet_flow(0) {
+// CHECK:        aie.packet_source<%mem_tile_0_1, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_0_2, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_0_3, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_0_4, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_0_5, DMA : 0>
+// CHECK:      }
+// CHECK:      aie.packet_flow(1) {
+// CHECK:        aie.packet_source<%mem_tile_1_1, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_1_2, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_1_3, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_1_4, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_1_5, DMA : 0>
+// CHECK:      }
+// CHECK:      aie.packet_flow(2) {
+// CHECK:        aie.packet_source<%mem_tile_2_1, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_2_2, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_2_3, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_2_4, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_2_5, DMA : 0>
+// CHECK:      }
+// CHECK:      aie.packet_flow(3) {
+// CHECK:        aie.packet_source<%mem_tile_3_1, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_3_2, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_3_3, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_3_4, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_3_5, DMA : 0>
+// CHECK:      }
+// CHECK:      aie.packet_flow(4) {
+// CHECK:        aie.packet_source<%mem_tile_0_1, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_0_2, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_1_2, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_2_2, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_3_2, DMA : 0>
+// CHECK:      }
+// CHECK:      aie.packet_flow(5) {
+// CHECK:        aie.packet_source<%mem_tile_1_1, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_0_3, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_1_3, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_2_3, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_3_3, DMA : 0>
+// CHECK:      }
+// CHECK:      aie.packet_flow(6) {
+// CHECK:        aie.packet_source<%mem_tile_2_1, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_0_4, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_1_4, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_2_4, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_3_4, DMA : 0>
+// CHECK:      }
+// CHECK:      aie.packet_flow(7) {
+// CHECK:        aie.packet_source<%mem_tile_3_1, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_0_5, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_1_5, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_2_5, DMA : 0>
+// CHECK:        aie.packet_dest<%tile_3_5, DMA : 0>
+// CHECK:      }
+// CHECK:      aie.memtile_dma(%mem_tile_0_1) {
+// CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
+// CHECK:      ^bb1:
+// CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32>, 0, 2048, [<size = 8, stride = 8>, <size = 32, stride = 64>, <size = 8, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
+// CHECK:        aie.use_lock(%{{.*}}, Release, 1)
+// CHECK:        aie.next_bd ^bb2
+// CHECK:      ^bb2:
+// CHECK:        aie.end
+// CHECK:      ^bb3:
+// CHECK:        aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
+// CHECK:      ^bb4:
+// CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32>, 0, 6144, [<size = 24, stride = 4>, <size = 64, stride = 96>, <size = 4, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 4>
+// CHECK:        aie.use_lock(%{{.*}}, Release, 1)
+// CHECK:        aie.next_bd ^bb2
+// CHECK:      }
+// CHECK:      aie.memtile_dma(%mem_tile_1_1) {
+// CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
+// CHECK:      ^bb1:
+// CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32>, 0, 2048, [<size = 8, stride = 8>, <size = 32, stride = 64>, <size = 8, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 1>
+// CHECK:        aie.use_lock(%{{.*}}, Release, 1)
+// CHECK:        aie.next_bd ^bb2
+// CHECK:      ^bb2:
+// CHECK:        aie.end
+// CHECK:      ^bb3:
+// CHECK:        aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
+// CHECK:      ^bb4:
+// CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32>, 0, 6144, [<size = 24, stride = 4>, <size = 64, stride = 96>, <size = 4, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>
+// CHECK:        aie.use_lock(%{{.*}}, Release, 1)
+// CHECK:        aie.next_bd ^bb2
+// CHECK:      }
+// CHECK:      aie.memtile_dma(%mem_tile_2_1) {
+// CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
+// CHECK:      ^bb1:
+// CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32>, 0, 2048, [<size = 8, stride = 8>, <size = 32, stride = 64>, <size = 8, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 2>
+// CHECK:        aie.use_lock(%{{.*}}, Release, 1)
+// CHECK:        aie.next_bd ^bb2
+// CHECK:      ^bb2:
+// CHECK:        aie.end
+// CHECK:      ^bb3:
+// CHECK:        %1 = aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
+// CHECK:      ^bb4:
+// CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32>, 0, 6144, [<size = 24, stride = 4>, <size = 64, stride = 96>, <size = 4, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 6>
+// CHECK:        aie.use_lock(%{{.*}}, Release, 1)
+// CHECK:        aie.next_bd ^bb2
+// CHECK:      }
+// CHECK:      aie.memtile_dma(%mem_tile_3_1) {
+// CHECK:        aie.dma_start(MM2S, 0, ^bb1, ^bb3)
+// CHECK:      ^bb1:
+// CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:        aie.dma_bd(%{{.*}} : memref<32x64xbf16, 1 : i32>, 0, 2048, [<size = 8, stride = 8>, <size = 32, stride = 64>, <size = 8, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>
+// CHECK:        aie.use_lock(%{{.*}}, Release, 1)
+// CHECK:        aie.next_bd ^bb2
+// CHECK:      ^bb2:
+// CHECK:        aie.end
+// CHECK:      ^bb3:
+// CHECK:        %1 = aie.dma_start(MM2S, 0, ^bb4, ^bb5, repeat_count = 7)
+// CHECK:      ^bb4:
+// CHECK:        aie.use_lock(%{{.*}}, AcquireGreaterEqual, 1)
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64x96xbf16, 1 : i32>, 0, 6144, [<size = 24, stride = 4>, <size = 64, stride = 96>, <size = 4, stride = 1>]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 7>
+// CHECK:        aie.use_lock(%{{.*}}, Release, 1)
+// CHECK:        aie.next_bd ^bb2
+// CHECK:      }
+// RACECONDFIX: @func20
+
+#map = affine_map<()[s0] -> (s0 * 32)>
+#set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
+#set1 = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0, -s1 + 3 >= 0)>
+#set2 = affine_set<()[s0, s1] : (s0 - 2 == 0, s1 >= 0, -s1 + 3 >= 0)>
+#set3 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 == 0)>
+#set4 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 - 1 == 0)>
+#set5 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 - 2 == 0)>
+module {
+  air.channel @L3ToL2Chan1 [1, 4]
+  air.channel @L2ToL1Chan1_0 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_packet"}
+  air.channel @L2ToL1Chan1_1 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_packet"}
+  air.channel @L2ToL1Chan1_2 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_packet"}
+  air.channel @L2ToL1Chan1_3 [1, 1] {broadcast_shape = [1, 4], channel_type = "dma_packet"}
+  air.channel @L2ToL1Chan2_0 [1, 1] {broadcast_shape = [4, 1], channel_type = "dma_packet"}
+  air.channel @L2ToL1Chan2_1 [1, 1] {broadcast_shape = [4, 1], channel_type = "dma_packet"}
+  air.channel @L2ToL1Chan2_2 [1, 1] {broadcast_shape = [4, 1], channel_type = "dma_packet"}
+  air.channel @L2ToL1Chan2_3 [1, 1] {broadcast_shape = [4, 1], channel_type = "dma_packet"}
+  func.func @func20(%arg0: memref<128x64xbf16>, %arg1: memref<64x3072xbf16>, %arg2: memref<3072x64xbf16>, %arg3: memref<128x3072xbf16>, %arg4: memref<128x64xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg5, %arg6) in (%arg7=%c1, %arg8=%c1) args(%arg9=%arg0, %arg10=%arg1) : memref<128x64xbf16>, memref<64x3072xbf16> attributes {id = 1 : i32} {
+      %c0 = arith.constant 0 : index
+      %c3 = arith.constant 3 : index
+      %c2 = arith.constant 2 : index
+      %c1_0 = arith.constant 1 : index
+      %c32 = arith.constant 32 : index
+      %c96 = arith.constant 96 : index
+      %c192 = arith.constant 192 : index
+      %c288 = arith.constant 288 : index
+      %c64 = arith.constant 64 : index
+      %c3072 = arith.constant 3072 : index
+      %c384 = arith.constant 384 : index
+      %c4 = arith.constant 4 : index
+      %c8 = arith.constant 8 : index
+      %1 = air.wait_all async 
+      %2 = scf.parallel (%arg11) = (%c0) to (%c4) step (%c1_0) init (%1) -> !air.async.token {
+        %8 = affine.apply #map()[%arg11]
+        %9 = air.channel.put async  @L3ToL2Chan1[%c0, %arg11] (%arg9[%8, %c0] [%c32, %c64] [%c64, %c1_0]) {id = 1 : i32} : (memref<128x64xbf16>)
+        scf.reduce(%9 : !air.async.token) {
+        ^bb0(%arg12: !air.async.token, %arg13: !air.async.token):
+          %10 = air.wait_all async [%arg12, %arg13] 
+          scf.reduce.return %10 : !air.async.token
+        }
+      }
+      %3 = air.channel.put async  @L3ToL2Chan1[%c0, %c0] (%arg10[%c0, %c0, %c0] [%c8, %c64, %c96] [%c384, %c3072, %c1_0]) {id = 2 : i32} : (memref<64x3072xbf16>)
+      %4 = air.channel.put async  @L3ToL2Chan1[%c0, %c1_0] (%arg10[%c0, %c0, %c96] [%c8, %c64, %c96] [%c384, %c3072, %c1_0]) {id = 3 : i32} : (memref<64x3072xbf16>)
+      %5 = air.channel.put async  @L3ToL2Chan1[%c0, %c2] (%arg10[%c0, %c0, %c192] [%c8, %c64, %c96] [%c384, %c3072, %c1_0]) {id = 4 : i32} : (memref<64x3072xbf16>)
+      %6 = air.channel.put async  @L3ToL2Chan1[%c0, %c3] (%arg10[%c0, %c0, %c288] [%c8, %c64, %c96] [%c384, %c3072, %c1_0]) {id = 5 : i32} : (memref<64x3072xbf16>)
+      %7 = air.segment @attention_seg async  attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 4 : i64, y_loc = 2 : i64, y_size = 4 : i64} {
+        %c32_1 = arith.constant 32 : index
+        %c24 = arith.constant 24 : index
+        %c2_2 = arith.constant 2 : index
+        %c3_3 = arith.constant 3 : index
+        %c1_4 = arith.constant 1 : index
+        %c96_5 = arith.constant 96 : index
+        %c64_6 = arith.constant 64 : index
+        %c4_7 = arith.constant 4 : index
+        %c8_8 = arith.constant 8 : index
+        %c0_9 = arith.constant 0 : index
+        %async_token, %results = air.execute -> (memref<32x64xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<32x64xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<32x64xbf16, 1 : i32>
+        }
+        %async_token_10, %results_11 = air.execute -> (memref<32x64xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<32x64xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<32x64xbf16, 1 : i32>
+        }
+        %async_token_12, %results_13 = air.execute -> (memref<32x64xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<32x64xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<32x64xbf16, 1 : i32>
+        }
+        %async_token_14, %results_15 = air.execute -> (memref<32x64xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<32x64xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<32x64xbf16, 1 : i32>
+        }
+        %8 = air.channel.get async [%async_token]  @L3ToL2Chan1[%c0_9, %c0_9] (%results[] [] []) {id = 10 : i32} : (memref<32x64xbf16, 1 : i32>)
+        %9 = air.channel.get async [%async_token_10]  @L3ToL2Chan1[%c0_9, %c1_4] (%results_11[] [] []) {id = 11 : i32} : (memref<32x64xbf16, 1 : i32>)
+        %10 = air.channel.get async [%async_token_12]  @L3ToL2Chan1[%c0_9, %c2_2] (%results_13[] [] []) {id = 12 : i32} : (memref<32x64xbf16, 1 : i32>)
+        %11 = air.channel.get async [%async_token_14]  @L3ToL2Chan1[%c0_9, %c3_3] (%results_15[] [] []) {id = 13 : i32} : (memref<32x64xbf16, 1 : i32>)
+        %12 = air.channel.put async [%8]  @L2ToL1Chan1_0[%c0_9, %c0_9] (%results[%c0_9, %c0_9, %c0_9] [%c8_8, %c32_1, %c8_8] [%c8_8, %c64_6, %c1_4]) {id = 14 : i32} : (memref<32x64xbf16, 1 : i32>)
+        %13 = air.channel.put async [%9]  @L2ToL1Chan1_1[%c0_9, %c0_9] (%results_11[%c0_9, %c0_9, %c0_9] [%c8_8, %c32_1, %c8_8] [%c8_8, %c64_6, %c1_4]) {id = 15 : i32} : (memref<32x64xbf16, 1 : i32>)
+        %14 = air.channel.put async [%10]  @L2ToL1Chan1_2[%c0_9, %c0_9] (%results_13[%c0_9, %c0_9, %c0_9] [%c8_8, %c32_1, %c8_8] [%c8_8, %c64_6, %c1_4]) {id = 16 : i32} : (memref<32x64xbf16, 1 : i32>)
+        %15 = air.channel.put async [%11]  @L2ToL1Chan1_3[%c0_9, %c0_9] (%results_15[%c0_9, %c0_9, %c0_9] [%c8_8, %c32_1, %c8_8] [%c8_8, %c64_6, %c1_4]) {id = 17 : i32} : (memref<32x64xbf16, 1 : i32>)
+        %16 = air.wait_all async 
+        %17 = scf.for %arg11 = %c0_9 to %c8_8 step %c1_4 iter_args(%arg12 = %16) -> (!air.async.token) {
+          %async_token_16, %results_17 = air.execute -> (memref<64x96xbf16, 1 : i32>) {
+            %alloc = memref.alloc() : memref<64x96xbf16, 1 : i32>
+            air.execute_terminator %alloc : memref<64x96xbf16, 1 : i32>
+          } {hoist_alloc = true}
+          %22 = air.channel.get async [%async_token_16, %arg12]  @L3ToL2Chan1[%c0_9, %c0_9] (%results_17[] [] []) {id = 18 : i32} : (memref<64x96xbf16, 1 : i32>)
+          %23 = air.channel.put async [%22]  @L2ToL1Chan2_0[%c0_9, %c0_9] (%results_17[%c0_9, %c0_9, %c0_9] [%c24, %c64_6, %c4_7] [%c4_7, %c96_5, %c1_4]) {id = 19 : i32} : (memref<64x96xbf16, 1 : i32>)
+          scf.yield %23 : !air.async.token
+        }
+        %18 = scf.for %arg11 = %c0_9 to %c8_8 step %c1_4 iter_args(%arg12 = %16) -> (!air.async.token) {
+          %async_token_16, %results_17 = air.execute -> (memref<64x96xbf16, 1 : i32>) {
+            %alloc = memref.alloc() : memref<64x96xbf16, 1 : i32>
+            air.execute_terminator %alloc : memref<64x96xbf16, 1 : i32>
+          } {hoist_alloc = true}
+          %22 = air.channel.get async [%async_token_16, %arg12]  @L3ToL2Chan1[%c0_9, %c1_4] (%results_17[] [] []) {id = 22 : i32} : (memref<64x96xbf16, 1 : i32>)
+          %23 = air.channel.put async [%22]  @L2ToL1Chan2_1[%c0_9, %c0_9] (%results_17[%c0_9, %c0_9, %c0_9] [%c24, %c64_6, %c4_7] [%c4_7, %c96_5, %c1_4]) {id = 23 : i32} : (memref<64x96xbf16, 1 : i32>)
+          scf.yield %23 : !air.async.token
+        }
+        %19 = scf.for %arg11 = %c0_9 to %c8_8 step %c1_4 iter_args(%arg12 = %16) -> (!air.async.token) {
+          %async_token_16, %results_17 = air.execute -> (memref<64x96xbf16, 1 : i32>) {
+            %alloc = memref.alloc() : memref<64x96xbf16, 1 : i32>
+            air.execute_terminator %alloc : memref<64x96xbf16, 1 : i32>
+          } {hoist_alloc = true}
+          %22 = air.channel.get async [%async_token_16, %arg12]  @L3ToL2Chan1[%c0_9, %c2_2] (%results_17[] [] []) {id = 26 : i32} : (memref<64x96xbf16, 1 : i32>)
+          %23 = air.channel.put async [%22]  @L2ToL1Chan2_2[%c0_9, %c0_9] (%results_17[%c0_9, %c0_9, %c0_9] [%c24, %c64_6, %c4_7] [%c4_7, %c96_5, %c1_4]) {id = 27 : i32} : (memref<64x96xbf16, 1 : i32>)
+          scf.yield %23 : !air.async.token
+        }
+        %20 = scf.for %arg11 = %c0_9 to %c8_8 step %c1_4 iter_args(%arg12 = %16) -> (!air.async.token) {
+          %async_token_16, %results_17 = air.execute -> (memref<64x96xbf16, 1 : i32>) {
+            %alloc = memref.alloc() : memref<64x96xbf16, 1 : i32>
+            air.execute_terminator %alloc : memref<64x96xbf16, 1 : i32>
+          } {hoist_alloc = true}
+          %22 = air.channel.get async [%async_token_16, %arg12]  @L3ToL2Chan1[%c0_9, %c3_3] (%results_17[] [] []) {id = 30 : i32} : (memref<64x96xbf16, 1 : i32>)
+          %23 = air.channel.put async [%22]  @L2ToL1Chan2_3[%c0_9, %c0_9] (%results_17[%c0_9, %c0_9, %c0_9] [%c24, %c64_6, %c4_7] [%c4_7, %c96_5, %c1_4]) {id = 31 : i32} : (memref<64x96xbf16, 1 : i32>)
+          scf.yield %23 : !air.async.token
+        }
+        %21 = air.herd @herd_0 async  tile (%arg11, %arg12) in (%arg13=%c4_7, %arg14=%c4_7) attributes {id = 5 : i32, link_with = "attn.o", x_loc = 0 : i64, y_loc = 2 : i64} {
+          %c8_16 = arith.constant 8 : index
+          %c0_17 = arith.constant 0 : index
+          %c1_18 = arith.constant 1 : index
+          %async_token_19, %results_20 = air.execute -> (memref<32x64xbf16, 2 : i32>) {
+            %alloc = memref.alloc() : memref<32x64xbf16, 2 : i32>
+            air.execute_terminator %alloc : memref<32x64xbf16, 2 : i32>
+          }
+          %22 = affine.if #set()[%arg11, %arg12] -> !air.async.token {
+            %23 = air.channel.get async [%async_token_19]  @L2ToL1Chan1_0[%arg11, %arg12] (%results_20[] [] []) {id = 34 : i32} : (memref<32x64xbf16, 2 : i32>)
+            affine.yield %23 : !air.async.token
+          } else {
+            %23 = affine.if #set1()[%arg11, %arg12] -> !air.async.token {
+              %24 = air.channel.get async [%async_token_19]  @L2ToL1Chan1_1[%arg11, %arg12] (%results_20[] [] []) {id = 35 : i32} : (memref<32x64xbf16, 2 : i32>)
+              affine.yield %24 : !air.async.token
+            } else {
+              %24 = affine.if #set2()[%arg11, %arg12] -> !air.async.token {
+                %25 = air.channel.get async [%async_token_19]  @L2ToL1Chan1_2[%arg11, %arg12] (%results_20[] [] []) {id = 36 : i32} : (memref<32x64xbf16, 2 : i32>)
+                affine.yield %25 : !air.async.token
+              } else {
+                %25 = air.channel.get async [%async_token_19]  @L2ToL1Chan1_3[%arg11, %arg12] (%results_20[] [] []) {id = 37 : i32} : (memref<32x64xbf16, 2 : i32>)
+                affine.yield %25 : !air.async.token
+              }
+              affine.yield %24 : !air.async.token
+            }
+            affine.yield %23 : !air.async.token
+          }
+          scf.for %arg15 = %c0_17 to %c8_16 step %c1_18 {
+            %async_token_21, %results_22 = air.execute -> (memref<64x96xbf16, 2 : i32>) {
+              %alloc = memref.alloc() : memref<64x96xbf16, 2 : i32>
+              air.execute_terminator %alloc : memref<64x96xbf16, 2 : i32>
+            }
+            %23 = affine.if #set3()[%arg11, %arg12] -> !air.async.token {
+              %24 = air.channel.get async [%async_token_21]  @L2ToL1Chan2_0[%arg11, %arg12] (%results_22[] [] []) {id = 38 : i32} : (memref<64x96xbf16, 2 : i32>)
+              affine.yield %24 : !air.async.token
+            } else {
+              %24 = affine.if #set4()[%arg11, %arg12] -> !air.async.token {
+                %25 = air.channel.get async [%async_token_21]  @L2ToL1Chan2_1[%arg11, %arg12] (%results_22[] [] []) {id = 39 : i32} : (memref<64x96xbf16, 2 : i32>)
+                affine.yield %25 : !air.async.token
+              } else {
+                %25 = affine.if #set5()[%arg11, %arg12] -> !air.async.token {
+                  %26 = air.channel.get async [%async_token_21]  @L2ToL1Chan2_2[%arg11, %arg12] (%results_22[] [] []) {id = 40 : i32} : (memref<64x96xbf16, 2 : i32>)
+                  affine.yield %26 : !air.async.token
+                } else {
+                  %26 = air.channel.get async [%async_token_21]  @L2ToL1Chan2_3[%arg11, %arg12] (%results_22[] [] []) {id = 41 : i32} : (memref<64x96xbf16, 2 : i32>)
+                  affine.yield %26 : !air.async.token
+                }
+                affine.yield %25 : !air.async.token
+              }
+              affine.yield %24 : !air.async.token
+            }
+          }
         }
       }
     }

@@ -692,6 +692,25 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   auto &body = herdOp.getBody().front().getOperations();
   bb.splice(bb.begin(), body, body.begin(), --body.end());
 
+  // Connect spliced body ops with the inner-most loop's loop-carried token, to
+  // synchronize the herd body operations with the inner-most loop's
+  // loop-carried dependency.
+  if (air::isAsyncOp(innerMostLoop)) {
+    for (auto &bodyOp : innerMostLoop.getBody()->without_terminator()) {
+      if (!air::getAsyncDependenciesFromOp(&bodyOp).empty())
+        continue;
+      addAsyncDependencyIfNew(&bodyOp, air::getLoopCarriedTokenFromScfOp(
+                                           innerMostLoop, "argument"));
+    }
+    // Generate a wait_all op that collects all dangling async tokens in the
+    // loop body.
+    auto waitAllOp = generateWaitAllToTerminateBlock(
+        *innerMostLoop.getBody(), builder, /*isBlocking*/ false);
+    // Assign the wait_all token to the loop's terminator (scf.yield).
+    innerMostLoop.getBody()->getTerminator()->getOpOperand(0).assign(
+        waitAllOp.getAsyncToken());
+  }
+
   builder.setInsertionPoint(herdOp);
   for (auto res : herdOp->getResults())
     remap.map(res,
@@ -3645,6 +3664,12 @@ private:
     }
   }
 
+  // Helper function to check if two channels have the same channel_type
+  // attribute
+  bool haveSameChannelType(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    return chan_a.getChannelType() == chan_b.getChannelType();
+  }
+
   // Check whether puts and gets hit the aggressive mode target memory spaces
   bool hitsMemorySpaceForAggMode(std::vector<air::ChannelPutOp> &puts,
                                  std::vector<air::ChannelGetOp> &gets) {
@@ -3668,6 +3693,10 @@ private:
   }
 
   bool checkIfMergeable(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    // Check if channels have the same channel_type
+    if (!haveSameChannelType(chan_a, chan_b))
+      return false;
+
     // Check which memory space to time-multiplex channels onto.
     if (targetMemorySpaces.empty())
       return false;
@@ -3875,6 +3904,12 @@ private:
   // for loop (NFL).
   std::tuple<bool, std::string>
   checkIfTemporalMergeable(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    std::tuple<bool, std::string> notMergeable = {false, ""};
+
+    // Check if channels have the same channel_type
+    if (!haveSameChannelType(chan_a, chan_b))
+      return notMergeable;
+
     std::vector<air::ChannelPutOp> a_puts =
         getChannelPutOpThroughSymbol(chan_a);
     std::vector<air::ChannelPutOp> b_puts =
@@ -3883,7 +3918,6 @@ private:
         getChannelGetOpThroughSymbol(chan_a);
     std::vector<air::ChannelGetOp> b_gets =
         getChannelGetOpThroughSymbol(chan_b);
-    std::tuple<bool, std::string> notMergeable = {false, ""};
     std::tuple<bool, std::string> mergeableToLB = {true, "LB"};
     std::tuple<bool, std::string> mergeableToUB = {true, "UB"};
     std::tuple<bool, std::string> mergeableNoForLoop = {true, "NFL"};
@@ -4640,6 +4674,25 @@ public:
 private:
 };
 
+// A pattern which attempts to fix memref.subview output type, after memref
+// shrinkage changes the memref shapes being allocated.
+struct UpdateSubViewOutputTypeAfterMemrefShrinkage
+    : public OpRewritePattern<memref::SubViewOp> {
+  using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::SubViewOp op,
+                                PatternRewriter &rewriter) const override {
+    MemRefType newResultType = memref::SubViewOp::inferRankReducedResultType(
+        op.getType().getShape(), op.getSourceType(), op.getMixedOffsets(),
+        op.getMixedSizes(), op.getMixedStrides());
+    if (newResultType != op.getType()) {
+      op.getResult().setType(newResultType);
+      return success();
+    } else
+      return failure();
+  }
+};
+
 // A pattern which attempts to shrink the memref sizes, based on the access
 // patterns of all its uses.
 struct ShrinkMemrefSizesByAccessPattern
@@ -5028,8 +5081,6 @@ private:
     if (allOffsetsAreZeros() && allStridesAreOnes() &&
         memrefVolumeUnchanged()) {
       subViewOp.getResult().replaceAllUsesWith(subViewOp.getSource());
-      for (auto newUser : subViewOp.getSource().getUsers())
-        push_back_if_unique<Operation *>(users, newUser);
       rewriter.eraseOp(subViewOp);
     }
     return success();
@@ -5679,7 +5730,8 @@ public:
   void runPostProcPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
+    patterns.insert<ShrinkMemrefSizesByAccessPattern,
+                    UpdateSubViewOutputTypeAfterMemrefShrinkage>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration post memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
@@ -5760,36 +5812,6 @@ private:
     fnDecl.setType(newFunctionType);
   }
 };
-
-// Generate a wait_all at the end of block, which gathers all dangling async
-// tokens.
-FailureOr<air::WaitAllOp>
-generateWaitAllToTerminateBlock(Block &block, OpBuilder &b,
-                                bool isBlocking = true) {
-  llvm::SetVector<Value> blockTokens, danglingTokens;
-  blockTokens.insert(block.getArguments().begin(), block.getArguments().end());
-  for (auto &o : block.getOperations())
-    blockTokens.insert(o.getResults().begin(), o.getResults().end());
-  for (auto t : blockTokens) {
-    if (!t.use_empty())
-      continue;
-    if (!isa<air::AsyncTokenType>(t.getType()))
-      continue;
-    danglingTokens.insert(t);
-  }
-  if (block.mightHaveTerminator())
-    b.setInsertionPoint(block.getTerminator());
-  else
-    b.setInsertionPointToEnd(&block);
-  if (isBlocking)
-    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
-                                    /*result_type*/ std::nullopt,
-                                    danglingTokens.takeVector());
-  else
-    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
-                                    air::AsyncTokenType::get(b.getContext()),
-                                    danglingTokens.takeVector());
-}
 
 // Air launch is converted to scf for loop nest here, so as to enable
 // compile-time shim dma bd optimizations.
@@ -5881,10 +5903,8 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       auto wa = generateWaitAllToTerminateBlock(*body, rewriter,
                                                 /*isBlocking*/ false);
-      if (failed(wa))
-        return failure();
       rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(),
-                                    wa->getAsyncToken());
+                                    wa.getAsyncToken());
     }
 
     // replace output events with air.wait_all
@@ -6185,8 +6205,8 @@ public:
       IRRewriter rewriter(func.getContext());
       if (air::isAsyncOp(seg)) {
         OpBuilder::InsertionGuard guard(rewriter);
-        if (failed(generateWaitAllToTerminateBlock(
-                seg.getBody().front(), rewriter, /*isBlocking*/ true)))
+        if (!generateWaitAllToTerminateBlock(seg.getBody().front(), rewriter,
+                                             /*isBlocking*/ true))
           signalPassFailure();
       }
     }
@@ -6530,7 +6550,8 @@ public:
     MLIRContext *ctx = &getContext();
     auto funcOp = getOperation();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
+    patterns.insert<ShrinkMemrefSizesByAccessPattern,
+                    UpdateSubViewOutputTypeAfterMemrefShrinkage>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
     // Update func.call declaration after memref shrinkage
     SmallVector<memref::AllocOp> shrunkMemallocs;
