@@ -277,15 +277,17 @@ extern "C" {
 // the kernels.
 
 #ifndef DIM_M
-#define DIM_M 64
+#define DIM_M 128
+#define DIM_M_DIV_4 32
 #endif
 
 #ifndef DIM_K
-#define DIM_K 64
+#define DIM_K 32
 #endif
 
 #ifndef DIM_N
 #define DIM_N 64
+#define DIM_N_DIV_4 16
 #endif
 
 #ifndef combos
@@ -300,6 +302,7 @@ extern "C" {
         DIM_M, DIM_K, DIM_N>(a_in, b_in, c_out);                               \
   }
 
+
 #define matmul_scalar_c_func(ctype_in, mlir_type_in, ctype_out, mlir_type_out, \
                              r, s, t)                                          \
   void matmul_scalar_##mlir_type_in##_##mlir_type_out(                         \
@@ -308,14 +311,23 @@ extern "C" {
                                                             c_out);            \
   }
 
-#define zero_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,              \
-                               mlir_type_out, r, s, t)                         \
-  void linalg_fill_##mlir_type_out##_view1x1x16x16x4x4x##mlir_type_out##as2(   \
+
+#define CAT2(a,b) a##b
+#define CAT(a,b) CAT2(a,b)
+#define MAKE_LINALG_FILL_NAME(mlir_in, mlir_out, N_div_4, M_div_4)             \
+  CAT(CAT(CAT(CAT(CAT(CAT(CAT(CAT(linalg_fill_, mlir_in), _view1x1x), N_div_4),\
+   x), M_div_4), x4x4x), mlir_out), as2)
+
+#define zero_vectorized_c_func(ctype_in, mlir_type_in, ctype_out, mlir_type_out,\
+                             r, s, t)                                          \
+  void MAKE_LINALG_FILL_NAME(mlir_type_in, mlir_type_out, DIM_N_DIV_4, DIM_M_DIV_4)(   \
       ctype_out *c_out) {                                                      \
     zero_vectorized<ctype_out, DIM_M, DIM_N, 32>(c_out);                       \
   }
 
-combos(matmul_vectorized_c_func) combos(matmul_scalar_c_func)
-    combos(zero_vectorized_c_func)
+combos(matmul_vectorized_c_func) combos(matmul_scalar_c_func) combos(zero_vectorized_c_func)
 
 } // extern "C"
+
+//CAT9(linalg_fill_, mlir_in, _view1x1x, DIV4(N), x, DIV4(M), x4x4x, mlir_out, as2)
+// linalg_fill_bf16_view1x1x16x32x4x4xbf16as2

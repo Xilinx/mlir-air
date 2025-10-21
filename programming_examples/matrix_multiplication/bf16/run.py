@@ -465,9 +465,9 @@ if __name__ == "__main__":
     M = 512
     K = 512
     N = 512
-    TILE_M = 64
+    TILE_M = 128
     TILE_K_L2 = 128
-    TILE_K_L1 = 64
+    TILE_K_L1 = 32
     TILE_N = 64
     HERD_M = 4
     HERD_N = 4
