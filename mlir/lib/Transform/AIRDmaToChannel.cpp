@@ -1275,17 +1275,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     // memory hierarchy.
     SetVector<air::ChannelInterface> externalChannelOps;
     for (auto f : funcOps) {
-      f.walk([&externalChannelOps](air::HerdOp herd) {
-        herd.walk([&externalChannelOps](air::ChannelInterface getput) {
-          if (isValidExternalChannelOp(getput))
-            externalChannelOps.insert(getput);
-        });
-      });
-      f.walk([&externalChannelOps](air::SegmentOp segment) {
-        segment.walk([&externalChannelOps](air::ChannelInterface getput) {
-          if (isValidExternalChannelOp(getput))
-            externalChannelOps.insert(getput);
-        });
+      f.walk([&externalChannelOps](air::ChannelInterface getput) {
+        if (!isInMatchingHierarchy(getput))
+          externalChannelOps.insert(getput);
       });
     }
 
