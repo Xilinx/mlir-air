@@ -47,6 +47,7 @@ def build_module(
     herd_n,
     np_dtype_in,
     np_dtype_out,
+    arch="aie2",
 ):
     assert m % tile_m == 0
     assert k % tile_k_l2 == 0
@@ -58,7 +59,11 @@ def build_module(
     xrt_dtype_in = type_mapper(np_dtype_in)
     xrt_dtype_out = type_mapper(np_dtype_out)
 
-    mmul_mkn = [4, 8, 4]
+    # Architecture-specific matrix multiplication dimensions
+    if arch == "aie2p":
+        mmul_mkn = [8, 8, 8]
+    else:  # aie2
+        mmul_mkn = [4, 8, 4]
 
     # L3 MemRefTypes
     memrefTyA = MemRefType.get(a_size, xrt_dtype_in)
@@ -538,6 +543,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable direct code generation mode (compiles directly without extra kernel library)",
     )
+    parser.add_argument(
+        "--arch",
+        type=str,
+        choices=["aie2", "aie2p"],
+        default="aie2",
+        help="Target AIE architecture (aie2 or aie2p)",
+    )
     args = parser.parse_args()
 
     # Check for PEANO_INSTALL_DIR if direct codegen is enabled
@@ -562,6 +574,7 @@ if __name__ == "__main__":
         args.herd_n,
         INPUT_DATATYPE,
         OUTPUT_DATATYPE,
+        args.arch,
     )
 
     # Vectorization - only run if direct codegen mode is enabled
