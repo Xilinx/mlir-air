@@ -14,7 +14,7 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=5a67ce83d8c65ede525d4764abe0811c9f9a789f
+export HASH=f36b5cce6b97fb203dbea426e6e03655d70966ca
 DATETIME=2025100804
 WHEEL_VERSION=0.0.1.$DATETIME+${HASH:0:7}
 
