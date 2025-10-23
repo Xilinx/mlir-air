@@ -12,6 +12,5 @@
 // RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: %PEANO_INSTALL_DIR/bin/clang++ --target=aie2p-none-unknown-elf %peano_flags -c %S/chess/beefmaker_kernel.cc
 // RUN: air-opt %S/air.mlir -air-dma-to-channel -canonicalize -air-dependency -air-to-aie="device=npu2_4col row-offset=2 col-offset=0" -air-to-std -symbol-dce -airrt-to-npu -canonicalize -cse -o aie.mlir
-// RUN: %python aiecc.py --no-aiesim --aie-generate-xclbin --aie-generate-npu --no-compile-host --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie.mlir
+// RUN: %python aiecc.py --no-aiesim --no-xchesscc --no-xbridge --peano %PEANO_INSTALL_DIR --aie-generate-xclbin --aie-generate-npu --no-compile-host --xclbin-name=aie.xclbin --npu-insts-name=insts.bin aie.mlir
 // RUN: %run_on_npu2% %python %S/run.py aie.xclbin
-// XFAIL:*
