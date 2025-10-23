@@ -39,15 +39,19 @@ print:
 	${powershell} python3 ${srcdir}/run.py -p --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 run4x4: $(KERNEL_DEP)
+	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 run2x4: $(KERNEL_DEP)
+	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 run2x2: $(KERNEL_DEP)
+	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 run3x3: $(KERNEL_DEP)
+	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 32 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 # Measure the e2e latencies across a range of problem shapes.
@@ -98,16 +102,16 @@ build-test-exe:
 		echo "Error: XILINX_XRT environment variable not set. Please make sure to have sourced xrt/setup.sh."; \
 		exit 1; \
 	fi; \
-	if [ -z "$$MLIR_AIE_INSTALL_DIR" ]; then \
-		echo "Error: MLIR_AIE_INSTALL_DIR environment variable not set. Please make sure to have sourced utils/env_setup.sh."; \
+	if [ -z "$(AIEOPT_DIR)" ]; then \
+		echo "Error: AIEOPT_DIR environment variable not set. Please make sure to have sourced utils/env_setup.sh."; \
 		exit 1; \
 	fi; \
 	echo "Using compiler: $$GPP"; \
 	mkdir -p $(BUILD_DIR); \
 	cd $(BUILD_DIR) && $$GPP ${srcdir}/test.cpp -o test.exe -std=c++23 -Wall \
 		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
-		-I$$MLIR_AIE_INSTALL_DIR/runtime_lib/x86_64/test_lib/include \
-		-L$$MLIR_AIE_INSTALL_DIR/runtime_lib/x86_64/test_lib/lib \
+		-I$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/include \
+		-L$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/lib \
 		-luuid -lxrt_coreutil -lrt -lstdc++ -ltest_utils
 
 clean:
