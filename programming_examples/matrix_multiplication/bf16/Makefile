@@ -35,9 +35,6 @@ all: run4x4
 print:
 	${powershell} python3 ${srcdir}/run.py -p --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 48 --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
-run8x4: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
-
 run4x4: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
