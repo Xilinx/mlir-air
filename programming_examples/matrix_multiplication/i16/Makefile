@@ -23,11 +23,14 @@ PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLA
 #   make run4x4 AIE_TARGET=aie2p # uses aie2p target
 AIE_TARGET ?= aie2
 
-# Select compiler flags based on AIE_TARGET
+# Select compiler flags and kernel dependency based on AIE_TARGET
+# Matmul kernels with i16 inputs are currently incompatible with aie2p, so KERNEL_DEP is empty for aie2p
 ifeq ($(AIE_TARGET),aie2p)
   PEANO_FLAGS = ${PEANOWRAP2P_FLAGS}
+  KERNEL_DEP =
 else
   PEANO_FLAGS = ${PEANOWRAP2_FLAGS}
+  KERNEL_DEP = compile-kernel
 endif
 
 all: run4x4
@@ -35,20 +38,20 @@ all: run4x4
 print:
 	${powershell} python3 ${srcdir}/run.py -p --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
-run4x4: #compile-kernel
+run4x4: $(KERNEL_DEP)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
-run2x4: compile-kernel
+run2x4: $(KERNEL_DEP)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
-run2x2: compile-kernel
+run2x2: $(KERNEL_DEP)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
-run3x3: compile-kernel
+run3x3: $(KERNEL_DEP)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 32 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 # Measure the e2e latencies across a range of problem shapes.
-sweep4x4: compile-kernel build-test-exe
+sweep4x4: $(KERNEL_DEP) build-test-exe
 	@for M in 256 512 1024 2048; do \
 		for N in 256 512 1024 2048; do \
 			for K in 256 512 1024 2048; do \
