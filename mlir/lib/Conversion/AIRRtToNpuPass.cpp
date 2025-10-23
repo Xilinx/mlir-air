@@ -185,6 +185,15 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
   }
 };
 
+// Helper method to get AIE device by segment name
+AIE::DeviceOp getDeviceByName(ModuleOp module, StringAttr segmentName) {
+  for (auto d : module.getOps<AIE::DeviceOp>()) {
+    if (d.getSymName() == segmentName)
+      return d;
+  }
+  return nullptr;
+}
+
 struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
   using OpConversionPattern<airrt::HerdLoadOp>::OpConversionPattern;
 
@@ -246,11 +255,27 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
           rewriter.create<AIEX::NpuWriteRTPOp>(op.getLoc(), name, i, v);
         }
         // FIXME: this should depend on the metadata to enable and to get the id
-        if (op.getNumOperands())
-          rewriter.create<AIEX::NpuWrite32Op>(
-              op.getLoc(), 0x0001F000, 0x1, nullptr,
-              rewriter.getI32IntegerAttr(phys_x),
-              rewriter.getI32IntegerAttr(phys_y));
+        if (!op.getNumOperands())
+          continue;
+
+        std::string lock_name = "__air_herd_lock_" + std::to_string(phys_x) +
+                                "_" + std::to_string(phys_y);
+
+        // Find the corresponding device using the segment_name attribute
+        auto segmentName = op->getAttrOfType<StringAttr>("segment_name");
+        if (!segmentName)
+          continue;
+
+        auto device = getDeviceByName(module, segmentName);
+        if (!device)
+          continue;
+
+        auto lockOp = device.lookupSymbol<AIE::LockOp>(lock_name);
+        if (!lockOp)
+          continue;
+
+        rewriter.create<AIEX::SetLockOp>(op.getLoc(), lockOp.getResult(),
+                                         rewriter.getI32IntegerAttr(1));
       }
     }
     rewriter.eraseOp(op);
@@ -454,10 +479,9 @@ AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
 
   // Use the airrt metadata to lookup the segment associated with each head
   // or segment load operation.
-  for (auto d : module.getOps<AIE::DeviceOp>()) {
-    if (s->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()) ==
-        d->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-      return d;
+  if (auto segmentName =
+          s->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+    return getDeviceByName(module, segmentName);
   }
   return nullptr;
 }
