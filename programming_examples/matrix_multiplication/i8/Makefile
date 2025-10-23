@@ -95,16 +95,16 @@ build-test-exe:
 		echo "Error: XILINX_XRT environment variable not set. Please make sure to have sourced xrt/setup.sh."; \
 		exit 1; \
 	fi; \
-	if [ -z "$$MLIR_AIE_INSTALL_DIR" ]; then \
-		echo "Error: MLIR_AIE_INSTALL_DIR environment variable not set. Please make sure to have sourced utils/env_setup.sh."; \
+	if [ -z "$(AIEOPT_DIR)" ]; then \
+		echo "Error: AIEOPT_DIR environment variable not set. Please make sure to have sourced utils/env_setup.sh."; \
 		exit 1; \
 	fi; \
 	echo "Using compiler: $$GPP"; \
 	mkdir -p $(BUILD_DIR); \
 	cd $(BUILD_DIR) && $$GPP ${srcdir}/test.cpp -o test.exe -std=c++23 -Wall \
 		-I$$XILINX_XRT/include -L$$XILINX_XRT/lib \
-		-I$$MLIR_AIE_INSTALL_DIR/runtime_lib/x86_64/test_lib/include \
-		-L$$MLIR_AIE_INSTALL_DIR/runtime_lib/x86_64/test_lib/lib \
+		-I$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/include \
+		-L$(AIEOPT_DIR)/runtime_lib/x86_64/test_lib/lib \
 		-luuid -lxrt_coreutil -lrt -lstdc++ -ltest_utils
 
 clean:
