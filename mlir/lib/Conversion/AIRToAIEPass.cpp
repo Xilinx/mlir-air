@@ -309,16 +309,17 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
                 core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_y));
 
       if (options.emit_herd_lock) {
-        if (aie_device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
-          core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
-                                              herd_lock,
-                                              AIE::LockAction::Acquire, 0);
-        } else if (aie_device.getTargetModel().getTargetArch() ==
-                   AIE::AIEArch::AIE2) {
-          core_builder.create<AIE::UseLockOp>(
-              core_builder.getUnknownLoc(), herd_lock,
-              AIE::LockAction::AcquireGreaterEqual, 1);
-        }
+        AIE::LockAction lockAction =
+            aie_device.getTargetModel().hasProperty(
+                AIE::AIETargetModel::UsesSemaphoreLocks)
+                ? AIE::LockAction::AcquireGreaterEqual
+                : AIE::LockAction::Acquire;
+        int lockValue = aie_device.getTargetModel().hasProperty(
+                            AIE::AIETargetModel::UsesSemaphoreLocks)
+                            ? 1
+                            : 0;
+        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
+                                            herd_lock, lockAction, lockValue);
       }
 
       for (unsigned ki = 0, ke = h.getNumKernelOperands(); ki < ke; ki++) {
@@ -396,14 +397,14 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       core_builder.create<cf::BranchOp>(hloc, launch_bb);
       core_builder.setInsertionPoint(launch_bb->getTerminator());
       if (options.emit_herd_lock) {
-        if (aie_device.getTargetModel().getTargetArch() == AIE::AIEArch::AIE1) {
+        if (aie_device.getTargetModel().hasProperty(
+                AIE::AIETargetModel::UsesSemaphoreLocks)) {
+          // we could release something, but we don't have to a way to observe
+          // it yet in NPU
+        } else {
           core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
                                               herd_lock,
                                               AIE::LockAction::Release, 0);
-        } else if (aie_device.getTargetModel().getTargetArch() ==
-                   AIE::AIEArch::AIE2) {
-          // we could release something, but we don't have to a way to observe
-          // it yet in NPU
         }
       }
 

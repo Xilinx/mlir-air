@@ -165,8 +165,17 @@ public:
     }
 
     // clone the body
+    // Tag herd ops with their parent segment's symbol name before cloning,
+    // to enable HerdLoadOp to reference the correct AIE device later.
+    auto segmentName =
+        segment->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
     rewriter.setInsertionPointToStart(scfPar.getBody());
     for (auto &o : segment.getBody().front().getOperations()) {
+      if (auto herdOp = dyn_cast<air::HerdOp>(o)) {
+        if (segmentName) {
+          herdOp->setAttr("segment_name", segmentName);
+        }
+      }
       if (!isa<air::ChannelGetOp, air::ChannelPutOp, air::SegmentTerminatorOp>(
               o)) {
         rewriter.clone(o, remap);
@@ -236,8 +245,21 @@ public:
         args.push_back(o);
     }
 
-    rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                       herd_name_attr.getValue().str(), args);
+    auto herdLoadOp = rewriter.create<airrt::HerdLoadOp>(
+        op->getLoc(), rewriter.getI64Type(), herd_name_attr.getValue().str(),
+        args);
+
+    // Set an attribute linking to the parent segment's symbol name.
+    if (auto segment = herd->getParentOfType<air::SegmentOp>()) {
+      if (auto segmentName = segment->getAttrOfType<StringAttr>(
+              SymbolTable::getSymbolAttrName())) {
+        herdLoadOp->setAttr("segment_name", segmentName);
+      }
+    }
+    // Fallback: if the herd op already has segment_name (e.g., set during
+    // AIRSegmentConversion), propagate it to the herd load op.
+    if (herd->hasAttr("segment_name"))
+      herdLoadOp->setAttr("segment_name", herd->getAttr("segment_name"));
 
     SmallVector<Value, 4> deps;
     for (auto &o : operands)
