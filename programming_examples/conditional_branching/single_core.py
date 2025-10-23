@@ -1,6 +1,5 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import air
 import argparse
 from math import cos, sin
 
