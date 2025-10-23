@@ -578,39 +578,45 @@ if __name__ == "__main__":
 
     # Vectorization - only run if direct codegen mode is enabled
     if args.direct_codegen:
-        transform_ir_string = """
-        transform.with_pdl_patterns {
+        # Architecture-specific accumulator type for vector intrinsics
+        # aie2: 4x4x4 matrix multiply produces i64 accumulator
+        # aie2p: 8x2x8 matrix multiply produces i32 accumulator
+        # This is due to different vector intrinsic shapes between architectures
+        vector_acc_type = "i64" if args.arch == "aie2" else "i32"
+
+        transform_ir_string = f"""
+        transform.with_pdl_patterns {{
         ^bb0(%arg0: !pdl.operation):
-            transform.sequence %arg0 : !pdl.operation failures(propagate) {
+            transform.sequence %arg0 : !pdl.operation failures(propagate) {{
             ^bb1(%arg1: !pdl.operation):
 
-                %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-                transform.apply_patterns to %func0 {
+                %func0 = transform.structured.match ops{{["func.func"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
+                transform.apply_patterns to %func0 {{
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
                     transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
-                } : !pdl.operation
+                }} : !pdl.operation
 
 
-                %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+                %matmul = transform.structured.match ops{{["linalg.generic"]}} in %arg1  : (!pdl.operation) -> !pdl.operation
                 %inner_most_matmul, %vec_loops:3 =
                   transform.structured.tile_using_for %matmul tile_sizes [1, 1, 1, 0, 0, 0]
                   : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)  
-                %linalg_fills = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+                %linalg_fills = transform.structured.match ops{{["linalg.fill"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
                 %inner_most_fills, %vec_fill_loops:2 =
                   transform.structured.tile_using_for %linalg_fills tile_sizes [0, 0, 1, 1]
                   : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation)  
 
 
-                %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+                %herds = transform.structured.match ops{{["air.herd"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
                 %vectorized_herds = transform.air.herd_vectorize %herds
         
-                %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-                %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = i64, input_indices = [2], output_indices = [0]}
+                %vector_contracts = transform.structured.match ops{{["vector.contract"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
+                %result11 = transform.air.vector_type_cast %vector_contracts {{target_element_type = {vector_acc_type}, input_indices = [2], output_indices = [0]}}
 
-            }
-        }
+            }}
+        }}
         """
         transform_ir = Module.parse(transform_ir_string, context=mlir_module.context)
         run_transform(transform_ir, mlir_module)
