@@ -607,7 +607,7 @@ if __name__ == "__main__":
                 %vectorized_herds = transform.air.herd_vectorize %herds
         
                 %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-                %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = i32, input_indices = [2], output_indices = [0]}
+                %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = i64, input_indices = [2], output_indices = [0]}
 
             }
         }
