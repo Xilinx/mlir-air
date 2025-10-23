@@ -44,10 +44,8 @@ def parse_and_check_args():
 def main():
     (xclbin_path, insts_path) = parse_and_check_args()
 
-    with open(insts_path, "r") as f:
-        instr_text = f.read().split("\n")
-    instr_text = [l for l in instr_text if l != ""]
-    instr_v = np.array([int(i, 16) for i in instr_text], dtype=INOUT_DATATYPE)
+    with open(insts_path, "rb") as f:
+        instr_v = np.fromfile(f, dtype=np.uint32)
 
     device = xrt.device(0)
     xclbin = xrt.xclbin(xclbin_path)
