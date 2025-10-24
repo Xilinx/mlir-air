@@ -332,7 +332,3 @@ combos(matmul_vectorized_c_func) combos(matmul_scalar_c_func)
     combos(zero_vectorized_c_func)
 
 } // extern "C"
-
-// CAT9(linalg_fill_, mlir_in, _view1x1x, DIV4(N), x, DIV4(M), x4x4x, mlir_out,
-// as2)
-//  linalg_fill_bf16_view1x1x16x32x4x4xbf16as2
