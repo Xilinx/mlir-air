@@ -48,6 +48,7 @@ def build_module(
     np_dtype_in,
     np_dtype_out,
     arch="aie2",
+    direct_codegen=False,
 ):
     assert m % tile_m == 0
     assert k % tile_k_l2 == 0
@@ -60,10 +61,12 @@ def build_module(
     xrt_dtype_out = type_mapper(np_dtype_out)
 
     # Architecture-specific matrix multiplication dimensions
-    if arch == "aie2p":
-        mmul_mkn = [8, 8, 8]
-    else:  # aie2
-        mmul_mkn = [4, 8, 4]
+    # aie2p with direct codegen uses 8x8x8, otherwise uses 4x8x4
+    # aie2 always uses 4x8x4
+    if arch == "aie2p" and direct_codegen:
+        mmul_mkn = [8, 8, 8]  # For aie2p with BFP16 emulation (direct codegen)
+    else:
+        mmul_mkn = [4, 8, 4]  # For aie2 or aie2p without direct codegen
 
     # L3 MemRefTypes
     memrefTyA = MemRefType.get(a_size, xrt_dtype_in)
@@ -575,6 +578,7 @@ if __name__ == "__main__":
         INPUT_DATATYPE,
         OUTPUT_DATATYPE,
         args.arch,
+        args.direct_codegen,
     )
 
     # Vectorization - only run if direct codegen mode is enabled

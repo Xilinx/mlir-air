@@ -20,6 +20,7 @@ import re
 HERD_M = 4
 HERD_N = 4
 
+
 def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N):
     context = air.ir.Context()
     air_module = Module.parse(air_ir_string, context=context)
@@ -131,6 +132,7 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
 
     runner = air.compiler.util.Runner(arch, "simulation_trace.json", "core")
     trace = runner.run(air_module, "matmul_bf16")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="mmult_aie2.py")
