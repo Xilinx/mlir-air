@@ -6,12 +6,12 @@
 // RUN: cd test_npu1_chess
 // UN: xchesscc_wrapper aie2 -c %S/mm.cc -o mm.o
 // UN: aie-opt -aie-generate-column-control-overlay="route-shim-to-tile-ctrl=true" %S/base.mlir -o base_overlay.mlir
-// UN: %python aiecc.py --aie-generate-xclbin --xclbin-name=base.xclbin base_overlay.mlir
+// UN: %python aiecc.py --device-name=base --aie-generate-xclbin --xclbin-name=base.xclbin base_overlay.mlir
 // UN: %python %S/aie.py
 // UN: aie-opt -aie-generate-column-control-overlay="route-shim-to-tile-ctrl=true" aie.mlir -o aie_overlay.mlir
-// UN: %python aiecc.py --aie-generate-ctrlpkt --ctrlpkt-name=aie1_ctrlpkt.bin --ctrlpkt-dma-seq-name=aie1_ctrlpkt_dma_seq.bin --aie-generate-npu-insts --npu-insts-name=aie1_run_seq.bin aie_overlay.mlir
+// UN: %python aiecc.py --device-name=matmul_512x512_512xbf16__dispatch_0_matmul_512x512x512_bf16_0 --aie-generate-ctrlpkt --ctrlpkt-name=aie1_ctrlpkt.bin --ctrlpkt-dma-seq-name=aie1_ctrlpkt_dma_seq.bin --aie-generate-npu-insts --npu-insts-name=aie1_run_seq.bin aie_overlay.mlir
 // UN: %python %S/aie2.py
 // UN: aie-opt -aie-generate-column-control-overlay="route-shim-to-tile-ctrl=true" aie2.mlir -o aie2_overlay.mlir
-// UN: %python aiecc.py --aie-generate-ctrlpkt --ctrlpkt-name=aie2_ctrlpkt.bin --ctrlpkt-dma-seq-name=aie2_ctrlpkt_dma_seq.bin --aie-generate-npu-insts --npu-insts-name=aie2_run_seq.bin aie2_overlay.mlir
+// UN: %python aiecc.py --device-name=matmul_512x1024_512xbf16__dispatch_0_matmul_512x1024x512_bf16_0 --aie-generate-ctrlpkt --ctrlpkt-name=aie2_ctrlpkt.bin --ctrlpkt-dma-seq-name=aie2_ctrlpkt_dma_seq.bin --aie-generate-npu-insts --npu-insts-name=aie2_run_seq.bin aie2_overlay.mlir
 // UN: g++-13 %S/test.cpp -o test.exe -std=c++23 -Wall %test_utils_flags %xrt_flags -lrt -lstdc++ -lboost_program_options -lboost_filesystem
 // UN: %run_on_npu1% ./test.exe
