@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 module {
-  aie.device(npu1){
+  aie.device(npu1) @base {
     %tile_0_0 = aie.tile(0, 0)
     %tile_0_1 = aie.tile(0, 1)
     %tile_0_2 = aie.tile(0, 2)
