@@ -8,6 +8,8 @@ TILE_K_L2 ?= 64
 TILE_K_L1 ?= 32
 TILE_N ?= 64
 
+# Recommended tile configuration for run3x3 (576x576x576): TILE_M=64 TILE_K_L2=288 TILE_K_L1=48
+
 # M and N tile sizes divided by 4
 TILE_M_DIV_4 := $(shell echo $$(( $(TILE_M) / 4 )))
 TILE_N_DIV_4 := $(shell echo $$(( $(TILE_N) / 4 )))
@@ -68,9 +70,9 @@ profile: compile-kernel build-test-exe
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M 512 -K 512 -N 512
 
 runner:
-	mkdir -p build
-	cd build && python ../run.py --m 512 --k 512 --n 512 --tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) -p > input.mlir
-	cd build && python ../mmult_aie2.py
+	mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && python ${srcdir}/run.py --m 512 --k 512 --n 512 --tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) -p > input.mlir
+	cd $(BUILD_DIR) && python ${srcdir}/mmult_aie2.py
 
 # Measure the e2e latencies across a range of problem shapes.
 sweep4x4: compile-kernel build-test-exe

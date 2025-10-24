@@ -129,15 +129,8 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
         },
     }
 
-    runner = air.compiler.util.Runner(arch, None, "core")
+    runner = air.compiler.util.Runner(arch, "simulation_trace.json", "core")
     trace = runner.run(air_module, "matmul_bf16")
-
-    latency = (re.findall("\\d+\\.\\d+", trace))
-    if len(latency) == 0:
-        return 0.0
-    else:
-        latency = latency[len(latency)-1]
-        return float(latency)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="mmult_aie2.py")
@@ -165,4 +158,3 @@ if __name__ == "__main__":
         air_ir_string = f.read()
 
     latency = mmult_runner(air_ir_string=air_ir_string)
-    print("Lat:", latency)
