@@ -52,7 +52,7 @@ run2x2: $(KERNEL_DEP)
 
 run3x3: $(KERNEL_DEP)
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 32 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 48 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 # Measure the e2e latencies across a range of problem shapes.
 sweep4x4: $(KERNEL_DEP) build-test-exe
