@@ -109,8 +109,8 @@ void matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 *__restrict pA,
   static_assert(m % (2 * r) == 0 && m / (2 * r) > 0);
   static_assert(k % (2 * s) == 0 && k / (2 * s) > 0);
   static_assert(n % (2 * t) == 0 && n / (2 * t) > 0);
-  return matmul_vectorized<bfloat16, bfloat16, m / r, k / s, n / t, r, s,
-                               t>(pA, pB, pC);
+  return matmul_vectorized<bfloat16, bfloat16, m / r, k / s, n / t, r, s, t>(
+      pA, pB, pC);
 }
 
 extern "C" {
