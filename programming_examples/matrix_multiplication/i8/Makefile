@@ -64,15 +64,25 @@ compile-kernel:
 	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
 		echo "Detected PEANO_INSTALL_DIR from environment: $(PEANO_INSTALL_DIR)"; \
 		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
-			echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET)"; \
-			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm.cc -o $(BUILD_DIR)/mm.o; \
+			if [ "$(AIE_TARGET)" = "aie2p" ]; then \
+				echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET) and mm_aie2p.cc"; \
+				$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm_aie2p.cc -o $(BUILD_DIR)/mm.o; \
+			else \
+				echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET) and mm.cc"; \
+				$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm.cc -o $(BUILD_DIR)/mm.o; \
+			fi; \
 		else \
 			echo "Error: invalid PEANO_INSTALL_DIR, clang++ not found."; \
 			exit 1; \
 		fi; \
 	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
-		echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET)"; \
-		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm.cc -o mm.o; \
+		if [ "$(AIE_TARGET)" = "aie2p" ]; then \
+			echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET) and mm_aie2p.cc"; \
+			cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm_aie2p.cc -o mm.o; \
+		else \
+			echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET) and mm.cc"; \
+			cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm.cc -o mm.o; \
+		fi; \
 	else \
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \
