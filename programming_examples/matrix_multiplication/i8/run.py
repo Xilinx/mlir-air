@@ -471,7 +471,7 @@ if __name__ == "__main__":
     HERD_M = 4
     HERD_N = 4
     INPUT_DATATYPE = np.int8
-    OUTPUT_DATATYPE = np.int32  # np.int16
+    OUTPUT_DATATYPE = np.int16  # np.int32
 
     parser = argparse.ArgumentParser(
         prog="run.py",
