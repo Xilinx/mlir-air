@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 module {
+  aie.device(xcvc1902) {
   %t60 = aie.tile(6, 0)
   %t61 = aie.tile(6, 1)
   %t62 = aie.tile(6, 2)
@@ -157,6 +158,7 @@ module {
     aie.use_lock(%l72_3, "Release", 1)
     aie.end
 
+  }
   }
 
 }
