@@ -1,0 +1,12 @@
+// (c) Copyright 2024 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+
+// REQUIRES: ryzen_ai_npu2, peano
+
+// RUN: mkdir -p test_npu2_peano
+// RUN: cd test_npu2_peano
+// RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: %PEANO_INSTALL_DIR/bin/clang++ --target=aie2p-none-unknown-elf %peano_flags -c %S/conv.cc -o conv.o
+// RUN: %python %S/gen.py
+// RUN: g++-13 %S/test.cpp -o test.exe -std=c++23 -Wall %test_utils_flags %xrt_flags -lrt -lstdc++ -lboost_program_options -lboost_filesystem
+// UN: %run_on_npu2% ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin --trace_sz 262144
