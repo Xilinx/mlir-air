@@ -22,7 +22,7 @@ transform.with_pdl_patterns {
         %fused_fill, %1 = transform.structured.fuse_into_containing_op %fill into %outer_forall : (!pdl.operation, !pdl.operation) -> (!pdl.operation, !pdl.operation)
 
         // First level pack the matmul.
-        %first_level_tiled_transposed_l2_packed_matmul = transform.structured.pack %first_level_tiled_matmul packed_sizes = [64, 64, 32]
+        %first_level_tiled_transposed_l2_packed_matmul = transform.structured.pack %first_level_tiled_matmul packed_sizes = [64, 64, 64]
         : (!pdl.operation) -> (!pdl.operation)
 
         %lhs_transposed_l2_pack_op = transform.get_producer_of_operand %first_level_tiled_transposed_l2_packed_matmul[0] : (!pdl.operation) -> (!pdl.operation)
@@ -53,7 +53,7 @@ transform.with_pdl_patterns {
 
         // Second level pack the matmul.
         %generic_op = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        %l1_packed = transform.structured.pack %generic_op packed_sizes = [0, 0, 0, 4, 4, 8]
+        %l1_packed = transform.structured.pack %generic_op packed_sizes = [0, 0, 0, 8, 8, 8]
           : (!pdl.operation) -> (!pdl.operation)
 
         // Transpose A matrix from [M K m k m0 k0] to [M K k m m0 k0]
@@ -124,7 +124,7 @@ transform.with_pdl_patterns {
         // Second level for loop.
         %generic_op1 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!pdl.operation) -> !pdl.operation
         %second_level_tiled_reduction_matmul, %inner_for_loop =
-          transform.structured.tile_using_for %generic_op1 tile_sizes [0, 0, 0, 0, 0, 4]
+          transform.structured.tile_using_for %generic_op1 tile_sizes [0, 0, 0, 0, 0, 8]
           : (!pdl.operation) -> (!pdl.operation, !pdl.operation)
 
         // Fuse the pack operations in inner for loop.
