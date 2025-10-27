@@ -25,6 +25,12 @@ runtimes and compilers.
 - [AIR Asynchronous Concurrency](AIRAsyncConcurrency.md)
 - [AIR Runner](AIRRunner.md)
 
+## Citation
+
+If you use MLIR-AIR in your research, please cite our paper:
+
+> E. Wang, S. Bayliss, A. Bisca, Z. Blair, S. Chowdhary, K. Denolf, J. Fifield, B. Freiberger, E. Hunhoff, P. James-Roxby, J. Lo, J. Melber, S. Neuendorffer, E. Richter, A. Rosti, J. Setoain, G. Singh, E. Taka, P. Vasireddy, Z. Yu, N. Zhang, J. Zhuang. "[From Loop Nests to Silicon: Mapping AI Workloads onto AMD NPUs with MLIR-AIR](https://arxiv.org/abs/2510.14871)". arXiv:2510.14871, October 2025.
+
 -----
 
 <p align="center">Copyright&copy; 2019-2023 Advanced Micro Devices, Inc.</p>
