@@ -142,6 +142,9 @@ add_dependencies(air-headers mlir-headers)
 add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
+# Check if Python bindings should be enabled (defaults to ON if not specified)
+option(AIE_ENABLE_BINDINGS_PYTHON "Enable building of Python bindings." ON)
+
 set(AIR_RUNTIME_TARGETS
     ""
     CACHE STRING "Architectures to compile the runtime libraries for.")
@@ -195,7 +198,9 @@ foreach(target ${AIR_RUNTIME_TARGETS})
     TEST_EXCLUDE_FROM_MAIN true)
 endforeach()
 
-add_subdirectory(python)
+if(AIE_ENABLE_BINDINGS_PYTHON)
+  add_subdirectory(python)
+endif()
 if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
   message(
     "Skipping e2e tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
