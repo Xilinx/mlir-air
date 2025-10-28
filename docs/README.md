@@ -7,9 +7,16 @@ runtimes and compilers.
 
 ### Getting Started
 
-- [Building](building.md)
-- [Running Examples](running.md)
-- [AIRCC](aircc.md)
+- **[Building](building.md)**
+- **[Quick Start Guide](QuickStart.md)**
+
+### Examples and Tutorials
+
+- **[Examples Index](ExamplesIndex.md)** - Comprehensive catalog of all code examples
+- **[AIR Asynchronous Concurrency](AIRAsyncConcurrency.md)** - Documentation on AIR dialect's asynchronous concurrency model
+- **[AIR Runner](AIRRunner.md)** - AIR's event-driven performance simulator
+- **[GEMM Case Study](GEMMCaseStudy.md)** - Deep dive into matrix multiplication optimization
+- **[Tracing and Profiling](trace.md)** - Performance analysis and hardware trace generation/visualization
 
 ### Generated MLIR Documentation
 - [AIR Dialect](AIRDialect.html)
@@ -20,10 +27,6 @@ runtimes and compilers.
 
 ### AIR Platform Documentation
 - [VCK5000 platform](https://github.com/Xilinx/ROCm-air-platforms) 
-
-### Tutorials
-- [AIR Asynchronous Concurrency](AIRAsyncConcurrency.md)
-- [AIR Runner](AIRRunner.md)
 
 ## Citation
 
