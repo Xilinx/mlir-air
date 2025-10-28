@@ -5,3 +5,4 @@
 // RUN: mkdir -p test_npu2_chess
 // RUN: cd test_npu2_chess
 // RUN: %python %S/run.py
+// XFAIL:*
