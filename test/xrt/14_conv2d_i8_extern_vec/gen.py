@@ -6,6 +6,25 @@
 from air.backend.xrt import XRTBackend
 from air.ir import *
 import air.passmanager
+import argparse
+
+parser = argparse.ArgumentParser(prog="gen.py")
+parser.add_argument(
+    "--trace-size",
+    dest="trace_size",
+    default=262144,
+    type=int,
+    help="Trace buffer size",
+)
+parser.add_argument(
+    "--trace-offset",
+    dest="trace_offset",
+    default=73728,
+    type=int,
+    help="Trace buffer offset",
+)
+
+opts = parser.parse_args()
 
 with air.ir.Context() as ctx, Location.unknown():
 
@@ -99,8 +118,8 @@ with air.ir.Context() as ctx, Location.unknown():
 
     backend = XRTBackend(
         lower_linalg_to_func="conv.o",
-        trace_offset=73728,
-        trace_size=262144,
+        trace_offset=opts.trace_offset,
+        trace_size=opts.trace_size,
         runtime_loop_tiling_sizes=[1, 1],
         use_lock_race_condition_fix=True,
     )
