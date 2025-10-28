@@ -1,10 +1,9 @@
 // (c) Copyright 2023 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
-// REQUIRES: ryzen_ai, peano
-// RUN: mkdir -p test_peano
-// RUN: cd test_peano
-// RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
-// RUN: %python %S/gen.py --trace-size 131072 --trace-offset 65536 --trace-file-name trace.txt
+// REQUIRES: ryzen_ai_npu1, valid_xchess_license
+// RUN: mkdir -p test_chess
+// RUN: cd test_chess
+// RUN: %python %S/gen.py --trace-size 65536 --trace-offset 65536 --trace-file-name trace.txt
 // RUN: %python parse_trace.py --input trace.txt --mlir air_project/input_with_addresses.mlir --output parse_eventIR_vs.json
 // RUN: jq . parse_eventIR_vs.json | FileCheck %S/parse_eventIR_vs.json.check
