@@ -158,7 +158,7 @@ class XRTBackend(AirBackend):
                 if model in ["npu1", "Phoenix"]:
                     target_device = "npu1"
                 elif model in ["npu4", "Strix"]:
-                    target_device = "npu2_4col"
+                    target_device = "npu2"
                 else:
                     print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
                 break
@@ -219,7 +219,7 @@ class XRTBackend(AirBackend):
             if len(self.channel_multiplexing) != 0:
                 aircc_options += ["--air-channel-multiplexing"]
                 aircc_options += self.channel_multiplexing
-            
+
             if self.use_lock_race_condition_fix:
                 aircc_options += ["--use-lock-race-condition-fix"]
 
