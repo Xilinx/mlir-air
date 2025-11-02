@@ -182,7 +182,6 @@ pipeline = (
             "func.func(air-shrink-memref-sizes-by-access)",
             "air-label-scf-for-to-ping-pong",
             "air-ping-pong-transform",
-            "canonicalize", "cse",
             "air-place-herds{num-rows="
             + str(herd_x)
             + " num-cols="

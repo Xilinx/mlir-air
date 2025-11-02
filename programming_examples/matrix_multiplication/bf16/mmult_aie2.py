@@ -48,8 +48,6 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
                 "func.func(air-shrink-memref-sizes-by-access)",
                 "air-label-scf-for-to-ping-pong",
                 "air-ping-pong-transform",
-                "canonicalize",
-                "cse",
                 "air-place-herds{num-rows="
                 + str(herd_m)
                 + " num-cols="
@@ -130,7 +128,7 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
         },
     }
 
-    runner = air.compiler.util.Runner(arch, "simulation_trace.json", "core")
+    runner = air.compiler.util.Runner(arch, "simulation_trace.json", "core", "single")
     trace = runner.run(air_module, "matmul_bf16")
 
 
