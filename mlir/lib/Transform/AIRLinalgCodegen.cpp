@@ -2358,6 +2358,222 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
 }
 
 //===----------------------------------------------------------------------===//
+// HoistLoopInvariantTransfersOp
+//===----------------------------------------------------------------------===//
+
+/// Check if a value depends on the given loop induction variable
+static bool dependsOnLoopIV(Value val, Value loopIV) {
+  if (val == loopIV)
+    return true;
+
+  // Check if the value is defined by an affine.apply that uses the loop IV
+  if (auto affineOp = val.getDefiningOp<affine::AffineApplyOp>()) {
+    for (Value operand : affineOp.getMapOperands()) {
+      if (dependsOnLoopIV(operand, loopIV))
+        return true;
+    }
+  }
+
+  // Check for arithmetic operations
+  if (auto defOp = val.getDefiningOp()) {
+    for (Value operand : defOp->getOperands()) {
+      if (dependsOnLoopIV(operand, loopIV))
+        return true;
+    }
+  }
+
+  return false;
+}
+
+/// Recursively clone an operation and its operands, using current insertion
+/// point
+static Value cloneOpAndOperands(Operation *op, Value loopIV,
+                                RewriterBase &rewriter, IRMapping &mapping) {
+  // If already mapped, return the mapped value
+  if (!op->getResults().empty())
+    if (mapping.contains(op->getResult(0)))
+      return mapping.lookup(op->getResult(0));
+
+  // Clone operand-producing operations first
+  for (Value operand : op->getOperands()) {
+    if (operand == loopIV)
+      continue; // Can't clone loop IV
+
+    if (mapping.contains(operand))
+      continue; // Already cloned
+
+    // BlockArguments from enclosing loops are still in scope after hoisting -
+    // use directly
+    if (isa<BlockArgument>(operand) && operand != loopIV)
+      continue; // BlockArguments from outer loops are still accessible
+
+    Operation *defOp = operand.getDefiningOp();
+    if (defOp && !dependsOnLoopIV(operand, loopIV)) {
+      Value clonedOperand =
+          cloneOpAndOperands(defOp, loopIV, rewriter, mapping);
+      mapping.map(operand, clonedOperand);
+    }
+  }
+
+  // Clone this operation at the current insertion point (don't reset it!)
+  Operation *cloned = rewriter.clone(*op, mapping);
+  if (cloned->getResults().empty())
+    return nullptr;
+  else
+    return cloned->getResult(0);
+}
+
+DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> readOps =
+      llvm::to_vector(state.getPayloadOps(getReadOp()));
+  SmallVector<Operation *> writeOps =
+      llvm::to_vector(state.getPayloadOps(getWriteOp()));
+  SmallVector<Operation *> loopOps =
+      llvm::to_vector(state.getPayloadOps(getLoopOp()));
+
+  if (readOps.size() != 1 || writeOps.size() != 1 || loopOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one read_op, write_op, and loop_op handle";
+  }
+
+  auto readOp = dyn_cast<vector::TransferReadOp>(readOps[0]);
+  auto writeOp = dyn_cast<vector::TransferWriteOp>(writeOps[0]);
+  auto loopOp = dyn_cast<scf::ForOp>(loopOps[0]);
+
+  if (!readOp || !writeOp || !loopOp) {
+    return emitDefiniteFailure() << "handles must be vector.transfer_read, "
+                                    "vector.transfer_write, and scf.for";
+  }
+
+  // Verify read and write are in the loop
+  if (!loopOp->isProperAncestor(readOp) || !loopOp->isProperAncestor(writeOp)) {
+    return emitDefiniteFailure()
+           << "read and write operations must be inside the loop";
+  }
+
+  Value loopIV = loopOp.getInductionVar();
+
+  // Check if read indices are loop-invariant
+  for (Value index : readOp.getIndices()) {
+    if (dependsOnLoopIV(index, loopIV)) {
+      return emitDefiniteFailure()
+             << "read operation indices depend on loop induction variable";
+    }
+  }
+
+  // Check if write indices are loop-invariant
+  for (Value index : writeOp.getIndices()) {
+    if (dependsOnLoopIV(index, loopIV)) {
+      return emitDefiniteFailure()
+             << "write operation indices depend on loop induction variable";
+    }
+  }
+
+  // Check if they operate on the same memref
+  if (readOp.getBase() != writeOp.getBase()) {
+    return emitDefiniteFailure()
+           << "read and write must operate on the same memref";
+  }
+
+  // Step 1: Clone the read and its operands before the loop
+  rewriter.setInsertionPoint(loopOp);
+  IRMapping readMapping;
+  Value clonedReadResult =
+      cloneOpAndOperands(readOp, loopIV, rewriter, readMapping);
+
+  // Step 2: Get the value that the write op is writing (its vector operand)
+  Value writeVector = writeOp.getVector();
+
+  // Step 3: Use replaceWithAdditionalYields to add the read result as iter_arg
+  // and yield the value to be written
+  auto yieldValuesFn =
+      [&](OpBuilder &b, Location loc,
+          ArrayRef<BlockArgument> newBbArgs) -> SmallVector<Value> {
+    // The new block argument is the last one (the hoisted read result)
+    BlockArgument readIterArg = newBbArgs.back();
+
+    // Replace uses of the original read with the iter_arg
+    rewriter.replaceAllUsesWith(readOp.getResult(), readIterArg);
+
+    // Return the value to yield (what the write op was writing)
+    SmallVector<Value> yieldValues;
+    yieldValues.push_back(writeVector);
+    return yieldValues;
+  };
+
+  // Create new loop with additional iter_arg
+  FailureOr<LoopLikeOpInterface> newLoopResult =
+      cast<LoopLikeOpInterface>(loopOp.getOperation())
+          .replaceWithAdditionalYields(
+              rewriter, ValueRange{clonedReadResult}, // new init operand
+              true,                                   // replace uses in loop
+              yieldValuesFn);
+
+  if (failed(newLoopResult)) {
+    return emitDefiniteFailure() << "failed to add iter_args to loop";
+  }
+
+  auto newLoop = cast<scf::ForOp>(newLoopResult->getOperation());
+
+  // Step 4: Erase the original read (now passed as iter_arg)
+  rewriter.eraseOp(readOp);
+
+  // Step 5: Create the write operation after the loop using the yielded value
+  Value valueToWrite = newLoop.getResults().back();
+
+  // Clone the write operation with updated vector value
+  IRMapping writeMapping;
+  writeMapping.map(writeVector, valueToWrite);
+
+  // Clone ALL index dependencies FIRST, before creating the write
+  // Set insertion point after the loop for index cloning
+  rewriter.setInsertionPointAfter(newLoop);
+
+  for (Value index : writeOp.getIndices()) {
+    Operation *defOp = index.getDefiningOp();
+    if (!defOp || dependsOnLoopIV(index, loopIV))
+      continue; // Skip loop IV-dependent or non-operation indices
+
+    // Check if this index is already outside the loop (from previous hoisting)
+    if (!newLoop->isProperAncestor(defOp)) {
+      // Index is already available outside - use it directly
+      continue;
+    }
+
+    // Index is inside loop and needs to be cloned
+    if (!writeMapping.contains(index)) {
+      Value clonedIndex =
+          cloneOpAndOperands(defOp, loopIV, rewriter, writeMapping);
+      if (clonedIndex)
+        writeMapping.map(index, clonedIndex);
+    }
+  }
+
+  // NOW clone the write operation - DON'T reset insertion point, it's already
+  // at the end after cloning indices
+  rewriter.clone(*writeOp.getOperation(), writeMapping);
+
+  // Step 6: Erase the original write
+  rewriter.eraseOp(writeOp);
+
+  SmallVector<Operation *> resultOps = {newLoop.getOperation()};
+  results.set(llvm::cast<OpResult>(getResult()), resultOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::HoistLoopInvariantTransfersOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getReadOpMutable(), effects);
+  consumesHandle(getWriteOpMutable(), effects);
+  onlyReadsHandle(getLoopOpMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
 // RemoveUninitializedMemrefCopyOp
 //===----------------------------------------------------------------------===//
 
@@ -3446,6 +3662,364 @@ transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
 
     else
       transformedOps.push_back(target);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// EliminateRedundantVectorTransfersOp
+//===----------------------------------------------------------------------===//
+
+/// Check if two values are semantically equivalent indices
+static bool areEquivalentIndices(Value idx1, Value idx2) {
+  // Direct SSA value equality
+  if (idx1 == idx2)
+    return true;
+
+  // Check if both are results of affine.apply with the same map and operands
+  auto affineOp1 = idx1.getDefiningOp<affine::AffineApplyOp>();
+  auto affineOp2 = idx2.getDefiningOp<affine::AffineApplyOp>();
+
+  if (affineOp1 && affineOp2) {
+    // Check if they use the same affine map
+    if (affineOp1.getAffineMap() != affineOp2.getAffineMap())
+      return false;
+
+    // Check if they have the same number of operands
+    if (affineOp1.getMapOperands().size() != affineOp2.getMapOperands().size())
+      return false;
+
+    // Check if all operands are identical
+    for (auto [op1, op2] :
+         llvm::zip(affineOp1.getMapOperands(), affineOp2.getMapOperands())) {
+      if (op1 != op2)
+        return false;
+    }
+
+    return true;
+  }
+
+  // Check if both are constants with the same value
+  auto constOp1 = idx1.getDefiningOp<arith::ConstantIndexOp>();
+  auto constOp2 = idx2.getDefiningOp<arith::ConstantIndexOp>();
+
+  if (constOp1 && constOp2) {
+    return constOp1.value() == constOp2.value();
+  }
+
+  return false;
+}
+
+/// Check if two vector.transfer_read operations read from the same location
+static bool areIdenticalReads(vector::TransferReadOp read1,
+                              vector::TransferReadOp read2) {
+  // Check if they read from the same memref
+  if (read1.getBase() != read2.getBase())
+    return false;
+
+  // Check if they have the same number of indices
+  if (read1.getIndices().size() != read2.getIndices().size())
+    return false;
+
+  // Check if all indices are semantically equivalent
+  for (auto [idx1, idx2] : llvm::zip(read1.getIndices(), read2.getIndices())) {
+    if (!areEquivalentIndices(idx1, idx2))
+      return false;
+  }
+
+  // Check if they have the same result type
+  auto vec1Ty = llvm::cast<VectorType>(read1.getVector().getType());
+  auto vec2Ty = llvm::cast<VectorType>(read2.getVector().getType());
+  if (vec1Ty != vec2Ty)
+    return false;
+
+  return true;
+}
+
+/// Check if there are any writes to the memref between two operations
+static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
+                                  vector::TransferReadOp secondRead) {
+  Value sourceMemref = firstRead.getBase();
+
+  // Get the block containing both reads
+  Block *block = firstRead->getBlock();
+  if (block != secondRead->getBlock())
+    return true; // Conservative: assume writes if in different blocks
+
+  // Find the operations between the two reads
+  auto firstIt = firstRead->getIterator();
+  auto secondIt = secondRead->getIterator();
+
+  // Iterate from first read to second read
+  for (auto it = ++firstIt; it != secondIt; ++it) {
+    Operation *op = &(*it);
+
+    // Check if this operation writes to the source memref
+    auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
+    if (!memInterface) {
+      // Conservative: if we can't determine effects, assume it might write
+      if (!op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+        continue;
+      return true;
+    }
+
+    SmallVector<MemoryEffects::EffectInstance> effects;
+    memInterface.getEffects(effects);
+
+    for (auto &effect : effects) {
+      if (!isa<MemoryEffects::Write>(effect.getEffect()))
+        continue;
+
+      Value effectValue = effect.getValue();
+      if (!effectValue)
+        return true; // Unknown write target, be conservative
+
+      // Check if the write is to the same memref or a view of it
+      if (effectValue == sourceMemref)
+        return true;
+
+      // Check if the effect value is derived from the same memref
+      if (auto subview = effectValue.getDefiningOp<memref::SubViewOp>()) {
+        if (subview.getSource() == sourceMemref)
+          return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+DiagnosedSilenceableFailure
+transform::EliminateRedundantVectorTransfersOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+  int eliminatedCount = 0;
+
+  for (Operation *target : targets) {
+    // Collect all vector.transfer_read operations in this target
+    SmallVector<vector::TransferReadOp> transferReads;
+    target->walk([&](vector::TransferReadOp readOp) {
+      transferReads.push_back(readOp);
+    });
+
+    // Track which reads have been eliminated
+    llvm::SmallDenseSet<Operation *> eliminated;
+
+    // Compare each pair of reads
+    for (size_t i = 0; i < transferReads.size(); ++i) {
+      if (eliminated.contains(transferReads[i]))
+        continue;
+
+      for (size_t j = i + 1; j < transferReads.size(); ++j) {
+        if (eliminated.contains(transferReads[j]))
+          continue;
+
+        vector::TransferReadOp firstRead = transferReads[i];
+        vector::TransferReadOp secondRead = transferReads[j];
+
+        // Check if the reads are identical
+        if (!areIdenticalReads(firstRead, secondRead))
+          continue;
+
+        // Check if there are writes between them
+        if (hasWritesBetweenReads(firstRead, secondRead))
+          continue;
+
+        // Replace the second read with the result of the first read
+        rewriter.replaceAllUsesWith(secondRead.getResult(),
+                                    firstRead.getResult());
+        rewriter.eraseOp(secondRead);
+        eliminated.insert(secondRead);
+        eliminatedCount++;
+      }
+    }
+
+    transformedOps.push_back(target);
+  }
+
+  if (eliminatedCount > 0) {
+    LLVM_DEBUG(llvm::dbgs() << "Eliminated " << eliminatedCount
+                            << " redundant vector.transfer_read operations\n");
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// FlattenForIterArgsOp
+//===----------------------------------------------------------------------===//
+
+/// Calculate the total number of elements in a vector type
+static int64_t getVectorNumElements(VectorType vecType) {
+  int64_t numElements = 1;
+  for (int64_t dim : vecType.getShape()) {
+    numElements *= dim;
+  }
+  return numElements;
+}
+
+DiagnosedSilenceableFailure
+transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
+                                       transform::TransformResults &results,
+                                       transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    auto forOp = dyn_cast<scf::ForOp>(target);
+    if (!forOp) {
+      return emitDefiniteFailure() << "target must be an scf.for operation";
+    }
+
+    Location loc = forOp.getLoc();
+
+    // Collect vector-typed iter_args
+    SmallVector<unsigned> vectorIterArgIndices;
+    SmallVector<VectorType> originalVectorTypes;
+    SmallVector<VectorType> flattenedVectorTypes;
+
+    for (auto [idx, iterArg] : llvm::enumerate(forOp.getInitArgs())) {
+      if (auto vecType = dyn_cast<VectorType>(iterArg.getType())) {
+        vectorIterArgIndices.push_back(idx);
+        originalVectorTypes.push_back(vecType);
+
+        // Create flattened vector type
+        int64_t numElements = getVectorNumElements(vecType);
+        VectorType flatType =
+            VectorType::get({numElements}, vecType.getElementType());
+        flattenedVectorTypes.push_back(flatType);
+      }
+    }
+
+    // If no vector iter_args, nothing to do
+    if (vectorIterArgIndices.empty()) {
+      transformedOps.push_back(target);
+      continue;
+    }
+
+    // Step 1: Insert vector.shape_cast operations before the loop to flatten
+    // init values
+    rewriter.setInsertionPoint(forOp);
+    SmallVector<Value> newInitArgs(forOp.getInitArgs().begin(),
+                                   forOp.getInitArgs().end());
+
+    for (auto [idx, vecIdx] : llvm::enumerate(vectorIterArgIndices)) {
+      Value initArg = forOp.getInitArgs()[vecIdx];
+      auto shapeCast = rewriter.create<vector::ShapeCastOp>(
+          loc, flattenedVectorTypes[idx], initArg);
+      newInitArgs[vecIdx] = shapeCast.getResult();
+    }
+
+    // Step 2: Create new result types (flattened for vector types)
+    SmallVector<Type> newResultTypes;
+    for (auto [idx, resultType] : llvm::enumerate(forOp.getResultTypes())) {
+      auto it = llvm::find(vectorIterArgIndices, idx);
+      if (it != vectorIterArgIndices.end()) {
+        size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
+        newResultTypes.push_back(flattenedVectorTypes[vecIdx]);
+      } else {
+        newResultTypes.push_back(resultType);
+      }
+    }
+
+    // Step 3: Create new scf.for with flattened iter_args
+    auto newForOp = rewriter.create<scf::ForOp>(loc, forOp.getLowerBound(),
+                                                forOp.getUpperBound(),
+                                                forOp.getStep(), newInitArgs);
+
+    // Step 4: Clone the loop body and insert shape_cast operations
+    Block *oldBody = forOp.getBody();
+    Block *newBody = newForOp.getBody();
+
+    rewriter.setInsertionPointToStart(newBody);
+    IRMapping mapping;
+
+    // Map the induction variable
+    mapping.map(oldBody->getArgument(0), newBody->getArgument(0));
+
+    // For vector iter_args, insert shape_cast to convert back to original shape
+    for (auto [idx, vecIdx] : llvm::enumerate(vectorIterArgIndices)) {
+      BlockArgument newArg = newBody->getArgument(vecIdx + 1);
+      auto shapeCast = rewriter.create<vector::ShapeCastOp>(
+          loc, originalVectorTypes[idx], newArg);
+      mapping.map(oldBody->getArgument(vecIdx + 1), shapeCast.getResult());
+    }
+
+    // Map non-vector iter_args directly
+    for (auto [idx, arg] :
+         llvm::enumerate(oldBody->getArguments().drop_front(1))) {
+      if (llvm::find(vectorIterArgIndices, idx) == vectorIterArgIndices.end()) {
+        mapping.map(arg, newBody->getArgument(idx + 1));
+      }
+    }
+
+    // Clone operations from old body (except the terminator)
+    for (Operation &op : oldBody->without_terminator()) {
+      rewriter.clone(op, mapping);
+    }
+
+    // Step 5: Handle the yield operation
+    auto oldYield = cast<scf::YieldOp>(oldBody->getTerminator());
+    SmallVector<Value> newYieldOperands;
+
+    for (auto [idx, yieldValue] : llvm::enumerate(oldYield.getOperands())) {
+      auto it = llvm::find(vectorIterArgIndices, idx);
+      if (it != vectorIterArgIndices.end()) {
+        // Flatten the yielded vector value
+        size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
+        Value mappedValue = mapping.lookup(yieldValue);
+        auto shapeCast = rewriter.create<vector::ShapeCastOp>(
+            loc, flattenedVectorTypes[vecIdx], mappedValue);
+        newYieldOperands.push_back(shapeCast.getResult());
+      } else {
+        newYieldOperands.push_back(mapping.lookup(yieldValue));
+      }
+    }
+
+    rewriter.create<scf::YieldOp>(loc, newYieldOperands);
+
+    // Step 6: Insert shape_cast operations after the loop to convert results
+    // back
+    rewriter.setInsertionPointAfter(newForOp);
+    SmallVector<Value> finalResults;
+
+    for (auto [idx, result] : llvm::enumerate(newForOp.getResults())) {
+      auto it = llvm::find(vectorIterArgIndices, idx);
+      if (it != vectorIterArgIndices.end()) {
+        size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
+        auto shapeCast = rewriter.create<vector::ShapeCastOp>(
+            loc, originalVectorTypes[vecIdx], result);
+        finalResults.push_back(shapeCast.getResult());
+      } else {
+        finalResults.push_back(result);
+      }
+    }
+
+    // Replace uses of the old loop's results
+    rewriter.replaceOp(forOp, finalResults);
+
+    transformedOps.push_back(newForOp.getOperation());
   }
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);

@@ -770,4 +770,153 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
   }];
 }
 
+def EliminateRedundantVectorTransfersOp : Op<Transform_Dialect, "air.eliminate_redundant_vector_transfers",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Eliminate redundant vector.transfer_read operations";
+  let description = [{
+    This transform identifies and eliminates redundant vector.transfer_read operations
+    within the target operation. Two vector.transfer_read operations are considered
+    redundant when:
+    1. They read from the same memref source
+    2. They use identical indices for the read
+    3. They have the same result type
+    4. No write operations to the source memref occur between them
+    
+    The transformation walks through all vector.transfer_read operations in the target,
+    compares each pair, and when a redundant read is found, replaces all uses of the
+    second read with the result of the first read, then erases the redundant operation.
+    
+    This optimization is particularly useful after loop unrolling or other transformations
+    that may duplicate read operations unnecessarily, reducing memory traffic and register
+    pressure.
+    
+    Example:
+    ```mlir
+    // Before:
+    %0 = vector.transfer_read %memref[%i, %j], %pad : memref<8x8xi32>, vector<4xi32>
+    %1 = vector.add %0, %cst : vector<4xi32>
+    %2 = vector.transfer_read %memref[%i, %j], %pad : memref<8x8xi32>, vector<4xi32>  // Redundant!
+    %3 = vector.mul %2, %other : vector<4xi32>
+    
+    // After:
+    %0 = vector.transfer_read %memref[%i, %j], %pad : memref<8x8xi32>, vector<4xi32>
+    %1 = vector.add %0, %cst : vector<4xi32>
+    %3 = vector.mul %0, %other : vector<4xi32>  // Uses %0 instead of redundant %2
+    ```
+    
+    Returns a handle to the transformed operation.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
+def HoistLoopInvariantTransfersOp : Op<Transform_Dialect, "air.hoist_loop_invariant_transfers",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Hoist a pair of loop-invariant vector.transfer_read/write operations";
+  let description = [{
+    This transform takes handles to a vector.transfer_read, a vector.transfer_write,
+    and their parent scf.for loop. If both operations have loop-invariant indices and
+    operate on the same memref, it hoists them outside the loop along with any operations
+    needed to compute their operands (like affine.apply operations).
+    
+    The read is hoisted before the loop, and the write is hoisted after the loop.
+    All necessary operand-producing operations (constants, affine.apply, etc.) are
+    also hoisted to maintain SSA dominance.
+    
+    Example:
+    ```mlir
+    // Before:
+    scf.for %i = %c0 to %c4 step %c1 {
+      %idx = affine.apply #map()[%x]
+      %val = vector.transfer_read %A[%x, %idx], %pad : memref<8x8xi32>, vector<4xi32>
+      // ... computation using %val ...
+      %result = ... // some computation
+      vector.transfer_write %result, %A[%x, %idx] : vector<4xi32>, memref<8x8xi32>
+    }
+    
+    // After:
+    %idx = affine.apply #map()[%x]
+    %val = vector.transfer_read %A[%x, %idx], %pad : memref<8x8xi32>, vector<4xi32>
+    scf.for %i = %c0 to %c4 step %c1 {
+      // ... computation using %val ...
+      %result = ... // some computation
+    }
+    vector.transfer_write %result, %A[%x, %idx] : vector<4xi32>, memref<8x8xi32>
+    ```
+    
+    Requirements:
+    - Read and write must be in the same scf.for loop
+    - Their indices must not depend on the loop induction variable
+    - They should operate on the same memref
+    
+    Returns a handle to the transformed loop.
+  }];
+  
+  let arguments = (ins PDL_Operation:$read_op,
+                       PDL_Operation:$write_op,
+                       PDL_Operation:$loop_op);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$read_op `,` $write_op `,` $loop_op attr-dict";
+}
+
+def FlattenForIterArgsOp : Op<Transform_Dialect, "air.flatten_for_iter_args",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Flatten vector-typed iter_args of an scf.for loop using vector.shape_cast";
+  let description = [{
+    This transform takes a handle to an scf.for loop and flattens all vector-typed
+    iter_args by inserting vector.shape_cast operations. The transformation:
+    1. Identifies all iter_args with vector types
+    2. For each vector iter_arg, inserts a vector.shape_cast before the loop to flatten it
+    3. Updates the iter_arg type to the flattened vector type
+    4. Inserts vector.shape_cast operations inside the loop body to convert back to the original shape
+    5. Updates the scf.yield to flatten yielded values with vector.shape_cast
+    
+    This is useful for ensuring that loop-carried dependencies use flattened vector types,
+    which can be required by certain backend lowerings or optimization passes.
+    
+    Example:
+    ```mlir
+    // Before:
+    %result:4 = scf.for %i = %c0 to %c4 step %c1 
+        iter_args(%arg0 = %v0, %arg1 = %v1, %arg2 = %v2, %arg3 = %v3) 
+        -> (vector<1x1x8x8xi16>, vector<1x1x8x8xi16>, vector<1x1x8x8xi16>, vector<1x1x8x8xi16>) {
+      // ... computation ...
+      scf.yield %r0, %r1, %r2, %r3 : vector<1x1x8x8xi16>, vector<1x1x8x8xi16>, vector<1x1x8x8xi16>, vector<1x1x8x8xi16>
+    }
+    
+    // After:
+    %v0_flat = vector.shape_cast %v0 : vector<1x1x8x8xi16> to vector<64xi16>
+    %v1_flat = vector.shape_cast %v1 : vector<1x1x8x8xi16> to vector<64xi16>
+    %v2_flat = vector.shape_cast %v2 : vector<1x1x8x8xi16> to vector<64xi16>
+    %v3_flat = vector.shape_cast %v3 : vector<1x1x8x8xi16> to vector<64xi16>
+    %result:4 = scf.for %i = %c0 to %c4 step %c1 
+        iter_args(%arg0 = %v0_flat, %arg1 = %v1_flat, %arg2 = %v2_flat, %arg3 = %v3_flat) 
+        -> (vector<64xi16>, vector<64xi16>, vector<64xi16>, vector<64xi16>) {
+      %arg0_shaped = vector.shape_cast %arg0 : vector<64xi16> to vector<1x1x8x8xi16>
+      %arg1_shaped = vector.shape_cast %arg1 : vector<64xi16> to vector<1x1x8x8xi16>
+      %arg2_shaped = vector.shape_cast %arg2 : vector<64xi16> to vector<1x1x8x8xi16>
+      %arg3_shaped = vector.shape_cast %arg3 : vector<64xi16> to vector<1x1x8x8xi16>
+      // ... computation using %arg0_shaped, %arg1_shaped, etc. ...
+      %r0_flat = vector.shape_cast %r0 : vector<1x1x8x8xi16> to vector<64xi16>
+      %r1_flat = vector.shape_cast %r1 : vector<1x1x8x8xi16> to vector<64xi16>
+      %r2_flat = vector.shape_cast %r2 : vector<1x1x8x8xi16> to vector<64xi16>
+      %r3_flat = vector.shape_cast %r3 : vector<1x1x8x8xi16> to vector<64xi16>
+      scf.yield %r0_flat, %r1_flat, %r2_flat, %r3_flat : vector<64xi16>, vector<64xi16>, vector<64xi16>, vector<64xi16>
+    }
+    ```
+    
+    Returns a handle to the transformed loop.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
 #endif // AIR_TRANSFORM_OPS
