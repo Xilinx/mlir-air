@@ -10,10 +10,10 @@
 // Construct dependency edges in scf.for to represent ping-pong buffering
 // CHECK-LABEL: channel_put_get
 // CHECK: %[[EVENT0:.*]]:4 = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = {{.*}} %[[EVENT2:.*]] = {{.*}} %[[EVENT3:.*]] = {{.*}} %[[EVENT4:.*]] = {{.*}})
-// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_0[]
-// CHECK: %[[EVENT6:.*]] = air.channel.put async [%[[EVENT3]], %[[EVENT5]]] @channel_1[]
-// CHECK: %[[EVENT7:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_0[]
-// CHECK: %[[EVENT8:.*]] = air.channel.put async [%[[EVENT6]], %[[EVENT7]]] @channel_1[]
+// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]{{.*}}] @channel_0[]
+// CHECK: %[[EVENT6:.*]] = air.channel.put async [%[[EVENT3]], %[[EVENT5]]{{.*}}] @channel_1[]
+// CHECK: %[[EVENT7:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]{{.*}}] @channel_0[]
+// CHECK: %[[EVENT8:.*]] = air.channel.put async [%[[EVENT6]], %[[EVENT7]]{{.*}}] @channel_1[]
 // CHECK: scf.yield %[[EVENT6]], %[[EVENT8]], %[[EVENT8]], %[[EVENT7]] : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 
 air.channel @channel_1 [1, 1]
@@ -77,19 +77,19 @@ func.func @channel_put_get(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024
 // CHECK-LABEL: affine_if
 // CHECK: %[[EVENT0:.*]]:4 = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = {{.*}} %[[EVENT2:.*]] = {{.*}} %[[EVENT3:.*]] = {{.*}} %[[EVENT4:.*]] = {{.*}})
 // CHECK: %[[EVENT5:.*]] = affine.if #set(){{.*}}-> !air.async.token {
-// CHECK: %[[EVENT6:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_2
+// CHECK: %[[EVENT6:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]{{.*}}] @channel_2
 // CHECK: affine.yield %[[EVENT6]]
 // CHECK: else
-// CHECK: %[[EVENT7:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_3
+// CHECK: %[[EVENT7:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]{{.*}}] @channel_3
 // CHECK: affine.yield %[[EVENT7]]
-// CHECK: %[[EVENT8:.*]] = air.channel.put async [%[[EVENT3]], %[[EVENT5]]] @channel_4
+// CHECK: %[[EVENT8:.*]] = air.channel.put async [%[[EVENT3]], %[[EVENT5]]{{.*}}] @channel_4
 // CHECK: %[[EVENT9:.*]] = affine.if #set(){{.*}}-> !air.async.token {
-// CHECK: %[[EVENT10:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_2
+// CHECK: %[[EVENT10:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]{{.*}}] @channel_2
 // CHECK: affine.yield %[[EVENT10]]
 // CHECK: else
-// CHECK: %[[EVENT11:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_3
+// CHECK: %[[EVENT11:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]{{.*}}] @channel_3
 // CHECK: affine.yield %[[EVENT11]]
-// CHECK: %[[EVENT12:.*]] = air.channel.put async [%[[EVENT8]], %[[EVENT9]]] @channel_4
+// CHECK: %[[EVENT12:.*]] = air.channel.put async [%[[EVENT8]], %[[EVENT9]]{{.*}}] @channel_4
 // CHECK: %[[EVENT13:.*]] = air.wait_all async [%[[EVENT9]]]
 // CHECK: scf.yield %[[EVENT8]], %[[EVENT12]], %[[EVENT12]], %[[EVENT13]] : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 
@@ -170,25 +170,25 @@ func.func @affine_if(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>
 // CHECK: air.segment async
 // CHECK: air.segment async
 // CHECK: %[[EVENT0:.*]]:4 = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = {{.*}} %[[EVENT2:.*]] = {{.*}} %[[EVENT3:.*]] = {{.*}} %[[EVENT4:.*]] = {{.*}})
-// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_5
-// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]]
+// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]{{.*}}] @channel_5
+// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]{{.*}}]
 // CHECK: %[[EVENT7:.*]] = scf.for
-// CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]]
-// CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_5
-// CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]]
+// CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]{{.*}}]
+// CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]{{.*}}] @channel_5
+// CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]{{.*}}]
 // CHECK-NEXT: %[[EVENT11:.*]] = scf.for
 // CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT11]]]
 // CHECK: scf.yield %[[EVENT8]], %[[EVENT12]], %[[EVENT12]], %[[EVENT9]] : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 // CHECK: air.segment async
 // CHECK: %[[EVENT0:.*]]:4 = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = {{.*}} %[[EVENT2:.*]] = {{.*}} %[[EVENT3:.*]] = {{.*}} %[[EVENT4:.*]] = {{.*}})
-// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_7
-// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]]
+// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]{{.*}}] @channel_7
+// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]{{.*}}]
 // CHECK: %[[EVENT7:.*]] = scf.for
-// CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]]
-// CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_7
-// CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]]
+// CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]{{.*}}]
+// CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]{{.*}}] @channel_7
+// CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]{{.*}}]
 // CHECK-NEXT: %[[EVENT11:.*]] = scf.for
-// CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT11]]]
+// CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT11]]{{.*}}]
 // CHECK: scf.yield %[[EVENT8]], %[[EVENT12]], %[[EVENT12]], %[[EVENT9]] : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 
 air.channel @channel_8 [1, 1]
@@ -349,25 +349,25 @@ func.func @scf_for() {
 // CHECK: air.segment async
 // CHECK: air.segment async
 // CHECK: %[[EVENT0:.*]]:4 = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = {{.*}} %[[EVENT2:.*]] = {{.*}} %[[EVENT3:.*]] = {{.*}} %[[EVENT4:.*]] = {{.*}})
-// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_9
-// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]]
+// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]{{.*}}] @channel_9
+// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]{{.*}}]
 // CHECK: %[[EVENT7:.*]] = scf.parallel
-// CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]]
-// CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_9
-// CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]]
+// CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]{{.*}}]
+// CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]{{.*}}] @channel_9
+// CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]{{.*}}]
 // CHECK-NEXT: %[[EVENT11:.*]] = scf.parallel
-// CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT11]]]
+// CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT11]]{{.*}}]
 // CHECK: scf.yield %[[EVENT8]], %[[EVENT12]], %[[EVENT12]], %[[EVENT9]] : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 // CHECK: air.segment async
 // CHECK: %[[EVENT0:.*]]:4 = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = {{.*}} %[[EVENT2:.*]] = {{.*}} %[[EVENT3:.*]] = {{.*}} %[[EVENT4:.*]] = {{.*}})
-// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_11
-// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]]
+// CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]{{.*}}] @channel_11
+// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]{{.*}}]
 // CHECK: %[[EVENT7:.*]] = scf.parallel
-// CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]]
-// CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_11
-// CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]]
+// CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]{{.*}}]
+// CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]{{.*}}] @channel_11
+// CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]{{.*}}]
 // CHECK-NEXT: %[[EVENT11:.*]] = scf.parallel
-// CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT11]]]
+// CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT11]]{{.*}}]
 // CHECK: scf.yield %[[EVENT8]], %[[EVENT12]], %[[EVENT12]], %[[EVENT9]] : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 
 air.channel @channel_12 [1, 1]

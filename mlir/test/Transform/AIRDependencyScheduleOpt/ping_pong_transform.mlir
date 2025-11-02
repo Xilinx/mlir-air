@@ -14,19 +14,19 @@
 // CHECK: %alloc = memref.alloc() : memref<1x256x112x4xi8, 1>
 // CHECK: %[[EVENT0:.*]]:4 = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = {{.*}} %[[EVENT2:.*]] = {{.*}} %[[EVENT3:.*]] = {{.*}} %[[EVENT4:.*]] = {{.*}})
 // CHECK: %[[EVENT5:.*]] = air.channel.get async [{{.*}}%[[EVENT4]]{{.*}}%[[EVENT1]]{{.*}}] @channel_0[]
-// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]]
+// CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]{{.*}}]
 // CHECK: %[[EVENT7:.*]] = scf.for {{.*}} iter_args(%[[EVENT8:.*]] = %[[EVENT6]])
 // CHECK: %[[EVENT9:.*]] = air.channel.put async [%[[EVENT8]]]  @channel_1
 // CHECK: scf.yield %[[EVENT9]]
 // CHECK: }
-// CHECK: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT7]]]
-// CHECK: %[[EVENT11:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_0[]
-// CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT10]], %[[EVENT11]]]
+// CHECK: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT7]]{{.*}}]
+// CHECK: %[[EVENT11:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]{{.*}}] @channel_0[]
+// CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT10]], %[[EVENT11]]{{.*}}]
 // CHECK: %[[EVENT13:.*]] = scf.for {{.*}} iter_args(%[[EVENT14:.*]] = %[[EVENT12]])
-// CHECK: %[[EVENT15:.*]] = air.channel.put async [%[[EVENT14]]]  @channel_1
+// CHECK: %[[EVENT15:.*]] = air.channel.put async [%[[EVENT14]]{{.*}}]  @channel_1
 // CHECK: scf.yield %[[EVENT15]]
 // CHECK: }
-// CHECK: %[[EVENT16:.*]] = air.wait_all async [%[[EVENT13]]]
+// CHECK: %[[EVENT16:.*]] = air.wait_all async [%[[EVENT13]]{{.*}}]
 // CHECK: scf.yield %[[EVENT10]], %[[EVENT16]], %[[EVENT16]], %[[EVENT11]] : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 // CHECK: memref.dealloc {{.*}} : memref<1x256x112x4xi8, 1>
 // CHECK: memref.dealloc {{.*}} : memref<1x256x112x4xi8, 1>

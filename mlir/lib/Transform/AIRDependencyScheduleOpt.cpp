@@ -1090,7 +1090,6 @@ struct ConstructPingPongDependencyPattern
     }
     for (auto sink : pong_producer_fronts) {
       // "Pong" producers
-      clearAsyncDependenciesOfAsyncOp(sink);
       addAsyncDependencyIfNew(sink, new_loop_op.getRegionIterArgs()[1]);
       for (auto source : ping_producer_backs) {
         Value token = getTokenFromOutermostParentAffineIfOp(source);
