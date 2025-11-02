@@ -16,15 +16,18 @@ func.func @eliminate_simple_redundant_read(%memref: memref<8x8xi32, 2>) -> (vect
   %cst = arith.constant dense<1> : vector<4xi32>
   %other = arith.constant dense<2> : vector<4xi32>
   
+  // CHECK: %[[READ:.*]] = vector.transfer_read %{{.*}}[%c0, %c2]
   // First read
   %0 = vector.transfer_read %memref[%c0, %c2], %c0_i32 {in_bounds = [true]} : memref<8x8xi32, 2>, vector<4xi32>
-  %1 = vector.add %0, %cst : vector<4xi32>
+  // CHECK: %{{.*}} = arith.addi %[[READ]], %{{.*}}
+  %1 = arith.addi %0, %cst : vector<4xi32>
   
   // Redundant read - should be eliminated
-  // CHECK-NOT: vector.transfer_read %{{.*}}[%c0, %c2]
+  // CHECK-NOT: vector.transfer_read
   %2 = vector.transfer_read %memref[%c0, %c2], %c0_i32 {in_bounds = [true]} : memref<8x8xi32, 2>, vector<4xi32>
-  %3 = vector.mul %2, %other : vector<4xi32>
-  // CHECK: %{{.*}} = vector.mul %[[READ:.*]], %{{.*}}
+  // CHECK: %{{.*}} = arith.muli %[[READ]], %{{.*}}
+  %3 = arith.muli %2, %other : vector<4xi32>
+  // CHECK: return
   
   return %1, %3 : vector<4xi32>, vector<4xi32>
 }
@@ -37,17 +40,20 @@ func.func @keep_read_after_write(%memref: memref<8x8xi32, 2>) -> (vector<4xi32>,
   %c0_i32 = arith.constant 0 : i32
   %cst = arith.constant dense<1> : vector<4xi32>
   
+  // CHECK: %[[READ1:.*]] = vector.transfer_read %{{.*}}[%c0, %c2]
   // First read
   %0 = vector.transfer_read %memref[%c0, %c2], %c0_i32 {in_bounds = [true]} : memref<8x8xi32, 2>, vector<4xi32>
-  %1 = vector.add %0, %cst : vector<4xi32>
+  %1 = arith.addi %0, %cst : vector<4xi32>
   
   // Write to the same memref
+  // CHECK: vector.transfer_write
   vector.transfer_write %1, %memref[%c0, %c2] {in_bounds = [true]} : vector<4xi32>, memref<8x8xi32, 2>
   
   // Second read - should NOT be eliminated because of write in between
-  // CHECK: %{{.*}} = vector.transfer_read %{{.*}}[%c0, %c2]
+  // CHECK: %[[READ2:.*]] = vector.transfer_read %{{.*}}[%c0, %c2]
   %2 = vector.transfer_read %memref[%c0, %c2], %c0_i32 {in_bounds = [true]} : memref<8x8xi32, 2>, vector<4xi32>
-  %3 = vector.mul %2, %cst : vector<4xi32>
+  // CHECK: arith.muli %[[READ2]]
+  %3 = arith.muli %2, %cst : vector<4xi32>
   
   return %1, %3 : vector<4xi32>, vector<4xi32>
 }
@@ -96,23 +102,23 @@ func.func @eliminate_multiple_redundant_reads(%memref: memref<8x8xi32, 2>) -> (v
   %c0_i32 = arith.constant 0 : i32
   %cst = arith.constant dense<1> : vector<4xi32>
   
+  // CHECK: %[[READ:.*]] = vector.transfer_read
   // First read
   %0 = vector.transfer_read %memref[%c0, %c2], %c0_i32 {in_bounds = [true]} : memref<8x8xi32, 2>, vector<4xi32>
-  %1 = vector.add %0, %cst : vector<4xi32>
+  // CHECK-NEXT: arith.addi %[[READ]]
+  %1 = arith.addi %0, %cst : vector<4xi32>
   
   // Redundant read 1 - should be eliminated
+  // CHECK-NOT: vector.transfer_read
   %2 = vector.transfer_read %memref[%c0, %c2], %c0_i32 {in_bounds = [true]} : memref<8x8xi32, 2>, vector<4xi32>
-  %3 = vector.mul %2, %cst : vector<4xi32>
+  // CHECK: arith.muli %[[READ]]
+  %3 = arith.muli %2, %cst : vector<4xi32>
   
   // Redundant read 2 - should be eliminated
-  %4 = vector.transfer_read %memref[%c0, %c2], %c0_i32 {in_bounds = [true]} : memref<8x8xi32, 2>, vector<4xi32>
-  %5 = vector.add %4, %3 : vector<4xi32>
-  
-  // CHECK: %[[READ:.*]] = vector.transfer_read
   // CHECK-NOT: vector.transfer_read
-  // CHECK: vector.add %[[READ]]
-  // CHECK: vector.mul %[[READ]]
-  // CHECK: vector.add %{{.*}}, %{{.*}}
+  %4 = vector.transfer_read %memref[%c0, %c2], %c0_i32 {in_bounds = [true]} : memref<8x8xi32, 2>, vector<4xi32>
+  // CHECK: arith.addi
+  %5 = arith.addi %4, %3 : vector<4xi32>
   
   return %1, %3, %5 : vector<4xi32>, vector<4xi32>, vector<4xi32>
 }
@@ -139,10 +145,11 @@ func.func @eliminate_in_loop_pattern(%memref: memref<16x16xf32, 2>) -> vector<4x
   %result = arith.addf %acc1, %acc2 : vector<4xf32>
   
   // CHECK: %[[R0:.*]] = vector.transfer_read %{{.*}}[%c0, %c0]
-  // CHECK: %[[R1:.*]] = vector.transfer_read %{{.*}}[%c4, %c0]
+  // CHECK-NEXT: %[[R1:.*]] = vector.transfer_read %{{.*}}[%c4, %c0]
+  // CHECK-NEXT: %{{.*}} = arith.addf %[[R0]], %[[R1]]
   // CHECK-NOT: vector.transfer_read
-  // CHECK: arith.addf %[[R0]], %[[R1]]
-  // CHECK: arith.addf %[[R0]], %[[R1]]
+  // CHECK: %{{.*}} = arith.addf %[[R0]], %[[R1]]
+  // CHECK: %{{.*}} = arith.addf
   
   return %result : vector<4xf32>
 }
@@ -162,8 +169,9 @@ func.func @eliminate_with_affine_indices(%memref: memref<32x32xi16, 2>, %x: inde
   %1 = vector.transfer_read %memref[%idx, %c0], %c0_i16 {in_bounds = [true]} : memref<32x32xi16, 2>, vector<8xi16>
   
   // CHECK: %[[IDX:.*]] = affine.apply
-  // CHECK: %[[READ:.*]] = vector.transfer_read %{{.*}}[%[[IDX]], %c0]
+  // CHECK-NEXT: %[[READ:.*]] = vector.transfer_read %{{.*}}[%[[IDX]], %c0]
   // CHECK-NOT: vector.transfer_read
+  // CHECK: return
   
   return %0, %1 : vector<8xi16>, vector<8xi16>
 }
@@ -189,8 +197,9 @@ func.func @mixed_redundant_and_unique(%memref: memref<16x16xi32, 2>) -> (vector<
   %3 = vector.transfer_read %memref[%c4, %c0], %c0_i32 {in_bounds = [true]} : memref<16x16xi32, 2>, vector<4xi32>
   
   // CHECK: %[[R0:.*]] = vector.transfer_read %{{.*}}[%c0, %c0]
-  // CHECK: %[[R1:.*]] = vector.transfer_read %{{.*}}[%c4, %c0]
+  // CHECK-NEXT: %[[R1:.*]] = vector.transfer_read %{{.*}}[%c4, %c0]
   // CHECK-NOT: vector.transfer_read
+  // CHECK: return
   
   return %0, %1, %2, %3 : vector<4xi32>, vector<4xi32>, vector<4xi32>, vector<4xi32>
 }
@@ -209,6 +218,7 @@ func.func @eliminate_2d_vector_reads(%memref: memref<16x16xf32, 2>) -> (vector<4
   
   // CHECK: %[[READ:.*]] = vector.transfer_read %{{.*}}[%c0, %c0]{{.*}}: memref<16x16xf32, 2>, vector<4x4xf32>
   // CHECK-NOT: vector.transfer_read
+  // CHECK: return
   
   return %0, %1 : vector<4x4xf32>, vector<4x4xf32>
 }
