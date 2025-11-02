@@ -369,26 +369,25 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
                                    std::string operand_or_argument) {
   if (operand_or_argument == "operand") {
     if (!op.getInitArgs().size()) {
-      op->emitOpError("has no iter_arg");
       return nullptr;
     }
-    auto token = op.getInitArgs()[0];
-    if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
-      op->emitOpError("iter operand is not an async token");
-      return nullptr;
+    for (auto initArg : op.getInitArgs()) {
+      if (isa<air::AsyncTokenType>(initArg.getType()))
+        return initArg;
     }
-    return token;
+    // No async token found - return nullptr without error
+    return nullptr;
   } else if (operand_or_argument == "argument") {
     if (!op.getRegionIterArgs().size()) {
-      op->emitOpError("has no iter_arg");
       return nullptr;
     }
-    auto token = op.getRegionIterArgs()[0];
-    if (!llvm::isa<air::AsyncTokenType>(token.getType())) {
-      op->emitOpError("iter operand is not an async token");
-      return nullptr;
+    for (auto iterArg : op.getRegionIterArgs()) {
+      if (isa<air::AsyncTokenType>(iterArg.getType())) {
+        return iterArg;
+      }
     }
-    return token;
+    // No async token found - return nullptr without error
+    return nullptr;
   } else {
     op->emitOpError("unknown string in operand_or_argument");
     return nullptr;
@@ -2319,15 +2318,20 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
       if (op == src_op)
         continue; // Avoid dep to itself
       if (graph.g[TRVertex].asyncEventType == "for_loop") {
-        auto value = dyn_cast<scf::ForOp>(src_op).getRegionIterArgs()[0];
-        async_op.addAsyncDependency(value);
+        auto value = getLoopCarriedTokenFromScfOp(dyn_cast<scf::ForOp>(src_op),
+                                                  "argument");
+        if (value)
+          async_op.addAsyncDependency(value);
       } else if (graph.g[TRVertex].asyncEventType == "parallel_loop") {
-        auto value = dyn_cast<scf::ParallelOp>(src_op).getInitVals()[0];
-        async_op.addAsyncDependency(value);
+        auto value =
+            getLoopCarriedTokenFromScfOp(dyn_cast<scf::ParallelOp>(src_op));
+        if (value)
+          async_op.addAsyncDependency(value);
       } else if (graph.g[TRVertex].asyncEventType == "terminator") {
         auto parent_op = src_op->getParentOp();
-        auto value = parent_op->getResult(0);
-        async_op.addAsyncDependency(value);
+        auto value = getAsyncTokenFromOp(parent_op);
+        if (value)
+          async_op.addAsyncDependency(value);
       } else if (auto async_src_op =
                      dyn_cast<xilinx::air::AsyncOpInterface>(src_op)) {
         // Elevate src token if src op is in affine if
@@ -2786,7 +2790,9 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
       scf_par->emitOpError("reduce op is not dependent on any air::WaitAllOp");
 
     // Connect op's async token to scf reduce
-    addAsyncDependencyIfNew(reduce_wait_all, op->getResult(0));
+    auto opToken = getAsyncTokenFromOp(op);
+    if (opToken)
+      addAsyncDependencyIfNew(reduce_wait_all, opToken);
 
     // Recurse with parent
     reconnectLoopCarriedDependencyFromOp(parent);
@@ -2800,22 +2806,35 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
     // Get scf for's wait_all op before yield
     auto scf_for_yield =
         dyn_cast<scf::YieldOp>(scf_for.getBody()->getTerminator());
+
+    // The async token is the last operand in the yield
+    Value tokenOperand = scf_for_yield.getOperands().back();
     auto yield_wait_all =
-        dyn_cast<air::WaitAllOp>(scf_for_yield.getOperand(0).getDefiningOp());
+        dyn_cast<air::WaitAllOp>(tokenOperand.getDefiningOp());
     if (!yield_wait_all) {
       OpBuilder b_yield(scf_for_yield);
+
+      // Preserve all existing yield operands except the last one (token)
+      SmallVector<Value> yieldOperands;
+      auto operands = scf_for_yield.getOperands();
+      yieldOperands.append(operands.begin(), std::prev(operands.end()));
+
       yield_wait_all = b_yield.create<air::WaitAllOp>(
           scf_for_yield->getLoc(),
           air::AsyncTokenType::get(scf_for_yield->getContext()),
-          SmallVector<Value>{scf_for_yield.getOperand(0)});
-      b_yield.create<scf::YieldOp>(
-          scf_for_yield->getLoc(),
-          SmallVector<Value>{yield_wait_all.getAsyncToken()});
+          SmallVector<Value>{tokenOperand});
+
+      // Append the new wait_all token to the preserved operands
+      yieldOperands.push_back(yield_wait_all.getAsyncToken());
+
+      b_yield.create<scf::YieldOp>(scf_for_yield->getLoc(), yieldOperands);
       scf_for_yield->erase();
     }
 
-    // Connect op's async token to scf reduce
-    addAsyncDependencyIfNew(yield_wait_all, op->getResult(0));
+    // Connect op's async token to scf yield
+    auto opToken = getAsyncTokenFromOp(op);
+    if (opToken)
+      addAsyncDependencyIfNew(yield_wait_all, opToken);
 
     // Recurse with parent
     reconnectLoopCarriedDependencyFromOp(parent);

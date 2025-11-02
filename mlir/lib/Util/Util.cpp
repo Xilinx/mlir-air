@@ -1592,6 +1592,37 @@ air::writeAccessPattern(memref::SubViewOp subview, Region *commonReg) {
   return pattern;
 }
 
+// Helper function to check if a value ultimately depends on herd tile indices,
+// either directly or through intermediate operations.
+static bool dependsOnHerdTileIndex(Value index) {
+  // Direct check - is this value a herd argument?
+  if (air::getHerdArgOwner(index))
+    return true;
+
+  // Check if defined by an operation that uses herd indices
+  auto defOp = index.getDefiningOp();
+  if (!defOp)
+    return false;
+
+  // Check air.execute wrapping
+  if (auto exec = dyn_cast<air::ExecuteOp>(defOp)) {
+    for (auto &childOp : exec.getChildOps()) {
+      for (auto oper : childOp.getOperands()) {
+        if (air::getHerdArgOwner(oper))
+          return true;
+      }
+    }
+  }
+
+  // Check operands of the defining operation
+  for (auto oper : defOp->getOperands()) {
+    if (air::getHerdArgOwner(oper))
+      return true;
+  }
+
+  return false;
+}
+
 std::tuple<SmallVector<Value>, SmallVector<Value>, SmallVector<Value>>
 air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   OpBuilder builder(readOp);
@@ -1611,6 +1642,20 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
   populateDefaultWrapsAndStrides(builder, readOp.getBase(),
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
+
+  // Detect herd tile indices in the indices and adjust sizes accordingly.
+  // If an index depends on a herd tile index, that dimension only accesses
+  // a size of 1 per tile.
+  auto indices = readOp.getIndices();
+  for (unsigned i = 0; i < indices.size() && i < std::get<1>(pattern).size();
+       i++) {
+    if (dependsOnHerdTileIndex(indices[i])) {
+      // This index is a herd tile index - set size to 1 for this dimension
+      std::get<1>(pattern)[i] =
+          builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(), 1);
+    }
+  }
+
   // Update wraps based on vector shape and vector access patterns.
   unsigned rankOffset =
       vectorTy.getShape().size() >= std::get<1>(pattern).size()
@@ -1642,6 +1687,20 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
   populateDefaultWrapsAndStrides(builder, writeOp.getBase(),
                                  std::get<0>(pattern), std::get<1>(pattern),
                                  std::get<2>(pattern));
+
+  // Detect herd tile indices in the indices and adjust sizes accordingly.
+  // If an index depends on a herd tile index, that dimension only accesses
+  // a size of 1 per tile.
+  auto indices = writeOp.getIndices();
+  for (unsigned i = 0; i < indices.size() && i < std::get<1>(pattern).size();
+       i++) {
+    if (dependsOnHerdTileIndex(indices[i])) {
+      // This index is a herd tile index - set size to 1 for this dimension
+      std::get<1>(pattern)[i] =
+          builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(), 1);
+    }
+  }
+
   // Update wraps based on vector shape and vector access patterns.
   unsigned rankOffset =
       vectorTy.getShape().size() >= std::get<1>(pattern).size()
