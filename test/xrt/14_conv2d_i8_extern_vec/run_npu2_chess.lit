@@ -6,6 +6,6 @@
 // RUN: mkdir -p test_npu2_chess
 // RUN: cd test_npu2_chess
 // RUN: xchesscc_wrapper aie2p -c %S/conv.cc -o conv.o
-// RUN: %python %S/gen.py
+// RUN: %python %S/gen.py --trace-size 0 --trace-offset 0
 // RUN: g++-13 %S/test.cpp -o test.exe -std=c++23 -Wall %test_utils_flags %xrt_flags -lrt -lstdc++ -lboost_program_options -lboost_filesystem
-// UN: %run_on_npu2% ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin --trace_sz 262144
+// RUN: %run_on_npu2% ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin

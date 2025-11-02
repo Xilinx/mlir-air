@@ -409,7 +409,12 @@ def run(mlir_module, args=None):
             print("created temporary directory", tmpdirname)
 
     if not opts.num_cols:
-        opts.num_cols = 4 if "npu" in opts.device else 10
+        if "npu1" in opts.device:
+            opts.num_cols = 4
+        elif "npu2" in opts.device:
+            opts.num_cols = 8
+        else:
+            opts.num_cols = 10
 
     if not opts.col_offset:
         opts.col_offset = 0 if "npu" in opts.device else 7
