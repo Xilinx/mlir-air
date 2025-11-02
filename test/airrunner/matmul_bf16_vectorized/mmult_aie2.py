@@ -148,5 +148,5 @@ arch = {
     },
 }
 
-runner = air.compiler.util.Runner(arch, "trace.out", "core", "all")
+runner = air.compiler.util.Runner(arch, "trace.out", "core", "single")
 trace = runner.run(air_module, "matmul_bf16")

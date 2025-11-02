@@ -380,10 +380,11 @@ public:
     auto device_resource_node = device(model);
 
     uint64_t time = 1;
+    int64_t iter_count = 1;
     for (auto &launchGraph : hostGraph.subgraphs) {
 
       // air launch iteration space
-      int64_t iter_count = 1;
+      iter_count = 1;
       auto launch_op = dyn_cast<air::LaunchOp>(launchGraph.hierarchyOp);
       for (auto s_op : launch_op.getSizeOperands()) {
         int64_t s = cast<arith::ConstantIndexOp>(s_op.getDefiningOp()).value();
@@ -414,7 +415,15 @@ public:
 
     // Simulation performance report
     std::string end_ts = convertToTimeStampInStr(time, device_resource_node);
-    std::cout << "Latency: " << end_ts << "us\n";
+    if (launch_iterations == "single" && iter_count > 1) {
+      // In single-iteration mode, multiply by total iteration count
+      double latency_us = std::stod(end_ts) * iter_count;
+      std::cout << "Latency (single-iteration mode, estimated for "
+                << iter_count << " iterations): " << latency_us << "us\n";
+    } else {
+      // All-iterations mode or single iteration total
+      std::cout << "Latency (all-iterations mode): " << end_ts << "us\n";
+    }
   }
 
   void scheduleLaunch(runnerNode &launch, device &device_resource_node,

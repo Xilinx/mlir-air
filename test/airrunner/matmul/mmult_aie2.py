@@ -262,5 +262,5 @@ arch = {
     },
 }
 
-runner = air.compiler.util.Runner(arch, "trace.out", "core")
+runner = air.compiler.util.Runner(arch, "trace.out", "core", "single")
 trace = runner.run(air_module, "forward")

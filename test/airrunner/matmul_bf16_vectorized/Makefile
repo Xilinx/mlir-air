@@ -9,7 +9,7 @@ all: run
 
 run:
 	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && ${powershell} python3 ${matmul_example_dir}/run.py -p --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 > input.mlir
+	cd $(BUILD_DIR) && ${powershell} python3 ${matmul_example_dir}/run.py -p --herd-m 4 --herd-n 4 --tile-m 32 --tile-n 32 --m 512 --n 512 --k 512 > input.mlir
 	cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/mmult_aie2.py 
 
 clean:
