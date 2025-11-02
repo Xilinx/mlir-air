@@ -328,14 +328,20 @@ public:
       for (auto child_for_op : region.front().getOps<scf::ForOp>()) {
         if (child_for_op.getNumResults() == 0)
           continue;
-        auto token = child_for_op.getResult(0);
+        // Get the async token from the loop using the generic helper
+        auto token = air::getAsyncTokenFromOp(child_for_op);
+        if (!token)
+          continue; // Loop is not async, skip it
         if (isOnlyUsedByNoLoopCarryOpsInBlock(token, &region.front()))
           yielded_tokens.push_back(token);
       }
       for (auto child_parallel_op : region.front().getOps<scf::ParallelOp>()) {
         if (child_parallel_op.getNumResults() == 0)
           continue;
-        auto token = child_parallel_op.getResult(0);
+        // Get the async token from the loop using the generic helper
+        auto token = air::getAsyncTokenFromOp(child_parallel_op);
+        if (!token)
+          continue; // Loop is not async, skip it
         if (isOnlyUsedByNoLoopCarryOpsInBlock(token, &region.front()))
           yielded_tokens.push_back(token);
       }
@@ -1024,9 +1030,13 @@ private:
   air::WaitAllOp insertWaitAllOpBeforeLoopYield(
       OpBuilder &builder, Region &region,
       SmallVector<Value, 1> yielded_tokens_in_loop_op) {
-    // Create one wait_all event at the end of current loop body.
-    // Output token of wait_all shall be yielded
-    builder.setInsertionPointToEnd(&region.front());
+    // Create one wait_all event at the end of current loop body, BEFORE the
+    // terminator Output token of wait_all shall be yielded
+    if (region.front().mightHaveTerminator()) {
+      builder.setInsertionPoint(region.front().getTerminator());
+    } else {
+      builder.setInsertionPointToEnd(&region.front());
+    }
     air::WaitAllOp wait_all_op_yielded = builder.create<air::WaitAllOp>(
         builder.getUnknownLoc(), air::AsyncTokenType::get(builder.getContext()),
         yielded_tokens_in_loop_op);
@@ -1123,24 +1133,34 @@ private:
                                   air::WaitAllOp wait_all_op_before_loop,
                                   SmallVector<Value, 4> incoming_tokens,
                                   SmallVector<Value, 4> constants) {
-    // Create new for op with iter_args.
-    SmallVector<Value, 4> merged_incoming_token;
-    merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
+    // Preserve existing iter_args and add async token as additional iter_arg
+    SmallVector<Value> all_init_args;
+    all_init_args.append(loop_op.getInitArgs().begin(),
+                         loop_op.getInitArgs().end());
+    all_init_args.push_back(wait_all_op_before_loop.getResult(0));
+
     scf::ForOp new_loop_op = rewriter.create<scf::ForOp>(
         loop_op.getLoc(), loop_op.getLowerBound(), loop_op.getUpperBound(),
-        loop_op.getStep(), merged_incoming_token);
+        loop_op.getStep(), all_init_args);
 
     if (auto attr = loop_op->getAttrOfType<StringAttr>(
             SymbolTable::getSymbolAttrName()))
       new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
 
-    // Splice the operations inside loop op
+    // Splice the operations inside loop op INCLUDING the terminator
     auto &bb = new_loop_op.getBody()->getOperations();
     auto &body = loop_op.getBody()->getOperations();
-    bb.splice(bb.begin(), body, body.begin(), --body.end());
+    bb.splice(bb.begin(), body, body.begin(), body.end());
 
+    // Replace old induction variable and existing iter_args
     auto iv = loop_op.getInductionVar();
     iv.replaceAllUsesWith(new_loop_op.getInductionVar());
+
+    for (unsigned i = 0; i < loop_op.getRegionIterArgs().size(); i++) {
+      loop_op.getRegionIterArgs()[i].replaceAllUsesWith(
+          new_loop_op.getRegionIterArgs()[i]);
+    }
+
     rewriter.setInsertionPointToStart(new_loop_op.getBody());
     for (auto c : constants) {
       replaceAllUsesInRegionWith(
@@ -1148,15 +1168,18 @@ private:
           new_loop_op.getRegion());
     }
 
+    // Get the async token iter_arg (now the last one since we appended it)
+    Value asyncTokenIterArg =
+        air::getLoopCarriedTokenFromScfOp(new_loop_op, "argument");
+
     for (Value v : incoming_tokens) {
-      replaceAllUsesInRegionWith(v, new_loop_op.getRegionIterArgs()[0],
-                                 new_loop_op.getRegion());
+      replaceAllUsesInRegionWith(v, asyncTokenIterArg, new_loop_op.getRegion());
     }
 
     // Connect sources in loop body with iter_args
     for (auto async_op : new_loop_op.getOps<air::AsyncOpInterface>()) {
       if (!isNotLoopCarriedOp(async_op)) {
-        addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[0]);
+        addAsyncDependencyIfNew(async_op, asyncTokenIterArg);
       }
     }
 
@@ -1296,8 +1319,14 @@ private:
       SmallPtrSet<Operation *, 1> keep;
       if (source->getNumResults() == 0)
         continue;
-      if (source->getResult(0)) {
-        for (auto sink : source->getResult(0).getUsers()) {
+
+      // Get the async token from the source operation
+      Value tokenResult = air::getAsyncTokenFromOp(source.getOperation());
+      if (!tokenResult)
+        continue; // No token result, skip elevation
+
+      if (tokenResult) {
+        for (auto sink : tokenResult.getUsers()) {
           // Keep token if source already dominates sink
           if (source->getParentOp()->isAncestor(sink)) {
             keep.insert(sink);
@@ -1306,9 +1335,10 @@ private:
             insertVertexBetweenTwoOps(source.getOperation(), sink, wait_all_op);
           }
         }
+        // Only replace the token result, not other results
+        tokenResult.replaceAllUsesExcept(
+            region.getParentOp()->getResults().back(), keep);
       }
-      source->getResult(0).replaceAllUsesExcept(
-          region.getParentOp()->getResult(0), keep);
     }
   }
 
@@ -1347,7 +1377,9 @@ private:
                                    RegionBranchOpInterface>(
                        v.getDefiningOp())) {
           auto v_op = v.getDefiningOp();
-          if (v_op->getNumResults() > 0 && v_op->getResult(0) == v)
+          // Check if v is an async token from this op
+          auto token = air::getAsyncTokenFromOp(v_op);
+          if (token && token == v)
             incoming_tokens.push_back(v);
         }
       }
@@ -1359,6 +1391,12 @@ private:
     // (3) Create new for op with iter_args.
     scf::ForOp new_loop_op = convertScfForToAsync(
         rewriter, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
+
+    // Replace old loop's results with new loop's corresponding results
+    // The new loop has: [existing results..., async token result]
+    for (unsigned i = 0; i < loop_op.getNumResults(); i++) {
+      loop_op.getResult(i).replaceAllUsesWith(new_loop_op.getResult(i));
+    }
 
     if (eraseOpWithCheck(rewriter, loop_op, "insertLoopCarriedDeps").failed()) {
       signalPassFailure();
@@ -1387,7 +1425,9 @@ private:
                                    RegionBranchOpInterface>(
                        v.getDefiningOp())) {
           auto v_op = v.getDefiningOp();
-          if (v_op->getNumResults() > 0 && v_op->getResult(0) == v)
+          // Check if v is an async token from this op
+          auto token = air::getAsyncTokenFromOp(v_op);
+          if (token && token == v)
             incoming_tokens.push_back(v);
         }
       }
@@ -1443,7 +1483,9 @@ private:
                                      RegionBranchOpInterface>(
                          v.getDefiningOp())) {
             auto v_op = v.getDefiningOp();
-            if (v_op->getNumResults() > 0 && v_op->getResult(0) == v)
+            // Check if v is an async token from this op
+            auto token = air::getAsyncTokenFromOp(v_op);
+            if (token && token == v)
               incoming_tokens.push_back(v);
           }
         }
@@ -1485,7 +1527,9 @@ private:
                                      RegionBranchOpInterface>(
                          v.getDefiningOp())) {
             auto v_op = v.getDefiningOp();
-            if (v_op->getNumResults() > 0 && v_op->getResult(0) == v)
+            // Check if v is an async token from this op
+            auto token = air::getAsyncTokenFromOp(v_op);
+            if (token && token == v)
               incoming_tokens.push_back(v);
           }
         }
@@ -1530,11 +1574,24 @@ private:
     wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
 
     if (isa<scf::ForOp, scf::IfOp>(region.getParentOp())) {
-      // Yield an async token
-      SmallVector<Value, 4> yield_token;
-      yield_token.push_back(wait_all_op_yielded.getResult(0));
+      // For scf::ForOp and scf::IfOp, preserve existing yield values and append
+      // async token
+      SmallVector<Value, 4> yield_values;
+
+      // Get existing yield if it exists and extract its operands
+      if (region.front().mightHaveTerminator()) {
+        if (auto old_yield = dyn_cast_if_present<scf::YieldOp>(
+                region.front().getTerminator())) {
+          yield_values.append(old_yield.getOperands().begin(),
+                              old_yield.getOperands().end());
+          rewriter.eraseOp(old_yield);
+        }
+      }
+
+      // Append the async token
+      yield_values.push_back(wait_all_op_yielded.getResult(0));
       rewriter.setInsertionPointToEnd(&region.front());
-      rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(), yield_token);
+      rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(), yield_values);
     }
 
     else if (isa<scf::ParallelOp>(region.getParentOp())) {
