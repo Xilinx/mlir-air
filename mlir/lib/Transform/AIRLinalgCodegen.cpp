@@ -1220,7 +1220,7 @@ class AIRPipelineReducePass
 
 public:
   AIRPipelineReducePass() = default;
-  AIRPipelineReducePass(const AIRPipelineReducePass &pass) {};
+  AIRPipelineReducePass(const AIRPipelineReducePass &pass){};
 
   void runOnOperation() override;
 
