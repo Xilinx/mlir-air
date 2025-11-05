@@ -1864,8 +1864,11 @@ struct CanonicalizeArithIndexCastOpOnLoopInductionVar
     if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp()))
       if (exec->getResult(1).use_empty())
         return failure();
-    if (isa<scf::ForOp>(ivArg.getOwner()->getParentOp())) {
-      containingOp = ivArg.getOwner()->getParentOp();
+    if (auto containingScfFor =
+            dyn_cast<scf::ForOp>(ivArg.getOwner()->getParentOp())) {
+      if (containingScfFor.getInductionVar() != ivArg)
+        return failure();
+      containingOp = containingScfFor;
       var_val = val;
     } else if (isa<affine::AffineForOp>(ivArg.getOwner()->getParentOp())) {
       // Affine for op only operates on index type.
