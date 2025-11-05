@@ -919,4 +919,64 @@ def FlattenForIterArgsOp : Op<Transform_Dialect, "air.flatten_for_iter_args",
   let assemblyFormat = "$target attr-dict";
 }
 
+def HoistVectorTransferPointersOp : Op<Transform_Dialect, "air.hoist_vector_transfer_pointers",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Optimize vector transfers by hoisting pointer computations out of loops";
+  let description = [{
+    This transform takes a handle to an scf.for loop and optimizes vector transfer operations
+    (vector.transfer_read and vector.transfer_write) inside the loop by:
+    1. Flattening the vector types to 1D using vector.shape_cast before and after the transfer
+    2. Flattening multi-dimensional memrefs to 1D using memref.collapse_shape
+    3. Computing a linearized base pointer from the operation's indices using affine.apply
+    4. Hoisting the base pointer computation out of the loop
+    5. For IV-dependent indices:
+       - Passing base pointers as iter_args to the loop
+       - Using the pointer iter_arg directly in the loop body
+       - Incrementing the pointer by a constant stride at each iteration
+       - Yielding the updated pointer for the next iteration
+    
+    This optimization converts expensive multi-dimensional address calculations inside loops
+    into simple "pointer + constant" arithmetic with iter_args, which is particularly beneficial 
+    for hardware accelerators with limited address computation capabilities.
+    
+    Example with IV-dependent indices:
+    ```mlir
+    // Before:
+    scf.for %i = %c0 to %c8 step %c1 {
+      %val = vector.transfer_read %mem[%c0, %i], %pad 
+        : memref<32x32xi16>, vector<8x8xi16>
+      // ... computation ...
+      vector.transfer_write %result, %mem[%c0, %i] 
+        : vector<8x8xi16>, memref<32x32xi16>
+    }
+    
+    // After:
+    %flat_mem = memref.collapse_shape %mem [[0, 1]] : memref<32x32xi16> into memref<1024xi16>
+    %base_ptr = affine.apply affine_map<(d0, d1) -> (d0 * 32 + d1)>(%c0, %c0)
+    %stride = arith.constant 1 : index
+    scf.for %i = %c0 to %c8 step %c1 iter_args(%ptr = %base_ptr) -> (index) {
+      %val_1d = vector.transfer_read %flat_mem[%ptr], %pad : memref<1024xi16>, vector<64xi16>
+      %val = vector.shape_cast %val_1d : vector<64xi16> to vector<8x8xi16>
+      // ... computation ...
+      %result_1d = vector.shape_cast %result : vector<8x8xi16> to vector<64xi16>
+      vector.transfer_write %result_1d, %flat_mem[%ptr] : vector<64xi16>, memref<1024xi16>
+      %next_ptr = arith.addi %ptr, %stride : index
+      scf.yield %next_ptr : index
+    }
+    ```
+    
+    Requirements:
+    - Target must be an scf.for operation
+    - Vector transfer operations must have concrete vector types (no dynamic dimensions)
+    - The memref must have static shapes for proper stride calculation
+    
+    Returns a handle to the transformed loop.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
 #endif // AIR_TRANSFORM_OPS

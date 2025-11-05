@@ -4027,6 +4027,347 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
 }
 
 //===----------------------------------------------------------------------===//
+// HoistVectorTransferPointersOp
+//===----------------------------------------------------------------------===//
+
+namespace {
+/// Check if a value depends on the given loop induction variable
+bool dependsOnLoopIVForHoist(Value val, Value loopIV) {
+  if (val == loopIV)
+    return true;
+
+  // Check if the value is defined by an affine.apply that uses the loop IV
+  if (auto affineOp = val.getDefiningOp<affine::AffineApplyOp>()) {
+    for (Value operand : affineOp.getMapOperands()) {
+      if (dependsOnLoopIVForHoist(operand, loopIV))
+        return true;
+    }
+  }
+
+  // Check for arithmetic operations
+  if (auto defOp = val.getDefiningOp()) {
+    for (Value operand : defOp->getOperands()) {
+      if (dependsOnLoopIVForHoist(operand, loopIV))
+        return true;
+    }
+  }
+
+  return false;
+}
+} // namespace
+
+DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    auto forOp = dyn_cast<scf::ForOp>(target);
+    if (!forOp) {
+      return emitDefiniteFailure() << "target must be an scf.for operation";
+    }
+
+    Value loopIV = forOp.getInductionVar();
+    Location loc = forOp.getLoc();
+    OpBuilder::InsertionGuard guard(rewriter);
+
+    // Collect all vector transfer operations with IV-dependent indices
+    struct TransferOpInfo {
+      Operation *op;
+      Value base;
+      MemRefType memrefType;
+      VectorType vectorType;
+      SmallVector<Value> indices;
+      int64_t constantStride; // Total constant stride per iteration
+      bool hasIVDependentIndices;
+    };
+
+    SmallVector<TransferOpInfo> transferOps;
+
+    for (Operation &op : forOp.getBody()->without_terminator()) {
+      auto transferOp = dyn_cast<VectorTransferOpInterface>(&op);
+      if (!transferOp)
+        continue;
+
+      Value base = transferOp.getBase();
+      auto memrefType = dyn_cast<MemRefType>(base.getType());
+      if (!memrefType)
+        continue;
+
+      VectorType vectorType;
+      if (auto readOp = dyn_cast<vector::TransferReadOp>(&op)) {
+        vectorType = readOp.getVectorType();
+      } else if (auto writeOp = dyn_cast<vector::TransferWriteOp>(&op)) {
+        vectorType = writeOp.getVectorType();
+      } else {
+        continue;
+      }
+
+      SmallVector<Value> indices(transferOp.getIndices().begin(),
+                                 transferOp.getIndices().end());
+
+      // Check if any indices depend on loop IV and compute constant stride
+      bool hasIVDependentIndices = false;
+      int64_t constantStride = 0;
+
+      for (size_t dimIdx = 0; dimIdx < indices.size(); ++dimIdx) {
+        Value idx = indices[dimIdx];
+        if (dependsOnLoopIVForHoist(idx, loopIV)) {
+          hasIVDependentIndices = true;
+
+          // Calculate the stride for this dimension
+          int64_t dimStride = 1;
+          for (size_t j = dimIdx + 1;
+               j < static_cast<size_t>(memrefType.getRank()); ++j) {
+            dimStride *= memrefType.getShape()[j];
+          }
+
+          // For now, assume the IV coefficient is 1 (i.e., the index is IV or
+          // IV + const) This is the total stride increment per loop iteration
+          constantStride += dimStride;
+        }
+      }
+
+      transferOps.push_back({&op, base, memrefType, vectorType, indices,
+                             constantStride, hasIVDependentIndices});
+    }
+
+    // Prepare to add iter_args for each transfer operation with IV-dependent
+    // indices
+    SmallVector<Value> newInitArgs;
+    SmallVector<Value> flatMemrefs;
+
+    for (const auto &info : transferOps) {
+      if (!info.hasIVDependentIndices)
+        continue;
+
+      // Flatten the memref if needed
+      rewriter.setInsertionPoint(forOp);
+      Value flatMemref = info.base;
+      if (info.memrefType.getRank() > 1) {
+        int64_t totalSize = 1;
+        for (int64_t dim : info.memrefType.getShape()) {
+          if (dim == ShapedType::kDynamic)
+            return emitDefiniteFailure()
+                   << "dynamic memref shapes not supported";
+          totalSize *= dim;
+        }
+
+        MemRefType flatMemrefType =
+            MemRefType::get({totalSize}, info.memrefType.getElementType(),
+                            AffineMap(), info.memrefType.getMemorySpace());
+
+        SmallVector<ReassociationIndices> reassociation;
+        ReassociationIndices allDims;
+        for (size_t i = 0; i < static_cast<size_t>(info.memrefType.getRank());
+             ++i) {
+          allDims.push_back(i);
+        }
+        reassociation.push_back(allDims);
+
+        flatMemref = rewriter.create<memref::CollapseShapeOp>(
+            loc, flatMemrefType, info.base, reassociation);
+      }
+      flatMemrefs.push_back(flatMemref);
+
+      // Compute base pointer (with zeros for IV-dependent parts)
+      int64_t rank = info.memrefType.getRank();
+      AffineExpr linearExpr = rewriter.getAffineConstantExpr(0);
+      int64_t stride = 1;
+      for (int64_t i = rank - 1; i >= 0; --i) {
+        linearExpr = linearExpr + rewriter.getAffineDimExpr(i) * stride;
+        if (i > 0)
+          stride *= info.memrefType.getShape()[i];
+      }
+      auto linearMap = AffineMap::get(rank, 0, linearExpr);
+
+      SmallVector<Value> baseIndices;
+      IRMapping indexMapping;
+      for (Value idx : info.indices) {
+        if (!dependsOnLoopIVForHoist(idx, loopIV)) {
+          if (auto defOp = idx.getDefiningOp()) {
+            Value clonedIdx =
+                cloneOpAndOperands(defOp, loopIV, rewriter, indexMapping);
+            if (clonedIdx)
+              baseIndices.push_back(clonedIdx);
+            else
+              baseIndices.push_back(idx);
+          } else {
+            baseIndices.push_back(idx);
+          }
+        } else {
+          baseIndices.push_back(
+              rewriter.create<arith::ConstantIndexOp>(loc, 0));
+        }
+      }
+
+      Value basePointer =
+          rewriter.create<affine::AffineApplyOp>(loc, linearMap, baseIndices);
+
+      newInitArgs.push_back(basePointer);
+    }
+
+    // If there are no IV-dependent transfers, just process them normally
+    if (newInitArgs.empty()) {
+      // Process all transfers without using iter_args
+      for (const auto &info : transferOps) {
+        rewriter.setInsertionPoint(info.op);
+
+        // Flatten vector type
+        int64_t numElements = getVectorNumElements(info.vectorType);
+        VectorType flatVectorType =
+            VectorType::get({numElements}, info.vectorType.getElementType());
+
+        // Use the base directly
+        rewriter.setInsertionPoint(forOp);
+        Value flatMemref = info.base;
+        if (info.memrefType.getRank() > 1) {
+          int64_t totalSize = 1;
+          for (int64_t dim : info.memrefType.getShape()) {
+            totalSize *= dim;
+          }
+          MemRefType flatMemrefType =
+              MemRefType::get({totalSize}, info.memrefType.getElementType(),
+                              AffineMap(), info.memrefType.getMemorySpace());
+          SmallVector<ReassociationIndices> reassociation;
+          ReassociationIndices allDims;
+          for (size_t i = 0; i < static_cast<size_t>(info.memrefType.getRank());
+               ++i) {
+            allDims.push_back(i);
+          }
+          reassociation.push_back(allDims);
+          flatMemref = rewriter.create<memref::CollapseShapeOp>(
+              loc, flatMemrefType, info.base, reassociation);
+        }
+
+        // Compute pointer from indices
+        int64_t rank = info.memrefType.getRank();
+        AffineExpr linearExpr = rewriter.getAffineConstantExpr(0);
+        int64_t stride = 1;
+        for (int64_t i = rank - 1; i >= 0; --i) {
+          linearExpr = linearExpr + rewriter.getAffineDimExpr(i) * stride;
+          if (i > 0)
+            stride *= info.memrefType.getShape()[i];
+        }
+        auto linearMap = AffineMap::get(rank, 0, linearExpr);
+
+        rewriter.setInsertionPoint(info.op);
+        Value currentPointer = rewriter.create<affine::AffineApplyOp>(
+            loc, linearMap, info.indices);
+
+        // Transform the transfer operation
+        AffineMap identityMap1D = AffineMap::get(
+            1, 0, rewriter.getAffineDimExpr(0), rewriter.getContext());
+        auto inBoundsAttr = rewriter.getBoolArrayAttr({true});
+
+        if (auto readOp = dyn_cast<vector::TransferReadOp>(info.op)) {
+          Value flatRead = rewriter.create<vector::TransferReadOp>(
+              loc, flatVectorType, flatMemref, ValueRange{currentPointer},
+              AffineMapAttr::get(identityMap1D), readOp.getPadding(),
+              /*mask=*/Value(), inBoundsAttr);
+          Value shapedRead = rewriter.create<vector::ShapeCastOp>(
+              loc, info.vectorType, flatRead);
+          rewriter.replaceOp(readOp, shapedRead);
+        } else if (auto writeOp = dyn_cast<vector::TransferWriteOp>(info.op)) {
+          Value flatValue = rewriter.create<vector::ShapeCastOp>(
+              loc, flatVectorType, writeOp.getVector());
+          rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
+              writeOp, flatValue, flatMemref, ValueRange{currentPointer},
+              AffineMapAttr::get(identityMap1D), /*mask=*/Value(),
+              inBoundsAttr);
+        }
+      }
+      transformedOps.push_back(forOp);
+      continue;
+    }
+
+    // Use replaceWithAdditionalYields to add pointer iter_args
+    auto yieldValuesFn =
+        [&](OpBuilder &b, Location yieldLoc,
+            ArrayRef<BlockArgument> newBbArgs) -> SmallVector<Value> {
+      SmallVector<Value> yieldValues;
+
+      // Process each transfer operation with IV-dependent indices
+      size_t iterArgIdx = 0;
+      for (size_t i = 0; i < transferOps.size(); ++i) {
+        const auto &info = transferOps[i];
+        if (!info.hasIVDependentIndices)
+          continue;
+
+        BlockArgument ptrIterArg =
+            newBbArgs[newBbArgs.size() - newInitArgs.size() + iterArgIdx];
+        Value flatMemref = flatMemrefs[iterArgIdx];
+
+        // Flatten vector type
+        int64_t numElements = getVectorNumElements(info.vectorType);
+        VectorType flatVectorType =
+            VectorType::get({numElements}, info.vectorType.getElementType());
+
+        // Transform the transfer operation to use the iter_arg pointer
+        b.setInsertionPoint(info.op);
+
+        AffineMap identityMap1D =
+            AffineMap::get(1, 0, b.getAffineDimExpr(0), b.getContext());
+        auto inBoundsAttr = b.getBoolArrayAttr({true});
+
+        if (auto readOp = dyn_cast<vector::TransferReadOp>(info.op)) {
+          Value flatRead = b.create<vector::TransferReadOp>(
+              loc, flatVectorType, flatMemref, ValueRange{ptrIterArg},
+              AffineMapAttr::get(identityMap1D), readOp.getPadding(),
+              /*mask=*/Value(), inBoundsAttr);
+          Value shapedRead =
+              b.create<vector::ShapeCastOp>(loc, info.vectorType, flatRead);
+          rewriter.replaceOp(readOp, shapedRead);
+        } else if (auto writeOp = dyn_cast<vector::TransferWriteOp>(info.op)) {
+          Value flatValue = b.create<vector::ShapeCastOp>(loc, flatVectorType,
+                                                          writeOp.getVector());
+          rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
+              writeOp, flatValue, flatMemref, ValueRange{ptrIterArg},
+              AffineMapAttr::get(identityMap1D), /*mask=*/Value(),
+              inBoundsAttr);
+        }
+
+        // Compute next pointer value: current_ptr + constant_stride
+        Value strideConst =
+            b.create<arith::ConstantIndexOp>(yieldLoc, info.constantStride);
+        Value nextPtr =
+            b.create<arith::AddIOp>(yieldLoc, ptrIterArg, strideConst);
+        yieldValues.push_back(nextPtr);
+
+        iterArgIdx++;
+      }
+
+      return yieldValues;
+    };
+
+    // Create new loop with additional iter_args for pointers
+    FailureOr<LoopLikeOpInterface> newLoopResult =
+        cast<LoopLikeOpInterface>(forOp.getOperation())
+            .replaceWithAdditionalYields(
+                rewriter, newInitArgs, // new init operands (base pointers)
+                true,                  // replace uses in loop
+                yieldValuesFn);
+
+    if (failed(newLoopResult)) {
+      return emitDefiniteFailure() << "failed to add pointer iter_args to loop";
+    }
+
+    transformedOps.push_back(newLoopResult->getOperation());
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+//===----------------------------------------------------------------------===//
 
 namespace xilinx {
 namespace air {
