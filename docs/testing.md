@@ -6,44 +6,21 @@ Testing is implementing using the [https://llvm.org/docs/CommandGuide/lit.html](
 Tests are generally run from a build directory using ninja:
 ```
 $ cd build
-$ ninja check-air
+$ ninja check-air-mlir
+$ ninja check-air-e2e-peano
+$ ninja check-air-e2e-chess
+$ ninja check-programming-examples-peano
+$ ninja check-programming-examples-chess
 ```
-
-## Testing an Install Area
-
-It is almost always much faster to cross-compile these tools for embedded processors (e.g. ARM/AArch64) rather than compiling locally.  To test a cross-compiled build, the tests can be configured using cmake independently from the rest of the source code.  This leverages standard cmake mechanisms to export information about an install area.
-
-```
-$ cd aie/test
-$ mkdir build
-$ cd build
-$ cmake -GNinja .. -DCMAKE_MODULE_PATH=/home/xilinx/acdc/cmakeModules/cmakeModulesXilinx/
-```
-Note that CMAKE_MODULE_PATH needs to be an absolute path at the moment
 
 ## Unit Testing
 
 Most unit tests check the behavior of individual compilation passes.  In general, we follow [https://llvm.org/docs/TestingGuide.html] best practices from LLVM, such as `FileCheck`.
 
 ```
-// RUN: aie-opt --aie-create-pathfinder-flows --aie-find-flows %s | FileCheck %s
-// CHECK: %[[T23:.*]] = AIE.tile(2, 3)
+// RUN: air-opt --air-dma-to-channel %s | FileCheck %s
+// CHECK: %[[VAL1:.*]] = air.channel.get
 ```
-
-## On-board Integration Testing (vck5000)
-
-If no board is available, then designs will still be compiled (enabling some minimal testing).  However, on a board, the tests will automatically be run as well.  This is controlled by the cmake `ENABLE_RUN_AIRHOST_TESTS` option, the lit configuration and the `%run_on_board` substitution:
-```
-$ cmake -GNinja .. -DCMAKE_MODULE_PATH=/home/xilinx/acdc/cmakeModules/cmakeModulesXilinx/ -DENABLE_RUN_AIRHOST_TESTS=ON
-```
-```
-// RUN: clang ... -o test.elf
-// RUN: %run_on_board test.elf
-```
-
-When a board is available, `%run_on_board test.elf` becomes `sudo test.elf`, executing the elf file.  If the execution fails (i.e., returns a negative return value), then the test will fail.  If no board is available then `%run_on_board test.elf` becomes `echo test.elf`, to disable running the test.  Note that this mechanism means that the executable must be self-checking and cannot use the common `FileCheck` mechanism to check the output of running `test.elf`.
-
-Board tests must also be serialized because they assume exclusive access to the hardware.  Currently tests are serialized by adding `flock /tmp/board.lock` to the `%run_on_board` command line. The complete `%run_on_board <command line>` substitution is `sudo flock /tmp/board.lock <command line>`.
 
 -----
 
