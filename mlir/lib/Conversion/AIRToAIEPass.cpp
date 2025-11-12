@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -166,6 +167,16 @@ AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
                     StringAttr::get(tile->getContext(), ss.str()));
 
   return bufferOp;
+}
+
+// Set data layout attribute on AIE device to specify index type has 32 bits
+// width
+void setAIEDeviceDataLayout(OpBuilder &builder, AIE::DeviceOp aie_dev) {
+  auto indexType = builder.getIndexType();
+  auto dlEntry =
+      DataLayoutEntryAttr::get(indexType, builder.getI64IntegerAttr(32));
+  auto dlSpec = DataLayoutSpecAttr::get(builder.getContext(), {dlEntry});
+  aie_dev->setAttr(DLTIDialect::kDataLayoutAttrName, dlSpec);
 }
 
 void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
@@ -517,6 +528,7 @@ void createAIEModulesAndOutlineCores(
         AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
     aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                      StringAttr::get(builder.getContext(), segment_name));
+    setAIEDeviceDataLayout(builder, aie_dev);
     AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
                                     aie_dev.getLoc());
     seg.walk([&](air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
@@ -540,6 +552,7 @@ void createAIEModulesAndOutlineCores(
         AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
     aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                      StringAttr::get(builder.getContext(), segment_name));
+    setAIEDeviceDataLayout(builder, aie_dev);
     AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
                                     aie_dev.getLoc());
     aie_modules.push_back({aie_dev, herd});
@@ -826,10 +839,51 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+struct AttachMustProgressPattern : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  AttachMustProgressPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(scf::ForOp fop,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if the attribute is already present
+    // if (fop->hasAttr("llvm.loop"))
+    if (fop->hasAttr("loop_annotation"))
+      return failure();
+
+    // Create the loop annotation attribute with mustProgress = true
+    auto ctx = fop->getContext();
+    auto mustProgressAttr = LLVM::LoopAnnotationAttr::get(
+        ctx,
+        /*disableNonforced=*/nullptr,
+        /*vectorize=*/nullptr,
+        /*interleave=*/nullptr,
+        /*unroll=*/nullptr,
+        /*unrollAndJam=*/nullptr,
+        /*licm=*/nullptr,
+        /*distribute=*/nullptr,
+        /*pipeline=*/nullptr,
+        /*peeled=*/nullptr,
+        /*unswitch=*/nullptr,
+        /*mustProgress=*/rewriter.getBoolAttr(true),
+        /*isVectorized=*/nullptr,
+        /*startLoc=*/nullptr,
+        /*endLoc=*/nullptr,
+        /*parallelAccesses=*/{});
+
+    // Set the attribute on the for loop
+    fop->setAttr("loop_annotation", mustProgressAttr);
+
+    return success();
+  }
+};
+
 void lowerScfAirTokens(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<LowerScfTokenPattern>(ctx);
+  patterns.insert<AttachMustProgressPattern>(ctx);
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
@@ -1678,6 +1732,7 @@ public:
     registry.insert<LLVM::LLVMDialect>();
     registry.insert<cf::ControlFlowDialect>();
     registry.insert<vector::VectorDialect>();
+    registry.insert<DLTIDialect>();
   }
 
   // Circuit-switched flow.
@@ -4503,6 +4558,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     auto devOp = rewriter.create<AIE::DeviceOp>(
         aie_module.getLoc(),
         AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device));
+    setAIEDeviceDataLayout(rewriter, devOp);
     AIE::DeviceOp::ensureTerminator(devOp.getRegion(), rewriter,
                                     devOp.getLoc());
     outlineAIECores(rewriter, devOp, h, tileToHerdMap, options);
