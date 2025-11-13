@@ -919,6 +919,101 @@ def FlattenForIterArgsOp : Op<Transform_Dialect, "air.flatten_for_iter_args",
   let assemblyFormat = "$target attr-dict";
 }
 
+def HoistCastPairOp : Op<Transform_Dialect, "air.hoist_cast_pair",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Hoist extension/truncation operation pairs out of a loop";
+  let description = [{
+    This transform takes handles to an extension operation (arith.extsi, arith.extui, or arith.extf),
+    a truncation operation (arith.trunci or arith.truncf), and their parent scf.for loop.
+    It hoists the extension/truncation pair out of the loop by:
+    1. Moving the extension operation before the loop to extend the initial iter_arg value
+    2. Changing the loop's iter_arg type from the narrow type to the wide type
+    3. Removing the extension from inside the loop (now using the iter_arg directly)
+    4. Removing the truncation from inside the loop
+    5. Adding a truncation after the loop to convert the result back to the narrow type
+    
+    Supports the following extension/truncation pairs:
+    - Integer signed extension: arith.extsi + arith.trunci
+    - Integer unsigned extension: arith.extui + arith.trunci
+    - Floating-point extension: arith.extf + arith.truncf
+    
+    This optimization is beneficial when accumulator values are repeatedly extended to
+    a wider type for computation and then truncated back to a narrow type at each iteration.
+    By keeping the accumulator in the wide type throughout all loop iterations, we eliminate
+    redundant extend/truncate operations.
+    
+    Example (Integer):
+    ```mlir
+    // Before:
+    %init = ... : vector<64xi16>
+    %result = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init) -> (vector<64xi16>) {
+      %arg_shaped = vector.shape_cast %arg : vector<64xi16> to vector<1x1x8x8xi16>
+      %arg_ext = arith.extsi %arg_shaped : vector<1x1x8x8xi16> to vector<1x1x8x8xi32>
+      // ... computation using %arg_ext ...
+      %result_i32 = vector.contract ... : ... into vector<1x1x8x8xi32>
+      %result_i16 = arith.trunci %result_i32 : vector<1x1x8x8xi32> to vector<1x1x8x8xi16>
+      %result_flat = vector.shape_cast %result_i16 : vector<1x1x8x8xi16> to vector<64xi16>
+      scf.yield %result_flat : vector<64xi16>
+    }
+    
+    // After:
+    %init = ... : vector<64xi16>
+    %init_shaped = vector.shape_cast %init : vector<64xi16> to vector<1x1x8x8xi16>
+    %init_ext = arith.extsi %init_shaped : vector<1x1x8x8xi16> to vector<1x1x8x8xi32>
+    %init_flat = vector.shape_cast %init_ext : vector<1x1x8x8xi32> to vector<64xi32>
+    %result_i32 = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init_flat) -> (vector<64xi32>) {
+      %arg_shaped = vector.shape_cast %arg : vector<64xi32> to vector<1x1x8x8xi32>
+      // ... computation using %arg_shaped directly (no extsi needed) ...
+      %result_i32 = vector.contract ... : ... into vector<1x1x8x8xi32>
+      %result_flat = vector.shape_cast %result_i32 : vector<1x1x8x8xi32> to vector<64xi32>
+      scf.yield %result_flat : vector<64xi32>
+    }
+    %result_shaped = vector.shape_cast %result_i32 : vector<64xi32> to vector<1x1x8x8xi32>
+    %result_i16 = arith.trunci %result_shaped : vector<1x1x8x8xi32> to vector<1x1x8x8xi16>
+    %result = vector.shape_cast %result_i16 : vector<1x1x8x8xi16> to vector<64xi16>
+    ```
+    
+    Example (Floating-point):
+    ```mlir
+    // Before:
+    %init = ... : vector<64xbf16>
+    %result = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init) -> (vector<64xbf16>) {
+      %arg_ext = arith.extf %arg : vector<64xbf16> to vector<64xf32>
+      // ... computation using %arg_ext ...
+      %result_f32 = vector.fma ... : vector<64xf32>
+      %result_bf16 = arith.truncf %result_f32 : vector<64xf32> to vector<64xbf16>
+      scf.yield %result_bf16 : vector<64xbf16>
+    }
+    
+    // After:
+    %init = ... : vector<64xbf16>
+    %init_ext = arith.extf %init : vector<64xbf16> to vector<64xf32>
+    %result_f32 = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init_ext) -> (vector<64xf32>) {
+      // ... computation using %arg directly (no extf needed) ...
+      %result_f32 = vector.fma ... : vector<64xf32>
+      scf.yield %result_f32 : vector<64xf32>
+    }
+    %result = arith.truncf %result_f32 : vector<64xf32> to vector<64xbf16>
+    ```
+    
+    Requirements:
+    - Extension and truncation operations must be in the same scf.for loop
+    - Extension must extend an iter_arg (or value derived from iter_arg via shape_cast)
+    - Truncation result must be yielded (directly or indirectly via shape_cast)
+    - Extension and truncation operations must form a valid pair (matching types)
+    
+    Returns a handle to the transformed loop.
+  }];
+  
+  let arguments = (ins PDL_Operation:$extension_op,
+                       PDL_Operation:$truncation_op,
+                       PDL_Operation:$loop_op);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$extension_op `,` $truncation_op `,` $loop_op attr-dict";
+}
+
 def HoistVectorTransferPointersOp : Op<Transform_Dialect, "air.hoist_vector_transfer_pointers",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
