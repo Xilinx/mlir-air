@@ -4367,6 +4367,320 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 }
+
+//===----------------------------------------------------------------------===//
+// HoistCastPairOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
+                                  transform::TransformResults &results,
+                                  transform::TransformState &state) {
+
+  SmallVector<Operation *> extensionOps =
+      llvm::to_vector(state.getPayloadOps(getExtensionOp()));
+  SmallVector<Operation *> truncationOps =
+      llvm::to_vector(state.getPayloadOps(getTruncationOp()));
+  SmallVector<Operation *> loopOps =
+      llvm::to_vector(state.getPayloadOps(getLoopOp()));
+
+  if (extensionOps.size() != 1 || truncationOps.size() != 1 ||
+      loopOps.size() != 1) {
+    return emitDefiniteFailure() << "requires exactly one extension_op, "
+                                    "truncation_op, and loop_op handle";
+  }
+
+  Operation *extensionOp = extensionOps[0];
+  Operation *truncationOp = truncationOps[0];
+  auto loopOp = dyn_cast<scf::ForOp>(loopOps[0]);
+
+  if (!loopOp) {
+    return emitDefiniteFailure() << "loop_op handle must be scf.for";
+  }
+
+  // Determine extension/truncation operation types and get input/output values
+  Value extensionInput, extensionOutput;
+  Value truncationInput, truncationOutput;
+  bool isFloatingPoint = false;
+
+  if (auto extsiOp = dyn_cast<arith::ExtSIOp>(extensionOp)) {
+    extensionInput = extsiOp.getIn();
+    extensionOutput = extsiOp.getOut();
+    auto trunciOp = dyn_cast<arith::TruncIOp>(truncationOp);
+    if (!trunciOp) {
+      return emitDefiniteFailure()
+             << "arith.extsi must be paired with arith.trunci";
+    }
+    truncationInput = trunciOp.getIn();
+    truncationOutput = trunciOp.getOut();
+  } else if (auto extuiOp = dyn_cast<arith::ExtUIOp>(extensionOp)) {
+    extensionInput = extuiOp.getIn();
+    extensionOutput = extuiOp.getOut();
+    auto trunciOp = dyn_cast<arith::TruncIOp>(truncationOp);
+    if (!trunciOp) {
+      return emitDefiniteFailure()
+             << "arith.extui must be paired with arith.trunci";
+    }
+    truncationInput = trunciOp.getIn();
+    truncationOutput = trunciOp.getOut();
+  } else if (auto extfOp = dyn_cast<arith::ExtFOp>(extensionOp)) {
+    extensionInput = extfOp.getIn();
+    extensionOutput = extfOp.getOut();
+    auto truncfOp = dyn_cast<arith::TruncFOp>(truncationOp);
+    if (!truncfOp) {
+      return emitDefiniteFailure()
+             << "arith.extf must be paired with arith.truncf";
+    }
+    truncationInput = truncfOp.getIn();
+    truncationOutput = truncfOp.getOut();
+    isFloatingPoint = true;
+  } else {
+    return emitDefiniteFailure() << "extension operation must be arith.extsi, "
+                                    "arith.extui, or arith.extf";
+  }
+
+  // Verify extension and truncation are in the loop
+  if (!loopOp->isProperAncestor(extensionOp) ||
+      !loopOp->isProperAncestor(truncationOp)) {
+    return emitDefiniteFailure()
+           << "extension and truncation operations must be inside the loop";
+  }
+
+  // Find which iter_arg the extension operates on
+  BlockArgument iterArg = nullptr;
+  int64_t iterArgIndex = -1;
+  vector::ShapeCastOp shapeCastBeforeExtension = nullptr;
+
+  // The extension input might be the iter_arg directly, or derived from it
+  // through shape_cast
+  if (auto blockArg = dyn_cast<BlockArgument>(extensionInput)) {
+    if (blockArg.getOwner() == loopOp.getBody() &&
+        blockArg.getArgNumber() > 0) {
+      iterArg = blockArg;
+      iterArgIndex = blockArg.getArgNumber() - 1;
+    }
+  } else if (auto shapeCastOp =
+                 extensionInput.getDefiningOp<vector::ShapeCastOp>()) {
+    Value shapeCastSource = shapeCastOp.getSource();
+    if (auto blockArg = dyn_cast<BlockArgument>(shapeCastSource)) {
+      if (blockArg.getOwner() == loopOp.getBody() &&
+          blockArg.getArgNumber() > 0) {
+        iterArg = blockArg;
+        iterArgIndex = blockArg.getArgNumber() - 1;
+        shapeCastBeforeExtension = shapeCastOp;
+      }
+    }
+  }
+
+  if (!iterArg) {
+    return emitDefiniteFailure() << "extension must operate on a loop iter_arg "
+                                    "(directly or through shape_cast)";
+  }
+
+  // Find the value that gets yielded (should come from truncation, possibly
+  // through shape_cast)
+  vector::ShapeCastOp shapeCastAfterTruncation = nullptr;
+
+  auto yieldOp = cast<scf::YieldOp>(loopOp.getBody()->getTerminator());
+  bool truncationIsYielded = false;
+  int64_t yieldIndex = -1;
+
+  for (auto [idx, yieldValue] : llvm::enumerate(yieldOp.getOperands())) {
+    if (yieldValue == truncationOutput) {
+      truncationIsYielded = true;
+      yieldIndex = idx;
+      break;
+    } else if (auto shapeCast =
+                   yieldValue.getDefiningOp<vector::ShapeCastOp>()) {
+      if (shapeCast.getSource() == truncationOutput) {
+        truncationIsYielded = true;
+        yieldIndex = idx;
+        shapeCastAfterTruncation = shapeCast;
+        break;
+      }
+    }
+  }
+
+  if (!truncationIsYielded || yieldIndex != iterArgIndex) {
+    return emitDefiniteFailure() << "truncation result must be yielded at the "
+                                    "same position as the extension iter_arg";
+  }
+
+  Location loc = loopOp.getLoc();
+
+  // Step 1: Hoist extension before the loop (don't hoist shape_cast yet)
+  rewriter.setInsertionPoint(loopOp);
+  Value initValue = loopOp.getInitArgs()[iterArgIndex];
+
+  // Get the wide element type from the extension output
+  Type wideElemType =
+      cast<VectorType>(extensionOutput.getType()).getElementType();
+  Type wideInitType = VectorType::get(
+      cast<VectorType>(initValue.getType()).getShape(), wideElemType);
+
+  // Extend the init value directly (in narrow flat form)
+  Value extendedInit;
+  if (isFloatingPoint) {
+    extendedInit = rewriter.create<arith::ExtFOp>(loc, wideInitType, initValue);
+  } else if (isa<arith::ExtSIOp>(extensionOp)) {
+    extendedInit =
+        rewriter.create<arith::ExtSIOp>(loc, wideInitType, initValue);
+  } else {
+    extendedInit =
+        rewriter.create<arith::ExtUIOp>(loc, wideInitType, initValue);
+  }
+
+  // Step 2: Create new loop with wide type for this iter_arg
+  SmallVector<Value> newInitArgs(loopOp.getInitArgs().begin(),
+                                 loopOp.getInitArgs().end());
+  newInitArgs[iterArgIndex] = extendedInit;
+
+  auto newLoopOp = rewriter.create<scf::ForOp>(loc, loopOp.getLowerBound(),
+                                               loopOp.getUpperBound(),
+                                               loopOp.getStep(), newInitArgs);
+
+  // Step 3: Clone the loop body with proper type adjustments
+  Block *oldBody = loopOp.getBody();
+  Block *newBody = newLoopOp.getBody();
+
+  rewriter.setInsertionPointToStart(newBody);
+  IRMapping mapping;
+
+  // Map the induction variable
+  mapping.map(oldBody->getArgument(0), newBody->getArgument(0));
+
+  // Map iter_args
+  for (auto [idx, oldArg] :
+       llvm::enumerate(oldBody->getArguments().drop_front(1))) {
+    mapping.map(oldArg, newBody->getArgument(idx + 1));
+  }
+
+  // Clone operations from old body, adjusting types as needed
+  for (Operation &op : oldBody->without_terminator()) {
+    // Skip extension - its result will be mapped to the wide iter_arg or wide
+    // shape_cast
+    if (&op == extensionOp) {
+      if (shapeCastBeforeExtension) {
+        // Map extension result to the shape_cast result (which we'll create
+        // below) Don't map yet - we'll map it when we encounter the shape_cast
+      } else {
+        // No shape_cast: map extension result directly to the wide iter_arg
+        mapping.map(extensionOutput, newBody->getArgument(iterArgIndex + 1));
+      }
+      continue;
+    }
+
+    // Skip truncation - we'll handle the yielded value specially
+    if (&op == truncationOp) {
+      continue;
+    }
+
+    // Handle shape_cast before extension - clone it with wide element type
+    if (shapeCastBeforeExtension &&
+        &op == shapeCastBeforeExtension.getOperation()) {
+      auto narrowVecType =
+          cast<VectorType>(shapeCastBeforeExtension.getResult().getType());
+      auto wideVecType =
+          VectorType::get(narrowVecType.getShape(), wideElemType);
+
+      Value mappedSource = mapping.lookup(shapeCastBeforeExtension.getSource());
+      auto newShapeCast =
+          rewriter.create<vector::ShapeCastOp>(loc, wideVecType, mappedSource);
+      mapping.map(shapeCastBeforeExtension.getResult(),
+                  newShapeCast.getResult());
+      mapping.map(extensionOutput, newShapeCast.getResult());
+      continue;
+    }
+
+    // Handle shape_cast after truncation - clone it with wide element type for
+    // the yield
+    if (shapeCastAfterTruncation &&
+        &op == shapeCastAfterTruncation.getOperation()) {
+      // We'll handle this in the yield processing
+      continue;
+    }
+
+    // Clone all other operations normally
+    rewriter.clone(op, mapping);
+  }
+
+  // Step 4: Update the yield to yield the wide value
+  auto oldYield = cast<scf::YieldOp>(oldBody->getTerminator());
+  SmallVector<Value> newYieldOperands;
+
+  for (auto [idx, yieldValue] : llvm::enumerate(oldYield.getOperands())) {
+    if ((int64_t)idx == iterArgIndex) {
+      // Get the wide value (truncation input)
+      Value wideValue = mapping.lookup(truncationInput);
+
+      // If there was a shape_cast after truncation, we need to create a wide
+      // version of it
+      if (shapeCastAfterTruncation) {
+        auto narrowVecType =
+            cast<VectorType>(shapeCastAfterTruncation.getResult().getType());
+        auto wideVecType =
+            VectorType::get(narrowVecType.getShape(), wideElemType);
+
+        auto newShapeCast =
+            rewriter.create<vector::ShapeCastOp>(loc, wideVecType, wideValue);
+        newYieldOperands.push_back(newShapeCast.getResult());
+      } else {
+        newYieldOperands.push_back(wideValue);
+      }
+    } else {
+      newYieldOperands.push_back(mapping.lookup(yieldValue));
+    }
+  }
+
+  rewriter.create<scf::YieldOp>(loc, newYieldOperands);
+
+  // Step 5: Hoist truncation after the loop
+  rewriter.setInsertionPointAfter(newLoopOp);
+  Value wideResult = newLoopOp.getResults()[iterArgIndex];
+
+  // Get the narrow element type from the original init value
+  auto narrowElemType =
+      cast<VectorType>(loopOp.getInitArgs()[iterArgIndex].getType())
+          .getElementType();
+  auto narrowResultType = VectorType::get(
+      cast<VectorType>(wideResult.getType()).getShape(), narrowElemType);
+
+  // Create the appropriate truncation operation based on type
+  Value narrowResult;
+  if (isFloatingPoint) {
+    narrowResult =
+        rewriter.create<arith::TruncFOp>(loc, narrowResultType, wideResult);
+  } else {
+    narrowResult =
+        rewriter.create<arith::TruncIOp>(loc, narrowResultType, wideResult);
+  }
+
+  // Step 6: Replace uses of the old loop
+  SmallVector<Value> finalResults;
+  for (auto [idx, result] : llvm::enumerate(newLoopOp.getResults())) {
+    if ((int64_t)idx == iterArgIndex) {
+      finalResults.push_back(narrowResult);
+    } else {
+      finalResults.push_back(result);
+    }
+  }
+
+  rewriter.replaceOp(loopOp, finalResults);
+
+  SmallVector<Operation *> resultOps = {newLoopOp.getOperation()};
+  results.set(llvm::cast<OpResult>(getResult()), resultOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform::HoistCastPairOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getExtensionOpMutable(), effects);
+  consumesHandle(getTruncationOpMutable(), effects);
+  onlyReadsHandle(getLoopOpMutable(), effects);
+  producesHandle(getOperation()->getOpResults(), effects);
+  modifiesPayload(effects);
+}
+
 //===----------------------------------------------------------------------===//
 
 namespace xilinx {
