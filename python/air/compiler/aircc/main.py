@@ -605,6 +605,7 @@ def run(mlir_module, args=None):
                     if opts.peano_install_dir
                     else []
                 )
+                + (["-O", "3"])
                 + aiecc_output_file_options
                 + aiecc_existing_xclbin_options
                 + [air_to_npu_file]
