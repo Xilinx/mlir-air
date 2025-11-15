@@ -131,15 +131,15 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
 
 // int16 MatMul kernel definion with int16 outputs.
 template <unsigned m, unsigned k, unsigned n>
-static inline void matmul_vectorized_4x4x4_i16_i16(const int16 *__restrict pA,
+static inline void matmul_vectorized_8x2x8_i16_i16(const int16 *__restrict pA,
                                                    const int16 *__restrict pB,
                                                    int16 *__restrict pC) {
 
-  // After extensive experimentation, the 4x4x4 aie::mmul size was found to be
+  // After extensive experimentation, the 8x2x8 aie::mmul size was found to be
   // optimal for AIE2, in combination with the 2x2 mmul expanded kernel
-  constexpr int r = 4;
-  constexpr int s = 4;
-  constexpr int t = 4;
+  constexpr int r = 8;
+  constexpr int s = 2;
+  constexpr int t = 8;
 
   // Since the kernel has been expanded twice for both A ('m' dimension) and B
   // ('n' dimension), the following assertions veirify this even division for
@@ -162,7 +162,7 @@ extern "C" {
 
 #ifndef DIM_M
 #define DIM_M 64
-#define DIM_M_DIV_4 16
+#define DIM_M_DIV_8 8
 #endif
 
 #ifndef DIM_K
@@ -171,11 +171,11 @@ extern "C" {
 
 #ifndef DIM_N
 #define DIM_N 64
-#define DIM_N_DIV_4 16
+#define DIM_N_DIV_8 8
 #endif
 
 #ifndef combos
-#define combos(X) X(int16, i16, int16, i16, 4, 4, 4)
+#define combos(X) X(int16, i16, int16, i16, 8, 2, 8)
 #endif
 
 #define matmul_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,            \
@@ -196,19 +196,19 @@ extern "C" {
 
 #define CAT2(a, b) a##b
 #define CAT(a, b) CAT2(a, b)
-#define MAKE_LINALG_FILL_NAME(mlir_in, mlir_out, N_div_4, M_div_4)             \
+#define MAKE_LINALG_FILL_NAME(mlir_in, mlir_out, N_div_8, M_div_8)             \
   CAT(CAT(CAT(CAT(CAT(CAT(CAT(CAT(linalg_fill_, mlir_out), _view1x1x),         \
-                          N_div_4),                                            \
+                          N_div_8),                                            \
                       x),                                                      \
-                  M_div_4),                                                    \
-              x4x4x),                                                          \
+                  M_div_8),                                                    \
+              x8x8x),                                                          \
           mlir_out),                                                           \
       as2)
 
 #define zero_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,              \
                                mlir_type_out, r, s, t)                         \
-  void MAKE_LINALG_FILL_NAME(mlir_type_in, mlir_type_out, DIM_N_DIV_4,         \
-                             DIM_M_DIV_4)(ctype_out * c_out) {                 \
+  void MAKE_LINALG_FILL_NAME(mlir_type_in, mlir_type_out, DIM_N_DIV_8,         \
+                             DIM_M_DIV_8)(ctype_out * c_out) {                 \
     zero_vectorized<ctype_out, DIM_M, DIM_N>(c_out);                           \
   }
 
