@@ -2,6 +2,20 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+# Tile sizes
+TILE_M ?= 64
+TILE_K_L2 ?= 128
+TILE_K_L1 ?= 64
+TILE_N ?= 64
+
+# Recommended tile configuration for run3x3 (576x576x576): TILE_M=64 TILE_K_L2=288 TILE_K_L1=48
+
+# M and N tile sizes divided by 4 and 8
+TILE_M_DIV_4 := $(shell echo $$(( $(TILE_M) / 4 )))
+TILE_N_DIV_4 := $(shell echo $$(( $(TILE_N) / 4 )))
+TILE_M_DIV_8 := $(shell echo $$(( $(TILE_M) / 8 )))
+TILE_N_DIV_8 := $(shell echo $$(( $(TILE_N) / 8 )))
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -27,10 +41,12 @@ AIE_TARGET ?= aie2
 # Matmul kernels with i16 inputs are currently incompatible with aie2p, so KERNEL_DEP is empty for aie2p
 ifeq ($(AIE_TARGET),aie2p)
   PEANO_FLAGS = ${PEANOWRAP2P_FLAGS}
-  KERNEL_DEP =
+  MAX_HERD_M = 8
+  MAX_HERD_N = 4
 else
   PEANO_FLAGS = ${PEANOWRAP2_FLAGS}
-  KERNEL_DEP = compile-kernel
+  MAX_HERD_M = 4
+  MAX_HERD_N = 4
 endif
 
 all: run4x4
@@ -38,24 +54,33 @@ all: run4x4
 print:
 	${powershell} python3 ${srcdir}/run.py -p --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
-run4x4: $(KERNEL_DEP)
+run8x4: compile-kernel
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 1024 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+
+run4x4: compile-kernel
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 4 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
-run2x4: $(KERNEL_DEP)
+run2x4: compile-kernel
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 4 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
-run2x2: $(KERNEL_DEP)
+run2x2: compile-kernel
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
-run3x3: $(KERNEL_DEP)
+run3x3: compile-kernel
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 --tile-k-l2 288 --tile-k-l1 48 --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
+profile: compile-kernel build-test-exe
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python ../run.py --m 1024 --k 1024 --n 1024 \
+		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --herd-m $(MAX_HERD_M) --herd-n $(MAX_HERD_N) --compile-mode compile-only --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M 1024 -K 1024 -N 1024
+
 # Measure the e2e latencies across a range of problem shapes.
-sweep4x4: $(KERNEL_DEP) build-test-exe
+sweep4x4: compile-kernel build-test-exe
 	@for M in 256 512 1024 2048; do \
 		for N in 256 512 1024 2048; do \
 			for K in 256 512 1024 2048; do \
@@ -71,15 +96,25 @@ compile-kernel:
 	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
 		echo "Detected PEANO_INSTALL_DIR from environment: $(PEANO_INSTALL_DIR)"; \
 		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
-			echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET)"; \
-			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm.cc -o $(BUILD_DIR)/mm.o; \
+			if [ "$(AIE_TARGET)" = "aie2p" ]; then \
+				echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET) and mm_aie2p.cc"; \
+				$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm_aie2p.cc -o $(BUILD_DIR)/mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_8=$(TILE_N_DIV_8) -DDIM_M_DIV_8=$(TILE_M_DIV_8); \
+			else \
+				echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET) and mm.cc"; \
+				$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm.cc -o $(BUILD_DIR)/mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_4=$(TILE_N_DIV_4) -DDIM_M_DIV_4=$(TILE_M_DIV_4); \
+			fi; \
 		else \
 			echo "Error: invalid PEANO_INSTALL_DIR, clang++ not found."; \
 			exit 1; \
 		fi; \
 	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
-		echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET)"; \
-		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm.cc -o mm.o; \
+		if [ "$(AIE_TARGET)" = "aie2p" ]; then \
+			echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET) and mm_aie2p.cc"; \
+			cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm_aie2p.cc -o mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_8=$(TILE_N_DIV_8) -DDIM_M_DIV_8=$(TILE_M_DIV_8); \
+		else \
+			echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET) and mm.cc"; \
+			cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm.cc -o mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_4=$(TILE_N_DIV_4) -DDIM_M_DIV_4=$(TILE_M_DIV_4); \
+		fi; \
 	else \
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \

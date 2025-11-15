@@ -6,5 +6,5 @@
 // RUN: mkdir -p test_npu1_peano_no_direct_codegen
 // RUN: cd test_npu1_peano_no_direct_codegen
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run4x4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR DIRECT_CODEGEN_FLAG= | FileCheck %s
+// RUN: make -f %S/Makefile run4x4 AIE_TARGET=aie2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR DIRECT_CODEGEN_FLAG= | FileCheck %s
 // CHECK: PASS!

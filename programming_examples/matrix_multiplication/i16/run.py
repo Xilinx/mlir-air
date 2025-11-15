@@ -465,7 +465,7 @@ if __name__ == "__main__":
     K = 512
     N = 512
     TILE_M = 64
-    TILE_K_L2 = 64
+    TILE_K_L2 = 128
     TILE_K_L1 = 64
     TILE_N = 64
     HERD_M = 4
@@ -601,8 +601,14 @@ if __name__ == "__main__":
 
                 %matmul = transform.structured.match ops{{["linalg.generic"]}} in %arg1  : (!pdl.operation) -> !pdl.operation
                 %inner_most_matmul, %vec_loops:3 =
-                  transform.structured.tile_using_for %matmul tile_sizes [1, 1, 1, 0, 0, 0]
+                  transform.structured.tile_using_for %matmul tile_sizes [2, 2, 1, 0, 0, 0]
                   : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)  
+                %inner_most_matmul_to_unroll, %vec_loops_to_unroll:2 =
+                  transform.structured.tile_using_for %inner_most_matmul tile_sizes [1, 1, 0, 0, 0, 0]
+                  : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation)  
+                transform.loop.unroll %vec_loops_to_unroll#1 {{factor = 2}} : !pdl.operation
+                transform.loop.unroll %vec_loops_to_unroll#0 {{factor = 2}} : !pdl.operation
+
                 %linalg_fills = transform.structured.match ops{{["linalg.fill"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
                 %inner_most_fills, %vec_fill_loops:2 =
                   transform.structured.tile_using_for %linalg_fills tile_sizes [0, 0, 1, 1]
@@ -611,9 +617,94 @@ if __name__ == "__main__":
 
                 %herds = transform.structured.match ops{{["air.herd"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
                 %vectorized_herds = transform.air.herd_vectorize %herds
-        
+                
+                %herd1, %herd2, %herd3 = transform.split_handle %vectorized_herds : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation)
+                %scf_fors = transform.structured.match ops{{["scf.for"]}} in %herd2 : (!pdl.operation) -> !pdl.operation
+                %for1, %for2, %for3, %for4 = transform.split_handle %scf_fors : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)
+
+                // Apply LICM to the innermost loop to hoist invariant reads
+                transform.apply_licm to %for4 : !pdl.operation
+
+                %func1 = transform.structured.match ops{{["func.func"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
+                transform.apply_patterns to %func1 {{
+                    transform.apply_patterns.linalg.tiling_canonicalization
+                    transform.apply_patterns.scf.for_loop_canonicalization
+                    transform.apply_patterns.canonicalization
+                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
+                    transform.apply_patterns.memref.fold_memref_alias_ops
+                }} : !pdl.operation
+                
+                // Eliminate redundant vector.transfer_read operations
+                %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1
+                
+                // Hoist loop-invariant vector transfers out of innermost loop
+                %herds_1 = transform.structured.match ops{{["air.herd"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
+                %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %herds_1 : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation)
+                %all_reads_in_herd2 = transform.structured.match ops{{["vector.transfer_read"]}} in %herd2_1 : (!pdl.operation) -> !pdl.operation
+                %all_writes_in_herd2 = transform.structured.match ops{{["vector.transfer_write"]}} in %herd2_1 : (!pdl.operation) -> !pdl.operation
+                
+                // Split handles to get individual read/write operations
+                %scf_fors_1 = transform.structured.match ops{{["scf.for"]}} in %herd2_1 : (!pdl.operation) -> !pdl.operation
+                %for1_1, %for2_1, %for3_1, %for4_1 = transform.split_handle %scf_fors_1 : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)
+                // The innermost loop has read-write pairs accessing the result buffer
+                %read0, %read1, %read2, %read3, %read4, %read5, %read6, %read7 = transform.split_handle %all_reads_in_herd2 : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)
+                %write0, %write1, %write2, %write3 = transform.split_handle %all_writes_in_herd2 : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)
+                
                 %vector_contracts = transform.structured.match ops{{["vector.contract"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
                 %result11 = transform.air.vector_type_cast %vector_contracts {{target_element_type = {vector_acc_type}, input_indices = [2], output_indices = [0]}}
+                
+                // Hoist read/write pair from the innermost loop (%for1_1)
+                %for1_1_updated = transform.air.hoist_loop_invariant_transfers %read2, %write0, %for1_1
+                %for1_1_updated_1 = transform.air.hoist_loop_invariant_transfers %read4, %write1, %for1_1_updated
+                %for1_1_updated_2 = transform.air.hoist_loop_invariant_transfers %read6, %write2, %for1_1_updated_1
+                %for1_1_updated_3 = transform.air.hoist_loop_invariant_transfers %read7, %write3, %for1_1_updated_2
+                %for1_1_updated_4 = transform.air.flatten_for_iter_args %for1_1_updated_3
+                %for1_1_updated_5 = transform.air.hoist_vector_transfer_pointers %for1_1_updated_4
+
+
+                %fors_to_hoist_ptrs = transform.structured.match ops{{["scf.for"]}} in %herd2_1 : (!pdl.operation) -> !pdl.operation
+                %for_ptr1, %for_ptr2, %for_ptr3, %for_ptr4 = transform.split_handle %fors_to_hoist_ptrs: (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)
+
+
+
+                // Hoist the 4 extsi/trunci pairs from the innermost loop
+                %all_extsi_loop = transform.structured.match ops{{["arith.extsi"]}} in %for_ptr1 : (!pdl.operation) -> !pdl.operation
+                %all_trunci_loop = transform.structured.match ops{{["arith.trunci"]}} in %for_ptr1 : (!pdl.operation) -> !pdl.operation
+                
+                // Split to get individual operations
+                %extsi_i16_1, %extsi_i16_2, %extsi_i16_3, %extsi_i16_4 = transform.split_handle %all_extsi_loop : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)
+                
+                // The 4 trunci ops correspond to the 4 vector.contract results
+                %trunci_1, %trunci_2, %trunci_3, %trunci_4 = transform.split_handle %all_trunci_loop : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation, !pdl.operation)
+                
+                // Hoist first pair (arg29 - index 2)
+                %for1_1_hoisted_1 = transform.air.hoist_cast_pair %extsi_i16_1, %trunci_1, %for_ptr1
+                %all_extsi_loop_2 = transform.structured.match ops{{["arith.extsi"]}} in %for1_1_hoisted_1 : (!pdl.operation) -> !pdl.operation
+                %all_trunci_loop_2 = transform.structured.match ops{{["arith.trunci"]}} in %for1_1_hoisted_1 : (!pdl.operation) -> !pdl.operation
+                %extsi_i16_2_new, %e2_5, %e2_6 = transform.split_handle %all_extsi_loop_2 : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation)
+                %trunci_2_1, %trunci_2_2, %trunci_2_3 = transform.split_handle %all_trunci_loop_2 {{num_result_handles = 3}} : (!pdl.operation) -> (!pdl.operation, !pdl.operation, !pdl.operation)
+                %for1_1_hoisted_2 = transform.air.hoist_cast_pair %extsi_i16_2_new, %trunci_2_1, %for1_1_hoisted_1
+                
+                // Re-match and hoist third pair
+                %all_extsi_loop_3 = transform.structured.match ops{{["arith.extsi"]}} in %for1_1_hoisted_2 : (!pdl.operation) -> !pdl.operation
+                %all_trunci_loop_3 = transform.structured.match ops{{["arith.trunci"]}} in %for1_1_hoisted_2 : (!pdl.operation) -> !pdl.operation
+                %extsi_i16_3_new, %e3_7 = transform.split_handle %all_extsi_loop_3 : (!pdl.operation) -> (!pdl.operation, !pdl.operation)
+                %trunci_3_1, %trunci_3_2 = transform.split_handle %all_trunci_loop_3 : (!pdl.operation) -> (!pdl.operation, !pdl.operation)
+                %for1_1_hoisted_3 = transform.air.hoist_cast_pair %extsi_i16_3_new, %trunci_3_1, %for1_1_hoisted_2
+                
+                // Re-match and hoist fourth pair
+                %all_extsi_loop_4 = transform.structured.match ops{{["arith.extsi"]}} in %for1_1_hoisted_3 : (!pdl.operation) -> !pdl.operation
+                %all_trunci_loop_4 = transform.structured.match ops{{["arith.trunci"]}} in %for1_1_hoisted_3 : (!pdl.operation) -> !pdl.operation
+                %for1_1_hoisted_final = transform.air.hoist_cast_pair %all_extsi_loop_4, %all_trunci_loop_4, %for1_1_hoisted_3
+
+                %func2 = transform.structured.match ops{{["func.func"]}} in %arg1 : (!pdl.operation) -> !pdl.operation
+                transform.apply_patterns to %func2 {{
+                    transform.apply_patterns.linalg.tiling_canonicalization
+                    transform.apply_patterns.scf.for_loop_canonicalization
+                    transform.apply_patterns.canonicalization
+                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
+                    transform.apply_patterns.memref.fold_memref_alias_ops
+                }} : !pdl.operation
 
             }}
         }}

@@ -19,11 +19,6 @@
 
 #include "zero.cc"
 
-#define i16_i16_ONLY
-#define DIM_M 64
-#define DIM_K 64
-#define DIM_N 64
-
 template <typename T_in, typename T_out, int rowA, int colA, int colB>
 static inline void matmul_scalar(T_in *a, T_in *b, T_out *c) {
   event0();
@@ -167,6 +162,7 @@ extern "C" {
 
 #ifndef DIM_M
 #define DIM_M 64
+#define DIM_M_DIV_4 16
 #endif
 
 #ifndef DIM_K
@@ -175,6 +171,7 @@ extern "C" {
 
 #ifndef DIM_N
 #define DIM_N 64
+#define DIM_N_DIV_4 16
 #endif
 
 #ifndef combos
@@ -197,20 +194,25 @@ extern "C" {
                                                             c_out);            \
   }
 
-#define zero_scalar_c_func(ctype_in, mlir_type_in, ctype_out, mlir_type_out,   \
-                           r, s, t)                                            \
-  void zero_scalar_##mlir_type_out(ctype_out *c_out) {                         \
-    zero_scalar<ctype_out, DIM_M, DIM_N>(c_out);                               \
-  }
+#define CAT2(a, b) a##b
+#define CAT(a, b) CAT2(a, b)
+#define MAKE_LINALG_FILL_NAME(mlir_in, mlir_out, N_div_4, M_div_4)             \
+  CAT(CAT(CAT(CAT(CAT(CAT(CAT(CAT(linalg_fill_, mlir_out), _view1x1x),         \
+                          N_div_4),                                            \
+                      x),                                                      \
+                  M_div_4),                                                    \
+              x4x4x),                                                          \
+          mlir_out),                                                           \
+      as2)
 
 #define zero_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,              \
                                mlir_type_out, r, s, t)                         \
-  void linalg_fill_##mlir_type_out##_view1x1x16x16x4x4x##mlir_type_out##as2(   \
-      ctype_out *c_out) {                                                      \
+  void MAKE_LINALG_FILL_NAME(mlir_type_in, mlir_type_out, DIM_N_DIV_4,         \
+                             DIM_M_DIV_4)(ctype_out * c_out) {                 \
     zero_vectorized<ctype_out, DIM_M, DIM_N>(c_out);                           \
   }
 
 combos(matmul_vectorized_c_func) combos(matmul_scalar_c_func)
-    combos(zero_vectorized_c_func) combos(zero_scalar_c_func)
+    combos(zero_vectorized_c_func)
 
 } // extern "C"

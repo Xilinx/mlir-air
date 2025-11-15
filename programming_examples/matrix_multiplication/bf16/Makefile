@@ -40,8 +40,14 @@ AIE_TARGET ?= aie2
 # Select compiler flags based on AIE_TARGET
 ifeq ($(AIE_TARGET),aie2p)
   PEANO_FLAGS = ${PEANOWRAP2P_FLAGS}
+  MAX_HERD_M = 8
+  MAX_HERD_N = 4
+  RUNNER_SCRIPT = mmult_aie2p.py
 else
   PEANO_FLAGS = ${PEANOWRAP2_FLAGS}
+  MAX_HERD_M = 4
+  MAX_HERD_N = 4
+  RUNNER_SCRIPT = mmult_aie2.py
 endif
 
 all: run4x4
@@ -51,7 +57,7 @@ print:
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 run8x4: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 1024 --n 512 --k 512 -v \
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 8 --herd-n 4 --m 1024 --n 512 --k 512 \
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
 run4x4: compile-kernel
@@ -71,14 +77,14 @@ run3x3: compile-kernel
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode compile-and-run --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 	
 profile: compile-kernel build-test-exe
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python ../run.py --m 512 --k 512 --n 512 \
-		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode compile-only
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python ../run.py --m 1024 --k 512 --n 512 \
+		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --herd-m $(MAX_HERD_M) --herd-n $(MAX_HERD_N) --compile-mode compile-only --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M 512 -K 512 -N 512
 
 runner:
 	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python ${srcdir}/run.py --m 512 --k 512 --n 512 --tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) -p > input.mlir
-	cd $(BUILD_DIR) && python ${srcdir}/mmult_aie2.py
+	cd $(BUILD_DIR) && python ${srcdir}/run.py --herd-m $(MAX_HERD_M) --herd-n $(MAX_HERD_N) --m 1024 --k 512 --n 512 --tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --arch $(AIE_TARGET) -p > input.mlir
+	cd $(BUILD_DIR) && python ${srcdir}/$(RUNNER_SCRIPT)
 
 # Measure the e2e latencies across a range of problem shapes.
 sweep4x4: compile-kernel build-test-exe
@@ -86,7 +92,7 @@ sweep4x4: compile-kernel build-test-exe
 		for N in 256 512 1024 2048; do \
 			for K in 256 512 1024 2048; do \
 				echo "Running with M=$$M, N=$$N, K=$$K"; \
-				cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --m $$M --n $$N --k $$K --compile-mode compile-only --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG); \
+				cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --m $$M --n $$N --k $$K --tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --herd-m $(MAX_HERD_M) --herd-n $(MAX_HERD_N) --compile-mode compile-only --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG); \
 				./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin -M $$M -N $$N -K $$K; \
 			done; \
 		done; \
