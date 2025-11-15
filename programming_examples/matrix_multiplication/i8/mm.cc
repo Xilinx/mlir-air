@@ -247,7 +247,7 @@ extern "C" {
                                mlir_type_out, r, s, t)                         \
   void MAKE_LINALG_FILL_NAME(mlir_type_in, mlir_type_out, DIM_N_DIV_4,         \
                              DIM_M_DIV_8)(ctype_out * c_out) {                 \
-    zero_vectorized<ctype_out, DIM_M, DIM_N, 32>(c_out);                       \
+    zero_vectorized<ctype_out, DIM_M, DIM_N>(c_out);                           \
   }
 
 combos(matmul_vectorized_c_func) combos(matmul_scalar_c_func)
