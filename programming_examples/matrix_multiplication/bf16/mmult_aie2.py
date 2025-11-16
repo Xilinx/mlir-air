@@ -110,8 +110,8 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
             "count": [4, 4],
             "memory": {"memory_space": "L2", "bytes": 524288},
             "ports": {
-                "outbound": {"count": 6, "bytes_per_second": 4000000000},
-                "inbound": {"count": 6, "bytes_per_second": 4000000000},
+                "outbound": {"count": 6, "bytes_per_second": 16000000000},
+                "inbound": {"count": 6, "bytes_per_second": 16000000000},
             },
             "tiles": {
                 "count": [1, 4],
@@ -123,12 +123,12 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
             },
         },
         "noc": {
-            "outbound": {"count": 8, "bytes_per_second": 4000000000},
-            "inbound": {"count": 8, "bytes_per_second": 4000000000},
+            "outbound": {"count": 8, "bytes_per_second": 16000000000},
+            "inbound": {"count": 8, "bytes_per_second": 16000000000},
         },
     }
 
-    runner = air.compiler.util.Runner(arch, "simulation_trace.json", "core", "single")
+    runner = air.compiler.util.Runner(arch, "simulation_trace.json", "herd", "single")
     trace = runner.run(air_module, "matmul_bf16")
 
 

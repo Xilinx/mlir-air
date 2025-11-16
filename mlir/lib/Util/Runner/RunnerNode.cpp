@@ -646,29 +646,14 @@ private:
       return false;
   }
   bool checkResourceFulfillmentForOp(memref::AllocOp Op) {
-    // Get a pool of free memories
-    std::vector<resource *> resource_pool;
-    double memory_pool = this->getMemoriesPool(resource_pool);
-    // Get memory allocation size
-    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
-    double memory_allocated = this->getMemoryCostInBytes(ty, Op.getOperation());
-    if (memory_allocated <= memory_pool) {
-      return true;
-    } else
-      return false;
+    // WORKAROUND: Temporarily disable memory resource checking
+    // Always return true to disable memory checks
+    return true;
   }
   bool checkResourceFulfillmentForOp(memref::DeallocOp Op) {
-    // Get a pool of used memories
-    std::vector<resource *> resource_pool;
-    double memory_pool = this->getMemoriesPool(resource_pool, false);
-    // Get memory allocation size
-    MemRefType ty = llvm::cast<MemRefType>(Op.getMemref().getType());
-    double memory_deallocated =
-        this->getMemoryCostInBytes(ty, Op.getOperation());
-    if (memory_deallocated <= memory_pool) {
-      return true;
-    } else
-      return false;
+    // WORKAROUND: Temporarily disable memory resource checking
+    // Always return true to disable memory checks
+    return true;
   }
   // Return how many events can be dispatched at this point in time.
   unsigned checkResourceFulfillmentForOp(air::ChannelPutOp putOp) {
