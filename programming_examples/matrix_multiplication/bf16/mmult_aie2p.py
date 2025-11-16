@@ -1,4 +1,4 @@
-# mmult_aie2.py -*- Python -*-
+# mmult_aie2p.py -*- Python -*-
 #
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
@@ -17,7 +17,7 @@ import argparse
 import re
 
 # Default values.
-HERD_M = 4
+HERD_M = 8
 HERD_N = 4
 
 
@@ -75,23 +75,23 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
         "kernels": {
             "linalg.copy": {
                 "datatypes": {
-                    "i8": {"ops_per_core_per_cycle": 32, "efficiency": 1},
-                    "bf16": {"ops_per_core_per_cycle": 32, "efficiency": 1},
-                    "i32": {"ops_per_core_per_cycle": 16, "efficiency": 1},
+                    "i8": {"ops_per_core_per_cycle": 64, "efficiency": 1},
+                    "bf16": {"ops_per_core_per_cycle": 64, "efficiency": 1},
+                    "i32": {"ops_per_core_per_cycle": 32, "efficiency": 1},
                 },
                 "name": "linalg.copy",
             },
             "linalg.fill": {
                 "datatypes": {
-                    "i8": {"ops_per_core_per_cycle": 32, "efficiency": 1},
-                    "bf16": {"ops_per_core_per_cycle": 32, "efficiency": 1},
-                    "i32": {"ops_per_core_per_cycle": 16, "efficiency": 1},
+                    "i8": {"ops_per_core_per_cycle": 64, "efficiency": 1},
+                    "bf16": {"ops_per_core_per_cycle": 64, "efficiency": 1},
+                    "i32": {"ops_per_core_per_cycle": 32, "efficiency": 1},
                 },
                 "name": "linalg.fill",
             },
             "linalg.generic": {
                 "datatypes": {
-                    "i8": {"macs_per_core_per_cycle": 256, "efficiency": 1},
+                    "i8": {"macs_per_core_per_cycle": 1024, "efficiency": 1},
                     "bf16": {"macs_per_core_per_cycle": 128, "efficiency": 1},
                     "i32": {"macs_per_core_per_cycle": 1, "efficiency": 1},
                 },
@@ -99,7 +99,7 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
             },
             "linalg.matmul": {
                 "datatypes": {
-                    "i8": {"macs_per_core_per_cycle": 256, "efficiency": 1},
+                    "i8": {"macs_per_core_per_cycle": 1024, "efficiency": 1},
                     "bf16": {"macs_per_core_per_cycle": 128, "efficiency": 1},
                     "i32": {"macs_per_core_per_cycle": 1, "efficiency": 1},
                 },
@@ -107,11 +107,11 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
             },
         },
         "dus": {
-            "count": [4, 4],
+            "count": [8, 4],
             "memory": {"memory_space": "L2", "bytes": 524288},
             "ports": {
-                "outbound": {"count": 6, "bytes_per_second": 16000000000},
-                "inbound": {"count": 6, "bytes_per_second": 16000000000},
+                "outbound": {"count": 6, "bytes_per_second": 4000000000},
+                "inbound": {"count": 6, "bytes_per_second": 4000000000},
             },
             "tiles": {
                 "count": [1, 4],
@@ -123,17 +123,17 @@ def mmult_runner(air_ir_string: str, herd_m: int = HERD_M, herd_n: int = HERD_N)
             },
         },
         "noc": {
-            "outbound": {"count": 8, "bytes_per_second": 16000000000},
-            "inbound": {"count": 8, "bytes_per_second": 16000000000},
+            "outbound": {"count": 16, "bytes_per_second": 4000000000},
+            "inbound": {"count": 16, "bytes_per_second": 4000000000},
         },
     }
 
-    runner = air.compiler.util.Runner(arch, "simulation_trace.json", "herd", "single")
+    runner = air.compiler.util.Runner(arch, "simulation_trace.json", "core", "single")
     trace = runner.run(air_module, "matmul_bf16")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(prog="mmult_aie2.py")
+    parser = argparse.ArgumentParser(prog="mmult_aie2p.py")
     parser.add_argument(
         "--input-file",
         default="input.mlir",
