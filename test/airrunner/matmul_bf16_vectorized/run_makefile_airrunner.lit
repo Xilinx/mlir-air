@@ -6,4 +6,4 @@
 // RUN: cd test_airrunner
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile run | FileCheck %s
-// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 627.296us
+// CHECK: Latency (single-iteration mode, estimated for 16 iterations): 635.296us

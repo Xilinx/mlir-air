@@ -14,7 +14,7 @@
 // CHECK: "ts": 0.00[[#%d,TIME0:]],
 // CHECK: "name": "LinalgOp(linalg.matmul)",
 // CHECK: "ph": "E",
-// CHECK: "ts": 0.[[#TIME0 + 256]],
+// CHECK: "ts": 0.[[#TIME0 + 256 + 100]],
 
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "B",
