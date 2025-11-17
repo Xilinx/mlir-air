@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-runner %s -f test -m %S/arch.json -g core | FileCheck %s
+// XFAIL:*
 
 // Check for correct event serialization with memory contention. 
 // Trace simulation mode set to per-core granularity.

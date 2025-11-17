@@ -313,7 +313,7 @@ extern "C" {
 #define CAT2(a, b) a##b
 #define CAT(a, b) CAT2(a, b)
 #define MAKE_LINALG_FILL_NAME(mlir_in, mlir_out, N_div_4, M_div_4)             \
-  CAT(CAT(CAT(CAT(CAT(CAT(CAT(CAT(linalg_fill_, mlir_in), _view1x1x),          \
+  CAT(CAT(CAT(CAT(CAT(CAT(CAT(CAT(linalg_fill_, mlir_out), _view1x1x),         \
                           N_div_4),                                            \
                       x),                                                      \
                   M_div_4),                                                    \

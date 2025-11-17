@@ -224,6 +224,9 @@ public:
         uint64_t compute_xfer_cost = 0;
         uint64_t compute_op_cost = getComputeCostFromCostModel(d, child_op);
         execution_time = std::max(compute_op_cost, compute_xfer_cost);
+        // Add extra cycles as base latency for linalg ops, to model the
+        // overhead of external function.
+        execution_time += 100;
       } else if (auto custom_op = dyn_cast<air::CustomOp>(child_op)) {
         execution_time = getComputeCostFromJSON(d, custom_op);
       }
