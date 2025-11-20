@@ -29,7 +29,7 @@ func.func @func1(%arg0: i32, %arg1: i32) {
 
 // CHECK-LABEL: module
 // CHECK: aie.device(npu1) @segment_0
-// CHECK: aiex.runtime_sequence @func2
+// CHECK: aie.runtime_sequence @func2
 // CHECK: aiex.npu.rtp_write(@__air_herd_rtp_0_2, 0, 5)
 // CHECK: aiex.set_lock(%__air_herd_lock_0_2, 1)
 

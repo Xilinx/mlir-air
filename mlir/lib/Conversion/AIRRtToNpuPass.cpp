@@ -400,8 +400,8 @@ public:
     if (!contains_npu_ops)
       return failure();
 
-    auto seq = rewriter.create<AIEX::RuntimeSequenceOp>(op->getLoc(),
-                                                        op.getSymNameAttr());
+    auto seq = rewriter.create<AIE::RuntimeSequenceOp>(op->getLoc(),
+                                                       op.getSymNameAttr());
     seq.getBody().push_back(new Block);
 
     // Add and remap the arguments
@@ -746,8 +746,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<airrt::AIRRtDialect>();
-    target.addLegalDialect<arith::ArithDialect, AIEX::AIEXDialect,
-                           memref::MemRefDialect>();
+    target.addLegalDialect<arith::ArithDialect, AIE::AIEDialect,
+                           AIEX::AIEXDialect, memref::MemRefDialect>();
     target.addLegalOp<UnrealizedConversionCastOp>();
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
         [&](affine::AffineStoreOp op) {
