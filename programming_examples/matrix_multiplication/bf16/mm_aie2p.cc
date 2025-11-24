@@ -44,7 +44,7 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
                                               const T_in *__restrict pB,
                                               T_out *__restrict pC) {
 
-  using MMUL = aie::mmul<r, s, t, T_in, T_in, accfloat>;
+  using MMUL = aie::mmul<r, s, t, T_in, T_in, accauto>;
 
   event0();
 
@@ -63,15 +63,6 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
           const T_in *__restrict pB1 = pB + (j)*colA * MMUL::size_B;
           const T_in *__restrict pB2 = pB + (j + 1) * colA * MMUL::size_B;
 
-          aie::vector<T_in, MMUL::size_A> A0 = aie::load_v<MMUL::size_A>(pA1);
-          pA1 += rowA * MMUL::size_A;
-          aie::vector<T_in, MMUL::size_A> A1 = aie::load_v<MMUL::size_A>(pA2);
-          pA2 += rowA * MMUL::size_A;
-          aie::vector<T_in, MMUL::size_B> B0 = aie::load_v<MMUL::size_B>(pB1);
-          pB1 += MMUL::size_B;
-          aie::vector<T_in, MMUL::size_B> B1 = aie::load_v<MMUL::size_B>(pB2);
-          pB2 += MMUL::size_B;
-
           aie::vector<T_out, MMUL::size_C> acc_C00 =
               aie::load_v<MMUL::size_C>(pC1);
           aie::vector<T_out, MMUL::size_C> acc_C01 =
@@ -86,23 +77,22 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
           MMUL C10(acc_C10);
           MMUL C11(acc_C11);
 
-          C00.mac(A0, B0);
-          C01.mac(A0, B1);
-          C10.mac(A1, B0);
-          C11.mac(A1, B1);
-
-          for (unsigned i = 1; i < colA; ++i)
+          for (unsigned i = 0; i < colA; ++i)
 #ifdef OPT_PERF_ENABLED
             chess_flatten_loop
 #endif
             {
-              A0 = aie::load_v<MMUL::size_A>(pA1);
+              aie::vector<T_in, MMUL::size_A> A0 =
+                  aie::load_v<MMUL::size_A>(pA1);
               pA1 += rowA * MMUL::size_A;
-              A1 = aie::load_v<MMUL::size_A>(pA2);
+              aie::vector<T_in, MMUL::size_A> A1 =
+                  aie::load_v<MMUL::size_A>(pA2);
               pA2 += rowA * MMUL::size_A;
-              B0 = aie::load_v<MMUL::size_B>(pB1);
+              aie::vector<T_in, MMUL::size_B> B0 =
+                  aie::load_v<MMUL::size_B>(pB1);
               pB1 += MMUL::size_B;
-              B1 = aie::load_v<MMUL::size_B>(pB2);
+              aie::vector<T_in, MMUL::size_B> B1 =
+                  aie::load_v<MMUL::size_B>(pB2);
               pB2 += MMUL::size_B;
 
               C00.mac(A0, B0);
@@ -125,20 +115,20 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
   event1();
 }
 
-// bf16 MatMul kernel definition with bf16 outputs using 4x8x4 shape.
-// This is used when compiling external library (non-direct-codegen mode).
-// For direct codegen mode with 8x8x8, the kernel is generated directly by the
-// compiler.
+// bf16 MatMul kernel definition with bf16 outputs using 8x8x8 shape.
+// This is used when compiling external library (non-direct-codegen mode) with
+// -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 flag.
+// For direct codegen mode, the kernel is generated directly by the compiler.
 template <unsigned m, unsigned k, unsigned n>
 static inline void
-matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 *__restrict pA,
+matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
                                   const bfloat16 *__restrict pB,
                                   bfloat16 *__restrict pC) {
 
-  // For AIE2P external library, use 4x8x4 shape with 2x2 expansion
-  constexpr int r = 4;
+  // For AIE2P external library, use 8x8x8 shape with 2x2 expansion
+  constexpr int r = 8;
   constexpr int s = 8;
-  constexpr int t = 4;
+  constexpr int t = 8;
 
   // Since the kernel has been expanded 2 times for both A ('m' dimension) and B
   // ('n' dimension), the following assertions verify this even division for
@@ -167,6 +157,7 @@ extern "C" {
 #ifndef DIM_M
 #define DIM_M 128
 #define DIM_M_DIV_4 32
+#define DIM_M_DIV_8 16
 #endif
 
 #ifndef DIM_K
@@ -176,10 +167,12 @@ extern "C" {
 #ifndef DIM_N
 #define DIM_N 64
 #define DIM_N_DIV_4 16
+#define DIM_N_DIV_8 8
 #endif
 
 #ifndef combos
-#define combos(X) X(bfloat16, bf16, bfloat16, bf16, 4, 8, 4)
+#define combos(X) X(bfloat16, bf16, bfloat16, bf16, 8, 8, 8)
+// #define combos(X) X(bfloat16, bf16, bfloat16, bf16, 4, 8, 4)
 #endif
 
 #define matmul_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,            \
@@ -200,19 +193,18 @@ extern "C" {
 
 #define CAT2(a, b) a##b
 #define CAT(a, b) CAT2(a, b)
-#define MAKE_LINALG_FILL_NAME(mlir_in, mlir_out, N_div_4, M_div_4)             \
-  CAT(CAT(CAT(CAT(CAT(CAT(CAT(CAT(linalg_fill_, mlir_in), _view1x1x),          \
-                          N_div_4),                                            \
+#define MAKE_LINALG_FILL_NAME(mlir_in, mlir_out, N_div, M_div, tile)           \
+  CAT(CAT(CAT(CAT(CAT(CAT(CAT(CAT(linalg_fill_, mlir_in), _view1x1x), N_div),  \
                       x),                                                      \
-                  M_div_4),                                                    \
-              x4x4x),                                                          \
-          mlir_out),                                                           \
-      as2)
+                  M_div),                                                      \
+              x),                                                              \
+          tile),                                                               \
+      x##mlir_out##as2)
 
 #define zero_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,              \
                                mlir_type_out, r, s, t)                         \
-  void MAKE_LINALG_FILL_NAME(mlir_type_in, mlir_type_out, DIM_N_DIV_4,         \
-                             DIM_M_DIV_4)(ctype_out * c_out) {                 \
+  void MAKE_LINALG_FILL_NAME(mlir_type_in, mlir_type_out, DIM_N_DIV_##t,       \
+                             DIM_M_DIV_##r, r##x##t)(ctype_out * c_out) {      \
     zero_vectorized<ctype_out, DIM_M, DIM_N, 32>(c_out);                       \
   }
 

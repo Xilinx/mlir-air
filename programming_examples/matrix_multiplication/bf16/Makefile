@@ -105,7 +105,7 @@ compile-kernel:
 		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
 			if [ "$(AIE_TARGET)" = "aie2p" ]; then \
 				echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET) and mm_aie2p.cc"; \
-				$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm_aie2p.cc -o $(BUILD_DIR)/mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_4=$(TILE_N_DIV_4) -DDIM_M_DIV_4=$(TILE_M_DIV_4); \
+				$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm_aie2p.cc -o $(BUILD_DIR)/mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_4=$(TILE_N_DIV_4) -DDIM_M_DIV_4=$(TILE_M_DIV_4) -DDIM_N_DIV_8=$(TILE_N_DIV_8) -DDIM_M_DIV_8=$(TILE_M_DIV_8) -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16; \
 			else \
 				echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET) and mm.cc"; \
 				$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm.cc -o $(BUILD_DIR)/mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_4=$(TILE_N_DIV_4) -DDIM_M_DIV_4=$(TILE_M_DIV_4); \
@@ -117,7 +117,7 @@ compile-kernel:
 	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
 		if [ "$(AIE_TARGET)" = "aie2p" ]; then \
 			echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET) and mm_aie2p.cc"; \
-			cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm_aie2p.cc -o mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_4=$(TILE_N_DIV_4) -DDIM_M_DIV_4=$(TILE_M_DIV_4); \
+			cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm_aie2p.cc -o mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_4=$(TILE_N_DIV_4) -DDIM_M_DIV_4=$(TILE_M_DIV_4) -DDIM_N_DIV_8=$(TILE_N_DIV_8) -DDIM_M_DIV_8=$(TILE_M_DIV_8) -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16; \
 		else \
 			echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET) and mm.cc"; \
 			cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm.cc -o mm.o -DDIM_M=$(TILE_M) -DDIM_N=$(TILE_N) -DDIM_K=$(TILE_K_L1) -DDIM_N_DIV_4=$(TILE_N_DIV_4) -DDIM_M_DIV_4=$(TILE_M_DIV_4); \
