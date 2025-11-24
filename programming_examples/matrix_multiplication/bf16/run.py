@@ -61,12 +61,12 @@ def build_module(
     xrt_dtype_out = type_mapper(np_dtype_out)
 
     # Architecture-specific matrix multiplication dimensions
-    # aie2p with direct codegen uses 8x8x8, otherwise uses 4x8x4
-    # aie2 always uses 4x8x4
-    if arch == "aie2p" and direct_codegen:
-        mmul_mkn = [8, 8, 8]  # For aie2p with BFP16 emulation (direct codegen)
+    # aie2p uses 8x8x8 (using -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 if without direct-codegen, i.e. aie_api)
+    # aie2 uses 4x8x4
+    if arch == "aie2p":
+        mmul_mkn = [8, 8, 8]  # For aie2p
     else:
-        mmul_mkn = [4, 8, 4]  # For aie2 or aie2p without direct codegen
+        mmul_mkn = [4, 8, 4]  # For aie2
 
     # L3 MemRefTypes
     memrefTyA = MemRefType.get(a_size, xrt_dtype_in)
