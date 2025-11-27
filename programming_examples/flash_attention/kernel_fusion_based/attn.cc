@@ -170,7 +170,6 @@ void matmul_g_b_bf16(bfloat16 *g_in, bfloat16 *b_in, bfloat16 *out) {
   // G: [lqp, lkp] = [32, 96]
   // B: [lkp, dv] = [96, 64]
   // Out: [lqp, dv] = [32, 64]
-  // matmul_vectorized_4x8x4_bf16_bf16<32, 96, 64>(g_in, b_in, out);
   matmul_vectorized_8x8x8_bf16_bf16<lqp, lkp, dv>(g_in, b_in, out);
 }
 

@@ -17,13 +17,6 @@ from air.dialects import scf, affine, arith
 range_ = for_
 
 
-def softmax(x, axis=-1):
-    # Subtract max for numerical stability
-    x_max = np.max(x, axis=axis, keepdims=True)
-    e_x = np.exp(x - x_max)
-    return e_x / np.sum(e_x, axis=axis, keepdims=True)
-
-
 @module_builder
 def build_module(
     lk=3072, lkp=96, lq=128, dk=64, dv=64, num_q_tiles=4, num_cascade_stages=4
@@ -206,7 +199,7 @@ def build_module(
                 )
                 scf.InParallelOp()
 
-            # L3 to L2 channel puts for K matrix (strides hardcoded)
+            # L3 to L2 channel puts for K matrix
             for i in range(num_cascade_stages):
                 ChannelPut(
                     "L3ToL2Chan1",
@@ -217,7 +210,7 @@ def build_module(
                     strides=[lkp * num_cascade_stages, lk, 1],
                 )
 
-            # L3 to L2 channel puts for V matrix (strides hardcoded)
+            # L3 to L2 channel puts for V matrix
             for i in range(num_cascade_stages):
                 ChannelPut(
                     "L3ToL2Chan2",
@@ -268,7 +261,7 @@ def build_module(
                         indices=[0, i],
                     )
 
-                # L2 to L1 channel puts for Q matrix (strides hardcoded)
+                # L2 to L1 channel puts for Q matrix
                 # Memory [tile_size_q, dk] tiled for matmul: Q is M dimension, dk is K dimension
                 for i in range(num_cascade_stages):
                     ChannelPut(
@@ -310,7 +303,7 @@ def build_module(
                             indices=[0, i],
                         )
 
-                    # Channel puts for K matrix to L1 (strides hardcoded)
+                    # Channel puts for K matrix to L1
                     # Memory [dk, lkp] tiled for matmul: dk is K dimension, lkp is N dimension
                     for i in range(num_cascade_stages):
                         ChannelPut(
@@ -322,7 +315,7 @@ def build_module(
                             strides=[mmul_n, lkp * mmul_n, lkp, 1],
                         )
 
-                    # Channel puts for V matrix to L1 (strides hardcoded)
+                    # Channel puts for V matrix to L1
                     # Memory [lkp, dk] tiled for matmul: lkp is K dimension, dk is N dimension
                     for i in range(num_cascade_stages):
                         ChannelPut(
@@ -555,7 +548,7 @@ def build_module(
                             affine.AffineYieldOp([])
                         affine.AffineYieldOp([])
 
-                # Parallel gather results from L1 to L2 (strides hardcoded)
+                # Parallel gather results from L1 to L2
                 affine_map_tileq = AffineMap.get(
                     0,
                     1,

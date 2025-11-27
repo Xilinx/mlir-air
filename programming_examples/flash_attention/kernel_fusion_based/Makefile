@@ -45,7 +45,7 @@ compile-kernel:
 		fi; \
 	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
 		echo "Using xchesscc_wrapper from PATH"; \
-		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper aie2 -c ${srcdir}/attn.cc -o attn.o -Dlqp=$(LQP) -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV); \
+		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper aie2p -c ${srcdir}/attn.cc -o attn.o -Dlqp=$(LQP) -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV); \
 	else \
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \
