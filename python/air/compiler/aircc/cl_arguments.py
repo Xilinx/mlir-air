@@ -141,8 +141,8 @@ def parse_args(args=None):
         dest="omit_pingpong",
         default="",
         type=str,
-        nargs='?',
-        const='all',
+        nargs="?",
+        const="all",
         help="Omit ping-pong buffering transformation for specific memory levels. Supported values: '', 'L1', 'L2', 'all'. Empty string means no omission (default). For backward compatibility, using the flag without a value is equivalent to 'all'.",
     )
     parser.add_argument(
