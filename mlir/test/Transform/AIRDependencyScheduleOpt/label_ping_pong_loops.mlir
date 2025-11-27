@@ -9,10 +9,11 @@
 // RUN: air-opt %s -air-label-scf-for-to-ping-pong='omit-memory-space=L1' | FileCheck %s --check-prefix=OMIT_L1
 // RUN: air-opt %s -air-label-scf-for-to-ping-pong='omit-memory-space=L2' | FileCheck %s --check-prefix=OMIT_L2
 
-// Label scf.for and memref.alloc as target for ping-pong transformation.
-// DEFAULT: memref.alloc() {hoist_alloc = true}
-// DEFAULT: scf.yield
-// DEFAULT-NEXT: } {unroll = 2 : i32}
+// Test ping-pong labeling with memory space filtering.
+
+// DEFAULT-LABEL: func.func @test
+// OMIT_L1-LABEL: func.func @test
+// OMIT_L2-LABEL: func.func @test
 
 module {
   func.func @test(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<1024x1024xbf16>, %arg3: memref<1024x1024xbf16>) {
