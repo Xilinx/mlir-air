@@ -94,10 +94,7 @@ def get_air_optimization_pass(
     # Empty string or falsy: apply ping-pong to all levels
     # "all": omit ping-pong entirely
     # "L1" or "L2": omit ping-pong only for that specific memory level
-    if omit_pingpong == "all":
-        # Completely omit ping-pong transformation
-        pass
-    elif omit_pingpong in ["", "L1", "L2"]:
+    if omit_pingpong in ["", "L1", "L2"]:
         # Apply ping-pong transformation with optional memory space filter
         label_pass = "air-label-scf-for-to-ping-pong"
         ping_pong_pass = "air-ping-pong-transform"
