@@ -203,7 +203,7 @@ void max_g_bf16(bfloat16 *in, bfloat16 *out) {
   constexpr int num_elems = lkp;
   constexpr int num_rows = lqp;
   bfloat16 *__restrict pOut = out;
-  uint16 neg_infinity = (uint16)0xff80;
+  uint16_t neg_infinity = (uint16_t)0xff80;
   bfloat16 *bf_neg_infinity = (bfloat16 *)&neg_infinity;
   aie::vector<bfloat16, VecLen> outputVec;
   for (int rowVec = 0; rowVec < num_rows; rowVec += VecLen) {
