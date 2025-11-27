@@ -61,6 +61,7 @@ class XRTBackend(AirBackend):
         instance_name: str = "",
         kernel_id: str = "",
         xclbin_input: str = "",
+        num_device_cols: int = 0,
     ):
         """Constructor for XRTBackend
 
@@ -81,6 +82,9 @@ class XRTBackend(AirBackend):
             instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
             kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
             xclbin_input: configure aircc to package the kernel into an existing xclbin with specified xclbin file name.
+            num_device_cols: number of device columns to confine the design within (0 means entire device, default).
+                For npu1 (4 columns total): valid values are 0 (entire device), 1, 2, 3
+                For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
         """
         super().__init__()
         self.verbose = verbose
@@ -104,6 +108,7 @@ class XRTBackend(AirBackend):
         self.instance_name = instance_name
         self.kernel_id = kernel_id
         self.xclbin_input = xclbin_input
+        self.num_device_cols = num_device_cols
 
     def __del__(self):
         self.unload()
@@ -169,6 +174,22 @@ class XRTBackend(AirBackend):
         except Exception as e:
             print("Failed to run xrt-smi")
             print(e)
+
+        # Apply user-specified device column configuration if provided
+        if self.num_device_cols > 0:
+            # Validate column count based on detected device
+            max_cols = 4 if target_device == "npu1" else 8
+            if self.num_device_cols > max_cols - 1:
+                raise AirBackendError(
+                    f"Invalid num_device_cols value: {self.num_device_cols}. "
+                    f"For {target_device}, valid values are 0 (entire device) or 1-{max_cols-1}"
+                )
+            base_device = target_device
+            target_device = f"{target_device}_{self.num_device_cols}col"
+            if self.verbose:
+                print(
+                    f"Confining design to {self.num_device_cols} column(s) of {base_device} device: {target_device}"
+                )
 
         import os, site, glob
 
