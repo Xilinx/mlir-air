@@ -179,7 +179,7 @@ class XRTBackend(AirBackend):
         if self.num_device_cols > 0:
             # Validate column count based on detected device
             max_cols = 4 if target_device == "npu1" else 8
-            if self.num_device_cols >= max_cols:
+            if self.num_device_cols > max_cols - 1:
                 raise AirBackendError(
                     f"Invalid num_device_cols value: {self.num_device_cols}. "
                     f"For {target_device}, valid values are 0 (entire device) or 1-{max_cols-1}"
