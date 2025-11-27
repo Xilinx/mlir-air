@@ -29,7 +29,7 @@ void zero_vectorized(T *__restrict c) {
 
 template <typename T, int M, int N, int r>
 void neg_inf_vectorized(T *__restrict c) {
-  uint16 neg_infinity = (uint16)0xff80;
+  uint16_t neg_infinity = (uint16_t)0xff80;
   T *T_neg_infinity = (T *)&neg_infinity;
   const aie::vector<T, r> neg_infs = aie::broadcast<T, r>(*T_neg_infinity);
   const T *__restrict c_end = c + M * N;
