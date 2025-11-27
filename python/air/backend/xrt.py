@@ -184,10 +184,11 @@ class XRTBackend(AirBackend):
                     f"Invalid num_device_cols value: {self.num_device_cols}. "
                     f"For {target_device}, valid values are 0 (entire device) or 1-{max_cols-1}"
                 )
+            base_device = target_device
             target_device = f"{target_device}_{self.num_device_cols}col"
             if self.verbose:
                 print(
-                    f"Confining design to {self.num_device_cols} column(s) of {target_device.split('_')[0]} device: {target_device}"
+                    f"Confining design to {self.num_device_cols} column(s) of {base_device} device: {target_device}"
                 )
 
         import os, site, glob
