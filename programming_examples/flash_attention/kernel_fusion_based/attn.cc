@@ -126,7 +126,7 @@ matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
   constexpr int t = 8;
 
   // Since the kernel has been expanded 4 times for both A ('m' dimension) and B
-  // ('n' dimension), the following assertions veirify this even division for
+  // ('n' dimension), the following assertions verify this even division for
   // the single AIE MatMul dimensionality Notice that 'k' dimension is not
   // spatially expanded.
   static_assert(m % (2 * r) == 0); // 'm' dimension
