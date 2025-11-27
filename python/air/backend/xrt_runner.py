@@ -61,7 +61,7 @@ class XRTRunner:
         self,
         verbose: bool = False,
         omit_while_true_loop: bool = True,
-        omit_pingpong: bool = False,
+        omit_pingpong: str = "",
         lower_linalg_to_func: bool = False,
         air_loop_fusion: bool = False,
         runtime_loop_tiling_sizes: list[int] = [4, 4],
@@ -81,7 +81,7 @@ class XRTRunner:
         Args:
             verbose: verbose output
             omit_while_true_loop: configure aircc to omit the while true loop it traditionally emits.
-            omit_pingpong: configure aircc to omit the generation of ping-pong buffering.
+            omit_pingpong: configure aircc to omit the generation of ping-pong buffering for specific memory levels. Supported values: "", "L1", "L2", "all". Empty string means no omission (default).
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
             runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
@@ -99,7 +99,11 @@ class XRTRunner:
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
-        self.omit_pingpong = omit_pingpong
+        # Support backward compatibility: convert True to "all", False to ""
+        if isinstance(omit_pingpong, bool):
+            self.omit_pingpong = "all" if omit_pingpong else ""
+        else:
+            self.omit_pingpong = omit_pingpong
         self.lower_linalg_to_func = lower_linalg_to_func
         self.air_loop_fusion = air_loop_fusion
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes

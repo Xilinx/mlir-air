@@ -47,7 +47,7 @@ class XRTBackend(AirBackend):
         self,
         verbose: bool = False,
         omit_while_true_loop: bool = False,
-        omit_pingpong: bool = False,
+        omit_pingpong: str = "",
         lower_linalg_to_func: str = None,
         air_loop_fusion: bool = False,
         runtime_loop_tiling_sizes: list[int] = [4, 4],
@@ -61,13 +61,14 @@ class XRTBackend(AirBackend):
         instance_name: str = "",
         kernel_id: str = "",
         xclbin_input: str = "",
+        num_device_cols: int = 0,
     ):
         """Constructor for XRTBackend
 
         Args:
             verbose: verbose output
             omit_while_true_loop: configure aircc to omit the while true loop it traditionally emits.
-            omit_pingpong: configure aircc to omit the generation of ping-pong buffering.
+            omit_pingpong: configure aircc to omit the generation of ping-pong buffering for specific memory levels. Supported values: "", "L1", "L2", "all". Empty string means no omission (default).
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
             air_loop_fusion: configure aircc to add air-loop-fusion experimental pass.
             runtime_loop_tiling_sizes: configure aircc to add extra runtime loop tiling using the experimental affine-loop-opt pass.
@@ -81,11 +82,18 @@ class XRTBackend(AirBackend):
             instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
             kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
             xclbin_input: configure aircc to package the kernel into an existing xclbin with specified xclbin file name.
+            num_device_cols: number of device columns to confine the design within (0 means entire device, default).
+                For npu1 (4 columns total): valid values are 0 (entire device), 1, 2, 3
+                For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
         """
         super().__init__()
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
-        self.omit_pingpong = omit_pingpong
+        # Support backward compatibility: convert True to "all", False to ""
+        if isinstance(omit_pingpong, bool):
+            self.omit_pingpong = "all" if omit_pingpong else ""
+        else:
+            self.omit_pingpong = omit_pingpong
         self.lower_linalg_to_func = lower_linalg_to_func
         self.air_loop_fusion = air_loop_fusion
         self.runtime_loop_tiling_sizes = runtime_loop_tiling_sizes
@@ -100,6 +108,7 @@ class XRTBackend(AirBackend):
         self.instance_name = instance_name
         self.kernel_id = kernel_id
         self.xclbin_input = xclbin_input
+        self.num_device_cols = num_device_cols
 
     def __del__(self):
         self.unload()
@@ -166,6 +175,22 @@ class XRTBackend(AirBackend):
             print("Failed to run xrt-smi")
             print(e)
 
+        # Apply user-specified device column configuration if provided
+        if self.num_device_cols > 0:
+            # Validate column count based on detected device
+            max_cols = 4 if target_device == "npu1" else 8
+            if self.num_device_cols > max_cols - 1:
+                raise AirBackendError(
+                    f"Invalid num_device_cols value: {self.num_device_cols}. "
+                    f"For {target_device}, valid values are 0 (entire device) or 1-{max_cols-1}"
+                )
+            base_device = target_device
+            target_device = f"{target_device}_{self.num_device_cols}col"
+            if self.verbose:
+                print(
+                    f"Confining design to {self.num_device_cols} column(s) of {base_device} device: {target_device}"
+                )
+
         import os, site, glob
 
         # Try to get peano package dir from environment variable, fallback to site-packages
@@ -204,7 +229,7 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--omit-while-true-loop"]
 
             if self.omit_pingpong:
-                aircc_options += ["--omit-ping-pong-transform"]
+                aircc_options += ["--omit-ping-pong-transform", self.omit_pingpong]
 
             if self.lower_linalg_to_func:
                 aircc_options += ["--lower-linalg-to-func"]

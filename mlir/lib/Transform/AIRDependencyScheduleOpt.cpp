@@ -1374,6 +1374,10 @@ private:
 struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
+  LabelScfForLoopForPingPongPattern(MLIRContext *ctx,
+                                    std::string omitMemorySpace)
+      : OpRewritePattern(ctx), omitMemorySpace(omitMemorySpace) {}
+
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
 
@@ -1391,6 +1395,29 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     if (alloc_ops.empty())
       return failure();
 
+    // Check if we should skip this loop based on memory space
+    if (!omitMemorySpace.empty()) {
+      bool shouldSkip = false;
+      for (auto op : alloc_ops) {
+        auto alloc_op = dyn_cast<memref::AllocOp>(op);
+        if (!alloc_op)
+          continue;
+        auto memref_type = llvm::cast<MemRefType>(alloc_op.getType());
+        int memorySpace = memref_type.getMemorySpaceAsInt();
+
+        // Check if this alloc's memory space matches the omit criteria
+        if ((omitMemorySpace == "L1" &&
+             memorySpace == (int)air::MemorySpace::L1) ||
+            (omitMemorySpace == "L2" &&
+             memorySpace == (int)air::MemorySpace::L2)) {
+          shouldSkip = true;
+          break;
+        }
+      }
+      if (shouldSkip)
+        return failure();
+    }
+
     // Label the scf.for loop and all its child memref.allocs
     int unroll_factor = 2; // Unroll factor hardened as 2. TODO: add support for
                            // an arbitrary factor.
@@ -1403,6 +1430,7 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
   }
 
 private:
+  std::string omitMemorySpace;
 };
 
 struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
@@ -3108,7 +3136,8 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<LabelScfForLoopForPingPongPattern>(ctx);
+    // Use the clOmitMemorySpace option from the pass
+    patterns.insert<LabelScfForLoopForPingPongPattern>(ctx, clOmitMemorySpace);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
   }
 
