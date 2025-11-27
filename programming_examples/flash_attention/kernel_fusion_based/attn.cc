@@ -15,8 +15,9 @@
 #define REL_WRITE 0
 #define REL_READ 1
 
-#include "zero.cc"
 #include <aie_api/aie.hpp>
+
+#include "zero.cc"
 
 // Default values if not provided by Makefile
 #ifndef lqp
