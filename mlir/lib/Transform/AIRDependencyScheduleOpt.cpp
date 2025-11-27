@@ -1400,6 +1400,8 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
       bool shouldSkip = false;
       for (auto op : alloc_ops) {
         auto alloc_op = dyn_cast<memref::AllocOp>(op);
+        if (!alloc_op)
+          continue;
         auto memref_type = llvm::cast<MemRefType>(alloc_op.getType());
         int memorySpace = memref_type.getMemorySpaceAsInt();
 
