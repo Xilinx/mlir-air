@@ -139,9 +139,11 @@ def parse_args(args=None):
     parser.add_argument(
         "--omit-ping-pong-transform",
         dest="omit_pingpong",
-        default=False,
-        action="store_true",
-        help="Whether to run passes which generate ping-pong buffering patterns or not. This will only change the behavior for this program for npu devices",
+        default="",
+        type=str,
+        nargs="?",
+        const="all",
+        help="Omit ping-pong buffering transformation for specific memory levels. Supported values: '', 'L1', 'L2', 'all'. Empty string means no omission (default). For backward compatibility, using the flag without a value is equivalent to 'all'.",
     )
     parser.add_argument(
         "--lower-linalg-to-func",
