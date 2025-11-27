@@ -76,6 +76,7 @@ class XRTRunner:
         kernel_id: str = "",
         xclbin_input: str = "",
         trace_file: str = "trace_data.txt",
+        num_device_cols: int = 0,
     ):
         """
         Args:
@@ -96,6 +97,9 @@ class XRTRunner:
             kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
             xclbin_input: configure aircc to package the kernel into an existing xclbin with specified xclbin file name.
             trace_file: default filename for saving trace data.
+            num_device_cols: number of device columns to confine the design within (0 means entire device, default).
+                For npu1 (4 columns total): valid values are 0 (entire device), 1, 2, 3
+                For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -118,6 +122,7 @@ class XRTRunner:
         self.kernel_id = kernel_id
         self.xclbin_input = xclbin_input
         self.trace_file = trace_file
+        self.num_device_cols = num_device_cols
 
     def run_test(
         self,
@@ -158,6 +163,7 @@ class XRTRunner:
             instance_name=self.instance_name,
             kernel_id=self.kernel_id,
             xclbin_input=self.xclbin_input,
+            num_device_cols=self.num_device_cols,
         )
 
         # Use per-test trace file if provided, otherwise use instance default
