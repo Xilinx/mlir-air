@@ -957,7 +957,9 @@ def AIRPingPongTransformationPattern: Pass<"air-ping-pong-transform", "ModuleOp"
   }];
   let options = [
     Option<"clKeepMemrefDealloc", "keep-memref-dealloc", "bool", /*default=*/"false",
-            "Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.">
+            "Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.">,
+    Option<"clOmitMemorySpace", "omit-memory-space", "std::string", /*default=*/"\"\"",
+            "Omit ping-pong transformation for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means apply ping-pong to all memory levels (default).">
   ];
 }
 
@@ -970,6 +972,10 @@ def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong",
     transformation. The label includes an attribute added to the child memref.alloc ops
     for subsequent hoisting, and an attribute added to the scf.for with an unroll factor.
   }];
+  let options = [
+    Option<"clOmitMemorySpace", "omit-memory-space", "std::string", /*default=*/"\"\"",
+            "Omit ping-pong labeling for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means label all loops (default).">
+  ];
 }
 
 def AIRLabelScfForLoopInAIRSegmentPattern: Pass<"air-label-scf-for-in-segment", "ModuleOp"> {

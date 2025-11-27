@@ -39,7 +39,7 @@ def get_L2_splitting_analysis_pass():
 
 def get_air_optimization_pass(
     device,
-    omit_pingpong=False,
+    omit_pingpong="",
     lower_linalg_to_func=None,
     air_loop_fusion=False,
     omit_auto_broadcast=False,
@@ -90,10 +90,28 @@ def get_air_optimization_pass(
             "func.func(air-fuse-alloc-dealloc)",
             "func.func(air-shrink-memref-sizes-by-access)",
         ]
-    if not omit_pingpong:
+    # Handle ping-pong transformation based on omit_pingpong value
+    # Empty string or falsy: apply ping-pong to all levels
+    # "all": omit ping-pong entirely
+    # "L1" or "L2": omit ping-pong only for that specific memory level
+    if omit_pingpong == "all":
+        # Completely omit ping-pong transformation
+        pass
+    elif omit_pingpong in ["", "L1", "L2"]:
+        # Apply ping-pong transformation with optional memory space filter
+        label_pass = "air-label-scf-for-to-ping-pong"
+        ping_pong_pass = "air-ping-pong-transform"
+        if omit_pingpong in ["L1", "L2"]:
+            # Add omit-memory-space parameter to both labeling and transformation passes
+            label_pass = (
+                f"air-label-scf-for-to-ping-pong{{omit-memory-space={omit_pingpong}}}"
+            )
+            ping_pong_pass = (
+                f"air-ping-pong-transform{{omit-memory-space={omit_pingpong}}}"
+            )
         OPTIMIZATION_PASSES += [
-            "air-label-scf-for-to-ping-pong",
-            "air-ping-pong-transform",
+            label_pass,
+            ping_pong_pass,
             "canonicalize",
             "cse",
         ]
@@ -410,6 +428,8 @@ def run(mlir_module, args=None):
 
     if not opts.num_cols:
         if "npu1" in opts.device:
+            opts.num_cols = 4
+        elif "npu2_4col" in opts.device:
             opts.num_cols = 4
         elif "npu2" in opts.device:
             opts.num_cols = 8
