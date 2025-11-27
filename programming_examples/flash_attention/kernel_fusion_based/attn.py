@@ -664,7 +664,8 @@ if __name__ == "__main__":
 
     runner = XRTRunner(
         omit_while_true_loop=False,
-        omit_pingpong=True,
+        omit_pingpong="all",
+        num_device_cols=4,
         verbose=False,
         runtime_loop_tiling_sizes=[1, 1],
     )
