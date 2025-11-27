@@ -664,6 +664,12 @@ which is a direct child op of said scf.for, as candidate loop for ping-pong
 transformation. The label includes an attribute added to the child memref.alloc ops
 for subsequent hoisting, and an attribute added to the scf.for with an unroll factor.
 
+#### Options
+
+```
+-omit-memory-space : Omit ping-pong labeling for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means label all loops (default).
+```
+
 ### `-air-linalg-codegen`
 
 _AIR codegen strategies for linalg_
@@ -940,6 +946,7 @@ edges which represent a ping-pong buffering scheduling.
 
 ```
 -keep-memref-dealloc : Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.
+-omit-memory-space   : Omit ping-pong transformation for the specified memory space. Supported values: '', 'L1', 'L2'. Empty string means apply ping-pong to all memory levels (default).
 ```
 
 ### `-air-pipeline-reduce`
