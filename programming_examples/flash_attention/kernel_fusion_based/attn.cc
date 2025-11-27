@@ -1,4 +1,4 @@
-//===- mm.cc ----------------------------------------------------*- C++ -*-===//
+//===- attn.cc --------------------------------------------------*- C++ -*-===//
 //
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2025, Advanced Micro Devices, Inc.
@@ -15,8 +15,8 @@
 #define REL_WRITE 0
 #define REL_READ 1
 
-#include <aie_api/aie.hpp>
 #include "zero.cc"
+#include <aie_api/aie.hpp>
 
 // Default values if not provided by Makefile
 #ifndef lqp
