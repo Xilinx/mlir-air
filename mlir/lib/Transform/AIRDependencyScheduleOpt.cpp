@@ -6081,7 +6081,7 @@ public:
         // to make it blocking.
         rewriter.setInsertionPointAfter(tiledLoops.front());
         auto blockingWaitAll = rewriter.replaceOpWithNewOp<air::WaitAllOp>(
-            tiledLoops.front()->getNextNode(), /*result_type*/ std::nullopt,
+            tiledLoops.front()->getNextNode(), /*result_type*/ Type(),
             tiledLoops.front()->getResult(0));
         rewriter.setInsertionPointAfter(blockingWaitAll);
         auto disconnectedWaitAll = rewriter.create<air::WaitAllOp>(
@@ -6157,8 +6157,7 @@ public:
           else
             rewriter.setInsertionPointToEnd(blk);
           rewriter.create<air::WaitAllOp>(rewriter.getUnknownLoc(),
-                                          /*result_type*/ std::nullopt,
-                                          chanTokens);
+                                          /*result_type*/ Type(), chanTokens);
         }
       }
     }
