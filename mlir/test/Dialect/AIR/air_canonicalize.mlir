@@ -1075,8 +1075,8 @@ air.channel @channel_cascade [3] {channel_type = "cascade"}
 
 // CHECK-LABEL: func.func @channel_cascade_fold_cast_only
 // CHECK-NOT: %[[CAST:.*]] = memref.cast %{{.*}} : memref<256x256xbf16> to memref<256x256xbf16, strided<[256, 1], offset: ?>>
-// CHECK: %[[REINTERPRET:.*]] = memref.reinterpret_cast %{{.*}} to offset: [%c0{{.*}}], sizes: [256, 256], strides: [256, 1] : memref<256x256xbf16> to memref<256x256xbf16, strided<[256, 1], offset: ?>>
-// CHECK: air.channel.put @channel_cascade[%c0{{.*}}] (%[[REINTERPRET]][] [] []) : (memref<256x256xbf16, strided<[256, 1], offset: ?>>)
+// CHECK: %[[REINTERPRET:.*]] = memref.reinterpret_cast %{{.*}} to offset: [0], sizes: [256, 256], strides: [256, 1] : memref<256x256xbf16> to memref<256x256xbf16, strided<[256, 1]>>
+// CHECK: air.channel.put @channel_cascade[%c0{{.*}}] (%[[REINTERPRET]][] [] []) : (memref<256x256xbf16, strided<[256, 1]>>)
 func.func @channel_cascade_fold_cast_only(%arg0: memref<256x256xbf16>) {
   %c0 = arith.constant 0 : index
   %offset = arith.constant 0 : index

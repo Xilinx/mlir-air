@@ -722,7 +722,7 @@ air::WaitAllOp generateWaitAllToTerminateBlock(Block &block, OpBuilder &b,
     b.setInsertionPointToEnd(&block);
   if (isBlocking)
     return b.create<air::WaitAllOp>(b.getUnknownLoc(),
-                                    /*result_type*/ std::nullopt,
+                                    /*result_type*/ Type(),
                                     danglingTokens.takeVector());
   else
     return b.create<air::WaitAllOp>(b.getUnknownLoc(),
