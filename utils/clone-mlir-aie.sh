@@ -14,8 +14,8 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=84c052286475ceeb6a084d6ef8557ee2e3087c9e
-DATETIME=2025120304
+export HASH=33f421bb1204e77e4c6a1deeb0c16ec457fabf09
+DATETIME=2025120704
 WHEEL_VERSION=0.0.1.$DATETIME+${HASH:0:7}
 
 if [ x"$1" == x--get-wheel-version ]; then
