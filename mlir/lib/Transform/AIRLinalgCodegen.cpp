@@ -3042,6 +3042,11 @@ transform::BroadcastBeforeUnaryOp::apply(transform::TransformRewriter &rewriter,
   SmallVector<Operation *> transformedOps;
   int numTransformations = 0;
 
+  // Get the optional op_name filter
+  std::optional<StringRef> opNameFilter = std::nullopt;
+  if (getOpName())
+    opNameFilter = getOpName().value();
+
   for (Operation *target : targets) {
     // Verify target has IsolatedFromAbove trait
     if (!target->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
@@ -3055,8 +3060,18 @@ transform::BroadcastBeforeUnaryOp::apply(transform::TransformRewriter &rewriter,
     target->walk([&](vector::BroadcastOp broadcastOp) {
       // Check if the source is a supported unary operation
       Operation *unaryOp = broadcastOp.getSource().getDefiningOp();
-      if (!unaryOp || !isSupportedBroadcastableUnaryOp(unaryOp))
+      if (!unaryOp)
         return;
+
+      // If op_name is specified, check if it matches
+      if (opNameFilter.has_value()) {
+        if (unaryOp->getName().getStringRef() != opNameFilter.value())
+          return;
+      } else {
+        // Otherwise use trait-based checking
+        if (!isSupportedBroadcastableUnaryOp(unaryOp))
+          return;
+      }
 
       // Check that operation has exactly one operand and one result
       if (unaryOp->getNumOperands() != 1 || unaryOp->getNumResults() != 1)

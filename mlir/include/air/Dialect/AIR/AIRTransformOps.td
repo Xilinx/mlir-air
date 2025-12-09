@@ -1210,35 +1210,42 @@ def BroadcastBeforeUnaryOp : Op<Transform_Dialect, "air.broadcast_before_unary",
     
     This is mathematically valid for element-wise operations where op(broadcast(x)) == broadcast(op(x)).
     
-    Supported operations include:
-    - Math dialect: rsqrt, sqrt, exp, log, log2, log10, sin, cos, tanh, absf, ceil, floor, round, erf
-    - Arith dialect: negf
+    By default (when op_name is not specified), the transform uses trait-based checking to 
+    automatically support all Pure, single-operand, single-result, element-wise operations 
+    in math/arith dialects. If op_name is specified, only operations with that exact name 
+    are transformed.
     
     Safety conditions checked:
     1. The unary op must operate on a single-element vector (e.g., vector<1xf32>)
     2. The unary op result must have exactly one use (the broadcast)
     3. The unary op must have exactly one operand and one result
     4. Both operations must work on the same element type
-    5. The operation must be in the supported list
+    5. If op_name is specified, the operation name must match
+    6. If op_name is empty, the operation must pass trait-based validation
     
     This optimization is particularly beneficial for hardware accelerators like AMD AIEs
     that can only execute certain operations on vector engines, not on scalar units. 
     Common in layer normalization and other neural network operations.
     
-    Example usage:
+    Example usage (all qualifying unary ops):
     ```mlir
     %func = transform.structured.match ops{["func.func"]} in %arg0 
       : (!pdl.operation) -> !pdl.operation
-    transform.air.broadcast_before_rsqrt %func
+    transform.air.broadcast_before_unary %func
     ```
     
-    Note: Despite the name "broadcast_before_rsqrt", this operation now supports 
-    multiple unary operations, not just rsqrt. The name is kept for backward compatibility.
+    Example usage (specific operation only):
+    ```mlir
+    %func = transform.structured.match ops{["func.func"]} in %arg0 
+      : (!pdl.operation) -> !pdl.operation
+    transform.air.broadcast_before_unary %func {op_name = "math.rsqrt"}
+    ```
     
     Returns a handle to the transformed operation.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
+  let arguments = (ins PDL_Operation:$target,
+                       OptionalAttr<StrAttr>:$op_name);
   let results = (outs PDL_Operation:$result);
   let assemblyFormat = "$target attr-dict";
 }
