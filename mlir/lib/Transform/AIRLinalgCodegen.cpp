@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
@@ -2633,26 +2634,55 @@ static bool hasWriteEffectOn(Operation *op, Value allocResult) {
   return false;
 }
 
-/// Check if there are any write operations to the memref between allocation and
-/// the given operation Uses DominanceInfo for proper dominance analysis
-static bool hasWritesBetween(memref::AllocOp allocOp, Operation *beforeOp) {
+/// Helper functions to extract source and target from different copy operation
+/// types
+static Value getCopySource(memref::CopyOp copyOp) { return copyOp.getSource(); }
+
+static Value getCopySource(linalg::CopyOp copyOp) {
+  return copyOp.getInputs()[0];
+}
+
+/// Get the target/destination of a copy operation
+static Value getCopyTarget(memref::CopyOp copyOp) { return copyOp.getTarget(); }
+
+static Value getCopyTarget(linalg::CopyOp copyOp) {
+  return copyOp.getOutputs()[0];
+}
+
+/// Enum to represent different write patterns for copy optimization
+enum class WritePattern {
+  NoWrites,      // Uninitialized - can remove copy
+  SingleFill,    // Single fill - can replace copy with fill
+  MultipleWrites // Multiple writes - cannot optimize
+};
+
+/// Structure to hold the result of write analysis
+struct WriteAnalysis {
+  WritePattern pattern;
+  linalg::FillOp fillOp; // Only valid if pattern == SingleFill
+};
+
+/// Unified analysis function that examines writes between allocation and copy
+/// This replaces the redundant logic in hasWritesBetween() and
+/// findSingleFillBetween()
+static WriteAnalysis analyzeWritesBetween(memref::AllocOp allocOp,
+                                          Operation *beforeOp) {
   Value allocResult = allocOp.getResult();
 
   // Get the function containing both operations
   auto funcOp = allocOp->getParentOfType<func::FuncOp>();
   if (!funcOp || funcOp != beforeOp->getParentOfType<func::FuncOp>()) {
-    // If they're in different functions, conservatively return true
-    return true;
+    // If they're in different functions, conservatively assume multiple writes
+    return {WritePattern::MultipleWrites, nullptr};
   }
 
-  // Create dominance info for the function
-  DominanceInfo domInfo(funcOp);
+  linalg::FillOp foundFill = nullptr;
+  int writeCount = 0;
 
-  // Walk through all operations in the function to find writes
-  bool foundWrite = false;
+  // Single walk through all operations to analyze write pattern
   funcOp.walk([&](Operation *op) {
-    // Skip if we've already found a write
-    if (foundWrite)
+    // Skip if we've already found multiple writes
+    if (writeCount > 1)
       return;
 
     // Skip the allocation itself
@@ -2668,48 +2698,75 @@ static bool hasWritesBetween(memref::AllocOp allocOp, Operation *beforeOp) {
 
     // Check if this operation writes to our allocation
     if (hasWriteEffectOn(op, allocResult)) {
-      foundWrite = true;
-      return;
+      writeCount++;
+
+      // If this is the first write, check if it's a fill
+      if (writeCount == 1) {
+        if (auto fillOp = dyn_cast<linalg::FillOp>(op)) {
+          // Verify this fill writes to our allocation
+          if (traceToAlloc(fillOp.getOutputs()[0]) == allocOp) {
+            foundFill = fillOp;
+          } else {
+            // Write to a different allocation - doesn't count
+            writeCount--;
+          }
+        }
+      }
     }
   });
 
-  return foundWrite;
-}
-
-/// Helper functions to extract source and target from different copy operation
-/// types
-static Value getCopySource(memref::CopyOp copyOp) { return copyOp.getSource(); }
-
-static Value getCopySource(linalg::CopyOp copyOp) {
-  return copyOp.getInputs()[0];
-}
-
-/// Template function to check if a copy operation copies from an uninitialized
-/// memref
-template <typename CopyOpType>
-static bool isUninitializedCopy(CopyOpType copyOp) {
-  Value source = getCopySource(copyOp);
-
-  // Trace the source back to its allocation
-  memref::AllocOp allocOp = traceToAlloc(source);
-  if (!allocOp) {
-    return false;
+  // Determine the pattern based on analysis
+  if (writeCount == 0) {
+    return {WritePattern::NoWrites, nullptr};
+  } else if (writeCount == 1 && foundFill) {
+    return {WritePattern::SingleFill, foundFill};
+  } else {
+    return {WritePattern::MultipleWrites, nullptr};
   }
-
-  // Check if there are any writes to the allocated memref before this copy
-  return !hasWritesBetween(allocOp, copyOp);
 }
 
+/// Unified pattern to optimize copy operations based on write analysis
+/// This replaces RemoveUninitializedCopyOpPattern and
+/// ReplaceCopyWithFillPattern
 template <typename CopyOpType>
-struct RemoveUninitializedCopyOpPattern : public OpRewritePattern<CopyOpType> {
+struct OptimizeCopyOpPattern : public OpRewritePattern<CopyOpType> {
   using OpRewritePattern<CopyOpType>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(CopyOpType copyOp,
                                 PatternRewriter &rewriter) const override {
-    if (isUninitializedCopy(copyOp)) {
+    Value source = getCopySource(copyOp);
+    Value target = getCopyTarget(copyOp);
+
+    // Trace the source back to its allocation
+    memref::AllocOp allocOp = traceToAlloc(source);
+    if (!allocOp) {
+      return failure();
+    }
+
+    // Perform unified write analysis
+    WriteAnalysis analysis = analyzeWritesBetween(allocOp, copyOp);
+
+    switch (analysis.pattern) {
+    case WritePattern::NoWrites:
+      // Source is uninitialized - remove the copy
       rewriter.eraseOp(copyOp);
       return success();
+
+    case WritePattern::SingleFill:
+      // Source is only written by a single fill - replace copy with fill
+      {
+        Value fillValue = analysis.fillOp.getInputs()[0];
+        rewriter.setInsertionPoint(copyOp);
+        rewriter.create<linalg::FillOp>(copyOp.getLoc(), fillValue, target);
+        rewriter.eraseOp(copyOp);
+        return success();
+      }
+
+    case WritePattern::MultipleWrites:
+      // Cannot optimize - multiple writes to source
+      return failure();
     }
+
     return failure();
   }
 };
@@ -2737,9 +2794,11 @@ DiagnosedSilenceableFailure transform::RemoveUninitializedCopyOp::apply(
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(ctx);
 
-    // Apply the pattern to remove memcpy operations with uninitialized sources.
-    patterns.insert<RemoveUninitializedCopyOpPattern<memref::CopyOp>,
-                    RemoveUninitializedCopyOpPattern<linalg::CopyOp>>(ctx);
+    // Apply unified copy optimization pattern that:
+    // 1. Removes copy operations with uninitialized sources
+    // 2. Replaces copy operations with fill when source is only filled
+    patterns.insert<OptimizeCopyOpPattern<memref::CopyOp>,
+                    OptimizeCopyOpPattern<linalg::CopyOp>>(ctx);
     (void)applyPatternsGreedily(funcOp, std::move(patterns));
 
     transformedOps.push_back(funcOp);
@@ -2814,6 +2873,115 @@ DiagnosedSilenceableFailure transform::ConvertMemrefCopyToLinalgCopyOp::apply(
 
     transformedOps.push_back(target);
   }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// ConvertDivfSqrtToRsqrtOp
+//===----------------------------------------------------------------------===//
+
+/// Check if a value is a constant 1.0 (scalar or vector splat)
+static bool isConstantOne(Value val) {
+  auto constOp = val.getDefiningOp<arith::ConstantOp>();
+  if (!constOp)
+    return false;
+
+  auto attr = constOp.getValue();
+
+  // Check for scalar float constant
+  if (auto floatAttr = dyn_cast<FloatAttr>(attr)) {
+    return floatAttr.getValue().isExactlyValue(1.0);
+  }
+
+  // Check for dense vector constant (splat)
+  if (auto denseAttr = dyn_cast<DenseFPElementsAttr>(attr)) {
+    if (denseAttr.isSplat()) {
+      return denseAttr.getSplatValue<FloatAttr>().getValue().isExactlyValue(
+          1.0);
+    }
+  }
+
+  return false;
+}
+
+DiagnosedSilenceableFailure transform::ConvertDivfSqrtToRsqrtOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+  int numTransformations = 0;
+
+  for (Operation *target : targets) {
+    // Verify target has IsolatedFromAbove trait
+    if (!target->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+      return emitDefiniteFailure()
+             << "target operation must have IsolatedFromAbove trait";
+    }
+
+    // Collect divf operations to transform
+    SmallVector<arith::DivFOp> divfOpsToTransform;
+
+    target->walk([&](arith::DivFOp divfOp) {
+      // Check if LHS is constant 1.0
+      if (!isConstantOne(divfOp.getLhs()))
+        return;
+
+      // Check if RHS is a math.sqrt operation
+      auto sqrtOp = divfOp.getRhs().getDefiningOp<math::SqrtOp>();
+      if (!sqrtOp)
+        return;
+
+      // Check if sqrt result has exactly one use (this divf)
+      if (!sqrtOp.getResult().hasOneUse())
+        return;
+
+      // Check type consistency - both must be floating-point
+      Type divfType = divfOp.getType();
+      Type sqrtType = sqrtOp.getType();
+      if (divfType != sqrtType)
+        return;
+
+      Type elementType = getElementTypeOrSelf(divfType);
+      if (!isa<FloatType>(elementType))
+        return;
+
+      // This divf op matches the pattern
+      divfOpsToTransform.push_back(divfOp);
+    });
+
+    // Apply transformations
+    for (arith::DivFOp divfOp : divfOpsToTransform) {
+      auto sqrtOp = divfOp.getRhs().getDefiningOp<math::SqrtOp>();
+
+      // Create math.rsqrt operation
+      rewriter.setInsertionPoint(divfOp);
+      auto rsqrtOp =
+          rewriter.create<math::RsqrtOp>(divfOp.getLoc(), sqrtOp.getOperand());
+
+      // Replace the divf operation with the rsqrt result
+      rewriter.replaceOp(divfOp, rsqrtOp.getResult());
+
+      // Erase the sqrt operation (it has no other uses)
+      rewriter.eraseOp(sqrtOp);
+
+      numTransformations++;
+    }
+
+    transformedOps.push_back(target);
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "Converted " << numTransformations
+                          << " divf(1.0, sqrt(x)) patterns to rsqrt(x)\n");
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
@@ -3167,6 +3335,51 @@ transform::TransposeReduceOp::apply(transform::TransformRewriter &rewriter,
     // Replace the original operation
     rewriter.replaceOp(reduceOp, newReduceOp.getResults());
     transformedOps.push_back(newReduceOp);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// FuseElementwiseLinalgOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::FuseElementwiseLinalgOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    auto funcOp = dyn_cast<func::FuncOp>(target);
+    if (!funcOp) {
+      return emitDefiniteFailure() << "target must be a func.func operation";
+    }
+
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(ctx);
+
+    // Populate the elementwise fusion patterns using the linalg utilities
+    linalg::ControlFusionFn controlFn = [](OpOperand *fusedOperand) {
+      // Default: allow all fusions
+      return true;
+    };
+
+    linalg::populateElementwiseOpsFusionPatterns(patterns, controlFn);
+
+    // Apply the patterns greedily
+    (void)applyPatternsGreedily(funcOp, std::move(patterns));
+
+    transformedOps.push_back(funcOp);
   }
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
