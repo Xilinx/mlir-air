@@ -1173,10 +1173,67 @@ def ConvertDivfSqrtToRsqrtOp : Op<Transform_Dialect, "air.convert_divf_sqrt_to_r
     Example usage:
     ```mlir
     %herd = transform.structured.match ops{["air.herd"]} in %arg0 
-      : (!transform.any_op) -> !transform.any_op
-    transform.air.convert_divf_sqrt_to_rsqrt %herd 
-      : (!transform.any_op) -> !transform.any_op
+      : (!pdl.operation) -> !pdl.operation
+    transform.air.convert_divf_sqrt_to_rsqrt %herd
     ```
+    
+    Returns a handle to the transformed operation.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
+def BroadcastBeforeRsqrtOp : Op<Transform_Dialect, "air.broadcast_before_rsqrt",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Move vector.broadcast before element-wise unary operations to enable vector execution";
+  let description = [{
+    This transform identifies patterns where an element-wise unary operation operates on a 
+    single-element vector and its result is immediately broadcast to a larger vector. 
+    It rearranges the operations to broadcast first, then apply the unary operation,
+    allowing the operation to execute on the full vector which can be more efficient on 
+    vector engines.
+    
+    Pattern matched:
+    ```mlir
+    %unary_result = unary_op %x : vector<1xT>
+    %result = vector.broadcast %unary_result : vector<1xT> to vector<NxT>
+    ```
+    
+    Transformed to:
+    ```mlir
+    %broadcast = vector.broadcast %x : vector<1xT> to vector<NxT>
+    %result = unary_op %broadcast : vector<NxT>
+    ```
+    
+    This is mathematically valid for element-wise operations where op(broadcast(x)) == broadcast(op(x)).
+    
+    Supported operations include:
+    - Math dialect: rsqrt, sqrt, exp, log, log2, log10, sin, cos, tanh, absf, ceil, floor, round, erf
+    - Arith dialect: negf
+    
+    Safety conditions checked:
+    1. The unary op must operate on a single-element vector (e.g., vector<1xf32>)
+    2. The unary op result must have exactly one use (the broadcast)
+    3. The unary op must have exactly one operand and one result
+    4. Both operations must work on the same element type
+    5. The operation must be in the supported list
+    
+    This optimization is particularly beneficial for hardware accelerators like AMD AIEs
+    that can only execute certain operations on vector engines, not on scalar units. 
+    Common in layer normalization and other neural network operations.
+    
+    Example usage:
+    ```mlir
+    %func = transform.structured.match ops{["func.func"]} in %arg0 
+      : (!pdl.operation) -> !pdl.operation
+    transform.air.broadcast_before_rsqrt %func
+    ```
+    
+    Note: Despite the name "broadcast_before_rsqrt", this operation now supports 
+    multiple unary operations, not just rsqrt. The name is kept for backward compatibility.
     
     Returns a handle to the transformed operation.
   }];

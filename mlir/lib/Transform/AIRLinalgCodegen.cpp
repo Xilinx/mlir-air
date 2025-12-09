@@ -2998,6 +2998,142 @@ DiagnosedSilenceableFailure transform::ConvertDivfSqrtToRsqrtOp::apply(
 }
 
 //===----------------------------------------------------------------------===//
+// BroadcastBeforeRsqrtOp
+//===----------------------------------------------------------------------===//
+
+/// Check if an operation is a supported element-wise unary operation
+/// Uses trait-based checking to automatically support all qualifying operations
+static bool isSupportedBroadcastableUnaryOp(Operation *op) {
+  // Must be Pure (no side effects) - required for safe broadcast reordering
+  if (!isPure(op))
+    return false;
+
+  // Must have exactly one operand and one result
+  if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+    return false;
+
+  // Must have same input and output types (element-wise property)
+  // This ensures op(broadcast(x)) == broadcast(op(x))
+  if (op->getOperand(0).getType() != op->getResult(0).getType())
+    return false;
+
+  // Restrict to math and arith dialects for safety
+  // These dialects contain well-defined element-wise operations
+  StringRef dialectName = op->getDialect()->getNamespace();
+  if (dialectName != "math" && dialectName != "arith")
+    return false;
+
+  return true;
+}
+
+DiagnosedSilenceableFailure
+transform::BroadcastBeforeRsqrtOp::apply(transform::TransformRewriter &rewriter,
+                                         transform::TransformResults &results,
+                                         transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+  int numTransformations = 0;
+
+  for (Operation *target : targets) {
+    // Verify target has IsolatedFromAbove trait
+    if (!target->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+      return emitDefiniteFailure()
+             << "target operation must have IsolatedFromAbove trait";
+    }
+
+    // Collect broadcast operations to transform
+    SmallVector<vector::BroadcastOp> broadcastOpsToTransform;
+
+    target->walk([&](vector::BroadcastOp broadcastOp) {
+      // Check if the source is a supported unary operation
+      Operation *unaryOp = broadcastOp.getSource().getDefiningOp();
+      if (!unaryOp || !isSupportedBroadcastableUnaryOp(unaryOp))
+        return;
+
+      // Check that operation has exactly one operand and one result
+      if (unaryOp->getNumOperands() != 1 || unaryOp->getNumResults() != 1)
+        return;
+
+      // Check if unary op operates on a vector type
+      auto unaryType = dyn_cast<VectorType>(unaryOp->getOperand(0).getType());
+      if (!unaryType)
+        return;
+
+      // Calculate number of elements
+      int64_t numElements = 1;
+      for (int64_t dim : unaryType.getShape()) {
+        numElements *= dim;
+      }
+
+      // Only transform if unary op operates on single-element vector
+      if (numElements != 1)
+        return;
+
+      // Check if unary op result has exactly one use (this broadcast)
+      if (!unaryOp->getResult(0).hasOneUse())
+        return;
+
+      // Check type consistency
+      auto broadcastType = dyn_cast<VectorType>(broadcastOp.getType());
+      if (!broadcastType)
+        return;
+
+      if (unaryType.getElementType() != broadcastType.getElementType())
+        return;
+
+      // This broadcast op matches the pattern
+      broadcastOpsToTransform.push_back(broadcastOp);
+    });
+
+    // Apply transformations
+    for (vector::BroadcastOp broadcastOp : broadcastOpsToTransform) {
+      Operation *unaryOp = broadcastOp.getSource().getDefiningOp();
+      Value unaryInput = unaryOp->getOperand(0);
+
+      // Clone the original broadcast operation to preserve its exact semantics
+      rewriter.setInsertionPoint(unaryOp);
+      IRMapping mapping;
+      mapping.map(unaryOp->getResult(0), unaryInput);
+      auto *clonedBroadcastOp =
+          rewriter.clone(*broadcastOp.getOperation(), mapping);
+      Value newBroadcastResult = clonedBroadcastOp->getResult(0);
+
+      // Create a new unary operation with the broadcast result as input
+      // The result type will match the broadcast result type (larger vector)
+      OperationState newState(unaryOp->getLoc(), unaryOp->getName());
+      newState.addOperands(newBroadcastResult);
+      newState.addTypes(newBroadcastResult.getType());
+      newState.addAttributes(unaryOp->getAttrs());
+      auto *newUnaryOp = rewriter.create(newState);
+
+      // Replace the broadcast operation with the new unary op result
+      rewriter.replaceOp(broadcastOp, newUnaryOp->getResult(0));
+
+      // Erase the old unary operation (it has no other uses)
+      rewriter.eraseOp(unaryOp);
+
+      numTransformations++;
+    }
+
+    transformedOps.push_back(target);
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "Moved " << numTransformations
+                          << " vector.broadcast operations before unary ops\n");
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
 // FuseExtfLinalgOp
 //===----------------------------------------------------------------------===//
 
