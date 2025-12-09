@@ -130,6 +130,93 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 | `target` | PDL handle to an `mlir::Operation *` |
 
 
+### `transform.air.broadcast_before_unary` (transform::BroadcastBeforeUnaryOp)
+
+_Move vector.broadcast before element-wise unary operations to enable vector execution_
+
+Syntax:
+
+```
+operation ::= `transform.air.broadcast_before_unary` $target attr-dict
+```
+
+This transform identifies patterns where an element-wise unary operation operates on a 
+single-element vector and its result is immediately broadcast to a larger vector. 
+It rearranges the operations to broadcast first, then apply the unary operation,
+allowing the operation to execute on the full vector which can be more efficient on 
+vector engines.
+
+Pattern matched:
+```mlir
+%unary_result = unary_op %x : vector<1xT>
+%result = vector.broadcast %unary_result : vector<1xT> to vector<NxT>
+```
+
+Transformed to:
+```mlir
+%broadcast = vector.broadcast %x : vector<1xT> to vector<NxT>
+%result = unary_op %broadcast : vector<NxT>
+```
+
+This is mathematically valid for element-wise operations where op(broadcast(x)) == broadcast(op(x)).
+
+By default (when op_name is not specified), the transform uses trait-based checking to 
+automatically support all Pure, single-operand, single-result, element-wise operations 
+in math/arith dialects. If op_name is specified, only operations with that exact name 
+are transformed.
+
+Safety conditions checked:
+1. The unary op must operate on a single-element vector (e.g., vector<1xf32>)
+2. The unary op result must have exactly one use (the broadcast)
+3. The unary op must have exactly one operand and one result
+4. Both operations must work on the same element type
+5. If op_name is specified, the operation name must match
+6. If op_name is empty, the operation must pass trait-based validation
+
+This optimization is particularly beneficial for hardware accelerators like AMD AIEs
+that can only execute certain operations on vector engines, not on scalar units. 
+Common in layer normalization and other neural network operations.
+
+Example usage (all qualifying unary ops):
+```mlir
+%func = transform.structured.match ops{["func.func"]} in %arg0 
+  : (!pdl.operation) -> !pdl.operation
+transform.air.broadcast_before_unary %func
+```
+
+Example usage (specific operation only):
+```mlir
+%func = transform.structured.match ops{["func.func"]} in %arg0 
+  : (!pdl.operation) -> !pdl.operation
+transform.air.broadcast_before_unary %func {op_name = "math.rsqrt"}
+```
+
+Returns a handle to the transformed operation.
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>op_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *` |
+
+
 ### `transform.air.convert_divf_sqrt_to_rsqrt` (transform::ConvertDivfSqrtToRsqrtOp)
 
 _Convert arith.divf(1.0, math.sqrt(x)) pattern to math.rsqrt(x)_
@@ -169,9 +256,8 @@ normalization and other neural network operations.
 Example usage:
 ```mlir
 %herd = transform.structured.match ops{["air.herd"]} in %arg0 
-  : (!transform.any_op) -> !transform.any_op
-transform.air.convert_divf_sqrt_to_rsqrt %herd 
-  : (!transform.any_op) -> !transform.any_op
+  : (!pdl.operation) -> !pdl.operation
+transform.air.convert_divf_sqrt_to_rsqrt %herd
 ```
 
 Returns a handle to the transformed operation.
