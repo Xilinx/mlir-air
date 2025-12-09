@@ -701,6 +701,63 @@ def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
 // Ops implemented in mlir/lib/Transform/AIRLinalgBufferize.cpp
 //
 
+def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Apply linalg elementwise fusion patterns to a func.func operation";
+  let description = [{
+    This transform walks the body of a func.func operation and applies the 
+    linalg elementwise fusion patterns, which include:
+    - FuseElementwiseOps: Fuses producer elementwise operations into consumer operations
+    - FoldFillWithGenericOp: Folds fill operations into generic operations
+    - FoldScalarOrSplatConstant: Folds scalar or splat constants
+    - RemoveOutsDependency: Removes unnecessary output dependencies
+    - EraseUnusedOperandsAndResults: Cleans up dead operands and results
+    
+    This is the transform dialect equivalent of running the `-linalg-fuse-elementwise-ops`
+    pass on the target function.
+    
+    Example:
+    ```mlir
+    // Before fusion:
+    %0 = linalg.generic {
+      indexing_maps = [#map0, #map1],
+      iterator_types = ["parallel"]
+    } ins(%input : tensor<16xf32>) outs(%temp1 : tensor<16xf32>) {
+      ^bb0(%arg0: f32, %arg1: f32):
+        %1 = arith.mulf %arg0, %cst : f32
+        linalg.yield %1 : f32
+    } -> tensor<16xf32>
+    
+    %result = linalg.generic {
+      indexing_maps = [#map0, #map2, #map1],
+      iterator_types = ["parallel"]
+    } ins(%0, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%temp2 : tensor<16xf32>) {
+      ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
+        %2 = arith.addf %arg0, %arg1 : f32
+        linalg.yield %2 : f32
+    } -> tensor<16xf32>
+    
+    // After fusion:
+    %result = linalg.generic {
+      indexing_maps = [#map0, #map2, #map1],
+      iterator_types = ["parallel"]
+    } ins(%input, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%temp2 : tensor<16xf32>) {
+      ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
+        %1 = arith.mulf %arg0, %cst : f32
+        %2 = arith.addf %1, %arg1 : f32
+        linalg.yield %2 : f32
+    } -> tensor<16xf32>
+    ```
+    
+    Returns a handle to the modified function.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
 def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
     [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
      TransformEachOpTrait,
@@ -1067,6 +1124,53 @@ def HoistVectorTransferPointersOp : Op<Transform_Dialect, "air.hoist_vector_tran
     - The memref must have static shapes for proper stride calculation
     
     Returns a handle to the transformed loop.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
+def ConvertDivfSqrtToRsqrtOp : Op<Transform_Dialect, "air.convert_divf_sqrt_to_rsqrt",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Convert arith.divf(1.0, math.sqrt(x)) pattern to math.rsqrt(x)";
+  let description = [{
+    This transform walks through operations with the IsolatedFromAbove trait
+    (such as func.func, air.herd, air.segment, etc.) and identifies the pattern 
+    of dividing a constant 1.0 by the result of math.sqrt, converting it to a 
+    single math.rsqrt operation.
+    
+    The transformation looks for:
+    ```mlir
+    %sqrt = math.sqrt %x : vector<NxT>
+    %rsqrt = arith.divf %cst_1.0, %sqrt : vector<NxT>
+    ```
+    
+    And replaces it with:
+    ```mlir
+    %rsqrt = math.rsqrt %x : vector<NxT>
+    ```
+    
+    Safety conditions checked:
+    1. The numerator must be exactly 1.0 (constant or constant splat for vectors)
+    2. The sqrt result should have exactly one use (the divf)
+    3. Both operations must work on the same floating-point type
+    
+    This optimization is beneficial for hardware accelerators that have native
+    rsqrt instructions, as it's typically faster and more accurate than
+    separate sqrt + division operations. This is a common pattern in layer
+    normalization and other neural network operations.
+    
+    Example usage:
+    ```mlir
+    %herd = transform.structured.match ops{["air.herd"]} in %arg0 
+      : (!transform.any_op) -> !transform.any_op
+    transform.air.convert_divf_sqrt_to_rsqrt %herd 
+      : (!transform.any_op) -> !transform.any_op
+    ```
+    
+    Returns a handle to the transformed operation.
   }];
   
   let arguments = (ins PDL_Operation:$target);
