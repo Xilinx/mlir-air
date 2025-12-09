@@ -3585,6 +3585,15 @@ void transform::FuseTruncfLinalgOp::getEffects(
 // VectorTypeCastOp
 //===----------------------------------------------------------------------===//
 
+/// Calculate the total number of elements in a vector type
+static int64_t getVectorNumElements(VectorType vecType) {
+  int64_t numElements = 1;
+  for (int64_t dim : vecType.getShape()) {
+    numElements *= dim;
+  }
+  return numElements;
+}
+
 /// Helper function to create cast operations for both scalar and vector types
 static Value createTypeCast(OpBuilder &builder, Location loc, Value input,
                             Type targetElementType, bool isExtension) {
@@ -3660,6 +3669,34 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   llvm::SmallDenseSet<int64_t> outputIndicesToCastSet(
       outputIndicesToCast.begin(), outputIndicesToCast.end());
 
+  // Check if ALL vector operands and results have exactly one element
+  // If so, skip casting this operation entirely
+  bool allVectorsAreSingleElement = true;
+  bool hasAnyVectors = false;
+
+  for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
+    if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+      hasAnyVectors = true;
+      if (getVectorNumElements(vectorType) != 1) {
+        allVectorsAreSingleElement = false;
+      }
+    }
+  }
+
+  for (auto [idx, result] : llvm::enumerate(op->getResults())) {
+    if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
+      hasAnyVectors = true;
+      if (getVectorNumElements(vectorType) != 1) {
+        allVectorsAreSingleElement = false;
+      }
+    }
+  }
+
+  // Skip the entire operation if all vectors are single-element
+  if (hasAnyVectors && allVectorsAreSingleElement) {
+    return failure();
+  }
+
   for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
     if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
       hasVectorOperands = true;
@@ -3729,6 +3766,8 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
       bool shouldCast =
           castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
 
+      // Note: We DO change the result type even for single-element vectors
+      // to maintain type consistency with the operation's inputs
       if (shouldCast) {
         auto newVectorType =
             VectorType::get(vectorType.getShape(), targetElementType);
@@ -3876,15 +3915,15 @@ transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
           applyVectorTypeCastToOp(target, targetElementType, inputIndicesToCast,
                                   outputIndicesToCast, rewriter);
       if (failed(castedOpOnVector)) {
-        return emitDefiniteFailure()
-               << "failed to apply vector type cast to operation: "
-               << target->getName();
+        // Operation was skipped (e.g., all vectors are single-element)
+        // This is not an error, just add the original operation unchanged
+        transformedOps.push_back(target);
+      } else {
+        transformedOps.push_back(*castedOpOnVector);
       }
-      transformedOps.push_back(*castedOpOnVector);
-    }
-
-    else
+    } else {
       transformedOps.push_back(target);
+    }
   }
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
@@ -4084,15 +4123,6 @@ transform::EliminateRedundantVectorTransfersOp::apply(
 //===----------------------------------------------------------------------===//
 // FlattenForIterArgsOp
 //===----------------------------------------------------------------------===//
-
-/// Calculate the total number of elements in a vector type
-static int64_t getVectorNumElements(VectorType vecType) {
-  int64_t numElements = 1;
-  for (int64_t dim : vecType.getShape()) {
-    numElements *= dim;
-  }
-  return numElements;
-}
 
 DiagnosedSilenceableFailure
 transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
