@@ -589,13 +589,21 @@ def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
     The transformation works by:
     1. Finding vector dialect operations within the target
     2. For each vector operation, examining its operands and results
-    3. Creating cast operations to convert selected vector operands to the target element type
-    4. Updating the operation to work with the new vector types
-    5. Creating cast operations to convert selected results back to the original types
+    3. Skipping the operation entirely if ALL vector operands and results contain exactly one element (e.g., vector<1xf32>, vector<1x1xf16>)
+    4. Creating cast operations to convert selected vector operands to the target element type
+    5. Updating the operation to work with the new vector types
+    6. Creating cast operations to convert selected results back to the original types
 
     This optimization is useful for hardware accelerators that can perform vector operations
     natively on specific data types (e.g., bf16, f16) while maintaining compatibility with
     the original precision through selective casting.
+    
+    Special handling for single-element vectors:
+    Operations where ALL vector operands and results have exactly one element are skipped
+    to avoid unnecessary type conversions that provide no performance benefit. Note that
+    operations with mixed vector sizes (e.g., vector.multi_reduction with a multi-element
+    input and single-element accumulator) are still transformed, as they contain at least 
+    one multi-element vector.
 
     Example 1 - Cast all inputs and outputs (default behavior):
     ```mlir
