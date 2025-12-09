@@ -2998,7 +2998,7 @@ DiagnosedSilenceableFailure transform::ConvertDivfSqrtToRsqrtOp::apply(
 }
 
 //===----------------------------------------------------------------------===//
-// BroadcastBeforeRsqrtOp
+// BroadcastBeforeUnaryOp
 //===----------------------------------------------------------------------===//
 
 /// Check if an operation is a supported element-wise unary operation
@@ -3027,7 +3027,7 @@ static bool isSupportedBroadcastableUnaryOp(Operation *op) {
 }
 
 DiagnosedSilenceableFailure
-transform::BroadcastBeforeRsqrtOp::apply(transform::TransformRewriter &rewriter,
+transform::BroadcastBeforeUnaryOp::apply(transform::TransformRewriter &rewriter,
                                          transform::TransformResults &results,
                                          transform::TransformState &state) {
 

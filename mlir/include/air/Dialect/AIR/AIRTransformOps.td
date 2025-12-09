@@ -1185,7 +1185,7 @@ def ConvertDivfSqrtToRsqrtOp : Op<Transform_Dialect, "air.convert_divf_sqrt_to_r
   let assemblyFormat = "$target attr-dict";
 }
 
-def BroadcastBeforeRsqrtOp : Op<Transform_Dialect, "air.broadcast_before_rsqrt",
+def BroadcastBeforeUnaryOp : Op<Transform_Dialect, "air.broadcast_before_unary",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Move vector.broadcast before element-wise unary operations to enable vector execution";
