@@ -2698,19 +2698,29 @@ static WriteAnalysis analyzeWritesBetween(memref::AllocOp allocOp,
 
     // Check if this operation writes to our allocation
     if (hasWriteEffectOn(op, allocResult)) {
-      writeCount++;
+      bool isWriteToAlloc = false;
 
-      // If this is the first write, check if it's a fill
-      if (writeCount == 1) {
-        if (auto fillOp = dyn_cast<linalg::FillOp>(op)) {
-          // Verify this fill writes to our allocation
-          if (traceToAlloc(fillOp.getOutputs()[0]) == allocOp) {
+      // Check if this operation writes to our allocation
+      if (auto fillOp = dyn_cast<linalg::FillOp>(op)) {
+        // Verify this fill writes to our allocation
+        if (traceToAlloc(fillOp.getOutputs()[0]) == allocOp) {
+          isWriteToAlloc = true;
+          // If this is the first write, record the fill
+          if (writeCount == 0)
             foundFill = fillOp;
-          } else {
-            // Write to a different allocation - doesn't count
-            writeCount--;
+        }
+      } else {
+        // For other ops, check if any operand/result traces to allocOp
+        for (Value operand : op->getOperands()) {
+          if (traceToAlloc(operand) == allocOp) {
+            isWriteToAlloc = true;
+            break;
           }
         }
+      }
+
+      if (isWriteToAlloc) {
+        writeCount++;
       }
     }
   });
