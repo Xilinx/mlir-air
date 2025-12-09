@@ -47,4 +47,14 @@ transform.sequence failures(propagate) {
   %mulf8 = transform.structured.match ops{["arith.mulf"]} in %func8 : (!pdl.operation) -> !pdl.operation
   %result8a = transform.air.vector_type_cast %addf8 {target_element_type = f16}
   %result8b = transform.air.vector_type_cast %mulf8 {target_element_type = f16}
+
+  // Test case 9: Single-element INPUT vector should NOT be cast (new feature)
+  %func9 = transform.structured.match ops{["func.func"]} attributes{sym_name = "single_element_input_not_cast"} in %arg1 : (!pdl.operation) -> !pdl.operation
+  %addf9 = transform.structured.match ops{["arith.addf"]} in %func9 : (!pdl.operation) -> !pdl.operation
+  %result9 = transform.air.vector_type_cast %addf9 {target_element_type = f16}
+
+  // Test case 10: vector.multi_reduction with single-element output (new feature)
+  %func10 = transform.structured.match ops{["func.func"]} attributes{sym_name = "multi_reduction_single_output"} in %arg1 : (!pdl.operation) -> !pdl.operation
+  %multi_red10 = transform.structured.match ops{["vector.multi_reduction"]} in %func10 : (!pdl.operation) -> !pdl.operation
+  %result10 = transform.air.vector_type_cast %multi_red10 {target_element_type = f16}
 }

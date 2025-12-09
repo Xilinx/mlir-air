@@ -109,3 +109,30 @@ func.func @vector_sequence_f32_to_f16(%a: vector<8xf32>, %b: vector<8xf32>, %c: 
   
   return %result : vector<8xf32>
 }
+
+// Test case 9: All single-element vectors should NOT be cast (new feature)
+// CHECK-LABEL: @single_element_input_not_cast
+func.func @single_element_input_not_cast(%a: vector<1xf32>, %b: vector<1xf32>) -> vector<1xf32> {
+  // When ALL vectors are single-element, skip casting entirely
+  %result = arith.addf %a, %b : vector<1xf32>
+  
+  // CHECK-NOT: arith.truncf
+  // CHECK-NOT: arith.extf
+  // CHECK: %[[RESULT:.*]] = arith.addf %{{.*}}, %{{.*}} : vector<1xf32>
+  
+  return %result : vector<1xf32>
+}
+
+// Test case 10: vector.multi_reduction with mixed vector sizes (new feature)
+// CHECK-LABEL: @multi_reduction_single_output
+func.func @multi_reduction_single_output(%input: vector<1x16xf32>, %acc: vector<1xf32>) -> vector<1xf32> {
+  %result = vector.multi_reduction <add>, %input, %acc [1] : vector<1x16xf32> to vector<1xf32>
+  
+  // Since NOT ALL vectors are single-element (input has 16 elements), all will be cast
+  // CHECK: %[[INPUT_CAST:.*]] = arith.truncf %{{.*}} : vector<1x16xf32> to vector<1x16xf16>
+  // CHECK: %[[ACC_CAST:.*]] = arith.truncf %{{.*}} : vector<1xf32> to vector<1xf16>
+  // CHECK: %[[RESULT_F16:.*]] = vector.multi_reduction <add>, %[[INPUT_CAST]], %[[ACC_CAST]] [1] : vector<1x16xf16> to vector<1xf16>
+  // CHECK: %{{.*}} = arith.extf %[[RESULT_F16]] : vector<1xf16> to vector<1xf32>
+  
+  return %result : vector<1xf32>
+}
