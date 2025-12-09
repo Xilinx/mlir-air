@@ -24,14 +24,14 @@ func.func @test_basic_uninitialized_copy() {
 
 // -----
 
-// Test that initialized memref copy is NOT removed
-// CHECK-LABEL: @test_initialized_copy_not_removed
+// Test that copy from single-fill source is replaced with fill
+// CHECK-LABEL: @test_copy_replaced_with_fill
 // CHECK: %[[ALLOC_6:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
-// CHECK: linalg.fill ins(%{{.*}} : i32) outs(%[[ALLOC_6]] : memref<2x16x8xi32, 1>)
-// CHECK: %[[SUBVIEW_11:.*]] = memref.subview %[[ALLOC_6]][0, 0, 0] [1, 16, 8] [1, 1, 1]
+// CHECK: linalg.fill ins(%[[C0:.*]] : i32) outs(%[[ALLOC_6]] : memref<2x16x8xi32, 1>)
 // CHECK: %[[ALLOC_12:.*]] = memref.alloc() : memref<1x16x8xi32, 2>
-// CHECK: memref.copy %[[SUBVIEW_11]], %[[ALLOC_12]]
-func.func @test_initialized_copy_not_removed() {
+// CHECK-NOT: memref.copy
+// CHECK: linalg.fill ins(%[[C0]] : i32) outs(%[[ALLOC_12]] : memref<1x16x8xi32, 2>)
+func.func @test_copy_replaced_with_fill() {
   %c0_i32 = arith.constant 0 : i32
   %alloc_6 = memref.alloc() : memref<2x16x8xi32, 1>
   linalg.fill ins(%c0_i32 : i32) outs(%alloc_6 : memref<2x16x8xi32, 1>)
@@ -176,14 +176,14 @@ func.func @test_basic_uninitialized_linalg_copy() {
 
 // -----
 
-// Test that initialized linalg.copy is NOT removed
-// CHECK-LABEL: @test_initialized_linalg_copy_not_removed
+// Test that linalg.copy from single-fill source is replaced with fill
+// CHECK-LABEL: @test_linalg_copy_replaced_with_fill
 // CHECK: %[[ALLOC_6:.*]] = memref.alloc() : memref<2x16x8xi32, 1>
-// CHECK: linalg.fill ins(%{{.*}} : i32) outs(%[[ALLOC_6]] : memref<2x16x8xi32, 1>)
-// CHECK: %[[SUBVIEW_11:.*]] = memref.subview %[[ALLOC_6]][0, 0, 0] [1, 16, 8] [1, 1, 1]
+// CHECK: linalg.fill ins(%[[C0:.*]] : i32) outs(%[[ALLOC_6]] : memref<2x16x8xi32, 1>)
 // CHECK: %[[ALLOC_12:.*]] = memref.alloc() : memref<1x16x8xi32, 2>
-// CHECK: linalg.copy ins(%[[SUBVIEW_11]] : {{.*}}) outs(%[[ALLOC_12]] : {{.*}})
-func.func @test_initialized_linalg_copy_not_removed() {
+// CHECK-NOT: linalg.copy
+// CHECK: linalg.fill ins(%[[C0]] : i32) outs(%[[ALLOC_12]] : memref<1x16x8xi32, 2>)
+func.func @test_linalg_copy_replaced_with_fill() {
   %c0_i32 = arith.constant 0 : i32
   %alloc_6 = memref.alloc() : memref<2x16x8xi32, 1>
   linalg.fill ins(%c0_i32 : i32) outs(%alloc_6 : memref<2x16x8xi32, 1>)
