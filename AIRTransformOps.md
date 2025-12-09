@@ -130,6 +130,69 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 | `target` | PDL handle to an `mlir::Operation *` |
 
 
+### `transform.air.convert_divf_sqrt_to_rsqrt` (transform::ConvertDivfSqrtToRsqrtOp)
+
+_Convert arith.divf(1.0, math.sqrt(x)) pattern to math.rsqrt(x)_
+
+Syntax:
+
+```
+operation ::= `transform.air.convert_divf_sqrt_to_rsqrt` $target attr-dict
+```
+
+This transform walks through operations with the IsolatedFromAbove trait
+(such as func.func, air.herd, air.segment, etc.) and identifies the pattern 
+of dividing a constant 1.0 by the result of math.sqrt, converting it to a 
+single math.rsqrt operation.
+
+The transformation looks for:
+```mlir
+%sqrt = math.sqrt %x : vector<NxT>
+%rsqrt = arith.divf %cst_1.0, %sqrt : vector<NxT>
+```
+
+And replaces it with:
+```mlir
+%rsqrt = math.rsqrt %x : vector<NxT>
+```
+
+Safety conditions checked:
+1. The numerator must be exactly 1.0 (constant or constant splat for vectors)
+2. The sqrt result should have exactly one use (the divf)
+3. Both operations must work on the same floating-point type
+
+This optimization is beneficial for hardware accelerators that have native
+rsqrt instructions, as it's typically faster and more accurate than
+separate sqrt + division operations. This is a common pattern in layer
+normalization and other neural network operations.
+
+Example usage:
+```mlir
+%herd = transform.structured.match ops{["air.herd"]} in %arg0 
+  : (!transform.any_op) -> !transform.any_op
+transform.air.convert_divf_sqrt_to_rsqrt %herd 
+  : (!transform.any_op) -> !transform.any_op
+```
+
+Returns a handle to the transformed operation.
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *` |
+
+
 ### `transform.air.convert_memref_copy_to_linalg_copy` (transform::ConvertMemrefCopyToLinalgCopyOp)
 
 _Convert memref.copy operations to linalg.copy operations_
@@ -406,6 +469,79 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 | Result | Description |
 | :----: | ----------- |
 | `transformed` | variadic of PDL handle to an `mlir::Operation *` |
+
+
+### `transform.air.fuse_elementwise_linalg` (transform::FuseElementwiseLinalgOp)
+
+_Apply linalg elementwise fusion patterns to a func.func operation_
+
+Syntax:
+
+```
+operation ::= `transform.air.fuse_elementwise_linalg` $target attr-dict
+```
+
+This transform walks the body of a func.func operation and applies the 
+linalg elementwise fusion patterns, which include:
+- FuseElementwiseOps: Fuses producer elementwise operations into consumer operations
+- FoldFillWithGenericOp: Folds fill operations into generic operations
+- FoldScalarOrSplatConstant: Folds scalar or splat constants
+- RemoveOutsDependency: Removes unnecessary output dependencies
+- EraseUnusedOperandsAndResults: Cleans up dead operands and results
+
+This is the transform dialect equivalent of running the `-linalg-fuse-elementwise-ops`
+pass on the target function.
+
+Example:
+```mlir
+// Before fusion:
+%0 = linalg.generic {
+  indexing_maps = [#map0, #map1],
+  iterator_types = ["parallel"]
+} ins(%input : tensor<16xf32>) outs(%temp1 : tensor<16xf32>) {
+  ^bb0(%arg0: f32, %arg1: f32):
+    %1 = arith.mulf %arg0, %cst : f32
+    linalg.yield %1 : f32
+} -> tensor<16xf32>
+
+%result = linalg.generic {
+  indexing_maps = [#map0, #map2, #map1],
+  iterator_types = ["parallel"]
+} ins(%0, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%temp2 : tensor<16xf32>) {
+  ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
+    %2 = arith.addf %arg0, %arg1 : f32
+    linalg.yield %2 : f32
+} -> tensor<16xf32>
+
+// After fusion:
+%result = linalg.generic {
+  indexing_maps = [#map0, #map2, #map1],
+  iterator_types = ["parallel"]
+} ins(%input, %input2 : tensor<16xf32>, tensor<16xf32>) outs(%temp2 : tensor<16xf32>) {
+  ^bb0(%arg0: f32, %arg1: f32, %arg2: f32):
+    %1 = arith.mulf %arg0, %cst : f32
+    %2 = arith.addf %1, %arg1 : f32
+    linalg.yield %2 : f32
+} -> tensor<16xf32>
+```
+
+Returns a handle to the modified function.
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | PDL handle to an `mlir::Operation *` |
 
 
 ### `transform.air.fuse_extf_linalg` (transform::FuseExtfLinalgOp)
