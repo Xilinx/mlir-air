@@ -7,7 +7,7 @@
 - **Python 3.10+** (required by the wheels)
 - **gcc >= 11**
 - **pip** (Python package manager)
-- **XRT** installed (you must provide the path to your XRT installation)
+- **XRT** (optional, required only for running on hardware)
 
 ### Steps
 
@@ -28,10 +28,19 @@
    ```
 
 4. **Run the build script:**
+   
+   **Without XRT (software-only build):**
    ```bash
-   ./utils/build-mlir-air-using-wheels.sh <xrt_dir> [build_dir] [install_dir]
+   ./utils/build-mlir-air-using-wheels.sh [build_dir] [install_dir]
    ```
-   - `<xrt_dir>`: Path to your XRT installation (required)
+   
+   **With XRT (for hardware execution):**
+   ```bash
+   ./utils/build-mlir-air-using-wheels.sh --xrt-dir <xrt_path> [build_dir] [install_dir]
+   ```
+   
+   Parameters:
+   - `--xrt-dir <xrt_path>`: Path to your XRT installation (optional, only needed for hardware execution)
    - `[build_dir]`: Build directory (optional, default: `build`)
    - `[install_dir]`: Install directory (optional, default: `install`)
 
@@ -41,15 +50,21 @@
    - Install `mlir-aie` dependencies from wheels
    - Clone required CMake modules
    - Configure and build MLIR-AIR using CMake and Ninja
+   - Optionally configure XRT support if `--xrt-dir` is provided
 
 5. **Environment Setup:**
    To setup your environment after building:
    ```bash
    source utils/env_setup.sh [install_dir] $(python3 -m pip show mlir_aie | grep Location | awk '{print $2}')/mlir_aie my_install/mlir
+   ```
+   This command automatically detects the installation directories of the `mlir-aie` Python package, and sets up environment variables for MLIR-AIE, Python, and MLIR libraries.
+   
+   **If you built with XRT support**, also run:
+   ```bash
    source [xrt_dir]/setup.sh
    ```
-   The first command automatically detects the installation directories of the `mlir-aie` Python package, and sets up environment variables for MLIR-AIE, Python, and MLIR libraries.  
-   The second command sets up the PATHs for XRT.
+   This sets up the PATHs for XRT.
+   
    If you start a new terminal, you may need to re-source the above setup scripts as needed.
 
 6. **Testing:**
@@ -60,7 +75,10 @@
    ninja check-air-cpp
    ninja check-air-mlir
    ninja check-air-python
-
+   ```
+   
+   **If you built with XRT support**, you can also run XRT/hardware tests:
+   ```bash
    # Run LIT tests (set -DLLVM_EXTERNAL_LIT if needed)
    lit -sv --time-tests --show-unsupported --show-excluded --timeout 600 -j5 test/xrt
 

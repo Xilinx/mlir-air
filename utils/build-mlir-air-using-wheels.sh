@@ -15,9 +15,11 @@
 #       and Python 3.10 and above. For lit tests, please set -DLLVM_EXTERNAL_LIT
 #       path.
 #
-# <xrt dir>    - required, xrt dir.
-# <build dir>    - optional, build dir name, default is 'build'
-# <install dir>  - optional, install dir name, default is 'install'
+# Usage: build-mlir-air-using-wheels.sh [--xrt-dir <xrt_path>] [<build_dir>] [<install_dir>]
+#
+# --xrt-dir <path> - optional, path to XRT installation directory
+# <build dir>      - optional, build dir name, default is 'build'
+# <install dir>    - optional, install dir name, default is 'install'
 #
 ##===----------------------------------------------------------------------===##
 
@@ -64,10 +66,34 @@ git clone https://github.com/Xilinx/cmakeModules.git
 CMAKEMODULES_DIR=$(pwd)/cmakeModules
 popd
 
+# Parse command-line arguments
+XRT_DIR=""
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --xrt-dir)
+      if [ -z "$2" ] || [[ "$2" == --* ]]; then
+        echo "Error: --xrt-dir requires a path argument"
+        exit 1
+      fi
+      XRT_DIR=$(realpath "$2")
+      if [ ! -d "$XRT_DIR" ]; then
+        echo "Error: XRT directory does not exist: $XRT_DIR"
+        exit 1
+      fi
+      shift 2
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
 # Build mlir-air
-XRT_DIR=`realpath $1`
-BUILD_DIR=${2:-"build"}
-INSTALL_DIR=${3:-"install"}
+BUILD_DIR=${POSITIONAL_ARGS[0]:-"build"}
+INSTALL_DIR=${POSITIONAL_ARGS[1]:-"install"}
 
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
@@ -89,13 +115,21 @@ CMAKE_ARGS="$CMAKE_ARGS -DAIE_DIR=${MLIR_AIE_INSTALL_DIR}/lib/cmake/aie"
 CMAKE_ARGS="$CMAKE_ARGS -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11"
 CMAKE_ARGS="$CMAKE_ARGS -DPython_FIND_VIRTUALENV=ONLY"
 CMAKE_ARGS="$CMAKE_ARGS -DPython3_FIND_VIRTUALENV=ONLY"
-CMAKE_ARGS="$CMAKE_ARGS -DXRT_LIB_DIR=${XRT_DIR}/lib"
-CMAKE_ARGS="$CMAKE_ARGS -DXRT_BIN_DIR=${XRT_DIR}/bin"
-CMAKE_ARGS="$CMAKE_ARGS -DXRT_INCLUDE_DIR=${XRT_DIR}/include"
+
+# Add XRT-related arguments only if XRT directory is provided
+if [ -n "$XRT_DIR" ]; then
+  echo "Building with XRT support from: $XRT_DIR"
+  CMAKE_ARGS="$CMAKE_ARGS -DXRT_LIB_DIR=${XRT_DIR}/lib"
+  CMAKE_ARGS="$CMAKE_ARGS -DXRT_BIN_DIR=${XRT_DIR}/bin"
+  CMAKE_ARGS="$CMAKE_ARGS -DXRT_INCLUDE_DIR=${XRT_DIR}/include"
+  CMAKE_ARGS="$CMAKE_ARGS -DENABLE_RUN_XRT_TESTS=ON"
+else
+  echo "Building without XRT support"
+fi
+
 CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release"
 CMAKE_ARGS="$CMAKE_ARGS -DAIR_RUNTIME_TARGETS=x86_64"
 CMAKE_ARGS="$CMAKE_ARGS -DBUILD_SHARED_LIBS=OFF"
-CMAKE_ARGS="$CMAKE_ARGS -DENABLE_RUN_XRT_TESTS=ON"
 CMAKE_ARGS="$CMAKE_ARGS -DLLVM_ENABLE_ASSERTIONS=on"
 CMAKE_ARGS="$CMAKE_ARGS -DPEANO_INSTALL_DIR=${PEANO_INSTALL_DIR}"
 
