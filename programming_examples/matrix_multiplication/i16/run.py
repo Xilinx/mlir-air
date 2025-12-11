@@ -532,10 +532,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--compile-mode",
         type=str,
-        choices=["compile-only", "compile-and-run"],
+        choices=["compile-only", "compile-and-xclbin", "compile-and-run"],
         dest="compile_mode",
         default="compile-and-run",
-        help="Configure to whether to run after compile",
+        help="Configure compilation mode: compile-only (no XRT, no xclbin), compile-and-xclbin (requires XRT, generates xclbin), or compile-and-run (requires XRT, generates xclbin and runs)",
     )
     parser.add_argument(
         "--direct-codegen",
@@ -766,8 +766,8 @@ if __name__ == "__main__":
             )
         )
 
-    elif args.compile_mode == "compile-only":
-        ###### Compile only
+    elif args.compile_mode == "compile-and-xclbin":
+        ###### Compile and generate xclbin (requires XRT, no execution)
         backend_kwargs = {
             "verbose": args.verbose,
             "omit_while_true_loop": False,
@@ -781,3 +781,27 @@ if __name__ == "__main__":
         module_function = backend.compile(mlir_module)
 
         backend.unload()
+
+    elif args.compile_mode == "compile-only":
+        ###### Compile only (without XRT dependencies)
+        # Map architecture to target device
+        target_device = "npu2" if args.arch == "aie2p" else "npu1"
+
+        backend_kwargs = {
+            "verbose": args.verbose,
+            "target_device": target_device,  # Explicit target based on arch (no xrt dependencies)
+            "output_format": "none",  # Skip xclbin generation (no xrt dependencies)
+            "omit_while_true_loop": False,
+            "runtime_loop_tiling_sizes": [2, 2],
+        }
+        # Only use external kernel library if NOT in direct codegen mode
+        if not args.direct_codegen:
+            backend_kwargs["lower_linalg_to_func"] = "mm.o"
+
+        backend = XRTBackend(**backend_kwargs)
+        module_function = backend.compile(mlir_module)
+
+        backend.unload()
+
+        print("Compilation completed successfully!")
+        exit(0)
