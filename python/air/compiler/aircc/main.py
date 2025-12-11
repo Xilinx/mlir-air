@@ -581,8 +581,11 @@ def run(mlir_module, args=None):
                 aiecc_output_file_options = ["--aie-generate-xclbin"]
             elif opts.output_format == "txn":
                 aiecc_output_file_options = ["--aie-generate-txn"]
+            elif opts.output_format == "none":
+                # Compile-only mode: generate intermediate artifacts without xclbin/txn
+                aiecc_output_file_options = []
             else:
-                print("Error: unknown output-format")
+                print("Error: unknown output-format (valid: xclbin, txn, none)")
                 sys.exit(1)
             aiecc_output_file_options = aiecc_output_file_options + [
                 (
@@ -611,7 +614,6 @@ def run(mlir_module, args=None):
                     "--no-aiesim",
                     "--xchesscc" if opts.xchesscc else "--no-xchesscc",
                     "--xbridge" if opts.xbridge else "--no-xbridge",
-                    "--aie-generate-xclbin",
                     "--aie-generate-npu",
                     "--no-compile-host",
                     "--npu-insts-name=" + insts_file,

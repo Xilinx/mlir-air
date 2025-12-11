@@ -98,6 +98,112 @@
 
 ---
 
+## Running a Quick Example
+
+After building MLIR-AIR, you can try the i8 matrix multiplication example to verify your setup and understand the different compilation workflows. Matmul shapes are configurable in the Makefile.
+
+### Example 1: Hardware-Free Compilation (No XRT Required)
+
+This mode is useful for **cross-compilation** or **development without hardware access**. It generates intermediate compilation artifacts without requiring XRT to be installed:
+
+```bash
+cd programming_examples/matrix_multiplication/i8
+make run4x4 COMPILE_MODE=compile-only
+```
+
+**Expected output:** `Compilation completed successfully!`
+
+**What this does:**
+- Compiles AIR dialect code through the full compilation pipeline
+- Generates intermediate MLIR files and NPU instructions
+- Does **not** generate xclbin (no `xclbinutil` needed)
+- Does **not** require XRT or hardware
+
+**When to use:**
+- Building on a system without XRT installed
+- Cross-compiling for deployment on another system
+- CI/CD pipelines
+- Early development and testing
+
+### Example 2: Full Workflow with Hardware (Default)
+
+If you have XRT and Ryzen AI hardware available, run the complete workflow:
+
+```bash
+cd programming_examples/matrix_multiplication/i8
+make run4x4
+```
+
+**Expected output:** `PASS!`
+
+**What this does:**
+- Compiles the AIR code
+- Generates xclbin and instruction files
+- Loads and executes on NPU hardware
+- Validates results against expected outputs
+
+This is the default mode (`COMPILE_MODE=compile-and-run`) for users with hardware.
+
+### Example 3: Advanced - Profiling with Custom Host Code
+
+For specialized workflows like profiling with custom test executables:
+
+```bash
+make profile
+```
+
+**What this does:**
+- Uses `compile-and-xclbin` mode to generate xclbin and instructions
+- Runs a custom C++ test executable (not xrt_runner) for detailed profiling
+- Useful for performance measurement and custom host integration
+
+The `sweep4x4` target similarly uses `compile-and-xclbin` to benchmark across multiple problem sizes with a custom test harness.
+
+### Additional Examples
+
+**Different herd configurations:**
+```bash
+make run2x2 COMPILE_MODE=compile-only  # 2x2 herd
+make run8x4 COMPILE_MODE=compile-only  # 8x4 herd
+```
+
+**Different architectures:**
+```bash
+make run4x4 AIE_TARGET=aie2p COMPILE_MODE=compile-only  # For NPU2/Strix
+make run4x4 AIE_TARGET=aie2                              # For NPU1/Phoenix (default)
+```
+
+**View generated MLIR:**
+```bash
+make print  # Display MLIR module without compiling
+```
+
+**Clean build artifacts:**
+```bash
+make clean
+```
+
+### Other Data Types
+
+The same patterns work for other matrix multiplication examples:
+- `programming_examples/matrix_multiplication/bf16/` - bfloat16 matrix multiply
+- `programming_examples/matrix_multiplication/i16/` - int16 matrix multiply
+
+### Exploring More Examples
+
+Explore `programming_examples/` for many more examples including:
+- Element-wise operations
+- Softmax
+- Sine/cosine
+- Llama 2-style multi-head attention
+- Flash attention
+- Vector instruction micro-benchmark
+- And more
+
+Most examples follow similar Makefile patterns with `COMPILE_MODE` and `AIE_TARGET` support.
+
+---
+
 ## Manual Build (Advanced/Legacy)
 
 The following instructions describe the manual, source-based build process. This is generally not required unless you need to build from source for development or debugging.

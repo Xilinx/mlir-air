@@ -12,7 +12,6 @@ import air.compiler.util
 import air.compiler.aircc.main as aircc
 
 import numpy as np
-import pyxrt as xrt
 import os
 
 from ml_dtypes import bfloat16
@@ -46,6 +45,7 @@ class XRTBackend(AirBackend):
     def __init__(
         self,
         verbose: bool = False,
+        target_device: str = None,
         omit_while_true_loop: bool = False,
         omit_pingpong: str = "",
         lower_linalg_to_func: str = None,
@@ -67,6 +67,7 @@ class XRTBackend(AirBackend):
 
         Args:
             verbose: verbose output
+            target_device: specify target device explicitly ("npu1", "npu2", etc.). If None, will attempt auto-detection via xrt-smi. This parameter is useful when compiling without XRT installed.
             omit_while_true_loop: configure aircc to omit the while true loop it traditionally emits.
             omit_pingpong: configure aircc to omit the generation of ping-pong buffering for specific memory levels. Supported values: "", "L1", "L2", "all". Empty string means no omission (default).
             lower_linalg_to_func: configure aircc to lower linalg.generic to function calls, or loops.
@@ -88,6 +89,7 @@ class XRTBackend(AirBackend):
         """
         super().__init__()
         self.verbose = verbose
+        self.target_device = target_device
         self.omit_while_true_loop = omit_while_true_loop
         # Support backward compatibility: convert True to "all", False to ""
         if isinstance(omit_pingpong, bool):
@@ -137,43 +139,52 @@ class XRTBackend(AirBackend):
                 "Cannot use XRTBackend to compile while the artifact is currently loaded. Call unload() first."
             )
 
-        # Try to get xrt.
-        target_device = "npu1"
-        try:
-            import subprocess
-            import re
+        # Determine target device: use explicit parameter if provided, otherwise auto-detect
+        if self.target_device is not None:
+            target_device = self.target_device
+            if self.verbose:
+                print(f"Using explicitly specified target device: {target_device}")
+        else:
+            # Try to auto-detect device via xrt-smi
+            target_device = "npu1"  # Default fallback
+            try:
+                import subprocess
+                import re
 
-            xrtsmi = "/opt/xilinx/xrt/bin/xrt-smi"
-            result = subprocess.run(
-                [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            result = result.stdout.decode("utf-8").split("\n")
-            # Older format is "|[0000:41:00.1]  ||RyzenAI-npu1  |"
-            # Newer format is "|[0000:41:00.1]  |NPU Phoenix  |"
-            p = re.compile(r"[\|]?(\[.+:.+:.+\]).+\|(RyzenAI-(npu\d)|NPU (\w+))\W*\|")
-            for l in result:
-                m = p.match(l)
-                if not m:
-                    continue
+                xrtsmi = "/opt/xilinx/xrt/bin/xrt-smi"
+                result = subprocess.run(
+                    [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                result = result.stdout.decode("utf-8").split("\n")
+                # Older format is "|[0000:41:00.1]  ||RyzenAI-npu1  |"
+                # Newer format is "|[0000:41:00.1]  |NPU Phoenix  |"
+                p = re.compile(
+                    r"[\|]?(\[.+:.+:.+\]).+\|(RyzenAI-(npu\d)|NPU (\w+))\W*\|"
+                )
+                for l in result:
+                    m = p.match(l)
+                    if not m:
+                        continue
+                    if self.verbose:
+                        print("Found Ryzen AI device:", m.group(1))
+                    model = "unknown"
+                    if m.group(3):
+                        model = str(m.group(3))
+                    if m.group(4):
+                        model = str(m.group(4))
+                    if self.verbose:
+                        print(f"\tmodel: '{model}'")
+                    if model in ["npu1", "Phoenix"]:
+                        target_device = "npu1"
+                    elif model in ["npu4", "Strix"]:
+                        target_device = "npu2"
+                    else:
+                        print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
+                    break
+            except Exception as e:
                 if self.verbose:
-                    print("Found Ryzen AI device:", m.group(1))
-                model = "unknown"
-                if m.group(3):
-                    model = str(m.group(3))
-                if m.group(4):
-                    model = str(m.group(4))
-                if self.verbose:
-                    print(f"\tmodel: '{model}'")
-                if model in ["npu1", "Phoenix"]:
-                    target_device = "npu1"
-                elif model in ["npu4", "Strix"]:
-                    target_device = "npu2"
-                else:
-                    print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
-                break
-        except Exception as e:
-            print("Failed to run xrt-smi")
-            print(e)
+                    print("Failed to run xrt-smi, using default target device")
+                    print(e)
 
         # Apply user-specified device column configuration if provided
         if self.num_device_cols > 0:
@@ -356,6 +367,18 @@ class XRTBackend(AirBackend):
             assumed to be an input/output tensor. The callable also returns a
             list of numpy arrays, one for each tensor.
         """
+        # Try to import pyxrt - it's only needed for load(), not compile()
+        try:
+            import pyxrt as xrt
+        except ImportError:
+            raise AirBackendError(
+                "XRT runtime (pyxrt) is not available. "
+                "The compile() method can generate artifacts without XRT, "
+                "but load() requires XRT to be installed for hardware execution. "
+                "To compile without XRT, use compile() and specify target_device parameter. "
+                "Install XRT to use load() for hardware execution."
+            )
+
         if self.currently_loaded:
             raise AirBackendError(
                 "Cannot use XRTBackend to compile while the artifact is currently loaded. Call unload() first."

@@ -192,10 +192,10 @@ def parse_args(args=None):
     parser.add_argument(
         "--output-format",
         type=str,
-        choices=["xclbin", "txn"],
+        choices=["xclbin", "txn", "none"],
         dest="output_format",
         default="xclbin",
-        help="File format for the generated binary",
+        help="File format for the generated binary. Use 'none' for compile-only mode without XRT dependencies (generates intermediate artifacts only).",
     )
     parser.add_argument(
         "--xclbin-kernel-name",
