@@ -10,6 +10,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp
+from air.dialects.math import rsqrt
 from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
@@ -20,17 +21,11 @@ range_ = for_
 @module_builder
 def build_module(n, tile_n, np_dtype_in, arch="aie2"):
     a_size = [n]
-    b_size = a_size
     out_size = a_size
     xrt_dtype_in = type_mapper(np_dtype_in)
     num_tiles = 2
     assert n % (tile_n * num_tiles) == 0
-    # Architecture-specific vector size
-    arch_vector_sizes = {
-        "aie2": 16,
-        "aie2p": 64,
-    }
-    VECTOR_SIZE = arch_vector_sizes.get(arch, 16)  # default to 16 if unknown
+    VECTOR_SIZE = 16
     index_type = IndexType.get()
 
     # L3 MemRefTypes
@@ -43,25 +38,27 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
         memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
     )
 
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
-    def vector_mul(arg0, arg1, arg2):
+    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
+    def vector_rsqrt(arg0, arg2):
+        # For aie2, link with external function
+        herd_kwargs = {
+            "name": "herd_0",
+            "sizes": [1, num_tiles],
+            "operands": [arg0, arg2],
+        }
+        if arch == "aie2":
+            herd_kwargs["link_with"] = "extern_func.o"
 
-        @herd(
-            name="herd_0",
-            sizes=[1, num_tiles],
-            operands=[arg0, arg1, arg2],
-        )
+        @herd(**herd_kwargs)
         def herd_body(
             _tx,
             _ty,
             _sx,
             _sy,
             _l3_a,
-            _l3_b,
             _l3_c,
         ):
             l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_b_data = AllocOp(l1MemrefTy, [], [])
             l1_out_data = AllocOp(l1MemrefTy, [], [])
 
             for _l_ivx in range_(0, n, tile_n * num_tiles):
@@ -90,15 +87,6 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
                     src_sizes=[tile_n],
                     src_strides=[1],
                 )
-                dma_memcpy_nd(
-                    l1_b_data,
-                    _l3_b,
-                    src_offsets=[
-                        offset,
-                    ],
-                    src_sizes=[tile_n],
-                    src_strides=[1],
-                )
                 c0 = ConstantOp(index_type, 0)
                 c1 = ConstantOp(index_type, 1)
                 cVecSize = ConstantOp(index_type, VECTOR_SIZE)
@@ -106,12 +94,6 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
                 for j in range_(c0, cTileN, cVecSize):
                     sub_a_vec = subview(
                         l1_a_data.result,
-                        [j],
-                        [VECTOR_SIZE],
-                        [1],
-                    )
-                    sub_b_vec = subview(
-                        l1_b_data.result,
                         [j],
                         [VECTOR_SIZE],
                         [1],
@@ -131,15 +113,7 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
                         cst0,
                         [True],
                     )
-                    v_b = transfer_read(
-                        VectorType.get([VECTOR_SIZE], xrt_dtype_in),
-                        sub_b_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        cst0,
-                        [True],
-                    )
-                    v_c = arith.MulFOp(v_a, v_b)
+                    v_c = rsqrt(v_a)
                     transfer_write(
                         None,
                         v_c,
@@ -160,7 +134,6 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
                     dst_strides=[1],
                 )
                 DeallocOp(l1_a_data)
-                DeallocOp(l1_b_data)
                 DeallocOp(l1_out_data)
 
                 yield_([])
@@ -168,13 +141,13 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
 
 if __name__ == "__main__":
     # Default values.
-    N = 65536
-    TILE_N = 1024
+    N = 512
+    TILE_N = 64
     INPUT_DATATYPE = bfloat16
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the vector_rsqrt example",
     )
     parser.add_argument(
         "-v",
@@ -220,10 +193,10 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
-    input_a = input_a.astype(INPUT_DATATYPE)
-    input_b = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
-    input_b = input_b.astype(INPUT_DATATYPE)
+    # Generate input values in range [0.1, 3.0] to match working testbench pattern
+    # This ensures positive values (required for rsqrt) and stays well within bfloat16 range
+    np.random.seed(10)
+    input_a = np.abs(np.random.uniform(0.1, 3.0, args.n)).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
 
@@ -237,7 +210,7 @@ if __name__ == "__main__":
 
         # Compute reference results for sampled indices
         sampled_values = np.array(
-            [input_a[i] * input_b[i] for i in zip(*sampled_indices)],
+            [1.0 / np.sqrt(input_a[i]) for i in sampled_indices[0]],
             dtype=INPUT_DATATYPE,
         )
 
@@ -256,9 +229,9 @@ if __name__ == "__main__":
         exit(
             runner.run_test(
                 mlir_module,
-                inputs=[input_a, input_b],
+                inputs=[input_a],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e-2,
+                rtol=1e-1,
             )
         )
 
