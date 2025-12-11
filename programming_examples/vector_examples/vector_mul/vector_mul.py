@@ -18,14 +18,19 @@ range_ = for_
 
 
 @module_builder
-def build_module(n, tile_n, np_dtype_in):
+def build_module(n, tile_n, np_dtype_in, arch="aie2"):
     a_size = [n]
     b_size = a_size
     out_size = a_size
     xrt_dtype_in = type_mapper(np_dtype_in)
     num_tiles = 2
     assert n % (tile_n * num_tiles) == 0
-    VECTOR_SIZE = 64
+    # Architecture-specific vector size
+    arch_vector_sizes = {
+        "aie2": 16,
+        "aie2p": 64,
+    }
+    VECTOR_SIZE = arch_vector_sizes.get(arch, 16)  # default to 16 if unknown
     index_type = IndexType.get()
 
     # L3 MemRefTypes
@@ -189,6 +194,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
     parser.add_argument(
+        "--arch",
+        type=str,
+        choices=["aie2", "aie2p"],
+        default="aie2",
+        help="Target AIE architecture (aie2 or aie2p)",
+    )
+    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
@@ -202,6 +214,7 @@ if __name__ == "__main__":
         args.n,
         args.tile_n,
         INPUT_DATATYPE,
+        args.arch,
     )
     if args.print_module_only:
         print(mlir_module)
