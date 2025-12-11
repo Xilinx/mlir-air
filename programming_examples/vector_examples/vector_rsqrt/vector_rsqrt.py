@@ -210,7 +210,7 @@ if __name__ == "__main__":
 
         # Compute reference results for sampled indices
         sampled_values = np.array(
-            [1.0 / np.sqrt(input_a[i]) for i in zip(*sampled_indices)],
+            [1.0 / np.sqrt(input_a[i]) for i in sampled_indices[0]],
             dtype=INPUT_DATATYPE,
         )
 
