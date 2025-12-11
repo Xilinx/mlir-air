@@ -811,4 +811,4 @@ if __name__ == "__main__":
         backend.unload()
 
         print("Compilation completed successfully!")
-        exit(0)
+        sys.exit(0)
