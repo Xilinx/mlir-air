@@ -12,8 +12,6 @@ from collections import defaultdict
 from ml_dtypes import bfloat16
 import timeit
 
-from aie.utils.xrt import write_out_trace, extract_trace
-
 TYPE_MAP_DICT = defaultdict(
     lambda: None,
     {
@@ -249,6 +247,16 @@ class XRTRunner:
 
         # Handle trace data extraction and saving
         if self.trace_size > 0:
+            # Import XRT utilities only when needed for trace handling
+            try:
+                from aie.utils.xrt import write_out_trace, extract_trace
+            except ImportError:
+                raise AirBackendError(
+                    "XRT utilities (aie.utils.xrt) are not available. "
+                    "Trace functionality requires XRT to be installed. "
+                    "Install XRT to use trace_size parameter."
+                )
+
             actual_outputs[0], trace = extract_trace(
                 actual_outputs[0],
                 expected_outputs_0_shape,
