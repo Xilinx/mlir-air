@@ -200,7 +200,7 @@ Explore `programming_examples/` for many more examples including:
 - Vector instruction micro-benchmark
 - And more
 
-Most examples follows similar Makefile patterns with `COMPILE_MODE` and `AIE_TARGET` support.
+Most examples follow similar Makefile patterns with `COMPILE_MODE` and `AIE_TARGET` support.
 
 ---
 
