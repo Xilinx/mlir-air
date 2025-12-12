@@ -129,6 +129,7 @@ class XRTRunner:
         expected_outputs: List[np.ndarray] = [],
         stochastic_expected_outputs: List[np.ndarray] = [],
         rtol: float = 1e-3,
+        atol: float = 1e-8,
         trace_file: str = None,
     ):
         """
@@ -138,6 +139,7 @@ class XRTRunner:
             expected_outputs: expected output matrices.
             stochastic_expected_outputs: expected output matrices stored in sparse coordinates. Expect each matrix to be a dictionary containing "shape", "indices" and "values" fields.
             rtol: relative error tolerance.
+            atol: absolute error tolerance.
             trace_file: optional override for trace data filename. If None, uses instance default.
         """
         if self.verbose:
@@ -273,6 +275,7 @@ class XRTRunner:
                 actual_outputs=actual_outputs,
                 expected_outputs=expected_outputs,
                 rtol=rtol,
+                atol=atol,
             ):
                 print("PASS!")
                 return_code = 0
@@ -284,6 +287,7 @@ class XRTRunner:
                 actual_outputs=actual_outputs,
                 stochastic_expected_outputs=stochastic_expected_outputs,
                 rtol=rtol,
+                atol=atol,
             ):
                 print("PASS!")
                 return_code = 0
@@ -307,6 +311,7 @@ class XRTRunner:
         actual_outputs: List[np.ndarray],
         expected_outputs: List[np.ndarray],
         rtol: float = 1e-3,
+        atol: float = 1e-8,
     ):
         assert len(actual_outputs) == len(
             expected_outputs
@@ -332,7 +337,7 @@ class XRTRunner:
                 if expected.dtype == bfloat16:
                     expected = expected.astype(np.float64)
                     actual = actual.astype(np.float64)
-                if not np.allclose(actual, expected, rtol=rtol):
+                if not np.allclose(actual, expected, rtol=rtol, atol=atol):
                     print(f"ERROR: Output {i} does not meet expected output.")
                     print("Expected: ")
                     print(expected)
@@ -355,6 +360,7 @@ class XRTRunner:
         actual_outputs: List[np.ndarray],
         stochastic_expected_outputs: List[np.ndarray],
         rtol: float = 1e-3,
+        atol: float = 1e-8,
     ):
         assert len(actual_outputs) == len(
             stochastic_expected_outputs
@@ -390,7 +396,9 @@ class XRTRunner:
                     expected["values"] = expected["values"].astype(np.float64)
                     actual = actual.astype(np.float64)
                 actual_stochastic = actual[tuple(expected["indices"])]
-                if not np.allclose(actual_stochastic, expected["values"], rtol=rtol):
+                if not np.allclose(
+                    actual_stochastic, expected["values"], rtol=rtol, atol=atol
+                ):
                     print(f"ERROR: Output {i} does not meet expected output.")
                     print("Expected: ")
                     print(expected["values"])
