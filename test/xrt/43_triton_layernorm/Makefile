@@ -15,9 +15,6 @@ PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS
 
 all: run
 
-print:
-	${powershell} python3 ${srcdir}/softmax.py -p
-
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --transform-script ${srcdir}/transform.mlir
