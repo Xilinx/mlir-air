@@ -14,7 +14,7 @@ import filelock
 
 parser = argparse.ArgumentParser(
     prog="run.py",
-    description="Builds, runs, and tests the matmul example",
+    description="Builds, runs, and tests the LayerNorm example",
 )
 parser.add_argument(
     "--transform-script",
