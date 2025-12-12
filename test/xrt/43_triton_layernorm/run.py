@@ -222,7 +222,7 @@ with air.ir.Context() as ctx, Location.unknown():
     run_transform(transform_ir, air_module)
 
     ###############################################
-    # Binding scf.paralell to air hierarchies
+    # Binding scf.parallel to air hierarchies
     ###############################################
     M, N = args.M, args.N
     input_size = (M, N)
