@@ -16,12 +16,35 @@ AIE_TARGET ?= aie2
 
 all: run
 
+# Default target (Version 1)
 print:
-	${powershell} python3 ${srcdir}/vector_rsqrt.py -p --arch $(AIE_TARGET)
+	${powershell} python3 ${srcdir}/vector_rsqrt_v1.py -p --arch $(AIE_TARGET)
 
-run: compile-kernel
+run: run-v1
+
+# Version 1: f32 vector rsqrt
+print-v1:
+	${powershell} python3 ${srcdir}/vector_rsqrt_v1.py -p --arch $(AIE_TARGET)
+
+run-v1: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_rsqrt.py --arch $(AIE_TARGET)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_rsqrt_v1.py --arch $(AIE_TARGET)
+
+# Version 2: f32 scalar rsqrt in loop
+print-v2:
+	${powershell} python3 ${srcdir}/vector_rsqrt_v2.py -p --arch $(AIE_TARGET)
+
+run-v2: compile-kernel
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_rsqrt_v2.py --arch $(AIE_TARGET)
+
+# Version 3: bf16 vector rsqrt with f32 conversion
+print-v3:
+	${powershell} python3 ${srcdir}/vector_rsqrt_v3.py -p --arch $(AIE_TARGET)
+
+run-v3: compile-kernel
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_rsqrt_v3.py --arch $(AIE_TARGET)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
