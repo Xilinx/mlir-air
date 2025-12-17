@@ -307,12 +307,13 @@ transform.with_pdl_patterns {
         // using the "innerreduction" strategy, which generates code suitable for
         // AIE's reduction intrinsics.
         %func7 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        transform.apply_patterns to %func7 {
+        %func7_transformed = transform.air.convert_size1_vector_to_scalar %func7
+        transform.apply_patterns to %func7_transformed {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
             transform.apply_patterns.vector.lower_multi_reduction lowering_strategy = "innerreduction"
         } : !pdl.operation
-        transform.apply_cse to %func7 : !pdl.operation
+        transform.apply_cse to %func7_transformed : !pdl.operation
     }
 }
