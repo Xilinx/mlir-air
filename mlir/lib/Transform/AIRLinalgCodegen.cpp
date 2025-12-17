@@ -5311,13 +5311,20 @@ DiagnosedSilenceableFailure transform::ConvertSize1VectorToScalarOp::apply(
                  ConvertSize1VectorStoreToStore, ConvertSize1VectorOpsToScalar>(
         ctx);
 
-    (void)applyPatternsGreedily(target, std::move(patterns));
+    if (failed(applyPatternsGreedily(target, std::move(patterns)))) {
+      return emitDefiniteFailure()
+             << "failed to apply size-1 vector-to-scalar rewrite patterns";
+    }
 
     // Run canonicalization to fold extract(broadcast(x)) -> x
     RewritePatternSet canonPatterns(ctx);
     vector::ExtractOp::getCanonicalizationPatterns(canonPatterns, ctx);
     vector::BroadcastOp::getCanonicalizationPatterns(canonPatterns, ctx);
-    (void)applyPatternsGreedily(target, std::move(canonPatterns));
+    if (failed(applyPatternsGreedily(target, std::move(canonPatterns)))) {
+      return emitDefiniteFailure()
+             << "failed to apply canonicalization patterns "
+                "after size-1 vector-to-scalar conversion";
+    }
 
     transformedOps.push_back(target);
   }
