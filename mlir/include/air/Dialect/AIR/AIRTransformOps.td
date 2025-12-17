@@ -1250,4 +1250,93 @@ def BroadcastBeforeUnaryOp : Op<Transform_Dialect, "air.broadcast_before_unary",
   let assemblyFormat = "$target attr-dict";
 }
 
+def ConvertSize1VectorToScalarOp : Op<Transform_Dialect, "air.convert_size1_vector_to_scalar",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Convert size-1 vector operations to scalar operations following LLVM's approach";
+  let description = [{
+    This transform converts operations on size-1 vectors (e.g., vector<1xf32>, vector<1x1xi32>) 
+    to use scalar operations instead. Following LLVM's VectorDropLeadUnitDim pattern, it uses
+    rewrite patterns (NOT a TypeConverter) and inserts extract/broadcast operations at boundaries.
+    
+    **Key transformations:**
+    1. **vector.transfer_read** with vector<1xT> → **memref.load** (scalar) + **vector.broadcast**
+    2. **vector.transfer_write** with vector<1xT> → **vector.extract** + **memref.store** (scalar)
+    3. **vector.load** with vector<1xT> → **memref.load** (scalar) + **vector.broadcast**
+    4. **vector.store** with vector<1xT> → **vector.extract** + **memref.store** (scalar)
+    5. **Elementwise operations** on vector<1xT> → **vector.extract** + scalar op + **vector.broadcast**
+    
+    **Important:** Function signatures and block argument types remain as vector<1xT>. 
+    Only the operations inside are converted to scalars, with extract/broadcast at boundaries.
+    Canonicalization then folds redundant extract(broadcast(x)) → x pairs.
+    
+    Example with memory operations:
+    ```mlir
+    // Before:
+    %v = vector.transfer_read %mem[%i, %j], %pad : memref<8x8xf32>, vector<1xf32>
+    %result = arith.mulf %v, %v : vector<1xf32>
+    vector.transfer_write %result, %mem[%i, %j] : vector<1xf32>, memref<8x8xf32>
+    
+    // After:
+    %scalar = memref.load %mem[%i, %j] : memref<8x8xf32>
+    %result = arith.mulf %scalar, %scalar : f32
+    memref.store %result, %mem[%i, %j] : memref<8x8xf32>
+    ```
+    
+    Example with function arguments (extract/broadcast at boundaries):
+    ```mlir
+    // Before:
+    func.func @foo(%a: vector<1xf32>, %b: vector<1xf32>) -> vector<1xf32> {
+      %add = arith.addf %a, %b : vector<1xf32>
+      %mul = arith.mulf %add, %a : vector<1xf32>
+      return %mul : vector<1xf32>
+    }
+    
+    // After:
+    func.func @foo(%a: vector<1xf32>, %b: vector<1xf32>) -> vector<1xf32> {
+      %0 = vector.extract %a[0] : f32 from vector<1xf32>
+      %1 = vector.extract %b[0] : f32 from vector<1xf32>
+      %2 = arith.addf %0, %1 : f32
+      %3 = vector.extract %a[0] : f32 from vector<1xf32>
+      %4 = arith.mulf %2, %3 : f32
+      %5 = vector.broadcast %4 : f32 to vector<1xf32>
+      return %5 : vector<1xf32>
+    }
+    ```
+    
+    Example with loops (boundaries preserved):
+    ```mlir
+    // Before:
+    %result = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init) -> (vector<1xf32>) {
+      %add = arith.addf %arg, %cst : vector<1xf32>
+      scf.yield %add : vector<1xf32>
+    }
+    
+    // After:
+    %result = scf.for %i = %c0 to %c4 step %c1 iter_args(%arg = %init) -> (vector<1xf32>) {
+      %0 = vector.extract %arg[0] : f32 from vector<1xf32>
+      %1 = arith.addf %0, %cst_scalar : f32
+      %2 = vector.broadcast %1 : f32 to vector<1xf32>
+      scf.yield %2 : vector<1xf32>
+    }
+    ```
+    
+    **Result:** Clean scalar operations on memref.load/store with extract/broadcast only 
+    at region boundaries. Canonicalization folds adjacent extract/broadcast pairs automatically.
+    
+    Usage:
+    ```mlir
+    %func = transform.structured.match ops{["func.func"]} in %arg0 
+      : (!pdl.operation) -> !pdl.operation
+    transform.air.convert_size1_vector_to_scalar %func
+    ```
+    
+    Returns a handle to the transformed operation.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
 #endif // AIR_TRANSFORM_OPS
