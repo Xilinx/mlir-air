@@ -19,8 +19,8 @@ module {
       aie.packet_source<%tile_0_2, Trace : 0>
       aie.packet_dest<%tile_0_0, DMA : 1>
     } {keep_pkt_header = true}
-    aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId7(%tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%tile_0_0, MM2S, 0)
   } {sym_name = "segment0"}
   air.channel @channel_0 [1, 1]
   air.channel @channel_1 [1, 1]
