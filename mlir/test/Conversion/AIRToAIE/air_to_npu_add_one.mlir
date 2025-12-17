@@ -89,8 +89,8 @@
 // CHECK:   aie.use_lock(%[[VAL4]], Release, 1)
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
-// CHECK: aie.shim_dma_allocation @air_channel_3(S2MM, 0, 0)
-// CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @air_channel_3(%[[VAL2]], S2MM, 0)
+// CHECK: aie.shim_dma_allocation @air_channel_0(%[[VAL2]], MM2S, 0)
 // CHECK: @func0
 // RACECONDFIX: @func0
 #map2 = affine_map<(d0) -> (d0)>
@@ -218,8 +218,8 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK:   aie.use_lock(%[[VAL4]], Release, 1)
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
-// CHECK: aie.shim_dma_allocation @air_channel_3(S2MM, 0, 0)
-// CHECK: aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @air_channel_3(%[[VAL2]], S2MM, 0)
+// CHECK: aie.shim_dma_allocation @air_channel_0(%[[VAL2]], MM2S, 0)
 // CHECK: @func1
 // RACECONDFIX: @func1
 #map = affine_map<(d0) -> (d0)>

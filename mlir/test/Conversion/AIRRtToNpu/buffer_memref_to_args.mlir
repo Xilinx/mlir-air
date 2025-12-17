@@ -18,9 +18,10 @@
 #map = affine_map<(d0)[] -> (d0 * 8)>
 module {
   aie.device(npu1_1col) {
-    aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId16(%shim_noc_tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @airMemcpyId5(%shim_noc_tile_0_0, MM2S, 0)
   } {sym_name = "segment_0"}
   func.func @func0(%arg0: memref<8x16xi32>, %arg1: memref<16x8xi32>, %arg2: memref<8x8xi32>) {
     %c8_i64 = arith.constant 8 : i64
@@ -61,9 +62,10 @@ module {
 #map = affine_map<(d0)[] -> (d0 * 8)>
 module {
   aie.device(npu1_1col) {
-    aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId16(%shim_noc_tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @airMemcpyId5(%shim_noc_tile_0_0, MM2S, 0)
   } {sym_name = "segment_0"}
   func.func @func1() {
     %c8_i64 = arith.constant 8 : i64
@@ -118,11 +120,12 @@ module {
 
 module {
   aie.device(npu1_1col) {
-    aie.shim_dma_allocation @airMemcpyId26(S2MM, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId10(MM2S, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId7(MM2S, 1, 0)
-    aie.shim_dma_allocation @airMemcpyId13(MM2S, 1, 0)
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId26(%shim_noc_tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @airMemcpyId10(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @airMemcpyId7(%shim_noc_tile_0_0, MM2S, 1)
+    aie.shim_dma_allocation @airMemcpyId13(%shim_noc_tile_0_0, MM2S, 1)
   } {sym_name = "segment_0"}
   func.func @func2() {
     %c128_i64 = arith.constant 128 : i64

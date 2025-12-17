@@ -10,9 +10,9 @@
 
 
 // CHECK-LABEL: aie.device(npu1)
-// CHECK: aie.shim_dma_allocation @airMemcpyId29(S2MM, 0, 0)
-// CHECK: aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-// CHECK: aie.shim_dma_allocation @airMemcpyId10(MM2S, 1, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId29(%shim_noc_tile_0_0, S2MM, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId10(%shim_noc_tile_0_0, MM2S, 1)
 // CHECK: aiex.npu.dma_memcpy_nd(%arg0[0, 0, 0, 0][1, 4, 128, 256][0, 256, 1024, 1]) {id = 0 : i64, metadata = @airMemcpyId4} : memref<512x1024xbf16>
 // CHECK: aiex.npu.dma_memcpy_nd(%arg1[0, 0, 0, 0][32, 8, 8, 16][4096, 64, 512, 1]) {id = 1 : i64, metadata = @airMemcpyId10} : memref<128x8x8x64xbf16>
 // CHECK: aiex.npu.dma_memcpy_nd(%arg1[0, 0, 0, 131072][32, 8, 8, 16][4096, 64, 512, 1]) {id = 2 : i64, metadata = @airMemcpyId10} : memref<128x8x8x64xbf16>
@@ -128,9 +128,10 @@
 
 module {
   aie.device(npu1) {
-    aie.shim_dma_allocation @airMemcpyId29(S2MM, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
-    aie.shim_dma_allocation @airMemcpyId10(MM2S, 1, 0)
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId29(%shim_noc_tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @airMemcpyId10(%shim_noc_tile_0_0, MM2S, 1)
   } {sym_name = "forward_0"}
   airrt.module_metadata{
     airrt.segment_metadata attributes {sym_name = "forward_0"} {

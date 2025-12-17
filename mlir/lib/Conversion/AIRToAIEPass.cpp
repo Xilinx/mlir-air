@@ -2903,10 +2903,9 @@ public:
         // Create shim allocation op.
         if (!SymbolTable::lookupSymbolIn(deviceOp, shim_name)) {
           auto shimAllocationOp = builder.create<AIE::ShimDMAAllocationOp>(
-              builder.getUnknownLoc(), shim_name_attr,
+              builder.getUnknownLoc(), shim_name_attr, t.getDmaTile(),
               AIE::DMAChannelDirAttr::get(ctx, dir),
               builder.getI64IntegerAttr(t.dma_channel.channel),
-              builder.getI64IntegerAttr(t.getDmaTile().getCol()),
               /*plio*/ builder.getBoolAttr(false),
               /*packet*/ nullptr);
 
