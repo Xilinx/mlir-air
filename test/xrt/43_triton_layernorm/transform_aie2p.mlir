@@ -251,11 +251,10 @@ transform.with_pdl_patterns {
         %parallel = transform.loop.forall_to_parallel %forall_as_herd  : (!pdl.operation) -> !pdl.operation
         %herd = transform.air.par_to_herd %parallel
 
-        // Step 2: Link external functions for specialized operations
-        // Annotate the herd with external object file containing optimized
-        // implementations for operations that may not have direct AIE intrinsics.
-        %extern_func_param = transform.param.constant "extern_func.o" -> !transform.any_param
-        transform.annotate %herd "link_with" = %extern_func_param : !pdl.operation, !transform.any_param
+        // Step 2: No external function linking required for aie2p
+        // Unlike aie2, rsqrt lowering in aie2p does not require an external aie_api
+        // implementation. The aie2p architecture provides native support for rsqrt
+        // operations through direct hardware intrinsics.
 
         // Step 3: Convert memory copies to DMA operations
         // AIE uses dedicated DMA engines for efficient data movement. Convert
