@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Version 1: f32 vector rsqrt
 import argparse
+import numpy as np
 from ml_dtypes import bfloat16
 
 from air.ir import *
@@ -145,7 +146,6 @@ if __name__ == "__main__":
     # Default values.
     N = 512
     TILE_N = 64
-    INPUT_DATATYPE = np.float32
 
     parser = argparse.ArgumentParser(
         prog="run.py",
@@ -184,6 +184,14 @@ if __name__ == "__main__":
         help="Configure to whether to run after compile",
     )
     args = parser.parse_args()
+
+    # Set INPUT_DATATYPE based on architecture
+    if args.arch == "aie2":
+        INPUT_DATATYPE = bfloat16
+    elif args.arch == "aie2p":
+        INPUT_DATATYPE = np.float32
+    else:
+        INPUT_DATATYPE = bfloat16  # Default to bfloat16
 
     mlir_module = build_module(
         args.n,
