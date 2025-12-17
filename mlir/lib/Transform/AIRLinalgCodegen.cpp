@@ -5095,11 +5095,7 @@ static bool isSize1VectorType(Type type) {
   if (!vecType)
     return false;
 
-  int64_t numElements = 1;
-  for (int64_t dim : vecType.getShape()) {
-    numElements *= dim;
-  }
-  return numElements == 1;
+  return vecType.getNumElements() == 1;
 }
 
 /// Convert vector.transfer_read of vector<1xT> to memref.load + broadcast
