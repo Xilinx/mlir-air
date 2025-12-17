@@ -13,7 +13,7 @@
 // WHOLEARRAY: %[[shim_noc_tile_1_0:.*]] = aie.tile(1, 0)
 // WHOLEARRAY: %[[shim_noc_tile_2_0:.*]] = aie.tile(2, 0)
 // WHOLEARRAY: %[[shim_noc_tile_3_0:.*]] = aie.tile(3, 0)
-// WHOLEARRAY: aie.shim_dma_allocation @air_channel_2_0(MM2S, 0, 0)
+// WHOLEARRAY: aie.shim_dma_allocation @air_channel_2_0(%[[shim_noc_tile_0_0]], MM2S, 0)
 
 
 #map = affine_map<()[s0] -> (s0 * 256)>

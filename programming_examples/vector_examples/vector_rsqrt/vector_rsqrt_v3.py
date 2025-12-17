@@ -1,12 +1,13 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
+# Version 3: bf16 vector rsqrt with f32 conversion
 import argparse
 from ml_dtypes import bfloat16
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
-from air.dialects.arith import ConstantOp
+from air.dialects.arith import ConstantOp, extf, truncf
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp
@@ -104,8 +105,10 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
                         [VECTOR_SIZE],
                         [1],
                     )
+
+                    # Load bf16 vector
                     cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
-                    v_a = transfer_read(
+                    v_a_bf16 = transfer_read(
                         VectorType.get([VECTOR_SIZE], xrt_dtype_in),
                         sub_a_vec,
                         [c0],
@@ -113,10 +116,26 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
                         cst0,
                         [True],
                     )
-                    v_c = rsqrt(v_a)
+
+                    # Extend bf16 to f32
+                    v_a_f32 = extf(
+                        VectorType.get([VECTOR_SIZE], F32Type.get()),
+                        v_a_bf16,
+                    )
+
+                    # Perform rsqrt on f32
+                    v_c_f32 = rsqrt(v_a_f32)
+
+                    # Truncate f32 back to bf16
+                    v_c_bf16 = truncf(
+                        VectorType.get([VECTOR_SIZE], xrt_dtype_in),
+                        v_c_f32,
+                    )
+
+                    # Store bf16 vector
                     transfer_write(
                         None,
-                        v_c,
+                        v_c_bf16,
                         sub_c_vec,
                         [c0],
                         AffineMapAttr.get(AffineMap.get_identity(1)),
@@ -147,7 +166,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the vector_rsqrt example",
+        description="Builds, runs, and tests the vector_rsqrt example (Version 3: bf16 vector with f32 conversion)",
     )
     parser.add_argument(
         "-v",

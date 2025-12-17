@@ -887,15 +887,17 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Map each unique set of <dir, chan, col> to a shim dma alloc op
     DenseMap<StringRef, StringRef> uniqueAllocMap;
     for (auto alloc : allocs) {
+      AIE::TileOp shimtile = alloc.getTileOp();
       std::tuple<bool, int, int> allocInfo = {
           alloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
-          alloc.getChannelIndex(), alloc.getCol()};
+          alloc.getChannelIndex(), shimtile.getCol()};
 
       auto it =
           llvm::find_if(uniqueAllocs, [&](AIE::ShimDMAAllocationOp ualloc) {
+            AIE::TileOp shimtile = ualloc.getTileOp();
             std::tuple<bool, int, int> uallocInfo = {
                 ualloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
-                ualloc.getChannelIndex(), ualloc.getCol()};
+                ualloc.getChannelIndex(), shimtile.getCol()};
             return allocInfo == uallocInfo;
           });
       if (it != uniqueAllocs.end()) {
@@ -1330,7 +1332,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (d) {
         if (auto infoOp = AIE::ShimDMAAllocationOp::getForSymbol(
                 d, dma.getMetadata().getRootReference())) {
-          col = infoOp.getCol();
+          AIE::TileOp shimtile = infoOp.getTileOp();
+          col = shimtile.getCol();
         } else if (auto objFifoCreateOp = getObjectFifoCreateOpForSymbol(
                        objectFifoCreateOps,
                        dma.getMetadata().getLeafReference().getValue())) {

@@ -34,7 +34,7 @@
 // CHECK:    aie.use_lock(%[[VAL_2]], Release, 1)
 // CHECK:    aie.end
 // CHECK:  aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
-// CHECK:  aie.shim_dma_allocation @airMemcpyId1(MM2S, 0, 0)
+// CHECK:  aie.shim_dma_allocation @airMemcpyId1(%[[VAL_1]], MM2S, 0)
 // CHECK: @func1
 // RACECONDFIX: @func1
 func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
@@ -91,8 +91,8 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   aie.end
 // CHECK: aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
 // CHECK: aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
-// CHECK: aie.shim_dma_allocation @airMemcpyId2(S2MM, 0, 0)
-// CHECK: aie.shim_dma_allocation @airMemcpyId1(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId2(%[[VAL_1]], S2MM, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId1(%[[VAL_1]], MM2S, 0)
 // CHECK: @func2
 // RACECONDFIX: @func2
 func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
@@ -158,8 +158,8 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // CHECK:         aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
-// CHECK:         aie.shim_dma_allocation @air_channel_1(S2MM, 0, 0)
-// CHECK:         aie.shim_dma_allocation @air_channel_0(MM2S, 0, 0)
+// CHECK:         aie.shim_dma_allocation @air_channel_1(%[[VAL_0]], S2MM, 0)
+// CHECK:         aie.shim_dma_allocation @air_channel_0(%[[VAL_0]], MM2S, 0)
 // CHECK: @func3
 // RACECONDFIX: @func3
 air.channel @channel_0 [1, 1]
@@ -265,8 +265,8 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   aie.use_lock(%[[VAL_6]], Release, 1)
 // CHECK:   aie.next_bd ^bb8
 // CHECK: }
-// CHECK: aie.shim_dma_allocation @air_channel_5(S2MM, 0, 0)
-// CHECK: aie.shim_dma_allocation @air_channel_2(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @air_channel_5(%[[VAL_4]], S2MM, 0)
+// CHECK: aie.shim_dma_allocation @air_channel_2(%[[VAL_4]], MM2S, 0)
 // CHECK: @func4
 // RACECONDFIX: @func4
 air.channel @channel_2 [1, 1]
@@ -334,7 +334,7 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 1, %[[VAL_4]], DMA : 0)
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 1, %[[VAL_5]], DMA : 0)
 
-// CHECK:         aie.shim_dma_allocation @air_channel_8(MM2S, 0, 0)
+// CHECK:         aie.shim_dma_allocation @air_channel_8(%[[VAL_0]], MM2S, 0)
 // CHECK: @func5
 
 // RACECONDFIX: aie.device
@@ -438,10 +438,10 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
 // CHECK:  aie.flow(%[[tile_0_4]], DMA : 0, %[[tile_0_0]], DMA : 1)
 // CHECK:  aie.flow(%[[tile_1_3]], DMA : 0, %[[tile_1_0]], DMA : 0)
 // CHECK:  aie.flow(%[[tile_1_4]], DMA : 0, %[[tile_1_0]], DMA : 1)
-// CHECK:  aie.shim_dma_allocation @air_channel_0_0(S2MM, 0, 0)
-// CHECK:  aie.shim_dma_allocation @air_channel_0_1(S2MM, 1, 0)
-// CHECK:  aie.shim_dma_allocation @air_channel_0_2(S2MM, 0, 1)
-// CHECK:  aie.shim_dma_allocation @air_channel_0_3(S2MM, 1, 1)
+// CHECK:  aie.shim_dma_allocation @air_channel_0_0(%[[tile_0_0]], S2MM, 0)
+// CHECK:  aie.shim_dma_allocation @air_channel_0_1(%[[tile_0_0]], S2MM, 1)
+// CHECK:  aie.shim_dma_allocation @air_channel_0_2(%[[tile_1_0]], S2MM, 0)
+// CHECK:  aie.shim_dma_allocation @air_channel_0_3(%[[tile_1_0]], S2MM, 1)
 
 // CHECK: @func6
 // CHECK: air.channel.get{{.*}}metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<8x8xi32>)
@@ -1085,10 +1085,10 @@ module {
 // CHECK: aie.flow(%[[tile_1_0]], DMA : 0, %[[tile_1_2]], DMA : 0)
 // CHECK: aie.flow(%[[tile_0_0]], DMA : 1, %[[tile_0_3]], DMA : 0)
 // CHECK: aie.flow(%[[tile_1_0]], DMA : 1, %[[tile_1_3]], DMA : 0)
-// CHECK: aie.shim_dma_allocation @air_channel_0_0(MM2S, 0, 0)
-// CHECK: aie.shim_dma_allocation @air_channel_0_1(MM2S, 0, 1)
-// CHECK: aie.shim_dma_allocation @air_channel_0_2(MM2S, 1, 0)
-// CHECK: aie.shim_dma_allocation @air_channel_0_3(MM2S, 1, 1)
+// CHECK: aie.shim_dma_allocation @air_channel_0_0(%[[tile_0_0]], MM2S, 0)
+// CHECK: aie.shim_dma_allocation @air_channel_0_1(%[[tile_1_0]], MM2S, 0)
+// CHECK: aie.shim_dma_allocation @air_channel_0_2(%[[tile_0_0]], MM2S, 1)
+// CHECK: aie.shim_dma_allocation @air_channel_0_3(%[[tile_1_0]], MM2S, 1)
 // CHECK: func.func @func14
 // CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
 // CHECK: air.channel.put  @channel_0{{.*}} metadataArray = [{base = "air_channel_0_0", index = 0 : i32}, {base = "air_channel_0_1", index = 1 : i32}, {base = "air_channel_0_2", index = 2 : i32}, {base = "air_channel_0_3", index = 3 : i32}]} : (memref<32x16xi32>)
@@ -1128,7 +1128,7 @@ module {
 // Ensure redundant shim DMA allocations do not occur
 //
 // CHECK:         aie.flow
-// CHECK-NEXT: aie.shim_dma_allocation @air_channel_2(MM2S, 0, 0)
+// CHECK-NEXT: aie.shim_dma_allocation @air_channel_2(%shim_noc_tile_0_0, MM2S, 0)
 // CHECK: @func15
 // RACECONDFIX: @func15
 air.channel @channel_2 [1, 1]
@@ -1282,7 +1282,7 @@ func.func @func17(%arg0 : memref<5xi32>, %arg1 : memref<96xi32>, %arg2 : memref<
 // CHECK:      %[[shim_noc_tile_0_0:.*]] = aie.tile(0, 0)
 // CHECK:      %[[tile_0_2:.*]] = aie.tile(0, 2)
 // CHECK:      aie.flow(%[[tile_0_2]], DMA : 0, %[[shim_noc_tile_0_0]], DMA : 0)
-// CHECK:      aie.shim_dma_allocation @air_channel_0(S2MM, 0, 0)
+// CHECK:      aie.shim_dma_allocation @air_channel_0(%[[shim_noc_tile_0_0]], S2MM, 0)
 // CHECK:      @func18
 // CHECK:      air.launch
 // CHECK:      scf.for
@@ -1369,7 +1369,7 @@ func.func @func18(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: i32, %arg3:
 // CHECK:      %[[buf1:.*]] = aie.buffer(%[[tile_0_2]]) {sym_name = "buf1"}
 // CHECK:      %[[buf0:.*]] = aie.buffer(%[[tile_0_2]]) {sym_name = "buf0"}
 // CHECK:      aie.flow(%[[tile_0_2]], DMA : 0, %[[shim_noc_tile_0_0]], DMA : 0)
-// CHECK:      aie.shim_dma_allocation @air_channel_0(S2MM, 0, 0)
+// CHECK:      aie.shim_dma_allocation @air_channel_0(%[[shim_noc_tile_0_0]], S2MM, 0)
 // CHECK:      @func19
 // CHECK:      air.launch
 // CHECK:      scf.for
