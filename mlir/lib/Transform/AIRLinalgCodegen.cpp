@@ -5086,6 +5086,251 @@ void transform::HoistCastPairOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// ConvertSize1VectorToScalarOp
+//===----------------------------------------------------------------------===//
+
+/// Check if a type is a size-1 vector type
+static bool isSize1VectorType(Type type) {
+  auto vecType = dyn_cast<VectorType>(type);
+  if (!vecType)
+    return false;
+
+  int64_t numElements = 1;
+  for (int64_t dim : vecType.getShape()) {
+    numElements *= dim;
+  }
+  return numElements == 1;
+}
+
+/// Convert vector.transfer_read of vector<1xT> to memref.load + broadcast
+/// Following LLVM's pattern: Load scalar → Broadcast to vector<1xT>
+struct ConvertSize1TransferReadToLoad
+    : public OpRewritePattern<vector::TransferReadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::TransferReadOp readOp,
+                                PatternRewriter &rewriter) const override {
+    VectorType vecType = readOp.getVectorType();
+    if (!isSize1VectorType(vecType))
+      return failure();
+
+    // Create memref.load returning scalar
+    Value scalarLoad = rewriter.create<memref::LoadOp>(
+        readOp.getLoc(), readOp.getBase(), readOp.getIndices());
+
+    // Broadcast scalar to vector<1xT>
+    Value vectorResult = rewriter.create<vector::BroadcastOp>(
+        readOp.getLoc(), vecType, scalarLoad);
+
+    rewriter.replaceOp(readOp, vectorResult);
+    return success();
+  }
+};
+
+/// Convert vector.transfer_write of vector<1xT> to extract + memref.store
+/// Following LLVM's pattern: Extract to scalar → Store scalar
+struct ConvertSize1TransferWriteToStore
+    : public OpRewritePattern<vector::TransferWriteOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::TransferWriteOp writeOp,
+                                PatternRewriter &rewriter) const override {
+    VectorType vecType = writeOp.getVectorType();
+    if (!isSize1VectorType(vecType))
+      return failure();
+
+    // Extract scalar from vector<1xT>
+    SmallVector<int64_t> indices(vecType.getRank(), 0);
+    Value scalarValue = rewriter.create<vector::ExtractOp>(
+        writeOp.getLoc(), writeOp.getVector(), indices);
+
+    // Create memref.store with scalar
+    rewriter.replaceOpWithNewOp<memref::StoreOp>(
+        writeOp, scalarValue, writeOp.getBase(), writeOp.getIndices());
+
+    return success();
+  }
+};
+
+/// Convert vector.load of vector<1xT> to memref.load + broadcast
+struct ConvertSize1VectorLoadToLoad : public OpRewritePattern<vector::LoadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::LoadOp loadOp,
+                                PatternRewriter &rewriter) const override {
+    VectorType vecType = loadOp.getVectorType();
+    if (!isSize1VectorType(vecType))
+      return failure();
+
+    // Create memref.load returning scalar
+    Value scalarLoad = rewriter.create<memref::LoadOp>(
+        loadOp.getLoc(), loadOp.getBase(), loadOp.getIndices());
+
+    // Broadcast scalar to vector<1xT>
+    Value vectorResult = rewriter.create<vector::BroadcastOp>(
+        loadOp.getLoc(), vecType, scalarLoad);
+
+    rewriter.replaceOp(loadOp, vectorResult);
+    return success();
+  }
+};
+
+/// Convert vector.store of vector<1xT> to extract + memref.store
+struct ConvertSize1VectorStoreToStore
+    : public OpRewritePattern<vector::StoreOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vector::StoreOp storeOp,
+                                PatternRewriter &rewriter) const override {
+    VectorType vecType = storeOp.getVectorType();
+    if (!isSize1VectorType(vecType))
+      return failure();
+
+    // Extract scalar from vector<1xT>
+    SmallVector<int64_t> indices(vecType.getRank(), 0);
+    Value scalarValue = rewriter.create<vector::ExtractOp>(
+        storeOp.getLoc(), storeOp.getValueToStore(), indices);
+
+    // Create memref.store with scalar
+    rewriter.replaceOpWithNewOp<memref::StoreOp>(
+        storeOp, scalarValue, storeOp.getBase(), storeOp.getIndices());
+
+    return success();
+  }
+};
+
+/// Convert elementwise operations on vector<1xT> to scalar operations
+/// Following LLVM's CastAwayElementwiseLeadingOneDim pattern
+struct ConvertSize1VectorOpsToScalar : public RewritePattern {
+  ConvertSize1VectorOpsToScalar(MLIRContext *context)
+      : RewritePattern(MatchAnyOpTypeTag(), 1, context) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    // Skip memory ops (handled by specific patterns)
+    if (isa<vector::TransferReadOp, vector::TransferWriteOp, vector::LoadOp,
+            vector::StoreOp, vector::BroadcastOp, vector::ExtractOp>(op))
+      return failure();
+
+    // Check if this is an elementwise operation with size-1 vector result
+    if (!op->hasTrait<OpTrait::Elementwise>())
+      return failure();
+
+    // Check if any result is a size-1 vector
+    bool hasSize1VectorResult = false;
+    for (Type resultType : op->getResultTypes()) {
+      if (isSize1VectorType(resultType)) {
+        hasSize1VectorResult = true;
+        break;
+      }
+    }
+
+    if (!hasSize1VectorResult)
+      return failure();
+
+    Location loc = op->getLoc();
+
+    // Extract all vector<1xT> operands to scalars
+    SmallVector<Value> scalarOperands;
+    for (Value operand : op->getOperands()) {
+      if (isSize1VectorType(operand.getType())) {
+        auto vecType = cast<VectorType>(operand.getType());
+        SmallVector<int64_t> indices(vecType.getRank(), 0);
+        Value scalarOperand =
+            rewriter.create<vector::ExtractOp>(loc, operand, indices);
+        scalarOperands.push_back(scalarOperand);
+      } else {
+        scalarOperands.push_back(operand);
+      }
+    }
+
+    // Determine scalar result types
+    SmallVector<Type> scalarResultTypes;
+    for (Type resultType : op->getResultTypes()) {
+      if (auto vecType = dyn_cast<VectorType>(resultType)) {
+        if (isSize1VectorType(vecType)) {
+          scalarResultTypes.push_back(vecType.getElementType());
+        } else {
+          scalarResultTypes.push_back(resultType);
+        }
+      } else {
+        scalarResultTypes.push_back(resultType);
+      }
+    }
+
+    // Create scalar operation
+    OperationState newState(loc, op->getName());
+    newState.addOperands(scalarOperands);
+    newState.addTypes(scalarResultTypes);
+    newState.addAttributes(op->getAttrs());
+
+    Operation *scalarOp = rewriter.create(newState);
+
+    // Broadcast scalar results back to vector<1xT>
+    SmallVector<Value> finalResults;
+    for (auto [idx, resultType] : llvm::enumerate(op->getResultTypes())) {
+      if (isSize1VectorType(resultType)) {
+        Value broadcastResult = rewriter.create<vector::BroadcastOp>(
+            loc, cast<VectorType>(resultType), scalarOp->getResult(idx));
+        finalResults.push_back(broadcastResult);
+      } else {
+        finalResults.push_back(scalarOp->getResult(idx));
+      }
+    }
+
+    rewriter.replaceOp(op, finalResults);
+    return success();
+  }
+};
+
+DiagnosedSilenceableFailure transform::ConvertSize1VectorToScalarOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    // Verify target has IsolatedFromAbove trait
+    if (!target->hasTrait<OpTrait::IsIsolatedFromAbove>()) {
+      return emitDefiniteFailure()
+             << "target operation must have IsolatedFromAbove trait";
+    }
+
+    MLIRContext *ctx = target->getContext();
+
+    // Apply rewrite patterns using applyPatternsGreedily (not conversion)
+    RewritePatternSet patterns(ctx);
+
+    // Add patterns for memory operations and elementwise ops
+    patterns.add<ConvertSize1TransferReadToLoad,
+                 ConvertSize1TransferWriteToStore, ConvertSize1VectorLoadToLoad,
+                 ConvertSize1VectorStoreToStore, ConvertSize1VectorOpsToScalar>(
+        ctx);
+
+    (void)applyPatternsGreedily(target, std::move(patterns));
+
+    // Run canonicalization to fold extract(broadcast(x)) -> x
+    RewritePatternSet canonPatterns(ctx);
+    vector::ExtractOp::getCanonicalizationPatterns(canonPatterns, ctx);
+    vector::BroadcastOp::getCanonicalizationPatterns(canonPatterns, ctx);
+    (void)applyPatternsGreedily(target, std::move(canonPatterns));
+
+    transformedOps.push_back(target);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
 
 namespace xilinx {
 namespace air {
