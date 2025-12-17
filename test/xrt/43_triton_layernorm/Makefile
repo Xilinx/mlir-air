@@ -2,6 +2,18 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
+# AIE_TARGET: Set to either 'aie2' or 'aie2p' (default: aie2)
+AIE_TARGET ?= aie2
+
+# Determine transform script based on AIE_TARGET
+ifeq ($(AIE_TARGET),aie2p)
+  TRANSFORM_SCRIPT := transform_aie2p.mlir
+else ifeq ($(AIE_TARGET),aie2)
+  TRANSFORM_SCRIPT := transform_aie2.mlir
+else
+  $(error Invalid AIE_TARGET=$(AIE_TARGET). Must be 'aie2' or 'aie2p')
+endif
+
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
@@ -17,7 +29,7 @@ all: run
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --transform-script ${srcdir}/transform.mlir
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --transform-script ${srcdir}/$(TRANSFORM_SCRIPT)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
