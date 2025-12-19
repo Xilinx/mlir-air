@@ -160,7 +160,7 @@ transform.with_pdl_patterns {
         %reduces2 = transform.structured.match ops{["linalg.reduce"]} in %arg1  : (!pdl.operation) -> !pdl.operation
         %tiled_reduce1, %tiled_reduce2 = transform.split_handle %reduces2 : (!pdl.operation<"linalg.reduce">) -> (!pdl.operation<"linalg.reduce">, !pdl.operation<"linalg.reduce">)
 
-        %fused_reduce1 = transform.air.fuse_extf_linalg %tiled_generic1, %tiled_reduce1
+        %fused_reduce1 = transform.air.fuse_multi_op_linalg %tiled_generic1, %tiled_reduce1
 
         %op0 = transform.get_operand %fused_reduce1[0]
             : (!pdl.operation) -> !transform.any_value
@@ -320,13 +320,14 @@ transform.with_pdl_patterns {
         %result11 = transform.air.vector_type_cast %vector_exps_in_herd {target_element_type = bf16}
 
         %func7 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        transform.apply_patterns to %func7 {
+        %func7_transformed = transform.air.convert_size1_vector_to_scalar %func7
+        transform.apply_patterns to %func7_transformed {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
             transform.apply_patterns.vector.cast_away_vector_leading_one_dim
             transform.apply_patterns.vector.lower_multi_reduction lowering_strategy = "innerreduction"
         } : !pdl.operation
-        transform.apply_cse to %func7 : !pdl.operation
+        transform.apply_cse to %func7_transformed : !pdl.operation
     }
 }
