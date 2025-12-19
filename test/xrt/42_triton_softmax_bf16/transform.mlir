@@ -320,16 +320,14 @@ transform.with_pdl_patterns {
         %result11 = transform.air.vector_type_cast %vector_exps_in_herd {target_element_type = bf16}
 
         %func7 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        transform.apply_patterns to %func7 {
+        %func7_transformed = transform.air.convert_size1_vector_to_scalar %func7
+        transform.apply_patterns to %func7_transformed {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
             transform.apply_patterns.vector.cast_away_vector_leading_one_dim
             transform.apply_patterns.vector.lower_multi_reduction lowering_strategy = "innerreduction"
         } : !pdl.operation
-        transform.apply_cse to %func7 : !pdl.operation
-
-        // // Convert size-1 vectors to scalars (downstream compiler cannot handle size-1 vectors)
-        // %vectorized_herd_scalar = transform.air.convert_size1_vector_to_scalar %vectorized_herd
+        transform.apply_cse to %func7_transformed : !pdl.operation
     }
 }
