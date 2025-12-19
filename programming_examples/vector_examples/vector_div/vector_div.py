@@ -174,7 +174,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the vector division example",
     )
     parser.add_argument(
         "-v",
