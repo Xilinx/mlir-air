@@ -735,73 +735,6 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 | `result` | PDL handle to an `mlir::Operation *` |
 
 
-### `transform.air.fuse_extf_linalg` (transform::FuseExtfLinalgOp)
-
-_Fuse a linalg operation containing only arith.extf with its consumer_
-
-Syntax:
-
-```
-operation ::= `transform.air.fuse_extf_linalg` $first_op `,` $second_op attr-dict
-```
-
-This transform fuses two linalg operations where:
-1. The first operation contains only an arith.extf operation in its body (apart from terminator)
-2. The second operation directly consumes the result of the first operation
-
-The fusion is performed by:
-1. Removing the arith.extf from the first operation
-2. Updating the input type in the second operation to use the original (narrower) type
-3. Adding arith.extf operations as needed to maintain type consistency
-4. Erasing the first operation
-
-This optimization folds the arithmetic extensions into the linalg ops, and enables the use of
-native native intrinsics on narrower datatypes, such as AMD AIEs.
-
-Example:
-```mlir
-// Before fusion:
-%0 = linalg.generic {
-  ^bb0(%arg0: f16):
-    %1 = arith.extf %arg0 : f16 to f32
-    linalg.yield %1 : f32
-} ins(%input : tensor<16xf16>) outs(%temp : tensor<16xf32>)
-
-%result = linalg.generic {
-  ^bb0(%arg0: f32, %arg1: f32):
-    %2 = arith.addf %arg0, %arg1 : f32
-    linalg.yield %2 : f32
-} ins(%0, %other : tensor<16xf32>, tensor<16xf32>) outs(%output : tensor<16xf32>)
-
-// After fusion:
-%result = linalg.generic {
-  ^bb0(%arg0: f16, %arg1: f32):
-    %1 = arith.extf %arg0 : f16 to f32
-    %2 = arith.addf %1, %arg1 : f32
-    linalg.yield %2 : f32
-} ins(%input, %other : tensor<16xf16>, tensor<16xf32>) outs(%output : tensor<16xf32>)
-```
-
-Returns a handle to the fused operation (the second operation after modification).
-
-Traits: `FunctionalStyleTransformOpTrait`
-
-Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `first_op` | PDL handle to an `mlir::Operation *` |
-| `second_op` | PDL handle to an `mlir::Operation *` |
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `fused_op` | PDL handle to an `mlir::Operation *` |
-
-
 ### `transform.air.fuse_into_containing_op` (transform::FuseIntoContainingMemrefOp)
 
 _Fuse a producer into a containing operation._
@@ -840,6 +773,90 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 | :-----: | ----------- |
 | `producer_op` | PDL handle to an `mlir::Operation *` |
 | `containing_op` | PDL handle to an `mlir::Operation *` |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `fused_op` | PDL handle to an `mlir::Operation *` |
+
+
+### `transform.air.fuse_multi_op_linalg` (transform::FuseMultiOpLinalgOp)
+
+_Fuse a linalg operation containing multiple element-wise ops with its consumer_
+
+Syntax:
+
+```
+operation ::= `transform.air.fuse_multi_op_linalg` $first_op `,` $second_op attr-dict
+```
+
+This transform fuses two linalg operations where:
+1. The first operation contains one or more element-wise pure operations in its body
+2. The first operation has only parallel iterator types (no reduction dimensions)
+3. The second operation directly consumes the result of the first operation
+
+The second operation may have any iterator types (parallel or reduction).
+
+This is a generalization of FuseExtfLinalgOp that supports multiple operations.
+The fusion is performed by:
+1. Validating that the first op contains only element-wise pure operations
+2. Validating that the first op has no reduction dimensions
+3. Cloning the entire body of the first op into the second op at the consumption point
+4. Updating block argument mappings to maintain SSA form
+5. Erasing the first operation
+
+All operations in the first op's body must be:
+- Pure (no side effects)
+- Element-wise (operate independently on each element)
+
+Example with reduction in second op:
+```mlir
+// Before fusion:
+%0 = linalg.generic {
+  indexing_maps = [#map0, #map1],
+  iterator_types = ["parallel", "parallel"]
+} ins(%input : tensor<16x8xf16>) outs(%temp : tensor<16x8xf32>) {
+  ^bb0(%arg0: f16):
+    %1 = arith.extf %arg0 : f16 to f32
+    %2 = arith.mulf %1, %cst : f32
+    linalg.yield %2 : f32
+} -> tensor<16x8xf32>
+
+%result = linalg.generic {
+  indexing_maps = [#map2, #map3],
+  iterator_types = ["parallel", "reduction"]
+} ins(%0 : tensor<16x8xf32>) outs(%output : tensor<16xf32>) {
+  ^bb0(%arg0: f32, %arg1: f32):
+    %3 = arith.addf %arg0, %arg1 : f32
+    linalg.yield %3 : f32
+} -> tensor<16xf32>
+
+// After fusion:
+%result = linalg.generic {
+  indexing_maps = [#map4, #map3],
+  iterator_types = ["parallel", "reduction"]
+} ins(%input : tensor<16x8xf16>) outs(%output : tensor<16xf32>) {
+  ^bb0(%arg0: f16, %arg1: f32):
+    %1 = arith.extf %arg0 : f16 to f32
+    %2 = arith.mulf %1, %cst : f32
+    %3 = arith.addf %2, %arg1 : f32
+    linalg.yield %3 : f32
+} -> tensor<16xf32>
+```
+
+Returns a handle to the fused operation (the second operation after modification).
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `first_op` | PDL handle to an `mlir::Operation *` |
+| `second_op` | PDL handle to an `mlir::Operation *` |
 
 #### Results:
 
