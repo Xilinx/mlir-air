@@ -1,4 +1,4 @@
  # This can't go in the normal requirements file because the way the wheels build parses requirements.txt
  # does not support github packages
-git+https://github.com/erwei-xilinx/mlir-python-extras@a801853
+git+https://github.com/erwei-xilinx/mlir-python-extras@a1900ff
 -f https://github.com/llvm/eudsl/releases/expanded_assets/latest
