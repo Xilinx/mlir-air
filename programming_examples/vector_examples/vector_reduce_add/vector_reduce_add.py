@@ -26,14 +26,12 @@ range_ = for_
 
 
 @module_builder
-def build_module(m, n, tile_m, np_dtype_in, vector_size=16):
+def build_module(m, n, tile_m, np_dtype_in):
     a_size = [m, n]
     out_size = [m]
     xrt_dtype_in = type_mapper(np_dtype_in)
     num_tiles = 2
     assert m % (tile_m * num_tiles) == 0
-    assert vector_size in [16, 32], "vector_size must be either 16 or 32"
-    VECTOR_SIZE = vector_size
     index_type = IndexType.get()
 
     # L3 MemRefTypes
@@ -97,7 +95,6 @@ def build_module(m, n, tile_m, np_dtype_in, vector_size=16):
                 )
                 c0 = ConstantOp(index_type, 0)
                 c1 = ConstantOp(index_type, 1)
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
                 cTileN = ConstantOp(index_type, tile_m)
                 for j in range_(c0, cTileN, c1):
                     sub_a_vec = subview(
@@ -200,13 +197,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--tile-m", type=int, default=TILE_M, help="Tile size M")
     parser.add_argument(
-        "--vector-size",
-        type=int,
-        choices=[16, 32],
-        default=16,
-        help="Vector size (16 or 32)",
-    )
-    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
@@ -221,7 +211,6 @@ if __name__ == "__main__":
         args.n,
         args.tile_m,
         INPUT_DATATYPE,
-        args.vector_size,
     )
     if args.print_module_only:
         print(mlir_module)

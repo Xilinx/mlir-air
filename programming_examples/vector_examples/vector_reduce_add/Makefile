@@ -15,10 +15,10 @@ VECTOR_SIZE ?= 16
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_reduce_add.py -p --vector-size $(VECTOR_SIZE)
+	${powershell} python3 ${srcdir}/vector_reduce_add.py -p --n $(VECTOR_SIZE)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_reduce_add.py --vector-size $(VECTOR_SIZE)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_reduce_add.py --n $(VECTOR_SIZE)
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
