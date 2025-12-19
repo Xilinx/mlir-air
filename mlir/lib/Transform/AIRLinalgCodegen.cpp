@@ -3331,19 +3331,15 @@ fuseMultiOpLinalgOps(RewriterBase &rewriter, linalg::LinalgOp firstOp,
   rewriter.setInsertionPointToStart(newBody);
 
   // Clone all operations from first op (except yield)
-  Value firstOpYieldValue;
   for (Operation &op : firstOpBody->without_terminator()) {
-    Operation *clonedOp = rewriter.clone(op, firstOpMapping);
-    // Track the last operation's result (this will be what first op yields)
-    if (clonedOp->getNumResults() > 0) {
-      firstOpYieldValue = clonedOp->getResult(0);
-    }
+    rewriter.clone(op, firstOpMapping);
   }
 
-  // If first op has a yield, get its operand
+  // Determine the yield value from the actual yield operation
+  Value firstOpYieldValue;
   if (auto firstYield =
           dyn_cast<linalg::YieldOp>(firstOpBody->getTerminator())) {
-    if (!firstOpYieldValue && firstYield.getNumOperands() > 0) {
+    if (firstYield.getNumOperands() > 0) {
       firstOpYieldValue = firstOpMapping.lookup(firstYield.getOperand(0));
     }
   }
