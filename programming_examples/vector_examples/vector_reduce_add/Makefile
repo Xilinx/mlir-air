@@ -9,13 +9,16 @@ else
   BUILD_DIR := build_chess
 endif
 
+# Vector size parameter (16 or 32)
+VECTOR_SIZE ?= 16
+
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_reduce_add.py -p
+	${powershell} python3 ${srcdir}/vector_reduce_add.py -p --vector-size $(VECTOR_SIZE)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_reduce_add.py
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_reduce_add.py --vector-size $(VECTOR_SIZE)
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
