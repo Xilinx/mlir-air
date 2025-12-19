@@ -3298,7 +3298,8 @@ fuseMultiOpLinalgOps(RewriterBase &rewriter, linalg::LinalgOp firstOp,
     Type elementType;
     // Check if this index corresponds to one of the first op's inputs
     if (static_cast<int64_t>(index) >= targetInputIndex &&
-        firstOpInputIdx < firstOpInputElementTypes.size()) {
+        static_cast<int64_t>(index) <
+            targetInputIndex + static_cast<int64_t>(firstOpInputs.size())) {
       elementType = firstOpInputElementTypes[firstOpInputIdx++];
     } else {
       elementType = cast<ShapedType>(input.getType()).getElementType();
