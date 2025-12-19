@@ -160,7 +160,7 @@ transform.with_pdl_patterns {
         %reduces2 = transform.structured.match ops{["linalg.reduce"]} in %arg1  : (!pdl.operation) -> !pdl.operation
         %tiled_reduce1, %tiled_reduce2 = transform.split_handle %reduces2 : (!pdl.operation<"linalg.reduce">) -> (!pdl.operation<"linalg.reduce">, !pdl.operation<"linalg.reduce">)
 
-        %fused_reduce1 = transform.air.fuse_extf_linalg %tiled_generic1, %tiled_reduce1
+        %fused_reduce1 = transform.air.fuse_multi_op_linalg %tiled_generic1, %tiled_reduce1
 
         %op0 = transform.get_operand %fused_reduce1[0]
             : (!pdl.operation) -> !transform.any_value
@@ -328,5 +328,8 @@ transform.with_pdl_patterns {
             transform.apply_patterns.vector.lower_multi_reduction lowering_strategy = "innerreduction"
         } : !pdl.operation
         transform.apply_cse to %func7 : !pdl.operation
+
+        // // Convert size-1 vectors to scalars (downstream compiler cannot handle size-1 vectors)
+        // %vectorized_herd_scalar = transform.air.convert_size1_vector_to_scalar %vectorized_herd
     }
 }
