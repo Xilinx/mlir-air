@@ -8,6 +8,6 @@ psutil
 rich
 pybind11
 nanobind>=2.9
-numpy<2
-cmake
+numpy>=1.19.5, <2.0
+cmake>=3.30
 ml_dtypes
