@@ -200,6 +200,7 @@ with air.ir.Context() as ctx, Location.unknown():
             air_module,
             inputs=[A],
             expected_outputs=[C],
-            rtol=1e0,
+            rtol=1e-2,
+            atol=1e-3,
         )
     )
