@@ -220,10 +220,11 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
-    input_a = input_a.astype(INPUT_DATATYPE)
-    input_b = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
-    input_b = input_b.astype(INPUT_DATATYPE)
+    # Generate random input vectors with fixed seed for reproducibility
+    np.random.seed(37)
+    # Use a safe range [1, 10] for input_b to avoid division by zero
+    input_a = np.random.uniform(0.1, 10.0, args.n).astype(INPUT_DATATYPE)
+    input_b = np.random.uniform(1.0, 10.0, args.n).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
 
