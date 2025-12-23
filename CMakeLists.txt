@@ -198,9 +198,7 @@ foreach(target ${AIR_RUNTIME_TARGETS})
     TEST_EXCLUDE_FROM_MAIN true)
 endforeach()
 
-if(AIE_ENABLE_BINDINGS_PYTHON)
-  add_subdirectory(python)
-endif()
+add_subdirectory(python)
 if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
   message(
     "Skipping e2e tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
