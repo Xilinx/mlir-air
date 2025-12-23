@@ -14,14 +14,20 @@ PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS
 #   make run AIE_TARGET=aie2p # uses aie2p target
 AIE_TARGET ?= aie2
 
+# VECTOR_SIZE can be set to configure the vector size for SIMD operations (default: 16)
+# Usage examples:
+#   make run                      # uses default vector size of 16
+#   make run VECTOR_SIZE=32       # uses vector size of 32
+VECTOR_SIZE ?= 16
+
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_exp.py -p --arch $(AIE_TARGET)
+	${powershell} python3 ${srcdir}/vector_exp.py -p --arch $(AIE_TARGET) --vector-size $(VECTOR_SIZE)
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_exp.py --arch $(AIE_TARGET)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_exp.py --arch $(AIE_TARGET) --vector-size $(VECTOR_SIZE)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)

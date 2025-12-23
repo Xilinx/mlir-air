@@ -19,13 +19,13 @@ range_ = for_
 
 
 @module_builder
-def build_module(n, tile_n, np_dtype_in, arch="aie2"):
+def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
     a_size = [n]
     out_size = a_size
     xrt_dtype_in = type_mapper(np_dtype_in)
     num_tiles = 2
     assert n % (tile_n * num_tiles) == 0
-    VECTOR_SIZE = 16
+    VECTOR_SIZE = vector_size
     index_type = IndexType.get()
 
     # L3 MemRefTypes
@@ -143,6 +143,7 @@ if __name__ == "__main__":
     # Default values.
     N = 65536
     TILE_N = 1024
+    VECTOR_SIZE = 16
     INPUT_DATATYPE = bfloat16
 
     parser = argparse.ArgumentParser(
@@ -167,6 +168,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
     parser.add_argument(
+        "--vector-size",
+        type=int,
+        default=VECTOR_SIZE,
+        help="Vector size for SIMD operations",
+    )
+    parser.add_argument(
         "--arch",
         type=str,
         choices=["aie2", "aie2p"],
@@ -188,6 +195,7 @@ if __name__ == "__main__":
         args.tile_n,
         INPUT_DATATYPE,
         args.arch,
+        args.vector_size,
     )
     if args.print_module_only:
         print(mlir_module)
