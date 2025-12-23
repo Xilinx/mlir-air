@@ -18,7 +18,7 @@ range_ = for_
 
 
 @module_builder
-def build_module(n, tile_n, np_dtype_in, vector_size=32):
+def build_module(n, tile_n, np_dtype_in, vector_size=16):
     a_size = [n]
     b_size = a_size
     out_size = a_size
