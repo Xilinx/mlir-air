@@ -34,6 +34,16 @@ jobs:
         ubuntu_version: [ 22.04 ]
 
     steps:
+
+      - name: Free disk space
+        uses: descriptinc/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: false
       # Clone the repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get repo
