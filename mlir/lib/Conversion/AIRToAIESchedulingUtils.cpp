@@ -76,8 +76,8 @@ AIE::TileOp air::getPhysTileOp(AIE::DeviceOp aie_device, int col, int row) {
     else
       break;
   }
-  return builder.create<AIE::TileOp>(UnknownLoc::get(aie_device.getContext()),
-                                     col, row);
+  return AIE::TileOp::create(builder, UnknownLoc::get(aie_device.getContext()),
+                             col, row);
 }
 
 AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
@@ -109,7 +109,7 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
   while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
     t = t->getNextNode();
   b.setInsertionPointAfter(t);
-  auto lockOp = b.create<AIE::LockOp>(tile.getLoc(), tile, new_id, init);
+  auto lockOp = AIE::LockOp::create(b, tile.getLoc(), tile, new_id, init);
   if (name)
     lockOp->setAttr(SymbolTable::getSymbolAttrName(), name);
   return lockOp;
@@ -142,8 +142,8 @@ AIE::ExternalBufferOp air::allocateExternalBufferOp(uint64_t &BufferId,
                                                     int x, int y) {
 
   auto builder = OpBuilder::atBlockBegin(device.getBody());
-  AIE::ExternalBufferOp bufferOp = builder.create<AIE::ExternalBufferOp>(
-      builder.getUnknownLoc(), memrefTy, nullptr, nullptr);
+  AIE::ExternalBufferOp bufferOp = AIE::ExternalBufferOp::create(
+      builder, builder.getUnknownLoc(), memrefTy, nullptr, nullptr);
 
   std::stringstream ss =
       generateBufferNameInStringStream("extBuf", BufferId, attr, x, y);

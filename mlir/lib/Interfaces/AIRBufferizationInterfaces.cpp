@@ -147,7 +147,8 @@ FailureOr<LowerPackUnPackResult> lowerPack(RewriterBase &rewriter, Value source,
   if (llvm::any_of(innerDimsPos, [destShape](int64_t index) {
         return destShape[index] != 1;
       })) {
-    // (1) Compute permutation from packed -> strip-mined (pre-permutation) shape.
+    // (1) Compute permutation from packed -> strip-mined (pre-permutation)
+    // shape.
     PackingMetadata packingMetadata =
         computePackingMetadata(outputMemRef.getRank(), innerDimsPos);
 
@@ -161,8 +162,8 @@ FailureOr<LowerPackUnPackResult> lowerPack(RewriterBase &rewriter, Value source,
 
     // (3) Expand from the padded result to the strip-mined shape.
     //     `reassociations` come from the packing metadata.
-    tile = rewriter.create<memref::ExpandShapeOp>(
-        loc, stripMinedShape, source, packingMetadata.reassociations);
+    tile = memref::ExpandShapeOp::create(rewriter, loc, stripMinedShape, source,
+                                         packingMetadata.reassociations);
 
     // (4) Later, transpose strip-mined -> packed (inverse of step 1).
     transpPerm = invertPermutationVector(packedToStripMinedShapePerm);
@@ -174,17 +175,16 @@ FailureOr<LowerPackUnPackResult> lowerPack(RewriterBase &rewriter, Value source,
   }
 
   // Create the transpose op with the computed permutation.
-  memref::TransposeOp transposeOp = rewriter.create<memref::TransposeOp>(
-      loc, tile,
+  memref::TransposeOp transposeOp = memref::TransposeOp::create(
+      rewriter, loc, tile,
       AffineMapAttr::get(
           AffineMap::getPermutationMap(transpPerm, packOp->getContext())));
 
   // Inject a DMA copy from the transposed tile into the destination buffer.
   SmallVector<Value, 2> emptyVec;
-  xilinx::air::DmaMemcpyNdOp dmaOp =
-      rewriter.create<xilinx::air::DmaMemcpyNdOp>(
-          loc, SmallVector<Type, 1>{}, emptyVec, dest, emptyVec, emptyVec,
-          emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec);
+  xilinx::air::DmaMemcpyNdOp dmaOp = xilinx::air::DmaMemcpyNdOp::create(
+      rewriter, loc, SmallVector<Type, 1>{}, emptyVec, dest, emptyVec, emptyVec,
+      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec);
 
   return LowerPackUnPackResult{transposeOp, dmaOp};
 }
@@ -270,8 +270,7 @@ FailureOr<LowerPackUnPackResult> lowerUnPack(RewriterBase &rewriter,
 
       if (ShapedType::isDynamic(srcShape[i])) {
         return rewriter.notifyMatchFailure(
-            unPackOp,
-            "Support for dynamic input shapes is not implemented.");
+            unPackOp, "Support for dynamic input shapes is not implemented.");
       } else {
         readSizes.push_back(rewriter.getIndexAttr(srcShape[i]));
       }
@@ -291,8 +290,8 @@ FailureOr<LowerPackUnPackResult> lowerUnPack(RewriterBase &rewriter,
             readShape, inputMemRef, readOffsets, readSizes, readStrides));
 
     // Materialize the tile extraction.
-    tile = rewriter.create<memref::SubViewOp>(
-        loc, readType, source, readOffsets, readSizes, readStrides);
+    tile = memref::SubViewOp::create(rewriter, loc, readType, source,
+                                     readOffsets, readSizes, readStrides);
 
     // Compute permutation that aligns inner tile dims with `innerDimsPos`.
     perm = getPackUnpackNormalizedPerm(readType.getRank(), innerDimsPos);
@@ -300,17 +299,16 @@ FailureOr<LowerPackUnPackResult> lowerUnPack(RewriterBase &rewriter,
   }
 
   // Transpose packedShape -> stripMinedShape (or vice versa depending on path).
-  memref::TransposeOp transposeOp = rewriter.create<memref::TransposeOp>(
-      loc, tile,
+  memref::TransposeOp transposeOp = memref::TransposeOp::create(
+      rewriter, loc, tile,
       AffineMapAttr::get(
           AffineMap::getPermutationMap(perm, unPackOp->getContext())));
 
   // DMA copy into destination.
   SmallVector<Value, 2> emptyVec;
-  xilinx::air::DmaMemcpyNdOp dmaOp =
-      rewriter.create<xilinx::air::DmaMemcpyNdOp>(
-          loc, SmallVector<Type, 1>{}, emptyVec, dest, emptyVec, emptyVec,
-          emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec);
+  xilinx::air::DmaMemcpyNdOp dmaOp = xilinx::air::DmaMemcpyNdOp::create(
+      rewriter, loc, SmallVector<Type, 1>{}, emptyVec, dest, emptyVec, emptyVec,
+      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec);
 
   return LowerPackUnPackResult{transposeOp, dmaOp};
 }

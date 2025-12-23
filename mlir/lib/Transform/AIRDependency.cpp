@@ -428,8 +428,8 @@ private:
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::ExecuteOp async_region;
-    async_region = rewriter.create<air::ExecuteOp>(
-        loc, air::AsyncTokenType::get(op->getContext()), deps);
+    async_region = air::ExecuteOp::create(
+        rewriter, loc, air::AsyncTokenType::get(op->getContext()), deps);
     assignOpId(async_region);
 
     // Insert op to the new async execute region's body.
@@ -454,7 +454,7 @@ private:
     }
 
     rewriter.clone(*op);
-    rewriter.create<air::ExecuteTerminatorOp>(rewriter.getUnknownLoc());
+    air::ExecuteTerminatorOp::create(rewriter, rewriter.getUnknownLoc());
 
     // Update op-to-graph map
     updateAsyncExecuteGraphWithNewNode(async_region, asyncExecuteGraph);
@@ -476,8 +476,8 @@ private:
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::ExecuteOp async_region;
-    async_region = rewriter.create<air::ExecuteOp>(
-        loc, air::AsyncTokenType::get(op->getContext()),
+    async_region = air::ExecuteOp::create(
+        rewriter, loc, air::AsyncTokenType::get(op->getContext()),
         op->getResults().getType(), deps);
     assignOpId(async_region);
 
@@ -485,8 +485,8 @@ private:
     Block *async_region_bb = rewriter.createBlock(&async_region.getRegion());
     rewriter.setInsertionPointToStart(async_region_bb);
     auto op_cloned = rewriter.clone(*op);
-    rewriter.create<air::ExecuteTerminatorOp>(rewriter.getUnknownLoc(),
-                                              op_cloned->getResults());
+    air::ExecuteTerminatorOp::create(rewriter, rewriter.getUnknownLoc(),
+                                     op_cloned->getResults());
     SmallVector<Value, 1> returnVals;
     for (auto val : async_region.getResults()) {
       returnVals.push_back(val);
@@ -510,8 +510,8 @@ private:
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     auto dma_op = mlir::dyn_cast<air::DmaMemcpyNdOp>(op);
-    air::DmaMemcpyNdOp new_dmaNd_op = rewriter.create<air::DmaMemcpyNdOp>(
-        loc, air::AsyncTokenType::get(dma_op->getContext()), deps,
+    air::DmaMemcpyNdOp new_dmaNd_op = air::DmaMemcpyNdOp::create(
+        rewriter, loc, air::AsyncTokenType::get(dma_op->getContext()), deps,
         dma_op.getDstMemref(), dma_op.getDstOffsets(), dma_op.getDstSizes(),
         dma_op.getDstStrides(), dma_op.getSrcMemref(), dma_op.getSrcOffsets(),
         dma_op.getSrcSizes(), dma_op.getSrcStrides());
@@ -533,9 +533,9 @@ private:
     SmallVector<Value, 1> deps;
     std::string event_name = "";
     if (auto channel_put_op = dyn_cast<air::ChannelPutOp>(op)) {
-      air::ChannelPutOp new_channel_put_op = rewriter.create<air::ChannelPutOp>(
-          loc, air::AsyncTokenType::get(channel_put_op->getContext()), deps,
-          channel_put_op.getChanName(), channel_put_op.getIndices(),
+      air::ChannelPutOp new_channel_put_op = air::ChannelPutOp::create(
+          rewriter, loc, air::AsyncTokenType::get(channel_put_op->getContext()),
+          deps, channel_put_op.getChanName(), channel_put_op.getIndices(),
           channel_put_op.getSrc(), channel_put_op.getSrcOffsets(),
           channel_put_op.getSrcSizes(), channel_put_op.getSrcStrides());
       assignOpId(new_channel_put_op);
@@ -543,9 +543,9 @@ private:
       // Update op-to-graph map
       updateAsyncExecuteGraphWithNewNode(new_channel_put_op, asyncExecuteGraph);
     } else if (auto channel_get_op = dyn_cast<air::ChannelGetOp>(op)) {
-      air::ChannelGetOp new_channel_get_op = rewriter.create<air::ChannelGetOp>(
-          loc, air::AsyncTokenType::get(channel_get_op->getContext()), deps,
-          channel_get_op.getChanName(), channel_get_op.getIndices(),
+      air::ChannelGetOp new_channel_get_op = air::ChannelGetOp::create(
+          rewriter, loc, air::AsyncTokenType::get(channel_get_op->getContext()),
+          deps, channel_get_op.getChanName(), channel_get_op.getIndices(),
           channel_get_op.getDst(), channel_get_op.getDstOffsets(),
           channel_get_op.getDstSizes(), channel_get_op.getDstStrides());
       assignOpId(new_channel_get_op);
@@ -613,8 +613,8 @@ private:
                          SmallVector<Value, 1> deps, SmallVector<Value, 4> args,
                          SmallVector<Value, 4> constants) {
     auto loc = op->getLoc();
-    T new_op = rewriter.create<T>(loc, deps, op.getSizeOperands(), args, true,
-                                  op->getAttrs());
+    T new_op = T::create(rewriter, loc, deps, op.getSizeOperands(), args, true,
+                         op->getAttrs());
     assignOpId(new_op);
 
     auto &bb = new_op.getBody().front();
@@ -1037,9 +1037,10 @@ private:
     } else {
       builder.setInsertionPointToEnd(&region.front());
     }
-    air::WaitAllOp wait_all_op_yielded = builder.create<air::WaitAllOp>(
-        builder.getUnknownLoc(), air::AsyncTokenType::get(builder.getContext()),
-        yielded_tokens_in_loop_op);
+    air::WaitAllOp wait_all_op_yielded =
+        air::WaitAllOp::create(builder, builder.getUnknownLoc(),
+                               air::AsyncTokenType::get(builder.getContext()),
+                               yielded_tokens_in_loop_op);
     wait_all_op_yielded->setAttr(
         "id",
         mlir::IntegerAttr::get(mlir::IntegerType::get(builder.getContext(), 32),
@@ -1096,8 +1097,8 @@ private:
     // Create a new wait_all event before the for op which collects the incoming
     // deps. Output token of wait_all shall be the iter_arg of for op.
     builder.setInsertionPoint(loop_op);
-    air::WaitAllOp wait_all_op_before_loop = builder.create<air::WaitAllOp>(
-        builder.getUnknownLoc(),
+    air::WaitAllOp wait_all_op_before_loop = air::WaitAllOp::create(
+        builder, builder.getUnknownLoc(),
         air::AsyncTokenType::get(loop_op->getContext()), incoming_tokens);
     wait_all_op_before_loop->setAttr(
         "id",
@@ -1139,9 +1140,9 @@ private:
                          loop_op.getInitArgs().end());
     all_init_args.push_back(wait_all_op_before_loop.getResult(0));
 
-    scf::ForOp new_loop_op = rewriter.create<scf::ForOp>(
-        loop_op.getLoc(), loop_op.getLowerBound(), loop_op.getUpperBound(),
-        loop_op.getStep(), all_init_args);
+    scf::ForOp new_loop_op = scf::ForOp::create(
+        rewriter, loop_op.getLoc(), loop_op.getLowerBound(),
+        loop_op.getUpperBound(), loop_op.getStep(), all_init_args);
 
     if (auto attr = loop_op->getAttrOfType<StringAttr>(
             SymbolTable::getSymbolAttrName()))
@@ -1198,9 +1199,9 @@ private:
     // Create new parallel op with init_val.
     SmallVector<Value, 4> merged_incoming_token;
     merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
-    scf::ParallelOp new_loop_op = rewriter.create<scf::ParallelOp>(
-        loop_op.getLoc(), loop_op.getLowerBound(), loop_op.getUpperBound(),
-        loop_op.getStep(), merged_incoming_token);
+    scf::ParallelOp new_loop_op = scf::ParallelOp::create(
+        rewriter, loop_op.getLoc(), loop_op.getLowerBound(),
+        loop_op.getUpperBound(), loop_op.getStep(), merged_incoming_token);
 
     if (auto attr = loop_op->getAttrOfType<StringAttr>(
             SymbolTable::getSymbolAttrName()))
@@ -1264,8 +1265,8 @@ private:
     // Create new if op with a yielded async token.
     SmallVector<Type> yielded_tys = {
         air::AsyncTokenType::get(rewriter.getContext())};
-    scf::IfOp new_branch_op = rewriter.create<scf::IfOp>(
-        branch_op.getLoc(), yielded_tys, branch_op.getCondition(),
+    scf::IfOp new_branch_op = scf::IfOp::create(
+        rewriter, branch_op.getLoc(), yielded_tys, branch_op.getCondition(),
         /*withElseRegion*/ (bool)branch_op.elseBlock());
 
     if (auto attr = branch_op->getAttrOfType<StringAttr>(
@@ -1289,8 +1290,8 @@ private:
     // Create new if op with a yielded async token.
     SmallVector<Type> yielded_tys = {
         air::AsyncTokenType::get(rewriter.getContext())};
-    affine::AffineIfOp new_branch_op = rewriter.create<affine::AffineIfOp>(
-        branch_op.getLoc(), yielded_tys, branch_op.getIntegerSet(),
+    affine::AffineIfOp new_branch_op = affine::AffineIfOp::create(
+        rewriter, branch_op.getLoc(), yielded_tys, branch_op.getIntegerSet(),
         branch_op.getOperands(),
         /*withElseRegion*/ (bool)branch_op.hasElse());
 
@@ -1591,7 +1592,7 @@ private:
       // Append the async token
       yield_values.push_back(wait_all_op_yielded.getResult(0));
       rewriter.setInsertionPointToEnd(&region.front());
-      rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(), yield_values);
+      scf::YieldOp::create(rewriter, rewriter.getUnknownLoc(), yield_values);
     }
 
     else if (isa<scf::ParallelOp>(region.getParentOp())) {
@@ -1613,8 +1614,8 @@ private:
       SmallVector<Value, 4> yield_token;
       yield_token.push_back(wait_all_op_yielded.getResult(0));
       rewriter.setInsertionPointToEnd(&region.front());
-      rewriter.create<affine::AffineYieldOp>(rewriter.getUnknownLoc(),
-                                             yield_token);
+      affine::AffineYieldOp::create(rewriter, rewriter.getUnknownLoc(),
+                                    yield_token);
     }
 
     // Elevating tokens from inside forOp body to the yielded token, to maintain

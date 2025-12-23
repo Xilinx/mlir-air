@@ -307,10 +307,9 @@ void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op) {
   for (auto v : operands_without_wait_all) {
     OpBuilder builder(op);
     SmallVector<Value> dep_list = {};
-    air::WaitAllOp wait_all_op_before_loop =
-        builder.create<xilinx::air::WaitAllOp>(
-            builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
-            dep_list);
+    air::WaitAllOp wait_all_op_before_loop = xilinx::air::WaitAllOp::create(
+        builder, builder.getUnknownLoc(),
+        air::AsyncTokenType::get(op->getContext()), dep_list);
     op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
   }
 }
@@ -331,10 +330,9 @@ void clearAsyncDependenciesOfAsyncOpImpl(scf::ParallelOp op) {
   for (auto v : operands_without_wait_all) {
     OpBuilder builder(op);
     SmallVector<Value> dep_list = {};
-    air::WaitAllOp wait_all_op_before_loop =
-        builder.create<xilinx::air::WaitAllOp>(
-            builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
-            dep_list);
+    air::WaitAllOp wait_all_op_before_loop = xilinx::air::WaitAllOp::create(
+        builder, builder.getUnknownLoc(),
+        air::AsyncTokenType::get(op->getContext()), dep_list);
     op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
   }
 }
@@ -397,8 +395,8 @@ air::WaitAllOp assignEmptyWaitAllAtScfForIterArg(OpBuilder builder,
                                                  scf::ForOp &op) {
   auto checkpoint = builder.saveInsertionPoint();
   builder.setInsertionPoint(op);
-  air::WaitAllOp sink_wait_all_op = builder.create<air::WaitAllOp>(
-      op->getLoc(), air::AsyncTokenType::get(builder.getContext()),
+  air::WaitAllOp sink_wait_all_op = air::WaitAllOp::create(
+      builder, op->getLoc(), air::AsyncTokenType::get(builder.getContext()),
       SmallVector<Value>{});
   op->getOpOperand(op.getNumControlOperands())
       .assign(sink_wait_all_op.getAsyncToken());
@@ -410,15 +408,16 @@ air::WaitAllOp assignEmptyWaitAllAtScfForIterArg(OpBuilder builder,
 scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
                                                  Location loc, Value token,
                                                  MLIRContext *ctx) {
-  auto reduce_op = builder.create<scf::ReduceOp>(loc, token);
+  auto reduce_op = scf::ReduceOp::create(builder, loc, token);
   builder.setInsertionPointToStart(&reduce_op.getRegion(0).front());
   SmallVector<Value, 4> reduce_tokens;
   reduce_tokens.push_back(reduce_op.getRegion(0).front().getArgument(0));
   reduce_tokens.push_back(reduce_op.getRegion(0).front().getArgument(1));
-  auto reduce_res = builder.create<xilinx::air::WaitAllOp>(
-      builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), reduce_tokens);
-  builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(),
-                                      reduce_res.getResult(0));
+  auto reduce_res = xilinx::air::WaitAllOp::create(
+      builder, builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
+      reduce_tokens);
+  scf::ReduceReturnOp::create(builder, builder.getUnknownLoc(),
+                              reduce_res.getResult(0));
   return reduce_op;
 }
 
@@ -529,8 +528,8 @@ void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
     OpBuilder builder(op);
     SmallVector<Value> dep_list = {token, v};
     air::WaitAllOp wait_all_op_before_loop =
-        builder.create<xilinx::air::WaitAllOp>(
-            builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), dep_list);
+        xilinx::air::WaitAllOp::create(builder, builder.getUnknownLoc(),
+                                       air::AsyncTokenType::get(ctx), dep_list);
     op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
   }
   // If scf.for loop isn't async, then make it async.
@@ -560,10 +559,9 @@ void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
   for (auto v : operands_without_wait_all) {
     OpBuilder builder(op);
     SmallVector<Value> dep_list = {};
-    air::WaitAllOp wait_all_op_before_loop =
-        builder.create<xilinx::air::WaitAllOp>(
-            builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
-            dep_list);
+    air::WaitAllOp wait_all_op_before_loop = xilinx::air::WaitAllOp::create(
+        builder, builder.getUnknownLoc(),
+        air::AsyncTokenType::get(op->getContext()), dep_list);
     op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
     replaceAllUsesInRegionWith(v, wait_all_op_before_loop.getAsyncToken(),
                                op.getRegion());
@@ -721,13 +719,13 @@ air::WaitAllOp generateWaitAllToTerminateBlock(Block &block, OpBuilder &b,
   else
     b.setInsertionPointToEnd(&block);
   if (isBlocking)
-    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
-                                    /*result_type*/ Type(),
-                                    danglingTokens.takeVector());
+    return air::WaitAllOp::create(b, b.getUnknownLoc(),
+                                  /*result_type*/ Type(),
+                                  danglingTokens.takeVector());
   else
-    return b.create<air::WaitAllOp>(b.getUnknownLoc(),
-                                    air::AsyncTokenType::get(b.getContext()),
-                                    danglingTokens.takeVector());
+    return air::WaitAllOp::create(b, b.getUnknownLoc(),
+                                  air::AsyncTokenType::get(b.getContext()),
+                                  danglingTokens.takeVector());
 }
 
 // Splits an SCF for loop into two for loops, by hoisting target operations in
@@ -759,9 +757,9 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
 
   rewriter.setInsertionPoint(for_op);
   IRMapping remap;
-  auto new_for_op = rewriter.create<scf::ForOp>(
-      loc, for_op.getLowerBound(), for_op.getUpperBound(), for_op.getStep(),
-      for_op.getInitArgs());
+  auto new_for_op = scf::ForOp::create(rewriter, loc, for_op.getLowerBound(),
+                                       for_op.getUpperBound(), for_op.getStep(),
+                                       for_op.getInitArgs());
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -804,13 +802,13 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
     // The yielded wait_all synchronizes on all operations collected by
     // waitAllOp, allowing the for loop to properly propagate async dependencies
     // to subsequent iterations.
-    rewriter.create<scf::YieldOp>(
-        loc, SmallVector<Value>{
-                 rewriter
-                     .create<air::WaitAllOp>(
-                         loc, air::AsyncTokenType::get(rewriter.getContext()),
-                         yield_operands)
-                     ->getResult(0)});
+    scf::YieldOp::create(
+        rewriter, loc,
+        SmallVector<Value>{air::WaitAllOp::create(
+                               rewriter, loc,
+                               air::AsyncTokenType::get(rewriter.getContext()),
+                               yield_operands)
+                               ->getResult(0)});
   }
 
   return new_for_op;
@@ -893,8 +891,8 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
       Operation *user = use->getOwner();
       if (auto yieldUser = dyn_cast<scf::YieldOp>(user)) {
         OpBuilder builder(yieldUser);
-        user = builder.create<air::WaitAllOp>(
-            yieldUser->getLoc(),
+        user = air::WaitAllOp::create(
+            builder, yieldUser->getLoc(),
             air::AsyncTokenType::get(yieldUser->getContext()),
             SmallVector<Value>{use->get()});
         use->assign(user->getResult(0));
@@ -1017,8 +1015,8 @@ LogicalResult unrollScfParallel(
             .end()); // scf.parallel induction vars. have LSD at highest index.
     for (unsigned i = 0; i < position.size(); i++) {
       localRemap.map(par.getInductionVars()[i],
-                     builder.create<arith::ConstantIndexOp>(
-                         builder.getUnknownLoc(),
+                     arith::ConstantIndexOp::create(
+                         builder, builder.getUnknownLoc(),
                          position[i] * *getConstantIntValue(par.getStep()[i]) +
                              *getConstantIntValue(par.getLowerBound()[i])));
     }
@@ -1032,8 +1030,8 @@ LogicalResult unrollScfParallel(
     }
     // Unroll air.wait_all token reduction
     if (getAsyncTokenFromOp(par)) {
-      auto yieldedWaitAll = builder.create<air::WaitAllOp>(
-          loc, air::AsyncTokenType::get(builder.getContext()),
+      auto yieldedWaitAll = air::WaitAllOp::create(
+          builder, loc, air::AsyncTokenType::get(builder.getContext()),
           yieldedTokensInIter);
       yieldedTokens.push_back(yieldedWaitAll.getAsyncToken());
     }
@@ -1041,9 +1039,8 @@ LogicalResult unrollScfParallel(
 
   if (auto parToken = getAsyncTokenFromOp(par)) {
     parToken.replaceAllUsesWith(
-        builder
-            .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
-                                    yieldedTokens)
+        air::WaitAllOp::create(builder, loc, air::AsyncTokenType::get(ctx),
+                               yieldedTokens)
             .getAsyncToken());
   }
   return success();
@@ -1077,11 +1074,11 @@ separateScfParallelByDims(RewriterBase &rewriter, scf::ParallelOp par,
     }
   }
 
-  auto outerPar = rewriter.create<scf::ParallelOp>(loc, outerLbs, outerUbs,
-                                                   outerSteps, inits);
+  auto outerPar = scf::ParallelOp::create(rewriter, loc, outerLbs, outerUbs,
+                                          outerSteps, inits);
   rewriter.setInsertionPointToStart(outerPar.getBody());
-  auto innerPar = rewriter.create<scf::ParallelOp>(loc, innerLbs, innerUbs,
-                                                   innerSteps, inits);
+  auto innerPar = scf::ParallelOp::create(rewriter, loc, innerLbs, innerUbs,
+                                          innerSteps, inits);
   int innerIdx = 0;
   int outerIdx = 0;
   for (unsigned i = 0; i < par.getNumLoops(); i++) {
@@ -1247,9 +1244,9 @@ air::WaitAllOp replaceAsyncOpWithWaitAll(OpBuilder builder, IRMapping &remap,
       dep_list_remap.push_back(remap.lookupOrDefault(dep));
     }
   }
-  auto wa_op = builder.create<air::WaitAllOp>(
-      builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
-      dep_list_remap);
+  auto wa_op = air::WaitAllOp::create(
+      builder, builder.getUnknownLoc(),
+      air::AsyncTokenType::get(op->getContext()), dep_list_remap);
   remap.map(air::getAsyncTokenFromOp(op), wa_op.getAsyncToken());
   return wa_op;
 }
@@ -2819,15 +2816,15 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
       auto operands = scf_for_yield.getOperands();
       yieldOperands.append(operands.begin(), std::prev(operands.end()));
 
-      yield_wait_all = b_yield.create<air::WaitAllOp>(
-          scf_for_yield->getLoc(),
+      yield_wait_all = air::WaitAllOp::create(
+          b_yield, scf_for_yield->getLoc(),
           air::AsyncTokenType::get(scf_for_yield->getContext()),
           SmallVector<Value>{tokenOperand});
 
       // Append the new wait_all token to the preserved operands
       yieldOperands.push_back(yield_wait_all.getAsyncToken());
 
-      b_yield.create<scf::YieldOp>(scf_for_yield->getLoc(), yieldOperands);
+      scf::YieldOp::create(b_yield, scf_for_yield->getLoc(), yieldOperands);
       scf_for_yield->erase();
     }
 

@@ -83,9 +83,9 @@ struct RelocateAssumeAlignmentOp
           assumeOp, "No unrealized_conversion_cast consumer of producer.");
 
     // Create a new AssumeAlignmentOp that consumes the cast operation's result
-    (void)rewriter.create<memref::AssumeAlignmentOp>(
-        assumeOp.getLoc(), castConsumerOp->getResult(0),
-        assumeOp.getAlignment());
+    (void)memref::AssumeAlignmentOp::create(rewriter, assumeOp.getLoc(),
+                                            castConsumerOp->getResult(0),
+                                            assumeOp.getAlignment());
 
     // Erase the old AssumeAlignmentOp
     rewriter.eraseOp(assumeOp);
@@ -252,7 +252,7 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
           if (!constOp)
             continue;
           uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
-          rewriter.create<AIEX::NpuWriteRTPOp>(op.getLoc(), name, i, v);
+          AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, i, v);
         }
         // FIXME: this should depend on the metadata to enable and to get the id
         if (!op.getNumOperands())
@@ -274,8 +274,8 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
         if (!lockOp)
           continue;
 
-        rewriter.create<AIEX::SetLockOp>(op.getLoc(), lockOp.getResult(),
-                                         rewriter.getI32IntegerAttr(1));
+        AIEX::SetLockOp::create(rewriter, op.getLoc(), lockOp.getResult(),
+                                rewriter.getI32IntegerAttr(1));
       }
     }
     rewriter.eraseOp(op);
@@ -400,8 +400,8 @@ public:
     if (!contains_npu_ops)
       return failure();
 
-    auto seq = rewriter.create<AIE::RuntimeSequenceOp>(op->getLoc(),
-                                                       op.getSymNameAttr());
+    auto seq = AIE::RuntimeSequenceOp::create(rewriter, op->getLoc(),
+                                              op.getSymNameAttr());
     seq.getBody().push_back(new Block);
 
     // Add and remap the arguments
@@ -465,7 +465,7 @@ public:
       StringRef metadata =
           airrtDmaOp->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata")
               .getValue();
-      rewriter.create<AIEX::NpuDmaWaitOp>(op.getLoc(), metadata);
+      AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
     }
     rewriter.eraseOp(op);
     return success();
@@ -549,8 +549,9 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   SmallVector<Value> strides(oper_begin + 12, oper_begin + 15);
   // Stride field implicit last element one
   OpBuilder builder(memcpy_op);
-  strides.push_back(builder.create<arith::ConstantOp>(
-      loc, builder.getI64Type(), IntegerAttr::get(builder.getI64Type(), 1)));
+  strides.push_back(
+      arith::ConstantOp::create(builder, loc, builder.getI64Type(),
+                                IntegerAttr::get(builder.getI64Type(), 1)));
 
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
@@ -572,12 +573,12 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       int outer_wrap = (new_a_stride > AIE2_STRIDE_UPPER_BOUND && i != 0)
                            ? (a_wrap)
                            : (b_wrap);
-      wraps[i] = builder.create<arith::ConstantOp>(
-          loc, builder.getI64Type(),
+      wraps[i] = arith::ConstantOp::create(
+          builder, loc, builder.getI64Type(),
           IntegerAttr::get(builder.getI64Type(), inner_wrap));
       wraps.insert(wraps.begin() + i,
-                   builder.create<arith::ConstantOp>(
-                       loc, builder.getI64Type(),
+                   arith::ConstantOp::create(
+                       builder, loc, builder.getI64Type(),
                        IntegerAttr::get(builder.getI64Type(), outer_wrap)));
       auto new_const_stride = const_stride * inner_wrap;
       if (volume != 1)
@@ -585,13 +586,13 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
             volume; // Avoids striding out of memory size, if memref is ranked
       strides.insert(
           strides.begin() + i,
-          builder.create<arith::ConstantOp>(
-              loc, builder.getI64Type(),
+          arith::ConstantOp::create(
+              builder, loc, builder.getI64Type(),
               IntegerAttr::get(builder.getI64Type(), new_const_stride)));
-      offsets.insert(offsets.begin() + i,
-                     builder.create<arith::ConstantOp>(
-                         loc, builder.getI64Type(),
-                         IntegerAttr::get(builder.getI64Type(), 0)));
+      offsets.insert(
+          offsets.begin() + i,
+          arith::ConstantOp::create(builder, loc, builder.getI64Type(),
+                                    IntegerAttr::get(builder.getI64Type(), 0)));
       // Attempt to find one dummy dimension in the wrap-and-stride list and
       // erase.
       auto offsetWrapZip = llvm::zip_equal(offsets, wraps);
@@ -633,20 +634,20 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
     int const_step = const_stride ? const_stride : 1;
     auto new_for_op =
         (inner_affine_for_iv)
-            ? (builder.create<affine::AffineForOp>(
-                  loc,
-                  SmallVector<Value>{builder.create<arith::AddIOp>(
-                      loc, inner_affine_for_iv,
-                      builder.create<arith::ConstantIndexOp>(
-                          loc, const_lower_bound))},
+            ? (affine::AffineForOp::create(
+                  builder, loc,
+                  SmallVector<Value>{arith::AddIOp::create(
+                      builder, loc, inner_affine_for_iv,
+                      arith::ConstantIndexOp::create(builder, loc,
+                                                     const_lower_bound))},
                   AffineMap::get(ctx),
-                  SmallVector<Value>{builder.create<arith::AddIOp>(
-                      loc, inner_affine_for_iv,
-                      builder.create<arith::ConstantIndexOp>(
-                          loc, const_upper_bound))},
+                  SmallVector<Value>{arith::AddIOp::create(
+                      builder, loc, inner_affine_for_iv,
+                      arith::ConstantIndexOp::create(builder, loc,
+                                                     const_upper_bound))},
                   AffineMap::get(ctx), const_step))
-            : (builder.create<affine::AffineForOp>(
-                  loc, const_lower_bound, const_upper_bound, const_step));
+            : (affine::AffineForOp::create(builder, loc, const_lower_bound,
+                                           const_upper_bound, const_step));
     for_loop_nest.push_back(new_for_op);
     inner_affine_for = new_for_op;
 
@@ -673,15 +674,15 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
     // Innermost tiled affine.for loop induction variable as lowest offset, if
     // original rank exceeds hw limit.
     new_opers.insert(new_opers.end(), offsets.begin(), offsets.end() - 1);
-    auto new_inner_offset = builder.create<arith::IndexCastOp>(
-        loc, IntegerType::get(ctx, 64), inner_affine_for_iv);
+    auto new_inner_offset = arith::IndexCastOp::create(
+        builder, loc, IntegerType::get(ctx, 64), inner_affine_for_iv);
     new_opers.push_back(new_inner_offset);
   } else
     new_opers.insert(new_opers.end(), offsets.begin(), offsets.end());
   new_opers.insert(new_opers.end(), wraps.begin(), wraps.end());
   new_opers.insert(new_opers.end(), strides.begin(), strides.end());
-  builder.create<airrt::DmaMemcpyNdOp>(loc, tys, new_opers,
-                                       memcpy_op->getAttrs());
+  airrt::DmaMemcpyNdOp::create(builder, loc, tys, new_opers,
+                               memcpy_op->getAttrs());
 
   // Unroll the affine loop nest.
   for (auto forOp : llvm::reverse(for_loop_nest)) {
@@ -851,8 +852,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (dma->getNumResults()) {
         OpBuilder builder(dma);
         SmallVector<Type, 1> tys;
-        auto newOp = builder.create<airrt::DmaMemcpyNdOp>(dma->getLoc(), tys,
-                                                          dma->getOperands());
+        auto newOp = airrt::DmaMemcpyNdOp::create(builder, dma->getLoc(), tys,
+                                                  dma->getOperands());
         newOp->setAttrs(dma->getDiscardableAttrDictionary());
         dma->erase();
       }
@@ -871,11 +872,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       bool resetY = !(getConstantIntValue(dma.getY()) &&
                       *getConstantIntValue(dma.getY()) == 0);
       if (resetX)
-        dma.getXMutable().assign(builder.create<arith::ConstantOp>(
-            dma->getLoc(), i64Ty, IntegerAttr::get(i64Ty, 0)));
+        dma.getXMutable().assign(arith::ConstantOp::create(
+            builder, dma->getLoc(), i64Ty, IntegerAttr::get(i64Ty, 0)));
       if (resetY)
-        dma.getYMutable().assign(builder.create<arith::ConstantOp>(
-            dma->getLoc(), i64Ty, IntegerAttr::get(i64Ty, 0)));
+        dma.getYMutable().assign(arith::ConstantOp::create(
+            builder, dma->getLoc(), i64Ty, IntegerAttr::get(i64Ty, 0)));
     }
   }
 
@@ -1008,9 +1009,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         }
       });
       builder.setInsertionPoint(par_op);
-      auto newWaitAll = builder.create<airrt::WaitAllOp>(
-          par_op->getLoc(), airrt::EventType::get(par_op->getContext()),
-          par_op.getInitVals());
+      auto newWaitAll = airrt::WaitAllOp::create(
+          builder, par_op->getLoc(),
+          airrt::EventType::get(par_op->getContext()), par_op.getInitVals());
       for (auto res : par_op->getResults())
         res.replaceAllUsesWith(newWaitAll->getResult(0));
       par_op->erase();
@@ -1081,16 +1082,16 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       v0 |= (ports[i].second << (i * 8));
       v0 |= (ports[i].first << ((i * 8) + 5));
     }
-    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0,
-                                       nullptr, col, row);
+    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset, v0,
+                               nullptr, col, row);
     uint32_t v1 = 0;
     if (ports.size() > 4)
       for (unsigned i = 4; i < std::min(ports.size(), 8UL); i++) {
         v1 |= (ports[i].second << ((i - 4) * 8));
         v1 |= (ports[i].first << (((i - 4) * 8) + 5));
       }
-    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset + 0x4,
-                                       v1, nullptr, col, row);
+    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset + 0x4,
+                               v1, nullptr, col, row);
   }
 
   // up to 8 events (up to 64 bits) will be written to the 8 event slots (bytes)
@@ -1107,10 +1108,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (unsigned i = 4; i < std::min(events.size(), 8UL); i++)
         v1 |= ((events[i] & 0xff) << ((i - 4) * 8));
 
-    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset, v0,
-                                       nullptr, col, row);
-    builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), offset + 0x4,
-                                       v1, nullptr, col, row);
+    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset, v0,
+                               nullptr, col, row);
+    AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset + 0x4,
+                               v1, nullptr, col, row);
   }
 
   // configure events to monitor
@@ -1181,14 +1182,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           uint32_t core_reg_trace_control0 = 0x340D0;
           uint32_t core_reg_trace_control1 = 0x340D4;
           uint32_t core_event_broadcast_15 = 122;
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), core_reg_timer_control,
+          AIEX::NpuWrite32Op::create(
+              builder, builder.getUnknownLoc(), core_reg_timer_control,
               core_event_broadcast_15 << 8, nullptr, col, row);
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), core_reg_trace_control0,
+          AIEX::NpuWrite32Op::create(
+              builder, builder.getUnknownLoc(), core_reg_trace_control0,
               core_event_broadcast_15 << 16, nullptr, col, row);
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), core_reg_trace_control1,
+          AIEX::NpuWrite32Op::create(
+              builder, builder.getUnknownLoc(), core_reg_trace_control1,
               pkt_type << 12 | flowID, nullptr, col, row);
 
           // configure events to monitor
@@ -1214,14 +1215,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           uint32_t mem_reg_trace_control0 = 0x940D0;
           uint32_t mem_reg_trace_control1 = 0x940D4;
           uint32_t mem_event_broadcast_15 = 157;
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), mem_reg_timer_control,
+          AIEX::NpuWrite32Op::create(
+              builder, builder.getUnknownLoc(), mem_reg_timer_control,
               mem_event_broadcast_15 << 8, nullptr, col, row);
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), mem_reg_trace_control0,
+          AIEX::NpuWrite32Op::create(
+              builder, builder.getUnknownLoc(), mem_reg_trace_control0,
               mem_event_broadcast_15 << 16, nullptr, col, row);
-          builder.create<AIEX::NpuWrite32Op>(
-              builder.getUnknownLoc(), mem_reg_trace_control1,
+          AIEX::NpuWrite32Op::create(
+              builder, builder.getUnknownLoc(), mem_reg_trace_control1,
               pkt_type << 12 | flowID, nullptr, col, row);
 
           // configure events to monitor
@@ -1251,8 +1252,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           return failure();
         }
 
-        builder.create<AIEX::NpuWriteBdOp>(
-            builder.getUnknownLoc(), dstColIndex, bdID, buff_size, buff_offset,
+        AIEX::NpuWriteBdOp::create(
+            builder, builder.getUnknownLoc(), dstColIndex, bdID, buff_size,
+            buff_offset,
             /*enable_packet*/ 1, /*out_of_order_id*/ 0,
             /*packet_id*/ flowID, pkt_type,
             /* d0_size */ 0, /* d0_stride */ 0, /* d1_size */ 0,
@@ -1268,8 +1270,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             /* d2_zero_after */ 0);
         uint32_t addr = (dstColIndex << target_model.getColumnShift()) |
                         (0x1D004 + bdID * 0x20);
-        builder.create<AIEX::NpuAddressPatchOp>(builder.getUnknownLoc(), addr,
-                                                /* ddr_id */ 2, buff_offset);
+        AIEX::NpuAddressPatchOp::create(builder, builder.getUnknownLoc(), addr,
+                                        /* ddr_id */ 2, buff_offset);
 
         int address;
         if (destPort.channel == 0)
@@ -1280,8 +1282,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
           pktFlow->emitOpError("unknown trace dest.");
           return failure();
         }
-        builder.create<AIEX::NpuWrite32Op>(
-            builder.getUnknownLoc(), address, bdID, nullptr,
+        AIEX::NpuWrite32Op::create(
+            builder, builder.getUnknownLoc(), address, bdID, nullptr,
             builder.getIntegerAttr(builder.getI32Type(), dstColIndex),
             builder.getIntegerAttr(builder.getI32Type(), dstRowIndex));
         chanToIdMap[dstColIndex]--;
@@ -1289,12 +1291,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
       // broadcast event to sync timer
       auto zero = builder.getIntegerAttr(builder.getI32Type(), 0);
-      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x34000,
-                                         127 << 8, nullptr, zero, zero);
-      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x3404C, 127,
-                                         nullptr, zero, zero);
-      builder.create<AIEX::NpuWrite32Op>(builder.getUnknownLoc(), 0x34008, 127,
-                                         nullptr, zero, zero);
+      AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), 0x34000,
+                                 127 << 8, nullptr, zero, zero);
+      AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), 0x3404C, 127,
+                                 nullptr, zero, zero);
+      AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), 0x34008, 127,
+                                 nullptr, zero, zero);
     }
     return success();
   }

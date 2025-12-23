@@ -182,13 +182,13 @@ std::optional<Value> hoistOneStaticallyBoundAllocation(
     OpBuilder::InsertionGuard g(builder);
     builder.setInsertionPointToStart(&funcOp.getFunctionBody().front());
     Value allocation =
-        builder.create<AllocLikeOpType>(loc, allocLikeType, alignmentAttr);
+        AllocLikeOpType::create(builder, loc, allocLikeType, alignmentAttr);
     // For memref.alloc, also insert a dealloc in the entry block terminator
     // block to preserve semantics (leaks avoided).
     if (std::is_same<AllocLikeOpType, memref::AllocOp>::value) {
       builder.setInsertionPoint(
           funcOp.getFunctionBody().front().getTerminator());
-      builder.create<memref::DeallocOp>(loc, allocation);
+      memref::DeallocOp::create(builder, loc, allocation);
     }
     return allocation;
   }
@@ -225,8 +225,8 @@ std::optional<Value> hoistOneStaticallyBoundAllocation(
     dispatchIndexOpFoldResults(allocSizes, dynamicSizes, staticShape);
     auto allocationType = allocLikeType.clone(staticShape);
 
-    allocation = builder.create<AllocLikeOpType>(loc, allocationType,
-                                                 dynamicSizes, alignmentAttr);
+    allocation = AllocLikeOpType::create(builder, loc, allocationType,
+                                         dynamicSizes, alignmentAttr);
   }
 
   // Create a subview that exactly matches the original requested type.
@@ -235,20 +235,20 @@ std::optional<Value> hoistOneStaticallyBoundAllocation(
                                     builder.getIndexAttr(0));
   SmallVector<OpFoldResult> strides(allocLikeType.getRank(),
                                     builder.getIndexAttr(1));
-  Value subviewOp = builder.create<memref::SubViewOp>(loc, allocation, offsets,
-                                                      subviewSizes, strides);
+  Value subviewOp = memref::SubViewOp::create(builder, loc, allocation, offsets,
+                                              subviewSizes, strides);
 
   // Some consumers (e.g., another subview) may require the *exact* original
   // memref type. If the subview result type does not match, insert an explicit
   // memref.cast back to `allocLikeType` to satisfy verifier and users.
   if (subviewOp.getType() != allocLikeType) {
-    subviewOp = builder.create<memref::CastOp>(loc, allocLikeType, subviewOp);
+    subviewOp = memref::CastOp::create(builder, loc, allocLikeType, subviewOp);
   }
 
   // As above, insert a dealloc at function end.
   if (std::is_same<AllocLikeOpType, memref::AllocOp>::value) {
     builder.setInsertionPoint(funcOp.getFunctionBody().front().getTerminator());
-    builder.create<memref::DeallocOp>(loc, allocation);
+    memref::DeallocOp::create(builder, loc, allocation);
   }
 
   return subviewOp;

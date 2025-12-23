@@ -81,9 +81,9 @@ static LogicalResult canonicalizeHierarchyOpArgs(T op,
     return failure();
 
   IRMapping remap;
-  auto newOp = rewriter.create<T>(op.getLoc(), op.getAsyncDependencies(),
-                                  op.getSizeOperands(), newOperands,
-                                  op->getNumResults() > 0, op->getAttrs());
+  auto newOp = T::create(rewriter, op.getLoc(), op.getAsyncDependencies(),
+                         op.getSizeOperands(), newOperands,
+                         op->getNumResults() > 0, op->getAttrs());
 
   rewriter.setInsertionPointToStart(&newOp.getBody().front());
   for (auto p : llvm::zip(op.getSize(), newOp.getSize()))
@@ -493,9 +493,10 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
       replaceAllUsesInRegionWith(tok, loopCarriedTokenArg, forOp.getRegion());
     rewriter.setInsertionPoint(forOp);
     regionTokens.insert(forOp.getInitArgs().begin(), forOp.getInitArgs().end());
-    auto newWaitAll = rewriter.create<air::WaitAllOp>(
-        forOp->getLoc(), air::AsyncTokenType::get(forOp->getContext()),
-        regionTokens.takeVector());
+    auto newWaitAll =
+        air::WaitAllOp::create(rewriter, forOp->getLoc(),
+                               air::AsyncTokenType::get(forOp->getContext()),
+                               regionTokens.takeVector());
     forOp
         .getInitsMutable()[loopCarriedTokenArg.getArgNumber() -
                            forOp.getNumInductionVars()]
@@ -1363,9 +1364,8 @@ static LogicalResult FoldExecute(air::ExecuteOp op, PatternRewriter &rewriter) {
   // then replace the execute with a wait_all no-op.
   if (op->getNumResults() > 1) {
     op.getResult(0).replaceAllUsesWith(
-        rewriter
-            .create<air::WaitAllOp>(op->getLoc(), op->getResult(0).getType(),
-                                    op->getOperands())
+        air::WaitAllOp::create(rewriter, op->getLoc(),
+                               op->getResult(0).getType(), op->getOperands())
             .getResult(0));
     rewriter.eraseOp(op);
     return success();
@@ -1698,7 +1698,7 @@ static void combineMixedOffsetsInPlace(
       AffineMap map = AffineMap::get(/*dimCount=*/0,
                                      /*symCount=*/affineOperands.size(), expr);
       offsets[i] =
-          rewriter.create<affine::AffineApplyOp>(loc, map, affineOperands)
+          affine::AffineApplyOp::create(rewriter, loc, map, affineOperands)
               .getResult();
       continue;
     }
@@ -1708,12 +1708,12 @@ static void combineMixedOffsetsInPlace(
     if (opOffsetAttr) {
       Value opOffCst =
           makeIndexCst(mlir::cast<IntegerAttr>(opOffsetAttr).getInt());
-      mulTerm = rewriter.create<arith::MulIOp>(loc, opOffCst, sourceStride);
+      mulTerm = arith::MulIOp::create(rewriter, loc, opOffCst, sourceStride);
     } else {
       Value opOffsetVal = mlir::cast<Value>(opOffset);
-      mulTerm = rewriter.create<arith::MulIOp>(loc, opOffsetVal, sourceStride);
+      mulTerm = arith::MulIOp::create(rewriter, loc, opOffsetVal, sourceStride);
     }
-    offsets[i] = rewriter.create<arith::AddIOp>(loc, sourceOffset, mulTerm);
+    offsets[i] = arith::AddIOp::create(rewriter, loc, sourceOffset, mulTerm);
   }
 }
 
@@ -2052,7 +2052,7 @@ SmallVector<Value> materializeOpFoldResultAsValues(ArrayRef<OpFoldResult> ofrs,
       // Create an arith.constant if the OpFoldResult is an Attribute.
       auto constAttr = cast<IntegerAttr>(attr);
       values.push_back(
-          builder.create<arith::ConstantIndexOp>(loc, constAttr.getInt()));
+          arith::ConstantIndexOp::create(builder, loc, constAttr.getInt()));
     }
   }
   return values;
@@ -2172,9 +2172,10 @@ FailureOr<TilingResult> getTiledImplementationFromChanIf(
   // attributes.
   air::AsyncOpInterface asyncIf =
       dyn_cast<air::AsyncOpInterface>(op.getOperation());
-  PutGetTy tiledOp = builder.create<PutGetTy>(
-      op.getLoc(), op->getResultTypes(), asyncIf.getAsyncDependencies(),
-      op.getChanName(), op.getIndices(), inputSlice->getResult(0),
+  PutGetTy tiledOp = PutGetTy::create(
+      builder, op.getLoc(), op->getResultTypes(),
+      asyncIf.getAsyncDependencies(), op.getChanName(), op.getIndices(),
+      inputSlice->getResult(0),
       materializeOpFoldResultAsValues(offsets, op.getLoc(), builder),
       materializeOpFoldResultAsValues(sizes, op.getLoc(), builder),
       materializeOpFoldResultAsValues(strides, op.getLoc(), builder));
