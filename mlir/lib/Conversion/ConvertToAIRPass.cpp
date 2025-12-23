@@ -75,14 +75,14 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
 
   for (auto o : static_offsets) {
     if (o >= 0)
-      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, o));
+      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, o));
     else
       offsets.push_back(*subview_offsets++);
   }
   for (auto s : static_sizes)
-    sizes.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+    sizes.push_back(arith::ConstantIndexOp::create(builder, loc, s));
   for (auto s : layout_strides)
-    strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+    strides.push_back(arith::ConstantIndexOp::create(builder, loc, s));
 }
 
 static void extractOperandsFromReinterpretCast(
@@ -133,17 +133,17 @@ static void extractOperandsFromReinterpretCast(
 
   for (auto o : static_offsets) {
     if (o >= 0)
-      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, o));
+      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, o));
     else
       offsets.push_back(*reinterpretCast_offsets++);
   }
   for (auto s : static_sizes)
-    sizes.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+    sizes.push_back(arith::ConstantIndexOp::create(builder, loc, s));
   for (auto s : layout_strides)
-    strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+    strides.push_back(arith::ConstantIndexOp::create(builder, loc, s));
   while (offsets.size() < sizes.size())
     offsets.insert(offsets.begin(),
-                   builder.create<arith::ConstantIndexOp>(loc, 0));
+                   arith::ConstantIndexOp::create(builder, loc, 0));
 }
 
 static FailureOr<air::DmaMemcpyNdOp>
@@ -195,8 +195,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
 
   SmallVector<Value, 4> deps;
   SmallVector<Type, 4> tys;
-  auto dma = rewriter.create<air::DmaMemcpyNdOp>(
-      loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
+  auto dma = air::DmaMemcpyNdOp::create(
+      rewriter, loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
       src_offsets, src_sizes, src_strides);
   dma->setAttr(
       "id", mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
@@ -301,9 +301,9 @@ public:
     SmallVector<Value, 4> constants;
     getUsedConstsAndArgsDefinedAbove(op.getRegion(), constants, args);
     SmallVector<Value, 2> dims{
-        rewriter.create<arith::ConstantIndexOp>(loc, ub0.getValue()),
-        rewriter.create<arith::ConstantIndexOp>(loc, ub1.getValue())};
-    auto launch = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
+        arith::ConstantIndexOp::create(rewriter, loc, ub0.getValue()),
+        arith::ConstantIndexOp::create(rewriter, loc, ub1.getValue())};
+    auto launch = air::HerdOp::create(rewriter, op.getLoc(), dims, args);
 
     if (auto attr =
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
@@ -369,9 +369,9 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
              << "' does not evenly divide range '" << (ub - lb) << "'";
 
     auto loc = parOp.getLoc();
-    new_ub.push_back(rewriter.create<arith::ConstantIndexOp>(loc, new_ub_int));
-    new_lb.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
-    new_step.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+    new_ub.push_back(arith::ConstantIndexOp::create(rewriter, loc, new_ub_int));
+    new_lb.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
+    new_step.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
     AffineExpr d0 = rewriter.getAffineDimExpr(0);
     AffineExpr mul = d0 * s;
     AffineExpr add = mul + lb;
@@ -379,7 +379,7 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(parOp.getBody());
       auto map = AffineMap::get(1, 0, add);
-      auto new_iv = rewriter.create<affine::AffineApplyOp>(loc, map, iv);
+      auto new_iv = affine::AffineApplyOp::create(rewriter, loc, map, iv);
       SmallPtrSet<Operation *, 1> keep{new_iv};
       iv.replaceAllUsesExcept(new_iv.getResult(), keep);
     }
@@ -406,15 +406,15 @@ void InsertEmptyLaunchOverHerd(air::HerdOp op, bool insertSegment = true) {
   // Launch of size 1 in each dimension
   SmallVector<Value, 4> launchSizes;
   for (unsigned i = 0; i < op.getNumDims(); ++i)
-    launchSizes.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
+    launchSizes.push_back(arith::ConstantIndexOp::create(builder, loc, 1));
 
   // Create LaunchOp
   air::LaunchOp launch;
   if (op.getAsyncToken())
-    launch = builder.create<air::LaunchOp>(loc, op.getAsyncDependencies(),
-                                           launchSizes, args, true);
+    launch = air::LaunchOp::create(builder, loc, op.getAsyncDependencies(),
+                                   launchSizes, args, true);
   else
-    launch = builder.create<air::LaunchOp>(loc, launchSizes, args);
+    launch = air::LaunchOp::create(builder, loc, launchSizes, args);
 
   builder.setInsertionPointToStart(&launch.getRegion().front());
 
@@ -428,10 +428,11 @@ void InsertEmptyLaunchOverHerd(air::HerdOp op, bool insertSegment = true) {
     SmallVector<Value> segmentSizes; // TODO: Currently we generate
                                      // single-iteration segments only.
     if (op.getAsyncToken())
-      segment = builder.create<air::SegmentOp>(loc, ValueRange{}, segmentSizes,
-                                               segmentOpers, true);
+      segment = air::SegmentOp::create(builder, loc, ValueRange{}, segmentSizes,
+                                       segmentOpers, true);
     else
-      segment = builder.create<air::SegmentOp>(loc, segmentSizes, segmentOpers);
+      segment =
+          air::SegmentOp::create(builder, loc, segmentSizes, segmentOpers);
     builder.setInsertionPointToStart(&segment.getRegion().front());
   }
 
@@ -452,10 +453,10 @@ void InsertEmptyLaunchOverHerd(air::HerdOp op, bool insertSegment = true) {
     llvm::append_range(herdOpers, launch.getKernelArguments());
   }
   if (op.getAsyncToken())
-    newHerd = builder.create<air::HerdOp>(loc, ValueRange{}, herdSizes,
-                                          herdOpers, true);
+    newHerd = air::HerdOp::create(builder, loc, ValueRange{}, herdSizes,
+                                  herdOpers, true);
   else
-    newHerd = builder.create<air::HerdOp>(loc, herdSizes, herdOpers);
+    newHerd = air::HerdOp::create(builder, loc, herdSizes, herdOpers);
 
   // Map values from old Herd to new Herd
   IRMapping remap;
@@ -534,8 +535,8 @@ separateScfParallel(scf::ParallelOp op, unsigned innerNumLoops,
     outerUpperBounds.push_back(op.getUpperBound()[i]);
     outerSteps.push_back(op.getStep()[i]);
   }
-  scf::ParallelOp outerLoop = builder.create<scf::ParallelOp>(
-      loc, outerLowerBounds, outerUpperBounds, outerSteps);
+  scf::ParallelOp outerLoop = scf::ParallelOp::create(
+      builder, loc, outerLowerBounds, outerUpperBounds, outerSteps);
   for (unsigned i = 0, e = outerNumLoops; i < e; ++i)
     op.getInductionVars()[i].replaceAllUsesWith(
         outerLoop.getInductionVars()[i]);
@@ -545,8 +546,8 @@ separateScfParallel(scf::ParallelOp op, unsigned innerNumLoops,
     innerSteps.push_back(op.getStep()[i]);
   }
   builder.setInsertionPointToStart(outerLoop.getBody());
-  scf::ParallelOp innerLoop = builder.create<scf::ParallelOp>(
-      loc, innerLowerBounds, innerUpperBounds, innerSteps);
+  scf::ParallelOp innerLoop = scf::ParallelOp::create(
+      builder, loc, innerLowerBounds, innerUpperBounds, innerSteps);
   for (unsigned i = outerNumLoops, e = op.getNumLoops(); i < e; ++i)
     op.getInductionVars()[i].replaceAllUsesWith(
         innerLoop.getInductionVars()[i - outerNumLoops]);
@@ -575,8 +576,8 @@ createCascadeChannelOp(OpBuilder &builder, ModuleOp module, Location loc,
   builder.setInsertionPoint(o);
 
   // Create the channel op with the given bundle sizes and "cascade" tag.
-  auto channel_op = builder.create<air::ChannelOp>(
-      loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
+  auto channel_op = air::ChannelOp::create(
+      builder, loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
       builder.getStringAttr("cascade"));
 
   return channel_op;
@@ -648,28 +649,28 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
   auto decIndices = [&](ValueRange ifOpers) {
     SmallVector<Value> idx;
     idx.reserve(ifOpers.size());
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
     for (Value v : ifOpers)
-      idx.push_back(rewriter.create<arith::SubIOp>(loc, v, c1));
+      idx.push_back(arith::SubIOp::create(rewriter, loc, v, c1));
     return idx;
   };
 
   // Emit a ChannelPutOp with given channel name, indices, and value.
   auto emitChannelPut = [&](StringRef ch, ValueRange idx, Value val) {
-    rewriter.create<air::ChannelPutOp>(
-        loc, /*types*/ TypeRange{}, /*async_deps*/ ValueRange{}, ch, idx, val,
-        /*offsets*/ ValueRange{},
-        /*sizes*/ ValueRange{},
-        /*strides*/ ValueRange{});
+    air::ChannelPutOp::create(rewriter, loc, /*types*/ TypeRange{},
+                              /*async_deps*/ ValueRange{}, ch, idx, val,
+                              /*offsets*/ ValueRange{},
+                              /*sizes*/ ValueRange{},
+                              /*strides*/ ValueRange{});
   };
 
   // Emit a ChannelGetOp with given channel name, indices, and value.
   auto emitChannelGet = [&](StringRef ch, ValueRange idx, Value val) {
-    rewriter.create<air::ChannelGetOp>(
-        loc, /*types*/ TypeRange{}, /*async_deps*/ ValueRange{}, ch, idx, val,
-        /*offsets*/ ValueRange{},
-        /*sizes*/ ValueRange{},
-        /*strides*/ ValueRange{});
+    air::ChannelGetOp::create(rewriter, loc, /*types*/ TypeRange{},
+                              /*async_deps*/ ValueRange{}, ch, idx, val,
+                              /*offsets*/ ValueRange{},
+                              /*sizes*/ ValueRange{},
+                              /*strides*/ ValueRange{});
   };
 
   // Clone a list of ops into the current insertion point using a remap.
@@ -711,8 +712,8 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
                                  parallelOp.getNumLoops());
 
   // Outer if: prologue vs everything else.
-  auto ifTop = rewriter.create<affine::AffineIfOp>(loc, prologIS, ifOpers,
-                                                   /*has_else*/ true);
+  auto ifTop = affine::AffineIfOp::create(rewriter, loc, prologIS, ifOpers,
+                                          /*has_else*/ true);
   rewriter.setInsertionPointToStart(ifTop.getThenBlock());
 
   // Prologue execution: clone producers and first reduction step, then put into
@@ -753,8 +754,8 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
 
   // Else branch of prologue: steady state vs epilogue.
   rewriter.setInsertionPointToStart(ifTop.getElseBlock());
-  auto elIfTop = rewriter.create<affine::AffineIfOp>(loc, pplBodyIS, ifOpers,
-                                                     /*has_else*/ true);
+  auto elIfTop = affine::AffineIfOp::create(rewriter, loc, pplBodyIS, ifOpers,
+                                            /*has_else*/ true);
   rewriter.setInsertionPointToStart(elIfTop.getThenBlock());
 
   // Steady-state: clone producers, get from channel, do reduction, put back.
@@ -862,8 +863,8 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
   }
   SmallVector<Value, 2> dims;
   for (auto id : ids)
-    dims.push_back(rewriter.create<arith::ConstantIndexOp>(loc, bounds[id]));
-  auto hierOp = rewriter.create<hierTy>(op.getLoc(), dims, args);
+    dims.push_back(arith::ConstantIndexOp::create(rewriter, loc, bounds[id]));
+  auto hierOp = hierTy::create(rewriter, op.getLoc(), dims, args);
   auto &body = op.getBody()->getOperations();
   if (auto herdOp = dyn_cast<air::HerdOp>(hierOp.getOperation()))
     propagateLinkWith(op, herdOp);
@@ -999,8 +1000,8 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   if (L2MemrefShape.size() < previousTilingScfPar.getStep().size())
     return failure();
   builder.setInsertionPointAfter(op);
-  auto newTilingPar = builder.create<scf::ParallelOp>(
-      loc, previousTilingScfPar.getLowerBound(),
+  auto newTilingPar = scf::ParallelOp::create(
+      builder, loc, previousTilingScfPar.getLowerBound(),
       previousTilingScfPar.getUpperBound(), previousTilingScfPar.getStep());
   IRMapping remap;
   for (unsigned i = 0; i < previousTilingScfPar.getInductionVars().size(); i++)
@@ -1013,9 +1014,9 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   remap.map(L1Memref, newL1Subview.getResult());
   for (auto o : L1MemrefOpLog) {
     if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
-      memref::TransposeOp transposeOp = builder.create<memref::TransposeOp>(
-          loc, newL1Subview.getResult(),
-          AffineMapAttr::get(tr.getPermutation()));
+      memref::TransposeOp transposeOp =
+          memref::TransposeOp::create(builder, loc, newL1Subview.getResult(),
+                                      AffineMapAttr::get(tr.getPermutation()));
       remap.map(tr.getResult(), transposeOp.getResult());
     } else {
       o->emitOpError("memref operation type unsupported on L1 memref.");
@@ -1046,8 +1047,8 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
       AffineExpr d0 = builder.getAffineDimExpr(0);
       AffineExpr mul = d0 * applyFactor;
       auto map = AffineMap::get(1, 0, mul);
-      Value new_iv = builder.create<affine::AffineApplyOp>(
-          loc, map, newTilingPar.getInductionVars()[dimIndex]);
+      Value new_iv = affine::AffineApplyOp::create(
+          builder, loc, map, newTilingPar.getInductionVars()[dimIndex]);
       L2Offsets[i] = new_iv;
       L2TiledShape[i] =
           llvm::divideCeilSigned(L2MemrefShape[i], tilingFactors[dimIndex]);
@@ -1064,14 +1065,14 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
       llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
           llvm::cast<MemRefType>(L2Memref.getType()), L2Offsets, L2Sizes,
           L2Strides));
-  auto newL2Subview = builder.create<memref::SubViewOp>(
-      loc, subviewOutputType, L2Memref, L2Offsets, L2Sizes, L2Strides);
+  auto newL2Subview = memref::SubViewOp::create(
+      builder, loc, subviewOutputType, L2Memref, L2Offsets, L2Sizes, L2Strides);
   remap.map(L2Memref, newL2Subview.getResult());
   for (auto o : L2MemrefOpLog) {
     if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
-      memref::TransposeOp transposeOp = builder.create<memref::TransposeOp>(
-          loc, newL2Subview.getResult(),
-          AffineMapAttr::get(tr.getPermutation()));
+      memref::TransposeOp transposeOp =
+          memref::TransposeOp::create(builder, loc, newL2Subview.getResult(),
+                                      AffineMapAttr::get(tr.getPermutation()));
       remap.map(tr.getResult(), transposeOp.getResult());
     } else {
       o->emitOpError("memref operation type unsupported on L1 memref.");
@@ -1092,8 +1093,8 @@ FailureOr<air::SegmentOp> insertAIRSegmentOpAroundRegion(OpBuilder &rewriter,
   for (Value v : region->getArguments())
     segmentOpers.push_back(v);
   rewriter.setInsertionPointToStart(&region->front());
-  auto segment = rewriter.create<air::SegmentOp>(rewriter.getUnknownLoc(),
-                                                 segmentSizes, segmentOpers);
+  auto segment = air::SegmentOp::create(rewriter, rewriter.getUnknownLoc(),
+                                        segmentSizes, segmentOpers);
   auto &bb = segment.getBody().front();
   auto &body = region->front().getOperations();
   bb.getOperations().splice(bb.begin(), body, ++body.begin(), --body.end());
@@ -1803,13 +1804,13 @@ LogicalResult canonicalizeArithBinaryOpToIndexType(T arithOp,
   auto loc = arithOp.getLoc();
   if (!isa<IndexType>(lhs.getType())) {
     lhs =
-        rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), lhs);
+        arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), lhs);
   }
   if (!isa<IndexType>(rhs.getType())) {
     rhs =
-        rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(), rhs);
+        arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), rhs);
   }
-  auto newArithOp = rewriter.create<T>(loc, rewriter.getIndexType(), lhs, rhs);
+  auto newArithOp = T::create(rewriter, loc, rewriter.getIndexType(), lhs, rhs);
   rewriter.replaceOpWithNewOp<arith::IndexCastOp>(
       arithOp, arithOp.getResult().getType(), newArithOp);
 
@@ -1903,17 +1904,17 @@ struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
     Location loc = funcOp.getLoc();
     rewriter.setInsertionPointToStart(&funcOp.getBody().front());
     SmallVector<Value, 4> lowerBounds(
-        N, rewriter.create<arith::ConstantIndexOp>(loc, 0));
+        N, arith::ConstantIndexOp::create(rewriter, loc, 0));
     SmallVector<Value, 4> steps(
-        N, rewriter.create<arith::ConstantIndexOp>(loc, 1));
+        N, arith::ConstantIndexOp::create(rewriter, loc, 1));
     SmallVector<Value, 4> upperBoundsVals;
     for (int64_t bound : loopBounds) {
       upperBoundsVals.push_back(
-          rewriter.create<arith::ConstantIndexOp>(loc, bound));
+          arith::ConstantIndexOp::create(rewriter, loc, bound));
     }
 
-    auto parallelOp = rewriter.create<scf::ParallelOp>(loc, lowerBounds,
-                                                       upperBoundsVals, steps);
+    auto parallelOp = scf::ParallelOp::create(rewriter, loc, lowerBounds,
+                                              upperBoundsVals, steps);
 
     // Redirect arguments properly inside the loop
     Block &loopBlock = parallelOp.getRegion().front();
@@ -1922,8 +1923,8 @@ struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
     for (unsigned i = 0; i < N; i++) {
       Value loopBlockArg = loopBlock.getArgument(i);
       if (inductionVars[i].getType() != loopBlockArg.getType())
-        loopBlockArg = rewriter.create<arith::IndexCastOp>(
-            loc, inductionVars[i].getType(), loopBlockArg);
+        loopBlockArg = arith::IndexCastOp::create(
+            rewriter, loc, inductionVars[i].getType(), loopBlockArg);
       remap.map(inductionVars[i], loopBlockArg);
     }
 
@@ -2128,7 +2129,7 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
 
   // Create scf.parallel op with modified init_vals
   auto parallelOp =
-      rewriter.create<scf::ParallelOp>(loc, lbs, ubs, steps, modifiedInitVals);
+      scf::ParallelOp::create(rewriter, loc, lbs, ubs, steps, modifiedInitVals);
 
   // Clone the forall body into the parallel body, but skip the terminator
   Block &forallBody = forallOp.getRegion().front();
@@ -2171,7 +2172,7 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
 
   // Create a single scf.reduce operation with all values
   if (!reduceValues.empty()) {
-    auto reduceOp = rewriter.create<scf::ReduceOp>(loc, reduceValues);
+    auto reduceOp = scf::ReduceOp::create(rewriter, loc, reduceValues);
 
     // For each reduction value, populate the corresponding reduction region
     for (auto [i, reduceValue] : llvm::enumerate(reduceValues)) {
@@ -2200,21 +2201,21 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
 
         if (reductionOp && isa<arith::AddIOp, arith::AddFOp>(reductionOp)) {
           // For addition reduction, use linalg.add
-          rewriter.create<linalg::AddOp>(
-              loc,
-              ValueRange{reduceBlock.getArgument(0),
-                         reduceBlock.getArgument(1)},
-              ValueRange{reduceBlock.getArgument(0)});
-          rewriter.create<scf::ReduceReturnOp>(loc, reduceBlock.getArgument(0));
+          linalg::AddOp::create(rewriter, loc,
+                                ValueRange{reduceBlock.getArgument(0),
+                                           reduceBlock.getArgument(1)},
+                                ValueRange{reduceBlock.getArgument(0)});
+          scf::ReduceReturnOp::create(rewriter, loc,
+                                      reduceBlock.getArgument(0));
         } else if (reductionOp &&
                    isa<arith::MulIOp, arith::MulFOp>(reductionOp)) {
           // For multiplication reduction, use linalg.mul
-          rewriter.create<linalg::MulOp>(
-              loc,
-              ValueRange{reduceBlock.getArgument(0),
-                         reduceBlock.getArgument(1)},
-              ValueRange{reduceBlock.getArgument(0)});
-          rewriter.create<scf::ReduceReturnOp>(loc, reduceBlock.getArgument(0));
+          linalg::MulOp::create(rewriter, loc,
+                                ValueRange{reduceBlock.getArgument(0),
+                                           reduceBlock.getArgument(1)},
+                                ValueRange{reduceBlock.getArgument(0)});
+          scf::ReduceReturnOp::create(rewriter, loc,
+                                      reduceBlock.getArgument(0));
         } else {
           return rewriter.notifyMatchFailure(
               linalgReduceOp,
@@ -2223,7 +2224,7 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
       } else {
         // Default reduction: just return the first argument (no actual
         // reduction)
-        rewriter.create<scf::ReduceReturnOp>(loc, reduceBlock.getArgument(0));
+        scf::ReduceReturnOp::create(rewriter, loc, reduceBlock.getArgument(0));
       }
     }
   }
@@ -2345,8 +2346,8 @@ DiagnosedSilenceableFailure transform::LinalgToLibraryCallOp::applyToOne(
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(module.getBody(),
                                std::prev(module.getBody()->end()));
-    func::FuncOp funcOp = rewriter.create<func::FuncOp>(
-        linalgOp->getLoc(), fnNameAttr.getValue(), libFnType);
+    func::FuncOp funcOp = func::FuncOp::create(
+        rewriter, linalgOp->getLoc(), fnNameAttr.getValue(), libFnType);
     funcOp->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
                     UnitAttr::get(linalgOp->getContext()));
     if (auto linkWithAttr =

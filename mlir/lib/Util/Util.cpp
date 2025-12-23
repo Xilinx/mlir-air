@@ -131,7 +131,7 @@ LogicalResult air::normalizeLoop(affine::AffineForOp afo) {
   auto iv_expr = dim0_expr * step_expr + lb_expr;
   auto iv_map = AffineMap::get(1, 0, iv_expr);
   auto builder = OpBuilder::atBlockBegin(afo.getBody());
-  auto new_iv = builder.create<affine::AffineApplyOp>(loc, iv_map, iv);
+  auto new_iv = affine::AffineApplyOp::create(builder, loc, iv_map, iv);
   SmallPtrSet<Operation *, 1> keep{new_iv};
   iv.replaceAllUsesExcept(new_iv, keep);
   return success();
@@ -913,8 +913,8 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
     auto const_size_next = getConstantIntValue(sizes[erase_dim + 1]);
     if (!const_size_next)
       return false; // non-static wrap, NYI.
-    sizes[erase_dim + 1] = builder.create<arith::ConstantIndexOp>(
-        builder.getUnknownLoc(), (*const_size) * (*const_size_next));
+    sizes[erase_dim + 1] = arith::ConstantIndexOp::create(
+        builder, builder.getUnknownLoc(), (*const_size) * (*const_size_next));
     return true;
   };
   // For a given offset[i], find the first offset[j] such that stride[j] is
@@ -960,8 +960,8 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
     auto const_stride_next = getConstantIntValue(strides[*j]);
     // Attempting to compose i-th offset onto another offset.
     if (const_offset) {
-      offsets[*j] = builder.create<arith::ConstantIndexOp>(
-          builder.getUnknownLoc(),
+      offsets[*j] = arith::ConstantIndexOp::create(
+          builder, builder.getUnknownLoc(),
           (*const_stride) * (*const_offset) / (*const_stride_next) +
               (*const_offset_next));
     } else {
@@ -1005,8 +1005,8 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
         // subsequent offset composition.
         auto dim0_expr = getAffineDimExpr(0, builder.getContext());
         auto iv_map = AffineMap::get(1, 0, dim0_expr);
-        offset_producer = builder.create<affine::AffineApplyOp>(
-            builder.getUnknownLoc(), iv_map, offsets[i]);
+        offset_producer = affine::AffineApplyOp::create(
+            builder, builder.getUnknownLoc(), iv_map, offsets[i]);
       }
       if (auto exec = dyn_cast<air::ExecuteOp>(offset_producer))
         offset_producer = &exec.getChildOps().front();
@@ -1113,8 +1113,8 @@ LogicalResult air::canonicalizeWrapAndStrideList(
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
   if (max_dim_size && offsets.size() < max_dim_size) {
     for (auto i = offsets.size(); i < max_dim_size; i++) {
-      offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
-                                          builder.getUnknownLoc(), 0));
+      offsets.insert(offsets.begin(), arith::ConstantIndexOp::create(
+                                          builder, builder.getUnknownLoc(), 0));
     }
     listsHaveChanged = true;
   }
@@ -1144,19 +1144,21 @@ LogicalResult air::canonicalizeWrapAndStrideList(
         (new_a_stride > AIE2_STRIDE_UPPER_BOUND) ? (b_wrap) : (a_wrap);
     int outer_wrap =
         (new_a_stride > AIE2_STRIDE_UPPER_BOUND) ? (a_wrap) : (b_wrap);
-    sizes[i] = builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(),
-                                                      inner_wrap);
-    sizes.insert(sizes.begin() + i, builder.create<arith::ConstantIndexOp>(
-                                        builder.getUnknownLoc(), outer_wrap));
+    sizes[i] = arith::ConstantIndexOp::create(builder, builder.getUnknownLoc(),
+                                              inner_wrap);
+    sizes.insert(sizes.begin() + i,
+                 arith::ConstantIndexOp::create(
+                     builder, builder.getUnknownLoc(), outer_wrap));
     auto new_const_stride = const_stride * inner_wrap;
     if (memref_volume != 1)
       new_const_stride %= memref_volume; // Avoids striding out of memory size,
                                          // if memref is ranked
     strides.insert(strides.begin() + i,
-                   builder.create<arith::ConstantIndexOp>(
-                       builder.getUnknownLoc(), new_const_stride));
-    offsets.insert(offsets.begin() + i, builder.create<arith::ConstantIndexOp>(
-                                            builder.getUnknownLoc(), 0));
+                   arith::ConstantIndexOp::create(
+                       builder, builder.getUnknownLoc(), new_const_stride));
+    offsets.insert(
+        offsets.begin() + i,
+        arith::ConstantIndexOp::create(builder, builder.getUnknownLoc(), 0));
     i++;
     listsHaveChanged = true;
   }
@@ -1272,8 +1274,8 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       }
       if (iv && offsetVal == iv) {
         ind_var_factor = *getConstantIntValue(strides[i]) * stepSize;
-        offsets[i] = builder.template create<arith::ConstantIndexOp>(
-            loc, loop_lower_bound);
+        offsets[i] =
+            arith::ConstantIndexOp::create(builder, loc, loop_lower_bound);
         break;
       } else if (iv && offsetVal.getDefiningOp()) {
         Operation *iv_consumer = offsetVal.getDefiningOp();
@@ -1313,15 +1315,14 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
       trip_count = *getStaticAffineForTripCountAsInt(afo);
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       trip_count = *getStaticScfForTripCountAsInt(sfo);
-    Value new_wrap =
-        builder.template create<arith::ConstantIndexOp>(loc, trip_count);
+    Value new_wrap = arith::ConstantIndexOp::create(builder, loc, trip_count);
     // Skip stride modulo if memref is unranked.
     int64_t new_stride_value =
         getTensorVolume(memref.getType()) == 1
             ? ind_var_factor
             : ind_var_factor % getTensorVolume(memref.getType());
     Value new_stride =
-        builder.template create<arith::ConstantIndexOp>(loc, new_stride_value);
+        arith::ConstantIndexOp::create(builder, loc, new_stride_value);
 
     // Check for compliance with DMA BD hardware limitation (<= 1M). Note that
     // the exception is when stepSize = previous highest wrap, because in that
@@ -1336,7 +1337,7 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
 
     // Insert new dimension into the wraps and strides list.
     offsets.insert(offsets.begin(),
-                   builder.template create<arith::ConstantIndexOp>(loc, 0));
+                   arith::ConstantIndexOp::create(builder, loc, 0));
     wraps.insert(wraps.begin(), new_wrap);
     strides.insert(strides.begin(), new_stride);
   }
@@ -1354,12 +1355,12 @@ void air::populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
     auto memref_shape = getTensorShape(memref.getType());
     int current_stride = getTensorVolume(memref.getType());
     for (unsigned i = 0; i < memref_shape.size(); i++) {
-      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, 0));
+      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
       wraps.push_back(
-          builder.create<arith::ConstantIndexOp>(loc, memref_shape[i]));
+          arith::ConstantIndexOp::create(builder, loc, memref_shape[i]));
       current_stride /= memref_shape[i];
       strides.push_back(
-          builder.create<arith::ConstantIndexOp>(loc, current_stride));
+          arith::ConstantIndexOp::create(builder, loc, current_stride));
     }
   }
 }
@@ -1477,9 +1478,10 @@ static void updateAccessPatternByScfForNest(
   auto loc = builder.getUnknownLoc();
   auto updateWrapAndStride = [&](int stepSize, int tripCount, int i) {
     std::get<1>(pattern)[i] =
-        builder.create<arith::ConstantIndexOp>(loc, tripCount);
-    std::get<2>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
-        loc, stepSize * (*getConstantIntValue(std::get<2>(pattern)[i])));
+        arith::ConstantIndexOp::create(builder, loc, tripCount);
+    std::get<2>(pattern)[i] = arith::ConstantIndexOp::create(
+        builder, loc,
+        stepSize * (*getConstantIntValue(std::get<2>(pattern)[i])));
   };
   // Infer data access pattern's sizes from parent scf.for loop and any affine
   // op applied on the induction variable
@@ -1560,14 +1562,14 @@ air::writeAccessPattern(memref::SubViewOp subview, Region *commonReg) {
   for (auto o : static_offsets) {
     if (o >= 0)
       std::get<0>(pattern).push_back(
-          builder.create<arith::ConstantIndexOp>(loc, o));
+          arith::ConstantIndexOp::create(builder, loc, o));
     else
       std::get<0>(pattern).push_back(*subview_offsets++);
   }
   for (auto o : static_sizes) {
     if (o >= 0)
       std::get<1>(pattern).push_back(
-          builder.create<arith::ConstantIndexOp>(loc, o));
+          arith::ConstantIndexOp::create(builder, loc, o));
     else
       std::get<1>(pattern).push_back(*subview_sizes++);
   }
@@ -1579,11 +1581,11 @@ air::writeAccessPattern(memref::SubViewOp subview, Region *commonReg) {
   // If rank-reduced memref.subview, then pad strides with 1s.
   for (unsigned i = 0; i < static_sizes.size() - static_strides.size(); i++)
     std::get<2>(pattern).push_back(
-        builder.create<arith::ConstantIndexOp>(loc, 1));
+        arith::ConstantIndexOp::create(builder, loc, 1));
   for (auto o : static_strides) {
     if (o >= 0)
       std::get<2>(pattern).push_back(
-          builder.create<arith::ConstantIndexOp>(loc, o));
+          arith::ConstantIndexOp::create(builder, loc, o));
     else
       std::get<2>(pattern).push_back(*subview_strides++);
   }
@@ -1652,7 +1654,7 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
     if (dependsOnHerdTileIndex(indices[i])) {
       // This index is a herd tile index - set size to 1 for this dimension
       std::get<1>(pattern)[i] =
-          builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(), 1);
+          arith::ConstantIndexOp::create(builder, builder.getUnknownLoc(), 1);
     }
   }
 
@@ -1662,8 +1664,8 @@ air::writeAccessPattern(mlir::vector::TransferReadOp readOp) {
           ? 0
           : std::get<1>(pattern).size() - vectorTy.getShape().size();
   for (unsigned i = rankOffset; i < std::get<1>(pattern).size(); i++)
-    std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
-        builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
+    std::get<1>(pattern)[i] = arith::ConstantIndexOp::create(
+        builder, builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
   updateAccessPatternByScfForNest(pattern, readOp.getIndices(), builder);
   return pattern;
 }
@@ -1697,7 +1699,7 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
     if (dependsOnHerdTileIndex(indices[i])) {
       // This index is a herd tile index - set size to 1 for this dimension
       std::get<1>(pattern)[i] =
-          builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(), 1);
+          arith::ConstantIndexOp::create(builder, builder.getUnknownLoc(), 1);
     }
   }
 
@@ -1707,8 +1709,8 @@ air::writeAccessPattern(mlir::vector::TransferWriteOp writeOp) {
           ? 0
           : std::get<1>(pattern).size() - vectorTy.getShape().size();
   for (unsigned i = rankOffset; i < std::get<1>(pattern).size(); i++)
-    std::get<1>(pattern)[i] = builder.create<arith::ConstantIndexOp>(
-        builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
+    std::get<1>(pattern)[i] = arith::ConstantIndexOp::create(
+        builder, builder.getUnknownLoc(), vectorTy.getShape()[i - rankOffset]);
   updateAccessPatternByScfForNest(pattern, writeOp.getIndices(), builder);
   return pattern;
 }

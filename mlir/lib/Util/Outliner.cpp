@@ -84,11 +84,11 @@ func::CallOp AIROutliner::outline(affine::AffineForOp forOp,
   }
   (void)clone;
 
-  body_builder.create<func::ReturnOp>(loc);
+  func::ReturnOp::create(body_builder, loc);
 
   OpBuilder call_builder(forOp);
-  return call_builder.create<func::CallOp>(loc, function,
-                                           outline_args.getArrayRef());
+  return func::CallOp::create(call_builder, loc, function,
+                              outline_args.getArrayRef());
 }
 
 func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
@@ -158,10 +158,10 @@ func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
   }
 
   auto builder = OpBuilder(ops[0]);
-  auto call = builder.create<func::CallOp>(loc, function, outline_args);
+  auto call = func::CallOp::create(builder, loc, function, outline_args);
 
   auto func_builder = OpBuilder::atBlockEnd(&entryBlock);
-  func_builder.create<func::ReturnOp>(loc, rets);
+  func::ReturnOp::create(func_builder, loc, rets);
 
   idx = 0;
   for (auto r : call.getResults()) {

@@ -76,9 +76,10 @@ public:
       int64_t ub_0 = ub_map_0.getSingleConstantResult();
       int64_t ub_1 = ub_map_1.getSingleConstantResult();
 
-      auto affine_par = builder.create<affine::AffineParallelOp>(
-          loc, std::vector<Type>{}, std::vector<arith::AtomicRMWKind>{},
-          std::vector<int64_t>{ub_0, ub_1});
+      auto affine_par =
+          affine::AffineParallelOp::create(builder, loc, std::vector<Type>{},
+                                           std::vector<arith::AtomicRMWKind>{},
+                                           std::vector<int64_t>{ub_0, ub_1});
 
       outer.getBody()->back().erase();
       affine_par.getBody()->getOperations().splice(

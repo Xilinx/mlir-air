@@ -65,15 +65,15 @@ public:
         if (!llvm::isa<MemRefType>(v.getType()))
           llvm_unreachable("function returns non-memref");
         if (!valueMap.count(v)) {
-          valueMap[v] = builder->create<memref::AllocOp>(
-              op->getLoc(), llvm::cast<MemRefType>(v.getType()));
+          valueMap[v] = memref::AllocOp::create(
+              *builder, op->getLoc(), llvm::cast<MemRefType>(v.getType()));
         }
         v.replaceAllUsesWith(valueMap[v]);
         newCallArgs.push_back(valueMap[v]);
       }
 
-      /*auto newCallOp =*/builder->create<func::CallOp>(
-          op->getLoc(), newFnName, ArrayRef<Type>{}, newCallArgs);
+      /*auto newCallOp =*/func::CallOp::create(
+          *builder, op->getLoc(), newFnName, ArrayRef<Type>{}, newCallArgs);
       erasedOps.insert(op);
       auto fn = module.lookupSymbol<func::FuncOp>(callOp.getCallee());
       if (fn && fn.use_empty())
@@ -138,7 +138,7 @@ public:
       Operation *retOp = retOps.front();
       auto builder = std::make_unique<mlir::OpBuilder>(retOp);
 
-      builder->create<func::ReturnOp>(retOp->getLoc());
+      func::ReturnOp::create(*builder, retOp->getLoc());
 
       std::vector<Value> operands{retOp->getOperands().begin(),
                                   retOp->getOperands().end()};

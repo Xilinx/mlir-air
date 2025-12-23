@@ -89,7 +89,7 @@ constructReducedLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
   for (unsigned i = 0; i < total_width; i++) {
     OpBuilder builder(rootLoopOp);
     affine::AffineForOp intraLoop =
-        builder.create<affine::AffineForOp>(rootLoopLoc, 0, 0);
+        affine::AffineForOp::create(builder, rootLoopLoc, 0, 0);
     intraLoop.getBody()->getOperations().splice(
         intraLoop.getBody()->begin(), rootLoopOp->getBlock()->getOperations(),
         rootLoopOp);
@@ -174,8 +174,8 @@ constructReducedLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
     divConst *= origLoops[loopLevel].getConstantUpperBound();
   }
   auto map_0 = AffineMap::get(1, 0, dim0.floorDiv(divConst));
-  affine::AffineApplyOp apply_0 = applyBuilder.create<affine::AffineApplyOp>(
-      innerFor.getLoc(), map_0, singleFor.getInductionVar());
+  affine::AffineApplyOp apply_0 = affine::AffineApplyOp::create(
+      applyBuilder, innerFor.getLoc(), map_0, singleFor.getInductionVar());
   restoredIVs.push_back(apply_0);
 
   // The IV in the middle loop nests can be calculated as
@@ -190,8 +190,8 @@ constructReducedLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
     }
     AffineExpr dim0 = applyBuilder.getAffineDimExpr(0);
     auto map = AffineMap::get(1, 0, dim0.floorDiv(divConst) % modConst);
-    affine::AffineApplyOp apply = applyBuilder.create<affine::AffineApplyOp>(
-        innerFor.getLoc(), map, singleFor.getInductionVar());
+    affine::AffineApplyOp apply = affine::AffineApplyOp::create(
+        applyBuilder, innerFor.getLoc(), map, singleFor.getInductionVar());
     restoredIVs.push_back(apply);
   }
 
@@ -200,8 +200,8 @@ constructReducedLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
   unsigned loopLevel = loopMergeLevels[reducedSize - 1];
   int64_t modConst = origLoops[loopLevel].getConstantUpperBound();
   auto map_1 = AffineMap::get(1, 0, dim0 % modConst);
-  affine::AffineApplyOp apply_1 = applyBuilder.create<affine::AffineApplyOp>(
-      innerFor.getLoc(), map_1, singleFor.getInductionVar());
+  affine::AffineApplyOp apply_1 = affine::AffineApplyOp::create(
+      applyBuilder, innerFor.getLoc(), map_1, singleFor.getInductionVar());
   restoredIVs.push_back(apply_1);
   if (restoredIVs.size() != loopMergeLevels.size()) {
     apply_1->emitOpError("restoredIVs.size() != loopMergeLevels.size()");

@@ -42,8 +42,9 @@ static void generateYieldAndOrReduceToScfLoop(OpBuilder builder,
     builder.setInsertionPointToEnd(scf_par.getBody());
   }
 
-  auto wait_all_op_yielded = builder.create<air::WaitAllOp>(
-      scf_par.getLoc(), air::AsyncTokenType::get(ctx), SmallVector<Value, 1>{});
+  auto wait_all_op_yielded = air::WaitAllOp::create(
+      builder, scf_par.getLoc(), air::AsyncTokenType::get(ctx),
+      SmallVector<Value, 1>{});
   auto reduce_op = air::createSCFReduceForAsyncSCFParallel(
       builder, scf_par.getLoc(), wait_all_op_yielded.getAsyncToken(), ctx);
   builder.setInsertionPointToEnd(scf_par.getBody());
@@ -87,9 +88,9 @@ generateWaitAllToDanglingTokens(OpBuilder &builder, MLIRContext *ctx,
   for (auto token : inputTokens) {
     getLeavesInDepGraph(token, dep_list);
   }
-  return builder.create<air::WaitAllOp>(builder.getUnknownLoc(),
-                                        air::AsyncTokenType::get(ctx),
-                                        dep_list.takeVector());
+  return air::WaitAllOp::create(builder, builder.getUnknownLoc(),
+                                air::AsyncTokenType::get(ctx),
+                                dep_list.takeVector());
 }
 
 static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder &builder,
@@ -105,7 +106,7 @@ static scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder &builder,
   yield_token.push_back(wa_op.getAsyncToken());
   wa_op->setAttr("hoist", StringAttr::get(ctx, "dep"));
   scf::YieldOp output =
-      builder.create<scf::YieldOp>(builder.getUnknownLoc(), yield_token);
+      scf::YieldOp::create(builder, builder.getUnknownLoc(), yield_token);
   return output;
 }
 
@@ -187,12 +188,12 @@ SmallVector<Operation *>
 air::cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                             air::ChannelInterface externalGetPut) {
   SmallVector<Value> loop_init_args = air::getAsyncDependenciesFromOp(loop_op);
-  T new_loop_op = builder.create<T>(
-      builder.getUnknownLoc(),
-      air::lookupOrDefaultRange(loop_op.getLowerBound(), remap),
-      air::lookupOrDefaultRange(loop_op.getUpperBound(), remap),
-      air::lookupOrDefaultRange(loop_op.getStep(), remap),
-      air::lookupOrDefaultRange(loop_init_args, remap));
+  T new_loop_op =
+      T::create(builder, builder.getUnknownLoc(),
+                air::lookupOrDefaultRange(loop_op.getLowerBound(), remap),
+                air::lookupOrDefaultRange(loop_op.getUpperBound(), remap),
+                air::lookupOrDefaultRange(loop_op.getStep(), remap),
+                air::lookupOrDefaultRange(loop_init_args, remap));
 
   OpBuilder::InsertionGuard guard(builder);
 
@@ -259,7 +260,7 @@ hoistAIRHierToScfParallel(OpBuilder builder, Location loc, MLIRContext *ctx,
                           air::HierarchyInterface hierOp,
                           SmallVector<Operation *> targetOpsToHoist) {
 
-  auto step = builder.create<arith::ConstantIndexOp>(loc, 1);
+  auto step = arith::ConstantIndexOp::create(builder, loc, 1);
   SmallVector<Value, 2> steps;
   SmallVector<Value, 2> lbs;
   SmallVector<Value, 2> ubs;
@@ -275,24 +276,25 @@ hoistAIRHierToScfParallel(OpBuilder builder, Location loc, MLIRContext *ctx,
       air::getRectangularConditionBoundsThroughAffineIfs(
           targetOpsToHoist.front(), spatial_loop, affine_if_nest);
   for (auto [lbs_int, ubs_int] : conditionBounds) {
-    lbs.push_back(builder.create<arith::ConstantIndexOp>(loc, lbs_int));
-    ubs.push_back(builder.create<arith::ConstantIndexOp>(loc, ubs_int + 1));
+    lbs.push_back(arith::ConstantIndexOp::create(builder, loc, lbs_int));
+    ubs.push_back(arith::ConstantIndexOp::create(builder, loc, ubs_int + 1));
     steps.push_back(step);
   }
 
   auto hierAsyncIfOp = dyn_cast<air::AsyncOpInterface>(hierOp.getOperation());
 
-  auto wa_op = builder.create<air::WaitAllOp>(
-      loc, air::AsyncTokenType::get(ctx), hierAsyncIfOp.getAsyncDependencies());
+  auto wa_op =
+      air::WaitAllOp::create(builder, loc, air::AsyncTokenType::get(ctx),
+                             hierAsyncIfOp.getAsyncDependencies());
   SmallVector<Value, 1> deps_in{wa_op.getAsyncToken()};
   scf::ParallelOp scf_par = nullptr;
   if (isAsyncOp(hierAsyncIfOp)) {
-    scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps, deps_in);
+    scf_par = scf::ParallelOp::create(builder, loc, lbs, ubs, steps, deps_in);
     generateYieldAndOrReduceToScfLoop(builder, ctx, scf_par);
     hierAsyncIfOp.getAsyncToken().replaceAllUsesWith(
         air::getAsyncTokenFromOp(scf_par));
   } else
-    scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps);
+    scf_par = scf::ParallelOp::create(builder, loc, lbs, ubs, steps);
 
   scf_par->setAttr("hoist", StringAttr::get(ctx, "hoistedLoop"));
   scf_par->setAttr("loop-carried-dep", StringAttr::get(ctx, "hoistedLoop"));
@@ -310,8 +312,8 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
     o = o->getNextNode();
   builder.setInsertionPoint(o);
 
-  auto channel_op = builder.create<air::ChannelOp>(
-      loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
+  auto channel_op = air::ChannelOp::create(
+      builder, loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
       builder.getStringAttr("dma_stream"));
 
   builder.restoreInsertionPoint(insertionCheckpoint);
@@ -424,25 +426,25 @@ static void replaceAIRDmaWithAIRChannelPairs(
     tys.push_back(air::AsyncTokenType::get(ctx));
   }
   if (dst_type.getMemorySpaceAsInt() == innerMemorySpace) {
-    auto internal = builder.create<air::ChannelGetOp>(
-        loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
+    auto internal = air::ChannelGetOp::create(
+        builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_internal, dst, dst_offsets, dst_sizes, dst_strides);
     internalGetPut = dyn_cast<air::ChannelInterface>(internal.getOperation());
   } else {
-    auto external = builder.create<air::ChannelGetOp>(
-        loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
+    auto external = air::ChannelGetOp::create(
+        builder, loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_external, dst, dst_offsets, dst_sizes, dst_strides);
     externalGetPut = dyn_cast<air::ChannelInterface>(external.getOperation());
   }
 
   if (src_type.getMemorySpaceAsInt() == innerMemorySpace) {
-    auto internal = builder.create<air::ChannelPutOp>(
-        loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
+    auto internal = air::ChannelPutOp::create(
+        builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_internal, src, src_offsets, src_sizes, src_strides);
     internalGetPut = dyn_cast<air::ChannelInterface>(internal.getOperation());
   } else {
-    auto external = builder.create<air::ChannelPutOp>(
-        loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
+    auto external = air::ChannelPutOp::create(
+        builder, loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_external, src, src_offsets, src_sizes, src_strides);
     externalGetPut = dyn_cast<air::ChannelInterface>(external.getOperation());
   }
@@ -725,16 +727,16 @@ class AIRHoistExternalAIRChannelPattern : public OpRewritePattern<AIRHierOpTy> {
                       .getValue();
         for (size_t hierDim = 0; hierDim < hier_op.getNumDims(); hierDim++) {
           remap.map(hier_op.getIds()[hierDim],
-                    rewriter.create<arith::ConstantIndexOp>(
-                        rewriter.getUnknownLoc(), 0));
+                    arith::ConstantIndexOp::create(
+                        rewriter, rewriter.getUnknownLoc(), 0));
           for (unsigned i = 0; i < is.getNumConstraints(); i++) {
             if (!is.isEq(i))
               continue;
             auto c = is.getConstraint(i);
             if (!c.isFunctionOfSymbol(hierDim))
               continue;
-            auto constIV = rewriter.create<arith::ConstantIndexOp>(
-                rewriter.getUnknownLoc(),
+            auto constIV = arith::ConstantIndexOp::create(
+                rewriter, rewriter.getUnknownLoc(),
                 air::evaluateSymbolEqualityInSet(c, ctx));
             remap.map(hier_op.getIds()[hierDim], constIV);
           }
@@ -825,8 +827,8 @@ static Value insertArgToHierOpImpl(OpBuilder &builder, T op,
   builder.setInsertionPoint(op);
   IRMapping remap;
   auto newOp =
-      builder.create<T>(op.getLoc(), newAsyncDeps, op.getSizeOperands(),
-                        newOperands, op->getNumResults() > 0, op->getAttrs());
+      T::create(builder, op.getLoc(), newAsyncDeps, op.getSizeOperands(),
+                newOperands, op->getNumResults() > 0, op->getAttrs());
 
   builder.setInsertionPointToStart(&newOp.getBody().front());
   for (auto p : llvm::zip(op.getSize(), newOp.getSize()))
@@ -919,10 +921,9 @@ static LogicalResult AIRDemoteMemrefToAIRHierarchy(
         // token.replaceAllUsesWith(new_exec->getResult(0));
         builder.setInsertionPoint(op);
         token.replaceAllUsesWith(
-            builder
-                .create<air::WaitAllOp>(
-                    loc, air::AsyncTokenType::get(op->getContext()),
-                    new_exec.getAsyncDependencies())
+            air::WaitAllOp::create(builder, loc,
+                                   air::AsyncTokenType::get(op->getContext()),
+                                   new_exec.getAsyncDependencies())
                 .getAsyncToken());
         // Update async deps
         clearAsyncDependenciesOfAsyncOp(new_exec);
@@ -942,10 +943,9 @@ static LogicalResult AIRDemoteMemrefToAIRHierarchy(
         if (auto new_exec = dyn_cast<air::ExecuteOp>(new_dealloc)) {
           builder.setInsertionPoint(dealloc);
           dealloc->getResult(0).replaceAllUsesWith(
-              builder
-                  .create<air::WaitAllOp>(
-                      loc, air::AsyncTokenType::get(op->getContext()),
-                      new_exec.getAsyncDependencies())
+              air::WaitAllOp::create(builder, loc,
+                                     air::AsyncTokenType::get(op->getContext()),
+                                     new_exec.getAsyncDependencies())
                   .getAsyncToken());
           clearAsyncDependenciesOfAsyncOp(new_exec);
           new_exec.addAsyncDependency(hier_op->getResult(0));
@@ -1106,12 +1106,11 @@ class AIRDemoteDmaToAIRHierarchyConversion
           // Dangling incoming dependency edge to hoisted scf.for.
           auto for_op = dyn_cast<scf::ForOp>(op->getParentOp());
           for (auto init_arg : for_op.getInitArgs())
-            remap.map(init_arg,
-                      rewriter
-                          .create<air::WaitAllOp>(
-                              loc, air::AsyncTokenType::get(op->getContext()),
-                              SmallVector<Value>{})
-                          .getAsyncToken());
+            remap.map(init_arg, air::WaitAllOp::create(
+                                    rewriter, loc,
+                                    air::AsyncTokenType::get(op->getContext()),
+                                    SmallVector<Value>{})
+                                    .getAsyncToken());
         }
         int arg_idx = 0;
         for (auto arg : herd.getKernelArguments())
@@ -1147,10 +1146,9 @@ class AIRDemoteDmaToAIRHierarchyConversion
     if (isAsyncOp(op)) {
       rewriter.setInsertionPoint(op);
       op.getAsyncToken().replaceAllUsesWith(
-          rewriter
-              .create<air::WaitAllOp>(
-                  loc, air::AsyncTokenType::get(op->getContext()),
-                  op.getAsyncDependencies())
+          air::WaitAllOp::create(rewriter, loc,
+                                 air::AsyncTokenType::get(op->getContext()),
+                                 op.getAsyncDependencies())
               .getAsyncToken());
     }
 

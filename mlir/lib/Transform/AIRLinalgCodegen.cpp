@@ -87,10 +87,10 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
           result_offsets.push_back(*offsets++);
         } else {
           Value a = *offsets++;
-          Value b = rewriter.create<arith::ConstantIndexOp>(op.getLoc(),
-                                                            source_offset);
+          Value b = arith::ConstantIndexOp::create(rewriter, op.getLoc(),
+                                                   source_offset);
           result_offsets.push_back(
-              rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
+              arith::AddIOp::create(rewriter, op.getLoc(), a.getType(), a, b));
         }
       } else if (op_offset >= 0 && source_offset < 0) {
         result_static_offsets.push_back(source_offset);
@@ -99,15 +99,15 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
         } else {
           Value a = *source_offsets++;
           Value b =
-              rewriter.create<arith::ConstantIndexOp>(op.getLoc(), op_offset);
+              arith::ConstantIndexOp::create(rewriter, op.getLoc(), op_offset);
           result_offsets.push_back(
-              rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
+              arith::AddIOp::create(rewriter, op.getLoc(), a.getType(), a, b));
         }
       } else if (op_offset < 0 && source_offset < 0) {
         Value a = *source_offsets++;
         Value b = *offsets++;
         result_offsets.push_back(
-            rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
+            arith::AddIOp::create(rewriter, op.getLoc(), a.getType(), a, b));
         result_static_offsets.push_back(source_offset);
       }
     }
@@ -156,8 +156,8 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
             auto new_arg = b->insertArgument(arg.getArgNumber(),
                                              newOp.getType(), newOp.getLoc());
             rewriter.setInsertionPointToStart(&*launch.getRegion().begin());
-            arg.replaceAllUsesWith(rewriter.create<memref::CastOp>(
-                op.getLoc(), arg.getType(), new_arg));
+            arg.replaceAllUsesWith(memref::CastOp::create(
+                rewriter, op.getLoc(), arg.getType(), new_arg));
             b->eraseArgument(arg.getArgNumber());
           }
         }
@@ -449,8 +449,8 @@ struct RemoveAllocLinalgOpCopyPattern
     }
     auto copyOperand = copyOp->getOperand(1);
     rewriter.setInsertionPointAfter(copyOperand.getDefiningOp());
-    auto newOp = rewriter.create<memref::CastOp>(op->getLoc(), op.getType(),
-                                                 copyOperand);
+    auto newOp = memref::CastOp::create(rewriter, op->getLoc(), op.getType(),
+                                        copyOperand);
     rewriter.replaceOp(op, newOp->getResults());
     rewriter.eraseOp(copyOp);
 
@@ -658,8 +658,8 @@ struct EliminateIntermediateMemrefPattern
       emptyTypes.push_back(air::AsyncTokenType::get(rewriter.getContext()));
     }
 
-    auto newMemcpy = rewriter.create<air::DmaMemcpyNdOp>(
-        firstMemcpy.getLoc(),
+    auto newMemcpy = air::DmaMemcpyNdOp::create(
+        rewriter, firstMemcpy.getLoc(),
         emptyTypes,                         // result types
         firstMemcpy.getAsyncDependencies(), // async dependencies
         secondMemcpy.getDstMemref(),        // destination from second memcpy
@@ -972,7 +972,7 @@ allocBufferCallBack(OpBuilder &b, memref::SubViewOp subView,
 }
 
 static LogicalResult deallocBufferCallBack(OpBuilder &b, Value buffer) {
-  // b.create<memref::DeallocOp>(buffer.getLoc(), buffer);
+  // memref::DeallocOp::create(b, buffer.getLoc(), buffer);
   return success();
 }
 
@@ -1010,14 +1010,15 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   int new_herd_x = isHoriz ? pipeline_depth : 1;
   int new_herd_y = !isHoriz ? pipeline_depth : 1;
 
-  SmallVector<Value, 2> dims{b.create<arith::ConstantIndexOp>(loc, new_herd_x),
-                             b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
+  SmallVector<Value, 2> dims{
+      arith::ConstantIndexOp::create(b, loc, new_herd_x),
+      arith::ConstantIndexOp::create(b, loc, new_herd_y)};
 
   SmallVector<Value, 4> args;
   for (auto o : op->getOperands())
     args.push_back(o);
 
-  auto herd = b.create<air::HerdOp>(loc, dims, args);
+  auto herd = air::HerdOp::create(b, loc, dims, args);
   b.setInsertionPointToStart(&herd.getBody().front());
 
   Value x = herd.getIds()[0];
@@ -1029,9 +1030,9 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   SmallVector<OpFoldResult, 4> tileSizeVector;
   for (auto s : tileSizes)
     tileSizeVector.push_back(
-        b.create<arith::ConstantIndexOp>(loc, s).getResult());
+        arith::ConstantIndexOp::create(b, loc, s).getResult());
   if (tileSizeVector.size() < nLoops) {
-    auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
+    auto zero = arith::ConstantIndexOp::create(b, loc, 0);
     tileSizeVector.append(nLoops - tileSizeVector.size(), zero.getResult());
   }
 
@@ -1049,10 +1050,10 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       continue;
     AffineExpr d0 = b.getAffineDimExpr(0);
     auto map = AffineMap::get(1, 0, d0 * s);
-    tileIds.push_back(
-        b.create<affine::AffineApplyOp>(
-             loc, map, isHoriz ? herd.getIds()[0] : herd.getIds()[1])
-            .getResult());
+    tileIds.push_back(affine::AffineApplyOp::create(b, loc, map,
+                                                    isHoriz ? herd.getIds()[0]
+                                                            : herd.getIds()[1])
+                          .getResult());
   }
   SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
@@ -1077,17 +1078,18 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     SmallVector<bool, 2> eqflags{true, false};
     auto int_set = IntegerSet::get(2, 0, constraints, eqflags);
     SmallVector<Value, 2> int_set_args{x, y};
-    affine::AffineIfOp aif = b.create<affine::AffineIfOp>(op->getLoc(), int_set,
-                                                          int_set_args, false);
+    affine::AffineIfOp aif = affine::AffineIfOp::create(
+        b, op->getLoc(), int_set, int_set_args, false);
 
     Block *stageBlock = aif.getBody();
     b.setInsertionPointToStart(stageBlock);
 
     if (i) {
       auto ty = llvm::cast<MemRefType>(tiledOperands[resultIdx].getType());
-      auto alloc = b.create<memref::AllocOp>(
-          loc, MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
-                               b.getI32IntegerAttr((int)air::MemorySpace::L1)));
+      auto alloc = memref::AllocOp::create(
+          b, loc,
+          MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
+                          b.getI32IntegerAttr((int)air::MemorySpace::L1)));
       tiledOperands[resultIdx] = alloc.getResult();
       SmallVector<Value> src_offsets;
       SmallVector<Value> src_sizes;
@@ -1095,16 +1097,16 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       SmallVector<Value> channel_idx;
       SmallVector<Value> deps;
       SmallVector<Type> tys;
-      b.create<air::ChannelGetOp>(loc, tys, deps, channels[i - 1].getSymName(),
-                                  channel_idx, tiledOperands[resultIdx],
-                                  src_offsets, src_sizes, src_strides);
+      air::ChannelGetOp::create(b, loc, tys, deps, channels[i - 1].getSymName(),
+                                channel_idx, tiledOperands[resultIdx],
+                                src_offsets, src_sizes, src_strides);
     }
 
     linalg::LinalgOp linalgOp = clone(b, op, {}, tiledOperands);
 
     auto defaultCopyCallBack = [loc](OpBuilder &bldr, Value src,
                                      Value dst) -> LogicalResult {
-      bldr.create<memref::CopyOp>(loc, src, dst);
+      memref::CopyOp::create(bldr, loc, src, dst);
       return success();
     };
 
@@ -1147,8 +1149,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       auto module = op->getParentOfType<ModuleOp>();
       auto cname = createChannelName(module);
       b.setInsertionPointToStart(module.getBody());
-      auto channel_op = b.create<air::ChannelOp>(
-          loc, cname, b.getI64ArrayAttr({1}), b.getStringAttr("dma_stream"));
+      auto channel_op = air::ChannelOp::create(
+          b, loc, cname, b.getI64ArrayAttr({1}), b.getStringAttr("dma_stream"));
       b.setInsertionPoint(stageBlock->getTerminator());
       SmallVector<Value> src_offsets;
       SmallVector<Value> src_sizes;
@@ -1156,9 +1158,9 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       SmallVector<Value> channel_idx;
       SmallVector<Value> deps;
       SmallVector<Type> tys;
-      b.create<air::ChannelPutOp>(
-          loc, tys, deps, FlatSymbolRefAttr::get(ctx, cname), channel_idx, mref,
-          src_offsets, src_sizes, src_strides);
+      air::ChannelPutOp::create(b, loc, tys, deps,
+                                FlatSymbolRefAttr::get(ctx, cname), channel_idx,
+                                mref, src_offsets, src_sizes, src_strides);
       channels[i] = channel_op;
     }
     // if (erased) erased.erase();
@@ -1394,7 +1396,7 @@ public:
   }
 
   static LogicalResult copyCallBack(OpBuilder &b, Value src, Value dst) {
-    b.create<memref::CopyOp>(b.getUnknownLoc(), src, dst);
+    memref::CopyOp::create(b, b.getUnknownLoc(), src, dst);
     return success();
   }
 
@@ -1819,8 +1821,8 @@ public:
         steps.push_back(loops[i].getStep());
       }
 
-      auto parallelLoop =
-          builder.create<scf::ParallelOp>(loc, lowerBounds, upperBounds, steps);
+      auto parallelLoop = scf::ParallelOp::create(builder, loc, lowerBounds,
+                                                  upperBounds, steps);
 
       builder.setInsertionPointToStart(parallelLoop.getBody());
 
@@ -2112,7 +2114,7 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
     promotionOptions = promotionOptions.setAlignment(*getAlignment());
 
   auto copyCallBack = [](OpBuilder &b, Value src, Value dst) -> LogicalResult {
-    b.create<memref::CopyOp>(b.getUnknownLoc(), src, dst);
+    memref::CopyOp::create(b, b.getUnknownLoc(), src, dst);
     return success();
   };
   promotionOptions.setCopyInOutFns(copyCallBack, copyCallBack);
@@ -2767,7 +2769,7 @@ struct OptimizeCopyOpPattern : public OpRewritePattern<CopyOpType> {
       {
         Value fillValue = analysis.fillOp.getInputs()[0];
         rewriter.setInsertionPoint(copyOp);
-        rewriter.create<linalg::FillOp>(copyOp.getLoc(), fillValue, target);
+        linalg::FillOp::create(rewriter, copyOp.getLoc(), fillValue, target);
         rewriter.eraseOp(copyOp);
         return success();
       }
@@ -2976,7 +2978,7 @@ DiagnosedSilenceableFailure transform::ConvertDivfSqrtToRsqrtOp::apply(
       // Create math.rsqrt operation
       rewriter.setInsertionPoint(divfOp);
       auto rsqrtOp =
-          rewriter.create<math::RsqrtOp>(divfOp.getLoc(), sqrtOp.getOperand());
+          math::RsqrtOp::create(rewriter, divfOp.getLoc(), sqrtOp.getOperand());
 
       // Replace the divf operation with the rsqrt result
       rewriter.replaceOp(divfOp, rsqrtOp.getResult());
@@ -3274,8 +3276,8 @@ fuseMultiOpLinalgOps(RewriterBase &rewriter, linalg::LinalgOp firstOp,
 
   // Create the new fused operation
   rewriter.setInsertionPoint(secondOp);
-  auto fusedOp = rewriter.create<linalg::GenericOp>(
-      secondOp.getLoc(), secondOp->getResultTypes(), newInputs,
+  auto fusedOp = linalg::GenericOp::create(
+      rewriter, secondOp.getLoc(), secondOp->getResultTypes(), newInputs,
       secondOp.getDpsInits(), newIndexingMaps,
       secondOp.getIteratorTypesArray());
 
@@ -3505,10 +3507,10 @@ createTransposeToMakeReductionInnermost(OpBuilder &builder, Location loc,
   }
 
   // Create linalg.transpose operation
-  auto transposeOp = builder.create<linalg::TransposeOp>(
-      loc, input,
-      builder.create<tensor::EmptyOp>(loc, transposedShape,
-                                      inputType.getElementType()),
+  auto transposeOp = linalg::TransposeOp::create(
+      builder, loc, input,
+      tensor::EmptyOp::create(builder, loc, transposedShape,
+                              inputType.getElementType()),
       builder.getDenseI64ArrayAttr(permutation));
 
   return transposeOp.getResult()[0];
@@ -3575,8 +3577,8 @@ transform::TransposeReduceOp::apply(transform::TransformRewriter &rewriter,
         updateReductionDimsAfterTranspose(reductionDims, rank);
 
     // Create new reduce operation with transposed input and updated dimensions
-    auto newReduceOp = rewriter.create<linalg::ReduceOp>(
-        reduceOp.getLoc(), reduceOp.getResultTypes(),
+    auto newReduceOp = linalg::ReduceOp::create(
+        rewriter, reduceOp.getLoc(), reduceOp.getResultTypes(),
         ValueRange{transposedInput}, reduceOp.getInits(),
         rewriter.getDenseI64ArrayAttr(newReductionDims));
 
@@ -3705,8 +3707,8 @@ fuseTruncfIntoProducer(RewriterBase &rewriter, linalg::LinalgOp producerOp,
   // Get the truncf op's init to use directly
   Value truncfInit = truncfOp.getDpsInits()[0];
 
-  auto fusedOp = rewriter.create<linalg::GenericOp>(
-      producerOp.getLoc(), truncfOp->getResultTypes(),
+  auto fusedOp = linalg::GenericOp::create(
+      rewriter, producerOp.getLoc(), truncfOp->getResultTypes(),
       producerOp.getDpsInputs(), ValueRange{truncfInit},
       producerOp.getIndexingMapsArray(), producerOp.getIteratorTypesArray());
 
@@ -3743,8 +3745,8 @@ fuseTruncfIntoProducer(RewriterBase &rewriter, linalg::LinalgOp producerOp,
         continue;
 
       rewriter.setInsertionPoint(user);
-      auto extfOp = rewriter.create<arith::ExtFOp>(
-          fusedOp.getLoc(), originalOutputType, outputArg);
+      auto extfOp = arith::ExtFOp::create(rewriter, fusedOp.getLoc(),
+                                          originalOutputType, outputArg);
       use->set(extfOp.getResult());
     }
   }
@@ -3754,8 +3756,8 @@ fuseTruncfIntoProducer(RewriterBase &rewriter, linalg::LinalgOp producerOp,
   Value yieldValue = yieldOp.getValues()[0];
 
   rewriter.setInsertionPoint(yieldOp);
-  auto truncfOpInBody = rewriter.create<arith::TruncFOp>(
-      fusedOp.getLoc(), truncatedType, yieldValue);
+  auto truncfOpInBody = arith::TruncFOp::create(rewriter, fusedOp.getLoc(),
+                                                truncatedType, yieldValue);
 
   // Update the yield to use the truncated value
   yieldOp.getValuesMutable().assign(truncfOpInBody.getResult());
@@ -3861,20 +3863,20 @@ static Value createTypeCast(OpBuilder &builder, Location loc, Value input,
     // Extension: narrow to wide type
     if (isa<FloatType>(sourceElementType) &&
         isa<FloatType>(targetElementType)) {
-      return builder.create<arith::ExtFOp>(loc, targetType, input);
+      return arith::ExtFOp::create(builder, loc, targetType, input);
     } else if (isa<IntegerType>(sourceElementType) &&
                isa<IntegerType>(targetElementType)) {
       // For integer types, use sign extension
-      return builder.create<arith::ExtSIOp>(loc, targetType, input);
+      return arith::ExtSIOp::create(builder, loc, targetType, input);
     }
   } else {
     // Truncation: wide to narrow type
     if (isa<FloatType>(sourceElementType) &&
         isa<FloatType>(targetElementType)) {
-      return builder.create<arith::TruncFOp>(loc, targetType, input);
+      return arith::TruncFOp::create(builder, loc, targetType, input);
     } else if (isa<IntegerType>(sourceElementType) &&
                isa<IntegerType>(targetElementType)) {
-      return builder.create<arith::TruncIOp>(loc, targetType, input);
+      return arith::TruncIOp::create(builder, loc, targetType, input);
     }
   }
 
@@ -4422,8 +4424,8 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
 
     for (auto [idx, vecIdx] : llvm::enumerate(vectorIterArgIndices)) {
       Value initArg = forOp.getInitArgs()[vecIdx];
-      auto shapeCast = rewriter.create<vector::ShapeCastOp>(
-          loc, flattenedVectorTypes[idx], initArg);
+      auto shapeCast = vector::ShapeCastOp::create(
+          rewriter, loc, flattenedVectorTypes[idx], initArg);
       newInitArgs[vecIdx] = shapeCast.getResult();
     }
 
@@ -4440,9 +4442,9 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
     }
 
     // Step 3: Create new scf.for with flattened iter_args
-    auto newForOp = rewriter.create<scf::ForOp>(loc, forOp.getLowerBound(),
-                                                forOp.getUpperBound(),
-                                                forOp.getStep(), newInitArgs);
+    auto newForOp =
+        scf::ForOp::create(rewriter, loc, forOp.getLowerBound(),
+                           forOp.getUpperBound(), forOp.getStep(), newInitArgs);
 
     // Step 4: Clone the loop body and insert shape_cast operations
     Block *oldBody = forOp.getBody();
@@ -4457,8 +4459,8 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
     // For vector iter_args, insert shape_cast to convert back to original shape
     for (auto [idx, vecIdx] : llvm::enumerate(vectorIterArgIndices)) {
       BlockArgument newArg = newBody->getArgument(vecIdx + 1);
-      auto shapeCast = rewriter.create<vector::ShapeCastOp>(
-          loc, originalVectorTypes[idx], newArg);
+      auto shapeCast = vector::ShapeCastOp::create(
+          rewriter, loc, originalVectorTypes[idx], newArg);
       mapping.map(oldBody->getArgument(vecIdx + 1), shapeCast.getResult());
     }
 
@@ -4485,15 +4487,15 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
         // Flatten the yielded vector value
         size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
         Value mappedValue = mapping.lookup(yieldValue);
-        auto shapeCast = rewriter.create<vector::ShapeCastOp>(
-            loc, flattenedVectorTypes[vecIdx], mappedValue);
+        auto shapeCast = vector::ShapeCastOp::create(
+            rewriter, loc, flattenedVectorTypes[vecIdx], mappedValue);
         newYieldOperands.push_back(shapeCast.getResult());
       } else {
         newYieldOperands.push_back(mapping.lookup(yieldValue));
       }
     }
 
-    rewriter.create<scf::YieldOp>(loc, newYieldOperands);
+    scf::YieldOp::create(rewriter, loc, newYieldOperands);
 
     // Step 6: Insert shape_cast operations after the loop to convert results
     // back
@@ -4504,8 +4506,8 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
       auto it = llvm::find(vectorIterArgIndices, idx);
       if (it != vectorIterArgIndices.end()) {
         size_t vecIdx = std::distance(vectorIterArgIndices.begin(), it);
-        auto shapeCast = rewriter.create<vector::ShapeCastOp>(
-            loc, originalVectorTypes[vecIdx], result);
+        auto shapeCast = vector::ShapeCastOp::create(
+            rewriter, loc, originalVectorTypes[vecIdx], result);
         finalResults.push_back(shapeCast.getResult());
       } else {
         finalResults.push_back(result);
@@ -4670,8 +4672,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
         }
         reassociation.push_back(allDims);
 
-        flatMemref = rewriter.create<memref::CollapseShapeOp>(
-            loc, flatMemrefType, info.base, reassociation);
+        flatMemref = memref::CollapseShapeOp::create(
+            rewriter, loc, flatMemrefType, info.base, reassociation);
       }
       flatMemrefs.push_back(flatMemref);
 
@@ -4702,12 +4704,12 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
           }
         } else {
           baseIndices.push_back(
-              rewriter.create<arith::ConstantIndexOp>(loc, 0));
+              arith::ConstantIndexOp::create(rewriter, loc, 0));
         }
       }
 
       Value basePointer =
-          rewriter.create<affine::AffineApplyOp>(loc, linearMap, baseIndices);
+          affine::AffineApplyOp::create(rewriter, loc, linearMap, baseIndices);
 
       newInitArgs.push_back(basePointer);
     }
@@ -4741,8 +4743,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
             allDims.push_back(i);
           }
           reassociation.push_back(allDims);
-          flatMemref = rewriter.create<memref::CollapseShapeOp>(
-              loc, flatMemrefType, info.base, reassociation);
+          flatMemref = memref::CollapseShapeOp::create(
+              rewriter, loc, flatMemrefType, info.base, reassociation);
         }
 
         // Compute pointer from indices
@@ -4757,8 +4759,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
         auto linearMap = AffineMap::get(rank, 0, linearExpr);
 
         rewriter.setInsertionPoint(info.op);
-        Value currentPointer = rewriter.create<affine::AffineApplyOp>(
-            loc, linearMap, info.indices);
+        Value currentPointer = affine::AffineApplyOp::create(
+            rewriter, loc, linearMap, info.indices);
 
         // Transform the transfer operation
         AffineMap identityMap1D = AffineMap::get(
@@ -4766,16 +4768,17 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
         auto inBoundsAttr = rewriter.getBoolArrayAttr({true});
 
         if (auto readOp = dyn_cast<vector::TransferReadOp>(info.op)) {
-          Value flatRead = rewriter.create<vector::TransferReadOp>(
-              loc, flatVectorType, flatMemref, ValueRange{currentPointer},
-              AffineMapAttr::get(identityMap1D), readOp.getPadding(),
+          Value flatRead = vector::TransferReadOp::create(
+              rewriter, loc, flatVectorType, flatMemref,
+              ValueRange{currentPointer}, AffineMapAttr::get(identityMap1D),
+              readOp.getPadding(),
               /*mask=*/Value(), inBoundsAttr);
-          Value shapedRead = rewriter.create<vector::ShapeCastOp>(
-              loc, info.vectorType, flatRead);
+          Value shapedRead = vector::ShapeCastOp::create(
+              rewriter, loc, info.vectorType, flatRead);
           rewriter.replaceOp(readOp, shapedRead);
         } else if (auto writeOp = dyn_cast<vector::TransferWriteOp>(info.op)) {
-          Value flatValue = rewriter.create<vector::ShapeCastOp>(
-              loc, flatVectorType, writeOp.getVector());
+          Value flatValue = vector::ShapeCastOp::create(
+              rewriter, loc, flatVectorType, writeOp.getVector());
           rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
               writeOp, flatValue, flatMemref, ValueRange{currentPointer},
               AffineMapAttr::get(identityMap1D), /*mask=*/Value(),
@@ -4816,16 +4819,16 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
         auto inBoundsAttr = b.getBoolArrayAttr({true});
 
         if (auto readOp = dyn_cast<vector::TransferReadOp>(info.op)) {
-          Value flatRead = b.create<vector::TransferReadOp>(
-              loc, flatVectorType, flatMemref, ValueRange{ptrIterArg},
+          Value flatRead = vector::TransferReadOp::create(
+              b, loc, flatVectorType, flatMemref, ValueRange{ptrIterArg},
               AffineMapAttr::get(identityMap1D), readOp.getPadding(),
               /*mask=*/Value(), inBoundsAttr);
           Value shapedRead =
-              b.create<vector::ShapeCastOp>(loc, info.vectorType, flatRead);
+              vector::ShapeCastOp::create(b, loc, info.vectorType, flatRead);
           rewriter.replaceOp(readOp, shapedRead);
         } else if (auto writeOp = dyn_cast<vector::TransferWriteOp>(info.op)) {
-          Value flatValue = b.create<vector::ShapeCastOp>(loc, flatVectorType,
-                                                          writeOp.getVector());
+          Value flatValue = vector::ShapeCastOp::create(b, loc, flatVectorType,
+                                                        writeOp.getVector());
           rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
               writeOp, flatValue, flatMemref, ValueRange{ptrIterArg},
               AffineMapAttr::get(identityMap1D), /*mask=*/Value(),
@@ -4834,9 +4837,9 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
 
         // Compute next pointer value: current_ptr + constant_stride
         Value strideConst =
-            b.create<arith::ConstantIndexOp>(yieldLoc, info.constantStride);
+            arith::ConstantIndexOp::create(b, yieldLoc, info.constantStride);
         Value nextPtr =
-            b.create<arith::AddIOp>(yieldLoc, ptrIterArg, strideConst);
+            arith::AddIOp::create(b, yieldLoc, ptrIterArg, strideConst);
         yieldValues.push_back(nextPtr);
 
         iterArgIdx++;
@@ -5017,13 +5020,14 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
   // Extend the init value directly (in narrow flat form)
   Value extendedInit;
   if (isFloatingPoint) {
-    extendedInit = rewriter.create<arith::ExtFOp>(loc, wideInitType, initValue);
+    extendedInit =
+        arith::ExtFOp::create(rewriter, loc, wideInitType, initValue);
   } else if (isa<arith::ExtSIOp>(extensionOp)) {
     extendedInit =
-        rewriter.create<arith::ExtSIOp>(loc, wideInitType, initValue);
+        arith::ExtSIOp::create(rewriter, loc, wideInitType, initValue);
   } else {
     extendedInit =
-        rewriter.create<arith::ExtUIOp>(loc, wideInitType, initValue);
+        arith::ExtUIOp::create(rewriter, loc, wideInitType, initValue);
   }
 
   // Step 2: Create new loop with wide type for this iter_arg
@@ -5031,9 +5035,9 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
                                  loopOp.getInitArgs().end());
   newInitArgs[iterArgIndex] = extendedInit;
 
-  auto newLoopOp = rewriter.create<scf::ForOp>(loc, loopOp.getLowerBound(),
-                                               loopOp.getUpperBound(),
-                                               loopOp.getStep(), newInitArgs);
+  auto newLoopOp =
+      scf::ForOp::create(rewriter, loc, loopOp.getLowerBound(),
+                         loopOp.getUpperBound(), loopOp.getStep(), newInitArgs);
 
   // Step 3: Clone the loop body with proper type adjustments
   Block *oldBody = loopOp.getBody();
@@ -5081,7 +5085,7 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
 
       Value mappedSource = mapping.lookup(shapeCastBeforeExtension.getSource());
       auto newShapeCast =
-          rewriter.create<vector::ShapeCastOp>(loc, wideVecType, mappedSource);
+          vector::ShapeCastOp::create(rewriter, loc, wideVecType, mappedSource);
       mapping.map(shapeCastBeforeExtension.getResult(),
                   newShapeCast.getResult());
       mapping.map(extensionOutput, newShapeCast.getResult());
@@ -5118,7 +5122,7 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
             VectorType::get(narrowVecType.getShape(), wideElemType);
 
         auto newShapeCast =
-            rewriter.create<vector::ShapeCastOp>(loc, wideVecType, wideValue);
+            vector::ShapeCastOp::create(rewriter, loc, wideVecType, wideValue);
         newYieldOperands.push_back(newShapeCast.getResult());
       } else {
         newYieldOperands.push_back(wideValue);
@@ -5128,7 +5132,7 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
     }
   }
 
-  rewriter.create<scf::YieldOp>(loc, newYieldOperands);
+  scf::YieldOp::create(rewriter, loc, newYieldOperands);
 
   // Step 5: Hoist truncation after the loop
   rewriter.setInsertionPointAfter(newLoopOp);
@@ -5145,10 +5149,10 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
   Value narrowResult;
   if (isFloatingPoint) {
     narrowResult =
-        rewriter.create<arith::TruncFOp>(loc, narrowResultType, wideResult);
+        arith::TruncFOp::create(rewriter, loc, narrowResultType, wideResult);
   } else {
     narrowResult =
-        rewriter.create<arith::TruncIOp>(loc, narrowResultType, wideResult);
+        arith::TruncIOp::create(rewriter, loc, narrowResultType, wideResult);
   }
 
   // Step 6: Replace uses of the old loop
@@ -5203,12 +5207,12 @@ struct ConvertSize1TransferReadToLoad
       return failure();
 
     // Create memref.load returning scalar
-    Value scalarLoad = rewriter.create<memref::LoadOp>(
-        readOp.getLoc(), readOp.getBase(), readOp.getIndices());
+    Value scalarLoad = memref::LoadOp::create(
+        rewriter, readOp.getLoc(), readOp.getBase(), readOp.getIndices());
 
     // Broadcast scalar to vector<1xT>
-    Value vectorResult = rewriter.create<vector::BroadcastOp>(
-        readOp.getLoc(), vecType, scalarLoad);
+    Value vectorResult = vector::BroadcastOp::create(rewriter, readOp.getLoc(),
+                                                     vecType, scalarLoad);
 
     rewriter.replaceOp(readOp, vectorResult);
     return success();
@@ -5229,8 +5233,8 @@ struct ConvertSize1TransferWriteToStore
 
     // Extract scalar from vector<1xT>
     SmallVector<int64_t> indices(vecType.getRank(), 0);
-    Value scalarValue = rewriter.create<vector::ExtractOp>(
-        writeOp.getLoc(), writeOp.getVector(), indices);
+    Value scalarValue = vector::ExtractOp::create(rewriter, writeOp.getLoc(),
+                                                  writeOp.getVector(), indices);
 
     // Create memref.store with scalar
     rewriter.replaceOpWithNewOp<memref::StoreOp>(
@@ -5251,12 +5255,12 @@ struct ConvertSize1VectorLoadToLoad : public OpRewritePattern<vector::LoadOp> {
       return failure();
 
     // Create memref.load returning scalar
-    Value scalarLoad = rewriter.create<memref::LoadOp>(
-        loadOp.getLoc(), loadOp.getBase(), loadOp.getIndices());
+    Value scalarLoad = memref::LoadOp::create(
+        rewriter, loadOp.getLoc(), loadOp.getBase(), loadOp.getIndices());
 
     // Broadcast scalar to vector<1xT>
-    Value vectorResult = rewriter.create<vector::BroadcastOp>(
-        loadOp.getLoc(), vecType, scalarLoad);
+    Value vectorResult = vector::BroadcastOp::create(rewriter, loadOp.getLoc(),
+                                                     vecType, scalarLoad);
 
     rewriter.replaceOp(loadOp, vectorResult);
     return success();
@@ -5276,8 +5280,8 @@ struct ConvertSize1VectorStoreToStore
 
     // Extract scalar from vector<1xT>
     SmallVector<int64_t> indices(vecType.getRank(), 0);
-    Value scalarValue = rewriter.create<vector::ExtractOp>(
-        storeOp.getLoc(), storeOp.getValueToStore(), indices);
+    Value scalarValue = vector::ExtractOp::create(
+        rewriter, storeOp.getLoc(), storeOp.getValueToStore(), indices);
 
     // Create memref.store with scalar
     rewriter.replaceOpWithNewOp<memref::StoreOp>(
@@ -5325,7 +5329,7 @@ struct ConvertSize1VectorOpsToScalar : public RewritePattern {
         auto vecType = cast<VectorType>(operand.getType());
         SmallVector<int64_t> indices(vecType.getRank(), 0);
         Value scalarOperand =
-            rewriter.create<vector::ExtractOp>(loc, operand, indices);
+            vector::ExtractOp::create(rewriter, loc, operand, indices);
         scalarOperands.push_back(scalarOperand);
       } else {
         scalarOperands.push_back(operand);
@@ -5358,8 +5362,9 @@ struct ConvertSize1VectorOpsToScalar : public RewritePattern {
     SmallVector<Value> finalResults;
     for (auto [idx, resultType] : llvm::enumerate(op->getResultTypes())) {
       if (isSize1VectorType(resultType)) {
-        Value broadcastResult = rewriter.create<vector::BroadcastOp>(
-            loc, cast<VectorType>(resultType), scalarOp->getResult(idx));
+        Value broadcastResult = vector::BroadcastOp::create(
+            rewriter, loc, cast<VectorType>(resultType),
+            scalarOp->getResult(idx));
         finalResults.push_back(broadcastResult);
       } else {
         finalResults.push_back(scalarOp->getResult(idx));

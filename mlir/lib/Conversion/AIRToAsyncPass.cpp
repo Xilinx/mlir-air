@@ -65,15 +65,15 @@ public:
     SmallVector<Type> retTy;
     SmallVector<Value> deps;
 
-    auto herdExeOp = rewriter.create<async::ExecuteOp>(
-        op->getLoc(), retTy, herd.getAsyncDependencies(), empty,
+    auto herdExeOp = async::ExecuteOp::create(
+        rewriter, op->getLoc(), retTy, herd.getAsyncDependencies(), empty,
         [&](OpBuilder &r, Location loc, ValueRange v) {
           auto size =
-              r.create<arith::ConstantIndexOp>(loc, herd_size_x * herd_size_y);
-          auto group = r.create<async::CreateGroupOp>(loc, size);
-          auto outer = r.create<affine::AffineForOp>(loc, 0, herd_size_x);
+              arith::ConstantIndexOp::create(r, loc, herd_size_x * herd_size_y);
+          auto group = async::CreateGroupOp::create(r, loc, size);
+          auto outer = affine::AffineForOp::create(r, loc, 0, herd_size_x);
           r.setInsertionPointToStart(outer.getBody());
-          auto inner = r.create<affine::AffineForOp>(loc, 0, herd_size_y);
+          auto inner = affine::AffineForOp::create(r, loc, 0, herd_size_y);
 
           outer->setAttr("air.herd",
                          StringAttr::get(op->getContext(), "outer"));
@@ -92,23 +92,23 @@ public:
             mapper.map(arg, operands[i++]);
 
           r.setInsertionPointToStart(inner.getBody());
-          auto coreExeOp = r.create<async::ExecuteOp>(
-              loc, retTy, empty, empty,
+          auto coreExeOp = async::ExecuteOp::create(
+              r, loc, retTy, empty, empty,
               [&](OpBuilder &b, Location loc, ValueRange v) {
                 for (auto &o : herd.getBody().front().getOperations()) {
                   if (!isa<air::HerdTerminatorOp>(o))
                     b.clone(o, mapper);
                 }
-                b.create<async::YieldOp>(loc, empty);
+                async::YieldOp::create(b, loc, empty);
               });
-          r.create<async::AddToGroupOp>(loc, coreExeOp.getResult(0), group);
+          async::AddToGroupOp::create(r, loc, coreExeOp.getResult(0), group);
 
           r.setInsertionPointAfter(outer);
-          r.create<async::AwaitAllOp>(loc, group);
-          r.create<async::YieldOp>(loc, empty);
+          async::AwaitAllOp::create(r, loc, group);
+          async::YieldOp::create(r, loc, empty);
         });
     rewriter.setInsertionPointAfter(herdExeOp);
-    rewriter.create<async::AwaitOp>(op->getLoc(), herdExeOp.getResult(0));
+    async::AwaitOp::create(rewriter, op->getLoc(), herdExeOp.getResult(0));
 
     if (auto t = herd.getAsyncToken())
       t.replaceAllUsesWith(herdExeOp.getResult(0));
@@ -151,10 +151,11 @@ public:
     for (unsigned d = 0; d < dimSizes.size(); ++d) {
       auto ub = dimSizes[d];
       // create constant index operands for lb, ub and step
-      auto lbConst = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      auto ubConst = rewriter.create<arith::ConstantIndexOp>(loc, ub);
-      auto stepConst = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-      auto loop = rewriter.create<scf::ForOp>(loc, lbConst, ubConst, stepConst);
+      auto lbConst = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      auto ubConst = arith::ConstantIndexOp::create(rewriter, loc, ub);
+      auto stepConst = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      auto loop =
+          scf::ForOp::create(rewriter, loc, lbConst, ubConst, stepConst);
       // set insertion point to start of this loop for nesting the next
       // one
       rewriter.setInsertionPointToStart(loop.getBody());
@@ -206,7 +207,7 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
           memrefTy.getElementType(), memrefTy.getLayout(),
           /*memrefTy.getMemorySpace()*/ 0);
       callops.push_back(
-          rewriter.create<UnrealizedConversionCastOp>(loc, t, o).getResult(0));
+          UnrealizedConversionCastOp::create(rewriter, loc, t, o).getResult(0));
     } else if (llvm::isa<async::TokenType>(o.getType())) {
       dependencies.push_back(o);
     } else {
@@ -237,26 +238,26 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
   func::CallOp call = nullptr;
   SmallVector<Value, 4> results;
   if (token_result_tys.size()) {
-    auto exe = rewriter.create<async::ExecuteOp>(
-        op->getLoc(), retTys, dependencies, SmallVector<Value, 1>{},
+    auto exe = async::ExecuteOp::create(
+        rewriter, op->getLoc(), retTys, dependencies, SmallVector<Value, 1>{},
         [&](OpBuilder &b, Location loc, ValueRange v) {
-          call = rewriter.create<func::CallOp>(op->getLoc(), retTys,
-                                               SymbolRefAttr::get(fn), callops);
-          b.create<async::YieldOp>(loc, call.getResults());
+          call = func::CallOp::create(rewriter, op->getLoc(), retTys,
+                                      SymbolRefAttr::get(fn), callops);
+          async::YieldOp::create(b, loc, call.getResults());
         });
     results = exe.getResults();
   } else {
     for (auto d : dependencies)
-      rewriter.create<async::AwaitOp>(op->getLoc(), d);
-    call = rewriter.create<func::CallOp>(op->getLoc(), retTys,
-                                         SymbolRefAttr::get(fn), callops);
+      async::AwaitOp::create(rewriter, op->getLoc(), d);
+    call = func::CallOp::create(rewriter, op->getLoc(), retTys,
+                                SymbolRefAttr::get(fn), callops);
     results = call.getResults();
     for (unsigned i = 0, real_result_idx = 0; i < results.size(); ++i) {
       auto r = results[i];
       if (auto memrefTy = llvm::dyn_cast<MemRefType>(r.getType())) {
         auto t = real_result_tys[real_result_idx++];
         auto c =
-            rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), t, r);
+            UnrealizedConversionCastOp::create(rewriter, op->getLoc(), t, r);
         results[i] = c.getResult(0);
       }
     }
@@ -275,7 +276,7 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
 
   auto idTy = IntegerType::get(op->getContext(), 32);
   if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-    callops.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
+    callops.push_back(arith::ConstantOp::create(rewriter, loc, idTy, id_attr));
   }
 
   callops.append(operands.begin(), operands.end());
@@ -349,8 +350,8 @@ public:
     if (op.getType().getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
       return failure();
 
-    auto alloc = rewriter.create<memref::AllocOp>(
-        op.getLoc(),
+    auto alloc = memref::AllocOp::create(
+        rewriter, op.getLoc(),
         MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
                         memrefTy.getLayout(), 0));
     op.getResult().replaceAllUsesWith(alloc.getResult());
@@ -373,7 +374,7 @@ public:
     if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
       return failure();
 
-    rewriter.create<memref::DeallocOp>(op.getLoc(), adaptor.getMemref());
+    memref::DeallocOp::create(rewriter, op.getLoc(), adaptor.getMemref());
     rewriter.eraseOp(op);
     return success();
   }
@@ -395,8 +396,9 @@ public:
       else
         retTy.push_back(t);
 
-    auto callOp = rewriter.create<func::CallOp>(
-        op->getLoc(), adaptor.getCallee(), retTy, adaptor.getOperands());
+    auto callOp =
+        func::CallOp::create(rewriter, op->getLoc(), adaptor.getCallee(), retTy,
+                             adaptor.getOperands());
     rewriter.replaceOp(op, callOp.getResults());
     return success();
   }
@@ -414,13 +416,13 @@ public:
     if (op->getNumResults() == 1) {
       SmallVector<Value, 1> empty;
       SmallVector<Type, 1> retTy;
-      auto newOp = rewriter.create<async::ExecuteOp>(
-          op->getLoc(), retTy, operands, empty,
+      auto newOp = async::ExecuteOp::create(
+          rewriter, op->getLoc(), retTy, operands, empty,
           [&](OpBuilder &b, Location loc, ValueRange v) {
             SmallVector<Value, 1> returnValues;
-            b.create<async::YieldOp>(loc, returnValues);
+            async::YieldOp::create(b, loc, returnValues);
           });
-      // auto r = rewriter.create<UnrealizedConversionCastOp>(op->getLoc(),
+      // auto r = UnrealizedConversionCastOp::create(rewriter, op->getLoc(),
       //                    async::TokenType::get(op->getContext()),
       //                    newOp->getResult(0));
       // op->getResult(0).replaceAllUsesWith(r.getResult(0));
@@ -432,10 +434,10 @@ public:
     for (auto o : operands) {
       Value v = o;
       // if (llvm::isa<air::AsyncTokenType>(o.getType()))
-      //   v = rewriter.create<UnrealizedConversionCastOp>(op->getLoc(),
+      //   v = UnrealizedConversionCastOp::create(rewriter, op->getLoc(),
       //                   async::TokenType::get(op->getContext()),
       //                   o).getResult(0);
-      rewriter.create<async::AwaitOp>(op->getLoc(), v);
+      async::AwaitOp::create(rewriter, op->getLoc(), v);
     }
     rewriter.eraseOp(op);
     return success();
@@ -525,13 +527,13 @@ public:
       total_size *= new_ub_int;
     }
 
-    auto topExeOp = rewriter.create<async::ExecuteOp>(
-        op->getLoc(), retTy, deps, empty,
+    auto topExeOp = async::ExecuteOp::create(
+        rewriter, op->getLoc(), retTy, deps, empty,
         [&](OpBuilder &r, Location loc, ValueRange v) {
           IRMapping mapper;
 
-          auto size = r.create<arith::ConstantIndexOp>(loc, total_size);
-          auto group = r.create<async::CreateGroupOp>(loc, size);
+          auto size = arith::ConstantIndexOp::create(r, loc, total_size);
+          auto group = async::CreateGroupOp::create(r, loc, size);
 
           // create nested for loops
           auto ivs = op.getInductionVars().begin();
@@ -544,7 +546,7 @@ public:
             Value lbv = *lowerBound++;
             Value ubv = *upperBound++;
             Value iv = *ivs++;
-            auto l = r.create<scf::ForOp>(loc, lbv, ubv, sv);
+            auto l = scf::ForOp::create(r, loc, lbv, ubv, sv);
             mapper.map(lbv, l.getLowerBound());
             mapper.map(ubv, l.getUpperBound());
             mapper.map(sv, l.getStep());
@@ -554,21 +556,21 @@ public:
           }
 
           // create an async.execute and clone the scf.parallel body into it
-          auto coreExeOp = r.create<async::ExecuteOp>(
-              loc, retTy, empty, empty,
+          auto coreExeOp = async::ExecuteOp::create(
+              r, loc, retTy, empty, empty,
               [&](OpBuilder &b, Location loc, ValueRange v) {
                 for (auto &o : op.getBody()->getOperations())
                   if (!isa<scf::YieldOp, scf::ReduceOp>(o))
                     b.clone(o, mapper);
-                b.create<async::YieldOp>(loc, empty);
+                async::YieldOp::create(b, loc, empty);
               });
-          r.create<async::AddToGroupOp>(loc, coreExeOp.getResult(0), group);
+          async::AddToGroupOp::create(r, loc, coreExeOp.getResult(0), group);
           r.setInsertionPointAfter(loops[0]);
 
-          r.create<async::AwaitAllOp>(loc, group);
-          r.create<async::YieldOp>(loc, empty);
+          async::AwaitAllOp::create(r, loc, group);
+          async::YieldOp::create(r, loc, empty);
         });
-    rewriter.create<async::AwaitOp>(op->getLoc(), topExeOp.getResult(0));
+    async::AwaitOp::create(rewriter, op->getLoc(), topExeOp.getResult(0));
     if (op.getInitVals().size())
       rewriter.replaceOp(op, topExeOp.getResults());
     else
@@ -592,8 +594,8 @@ public:
 
     SmallVector<Value, 4> dependencies = adaptor.getAsyncDependencies();
     SmallVector<Value, 4> operands;
-    auto newOp = rewriter.create<async::ExecuteOp>(
-        op->getLoc(), resultTypes, dependencies, operands,
+    auto newOp = async::ExecuteOp::create(
+        rewriter, op->getLoc(), resultTypes, dependencies, operands,
         [&](OpBuilder &b, Location loc, ValueRange v) {
           IRMapping map;
           for (auto &o : op.getOps()) {
@@ -601,7 +603,7 @@ public:
               SmallVector<Value, 4> returnValues;
               for (auto v : o.getOperands())
                 returnValues.push_back(map.lookupOrDefault(v));
-              b.create<async::YieldOp>(loc, returnValues);
+              async::YieldOp::create(b, loc, returnValues);
             } else
               b.clone(o, map);
           }
@@ -611,7 +613,7 @@ public:
     op.getResult(0).replaceAllUsesWith(newOp->getResult(0));
     for (unsigned i = 1; i < op->getNumResults(); ++i) {
       auto r = newOp.getResult(i);
-      auto await = rewriter.create<async::AwaitOp>(op->getLoc(), r);
+      auto await = async::AwaitOp::create(rewriter, op->getLoc(), r);
       // op.getResult(i).replaceAllUsesWith(await.getResult());
       results.push_back(await.getResult());
     }
@@ -661,9 +663,9 @@ struct ChannelOpConversion : public OpConversionPattern<air::ChannelOp> {
     auto initialValue = mlir::DenseElementsAttr::get(
         mlir::RankedTensorType::get(shape, ptrType),
         rewriter.getIntegerAttr(ptrType, 0));
-    auto globalOp = rewriter.create<memref::GlobalOp>(
-        op->getLoc(), name.str(), rewriter.getStringAttr("private"), memrefType,
-        initialValue, false, nullptr);
+    auto globalOp = memref::GlobalOp::create(
+        rewriter, op->getLoc(), name.str(), rewriter.getStringAttr("private"),
+        memrefType, initialValue, false, nullptr);
     // if op has broadcast attribute, attach it to the global
     if (op->getAttr("broadcast_shape")) {
       globalOp->setAttr("broadcast_shape", op->getAttr("broadcast_shape"));
@@ -686,8 +688,8 @@ public:
     if (!channelOp)
       return failure();
     auto memrefType = channelOp.getType();
-    auto channelPtr = rewriter.create<memref::GetGlobalOp>(
-        op->getLoc(), memrefType, op.getChanNameAttr());
+    auto channelPtr = memref::GetGlobalOp::create(
+        rewriter, op->getLoc(), memrefType, op.getChanNameAttr());
     operands.push_back(channelPtr);
     operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
     auto call = convertOpToFunction(op, operands, rewriter, "air_channel_get");
@@ -712,32 +714,32 @@ public:
     if (!channelOp)
       return failure();
     auto memrefType = channelOp.getType();
-    auto channelPtr = rewriter.create<memref::GetGlobalOp>(
-        op->getLoc(), memrefType, op.getChanNameAttr());
+    auto channelPtr = memref::GetGlobalOp::create(
+        rewriter, op->getLoc(), memrefType, op.getChanNameAttr());
     operands.push_back(channelPtr);
     // create constant index op for channel array size
     for (auto i : memrefType.getShape()) {
       operands.push_back(
-          rewriter.create<arith::ConstantIndexOp>(op->getLoc(), i));
+          arith::ConstantIndexOp::create(rewriter, op->getLoc(), i));
     }
     // if shape dim < 2, add until dim = 2
     while (operands.size() < 3) {
       operands.push_back(
-          rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
+          arith::ConstantIndexOp::create(rewriter, op->getLoc(), 1));
     }
     // if channel is broadcast, add broadcast shape
     if (channelOp->getAttr("broadcast_shape")) {
       for (auto i :
            llvm::cast<ArrayAttr>(channelOp->getAttr("broadcast_shape"))) {
-        operands.push_back(rewriter.create<arith::ConstantIndexOp>(
-            op->getLoc(), llvm::cast<IntegerAttr>(i).getInt()));
+        operands.push_back(arith::ConstantIndexOp::create(
+            rewriter, op->getLoc(), llvm::cast<IntegerAttr>(i).getInt()));
       }
     } else {
       // if channel is not broadcast, add 1
       operands.push_back(
-          rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
+          arith::ConstantIndexOp::create(rewriter, op->getLoc(), 1));
       operands.push_back(
-          rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
+          arith::ConstantIndexOp::create(rewriter, op->getLoc(), 1));
     }
     operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
     auto call = convertOpToFunction(op, operands, rewriter, "air_channel_put");
@@ -777,7 +779,8 @@ public:
     });
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) -> Value {
-      auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
+      auto cast =
+          UnrealizedConversionCastOp::create(builder, loc, type, inputs);
       return cast.getResult(0);
     };
     converter.addSourceMaterialization(addUnrealizedCast);

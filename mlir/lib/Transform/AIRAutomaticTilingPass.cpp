@@ -155,7 +155,7 @@ constructTiledLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
   for (unsigned i = 0; i < total_width; i++) {
     OpBuilder b(topLoop);
     affine::AffineForOp intraLoop =
-        b.create<affine::AffineForOp>(rootForLoc, 0, 0);
+        affine::AffineForOp::create(b, rootForLoc, 0, 0);
     intraLoop.getBody()->getOperations().splice(
         intraLoop.getBody()->begin(), topLoop->getBlock()->getOperations(),
         topLoop);
