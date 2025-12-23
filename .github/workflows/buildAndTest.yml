@@ -44,7 +44,6 @@ jobs:
           haskell: true
           large-packages: true
           swap-storage: false
-          
       # Clone the repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get repo
