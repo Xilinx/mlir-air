@@ -11,7 +11,6 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.dialects.math import exp
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
@@ -19,13 +18,19 @@ range_ = for_
 
 
 @module_builder
-def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
+def build_module(n, tile_n, np_dtype_in, arch="aie2"):
     a_size = [n]
+    b_size = a_size
     out_size = a_size
     xrt_dtype_in = type_mapper(np_dtype_in)
     num_tiles = 2
     assert n % (tile_n * num_tiles) == 0
-    VECTOR_SIZE = vector_size
+    # Architecture-specific vector size
+    arch_vector_sizes = {
+        "aie2": 16,
+        "aie2p": 64,
+    }
+    VECTOR_SIZE = arch_vector_sizes.get(arch, 16)  # default to 16 if unknown
     index_type = IndexType.get()
 
     # L3 MemRefTypes
@@ -38,27 +43,25 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
         memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
     )
 
-    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def vector_exp(arg0, arg2):
-        # For aie2, link with external function
-        herd_kwargs = {
-            "name": "herd_0",
-            "sizes": [1, num_tiles],
-            "operands": [arg0, arg2],
-        }
-        if arch == "aie2":
-            herd_kwargs["link_with"] = "extern_func.o"
+    @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
+    def vector_div(arg0, arg1, arg2):
 
-        @herd(**herd_kwargs)
+        @herd(
+            name="herd_0",
+            sizes=[1, num_tiles],
+            operands=[arg0, arg1, arg2],
+        )
         def herd_body(
             _tx,
             _ty,
             _sx,
             _sy,
             _l3_a,
+            _l3_b,
             _l3_c,
         ):
             l1_a_data = AllocOp(l1MemrefTy, [], [])
+            l1_b_data = AllocOp(l1MemrefTy, [], [])
             l1_out_data = AllocOp(l1MemrefTy, [], [])
 
             for _l_ivx in range_(0, n, tile_n * num_tiles):
@@ -87,6 +90,15 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
                     src_sizes=[tile_n],
                     src_strides=[1],
                 )
+                dma_memcpy_nd(
+                    l1_b_data,
+                    _l3_b,
+                    src_offsets=[
+                        offset,
+                    ],
+                    src_sizes=[tile_n],
+                    src_strides=[1],
+                )
                 c0 = ConstantOp(index_type, 0)
                 c1 = ConstantOp(index_type, 1)
                 cVecSize = ConstantOp(index_type, VECTOR_SIZE)
@@ -94,6 +106,12 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
                 for j in range_(c0, cTileN, cVecSize):
                     sub_a_vec = subview(
                         l1_a_data.result,
+                        [j],
+                        [VECTOR_SIZE],
+                        [1],
+                    )
+                    sub_b_vec = subview(
+                        l1_b_data.result,
                         [j],
                         [VECTOR_SIZE],
                         [1],
@@ -113,7 +131,15 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
                         cst0,
                         [True],
                     )
-                    v_c = exp(v_a)
+                    v_b = transfer_read(
+                        VectorType.get([VECTOR_SIZE], xrt_dtype_in),
+                        sub_b_vec,
+                        [c0],
+                        AffineMapAttr.get(AffineMap.get_identity(1)),
+                        cst0,
+                        [True],
+                    )
+                    v_c = arith.DivFOp(v_a, v_b)
                     transfer_write(
                         None,
                         v_c,
@@ -134,6 +160,7 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
                     dst_strides=[1],
                 )
                 DeallocOp(l1_a_data)
+                DeallocOp(l1_b_data)
                 DeallocOp(l1_out_data)
 
                 yield_([])
@@ -143,12 +170,11 @@ if __name__ == "__main__":
     # Default values.
     N = 65536
     TILE_N = 1024
-    VECTOR_SIZE = 16
-    INPUT_DATATYPE = bfloat16
+    INPUT_DATATYPE = np.float32
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the vector division example",
     )
     parser.add_argument(
         "-v",
@@ -167,12 +193,6 @@ if __name__ == "__main__":
         help="Total number of elements",
     )
     parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
-    parser.add_argument(
-        "--vector-size",
-        type=int,
-        default=VECTOR_SIZE,
-        help="Vector size for SIMD operations",
-    )
     parser.add_argument(
         "--arch",
         type=str,
@@ -195,15 +215,15 @@ if __name__ == "__main__":
         args.tile_n,
         INPUT_DATATYPE,
         args.arch,
-        args.vector_size,
     )
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
-    # Generate input values in a safe range for exp operation to avoid overflow
-    # Using values between -5 and 5 to ensure exp(x) stays within bfloat16 range
-    input_a = np.random.uniform(-5, 5, args.n).astype(INPUT_DATATYPE)
+    input_a = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
+    input_a = input_a.astype(INPUT_DATATYPE)
+    input_b = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
+    input_b = input_b.astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
 
@@ -217,7 +237,7 @@ if __name__ == "__main__":
 
         # Compute reference results for sampled indices
         sampled_values = np.array(
-            [np.exp(input_a[i]) for i in zip(*sampled_indices)],
+            [input_a[i] / input_b[i] for i in zip(*sampled_indices)],
             dtype=INPUT_DATATYPE,
         )
 
@@ -236,9 +256,9 @@ if __name__ == "__main__":
         exit(
             runner.run_test(
                 mlir_module,
-                inputs=[input_a],
+                inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
+                rtol=1e-2,
             )
         )
 
