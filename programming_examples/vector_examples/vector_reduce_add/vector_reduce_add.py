@@ -32,7 +32,6 @@ def build_module(m, n, tile_m, np_dtype_in):
     xrt_dtype_in = type_mapper(np_dtype_in)
     num_tiles = 2
     assert m % (tile_m * num_tiles) == 0
-    VECTOR_SIZE = 16
     index_type = IndexType.get()
 
     # L3 MemRefTypes
@@ -96,7 +95,6 @@ def build_module(m, n, tile_m, np_dtype_in):
                 )
                 c0 = ConstantOp(index_type, 0)
                 c1 = ConstantOp(index_type, 1)
-                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
                 cTileN = ConstantOp(index_type, tile_m)
                 for j in range_(c0, cTileN, c1):
                     sub_a_vec = subview(
