@@ -136,7 +136,7 @@ jobs:
             pip -q download --no-deps --platform manylinux_2_35_x86_64 "mlir_aie$NO_RTTI_UNDERSCORE==$MLIR_AIE_VERSION" \
               -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2/
             unzip -q mlir_aie*.whl
-            export MLIR_AIE_INSTALL_PATH=$BUILD_DIR/mlir_aie$NO_RTTI_UNDERSCORE
+            export MLIR_AIE_INSTALL_PATH=$PWD/mlir_aie$NO_RTTI_UNDERSCORE
 
             export MLIR_AIR_SOURCE_DIR=$PWD
             export WHEELHOUSE_DIR=$PWD/wheelhouse
