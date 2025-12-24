@@ -11,6 +11,8 @@ from pathlib import Path
 from pprint import pprint
 from setuptools import Extension, setup, find_packages
 from setuptools.command.build_ext import build_ext
+from setuptools.command.develop import develop
+from setuptools.command.install import install
 
 
 def check_env(build, default=0):
@@ -21,6 +23,70 @@ class CMakeExtension(Extension):
     def __init__(self, name: str, sourcedir: str = "") -> None:
         super().__init__(name, sources=[])
         self.sourcedir = os.fspath(Path(sourcedir).resolve())
+
+
+def get_cross_cmake_args():
+    cmake_args = {}
+
+    def native_tools():
+        nonlocal cmake_args
+
+        mlir_tblgen_host = next(
+            f.locate()
+            for f in files("mlir-native-tools")
+            if f.name.startswith("mlir-tblgen")
+        )
+        mlir_tblgen_target = next(
+            f.locate()
+            for f in files("mlir" if check_env("ENABLE_RTTI", 1) else "mlir_no_rtti")
+            if f.name.startswith("mlir-tblgen")
+        )
+        os.remove(mlir_tblgen_target)
+        shutil.copy(mlir_tblgen_host, mlir_tblgen_target)
+        mlir_pdll_host = next(
+            f.locate()
+            for f in files("mlir-native-tools")
+            if f.name.startswith("mlir-pdll")
+        )
+        mlir_pdll_target = next(
+            f.locate()
+            for f in files("mlir" if check_env("ENABLE_RTTI", 1) else "mlir_no_rtti")
+            if f.name.startswith("mlir-pdll")
+        )
+        os.remove(mlir_pdll_target)
+        shutil.copy(mlir_pdll_host, mlir_pdll_target)
+
+    CIBW_ARCHS = os.getenv("CIBW_ARCHS")
+    if CIBW_ARCHS in {"arm64", "aarch64", "ARM64"}:
+        ARCH = cmake_args["LLVM_TARGETS_TO_BUILD"] = "AArch64"
+    elif CIBW_ARCHS in {"x86_64", "AMD64"}:
+        ARCH = cmake_args["LLVM_TARGETS_TO_BUILD"] = "X86"
+    else:
+        raise ValueError(f"unknown CIBW_ARCHS={CIBW_ARCHS}")
+    if CIBW_ARCHS != platform.machine():
+        cmake_args["CMAKE_SYSTEM_NAME"] = platform.system()
+
+    if platform.system() == "Darwin":
+        if ARCH == "AArch64":
+            cmake_args["CMAKE_OSX_ARCHITECTURES"] = "arm64"
+            cmake_args["LLVM_HOST_TRIPLE"] = "arm64-apple-darwin21.6.0"
+            native_tools()
+        elif ARCH == "X86":
+            cmake_args["CMAKE_OSX_ARCHITECTURES"] = "x86_64"
+            cmake_args["LLVM_HOST_TRIPLE"] = "x86_64-apple-darwin"
+    elif platform.system() == "Linux":
+        if ARCH == "AArch64":
+            cmake_args["LLVM_HOST_TRIPLE"] = "aarch64-linux-gnu"
+            cmake_args["CMAKE_C_COMPILER"] = "aarch64-linux-gnu-gcc"
+            cmake_args["CMAKE_CXX_COMPILER"] = "aarch64-linux-gnu-g++"
+            cmake_args["CMAKE_CXX_FLAGS"] = "-static-libgcc -static-libstdc++"
+            cmake_args["SysrootAarch64"] = "/usr/aarch64-linux-gnu"
+            native_tools()
+        elif ARCH == "X86":
+            cmake_args["LLVM_HOST_TRIPLE"] = "x86_64-unknown-linux-gnu"
+            cmake_args["LLVM_TARGET_ARCH"] = "X86"
+
+    return cmake_args
 
 
 class CMakeBuild(build_ext):
@@ -41,27 +107,14 @@ class CMakeBuild(build_ext):
             )
         ).absolute()
 
-        # Get mlir-aie install path from pip
-        try:
-            package_name = (
-                "mlir_aie" if check_env("ENABLE_RTTI", 1) else "mlir_aie_no_rtti"
+        # Get mlir-aie install path from environment variable
+        MLIR_AIE_INSTALL_PATH = Path(
+            os.getenv(
+                "MLIR_AIE_INSTALL_PATH",
+                Path(__file__).parent
+                / ("mlir_aie" if check_env("ENABLE_RTTI", 1) else "mlir_aie_no_rtti"),
             )
-            result = subprocess.run(
-                ["pip", "show", package_name],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            for line in result.stdout.split("\n"):
-                if line.startswith("Location:"):
-                    mlir_aie_location = line.split(":", 1)[1].strip()
-                    MLIR_AIE_INSTALL_PATH = Path(mlir_aie_location) / "mlir_aie"
-                    break
-        except Exception as e:
-            print(
-                f"Warning: Could not find mlir_aie installation: {e}", file=sys.stderr
-            )
-            MLIR_AIE_INSTALL_PATH = Path(__file__).parent / "mlir_aie"
+        ).absolute()
 
         if platform.system() == "Windows":
             # Handle long paths on Windows
@@ -127,6 +180,9 @@ class CMakeBuild(build_ext):
         if "CMAKE_ARGS" in os.environ:
             cmake_args += [item for item in os.getenv("CMAKE_ARGS").split(" ") if item]
 
+        cmake_args_dict = get_cross_cmake_args()
+        cmake_args += [f"-D{k}={v}" for k, v in cmake_args_dict.items()]
+
         build_args = [f"-j{os.getenv('PARALLEL_LEVEL', 2 * os.cpu_count())}"]
 
         build_temp = Path(self.build_temp) / ext.name
@@ -147,6 +203,26 @@ class CMakeBuild(build_ext):
             cwd=build_temp,
             check=True,
         )
+
+
+class DevelopWithPth(develop):
+    """Custom develop command to create a .pth file into the site-packages directory."""
+
+    def run(self):
+        super().run()
+        pth_target = os.path.join(self.install_dir, "air.pth")
+        with open(pth_target, "w") as pth_file:
+            pth_file.write("mlir_air/python")
+
+
+class InstallWithPth(install):
+    """Custom install command to create a .pth file into the site-packages directory."""
+
+    def run(self):
+        super().run()
+        pth_target = os.path.join(self.install_lib, "air.pth")
+        with open(pth_target, "w") as pth_file:
+            pth_file.write("mlir_air/python")
 
 
 def get_version():
@@ -179,10 +255,14 @@ def parse_requirements(filename):
 
 setup(
     version=get_version(),
-    license="Apache-2.0 WITH LLVM-exception",
+    license="MIT",
     include_package_data=True,
     ext_modules=[CMakeExtension("_mlir_air", sourcedir=MLIR_AIR_SOURCE_DIR)],
-    cmdclass={"build_ext": CMakeBuild},
+    cmdclass={
+        "build_ext": CMakeBuild,
+        "develop": DevelopWithPth,
+        "install": InstallWithPth,
+    },
     zip_safe=False,
     packages=find_packages(exclude=["wheelhouse", "mlir-air"]),
     python_requires=">=3.10",

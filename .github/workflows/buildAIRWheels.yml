@@ -92,10 +92,8 @@ jobs:
         with:
           distro: none
           arch: none
-          base_image: ghcr.io/xilinx/mlir-aie/ubuntu22-ryzenai-1.3.0ea:1.2
+          base_image: quay.io/pypa/manylinux_2_34_x86_64:latest
           githubToken: ${{ github.token }}
-          dockerRunArgs: |
-            --mac-address 02:42:ac:11:00:02
           env: |
             AIR_WHEEL_VERSION: ${{ (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) && github.ref_name || '""' }}
           run: |
@@ -105,12 +103,12 @@ jobs:
 
             if ! command -v python${{ matrix.python_version }} &> /dev/null; then
               echo "Python ${{ matrix.python_version }} not found, installing..."
-              apt-get update
-              apt-get install -y software-properties-common
-              add-apt-repository -y ppa:deadsnakes/ppa
-              apt-get update
-              apt-get install -y python${{ matrix.python_version }} python${{ matrix.python_version }}-venv python${{ matrix.python_version }}-dev
+              yum update -y
+              yum install -y yum-utils
+              yum install -y python${{ matrix.python_version }} python${{ matrix.python_version }}-devel
             fi
+
+            yum install -y ninja-build clang lld zip unzip binutils
 
             python${{ matrix.python_version }} -m venv ${{ github.workspace }}/air-venv
             source ${{ github.workspace }}/air-venv/bin/activate
@@ -128,16 +126,18 @@ jobs:
             fi
             
             VERSION=$(utils/clone-llvm.sh --get-wheel-version)
-            pip -q download mlir$NO_RTTI==$VERSION \
+            pip -q download --no-deps "mlir$NO_RTTI==$VERSION" \
               -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
             unzip -q mlir*.whl
             find mlir$NO_RTTI_UNDERSCORE -exec touch -a -m -t 201108231405.14 {} \;
+            export MLIR_INSTALL_ABS_PATH=$PWD/mlir$NO_RTTI_UNDERSCORE
 
             MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
-            pip install mlir_aie$NO_RTTI_UNDERSCORE==$MLIR_AIE_VERSION \
+            pip -q download --no-deps --platform manylinux_2_35_x86_64 "mlir_aie$NO_RTTI_UNDERSCORE==$MLIR_AIE_VERSION" \
               -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2/
+            unzip -q mlir_aie*.whl
+            export MLIR_AIE_INSTALL_PATH=$BUILD_DIR/mlir_aie$NO_RTTI_UNDERSCORE
 
-            export MLIR_INSTALL_ABS_PATH=$PWD/mlir$NO_RTTI_UNDERSCORE
             export MLIR_AIR_SOURCE_DIR=$PWD
             export WHEELHOUSE_DIR=$PWD/wheelhouse
             if [ x"${{ inputs.AIR_COMMIT }}" == x"" ]; then
@@ -147,10 +147,13 @@ jobs:
               export AIR_PROJECT_COMMIT=${AIR_VERSION:0:7}
             fi
             export DATETIME=$(date +"%Y%m%d%H")
+            
+            rm -rf $WHEELHOUSE_DIR/mlir_air*.whl
+            rm -rf $WHEELHOUSE_DIR/repaired_wheel/*
 
             pushd utils/mlir_air_wheels
 
-            pip install wheel auditwheel patchelf importlib_metadata
+            pip install setuptools wheel auditwheel patchelf importlib_metadata
             CIBW_ARCHS=x86_64 pip wheel . -v -w $WHEELHOUSE_DIR --no-build-isolation
 
             popd
@@ -160,7 +163,7 @@ jobs:
       - name: Upload mlir_air
         uses: actions/upload-artifact@v4
         with:
-          path: wheelhouse/repaired_wheel/mlir_air*whl
+          path: wheelhouse/mlir_air*whl
           name: mlir_air_rtti_${{ matrix.ENABLE_RTTI }}-${{ matrix.python_version }}
 
       - name: Release
@@ -170,7 +173,7 @@ jobs:
           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
         uses: ncipollo/release-action@v1.12.0
         with:
-          artifacts: wheelhouse/repaired_wheel/mlir_air*whl
+          artifacts: wheelhouse/mlir_air*whl
           token: "${{ secrets.GITHUB_TOKEN }}"
           tag: ${{ github.event_name == 'push' && github.ref_name || (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') }}
           name: ${{ github.event_name == 'push' && github.ref_name || (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') }}
