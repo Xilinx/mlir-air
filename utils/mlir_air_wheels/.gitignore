@@ -1,0 +1,20 @@
+# Build artifacts
+build/
+dist/
+wheelhouse/
+*.egg-info/
+
+# Downloaded dependencies
+mlir/
+mlir_no_rtti/
+mlir_aie/
+mlir-*.whl
+mlir_aie*.whl
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# ccache
+.ccache/

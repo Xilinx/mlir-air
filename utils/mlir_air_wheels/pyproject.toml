@@ -1,0 +1,21 @@
+[project]
+name = "mlir-air"
+description = "MLIR-based toolchain for spatial accelerators"
+readme = { text = """MLIR AIR provides MLIR-based infrastructure for 
+programming spatial accelerators.""", content-type = "text/markdown" }
+dynamic = ["dependencies", "requires-python", "version", "license"]
+authors = [
+  { name="AMD Inc." },
+]
+
+[project.urls]
+"Homepage" = "https://github.com/Xilinx/mlir-air"
+
+[build-system]
+requires = ["setuptools>=61.0", "nanobind>=2.9"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+air-opt = "air.tools:air_opt"
+air-translate = "air.tools:air_translate"
+aircc = "air.compiler.aircc.main:main"
