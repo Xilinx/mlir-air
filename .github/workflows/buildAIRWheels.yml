@@ -1,0 +1,236 @@
+name: Build mlir-air Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      AIR_COMMIT:
+        description: 'AIR commit to build'
+        type: string
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*.*.*'
+  schedule:
+    - cron: '0 4 * * *'  # Daily at 4 AM
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-build-air-wheels-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  get_air_project_commit:
+    name: Get canonical AIR Project commit
+    runs-on: ubuntu-latest
+    outputs:
+      AIR_PROJECT_COMMIT: ${{ steps.get_air_project_commit.outputs.AIR_PROJECT_COMMIT }}
+      DATETIME: ${{ steps.get_air_project_commit.outputs.DATETIME }}
+    steps:
+      - name: Get AIR-project commit
+        id: get_air_project_commit
+        shell: bash
+        run: |
+          if [ x"${{ inputs.AIR_COMMIT }}" == x"" ]; then
+            sudo apt install jq
+            AIR_PROJECT_COMMIT=$(curl -s https://api.github.com/repos/Xilinx/mlir-air/commits/${{ github.head_ref || github.ref_name }} | jq -r '.sha[:8]')
+          else
+            AIR_PROJECT_COMMIT="${{ inputs.AIR_COMMIT }}"
+          fi
+          echo "AIR_PROJECT_COMMIT=${AIR_PROJECT_COMMIT}" | tee -a $GITHUB_OUTPUT
+          DATETIME=$(date +"%Y%m%d%H")
+          echo "DATETIME=${DATETIME}" | tee -a $GITHUB_OUTPUT
+
+  build_distro_wheels:
+    needs: get_air_project_commit
+    name: Build mlir-air wheels
+    runs-on: ubuntu-latest
+    
+    permissions:
+      id-token: write
+      contents: write
+      packages: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Python 3.10
+          - python_version: "3.10"
+            ENABLE_RTTI: ON
+          - python_version: "3.10"
+            ENABLE_RTTI: OFF
+
+          # Python 3.11
+          - python_version: "3.11"
+            ENABLE_RTTI: ON
+          - python_version: "3.11"
+            ENABLE_RTTI: OFF
+
+          # Python 3.12
+          - python_version: "3.12"
+            ENABLE_RTTI: ON
+          - python_version: "3.12"
+            ENABLE_RTTI: OFF
+
+          # Python 3.13
+          - python_version: "3.13"
+            ENABLE_RTTI: ON
+          - python_version: "3.13"
+            ENABLE_RTTI: OFF
+
+          # Python 3.14
+          - python_version: "3.14"
+            ENABLE_RTTI: ON
+          - python_version: "3.14"
+            ENABLE_RTTI: OFF
+
+          # Future OS support (commented out for now)
+          # - OS: windows-2022
+          #   ARCH: AMD64
+          #   python_version: "3.12"
+          #   ENABLE_RTTI: ON
+          # - OS: macos-14
+          #   ARCH: arm64
+          #   python_version: "3.12"
+          #   ENABLE_RTTI: ON
+
+    steps:
+      - name: Free disk space
+        uses: descriptinc/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: false
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - name: Set up Python ${{ matrix.python_version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+
+      - name: Set ENV
+        shell: bash
+        run: |
+          PIP_FIND_LINKS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro"
+          PIP_FIND_LINKS_URL="$PIP_FIND_LINKS_URL https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2"
+          echo "PIP_FIND_LINKS=$PIP_FIND_LINKS_URL" | tee -a $GITHUB_ENV
+          echo "ENABLE_RTTI=${{ matrix.ENABLE_RTTI }}" | tee -a $GITHUB_ENV
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang lld ccache
+          pip install cibuildwheel wheel auditwheel patchelf importlib_metadata
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: air-wheels-rtti-${{ matrix.ENABLE_RTTI }}-py${{ matrix.python_version }}
+          max-size: 1G
+
+      - name: Build wheels
+        working-directory: utils/mlir_air_wheels
+        run: |
+          CIBW_BUILD="cp${{ matrix.python_version }}-*" \
+          CIBW_ARCHS=x86_64 \
+          CMAKE_GENERATOR=Ninja \
+          DATETIME=${{ needs.get_air_project_commit.outputs.DATETIME }} \
+          AIR_PROJECT_COMMIT=${{ needs.get_air_project_commit.outputs.AIR_PROJECT_COMMIT }} \
+          MATRIX_OS=ubuntu-22.04 \
+          PARALLEL_LEVEL=2 \
+          cibuildwheel --output-dir wheelhouse
+
+      - name: Rename wheels to py3-none
+        working-directory: utils/mlir_air_wheels
+        run: |
+          # Make wheels compatible with all Python 3.x versions
+          for wheel in wheelhouse/mlir_air*.whl; do
+            if [ -f "$wheel" ]; then
+              new_name=$(echo "$wheel" | sed "s/cp${{ matrix.python_version }}-cp${{ matrix.python_version }}/py3-none/")
+              mv "$wheel" "$new_name"
+            fi
+          done
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          path: utils/mlir_air_wheels/wheelhouse/*.whl
+          name: mlir_air_wheel_py${{ matrix.python_version }}_rtti_${{ matrix.ENABLE_RTTI }}
+
+  smoke_test_wheels:
+    name: Test wheels
+    needs: build_distro_wheels
+    runs-on: ubuntu-22.04
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        python_version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        ENABLE_RTTI: [ON, OFF]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mlir_air_wheel_py${{ matrix.python_version }}_rtti_${{ matrix.ENABLE_RTTI }}
+          path: dist
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+
+      - name: Test wheel installation and imports
+        shell: bash
+        run: |
+          # Install the wheel
+          pip install dist/mlir_air*.whl
+          
+          # Test basic imports
+          python -c 'import air.ir; print("✓ air.ir imported successfully")'
+          python -c 'import air.dialects.air; print("✓ air.dialects.air imported successfully")'
+          python -c 'import air.passmanager; print("✓ air.passmanager imported successfully")'
+          
+          # Test that tools are available
+          which air-opt || echo "Warning: air-opt not in PATH"
+          which air-translate || echo "Warning: air-translate not in PATH"
+
+  upload_wheels:
+    needs: smoke_test_wheels
+    runs-on: ubuntu-latest
+    
+    permissions:
+      id-token: write
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python_version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        ENABLE_RTTI: [ON, OFF]
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mlir_air_wheel_py${{ matrix.python_version }}_rtti_${{ matrix.ENABLE_RTTI }}
+          path: dist
+
+      - name: Release
+        uses: ncipollo/release-action@v1.12.0
+        with:
+          artifacts: "dist/*.whl"
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          tag: ${{ github.event_name == 'workflow_dispatch' && (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') || 'dev-air-wheels' }}
+          name: ${{ github.event_name == 'workflow_dispatch' && (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') || 'dev-air-wheels' }}
+          removeArtifacts: false
+          allowUpdates: true
+          replacesArtifacts: true
+          makeLatest: false
