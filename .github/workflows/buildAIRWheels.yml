@@ -120,9 +120,14 @@ jobs:
 
             NO_RTTI=""
             NO_RTTI_UNDERSCORE=""
+            NO_RTTI_DOT=""
             if [ x"$ENABLE_RTTI" == x"OFF" ]; then
               NO_RTTI="-no-rtti"
               NO_RTTI_UNDERSCORE="_no_rtti"
+              NO_RTTI_DOT=".no.rtti"
+              MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti"
+            else
+              MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2/"
             fi
             
             VERSION=$(utils/clone-llvm.sh --get-wheel-version)
@@ -133,10 +138,10 @@ jobs:
             export MLIR_INSTALL_ABS_PATH=$PWD/mlir$NO_RTTI_UNDERSCORE
 
             MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
-            pip -q download --no-deps --platform manylinux_2_35_x86_64 "mlir_aie$NO_RTTI_UNDERSCORE==$MLIR_AIE_VERSION" \
-              -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2/
+            pip -q download --no-deps --platform manylinux_2_35_x86_64 "mlir_aie==${MLIR_AIE_VERSION}${NO_RTTI_DOT}" \
+              -f "$MLIR_AIE_WHEELS_URL"
             unzip -q mlir_aie*.whl
-            export MLIR_AIE_INSTALL_PATH=$PWD/mlir_aie$NO_RTTI_UNDERSCORE
+            export MLIR_AIE_INSTALL_PATH=$PWD/mlir_aie
 
             export MLIR_AIR_SOURCE_DIR=$PWD
             export WHEELHOUSE_DIR=$PWD/wheelhouse
