@@ -133,6 +133,3 @@ with air.ir.Context() as ctx, Location.unknown():
             rtol=1e-1,
         )
     )
-
-    # with open("air_tiled.mlir", "w") as f:
-    #     f.write(str(air_module))
