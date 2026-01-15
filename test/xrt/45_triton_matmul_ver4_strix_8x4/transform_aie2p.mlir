@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 ////////////////////////////////////////////////////////////////////////////////
-// Transform Script for Matmul (Triton Ver3, Vectorized): Step-by-Step Annotated
+// Transform Script for Matmul (Triton Ver4, Vectorized): Step-by-Step Annotated
 // This script transforms a matmul IR into a tiled, packed, bufferized, and
 // hardware-friendly form suitable for AIE execution. Each step is annotated
 // with its purpose, assumptions, and relation to the IR.
