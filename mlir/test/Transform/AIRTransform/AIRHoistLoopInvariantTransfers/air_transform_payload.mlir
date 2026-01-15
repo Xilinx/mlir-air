@@ -54,7 +54,40 @@ func.func @hoist_with_affine_indices(%arg0: memref<32x32xi16, 2>, %x: index) {
   return
 }
 
-// Test case 3: Hoisting two pairs from the same loop (tests handle chaining)
+// Test case 3: Hoisting from inner loop where memref is allocated in outer loop
+// Tests that we don't incorrectly clone allocations defined outside the hoisted loop
+// CHECK-LABEL: @hoist_with_outer_alloc
+func.func @hoist_with_outer_alloc() {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
+  %c0_f32 = arith.constant 0.0 : f32
+  
+  // Outer loop that allocates memory
+  // CHECK: scf.for
+  scf.for %outer = %c0 to %c4 step %c1 {
+    // Allocation happens OUTSIDE the inner loop
+    // CHECK-NEXT: %[[ALLOC:.*]] = memref.alloc() : memref<8x8x8x8xf32, 2>
+    %alloc = memref.alloc() : memref<8x8x8x8xf32, 2>
+    
+    // CHECK-NEXT: %[[READ:.*]] = vector.transfer_read %[[ALLOC]]
+    // CHECK-NEXT: %[[INNER_LOOP:.*]] = scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%[[ITER:.*]] = %[[READ]])
+    scf.for %inner = %c0 to %c4 step %c1 {
+      // Read from the allocation defined in outer loop - should reuse %alloc, not create a new one!
+      %val = vector.transfer_read %alloc[%c0, %c0, %c0, %c0], %c0_f32 {in_bounds = [true, true, true, true]} : memref<8x8x8x8xf32, 2>, vector<8x8x8x8xf32>
+      %result = arith.addf %val, %val : vector<8x8x8x8xf32>
+      vector.transfer_write %result, %alloc[%c0, %c0, %c0, %c0] {in_bounds = [true, true, true, true]} : vector<8x8x8x8xf32>, memref<8x8x8x8xf32, 2>
+      // CHECK-NEXT: %[[COMPUTE:.*]] = arith.addf %[[ITER]], %[[ITER]]
+      // CHECK-NEXT: scf.yield %[[COMPUTE]]
+    }
+    // CHECK: vector.transfer_write %[[INNER_LOOP]], %[[ALLOC]]
+    
+    memref.dealloc %alloc : memref<8x8x8x8xf32, 2>
+  }
+  return
+}
+
+// Test case 4: Hoisting two pairs from the same loop (tests handle chaining)
 // CHECK-LABEL: @hoist_two_pairs_from_same_loop
 #map1 = affine_map<()[s0] -> (s0 + 1)>
 func.func @hoist_two_pairs_from_same_loop(%arg0: memref<32x32xi32, 2>, %x: index, %y: index) {
@@ -66,8 +99,8 @@ func.func @hoist_two_pairs_from_same_loop(%arg0: memref<32x32xi32, 2>, %x: index
   // Compute affine index outside the loop (loop-invariant)
   %x_plus_1 = affine.apply #map1()[%x]
   
-  // CHECK: %[[READ1:.*]] = vector.transfer_read %{{.*}}[%{{.*}}, %{{.*}}]
-  // CHECK: %[[AFFINE2:.*]] = affine.apply
+  // CHECK-DAG: %[[READ1:.*]] = vector.transfer_read %{{.*}}[%{{.*}}, %{{.*}}]
+  // CHECK-DAG: %[[AFFINE2:.*]] = affine.apply
   // CHECK: %[[READ2:.*]] = vector.transfer_read %{{.*}}[%[[AFFINE2]], %{{.*}}]
   // CHECK-NEXT: %[[LOOP:.*]]:2 = scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} iter_args(%[[ITER1:.*]] = %[[READ1]], %[[ITER2:.*]] = %[[READ2]])
   scf.for %i = %c0 to %c4 step %c1 {
