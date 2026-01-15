@@ -55,9 +55,9 @@
 5. **Environment Setup:**
    To setup your environment after building:
    ```bash
-   source utils/env_setup.sh [install_dir] $(python3 -m pip show mlir_aie | grep Location | awk '{print $2}')/mlir_aie my_install/mlir
+   source utils/env_setup.sh [install_dir] $(python3 -m pip show mlir_aie | grep Location | awk '{print $2}')/mlir_aie $(python3 -m pip show llvm-aie | grep Location | awk '{print $2}')/llvm-aie my_install/mlir
    ```
-   This command automatically detects the installation directories of the `mlir-aie` Python package, and sets up environment variables for MLIR-AIE, Python, and MLIR libraries.
+   This command automatically detects the installation directories of the `mlir-aie` and `llvm-aie` Python packages, and sets up environment variables for MLIR-AIR, MLIR-AIE, PEANO (llvm-aie compiler), Python, and MLIR libraries.
    
    **If you built with XRT support**, also run:
    ```bash
@@ -270,12 +270,21 @@ To build MLIR-AIR provide the paths to llvm, cmakeModules, and xrt (here, we ass
 
 To setup your environment after building:
 ```bash
-source utils/env_setup.sh install-xrt/ mlir-aie/install/ llvm/install/
+# If you have llvm-aie (PEANO) installed via pip:
+source utils/env_setup.sh install-xrt/ mlir-aie/install/ $(python3 -m pip show llvm-aie | grep Location | awk '{print $2}')/llvm-aie llvm/install/
+
+# Or if you built llvm-aie from source:
+source utils/env_setup.sh install-xrt/ mlir-aie/install/ /path/to/llvm-aie/install llvm/install/
 ```
 
 Note that if you are starting a new environment (e.g., by creating a new terminal sometime after building), restore your environment with:
 ```bash
-source utils/env_setup.sh install-xrt/ mlir-aie/install/ llvm/install/
+# If you have llvm-aie (PEANO) installed via pip:
+source utils/env_setup.sh install-xrt/ mlir-aie/install/ $(python3 -m pip show llvm-aie | grep Location | awk '{print $2}')/llvm-aie llvm/install/
+source sandbox/bin/activate
+
+# Or if you built llvm-aie from source:
+source utils/env_setup.sh install-xrt/ mlir-aie/install/ /path/to/llvm-aie/install llvm/install/
 source sandbox/bin/activate
 ```
 
