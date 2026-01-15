@@ -2389,8 +2389,8 @@ static bool dependsOnLoopIV(Value val, Value loopIV) {
 }
 
 /// Recursively clone an operation and its operands, using current insertion
-/// point
-static Value cloneOpAndOperands(Operation *op, Value loopIV,
+/// point. Only clones operations that are inside the loop being hoisted from.
+static Value cloneOpAndOperands(Operation *op, Value loopIV, scf::ForOp loopOp,
                                 RewriterBase &rewriter, IRMapping &mapping) {
   // If already mapped, return the mapped value
   if (!op->getResults().empty())
@@ -2411,9 +2411,17 @@ static Value cloneOpAndOperands(Operation *op, Value loopIV,
       continue; // BlockArguments from outer loops are still accessible
 
     Operation *defOp = operand.getDefiningOp();
-    if (defOp && !dependsOnLoopIV(operand, loopIV)) {
+    if (!defOp)
+      continue;
+
+    // If the defining operation is outside the loop we're hoisting from,
+    // it's already in scope - use directly without cloning
+    if (!loopOp->isAncestor(defOp))
+      continue;
+
+    if (!dependsOnLoopIV(operand, loopIV)) {
       Value clonedOperand =
-          cloneOpAndOperands(defOp, loopIV, rewriter, mapping);
+          cloneOpAndOperands(defOp, loopIV, loopOp, rewriter, mapping);
       mapping.map(operand, clonedOperand);
     }
   }
@@ -2485,7 +2493,7 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
   rewriter.setInsertionPoint(loopOp);
   IRMapping readMapping;
   Value clonedReadResult =
-      cloneOpAndOperands(readOp, loopIV, rewriter, readMapping);
+      cloneOpAndOperands(readOp, loopIV, loopOp, rewriter, readMapping);
 
   // Step 2: Get the value that the write op is writing (its vector operand)
   Value writeVector = writeOp.getVector();
@@ -2549,7 +2557,7 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     // Index is inside loop and needs to be cloned
     if (!writeMapping.contains(index)) {
       Value clonedIndex =
-          cloneOpAndOperands(defOp, loopIV, rewriter, writeMapping);
+          cloneOpAndOperands(defOp, loopIV, newLoop, rewriter, writeMapping);
       if (clonedIndex)
         writeMapping.map(index, clonedIndex);
     }
@@ -4693,8 +4701,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
       for (Value idx : info.indices) {
         if (!dependsOnLoopIVForHoist(idx, loopIV)) {
           if (auto defOp = idx.getDefiningOp()) {
-            Value clonedIdx =
-                cloneOpAndOperands(defOp, loopIV, rewriter, indexMapping);
+            Value clonedIdx = cloneOpAndOperands(defOp, loopIV, forOp, rewriter,
+                                                 indexMapping);
             if (clonedIdx)
               baseIndices.push_back(clonedIdx);
             else
