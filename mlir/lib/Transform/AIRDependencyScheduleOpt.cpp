@@ -1577,6 +1577,13 @@ FailureOr<scf::ForOp> updateScfForBounds(RewriterBase &rewriter,
                                    loopOp.getInitArgs());
   auto &bb = newFor.getBody()->getOperations();
   auto &body = loopOp.getBody()->getOperations();
+  // The new ForOp is created with a default terminator.
+  // Erase it before splicing the old body, which has its own terminator.
+  // This preserves any operands the old yield might have (for iter_args).
+  if (!bb.empty() && bb.back().hasTrait<OpTrait::IsTerminator>() &&
+      !body.empty() && body.back().hasTrait<OpTrait::IsTerminator>()) {
+    bb.back().erase();
+  }
   bb.splice(bb.begin(), body, body.begin(), body.end());
   rewriter.replaceAllUsesWith(loopOp.getInductionVar(),
                               newFor.getInductionVar());
@@ -1614,6 +1621,59 @@ LogicalResult eraseOpFromScfFor(RewriterBase &rewriter, scf::ForOp sfo,
   return success();
 }
 
+// Utility function to fold a single affine.apply op into scf.for loop bounds.
+// Returns success if the transformation was applied.
+static FailureOr<scf::ForOp> foldSingleAffineApplyIntoScfForBounds(
+    scf::ForOp sfo, affine::AffineApplyOp apply, RewriterBase &rewriter) {
+  auto ctx = apply->getContext();
+
+  if (apply.getAffineMap().getNumInputs() != 1)
+    return failure();
+  auto val = apply->getOperand(0);
+  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+  if (!ivArg)
+    return failure();
+  if (!ivArg.getOwner())
+    return failure();
+  if (ivArg.getOwner()->getParentOp() != sfo.getOperation())
+    return failure();
+  if (!val.hasOneUse())
+    return failure();
+  if (apply.getResult().use_empty())
+    return failure();
+  if (auto exec_apply = dyn_cast<air::ExecuteOp>(apply->getParentOp()))
+    if (exec_apply->getResult(1).use_empty())
+      return failure();
+
+  if (!getStaticScfForTripCountAsInt(sfo))
+    return failure();
+  int tripCount = *getStaticScfForTripCountAsInt(sfo);
+  auto new_ub = air::evaluateConstantsInMap(
+      apply.getAffineMap(),
+      SmallVector<std::optional<int64_t>>{
+          *mlir::getConstantIntValue(sfo.getUpperBound())},
+      ctx);
+  auto new_lb = air::evaluateConstantsInMap(
+      apply.getAffineMap(),
+      SmallVector<std::optional<int64_t>>{
+          *mlir::getConstantIntValue(sfo.getLowerBound())},
+      ctx);
+  if (!new_lb) {
+    apply->emitOpError("failed to evaluate lower bound.");
+    return failure();
+  }
+  if (!new_ub) {
+    apply->emitOpError("failed to evaluate upper bound.");
+    return failure();
+  }
+  int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
+  auto valueType = apply.getResult().getType();
+  if (failed(eraseOpFromScfFor(rewriter, sfo, apply)))
+    return failure();
+  return updateScfForBounds(rewriter, sfo, *new_lb, *new_ub, newStepInInt,
+                            valueType);
+}
+
 // Fold affine.apply op operating on loop induction variable into loop bounds.
 struct CanonicalizeAffineApplyOnLoopInductionVar
     : public OpRewritePattern<affine::AffineApplyOp> {
@@ -1643,35 +1703,7 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
 
     // Apply affine map to loop step and bound
     if (auto sfo = dyn_cast<scf::ForOp>(containingOp)) {
-      if (!getStaticScfForTripCountAsInt(sfo))
-        return failure();
-      int tripCount = *getStaticScfForTripCountAsInt(sfo);
-      auto new_ub = air::evaluateConstantsInMap(
-          apply.getAffineMap(),
-          SmallVector<std::optional<int64_t>>{
-              *mlir::getConstantIntValue(sfo.getUpperBound())},
-          ctx);
-      auto new_lb = air::evaluateConstantsInMap(
-          apply.getAffineMap(),
-          SmallVector<std::optional<int64_t>>{
-              *mlir::getConstantIntValue(sfo.getLowerBound())},
-          ctx);
-      if (!new_lb) {
-        apply->emitOpError("failed to evaluate lower bound.");
-        return failure();
-      }
-      if (!new_ub) {
-        apply->emitOpError("failed to evaluate upper bound.");
-        return failure();
-      }
-      int newStepInInt = llvm::divideCeilSigned(*new_ub - *new_lb, tripCount);
-      auto valueType = apply.getResult().getType();
-      if (failed(eraseOpFromScfFor(rewriter, sfo, apply)))
-        return failure();
-      auto res = updateScfForBounds(rewriter, sfo, *new_lb, *new_ub,
-                                    newStepInInt, valueType);
-      if (failed(res))
-        return failure();
+      return foldSingleAffineApplyIntoScfForBounds(sfo, apply, rewriter);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
@@ -6750,6 +6782,34 @@ std::unique_ptr<Pass> createAIRShrinkMemrefSizesByAccess() {
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
   patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
+}
+
+// Fold affine.apply operations on loop induction variables into the loop
+// bounds. Returns success if any transformation was applied.
+FailureOr<scf::ForOp> foldAffineApplyIntoLoopBounds(scf::ForOp forOp,
+                                                    RewriterBase &rewriter) {
+  // Find the affine.apply operation in the loop body that operates on
+  // the loop's induction variable with single use
+  affine::AffineApplyOp targetApply;
+  Value loopIV = forOp.getInductionVar();
+
+  forOp.walk([&](affine::AffineApplyOp applyOp) {
+    // Check if this affine.apply operates on the loop induction variable
+    // and matches the criteria in foldSingleAffineApplyIntoScfForBounds
+    if (applyOp.getAffineMap().getNumInputs() == 1) {
+      Value operand = applyOp.getOperand(0);
+      if (operand == loopIV && operand.hasOneUse() &&
+          !applyOp.getResult().use_empty()) {
+        targetApply = applyOp;
+      }
+    }
+  });
+
+  if (!targetApply)
+    return failure();
+
+  // Reuse the existing utility function
+  return foldSingleAffineApplyIntoScfForBounds(forOp, targetApply, rewriter);
 }
 
 void populateAIRCanonicalizeChannelWrapAndStridePatterns(

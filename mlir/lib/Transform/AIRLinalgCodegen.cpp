@@ -9,6 +9,7 @@
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
+#include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Util/CostModel.h"
 #include "air/Util/Outliner.h"
 #include "air/Util/Util.h"
@@ -5432,6 +5433,47 @@ DiagnosedSilenceableFailure transform::ConvertSize1VectorToScalarOp::apply(
     }
 
     transformedOps.push_back(target);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// NormalizeForBoundsOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::NormalizeForBoundsOp::apply(transform::TransformRewriter &rewriter,
+                                       transform::TransformResults &results,
+                                       transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    auto forOp = dyn_cast<scf::ForOp>(target);
+    if (!forOp) {
+      return emitDefiniteFailure() << "target must be an scf.for operation";
+    }
+
+    // Use the utility function from AIRDependencyScheduleOpt to fold
+    // affine.apply into loop bounds
+    auto newForOp = xilinx::air::foldAffineApplyIntoLoopBounds(forOp, rewriter);
+    if (succeeded(newForOp)) {
+      // Use the returned ForOp (which may be a new operation)
+      transformedOps.push_back(*newForOp);
+    } else {
+      // No transformation was applied, return the original op
+      transformedOps.push_back(forOp);
+    }
   }
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
