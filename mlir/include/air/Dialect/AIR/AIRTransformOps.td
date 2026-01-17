@@ -1267,6 +1267,52 @@ def BroadcastBeforeUnaryOp : Op<Transform_Dialect, "air.broadcast_before_unary",
   let assemblyFormat = "$target attr-dict";
 }
 
+def NormalizeForBoundsOp : Op<Transform_Dialect, "air.normalize_for_bounds",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Normalize scf.for loop bounds by folding affine.apply on induction variable";
+  let description = [{
+    This transform normalizes an scf.for loop by folding affine.apply operations
+    that multiply the induction variable by a constant factor into the loop bounds.
+    
+    The transformation looks for patterns where the induction variable is multiplied
+    by a constant via affine.apply, and folds this multiplication into the loop bounds
+    to eliminate the affine.apply operation.
+    
+    For example, if a loop iterates with bounds (0, 64, step=8) and has an affine.apply
+    that scales the induction variable by 8 (i.e., affine_map<(d0) -> (d0 * 8)>), 
+    the transformation will:
+    1. Scale the loop bounds to (0, 512, step=64)
+    2. Replace all uses of the affine.apply result with the induction variable directly
+    3. Erase the affine.apply operation
+    
+    Example:
+    ```mlir
+    // Before:
+    scf.for %i = %c0 to %c64 step %c8 {
+      %scaled = affine.apply affine_map<(d0) -> (d0 * 8)>(%i)
+      // ... uses of %scaled ...
+    }
+    
+    // After:
+    scf.for %i = %c0 to %c512 step %c64 {
+      // ... uses of %i directly (scaled bounds) ...
+    }
+    ```
+    
+    The transform supports:
+    - Affine maps of the form `(d0) -> (d0 * constant)`
+    - Both positive and negative scaling constants
+    - Multiple affine.apply operations on the same induction variable (applies the first found)
+    
+    Returns a handle to the transformed loop.
+  }];
+  
+  let arguments = (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+}
+
 def ConvertSize1VectorToScalarOp : Op<Transform_Dialect, "air.convert_size1_vector_to_scalar",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {

@@ -11,6 +11,8 @@
 
 #include "air/Transform/PassDetail.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
@@ -90,6 +92,12 @@ void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region);
 // Populate patterns for fusing memref.alloc and dealloc ops into air.herarchy
 // ops.
 void populateAIRFuseAllocDeallocToAIRHierPatterns(RewritePatternSet &patterns);
+
+// Fold affine.apply operations on loop induction variables into the loop
+// bounds. Returns the new ForOp on success if transformation was applied,
+// or the original ForOp if no transformation was needed.
+FailureOr<scf::ForOp> foldAffineApplyIntoLoopBounds(scf::ForOp forOp,
+                                                    RewriterBase &rewriter);
 
 } // namespace air
 } // namespace xilinx
