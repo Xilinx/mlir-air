@@ -6801,6 +6801,7 @@ FailureOr<scf::ForOp> foldAffineApplyIntoLoopBounds(scf::ForOp forOp,
       if (operand == loopIV && operand.hasOneUse() &&
           !applyOp.getResult().use_empty()) {
         targetApply = applyOp;
+        return;
       }
     }
   });
