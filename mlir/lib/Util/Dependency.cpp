@@ -2630,56 +2630,69 @@ void dependencyTracer::addDependencyBetweenOps(Operation *source,
   }
 }
 
-// Check if two partial memref tiles have identical indices
+// Check if two partial memref tiles have overlapping access ranges.
+// Returns true if they overlap or if overlap cannot be determined.
+// Only returns false when provably disjoint.
 bool dependencyTracer::areOverlappingPartialMemrefs(partialMemref *tile_0,
                                                     partialMemref *tile_1) {
-  // Check if all static offsets of each partialMemref lead to equal overall
-  // offset.
-  auto getOffsetFromOffsetsAndStrides = [&](partialMemref *tile) {
-    unsigned offset = 0;
-    for (unsigned i = 0; i < tile->offsets.size(); i++) {
-      auto constOffset = getConstantIntValue(tile->offsets[i]);
-      auto constStride = getConstantIntValue(tile->strides[i]);
-      if (!constOffset || !constStride)
-        continue;
-      offset += (*constOffset) * (*constStride);
-    }
-    return offset;
-  };
-
   // If any of the two partialMemrefs have empty offsets list, then that
   // partialMemref represents the entire memref, and therefore guarantees to
   // conflict with any other accesses.
   if (tile_0->offsets.empty() || tile_1->offsets.empty())
     return true;
 
-  if (getOffsetFromOffsetsAndStrides(tile_0) !=
-      getOffsetFromOffsetsAndStrides(tile_1))
-    return false;
+  // Compute the linear range [start, end) for an access pattern.
+  // Returns std::nullopt if the range cannot be statically determined.
+  auto getAccessRange =
+      [](partialMemref *tile) -> std::optional<std::pair<int64_t, int64_t>> {
+    int64_t minOffset = 0;
+    int64_t maxOffset = 0;
 
-  // Check if all static offsets, hash mapped by strides, are equal across the
-  // two partialMemrefs.
-  auto buildStrideToVarOffsetsMap =
-      [](partialMemref *tile, DenseMap<unsigned, llvm::SetVector<Value>> &map) {
-        for (unsigned i = 0; i < tile->offsets.size(); i++) {
-          auto constOffset = getConstantIntValue(tile->offsets[i]);
-          auto constStride = getConstantIntValue(tile->strides[i]);
-          if (!constStride)
-            continue;
-          if (constOffset)
-            continue;
-          map[*constStride].insert(tile->offsets[i]);
-        }
-      };
-  DenseMap<unsigned, llvm::SetVector<Value>> strideToVarOffsetsMap;
-  buildStrideToVarOffsetsMap(tile_0, strideToVarOffsetsMap);
-  buildStrideToVarOffsetsMap(tile_1, strideToVarOffsetsMap);
-  // More than 1 unique variadic offsets per stride across the two
-  // partialMemrefs.
-  for (auto &[_, set] : strideToVarOffsetsMap)
-    if (set.size() > 1)
-      return false;
+    for (unsigned i = 0; i < tile->offsets.size(); i++) {
+      auto constOffset = getConstantIntValue(tile->offsets[i]);
+      auto constSize = getConstantIntValue(tile->sizes[i]);
+      auto constStride = getConstantIntValue(tile->strides[i]);
 
+      // If any dimension has non-constant offset, size, or stride,
+      // we cannot determine the exact range - conservatively assume overlap
+      if (!constOffset || !constSize || !constStride)
+        return std::nullopt;
+
+      // For this dimension, compute contribution to min and max offsets
+      // Min is at index 0: offset * stride
+      // Max is at index (size-1): (offset + size - 1) * stride
+      int64_t dimMin = (*constOffset) * (*constStride);
+      int64_t dimMax = (*constOffset + *constSize - 1) * (*constStride);
+
+      // Handle negative strides
+      if (dimMin > dimMax)
+        std::swap(dimMin, dimMax);
+
+      minOffset += dimMin;
+      maxOffset += dimMax;
+    }
+
+    // Return the range [minOffset, maxOffset + 1) - the +1 because end is
+    // exclusive
+    return std::make_pair(minOffset, maxOffset + 1);
+  };
+
+  auto range_0 = getAccessRange(tile_0);
+  auto range_1 = getAccessRange(tile_1);
+
+  // If either range cannot be determined, conservatively assume overlap
+  if (!range_0 || !range_1)
+    return true;
+
+  auto [start_0, end_0] = *range_0;
+  auto [start_1, end_1] = *range_1;
+
+  // Check if ranges are disjoint: [start_0, end_0) and [start_1, end_1)
+  // Disjoint if: end_0 <= start_1 OR end_1 <= start_0
+  if (end_0 <= start_1 || end_1 <= start_0)
+    return false; // Provably no overlap
+
+  // Ranges intersect - there is overlap
   return true;
 }
 
