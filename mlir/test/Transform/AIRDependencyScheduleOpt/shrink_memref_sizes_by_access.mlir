@@ -17,6 +17,8 @@
 // CHECK: air.channel.put async [%{{.*}}]  @channel_0[%{{.*}}, %{{.*}}] (%[[RES0]]{{.*}} : (memref<1x1x16x16x4x4xbf16, 2 : i32>)
 // CHECK: memref.dealloc %[[RES0]] : memref<1x1x16x16x4x4xbf16, 2 : i32>
 
+#map = affine_map<()[s0] -> (s0 * 64)>
+
 module {
   air.channel @channel_0 [4, 4]
   func.func @func0() {
@@ -44,6 +46,40 @@ module {
           %3 = air.channel.put async [%async_token_2] @channel_0[%arg2, %arg3] (%results[%arg2, %arg3, %c0, %c0, %c0, %c0] [%c1_1, %c1_1, %c16, %c4_0, %c16, %c4_0] [%c16384, %c4096, %c16, %c4_0, %c256, %c1_1]) {id = 37 : i32} : (memref<4x4x16x16x4x4xbf16, 2 : i32>)
           %async_token_3 = air.execute [%3] {
             memref.dealloc %results : memref<4x4x16x16x4x4xbf16, 2 : i32>
+          }
+        }
+      }
+    }
+    return
+  }
+
+  // Test for the case where offset is produced by affine.apply on herd induction variable.
+  // The pass should reset the offset to 0 when it depends on herd tile indices.
+  // CHECK-LABEL: func1
+  // CHECK: air.herd
+  // CHECK: %[[TOK1:.*]], %[[RES1:.*]] = air.execute -> (memref<1x64xbf16, 2 : i32>)
+  // After shrinking, the channel.put offset should be reset to 0 (from affine.apply result)
+  // CHECK: air.channel.put {{.*}} (%[[RES1]][%c0{{.*}}, %c0{{.*}}]
+  air.channel @channel_1 [4]
+  func.func @func1() {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg0) in (%arg1=%c1) {
+      %1 = air.segment @segment_1 async {
+        %c4 = arith.constant 4 : index
+        %2 = air.herd @herd_1 async tile (%arg2) in (%arg3=%c4) {
+          %c0 = arith.constant 0 : index
+          %c64 = arith.constant 64 : index
+          %c1_0 = arith.constant 1 : index
+          // Offset is computed from herd induction variable via affine.apply
+          %offset = affine.apply #map()[%arg2]
+          %async_token, %results = air.execute -> (memref<4x64xbf16, 2 : i32>) {
+            %alloc = memref.alloc() : memref<4x64xbf16, 2 : i32>
+            air.execute_terminator %alloc : memref<4x64xbf16, 2 : i32>
+          }
+          // The offset here (%offset, %c0) should become (%c0, %c0) after shrinking
+          %3 = air.channel.put async [%async_token] @channel_1[%arg2] (%results[%offset, %c0] [%c1_0, %c64] [%c64, %c1_0]) {id = 1 : i32} : (memref<4x64xbf16, 2 : i32>)
+          %async_token_1 = air.execute [%3] {
+            memref.dealloc %results : memref<4x64xbf16, 2 : i32>
           }
         }
       }
