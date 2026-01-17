@@ -176,3 +176,108 @@ module {
     return %alloc : memref<256xi32>
   }
 }
+
+// -----
+
+// Test case: Multiple broadcast DMAs reading from the same L1 buffer should
+// all depend on the DMA that fills that buffer. This is a regression test for
+// a bug in areOverlappingPartialMemrefs where only the first channel.put would
+// depend on the channel.get that writes to the L1 buffer.
+
+// CHECK-LABEL: func.func @test_overlapping_l1_reads
+// CHECK: air.segment
+// CHECK: scf.for %[[ARG:.*]] = %c0{{.*}} to %c512{{.*}} step %c64
+// The channel.get fills results buffer
+// CHECK: %[[GET0:.*]] = air.channel.get async{{.*}}@channel_{{[0-9]+}}[] (%[[RESULTS:.*]][%c0{{.*}}, %[[ARG]]]
+// All channel.put operations reading from results must depend on GET0
+// CHECK: air.channel.put async [%[[GET0]]{{.*}}]{{.*}}@channel_{{[0-9]+}}[] (%[[RESULTS]][%c0{{.*}}, %c0{{.*}}, %c0{{.*}}, %[[ARG]]]
+// CHECK: air.channel.put async [%[[GET0]]{{.*}}]{{.*}}@channel_{{[0-9]+}}[] (%[[RESULTS]][%c0{{.*}}, %c0{{.*}}, %c64{{.*}}, %[[ARG]]]
+// CHECK: air.channel.put async [%[[GET0]]{{.*}}]{{.*}}@channel_{{[0-9]+}}[] (%[[RESULTS]][%c0{{.*}}, %c0{{.*}}, %c128{{.*}}, %[[ARG]]]
+// CHECK: air.channel.put async [%[[GET0]]{{.*}}]{{.*}}@channel_{{[0-9]+}}[] (%[[RESULTS]][%c0{{.*}}, %c0{{.*}}, %c192{{.*}}, %[[ARG]]]
+
+#map2 = affine_map<()[s0] -> (s0 * 64)>
+#set10 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
+#set11 = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0, -s1 + 3 >= 0)>
+#set12 = affine_set<()[s0, s1] : (s0 - 2 == 0, s1 >= 0, -s1 + 3 >= 0)>
+#set13 = affine_set<()[s0, s1] : (s0 - 3 == 0, s1 >= 0, -s1 + 3 >= 0)>
+
+module {
+  func.func @test_overlapping_l1_reads(%arg0: memref<*xbf16>) {
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %0 = air.launch async (%arg9, %arg10, %arg11) in (%arg12=%c4, %arg13=%c4, %arg14=%c1) args(%arg15=%arg0) : memref<*xbf16> attributes {id = 5 : i32} {
+      %1 = air.segment @segment async args(%arg20=%arg15) : memref<*xbf16> attributes {id = 4 : i32} {
+        %c1_0 = arith.constant 1 : index
+        %c512 = arith.constant 512 : index
+        %c256 = arith.constant 256 : index
+        %c4096 = arith.constant 4096 : index
+        %c8 = arith.constant 8 : index
+        %c4_1 = arith.constant 4 : index
+        %c0 = arith.constant 0 : index
+        %c64 = arith.constant 64 : index
+        %c128 = arith.constant 128 : index
+        %c192 = arith.constant 192 : index
+
+        // Allocate L1 buffer
+        %async_token, %results = air.execute -> (memref<256x512xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<256x512xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<256x512xbf16, 1 : i32>
+        } {id = 1 : i32}
+
+        %async_token_16, %results_17 = air.execute -> (memref<8x8x8x8xbf16, 2>) {
+          %alloc = memref.alloc() : memref<8x8x8x8xbf16, 2>
+          air.execute_terminator %alloc : memref<8x8x8x8xbf16, 2>
+        } {id = 6 : i32}
+
+        // Loop that fills L1 buffer and then broadcasts to AIE tiles
+        %5 = scf.for %arg23 = %c0 to %c512 step %c64 iter_args(%arg24 = %async_token) -> (!air.async.token) {
+          // DMA fills L1 buffer at [0, arg23] with size [256, 64]
+          %12 = air.dma_memcpy_nd async [%arg24] (%results[%c0, %arg23] [%c256, %c64] [%c512, %c1_0], %arg20[%c0, %arg23] [%c256, %c64] [%c512, %c1_0]) {id = 1 : i32} : (memref<256x512xbf16, 1 : i32>, memref<*xbf16>)
+
+          // Herd with broadcast DMAs reading from different parts of the same L1 buffer
+          // Each broadcast DMA reads from results buffer at different row offsets (0, 64, 128, 192)
+          // but ALL read within the region [0:256, arg23:arg23+64] that was just written
+          %14 = air.herd @herd_0 async [%12, %arg24] tile (%arg25, %arg26) in (%arg27=%c4_1, %arg28=%c4_1) args(%arg29=%results, %arg30=%arg23, %arg31=%results_17) : memref<256x512xbf16, 1 : i32>, index, memref<8x8x8x8xbf16, 2> attributes {id = 2 : i32} {
+            %c0_11 = arith.constant 0 : index
+            %c8_12 = arith.constant 8 : index
+            %c4096_c = arith.constant 4096 : index
+            %c512_13 = arith.constant 512 : index
+            %c1_14 = arith.constant 1 : index
+            %c64_c = arith.constant 64 : index
+            %c128_c = arith.constant 128 : index
+            %c192_c = arith.constant 192 : index
+
+            // Different rows of L1 buffer are broadcast to different herd rows
+            // Row 0 of herd gets rows 0-63 of L1
+            // Row 1 of herd gets rows 64-127 of L1  
+            // Row 2 of herd gets rows 128-191 of L1
+            // Row 3 of herd gets rows 192-255 of L1
+            // All of these are WITHIN the region written by the DMA above!
+            %19 = affine.if #set10()[%arg25, %arg26] -> !air.async.token {
+              %24 = air.dma_memcpy_nd async (%arg31[] [] [], %arg29[%c0_11, %c0_11, %c0_11, %arg30] [%c8_12, %c8_12, %c8_12, %c8_12] [%c8_12, %c4096_c, %c512_13, %c1_14]) {broadcast_set = #set10, id = 3 : i32} : (memref<8x8x8x8xbf16, 2>, memref<256x512xbf16, 1 : i32>)
+              affine.yield %24 : !air.async.token
+            } else {
+              %24 = affine.if #set11()[%arg25, %arg26] -> !air.async.token {
+                %25 = air.dma_memcpy_nd async (%arg31[] [] [], %arg29[%c0_11, %c0_11, %c64_c, %arg30] [%c8_12, %c8_12, %c8_12, %c8_12] [%c8_12, %c4096_c, %c512_13, %c1_14]) {broadcast_set = #set11, id = 4 : i32} : (memref<8x8x8x8xbf16, 2>, memref<256x512xbf16, 1 : i32>)
+                affine.yield %25 : !air.async.token
+              } else {
+                %25 = affine.if #set12()[%arg25, %arg26] -> !air.async.token {
+                  %26 = air.dma_memcpy_nd async (%arg31[] [] [], %arg29[%c0_11, %c0_11, %c128_c, %arg30] [%c8_12, %c8_12, %c8_12, %c8_12] [%c8_12, %c4096_c, %c512_13, %c1_14]) {broadcast_set = #set12, id = 5 : i32} : (memref<8x8x8x8xbf16, 2>, memref<256x512xbf16, 1 : i32>)
+                  affine.yield %26 : !air.async.token
+                } else {
+                  %26 = air.dma_memcpy_nd async (%arg31[] [] [], %arg29[%c0_11, %c0_11, %c192_c, %arg30] [%c8_12, %c8_12, %c8_12, %c8_12] [%c8_12, %c4096_c, %c512_13, %c1_14]) {broadcast_set = #set13, id = 6 : i32} : (memref<8x8x8x8xbf16, 2>, memref<256x512xbf16, 1 : i32>)
+                  affine.yield %26 : !air.async.token
+                }
+                affine.yield %25 : !air.async.token
+              }
+              affine.yield %24 : !air.async.token
+            }
+          }
+          %15 = air.wait_all async [%14] {id = 12 : i32}
+          scf.yield %15 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
