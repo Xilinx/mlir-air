@@ -1796,6 +1796,13 @@ air::getUpdatedOffsetsAfterShrinkage(SmallVector<int> old_memref_shape,
             for (auto oper : childOp.getOperands())
               if (getHerdArgOwner(oper))
                 new_offsets[i] = 0;
+        } else {
+          // Generic case: check if any operand of the defining op (e.g.
+          // affine.apply, arith.muli) depends on a herd induction variable.
+          Operation *defOp = offsets[i].getDefiningOp();
+          for (auto oper : defOp->getOperands())
+            if (getHerdArgOwner(oper))
+              new_offsets[i] = 0;
         }
       } else {
         // If offset is some block argument
