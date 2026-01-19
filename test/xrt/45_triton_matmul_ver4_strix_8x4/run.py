@@ -38,26 +38,27 @@ with air.ir.Context() as ctx, Location.unknown():
         %c512 = arith.constant 512 : index
         %c1024 = arith.constant 1024 : index
         %c256_i32 = arith.constant 256 : i32
-        %0 = arith.muli %arg6, %c256_i32 : i32
+        %c512_i32 = arith.constant 512 : i32
+        %0 = arith.muli %arg6, %c512_i32 : i32
         %1 = arith.index_cast %0 : i32 to index
         %2 = arith.muli %arg7, %c256_i32 : i32
         %3 = arith.index_cast %2 : i32 to index
         %4 = arith.muli %1, %c512 : index
-        %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%4], sizes: [256, 512], strides: [512, 1] : memref<*xbf16> to memref<256x512xbf16, strided<[512, 1], offset: ?>>
-        %alloc = memref.alloc() : memref<256x512xbf16>
-        memref.copy %reinterpret_cast, %alloc : memref<256x512xbf16, strided<[512, 1], offset: ?>> to memref<256x512xbf16>
-        %5 = bufferization.to_tensor %alloc restrict writable : memref<256x512xbf16> to tensor<256x512xbf16>
+        %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%4], sizes: [512, 512], strides: [512, 1] : memref<*xbf16> to memref<512x512xbf16, strided<[512, 1], offset: ?>>
+        %alloc = memref.alloc() : memref<512x512xbf16>
+        memref.copy %reinterpret_cast, %alloc : memref<512x512xbf16, strided<[512, 1], offset: ?>> to memref<512x512xbf16>
+        %5 = bufferization.to_tensor %alloc restrict writable : memref<512x512xbf16> to tensor<512x512xbf16>
         %reinterpret_cast_0 = memref.reinterpret_cast %arg1 to offset: [%3], sizes: [512, 256], strides: [1024, 1] : memref<*xbf16> to memref<512x256xbf16, strided<[1024, 1], offset: ?>>
         %alloc_1 = memref.alloc() : memref<512x256xbf16>
         memref.copy %reinterpret_cast_0, %alloc_1 : memref<512x256xbf16, strided<[1024, 1], offset: ?>> to memref<512x256xbf16>
         %6 = bufferization.to_tensor %alloc_1 restrict writable : memref<512x256xbf16> to tensor<512x256xbf16>
-        %7 = tensor.empty() : tensor<256x256xf32>
-        %8 = linalg.fill ins(%cst : f32) outs(%7 : tensor<256x256xf32>) -> tensor<256x256xf32>
-        %9 = linalg.matmul ins(%5, %6 : tensor<256x512xbf16>, tensor<512x256xbf16>) outs(%8 : tensor<256x256xf32>) -> tensor<256x256xf32>
+        %7 = tensor.empty() : tensor<512x256xf32>
+        %8 = linalg.fill ins(%cst : f32) outs(%7 : tensor<512x256xf32>) -> tensor<512x256xf32>
+        %9 = linalg.matmul ins(%5, %6 : tensor<512x512xbf16>, tensor<512x256xbf16>) outs(%8 : tensor<512x256xf32>) -> tensor<512x256xf32>
         %10 = arith.muli %1, %c1024 : index
         %11 = arith.addi %10, %3 : index
-        %reinterpret_cast_2 = memref.reinterpret_cast %arg2 to offset: [%11], sizes: [256, 256], strides: [1024, 1] : memref<*xf32> to memref<256x256xf32, strided<[1024, 1], offset: ?>>
-        bufferization.materialize_in_destination %9 in writable %reinterpret_cast_2 : (tensor<256x256xf32>, memref<256x256xf32, strided<[1024, 1], offset: ?>>) -> ()
+        %reinterpret_cast_2 = memref.reinterpret_cast %arg2 to offset: [%11], sizes: [512, 256], strides: [1024, 1] : memref<*xf32> to memref<512x256xf32, strided<[1024, 1], offset: ?>>
+        bufferization.materialize_in_destination %9 in writable %reinterpret_cast_2 : (tensor<512x256xf32>, memref<512x256xf32, strided<[1024, 1], offset: ?>>) -> ()
         return
       }
     }
@@ -91,7 +92,7 @@ with air.ir.Context() as ctx, Location.unknown():
     ################################################
     M, N, K = 2048, 1024, 512
     input_size = (M, N, K)
-    tile_size = (256, 256, K)
+    tile_size = (512, 256, K)
     launch_size = tuple(i // t for i, t in zip(input_size, tile_size))
 
     pipeline = (
