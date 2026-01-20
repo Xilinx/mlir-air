@@ -19,7 +19,7 @@
 
 2. **Install the following packages needed for MLIR-AIR:**
    ```bash
-   sudo apt-get install -y ninja-build clang lld
+   sudo apt-get install -y ninja-build clang lld unzip
    ```
 
 3. **Set up a Python virtual environment with the prerequisite python packages :**
