@@ -53,7 +53,7 @@ transform.with_pdl_patterns {
     // memory_space = 1 corresponds to L2 (shared memory).
         %result_l2 = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
         %result_l2_buffer, %result_t2_new = transform.structured.bufferize_to_allocation %result_l2
-            {memory_space = 1, bufferize_destination_only, mempcy = "linalg.copy", emit_dealloc} : !pdl.operation
+            {memory_space = 1, bufferize_destination_only, memcpy = "linalg.copy", emit_dealloc} : !pdl.operation
 
     //==========================================================================
     // PHASE 3: PACK MATMUL FOR VECTORIZED COMPUTATION
