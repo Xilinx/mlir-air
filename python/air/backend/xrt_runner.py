@@ -345,9 +345,14 @@ class XRTRunner:
                     num_mismatches = len(mismatch_indices[0])
                     total_elements = expected.size
                     print(f"Shape: {expected.shape}")
-                    print(
-                        f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
-                    )
+                    if total_elements > 0:
+                        print(
+                            f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
+                        )
+                    else:
+                        print(
+                            f"Mismatches: {num_mismatches} / {total_elements} elements (empty array)"
+                        )
                     # Show first N mismatches
                     max_display = 20
                     print(
@@ -372,9 +377,14 @@ class XRTRunner:
                     num_mismatches = len(mismatch_indices[0])
                     total_elements = expected.size
                     print(f"Shape: {expected.shape}")
-                    print(
-                        f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
-                    )
+                    if total_elements > 0:
+                        print(
+                            f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
+                        )
+                    else:
+                        print(
+                            f"Mismatches: {num_mismatches} / {total_elements} elements (empty array)"
+                        )
                     # Show first N mismatches
                     max_display = 20
                     print(
@@ -438,19 +448,75 @@ class XRTRunner:
                     actual_stochastic, expected["values"], rtol=rtol, atol=atol
                 ):
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    print("Expected: ")
-                    print(expected["values"])
-                    print("Actual: ")
-                    print(actual_stochastic)
+                    # Find mismatched elements
+                    close_mask = np.isclose(
+                        actual_stochastic, expected["values"], rtol=rtol, atol=atol
+                    )
+                    mismatch_positions = np.where(~close_mask)[0]
+                    num_mismatches = len(mismatch_positions)
+                    total_elements = len(expected["values"])
+                    print(f"Shape: {expected['shape']}")
+                    print(f"Stochastic check: {total_elements} sampled elements")
+                    if total_elements > 0:
+                        print(
+                            f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
+                        )
+                    else:
+                        print(
+                            f"Mismatches: {num_mismatches} / {total_elements} elements (empty array)"
+                        )
+                    # Show first N mismatches
+                    max_display = 20
+                    print(
+                        f"First {min(max_display, num_mismatches)} mismatched locations:"
+                    )
+                    for j in range(min(max_display, num_mismatches)):
+                        pos = mismatch_positions[j]
+                        idx = tuple(dim[pos] for dim in expected["indices"])
+                        exp_val = expected["values"][pos]
+                        act_val = actual_stochastic[pos]
+                        print(
+                            f"  Index {idx}: expected={exp_val}, actual={act_val}, diff={abs(act_val - exp_val)}"
+                        )
+                    if num_mismatches > max_display:
+                        print(
+                            f"  ... and {num_mismatches - max_display} more mismatches"
+                        )
                     return False
             else:
                 actual_stochastic = actual[tuple(expected["indices"])]
                 if not np.array_equal(actual_stochastic, expected["values"]):
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    print("Expected: ")
-                    print(expected["values"])
-                    print("Actual: ")
-                    print(actual_stochastic)
+                    # Find mismatched elements
+                    mismatch_mask = actual_stochastic != expected["values"]
+                    mismatch_positions = np.where(mismatch_mask)[0]
+                    num_mismatches = len(mismatch_positions)
+                    total_elements = len(expected["values"])
+                    print(f"Shape: {expected['shape']}")
+                    print(f"Stochastic check: {total_elements} sampled elements")
+                    if total_elements > 0:
+                        print(
+                            f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
+                        )
+                    else:
+                        print(
+                            f"Mismatches: {num_mismatches} / {total_elements} elements (empty array)"
+                        )
+                    # Show first N mismatches
+                    max_display = 20
+                    print(
+                        f"First {min(max_display, num_mismatches)} mismatched locations:"
+                    )
+                    for j in range(min(max_display, num_mismatches)):
+                        pos = mismatch_positions[j]
+                        idx = tuple(dim[pos] for dim in expected["indices"])
+                        exp_val = expected["values"][pos]
+                        act_val = actual_stochastic[pos]
+                        print(f"  Index {idx}: expected={exp_val}, actual={act_val}")
+                    if num_mismatches > max_display:
+                        print(
+                            f"  ... and {num_mismatches - max_display} more mismatches"
+                        )
                     return False
 
         return True
