@@ -339,18 +339,56 @@ class XRTRunner:
                     actual = actual.astype(np.float64)
                 if not np.allclose(actual, expected, rtol=rtol, atol=atol):
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    print("Expected: ")
-                    print(expected)
-                    print("Actual: ")
-                    print(actual)
+                    # Find mismatched elements
+                    close_mask = np.isclose(actual, expected, rtol=rtol, atol=atol)
+                    mismatch_indices = np.where(~close_mask)
+                    num_mismatches = len(mismatch_indices[0])
+                    total_elements = expected.size
+                    print(f"Shape: {expected.shape}")
+                    print(
+                        f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
+                    )
+                    # Show first N mismatches
+                    max_display = 20
+                    print(
+                        f"First {min(max_display, num_mismatches)} mismatched locations:"
+                    )
+                    for j in range(min(max_display, num_mismatches)):
+                        idx = tuple(dim[j] for dim in mismatch_indices)
+                        print(
+                            f"  Index {idx}: expected={expected[idx]}, actual={actual[idx]}, diff={abs(actual[idx] - expected[idx])}"
+                        )
+                    if num_mismatches > max_display:
+                        print(
+                            f"  ... and {num_mismatches - max_display} more mismatches"
+                        )
                     return False
             else:
                 if not np.array_equal(actual, expected):
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    print("Expected: ")
-                    print(expected)
-                    print("Actual: ")
-                    print(actual)
+                    # Find mismatched elements
+                    mismatch_mask = actual != expected
+                    mismatch_indices = np.where(mismatch_mask)
+                    num_mismatches = len(mismatch_indices[0])
+                    total_elements = expected.size
+                    print(f"Shape: {expected.shape}")
+                    print(
+                        f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
+                    )
+                    # Show first N mismatches
+                    max_display = 20
+                    print(
+                        f"First {min(max_display, num_mismatches)} mismatched locations:"
+                    )
+                    for j in range(min(max_display, num_mismatches)):
+                        idx = tuple(dim[j] for dim in mismatch_indices)
+                        print(
+                            f"  Index {idx}: expected={expected[idx]}, actual={actual[idx]}"
+                        )
+                    if num_mismatches > max_display:
+                        print(
+                            f"  ... and {num_mismatches - max_display} more mismatches"
+                        )
                     return False
 
         return True
