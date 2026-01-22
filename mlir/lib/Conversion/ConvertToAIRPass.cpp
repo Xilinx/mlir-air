@@ -1527,12 +1527,6 @@ struct ParallelToHerdPass
     }
     getHerdNames(module);
 
-    // Postprocessing: fuse allocs and deallocs into air.hierarchy, if their
-    // memref is never used outside.
-    RewritePatternSet postProcPatterns(context);
-    air::populateAIRFuseAllocDeallocToAIRHierPatterns(postProcPatterns);
-    (void)applyPatternsGreedily(module, std::move(postProcPatterns));
-
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
   }
@@ -1629,12 +1623,6 @@ struct ParallelToLaunchPass
     }
     getSegmentNames(module);
 
-    // Postprocessing: fuse allocs and deallocs into air.hierarchy, if their
-    // memref is never used outside.
-    RewritePatternSet postProcPatterns(context);
-    air::populateAIRFuseAllocDeallocToAIRHierPatterns(postProcPatterns);
-    (void)applyPatternsGreedily(module, std::move(postProcPatterns));
-
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
   }
@@ -1730,12 +1718,6 @@ struct ParallelToSegmentPass
       signalPassFailure();
     }
     getSegmentNames(module);
-
-    // Postprocessing: fuse allocs and deallocs into air.hierarchy, if their
-    // memref is never used outside.
-    RewritePatternSet postProcPatterns(context);
-    air::populateAIRFuseAllocDeallocToAIRHierPatterns(postProcPatterns);
-    (void)applyPatternsGreedily(module, std::move(postProcPatterns));
 
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
