@@ -28,6 +28,8 @@ with air.ir.Context() as ctx, Location.unknown():
         scf.parallel (%arg2, %arg3) = (%c0, %c0) to (%c256, %c256) step (%c64, %c64) {
           %subview = memref.subview %alloc[%arg2, %arg3] [64, 64] [1, 1] : memref<256x256xi32> to memref<64x64xi32, strided<[256, 1], offset: ?>>
           %alloc_0 = memref.alloc() : memref<1x1x64x64xi32, 1>
+          %alloc_7 = memref.alloc() : memref<1x1x64x256xi32, 1>
+          %alloc_8 = memref.alloc() : memref<1x1x256x64xi32, 1>
           scf.parallel (%arg4, %arg5) = (%c0, %c0) to (%c64, %c64) step (%c32, %c32) {
             %alloc_2 = memref.alloc() : memref<1x1x4x8x4x8xi32, 2>
             linalg.fill ins(%c0_i32 : i32) outs(%alloc_2 : memref<1x1x4x8x4x8xi32, 2>)
@@ -35,8 +37,6 @@ with air.ir.Context() as ctx, Location.unknown():
             scf.for %arg6 = %c0 to %c256 step %c256 {
               %subview_5 = memref.subview %arg0[%arg2, %arg6] [64, 256] [1, 1] : memref<256x256xi32> to memref<64x256xi32, strided<[256, 1], offset: ?>>
               %subview_6 = memref.subview %arg1[%arg6, %arg3] [256, 64] [1, 1] : memref<256x256xi32> to memref<256x64xi32, strided<[256, 1], offset: ?>>
-              %alloc_7 = memref.alloc() : memref<1x1x64x256xi32, 1>
-              %alloc_8 = memref.alloc() : memref<1x1x256x64xi32, 1>
               air.dma_memcpy_nd (%alloc_7[] [] [], %subview_5[] [] []) : (memref<1x1x64x256xi32, 1>, memref<64x256xi32, strided<[256, 1], offset: ?>>)
               air.dma_memcpy_nd (%alloc_8[] [] [], %subview_6[] [] []) : (memref<1x1x256x64xi32, 1>, memref<256x64xi32, strided<[256, 1], offset: ?>>)
               scf.for %arg7 = %c0 to %c256 step %c32 {
@@ -59,8 +59,6 @@ with air.ir.Context() as ctx, Location.unknown():
                 memref.dealloc %alloc_11 : memref<1x1x4x8x4x8xi32, 2>
                 memref.dealloc %alloc_12 : memref<1x1x4x4x8x8xi32, 2>
               }
-              memref.dealloc %alloc_7 : memref<1x1x64x256xi32, 1>
-              memref.dealloc %alloc_8 : memref<1x1x256x64xi32, 1>
             }
             %transpose_4 = memref.transpose %alloc_2 (d0, d1, d2, d3, d4, d5) -> (d0, d1, d3, d4, d2, d5) : memref<1x1x4x8x4x8xi32, 2> to memref<1x1x8x4x4x8xi32, strided<[1024, 1024, 32, 8, 256, 1]>, 2>
             air.dma_memcpy_nd (%subview_3[] [] [], %transpose_4[] [] []) : (memref<1x1x32x32xi32, strided<[4096, 4096, 64, 1], offset: ?>, 1>, memref<1x1x8x4x4x8xi32, strided<[1024, 1024, 32, 8, 256, 1]>, 2>)
@@ -71,6 +69,8 @@ with air.ir.Context() as ctx, Location.unknown():
           %transpose = memref.transpose %subview_1 (d0, d1) -> (d0, d1) : memref<64x64xi32, 1> to memref<64x64xi32, strided<[64, 1]>, 1>
           air.dma_memcpy_nd (%subview[] [] [], %transpose[] [] []) : (memref<64x64xi32, strided<[256, 1], offset: ?>>, memref<64x64xi32, strided<[64, 1]>, 1>)
           memref.dealloc %alloc_0 : memref<1x1x64x64xi32, 1>
+          memref.dealloc %alloc_7 : memref<1x1x64x256xi32, 1>
+          memref.dealloc %alloc_8 : memref<1x1x256x64xi32, 1>
           scf.reduce 
         }
         return %alloc : memref<256x256xi32>

@@ -34,13 +34,13 @@ module {
       %c1_0 = arith.constant 1 : index
       %c4_0 = arith.constant 4 : index
       %c8 = arith.constant 8 : index
-      %shape = memref.alloc() : memref<2xindex>
+      %shape = memref.alloc() : memref<2xindex, 2>
       // CHECK-NOT: = air.execute
       // CHECK-NOT: air.execute_terminator
-      memref.store %c32_0, %shape[%c0_0] : memref<2xindex>
+      memref.store %c32_0, %shape[%c0_0] : memref<2xindex, 2>
       // CHECK-NOT: = air.execute
       // CHECK-NOT: air.execute_terminator
-      memref.store %c32_0, %shape[%c1_0] : memref<2xindex>
+      memref.store %c32_0, %shape[%c1_0] : memref<2xindex, 2>
       // CHECK-NOT: = air.execute
       // CHECK-NOT: air.execute_terminator
       %3 = arith.muli %arg2, %c8 : index
@@ -50,7 +50,7 @@ module {
         %5 = memref.alloc() : memref<8x4x32xi32, 2>
         air.dma_memcpy_nd (%5[] [] [], %arg6[%3, %c0_0, %arg8] [%c8, %c4_0, %c32_0] [%c256_0, %c64_0, %c1_0]) {id = 2 : i32} : (memref<8x4x32xi32, 2>, memref<16x4x64xi32, 1>)
         // CHECK: = air.dma_memcpy_nd async
-        %6 = memref.reshape %5(%shape) : (memref<8x4x32xi32, 2>, memref<2xindex>) -> memref<32x32xi32, 2>
+        %6 = memref.reshape %5(%shape) : (memref<8x4x32xi32, 2>, memref<2xindex, 2>) -> memref<32x32xi32, 2>
         // CHECK: memref.reshape
         air.dma_memcpy_nd (%arg7[%4, %arg8] [%c32_0, %c32_0] [%c64_0, %c1_0], %6[] [] []) {id = 3 : i32} : (memref<64x64xi32, 1>, memref<32x32xi32, 2>)
         // CHECK: = air.dma_memcpy_nd async

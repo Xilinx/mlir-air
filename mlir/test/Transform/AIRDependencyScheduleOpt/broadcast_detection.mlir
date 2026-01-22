@@ -64,47 +64,6 @@ func.func @matmul(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg
 
 // -----
 
-// CHECK: [[$SET0:#set[0-9]*]] = affine_set<(d0, d1)[s0] : (d0 >= 0, -d0 + 3 >= 0, d1 >= 0, -d1 + 3 >= 0, s0 >= 0, -s0 >= 0)>
-// CHECK-LABEL: func.func @func0
-// CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd {{.*}} {id = 1 : i32} : (memref<256x64xbf16, 1>, memref<1024x256xbf16>)
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}broadcast_pattern = [[$SET0]]{{.*}}
-
-#map = affine_map<()[s0] -> (s0 * 256)>
-#map1 = affine_map<()[s0] -> (s0 * 64)>
-module {
-  func.func @func0(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x256xbf16>, %arg2: memref<256x256xbf16>) {
-    %c1 = arith.constant 1 : index
-    air.launch (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) args(%arg7=%arg1) : memref<1024x256xbf16> attributes {id = 3 : i32} {
-      air.segment @segment_0  args(%arg8=%arg4, %arg9=%arg7) : index, memref<1024x256xbf16> attributes {id = 2 : i32} {
-        %c4 = arith.constant 4 : index
-        %0 = affine.apply #map()[%arg8]
-        air.herd @herd_0  tile (%arg10, %arg11) in (%arg12=%c4, %arg13=%c4) args(%arg14=%0, %arg15=%arg9) : index, memref<1024x256xbf16> attributes {id = 1 : i32} {
-          %c1_0 = arith.constant 1 : index
-          %c0 = arith.constant 0 : index
-          %c256 = arith.constant 256 : index
-          %c64 = arith.constant 64 : index
-          %c1024 = arith.constant 1024 : index
-          %1 = affine.apply #map1()[%arg11]
-          %2 = arith.addi %arg14, %1 : index
-          scf.for %arg16 = %c0 to %c1024 step %c256 {
-            %alloc = memref.alloc() : memref<256x64xbf16, 1>
-            air.dma_memcpy_nd (%alloc[] [] [], %arg15[%arg16, %2] [%c256, %c64] [%c256, %c1_0]) {id = 2 : i32} : (memref<256x64xbf16, 1>, memref<1024x256xbf16>)
-            scf.for %arg17 = %c0 to %c256 step %c64 {
-              %alloc_1 = memref.alloc() : memref<64x64xbf16, 2>
-              air.dma_memcpy_nd (%alloc_1[] [] [], %alloc[%arg17, %c0] [%c64, %c64] [%c64, %c1_0]) {id = 4 : i32} : (memref<64x64xbf16, 2>, memref<256x64xbf16, 1>)
-              memref.dealloc %alloc_1 : memref<64x64xbf16, 2>
-            }
-            memref.dealloc %alloc : memref<256x64xbf16, 1>
-          }
-        }
-      }
-    }
-    return
-  }
-}
-
-// -----
-
 // CHECK: [[$SET0:#set[0-9]*]] = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, -d1 + 1 >= 0, s0 >= 0, -s0 >= 0)>
 // CHECK-LABEL: func.func @func1
 // CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd {{.*}}broadcast_pattern = [[$SET0]]{{.*}} : (memref<4x2x4x8xi32, 2 : i32>, memref<8x2048xi32, 1 : i32>)

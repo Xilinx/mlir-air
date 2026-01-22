@@ -50,10 +50,10 @@ func.func @f2()  {
 }
 
 // CHECK-LABEL: func.func @f3
+// CHECK-DAG: memref.alloc() : memref<1x1x64x128xbf16, 1 : i32>
+// CHECK-DAG: memref.alloc() : memref<1x1x16x8x8x4xbf16, 2 : i32>
 // CHECK: air.launch
 // CHECK:   air.segment @f3_0
-// CHECK:     memref.alloc() : memref<1x1x64x128xbf16, 1 : i32>
-// CHECK:     memref.alloc() : memref<1x1x16x8x8x4xbf16, 2 : i32>
 // CHECK:     air.dma_memcpy_nd
 // CHECK:     memref.dealloc
 // CHECK:     memref.dealloc

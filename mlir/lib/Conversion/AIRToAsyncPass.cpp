@@ -208,7 +208,9 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
           /*memrefTy.getMemorySpace()*/ 0);
       callops.push_back(
           UnrealizedConversionCastOp::create(rewriter, loc, t, o).getResult(0));
-    } else if (llvm::isa<async::TokenType>(o.getType())) {
+    } else if (llvm::isa<async::TokenType>(o.getType()) ||
+               llvm::isa<air::AsyncTokenType>(o.getType())) {
+      // Handle both async::TokenType and air::AsyncTokenType as dependencies
       dependencies.push_back(o);
     } else {
       callops.push_back(o);
@@ -247,8 +249,17 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
         });
     results = exe.getResults();
   } else {
-    for (auto d : dependencies)
-      async::AwaitOp::create(rewriter, op->getLoc(), d);
+    for (auto d : dependencies) {
+      Value awaitArg = d;
+      // Convert air::AsyncTokenType to async::TokenType for async.await
+      if (llvm::isa<air::AsyncTokenType>(d.getType())) {
+        awaitArg = UnrealizedConversionCastOp::create(
+                       rewriter, op->getLoc(),
+                       async::TokenType::get(op->getContext()), d)
+                       .getResult(0);
+      }
+      async::AwaitOp::create(rewriter, op->getLoc(), awaitArg);
+    }
     call = func::CallOp::create(rewriter, op->getLoc(), retTys,
                                 SymbolRefAttr::get(fn), callops);
     results = call.getResults();
@@ -807,8 +818,23 @@ public:
       signalPassFailure();
     }
 
+    // Create a type converter for herd phase that converts air::AsyncTokenType
+    TypeConverter herdConverter;
+    herdConverter.addConversion([&](Type type) -> std::optional<Type> {
+      // convert air::AsyncTokenType to async::TokenType
+      if (llvm::dyn_cast<air::AsyncTokenType>(type))
+        return async::TokenType::get(context);
+      return type;
+    });
+    herdConverter.addSourceMaterialization(addUnrealizedCast);
+    herdConverter.addTargetMaterialization(addUnrealizedCast);
+
     RewritePatternSet air_herd_patterns(context);
     air_herd_patterns.add<AIRHerdOpConversion>(context);
+    // Add channel conversion patterns so cloned ops inside herd body can be
+    // legalized
+    air_herd_patterns.add<ChannelGetOpConversion, ChannelPutOpConversion>(
+        herdConverter, context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_herd_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.herd\n");
