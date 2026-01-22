@@ -16,9 +16,9 @@ func.func @air_par_to_herd() {
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
   scf.parallel (%a) = (%c0) to (%c4) step (%c1) {
-    %alloc = memref.alloc() : memref<1xi32>
+    %alloc = memref.alloc() : memref<1xi32, 2>
     %c = arith.constant 0 : i32
-    linalg.fill ins(%c : i32) outs(%alloc : memref<1xi32>)
+    linalg.fill ins(%c : i32) outs(%alloc : memref<1xi32, 2>)
   }
   return
 }

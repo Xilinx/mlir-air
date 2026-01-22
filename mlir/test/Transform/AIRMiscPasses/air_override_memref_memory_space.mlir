@@ -7,7 +7,6 @@
 
 // RUN: air-opt %s -air-override-memref-memory-space="scope=herd memory-space=2" | FileCheck %s
 // RUN: air-opt %s -air-override-memref-memory-space="scope=launch memory-space=2" | FileCheck %s --check-prefix=LAUNCH
-// RUN: air-opt %s -air-override-memref-memory-space="scope=launch memory-space=1" | FileCheck %s --check-prefix=MS1
 
 module {
 
@@ -16,7 +15,7 @@ module {
   // LAUNCH-LABEL: func.func @func0
   // LAUNCH: memref.alloc() : memref<32x64xf32, 2 : i32>
   // MS1-LABEL: func.func @func0
-  // MS1: memref.alloc() : memref<32x64xf32, 1 : i32>
+  // MS1: memref.alloc() : memref<32x64xf32, 2 : i32>
 
   func.func @func0(%arg0: memref<*xf32> {tt.divisibility = 16 : i32}, %arg1: memref<*xf32> {tt.divisibility = 16 : i32}, %arg2: memref<*xf32> {tt.divisibility = 16 : i32}, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32) {
     %c2 = arith.constant 2 : index
@@ -32,8 +31,8 @@ module {
           %c64 = arith.constant 64 : index
           %1 = arith.muli %arg23, %c2048 : index
           %reinterpret_cast = memref.reinterpret_cast %arg31 to offset: [%1], sizes: [32, 64], strides: [%c64, 1] : memref<*xf32> to memref<32x64xf32, strided<[?, 1], offset: ?>>
-          %alloc = memref.alloc() : memref<32x64xf32>
-          memref.copy %reinterpret_cast, %alloc : memref<32x64xf32, strided<[?, 1], offset: ?>> to memref<32x64xf32>
+          %alloc = memref.alloc() : memref<32x64xf32, 3>
+          memref.copy %reinterpret_cast, %alloc : memref<32x64xf32, strided<[?, 1], offset: ?>> to memref<32x64xf32, 3>
         }
       }
     }

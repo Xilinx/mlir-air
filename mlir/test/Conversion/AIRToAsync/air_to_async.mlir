@@ -150,11 +150,11 @@ air.channel @channel_1 [3,3]
 func.func @channel_get_put_3_3(%arg0 : memref<9x9xf32>) -> () {
   %c3 = arith.constant 1 : index
   air.herd tile (%x, %y) in (%sx=%c3, %sy=%c3) args (%op0 = %arg0) :  memref<9x9xf32> {
-    %alloc = memref.alloc() : memref<3x3xf32>
+    %alloc = memref.alloc() : memref<3x3xf32, 2>
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c9 = arith.constant 9 : index
-    air.channel.get @channel_1[%x, %y] (%alloc[][][]) : (memref<3x3xf32>)
+    air.channel.get @channel_1[%x, %y] (%alloc[][][]) : (memref<3x3xf32, 2>)
     air.channel.put @channel_1[%x, %y] (%op0[%c0, %c0] [%sx, %sy] [%c9, %c1]) : (memref<9x9xf32>)
   }
   return
