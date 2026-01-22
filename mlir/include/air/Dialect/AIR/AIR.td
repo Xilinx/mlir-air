@@ -213,6 +213,7 @@ def air_SegmentOp : air_Op<"segment", [air_AsyncOpInterface,
     }
   }];
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 }
 
 def air_SegmentTerminatorOp : air_Op<"segment_terminator", [HasParent<"SegmentOp">,
@@ -321,6 +322,7 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
     }
   }];
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 }
 
 def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdOp">,
