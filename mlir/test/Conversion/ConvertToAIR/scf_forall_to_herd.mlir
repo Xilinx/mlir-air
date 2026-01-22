@@ -40,7 +40,7 @@ func.func @scf1()  {
 
 // CHECK-LABEL: func.func @scf2() {
 // CHECK: scf.parallel (%[[VAL_3:.*]], %[[VAL_4:.*]]) = (%c0{{.*}}, %c0{{.*}}) to (%c1{{.*}}, %c2{{.*}}) step (%c1{{.*}}, %c1{{.*}}) {
-// CHECK:   air.herd @herd_0  tile (%[[VAL_7:.*]], %[[VAL_8:.*]]) in (%{{.*}}=%c3{{.*}}, %{{.*}}=%c4{{.*}}) args(%{{.*}}=%[[VAL_4]], %{{.*}}=%[[VAL_3]]) : index, index 
+// CHECK:   air.herd @herd_0  tile (%[[VAL_7:.*]], %[[VAL_8:.*]]) in (%{{.*}}=%c3{{.*}}, %{{.*}}=%c4{{.*}}) args(%{{.*}}=%[[VAL_4]], %{{.*}}=%[[VAL_3]]
 func.func @scf2()  {
   %src = memref.alloc() : memref<1x2x3x4xi32, 2 : i32>
   %dst = memref.alloc() : memref<1x2x3x4xi32, 2 : i32>

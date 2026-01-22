@@ -11,8 +11,7 @@
 // RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd="depth=0" %s | FileCheck %s --check-prefix=DEPTH0
 
 // CHECK-LABEL: func.func @scf0() {
-// CHECK: %[[C2:.*]] = arith.constant 2 : index
-// CHECK: air.herd @herd_0  tile ({{.*}}, {{.*}}) in ({{.*}}=%[[C2]], {{.*}}=%[[C2]])
+// CHECK: air.herd @herd_0  tile ({{.*}}, {{.*}}) in ({{.*}}=%c2{{.*}}, {{.*}}=%c2{{.*}})
 func.func @scf0()  {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -101,10 +100,10 @@ func.func @scf1()  {
 // -----
 
 // CHECK-LABEL: func.func @scf2() {
+// CHECK:     memref.alloc() : memref<1x2x3x4xi32, 2 : i32>
+// CHECK:     memref.alloc() : memref<1x2x3x4xi32, 2 : i32>
 // CHECK: scf.parallel (%[[VAL_3:.*]], %[[VAL_4:.*]]) = (%c0{{.*}}, %c0{{.*}}) to (%c1{{.*}}, %c2{{.*}}) step (%c1{{.*}}, %c1{{.*}}) {
-// CHECK:   air.herd @herd_0  tile (%[[VAL_7:.*]], %[[VAL_8:.*]]) in (%{{.*}}=%c3{{.*}}, %{{.*}}=%c4{{.*}}) args(%{{.*}}=%[[VAL_4]], %{{.*}}=%[[VAL_3]]) : index, index {
-// CHECK:     memref.alloc() : memref<1x2x3x4xi32, 2 : i32>
-// CHECK:     memref.alloc() : memref<1x2x3x4xi32, 2 : i32>
+// CHECK:   air.herd @herd_0  tile (%[[VAL_7:.*]], %[[VAL_8:.*]]) in (%{{.*}}=%c3{{.*}}, %{{.*}}=%c4{{.*}}) args(%{{.*}}=%[[VAL_4]], %{{.*}}=%[[VAL_3]]
 func.func @scf2()  {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -432,7 +431,7 @@ module {
 // CHECK: affine.if [[$SET1]]()
 // CHECK: %[[alloc_5:.*]] = memref.alloc()
 // CHECK: linalg.fill{{.*}}outs(%[[alloc_5]]
-// CHECK: air.channel.get  @channel_0[%[[arg0]]] (%alloc_5[] [] [])
+// CHECK: air.channel.get  @channel_0[%[[arg0]]] (%[[alloc_5]][] [] [])
 // CHECK: linalg.add ins(%[[alloc_4]], %[[alloc_5]]{{.*}}outs(%[[alloc_4]]
 // CHECK: %[[idx:.*]] = arith.subi %[[arg0]], %c1{{.*}}
 // CHECK: air.channel.put  @channel_0[%[[idx]]] (%[[alloc_4]][] [] [])
