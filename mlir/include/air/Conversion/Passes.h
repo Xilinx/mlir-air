@@ -13,6 +13,8 @@
 #include "air/Conversion/AIRRtToLLVMPass.h"
 #include "air/Conversion/AIRRtToNpuPass.h"
 #include "air/Conversion/AIRToAIEPass.h"
+#include "air/Conversion/AIRToROCDLPass.h"
+#include "air/Conversion/GPUKernelOutlinePass.h"
 #include "air/Conversion/AIRToAsyncPass.h"
 #include "air/Conversion/ConvertToAIRPass.h"
 namespace xilinx {
