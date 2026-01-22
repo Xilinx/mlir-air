@@ -6842,12 +6842,5 @@ void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region) {
   (void)AIRIsolateAsyncDmaLoopNestsImpl(region);
 }
 
-void populateAIRFuseAllocDeallocToAIRHierPatterns(RewritePatternSet &patterns) {
-  MLIRContext *ctx = patterns.getContext();
-  patterns.insert<AIRFuseAllocDeallocToAIRHierarchy<air::LaunchOp>,
-                  AIRFuseAllocDeallocToAIRHierarchy<air::SegmentOp>,
-                  AIRFuseAllocDeallocToAIRHierarchy<air::HerdOp>>(ctx);
-}
-
 } // namespace air
 } // namespace xilinx
