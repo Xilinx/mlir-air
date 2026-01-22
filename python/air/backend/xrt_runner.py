@@ -249,23 +249,26 @@ class XRTRunner:
 
         # Handle trace data extraction and saving
         if self.trace_size > 0:
-            # Import XRT utilities only when needed for trace handling
+            # Import trace utilities only when needed for trace handling
             try:
-                from aie.utils.xrt import write_out_trace, extract_trace
+                from aie.utils import TraceConfig, HostRuntime
             except ImportError:
                 raise AirBackendError(
-                    "XRT utilities (aie.utils.xrt) are not available. "
-                    "Trace functionality requires XRT to be installed. "
-                    "Install XRT to use trace_size parameter."
+                    "Trace utilities (aie.utils) are not available. "
+                    "Trace functionality requires mlir-aie to be installed. "
+                    "Install mlir-aie to use trace_size parameter."
                 )
 
-            actual_outputs[0], trace = extract_trace(
+            actual_outputs[0], trace = HostRuntime._extract_prefix(
                 actual_outputs[0],
                 expected_outputs_0_shape,
                 expected_outputs_0_dtype,
-                self.trace_size,
             )
-            write_out_trace(trace, active_trace_file)
+            trace = trace.view(np.uint32).reshape(self.trace_size // 4)
+            trace_config = TraceConfig(
+                trace_size=self.trace_size, trace_file=active_trace_file
+            )
+            trace_config.write_trace(trace)
 
             print(f"Trace data ({self.trace_size} bytes) saved to {active_trace_file}")
 
