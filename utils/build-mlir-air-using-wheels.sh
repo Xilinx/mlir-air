@@ -37,10 +37,6 @@ popd
 WHL_MLIR_DIR=`realpath my_install/mlir`
 echo "WHL_MLIR DIR: $WHL_MLIR_DIR"
 
-# Install mlir-aie dependence: mlir-python-extras
-MLIR_PYTHON_EXTRAS_COMMIT_HASH=$($(dirname ${SCRIPT_PATH})/clone-mlir-aie.sh --get-mlir-python-extras-version)
-EUDSL_PYTHON_EXTRAS_HOST_PACKAGE_PREFIX=aie python3 -m pip install -r $(dirname ${SCRIPT_PATH})/requirements_extras.txt
-
 # Install mlir-aie from wheel
 pushd my_install
 MLIR_AIE_VERSION=$($(dirname ${SCRIPT_PATH})/clone-mlir-aie.sh --get-wheel-version)

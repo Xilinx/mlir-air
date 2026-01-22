@@ -114,7 +114,6 @@ jobs:
             source ${{ github.workspace }}/air-venv/bin/activate
 
             pip install -r utils/requirements.txt
-            EUDSL_PYTHON_EXTRAS_HOST_PACKAGE_PREFIX=aie pip install -r utils/requirements_extras.txt
 
             export ENABLE_RTTI=${{ matrix.ENABLE_RTTI }}
 
