@@ -69,38 +69,38 @@ module {
             air.execute_terminator %12 : index
         } {id = 7 : i32}
         %8 = air.wait_all async [%asyncToken_13, %asyncToken_15] 
-        %asyncToken_17, %valOut_18 = air.execute -> (memref<32x32xbf16>) {
-            %12 = memref.alloc() : memref<32x32xbf16>
-            air.execute_terminator %12 : memref<32x32xbf16>
+        %asyncToken_17, %valOut_18 = air.execute -> (memref<32x32xbf16, 2>) {
+            %12 = memref.alloc() : memref<32x32xbf16, 2>
+            air.execute_terminator %12 : memref<32x32xbf16, 2>
         } {id = 10 : i32}
         %10 = scf.for %arg14 = %c0_12 to %c64_11 step %c32 iter_args(%arg15 = %8) -> (!air.async.token) {
-            %asyncToken_20, %valOut_21 = air.execute [%arg15] -> (memref<32x32xbf16>){
-                %15 = memref.alloc() : memref<32x32xbf16>
-                air.execute_terminator %15 : memref<32x32xbf16>
+            %asyncToken_20, %valOut_21 = air.execute [%arg15] -> (memref<32x32xbf16, 2>){
+                %15 = memref.alloc() : memref<32x32xbf16, 2>
+                air.execute_terminator %15 : memref<32x32xbf16, 2>
             } {id = 8 : i32}
-            %asyncToken_22, %valOut_23 = air.execute [%arg15] -> (memref<32x32xbf16>){
-                %15 = memref.alloc() : memref<32x32xbf16>
-                air.execute_terminator %15 : memref<32x32xbf16>
+            %asyncToken_22, %valOut_23 = air.execute [%arg15] -> (memref<32x32xbf16, 2>){
+                %15 = memref.alloc() : memref<32x32xbf16, 2>
+                air.execute_terminator %15 : memref<32x32xbf16, 2>
             } {id = 9 : i32}
-            %12 = air.dma_memcpy_nd async [%asyncToken_20, %arg15] (%valOut_21[] [] [], %arg11[%valOut_14, %arg14] [%c32, %c32] [%c64_11, %c1_10]) {broadcast_pattern = #set0, id = 4 : i32} : (memref<32x32xbf16>, memref<64x64xbf16>)
-            %13 = air.dma_memcpy_nd async [%asyncToken_22, %arg15] (%valOut_23[] [] [], %arg12[%arg14, %valOut_16] [%c32, %c32] [%c64_11, %c1_10]) {broadcast_pattern = #set1, id = 5 : i32} : (memref<32x32xbf16>, memref<64x64xbf16>)
+            %12 = air.dma_memcpy_nd async [%asyncToken_20, %arg15] (%valOut_21[] [] [], %arg11[%valOut_14, %arg14] [%c32, %c32] [%c64_11, %c1_10]) {broadcast_pattern = #set0, id = 4 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16>)
+            %13 = air.dma_memcpy_nd async [%asyncToken_22, %arg15] (%valOut_23[] [] [], %arg12[%arg14, %valOut_16] [%c32, %c32] [%c64_11, %c1_10]) {broadcast_pattern = #set1, id = 5 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16>)
             %asyncToken_24 = air.execute [%13, %arg15, %12] {
-                linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%valOut_21, %valOut_23 : memref<32x32xbf16>, memref<32x32xbf16>) outs(%valOut_18 : memref<32x32xbf16>)
+                linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%valOut_21, %valOut_23 : memref<32x32xbf16, 2>, memref<32x32xbf16, 2>) outs(%valOut_18 : memref<32x32xbf16, 2>)
                 air.execute_terminator
             } {id = 11 : i32}
             %asyncToken_25 = air.execute [%asyncToken_24] {
-                memref.dealloc %valOut_21 : memref<32x32xbf16>
+                memref.dealloc %valOut_21 : memref<32x32xbf16, 2>
                 air.execute_terminator
             } {id = 12 : i32}
             %asyncToken_26 = air.execute [%asyncToken_24] {
-                memref.dealloc %valOut_23 : memref<32x32xbf16>
+                memref.dealloc %valOut_23 : memref<32x32xbf16, 2>
                 air.execute_terminator
             } {id = 13 : i32}
             %14 = air.wait_all async [%asyncToken_24, %asyncToken_25, %asyncToken_26] 
             scf.yield %14 : !air.async.token
         }
         %asyncToken_19 = air.execute [%10] {
-            memref.dealloc %valOut_18 : memref<32x32xbf16>
+            memref.dealloc %valOut_18 : memref<32x32xbf16, 2>
             air.execute_terminator
         } {id = 14 : i32}
     }

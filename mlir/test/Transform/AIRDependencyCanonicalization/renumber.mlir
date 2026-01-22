@@ -38,13 +38,13 @@ module {
         %3 = air.dma_memcpy_nd async [%asyncToken_5] (%valOut_6[] [] [], %arg10[%c0_3] [%c0_3] [%c0_3]) {id = 72 : i32} : (memref<256xi32, 2>, memref<512xi32, 1>)
         %4 = air.herd async [%3]  tile (%arg11, %arg12) in (%arg13=%c1_4, %arg14=%c1_4) args(%arg15=%valOut_6) : memref<256xi32, 2> attributes {id = 15 : i32} {
           %c0_8 = arith.constant 0 : index
-          %asyncToken_9, %valOut_10 = air.execute -> (memref<128xi32, 1>) {
-            %6 = memref.alloc() : memref<128xi32, 1>
-            air.execute_terminator %6 : memref<128xi32, 1>
+          %asyncToken_9, %valOut_10 = air.execute -> (memref<128xi32, 2>) {
+            %6 = memref.alloc() : memref<128xi32, 2>
+            air.execute_terminator %6 : memref<128xi32, 2>
           } {id = 3 : i32}
-          %5 = air.dma_memcpy_nd async [%asyncToken_9] (%valOut_10[] [] [], %arg15[%c0_8] [%c0_8] [%c0_8]) {id = 43 : i32} : (memref<128xi32, 1>, memref<256xi32, 2>)
+          %5 = air.dma_memcpy_nd async [%asyncToken_9] (%valOut_10[] [] [], %arg15[%c0_8] [%c0_8] [%c0_8]) {id = 43 : i32} : (memref<128xi32, 2>, memref<256xi32, 2>)
           %asyncToken_11 = air.execute [%5, %asyncToken_9] {
-            memref.dealloc %valOut_10 : memref<128xi32, 1>
+            memref.dealloc %valOut_10 : memref<128xi32, 2>
             air.execute_terminator
           } {id = 4 : i32}
         }

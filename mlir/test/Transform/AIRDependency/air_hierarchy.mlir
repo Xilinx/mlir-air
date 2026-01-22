@@ -33,11 +33,11 @@ module  {
         air.herd tile (%arg8, %arg9) in (%arg10=%c1_2, %arg11=%c1_2) args(%arg12=%2) : memref<256xi32, 2> {
         // CHECK: %[[EVENT6:.*]] = air.herd async [{{.*}}%[[EVENT5]]{{.*}}]{{.*}}tile
           %c0_3 = arith.constant 0 : index
-          %3 = memref.alloc() : memref<128xi32, 1>
+          %3 = memref.alloc() : memref<128xi32, 2>
           // CHECK: %[[EVENT7:.*]], %[[VAL7:.*]] = air.execute
-          air.dma_memcpy_nd (%3[][][], %arg12[%c0_3][%c0_3][%c0_3]) {id = 3 : i32} : (memref<128xi32, 1>, memref<256xi32, 2>)
+          air.dma_memcpy_nd (%3[][][], %arg12[%c0_3][%c0_3][%c0_3]) {id = 3 : i32} : (memref<128xi32, 2>, memref<256xi32, 2>)
           // CHECK: %[[EVENT8:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT7]]{{.*}}]
-          memref.dealloc %3 : memref<128xi32, 1>
+          memref.dealloc %3 : memref<128xi32, 2>
           // CHECK: %[[EVENT9:.*]] = air.execute [{{.*}}%[[EVENT8]]{{.*}}]
         }
         memref.dealloc %2 : memref<256xi32, 2>

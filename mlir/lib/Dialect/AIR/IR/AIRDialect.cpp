@@ -1033,6 +1033,38 @@ unsigned air::SegmentOp::getNumDims() {
   return segment_sizes[1];
 }
 
+/// Utility function to verify that all memref.alloc operations within a region
+/// have a memory space greater than or equal to the specified minimum.
+/// Returns failure if any alloc violates the constraint.
+template <typename OpT>
+static LogicalResult verifyAllocMemorySpace(OpT op, unsigned minMemorySpace,
+                                            StringRef opName) {
+  WalkResult result =
+      op.getBody().walk([&](memref::AllocOp allocOp) -> WalkResult {
+        auto memrefType = allocOp.getType();
+        // Get memory space (defaults to 0 if not specified)
+        unsigned memorySpace = memrefType.getMemorySpaceAsInt();
+
+        if (memorySpace < minMemorySpace) {
+          allocOp.emitOpError()
+              << "memref.alloc inside " << opName
+              << " must have memory space >= " << minMemorySpace
+              << ", but found memory space " << memorySpace;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+
+  if (result.wasInterrupted())
+    return failure();
+
+  return success();
+}
+
+LogicalResult air::SegmentOp::verify() {
+  return verifyAllocMemorySpace(*this, /*minMemorySpace=*/1, "air.segment");
+}
+
 //
 // HerdOp
 //
@@ -1306,6 +1338,10 @@ uint64_t air::HerdOp::getNumCols() {
 uint64_t air::HerdOp::getNumRows() {
   auto rows = getSizeOperands()[1].getDefiningOp();
   return cast<arith::ConstantIndexOp>(rows).value();
+}
+
+LogicalResult air::HerdOp::verify() {
+  return verifyAllocMemorySpace(*this, /*minMemorySpace=*/2, "air.herd");
 }
 
 //

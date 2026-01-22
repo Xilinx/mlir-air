@@ -156,9 +156,9 @@ module {
 // CHECK: scf.for{{.*}}
 // CHECK: air.channel.put{{.*}}@channel_8
 // CHECK: air.segment @segment_0
+// CHECK: air.herd @herd_0
 // CHECK: scf.for{{.*}}
 // CHECK: air.channel.get{{.*}}@channel_8
-// CHECK: air.herd @herd_0
 
   func.func @gemm_k_dim_tiling(%arg0: memref<2048x2048xi32>) {
     %c32 = arith.constant 32 : index
@@ -186,13 +186,13 @@ module {
           %c2048_11 = arith.constant 2048 : index
           %4 = air.wait_all async
           %5 = scf.for %arg24 = %c0 to %c2048_11 step %c256 iter_args(%arg25 = %4) -> (!air.async.token) {
-            %async_token_20, %results_21 = air.execute -> (memref<64x256xi32, 1>) {
-              %alloc = memref.alloc() : memref<64x256xi32, 1>
-              air.execute_terminator %alloc : memref<64x256xi32, 1>
+            %async_token_20, %results_21 = air.execute -> (memref<64x256xi32, 2>) {
+              %alloc = memref.alloc() : memref<64x256xi32, 2>
+              air.execute_terminator %alloc : memref<64x256xi32, 2>
             }
-            %7 = air.dma_memcpy_nd async [%arg25, %async_token_20] (%results_21[] [] [], %arg20[%arg21, %arg24] [%c64_9, %c256] [%c2048_11, %c1_8]) {id = 1 : i32} : (memref<64x256xi32, 1>, memref<2048x2048xi32>)
+            %7 = air.dma_memcpy_nd async [%arg25, %async_token_20] (%results_21[] [] [], %arg20[%arg21, %arg24] [%c64_9, %c256] [%c2048_11, %c1_8]) {id = 1 : i32} : (memref<64x256xi32, 2>, memref<2048x2048xi32>)
             %async_token_24 = air.execute [%7] {
-              memref.dealloc %results_21 : memref<64x256xi32, 1>
+              memref.dealloc %results_21 : memref<64x256xi32, 2>
             }
             %11 = air.wait_all async [%7]
             scf.yield %11 : !air.async.token

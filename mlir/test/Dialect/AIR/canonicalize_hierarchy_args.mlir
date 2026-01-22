@@ -29,11 +29,11 @@ module {
         %c1_4 = arith.constant 1 : index
         %4 = air.herd async  tile (%arg11, %arg12) in (%arg13=%c1_4, %arg14=%c1_4) args(%arg15=%arg10, %newarg2=%newarg1) : memref<256xi32, 2>, memref<512xi32, 3> attributes {id = 15 : i32} {
           %c0_8 = arith.constant 0 : index
-          %asyncToken_9, %valOut_10 = air.execute -> (memref<128xi32, 1>) {
-            %6 = memref.alloc() : memref<128xi32, 1>
-            air.execute_terminator %6 : memref<128xi32, 1>
+          %asyncToken_9, %valOut_10 = air.execute -> (memref<128xi32, 2>) {
+            %6 = memref.alloc() : memref<128xi32, 2>
+            air.execute_terminator %6 : memref<128xi32, 2>
           } {id = 3 : i32}
-          %5 = air.dma_memcpy_nd async [%asyncToken_9] (%valOut_10[] [] [], %arg15[%c0_8] [%c0_8] [%c0_8]) {id = 43 : i32} : (memref<128xi32, 1>, memref<256xi32, 2>)
+          %5 = air.dma_memcpy_nd async [%asyncToken_9] (%valOut_10[] [] [], %arg15[%c0_8] [%c0_8] [%c0_8]) {id = 43 : i32} : (memref<128xi32, 2>, memref<256xi32, 2>)
         }
       }
     }
