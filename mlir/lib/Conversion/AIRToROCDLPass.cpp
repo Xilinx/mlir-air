@@ -424,7 +424,6 @@ struct ConvertAIRToROCDLPass
         deleteAirSegment(launchOp, builder, gpuLaunchOp);
       });
     });
-#if 1
 
     module.walk([&](gpu::LaunchOp gpuLaunchOp) {
       module.walk([&](air::LaunchOp launchOp) {
@@ -447,47 +446,6 @@ struct ConvertAIRToROCDLPass
       launchBlock.getTerminator()->erase(); // Erase the terminator
       launchOp.erase();                     // Erase the herd operation
     });
-#endif
-#if 0
-      pm.addPass(mlir::createLowerAffinePass());
-      pm.addPass(mlir::createConvertLinalgToLoopsPass());
-      pm.addPass(mlir::createConvertSCFToCFPass());
-
-      if (failed(pm.run(module))) {
-        module.emitError("Sub-pipeline failed in LowerRockOpsToGPUPass");
-        signalPassFailure();
-      }
-
-      SymbolTable symbolTable(getOperation());
-      module.walk([&](func::FuncOp func) {
-          func.walk([&](gpu::LaunchOp launchOp) {
-              ModuleOp op = getOperation();
-              MLIRContext *ctx = op.getContext();
-              OpBuilder b(ctx);
-              Location loc = op.getLoc();
-
-              // Annotate this module as a container module.
-              op->setAttr(gpu::GPUDialect::getContainerModuleAttrName(),
-                  UnitAttr::get(ctx));
-
-              SetVector<Value> operands;
-              std::string gfname = func.getName().str();
-              gfname += "_module";
-              // create a GPUModuleOp in case the GPU module specified does not exist.
-              auto gpuModule = gpu::GPUModuleOp::create(b, loc, gfname);
-
-              // add the GPUModuleOp into the symbol table.
-              SymbolTable symbolTable(op);
-              symbolTable.insert(gpuModule);
-
-              gpu::GPUFuncOp outlinedFunc = outlineKernelFuncImpl(launchOp, gfname, operands);
-              SymbolTable gpuModuleSymbolTable(gpuModule);
-              // insert the GPUFuncOp into GPUModuleOp.
-              gpuModuleSymbolTable.insert(outlinedFunc);
-              convertToLaunchFuncOp(launchOp, outlinedFunc, operands.getArrayRef());
-              });
-      });
-#endif
   }
 
   void getDependentDialects(mlir::DialectRegistry &registry) const override {

@@ -18,7 +18,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Linalg/Passes.h"
-#include "mlir/Dialect/SCF/IR/SCF.h" // Includes the ops like scf::ForOp
+#include "mlir/Dialect/SCF/IR/SCF.h" 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
@@ -417,7 +417,6 @@ struct ConvertGPUKernelOutlinePass
     PassManager pm(module.getContext());
     OpBuilder builder(module.getContext());
 
-#if 1
     pm.addPass(mlir::createLowerAffinePass());
     pm.addPass(mlir::createConvertLinalgToLoopsPass());
     pm.addPass(mlir::createSCFToControlFlowPass());
@@ -459,7 +458,6 @@ struct ConvertGPUKernelOutlinePass
                               filteredOperands.getArrayRef());
       });
     });
-#endif
   }
 
   void getDependentDialects(mlir::DialectRegistry &registry) const override {
