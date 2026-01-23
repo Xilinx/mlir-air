@@ -1734,8 +1734,6 @@ static bool isL1ToL1CopyInCore(MemRefType srcType, MemRefType dstType,
 struct MemRefCopyToLinalgCopyPattern : public OpRewritePattern<memref::CopyOp> {
   using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
 
-  MemRefCopyToLinalgCopyPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
-
   LogicalResult matchAndRewrite(memref::CopyOp copyOp,
                                 PatternRewriter &rewriter) const override {
     auto srcType = llvm::cast<MemRefType>(copyOp.getSource().getType());
@@ -1757,8 +1755,6 @@ struct MemRefCopyToLinalgCopyPattern : public OpRewritePattern<memref::CopyOp> {
 // linalg.copy to explicit load/store loops using linalg::linalgOpToLoops.
 struct LinalgCopyToLoopsPattern : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
-
-  LinalgCopyToLoopsPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
 
   LogicalResult matchAndRewrite(linalg::CopyOp copyOp,
                                 PatternRewriter &rewriter) const override {
