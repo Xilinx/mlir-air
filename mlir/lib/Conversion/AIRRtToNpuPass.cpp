@@ -615,9 +615,11 @@ public:
       auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
       if (!airrtDmaOp)
         continue;
-      StringRef metadata =
-          airrtDmaOp->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata")
-              .getValue();
+      auto metadataAttr =
+          airrtDmaOp->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
+      if (!metadataAttr)
+        continue;
+      StringRef metadata = metadataAttr.getValue();
       AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
     }
     rewriter.eraseOp(op);
