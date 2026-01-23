@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -34,6 +35,158 @@
 #define DEBUG_TYPE "airrt-to-npu-pass"
 
 using namespace mlir;
+
+namespace {
+
+// Helper function to check if a value is a memref on host memory (space 0)
+static bool isHostMemory(Value val) {
+  if (auto memrefType = dyn_cast<BaseMemRefType>(val.getType()))
+    return memrefType.getMemorySpaceAsInt() == 0;
+  return false;
+}
+
+// Helper function to check if an op has memory effects on host memory
+static bool hasMemoryEffectsOnHostMemory(Operation *op) {
+  // Check if this op has memory effects interface
+  auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!effects)
+    return false;
+
+  SmallVector<MemoryEffects::EffectInstance> memEffects;
+  effects.getEffects(memEffects);
+
+  for (auto &effect : memEffects) {
+    // Check if the effect is on a host memory value
+    Value val = effect.getValue();
+    if (val && isHostMemory(val))
+      return true;
+  }
+  return false;
+}
+
+// Helper function to check if an op is a "live root" that should be preserved
+bool isLiveRoot(Operation *op) {
+  // Ops in airrt dialect are always live roots
+  if (op->getDialect()->getNamespace() == "airrt")
+    return true;
+
+  // Ops in aie/aiex dialects are live roots
+  if (op->getDialect()->getNamespace() == "aie" ||
+      op->getDialect()->getNamespace() == "aiex")
+    return true;
+
+  // Terminators are live roots
+  if (op->hasTrait<OpTrait::IsTerminator>())
+    return true;
+
+  // func.func is a live root
+  if (isa<func::FuncOp>(op))
+    return true;
+
+  // Ops that have memory effects on host memory (space 0) should be kept
+  if (hasMemoryEffectsOnHostMemory(op))
+    return true;
+
+  return false;
+}
+
+// Recursively mark an op and its operand-defining ops as live
+void markLive(Operation *op, DenseSet<Operation *> &liveOps) {
+  if (!liveOps.insert(op).second)
+    return; // Already marked
+
+  // Mark all operand-defining ops as live
+  for (Value operand : op->getOperands()) {
+    if (auto *defOp = operand.getDefiningOp())
+      markLive(defOp, liveOps);
+  }
+
+  // Also mark parent ops as live (for nested ops in regions)
+  if (auto *parentOp = op->getParentOp()) {
+    if (!isa<ModuleOp>(parentOp))
+      markLive(parentOp, liveOps);
+  }
+}
+
+// Check if a loop body only contains the yield terminator (effectively empty)
+bool isLoopBodyEmpty(LoopLikeOpInterface loopOp) {
+  auto regions = loopOp.getLoopRegions();
+  if (regions.empty())
+    return false;
+  return llvm::hasSingleElement(regions.front()->front().getOperations());
+}
+
+// Remove dead device compute ops (L1/L2 memory ops, pure compute) that won't
+// be converted to NPU ops. This is a performance optimization to avoid
+// processing thousands of ops that will just be removed.
+void removeDeadDeviceComputeOps(func::FuncOp funcOp) {
+  DenseSet<Operation *> liveOps;
+
+  // Step 1: Find all live roots and propagate liveness backwards
+  funcOp.walk([&](Operation *op) {
+    if (isLiveRoot(op))
+      markLive(op, liveOps);
+  });
+
+  // Step 2: Collect dead ops (those not in liveOps)
+  // We need to process in reverse order so that users are erased before defs
+  SmallVector<Operation *> deadOps;
+
+  // Walk the function and collect dead ops
+  funcOp.walk([&](Operation *op) {
+    // Skip the function itself
+    if (op == funcOp.getOperation())
+      return;
+
+    if (!liveOps.contains(op))
+      deadOps.push_back(op);
+  });
+
+  // Step 3: Erase dead ops in reverse order
+  // Reverse the list so we erase inner-most ops first
+  for (Operation *op : llvm::reverse(deadOps)) {
+    // Double-check the op is still dead (use_empty)
+    // Skip if it still has uses (defensive programming)
+    if (!op->use_empty())
+      continue;
+
+    op->erase();
+  }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "Removed " << deadOps.size()
+                 << " dead device compute ops from function "
+                 << funcOp.getSymName() << "\n";
+  });
+
+  // Step 4: Remove empty loops (loops that have empty bodies after dead code
+  // removal). This needs to be done iteratively since removing inner loops may
+  // make outer loops empty.
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    SmallVector<Operation *> emptyLoops;
+
+    funcOp.walk([&](LoopLikeOpInterface loopOp) {
+      // Check if loop has no results being used
+      if (!loopOp->use_empty())
+        return;
+
+      // Check if loop body is empty (only contains yield)
+      if (isLoopBodyEmpty(loopOp))
+        emptyLoops.push_back(loopOp);
+    });
+
+    for (Operation *op : llvm::reverse(emptyLoops)) {
+      if (op->use_empty()) {
+        op->erase();
+        changed = true;
+      }
+    }
+  }
+}
+
+} // namespace
 
 namespace xilinx {
 
@@ -717,6 +870,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Move func op to the end of device op's body
     moveFuncOpToEndOfDeviceOp(module);
+
+    // Early cleanup: remove dead device compute ops (L1/L2 memory ops, pure
+    // compute) that won't be converted to NPU ops. This is a performance
+    // optimization to avoid processing thousands of ops during loop unrolling
+    // and pattern matching.
+    SmallVector<func::FuncOp> funcOps;
+    module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
+    for (auto f : funcOps)
+      removeDeadDeviceComputeOps(f);
 
     // Purge all wait all ops
     purgeSCFParContainingOnlyWaitAllOps(module);
