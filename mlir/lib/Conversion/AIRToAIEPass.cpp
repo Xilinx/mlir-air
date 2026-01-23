@@ -25,6 +25,8 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -1714,6 +1716,87 @@ struct OpRemovalPattern : public OpConversionPattern<OpT> {
   }
 };
 
+// Helper function to check if a copy operation is an L1-to-L1 copy inside an
+// AIE core.
+static bool isL1ToL1CopyInCore(MemRefType srcType, MemRefType dstType,
+                               Operation *op) {
+  // Only handle L1-to-L1 copies (memory space 2)
+  if (srcType.getMemorySpaceAsInt() != (int)air::MemorySpace::L1 ||
+      dstType.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+    return false;
+
+  // Only handle copies inside AIE cores
+  return op->getParentOfType<AIE::CoreOp>() != nullptr;
+}
+
+// Pattern to convert memref.copy to linalg.copy for L1-to-L1 copies.
+// The actual lowering to loops is handled by LinalgCopyToLoopsPattern.
+struct MemRefCopyToLinalgCopyPattern : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
+
+  MemRefCopyToLinalgCopyPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(memref::CopyOp copyOp,
+                                PatternRewriter &rewriter) const override {
+    auto srcType = llvm::cast<MemRefType>(copyOp.getSource().getType());
+    auto dstType = llvm::cast<MemRefType>(copyOp.getTarget().getType());
+
+    if (!isL1ToL1CopyInCore(srcType, dstType, copyOp))
+      return failure();
+
+    // Convert memref.copy to linalg.copy; LinalgCopyToLoopsPattern will
+    // lower it to loops.
+    rewriter.replaceOpWithNewOp<linalg::CopyOp>(copyOp, copyOp.getSource(),
+                                                copyOp.getTarget());
+    return success();
+  }
+};
+
+// Pattern to lower L1-to-L1 linalg.copy to SCF loops.
+// AIE cores don't have a native memcpy instruction, so we convert
+// linalg.copy to explicit load/store loops using linalg::linalgOpToLoops.
+struct LinalgCopyToLoopsPattern : public OpRewritePattern<linalg::CopyOp> {
+  using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
+
+  LinalgCopyToLoopsPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(linalg::CopyOp copyOp,
+                                PatternRewriter &rewriter) const override {
+    // Get input (source) and output (destination) memrefs
+    auto inputs = copyOp.getDpsInputOperands();
+    auto outputs = copyOp.getDpsInitsMutable();
+    if (inputs.size() != 1 || outputs.size() != 1)
+      return failure();
+
+    auto srcType = llvm::dyn_cast<MemRefType>(inputs[0]->get().getType());
+    auto dstType = llvm::dyn_cast<MemRefType>(outputs[0].get().getType());
+    if (!srcType || !dstType)
+      return failure();
+
+    if (!isL1ToL1CopyInCore(srcType, dstType, copyOp))
+      return failure();
+
+    // Convert linalg.copy to SCF loops using linalgOpToLoops
+    FailureOr<linalg::LinalgLoops> loops =
+        linalg::linalgOpToLoops(rewriter, copyOp);
+    if (failed(loops))
+      return failure();
+
+    rewriter.eraseOp(copyOp);
+    return success();
+  }
+};
+
+// Apply the memref.copy and linalg.copy to loops lowering patterns on L1-to-L1
+// copies
+void lowerMemRefCopyToLoops(AIE::DeviceOp d) {
+  auto ctx = d->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<MemRefCopyToLinalgCopyPattern>(ctx);
+  patterns.insert<LinalgCopyToLoopsPattern>(ctx);
+  (void)applyPatternsGreedily(d, std::move(patterns));
+}
+
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
   uint64_t BufferId = 0;
@@ -1732,6 +1815,8 @@ public:
     registry.insert<cf::ControlFlowDialect>();
     registry.insert<vector::VectorDialect>();
     registry.insert<DLTIDialect>();
+    registry.insert<linalg::LinalgDialect>();
+    registry.insert<scf::SCFDialect>();
   }
 
   // Circuit-switched flow.
@@ -4160,6 +4245,11 @@ public:
 
       if (options.insert_trace_packet_flow)
         createTracePacketFlow(device);
+
+      // Lower L1-to-L1 memref.copy to loops before removing remaining copies.
+      // AIE cores don't have native memcpy, so L1-to-L1 copies must be
+      // converted to explicit load/store loops via linalg.copy.
+      lowerMemRefCopyToLoops(device);
 
       SmallVector<air::HerdOp, 4> herds;
       SmallVector<air::SegmentOp, 4> segs;

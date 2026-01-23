@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie | FileCheck %s
+// RUN: air-opt %s -air-to-aie --split-input-file | FileCheck %s
 module {
 
 func.func @foo(%arg0: i32) {
@@ -31,6 +31,120 @@ func.func @foo(%arg0: i32) {
     memref.store %2, %dst0[%zero] : memref<1xi32, 2>
   }
   // CHECK: sym_name = "herd_0"
+  return
+}
+
+}
+
+// -----
+
+// Test that L1-to-L1 memref.copy is lowered to loops with load/store.
+// CHECK: aie.device
+// CHECK: %[[TILE:.*]] = aie.tile(1, 1)
+// CHECK: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK: aie.core(%[[TILE]]) {
+// CHECK:   scf.for
+// CHECK:     scf.for
+// CHECK:       memref.load %[[BUF1]]
+// CHECK:       memref.store {{.*}}, %[[BUF0]]
+module {
+
+func.func @memref_copy_l1_to_l1() {
+  %cst1 = arith.constant 1 : index
+  air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) {
+    %src = memref.alloc() : memref<4x8xi32, 2>
+    %dst = memref.alloc() : memref<4x8xi32, 2>
+    memref.copy %src, %dst : memref<4x8xi32, 2> to memref<4x8xi32, 2>
+    air.herd_terminator
+  }
+  return
+}
+
+}
+
+// -----
+
+// Test that L1-to-L1 memref.copy wrapped in air.execute is lowered to loops.
+// CHECK: aie.device
+// CHECK: %[[TILE:.*]] = aie.tile(1, 1)
+// CHECK: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK: aie.core(%[[TILE]]) {
+// CHECK:   scf.for
+// CHECK:     scf.for
+// CHECK:       memref.load %[[BUF1]]
+// CHECK:       memref.store {{.*}}, %[[BUF0]]
+module {
+
+func.func @memref_copy_l1_to_l1_in_execute() {
+  %cst1 = arith.constant 1 : index
+  air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) {
+    %src = memref.alloc() : memref<4x8xi32, 2>
+    %dst = memref.alloc() : memref<4x8xi32, 2>
+    %0 = air.execute {
+      memref.copy %src, %dst : memref<4x8xi32, 2> to memref<4x8xi32, 2>
+      air.execute_terminator
+    }
+    air.herd_terminator
+  }
+  return
+}
+
+}
+
+// -----
+
+// Test that L1-to-L1 linalg.copy is lowered to loops with load/store.
+// CHECK: aie.device
+// CHECK: %[[TILE:.*]] = aie.tile(1, 1)
+// CHECK: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK: aie.core(%[[TILE]]) {
+// CHECK:   scf.for
+// CHECK:     scf.for
+// CHECK:       memref.load %[[BUF1]]
+// CHECK:       memref.store {{.*}}, %[[BUF0]]
+module {
+
+func.func @linalg_copy_l1_to_l1() {
+  %cst1 = arith.constant 1 : index
+  air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) {
+    %src = memref.alloc() : memref<4x8xi32, 2>
+    %dst = memref.alloc() : memref<4x8xi32, 2>
+    linalg.copy ins(%src : memref<4x8xi32, 2>) outs(%dst : memref<4x8xi32, 2>)
+    air.herd_terminator
+  }
+  return
+}
+
+}
+
+// -----
+
+// Test that L1-to-L1 linalg.copy wrapped in air.execute is lowered to loops.
+// CHECK: aie.device
+// CHECK: %[[TILE:.*]] = aie.tile(1, 1)
+// CHECK: %[[BUF1:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK: %[[BUF0:.*]] = aie.buffer(%[[TILE]]) {{{.*}}} : memref<4x8xi32, 2>
+// CHECK: aie.core(%[[TILE]]) {
+// CHECK:   scf.for
+// CHECK:     scf.for
+// CHECK:       memref.load %[[BUF1]]
+// CHECK:       memref.store {{.*}}, %[[BUF0]]
+module {
+
+func.func @linalg_copy_l1_to_l1_in_execute() {
+  %cst1 = arith.constant 1 : index
+  air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) {
+    %src = memref.alloc() : memref<4x8xi32, 2>
+    %dst = memref.alloc() : memref<4x8xi32, 2>
+    %0 = air.execute {
+      linalg.copy ins(%src : memref<4x8xi32, 2>) outs(%dst : memref<4x8xi32, 2>)
+      air.execute_terminator
+    }
+    air.herd_terminator
+  }
   return
 }
 
