@@ -1,3 +1,10 @@
+//===- GPUKernelOutlingPass.cpp -----------------------------------------*- C++ -*-===//
+//
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
 #include "air/Conversion/GPUKernelOutlinePass.h"
 #include "air/Conversion/PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
