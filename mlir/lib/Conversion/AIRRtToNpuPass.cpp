@@ -12,6 +12,7 @@
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Util/Util.h"
 
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -256,71 +257,67 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
   LogicalResult
   matchAndRewrite(airrt::DmaMemcpyNdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto idOp = adaptor.getOperands().front();
-    uint64_t idInt = 0;
-    if (auto const_int = getConstantIntValue(idOp))
-      idInt = *const_int;
-    else
-      return failure();
-
     Value memref = adaptor.getMemref();
     BaseMemRefType memrefTy = cast<BaseMemRefType>(memref.getType());
     unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
     if (bitwidth != 32 && bitwidth != 16 && bitwidth != 8)
       return failure();
 
-    SmallVector<Value> offsets;
+    // Get static offsets
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
       staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(adaptor.getOffset3());
+      staticOffsets.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
       staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(adaptor.getOffset2());
+      staticOffsets.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
       staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(adaptor.getOffset1());
+      staticOffsets.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
       staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(adaptor.getOffset0());
-    SmallVector<Value> sizes;
+      staticOffsets.push_back(0);
+
+    // Get static sizes
     SmallVector<int64_t> staticSizes;
     if (auto const_int = getConstantIntValue(adaptor.getLength3()))
       staticSizes.push_back(*const_int);
     else
-      sizes.push_back(adaptor.getLength3());
+      staticSizes.push_back(1);
     if (auto const_int = getConstantIntValue(adaptor.getLength2()))
       staticSizes.push_back(*const_int);
     else
-      sizes.push_back(adaptor.getLength2());
+      staticSizes.push_back(1);
     if (auto const_int = getConstantIntValue(adaptor.getLength1()))
       staticSizes.push_back(*const_int);
     else
-      sizes.push_back(adaptor.getLength1());
+      staticSizes.push_back(1);
     if (auto const_int = getConstantIntValue(adaptor.getLength0()))
       staticSizes.push_back(std::max((int64_t)1, *const_int));
     else
-      sizes.push_back(adaptor.getLength0());
-    SmallVector<Value> strides;
+      staticSizes.push_back(1);
+
+    // Get static strides
     SmallVector<int64_t> staticStrides;
     if (auto const_int = getConstantIntValue(adaptor.getStride3()))
       staticStrides.push_back(*const_int);
     else
-      strides.push_back(adaptor.getStride3());
+      staticStrides.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getStride2()))
       staticStrides.push_back(*const_int);
     else
-      strides.push_back(adaptor.getStride2());
+      staticStrides.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getStride1()))
       staticStrides.push_back(*const_int);
     else
-      strides.push_back(adaptor.getStride1());
-    staticStrides.push_back(1);
+      staticStrides.push_back(0);
+    staticStrides.push_back(1); // Last stride is always 1
 
+    // Get metadata symbol
     SymbolRefAttr metadata;
     if (op->hasAttr("metadata"))
       metadata = op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
@@ -328,11 +325,80 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       metadata = SymbolRefAttr::get(op->getContext(),
                                     rewriter.getStringAttr("MetadataNotFound"));
 
-    AIE::PacketInfoAttr packet =
-        op->getAttrOfType<AIE::PacketInfoAttr>("packet");
-    rewriter.replaceOpWithNewOp<AIEX::NpuDmaMemcpyNdOp>(
-        op, memref, offsets, sizes, strides, staticOffsets, staticSizes,
-        staticStrides, packet, metadata, idInt);
+    // Calculate total offset in elements
+    int64_t totalOffset = 0;
+    if (auto rankedMemref = dyn_cast<MemRefType>(memrefTy)) {
+      auto shape = rankedMemref.getShape();
+      int64_t multiplier = 1;
+      for (int i = 3; i >= 0; i--) {
+        totalOffset += staticOffsets[i] * multiplier;
+        if (i > 0 && static_cast<size_t>(i - 1) < shape.size())
+          multiplier *= shape[shape.size() - (4 - i)];
+        else
+          multiplier = 1;
+      }
+    } else {
+      totalOffset = staticOffsets[3];
+    }
+
+    // Calculate transfer length (product of all sizes)
+    int64_t transferLen = 1;
+    for (auto sz : staticSizes)
+      transferLen *= sz;
+
+    // Build BDDimLayoutArrayAttr for the data layout transformation
+    SmallVector<AIE::BDDimLayoutAttr> dimLayouts;
+    auto ctx = rewriter.getContext();
+
+    // Build dimension layouts from sizes and strides (only non-trivial dims)
+    for (int i = 0; i < 4; i++) {
+      int64_t size = staticSizes[i];
+      int64_t stride = staticStrides[i];
+      if (size > 1 || i == 3) {
+        auto dimLayout = AIE::BDDimLayoutAttr::get(ctx, size, stride);
+        dimLayouts.push_back(dimLayout);
+      }
+    }
+
+    AIE::BDDimLayoutArrayAttr dimsAttr =
+        AIE::BDDimLayoutArrayAttr::get(ctx, dimLayouts);
+
+    // Create DMAConfigureTaskForOp
+    auto configTaskOp = AIEX::DMAConfigureTaskForOp::create(
+        rewriter, op.getLoc(),
+        rewriter.getIndexType(),      // result type
+        metadata,                     // alloc symbol reference
+        rewriter.getBoolAttr(true),   // issue_token = true
+        rewriter.getI32IntegerAttr(0) // repeat_count = 0
+    );
+
+    // Create the body region of the configure task op
+    Block *bodyBlock = rewriter.createBlock(&configTaskOp.getBody());
+    rewriter.setInsertionPointToStart(bodyBlock);
+
+    // Create aie.dma_bd inside the task body
+    if (dimLayouts.empty()) {
+      AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
+                           static_cast<int>(totalOffset),
+                           static_cast<int>(transferLen));
+    } else {
+      AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
+                           static_cast<int>(totalOffset),
+                           static_cast<int>(transferLen), dimsAttr);
+    }
+
+    // Create aie.end to terminate the block
+    AIE::EndOp::create(rewriter, op.getLoc());
+
+    // Move insertion point after the configure task op
+    rewriter.setInsertionPointAfter(configTaskOp);
+
+    // Create DMAStartTaskOp
+    AIEX::DMAStartTaskOp::create(rewriter, op.getLoc(),
+                                 configTaskOp.getResult());
+
+    // Erase the original op
+    rewriter.eraseOp(op);
 
     return success();
   }
@@ -529,7 +595,7 @@ public:
 
 // Convert FuncOp control function into aiex.runtime_sequence op.
 // Functions are converted if they are not external, are inside an aie.device
-// and contain aiex.npu.* ops
+// and contain aiex.npu.* ops, aiex.dma_* ops, or airrt.dma_memcpy_nd ops
 class ControlFuncConversion : public OpConversionPattern<func::FuncOp> {
 public:
   using OpConversionPattern<func::FuncOp>::OpConversionPattern;
@@ -545,12 +611,14 @@ public:
     if (!device)
       return failure();
 
-    bool contains_npu_ops = false;
+    bool contains_relevant_ops = false;
     op.walk([&](Operation *o) {
-      if (o->getName().getStringRef().starts_with("aiex.npu."))
-        contains_npu_ops = true;
+      if (o->getName().getStringRef().starts_with("aiex.npu.") ||
+          o->getName().getStringRef().starts_with("aiex.dma_") ||
+          isa<airrt::DmaMemcpyNdOp>(o))
+        contains_relevant_ops = true;
     });
-    if (!contains_npu_ops)
+    if (!contains_relevant_ops)
       return failure();
 
     auto seq = AIE::RuntimeSequenceOp::create(rewriter, op->getLoc(),
