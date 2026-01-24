@@ -587,6 +587,12 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--print-module-only", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument(
+        "--mlir-file",
+        type=str,
+        default=None,
+        help="Path to external MLIR file to compile (instead of generating)",
+    )
+    parser.add_argument(
         "--lk", type=int, default=12288, help="Total sequence length for K/V matrices"
     )
     parser.add_argument(
@@ -597,19 +603,40 @@ if __name__ == "__main__":
     )
     parser.add_argument("--dk", type=int, default=64, help="Key dimension")
     parser.add_argument("--dv", type=int, default=64, help="Value dimension")
+    parser.add_argument(
+        "--compile-mode",
+        type=str,
+        default="compile-and-run",
+        choices=["compile-and-run", "compile-and-xclbin", "compile-only"],
+        help="Compilation mode: compile-and-run (default), compile-and-xclbin (for profiling), compile-only",
+    )
     args = parser.parse_args()
 
     lk, lkp, lq, dk, dv = args.lk, args.lkp, args.lq, args.dk, args.dv
 
-    mlir_module = build_module(
-        lk=lk,
-        lkp=lkp,
-        lq=lq,
-        dk=dk,
-        dv=dv,
-        num_q_tiles=4,
-        num_cascade_stages=4,
-    )
+    if args.mlir_file:
+        # Load MLIR module from external file
+        with open(args.mlir_file, "r") as f:
+            mlir_source = f.read()
+        with Context() as ctx, Location.unknown():
+            # Register AIR dialects using DialectRegistry
+            registry = DialectRegistry()
+            air.dialects.air.register_dialect(registry)
+            ctx.append_dialect_registry(registry)
+            ctx.load_all_available_dialects()
+            mlir_module = Module.parse(mlir_source)
+        print(f"Loaded MLIR module from: {args.mlir_file}")
+    else:
+        # Generate MLIR module using Python bindings
+        mlir_module = build_module(
+            lk=lk,
+            lkp=lkp,
+            lq=lq,
+            dk=dk,
+            dv=dv,
+            num_q_tiles=4,
+            num_cascade_stages=4,
+        )
 
     if args.print_module_only:
         print(mlir_module)
@@ -666,14 +693,40 @@ if __name__ == "__main__":
         omit_while_true_loop=False,
         omit_pingpong="all",
         num_device_cols=4,
-        verbose=False,
+        verbose=args.verbose,
         runtime_loop_tiling_sizes=[1, 1],
     )
-    exit(
-        runner.run_test(
-            mlir_module,
-            inputs=[input_q_scaled, input_k, input_v, input_m],
-            expected_outputs=[lazy_attn_output],
-            rtol=1e-1,
+
+    if args.compile_mode == "compile-and-run":
+        exit(
+            runner.run_test(
+                mlir_module,
+                inputs=[input_q_scaled, input_k, input_v, input_m],
+                expected_outputs=[lazy_attn_output],
+                rtol=1e-1,
+            )
         )
-    )
+    elif args.compile_mode == "compile-and-xclbin":
+        # Compile and generate xclbin (requires XRT, no execution)
+        backend = XRTBackend(
+            omit_while_true_loop=False,
+            omit_pingpong="all",
+            num_device_cols=4,
+            verbose=args.verbose,
+            runtime_loop_tiling_sizes=[1, 1],
+        )
+        module_function = backend.compile(mlir_module)
+        backend.unload()
+        print("Compilation complete. Generated air.xclbin and air.insts.bin")
+    elif args.compile_mode == "compile-only":
+        # Compile without xclbin generation
+        backend = XRTBackend(
+            omit_while_true_loop=False,
+            omit_pingpong="all",
+            num_device_cols=4,
+            verbose=args.verbose,
+            target_device="npu2",
+            output_format="none",
+        )
+        backend.compile(mlir_module)
+        print("Compilation complete (no xclbin generated)")
