@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -51,9 +52,9 @@ int main(int argc, const char *argv[]) {
       "warmup,w", "Number of warmup iterations",
       cxxopts::value<int>()->default_value("0"))(
       "iterations,n", "Number of iterations",
-      cxxopts::value<int>()->default_value("1"));
-
-  int trace_size = 131072;
+      cxxopts::value<int>()->default_value("1"))(
+      "trace-size,t", "Trace buffer size in bytes (0 to disable tracing)",
+      cxxopts::value<int>()->default_value("0"));
 
   auto vm = options.parse(argc, argv);
 
@@ -68,6 +69,9 @@ int main(int argc, const char *argv[]) {
     std::cerr << "Usage:\n" << options.help() << std::endl;
     return 1;
   }
+
+  // Get trace size from command line
+  int trace_size = vm["trace-size"].as<int>();
 
   // Get dimensions from command line
   int lq = vm["lq"].as<int>();
@@ -151,7 +155,7 @@ int main(int argc, const char *argv[]) {
   unsigned n_warmup_iterations = vm["warmup"].as<int>();
   unsigned num_iter = n_iterations + n_warmup_iterations;
   float npu_time_total = 0;
-  float npu_time_min = 9999999;
+  float npu_time_min = std::numeric_limits<float>::max();
   float npu_time_max = 0;
 
   // FLOPs for attention: Q@K^T (lq*lk*dk*2) + softmax(~5*lq*lk) + S@V
