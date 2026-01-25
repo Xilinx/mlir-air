@@ -255,7 +255,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       : OpConversionPattern<airrt::DmaMemcpyNdOp>(context, benefit) {}
 
   // Helper to check if a DMA uses an S2MM (output/device-to-host) channel
-  bool isOutputChannel(airrt::DmaMemcpyNdOp op) const {
+  bool isDeviceToHostChannel(airrt::DmaMemcpyNdOp op) const {
     if (!op->hasAttr("metadata"))
       return false;
 
@@ -409,7 +409,7 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
 
     // Determine if this is an output (S2MM) channel
     // S2MM channels issue tokens by default, MM2S channels do not
-    bool issueToken = isOutputChannel(op);
+    bool issueToken = isDeviceToHostChannel(op);
 
     // Create DMAConfigureTaskForOp with proper repeat_count from highest
     // dimension
@@ -1170,59 +1170,6 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (!f || !d)
         continue;
       f->moveBefore(d.getBody()->getTerminator());
-    }
-  }
-
-  // Generate DMAAwaitTaskOp for output (S2MM) channels at the end of each
-  // function. This ensures all output data is written before the function
-  // returns.
-  void generateAwaitForOutputChannels(ModuleOp module) {
-    SmallVector<func::FuncOp> funcOps;
-    module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
-
-    for (auto f : funcOps) {
-      auto device = f->getParentOfType<AIE::DeviceOp>();
-      if (!device)
-        continue;
-
-      if (f.getBody().empty())
-        continue;
-
-      // Collect all DMAConfigureTaskForOp that use S2MM channels
-      // We need to track the last task for each unique S2MM channel
-      llvm::MapVector<StringRef, AIEX::DMAConfigureTaskForOp>
-          s2mmChannelToLastTask;
-
-      f.walk([&](AIEX::DMAConfigureTaskForOp configTask) {
-        auto allocSymbol = configTask.getAlloc();
-        StringRef allocSymbolStr = allocSymbol.getLeafReference().getValue();
-        auto allocOp =
-            AIE::ShimDMAAllocationOp::getForSymbol(device, allocSymbolStr);
-        if (!allocOp)
-          return;
-
-        // S2MM = device to host = output = needs wait
-        if (allocOp.getChannelDir() == AIE::DMAChannelDir::S2MM) {
-          // Store (or update) the last task for this channel
-          s2mmChannelToLastTask[allocSymbolStr] = configTask;
-        }
-      });
-
-      // Generate await ops at the end of the function body
-      if (s2mmChannelToLastTask.empty())
-        continue;
-
-      // Find the terminator (return) of the function
-      Operation *terminator = f.getBody().front().getTerminator();
-      if (!terminator)
-        continue;
-
-      OpBuilder builder(terminator);
-      for (auto &kv : s2mmChannelToLastTask) {
-        AIEX::DMAConfigureTaskForOp configTask = kv.second;
-        AIEX::DMAAwaitTaskOp::create(builder, terminator->getLoc(),
-                                     configTask.getResult());
-      }
     }
   }
 
