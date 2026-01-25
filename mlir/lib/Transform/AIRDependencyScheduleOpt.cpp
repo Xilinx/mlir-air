@@ -6117,6 +6117,9 @@ public:
         auto blockingWaitAll = rewriter.replaceOpWithNewOp<air::WaitAllOp>(
             tiledLoops.front()->getNextNode(), /*result_type*/ Type(),
             tiledLoops.front()->getResult(0));
+        // Label this wait_all as the end of a launch body so that later
+        // passes can identify it for reconfiguration operations.
+        blockingWaitAll->setAttr("air.launch_end", rewriter.getUnitAttr());
         rewriter.setInsertionPointAfter(blockingWaitAll);
         auto disconnectedWaitAll = air::WaitAllOp::create(
             rewriter, tiledLoops.front()->getLoc(),
@@ -6190,8 +6193,12 @@ public:
             rewriter.setInsertionPoint(blk->getTerminator());
           else
             rewriter.setInsertionPointToEnd(blk);
-          air::WaitAllOp::create(rewriter, rewriter.getUnknownLoc(),
-                                 /*result_type*/ Type(), chanTokens);
+          auto launchEndWaitAll =
+              air::WaitAllOp::create(rewriter, rewriter.getUnknownLoc(),
+                                     /*result_type*/ Type(), chanTokens);
+          // Label this wait_all as the end of a launch body so that later
+          // passes can identify it for reconfiguration operations.
+          launchEndWaitAll->setAttr("air.launch_end", rewriter.getUnitAttr());
         }
       }
     }
@@ -6269,9 +6276,14 @@ public:
       IRRewriter rewriter(func.getContext());
       if (air::isAsyncOp(seg)) {
         OpBuilder::InsertionGuard guard(rewriter);
-        if (!generateWaitAllToTerminateBlock(seg.getBody().front(), rewriter,
-                                             /*isBlocking*/ true))
+        auto segEndWaitAll =
+            generateWaitAllToTerminateBlock(seg.getBody().front(), rewriter,
+                                            /*isBlocking*/ true);
+        if (!segEndWaitAll)
           signalPassFailure();
+        // Label this wait_all as the end of a segment body so that later
+        // passes can identify it for reconfiguration operations.
+        segEndWaitAll->setAttr("air.segment_end", rewriter.getUnitAttr());
       }
     }
   }

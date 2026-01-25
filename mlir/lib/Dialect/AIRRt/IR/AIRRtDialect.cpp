@@ -69,8 +69,11 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
       continue;
     newOperands.erase(i);
     newOperands.insert(wa.getOperands().begin(), wa.getOperands().end());
-    rewriter.replaceOpWithNewOp<WaitAllOp>(op, op.getResultTypes(),
-                                           newOperands.takeVector());
+    auto newOp = rewriter.replaceOpWithNewOp<WaitAllOp>(
+        op, op.getResultTypes(), newOperands.takeVector());
+    // Preserve attributes from the original operation (e.g., air.segment_end,
+    // air.launch_end).
+    newOp->setAttrs(op->getAttrs());
     return success();
   }
 

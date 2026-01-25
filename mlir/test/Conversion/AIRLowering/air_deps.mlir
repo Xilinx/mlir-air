@@ -131,3 +131,41 @@ func.func @scf_for_par(%arg0: memref<1024x512xi8>, %arg1: memref<512x1024xi8>, %
   }
   return
 }
+
+// CHECK-LABEL: func.func @wait_all_segment_end
+// CHECK: %[[V0:.*]] = airrt.wait_all : !airrt.event
+// CHECK: airrt.wait_all %[[V0]] {air.segment_end}
+func.func @wait_all_segment_end() {
+  %0 = air.wait_all async
+  air.wait_all [%0] {air.segment_end}
+  return
+}
+
+// CHECK-LABEL: func.func @wait_all_launch_end
+// CHECK: %[[V0:.*]] = airrt.wait_all : !airrt.event
+// CHECK: airrt.wait_all %[[V0]] {air.launch_end}
+func.func @wait_all_launch_end() {
+  %0 = air.wait_all async
+  air.wait_all [%0] {air.launch_end}
+  return
+}
+
+// CHECK-LABEL: func.func @wait_all_async_segment_end
+// CHECK: %[[V0:.*]] = airrt.wait_all : !airrt.event
+// CHECK: %[[V1:.*]] = airrt.wait_all %[[V0]] {air.segment_end} : !airrt.event
+func.func @wait_all_async_segment_end() {
+  %0 = air.wait_all async
+  %1 = air.wait_all async [%0] {air.segment_end}
+  air.wait_all [%1]
+  return
+}
+
+// CHECK-LABEL: func.func @wait_all_async_launch_end
+// CHECK: %[[V0:.*]] = airrt.wait_all : !airrt.event
+// CHECK: %[[V1:.*]] = airrt.wait_all %[[V0]] {air.launch_end} : !airrt.event
+func.func @wait_all_async_launch_end() {
+  %0 = air.wait_all async
+  %1 = air.wait_all async [%0] {air.launch_end}
+  air.wait_all [%1]
+  return
+}
