@@ -98,6 +98,58 @@ static LogicalResult FoldDealloc(DeallocOp op, PatternRewriter &rewriter) {
   return failure();
 }
 
+static LogicalResult FoldSegmentLoad(SegmentLoadOp op,
+                                     PatternRewriter &rewriter) {
+  // Look for a previous segment_load with the same sym_name in the same block.
+  auto symName = op.getSymName();
+
+  for (Operation *prevOp = op->getPrevNode(); prevOp;
+       prevOp = prevOp->getPrevNode()) {
+    // Check if prevOp itself is a SegmentLoadOp.
+    if (auto prevSegmentLoad = dyn_cast<SegmentLoadOp>(prevOp)) {
+      if (prevSegmentLoad.getSymName() == symName) {
+        rewriter.replaceOp(op, prevSegmentLoad.getResults());
+        return success();
+      }
+    }
+  }
+  return failure();
+}
+
+// Helper to check if two HerdLoadOps are equivalent.
+static bool areHerdLoadsEquivalent(HerdLoadOp a, HerdLoadOp b) {
+  if (a.getSymName() != b.getSymName())
+    return false;
+  if (a->getAttr("segment_name") != b->getAttr("segment_name"))
+    return false;
+  auto aRtp = a.getRtp();
+  auto bRtp = b.getRtp();
+  if (aRtp.size() != bRtp.size())
+    return false;
+  for (size_t i = 0; i < aRtp.size(); ++i) {
+    if (aRtp[i] != bRtp[i])
+      return false;
+  }
+  return true;
+}
+
+static LogicalResult FoldHerdLoad(HerdLoadOp op, PatternRewriter &rewriter) {
+  // Look for a previous herd_load with the same sym_name, segment_name
+  // attribute, and rtp operands in the same block.
+
+  for (Operation *prevOp = op->getPrevNode(); prevOp;
+       prevOp = prevOp->getPrevNode()) {
+    // Check if prevOp itself is a HerdLoadOp.
+    if (auto prevHerdLoad = dyn_cast<HerdLoadOp>(prevOp)) {
+      if (areHerdLoadsEquivalent(op, prevHerdLoad)) {
+        rewriter.replaceOp(op, prevHerdLoad.getResults());
+        return success();
+      }
+    }
+  }
+  return failure();
+}
+
 void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldWaitAll);
@@ -111,6 +163,16 @@ void AllocOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 void DeallocOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldDealloc);
+}
+
+void SegmentLoadOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
+  patterns.add(FoldSegmentLoad);
+}
+
+void HerdLoadOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                             MLIRContext *context) {
+  patterns.add(FoldHerdLoad);
 }
 
 } // namespace xilinx::airrt
