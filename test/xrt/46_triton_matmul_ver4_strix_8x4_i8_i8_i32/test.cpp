@@ -1,7 +1,7 @@
 //===- test.cpp -------------------------------------------------*- C++ -*-===//
 //
 // SPDX-License-Identifier: MIT
-// Copyright (C) 2025, Advanced Micro Devices, Inc.
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,9 +27,7 @@ using A_DATATYPE = int8_t;
 using B_DATATYPE = int8_t;
 using C_DATATYPE = int32_t;
 
-static inline int8_t random_int8_t() {
-  return (int8_t)(rand() % 8);
-}
+static inline int8_t random_int8_t() { return (int8_t)(rand() % 8); }
 
 void add_default_options(cxxopts::Options &options) {
   options.add_options()("help,h", "produce help message")(

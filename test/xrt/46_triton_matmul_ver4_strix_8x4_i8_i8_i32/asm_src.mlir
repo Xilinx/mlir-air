@@ -1,3 +1,6 @@
+// Copyright (C) 2026, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+
 module {
   func.func @bare_matmul(%arg0: memref<*xi8> {tt.divisibility = 16 : i32}, %arg1: memref<*xi8> {tt.divisibility = 16 : i32}, %arg2: memref<*xi32> {tt.divisibility = 16 : i32}, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32) {
     %c0_i32 = arith.constant 0 : i32

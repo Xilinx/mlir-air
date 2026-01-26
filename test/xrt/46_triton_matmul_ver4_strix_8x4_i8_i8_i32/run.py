@@ -1,6 +1,6 @@
 # run.py -*- Python -*-
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
 import argparse
@@ -84,13 +84,13 @@ with air.ir.Context() as ctx, Location.unknown():
     # Print the IR for debugging and exit if --debug-ir is specified
     if args.debug_ir:
         import os
+
         output_file = args.debug_ir
         os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
         with open(output_file, "w") as f:
             f.write(str(air_module))
         print(f"Transformed IR written to {output_file}")
         exit(0)
-
 
     ################################################
     ## Binding scf.parallel to air hierarchies
@@ -120,7 +120,6 @@ with air.ir.Context() as ctx, Location.unknown():
     # Run compile and load
     ###############################################
 
-
     if args.compile_only:
         # Compile-only mode: generate xclbin and instruction binary without validation
         print("Compile-only mode: generating xclbin and instruction binary...")
@@ -144,7 +143,9 @@ with air.ir.Context() as ctx, Location.unknown():
             low=0, high=8, size=(K, N), dtype=input_type
         )  # Shape [K, N]
 
-        C = np.matmul(A.astype(output_type), B.astype(output_type)).astype(output_type)  # Shape [M, N]
+        C = np.matmul(A.astype(output_type), B.astype(output_type)).astype(
+            output_type
+        )  # Shape [M, N]
 
         runner = XRTRunner(
             omit_while_true_loop=False,
