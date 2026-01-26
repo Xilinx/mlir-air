@@ -326,8 +326,11 @@ public:
     if (op->getNumResults())
       tys.push_back(airrt::EventType::get(op->getContext()));
 
-    rewriter.replaceOpWithNewOp<airrt::WaitAllOp>(op, tys,
-                                                  adaptor.getOperands());
+    auto newWaitAll = airrt::WaitAllOp::create(rewriter, op->getLoc(), tys,
+                                               adaptor.getOperands());
+    // Preserve discardable attributes (e.g., air.launch_end).
+    newWaitAll->setAttrs(op->getDiscardableAttrDictionary());
+    rewriter.replaceOp(op, newWaitAll);
     return success();
   }
 };

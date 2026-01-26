@@ -12,6 +12,7 @@
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Util/Util.h"
 
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -253,86 +254,205 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
   DmaToNpuPattern(MLIRContext *context, PatternBenefit benefit = 1)
       : OpConversionPattern<airrt::DmaMemcpyNdOp>(context, benefit) {}
 
+  // Helper to check if a DMA uses an S2MM (output/device-to-host) channel
+  bool isDeviceToHostChannel(airrt::DmaMemcpyNdOp op) const {
+    if (!op->hasAttr("metadata"))
+      return false;
+
+    auto metadata = op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
+    if (!metadata)
+      return false;
+
+    // Find the parent DeviceOp to look up the allocation
+    auto device = op->getParentOfType<AIE::DeviceOp>();
+    if (!device)
+      return false;
+
+    // Look up the ShimDMAAllocationOp for this metadata symbol
+    StringRef metadataStr = metadata.getValue();
+    auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, metadataStr);
+    if (!allocOp)
+      return false;
+
+    // S2MM = device to host = output = needs wait
+    return allocOp.getChannelDir() == AIE::DMAChannelDir::S2MM;
+  }
+
   LogicalResult
   matchAndRewrite(airrt::DmaMemcpyNdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto idOp = adaptor.getOperands().front();
-    uint64_t idInt = 0;
-    if (auto const_int = getConstantIntValue(idOp))
-      idInt = *const_int;
-    else
-      return failure();
-
     Value memref = adaptor.getMemref();
     BaseMemRefType memrefTy = cast<BaseMemRefType>(memref.getType());
     unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
     if (bitwidth != 32 && bitwidth != 16 && bitwidth != 8)
       return failure();
 
-    SmallVector<Value> offsets;
+    // Get metadata symbol - must exist
+    SymbolRefAttr metadata;
+    if (!op->hasAttr("metadata"))
+      return failure();
+    metadata = op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
+    if (!metadata)
+      return failure();
+
+    // Verify the metadata symbol exists as a ShimDMAAllocationOp or
+    // ObjectFifo. If device doesn't exist or symbol lookup fails, we fail
+    // the pattern to avoid crashes.
+    auto device = op->getParentOfType<AIE::DeviceOp>();
+    if (!device)
+      return failure();
+
+    StringRef metadataStr = cast<FlatSymbolRefAttr>(metadata).getValue();
+    auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, metadataStr);
+    if (!allocOp) {
+      // Check for objectfifo as alternative
+      auto objFifo = device.lookupSymbol<AIE::ObjectFifoCreateOp>(metadataStr);
+      if (!objFifo)
+        return failure();
+    }
+
+    // Get static offsets
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
       staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(adaptor.getOffset3());
+      staticOffsets.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
       staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(adaptor.getOffset2());
+      staticOffsets.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
       staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(adaptor.getOffset1());
+      staticOffsets.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
       staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(adaptor.getOffset0());
-    SmallVector<Value> sizes;
+      staticOffsets.push_back(0);
+
+    // Get static sizes
     SmallVector<int64_t> staticSizes;
     if (auto const_int = getConstantIntValue(adaptor.getLength3()))
       staticSizes.push_back(*const_int);
     else
-      sizes.push_back(adaptor.getLength3());
+      staticSizes.push_back(1);
     if (auto const_int = getConstantIntValue(adaptor.getLength2()))
       staticSizes.push_back(*const_int);
     else
-      sizes.push_back(adaptor.getLength2());
+      staticSizes.push_back(1);
     if (auto const_int = getConstantIntValue(adaptor.getLength1()))
       staticSizes.push_back(*const_int);
     else
-      sizes.push_back(adaptor.getLength1());
+      staticSizes.push_back(1);
     if (auto const_int = getConstantIntValue(adaptor.getLength0()))
       staticSizes.push_back(std::max((int64_t)1, *const_int));
     else
-      sizes.push_back(adaptor.getLength0());
-    SmallVector<Value> strides;
+      staticSizes.push_back(1);
+
+    // Get static strides
     SmallVector<int64_t> staticStrides;
     if (auto const_int = getConstantIntValue(adaptor.getStride3()))
       staticStrides.push_back(*const_int);
     else
-      strides.push_back(adaptor.getStride3());
+      staticStrides.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getStride2()))
       staticStrides.push_back(*const_int);
     else
-      strides.push_back(adaptor.getStride2());
+      staticStrides.push_back(0);
     if (auto const_int = getConstantIntValue(adaptor.getStride1()))
       staticStrides.push_back(*const_int);
     else
-      strides.push_back(adaptor.getStride1());
-    staticStrides.push_back(1);
+      staticStrides.push_back(0);
+    staticStrides.push_back(1); // Last stride is always 1
 
-    SymbolRefAttr metadata;
-    if (op->hasAttr("metadata"))
-      metadata = op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
-    else
-      metadata = SymbolRefAttr::get(op->getContext(),
-                                    rewriter.getStringAttr("MetadataNotFound"));
+    // Calculate total offset in elements
+    // For npu.dma_memcpy_nd, the offset is computed as:
+    //   offset = sum(offsets[i] * strides[i]) for each dimension
+    int64_t totalOffset = 0;
+    for (int i = 0; i < 4; i++) {
+      totalOffset += staticOffsets[i] * staticStrides[i];
+    }
 
-    AIE::PacketInfoAttr packet =
-        op->getAttrOfType<AIE::PacketInfoAttr>("packet");
-    rewriter.replaceOpWithNewOp<AIEX::NpuDmaMemcpyNdOp>(
-        op, memref, offsets, sizes, strides, staticOffsets, staticSizes,
-        staticStrides, packet, metadata, idInt);
+    // Transfer length is ALWAYS the product of lowest 3 dimensions only
+    int64_t transferLen = staticSizes[1] * staticSizes[2] * staticSizes[3];
+
+    // repeat_count is ALWAYS size[0] - 1 (the highest dimension)
+    // repeat_count = 0 means execute once, repeat_count = 3 means execute 4
+    // times
+    int64_t repeatCount = std::max((int64_t)0, staticSizes[0] - 1);
+
+    // The 4th dimension is included in dma_bd dimensions if stride[0] != 0
+    // (the iteration_stride tells the hardware how to advance offset each
+    // repeat)
+    bool use4thDimInBd = (staticStrides[0] != 0);
+
+    // Build BDDimLayoutArrayAttr for the data layout transformation
+    SmallVector<AIE::BDDimLayoutAttr> dimLayouts;
+    auto ctx = rewriter.getContext();
+
+    // Determine starting index for dims based on whether we use 4th dim
+    int startDim = use4thDimInBd ? 0 : 1;
+
+    // Build dimension layouts from sizes and strides
+    for (int i = startDim; i < 4; i++) {
+      int64_t size = staticSizes[i];
+      int64_t stride = staticStrides[i];
+      // Include dimension if size > 1, or if it's the innermost dimension
+      if (size > 1 || i == 3) {
+        auto dimLayout = AIE::BDDimLayoutAttr::get(ctx, size, stride);
+        dimLayouts.push_back(dimLayout);
+      }
+    }
+
+    AIE::BDDimLayoutArrayAttr dimsAttr =
+        AIE::BDDimLayoutArrayAttr::get(ctx, dimLayouts);
+
+    // Determine if this is an output (S2MM) channel
+    // S2MM channels issue tokens by default, MM2S channels do not
+    bool issueToken = isDeviceToHostChannel(op);
+
+    // Create DMAConfigureTaskForOp with proper repeat_count from highest
+    // dimension
+    auto configTaskOp = AIEX::DMAConfigureTaskForOp::create(
+        rewriter, op.getLoc(),
+        rewriter.getIndexType(),          // result type
+        metadata,                         // alloc symbol reference
+        rewriter.getBoolAttr(issueToken), // issue_token = true for S2MM only
+        rewriter.getI32IntegerAttr(repeatCount) // repeat_count from highest dim
+    );
+
+    // Create the body region of the configure task op
+    Block *bodyBlock = rewriter.createBlock(&configTaskOp.getBody());
+    rewriter.setInsertionPointToStart(bodyBlock);
+
+    // Create aie.dma_bd inside the task body
+    if (dimLayouts.empty()) {
+      AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
+                           static_cast<int>(totalOffset),
+                           static_cast<int>(transferLen));
+    } else {
+      AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
+                           static_cast<int>(totalOffset),
+                           static_cast<int>(transferLen), dimsAttr);
+    }
+
+    // Create aie.end to terminate the block
+    AIE::EndOp::create(rewriter, op.getLoc());
+
+    // Move insertion point after the configure task op
+    rewriter.setInsertionPointAfter(configTaskOp);
+
+    // Create DMAStartTaskOp
+    AIEX::DMAStartTaskOp::create(rewriter, op.getLoc(),
+                                 configTaskOp.getResult());
+
+    // NOTE: We do NOT generate DMAAwaitTaskOp here. Awaits are generated
+    // by AIRRtWaitAllOpToAwaitPattern AFTER DMA conversion, at the location
+    // of the WaitAllOp (clustered together), replicating the original behavior
+    // where NpuDmaWaitOp was generated at WaitAllOp location.
+
+    // Erase the original op
+    rewriter.eraseOp(op);
 
     return success();
   }
@@ -527,9 +647,24 @@ public:
   }
 };
 
+// Erase remaining WaitAllOps that weren't converted to NpuDmaWaitOp.
+// These are pure synchronization ops that don't generate NPU ops.
+class AIRRtWaitAllOpConversion : public OpConversionPattern<airrt::WaitAllOp> {
+public:
+  using OpConversionPattern<airrt::WaitAllOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(airrt::WaitAllOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Just erase the op - synchronization is handled by NpuDmaWaitOp
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 // Convert FuncOp control function into aiex.runtime_sequence op.
 // Functions are converted if they are not external, are inside an aie.device
-// and contain aiex.npu.* ops
+// and contain aiex.npu.* ops, aiex.dma_* ops, or airrt.dma_memcpy_nd ops
 class ControlFuncConversion : public OpConversionPattern<func::FuncOp> {
 public:
   using OpConversionPattern<func::FuncOp>::OpConversionPattern;
@@ -545,12 +680,14 @@ public:
     if (!device)
       return failure();
 
-    bool contains_npu_ops = false;
+    bool contains_relevant_ops = false;
     op.walk([&](Operation *o) {
-      if (o->getName().getStringRef().starts_with("aiex.npu."))
-        contains_npu_ops = true;
+      if (o->getName().getStringRef().starts_with("aiex.npu.") ||
+          o->getName().getStringRef().starts_with("aiex.dma_") ||
+          isa<airrt::DmaMemcpyNdOp>(o))
+        contains_relevant_ops = true;
     });
-    if (!contains_npu_ops)
+    if (!contains_relevant_ops)
       return failure();
 
     auto seq = AIE::RuntimeSequenceOp::create(rewriter, op->getLoc(),
@@ -600,6 +737,12 @@ public:
   }
 };
 
+// Pattern to convert WaitAllOp to NpuDmaWaitOp(s).
+// This runs BEFORE DMA conversion. NpuDmaWaitOp takes a symbol reference,
+// so it can be created before DMAConfigureTaskForOp exists.
+// Later, after DMA conversion, we convert:
+//   - S2MM waits to DMAAwaitTaskOp (wait + free BD)
+//   - MM2S waits to DMAFreeTaskOp (just free BD, no wait needed)
 struct AIRRtWaitAllOpToNpuWaitPattern
     : public OpRewritePattern<airrt::WaitAllOp> {
 public:
@@ -607,10 +750,12 @@ public:
 
   LogicalResult matchAndRewrite(airrt::WaitAllOp op,
                                 PatternRewriter &rewriter) const override {
+    // Only match if at least one operand is a DmaMemcpyNdOp
     if (llvm::none_of(op->getOperands(), [](Value oper) {
           return (bool)oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
         }))
       return failure();
+
     for (auto oper : op->getOperands()) {
       auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
       if (!airrtDmaOp)
@@ -619,14 +764,34 @@ public:
           airrtDmaOp->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata");
       if (!metadataAttr)
         continue;
+
+      // Generate NpuDmaWaitOp for ALL channels (both S2MM and MM2S)
+      // The conversion to DMAAwaitTaskOp vs DMAFreeTaskOp happens later
+      // based on channel direction
       StringRef metadata = metadataAttr.getValue();
       AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
     }
-    rewriter.eraseOp(op);
+
+    // The WaitAllOp may have uses (other WaitAllOps depending on its result).
+    // Replace with a new WaitAllOp with no operands to break the dependency
+    // chain. This is safe because the synchronization is now handled by
+    // NpuDmaWaitOp.
+    if (op->getNumResults() > 0 && !op->use_empty()) {
+      // Create a replacement WaitAllOp with no DMA operands (only non-DMA deps)
+      SmallVector<Value> nonDmaOpers;
+      for (auto oper : op->getOperands()) {
+        if (!oper.getDefiningOp<airrt::DmaMemcpyNdOp>())
+          nonDmaOpers.push_back(oper);
+      }
+      auto newWaitAll = airrt::WaitAllOp::create(
+          rewriter, op.getLoc(), airrt::EventType::get(op->getContext()),
+          nonDmaOpers);
+      rewriter.replaceOp(op, newWaitAll->getResult(0));
+    } else {
+      rewriter.eraseOp(op);
+    }
     return success();
   }
-
-private:
 };
 
 AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
@@ -898,7 +1063,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     unrollAffineFors(module);
     unrollSCFFors(module);
 
-    // Purge dma ops' async tokens
+    // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
+    // This must happen BEFORE DMA conversion because:
+    // 1. WaitAllOp has SSA operands to DmaMemcpyNdOp event tokens
+    // 2. NpuDmaWaitOp uses symbol reference (can be created before DMA
+    // conversion)
+    // 3. After this, DMA tokens can be safely purged
     generateNpuWaitFromAIRRtWaitAll(module);
 
     // Enforce AIE2 hardware constraints.
@@ -944,7 +1114,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     patterns.add<DmaToNpuPattern, HerdLoadToNpuPattern, SegmentLoadToNpuPattern,
                  ModuleMetadataToNpuPattern, L1MemRefStoreOpConversion,
                  L1AffineStoreOpConversion, HostMemRefCopyOpConversion,
-                 AIRRtAllocOpConversion, AIRRtDeallocOpConversion>(ctx);
+                 AIRRtAllocOpConversion, AIRRtDeallocOpConversion,
+                 AIRRtWaitAllOpConversion>(ctx);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
@@ -963,8 +1134,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     air::populateBufferMemrefToFuncArgsPattern(castPattern);
     (void)applyPatternsGreedily(module, std::move(castPattern));
 
-    // Optimization: purge npu wait on device inbound shim data movements.
-    removeNpuWaitOnInboundMemcpy(module);
+    // Convert NpuDmaWaitOp → DMAAwaitTaskOp AFTER DMA conversion.
+    // NpuDmaWaitOp was placed at WaitAllOp locations (clustered), and now we
+    // replace each one with DMAAwaitTaskOp referencing the corresponding
+    // DMAConfigureTaskForOp result.
+    generateAwaitsFromWaitAllOps(module);
 
     // Renumber npu dma ops
     renumberNpuDmaOps(module.getBody());
@@ -999,17 +1173,123 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     }
   }
 
-  // Generate npu wait ops from blocking airrt.wait_all ops.
+  // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
+  // This must happen BEFORE DMA conversion.
   void generateNpuWaitFromAIRRtWaitAll(ModuleOp module) {
-
-    // Canonicalize airrt.wait_all, to remove redundant ops.
     auto ctx = module.getContext();
+
+    // Apply the pattern to convert WaitAllOp → NpuDmaWaitOp
     RewritePatternSet patterns(ctx);
-    airrt::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
     patterns.insert<AIRRtWaitAllOpToNpuWaitPattern>(ctx);
     (void)applyPatternsGreedily(module, std::move(patterns));
 
-    // Dma event tokens are no longer needed. Purge them.
+    // Now that WaitAllOps with DMA operands are erased, purge DMA async tokens
+    // (they no longer have uses from WaitAllOps)
+    purgeDmaAsyncTokens(module);
+  }
+
+  // Convert NpuDmaWaitOp → DMAAwaitTaskOp or DMAFreeTaskOp AFTER DMA
+  // conversion. This processes NpuDmaWaitOp ops and DMAConfigureTaskForOp ops
+  // in order, matching each wait to its corresponding configure task by
+  // channel. The key insight: waits and configures for the same channel must be
+  // matched in FIFO order - the Nth wait for channel X awaits the Nth config
+  // for X.
+  //
+  // For S2MM (output) channels: generate DMAAwaitTaskOp (wait + free BD)
+  // For MM2S (input) channels: generate DMAFreeTaskOp (just free BD, no wait)
+  void generateAwaitsFromWaitAllOps(ModuleOp module) {
+    SmallVector<func::FuncOp> funcOps;
+    module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
+
+    for (auto f : funcOps) {
+      auto device = f->getParentOfType<AIE::DeviceOp>();
+      if (!device)
+        continue;
+
+      if (f.getBody().empty())
+        continue;
+
+      // First pass: collect all DMAConfigureTaskForOp per channel in order
+      // Map from metadata symbol -> list of ConfigTasks in order
+      llvm::MapVector<StringRef, SmallVector<AIEX::DMAConfigureTaskForOp>>
+          channelToConfigTasks;
+
+      // Also track per-channel indices for matching
+      llvm::DenseMap<StringRef, unsigned> channelToNextConfigIdx;
+
+      // Walk the function body in order
+      f.walk([&](AIEX::DMAConfigureTaskForOp configTask) {
+        auto allocSymbol = configTask.getAlloc();
+        StringRef metadata = allocSymbol.getLeafReference().getValue();
+        channelToConfigTasks[metadata].push_back(configTask);
+      });
+
+      // Initialize indices
+      for (auto &kv : channelToConfigTasks) {
+        channelToNextConfigIdx[kv.first] = 0;
+      }
+
+      // Second pass: process NpuDmaWaitOp ops in order
+      // For each wait, find the next unconsumed ConfigTask for that channel
+      SmallVector<AIEX::NpuDmaWaitOp> waitOps;
+      f.walk([&](AIEX::NpuDmaWaitOp waitOp) { waitOps.push_back(waitOp); });
+
+      for (auto waitOp : waitOps) {
+        StringRef metadata = waitOp.getSymbol();
+
+        // Determine channel direction
+        // First try ShimDMAAllocationOp
+        auto allocOp = AIE::ShimDMAAllocationOp::getForSymbol(device, metadata);
+        bool isS2MM = false;
+        if (allocOp) {
+          isS2MM = allocOp.getChannelDir() == AIE::DMAChannelDir::S2MM;
+        } else {
+          // Check for objectfifo - if consumer is shim tile, it's S2MM
+          auto objFifo = device.lookupSymbol<AIE::ObjectFifoCreateOp>(metadata);
+          if (objFifo) {
+            for (auto consumerTileOp : objFifo.getConsumerTiles()) {
+              auto consTileOp = consumerTileOp.getDefiningOp<AIE::TileOp>();
+              if (consTileOp && consTileOp.isShimTile()) {
+                isS2MM = true;
+                break;
+              }
+            }
+          }
+        }
+
+        // Find the next ConfigTask for this channel
+        AIEX::DMAConfigureTaskForOp matchingConfigTask = nullptr;
+        auto it = channelToConfigTasks.find(metadata);
+        if (it != channelToConfigTasks.end()) {
+          auto &configTasks = it->second;
+          unsigned &nextIdx = channelToNextConfigIdx[metadata];
+          if (nextIdx < configTasks.size()) {
+            matchingConfigTask = configTasks[nextIdx];
+            nextIdx++;
+          }
+        }
+
+        if (matchingConfigTask) {
+          OpBuilder builder(waitOp);
+          if (isS2MM) {
+            // S2MM (output): await task - waits for completion AND frees BD
+            AIEX::DMAAwaitTaskOp::create(builder, waitOp.getLoc(),
+                                         matchingConfigTask.getResult());
+          } else {
+            // MM2S (input): free task - just frees BD for reuse, no wait
+            AIEX::DMAFreeTaskOp::create(builder, waitOp.getLoc(),
+                                        matchingConfigTask.getResult());
+          }
+        }
+        // Erase the NpuDmaWaitOp regardless of whether we found a match
+        waitOp->erase();
+      }
+    }
+  }
+
+  // Purge DMA async tokens - they are no longer needed after WaitAllOp
+  // processing. Call this BEFORE DMA conversion.
+  void purgeDmaAsyncTokens(ModuleOp module) {
     SmallVector<airrt::DmaMemcpyNdOp> dmas;
     module.walk([&](airrt::DmaMemcpyNdOp dma) { dmas.push_back(dma); });
     for (auto dma : dmas) {

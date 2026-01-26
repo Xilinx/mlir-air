@@ -100,6 +100,7 @@ def AIRRt_HerdLoadOp : AIRRt_Op<"herd_load", []> {
     let assemblyFormat = [{
       $sym_name ` ``(` $rtp `)` attr-dict `:` functional-type($rtp, results)
     }];
+    let hasCanonicalizer = 1;
 }
 
 def AIRRt_SegmentLoadOp : AIRRt_Op<"segment_load", []> {
@@ -109,6 +110,7 @@ def AIRRt_SegmentLoadOp : AIRRt_Op<"segment_load", []> {
     let assemblyFormat = [{
       $sym_name attr-dict `:` type($p) (`,` type($event)^)?
     }];
+    let hasCanonicalizer = 1;
 }
 
 def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", []> {
