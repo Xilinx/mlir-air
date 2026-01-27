@@ -1363,10 +1363,18 @@ private:
                                            Value prodTile,
                                            const std::vector<Value> &consTile,
                                            int depth, StringRef name) const {
+    // Create empty dimension arrays for each consumer to satisfy the
+    // dimensionsFromStreamPerConsumer attribute size requirement.
+    SmallVector<AIE::BDDimLayoutArrayAttr> dimsFromStreamPerConsumer;
+    for (size_t i = 0; i < consTile.size(); i++) {
+      dimsFromStreamPerConsumer.push_back(
+          AIE::BDDimLayoutArrayAttr::get(builder.getContext(), {}));
+    }
     AIE::ObjectFifoCreateOp fifo = AIE::ObjectFifoCreateOp::create(
         builder, builder.getUnknownLoc(), builder.getStringAttr(name), prodTile,
-        consTile, builder.getIntegerAttr(builder.getI32Type(), depth),
-        datatype);
+        consTile, builder.getIntegerAttr(builder.getI32Type(), depth), datatype,
+        /*dimensionsToStream=*/{},
+        /*dimensionsFromStreamPerConsumer=*/dimsFromStreamPerConsumer);
     return fifo;
   }
 
