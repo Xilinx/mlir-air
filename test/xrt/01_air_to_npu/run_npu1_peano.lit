@@ -6,5 +6,5 @@
 // RUN: cd test_peano
 // RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: %python %S/gen.py --trace-size 131072 --trace-offset 65536 --trace-file-name trace.txt
-// RUN: %python parse_trace.py --input trace.txt --mlir air_project/input_with_addresses.mlir --output parse_eventIR_vs.json
+// RUN: %python -m aie.utils.trace.parse --input trace.txt --mlir air_project/input_with_addresses.mlir --output parse_eventIR_vs.json
 // RUN: jq . parse_eventIR_vs.json | FileCheck %S/parse_eventIR_vs.json.check
