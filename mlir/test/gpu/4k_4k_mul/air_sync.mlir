@@ -1,4 +1,4 @@
-//===- emit_lock.mlir ---------------------------------*- MLIR -*-===//
+//===- air_sync.mlir ---------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
