@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie='test-patterns=to-aie-mlir insert-trace-packet-flow=true' | FileCheck %s
+// RUN: air-opt %s -air-to-aie='test-patterns=to-aie-mlir,after-trace-packet-flow insert-trace-packet-flow=true' | FileCheck %s
 // CHECK:    aie.packet_flow(0) {
 // CEHCK:      aie.packet_source<%tile_1_1, Trace : 0>
 // CHECK:      aie.packet_dest<%shim_pl_tile_1_0, DMA : 1>

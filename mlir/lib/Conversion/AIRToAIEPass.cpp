@@ -70,6 +70,22 @@ struct AIRToAIEConversionOptions {
   AIE::AIEDevice device;
 };
 
+// Breakpoint stages for debugging with --test-patterns
+// Each stage represents a point in the pipeline where execution can stop
+// for debugging purposes.
+enum class PipelineStage {
+  AfterCreateAIEModules,  // After createAIEModulesAndOutlineCores
+  AfterCloneMemcpys,      // After cloneL2AndL3MemcpysToDeviceOp
+  AfterLowerExecute,      // After lowerAirExecute + lowerScfAirTokens
+  AfterSpecializeChannel, // After specializeChannelBundle
+  AfterAllocBuffers,      // After allocL1/L2Buffers
+  AfterRenumberMemcpy,    // After renumberMemcpyIfOps
+  AfterLowerAIRMemcpy,    // After lowerAIRMemcpyOp
+  AfterTracePacketFlow,   // After createTracePacketFlow
+  AfterLowerMemRefCopy,   // After lowerMemRefCopyToLoops
+  Complete                // Full pipeline including metadata/cleanup
+};
+
 // get memcpy operation volumn (elements) as int
 int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
   BaseMemRefType memTy = llvm::cast<BaseMemRefType>(memref.getType());
@@ -1144,10 +1160,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     std::vector<air::ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
 
-    channel->print(llvm::outs());
-    llvm::outs() << "channelPuts" << channelPuts.size() << "\n";
-    llvm::outs() << "channelGets" << channelGets.size() << "\n";
-
     // keep track of potential LinkOp
     bool linkToComplete =
         false; // track if objFifo has to be added to linksToComplete
@@ -1801,6 +1813,132 @@ public:
   AIRToAIEPass() = default;
   AIRToAIEPass(const AIRToAIEPass &pass) {}
   AIRToAIEPass(const air::AIRToAIEOptions &options) : AIRToAIEBase(options) {}
+
+  // Shared pipeline logic for a single AIE device.
+  // This method runs the transformation pipeline for a device and stops at
+  // the specified PipelineStage for debugging purposes.
+  // Returns failure() if any transformation stage fails.
+  LogicalResult
+  runDevicePipeline(AIE::DeviceOp device, ModuleOp module, air::HerdOp herd,
+                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
+                    std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+                    AIRToAIEConversionOptions &options, bool useObjFifo,
+                    PipelineStage stopAfter = PipelineStage::Complete) {
+
+    auto ctx = device->getContext();
+    OpBuilder builder(device);
+
+    // Check hasDma/hasChan conflict
+    bool hasDma = false;
+    bool hasChan = false;
+    device.walk([&](Operation *o) {
+      hasDma |= isa<air::DmaMemcpyNdOp>(o);
+      hasChan |= isa<air::ChannelInterface>(o);
+    });
+    if (hasDma && hasChan) {
+      device.emitOpError(
+          ": lowering of segments containing both dma copies and "
+          "channels is not supported");
+      return failure();
+    }
+
+    // Allocators
+    air::ShimDMAAllocator shimDmaAlloc(device);
+    ShimTileAllocator shimTileAlloc(device.getTargetModel());
+    std::map<std::string, std::string> chan_to_chan_map;
+    std::map<int, int> chan_renumber_reverse_map;
+
+    if (stopAfter == PipelineStage::AfterCreateAIEModules)
+      return success();
+
+    // Stage: Clone memcpys to device
+    if (useObjFifo) {
+      cloneL2AndL3MemcpysToDeviceOp(
+          builder, device, module, /*clone_l2*/ true, /*clone_l3*/ false,
+          /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix);
+    } else {
+      cloneL2AndL3MemcpysToDeviceOp(
+          builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
+          /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix);
+    }
+    if (stopAfter == PipelineStage::AfterCloneMemcpys)
+      return success();
+
+    // Stage: Lower execute and tokens
+    specializeHerdAffineIf(device);
+    lowerAirExecute(device);
+    lowerScfAirTokens(device);
+    if (stopAfter == PipelineStage::AfterLowerExecute)
+      return success();
+
+    // Stage: Specialize channel bundle
+    specializeChannelBundle(device, chan_to_chan_map);
+    if (stopAfter == PipelineStage::AfterSpecializeChannel)
+      return success();
+
+    // Stage: Allocate buffers (ObjFifo vs non-ObjFifo paths diverge)
+    if (useObjFifo) {
+      air::renumberMemcpyIfOps(&device.getRegion());
+      LowerAIRPingPong(device);
+      allocL2Buffers(device, bufferToMemtileMap, BufferId);
+      lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap);
+      allocL1Buffers(device, tileToHerdMap, BufferId);
+    } else {
+      specializeL2MemrefsIntoMemtiles(device);
+      allocL1Buffers(device, tileToHerdMap, BufferId);
+      allocL2Buffers(device, bufferToMemtileMap, BufferId);
+    }
+    if (stopAfter == PipelineStage::AfterAllocBuffers)
+      return success();
+
+    // Stage: Renumber memcpy ops
+    if (!useObjFifo)
+      air::renumberMemcpyIfOps(&device.getRegion(), chan_renumber_reverse_map);
+    if (stopAfter == PipelineStage::AfterRenumberMemcpy)
+      return success();
+
+    // Stage: Lower AIR memcpy ops (WHERE CRASH OCCURS for the debugging case)
+    if (!useObjFifo) {
+      if (failed(lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc,
+                                                         options)))
+        return failure();
+    }
+    if (failed(lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc,
+                                                    options)))
+      return failure();
+    if (stopAfter == PipelineStage::AfterLowerAIRMemcpy)
+      return success();
+
+    // Stage: Trace packet flow
+    if (options.insert_trace_packet_flow)
+      createTracePacketFlow(device);
+    if (stopAfter == PipelineStage::AfterTracePacketFlow)
+      return success();
+
+    // Stage: Lower L1-to-L1 memref.copy to loops
+    lowerMemRefCopyToLoops(device);
+    if (stopAfter == PipelineStage::AfterLowerMemRefCopy)
+      return success();
+
+    // Complete stage: Canonicalization and op removal
+    RewritePatternSet patterns(ctx);
+    air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
+    (void)applyPatternsGreedily(device, std::move(patterns));
+
+    RewritePatternSet removepatterns(ctx);
+    removepatterns
+        .add<OpRemovalPattern<memref::DeallocOp>,
+             OpRemovalPattern<air::WaitAllOp>, OpRemovalPattern<memref::CopyOp>,
+             OpRemovalPattern<memref::AssumeAlignmentOp>>(ctx);
+    ConversionTarget target(*ctx);
+    target.addIllegalOp<memref::DeallocOp, air::WaitAllOp, memref::CopyOp,
+                        memref::AssumeAlignmentOp>();
+    if (failed(
+            applyPartialConversion(device, target, std::move(removepatterns))))
+      return failure();
+
+    return success();
+  }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<air::airDialect>();
@@ -4051,9 +4189,26 @@ public:
       return;
     }
 
+    // Map test pattern strings to pipeline stages
+    auto mapTestPatternToPipelineStage =
+        [](StringRef testPattern) -> PipelineStage {
+      if (testPattern.contains("after-lower-memcpy"))
+        return PipelineStage::AfterLowerAIRMemcpy;
+      if (testPattern.contains("after-trace-packet-flow"))
+        return PipelineStage::AfterTracePacketFlow;
+      if (testPattern.contains("after-lower-memref-copy"))
+        return PipelineStage::AfterLowerMemRefCopy;
+      if (testPattern.contains("to-aie-full") ||
+          testPattern.contains("complete"))
+        return PipelineStage::Complete;
+      // Default for "to-aie-mlir": stop right after
+      // createAIEModulesAndOutlineCores This matches the original behavior of
+      // printing the module before running any further transformations.
+      return PipelineStage::AfterCreateAIEModules;
+    };
+
     if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
       std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
-      std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
       AIRToAIEConversionOptions options = {
           /*.col_offset = */ clColOffset,
           /*.row_offset = */ clRowOffset,
@@ -4064,34 +4219,40 @@ public:
           /*.use_packet_flow_at_shim_dmas = */ clUsePktFlowsAtShimDma,
           /*.use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
           /*.device = */ *device};
+
+      // Pre-pipeline: renumber memcpy ops at module level
+      air::renumberMemcpyIfOps(&m.getRegion());
+
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
-      std::set<ModuleOp> seen;
+
+      // Determine the pipeline stage to stop at based on test pattern flags
+      PipelineStage stopStage =
+          mapTestPatternToPipelineStage(StringRef(clTestPatterns));
+
+      std::set<AIE::DeviceOp> seen;
       for (auto &p : aie_modules) {
         auto d = std::get<0>(p);
-        auto m = d->getParentOfType<ModuleOp>();
-        if (seen.find(m) == seen.end()) {
-          seen.insert(m);
-          m.print(llvm::outs());
+        auto h = std::get<1>(p);
+        auto parentModule = d->getParentOfType<ModuleOp>();
+
+        if (seen.find(d) != seen.end())
+          continue;
+        seen.insert(d);
+
+        // Run shared pipeline with the specified breakpoint
+        if (failed(runDevicePipeline(d, parentModule, h, tileToHerdMap,
+                                     bufferToMemtileMap, options, clUseObjFifo,
+                                     stopStage))) {
+          signalPassFailure();
+          return;
+        }
+
+        // Print the module after reaching the breakpoint for debugging
+        if (stopStage == PipelineStage::AfterCreateAIEModules) {
+          // Legacy "to-aie-mlir" behavior: print parent module after outline
+          parentModule.print(llvm::outs());
           llvm::outs() << "\n";
         }
-        if (options.generate_shim_dma) {
-          OpBuilder builder(d);
-          cloneL2AndL3MemcpysToDeviceOp(builder, d, m, /*clone_l2*/ true,
-                                        /*clone_l3*/ true,
-                                        /*use_lock_race_cond_fix*/ true);
-          specializeHerdAffineIf(d);
-          lowerAirExecute(d);
-          lowerScfAirTokens(d);
-          std::map<std::string, std::string> chan_to_chan_map;
-          specializeChannelBundle(d, chan_to_chan_map);
-          specializeL2MemrefsIntoMemtiles(d);
-          allocL1Buffers(d, tileToHerdMap, BufferId);
-          allocL2Buffers(d, bufferToMemtileMap, BufferId);
-          std::map<int, int> chan_renumber_reverse_map;
-          air::renumberMemcpyIfOps(&d.getRegion(), chan_renumber_reverse_map);
-        }
-        if (options.insert_trace_packet_flow)
-          createTracePacketFlow(d);
       }
     }
 
