@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 ##===- utils/build-llvm-local.sh - Build LLVM on local machine --*- Script -*-===##
-# 
+#
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-# 
+#
 ##===----------------------------------------------------------------------===##
 #
 # This script build LLVM with custom options intended to be called on your
@@ -37,17 +37,23 @@ set -e
 
 CMAKE_CONFIGS="\
     -GNinja \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
+    -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
     -DPython3_FIND_VIRTUALENV=ONLY \
     -DLLVM_BUILD_EXAMPLES=OFF \
     -DLLVM_BUILD_UTILS=ON \
+    -DMLIR_ENABLE_ROCM_RUNNER=ON \
     -DLLVM_ENABLE_RTTI=$LLVM_ENABLE_RTTI \
     -DLLVM_INSTALL_UTILS=ON \
     -DCMAKE_INSTALL_PREFIX=../$INSTALL_DIR \
-    -DLLVM_ENABLE_PROJECTS=clang;lld;mlir \
-    -DLLVM_TARGETS_TO_BUILD:STRING=X86;ARM;AArch64; \
+    -DLLVM_ENABLE_PROJECTS=llvm;clang;lld;mlir \
+    -DCOMPILER_RT_BUILD_BUILTINS=ON \
+    -DCOMPILER_RT_DEFAULT_TARGET_TRIPLE=amdgcn-amd-amdhsa \
     -DCMAKE_BUILD_TYPE=Release \
+    -DMLIR_ENABLE_LLVM_DIALECT=ON \
+    -DMLIR_ENABLE_ROCDL=ON \
+    -DMLIR_ENABLE_GPU=ON \
+    -DLLVM_TARGETS_TO_BUILD:STRING=X86;ARM;AArch64;AMDGPU \
     -DLLVM_BUILD_LLVM_DYLIB=OFF \
     -DLLVM_LINK_LLVM_DYLIB=OFF \
     -DCLANG_LINK_CLANG_DYLIB=OFF \
