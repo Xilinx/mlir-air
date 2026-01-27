@@ -1,9 +1,9 @@
-#===- air_sync.mlir ---------------------------------------*- C++
-#
-# Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
-# SPDX-License-Identifier: MIT
-#
-#===------------------------------------------------------------------===//
+//===- emit_lock.mlir ---------------------------------*- MLIR -*-===//
+//
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===------------------------------------------------------------------===//
 
 #map = affine_map<()[s0] -> (s0 * 128)>
 #map1 = affine_map<()[s0] -> (s0 * 4)>
