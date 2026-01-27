@@ -1,3 +1,10 @@
+#===- run.sh ---------------------------------------*- C++
+#
+# Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+#===------------------------------------------------------------------===//
+
 ~/public_realease_mlir_air/mlir-air/install/bin/air-opt air_sync.mlir -air-to-rocdl  -o mul_gpu_.mlir
 ~/public_realease_mlir_air/mlir-air/install/bin/air-opt mul_gpu_.mlir -air-gpu-outlining  -o mul_gpu11_outline.mlir
 ~/public_realease_mlir_air/mlir-air/llvm/build/bin/mlir-opt "--pass-pipeline=builtin.module(func.func(lower-affine, convert-linalg-to-loops,convert-scf-to-cf), gpu-kernel-outlining)"  mul_gpu11_outline.mlir -o mul_gpu_outline.llvm
