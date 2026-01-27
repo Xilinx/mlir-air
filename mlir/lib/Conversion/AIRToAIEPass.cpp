@@ -1859,15 +1859,20 @@ public:
     if (stopAfter == PipelineStage::AfterCreateAIEModules)
       return success();
 
+    // Get the parent launch for this herd to filter memcpy ops
+    air::LaunchOp targetLaunch = herd->getParentOfType<air::LaunchOp>();
+
     // Stage: Clone memcpys to device
     if (useObjFifo) {
       cloneL2AndL3MemcpysToDeviceOp(
           builder, device, module, /*clone_l2*/ true, /*clone_l3*/ false,
-          /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix);
+          /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix,
+          targetLaunch);
     } else {
       cloneL2AndL3MemcpysToDeviceOp(
           builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
-          /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix);
+          /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix,
+          targetLaunch);
     }
     if (stopAfter == PipelineStage::AfterCloneMemcpys)
       return success();
@@ -2322,10 +2327,12 @@ public:
   }
 
   // Clone data movement ops to and from memtile and shim tile DMAs
+  // If targetLaunch is provided, only clone ops from that specific launch.
   void cloneL2AndL3MemcpysToDeviceOp(OpBuilder &builder,
                                      AIE::DeviceOp aie_device, ModuleOp module,
                                      bool clone_l2, bool clone_l3,
-                                     bool lock_race_condition_fix = true) {
+                                     bool lock_race_condition_fix = true,
+                                     air::LaunchOp targetLaunch = nullptr) {
 
     if (!clone_l2 && !clone_l3)
       return;
@@ -2360,6 +2367,15 @@ public:
             bool hasParentSegmentOp = op->getParentOfType<air::SegmentOp>();
             if (!clone_l3 && !hasParentSegmentOp)
               return WalkResult::advance();
+            // Filter by target launch: if a targetLaunch is specified, only
+            // clone ops that belong to that launch
+            if (targetLaunch) {
+              auto parentLaunch = op->getParentOfType<air::LaunchOp>();
+              // If the op is not inside any launch or is inside a different
+              // launch, do not clone it.
+              if (!parentLaunch || parentLaunch != targetLaunch)
+                return WalkResult::advance();
+            }
             builder.clone(*op, remap);
             return WalkResult::skip();
           });
@@ -4376,10 +4392,14 @@ public:
       ShimTileAllocator shimTileAlloc(device.getTargetModel());
       std::map<std::string, std::string> chan_to_chan_map;
 
+      // Get the parent launch for this herd to filter memcpy ops
+      air::LaunchOp targetLaunch = h->getParentOfType<air::LaunchOp>();
+
       if (clUseObjFifo) {
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ false,
-            /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix);
+            /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix,
+            targetLaunch);
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
         lowerScfAirTokens(device);
@@ -4392,7 +4412,8 @@ public:
       } else {
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
-            /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix);
+            /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix,
+            targetLaunch);
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
         lowerScfAirTokens(device);
@@ -4486,7 +4507,13 @@ public:
         // Shim dma allocation metadata linkage (AIE2)
         auto func = h->getParentOfType<func::FuncOp>();
         std::vector<air::MemcpyInterface> shimMemcpyIfOps;
+        // Filter shim memcpy ops by target launch to only include ops
+        // belonging to the current device's parent launch.
         func.walk([&](air::ChannelInterface o) {
+          // Filter by target launch: only collect ops from the current launch
+          auto parentLaunch = o->getParentOfType<air::LaunchOp>();
+          if (parentLaunch && parentLaunch != targetLaunch)
+            return;
           auto memrefTy = dyn_cast<BaseMemRefType>(o.getMemref().getType());
           if (memrefTy &&
               memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
@@ -4494,6 +4521,10 @@ public:
                 dyn_cast<air::MemcpyInterface>(o.getOperation()));
         });
         func.walk([&](air::DmaMemcpyNdOp o) {
+          // Filter by target launch: only collect ops from the current launch
+          auto parentLaunch = o->getParentOfType<air::LaunchOp>();
+          if (parentLaunch && parentLaunch != targetLaunch)
+            return;
           auto srcMemrefTy =
               dyn_cast<BaseMemRefType>(o.getSrcMemref().getType());
           if (srcMemrefTy &&

@@ -440,6 +440,8 @@ bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
 }
 
 bool xilinx::air::allocation_info_t::foundAlloc(int32_t col, int32_t row) {
+  if (!getDmaTile())
+    return false;
   if (col == getDmaTile().getCol() && row == getDmaTile().getRow())
     return true;
   return false;
@@ -797,7 +799,10 @@ air::TileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
   Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt).value()
                      ? (memcpyOp.getDstMemref())
                      : (memcpyOp.getSrcMemref());
-  return getUnderlyingBufferOp(buffer);
+  auto bufferOp = getUnderlyingBufferOp(buffer);
+  if (!bufferOp)
+    return failure();
+  return bufferOp;
 }
 
 // ShimDMAAllocator impl.
@@ -1104,7 +1109,10 @@ air::MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
   Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt).value()
                      ? (memcpyOp.getDstMemref())
                      : (memcpyOp.getSrcMemref());
-  return getUnderlyingBufferOp(buffer);
+  auto bufferOp = getUnderlyingBufferOp(buffer);
+  if (!bufferOp)
+    return failure();
+  return bufferOp;
 }
 
 // CascadeAllocator impl.
@@ -1199,7 +1207,10 @@ air::CascadeAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
                      : (memcpyOp.getSrcMemref());
 
   // Resolve the actual underlying buffer op
-  return getUnderlyingBufferOp(buffer);
+  auto bufferOp = getUnderlyingBufferOp(buffer);
+  if (!bufferOp)
+    return failure();
+  return bufferOp;
 }
 
 // MemcpyBundleAsFlow impl.
@@ -1430,6 +1441,9 @@ LogicalResult air::simpleDMAChannelAllocation(
             return memcpyOpIf->emitOpError(
                 "only supports dma_stream or dma_packet connections at L3 "
                 "memory");
+          if (!f.S2MM_alloc[i].getDmaTile())
+            return memcpyOpIf->emitOpError(
+                "failed to get S2MM tile for L3 allocation.");
           auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
               memcpyOpIf, f.S2MM_alloc[i].getDmaTile().getCol(),
               f.S2MM_alloc[i].getDmaTile().getRow(), f.S2MM[i]);
@@ -1454,6 +1468,9 @@ LogicalResult air::simpleDMAChannelAllocation(
             f.memcpyResourceType != "dma_packet")
           return memcpyOpIf->emitOpError("only supports dma_stream or "
                                          "dma_packet connections at L3 memory");
+        if (!f.MM2S_alloc.getDmaTile())
+          return memcpyOpIf->emitOpError(
+              "failed to get MM2S tile for L3 allocation.");
         auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
             memcpyOpIf, f.MM2S_alloc.getDmaTile().getCol(),
             f.MM2S_alloc.getDmaTile().getRow(), f.MM2S);
