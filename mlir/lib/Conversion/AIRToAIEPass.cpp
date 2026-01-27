@@ -2684,8 +2684,12 @@ public:
     for (auto &f : memcpy_flows) {
       for (int i = 0; i < f.numS2MMAllocs; i++) {
         // Skip if either MM2S or S2MM tile allocation is invalid
-        if (!f.MM2S_alloc.getDmaTile() || !f.S2MM_alloc[i].getDmaTile())
+        if (!f.MM2S_alloc.getDmaTile() || !f.S2MM_alloc[i].getDmaTile()) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "AIRToAIE: skipping memcpy flow due to invalid DMA "
+                        "tile allocation (MM2S or S2MM tile is null)\n");
           continue;
+        }
         if (options.use_packet_flow_at_shim_dmas &&
             f.MM2S_alloc.getDmaTile().isShimNOCorPLTile()) {
           // use_packet_flow_at_shim_dmas mode: use packet flow for all shim dma
