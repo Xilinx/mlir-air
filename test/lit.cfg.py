@@ -272,7 +272,6 @@ tools = [
     "llvm-objdump",
     "mlir-translate",
     "opt",
-    "parse_trace.py",
 ]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)

@@ -5,5 +5,5 @@
 // RUN: mkdir -p test_chess
 // RUN: cd test_chess
 // RUN: %python %S/gen.py --trace-size 65536 --trace-offset 65536 --trace-file-name trace.txt
-// RUN: %python parse_trace.py --input trace.txt --mlir air_project/input_with_addresses.mlir --output parse_eventIR_vs.json
+// RUN: %python -m aie.utils.trace.parse --input trace.txt --mlir air_project/input_with_addresses.mlir --output parse_eventIR_vs.json
 // RUN: jq . parse_eventIR_vs.json | FileCheck %S/parse_eventIR_vs.json.check
