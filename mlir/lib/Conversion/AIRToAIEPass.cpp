@@ -2371,8 +2371,10 @@ public:
             // clone ops that belong to that launch
             if (targetLaunch) {
               auto parentLaunch = op->getParentOfType<air::LaunchOp>();
-              if (parentLaunch && parentLaunch != targetLaunch)
-                return WalkResult::skip();
+              // If the op is not inside any launch or is inside a different
+              // launch, do not clone it.
+              if (!parentLaunch || parentLaunch != targetLaunch)
+                return WalkResult::advance();
             }
             builder.clone(*op, remap);
             return WalkResult::skip();
