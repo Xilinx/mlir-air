@@ -26,14 +26,17 @@ set(LIBS
   AIRDialect
   AIRRtDialect
   AIRTargets
-  AIE
   MLIRIR
   MLIRParser
   MLIRPass
   MLIRSupport
 )
 
+# Add AIE libs only when enabled
+if(AIR_ENABLE_AIE)
+  list(APPEND LIBS AIE)
+  target_compile_definitions(air-translate PRIVATE AIR_ENABLE_AIE=1)
+endif()
+
 llvm_update_compile_flags(air-translate)
 target_link_libraries(air-translate PRIVATE ${LIBS})
-
- 

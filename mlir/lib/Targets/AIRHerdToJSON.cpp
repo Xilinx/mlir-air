@@ -157,5 +157,13 @@ mlir::LogicalResult AIRHerdsToJSON(ModuleOp module, raw_ostream &outStream) {
   return AIRHerdsToJSONTranslate(module, outStream);
 }
 
+#ifndef AIR_ENABLE_AIE
+// Stub implementation when AIE is not enabled
+void registerAIRRtTranslations() {
+  // AIR runtime translations require AIE support.
+  // Rebuild with -DAIR_ENABLE_AIE=ON to enable.
+}
+#endif // AIR_ENABLE_AIE
+
 } // namespace air
 } // namespace xilinx

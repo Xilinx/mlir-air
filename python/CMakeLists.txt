@@ -125,9 +125,13 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
   )
 
   include_directories(
-    ${AIE_INCLUDE_DIRS}/../runtime_lib
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
   )
+  if(AIR_ENABLE_AIE)
+    include_directories(
+      ${AIE_INCLUDE_DIRS}/../runtime_lib
+    )
+  endif()
 
   # Only include this if we are building the hsa runtime
   if(hsa-runtime64_FOUND)
