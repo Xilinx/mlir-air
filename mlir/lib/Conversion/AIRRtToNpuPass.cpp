@@ -467,7 +467,10 @@ AIE::DeviceOp getDeviceByName(ModuleOp module, StringAttr segmentName) {
   return nullptr;
 }
 
-// Overload for StringRef
+// Helper method to get AIE device by segment name.
+// This overload accepts the segment name as a StringRef and returns the
+// AIE::DeviceOp whose symbol name matches the given segment name, or nullptr
+// if no matching device is found in the module.
 AIE::DeviceOp getDeviceByName(ModuleOp module, StringRef segmentName) {
   for (auto d : module.getOps<AIE::DeviceOp>()) {
     if (d.getSymName() == segmentName)
