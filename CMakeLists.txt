@@ -41,14 +41,25 @@ set(PEANO_INSTALL_DIR
 include(ExternalProject)
 
 find_package(MLIR REQUIRED CONFIG)
-find_package(AIE REQUIRED)
-find_package(LibXAIE)
+
+# AIE is optional - set AIR_ENABLE_AIE=OFF to build without AIE support (GPU-only)
+option(AIR_ENABLE_AIE "Enable AIE backend support" ON)
+
+if(AIR_ENABLE_AIE)
+  find_package(AIE REQUIRED)
+  find_package(LibXAIE)
+endif()
+
 find_package(XRT)
 find_package(hsa-runtime64)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
+if(AIR_ENABLE_AIE)
+  message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
+else()
+  message(STATUS "AIE support disabled - building GPU-only")
+endif()
 
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
 option(LLVM_BUILD_TOOLS
@@ -102,8 +113,10 @@ include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/mlir/include)
 include_directories(${PROJECT_BINARY_DIR}/mlir/include)
 
-link_directories(${AIE_BINARY_DIR}/lib)
-include_directories(${AIE_INCLUDE_DIRS})
+if(AIR_ENABLE_AIE)
+  link_directories(${AIE_BINARY_DIR}/lib)
+  include_directories(${AIE_INCLUDE_DIRS})
+endif()
 
 add_definitions(${LLVM_DEFINITIONS})
 
@@ -153,50 +166,53 @@ set(AIR_RUNTIME_TEST_TARGET
     CACHE STRING "Runtime architecture to test with.")
 set(AIR_RUNTIME_TEST_TARGET_VAL ${AIR_RUNTIME_TEST_TARGET})
 
-foreach(target ${AIR_RUNTIME_TARGETS})
-  # By default, we test the first architecture in AIR_RUNTIME_TARGETS.
-  # Alternatively, this can be defined to force testing with a particular
-  # architecture.
-  if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
-    set(AIR_RUNTIME_TEST_TARGET_VAL ${target})
-    message("Testing with AIR runtime target: ${AIR_RUNTIME_TEST_TARGET_VAL}")
-  endif()
+# Runtime library build requires AIE
+if(AIR_ENABLE_AIE)
+  foreach(target ${AIR_RUNTIME_TARGETS})
+    # By default, we test the first architecture in AIR_RUNTIME_TARGETS.
+    # Alternatively, this can be defined to force testing with a particular
+    # architecture.
+    if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
+      set(AIR_RUNTIME_TEST_TARGET_VAL ${target})
+      message("Testing with AIR runtime target: ${AIR_RUNTIME_TEST_TARGET_VAL}")
+    endif()
 
-  if(NOT EXISTS ${${target}_TOOLCHAIN_FILE})
+    if(NOT EXISTS ${${target}_TOOLCHAIN_FILE})
+      message(
+        FATAL_ERROR
+          "Toolchain file ${${target}_TOOLCHAIN_FILE} not found! Cannot build target ${target}."
+      )
+    endif()
     message(
-      FATAL_ERROR
-        "Toolchain file ${${target}_TOOLCHAIN_FILE} not found! Cannot build target ${target}."
+      "Building AIR runtime for ${target} with TOOLCHAIN=${${target}_TOOLCHAIN_FILE}"
     )
-  endif()
-  message(
-    "Building AIR runtime for ${target} with TOOLCHAIN=${${target}_TOOLCHAIN_FILE}"
-  )
-  ExternalProject_Add(
-    air_runtime_lib_${target}
-    PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
-    SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
-    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
-    CMAKE_CACHE_ARGS -DCMAKE_MODULE_PATH:STRING=${CMAKE_MODULE_PATH}
-    CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${${target}_TOOLCHAIN_FILE}
-               -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-               -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-               -DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
-               -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-               -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
-               -DLibXAIE_ROOT=${LibXAIE_ROOT}
-               -Dhsa-runtime64_DIR=${hsa-runtime64_DIR}
-               -Dhsakmt_DIR=${hsakmt_DIR}
-               -DAIR_RUNTIME_TARGET=${target}
-               -DAIE_DIR=${AIE_DIR}
-    BUILD_ALWAYS true
-    STEP_TARGETS clean build install test
-    USES_TERMINAL_CONFIGURE true
-    USES_TERMINAL_BUILD true
-    USES_TERMINAL_TEST true
-    USES_TERMINAL_INSTALL true
-    TEST_BEFORE_INSTALL true
-    TEST_EXCLUDE_FROM_MAIN true)
-endforeach()
+    ExternalProject_Add(
+      air_runtime_lib_${target}
+      PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
+      SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
+      BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
+      CMAKE_CACHE_ARGS -DCMAKE_MODULE_PATH:STRING=${CMAKE_MODULE_PATH}
+      CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${${target}_TOOLCHAIN_FILE}
+                 -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+                 -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+                 -DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
+                 -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+                 -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
+                 -DLibXAIE_ROOT=${LibXAIE_ROOT}
+                 -Dhsa-runtime64_DIR=${hsa-runtime64_DIR}
+                 -Dhsakmt_DIR=${hsakmt_DIR}
+                 -DAIR_RUNTIME_TARGET=${target}
+                 -DAIE_DIR=${AIE_DIR}
+      BUILD_ALWAYS true
+      STEP_TARGETS clean build install test
+      USES_TERMINAL_CONFIGURE true
+      USES_TERMINAL_BUILD true
+      USES_TERMINAL_TEST true
+      USES_TERMINAL_INSTALL true
+      TEST_BEFORE_INSTALL true
+      TEST_EXCLUDE_FROM_MAIN true)
+  endforeach()
+endif()
 
 add_subdirectory(python)
 if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
@@ -213,4 +229,8 @@ endif()
 add_subdirectory(tools)
 add_subdirectory(mlir)
 add_subdirectory(cmake/modules)
-add_subdirectory(programming_examples)
+
+# Programming examples are AIE-specific
+if(AIR_ENABLE_AIE)
+  add_subdirectory(programming_examples)
+endif()

@@ -29,15 +29,16 @@
 #
 ##===----------------------------------------------------------------------===##
 
-if [ "$#" -lt 4 ]; then
+if [ "$#" -lt 2 ]; then
     echo "ERROR: Needs at least 4 arguments for <sysroot dir>, <llvm dir>,"
     echo "<cmakeModules dir> and <mlir-aie dir>."
     exit 1
 fi
 SYSROOT_DIR=`realpath $1`
 LLVM_DIR=`realpath $2`
-CMAKEMODULES_DIR=`realpath $3`
-MLIR_AIE_DIR=`realpath $4`
+#CMAKEMODULES_DIR=`realpath $3`
+#MLIR_AIE_DIR=`realpath $4`
+CMAKEMODULES_DIR=$(pwd)/cmakeModules
 
 BUILD_DIR=${5:-"build"}
 INSTALL_DIR=${6:-"install"}
@@ -60,7 +61,7 @@ cmake .. \
     -DPython3_FIND_VIRTUALENV=ONLY \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
-    -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
+#    -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_USE_LINKER=lld \
