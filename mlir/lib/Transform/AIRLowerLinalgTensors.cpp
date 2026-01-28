@@ -8,7 +8,9 @@
 
 #include "air/Transform/AIRLowerLinalgTensors.h"
 
+#ifdef AIR_ENABLE_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#endif
 
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -129,6 +131,7 @@ struct LowerLinalgOpPattern : public OpRewritePattern<linalg::GenericOp> {
   }
 };
 
+#ifdef AIR_ENABLE_AIE
 struct AIRLowerLinalgTensors
     : public xilinx::air::impl::AIRLowerLinalgTensorsBase<
           AIRLowerLinalgTensors> {
@@ -164,6 +167,18 @@ void AIRLowerLinalgTensors::runOnOperation() {
   patterns2.add<LowerLinalgOpPattern>(&context);
   (void)applyPatternsGreedily(aie_module, std::move(patterns2));
 }
+#else // AIR_ENABLE_AIE not defined
+// Stub pass implementation when AIE is not enabled
+struct AIRLowerLinalgTensors
+    : public xilinx::air::impl::AIRLowerLinalgTensorsBase<
+          AIRLowerLinalgTensors> {
+  void runOnOperation() override {
+    getOperation().emitError("AIRLowerLinalgTensors requires AIE support. "
+                             "Rebuild with -DAIR_ENABLE_AIE=ON");
+    signalPassFailure();
+  }
+};
+#endif // AIR_ENABLE_AIE
 
 namespace xilinx {
 namespace air {

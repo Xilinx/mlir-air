@@ -10,8 +10,10 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 
+#ifdef AIR_ENABLE_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
+#endif
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -5985,6 +5987,7 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
   }
 };
 
+#ifdef AIR_ENABLE_AIE
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient shim dma block
 // descriptors (BD).
@@ -6278,6 +6281,42 @@ public:
 
 private:
 };
+#else // AIR_ENABLE_AIE not defined
+// Stub pass implementations when AIE is not enabled
+class AIROptimizeShimDMABDs
+    : public xilinx::air::impl::AIROptimizeShimDMABDsBase<
+          AIROptimizeShimDMABDs> {
+public:
+  AIROptimizeShimDMABDs() = default;
+  AIROptimizeShimDMABDs(const AIROptimizeShimDMABDs &pass) {}
+  AIROptimizeShimDMABDs(
+      const ::xilinx::air::AIROptimizeShimDMABDsOptions &options)
+      : AIROptimizeShimDMABDsBase(options) {}
+
+  void runOnOperation() override {
+    getOperation().emitError("AIROptimizeShimDMABDs requires AIE support. "
+                             "Rebuild with -DAIR_ENABLE_AIE=ON");
+    signalPassFailure();
+  }
+};
+
+class AIROptimizeMemtileDMABDs
+    : public xilinx::air::impl::AIROptimizeMemtileDMABDsBase<
+          AIROptimizeMemtileDMABDs> {
+public:
+  AIROptimizeMemtileDMABDs() = default;
+  AIROptimizeMemtileDMABDs(const AIROptimizeMemtileDMABDs &pass) {}
+  AIROptimizeMemtileDMABDs(
+      const ::xilinx::air::AIROptimizeMemtileDMABDsOptions &options)
+      : AIROptimizeMemtileDMABDsBase(options) {}
+
+  void runOnOperation() override {
+    getOperation().emitError("AIROptimizeMemtileDMABDs requires AIE support. "
+                             "Rebuild with -DAIR_ENABLE_AIE=ON");
+    signalPassFailure();
+  }
+};
+#endif // AIR_ENABLE_AIE
 
 // Fuse pairs of alloc and dealloc into the inner-most loop-like op's body,
 // which contains all uses of the memref.

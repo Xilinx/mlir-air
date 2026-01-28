@@ -10,8 +10,10 @@
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/InitAll.h"
 
+#ifdef AIR_ENABLE_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
+#endif
 
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/MLIRContext.h"
@@ -35,8 +37,10 @@ int main(int argc, char **argv) {
   DialectRegistry registry;
   registerAllDialects(registry);
   xilinx::air::registerAllDialects(registry);
+#ifdef AIR_ENABLE_AIE
   registry.insert<xilinx::AIE::AIEDialect>();
   registry.insert<xilinx::AIEX::AIEXDialect>();
+#endif
 
   registerAllExtensions(registry);
 

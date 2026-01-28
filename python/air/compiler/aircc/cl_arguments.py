@@ -127,7 +127,29 @@ def parse_args(args=None):
         "--device",
         metavar="target_device",
         default="xcvc1902",
-        help="Target AIE device",
+        help="Target device. AIE devices: xcvc1902, npu1, npu2, etc. GPU devices: gfx942 (MI300), gfx90a (MI200), gfx1100, etc.",
+    )
+    parser.add_argument(
+        "--target",
+        metavar="target",
+        default="aie",
+        choices=["aie", "gpu"],
+        help="Target backend: 'aie' for AIE devices, 'gpu' for AMD GPUs (default: aie)",
+    )
+    parser.add_argument(
+        "--gpu-arch",
+        dest="gpu_arch",
+        metavar="gpu_arch",
+        default="gfx942",
+        help="GPU architecture for ROCDL compilation (default: gfx942 for MI300X)",
+    )
+    parser.add_argument(
+        "--gpu-runtime",
+        dest="gpu_runtime",
+        metavar="gpu_runtime",
+        default="HIP",
+        choices=["HIP", "OpenCL"],
+        help="GPU runtime to use (default: HIP)",
     )
     parser.add_argument(
         "--omit-while-true-loop",

@@ -16,3 +16,8 @@ add_mlir_dialect_library(AIRTransformOps
   MLIRPDLDialect
   MLIRTransformDialect
 )
+
+# Add compile definition for conditional compilation in source files
+if(AIR_ENABLE_AIE)
+  target_compile_definitions(AIRTransformOps PRIVATE AIR_ENABLE_AIE=1)
+endif()
