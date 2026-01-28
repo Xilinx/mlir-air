@@ -467,6 +467,18 @@ AIE::DeviceOp getDeviceByName(ModuleOp module, StringAttr segmentName) {
   return nullptr;
 }
 
+// Helper method to get AIE device by segment name.
+// This overload accepts the segment name as a StringRef and returns the
+// AIE::DeviceOp whose symbol name matches the given segment name, or nullptr
+// if no matching device is found in the module.
+AIE::DeviceOp getDeviceByName(ModuleOp module, StringRef segmentName) {
+  for (auto d : module.getOps<AIE::DeviceOp>()) {
+    if (d.getSymName() == segmentName)
+      return d;
+  }
+  return nullptr;
+}
+
 struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
   using OpConversionPattern<airrt::HerdLoadOp>::OpConversionPattern;
 
@@ -804,6 +816,80 @@ AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
     return getDeviceByName(module, segmentName);
   }
   return nullptr;
+}
+
+// Represents a launch region identified by its affine.for boundary
+struct LaunchRegion {
+  affine::AffineForOp boundaryOp; // The affine.for %arg = 0 to 1 loop
+  StringRef deviceName;           // Name of the target aie.device
+  AIE::DeviceOp device;           // The target device op
+};
+
+// Check if an affine.for loop is a launch boundary.
+// Launch boundaries are affine.for %arg = 0 to 1 loops with the
+// "affine_opt_label" attribute.
+bool isLaunchBoundaryLoop(affine::AffineForOp forOp) {
+  // Check for affine_opt_label attribute (marks original air.launch boundary)
+  if (!forOp->hasAttr("affine_opt_label"))
+    return false;
+
+  // Check bounds: 0 to 1
+  if (!forOp.hasConstantLowerBound() || !forOp.hasConstantUpperBound())
+    return false;
+  if (forOp.getConstantLowerBound() != 0 || forOp.getConstantUpperBound() != 1)
+    return false;
+
+  return true;
+}
+
+// Identify launch regions within a function.
+// Launch regions are delimited by affine.for %arg = 0 to 1 loops
+// with "affine_opt_label" attribute, and contain airrt.segment_load
+// operations that link to device ops.
+SmallVector<LaunchRegion> identifyLaunchRegions(func::FuncOp funcOp,
+                                                ModuleOp module) {
+  SmallVector<LaunchRegion> regions;
+
+  funcOp.walk([&](affine::AffineForOp forOp) {
+    // Check if this is a launch boundary
+    if (!isLaunchBoundaryLoop(forOp))
+      return;
+
+    // Look for airrt.segment_load inside this loop
+    forOp.walk([&](airrt::SegmentLoadOp segLoadOp) {
+      StringRef deviceName = segLoadOp.getSymName();
+      AIE::DeviceOp device = getDeviceByName(module, deviceName);
+      if (device) {
+        regions.push_back({forOp, deviceName, device});
+      }
+    });
+  });
+
+  return regions;
+}
+
+// Collect operations that should be part of the function "prologue" -
+// operations that are used by multiple launch regions and should be
+// cloned to each device's function.
+SmallVector<Operation *>
+collectPrologueOps(func::FuncOp funcOp, SmallVector<LaunchRegion> &regions) {
+  SmallVector<Operation *> prologueOps;
+  DenseSet<Operation *> launchOps;
+
+  // Collect all operations that are inside launch regions
+  for (auto &region : regions) {
+    region.boundaryOp->walk([&](Operation *op) { launchOps.insert(op); });
+  }
+
+  // Prologue ops are those in the function body but not inside any launch
+  // region
+  for (auto &op : funcOp.getBody().front().getOperations()) {
+    if (!launchOps.contains(&op) && !isa<func::ReturnOp>(&op)) {
+      prologueOps.push_back(&op);
+    }
+  }
+
+  return prologueOps;
 }
 
 // AIE2 hardware constraints.
@@ -1157,19 +1243,163 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
-    // Move func op to the end of device op's body
-    SmallVector<Operation *> segs;
-    module.walk([&](Operation *o) {
-      if (isa<airrt::SegmentLoadOp, airrt::HerdLoadOp>(o)) {
-        segs.push_back(o);
-      }
+    // Collect all func ops that need to be processed
+    SmallVector<func::FuncOp> funcOps;
+    module.walk([&](func::FuncOp f) {
+      // Only process functions that contain segment/herd load ops
+      bool hasSegmentOrHerd = false;
+      f.walk([&](Operation *o) {
+        if (isa<airrt::SegmentLoadOp, airrt::HerdLoadOp>(o))
+          hasSegmentOrHerd = true;
+      });
+      if (hasSegmentOrHerd)
+        funcOps.push_back(f);
     });
-    for (auto s : segs) {
-      auto f = s->getParentOfType<func::FuncOp>();
-      auto d = getDeviceForSegmentLoad(s);
-      if (!f || !d)
+
+    for (auto funcOp : funcOps) {
+      // Identify launch regions (affine.for with affine_opt_label containing
+      // segment_load)
+      SmallVector<LaunchRegion> regions = identifyLaunchRegions(funcOp, module);
+
+      if (regions.empty()) {
+        // Fallback: no launch boundaries found, use old behavior
+        funcOp.walk([&](Operation *o) {
+          if (isa<airrt::SegmentLoadOp, airrt::HerdLoadOp>(o)) {
+            auto d = getDeviceForSegmentLoad(o);
+            if (d)
+              funcOp->moveBefore(d.getBody()->getTerminator());
+          }
+        });
         continue;
-      f->moveBefore(d.getBody()->getTerminator());
+      }
+
+      // Group regions by device
+      llvm::MapVector<AIE::DeviceOp, SmallVector<LaunchRegion *>>
+          deviceToRegions;
+      for (auto &region : regions) {
+        deviceToRegions[region.device].push_back(&region);
+      }
+
+      // If all regions target the same device, just move the entire func
+      if (deviceToRegions.size() == 1) {
+        AIE::DeviceOp device = deviceToRegions.begin()->first;
+        funcOp->moveBefore(device.getBody()->getTerminator());
+        continue;
+      }
+
+      // Multiple devices: verify all have the same device type
+      AIE::AIEDevice deviceType = deviceToRegions.begin()->first.getDevice();
+      for (auto &[device, _] : deviceToRegions) {
+        if (device.getDevice() != deviceType) {
+          funcOp.emitError("Multiple devices with different device types "
+                           "are not supported");
+          signalPassFailure();
+          return;
+        }
+      }
+
+      // Collect prologue ops (constants and other shared ops)
+      SmallVector<Operation *> prologueOps =
+          collectPrologueOps(funcOp, regions);
+
+      OpBuilder builder(module.getContext());
+
+      // For each device, create a new func with device-specific name
+      for (auto &[device, deviceRegions] : deviceToRegions) {
+        builder.setInsertionPoint(device.getBody()->getTerminator());
+
+        // Create new function with device-specific name (e.g.,
+        // add_two_sequence)
+        std::string newFuncName = device.getSymName().str() + "_sequence";
+        auto newFuncOp = func::FuncOp::create(
+            builder, funcOp.getLoc(), newFuncName, funcOp.getFunctionType());
+        newFuncOp.setVisibility(funcOp.getVisibility());
+
+        // Create entry block with same arguments
+        Block *entryBlock = newFuncOp.addEntryBlock();
+        builder.setInsertionPointToStart(entryBlock);
+
+        // Map from old values to new values
+        IRMapping mapper;
+        for (unsigned i = 0; i < funcOp.getNumArguments(); ++i) {
+          mapper.map(funcOp.getArgument(i), newFuncOp.getArgument(i));
+        }
+
+        // Clone prologue ops
+        for (Operation *op : prologueOps) {
+          builder.clone(*op, mapper);
+        }
+
+        // Clone each launch region for this device
+        for (LaunchRegion *region : deviceRegions) {
+          builder.clone(*region->boundaryOp.getOperation(), mapper);
+        }
+
+        // Add return
+        func::ReturnOp::create(builder, funcOp.getLoc());
+      }
+
+      // Create the @main device with orchestration runtime_sequence
+      builder.setInsertionPointToEnd(module.getBody());
+
+      // Create main device with same device type as sub-devices
+      auto mainDevice =
+          AIE::DeviceOp::create(builder, funcOp.getLoc(), deviceType);
+      mainDevice->setAttr(SymbolTable::getSymbolAttrName(),
+                          StringAttr::get(builder.getContext(), "main"));
+
+      // Add a body block to the main device
+      Block *mainDeviceBody = new Block;
+      mainDevice.getRegion().push_back(mainDeviceBody);
+
+      // Create runtime_sequence inside main device
+      builder.setInsertionPointToStart(mainDeviceBody);
+      auto mainSeqName = funcOp.getName().str();
+      auto mainSeq = AIE::RuntimeSequenceOp::create(
+          builder, funcOp.getLoc(), builder.getStringAttr(mainSeqName));
+      mainSeq.getBody().push_back(new Block);
+
+      // Add arguments to runtime_sequence matching original func signature
+      for (unsigned i = 0; i < funcOp.getNumArguments(); ++i) {
+        auto arg = funcOp.getArgument(i);
+        mainSeq.getBody().addArgument(arg.getType(), arg.getLoc());
+      }
+
+      builder.setInsertionPointToStart(&mainSeq.getBody().front());
+
+      // Generate aiex.configure and aiex.run for each device in order
+      for (auto &region : regions) {
+        StringRef deviceName = region.deviceName;
+        std::string seqName = deviceName.str() + "_sequence";
+
+        // Create aiex.configure @device_name { ... }
+        auto configureOp = AIEX::ConfigureOp::create(
+            builder, funcOp.getLoc(),
+            FlatSymbolRefAttr::get(builder.getContext(), deviceName));
+        configureOp.getBody().push_back(new Block);
+        builder.setInsertionPointToStart(&configureOp.getBody().front());
+
+        // Create aiex.run @device_sequence (args) : (types)
+        SmallVector<Value> args;
+        SmallVector<Type> argTypes;
+        for (unsigned i = 0; i < mainSeq.getBody().getNumArguments(); ++i) {
+          args.push_back(mainSeq.getBody().getArgument(i));
+          argTypes.push_back(mainSeq.getBody().getArgument(i).getType());
+        }
+        AIEX::RunOp::create(
+            builder, funcOp.getLoc(),
+            FlatSymbolRefAttr::get(builder.getContext(), seqName), args);
+
+        // Move insertion point after configure op
+        builder.setInsertionPointAfter(configureOp);
+      }
+
+      // Add aie.end terminator to the main device body
+      builder.setInsertionPointToEnd(mainDeviceBody);
+      AIE::EndOp::create(builder, funcOp.getLoc());
+
+      // Erase the original function
+      funcOp.erase();
     }
   }
 
@@ -1325,49 +1555,57 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   void purgeDuplicateShimDmaAllocs(ModuleOp module) {
-    llvm::SetVector<AIE::ShimDMAAllocationOp> allocs;
-    module.walk([&](AIE::ShimDMAAllocationOp alloc) { allocs.insert(alloc); });
-    llvm::SmallSet<AIE::ShimDMAAllocationOp, 1> uniqueAllocs;
+    // Process each device separately to avoid cross-device deduplication
+    SmallVector<AIE::DeviceOp> devices;
+    module.walk([&](AIE::DeviceOp d) { devices.push_back(d); });
 
-    // Map each unique set of <dir, chan, col> to a shim dma alloc op
-    DenseMap<StringRef, StringRef> uniqueAllocMap;
-    for (auto alloc : allocs) {
-      AIE::TileOp shimtile = alloc.getTileOp();
-      std::tuple<bool, int, int> allocInfo = {
-          alloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
-          alloc.getChannelIndex(), shimtile.getCol()};
+    for (auto device : devices) {
+      llvm::SetVector<AIE::ShimDMAAllocationOp> allocs;
+      device.walk(
+          [&](AIE::ShimDMAAllocationOp alloc) { allocs.insert(alloc); });
+      llvm::SmallSet<AIE::ShimDMAAllocationOp, 1> uniqueAllocs;
 
-      auto it =
-          llvm::find_if(uniqueAllocs, [&](AIE::ShimDMAAllocationOp ualloc) {
-            AIE::TileOp shimtile = ualloc.getTileOp();
-            std::tuple<bool, int, int> uallocInfo = {
-                ualloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
-                ualloc.getChannelIndex(), shimtile.getCol()};
-            return allocInfo == uallocInfo;
-          });
-      if (it != uniqueAllocs.end()) {
-        AIE::ShimDMAAllocationOp uniqueAlloc = *it;
-        uniqueAllocMap[alloc.getSymName()] = uniqueAlloc.getSymName();
-      } else {
-        uniqueAllocs.insert(alloc);
-        uniqueAllocMap[alloc.getSymName()] = alloc.getSymName();
+      // Map each unique set of <dir, chan, col> to a shim dma alloc op
+      // within THIS device only
+      DenseMap<StringRef, StringRef> uniqueAllocMap;
+      for (auto alloc : allocs) {
+        AIE::TileOp shimtile = alloc.getTileOp();
+        std::tuple<bool, int, int> allocInfo = {
+            alloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
+            alloc.getChannelIndex(), shimtile.getCol()};
+
+        auto it =
+            llvm::find_if(uniqueAllocs, [&](AIE::ShimDMAAllocationOp ualloc) {
+              AIE::TileOp shimtile = ualloc.getTileOp();
+              std::tuple<bool, int, int> uallocInfo = {
+                  ualloc.getChannelDir() == AIE::DMAChannelDir::MM2S,
+                  ualloc.getChannelIndex(), shimtile.getCol()};
+              return allocInfo == uallocInfo;
+            });
+        if (it != uniqueAllocs.end()) {
+          AIE::ShimDMAAllocationOp uniqueAlloc = *it;
+          uniqueAllocMap[alloc.getSymName()] = uniqueAlloc.getSymName();
+        } else {
+          uniqueAllocs.insert(alloc);
+          uniqueAllocMap[alloc.getSymName()] = alloc.getSymName();
+        }
       }
+
+      // Replace all uses of metadata to unique within THIS device only
+      device.walk([&](airrt::DmaMemcpyNdOp dma) {
+        if (!dma->hasAttr("metadata"))
+          return;
+        StringRef metadata =
+            dma->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata").getValue();
+        if (!uniqueAllocMap.count(metadata))
+          return;
+        if (uniqueAllocMap[metadata] != metadata) {
+          dma->setAttr("metadata",
+                       FlatSymbolRefAttr::get(dma->getContext(),
+                                              uniqueAllocMap[metadata]));
+        }
+      });
     }
-
-    // Replace all uses of metadata to unique
-    module.walk([&](airrt::DmaMemcpyNdOp dma) {
-      if (!dma->hasAttr("metadata"))
-        return;
-      StringRef metadata =
-          dma->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata").getValue();
-      if (!uniqueAllocMap.count(metadata))
-        return;
-      if (uniqueAllocMap[metadata] != metadata) {
-        dma->setAttr("metadata",
-                     FlatSymbolRefAttr::get(dma->getContext(),
-                                            uniqueAllocMap[metadata]));
-      }
-    });
   }
 
   void unrollAffineFors(ModuleOp module) {
