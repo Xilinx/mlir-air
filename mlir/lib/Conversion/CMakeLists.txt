@@ -8,7 +8,7 @@ set(AIR_CONVERSION_SOURCES
   AIRRtToLLVMPass.cpp
   AIRToAsyncPass.cpp
   AIRToROCDLPass.cpp
-  GPUKernelOutlingPass.cpp
+  GPUKernelOutliningPass.cpp
   Passes.cpp
 )
 
@@ -65,6 +65,8 @@ add_mlir_library(
 )
 
 # Add compile definition for conditional compilation in source files
+# Note: add_mlir_library creates both a library and an object library (obj.*)
 if(AIR_ENABLE_AIE)
   target_compile_definitions(AIRConversionPasses PRIVATE AIR_ENABLE_AIE=1)
+  target_compile_definitions(obj.AIRConversionPasses PRIVATE AIR_ENABLE_AIE=1)
 endif()

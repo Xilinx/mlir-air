@@ -11,6 +11,32 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+// Forward declarations for GPU pass factory functions (always available)
+namespace xilinx {
+namespace air {
+std::unique_ptr<mlir::Pass> createAIRGPUOutliningPass();
+std::unique_ptr<mlir::Pass> createConvertAIRToROCDLPass();
+} // namespace air
+} // namespace xilinx
+
+// Forward declarations for stub functions when AIE is disabled.
+// These are needed because Passes.h.inc (generated from Passes.td) references
+// these factory functions, but the AIE headers are conditionally excluded.
+#ifndef AIR_ENABLE_AIE
+namespace xilinx {
+namespace air {
+std::unique_ptr<mlir::Pass> createAIRToAIEPass();
+std::unique_ptr<mlir::Pass> createAIRLoweringPass();
+std::unique_ptr<mlir::Pass> createAIRPipelineToAffinePass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createAIRLinalgToFuncPass();
+std::unique_ptr<mlir::Pass> createAIRSplitDevicesPass();
+} // namespace air
+namespace airrt {
+std::unique_ptr<mlir::Pass> createAIRRtToNpuPass();
+} // namespace airrt
+} // namespace xilinx
+#endif
+
 namespace {
 #define GEN_PASS_REGISTRATION
 #include "air/Conversion/Passes.h.inc"
@@ -54,6 +80,20 @@ struct AIRLoweringStubPass
   }
 };
 
+struct AIRPipelineToAffineStubPass
+    : public PassWrapper<AIRPipelineToAffineStubPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AIRPipelineToAffineStubPass)
+  StringRef getArgument() const override { return "air-pipeline-to-affine"; }
+  StringRef getDescription() const override {
+    return "AIR pipeline to affine (stub - requires AIE support)";
+  }
+  void runOnOperation() override {
+    getOperation().emitError("AIRPipelineToAffine pass requires AIE support. "
+                             "Rebuild with -DAIR_ENABLE_AIE=ON");
+    signalPassFailure();
+  }
+};
+
 struct AIRLinalgToFuncStubPass
     : public PassWrapper<AIRLinalgToFuncStubPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AIRLinalgToFuncStubPass)
@@ -91,6 +131,10 @@ std::unique_ptr<Pass> createAIRLoweringPass() {
   return std::make_unique<AIRLoweringStubPass>();
 }
 
+std::unique_ptr<Pass> createAIRPipelineToAffinePass() {
+  return std::make_unique<AIRPipelineToAffineStubPass>();
+}
+
 std::unique_ptr<OperationPass<ModuleOp>> createAIRLinalgToFuncPass() {
   return std::make_unique<AIRLinalgToFuncStubPass>();
 }
@@ -102,6 +146,8 @@ std::unique_ptr<Pass> createAIRSplitDevicesPass() {
 } // namespace air
 
 namespace airrt {
+
+using namespace mlir;
 
 namespace {
 struct AIRRtToNpuStubPass
@@ -119,7 +165,7 @@ struct AIRRtToNpuStubPass
 };
 } // namespace
 
-std::unique_ptr<Pass> createAIRRtToNpuPass() {
+std::unique_ptr<mlir::Pass> createAIRRtToNpuPass() {
   return std::make_unique<AIRRtToNpuStubPass>();
 }
 

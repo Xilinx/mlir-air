@@ -446,7 +446,7 @@ def AIRWrapFuncWithParallelPass : Pass<"air-wrap-func-with-parallel", "func::Fun
   let constructor = "xilinx::air::createAIRWrapFuncWithParallelPass()";
   let description = [{
     Wraps the body of a given func.func operation inside an scf.parallel loop.
-    The pass assumes that: 
+    The pass assumes that:
     (1) The function arguments consist of: M memref arguments, N loop upper bounds, N loop induction variable indices.
     (2) The scf.parallel loop is constructed using the N upper bounds and induction variable indices.
     (3) The scf.parallel loop is inserted at the beginning of the function, wrapping all existing operations.
@@ -455,6 +455,34 @@ def AIRWrapFuncWithParallelPass : Pass<"air-wrap-func-with-parallel", "func::Fun
     ListOption<"clLoopBounds", "loop-bounds", "unsigned",
                "Specify upper bounds for scf.parallel loops",
                "llvm::cl::ZeroOrMore">,
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// GPU-related passes
+//===----------------------------------------------------------------------===//
+
+def AIRGPUOutlining : Pass<"air-gpu-outlining", "ModuleOp"> {
+  let summary = "Outline GPU kernels from gpu.launch operations";
+  let constructor = "xilinx::air::createAIRGPUOutliningPass()";
+  let description = [{
+    This pass outlines gpu.launch operations into gpu.func operations within
+    a gpu.module. This is a preparatory step for GPU code generation.
+  }];
+}
+
+def ConvertAIRToROCDL : Pass<"air-to-rocdl", "ModuleOp"> {
+  let summary = "Lower AIR dialect to GPU/ROCDL dialect for AMD GPUs";
+  let constructor = "xilinx::air::createConvertAIRToROCDLPass()";
+  let description = [{
+    This pass converts AIR dialect operations (air.launch, air.herd, air.segment)
+    to GPU dialect operations for execution on AMD GPUs using the ROCDL backend.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "gpu::GPUDialect",
+    "scf::SCFDialect",
+    "memref::MemRefDialect"
   ];
 }
 

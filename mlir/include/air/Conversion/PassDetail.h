@@ -15,8 +15,11 @@
 
 // Include MLIR headers needed by generated pass declarations
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassOptions.h"
 
@@ -46,6 +49,10 @@ using namespace mlir;
 #define GEN_PASS_DEF_PARALLELTOLAUNCH
 #define GEN_PASS_DEF_PARALLELTOSEGMENT
 #define GEN_PASS_DEF_AIRWRAPFUNCWITHPARALLELPASS
+
+// GPU passes (work without AIE)
+#define GEN_PASS_DEF_AIRGPUOUTLINING
+#define GEN_PASS_DEF_CONVERTAIRTOROCDL
 
 #include "air/Conversion/Passes.h.inc"
 
