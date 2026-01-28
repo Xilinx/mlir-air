@@ -14,7 +14,7 @@ import filelock
 
 parser = argparse.ArgumentParser(
     prog="run.py",
-    description="Builds, runs, and tests the matmul example",
+    description="Builds, runs, and tests the softmax example",
 )
 parser.add_argument(
     "--transform-script",
@@ -36,6 +36,19 @@ parser.add_argument(
     dest="N",
     default=256,
     help="N (reduction) dimension size",
+)
+parser.add_argument(
+    "--compile-only",
+    action="store_true",
+    help="Only compile to xclbin without running validation (for profiling)",
+)
+parser.add_argument(
+    "--debug-ir",
+    type=str,
+    dest="debug_ir",
+    default=None,
+    metavar="OUTPUT_FILE",
+    help="Print the transformed IR to the specified file and exit (for debugging)",
 )
 args = parser.parse_args()
 
@@ -146,8 +159,18 @@ with air.ir.Context() as ctx, Location.unknown():
     transform_ir = Module.parse(transform_ir_string)
     run_transform(transform_ir, air_module)
 
+    # Print the IR for debugging and exit if --debug-ir is specified
+    if args.debug_ir:
+        import os
+        output_file = args.debug_ir
+        os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
+        with open(output_file, "w") as f:
+            f.write(str(air_module))
+        print(f"Transformed IR written to {output_file}")
+        exit(0)
+
     ###############################################
-    # Binding scf.paralell to air hierarchies
+    # Binding scf.parallel to air hierarchies
     ###############################################
     M, N = args.M, args.N
     input_size = (M, N)
@@ -174,19 +197,32 @@ with air.ir.Context() as ctx, Location.unknown():
     # Run compile and load
     ###############################################
 
-    input_type = np.float32
-    A = np.random.rand(M, N).astype(input_type)  # Shape [M, N]
-    C = softmax(A).astype(input_type)
+    if args.compile_only:
+        # Compile-only mode: generate xclbin and instruction binary without validation
+        print("Compile-only mode: generating xclbin and instruction binary...")
+        backend = XRTBackend(omit_while_true_loop=False)
+        module_function = backend.compile(air_module)
+        backend.unload()
+        print("Compilation complete. Generated files:")
+        print("  - air.xclbin")
+        print("  - air.insts.bin")
+        print("Run profiling with: ./test.exe")
+        exit(0)
+    else:
+        # Normal mode: compile and run validation
+        input_type = np.float32
+        A = np.random.rand(M, N).astype(input_type)  # Shape [M, N]
+        C = softmax(A).astype(input_type)
 
-    ###### Compile and test
-    runner = XRTRunner(
-        omit_while_true_loop=False,
-    )
-    exit(
-        runner.run_test(
-            air_module,
-            inputs=[A],
-            expected_outputs=[C],
-            rtol=1e-2,
+        ###### Compile and test
+        runner = XRTRunner(
+            omit_while_true_loop=False,
         )
-    )
+        exit(
+            runner.run_test(
+                air_module,
+                inputs=[A],
+                expected_outputs=[C],
+                rtol=1e-2,
+            )
+        )

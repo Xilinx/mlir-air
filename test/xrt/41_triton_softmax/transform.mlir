@@ -75,9 +75,10 @@ transform.with_pdl_patterns {
         // PHASE 3: Initial Tiling and Fusion Strategy
         //===================================================================
         // Assumption: generic7 is the final output operation that should drive
-        // the tiling strategy. Memory space 1 likely represents L1 memory.
+        // the tiling strategy.
         
-        // Bufferize the final operation to L1 memory (memory_space = 1)
+        // Bufferize the final operation to L2 memory (memory_space = 1)
+        // Memory space mapping: 0=L3(DDR), 1=L2(Tile), 2=L1(Core)
         %generic7_output_buf, %new_generic7 = transform.structured.bufferize_to_allocation %generic7
           {memory_space = 1, bufferize_destination_only, emit_dealloc} : !pdl.operation
 
@@ -111,30 +112,30 @@ transform.with_pdl_patterns {
         transform.apply_cse to %func2 : !pdl.operation
         
         //===================================================================
-        // PHASE 5: L2 Memory Allocation Strategy
+        // PHASE 5: L1 Memory Allocation Strategy
         //===================================================================
         // Assumption: After fusion, we need to allocate intermediate buffers
-        // in L2 memory (memory_space = 2) for efficient data movement.
-        // This phase targets specific operations that benefit from L2 caching.
+        // in L1 memory (memory_space = 2) for computation in AIE cores.
+        // Memory space mapping: 0=L3(DDR), 1=L2(Tile), 2=L1(Core)
         
-        // Allocate fill operations to L2 memory
+        // Allocate fill operations to L1 memory
         %fills_2 = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
         %fill1_buffer, %fill1_new = transform.structured.bufferize_to_allocation %fills_2
           {memory_space = 2, bufferize_destination_only, emit_dealloc} : !pdl.operation
 
-        // Re-split the fused generic operations for individual L2 allocation
+        // Re-split the fused generic operations for individual L1 allocation
         %generics2 = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!pdl.operation) -> !pdl.operation
         %tiled_generic1, %tiled_generic2, %tiled_generic3, %tiled_generic4, %tiled_generic5, %tiled_generic6, %tiled_generic7 = transform.split_handle %generics2 : (!pdl.operation<"linalg.generic">) -> (!pdl.operation<"linalg.generic">, !pdl.operation<"linalg.generic">, !pdl.operation<"linalg.generic">, !pdl.operation<"linalg.generic">, !pdl.operation<"linalg.generic">, !pdl.operation<"linalg.generic">, !pdl.operation<"linalg.generic">)
 
-        // Allocate input producer to L2 memory for efficient data access
+        // Allocate input producer to L1 memory for efficient data access
         %padded_gen1_in = transform.get_producer_of_operand %tiled_generic1[0] : (!pdl.operation) -> (!pdl.operation)
         
         %padded_gen1_in_buffer, %padded_gen1_in_new = transform.structured.bufferize_to_allocation %padded_gen1_in
             {memory_space = 2, bufferize_destination_only, emit_dealloc} : !pdl.operation
 
-        // Allocate intermediate computation results to L2 memory
+        // Allocate intermediate computation results to L1 memory
         // Assumption: These operations produce intermediate results that need
-        // to be cached in L2 for subsequent operations in the softmax pipeline
+        // to be cached in L1 for subsequent operations in the softmax pipeline
         %padded_gen2_out1_buffer, %padded_gen2_out1_new = transform.structured.bufferize_to_allocation %tiled_generic2
             {memory_space = 2, bufferize_destination_only, emit_dealloc} : !pdl.operation
 
@@ -154,9 +155,9 @@ transform.with_pdl_patterns {
         //===================================================================
         // PHASE 6: Final Canonicalization and Bufferization
         //===================================================================
-        // Clean up the IR after L2 allocation and prepare for final bufferization
+        // Clean up the IR after L1 allocation and prepare for final bufferization
         
-        // Run canonicalization after L2 memory allocation
+        // Run canonicalization after L1 memory allocation
         %func5 = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
         transform.apply_patterns to %func5 {
             transform.apply_patterns.linalg.tiling_canonicalization
