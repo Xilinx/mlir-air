@@ -6,6 +6,10 @@
 
 """
 aircc - AIR compiler driver for MLIR tools
+
+Supports two compilation targets:
+- AIE: AMD AI Engine devices (Versal, NPU)
+- GPU: AMD GPUs via ROCDL (MI300, MI200, etc.)
 """
 
 import os
@@ -22,7 +26,12 @@ from air.dialects import air as airdialect
 import air.compiler.aircc.cl_arguments as cl_arguments
 from air.compiler.aircc.configure import *
 
-import aie.compiler.aiecc.main as aiecc
+# AIE support is optional - only import if targeting AIE
+aiecc = None
+try:
+    import aie.compiler.aiecc.main as aiecc
+except ImportError:
+    pass  # AIE support not available
 
 
 def get_L2_splitting_analysis_pass():
@@ -408,11 +417,174 @@ def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filena
         do_call(["cp", lib_file, opts.output_file])
 
 
-def run(mlir_module, args=None):
+# =============================================================================
+# GPU Compilation Functions
+# =============================================================================
+
+
+def get_gpu_optimization_passes():
+    """Get optimization passes for GPU target."""
+    return [
+        "air-dependency",
+        "air-dma-to-channel",
+        "canonicalize",
+        "cse",
+        "air-dependency-canonicalize",
+        "canonicalize",
+        "cse",
+    ]
+
+
+def run_gpu(mlir_module, args=None):
+    """
+    Run GPU compilation pipeline.
+
+    This compiles AIR dialect to ROCDL/GPU dialect for AMD GPUs.
+    """
+    global opts
+
+    if args is not None:
+        opts = cl_arguments.parse_args(args)
+
+    if opts.tmpdir:
+        tmpdirname = opts.tmpdir
+        try:
+            os.mkdir(tmpdirname)
+        except FileExistsError:
+            pass
+        if opts.verbose:
+            print("created temporary directory", tmpdirname)
+
+    if opts.verbose:
+        print(f"Compiling {opts.air_mlir_file} for GPU ({opts.gpu_arch})\n")
+
+    with mlir_module.context as ctx:
+        _, air_mlir_filename = os.path.split(opts.air_mlir_file)
+
+        # Step 1: Apply optimization passes
+        air_optimized = opts.tmpdir + "/optimized." + air_mlir_filename
+        opt_passes = get_gpu_optimization_passes()
+        pass_pipeline = ",".join(opt_passes)
+        optimized_module = Module.parse(str(mlir_module))
+        run_passes(
+            "builtin.module(" + pass_pipeline + ")",
+            optimized_module,
+            opts,
+            air_optimized,
+        )
+
+        # Step 2: Lower AIR to ROCDL
+        air_rocdl = opts.tmpdir + "/rocdl." + air_mlir_filename
+        rocdl_passes = [
+            "air-to-rocdl",
+            "canonicalize",
+            "cse",
+        ]
+        pass_pipeline = ",".join(rocdl_passes)
+        rocdl_module = Module.parse(str(optimized_module))
+        run_passes(
+            "builtin.module(" + pass_pipeline + ")", rocdl_module, opts, air_rocdl
+        )
+
+        # Step 3: Outline GPU kernels
+        air_outlined = opts.tmpdir + "/outlined." + air_mlir_filename
+        outline_passes = [
+            "air-gpu-outlining",
+        ]
+        pass_pipeline = ",".join(outline_passes)
+        outlined_module = Module.parse(str(rocdl_module))
+        run_passes(
+            "builtin.module(" + pass_pipeline + ")",
+            outlined_module,
+            opts,
+            air_outlined,
+        )
+
+        # Step 4: Lower to LLVM with GPU support
+        # This uses mlir-opt from LLVM installation
+        air_gpu_llvm = opts.tmpdir + "/gpu." + air_mlir_filename
+
+        mlir_opt_cmd = [
+            "mlir-opt",
+            air_outlined,
+            "--pass-pipeline=builtin.module("
+            + "func.func(lower-affine, convert-linalg-to-loops, convert-scf-to-cf), "
+            + "gpu-kernel-outlining"
+            + ")",
+            "-o",
+            air_gpu_llvm,
+        ]
+        do_call(mlir_opt_cmd)
+
+        # Step 5: Convert to ROCDL binary
+        air_rocdl_binary = opts.tmpdir + "/rocdl_binary." + air_mlir_filename
+
+        gpu_arch = opts.gpu_arch
+        gpu_runtime = opts.gpu_runtime
+
+        rocdl_pipeline = (
+            f"builtin.module("
+            f"rocdl-attach-target{{chip={gpu_arch} O=3}}, "
+            f"gpu.module(convert-gpu-to-rocdl{{chipset={gpu_arch} runtime={gpu_runtime}}}, "
+            f"reconcile-unrealized-casts), "
+            f"gpu-module-to-binary, "
+            f"func.func(gpu-async-region), "
+            f"gpu-to-llvm, "
+            f"convert-to-llvm, "
+            f"reconcile-unrealized-casts"
+            f")"
+        )
+
+        rocdl_binary_cmd = [
+            "mlir-opt",
+            air_gpu_llvm,
+            f"--pass-pipeline={rocdl_pipeline}",
+            "-o",
+            air_rocdl_binary,
+        ]
+        do_call(rocdl_binary_cmd)
+
+        # Step 6: Output the final file
+        if opts.output_file:
+            do_call(["cp", air_rocdl_binary, opts.output_file])
+            if opts.verbose:
+                print(f"Output written to: {opts.output_file}")
+        else:
+            # Print the result to stdout
+            with open(air_rocdl_binary, "r") as f:
+                print(f.read())
+
+        if opts.verbose:
+            print("\n=== GPU Compilation Complete ===")
+            print(f"Intermediate files in: {opts.tmpdir}")
+            print(f"  - Optimized: {air_optimized}")
+            print(f"  - ROCDL: {air_rocdl}")
+            print(f"  - Outlined: {air_outlined}")
+            print(f"  - GPU LLVM: {air_gpu_llvm}")
+            print(f"  - Final: {air_rocdl_binary}")
+
+
+# =============================================================================
+# AIE Compilation Functions
+# =============================================================================
+
+
+def run_aie(mlir_module, args=None):
+    """
+    Run AIE compilation pipeline.
+
+    This compiles AIR dialect to AIE dialect for AMD AI Engine devices.
+    """
     global opts
     global aiecc_path
     if args is not None:
         opts = cl_arguments.parse_args(args)
+
+    # Check if AIE support is available
+    if aiecc is None:
+        print("Error: AIE compilation requires mlir-aie to be installed.")
+        print("Either install mlir-aie or use --target=gpu for GPU compilation.")
+        sys.exit(1)
 
     if opts.tmpdir:
         tmpdirname = opts.tmpdir
@@ -635,6 +807,40 @@ def run(mlir_module, args=None):
             lower_airrt_to_airhost(
                 air_to_aie_module, air_placed_module, air_mlir_filename
             )
+
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+
+
+def run(mlir_module, args=None):
+    """
+    Main compilation entry point.
+
+    Routes to either GPU or AIE compilation based on --target option.
+    """
+    global opts
+
+    if args is not None:
+        opts = cl_arguments.parse_args(args)
+    else:
+        # Parse args to get target
+        opts = cl_arguments.parse_args()
+
+    # Auto-detect target from device name
+    target = opts.target
+    gpu_devices = ["gfx", "mi300", "mi200", "mi100", "radeon"]
+    if any(gpu in opts.device.lower() for gpu in gpu_devices):
+        target = "gpu"
+        # Use device as gpu_arch if it looks like a GPU arch
+        if opts.device.startswith("gfx"):
+            opts.gpu_arch = opts.device
+
+    if target == "gpu":
+        run_gpu(mlir_module, args)
+    else:
+        run_aie(mlir_module, args)
 
 
 def main():

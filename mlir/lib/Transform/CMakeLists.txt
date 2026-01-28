@@ -44,3 +44,8 @@ add_mlir_library(
   MLIRLinalgTransforms
   MLIRLinalgUtils
   MLIRSupport)
+
+# Add compile definition for conditional compilation in source files
+if(AIR_ENABLE_AIE)
+  target_compile_definitions(AIRTransformPasses PRIVATE AIR_ENABLE_AIE=1)
+endif()

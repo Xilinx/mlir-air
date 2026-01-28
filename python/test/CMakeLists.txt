@@ -1,8 +1,11 @@
 # Copyright (C) 2022, Xilinx Inc. All rights reserved.
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
-if(NOT AIE_BINARY_DIR)
-  find_package(AIE REQUIRED CONFIG)
+# AIE is only required when AIR_ENABLE_AIE is ON
+if(AIR_ENABLE_AIE)
+  if(NOT AIE_BINARY_DIR)
+    find_package(AIE REQUIRED CONFIG)
+  endif()
 endif()
 
 if(NOT AIR_BINARY_DIR)
