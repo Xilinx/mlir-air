@@ -9,16 +9,6 @@ This guide provides instructions for building MLIR-AIR for GPU targets without A
 - Ninja build system
 - Python 3.8+
 
-### Cluster Access (Optional)
-
-If using the OCI MI300X cluster:
-
-```bash
-salloc -p amd-arad -N 1 --gres=gpu:2 -t 0-1
-srun --pty $SHELL
-bash
-```
-
 ## Quick Build (Recommended)
 
 ```bash
@@ -92,10 +82,7 @@ With GPU-only build, the following passes are available:
 |------|-------------|
 | `air-to-rocdl` | Lower AIR dialect to GPU/ROCDL dialect |
 | `air-gpu-outlining` | Outline GPU kernels from gpu.launch operations |
-| `air-to-async` | Lower AIR dialect to async dialect |
-| `convert-to-air` | Convert operations to AIR dialect |
 
-AIE-specific passes (e.g., `air-to-aie`) are registered but will emit an error if invoked, indicating that AIE support is required.
 
 ## Run GPU Tests
 
@@ -154,18 +141,6 @@ mlir-cpu-runner \
     step4_llvm.mlir
 ```
 
-### Test 4: Verify AIE Stubs Work
-
-```bash
-# This should produce an error message (expected behavior)
-echo 'module {}' | air-opt --air-to-aie
-```
-
-Expected output:
-```
-error: AIRToAIE pass requires AIE support. Rebuild with -DAIR_ENABLE_AIE=ON
-```
-
 ## Environment Setup
 
 To reactivate the environment from a new terminal:
@@ -176,64 +151,10 @@ source sandbox/bin/activate
 source utils/env_setup.sh build_gpu llvm/install
 ```
 
-## Troubleshooting
-
-### Missing OpenSSL
-
-If you encounter OpenSSL errors during CMake or LLVM build:
-
-```bash
-# Install OpenSSL locally
-wget https://github.com/openssl/openssl/releases/download/openssl-3.5.0/openssl-3.5.0.tar.gz
-tar zxvf openssl-3.5.0.tar.gz
-cd openssl-3.5.0
-./config --prefix=$HOME/openssl --openssldir=$HOME/openssl no-ssl2
-make && make install
-
 # Add to environment
+```
 export PATH=$HOME/openssl/bin:$PATH
 export LD_LIBRARY_PATH=$HOME/openssl/lib:$LD_LIBRARY_PATH
 export OPENSSL_ROOT_DIR=$HOME/openssl
 ```
 
-### AIE Pass Errors
-
-If you see errors like:
-```
-error: AIRToAIE pass requires AIE support. Rebuild with -DAIR_ENABLE_AIE=ON
-```
-
-This is expected behavior. The GPU-only build does not include AIE backend support. Use `air-to-rocdl` instead of `air-to-aie` for GPU targets.
-
-### ROCm Runtime Not Found
-
-Ensure ROCm is installed and the runtime library path is correct:
-```bash
-export LD_LIBRARY_PATH=/opt/rocm/lib:$LD_LIBRARY_PATH
-```
-
-## Building with AIE Support
-
-If you need both GPU and AIE backends, build with AIE enabled:
-
-```bash
-# Build LLVM (same as GPU build)
-./utils/clone-llvm.sh
-./utils/build-llvm-local.sh llvm
-
-# Clone and build mlir-aie
-./utils/clone-mlir-aie.sh
-./utils/build-mlir-aie-local.sh llvm/install mlir-aie/cmake/modulesXilinx NONE mlir-aie
-
-# Build mlir-air with AIE support
-mkdir -p build_aie && cd build_aie
-cmake .. \
-    -GNinja \
-    -DMLIR_DIR=$(pwd)/../llvm/install/lib/cmake/mlir \
-    -DLLVM_DIR=$(pwd)/../llvm/install/lib/cmake/llvm \
-    -DAIE_DIR=$(pwd)/../mlir-aie/install/lib/cmake/aie \
-    -DAIR_ENABLE_AIE=ON \
-    -DCMAKE_BUILD_TYPE=Release
-
-ninja
-```
