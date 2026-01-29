@@ -543,8 +543,11 @@ def run(mlir_module, args=None):
 
             airrt_to_npu_pass = "airrt-to-npu{"
             airrt_to_npu_pass = airrt_to_npu_pass + f" trace-size={opts.trace_size}"
+            airrt_to_npu_pass = airrt_to_npu_pass + f" trace-offset={opts.trace_offset}"
             airrt_to_npu_pass = (
-                airrt_to_npu_pass + f" trace-offset={opts.trace_offset}" + "}"
+                airrt_to_npu_pass
+                + f" emit-main-device={str(opts.emit_main_device).lower()}"
+                + "}"
             )
 
             air_to_npu_file = opts.tmpdir + "/npu." + air_mlir_filename
