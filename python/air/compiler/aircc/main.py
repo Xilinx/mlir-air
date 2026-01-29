@@ -593,7 +593,7 @@ def run(mlir_module, args=None):
                 # Compile-only mode: generate intermediate artifacts without xclbin/txn
                 aiecc_output_file_options = []
             else:
-                print("Error: unknown output-format (valid: xclbin, txn, none)")
+                print("Error: unknown output-format (valid: elf, xclbin, txn, none)")
                 sys.exit(1)
 
             # Add xclbin-specific options only when not in ELF generation mode
