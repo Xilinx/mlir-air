@@ -1194,16 +1194,28 @@ public:
 
     // If scf parallel loops containing memcpy ops exist in the same scope as
     // herd load, then attempt to serialize the asynchronous control programs.
-    module.walk([&](func::FuncOp f) {
-      bool hasCandidateSCFParallel = false;
-      for (auto par : f.getBody().getOps<scf::ParallelOp>()) {
-        par.walk(
-            [&](airrt::DmaMemcpyNdOp c) { hasCandidateSCFParallel = true; });
-      }
-      if (hasCandidateSCFParallel)
-        if (failed(serializeAsyncControlFlows(f)))
-          signalPassFailure();
+    // Note: This is a workaround for vck190 having a single control processor.
+    // Skip this for NPU targets which use XRT and don't have this limitation.
+    bool hasNPUDevice = false;
+    module.walk([&](AIE::DeviceOp device) {
+      if (device.getTargetModel().hasProperty(AIE::AIETargetModel::IsNPU))
+        hasNPUDevice = true;
+    });
 
+    if (!hasNPUDevice) {
+      module.walk([&](func::FuncOp f) {
+        bool hasCandidateSCFParallel = false;
+        for (auto par : f.getBody().getOps<scf::ParallelOp>()) {
+          par.walk(
+              [&](airrt::DmaMemcpyNdOp c) { hasCandidateSCFParallel = true; });
+        }
+        if (hasCandidateSCFParallel)
+          if (failed(serializeAsyncControlFlows(f)))
+            signalPassFailure();
+      });
+    }
+
+    module.walk([&](func::FuncOp f) {
       // SCF parallel to affine for conversion
       if (failed(ScfParToAffineForConversion(f))) {
         emitError(UnknownLoc::get(context), "error lowering air.execute\n");
@@ -1403,10 +1415,12 @@ private:
             SmallVector<Value, 8> operands{};
             if (auto new_ctrl_loop_par =
                     dyn_cast<scf::ParallelOp>(dst_loop_nest[0])) {
-              operands.push_back(new_ctrl_loop_par.getInitVals()[0]);
+              if (!new_ctrl_loop_par.getInitVals().empty())
+                operands.push_back(new_ctrl_loop_par.getInitVals()[0]);
             } else if (auto new_ctrl_loop_for =
                            dyn_cast<scf::ForOp>(dst_loop_nest[0])) {
-              operands.push_back(new_ctrl_loop_for.getRegionIterArgs()[0]);
+              if (!new_ctrl_loop_for.getRegionIterArgs().empty())
+                operands.push_back(new_ctrl_loop_for.getRegionIterArgs()[0]);
             }
             scf::YieldOp::create(builder, yield_op->getLoc(), operands);
             yield_op->erase();
