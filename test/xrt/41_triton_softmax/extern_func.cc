@@ -23,6 +23,9 @@
 // lookups with integer/fractional part decomposition. Lookup tables
 // (softmax_ilut_ab/cd, softmax_flut_ab/cd) defined in lut_based_ops.h provide
 // pre-computed exponential values.
+//
+// NOTE: This function assumes the input has already been normalized (max
+// subtracted) by the calling pipeline. It only performs the exp() computation.
 template <unsigned VecLen, typename VecIteratorIn, typename VecIteratorOut>
 float exp_f32(int num_elems, VecIteratorIn &in, VecIteratorOut &out) {
   bfloat16 __aie_dm_resource_a *ilut_ab =
@@ -45,14 +48,9 @@ float exp_f32(int num_elems, VecIteratorIn &in, VecIteratorOut &out) {
   const int elem_iters =
       num_elems / VecLen +
       (num_elems % VecLen != 0); // number of iterations need to be performed
-  aie::vector<bfloat16, VecLen> I_val_vec, F_val_vec, res0, input_bf16;
+  aie::vector<bfloat16, VecLen> I_val_vec, F_val_vec, input_bf16;
   aie::accum<accfloat, VecLen> exp_val_accum;
-  aie::accum<accfloat, VecLen> exp_val_accum_shift;
   exp_val_accum = aie::zeros<accfloat, VecLen>();
-  // Maximum value computation
-  bfloat16 max_value;
-  aie::vector<bfloat16, VecLen> max_bfloat16;
-  aie::accum<accfloat, VecLen> acc0, acc1, acc_res;
   aie::vector<int16, VecLen> input;
   aie::vector<int16, 2 * VecLen> input0;
 
@@ -64,30 +62,14 @@ float exp_f32(int num_elems, VecIteratorIn &in, VecIteratorOut &out) {
       lookup_f(lut_f, step_f);
   aie::accum<accfloat, VecLen> exp_val;
 
-  // if constexpr(maxsub_en == 1){
-  auto input_max = in;
-  uint16 neg_infinity = (uint16)0xff80;
-  bfloat16 *bf_neg_infinity = (bfloat16 *)&neg_infinity;
-  aie::vector<bfloat16, VecLen> max_vec =
-      aie::broadcast<bfloat16, VecLen>((*bf_neg_infinity));
-  aie::vector<bfloat16, VecLen> temp;
-  aie::vector<float, VecLen> tempf32;
+  // Main computation loop: convert to bf16, lookup exp values, store results
   for (int i = 0; i < elem_iters; i++) {
-    tempf32 = aie::load_v<VecLen>(input_max);
-    temp = to_v16bfloat16(tempf32);
-    max_vec = aie::max(max_vec, temp);
-  }
-  max_value = aie::reduce_max(max_vec);
-  max_bfloat16 = aie::broadcast<bfloat16, VecLen>(max_value);
-
-  for (int i = 0; i < elem_iters; i++) {
-    aie::vector<float, VecLen> input_org_f32 = aie::load_v<VecLen>(in);
-    aie::vector<bfloat16, VecLen> input_org = to_v16bfloat16(input_org_f32);
+    // Load input (already normalized: x - max)
+    aie::vector<float, VecLen> input_f32 = aie::load_v<VecLen>(in);
     in += VecLen;
-    acc0.from_vector(input_org, 0);
-    acc1.from_vector(max_bfloat16, 0);
-    acc_res = sub(acc0, acc1);
-    input_bf16 = to_v16bfloat16(acc_res);
+
+    // Convert to bfloat16 for LUT indexing
+    input_bf16 = to_v16bfloat16(input_f32);
     input0 = v32int16(bfloat16_to_int(input_bf16, SM_SCALE_FAC));
 #ifndef SM_USE_MSB
     input = filter_even(input0);
@@ -95,15 +77,20 @@ float exp_f32(int num_elems, VecIteratorIn &in, VecIteratorOut &out) {
     input = filter_odd(input0);
 #endif
 
+    // Parallel LUT lookups for integer and fractional parts
     I_val_vec = lookup_i.fetch(input.template cast_to<uint16>());
     F_val_vec = lookup_f.fetch(input.template cast_to<uint16>());
+
+    // exp(x) = exp(integer_part) * exp(fractional_part)
     exp_val = aie::mul(I_val_vec, F_val_vec);
     exp_val_accum = add(exp_val_accum, exp_val);
+
+    // Store result as float32
     aie::store_v(out, exp_val.template to_vector<float>());
     out += VecLen;
   }
-  // Variant not using emulated FP32 for the mul reduce, off by +/- 1 in final
-  // result and 10 cycles slower
+
+  // Return sum of all exp values (useful for softmax denominator)
   aie::vector<float, VecLen> reduce = exp_val_accum.template to_vector<float>();
   float res = aie::reduce_add(reduce);
   return res;
