@@ -162,10 +162,10 @@ def parse_args(args=None):
     parser.add_argument(
         "--air-runtime-loop-tiling-sizes",
         type=int,
-        nargs="+",  # Accept one or more integers
+        nargs="*",  # Accept zero or more integers
         dest="runtime_loop_tiling_sizes",
         default=[4, 4],
-        help="Adds tiling factors to be applied to the runtime host affine loop nest. It is an experimental pass which enforces extra innermost tilings at runtime, to comply with constraints of certain hardware",
+        help="Adds tiling factors to be applied to the runtime host affine loop nest. It is an experimental pass which enforces extra innermost tilings at runtime, to comply with constraints of certain hardware. If this option is omitted, the default tiling factors [4, 4] are used; specifying the flag without any values disables shim-dma-tile-sizes; providing one or more integers overrides the default tiling factors.",
     )
     parser.add_argument(
         "--omit-auto-broadcast",
@@ -192,7 +192,7 @@ def parse_args(args=None):
     parser.add_argument(
         "--output-format",
         type=str,
-        choices=["xclbin", "txn", "none"],
+        choices=["xclbin", "txn", "elf", "none"],
         dest="output_format",
         default="xclbin",
         help="File format for the generated binary. Use 'none' for compile-only mode without XRT dependencies (generates intermediate artifacts only).",
@@ -220,6 +220,12 @@ def parse_args(args=None):
         dest="xclbin_input",
         default=None,
         help="Generate kernel into existing xclbin file",
+    )
+    parser.add_argument(
+        "--elf-name",
+        dest="elf_name",
+        default="aie.elf",
+        help="Output filename for full ELF when using --output-format=elf (default: aie.elf)",
     )
 
     opts = parser.parse_args(args)
