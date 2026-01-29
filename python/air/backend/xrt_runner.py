@@ -89,7 +89,7 @@ class XRTRunner:
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
-            output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn].
+            output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn, elf].
             kernel_name: configure aircc to package the kernel with the specified name.
             instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
             kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.

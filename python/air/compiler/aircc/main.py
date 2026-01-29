@@ -577,7 +577,15 @@ def run(mlir_module, args=None):
             else:
                 assert xclbin_file.endswith(".xclbin")
                 insts_file = opts.output_file.removesuffix(".xclbin") + ".insts.bin"
-            if opts.output_format == "xclbin":
+            if opts.output_format == "elf":
+                # ELF generation mode: generate aie.elf instead of xclbin
+                # Automatically enable --expand-load-pdis for optimized PDI loading
+                aiecc_output_file_options = [
+                    "--generate-full-elf",
+                    "--expand-load-pdis",
+                    "--full-elf-name=" + opts.elf_name,
+                ]
+            elif opts.output_format == "xclbin":
                 aiecc_output_file_options = ["--aie-generate-xclbin"]
             elif opts.output_format == "txn":
                 aiecc_output_file_options = ["--aie-generate-txn"]
@@ -585,40 +593,52 @@ def run(mlir_module, args=None):
                 # Compile-only mode: generate intermediate artifacts without xclbin/txn
                 aiecc_output_file_options = []
             else:
-                print("Error: unknown output-format (valid: xclbin, txn, none)")
+                print("Error: unknown output-format (valid: elf, xclbin, txn, none)")
                 sys.exit(1)
-            aiecc_output_file_options = aiecc_output_file_options + [
-                (
-                    "--xclbin-name=" + xclbin_file
-                    if opts.output_format == "xclbin"
-                    else ""
-                ),
-                (
-                    "--xclbin-kernel-name=" + opts.kernel_name
-                    if opts.kernel_name
-                    else ""
-                ),
-                (
-                    "--xclbin-instance-name=" + opts.instance_name
-                    if opts.instance_name
-                    else ""
-                ),
-                ("--xclbin-kernel-id=" + opts.kernel_id if opts.kernel_id else ""),
+
+            # Add xclbin-specific options only when not in ELF generation mode
+            if opts.output_format != "elf":
+                aiecc_output_file_options = aiecc_output_file_options + [
+                    (
+                        "--xclbin-name=" + xclbin_file
+                        if opts.output_format == "xclbin"
+                        else ""
+                    ),
+                    (
+                        "--xclbin-kernel-name=" + opts.kernel_name
+                        if opts.kernel_name
+                        else ""
+                    ),
+                    (
+                        "--xclbin-instance-name=" + opts.instance_name
+                        if opts.instance_name
+                        else ""
+                    ),
+                    ("--xclbin-kernel-id=" + opts.kernel_id if opts.kernel_id else ""),
+                ]
+                aiecc_existing_xclbin_options = [
+                    "--xclbin-input=" + opts.xclbin_input if opts.xclbin_input else ""
+                ]
+            else:
+                aiecc_existing_xclbin_options = []
+            # Build base aiecc options
+            aiecc_base_options = [
+                "--no-aiesim",
+                "--xchesscc" if opts.xchesscc else "--no-xchesscc",
+                "--xbridge" if opts.xbridge else "--no-xbridge",
+                "--no-compile-host",
+                "--tmpdir=" + opts.tmpdir,
             ]
-            aiecc_existing_xclbin_options = [
-                "--xclbin-input=" + opts.xclbin_input if opts.xclbin_input else ""
-            ]
+            # Only add NPU instruction options when not generating ELF
+            # (ELF mode embeds instructions in the ELF file)
+            if opts.output_format != "elf":
+                aiecc_base_options += [
+                    "--aie-generate-npu",
+                    "--npu-insts-name=" + insts_file,
+                ]
             aiecc_options = (
                 (["-v"] if opts.verbose else [])
-                + [
-                    "--no-aiesim",
-                    "--xchesscc" if opts.xchesscc else "--no-xchesscc",
-                    "--xbridge" if opts.xbridge else "--no-xbridge",
-                    "--aie-generate-npu",
-                    "--no-compile-host",
-                    "--npu-insts-name=" + insts_file,
-                    "--tmpdir=" + opts.tmpdir,
-                ]
+                + aiecc_base_options
                 + (
                     ["--peano"] + [opts.peano_install_dir]
                     if opts.peano_install_dir
@@ -630,6 +650,8 @@ def run(mlir_module, args=None):
                 + [air_to_npu_file]
             )
             aiecc_options = [a for a in aiecc_options if a != ""]
+            if opts.verbose:
+                print("Running aiecc.py with options:", " ".join(aiecc_options))
             aiecc.run(air_to_npu_module, aiecc_options)
         else:
             lower_airrt_to_airhost(
