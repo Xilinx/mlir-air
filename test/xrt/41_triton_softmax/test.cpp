@@ -38,10 +38,11 @@ void add_default_options(cxxopts::Options &options) {
                                      cxxopts::value<int>()->default_value("0"))(
       "instr,i",
       "path of file containing userspace instructions to be sent to the LX6",
-      cxxopts::value<std::string>())("size_m,M", "Matrix size M (parallel dimension)",
-                                     cxxopts::value<int>()->default_value("256"))(
-      "size_n,N", "Matrix size N (reduction dimension)", 
-                                     cxxopts::value<int>()->default_value("256"));
+      cxxopts::value<std::string>())(
+      "size_m,M", "Matrix size M (parallel dimension)",
+      cxxopts::value<int>()->default_value("256"))(
+      "size_n,N", "Matrix size N (reduction dimension)",
+      cxxopts::value<int>()->default_value("256"));
 }
 
 int main(int argc, const char *argv[]) {
@@ -186,13 +187,12 @@ int main(int argc, const char *argv[]) {
     npu_time_max = (npu_time > npu_time_max) ? npu_time : npu_time_max;
   }
 
+  std::cout << std::endl << "Softmax size: " << M << " x " << N << std::endl;
   std::cout << std::endl
-            << "Softmax size: " << M << " x " << N << std::endl;
-  std::cout << std::endl
-            << "Avg NPU softmax time: " << npu_time_total / n_iterations << "us."
+            << "Avg NPU softmax time: " << npu_time_total / n_iterations
+            << "us." << std::endl;
+  std::cout << "Avg NPU Mops: " << ops / (1000 * npu_time_total / n_iterations)
             << std::endl;
-  std::cout << "Avg NPU Mops: "
-            << ops / (1000 * npu_time_total / n_iterations) << std::endl;
 
   std::cout << std::endl
             << "Min NPU softmax time: " << npu_time_min << "us." << std::endl;

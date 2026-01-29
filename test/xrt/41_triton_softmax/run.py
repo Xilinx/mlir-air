@@ -162,6 +162,7 @@ with air.ir.Context() as ctx, Location.unknown():
     # Print the IR for debugging and exit if --debug-ir is specified
     if args.debug_ir:
         import os
+
         output_file = args.debug_ir
         os.makedirs(os.path.dirname(output_file) or ".", exist_ok=True)
         with open(output_file, "w") as f:
