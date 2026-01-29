@@ -22,7 +22,7 @@ class XRTCompileArtifact:
 
     def __init__(
         self,
-        xclbin,
+        output_binary,
         kernel,
         insts,
     ):
@@ -30,11 +30,11 @@ class XRTCompileArtifact:
         Constructor for an XRTCompileArtifact
 
         Args:
-            xclbin: xclbin file name/path
+            output_binary: output binary file name/path (.xclbin, .elf, or .txn)
             kernel: kernel name
             insts: instruction file name/path
         """
-        self.xclbin = xclbin
+        self.output_binary = output_binary
         self.kernel = kernel
         self.insts = insts
 
@@ -78,7 +78,7 @@ class XRTBackend(AirBackend):
             use_lock_race_condition_fix: configure aircc to enable a fix for lock race condition which protects against race condition.
             trace_offset: configure aircc to stream out profiling traces at outputs, starting from the specified offset.
             trace_size: configure aircc to stream out profiling traces at outputs, with specified trace data size.
-            output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn].
+            output_format: configure aircc to produce output binary in to one of the following formats: [xclbin, txn, elf].
             kernel_name: configure aircc to package the kernel with the specified name.
             instance_name: configure aircc to package the kernel with specified instance name in xclbin metadata.
             kernel_id: configure aircc to package the kernel with specified kernel id in xclbin file.
@@ -118,7 +118,7 @@ class XRTBackend(AirBackend):
     def compile(
         self,
         air_module: air.ir.Module,
-        xclbin="air.xclbin",
+        output_binary_name="air",
         kernel="MLIR_AIE",
         insts="air.insts.bin",
     ):
@@ -128,7 +128,8 @@ class XRTBackend(AirBackend):
 
         Args:
             air_module: The MLIR module consisting of funcs in the AIR dialect.
-            xclbin: xclbin filename to use
+            output_binary_name: base name for the output binary (without extension).
+                Extension is determined by output_format: .xclbin, .elf, or .txn
             kernel: kernel name to use
             insts: instruction filename to use
         Returns:
@@ -213,6 +214,14 @@ class XRTBackend(AirBackend):
                 peano_package_dir,
             )
 
+        # Determine output file extension based on output_format
+        if self.output_format == "elf":
+            output_binary = f"{output_binary_name}.elf"
+        elif self.output_format == "txn":
+            output_binary = f"{output_binary_name}.txn"
+        else:  # xclbin (default)
+            output_binary = f"{output_binary_name}.xclbin"
+
         with air.ir.Context():
 
             if self.verbose:
@@ -223,11 +232,15 @@ class XRTBackend(AirBackend):
                 "--device",
                 target_device,
                 "air.mlir",
-                "-o",
-                xclbin,
-                "-i",
-                insts,
             ]
+
+            # Add output file options based on format
+            if self.output_format == "elf":
+                aircc_options += ["--elf-name", output_binary]
+                # Note: ELF mode embeds instructions, no separate -i needed
+            else:
+                aircc_options += ["-o", output_binary]
+                aircc_options += ["-i", insts]
 
             aircc_options += ["--air-runtime-loop-tiling-sizes"]
             for s in self.runtime_loop_tiling_sizes:
@@ -289,9 +302,18 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--xchesscc"]
                 aircc_options += ["--xbridge"]
 
+            if self.verbose:
+                print("Running aircc.py with options:", " ".join(aircc_options))
             aircc.run(air_module, aircc_options)
 
-        return XRTCompileArtifact(xclbin, kernel, insts)
+        # For ELF mode, the kernel identifier is "main:instance_name"
+        # This is used when loading the ELF via xrt.ext.kernel()
+        if self.output_format == "elf" and self.instance_name != "":
+            elf_kernel = f"main:{self.instance_name}"
+        else:
+            elf_kernel = kernel
+
+        return XRTCompileArtifact(output_binary, elf_kernel, insts)
 
     def compile_from_torch_mlir(
         self,
@@ -361,6 +383,7 @@ class XRTBackend(AirBackend):
 
         Args:
             artifact: The result of calling compile with XRTBackend on an MLIR-AIR module.
+                Supports both xclbin and ELF formats.
 
         Returns: A callable that can be used to invoke the loaded module.
             The callable takes a list of numpy arrays. Each numpy array is
@@ -384,79 +407,128 @@ class XRTBackend(AirBackend):
                 "Cannot use XRTBackend to compile while the artifact is currently loaded. Call unload() first."
             )
 
-        if not os.path.isfile(artifact.xclbin):
+        if not os.path.isfile(artifact.output_binary):
             raise AirBackendError(
-                f"Cannot load XRTCompileArtifact because {artifact.xclbin} xclbin file does not exist"
-            )
-        if not os.path.isfile(artifact.insts):
-            raise AirBackendError(
-                f"Cannot load XRTCompileArtifact because {artifact.insts} insts file does not exist"
+                f"Cannot load XRTCompileArtifact because {artifact.output_binary} file does not exist"
             )
 
-        # create the device, xclbin and context
+        # Determine the loading mode based on file extension
+        is_elf = artifact.output_binary.endswith(".elf")
+
+        # create the device
         self.device = xrt.device(0)
-        self.xclbin = xrt.xclbin(artifact.xclbin)
-        self.device.register_xclbin(self.xclbin)
-        self.context = xrt.hw_context(self.device, self.xclbin.get_uuid())
 
-        # find and load the kernel
-        kernels = self.xclbin.get_kernels()
-        try:
-            xkernel = [k for k in kernels if artifact.kernel in k.get_name()][0]
-        except:
-            raise AirBackendError(
-                f"Kernel '{artifact.kernel}' not found in '{self.xclbin}'"
+        if is_elf:
+            # ELF loading path - uses experimental APIs
+            # No instruction file needed for ELF (instructions embedded in ELF)
+            try:
+                self.elf = xrt.elf(artifact.output_binary)
+                self.context = xrt.hw_context(self.device, self.elf)
+                self.kernel = xrt.ext.kernel(self.context, artifact.kernel)
+            except Exception as e:
+                raise AirBackendError(
+                    f"Failed to load ELF kernel for XRT from '{artifact.output_binary}' "
+                    f"with kernel name '{artifact.kernel}'. "
+                    "Ensure this file is a valid ELF binary compiled for the target device "
+                    "and that it contains a kernel symbol matching the provided name."
+                ) from e
+            self.bo_instr = None  # Not needed for ELF
+            self.instr_v = None
+
+            def invoker(*args):
+                sizes_in_bytes = [a.size * a.itemsize for a in args]
+                # Use xrt.ext.bo for ELF mode (simpler, no group_id needed)
+                bos = [xrt.ext.bo(self.device, s) for s in sizes_in_bytes]
+
+                for i, a in enumerate(args):
+                    if a.dtype == bfloat16:
+                        a = a.view(np.int16)
+                    bos[i].write(a, 0)
+                    bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+
+                # Use xrt.run for ELF mode
+                run = xrt.run(self.kernel)
+                for i, bo in enumerate(bos):
+                    run.set_arg(i, bo)
+                run.start()
+                run.wait2()
+
+                for i, a in enumerate(args):
+                    bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
+                return tuple(
+                    [
+                        bos[i].read(s, 0).view(args[i].dtype)
+                        for i, s in enumerate(sizes_in_bytes)
+                    ]
+                )
+
+        else:
+            # xclbin loading path - original implementation
+            if not os.path.isfile(artifact.insts):
+                raise AirBackendError(
+                    f"Cannot load XRTCompileArtifact because {artifact.insts} insts file does not exist"
+                )
+
+            self.xclbin = xrt.xclbin(artifact.output_binary)
+            self.device.register_xclbin(self.xclbin)
+            self.context = xrt.hw_context(self.device, self.xclbin.get_uuid())
+
+            # find and load the kernel
+            kernels = self.xclbin.get_kernels()
+            try:
+                xkernel = [k for k in kernels if artifact.kernel in k.get_name()][0]
+            except:
+                raise AirBackendError(
+                    f"Kernel '{artifact.kernel}' not found in '{artifact.output_binary}'"
+                )
+            self.kernel = xrt.kernel(self.context, xkernel.get_name())
+
+            # load the instructions as a numpy array
+            with open(artifact.insts, "rb") as f:
+                instr_data = f.read()
+                self.instr_v = np.frombuffer(instr_data, dtype=np.uint32)
+
+            self.bo_instr = xrt.bo(
+                self.device,
+                len(self.instr_v) * 4,
+                xrt.bo.cacheable,
+                self.kernel.group_id(1),
             )
-        self.kernel = xrt.kernel(self.context, xkernel.get_name())
+            self.bo_instr.write(self.instr_v, 0)
 
-        # load the instructions as a numpy array
-        with open(artifact.insts, "rb") as f:
-            instr_data = f.read()
-            self.instr_v = np.frombuffer(instr_data, dtype=np.uint32)
-
-        self.bo_instr = xrt.bo(
-            self.device,
-            len(self.instr_v) * 4,
-            xrt.bo.cacheable,
-            self.kernel.group_id(1),
-        )
-        self.bo_instr.write(self.instr_v, 0)
-
-        # 1) create and sync the buffers
-        # 2) invoke the kernel
-        # 3) sync the buffers
-        # 4) return the contents of the buffers
-        def invoker(*args):
-
-            # limit arg length to 5
-            if len(args) > 5:
-                raise ValueError("Too many arguments")
-            sizes_in_bytes = [a.size * a.itemsize for a in args]
-            bos = [
-                xrt.bo(self.device, s, xrt.bo.host_only, self.kernel.group_id(i + 3))
-                for i, s in enumerate(sizes_in_bytes)
-            ]
-
-            self.bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-            for i, a in enumerate(args):
-                if a.dtype == bfloat16:
-                    # store bfloat16 in binary as int16
-                    a = a.view(np.int16)
-                bos[i].write(a, 0)
-                bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
-
-            h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
-            h.wait()
-
-            for i, a in enumerate(args):
-                bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
-            return tuple(
-                [
-                    bos[i].read(s, 0).view(args[i].dtype)
+            def invoker(*args):
+                # limit arg length to 5
+                if len(args) > 5:
+                    raise ValueError("Too many arguments")
+                sizes_in_bytes = [a.size * a.itemsize for a in args]
+                bos = [
+                    xrt.bo(
+                        self.device, s, xrt.bo.host_only, self.kernel.group_id(i + 3)
+                    )
                     for i, s in enumerate(sizes_in_bytes)
                 ]
-            )
 
+                self.bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+                for i, a in enumerate(args):
+                    if a.dtype == bfloat16:
+                        # store bfloat16 in binary as int16
+                        a = a.view(np.int16)
+                    bos[i].write(a, 0)
+                    bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
+
+                h = self.kernel(3, self.bo_instr, len(self.instr_v), *bos)
+                h.wait()
+
+                for i, a in enumerate(args):
+                    bos[i].sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_FROM_DEVICE)
+                return tuple(
+                    [
+                        bos[i].read(s, 0).view(args[i].dtype)
+                        for i, s in enumerate(sizes_in_bytes)
+                    ]
+                )
+
+        self.currently_loaded = True
         return invoker
 
     def compile_and_load(self, module):
@@ -479,6 +551,7 @@ class XRTBackend(AirBackend):
         self.kernel = None
         self.context = None
         self.xclbin = None
+        self.elf = None
         self.device = None
         self.bo_instr = None
         self.instr_v = None
