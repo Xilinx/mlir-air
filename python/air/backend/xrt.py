@@ -421,9 +421,17 @@ class XRTBackend(AirBackend):
         if is_elf:
             # ELF loading path - uses experimental APIs
             # No instruction file needed for ELF (instructions embedded in ELF)
-            self.elf = xrt.elf(artifact.output_binary)
-            self.context = xrt.hw_context(self.device, self.elf)
-            self.kernel = xrt.ext.kernel(self.context, artifact.kernel)
+            try:
+                self.elf = xrt.elf(artifact.output_binary)
+                self.context = xrt.hw_context(self.device, self.elf)
+                self.kernel = xrt.ext.kernel(self.context, artifact.kernel)
+            except Exception as e:
+                raise AirBackendError(
+                    f"Failed to load ELF kernel for XRT from '{artifact.output_binary}' "
+                    f"with kernel name '{artifact.kernel}'. "
+                    "Ensure this file is a valid ELF binary compiled for the target device "
+                    "and that it contains a kernel symbol matching the provided name."
+                ) from e
             self.bo_instr = None  # Not needed for ELF
             self.instr_v = None
 
