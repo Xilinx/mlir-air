@@ -1344,20 +1344,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                       std::move(funcToSeqPatterns))))
       signalPassFailure();
 
-    // Handle fallback case: wrap existing devices with runtime_sequence
-    // when emit-main-device is set but no func.func with segment_load
-    // was processed. This handles the XRTRunner path where IR goes
-    // directly to AIE dialect with runtime_sequence.
+    // Generate main device wrapper if needed. This handles two mutually
+    // exclusive cases:
+    // 1. Multi-device: pendingMainDevice was set by moveFuncOpToEndOfDeviceOp
+    // 2. Single device fallback: XRTRunner path with emit-main-device flag
     // This MUST run at the very end after ALL patterns that modify
-    // runtime_sequence arguments (including buffer-to-funcargs and
-    // ControlFuncConversion).
-    wrapExistingDevicesWithMainIfNeeded(module);
-
-    // Create the deferred main device wrapper if one was requested.
-    // This MUST be done at the very end after ControlFuncConversion has
-    // converted func.func to runtime_sequence AND after buffer-to-funcargs
-    // has added output memrefs to the argument list.
-    createDeferredMainDeviceWrapper(module);
+    // runtime_sequence arguments.
+    generateMainDeviceIfNeeded(module);
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -1541,11 +1534,35 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                             originalSeqName, deviceSequences);
   }
 
+  // Unified entry point for main device generation. Handles two mutually
+  // exclusive cases:
+  // 1. Multi-device: pendingMainDevice was set by moveFuncOpToEndOfDeviceOp
+  // 2. Single device fallback: XRTRunner path with emit-main-device flag
+  void generateMainDeviceIfNeeded(ModuleOp module) {
+    // Early exit if no main device generation is needed
+    if (!clEmitMainDevice && !pendingMainDevice) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Skipping main device generation: not requested\n");
+      return;
+    }
+
+    // Two mutually exclusive paths based on how the IR was processed
+    if (pendingMainDevice) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Creating main device for multi-device func.func\n");
+      createDeferredMainDeviceWrapperImpl(module);
+    } else {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Creating main device wrapper for existing device\n");
+      wrapExistingDevicesWithMainIfNeeded(module);
+    }
+  }
+
   // Create the deferred main device wrapper from func.func that was split
   // into multiple device-specific functions. This reads the FINAL argument
   // list from the runtime_sequences after all patterns (including
   // buffer-to-funcargs) have run.
-  void createDeferredMainDeviceWrapper(ModuleOp module) {
+  void createDeferredMainDeviceWrapperImpl(ModuleOp module) {
     if (!pendingMainDevice)
       return;
 
