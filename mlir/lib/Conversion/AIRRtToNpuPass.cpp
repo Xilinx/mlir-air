@@ -1280,8 +1280,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         deviceToRegions[region.device].push_back(&region);
       }
 
-      // If all regions target the same device, just move the entire func
-      if (deviceToRegions.size() == 1) {
+      // If all regions target the same device and we're not forcing main device
+      // generation, just move the entire func to that device
+      if (deviceToRegions.size() == 1 && !clEmitMainDevice) {
         AIE::DeviceOp device = deviceToRegions.begin()->first;
         funcOp->moveBefore(device.getBody()->getTerminator());
         continue;

@@ -237,6 +237,8 @@ class XRTBackend(AirBackend):
             # Add output file options based on format
             if self.output_format == "elf":
                 aircc_options += ["--elf-name", output_binary]
+                # ELF mode requires the main device wrapper for reconfiguration
+                aircc_options += ["--emit-main-device"]
                 # Note: ELF mode embeds instructions, no separate -i needed
             else:
                 aircc_options += ["-o", output_binary]
