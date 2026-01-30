@@ -410,7 +410,12 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
           "Trace buffer size for cores and memtiles (in bytes)">,
     Option<"clTraceOffset", "trace-offset", "unsigned",
           /*default=*/"0",
-          "Trace buffer offset appended to ddr_id=2">
+          "Trace buffer offset appended to ddr_id=2">,
+    Option<"clEmitMainDevice", "emit-main-device", "bool",
+          /*default=*/"false",
+          "Always generate a main aie.device wrapper with configure/run ops, "
+          "even for single-device designs. This enables reconfiguration mode "
+          "for designs with a single aie.device.">
   ];
   let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
 }
