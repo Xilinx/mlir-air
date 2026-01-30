@@ -892,6 +892,105 @@ collectPrologueOps(func::FuncOp funcOp, SmallVector<LaunchRegion> &regions) {
   return prologueOps;
 }
 
+// Structure representing a device and its sequence that needs a main wrapper.
+struct DeviceSequenceInfo {
+  // Name of the target device for which the sequence is generated.
+  std::string deviceName;
+  // Name of the sequence associated with this device.
+  std::string sequenceName;
+  // Types of the arguments passed to the sequence. This must be kept in
+  // lockstep with `argLocs` such that `argTypes[i]` has source location
+  // information stored in `argLocs[i]`.
+  SmallVector<Type> argTypes;
+  // Source locations corresponding to each entry in `argTypes`. This vector
+  // must always be the same size as `argTypes`, and both arrays are indexed
+  // in parallel.
+  SmallVector<Location> argLocs;
+};
+
+// Structure to track pending main device creation
+struct PendingMainDevice {
+  LocationAttr loc;
+  AIE::AIEDevice deviceType;
+  std::string mainSeqName;
+  // deviceNames and sequenceNames are parallel arrays:
+  //   - they must have the same length
+  //   - deviceNames[i] corresponds to sequenceNames[i]
+  SmallVector<std::string> deviceNames;
+  SmallVector<std::string> sequenceNames;
+};
+
+// Helper to create a main device with orchestration runtime_sequence.
+// This is used both for multi-device func lowering and for wrapping
+// existing aie.device ops with runtime_sequence when emit-main-device is set.
+AIE::DeviceOp createMainDeviceWrapper(
+    ModuleOp module, Location loc, AIE::AIEDevice deviceType,
+    StringRef mainSeqName,
+    const SmallVector<DeviceSequenceInfo> &deviceSequences) {
+
+  OpBuilder builder(module.getContext());
+  builder.setInsertionPointToEnd(module.getBody());
+
+  // Create main device with the specified device type
+  auto mainDevice = AIE::DeviceOp::create(builder, loc, deviceType);
+  mainDevice->setAttr(SymbolTable::getSymbolAttrName(),
+                      StringAttr::get(builder.getContext(), "main"));
+
+  // Add a body block to the main device
+  Block *mainDeviceBody = new Block;
+  mainDevice.getRegion().push_back(mainDeviceBody);
+
+  // Create runtime_sequence inside main device
+  builder.setInsertionPointToStart(mainDeviceBody);
+  auto mainSeq = AIE::RuntimeSequenceOp::create(
+      builder, loc, builder.getStringAttr(mainSeqName.str()));
+  mainSeq.getBody().push_back(new Block);
+
+  // Add arguments to runtime_sequence based on first device's signature
+  // (all devices should have the same signature)
+  if (!deviceSequences.empty()) {
+    assert(deviceSequences[0].argTypes.size() ==
+               deviceSequences[0].argLocs.size() &&
+           "argTypes and argLocs must be parallel arrays");
+    for (unsigned i = 0; i < deviceSequences[0].argTypes.size(); ++i) {
+      mainSeq.getBody().addArgument(deviceSequences[0].argTypes[i],
+                                    deviceSequences[0].argLocs[i]);
+    }
+  }
+
+  builder.setInsertionPointToStart(&mainSeq.getBody().front());
+
+  // Generate aiex.configure and aiex.run for each device in order
+  for (const auto &devInfo : deviceSequences) {
+    StringRef deviceName = devInfo.deviceName;
+
+    // Create aiex.configure @device_name { ... }
+    auto configureOp = AIEX::ConfigureOp::create(
+        builder, loc, FlatSymbolRefAttr::get(builder.getContext(), deviceName));
+    configureOp.getBody().push_back(new Block);
+    builder.setInsertionPointToStart(&configureOp.getBody().front());
+
+    // Create aiex.run @sequence_name (args)
+    SmallVector<Value> args;
+    for (unsigned i = 0; i < mainSeq.getBody().getNumArguments(); ++i) {
+      args.push_back(mainSeq.getBody().getArgument(i));
+    }
+    AIEX::RunOp::create(
+        builder, loc,
+        FlatSymbolRefAttr::get(builder.getContext(), devInfo.sequenceName),
+        args);
+
+    // Move insertion point after configure op
+    builder.setInsertionPointAfter(configureOp);
+  }
+
+  // Add aie.end terminator to the main device body
+  builder.setInsertionPointToEnd(mainDeviceBody);
+  AIE::EndOp::create(builder, loc);
+
+  return mainDevice;
+}
+
 // AIE2 hardware constraints.
 const std::vector<int> AIE2_WRAP_UPPER_BOUNDS = {64, 1024, 1024, 1024};
 const int AIE2_STRIDE_UPPER_BOUND = 1048576;
@@ -936,8 +1035,8 @@ int findLargestFactor(int num, int max) {
     const bool areActuallyFactors = num % lowFactor == 0;
     if (areActuallyFactors) {
       // We're certain that here lowFactor <= highFactor, and highFactor is
-      // descending in this loop. So we can return immediately if highFactor is
-      // good.
+      // descending in this loop. So we can return immediately if highFactor
+      // is good.
       if (highFactor <= max)
         return highFactor;
       largestLowFactor = lowFactor;
@@ -963,8 +1062,8 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
     if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
-      // Found dimension with illegal wrap. Tiling. (Prefers smaller outer wrap
-      // values, as long as stride fits)
+      // Found dimension with illegal wrap. Tiling. (Prefers smaller outer
+      // wrap values, as long as stride fits)
       int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
       int new_a_stride = const_stride * a_wrap;
@@ -1117,6 +1216,10 @@ void enforceAIE2WrapLimit(ModuleOp module) {
 }
 
 struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
+  // Track pending main device creation - stores info needed to create main
+  // device AFTER all argument-modifying patterns have run
+  std::optional<PendingMainDevice> pendingMainDevice;
+
   void runOnOperation() override {
 
     ModuleOp module = getOperation();
@@ -1240,6 +1343,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     if (failed(applyPartialConversion(module, target,
                                       std::move(funcToSeqPatterns))))
       signalPassFailure();
+
+    // Generate main device wrapper if needed. This handles two mutually
+    // exclusive cases:
+    // 1. Multi-device: pendingMainDevice was set by moveFuncOpToEndOfDeviceOp
+    // 2. Single device fallback: XRTRunner path with emit-main-device flag
+    // This MUST run at the very end after ALL patterns that modify
+    // runtime_sequence arguments.
+    generateMainDeviceIfNeeded(module);
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -1280,8 +1391,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         deviceToRegions[region.device].push_back(&region);
       }
 
-      // If all regions target the same device and we're not forcing main device
-      // generation, just move the entire func to that device
+      // If all regions target the same device and we're not forcing main
+      // device generation, just move the entire func to that device
       if (deviceToRegions.size() == 1 && !clEmitMainDevice) {
         AIE::DeviceOp device = deviceToRegions.begin()->first;
         funcOp->moveBefore(device.getBody()->getTerminator());
@@ -1340,68 +1451,168 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         func::ReturnOp::create(builder, funcOp.getLoc());
       }
 
-      // Create the @main device with orchestration runtime_sequence
-      builder.setInsertionPointToEnd(module.getBody());
-
-      // Create main device with same device type as sub-devices
-      auto mainDevice =
-          AIE::DeviceOp::create(builder, funcOp.getLoc(), deviceType);
-      mainDevice->setAttr(SymbolTable::getSymbolAttrName(),
-                          StringAttr::get(builder.getContext(), "main"));
-
-      // Add a body block to the main device
-      Block *mainDeviceBody = new Block;
-      mainDevice.getRegion().push_back(mainDeviceBody);
-
-      // Create runtime_sequence inside main device
-      builder.setInsertionPointToStart(mainDeviceBody);
-      auto mainSeqName = funcOp.getName().str();
-      auto mainSeq = AIE::RuntimeSequenceOp::create(
-          builder, funcOp.getLoc(), builder.getStringAttr(mainSeqName));
-      mainSeq.getBody().push_back(new Block);
-
-      // Add arguments to runtime_sequence matching original func signature
-      for (unsigned i = 0; i < funcOp.getNumArguments(); ++i) {
-        auto arg = funcOp.getArgument(i);
-        mainSeq.getBody().addArgument(arg.getType(), arg.getLoc());
-      }
-
-      builder.setInsertionPointToStart(&mainSeq.getBody().front());
-
-      // Generate aiex.configure and aiex.run for each device in order
+      // Record pending main device creation - will be done at the end of the
+      // pass after all argument-modifying patterns have run
+      pendingMainDevice = PendingMainDevice{};
+      pendingMainDevice->loc = funcOp.getLoc();
+      pendingMainDevice->deviceType = deviceType;
+      pendingMainDevice->mainSeqName = funcOp.getName().str();
       for (auto &region : regions) {
-        StringRef deviceName = region.deviceName;
-        std::string seqName = deviceName.str() + "_sequence";
-
-        // Create aiex.configure @device_name { ... }
-        auto configureOp = AIEX::ConfigureOp::create(
-            builder, funcOp.getLoc(),
-            FlatSymbolRefAttr::get(builder.getContext(), deviceName));
-        configureOp.getBody().push_back(new Block);
-        builder.setInsertionPointToStart(&configureOp.getBody().front());
-
-        // Create aiex.run @device_sequence (args) : (types)
-        SmallVector<Value> args;
-        SmallVector<Type> argTypes;
-        for (unsigned i = 0; i < mainSeq.getBody().getNumArguments(); ++i) {
-          args.push_back(mainSeq.getBody().getArgument(i));
-          argTypes.push_back(mainSeq.getBody().getArgument(i).getType());
-        }
-        AIEX::RunOp::create(
-            builder, funcOp.getLoc(),
-            FlatSymbolRefAttr::get(builder.getContext(), seqName), args);
-
-        // Move insertion point after configure op
-        builder.setInsertionPointAfter(configureOp);
+        pendingMainDevice->deviceNames.push_back(region.deviceName.str());
+        pendingMainDevice->sequenceNames.push_back(region.deviceName.str() +
+                                                   "_sequence");
       }
-
-      // Add aie.end terminator to the main device body
-      builder.setInsertionPointToEnd(mainDeviceBody);
-      AIE::EndOp::create(builder, funcOp.getLoc());
 
       // Erase the original function
       funcOp.erase();
     }
+  }
+
+  // Wrap existing aie.device ops with a main device when emit-main-device is
+  // set but no func.func with segment_load was processed. This handles the
+  // XRTRunner path where IR goes directly to AIE dialect with
+  // runtime_sequence.
+  void wrapExistingDevicesWithMainIfNeeded(ModuleOp module) {
+    // Only proceed if emit-main-device is requested
+    if (!clEmitMainDevice)
+      return;
+
+    // If pendingMainDevice is set, createDeferredMainDeviceWrapper will
+    // handle main device creation instead
+    if (pendingMainDevice)
+      return;
+
+    // Check if a "main" device already exists (created by
+    // moveFuncOpToEndOfDeviceOp)
+    bool mainDeviceExists = false;
+    module.walk([&](AIE::DeviceOp d) {
+      if (d.getSymName() == "main")
+        mainDeviceExists = true;
+    });
+
+    if (mainDeviceExists)
+      return;
+
+    // Find existing devices that have runtime_sequence but no main wrapper
+    SmallVector<AIE::DeviceOp> devices;
+    module.walk([&](AIE::DeviceOp d) { devices.push_back(d); });
+
+    // Only handle the single-device case for now
+    if (devices.size() != 1)
+      return;
+
+    AIE::DeviceOp device = devices[0];
+    AIE::RuntimeSequenceOp existingSeq = nullptr;
+    device.walk([&](AIE::RuntimeSequenceOp seq) { existingSeq = seq; });
+
+    if (!existingSeq)
+      return;
+
+    // Get the original sequence name and rename it to <device>_sequence
+    StringRef deviceName = device.getSymName();
+    std::string originalSeqName = existingSeq.getSymName().str();
+    std::string newSeqName = deviceName.str() + "_sequence";
+
+    // Rename the existing sequence
+    OpBuilder builder(module.getContext());
+    existingSeq->setAttr(SymbolTable::getSymbolAttrName(),
+                         builder.getStringAttr(newSeqName));
+
+    // Collect argument types and locations from existing sequence
+    SmallVector<DeviceSequenceInfo> deviceSequences;
+    DeviceSequenceInfo devInfo;
+    devInfo.deviceName = device.getSymName();
+    devInfo.sequenceName = newSeqName;
+    for (auto arg : existingSeq.getBody().getArguments()) {
+      devInfo.argTypes.push_back(arg.getType());
+      devInfo.argLocs.push_back(arg.getLoc());
+    }
+    deviceSequences.push_back(devInfo);
+
+    // Create main device wrapper using the helper function
+    createMainDeviceWrapper(module, device.getLoc(), device.getDevice(),
+                            originalSeqName, deviceSequences);
+  }
+
+  // Unified entry point for main device generation. Handles two mutually
+  // exclusive cases:
+  // 1. Multi-device: pendingMainDevice was set by moveFuncOpToEndOfDeviceOp
+  // 2. Single device fallback: XRTRunner path with emit-main-device flag
+  void generateMainDeviceIfNeeded(ModuleOp module) {
+    // Early exit if no main device generation is needed
+    if (!clEmitMainDevice && !pendingMainDevice) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Skipping main device generation: not requested\n");
+      return;
+    }
+
+    // Two mutually exclusive paths based on how the IR was processed
+    if (pendingMainDevice) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Creating main device for multi-device func.func\n");
+      createDeferredMainDeviceWrapperImpl(module);
+    } else {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Creating main device wrapper for existing device\n");
+      wrapExistingDevicesWithMainIfNeeded(module);
+    }
+  }
+
+  // Create the deferred main device wrapper from func.func that was split
+  // into multiple device-specific functions. This reads the FINAL argument
+  // list from the runtime_sequences after all patterns (including
+  // buffer-to-funcargs) have run.
+  void createDeferredMainDeviceWrapperImpl(ModuleOp module) {
+    if (!pendingMainDevice)
+      return;
+
+    // Build DeviceSequenceInfo by reading the FINAL argument list from each
+    // device's runtime_sequence. This is done AFTER ControlFuncConversion
+    // has converted func.func to runtime_sequence AND after
+    // buffer-to-funcargs has added output memrefs to the argument list.
+    SmallVector<DeviceSequenceInfo> deviceSequences;
+
+    for (unsigned i = 0; i < pendingMainDevice->deviceNames.size(); ++i) {
+      StringRef deviceName = pendingMainDevice->deviceNames[i];
+      StringRef sequenceName = pendingMainDevice->sequenceNames[i];
+
+      AIE::DeviceOp device = getDeviceByName(module, deviceName);
+      if (!device)
+        continue;
+
+      // Find the runtime_sequence with the expected name
+      AIE::RuntimeSequenceOp seq = nullptr;
+      device.walk([&](AIE::RuntimeSequenceOp s) {
+        if (s.getSymName() == sequenceName)
+          seq = s;
+      });
+
+      if (!seq)
+        continue;
+
+      DeviceSequenceInfo devInfo;
+      devInfo.deviceName = deviceName.str();
+      devInfo.sequenceName = sequenceName.str();
+
+      // Read the FINAL argument list from the runtime_sequence
+      for (auto arg : seq.getBody().getArguments()) {
+        devInfo.argTypes.push_back(arg.getType());
+        devInfo.argLocs.push_back(arg.getLoc());
+      }
+
+      deviceSequences.push_back(devInfo);
+    }
+
+    if (deviceSequences.empty())
+      return;
+
+    // Create the main device wrapper with the correct (final) argument types
+    createMainDeviceWrapper(module, pendingMainDevice->loc,
+                            pendingMainDevice->deviceType,
+                            pendingMainDevice->mainSeqName, deviceSequences);
+
+    // Clear the pending request
+    pendingMainDevice = std::nullopt;
   }
 
   // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
@@ -1414,17 +1625,17 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     patterns.insert<AIRRtWaitAllOpToNpuWaitPattern>(ctx);
     (void)applyPatternsGreedily(module, std::move(patterns));
 
-    // Now that WaitAllOps with DMA operands are erased, purge DMA async tokens
-    // (they no longer have uses from WaitAllOps)
+    // Now that WaitAllOps with DMA operands are erased, purge DMA async
+    // tokens (they no longer have uses from WaitAllOps)
     purgeDmaAsyncTokens(module);
   }
 
   // Convert NpuDmaWaitOp → DMAAwaitTaskOp or DMAFreeTaskOp AFTER DMA
   // conversion. This processes NpuDmaWaitOp ops and DMAConfigureTaskForOp ops
   // in order, matching each wait to its corresponding configure task by
-  // channel. The key insight: waits and configures for the same channel must be
-  // matched in FIFO order - the Nth wait for channel X awaits the Nth config
-  // for X.
+  // channel. The key insight: waits and configures for the same channel must
+  // be matched in FIFO order - the Nth wait for channel X awaits the Nth
+  // config for X.
   //
   // For S2MM (output) channels: generate DMAAwaitTaskOp (wait + free BD)
   // For MM2S (input) channels: generate DMAFreeTaskOp (just free BD, no wait)
@@ -1720,8 +1931,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   // Remove npu wait op on inbound dma data movements.
-  // TODO: this is an aggressive optimization which might prove problematic for
-  // some applications. To be revised.
+  // TODO: this is an aggressive optimization which might prove problematic
+  // for some applications. To be revised.
   void removeNpuWaitOnInboundMemcpy(ModuleOp module) {
     SmallVector<mlir::func::FuncOp> funcOps;
     module.walk([&](mlir::func::FuncOp f) { funcOps.push_back(f); });
@@ -1755,8 +1966,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   // Each element of 'port' is a {Port_N_Master_Slave, Port_N_ID} pair. They
-  // will be read sequentially to select up to 8 stream switch ports to monitor,
-  // using the select register at address {col, row, offset}.
+  // will be read sequentially to select up to 8 stream switch ports to
+  // monitor, using the select register at address {col, row, offset}.
   void insertNpuWriteStreamSwitchEventSel(
       OpBuilder &builder, std::vector<std::pair<uint8_t, uint8_t>> &ports,
       uint32_t offset, IntegerAttr col, IntegerAttr row) {
@@ -1777,8 +1988,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                v1, nullptr, col, row);
   }
 
-  // up to 8 events (up to 64 bits) will be written to the 8 event slots (bytes)
-  // at address {col, row, offset}
+  // up to 8 events (up to 64 bits) will be written to the 8 event slots
+  // (bytes) at address {col, row, offset}
   void insertNpuWriteTraceEvents(OpBuilder &builder,
                                  SmallVectorImpl<uint32_t> &events,
                                  uint32_t offset, IntegerAttr col,
@@ -1946,7 +2157,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             /* iteration_stride */ 0, /* next_bd */ 0, dstRowIndex,
             /* use_next_bd */ 0,
             /* valid_bd */ 1, /* lock_rel_val */ 0, /* lock_rel_id */ 0,
-            /* lock_acq_enable */ 0, /* lock_acq_val */ 0, /* lock_acq_id */ 0,
+            /* lock_acq_enable */ 0, /* lock_acq_val */ 0,
+            /* lock_acq_id */ 0,
             /* d0_zero_before */ 0, /* d1_zero_before */ 0,
             /* d2_zero_before */ 0,
             /* d0_zero_after */ 0, /* d1_zero_after */ 0,
