@@ -53,6 +53,77 @@ module {
 
 // -----
 
+// Test that an aie.device with an existing aie.runtime_sequence (no func.func
+// with airrt.segment_load) gets wrapped with a "main" aie.device when
+// --emit-main-device=true is specified. This handles the XRTRunner path where
+// IR goes directly to AIE dialect with runtime_sequence.
+
+// CHECK: aie.device(npu2) @xrt_segment
+// CHECK:   aie.runtime_sequence @xrt_segment_sequence
+// The main device should be created with configure/run ops
+// CHECK: aie.device(npu2)
+// CHECK:   aie.runtime_sequence @xrt_kernel
+// CHECK:     aiex.configure @xrt_segment
+// CHECK:       aiex.run @xrt_segment_sequence
+
+module {
+  aie.device(npu2) @xrt_segment {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    aie.shim_dma_allocation @input_alloc(%tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @output_alloc(%tile_0_0, S2MM, 0)
+    
+    // This is the existing runtime_sequence (XRTRunner path - no func.func)
+    aie.runtime_sequence @xrt_kernel(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+      aie.end
+    }
+  }
+}
+
+// -----
+
+// Test that mimics xrt test 31 (triton_blk_ptr_eltwise_mul) pattern.
+// This tests the XRTRunner/Triton path where the device is named @herd_0
+// and the sequence should be renamed to @herd_0_sequence with a main wrapper
+// containing the original @kernel sequence name.
+
+// CHECK: aie.device(npu2) @herd_0
+// CHECK:   aie.shim_dma_allocation @air_channel_0_0
+// CHECK:   aie.shim_dma_allocation @air_channel_2_0
+// CHECK:   aie.runtime_sequence @herd_0_sequence
+// The main device should be created with configure/run ops and @kernel sequence
+// CHECK: aie.device(npu2)
+// CHECK:   aie.runtime_sequence @kernel
+// CHECK:     aiex.configure @herd_0
+// CHECK:       aiex.run @herd_0_sequence
+
+module {
+  aie.device(npu2) @herd_0 {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    aie.shim_dma_allocation @air_channel_0_0(%tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @air_channel_2_0(%tile_0_0, S2MM, 0)
+    
+    // This mimics the test 31 pattern - device @herd_0 with @kernel sequence
+    aie.runtime_sequence @kernel(%arg0: memref<*xf32>, %arg1: memref<*xf32>, %arg2: memref<*xf32>) {
+      %0 = aiex.dma_configure_task_for @air_channel_0_0 {
+        aie.dma_bd(%arg0 : memref<*xf32>, 0, 128, [<size = 16, stride = 256>, <size = 16, stride = 2>, <size = 4, stride = 64>, <size = 2, stride = 1>])
+        aie.end
+      } {repeat_count = 15 : i32}
+      aiex.dma_start_task(%0)
+      %1 = aiex.dma_configure_task_for @air_channel_2_0 {
+        aie.dma_bd(%arg2 : memref<*xf32>, 0, 128, [<size = 16, stride = 256>, <size = 16, stride = 2>, <size = 4, stride = 64>, <size = 2, stride = 1>])
+        aie.end
+      } {issue_token = true, repeat_count = 15 : i32}
+      aiex.dma_start_task(%1)
+      aiex.dma_free_task(%0)
+      aiex.dma_await_task(%1)
+    }
+  }
+}
+
+// -----
+
 // Test that single device WITHOUT emit-main-device does NOT generate main device wrapper
 // The function should be moved directly into the device as aie.runtime_sequence
 
