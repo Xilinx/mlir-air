@@ -35,7 +35,15 @@ parser.add_argument(
 parser.add_argument(
     "--compile-only",
     action="store_true",
-    help="Only compile to xclbin without running validation (for profiling)",
+    help="Only compile without running validation (for profiling)",
+)
+parser.add_argument(
+    "--output-format",
+    type=str,
+    dest="output_format",
+    default="xclbin",
+    choices=["elf", "xclbin"],
+    help="Output format: 'xclbin' (default) or 'elf'",
 )
 parser.add_argument(
     "--debug-ir",
@@ -120,15 +128,23 @@ with air.ir.Context() as ctx, Location.unknown():
     # Run compile and load
     ###############################################
 
+    # Determine output file extension based on format
+    output_ext = "elf" if args.output_format == "elf" else "xclbin"
+
     if args.compile_only:
-        # Compile-only mode: generate xclbin and instruction binary without validation
-        print("Compile-only mode: generating xclbin and instruction binary...")
-        backend = XRTBackend(omit_while_true_loop=False)
+        # Compile-only mode: generate binary without validation
+        print(f"Compile-only mode: generating {output_ext} binary...")
+        backend = XRTBackend(
+            omit_while_true_loop=False,
+            output_format=args.output_format,
+            instance_name="bare_matmul",
+        )
         module_function = backend.compile(air_module)
         backend.unload()
         print("Compilation complete. Generated files:")
-        print("  - air.xclbin")
-        print("  - air.insts.bin")
+        print(f"  - air.{output_ext}")
+        if args.output_format == "xclbin":
+            print("  - air.insts.bin")
         print("Run profiling with: ./test.exe")
         exit(0)
     else:
@@ -149,6 +165,8 @@ with air.ir.Context() as ctx, Location.unknown():
 
         runner = XRTRunner(
             omit_while_true_loop=False,
+            output_format=args.output_format,
+            instance_name="bare_matmul",
             # verbose=True,
         )
         exit(

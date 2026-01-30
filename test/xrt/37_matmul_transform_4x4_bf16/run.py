@@ -61,6 +61,14 @@ parser.add_argument(
     default=512,
     help="Matrix dimension N (cols of B, cols of C)",
 )
+parser.add_argument(
+    "--output-format",
+    type=str,
+    dest="output_format",
+    default="xclbin",
+    choices=["elf", "xclbin"],
+    help="Output format: 'xclbin' (default) or 'elf'",
+)
 args = parser.parse_args()
 
 
@@ -182,7 +190,12 @@ if args.compile_mode == "compile-and-run":
         "indices": sampled_indices,
         "values": sampled_values,
     }
-    runner = XRTRunner(verbose=args.verbose, omit_while_true_loop=False)
+    runner = XRTRunner(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="forward",
+    )
     exit(
         runner.run_test(
             air_module,
@@ -197,6 +210,8 @@ elif args.compile_mode == "compile-only":
     backend = XRTBackend(
         verbose=args.verbose,
         omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="forward",
     )
     module_function = backend.compile(air_module)
 

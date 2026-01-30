@@ -152,6 +152,8 @@ def run_test(size, idtype, odtype):
     backend = xrt_backend.XRTBackend(
         verbose=verbose,
         use_lock_race_condition_fix=True,
+        output_format=args.output_format,
+        instance_name="mul",
     )
 
     # run the module
@@ -176,6 +178,14 @@ def run_test(size, idtype, odtype):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=["peano", "chess"], required=True)
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        dest="output_format",
+        default="xclbin",
+        choices=["elf", "xclbin"],
+        help="Output format: 'xclbin' (default) or 'elf'",
+    )
     args = parser.parse_args()
 
     if args.backend == "peano":

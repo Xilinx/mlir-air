@@ -33,6 +33,14 @@ parser.add_argument(
     default="compile-and-run",
     help="Configure to whether to run after compile",
 )
+parser.add_argument(
+    "--output-format",
+    type=str,
+    dest="output_format",
+    default="xclbin",
+    choices=["elf", "xclbin"],
+    help="Output format: 'xclbin' (default) or 'elf'",
+)
 args = parser.parse_args()
 
 with air.ir.Context() as ctx, Location.unknown():
@@ -115,6 +123,8 @@ with air.ir.Context() as ctx, Location.unknown():
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            output_format=args.output_format,
+            instance_name="scf1",
         )
         exit(
             runner.run_test(
@@ -129,6 +139,8 @@ with air.ir.Context() as ctx, Location.unknown():
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            output_format=args.output_format,
+            instance_name="scf1",
         )
         module_function = backend.compile(mlir_module)
 

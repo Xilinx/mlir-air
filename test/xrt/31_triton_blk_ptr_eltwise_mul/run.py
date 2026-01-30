@@ -3,11 +3,26 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
+import argparse
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
 from air.ir import *
 import air.passmanager
 import filelock
+
+parser = argparse.ArgumentParser(
+    prog="run.py",
+    description="Builds, runs, and tests the eltwise mul example",
+)
+parser.add_argument(
+    "--output-format",
+    type=str,
+    dest="output_format",
+    default="xclbin",
+    choices=["elf", "xclbin"],
+    help="Output format: 'xclbin' (default) or 'elf'",
+)
+args = parser.parse_args()
 
 with air.ir.Context() as ctx, Location.unknown():
 
@@ -89,6 +104,8 @@ with air.ir.Context() as ctx, Location.unknown():
     runner = XRTRunner(
         omit_while_true_loop=False,
         use_lock_race_condition_fix=True,
+        output_format=args.output_format,
+        instance_name="kernel",
     )
     exit(
         runner.run_test(
