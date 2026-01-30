@@ -892,11 +892,19 @@ collectPrologueOps(func::FuncOp funcOp, SmallVector<LaunchRegion> &regions) {
   return prologueOps;
 }
 
-// Structure representing a device and its sequence that needs a main wrapper
+// Structure representing a device and its sequence that needs a main wrapper.
 struct DeviceSequenceInfo {
+  // Name of the target device for which the sequence is generated.
   std::string deviceName;
+  // Name of the sequence associated with this device.
   std::string sequenceName;
+  // Types of the arguments passed to the sequence. This must be kept in
+  // lockstep with `argLocs` such that `argTypes[i]` has source location
+  // information stored in `argLocs[i]`.
   SmallVector<Type> argTypes;
+  // Source locations corresponding to each entry in `argTypes`. This vector
+  // must always be the same size as `argTypes`, and both arrays are indexed
+  // in parallel.
   SmallVector<Location> argLocs;
 };
 
@@ -905,6 +913,9 @@ struct PendingMainDevice {
   LocationAttr loc;
   AIE::AIEDevice deviceType;
   std::string mainSeqName;
+  // deviceNames and sequenceNames are parallel arrays:
+  //   - they must have the same length
+  //   - deviceNames[i] corresponds to sequenceNames[i]
   SmallVector<std::string> deviceNames;
   SmallVector<std::string> sequenceNames;
 };
@@ -938,11 +949,12 @@ AIE::DeviceOp createMainDeviceWrapper(
   // Add arguments to runtime_sequence based on first device's signature
   // (all devices should have the same signature)
   if (!deviceSequences.empty()) {
+    assert(deviceSequences[0].argTypes.size() ==
+               deviceSequences[0].argLocs.size() &&
+           "argTypes and argLocs must be parallel arrays");
     for (unsigned i = 0; i < deviceSequences[0].argTypes.size(); ++i) {
-      Location argLoc = i < deviceSequences[0].argLocs.size()
-                            ? deviceSequences[0].argLocs[i]
-                            : loc;
-      mainSeq.getBody().addArgument(deviceSequences[0].argTypes[i], argLoc);
+      mainSeq.getBody().addArgument(deviceSequences[0].argTypes[i],
+                                    deviceSequences[0].argLocs[i]);
     }
   }
 
@@ -1023,8 +1035,8 @@ int findLargestFactor(int num, int max) {
     const bool areActuallyFactors = num % lowFactor == 0;
     if (areActuallyFactors) {
       // We're certain that here lowFactor <= highFactor, and highFactor is
-      // descending in this loop. So we can return immediately if highFactor is
-      // good.
+      // descending in this loop. So we can return immediately if highFactor
+      // is good.
       if (highFactor <= max)
         return highFactor;
       largestLowFactor = lowFactor;
@@ -1050,8 +1062,8 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
     auto const_stride = *getConstantIntValue(strides[i]);
     if (const_wrap >= AIE2_WRAP_UPPER_BOUNDS[i]) {
-      // Found dimension with illegal wrap. Tiling. (Prefers smaller outer wrap
-      // values, as long as stride fits)
+      // Found dimension with illegal wrap. Tiling. (Prefers smaller outer
+      // wrap values, as long as stride fits)
       int a_wrap = findLargestFactor(const_wrap, AIE2_WRAP_UPPER_BOUNDS[i] - 1);
       int b_wrap = llvm::divideCeilSigned(const_wrap, a_wrap);
       int new_a_stride = const_stride * a_wrap;
@@ -1386,8 +1398,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         deviceToRegions[region.device].push_back(&region);
       }
 
-      // If all regions target the same device and we're not forcing main device
-      // generation, just move the entire func to that device
+      // If all regions target the same device and we're not forcing main
+      // device generation, just move the entire func to that device
       if (deviceToRegions.size() == 1 && !clEmitMainDevice) {
         AIE::DeviceOp device = deviceToRegions.begin()->first;
         funcOp->moveBefore(device.getBody()->getTerminator());
@@ -1465,14 +1477,15 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
   // Wrap existing aie.device ops with a main device when emit-main-device is
   // set but no func.func with segment_load was processed. This handles the
-  // XRTRunner path where IR goes directly to AIE dialect with runtime_sequence.
+  // XRTRunner path where IR goes directly to AIE dialect with
+  // runtime_sequence.
   void wrapExistingDevicesWithMainIfNeeded(ModuleOp module) {
     // Only proceed if emit-main-device is requested
     if (!clEmitMainDevice)
       return;
 
-    // If pendingMainDevice is set, createDeferredMainDeviceWrapper will handle
-    // main device creation instead
+    // If pendingMainDevice is set, createDeferredMainDeviceWrapper will
+    // handle main device creation instead
     if (pendingMainDevice)
       return;
 
@@ -1538,8 +1551,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Build DeviceSequenceInfo by reading the FINAL argument list from each
     // device's runtime_sequence. This is done AFTER ControlFuncConversion
-    // has converted func.func to runtime_sequence AND after buffer-to-funcargs
-    // has added output memrefs to the argument list.
+    // has converted func.func to runtime_sequence AND after
+    // buffer-to-funcargs has added output memrefs to the argument list.
     SmallVector<DeviceSequenceInfo> deviceSequences;
 
     for (unsigned i = 0; i < pendingMainDevice->deviceNames.size(); ++i) {
@@ -1595,17 +1608,17 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     patterns.insert<AIRRtWaitAllOpToNpuWaitPattern>(ctx);
     (void)applyPatternsGreedily(module, std::move(patterns));
 
-    // Now that WaitAllOps with DMA operands are erased, purge DMA async tokens
-    // (they no longer have uses from WaitAllOps)
+    // Now that WaitAllOps with DMA operands are erased, purge DMA async
+    // tokens (they no longer have uses from WaitAllOps)
     purgeDmaAsyncTokens(module);
   }
 
   // Convert NpuDmaWaitOp → DMAAwaitTaskOp or DMAFreeTaskOp AFTER DMA
   // conversion. This processes NpuDmaWaitOp ops and DMAConfigureTaskForOp ops
   // in order, matching each wait to its corresponding configure task by
-  // channel. The key insight: waits and configures for the same channel must be
-  // matched in FIFO order - the Nth wait for channel X awaits the Nth config
-  // for X.
+  // channel. The key insight: waits and configures for the same channel must
+  // be matched in FIFO order - the Nth wait for channel X awaits the Nth
+  // config for X.
   //
   // For S2MM (output) channels: generate DMAAwaitTaskOp (wait + free BD)
   // For MM2S (input) channels: generate DMAFreeTaskOp (just free BD, no wait)
@@ -1901,8 +1914,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   // Remove npu wait op on inbound dma data movements.
-  // TODO: this is an aggressive optimization which might prove problematic for
-  // some applications. To be revised.
+  // TODO: this is an aggressive optimization which might prove problematic
+  // for some applications. To be revised.
   void removeNpuWaitOnInboundMemcpy(ModuleOp module) {
     SmallVector<mlir::func::FuncOp> funcOps;
     module.walk([&](mlir::func::FuncOp f) { funcOps.push_back(f); });
@@ -1936,8 +1949,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   }
 
   // Each element of 'port' is a {Port_N_Master_Slave, Port_N_ID} pair. They
-  // will be read sequentially to select up to 8 stream switch ports to monitor,
-  // using the select register at address {col, row, offset}.
+  // will be read sequentially to select up to 8 stream switch ports to
+  // monitor, using the select register at address {col, row, offset}.
   void insertNpuWriteStreamSwitchEventSel(
       OpBuilder &builder, std::vector<std::pair<uint8_t, uint8_t>> &ports,
       uint32_t offset, IntegerAttr col, IntegerAttr row) {
@@ -1958,8 +1971,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                v1, nullptr, col, row);
   }
 
-  // up to 8 events (up to 64 bits) will be written to the 8 event slots (bytes)
-  // at address {col, row, offset}
+  // up to 8 events (up to 64 bits) will be written to the 8 event slots
+  // (bytes) at address {col, row, offset}
   void insertNpuWriteTraceEvents(OpBuilder &builder,
                                  SmallVectorImpl<uint32_t> &events,
                                  uint32_t offset, IntegerAttr col,
@@ -2127,7 +2140,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
             /* iteration_stride */ 0, /* next_bd */ 0, dstRowIndex,
             /* use_next_bd */ 0,
             /* valid_bd */ 1, /* lock_rel_val */ 0, /* lock_rel_id */ 0,
-            /* lock_acq_enable */ 0, /* lock_acq_val */ 0, /* lock_acq_id */ 0,
+            /* lock_acq_enable */ 0, /* lock_acq_val */ 0,
+            /* lock_acq_id */ 0,
             /* d0_zero_before */ 0, /* d1_zero_before */ 0,
             /* d2_zero_before */ 0,
             /* d0_zero_after */ 0, /* d1_zero_after */ 0,
