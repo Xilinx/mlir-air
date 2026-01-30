@@ -124,6 +124,64 @@ module {
 
 // -----
 
+// Test that aiex.run arguments match the runtime_sequence after buffer-to-funcargs
+// adds output memrefs. This tests the fix for the argument count mismatch issue
+// where func.func has 2 inputs but an output memref is added by buffer-to-funcargs.
+// The aiex.run must wait until all arguments are finalized before being created.
+
+// CHECK: aie.device(npu2) @segment_out
+// CHECK:   aie.runtime_sequence @segment_out_sequence
+// CHECK-SAME: %arg0: memref<64xi32>
+// CHECK-SAME: %arg1: memref<64xi32>
+// CHECK-SAME: %arg2: memref<64xi32>
+// The main device should have matching 3 arguments in aiex.run
+// CHECK: aie.device(npu2)
+// CHECK:   aie.runtime_sequence @with_output
+// CHECK-SAME: %arg0: memref<64xi32>
+// CHECK-SAME: %arg1: memref<64xi32>
+// CHECK-SAME: %arg2: memref<64xi32>
+// CHECK:     aiex.configure @segment_out
+// CHECK:       aiex.run @segment_out_sequence(%arg0, %arg1, %arg2) :
+// CHECK-SAME:    (memref<64xi32>, memref<64xi32>, memref<64xi32>)
+
+module {
+  aie.device(npu2) @segment_out {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    aie.shim_dma_allocation @input1_alloc(%tile_0_0, MM2S, 0)
+    aie.shim_dma_allocation @input2_alloc(%tile_0_0, MM2S, 1)
+    aie.shim_dma_allocation @output_alloc(%tile_0_0, S2MM, 0)
+  }
+  airrt.module_metadata {
+    airrt.segment_metadata attributes {dma_allocations = [], sym_name = "segment_out"} {
+      airrt.herd_metadata {dma_allocations = [], loc_x = 0 : i64, loc_y = 2 : i64, size_x = 1 : i64, size_y = 1 : i64, sym_name = "herd_0"}
+    }
+  }
+  // Function with 2 inputs - the output will be added by buffer-to-funcargs
+  func.func @with_output(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c1_i32 = arith.constant 1 : i32
+    %c2_i32 = arith.constant 2 : i32
+    %c3_i32 = arith.constant 3 : i32
+    // Allocate output buffer - this triggers buffer-to-funcargs to add it
+    %output = memref.alloc() : memref<64xi32>
+    affine.for %arg2 = 0 to 1 {
+      %0 = airrt.segment_load "segment_out" : i64
+      // Two input DMAs (MM2S)
+      %1 = airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @input1_alloc} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+      %2 = airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @input2_alloc} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+      // Output DMA (S2MM) - writes to the allocated output buffer
+      %3 = airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %output[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @output_alloc} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+      %4 = airrt.wait_all %1, %2, %3 : !airrt.event
+    } {affine_opt_label = "tiling"}
+    return
+  }
+}
+
+// -----
+
 // Test that single device WITHOUT emit-main-device does NOT generate main device wrapper
 // The function should be moved directly into the device as aie.runtime_sequence
 

@@ -900,6 +900,15 @@ struct DeviceSequenceInfo {
   SmallVector<Location> argLocs;
 };
 
+// Structure to track pending main device creation
+struct PendingMainDevice {
+  LocationAttr loc;
+  AIE::AIEDevice deviceType;
+  std::string mainSeqName;
+  SmallVector<std::string> deviceNames;
+  SmallVector<std::string> sequenceNames;
+};
+
 // Helper to create a main device with orchestration runtime_sequence.
 // This is used both for multi-device func lowering and for wrapping
 // existing aie.device ops with runtime_sequence when emit-main-device is set.
@@ -1195,6 +1204,10 @@ void enforceAIE2WrapLimit(ModuleOp module) {
 }
 
 struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
+  // Track pending main device creation - stores info needed to create main
+  // device AFTER all argument-modifying patterns have run
+  std::optional<PendingMainDevice> pendingMainDevice;
+
   void runOnOperation() override {
 
     ModuleOp module = getOperation();
@@ -1327,6 +1340,12 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // runtime_sequence arguments (including buffer-to-funcargs and
     // ControlFuncConversion).
     wrapExistingDevicesWithMainIfNeeded(module);
+
+    // Create the deferred main device wrapper if one was requested.
+    // This MUST be done at the very end after ControlFuncConversion has
+    // converted func.func to runtime_sequence AND after buffer-to-funcargs
+    // has added output memrefs to the argument list.
+    createDeferredMainDeviceWrapper(module);
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -1427,23 +1446,17 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         func::ReturnOp::create(builder, funcOp.getLoc());
       }
 
-      // Build DeviceSequenceInfo for each region to pass to the helper
-      SmallVector<DeviceSequenceInfo> deviceSequences;
+      // Record pending main device creation - will be done at the end of the
+      // pass after all argument-modifying patterns have run
+      pendingMainDevice = PendingMainDevice{};
+      pendingMainDevice->loc = funcOp.getLoc();
+      pendingMainDevice->deviceType = deviceType;
+      pendingMainDevice->mainSeqName = funcOp.getName().str();
       for (auto &region : regions) {
-        DeviceSequenceInfo devInfo;
-        devInfo.deviceName = region.deviceName;
-        devInfo.sequenceName = region.deviceName.str() + "_sequence";
-        // Collect argument types and locations from the original function
-        for (unsigned i = 0; i < funcOp.getNumArguments(); ++i) {
-          devInfo.argTypes.push_back(funcOp.getArgument(i).getType());
-          devInfo.argLocs.push_back(funcOp.getArgument(i).getLoc());
-        }
-        deviceSequences.push_back(devInfo);
+        pendingMainDevice->deviceNames.push_back(region.deviceName.str());
+        pendingMainDevice->sequenceNames.push_back(region.deviceName.str() +
+                                                   "_sequence");
       }
-
-      // Create the @main device with orchestration runtime_sequence
-      createMainDeviceWrapper(module, funcOp.getLoc(), deviceType,
-                              funcOp.getName(), deviceSequences);
 
       // Erase the original function
       funcOp.erase();
@@ -1456,6 +1469,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
   void wrapExistingDevicesWithMainIfNeeded(ModuleOp module) {
     // Only proceed if emit-main-device is requested
     if (!clEmitMainDevice)
+      return;
+
+    // If pendingMainDevice is set, createDeferredMainDeviceWrapper will handle
+    // main device creation instead
+    if (pendingMainDevice)
       return;
 
     // Check if a "main" device already exists (created by
@@ -1508,6 +1526,63 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Create main device wrapper using the helper function
     createMainDeviceWrapper(module, device.getLoc(), device.getDevice(),
                             originalSeqName, deviceSequences);
+  }
+
+  // Create the deferred main device wrapper from func.func that was split
+  // into multiple device-specific functions. This reads the FINAL argument
+  // list from the runtime_sequences after all patterns (including
+  // buffer-to-funcargs) have run.
+  void createDeferredMainDeviceWrapper(ModuleOp module) {
+    if (!pendingMainDevice)
+      return;
+
+    // Build DeviceSequenceInfo by reading the FINAL argument list from each
+    // device's runtime_sequence. This is done AFTER ControlFuncConversion
+    // has converted func.func to runtime_sequence AND after buffer-to-funcargs
+    // has added output memrefs to the argument list.
+    SmallVector<DeviceSequenceInfo> deviceSequences;
+
+    for (unsigned i = 0; i < pendingMainDevice->deviceNames.size(); ++i) {
+      StringRef deviceName = pendingMainDevice->deviceNames[i];
+      StringRef sequenceName = pendingMainDevice->sequenceNames[i];
+
+      AIE::DeviceOp device = getDeviceByName(module, deviceName);
+      if (!device)
+        continue;
+
+      // Find the runtime_sequence with the expected name
+      AIE::RuntimeSequenceOp seq = nullptr;
+      device.walk([&](AIE::RuntimeSequenceOp s) {
+        if (s.getSymName() == sequenceName)
+          seq = s;
+      });
+
+      if (!seq)
+        continue;
+
+      DeviceSequenceInfo devInfo;
+      devInfo.deviceName = deviceName.str();
+      devInfo.sequenceName = sequenceName.str();
+
+      // Read the FINAL argument list from the runtime_sequence
+      for (auto arg : seq.getBody().getArguments()) {
+        devInfo.argTypes.push_back(arg.getType());
+        devInfo.argLocs.push_back(arg.getLoc());
+      }
+
+      deviceSequences.push_back(devInfo);
+    }
+
+    if (deviceSequences.empty())
+      return;
+
+    // Create the main device wrapper with the correct (final) argument types
+    createMainDeviceWrapper(module, pendingMainDevice->loc,
+                            pendingMainDevice->deviceType,
+                            pendingMainDevice->mainSeqName, deviceSequences);
+
+    // Clear the pending request
+    pendingMainDevice = std::nullopt;
   }
 
   // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
