@@ -377,6 +377,7 @@ module {
 #### Options
 
 ```
--trace-size   : Trace buffer size for cores and memtiles (in bytes)
--trace-offset : Trace buffer offset appended to ddr_id=2
+-trace-size       : Trace buffer size for cores and memtiles (in bytes)
+-trace-offset     : Trace buffer offset appended to ddr_id=2
+-emit-main-device : Always generate a main aie.device wrapper with configure/run ops, even for single-device designs. This enables reconfiguration mode for designs with a single aie.device.
 ```
