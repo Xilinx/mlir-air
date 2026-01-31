@@ -33,7 +33,7 @@ print:
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py --lk $(LK) --lkp $(LKP) --lq $(LQ) --dk $(DK) --dv $(DV)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py --lk $(LK) --lkp $(LKP) --lq $(LQ) --dk $(DK) --dv $(DV) $(OUTPUT_FORMAT_FLAG)
 
 # Run with user-provided MLIR file
 # Usage: make run-mlir MLIR_FILE=path/to/your.mlir [LK=...] [LQ=...] etc.

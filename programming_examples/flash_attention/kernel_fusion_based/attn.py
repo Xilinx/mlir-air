@@ -610,6 +610,14 @@ if __name__ == "__main__":
         choices=["compile-and-run", "compile-and-xclbin", "compile-only"],
         help="Compilation mode: compile-and-run (default), compile-and-xclbin (for profiling), compile-only",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
     args = parser.parse_args()
 
     lk, lkp, lq, dk, dv = args.lk, args.lkp, args.lq, args.dk, args.dv
@@ -695,6 +703,7 @@ if __name__ == "__main__":
         num_device_cols=4,
         verbose=args.verbose,
         runtime_loop_tiling_sizes=[1, 1],
+        output_format=args.output_format,
         instance_name="attention_bf16",
     )
 
