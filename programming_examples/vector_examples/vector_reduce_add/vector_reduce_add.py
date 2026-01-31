@@ -51,7 +51,7 @@ def build_module(m, n, tile_m, np_dtype_in):
     )
 
     @FuncOp.from_py_func(l3memrefTy, l3outputMemrefTy)
-    def vector_reduce_max(arg0, arg2):
+    def vector_reduce_add(arg0, arg2):
 
         @herd(
             name="herd_0",
@@ -253,7 +253,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
-            instance_name="vector_reduce_max",
+            instance_name="vector_reduce_add",
         )
         exit(
             runner.run_test(
