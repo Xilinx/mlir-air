@@ -97,6 +97,15 @@ if __name__ == "__main__":
         "--print-module-only",
         action="store_true",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
+
     args = parser.parse_args()
 
     np_dtype = dtype_map[args.dtype]
@@ -127,7 +136,11 @@ if __name__ == "__main__":
         )
     expected_output_matrix = np.transpose(input_matrix)
 
-    runner = XRTRunner(verbose=args.verbose)
+    runner = XRTRunner(
+        verbose=args.verbose,
+        output_format=args.output_format,
+        instance_name="transpose",
+    )
     exit(
         runner.run_test(
             mlir_module,

@@ -9,6 +9,10 @@ else
   BUILD_DIR := build_chess
 endif
 
+# Output format: xclbin (default) or elf
+OUTPUT_FORMAT ?= xclbin
+OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
+
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
@@ -30,10 +34,10 @@ endif
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/single_core.py -p
+	${powershell} python3 ${srcdir}/single_core.py $(OUTPUT_FORMAT_FLAG) -p
 
 run: compile-kernel
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_core.py
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_core.py $(OUTPUT_FORMAT_FLAG)
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
