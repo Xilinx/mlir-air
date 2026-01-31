@@ -188,7 +188,11 @@ if __name__ == "__main__":
     inputs = np.arange(0, args.n, dtype=INPUT_DATATYPE).reshape(args.n)
     outputs = inputs * 100
 
-    runner = XRTRunner(verbose=args.verbose, output_format=args.output_format)
+    runner = XRTRunner(
+        verbose=args.verbose,
+        output_format=args.output_format,
+        instance_name="conditional_branch",
+    )
     res0 = runner.run_test(
         mlir_module,
         inputs=[inputs],

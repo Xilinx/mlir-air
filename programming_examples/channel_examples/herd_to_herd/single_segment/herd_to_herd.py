@@ -161,5 +161,7 @@ if __name__ == "__main__":
     input_a = np.full(IMAGE_SIZE, 0x2, dtype=INOUT_DATATYPE)
     output_b = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
 
-    runner = XRTRunner(verbose=args.verbose, output_format=args.output_format)
+    runner = XRTRunner(
+        verbose=args.verbose, output_format=args.output_format, instance_name="copy"
+    )
     exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

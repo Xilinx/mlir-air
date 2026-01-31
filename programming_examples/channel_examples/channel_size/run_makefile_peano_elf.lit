@@ -2,8 +2,7 @@
  // SPDX-License-Identifier: MIT
  //
  // REQUIRES: ryzen_ai, peano
- // XFAIL: *
- //
+//
  // RUN: make -f %S/Makefile clean
  // RUN: make -f %S/Makefile run OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
  // CHECK: PASS!

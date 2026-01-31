@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 //
 // REQUIRES: ryzen_ai_npu1, peano
-// XFAIL: *
 //
 // RUN: mkdir -p test_peano_elf
 // RUN: cd test_peano_elf

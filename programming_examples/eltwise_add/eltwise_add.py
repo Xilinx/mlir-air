@@ -200,6 +200,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format=args.output_format,
+            instance_name="eltwise_add",
         )
         exit(
             runner.run_test(

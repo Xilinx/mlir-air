@@ -695,6 +695,7 @@ if __name__ == "__main__":
         num_device_cols=4,
         verbose=args.verbose,
         runtime_loop_tiling_sizes=[1, 1],
+        instance_name="attention_bf16",
     )
 
     if args.compile_mode == "compile-and-run":

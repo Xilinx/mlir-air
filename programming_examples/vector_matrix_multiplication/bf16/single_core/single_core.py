@@ -330,7 +330,12 @@ if __name__ == "__main__":
     )
     output_c = np.dot(input_a.astype(OUTPUT_DATATYPE), input_b.astype(OUTPUT_DATATYPE))
 
-    runner = XRTRunner(verbose=args.verbose, omit_while_true_loop=False, output_format=args.output_format)
+    runner = XRTRunner(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="vecmat_bf16",
+    )
     exit(
         runner.run_test(
             mlir_module,

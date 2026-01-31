@@ -20,7 +20,7 @@ print:
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_core.py $(OUTPUT_FORMAT_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_core.py $(OUTPUT_FORMAT_FLAG) -v
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

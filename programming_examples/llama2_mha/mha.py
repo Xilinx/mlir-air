@@ -870,8 +870,11 @@ if __name__ == "__main__":
     if args.compile_mode == "compile-and-run":
         ###### Compile and test
         runner = XRTRunner(
-            verbose=args.verbose, omit_while_true_loop=False, omit_pingpong=True
+            verbose=args.verbose,
+            omit_while_true_loop=False,
+            omit_pingpong=True,
             output_format=args.output_format,
+            instance_name="mha_bf16",
         )
         exit(
             runner.run_test(

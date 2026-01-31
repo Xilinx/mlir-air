@@ -460,6 +460,7 @@ def main():
         verbose=False,
         runtime_loop_tiling_sizes=[2, 2],
         output_format=args.output_format,
+        instance_name="func1",
     )
     exit(
         runner.run_test(

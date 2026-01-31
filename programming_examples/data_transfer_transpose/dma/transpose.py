@@ -143,7 +143,11 @@ if __name__ == "__main__":
         )
     expected_output_matrix = np.transpose(input_matrix)
 
-    runner = XRTRunner(verbose=args.verbose, output_format=args.output_format)
+    runner = XRTRunner(
+        verbose=args.verbose,
+        output_format=args.output_format,
+        instance_name="transpose",
+    )
     exit(
         runner.run_test(
             mlir_module,

@@ -760,7 +760,7 @@ if __name__ == "__main__":
         if not args.direct_codegen:
             runner_kwargs["lower_linalg_to_func"] = "mm.o"
 
-        runner = XRTRunner(**runner_kwargs)
+        runner = XRTRunner(**runner_kwargs, instance_name="matmul_bf16")
         exit(
             runner.run_test(
                 mlir_module,

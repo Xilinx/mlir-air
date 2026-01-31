@@ -702,6 +702,7 @@ if __name__ == "__main__":
         verbose=False,
         runtime_loop_tiling_sizes=[1, 1],
         output_format=args.output_format,
+        instance_name="attention_bf16",
     )
     exit(
         runner.run_test(
