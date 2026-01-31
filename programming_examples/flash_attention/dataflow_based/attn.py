@@ -622,6 +622,15 @@ if __name__ == "__main__":
     )
     parser.add_argument("--dk", type=int, default=64, help="Key dimension")
     parser.add_argument("--dv", type=int, default=64, help="Value dimension")
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
+
     args = parser.parse_args()
 
     lk, lkp, lq, dk, dv = args.lk, args.lkp, args.lq, args.dk, args.dv
@@ -692,6 +701,7 @@ if __name__ == "__main__":
         omit_pingpong=True,
         verbose=False,
         runtime_loop_tiling_sizes=[1, 1],
+        output_format=args.output_format,
     )
     exit(
         runner.run_test(

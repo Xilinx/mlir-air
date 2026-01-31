@@ -9,14 +9,18 @@ else
   BUILD_DIR := build_chess
 endif
 
+# Output format: xclbin (default) or elf
+OUTPUT_FORMAT ?= xclbin
+OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
+
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/herd_to_herd.py -p
+	${powershell} python3 ${srcdir}/herd_to_herd.py $(OUTPUT_FORMAT_FLAG) -p
 
 run:
 	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/herd_to_herd.py
+	cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/herd_to_herd.py $(OUTPUT_FORMAT_FLAG)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

@@ -314,6 +314,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tile-n", type=int, default=TILE_N, help="N dimension size of each L1 tile"
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
+
     args = parser.parse_args()
 
     mlir_module = build_module(
@@ -344,7 +353,7 @@ if __name__ == "__main__":
     input_b = input_b.astype(INPUT_DATATYPE)
     output_c = np.dot(input_a.astype(OUTPUT_DATATYPE), input_b.astype(OUTPUT_DATATYPE))
 
-    runner = XRTRunner(verbose=args.verbose, omit_while_true_loop=False)
+    runner = XRTRunner(verbose=args.verbose, omit_while_true_loop=False, output_format=args.output_format)
     exit(
         runner.run_test(
             mlir_module,

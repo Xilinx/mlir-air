@@ -18,6 +18,10 @@ else
   BUILD_DIR := build_chess
 endif
 
+# Output format: xclbin (default) or elf
+OUTPUT_FORMAT ?= xclbin
+OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
+
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 WARNING_FLAGS = -Wno-parentheses -Wno-attributes -Wno-macro-redefined -Wno-empty-body
 PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include

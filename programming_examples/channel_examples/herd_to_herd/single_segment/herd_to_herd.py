@@ -142,6 +142,15 @@ if __name__ == "__main__":
         "--print-module-only",
         action="store_true",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
+
     args = parser.parse_args()
 
     mlir_module = build_module()
@@ -152,5 +161,5 @@ if __name__ == "__main__":
     input_a = np.full(IMAGE_SIZE, 0x2, dtype=INOUT_DATATYPE)
     output_b = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
 
-    runner = XRTRunner(verbose=args.verbose)
+    runner = XRTRunner(verbose=args.verbose, output_format=args.output_format)
     exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

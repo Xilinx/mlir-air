@@ -59,6 +59,14 @@ def parse_args():
         default="python",
         help="How to obtain the MLIR module: 'python' (build with Python bindings) or 'file' (load and parse air.mlir; NOTE: air.mlir is only valid for M=N=256)",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
     args = parser.parse_args()
     return args
 
@@ -451,6 +459,7 @@ def main():
         omit_while_true_loop=False,
         verbose=False,
         runtime_loop_tiling_sizes=[2, 2],
+        output_format=args.output_format,
     )
     exit(
         runner.run_test(

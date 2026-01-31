@@ -153,6 +153,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tile-width", type=int, default=TILE_WIDTH, help="Width of the tile data"
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
+
     args = parser.parse_args()
 
     mlir_module = build_module(
@@ -181,5 +190,5 @@ if __name__ == "__main__":
             )
             output_b[i, j] = input_a[i, j] + tile_num
 
-    runner = XRTRunner(verbose=args.verbose)
+    runner = XRTRunner(verbose=args.verbose, output_format=args.output_format)
     exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))
