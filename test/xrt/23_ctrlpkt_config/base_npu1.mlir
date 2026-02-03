@@ -1,4 +1,4 @@
-//===- base.mlir -----------------------------------------------*- MLIR -*-===//
+//===- base_npu1.mlir -----------------------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
