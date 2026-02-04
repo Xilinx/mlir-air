@@ -1105,16 +1105,15 @@ func.func @scf_for_mixed_iter_args() {
     %c8 = arith.constant 8 : index
     %c64 = arith.constant 64 : index
     %c512 = arith.constant 512 : index
-    
+
     %async_token, %results = air.execute -> (memref<8x8x8x8xbf16, 2>) {
       %alloc = memref.alloc() : memref<8x8x8x8xbf16, 2>
       air.execute_terminator %alloc : memref<8x8x8x8xbf16, 2>
     }
-    
+
     %init_token = air.wait_all async [%async_token]
     %init_idx1 = arith.muli %c0, %c64 : index
     %init_idx2 = arith.muli %c0, %c512 : index
-    
     // This scf.for loop has mixed iter_args: 2 index values and 1 async token.
     // The canonicalization should only include the async token in any
     // air.wait_all operations, not the index values.
