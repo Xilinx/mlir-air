@@ -2204,19 +2204,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();
   auto ctx = &getContext();
-  SmallVector<memref::AllocOp> allocOps;
-  func.walk([&](memref::AllocOp allocOp) {
-    if (allocOp->getParentOfType<air::SegmentOp>() &&
-        llvm::cast<MemRefType>(allocOp.getMemref().getType())
-                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
-      allocOps.push_back(allocOp);
-    }
-  });
 
-  // Check if any segment must be allocated to more than one column which
-  // implies more than one memtile (assumption is one memtile per column). If
-  // none, then memref splitting is not needed, as no routings or channels can
-  // be saved if only allocating to a single memtile.
+  // Helper lambda to compute tile count in a segment.
   auto getTileCountInSegment = [](air::SegmentOp seg) {
     DenseMap<StringRef, uint64_t>
         herdNumTiles; // Herds with the same name are assumed to be different
@@ -2237,18 +2226,41 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       tileCount += count;
     return tileCount;
   };
-  if (llvm::none_of(allocOps, [&](memref::AllocOp a) {
-        if (auto s = a->getParentOfType<air::SegmentOp>()) {
-          return getTileCountInSegment(s) > clNumTilesPerL2Tile;
-        } else
-          return false;
-      }))
+
+  // First, identify which segments actually need splitting based on tile count.
+  // Only process allocOps from segments that exceed the tile threshold.
+  // This ensures each launch/segment is processed independently.
+  llvm::DenseSet<air::SegmentOp> segmentsNeedingSplit;
+  func.walk([&](air::SegmentOp seg) {
+    if (getTileCountInSegment(seg) > clNumTilesPerL2Tile) {
+      segmentsNeedingSplit.insert(seg);
+    }
+  });
+
+  // If no segment needs splitting, exit early.
+  if (segmentsNeedingSplit.empty())
     return;
 
-  // STEP 1: Unroll scf.parallels in segment
+  // Collect only allocOps from segments that need splitting.
+  SmallVector<memref::AllocOp> allocOps;
+  func.walk([&](memref::AllocOp allocOp) {
+    auto parentSeg = allocOp->getParentOfType<air::SegmentOp>();
+    if (parentSeg && segmentsNeedingSplit.contains(parentSeg) &&
+        llvm::cast<MemRefType>(allocOp.getMemref().getType())
+                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+      allocOps.push_back(allocOp);
+    }
+  });
+
+  // If no target allocOps found, exit early.
+  if (allocOps.empty())
+    return;
+
+  // STEP 1: Unroll scf.parallels only in segments that need splitting
   SmallVector<scf::ParallelOp> parOps;
   func.walk([&](scf::ParallelOp parOp) {
-    if (parOp->getParentOfType<air::SegmentOp>()) {
+    auto parentSeg = parOp->getParentOfType<air::SegmentOp>();
+    if (parentSeg && segmentsNeedingSplit.contains(parentSeg)) {
       parOps.push_back(parOp);
     }
   });
@@ -2480,10 +2492,12 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
     }
   }
 
-  // STEP 4: Unroll all remaining scf.parallels in segment.
+  // STEP 4: Unroll all remaining scf.parallels only in segments that need
+  // splitting.
   parOps.clear();
   func.walk([&](scf::ParallelOp parOp) {
-    if (parOp->getParentOfType<air::SegmentOp>()) {
+    auto parentSeg = parOp->getParentOfType<air::SegmentOp>();
+    if (parentSeg && segmentsNeedingSplit.contains(parentSeg)) {
       parOps.push_back(parOp);
     }
   });
