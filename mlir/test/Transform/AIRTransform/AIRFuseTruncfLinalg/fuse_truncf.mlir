@@ -180,7 +180,7 @@ func.func @fuse_truncf_into_mixed_precision_matmul(%a: tensor<8x16xbf16>, %b: te
 // CHECK:   linalg.yield %[[TRUNC]] : bf16
 // CHECK: return %[[RESULT]] : tensor<8x8xbf16>
 
-// Test 5: Fuse truncf with 
+// Test 5: Fuse truncf into a bufferized matmul with bf16 inputs and f32 accumulator
 // CHECK-LABEL: @fuse_truncf_bufferized
 func.func @fuse_truncf_bufferized(%a: tensor<256x256xbf16>, %b: tensor<256x256xbf16>) -> tensor<256x256xbf16> {
   %cst = arith.constant 0.000000e+00 : f32
