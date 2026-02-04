@@ -492,7 +492,10 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
     for (auto tok : regionTokens)
       replaceAllUsesInRegionWith(tok, loopCarriedTokenArg, forOp.getRegion());
     rewriter.setInsertionPoint(forOp);
-    regionTokens.insert(forOp.getInitArgs().begin(), forOp.getInitArgs().end());
+    for (auto arg : forOp.getInitArgs()) {
+      if (isa<air::AsyncTokenType>(arg.getType()))
+        regionTokens.insert(arg);
+    }
     auto newWaitAll =
         air::WaitAllOp::create(rewriter, forOp->getLoc(),
                                air::AsyncTokenType::get(forOp->getContext()),
