@@ -3711,14 +3711,43 @@ fuseTruncfIntoProducer(RewriterBase &rewriter, linalg::LinalgOp producerOp,
   Value truncfOutput = truncfOp.getTiedOpResult(truncfOp.getDpsInitOperand(0));
 
   // Create new output for the fused operation (with truncated type)
-  rewriter.setInsertionPoint(producerOp);
+  // Use the producer's init, type-converted to the truncated element type
+  rewriter.setInsertionPoint(truncfOp);
 
-  // Get the truncf op's init to use directly
-  Value truncfInit = truncfOp.getDpsInits()[0];
+  // Get the producer's init and create a new one with the truncated type
+  Value producerInit = producerOp.getDpsInits()[0];
+  auto producerInitType = cast<RankedTensorType>(producerInit.getType());
+  auto fusedInitType =
+      RankedTensorType::get(producerInitType.getShape(), truncatedType);
+
+  // Create a type cast for the producer's init to the truncated type
+  // If producer init is a linalg.fill, create a new fill with truncated type
+  // Otherwise, create a tensor.empty with the truncated type
+  Value fusedInit;
+  if (auto fillOp = producerInit.getDefiningOp<linalg::FillOp>()) {
+    // Create new empty tensor with truncated element type
+    auto newEmptyOp =
+        tensor::EmptyOp::create(rewriter, truncfOp.getLoc(),
+                                producerInitType.getShape(), truncatedType);
+    // Truncate the fill value to the new type
+    Value fillValue = fillOp.getInputs()[0];
+    Value truncatedFillValue = arith::TruncFOp::create(
+        rewriter, truncfOp.getLoc(), truncatedType, fillValue);
+    // Create a new fill with the truncated fill value
+    auto newFillOp = linalg::FillOp::create(rewriter, truncfOp.getLoc(),
+                                            ValueRange{truncatedFillValue},
+                                            ValueRange{newEmptyOp.getResult()});
+    fusedInit = newFillOp.getResult(0);
+  } else {
+    // For other cases (e.g., tensor.empty), create a new empty tensor
+    fusedInit =
+        tensor::EmptyOp::create(rewriter, truncfOp.getLoc(),
+                                producerInitType.getShape(), truncatedType);
+  }
 
   auto fusedOp = linalg::GenericOp::create(
-      rewriter, producerOp.getLoc(), truncfOp->getResultTypes(),
-      producerOp.getDpsInputs(), ValueRange{truncfInit},
+      rewriter, producerOp.getLoc(), TypeRange{fusedInitType},
+      producerOp.getDpsInputs(), ValueRange{fusedInit},
       producerOp.getIndexingMapsArray(), producerOp.getIteratorTypesArray());
 
   // Clone the producer region directly - this preserves all types and
