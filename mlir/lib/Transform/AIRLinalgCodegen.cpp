@@ -9,7 +9,9 @@
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
+#if AIR_ENABLE_AIE
 #include "air/Transform/AIRDependencyScheduleOpt.h"
+#endif
 #include "air/Util/CostModel.h"
 #include "air/Util/Outliner.h"
 #include "air/Util/Util.h"
@@ -5447,7 +5449,7 @@ DiagnosedSilenceableFailure
 transform::NormalizeForBoundsOp::apply(transform::TransformRewriter &rewriter,
                                        transform::TransformResults &results,
                                        transform::TransformState &state) {
-
+#if AIR_ENABLE_AIE
   SmallVector<Operation *> targets =
       llvm::to_vector(state.getPayloadOps(getTarget()));
 
@@ -5478,6 +5480,10 @@ transform::NormalizeForBoundsOp::apply(transform::TransformRewriter &rewriter,
 
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
+#else
+  return emitSilenceableError()
+         << "NormalizeForBoundsOp requires AIE support which is not enabled in this build";
+#endif
 }
 
 //===----------------------------------------------------------------------===//
