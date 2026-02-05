@@ -185,7 +185,7 @@ if __name__ == "__main__":
 
         # Compute reference results for sampled indices: 1.0 / x
         sampled_values = np.array(
-            [np.float32(1.0) / np.float32(input_a[i]) for i in zip(*sampled_indices)],
+            [np.float32(1.0) / np.float32(input_a[i]) for i in sampled_indices[0]],
             dtype=INPUT_DATATYPE,
         )
 
