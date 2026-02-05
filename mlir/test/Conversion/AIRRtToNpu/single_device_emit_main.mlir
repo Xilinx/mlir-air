@@ -6,10 +6,10 @@
 //===----------------------------------------------------------------------===//
 
 // Test that a single aie.device design generates a "main" aie.device wrapper
-// when --emit-main-device=true is specified. This enables reconfiguration mode
+// when --output-elf=true is specified. This enables reconfiguration mode
 // even for single-device designs.
 
-// RUN: air-opt %s -airrt-to-npu="emit-main-device=true" --split-input-file | FileCheck %s
+// RUN: air-opt %s -airrt-to-npu="output-elf=true" --split-input-file | FileCheck %s
 
 // CHECK-LABEL: module
 // CHECK: aie.device(npu2) @segment_0
@@ -55,7 +55,7 @@ module {
 
 // Test that an aie.device with an existing aie.runtime_sequence (no func.func
 // with airrt.segment_load) gets wrapped with a "main" aie.device when
-// --emit-main-device=true is specified. This handles the XRTRunner path where
+// --output-elf=true is specified. This handles the XRTRunner path where
 // IR goes directly to AIE dialect with runtime_sequence.
 
 // CHECK: aie.device(npu2) @xrt_segment

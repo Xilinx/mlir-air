@@ -7,15 +7,15 @@
 
 // Test the generation of aiex.npu.load_pdi at air.launch_end locations.
 // load_pdi is generated when BOTH conditions are true:
-// 1. emit-main-device=true is set
+// 1. output-elf=true is set (ELF output mode)
 // 2. The device has core/memtile DMAs with repeat_count > 0
 
-// RUN: air-opt -airrt-to-npu="emit-main-device=true" --split-input-file %s | FileCheck %s --check-prefix=EMIT-TRUE
-// RUN: air-opt -airrt-to-npu="emit-main-device=false" --split-input-file %s | FileCheck %s --check-prefix=EMIT-FALSE
+// RUN: air-opt -airrt-to-npu="output-elf=true" --split-input-file %s | FileCheck %s --check-prefix=EMIT-TRUE
+// RUN: air-opt -airrt-to-npu="output-elf=false" --split-input-file %s | FileCheck %s --check-prefix=EMIT-FALSE
 
 // Test 1: npu2 device with core DMA repeat_count > 0
-// With emit-main-device=true: load_pdi SHOULD be generated inside <device>_sequence
-// With emit-main-device=false: load_pdi should NOT be generated
+// With output-elf=true: load_pdi SHOULD be generated inside <device>_sequence
+// With output-elf=false: load_pdi should NOT be generated
 
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment0 {
 // EMIT-TRUE: aie.runtime_sequence @segment0_sequence
@@ -67,7 +67,7 @@ module {
 // -----
 
 // Test 2: npu2 device with NO DMAs with repeat_count > 0
-// load_pdi should NOT be generated regardless of emit-main-device setting
+// load_pdi should NOT be generated regardless of output-elf setting
 
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_no_repeat {
 // EMIT-TRUE: aie.runtime_sequence @segment_no_repeat_sequence
@@ -119,7 +119,7 @@ module {
 // -----
 
 // Test 3: npu1 device should NOT get load_pdi even with repeat_count > 0
-// and emit-main-device=true (only NPU2 family devices get load_pdi)
+// and output-elf=true (only NPU2 family devices get load_pdi)
 
 // EMIT-TRUE-LABEL: aie.device(npu1_1col) @segment_npu1 {
 // EMIT-TRUE: aie.runtime_sequence @segment_npu1_sequence
@@ -171,7 +171,7 @@ module {
 // -----
 
 // Test 4: wait_all WITHOUT air.launch_end attribute should NOT get load_pdi
-// regardless of emit-main-device setting
+// regardless of output-elf setting
 
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_no_launch_end {
 // EMIT-TRUE: aie.runtime_sequence @segment_no_launch_end_sequence
@@ -224,7 +224,7 @@ module {
 // -----
 
 // Test 5: memtile DMA with repeat_count > 0 should also trigger load_pdi
-// when emit-main-device=true
+// when output-elf=true
 
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_memtile {
 // EMIT-TRUE: aie.runtime_sequence @segment_memtile_sequence
