@@ -51,7 +51,7 @@ def build_module(m, n, tile_m, np_dtype_in):
     )
 
     @FuncOp.from_py_func(l3memrefTy, l3outputMemrefTy)
-    def vector_reduce_max(arg0, arg2):
+    def vector_reduce_add(arg0, arg2):
 
         @herd(
             name="herd_0",
