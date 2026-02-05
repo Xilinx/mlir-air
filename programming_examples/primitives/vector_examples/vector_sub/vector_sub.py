@@ -39,7 +39,7 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
     )
 
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
-    def vector_add(arg0, arg1, arg2):
+    def vector_sub(arg0, arg1, arg2):
 
         @herd(
             name="herd_0",
@@ -134,7 +134,7 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
                         cst0,
                         [True],
                     )
-                    v_c = arith.AddFOp(v_a, v_b)
+                    v_c = arith.SubFOp(v_a, v_b)
                     transfer_write(
                         None,
                         v_c,
@@ -215,9 +215,9 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
+    input_a = np.arange(0, args.n, dtype=np.int64)
     input_a = input_a.astype(INPUT_DATATYPE)
-    input_b = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
+    input_b = np.arange(0, args.n, dtype=np.int64)
     input_b = input_b.astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
@@ -232,7 +232,7 @@ if __name__ == "__main__":
 
         # Compute reference results for sampled indices
         sampled_values = np.array(
-            [input_a[i] + input_b[i] for i in zip(*sampled_indices)],
+            [input_a[i] - input_b[i] for i in zip(*sampled_indices)],
             dtype=INPUT_DATATYPE,
         )
 
