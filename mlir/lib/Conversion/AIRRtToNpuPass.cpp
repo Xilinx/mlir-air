@@ -13,6 +13,7 @@
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#include "aie/Dialect/AIE/IR/AIETargetModel.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -36,6 +37,22 @@
 #define DEBUG_TYPE "airrt-to-npu-pass"
 
 using namespace mlir;
+
+// Helper function to check if an aie.device contains core/memtile DMAs with
+// repeat_count > 0. This indicates that the DMA engine state needs to be reset
+// after each launch to avoid stale repeat counters affecting the next launch.
+static bool deviceHasRepeatCountDMAs(xilinx::AIE::DeviceOp device) {
+  bool hasRepeatCount = false;
+
+  // Walk through all DMAStartOp operations in the device
+  device.walk([&](xilinx::AIE::DMAStartOp dmaStart) {
+    // Check if repeat_count attribute is set and > 0
+    if (dmaStart.getRepeatCount() > 0)
+      hasRepeatCount = true;
+  });
+
+  return hasRepeatCount;
+}
 
 namespace {
 
@@ -661,17 +678,48 @@ public:
 
 // Erase remaining WaitAllOps that weren't converted to NpuDmaWaitOp.
 // These are pure synchronization ops that don't generate NPU ops.
+// For WaitAllOps with "air.launch_end" attribute, we may need to insert
+// aiex.npu.load_pdi to reset the DMA engine state if:
+// 1. The device contains core/memtile DMAs with repeat_count > 0, OR
+// 2. The pass is invoked with emit-main-device=true
 class AIRRtWaitAllOpConversion : public OpConversionPattern<airrt::WaitAllOp> {
 public:
-  using OpConversionPattern<airrt::WaitAllOp>::OpConversionPattern;
+  AIRRtWaitAllOpConversion(MLIRContext *context, bool emitMainDevice,
+                           PatternBenefit benefit = 1)
+      : OpConversionPattern<airrt::WaitAllOp>(context, benefit),
+        emitMainDevice(emitMainDevice) {}
 
   LogicalResult
   matchAndRewrite(airrt::WaitAllOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Just erase the op - synchronization is handled by NpuDmaWaitOp
+    // Check if this is a launch_end wait_all
+    if (op->hasAttr("air.launch_end")) {
+      // Find the parent device
+      auto device = op->getParentOfType<AIE::DeviceOp>();
+      if (device) {
+        // Only apply for NPU2 family devices
+        const AIE::AIETargetModel &tm = device.getTargetModel();
+        if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
+          // Insert aiex.npu.load_pdi to reset DMA engine state if:
+          // 1. emit-main-device is set (multi-launch scenario), AND
+          // 2. The device has core/memtile DMAs with repeat_count > 0
+          if (emitMainDevice && deviceHasRepeatCountDMAs(device)) {
+            rewriter.setInsertionPoint(op);
+            auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
+                                                    device.getSymName());
+            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+          }
+        }
+      }
+    }
+
+    // Erase the op - synchronization is handled by NpuDmaWaitOp
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  bool emitMainDevice;
 };
 
 // Convert FuncOp control function into aiex.runtime_sequence op.
@@ -758,7 +806,10 @@ public:
 struct AIRRtWaitAllOpToNpuWaitPattern
     : public OpRewritePattern<airrt::WaitAllOp> {
 public:
-  using OpRewritePattern<airrt::WaitAllOp>::OpRewritePattern;
+  AIRRtWaitAllOpToNpuWaitPattern(MLIRContext *context, bool emitMainDevice,
+                                 PatternBenefit benefit = 1)
+      : OpRewritePattern<airrt::WaitAllOp>(context, benefit),
+        emitMainDevice(emitMainDevice) {}
 
   LogicalResult matchAndRewrite(airrt::WaitAllOp op,
                                 PatternRewriter &rewriter) const override {
@@ -784,6 +835,25 @@ public:
       AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
     }
 
+    // Check if this is a launch_end wait_all and needs load_pdi
+    if (op->hasAttr("air.launch_end")) {
+      auto device = op->getParentOfType<AIE::DeviceOp>();
+      if (device) {
+        // Only apply for NPU2 family devices
+        const AIE::AIETargetModel &tm = device.getTargetModel();
+        if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
+          // Insert aiex.npu.load_pdi to reset DMA engine state if:
+          // 1. emit-main-device is set (multi-launch scenario), AND
+          // 2. The device has core/memtile DMAs with repeat_count > 0
+          if (emitMainDevice && deviceHasRepeatCountDMAs(device)) {
+            auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
+                                                    device.getSymName());
+            AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+          }
+        }
+      }
+    }
+
     // The WaitAllOp may have uses (other WaitAllOps depending on its result).
     // Replace with a new WaitAllOp with no operands to break the dependency
     // chain. This is safe because the synchronization is now handled by
@@ -804,6 +874,9 @@ public:
     }
     return success();
   }
+
+private:
+  bool emitMainDevice;
 };
 
 AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
@@ -1303,8 +1376,8 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     patterns.add<DmaToNpuPattern, HerdLoadToNpuPattern, SegmentLoadToNpuPattern,
                  ModuleMetadataToNpuPattern, L1MemRefStoreOpConversion,
                  L1AffineStoreOpConversion, HostMemRefCopyOpConversion,
-                 AIRRtAllocOpConversion, AIRRtDeallocOpConversion,
-                 AIRRtWaitAllOpConversion>(ctx);
+                 AIRRtAllocOpConversion, AIRRtDeallocOpConversion>(ctx);
+    patterns.add<AIRRtWaitAllOpConversion>(ctx, clEmitMainDevice);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
@@ -1622,7 +1695,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Apply the pattern to convert WaitAllOp → NpuDmaWaitOp
     RewritePatternSet patterns(ctx);
-    patterns.insert<AIRRtWaitAllOpToNpuWaitPattern>(ctx);
+    patterns.insert<AIRRtWaitAllOpToNpuWaitPattern>(ctx, clEmitMainDevice);
     (void)applyPatternsGreedily(module, std::move(patterns));
 
     // Now that WaitAllOps with DMA operands are erased, purge DMA async
