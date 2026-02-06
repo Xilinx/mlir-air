@@ -2,7 +2,7 @@
 
 ##===- utils/build-mlir-air-gpu.sh - Build mlir-air for GPU --*- Script -*-===##
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
 ##===----------------------------------------------------------------------===##
