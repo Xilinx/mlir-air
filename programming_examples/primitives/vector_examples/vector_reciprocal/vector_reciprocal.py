@@ -1,24 +1,16 @@
-# Copyright (C) 2025, Advanced Micro Devices, Inc.
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 import argparse
-from ml_dtypes import bfloat16
+import numpy as np
 
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
 from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store, subview, collapse_shape
-from air.dialects.vector import (
-    transfer_read,
-    transfer_write,
-    reduction,
-    extract,
-    CombiningKind,
-    broadcast,
-)
+from air.dialects.memref import AllocOp, DeallocOp, subview
+from air.dialects.vector import transfer_read, transfer_write, broadcast
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.dialects.math import exp
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
@@ -26,37 +18,37 @@ range_ = for_
 
 
 @module_builder
-def build_module(m, n, tile_m, np_dtype_in):
-    a_size = [m, n]
-    out_size = [m]
+def build_module(n, tile_n, np_dtype_in, arch="aie2"):
+    a_size = [n]
+    out_size = a_size
     xrt_dtype_in = type_mapper(np_dtype_in)
     num_tiles = 2
-    assert m % (tile_m * num_tiles) == 0
+    assert n % (tile_n * num_tiles) == 0
+    # Architecture-specific vector size
+    arch_vector_sizes = {
+        "aie2": 16,
+        "aie2p": 32,
+    }
+    VECTOR_SIZE = arch_vector_sizes.get(arch, 16)  # default to 16 if unknown
     index_type = IndexType.get()
 
     # L3 MemRefTypes
     l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
-    l3outputMemrefTy = MemRefType.get(out_size, xrt_dtype_in)
 
     # L1 MemRefTypes
     l1MemrefTy = MemRefType.get(
-        shape=[tile_m, n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-    l1outputMemrefTy = MemRefType.get(
-        shape=[tile_m, 1],
+        shape=[tile_n],
         element_type=xrt_dtype_in,
         memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
     )
 
-    @FuncOp.from_py_func(l3memrefTy, l3outputMemrefTy)
-    def vector_reduce_max(arg0, arg2):
+    @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
+    def vector_reciprocal(arg0, arg1):
 
         @herd(
             name="herd_0",
             sizes=[1, num_tiles],
-            operands=[arg0, arg2],
+            operands=[arg0, arg1],
         )
         def herd_body(
             _tx,
@@ -67,9 +59,9 @@ def build_module(m, n, tile_m, np_dtype_in):
             _l3_c,
         ):
             l1_a_data = AllocOp(l1MemrefTy, [], [])
-            l1_out_data = AllocOp(l1outputMemrefTy, [], [])
+            l1_out_data = AllocOp(l1MemrefTy, [], [])
 
-            for _l_ivx in range_(0, m, tile_m * num_tiles):
+            for _l_ivx in range_(0, n, tile_n * num_tiles):
 
                 offset_map = AffineMap.get(
                     0,
@@ -79,7 +71,7 @@ def build_module(m, n, tile_m, np_dtype_in):
                             AffineSymbolExpr.get(0),
                             AffineExpr.get_mul(
                                 AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_m),
+                                AffineConstantExpr.get(tile_n),
                             ),
                         )
                     ],
@@ -89,62 +81,56 @@ def build_module(m, n, tile_m, np_dtype_in):
                 dma_memcpy_nd(
                     l1_a_data,
                     _l3_a,
-                    src_offsets=[offset, 0],
-                    src_sizes=[tile_m, n],
-                    src_strides=[n, 1],
+                    src_offsets=[
+                        offset,
+                    ],
+                    src_sizes=[tile_n],
+                    src_strides=[1],
                 )
+
                 c0 = ConstantOp(index_type, 0)
-                c1 = ConstantOp(index_type, 1)
-                cTileN = ConstantOp(index_type, tile_m)
-                for j in range_(c0, cTileN, c1):
+                cVecSize = ConstantOp(index_type, VECTOR_SIZE)
+                cTileN = ConstantOp(index_type, tile_n)
+
+                # Create constant 1.0 scalar and broadcast to vector
+                one_scalar = arith.ConstantOp(xrt_dtype_in, 1.0)
+                one_vector = broadcast(
+                    VectorType.get([VECTOR_SIZE], xrt_dtype_in),
+                    one_scalar,
+                )
+
+                for j in range_(c0, cTileN, cVecSize):
                     sub_a_vec = subview(
                         l1_a_data.result,
-                        [j, c0],
-                        [1, n],
-                        [1, 1],
+                        [j],
+                        [VECTOR_SIZE],
+                        [1],
                     )
                     sub_c_vec = subview(
                         l1_out_data.result,
-                        [j, c0],
-                        [1, 1],
-                        [1, 1],
-                    )
-                    layout = StridedLayoutAttr.get(
-                        ShapedType.get_dynamic_size(),
-                        [
-                            1,
-                        ],
-                    )
-                    collapsed_type = MemRefType.get(
-                        (n,),
-                        xrt_dtype_in,
-                        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-                        layout=layout,
-                    )
-                    collapsed_type_2 = MemRefType.get(
-                        (1,),
-                        xrt_dtype_in,
-                        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-                        layout=layout,
-                    )
-                    collapse_dims = [[0, 1]]
-                    collapse_a = collapse_shape(
-                        collapsed_type, sub_a_vec, collapse_dims
-                    )
-                    collapse_c = collapse_shape(
-                        collapsed_type_2, sub_c_vec, collapse_dims
+                        [j],
+                        [VECTOR_SIZE],
+                        [1],
                     )
                     cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
                     v_a = transfer_read(
-                        VectorType.get([n], xrt_dtype_in),
-                        collapse_a,
+                        VectorType.get([VECTOR_SIZE], xrt_dtype_in),
+                        sub_a_vec,
                         [c0],
                         AffineMapAttr.get(AffineMap.get_identity(1)),
                         cst0,
                         [True],
                     )
-                    v_c_red = reduction(xrt_dtype_in, CombiningKind.ADD, v_a)
-                    store(v_c_red, collapse_c, [c0])
+                    # Compute reciprocal: 1.0 / a
+                    v_c = arith.DivFOp(one_vector, v_a)
+                    transfer_write(
+                        None,
+                        v_c,
+                        sub_c_vec,
+                        [c0],
+                        AffineMapAttr.get(AffineMap.get_identity(1)),
+                        [True],
+                    )
                     yield_([])
 
                 dma_memcpy_nd(
@@ -153,7 +139,7 @@ def build_module(m, n, tile_m, np_dtype_in):
                     dst_offsets=[
                         offset,
                     ],
-                    dst_sizes=[tile_m],
+                    dst_sizes=[tile_n],
                     dst_strides=[1],
                 )
                 DeallocOp(l1_a_data)
@@ -164,14 +150,13 @@ def build_module(m, n, tile_m, np_dtype_in):
 
 if __name__ == "__main__":
     # Default values.
-    M = 65536
-    N = 16
-    TILE_M = 256
-    INPUT_DATATYPE = bfloat16
+    N = 65536
+    TILE_N = 1024
+    INPUT_DATATYPE = np.float32
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
+        description="Builds, runs, and tests the vector reciprocal (1/x) example",
     )
     parser.add_argument(
         "-v",
@@ -184,18 +169,19 @@ if __name__ == "__main__":
         action="store_true",
     )
     parser.add_argument(
-        "--m",
-        type=int,
-        default=M,
-        help="Input size (dimension M)",
-    )
-    parser.add_argument(
         "--n",
         type=int,
         default=N,
-        help="Input size (dimension N)",
+        help="Total number of elements",
     )
-    parser.add_argument("--tile-m", type=int, default=TILE_M, help="Tile size M")
+    parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
+    parser.add_argument(
+        "--arch",
+        type=str,
+        choices=["aie2", "aie2p"],
+        default="aie2",
+        help="Target AIE architecture (aie2 or aie2p)",
+    )
     parser.add_argument(
         "--compile-mode",
         type=str,
@@ -207,34 +193,39 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     mlir_module = build_module(
-        args.m,
         args.n,
-        args.tile_m,
+        args.tile_n,
         INPUT_DATATYPE,
+        args.arch,
     )
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, (args.m * args.n), dtype=INPUT_DATATYPE).reshape(
-        args.m, args.n
-    )
+    # Generate random input vector with fixed seed for reproducibility
+    np.random.seed(37)
+    # Use a safe range [1, 10] to avoid division by zero
+    input_a = np.random.uniform(1.0, 10.0, args.n).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
 
         # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
         num_samples = 100
-        sampled_indices = np.vstack([np.random.randint(0, args.m, num_samples)])
+        sampled_indices = np.vstack(
+            [
+                np.random.randint(0, args.n, num_samples),  # i indices
+            ]
+        )
 
-        # Compute reference results for sampled indices
+        # Compute reference results for sampled indices: 1.0 / x
         sampled_values = np.array(
-            [np.sum(input_a[i]) for i in zip(*sampled_indices)],
+            [np.float32(1.0) / np.float32(input_a[i]) for i in sampled_indices[0]],
             dtype=INPUT_DATATYPE,
         )
 
         # Store as a dictionary
         sampled_data = {
-            "shape": (args.m,),
+            "shape": (args.n,),
             "indices": sampled_indices,
             "values": sampled_values,
         }
@@ -249,7 +240,7 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_a],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
+                rtol=1e-5,
             )
         )
 
