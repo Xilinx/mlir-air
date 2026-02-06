@@ -411,11 +411,10 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
     Option<"clTraceOffset", "trace-offset", "unsigned",
           /*default=*/"0",
           "Trace buffer offset appended to ddr_id=2">,
-    Option<"clEmitMainDevice", "emit-main-device", "bool",
+    Option<"clOutputElf", "output-elf", "bool",
           /*default=*/"false",
-          "Always generate a main aie.device wrapper with configure/run ops, "
-          "even for single-device designs. This enables reconfiguration mode "
-          "for designs with a single aie.device.">
+          "Enable ELF output mode. When set, generates a main aie.device "
+          "wrapper with configure/run ops.">
   ];
   let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
 }
