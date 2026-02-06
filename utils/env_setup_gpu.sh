@@ -1,6 +1,6 @@
 ##===- utils/env_setup_gpu.sh - Setup mlir-air env for GPU builds --*- Script -*-===##
 #
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 #
 ##===----------------------------------------------------------------------===##
