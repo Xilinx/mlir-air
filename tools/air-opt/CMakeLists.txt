@@ -22,7 +22,6 @@ set(LIBS
   AIRConversionPasses
   AIRTransformPasses
   AIRInitAll
-  AIE
   MLIRAffineAnalysis
   MLIRAnalysis
   MLIRDialect
@@ -37,5 +36,9 @@ set(LIBS
   MLIRSupport
   MLIRIR
   )
+
+if(AIR_ENABLE_AIE)
+  list(APPEND LIBS AIE)
+endif()
 
 target_link_libraries(air-opt PRIVATE ${LIBS})
