@@ -12,11 +12,11 @@ endif
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/scalar_reciprocal.py -p
+	${powershell} python3 ${srcdir}/scalar_invsqrt.py -p
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/scalar_reciprocal.py
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/scalar_invsqrt.py
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

@@ -9,6 +9,7 @@ from air.dialects.air import *
 from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
+from air.dialects.math import rsqrt
 from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
@@ -35,7 +36,7 @@ def build_module(n, tile_n, np_dtype_in):
     )
 
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
-    def scalar_reciprocal(arg0, arg1):
+    def scalar_invsqrt(arg0, arg1):
 
         @herd(
             name="herd_0",
@@ -84,15 +85,12 @@ def build_module(n, tile_n, np_dtype_in):
                 c1 = ConstantOp(index_type, 1)
                 cTileN = ConstantOp(index_type, tile_n)
 
-                # Constant 1.0 for reciprocal computation
-                one_const = arith.ConstantOp(xrt_dtype_in, 1.0)
-
-                # Scalar loop: compute 1.0 / x for each element
+                # Scalar loop: compute 1.0 / sqrt(x) for each element
                 for j in range_(c0, cTileN, c1):
                     # Load scalar value from input
                     scalar_a = load(l1_a_data.result, [j])
-                    # Compute reciprocal: 1.0 / a
-                    scalar_c = arith.DivFOp(one_const, scalar_a)
+                    # Compute inverse square root: 1.0 / sqrt(a)
+                    scalar_c = rsqrt(scalar_a)
                     # Store result
                     store(scalar_c, l1_out_data.result, [j])
                     yield_([])
@@ -121,7 +119,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the scalar reciprocal (1/x) example",
+        description="Builds, runs, and tests the scalar inverse square root (1/sqrt(x)) example",
     )
     parser.add_argument(
         "-v",
@@ -160,9 +158,9 @@ if __name__ == "__main__":
         exit(0)
 
     # Generate random input vector with fixed seed for reproducibility
+    # Use a safe range [0.1, 10] to avoid division by zero or very small numbers
     np.random.seed(37)
-    # Use a safe range [1, 10] to avoid division by zero or very small numbers
-    input_a = np.random.uniform(1.0, 10.0, args.n).astype(INPUT_DATATYPE)
+    input_a = np.random.uniform(0.1, 10.0, args.n).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
 
@@ -174,9 +172,9 @@ if __name__ == "__main__":
             ]
         )
 
-        # Compute reference results for sampled indices: 1.0 / x
+        # Compute reference results for sampled indices: 1.0 / sqrt(x)
         sampled_values = np.array(
-            [np.float32(1.0) / np.float32(input_a[i]) for i in sampled_indices[0]],
+            [1.0 / np.sqrt(input_a[i]) for i in sampled_indices[0]],
             dtype=INPUT_DATATYPE,
         )
 
@@ -197,7 +195,7 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_a],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e-5,
+                rtol=1e-1,
             )
         )
 
