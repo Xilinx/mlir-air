@@ -62,6 +62,7 @@ class XRTBackend(AirBackend):
         kernel_id: str = "",
         xclbin_input: str = "",
         num_device_cols: int = 0,
+        debug_ir: bool = False,
     ):
         """Constructor for XRTBackend
 
@@ -86,6 +87,8 @@ class XRTBackend(AirBackend):
             num_device_cols: number of device columns to confine the design within (0 means entire device, default).
                 For npu1 (4 columns total): valid values are 0 (entire device), 1, 2, 3
                 For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
+            debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
+                IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
         """
         super().__init__()
         self.verbose = verbose
@@ -111,6 +114,7 @@ class XRTBackend(AirBackend):
         self.kernel_id = kernel_id
         self.xclbin_input = xclbin_input
         self.num_device_cols = num_device_cols
+        self.debug_ir = debug_ir
 
     def __del__(self):
         self.unload()
@@ -302,6 +306,9 @@ class XRTBackend(AirBackend):
             else:
                 aircc_options += ["--xchesscc"]
                 aircc_options += ["--xbridge"]
+
+            if self.debug_ir:
+                aircc_options += ["--debug-ir"]
 
             if self.verbose:
                 print("Running aircc.py with options:", " ".join(aircc_options))
