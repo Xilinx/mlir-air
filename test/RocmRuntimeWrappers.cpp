@@ -219,7 +219,6 @@ extern "C" void mgpuCheckOutput(float *device, float* hostA, float* hostB, int N
 
   float epsilon = 1e-6;
   bool mismatch = false;
-#if 1
   for(int i = 0; i<N; i++){
     for(int j = 0; j<M; j++){
       if (std::fabs(hostA[i*M+j] - device[i*M+j]) > epsilon) {
@@ -233,39 +232,6 @@ extern "C" void mgpuCheckOutput(float *device, float* hostA, float* hostB, int N
   if(!mismatch){
     std::cout <<"Output Matched!\n";
   }
-#endif
-#if 0
-   int K = N; // Assuming square matrix: 4096 x 4096
-   for (int i = 0; i < N; i++) {
-    for (int j = 0; j < M; j++) {
-      float expected = 0.0f;
-
-      for (int k = 0; k < K; k++) {
-        expected += hostA[i * K + k] * hostB[k * M + j];
-//        std::cout<<hostA[i * K + k]<<" * "<<hostB[k * M + j]<<"\n";
-      }
-
-      float actual = device[i * M + j];
-      float diff = std::fabs(expected - actual);
-
-      if (diff > epsilon) {
-        std::cout << "Mismatch at (" << i << ", " << j << "): "
-                  << "Expected = " << expected << ", Got = " << actual
-                  << ", Diff = " << diff << std::endl;
-        mismatch = true;
-        return;
-        // Optional: break early if only first mismatch is needed
-        // return;
-      }
-    }
-  }
-
-  if (!mismatch) {
-    std::cout << "[SUCCESS] Output matches expected matrix multiplication." << std::endl;
-  } else {
-    std::cerr << "[FAILURE] Output does NOT match expected results." << std::endl;
-  }
-#endif
 }
 
 extern "C" void mgpuInit(float *A, float* B, int N, int M){
@@ -279,15 +245,4 @@ extern "C" void mgpuInit(float *A, float* B, int N, int M){
       i = i + 1;
     }
   }
-  /*
-  i = 1;
-  for (int x = 0; x < N; x++)
-  {
-    for (int y = 0; y < N; y++)
-    {
-      B[N * y + x] = static_cast<float>(i);
-      i = i + 1;
-    }
-  }
-  */
 }
