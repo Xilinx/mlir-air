@@ -227,5 +227,13 @@ def parse_args(args=None):
         default="aie.elf",
         help="Output filename for full ELF when using --output-format=elf (default: aie.elf)",
     )
+    parser.add_argument(
+        "--debug-ir",
+        dest="debug_ir",
+        default=False,
+        action="store_true",
+        help="Enable debug mode to emit IR after each individual pass for fine-grained inspection. "
+        "IRs are saved to <tmpdir>/debug_ir/ with pass sequence numbers and checkpoint markers.",
+    )
     opts = parser.parse_args(args)
     return opts
