@@ -194,7 +194,7 @@ with air.ir.Context() as ctx, Location.unknown():
     ###### Compile and test
     runner = XRTRunner(
         omit_while_true_loop=False,
-        runtime_loop_tiling_sizes=[],
+        runtime_loop_tiling_sizes=[],  # disable loop tiling to improve shim DMA stream efficiency / avoid BD count limiting
     )
     exit(
         runner.run_test(
