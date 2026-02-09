@@ -191,6 +191,13 @@ class XRTBackend(AirBackend):
                     print("Failed to run xrt-smi, using default target device")
                     print(e)
 
+        # Validate output_format compatibility with target device
+        if self.output_format == "elf" and "npu1" in target_device:
+            raise AirBackendError(
+                f"output_format='elf' is not supported for {target_device} target. "
+                "ELF output format is only supported on npu2 and later devices."
+            )
+
         # Apply user-specified device column configuration if provided
         if self.num_device_cols > 0:
             # Validate column count based on detected device

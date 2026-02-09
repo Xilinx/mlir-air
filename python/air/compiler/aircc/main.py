@@ -688,6 +688,12 @@ def run(mlir_module, args=None):
     if opts.verbose:
         print("compiling %s for %s\n" % (opts.air_mlir_file, opts.device))
 
+    # Validate output_format compatibility with target device
+    if opts.output_format == "elf" and "npu1" in opts.device:
+        print(f"Error: output_format='elf' is not supported for {opts.device} target.")
+        print("ELF output format is only supported on npu2 and later devices.")
+        sys.exit(1)
+
     # Setup debug IR directory if debug mode is enabled
     if getattr(opts, "debug_ir", False):
         debug_dir = setup_debug_ir_dir(opts.tmpdir)
