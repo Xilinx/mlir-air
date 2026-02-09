@@ -228,12 +228,12 @@ def parse_args(args=None):
         help="Output filename for full ELF when using --output-format=elf (default: aie.elf)",
     )
     parser.add_argument(
-        "--emit-main-device",
-        dest="emit_main_device",
+        "--debug-ir",
+        dest="debug_ir",
         default=False,
         action="store_true",
-        help="Always generate a main aie.device wrapper with configure/run ops, even for single-device designs. This enables reconfiguration mode for designs with a single aie.device.",
+        help="Enable debug mode to emit IR after each individual pass for fine-grained inspection. "
+        "IRs are saved to <tmpdir>/debug_ir/ with pass sequence numbers and checkpoint markers.",
     )
-
     opts = parser.parse_args(args)
     return opts

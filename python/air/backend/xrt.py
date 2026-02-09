@@ -62,6 +62,7 @@ class XRTBackend(AirBackend):
         kernel_id: str = "",
         xclbin_input: str = "",
         num_device_cols: int = 0,
+        debug_ir: bool = False,
     ):
         """Constructor for XRTBackend
 
@@ -86,6 +87,8 @@ class XRTBackend(AirBackend):
             num_device_cols: number of device columns to confine the design within (0 means entire device, default).
                 For npu1 (4 columns total): valid values are 0 (entire device), 1, 2, 3
                 For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
+            debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
+                IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
         """
         super().__init__()
         self.verbose = verbose
@@ -111,6 +114,7 @@ class XRTBackend(AirBackend):
         self.kernel_id = kernel_id
         self.xclbin_input = xclbin_input
         self.num_device_cols = num_device_cols
+        self.debug_ir = debug_ir
 
     def __del__(self):
         self.unload()
@@ -187,6 +191,13 @@ class XRTBackend(AirBackend):
                     print("Failed to run xrt-smi, using default target device")
                     print(e)
 
+        # Validate output_format compatibility with target device
+        if self.output_format == "elf" and "npu1" in target_device:
+            raise AirBackendError(
+                f"output_format='elf' is not supported for {target_device} target. "
+                "ELF output format is only supported on npu2 and later devices."
+            )
+
         # Apply user-specified device column configuration if provided
         if self.num_device_cols > 0:
             # Validate column count based on detected device
@@ -237,9 +248,8 @@ class XRTBackend(AirBackend):
             # Add output file options based on format
             if self.output_format == "elf":
                 aircc_options += ["--elf-name", output_binary]
-                # ELF mode requires the main device wrapper for reconfiguration
-                aircc_options += ["--emit-main-device"]
-                # Note: ELF mode embeds instructions, no separate -i needed
+                # Note: ELF mode features (main device wrapper, load_pdi) are
+                # automatically enabled by --output-format=elf in aircc
             else:
                 aircc_options += ["-o", output_binary]
                 aircc_options += ["-i", insts]
@@ -303,6 +313,9 @@ class XRTBackend(AirBackend):
             else:
                 aircc_options += ["--xchesscc"]
                 aircc_options += ["--xbridge"]
+
+            if self.debug_ir:
+                aircc_options += ["--debug-ir"]
 
             if self.verbose:
                 print("Running aircc.py with options:", " ".join(aircc_options))

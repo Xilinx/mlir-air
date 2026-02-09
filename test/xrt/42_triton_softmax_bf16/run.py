@@ -204,6 +204,7 @@ with air.ir.Context() as ctx, Location.unknown():
         omit_while_true_loop=False,
         output_format=args.output_format,
         instance_name="softmax_kernel",
+        runtime_loop_tiling_sizes=[],  # disable loop tiling to improve shim DMA stream efficiency / avoid BD count limiting
     )
     exit(
         runner.run_test(
