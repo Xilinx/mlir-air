@@ -261,17 +261,25 @@ namespace segments {
 """
     s = s + f"namespace {herd_name} {{\n"
     s = s + f'#include "{include_name}"'
-    s = s + """
+    s = (
+        s
+        + """
 }
 }
 }
 """
+    )
     s = s + f"using namespace air::segments::{herd_name};"
-    s = s + """
+    s = (
+        s
+        + """
 extern "C" {
 """
+    )
     s = s + f"air_rt_aie_functions_t __airrt_{herd_name}_aie_functions {{"
-    s = s + """
+    s = (
+        s
+        + """
   .configure_cores = &mlir_aie_configure_cores,
   .configure_switchboxes = &mlir_aie_configure_switchboxes,
   .initialize_locks = &mlir_aie_initialize_locks,
@@ -280,6 +288,7 @@ extern "C" {
 };
 }
 """
+    )
     return s
 
 
@@ -687,6 +696,12 @@ def run(mlir_module, args=None):
 
     if opts.verbose:
         print("compiling %s for %s\n" % (opts.air_mlir_file, opts.device))
+
+    # Validate output_format compatibility with target device
+    if opts.output_format == "elf" and "npu1" in opts.device:
+        print(f"Error: output_format='elf' is not supported for {opts.device} target.")
+        print("ELF output format is only supported on npu2 and later devices.")
+        sys.exit(1)
 
     # Setup debug IR directory if debug mode is enabled
     if getattr(opts, "debug_ir", False):
