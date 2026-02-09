@@ -261,25 +261,17 @@ namespace segments {
 """
     s = s + f"namespace {herd_name} {{\n"
     s = s + f'#include "{include_name}"'
-    s = (
-        s
-        + """
+    s = s + """
 }
 }
 }
 """
-    )
     s = s + f"using namespace air::segments::{herd_name};"
-    s = (
-        s
-        + """
+    s = s + """
 extern "C" {
 """
-    )
     s = s + f"air_rt_aie_functions_t __airrt_{herd_name}_aie_functions {{"
-    s = (
-        s
-        + """
+    s = s + """
   .configure_cores = &mlir_aie_configure_cores,
   .configure_switchboxes = &mlir_aie_configure_switchboxes,
   .initialize_locks = &mlir_aie_initialize_locks,
@@ -288,7 +280,6 @@ extern "C" {
 };
 }
 """
-    )
     return s
 
 
