@@ -25,7 +25,8 @@ parser.add_argument(
     "--input-mlir",
     type=str,
     dest="input_mlir",
-    default=os.path.join(script_dir, "input_ir/4x1024_mul_inv_bf16.mlir"),
+    default=os.path.join(script_dir, "input_ir/4x1024_mul_inv_bf16.mlir"), # A softmax kernel for 4x1024 input tile. We test with 256x1024 input. 
+    # default=os.path.join(script_dir, "input_ir/original.mlir"), # The original kernel is for 4x256 input tile. We test with 256x256 input. 
     help="Input MLIR file path (default: input_ir/original.mlir)",
 )
 parser.add_argument(
@@ -47,6 +48,7 @@ parser.add_argument(
     type=int,
     dest="N",
     default=1024,
+    # default=256 # N=256 is used for `input_ir/original.mlir` which is the kernel for 4x256 input tile
     help="N (reduction) dimension size",
 )
 parser.add_argument(
