@@ -148,6 +148,14 @@ if __name__ == "__main__":
         default="compile-and-run",
         help="Configure to whether to run after compile",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
     args = parser.parse_args()
 
     mlir_module = build_module(
@@ -191,6 +199,8 @@ if __name__ == "__main__":
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            output_format=args.output_format,
+            instance_name="eltwise_add",
         )
         exit(
             runner.run_test(
@@ -207,6 +217,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             omit_auto_broadcast=True,
+            output_format=args.output_format,
         )
         module_function = backend.compile(mlir_module)
 

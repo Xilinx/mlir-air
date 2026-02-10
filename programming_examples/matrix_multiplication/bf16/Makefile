@@ -19,6 +19,10 @@ TILE_N_DIV_8 := $(shell echo $$(( $(TILE_N) / 8 )))
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
+
+# Output format: xclbin (default) or elf
+OUTPUT_FORMAT ?= xclbin
+OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
   # DIRECT_CODEGEN_FLAG can be overridden from command line (e.g., make DIRECT_CODEGEN_FLAG= run4x4)
   DIRECT_CODEGEN_FLAG ?= --direct-codegen
 else

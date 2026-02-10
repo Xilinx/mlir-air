@@ -9,16 +9,20 @@ else
   BUILD_DIR := build_chess
 endif
 
+# Output format: xclbin (default) or elf
+OUTPUT_FORMAT ?= xclbin
+OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
+
 # Vector size parameter (16 or 32)
 VECTOR_SIZE ?= 16
 
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_reduce_add.py -p --n $(VECTOR_SIZE)
+	${powershell} python3 ${srcdir}/vector_reduce_add.py $(OUTPUT_FORMAT_FLAG) -p --n $(VECTOR_SIZE)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_reduce_add.py --n $(VECTOR_SIZE)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_reduce_add.py $(OUTPUT_FORMAT_FLAG) --n $(VECTOR_SIZE)
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
