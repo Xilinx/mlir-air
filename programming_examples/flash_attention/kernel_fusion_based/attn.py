@@ -19,17 +19,18 @@ range_ = for_
 
 @module_builder
 def build_module(
-    lk=3072, lkp=96, lq=128, dk=64, dv=64, num_q_tiles=4, num_cascade_stages=4
+    lk=12288, lkp=96, lq=512, lqp=128, dk=64, dv=64, num_q_tiles=4, num_cascade_stages=4
 ):
     """Build the attention module using Python bindings
 
     Args:
         lk: Total sequence length for K/V matrices (default: 3072)
         lkp: Chunk size for K/V processing (default: 96)
-        lq: Sequence length for Q matrix (default: 128)
+        lq: Total sequence length for Q matrix (default: 512)
+        lqp: Chunk size for Q processing per launch iteration (default: 128)
         dk: Key dimension (default: 64)
         dv: Value dimension (default: 64)
-        num_q_tiles: Number of tiles to partition Q sequence into (default: 4)
+        num_q_tiles: Number of tiles to partition Q chunk (lqp) into (default: 4)
         num_cascade_stages: Number of cascade pipeline stages (default: 4)
     """
 
@@ -44,7 +45,8 @@ def build_module(
     # Derived parameters
     num_chunks = lk // lkp
     chunks_per_stage = num_chunks // num_cascade_stages
-    tile_size_q = lq // num_q_tiles
+    num_lq_iters = lq // lqp  # Number of launch iterations for lq dimension
+    tile_size_q = lqp // num_q_tiles  # Tile size within each lqp chunk
 
     # Memory spaces: L1 = 2 : i32, L2 = 1 : i32
     l1_space = IntegerAttr.get(i32, 2)  # L1 uses memory space 2
@@ -61,7 +63,9 @@ def build_module(
     memref_lqp_dk_l2 = MemRefType.get([tile_size_q, dk], bf16, memory_space=l2_space)
     memref_dk_lkp_l2 = MemRefType.get([dk, lkp], bf16, memory_space=l2_space)
     memref_lkp_dv_l2 = MemRefType.get([lkp, dk], bf16, memory_space=l2_space)
-    memref_output_lq_dv_l2 = MemRefType.get([lq, dk], bf16, memory_space=l2_space)
+    memref_output_lqp_dv_l2 = MemRefType.get(
+        [lqp, dk], bf16, memory_space=l2_space
+    )  # Per-iteration output buffer
 
     # L3 MemRefTypes (no memory space annotation = default L3)
     memref_input_q_lq_dk = MemRefType.get([lq, dk], bf16)
@@ -169,10 +173,11 @@ def build_module(
     )
     def attention_bf16(arg0, arg1, arg2, arg3, arg4):
         c1 = ConstantOp(index_type, 1)
+        c_num_lq_iters = ConstantOp(index_type, num_lq_iters)
 
-        @launch(operands=[arg0, arg1, arg2, arg3, arg4], sizes=[c1, c1])
+        @launch(operands=[arg0, arg1, arg2, arg3, arg4], sizes=[c_num_lq_iters, c1])
         def launch_body(arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13):
-            # Affine map for Q partitioning
+            # Affine map for Q tile partitioning within lqp chunk
             affine_map_tileq = AffineMap.get(
                 0,
                 1,
@@ -182,18 +187,34 @@ def build_module(
                     )
                 ],
             )
+            # Affine map for launch offset: arg5 * lqp * dk (row offset in flattened terms)
+            # Since we access as [row, col], offset is arg5 * lqp for row dimension
+            affine_map_launch_offset = AffineMap.get(
+                0,
+                1,
+                [
+                    AffineExpr.get_mul(
+                        AffineSymbolExpr.get(0), AffineConstantExpr.get(lqp * dk)
+                    )
+                ],
+            )
 
             # scf.parallel for L3 to L2 Q matrix transfers
             par_1 = scf.ForallOp(
                 lower_bounds=[0], upper_bounds=[num_cascade_stages], steps=[1]
             )
             with InsertionPoint(par_1.body):
-                apply = affine_apply(affine_map_tileq, [par_1.induction_variables[0]])
+                # Tile offset within lqp chunk
+                tile_offset = affine_apply(
+                    affine_map_tileq, [par_1.induction_variables[0]]
+                )
+                # Launch offset for which lqp chunk we're processing (arg5 is launch index)
+                launch_offset = affine_apply(affine_map_launch_offset, [arg5])
                 ChannelPut(
                     "L3ToL2Chan1",
                     arg9,
                     indices=[0, par_1.induction_variables[0]],
-                    offsets=[apply, 0],
+                    offsets=[tile_offset, launch_offset],
                     sizes=[tile_size_q, dk],
                     strides=[dk, 1],
                 )
@@ -241,8 +262,8 @@ def build_module(
                 alloc_32 = AllocOp(memref_lkp_dv_l2, [], [])
                 alloc_33 = AllocOp(memref_lkp_dv_l2, [], [])
 
-                # Output buffer
-                alloc_5 = AllocOp(memref_output_lq_dv_l2, [], [])
+                # Output buffer (per-iteration, lqp x dk)
+                alloc_5 = AllocOp(memref_output_lqp_dv_l2, [], [])
 
                 # L1 allocations
                 up = AllocOp(memref_lqp_l1, [], [])
@@ -578,8 +599,17 @@ def build_module(
                 # L2 to L3 transfer
                 ChannelPut("L2ToL3Chan1", alloc_5.result, indices=[])
 
-            # Get from L2 to L3
-            ChannelGet("L2ToL3Chan1", arg13, indices=[])
+            # Get from L2 to L3 with launch offset for output
+            # Output is written to the correct lqp chunk based on launch index (arg5)
+            launch_offset_out = affine_apply(affine_map_launch_offset, [arg5])
+            ChannelGet(
+                "L2ToL3Chan1",
+                arg13,
+                indices=[],
+                offsets=[0, launch_offset_out],
+                sizes=[lqp, dk],
+                strides=[dk, 1],
+            )
 
 
 if __name__ == "__main__":
@@ -599,28 +629,26 @@ if __name__ == "__main__":
         "--lkp", type=int, default=96, help="Chunk size for K/V processing"
     )
     parser.add_argument(
-        "--lq", type=int, default=128, help="Sequence length for Q matrix"
+        "--lq", type=int, default=512, help="Total sequence length for Q matrix"
+    )
+    parser.add_argument(
+        "--lqp",
+        type=int,
+        default=128,
+        help="Chunk size for Q processing per launch iteration",
     )
     parser.add_argument("--dk", type=int, default=64, help="Key dimension")
     parser.add_argument("--dv", type=int, default=64, help="Value dimension")
     parser.add_argument(
         "--compile-mode",
         type=str,
-        default="compile-and-run",
-        choices=["compile-and-run", "compile-and-xclbin", "compile-only"],
-        help="Compilation mode: compile-and-run (default), compile-and-xclbin (for profiling), compile-only",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
+        default="run",
+        choices=["run", "compile"],
+        help="Compilation mode: run (default, compile + test), compile (generate binary only)",
     )
     args = parser.parse_args()
 
-    lk, lkp, lq, dk, dv = args.lk, args.lkp, args.lq, args.dk, args.dv
+    lk, lkp, lq, lqp, dk, dv = args.lk, args.lkp, args.lq, args.lqp, args.dk, args.dv
 
     if args.mlir_file:
         # Load MLIR module from external file
@@ -640,6 +668,7 @@ if __name__ == "__main__":
             lk=lk,
             lkp=lkp,
             lq=lq,
+            lqp=lqp,
             dk=dk,
             dv=dv,
             num_q_tiles=4,
@@ -703,11 +732,11 @@ if __name__ == "__main__":
         num_device_cols=4,
         verbose=args.verbose,
         runtime_loop_tiling_sizes=[1, 1],
-        output_format=args.output_format,
+        output_format="elf",
         instance_name="attention_bf16",
     )
 
-    if args.compile_mode == "compile-and-run":
+    if args.compile_mode == "run":
         exit(
             runner.run_test(
                 mlir_module,
@@ -716,27 +745,16 @@ if __name__ == "__main__":
                 rtol=1e-1,
             )
         )
-    elif args.compile_mode == "compile-and-xclbin":
-        # Compile and generate xclbin (requires XRT, no execution)
+    elif args.compile_mode == "compile":
+        # Compile and generate binary (elf format)
         backend = XRTBackend(
             omit_while_true_loop=False,
             omit_pingpong="all",
             num_device_cols=4,
             verbose=args.verbose,
             runtime_loop_tiling_sizes=[1, 1],
+            output_format="elf",
+            instance_name="attention_bf16",
         )
         module_function = backend.compile(mlir_module)
-        backend.unload()
-        print("Compilation complete. Generated air.xclbin and air.insts.bin")
-    elif args.compile_mode == "compile-only":
-        # Compile without xclbin generation
-        backend = XRTBackend(
-            omit_while_true_loop=False,
-            omit_pingpong="all",
-            num_device_cols=4,
-            verbose=args.verbose,
-            target_device="npu2",
-            output_format="none",
-        )
-        backend.compile(mlir_module)
-        print("Compilation complete (no xclbin generated)")
+        print(f"Compilation complete. Generated elf binary")
