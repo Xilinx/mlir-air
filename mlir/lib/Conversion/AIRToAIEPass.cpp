@@ -213,16 +213,11 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
     }
   });
 
-  // use the command line offsets unless the attribute is present
+  // Use the offsets from options. For segment unroll, col_offset is already
+  // set to 0 in iter_options by createAIEModulesAndOutlineCores.
   int64_t col_offset = options.col_offset;
   int64_t row_offset = options.row_offset;
 
-  // For segment unroll, reset col_offset to 0 since each sub-device
-  // has its own column space starting from 0
-  if (aie_device->hasAttr("segment_unroll_x") ||
-      aie_device->hasAttr("segment_unroll_y")) {
-    col_offset = 0;
-  }
   auto col_name = air::HerdOp::getColOffsetAttrName();
   auto row_name = air::HerdOp::getRowOffsetAttrName();
   auto ctx = h->getContext();
@@ -345,22 +340,24 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
                                     core_builder, hloc, herd_size_y));
 
       // Map segment unroll IDs to constants if the herd is in an unrolled
-      // segment
+      // segment. Handle dimension-by-dimension to support 1-D segments.
       if (auto seg = h->getParentOfType<air::SegmentOp>()) {
         auto segIds = seg.getIds();
-        if (segIds.size() >= 2) {
-          // Get unroll indices from device attributes
-          int64_t unrollX = 0, unrollY = 0;
-          if (auto attr =
-                  aie_device->getAttrOfType<IntegerAttr>("segment_unroll_x"))
-            unrollX = attr.getInt();
-          if (auto attr =
-                  aie_device->getAttrOfType<IntegerAttr>("segment_unroll_y"))
-            unrollY = attr.getInt();
+        // Get unroll indices from device attributes
+        int64_t unrollX = 0, unrollY = 0;
+        if (auto attr =
+                aie_device->getAttrOfType<IntegerAttr>("segment_unroll_x"))
+          unrollX = attr.getInt();
+        if (auto attr =
+                aie_device->getAttrOfType<IntegerAttr>("segment_unroll_y"))
+          unrollY = attr.getInt();
 
-          // Map segment unroll IDs to constants
+        // Map segment unroll IDs to constants, dimension by dimension
+        if (segIds.size() >= 1) {
           remap.map(segIds[0], arith::ConstantIndexOp::create(core_builder,
                                                               hloc, unrollX));
+        }
+        if (segIds.size() >= 2) {
           remap.map(segIds[1], arith::ConstantIndexOp::create(core_builder,
                                                               hloc, unrollY));
         }
@@ -504,7 +501,11 @@ std::vector<AIE::TileOp> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
 // Get segment unroll factors from air.segment's iteration space
 // Returns {unrollX, unrollY} where X is dim 0 and Y is dim 1
 // Note: AIE only supports column-wise device slicing, so unrollY should be 1.
-std::pair<int64_t, int64_t> getSegmentUnrollFactors(air::SegmentOp seg) {
+// Returns failure if any dimension has a non-static size, since segment
+// unrolling requires static sizes to determine the number of AIE devices
+// at compile time.
+FailureOr<std::pair<int64_t, int64_t>>
+getSegmentUnrollFactors(air::SegmentOp seg) {
   int64_t unrollX = 1, unrollY = 1;
   unsigned numDims = seg.getNumDims();
   if (numDims > 0) {
@@ -516,6 +517,15 @@ std::pair<int64_t, int64_t> getSegmentUnrollFactors(air::SegmentOp seg) {
                    sizeOperands[0].getDefiningOp<arith::ConstantOp>()) {
       if (auto intAttr = dyn_cast<IntegerAttr>(constIntOp.getValue()))
         unrollX = intAttr.getInt();
+      else {
+        seg.emitOpError("segment unroll X-dimension size must be a static "
+                        "constant, but got non-integer constant");
+        return failure();
+      }
+    } else {
+      seg.emitOpError(
+          "segment unroll X-dimension size must be a static constant");
+      return failure();
     }
     if (numDims > 1) {
       if (auto constOp =
@@ -525,17 +535,29 @@ std::pair<int64_t, int64_t> getSegmentUnrollFactors(air::SegmentOp seg) {
                      sizeOperands[1].getDefiningOp<arith::ConstantOp>()) {
         if (auto intAttr = dyn_cast<IntegerAttr>(constIntOp.getValue()))
           unrollY = intAttr.getInt();
+        else {
+          seg.emitOpError("segment unroll Y-dimension size must be a static "
+                          "constant, but got non-integer constant");
+          return failure();
+        }
+      } else {
+        seg.emitOpError(
+            "segment unroll Y-dimension size must be a static constant");
+        return failure();
       }
     }
   }
-  return {unrollX, unrollY};
+  return std::make_pair(unrollX, unrollY);
 }
 
 // Validate segment unroll factors for AIE lowering.
 // AIE only supports column-wise device slicing, so Y-dimension unrolling
 // (unrollY > 1) is not allowed.
 LogicalResult validateSegmentUnrollFactors(air::SegmentOp seg) {
-  auto [unrollX, unrollY] = getSegmentUnrollFactors(seg);
+  auto unrollFactors = getSegmentUnrollFactors(seg);
+  if (failed(unrollFactors))
+    return failure();
+  auto [unrollX, unrollY] = *unrollFactors;
   if (unrollY > 1) {
     return seg.emitOpError(
         "segment unroll Y-dimension (row-wise) is not supported. "
@@ -604,9 +626,12 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
 
   // For segment unroll, divide by unroll factor since each sub-device gets
   // a portion of the segment's columns
-  auto [unrollX, unrollY] = getSegmentUnrollFactors(seg);
-  if (unrollX > 1) {
-    seg_size_x = (seg_size_x + unrollX - 1) / unrollX; // ceiling division
+  auto unrollFactors = getSegmentUnrollFactors(seg);
+  if (succeeded(unrollFactors)) {
+    auto [unrollX, unrollY] = *unrollFactors;
+    if (unrollX > 1) {
+      seg_size_x = (seg_size_x + unrollX - 1) / unrollX; // ceiling division
+    }
   }
 
   seg.walk([&](air::ChannelInterface op) {
@@ -646,7 +671,8 @@ void push_back_if_unique(std::vector<T> &vec, T entry) {
 
 void createAIEModulesAndOutlineCores(
     ModuleOp module,
-    std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> &aie_modules,
+    std::vector<std::tuple<AIE::DeviceOp, air::HerdOp,
+                           AIRToAIEConversionOptions>> &aie_modules,
     std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
     AIRToAIEConversionOptions &options) {
 
@@ -665,7 +691,10 @@ void createAIEModulesAndOutlineCores(
       return;
 
     // Get segment unroll factors
-    auto [unrollX, unrollY] = getSegmentUnrollFactors(seg);
+    auto unrollFactors = getSegmentUnrollFactors(seg);
+    if (failed(unrollFactors))
+      return;
+    auto [unrollX, unrollY] = *unrollFactors;
     int64_t totalUnroll = unrollX * unrollY;
 
     // Get the base device target model to compute sub-device type
@@ -712,7 +741,9 @@ void createAIEModulesAndOutlineCores(
           aie_dev->setAttr("segment_unroll_y", builder.getI64IntegerAttr(uy));
         }
 
-        seg.walk([&](air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
+        seg.walk([&](air::HerdOp h) {
+          aie_modules.push_back({aie_dev, h, iter_options});
+        });
         // If the device has memtiles, then outline memtiles
         if (aie_dev.getTargetModel().getNumMemTileRows()) {
           outlineAIEMemtiles(builder, aie_dev, seg, iter_options);
@@ -738,13 +769,14 @@ void createAIEModulesAndOutlineCores(
     setAIEDeviceDataLayout(builder, aie_dev);
     AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
                                     aie_dev.getLoc());
-    aie_modules.push_back({aie_dev, herd});
+    aie_modules.push_back({aie_dev, herd, options});
   };
   for (auto &p : aie_modules) {
     auto aie_dev = std::get<0>(p);
     auto h = std::get<1>(p);
+    auto device_options = std::get<2>(p);
     OpBuilder builder(aie_dev);
-    outlineAIECores(builder, aie_dev, h, tileToHerdMap, options);
+    outlineAIECores(builder, aie_dev, h, tileToHerdMap, device_options);
   }
   // Outline any L1 memref allocs used by herds but located outside of any herd
   std::vector<Value> sharedL1Memrefs;
@@ -2525,22 +2557,20 @@ public:
         // arguments) that define the segment's iteration space.
         for (auto func : module.getOps<func::FuncOp>()) {
           func.walk([&](air::SegmentOp segOp) {
-            // Map segment IDs (block arguments inside segment)
+            // Map segment IDs (block arguments inside segment) to constants.
+            // Note: Only remap segment IDs (induction variables), NOT size
+            // operands. Size operands represent the iteration space size
+            // (e.g., 2x1), while IDs represent the current iteration (e.g.,
+            // 0 or 1).
+            // Handle dimension-by-dimension to support 1-D segments.
             auto segIds = segOp.getIds();
-            if (segIds.size() >= 2) {
+            if (segIds.size() >= 1) {
               remap.map(segIds[0],
                         arith::ConstantIndexOp::create(
                             builder, builder.getUnknownLoc(), unrollX));
-              remap.map(segIds[1],
-                        arith::ConstantIndexOp::create(
-                            builder, builder.getUnknownLoc(), unrollY));
             }
-            auto sizeOperands = segOp.getSizeOperands();
-            if (sizeOperands.size() >= 2) {
-              remap.map(sizeOperands[0],
-                        arith::ConstantIndexOp::create(
-                            builder, builder.getUnknownLoc(), unrollX));
-              remap.map(sizeOperands[1],
+            if (segIds.size() >= 2) {
+              remap.map(segIds[1],
                         arith::ConstantIndexOp::create(
                             builder, builder.getUnknownLoc(), unrollY));
             }
@@ -4539,7 +4569,9 @@ public:
     };
 
     if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
-      std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
+      std::vector<
+          std::tuple<AIE::DeviceOp, air::HerdOp, AIRToAIEConversionOptions>>
+          aie_modules;
       AIRToAIEConversionOptions options = {
           /*.col_offset = */ clColOffset,
           /*.row_offset = */ clRowOffset,
@@ -4564,6 +4596,7 @@ public:
       for (auto &p : aie_modules) {
         auto d = std::get<0>(p);
         auto h = std::get<1>(p);
+        auto device_options = std::get<2>(p);
         auto parentModule = d->getParentOfType<ModuleOp>();
 
         if (seen.find(d) != seen.end())
@@ -4572,8 +4605,8 @@ public:
 
         // Run shared pipeline with the specified breakpoint
         if (failed(runDevicePipeline(d, parentModule, h, tileToHerdMap,
-                                     bufferToMemtileMap, options, clUseObjFifo,
-                                     stopStage))) {
+                                     bufferToMemtileMap, device_options,
+                                     clUseObjFifo, stopStage))) {
           signalPassFailure();
           return;
         }
@@ -4637,7 +4670,9 @@ public:
 
     // If we have multiple herds then we must emit them into different aie
     // modules to avoid resource conflicts in the AIE physical dialect.
-    std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_devices;
+    std::vector<
+        std::tuple<AIE::DeviceOp, air::HerdOp, AIRToAIEConversionOptions>>
+        aie_devices;
 
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
     std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
@@ -4665,6 +4700,7 @@ public:
     for (auto &p : aie_devices) {
       auto device = std::get<0>(p);
       air::HerdOp h = std::get<1>(p);
+      auto device_options = std::get<2>(p);
       auto ctx = device->getContext();
 
       if (seen.find(device) != seen.end())
@@ -4698,7 +4734,8 @@ public:
       if (clUseObjFifo) {
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ false,
-            /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix,
+            /*use_lock_race_cond_fix*/
+            device_options.use_lock_race_condition_fix,
             targetLaunch);
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
@@ -4712,7 +4749,8 @@ public:
       } else {
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
-            /*use_lock_race_cond_fix*/ options.use_lock_race_condition_fix,
+            /*use_lock_race_cond_fix*/
+            device_options.use_lock_race_condition_fix,
             targetLaunch);
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
@@ -4724,19 +4762,19 @@ public:
         air::renumberMemcpyIfOps(&device.getRegion(),
                                  chan_renumber_reverse_map);
         if (failed(lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc,
-                                                           options))) {
+                                                           device_options))) {
           signalPassFailure();
           return;
         }
       }
 
       if (failed(lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc,
-                                                      options))) {
+                                                      device_options))) {
         signalPassFailure();
         return;
       }
 
-      if (options.insert_trace_packet_flow)
+      if (device_options.insert_trace_packet_flow)
         createTracePacketFlow(device);
 
       // Lower L1-to-L1 memref.copy to loops before removing remaining copies.
@@ -4776,7 +4814,7 @@ public:
 
         // Control packet generation for AIE1 is not yet implemented.
         if (isa<AIE::AIE1TargetModel>(device.getTargetModel()) &&
-            options.use_packet_flow_at_shim_dmas)
+            device_options.use_packet_flow_at_shim_dmas)
           herd->emitOpError("control packet flow generation is not yet "
                             "supported for AIE1.");
       }
@@ -4798,7 +4836,7 @@ public:
 
         // Control packet generation for AIE1 is not yet implemented.
         if (isa<AIE::AIE1TargetModel>(device.getTargetModel()) &&
-            options.use_packet_flow_at_shim_dmas)
+            device_options.use_packet_flow_at_shim_dmas)
           seg->emitOpError("control packet flow generation is not yet "
                            "supported for AIE1.");
       }
