@@ -3794,7 +3794,14 @@ public:
     MemRefType memrefTy = cast<MemRefType>(memref.getType());
 
     // Calculate cascade tile size based on cascade width and element size
-    unsigned elementWidth = memrefTy.getElementType().getIntOrFloatBitWidth();
+    Type elemType = memrefTy.getElementType();
+    if (!isa<IntegerType, FloatType>(elemType))
+      return op->emitOpError("cascade channel requires integer or float "
+                             "element type, got ")
+             << elemType;
+    unsigned elementWidth = elemType.getIntOrFloatBitWidth();
+    if (elementWidth == 0)
+      return op->emitOpError("cascade channel element type has zero bit width");
     int64_t cascadeTileSize = llvm::divideCeil(cascadeWidth, elementWidth);
 
     // Calculate total number of elements
@@ -3812,6 +3819,13 @@ public:
 
     // ========== FLATTEN THE MEMREF TO 1D ==========
     rewriter.setInsertionPoint(op);
+
+    // Check for non-trivial layouts that cannot be safely flattened.
+    // Only identity (default contiguous row-major) layouts are supported.
+    if (!memrefTy.getLayout().isIdentity())
+      return op->emitOpError("cascade channel requires contiguous row-major "
+                             "memref layout, got ")
+             << memrefTy;
 
     // Create reassociation indices to collapse all dims into one
     // e.g., for rank 3: [[0, 1, 2]]
@@ -3833,7 +3847,7 @@ public:
     // ========== UPDATE MEMREF OPERAND IN PLACE ==========
     // Find the memref operand index (after async dependencies and indices)
     // Operand layout: [async_dependencies..., indices..., src, ...]
-    int memrefOperandOffset = dyn_cast<air::AsyncOpInterface>(op.getOperation())
+    int memrefOperandOffset = cast<air::AsyncOpInterface>(op.getOperation())
                                   .getAsyncDependencies()
                                   .size() +
                               op.getIndices().size();
