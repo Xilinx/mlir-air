@@ -19,7 +19,7 @@ M ?= 256
 N ?= 1024
 
 # Input MLIR file (can be overridden)
-INPUT_MLIR ?= $(srcdir)/input_ir/4x1024_mul_inv_bf16mul.mlir
+INPUT_MLIR ?= $(srcdir)/input_ir/4x1024_mul_inv_bf16.mlir
 
 # Verbose mode (0 = minimal, 1 = enabled for pass logging and test output)
 VERBOSE ?= 0

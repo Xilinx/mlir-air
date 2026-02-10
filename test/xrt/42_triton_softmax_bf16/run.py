@@ -25,7 +25,8 @@ parser.add_argument(
     "--input-mlir",
     type=str,
     dest="input_mlir",
-    default=os.path.join(script_dir, "input_ir/original.mlir"),
+    # default=os.path.join(script_dir, "input_ir/original.mlir"),
+    default=os.path.join(script_dir, "input_ir/4x1024_mul_inv_bf16.mlir"),
     help="Input MLIR file path (default: input_ir/original.mlir)",
 )
 parser.add_argument(
@@ -46,7 +47,8 @@ parser.add_argument(
     "--N",
     type=int,
     dest="N",
-    default=256,
+    # default=256,
+    default=1024,
     help="N (reduction) dimension size",
 )
 parser.add_argument(
@@ -72,6 +74,14 @@ parser.add_argument(
     action="store_true",
     dest="debug_aircc",
     help="Enable debug mode in aircc to emit IR after each individual pass for fine-grained inspection",
+)
+parser.add_argument(
+    "--output-format",
+    type=str,
+    dest="output_format",
+    default="xclbin",
+    choices=["elf", "xclbin"],
+    help="Output format: 'xclbin' (default) or 'elf'",
 )
 args = parser.parse_args()
 
@@ -174,6 +184,8 @@ with air.ir.Context() as ctx, Location.unknown():
             verbose=args.verbose,
             debug_ir=args.debug_aircc,
             runtime_loop_tiling_sizes=[],
+            output_format=args.output_format,
+            instance_name="softmax_kernel",
         )
         module_function = backend.compile(air_module)
         backend.unload()
@@ -197,6 +209,8 @@ with air.ir.Context() as ctx, Location.unknown():
             runtime_loop_tiling_sizes=[],  # No tiling = single large DMA transfer
             verbose=args.verbose,
             debug_ir=args.debug_aircc,
+            output_format=args.output_format,
+            instance_name="softmax_kernel",
         )
         exit(
             runner.run_test(
