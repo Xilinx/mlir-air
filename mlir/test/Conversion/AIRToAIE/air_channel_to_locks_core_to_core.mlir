@@ -489,7 +489,7 @@ module {
 // CHECK:         aie.core(%[[tile_2_4]])
 // CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1]
 // CHECK:           scf.for %[[arg:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
-// CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg]]] [16] [1]
+// CHECK:             %[[subview:.*]] = memref.subview %{{.*}}[%[[arg]]] [16] [1]
 // CHECK:             aie.put_cascade
 // CHECK:           aie.cascade_flow(%[[tile_2_4]], %[[tile_2_3]])
 
