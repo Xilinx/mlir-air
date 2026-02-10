@@ -481,7 +481,148 @@ module {
 
 // -----
 
+// Test cascade flattening with 2D memref (32x64 = 2048 elements, same total as 1D test)
+// The memref is flattened to 1D before tiling for cascade transfer
+// CHECK: aie.device
+// CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK:         aie.core(%[[tile_2_4]])
+// CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1]
+// CHECK:           scf.for %[[arg:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
+// CHECK:             %[[subview:.*]] = memref.subview %{{.*}}[%[[arg]]] [16] [1]
+// CHECK:             aie.put_cascade
+// CHECK:           aie.cascade_flow(%[[tile_2_4]], %[[tile_2_3]])
+
+// Test 2D memref flattening for cascade
+#set_2d = affine_set<()[s0] : (s0 - 1 == 0)>
+module {
+  air.channel @cascade_2d [1] {channel_type = "cascade"}
+  func.func @cascade_2d_flatten(%arg0: memref<32x64xi32>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0) : memref<32x64xi32> attributes {id = 1 : i32} {
+      %c2 = arith.constant 2 : index
+      %c1_0 = arith.constant 1 : index
+      %1 = air.herd @herd_0 async tile (%arg8, %arg9) in (%arg10=%c1_0, %arg11=%c2) attributes {id = 2 : i32} {
+        %c1_i32 = arith.constant 1 : i32
+        %c1_1 = arith.constant 1 : index
+        %async_token, %results = air.execute -> (memref<32x64xi32, 2 : i32>) {
+          %alloc = memref.alloc() : memref<32x64xi32, 2 : i32>
+          air.execute_terminator %alloc : memref<32x64xi32, 2 : i32>
+        }
+        %async_token_2 = air.execute [%async_token] {
+          linalg.fill ins(%c1_i32 : i32) outs(%results : memref<32x64xi32, 2 : i32>)
+        }
+        %2 = affine.if #set_2d()[%arg9] -> !air.async.token {
+          %3 = arith.subi %arg9, %c1_1 : index
+          %4 = air.channel.put async [%async_token_2]  @cascade_2d[%3] (%results[] [] []) {id = 3 : i32} : (memref<32x64xi32, 2 : i32>)
+          affine.yield %4 : !air.async.token
+        } else {
+          %3 = air.channel.get async [%async_token_2]  @cascade_2d[%arg9] (%results[] [] []) {id = 4 : i32} : (memref<32x64xi32, 2 : i32>)
+          affine.yield %3 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Test cascade flattening with 4D memref (2x4x8x32 = 2048 elements)
+// The memref is flattened from 4D to 1D before tiling for cascade transfer
+// CHECK: aie.device
+// CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK:         aie.core(%[[tile_2_4]])
+// CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2, 3]
+// CHECK:           scf.for %[[arg:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
+// CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg]]] [16] [1]
+// CHECK:             aie.put_cascade
+// CHECK:           aie.cascade_flow(%[[tile_2_4]], %[[tile_2_3]])
+
+// Test 4D memref flattening for cascade
+#set_4d = affine_set<()[s0] : (s0 - 1 == 0)>
+module {
+  air.channel @cascade_4d [1] {channel_type = "cascade"}
+  func.func @cascade_4d_flatten(%arg0: memref<2x4x8x32xi32>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0) : memref<2x4x8x32xi32> attributes {id = 1 : i32} {
+      %c2 = arith.constant 2 : index
+      %c1_0 = arith.constant 1 : index
+      %1 = air.herd @herd_0 async tile (%arg8, %arg9) in (%arg10=%c1_0, %arg11=%c2) attributes {id = 2 : i32} {
+        %c1_i32 = arith.constant 1 : i32
+        %c1_1 = arith.constant 1 : index
+        %async_token, %results = air.execute -> (memref<2x4x8x32xi32, 2 : i32>) {
+          %alloc = memref.alloc() : memref<2x4x8x32xi32, 2 : i32>
+          air.execute_terminator %alloc : memref<2x4x8x32xi32, 2 : i32>
+        }
+        %async_token_2 = air.execute [%async_token] {
+          linalg.fill ins(%c1_i32 : i32) outs(%results : memref<2x4x8x32xi32, 2 : i32>)
+        }
+        %2 = affine.if #set_4d()[%arg9] -> !air.async.token {
+          %3 = arith.subi %arg9, %c1_1 : index
+          %4 = air.channel.put async [%async_token_2]  @cascade_4d[%3] (%results[] [] []) {id = 3 : i32} : (memref<2x4x8x32xi32, 2 : i32>)
+          affine.yield %4 : !air.async.token
+        } else {
+          %3 = air.channel.get async [%async_token_2]  @cascade_4d[%arg9] (%results[] [] []) {id = 4 : i32} : (memref<2x4x8x32xi32, 2 : i32>)
+          affine.yield %3 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Test cascade with bf16 element type (cascade width 512 bits = 32 bf16 elements per tile)
+// CHECK: aie.device
+// CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK:         aie.core(%[[tile_2_4]])
+// CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1]
+// CHECK:           scf.for %[[arg:.*]] = %c0{{.*}} to %c1024{{.*}} step %c32{{.*}} {
+// CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg]]] [32] [1]
+// CHECK:             aie.put_cascade
+// CHECK:           aie.cascade_flow(%[[tile_2_4]], %[[tile_2_3]])
+
+// Test bf16 cascade flattening (different tile size due to element width)
+#set_bf16 = affine_set<()[s0] : (s0 - 1 == 0)>
+module {
+  air.channel @cascade_bf16 [1] {channel_type = "cascade"}
+  func.func @cascade_bf16_flatten(%arg0: memref<32x32xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0) : memref<32x32xbf16> attributes {id = 1 : i32} {
+      %c2 = arith.constant 2 : index
+      %c1_0 = arith.constant 1 : index
+      %1 = air.herd @herd_0 async tile (%arg8, %arg9) in (%arg10=%c1_0, %arg11=%c2) attributes {id = 2 : i32} {
+        %cst = arith.constant 1.0 : bf16
+        %c1_1 = arith.constant 1 : index
+        %async_token, %results = air.execute -> (memref<32x32xbf16, 2>) {
+          %alloc = memref.alloc() : memref<32x32xbf16, 2>
+          air.execute_terminator %alloc : memref<32x32xbf16, 2>
+        }
+        %async_token_2 = air.execute [%async_token] {
+          linalg.fill ins(%cst : bf16) outs(%results : memref<32x32xbf16, 2>)
+        }
+        %2 = affine.if #set_bf16()[%arg9] -> !air.async.token {
+          %3 = arith.subi %arg9, %c1_1 : index
+          %4 = air.channel.put async [%async_token_2]  @cascade_bf16[%3] (%results[] [] []) {id = 3 : i32} : (memref<32x32xbf16, 2>)
+          affine.yield %4 : !air.async.token
+        } else {
+          %3 = air.channel.get async [%async_token_2]  @cascade_bf16[%arg9] (%results[] [] []) {id = 4 : i32} : (memref<32x32xbf16, 2>)
+          affine.yield %3 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
 // Core-to-core cascade flow; vectorizing channel.put/get with for loops, to fulfill the AIE cascade width requirment.
+// With pre-flattening: the memref is collapsed first, then tiled with a single 1D scf.for loop.
 // CHECK: aie.device
 // CHECK:         %[[tile_2_3:.*]] = aie.tile(2, 3)
 // CHECK:         %[[tile_2_4:.*]] = aie.tile(2, 4)
@@ -490,72 +631,48 @@ module {
 // CHECK:         aie.core(%[[tile_2_6]])
 // CHECK:           %[[CST:.*]] = arith.constant 0 : i32
 // CHECK:           linalg.add
-// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:        scf.for %[[arg1:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:          scf.for %[[arg2:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
-// CHECK-NEXT:            %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]], %[[arg1]], %[[arg2]]] [1, 1, 16] [1, 1, 1]
-// CHECK-NEXT:            %[[collapse_shape:.*]] = memref.collapse_shape %[[subview]] {{.*}}[0, 1, 2]
-// CHECK-NEXT:            %[[cascade_data:.*]] = vector.transfer_read %[[collapse_shape]][%c0{{.*}}], %[[CST]] {in_bounds = [true]}
-// CHECK-NEXT:            aie.put_cascade(%[[cascade_data]] : vector<16xi32>)
-// CHECK-NEXT:          }
-// CHECK-NEXT:        }
+// CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
+// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
+// CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]]] [16] [1]
+// CHECK:             %[[cascade_data:.*]] = vector.transfer_read %{{.*}}[%c0{{.*}}], %[[CST]] {in_bounds = [true]}
+// CHECK-NEXT:        aie.put_cascade(%[[cascade_data]] : vector<16xi32>)
 // CHECK-NEXT:      }
 // CHECK:         aie.core(%[[tile_2_5]])
 // CHECK:           %[[CST:.*]] = arith.constant 0 : i32
-// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:        scf.for %[[arg1:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:          scf.for %[[arg2:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
-// CHECK-NEXT:            %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]], %[[arg1]], %[[arg2]]] [1, 1, 16] [1, 1, 1]
-// CHECK-NEXT:            %[[cascade_data:.*]] = aie.get_cascade() : vector<16xi32>
-// CHECK-NEXT:            %[[collapse_shape:.*]] = memref.collapse_shape %[[subview]] {{.*}}[0, 1, 2]
-// CHECK-NEXT:            vector.transfer_write %[[cascade_data]], %[[collapse_shape]][%c0{{.*}}] {in_bounds = [true]}
-// CHECK-NEXT:          }
-// CHECK-NEXT:        }
+// CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
+// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
+// CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]]] [16] [1]
+// CHECK:             %[[cascade_data:.*]] = aie.get_cascade() : vector<16xi32>
+// CHECK-NEXT:        vector.transfer_write %[[cascade_data]], %{{.*}}[%c0{{.*}}] {in_bounds = [true]}
 // CHECK-NEXT:      }
 // CHECK:           linalg.add
-// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:        scf.for %[[arg1:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:          scf.for %[[arg2:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
-// CHECK-NEXT:            %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]], %[[arg1]], %[[arg2]]] [1, 1, 16] [1, 1, 1]
-// CHECK-NEXT:            %[[collapse_shape:.*]] = memref.collapse_shape %[[subview]] {{.*}}[0, 1, 2]
-// CHECK-NEXT:            %[[cascade_data:.*]] = vector.transfer_read %[[collapse_shape]][%c0{{.*}}], %[[CST]] {in_bounds = [true]}
-// CHECK-NEXT:            aie.put_cascade(%[[cascade_data]] : vector<16xi32>)
-// CHECK-NEXT:          }
-// CHECK-NEXT:        }
+// CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
+// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
+// CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]]] [16] [1]
+// CHECK:             %[[cascade_data:.*]] = vector.transfer_read %{{.*}}[%c0{{.*}}], %[[CST]] {in_bounds = [true]}
+// CHECK-NEXT:        aie.put_cascade(%[[cascade_data]] : vector<16xi32>)
 // CHECK-NEXT:      }
 // CHECK:         aie.core(%[[tile_2_4]])
 // CHECK:           %[[CST:.*]] = arith.constant 0 : i32
-// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:        scf.for %[[arg1:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:          scf.for %[[arg2:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
-// CHECK-NEXT:            %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]], %[[arg1]], %[[arg2]]] [1, 1, 16] [1, 1, 1]
-// CHECK-NEXT:            %[[cascade_data:.*]] = aie.get_cascade() : vector<16xi32>
-// CHECK-NEXT:            %[[collapse_shape:.*]] = memref.collapse_shape %[[subview]] {{.*}}[0, 1, 2]
-// CHECK-NEXT:            vector.transfer_write %[[cascade_data]], %[[collapse_shape]][%c0{{.*}}] {in_bounds = [true]}
-// CHECK-NEXT:          }
-// CHECK-NEXT:        }
+// CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
+// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
+// CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]]] [16] [1]
+// CHECK:             %[[cascade_data:.*]] = aie.get_cascade() : vector<16xi32>
+// CHECK-NEXT:        vector.transfer_write %[[cascade_data]], %{{.*}}[%c0{{.*}}] {in_bounds = [true]}
 // CHECK-NEXT:      }
 // CHECK:           linalg.add
-// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:        scf.for %[[arg1:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:          scf.for %[[arg2:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
-// CHECK-NEXT:            %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]], %[[arg1]], %[[arg2]]] [1, 1, 16] [1, 1, 1]
-// CHECK-NEXT:            %[[collapse_shape:.*]] = memref.collapse_shape %[[subview]] {{.*}}[0, 1, 2]
-// CHECK-NEXT:            %[[cascade_data:.*]] = vector.transfer_read %[[collapse_shape]][%c0{{.*}}], %[[CST]] {in_bounds = [true]}
-// CHECK-NEXT:            aie.put_cascade(%[[cascade_data]] : vector<16xi32>)
-// CHECK-NEXT:          }
-// CHECK-NEXT:        }
+// CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
+// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
+// CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]]] [16] [1]
+// CHECK:             %[[cascade_data:.*]] = vector.transfer_read %{{.*}}[%c0{{.*}}], %[[CST]] {in_bounds = [true]}
+// CHECK-NEXT:        aie.put_cascade(%[[cascade_data]] : vector<16xi32>)
 // CHECK-NEXT:      }
 // CHECK:         aie.core(%[[tile_2_3]])
-// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:        scf.for %[[arg1:.*]] = %c0{{.*}} to %c1{{.*}} step %c1{{.*}} {
-// CHECK-NEXT:          scf.for %[[arg2:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
-// CHECK-NEXT:            %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]], %[[arg1]], %[[arg2]]] [1, 1, 16] [1, 1, 1]
-// CHECK-NEXT:            %[[cascade_data:.*]] = aie.get_cascade() : vector<16xi32>
-// CHECK-NEXT:            %[[collapse_shape:.*]] = memref.collapse_shape %[[subview]] {{.*}}[0, 1, 2]
-// CHECK-NEXT:            vector.transfer_write %[[cascade_data]], %[[collapse_shape]][%c0{{.*}}] {in_bounds = [true]}
-// CHECK-NEXT:          }
-// CHECK-NEXT:        }
+// CHECK:           memref.collapse_shape %{{.*}} {{.*}}[0, 1, 2]
+// CHECK:           scf.for %[[arg0:.*]] = %c0{{.*}} to %c2048{{.*}} step %c16{{.*}} {
+// CHECK-NEXT:        %[[subview:.*]] = memref.subview %{{.*}}[%[[arg0]]] [16] [1]
+// CHECK:             %[[cascade_data:.*]] = aie.get_cascade() : vector<16xi32>
+// CHECK-NEXT:        vector.transfer_write %[[cascade_data]], %{{.*}}[%c0{{.*}}] {in_bounds = [true]}
 // CHECK-NEXT:      }
 // CHECK:           linalg.add
 
@@ -563,7 +680,7 @@ module {
 // CHECK:         aie.cascade_flow(%[[tile_2_5]], %[[tile_2_4]])
 // CHECK:         aie.cascade_flow(%[[tile_2_4]], %[[tile_2_3]])
 
-
+// Test pre-flattening with full memref (not pre-tiled in IR)
 #set = affine_set<()[s0] : (s0 - 3 == 0)>
 #set1 = affine_set<()[s0] : (s0 - 1 >= 0, -s0 + 2 >= 0)>
 module {

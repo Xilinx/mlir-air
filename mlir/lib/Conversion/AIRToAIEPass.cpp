@@ -3789,45 +3789,90 @@ public:
     if (chan.getChannelType().str() != "cascade")
       return op->emitOpError("channel_type is not cascade");
 
+    Location loc = op.getLoc();
     Value memref = op.getMemref();
     MemRefType memrefTy = cast<MemRefType>(memref.getType());
 
-    // Create the aie.get_cascade operation
+    // Calculate cascade tile size based on cascade width and element size
+    Type elemType = memrefTy.getElementType();
+    if (!isa<IntegerType, FloatType>(elemType))
+      return op->emitOpError("cascade channel requires integer or float "
+                             "element type, got ")
+             << elemType;
+    unsigned elementWidth = elemType.getIntOrFloatBitWidth();
+    if (elementWidth == 0)
+      return op->emitOpError("cascade channel element type has zero bit width");
+    int64_t cascadeTileSize = llvm::divideCeil(cascadeWidth, elementWidth);
+
+    // Calculate total number of elements
+    int64_t totalElements = 1;
+    for (int64_t dim : memrefTy.getShape()) {
+      if (ShapedType::isDynamic(dim))
+        return op->emitOpError("cascade channel requires static memref shape");
+      totalElements *= dim;
+    }
+
+    // If total elements is less than or equal to cascade tile size, no tiling
+    // needed
+    if (totalElements <= cascadeTileSize)
+      return op;
+
+    // ========== FLATTEN THE MEMREF TO 1D ==========
     rewriter.setInsertionPoint(op);
 
+    // Check for non-trivial layouts that cannot be safely flattened.
+    // Only identity (default contiguous row-major) layouts are supported.
+    if (!memrefTy.getLayout().isIdentity())
+      return op->emitOpError("cascade channel requires contiguous row-major "
+                             "memref layout, got ")
+             << memrefTy;
+
+    // Create reassociation indices to collapse all dims into one
+    // e.g., for rank 3: [[0, 1, 2]]
+    SmallVector<ReassociationIndices> reassociation;
+    ReassociationIndices allDims;
+    for (int64_t i = 0; i < memrefTy.getRank(); i++)
+      allDims.push_back(i);
+    reassociation.push_back(allDims);
+
+    // Create the collapsed (1D) memref type
+    MemRefType flatMemrefTy =
+        MemRefType::get({totalElements}, memrefTy.getElementType(),
+                        MemRefLayoutAttrInterface{}, memrefTy.getMemorySpace());
+
+    // Create memref.collapse_shape op
+    Value flatMemref = memref::CollapseShapeOp::create(
+        rewriter, loc, flatMemrefTy, memref, reassociation);
+
+    // ========== UPDATE MEMREF OPERAND IN PLACE ==========
+    // Find the memref operand index (after async dependencies and indices)
+    // Operand layout: [async_dependencies..., indices..., src, ...]
+    int memrefOperandOffset = cast<air::AsyncOpInterface>(op.getOperation())
+                                  .getAsyncDependencies()
+                                  .size() +
+                              op.getIndices().size();
+    op->setOperand(memrefOperandOffset, flatMemref);
+
+    // ========== TILE THE NOW-1D CHANNEL OP ==========
     scf::SCFTilingOptions options;
     options.setLoopType(scf::SCFTilingOptions::LoopType::ForOp);
 
-    SmallVector<int64_t> tileSizes;
-    unsigned innermostTileableDim = 0;
-    if (op.getSizes().empty()) {
-      for (auto dim : llvm::seq<int64_t>(0, memrefTy.getRank())) {
-        tileSizes.push_back(1);
-        if (memrefTy.getShape()[dim] > 1)
-          innermostTileableDim = dim;
-      }
-    } else {
-      for (auto dim : llvm::seq<int64_t>(0, op.getSizes().size())) {
-        tileSizes.push_back(1);
-        auto constSize = *getConstantIntValue(op.getSizes()[dim]);
-        if (constSize > 1)
-          innermostTileableDim = dim;
-      }
-    }
-    unsigned elementWidth = memrefTy.getElementType().getIntOrFloatBitWidth();
-    tileSizes[innermostTileableDim] =
-        llvm::divideCeil(cascadeWidth, elementWidth);
-    SmallVector<OpFoldResult> tileSizesOfr =
-        getAsIndexOpFoldResult(rewriter.getContext(), tileSizes);
+    // Tile the 1D memref with cascadeTileSize
+    SmallVector<OpFoldResult> tileSizesOfr = {
+        rewriter.getIndexAttr(cascadeTileSize)};
     options.setTileSizes(tileSizesOfr);
 
     if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation())) {
       FailureOr<scf::SCFTilingResult> tilingResult =
           scf::tileUsingSCF(rewriter, put, options);
+      if (failed(tilingResult))
+        return failure();
       return dyn_cast<air::ChannelInterface>(tilingResult->tiledOps.front());
     } else if (auto get = dyn_cast<air::ChannelGetOp>(op.getOperation())) {
       FailureOr<scf::SCFTilingResult> tilingResult =
           scf::tileUsingSCF(rewriter, get, options);
+      if (failed(tilingResult))
+        return failure();
       return dyn_cast<air::ChannelInterface>(tilingResult->tiledOps.front());
     }
     return failure();
