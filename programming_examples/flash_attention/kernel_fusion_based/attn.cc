@@ -245,7 +245,7 @@ void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
   // Buffer shape:
   // up: [lqp, 1] = [32, 1]
   // u: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 16;
+  constexpr int VecLen = 32;
   constexpr int num_elems = lqp;
   bfloat16 *__restrict pu = u;
   for (int i = 0; i < num_elems; i += VecLen) {
@@ -333,7 +333,7 @@ void mul_r_gp(bfloat16 *r, bfloat16 *gp) {
   // Gp: [lqp, dv] = [32, 64]
   // Layout: [8x4x8x8xbf16]
   // r: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 8;
+  constexpr int VecLen = 32;
   constexpr int num_elems = dv;
   constexpr int num_rows = lqp;
   aie::vector<bfloat16, VecLen> rVec;
@@ -375,7 +375,7 @@ void sum_g(bfloat16 *g, bfloat16 *s) {
   // G: [lqp, lkp] = [32, 96]
   // Layout: [12x4x8x8xbf16]
   // s: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 8;
+  constexpr int VecLen = 32;
   constexpr int num_elems = lkp;
   constexpr int num_rows = lqp;
   bfloat16 *__restrict ps = s;
@@ -445,7 +445,7 @@ void div_gp_sp(bfloat16 *sp, bfloat16 *gp) {
   // Gp: [lqp, dv] = [32, 64]
   // Layout: [8x4x8x8xbf16]
   // sp: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 8;
+  constexpr int VecLen = 32;
   constexpr int num_elems = dv;
   constexpr int num_rows = lqp;
   aie::vector<bfloat16, VecLen> spVec;
