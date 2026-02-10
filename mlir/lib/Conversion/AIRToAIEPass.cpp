@@ -216,6 +216,13 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
   // use the command line offsets unless the attribute is present
   int64_t col_offset = options.col_offset;
   int64_t row_offset = options.row_offset;
+
+  // For segment unroll, reset col_offset to 0 since each sub-device
+  // has its own column space starting from 0
+  if (aie_device->hasAttr("segment_unroll_x") ||
+      aie_device->hasAttr("segment_unroll_y")) {
+    col_offset = 0;
+  }
   auto col_name = air::HerdOp::getColOffsetAttrName();
   auto row_name = air::HerdOp::getRowOffsetAttrName();
   auto ctx = h->getContext();
@@ -336,6 +343,28 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
                                     core_builder, hloc, herd_size_x));
       remap.map(h.getSize()[1], arith::ConstantIndexOp::create(
                                     core_builder, hloc, herd_size_y));
+
+      // Map segment unroll IDs to constants if the herd is in an unrolled
+      // segment
+      if (auto seg = h->getParentOfType<air::SegmentOp>()) {
+        auto segIds = seg.getIds();
+        if (segIds.size() >= 2) {
+          // Get unroll indices from device attributes
+          int64_t unrollX = 0, unrollY = 0;
+          if (auto attr =
+                  aie_device->getAttrOfType<IntegerAttr>("segment_unroll_x"))
+            unrollX = attr.getInt();
+          if (auto attr =
+                  aie_device->getAttrOfType<IntegerAttr>("segment_unroll_y"))
+            unrollY = attr.getInt();
+
+          // Map segment unroll IDs to constants
+          remap.map(segIds[0], arith::ConstantIndexOp::create(core_builder,
+                                                              hloc, unrollX));
+          remap.map(segIds[1], arith::ConstantIndexOp::create(core_builder,
+                                                              hloc, unrollY));
+        }
+      }
 
       if (options.emit_herd_lock) {
         AIE::LockAction lockAction =
@@ -472,6 +501,97 @@ std::vector<AIE::TileOp> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
   return memtiles;
 }
 
+// Get segment unroll factors from air.segment's iteration space
+// Returns {unrollX, unrollY} where X is dim 0 and Y is dim 1
+// Note: AIE only supports column-wise device slicing, so unrollY should be 1.
+std::pair<int64_t, int64_t> getSegmentUnrollFactors(air::SegmentOp seg) {
+  int64_t unrollX = 1, unrollY = 1;
+  unsigned numDims = seg.getNumDims();
+  if (numDims > 0) {
+    auto sizeOperands = seg.getSizeOperands();
+    if (auto constOp =
+            sizeOperands[0].getDefiningOp<arith::ConstantIndexOp>()) {
+      unrollX = constOp.value();
+    } else if (auto constIntOp =
+                   sizeOperands[0].getDefiningOp<arith::ConstantOp>()) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constIntOp.getValue()))
+        unrollX = intAttr.getInt();
+    }
+    if (numDims > 1) {
+      if (auto constOp =
+              sizeOperands[1].getDefiningOp<arith::ConstantIndexOp>()) {
+        unrollY = constOp.value();
+      } else if (auto constIntOp =
+                     sizeOperands[1].getDefiningOp<arith::ConstantOp>()) {
+        if (auto intAttr = dyn_cast<IntegerAttr>(constIntOp.getValue()))
+          unrollY = intAttr.getInt();
+      }
+    }
+  }
+  return {unrollX, unrollY};
+}
+
+// Validate segment unroll factors for AIE lowering.
+// AIE only supports column-wise device slicing, so Y-dimension unrolling
+// (unrollY > 1) is not allowed.
+LogicalResult validateSegmentUnrollFactors(air::SegmentOp seg) {
+  auto [unrollX, unrollY] = getSegmentUnrollFactors(seg);
+  if (unrollY > 1) {
+    return seg.emitOpError(
+        "segment unroll Y-dimension (row-wise) is not supported. "
+        "AIE only supports column-wise device slicing. "
+        "Please set Y-dimension unroll factor to 1.");
+  }
+  return success();
+}
+
+// Map (original device, unroll factor) -> sub-device type for NPU2
+// Returns the appropriate sub-device type based on column count division
+AIE::AIEDevice computeSubDeviceType(AIE::AIEDevice origDevice,
+                                    int unrollFactor) {
+  // Only NPU2 family supports subdivision
+  switch (origDevice) {
+  case AIE::AIEDevice::npu2:
+    // npu2 has 8 columns
+    switch (unrollFactor) {
+    case 1:
+      return AIE::AIEDevice::npu2;
+    case 2:
+      return AIE::AIEDevice::npu2_4col;
+    case 4:
+      return AIE::AIEDevice::npu2_2col;
+    case 8:
+      return AIE::AIEDevice::npu2_1col;
+    default:
+      return origDevice;
+    }
+  case AIE::AIEDevice::npu2_4col:
+    // npu2_4col has 4 columns
+    switch (unrollFactor) {
+    case 1:
+      return AIE::AIEDevice::npu2_4col;
+    case 2:
+      return AIE::AIEDevice::npu2_2col;
+    case 4:
+      return AIE::AIEDevice::npu2_1col;
+    default:
+      return origDevice;
+    }
+  case AIE::AIEDevice::npu2_2col:
+    // npu2_2col has 2 columns
+    switch (unrollFactor) {
+    case 1:
+      return AIE::AIEDevice::npu2_2col;
+    case 2:
+      return AIE::AIEDevice::npu2_1col;
+    default:
+      return origDevice;
+    }
+  default:
+    return origDevice;
+  }
+}
+
 void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
                         air::SegmentOp seg,
                         AIRToAIEConversionOptions &options) {
@@ -480,6 +600,13 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
   int64_t seg_size_x = 1;
   if (auto num_cols = seg.getNumCols()) {
     seg_size_x = *num_cols;
+  }
+
+  // For segment unroll, divide by unroll factor since each sub-device gets
+  // a portion of the segment's columns
+  auto [unrollX, unrollY] = getSegmentUnrollFactors(seg);
+  if (unrollX > 1) {
+    seg_size_x = (seg_size_x + unrollX - 1) / unrollX; // ceiling division
   }
 
   seg.walk([&](air::ChannelInterface op) {
@@ -533,26 +660,64 @@ void createAIEModulesAndOutlineCores(
   });
 
   for (auto seg : segments) {
-    std::string segment_name;
-    if (auto attr =
-            seg->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-      segment_name = attr.getValue().str();
-    else
-      segment_name = "segment_" + std::to_string(aie_modules.size());
-    std::string aie_module_name = "aie." + segment_name;
-    auto builder = OpBuilder::atBlockBegin(module.getBody());
-    auto aie_dev = AIE::DeviceOp::create(
-        builder, module.getLoc(),
-        AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
-    aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
-                     StringAttr::get(builder.getContext(), segment_name));
-    setAIEDeviceDataLayout(builder, aie_dev);
-    AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
-                                    aie_dev.getLoc());
-    seg.walk([&](air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
-    // If the device has memtiles, then outline memtiles
-    if (aie_dev.getTargetModel().getNumMemTileRows()) {
-      outlineAIEMemtiles(builder, aie_dev, seg, options);
+    // Validate segment unroll factors - Y-dimension unrolling is not supported
+    if (failed(validateSegmentUnrollFactors(seg)))
+      return;
+
+    // Get segment unroll factors
+    auto [unrollX, unrollY] = getSegmentUnrollFactors(seg);
+    int64_t totalUnroll = unrollX * unrollY;
+
+    // Get the base device target model to compute sub-device type
+    AIE::AIEDevice baseDevice = options.device;
+    AIE::AIEDevice subDevice = computeSubDeviceType(baseDevice, totalUnroll);
+
+    // For each unroll iteration, create a separate aie.device
+    for (int64_t uy = 0; uy < unrollY; uy++) {
+      for (int64_t ux = 0; ux < unrollX; ux++) {
+        std::string segment_name;
+        if (auto attr = seg->getAttrOfType<StringAttr>(
+                SymbolTable::getSymbolAttrName()))
+          segment_name = attr.getValue().str();
+        else
+          segment_name = "segment_" + std::to_string(aie_modules.size());
+
+        // Append unroll indices to segment name if unrolling
+        if (totalUnroll > 1)
+          segment_name += "_" + std::to_string(ux) + "_" + std::to_string(uy);
+
+        std::string aie_module_name = "aie." + segment_name;
+        auto builder = OpBuilder::atBlockBegin(module.getBody());
+        auto aie_dev = AIE::DeviceOp::create(
+            builder, module.getLoc(),
+            AIE::AIEDeviceAttr::get(builder.getContext(), subDevice));
+        aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
+                         StringAttr::get(builder.getContext(), segment_name));
+        setAIEDeviceDataLayout(builder, aie_dev);
+        AIE::DeviceOp::ensureTerminator(aie_dev.getRegion(), builder,
+                                        aie_dev.getLoc());
+
+        // Create a modified options for this iteration
+        AIRToAIEConversionOptions iter_options = options;
+        iter_options.device = subDevice;
+        // For segment unroll, reset col_offset to 0 since each sub-device
+        // has its own column space starting from 0
+        if (totalUnroll > 1) {
+          iter_options.col_offset = 0;
+        }
+
+        // Store unroll indices as attributes on the device for later use
+        if (totalUnroll > 1) {
+          aie_dev->setAttr("segment_unroll_x", builder.getI64IntegerAttr(ux));
+          aie_dev->setAttr("segment_unroll_y", builder.getI64IntegerAttr(uy));
+        }
+
+        seg.walk([&](air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
+        // If the device has memtiles, then outline memtiles
+        if (aie_dev.getTargetModel().getNumMemTileRows()) {
+          outlineAIEMemtiles(builder, aie_dev, seg, iter_options);
+        }
+      }
     }
   };
 
@@ -2346,6 +2511,86 @@ public:
     builder.setInsertionPointAfter(t);
     IRMapping remap;
 
+    // Set up segment operand -> constant remapping for unrolled segments.
+    // This ensures channel ops outside the segment (at L3 level) that use
+    // segment indices get specialized to the correct unroll iteration.
+    if (auto unrollXAttr =
+            aie_device->getAttrOfType<IntegerAttr>("segment_unroll_x")) {
+      if (auto unrollYAttr =
+              aie_device->getAttrOfType<IntegerAttr>("segment_unroll_y")) {
+        int64_t unrollX = unrollXAttr.getInt();
+        int64_t unrollY = unrollYAttr.getInt();
+        // Find segments and map their size operands (iteration indices) to
+        // constants. The size operands are the SSA values (typically function
+        // arguments) that define the segment's iteration space.
+        for (auto func : module.getOps<func::FuncOp>()) {
+          func.walk([&](air::SegmentOp segOp) {
+            // Map segment IDs (block arguments inside segment)
+            auto segIds = segOp.getIds();
+            if (segIds.size() >= 2) {
+              remap.map(segIds[0],
+                        arith::ConstantIndexOp::create(
+                            builder, builder.getUnknownLoc(), unrollX));
+              remap.map(segIds[1],
+                        arith::ConstantIndexOp::create(
+                            builder, builder.getUnknownLoc(), unrollY));
+            }
+            auto sizeOperands = segOp.getSizeOperands();
+            if (sizeOperands.size() >= 2) {
+              remap.map(sizeOperands[0],
+                        arith::ConstantIndexOp::create(
+                            builder, builder.getUnknownLoc(), unrollX));
+              remap.map(sizeOperands[1],
+                        arith::ConstantIndexOp::create(
+                            builder, builder.getUnknownLoc(), unrollY));
+            }
+          });
+        }
+      }
+    }
+
+    // Pre-create AIE::ExternalBufferOp for any L3 memrefs that will be used
+    // by cloned ops. This is necessary because aie.device is an isolated-from-
+    // above region and cannot reference values defined outside it.
+    llvm::DenseSet<Value> l3MemrefsHandled;
+    for (auto func : module.getOps<func::FuncOp>()) {
+      func.walk([&](Operation *op) {
+        // Skip ops that won't be cloned
+        if (isa<air::LaunchOp, func::FuncOp, air::HerdOp>(op))
+          return WalkResult::advance();
+        if (isa<air::LaunchTerminatorOp, air::SegmentTerminatorOp,
+                func::ReturnOp, air::WaitAllOp>(op))
+          return WalkResult::advance();
+        // Filter by target launch
+        if (targetLaunch) {
+          auto parentLaunch = op->getParentOfType<air::LaunchOp>();
+          if (!parentLaunch || parentLaunch != targetLaunch)
+            return WalkResult::advance();
+        }
+        // Check for L3 memref operands
+        for (auto operand : op->getOperands()) {
+          auto memrefTy = dyn_cast<MemRefType>(operand.getType());
+          if (!memrefTy)
+            continue;
+          if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L3)
+            continue;
+          // Skip if already handled
+          if (l3MemrefsHandled.contains(operand))
+            continue;
+          l3MemrefsHandled.insert(operand);
+
+          // Create AIE::ExternalBufferOp for this L3 memref
+          std::string sym_name = createSymbolName(aie_device.getOperation(),
+                                                  "__air_external_buffer");
+          auto extBuf = AIE::ExternalBufferOp::create(
+              builder, builder.getUnknownLoc(), memrefTy,
+              builder.getStringAttr(sym_name), /*address=*/nullptr);
+          remap.map(operand, extBuf.getResult());
+        }
+        return WalkResult::advance();
+      });
+    }
+
     SmallVector<func::FuncOp> funcs;
     module.walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
         [&](func::FuncOp f) {
@@ -2362,7 +2607,7 @@ public:
             if (isa<air::HerdOp>(op))
               return WalkResult::skip();
             if (isa<air::LaunchTerminatorOp, air::SegmentTerminatorOp,
-                    func::ReturnOp>(op))
+                    func::ReturnOp, air::WaitAllOp>(op))
               return WalkResult::advance();
             bool hasParentSegmentOp = op->getParentOfType<air::SegmentOp>();
             if (!clone_l3 && !hasParentSegmentOp)
@@ -4268,6 +4513,16 @@ public:
     // Map test pattern strings to pipeline stages
     auto mapTestPatternToPipelineStage =
         [](StringRef testPattern) -> PipelineStage {
+      if (testPattern.contains("after-clone-memcpys"))
+        return PipelineStage::AfterCloneMemcpys;
+      if (testPattern.contains("after-lower-execute"))
+        return PipelineStage::AfterLowerExecute;
+      if (testPattern.contains("after-specialize-channel"))
+        return PipelineStage::AfterSpecializeChannel;
+      if (testPattern.contains("after-alloc-buffers"))
+        return PipelineStage::AfterAllocBuffers;
+      if (testPattern.contains("after-renumber-memcpy"))
+        return PipelineStage::AfterRenumberMemcpy;
       if (testPattern.contains("after-lower-memcpy"))
         return PipelineStage::AfterLowerAIRMemcpy;
       if (testPattern.contains("after-trace-packet-flow"))
