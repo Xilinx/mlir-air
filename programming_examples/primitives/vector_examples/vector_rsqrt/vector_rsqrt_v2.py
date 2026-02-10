@@ -175,6 +175,15 @@ if __name__ == "__main__":
         default="compile-and-run",
         help="Configure to whether to run after compile",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
+
     args = parser.parse_args()
 
     # Version 2 (scalar rsqrt in loop) is not supported on aie2
@@ -227,6 +236,8 @@ if __name__ == "__main__":
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            output_format=args.output_format,
+            instance_name="vector_rsqrt",
         )
         exit(
             runner.run_test(
@@ -242,6 +253,7 @@ if __name__ == "__main__":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            output_format=args.output_format,
         )
         module_function = backend.compile(mlir_module)
 

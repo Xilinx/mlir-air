@@ -19,6 +19,10 @@ MLIR_AIE_INSTALL_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 # Determine build dir based on whether PEANO_INSTALL_DIR is set
 ifdef PEANO_INSTALL_DIR
   BUILD_DIR := build_peano
+
+# Output format: xclbin (default) or elf
+OUTPUT_FORMAT ?= xclbin
+OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
   AIRCC_FLAGS := --no-xbridge --no-xchesscc
 else
   BUILD_DIR := build_chess
@@ -37,7 +41,7 @@ $(BUILD_DIR)/final.xclbin: $(BUILD_DIR)/air.mlir
 
 $(BUILD_DIR)/final.py.xclbin: $(BUILD_DIR)/air.mlir
 	mkdir -p ${@D}
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 build.py air.mlir
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && python3 build.py $(OUTPUT_FORMAT_FLAG) air.mlir
 
 ${targetname}.exe: ${srcdir}/test.cpp
 	@GPP=$$( \

@@ -161,6 +161,15 @@ if __name__ == "__main__":
         default=N,
         help="N dimension size in a (1xK) * (KxN) matmul",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+        help="Output format for the compiled binary (default: xclbin)",
+    )
+
     args = parser.parse_args()
 
     ###### Compile and test, param = 0
@@ -179,7 +188,11 @@ if __name__ == "__main__":
     inputs = np.arange(0, args.n, dtype=INPUT_DATATYPE).reshape(args.n)
     outputs = inputs * 100
 
-    runner = XRTRunner(verbose=args.verbose)
+    runner = XRTRunner(
+        verbose=args.verbose,
+        output_format=args.output_format,
+        instance_name="conditional_branch",
+    )
     res0 = runner.run_test(
         mlir_module,
         inputs=[inputs],
