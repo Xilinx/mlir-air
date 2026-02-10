@@ -25,7 +25,6 @@ parser.add_argument(
     "--input-mlir",
     type=str,
     dest="input_mlir",
-    # default=os.path.join(script_dir, "input_ir/original.mlir"),
     default=os.path.join(script_dir, "input_ir/4x1024_mul_inv_bf16.mlir"),
     help="Input MLIR file path (default: input_ir/original.mlir)",
 )
@@ -47,7 +46,6 @@ parser.add_argument(
     "--N",
     type=int,
     dest="N",
-    # default=256,
     default=1024,
     help="N (reduction) dimension size",
 )
