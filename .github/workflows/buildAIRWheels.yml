@@ -126,7 +126,7 @@ jobs:
               NO_RTTI_DOT=".no.rtti"
               MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti"
             else
-              MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-2/"
+              MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/"
             fi
             
             VERSION=$(utils/clone-llvm.sh --get-wheel-version)
