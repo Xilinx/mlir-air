@@ -37,6 +37,14 @@ parser.add_argument(
     default=128,
     help="N (reduction) dimension size",
 )
+parser.add_argument(
+    "--output-format",
+    type=str,
+    dest="output_format",
+    default="xclbin",
+    choices=["elf", "xclbin"],
+    help="Output format: 'xclbin' (default) or 'elf'",
+)
 args = parser.parse_args()
 
 
@@ -267,6 +275,8 @@ with air.ir.Context() as ctx, Location.unknown():
     ###### Compile and test
     runner = XRTRunner(
         omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="_layer_norm_fwd_fused",
     )
     exit(
         runner.run_test(
