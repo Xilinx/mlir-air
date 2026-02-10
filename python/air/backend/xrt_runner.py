@@ -75,6 +75,7 @@ class XRTRunner:
         xclbin_input: str = "",
         trace_file: str = "trace_data.txt",
         num_device_cols: int = 0,
+        debug_ir: bool = False,
     ):
         """
         Args:
@@ -98,6 +99,8 @@ class XRTRunner:
             num_device_cols: number of device columns to confine the design within (0 means entire device, default).
                 For npu1 (4 columns total): valid values are 0 (entire device), 1, 2, 3
                 For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
+            debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
+                IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -121,6 +124,7 @@ class XRTRunner:
         self.xclbin_input = xclbin_input
         self.trace_file = trace_file
         self.num_device_cols = num_device_cols
+        self.debug_ir = debug_ir
 
     def run_test(
         self,
@@ -164,6 +168,7 @@ class XRTRunner:
             kernel_id=self.kernel_id,
             xclbin_input=self.xclbin_input,
             num_device_cols=self.num_device_cols,
+            debug_ir=self.debug_ir,
         )
 
         # Use per-test trace file if provided, otherwise use instance default

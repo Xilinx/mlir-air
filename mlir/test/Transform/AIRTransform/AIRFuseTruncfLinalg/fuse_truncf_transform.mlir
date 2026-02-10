@@ -28,4 +28,17 @@ transform.sequence failures(propagate) {
   %producer3 = transform.structured.match ops{["linalg.generic"]} attributes{producer_mul} in %func3 : (!pdl.operation) -> !pdl.operation
   %truncf3 = transform.structured.match ops{["linalg.generic"]} attributes{truncf_bf16} in %func3 : (!pdl.operation) -> !pdl.operation
   %fused3 = transform.air.fuse_truncf_linalg %truncf3, %producer3
+
+  // Test case 4: Fuse truncf into mixed-precision matmul (bf16 inputs, f32 accumulator)
+  // This is the pattern from Triton matmul lowering
+  %func4 = transform.structured.match ops{["func.func"]} attributes{sym_name = "fuse_truncf_into_mixed_precision_matmul"} in %arg1 : (!pdl.operation) -> !pdl.operation
+  %producer4 = transform.structured.match ops{["linalg.matmul"]} in %func4 : (!pdl.operation) -> !pdl.operation
+  %truncf4 = transform.structured.match ops{["linalg.generic"]} attributes{truncf_mixed_matmul} in %func4 : (!pdl.operation) -> !pdl.operation
+  %fused4 = transform.air.fuse_truncf_linalg %truncf4, %producer4
+
+  // Test case 5: Fuse truncf with bufferization pattern
+  %func5 = transform.structured.match ops{["func.func"]} attributes{sym_name = "fuse_truncf_bufferized"} in %arg1 : (!pdl.operation) -> !pdl.operation
+  %producer5 = transform.structured.match ops{["linalg.matmul"]} in %func5 : (!pdl.operation) -> !pdl.operation
+  %truncf5 = transform.structured.match ops{["linalg.generic"]} attributes{truncf_bufferized} in %func5 : (!pdl.operation) -> !pdl.operation
+  %fused5 = transform.air.fuse_truncf_linalg %truncf5, %producer5
 }

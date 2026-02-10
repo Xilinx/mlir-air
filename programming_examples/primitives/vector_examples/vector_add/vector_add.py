@@ -224,9 +224,9 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
+    input_a = np.arange(0, args.n, dtype=np.int64)
     input_a = input_a.astype(INPUT_DATATYPE)
-    input_b = np.arange(0, args.n, dtype=np.int64).reshape(args.n)
+    input_b = np.arange(0, args.n, dtype=np.int64)
     input_b = input_b.astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
