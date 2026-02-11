@@ -4735,8 +4735,7 @@ public:
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ false,
             /*use_lock_race_cond_fix*/
-            device_options.use_lock_race_condition_fix,
-            targetLaunch);
+            device_options.use_lock_race_condition_fix, targetLaunch);
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
         lowerScfAirTokens(device);
@@ -4750,8 +4749,7 @@ public:
         cloneL2AndL3MemcpysToDeviceOp(
             builder, device, module, /*clone_l2*/ true, /*clone_l3*/ true,
             /*use_lock_race_cond_fix*/
-            device_options.use_lock_race_condition_fix,
-            targetLaunch);
+            device_options.use_lock_race_condition_fix, targetLaunch);
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
         lowerScfAirTokens(device);
