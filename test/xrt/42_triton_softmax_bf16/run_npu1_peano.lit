@@ -1,9 +1,10 @@
-// (c) Copyright 2025 Advanced Micro Devices, Inc.
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
 // REQUIRES: ryzen_ai_npu1, peano
-// RUN: mkdir -p test_npu1_peano
-// RUN: cd test_npu1_peano
-// RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
-// RUN: %PEANO_INSTALL_DIR/bin/clang++ --target=aie2-none-unknown-elf %peano_flags -c %S/extern_func.cc -o extern_func.o
-// RUN: %python %S/run.py --transform-script %S/transform_aie2.mlir
+
+// RUN: make -f %S/Makefile run TARGET=npu1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS!
+
+// RUN: make -f %S/Makefile profile TARGET=npu1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=PROFILE
+// PROFILE: Avg NPU softmax time
