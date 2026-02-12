@@ -896,6 +896,43 @@ are lowered to loops using `linalg::LinalgLoweringPattern`.
 The transforms are biased toward aie.core regions and are intended
 to be run after the air-to-aie pass.
 
+### `-air-merge-unrolled-devices`
+
+_Merge unrolled segment devices back into a single device_
+
+This pass merges multiple aie.device operations that were created from
+segment unrolling back into a single aie.device. The tiles from each
+source device are offset horizontally based on their unroll index.
+
+The pass identifies related devices using the naming convention
+`{segment_name}_{unroll_x}_{unroll_y}` and the `segment_unroll_x/y`
+attributes, then:
+
+1. Computes the bounding box width of each source device based on device type
+2. Creates a merged device with the computed full device type
+3. Clones all ops, offsetting tile columns by (unroll_x * width)
+4. Merges the airrt.segment_metadata entries
+5. Removes the original unrolled device ops
+
+Example:
+
+Input:
+```mlir
+aie.device(npu2_4col) @segment_with_unroll_0_0 { ... tile(0,2) ... }
+aie.device(npu2_4col) @segment_with_unroll_1_0 { ... tile(0,2) ... }
+```
+
+Output:
+```mlir
+aie.device(npu2) @segment_with_unroll {
+  // From segment_with_unroll_0_0 (no offset)
+  %tile_0_2 = aie.tile(0, 2)  
+  // From segment_with_unroll_1_0 (offset by 4 columns)
+  %tile_4_2 = aie.tile(4, 2)
+  ...
+}
+```
+
 ### `-air-opt-memtile-dma-bds`
 
 _Optimize logical air.channel.put/get op into efficient AIE memtile dma block descriptor (BD)_
