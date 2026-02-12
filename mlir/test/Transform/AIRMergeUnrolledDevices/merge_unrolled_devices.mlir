@@ -7,6 +7,7 @@
 
 // RUN: air-opt %s -air-merge-unrolled-devices | FileCheck %s
 
+// Test 1: Basic device merging - verify devices are merged and tiles are offset
 // CHECK-LABEL: module
 // CHECK: aie.device(npu2) @segment_with_unroll
 // CHECK-NOT: aie.device(npu2_4col) @segment_with_unroll_0_0
@@ -15,6 +16,30 @@
 // CHECK-DAG: aie.tile(0, 2)
 // CHECK-DAG: aie.tile(4, 0)
 // CHECK-DAG: aie.tile(4, 2)
+
+// Test 2: Verify that symbol names are made unique with _unroll_N suffix
+// (except ShimDMAAllocationOp which already contains unroll coordinates)
+// CHECK-DAG: aie.buffer({{.*}}) {sym_name = "buf1_0_unroll_0"}
+// CHECK-DAG: aie.buffer({{.*}}) {sym_name = "buf0_0_unroll_0"}
+// CHECK-DAG: aie.buffer({{.*}}) {sym_name = "buf3_1_unroll_1"}
+// CHECK-DAG: aie.buffer({{.*}}) {sym_name = "buf2_1_unroll_1"}
+
+// Test 3: Verify air.channel symbols are renamed with _unroll_N suffix
+// CHECK-DAG: air.channel @channel_2_unroll_0
+// CHECK-DAG: air.channel @channel_0_unroll_0
+// CHECK-DAG: air.channel @channel_3_unroll_1
+// CHECK-DAG: air.channel @channel_1_unroll_1
+
+// Test 4: Verify ShimDMAAllocationOp names are NOT renamed (they already have unique suffixes)
+// CHECK-DAG: aie.shim_dma_allocation @air_ChanOut_0
+// CHECK-DAG: aie.shim_dma_allocation @air_ChanIn_0
+// CHECK-DAG: aie.shim_dma_allocation @air_ChanOut_1
+// CHECK-DAG: aie.shim_dma_allocation @air_ChanIn_1
+
+// Test 5: Verify airrt.segment_metadata is merged
+// CHECK: airrt.segment_metadata attributes {{{.*}}sym_name = "segment_with_unroll"}
+// CHECK-NOT: airrt.segment_metadata attributes {{{.*}}sym_name = "segment_with_unroll_0_0"}
+// CHECK-NOT: airrt.segment_metadata attributes {{{.*}}sym_name = "segment_with_unroll_1_0"}
 
 #loop_annotation = #llvm.loop_annotation<mustProgress = true>
 module {
