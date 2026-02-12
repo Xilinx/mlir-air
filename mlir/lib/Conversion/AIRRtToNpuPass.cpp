@@ -540,8 +540,15 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
     // Get the segment_name attribute and look up the device early
     auto segmentName = op->getAttrOfType<StringAttr>("segment_name");
     AIE::DeviceOp device = nullptr;
-    if (segmentName)
+    if (segmentName) {
       device = getDeviceByName(module, segmentName);
+      if (!device) {
+        rewriter.notifyMatchFailure(
+            op, "segment_name attribute is set, but no matching AIE device "
+                "was found in the module");
+        return failure();
+      }
+    }
 
     // for each herd core, emit write_rtp ops for every herd operand
     // followed by a write32 to the herd lock, setting it to 1.
