@@ -537,24 +537,37 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
       return failure();
     }
 
+    // Get the segment_name attribute and look up the device early
+    auto segmentName = op->getAttrOfType<StringAttr>("segment_name");
+    AIE::DeviceOp device = nullptr;
+    if (segmentName)
+      device = getDeviceByName(module, segmentName);
+
     // for each herd core, emit write_rtp ops for every herd operand
     // followed by a write32 to the herd lock, setting it to 1.
     for (int phys_x = loc_x; phys_x < size_x + loc_x; phys_x++) {
       for (int phys_y = loc_y; phys_y < size_y + loc_y; phys_y++) {
 
-        for (int i = 0, e = op.getNumOperands(); i < e; i++) {
-          Value oper = adaptor.getOperands()[i];
-          if (!llvm::isa<IntegerType, IndexType, FloatType>(oper.getType()))
-            continue;
+        std::string name = "__air_herd_rtp_" + std::to_string(phys_x) + "_" +
+                           std::to_string(phys_y);
 
-          std::string name = "__air_herd_rtp_" + std::to_string(phys_x) + "_" +
-                             std::to_string(phys_y);
-          auto constOp =
-              dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
-          if (!constOp)
-            continue;
-          uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
-          AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, i, v);
+        // Only generate RTP writes if the RTP buffer was actually created.
+        bool rtpBufferExists =
+            device && device.lookupSymbol<AIE::BufferOp>(name);
+
+        if (rtpBufferExists) {
+          for (int i = 0, e = op.getNumOperands(); i < e; i++) {
+            Value oper = adaptor.getOperands()[i];
+            if (!llvm::isa<IntegerType, IndexType, FloatType>(oper.getType()))
+              continue;
+
+            auto constOp =
+                dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
+            if (!constOp)
+              continue;
+            uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
+            AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, i, v);
+          }
         }
         // FIXME: this should depend on the metadata to enable and to get the id
         if (!op.getNumOperands())
