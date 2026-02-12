@@ -1886,10 +1886,14 @@ void removeOrphanedChannels(AIE::DeviceOp &d) {
   IRMapping remap;
   for (auto op : opsToRemove) {
     if (air::isAsyncOp(op)) {
-      builder.setInsertionPoint(op);
-      auto waitAll = air::replaceAsyncOpWithWaitAll(builder, remap, op,
-                                                    /*cloneDepList=*/true);
-      air::getAsyncTokenFromOp(op).replaceAllUsesWith(waitAll.getAsyncToken());
+      auto asyncToken = air::getAsyncTokenFromOp(op);
+      // Only materialize a wait_all if the async token has uses to preserve.
+      if (asyncToken && !asyncToken.use_empty()) {
+        builder.setInsertionPoint(op);
+        auto waitAll = air::replaceAsyncOpWithWaitAll(builder, remap, op,
+                                                      /*cloneDepList=*/true);
+        asyncToken.replaceAllUsesWith(waitAll.getAsyncToken());
+      }
     }
     op->erase();
   }
