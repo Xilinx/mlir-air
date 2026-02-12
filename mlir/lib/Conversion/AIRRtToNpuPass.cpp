@@ -543,10 +543,9 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
     if (segmentName) {
       device = getDeviceByName(module, segmentName);
       if (!device) {
-        rewriter.notifyMatchFailure(
+        return rewriter.notifyMatchFailure(
             op, "segment_name attribute is set, but no matching AIE device "
                 "was found in the module");
-        return failure();
       }
     }
 
