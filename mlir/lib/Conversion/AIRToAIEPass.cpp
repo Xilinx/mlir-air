@@ -261,9 +261,25 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
           core->setAttr("link_with", a);
       }
 
+      // Collect IDs from all parent hierarchy ops (Launch, Segment, etc.).
+      // These values become compile-time constants and don't need RTP slots.
+      llvm::SmallDenseSet<Value> hierarchyIdSet;
+      for (auto *parentOp = h->getParentOp(); parentOp;
+           parentOp = parentOp->getParentOp()) {
+        if (auto hierarchy = dyn_cast<air::HierarchyInterface>(parentOp)) {
+          for (auto id : hierarchy.getIds())
+            hierarchyIdSet.insert(id);
+        }
+      }
+
       int64_t rtp_buffer_size = 0; // size in i32s
       for (unsigned ki = 0, ke = h.getNumKernelOperands(); ki < ke; ki++) {
         BlockArgument karg = h.getKernelArgument(ki);
+        Value koperand = h.getKernelOperand(ki);
+        // Skip operands that come from parent hierarchy IDs (they become
+        // compile-time constants, not runtime parameters)
+        if (hierarchyIdSet.contains(koperand))
+          continue;
         // each one gets 32-bits in the rtp buffer
         if (llvm::isa<IntegerType, IndexType, FloatType>(karg.getType()))
           rtp_buffer_size++;
@@ -3489,7 +3505,17 @@ public:
       for (air::allocation_info_t &t : shimChanSymbolToAlloc[dma_name]) {
         auto deviceOp = t.getDmaTile()->getParentOfType<AIE::DeviceOp>();
         // Create shim allocation symbol name shim_name_attr.
+        // When segment unroll is active, append unroll indices to ensure
+        // unique symbol names across devices.
         std::string shim_name = dma_name;
+        if (auto unrollXAttr =
+                deviceOp->getAttrOfType<IntegerAttr>("segment_unroll_x")) {
+          shim_name += "_" + std::to_string(unrollXAttr.getInt());
+        }
+        if (auto unrollYAttr =
+                deviceOp->getAttrOfType<IntegerAttr>("segment_unroll_y")) {
+          shim_name += "_" + std::to_string(unrollYAttr.getInt());
+        }
         if (shimChanSymbolToAlloc[dma_name].size() > 1)
           shim_name += "_" + std::to_string(t_idx);
         StringAttr shim_name_attr = builder.getStringAttr(shim_name);

@@ -1576,4 +1576,43 @@ def AIRHerdVectorizePass : Pass<"air-herd-vectorize", "func::FuncOp"> {
   ];
 }
 
+def AIRMergeUnrolledDevices : Pass<"air-merge-unrolled-devices", "ModuleOp"> {
+  let summary = "Merge unrolled segment devices back into a single device";
+  let constructor = "xilinx::air::createAIRMergeUnrolledDevicesPass()";
+  let description = [{
+    This pass merges multiple aie.device operations that were created from
+    segment unrolling back into a single aie.device. The tiles from each
+    source device are offset horizontally based on their unroll index.
+    
+    The pass identifies related devices using the naming convention
+    `{segment_name}_{unroll_x}_{unroll_y}` and the `segment_unroll_x/y`
+    attributes, then:
+    
+    1. Computes the bounding box width of each source device based on device type
+    2. Creates a merged device with the computed full device type
+    3. Clones all ops, offsetting tile columns by (unroll_x * width)
+    4. Merges the airrt.segment_metadata entries
+    5. Removes the original unrolled device ops
+    
+    Example:
+    
+    Input:
+    ```mlir
+    aie.device(npu2_4col) @segment_with_unroll_0_0 { ... tile(0,2) ... }
+    aie.device(npu2_4col) @segment_with_unroll_1_0 { ... tile(0,2) ... }
+    ```
+    
+    Output:
+    ```mlir
+    aie.device(npu2) @segment_with_unroll {
+      // From segment_with_unroll_0_0 (no offset)
+      %tile_0_2 = aie.tile(0, 2)  
+      // From segment_with_unroll_1_0 (offset by 4 columns)
+      %tile_4_2 = aie.tile(4, 2)
+      ...
+    }
+    ```
+  }];
+}
+
 #endif // AIR_CONVERSION_PASSES
