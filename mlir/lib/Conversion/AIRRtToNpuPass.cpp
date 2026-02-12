@@ -559,8 +559,18 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
                            std::to_string(phys_y);
 
         // Only generate RTP writes if the RTP buffer was actually created.
-        bool rtpBufferExists =
-            device && device.lookupSymbol<AIE::BufferOp>(name);
+        bool rtpBufferExists = false;
+        if (device) {
+          rtpBufferExists = static_cast<bool>(
+              device.lookupSymbol<AIE::BufferOp>(name));
+        } else {
+          // Fallback for IR without segment_name: search all AIE::DeviceOp's.
+          module.walk([&](AIE::DeviceOp d) {
+            if (!rtpBufferExists &&
+                d.lookupSymbol<AIE::BufferOp>(name))
+              rtpBufferExists = true;
+          });
+        }
 
         if (rtpBufferExists) {
           for (int i = 0, e = op.getNumOperands(); i < e; i++) {
