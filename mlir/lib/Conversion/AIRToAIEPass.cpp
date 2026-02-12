@@ -3510,11 +3510,11 @@ public:
         std::string shim_name = dma_name;
         if (auto unrollXAttr =
                 deviceOp->getAttrOfType<IntegerAttr>("segment_unroll_x")) {
-          if (auto unrollYAttr =
-                  deviceOp->getAttrOfType<IntegerAttr>("segment_unroll_y")) {
-            shim_name += "_" + std::to_string(unrollXAttr.getInt()) + "_" +
-                         std::to_string(unrollYAttr.getInt());
-          }
+          shim_name += "_" + std::to_string(unrollXAttr.getInt());
+        }
+        if (auto unrollYAttr =
+                deviceOp->getAttrOfType<IntegerAttr>("segment_unroll_y")) {
+          shim_name += "_" + std::to_string(unrollYAttr.getInt());
         }
         if (shimChanSymbolToAlloc[dma_name].size() > 1)
           shim_name += "_" + std::to_string(t_idx);
