@@ -1863,7 +1863,7 @@ void specializeChannelBundle(
 // An orphaned channel is one that has puts but no gets, or gets but no puts.
 // This happens when cloning L3 ops to all devices, but each device only
 // using a subset of them.
-void removeOrphanedChannels(AIE::DeviceOp &d) {
+static void removeOrphanedChannels(AIE::DeviceOp &d) {
   SmallVector<air::ChannelOp> channelsToRemove;
   SmallVector<Operation *> opsToRemove;
 
