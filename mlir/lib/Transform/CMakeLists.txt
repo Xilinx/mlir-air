@@ -17,6 +17,7 @@ add_mlir_library(
   AIRLinalgCodegen.cpp
   AIRLinalgOpStats.cpp
   AIRLoopMergingPass.cpp
+  AIRMergeUnrolledDevicesPass.cpp
   AIRLoopPermutationPass.cpp
   AIRLowerLinalgTensors.cpp
   AIRMiscPasses.cpp
@@ -37,6 +38,7 @@ add_mlir_library(
   Core
 
   LINK_LIBS PUBLIC
+  AIE
   AIRDialect
   AIRRtDialect
   AIRUtil
