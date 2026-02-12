@@ -82,12 +82,16 @@ module {
 // Verify channel_0 is present and channel_1 is NOT present (orphaned)
 // FULL:         air.channel @channel_0
 // FULL-NOT:     air.channel @channel_1
+// Verify unique shim DMA allocation name with unroll indices
+// FULL:         aie.shim_dma_allocation @air_channel_orphan_0_0
 // FULL:       segment_unroll_x = 0 : i64
 
 // FULL-LABEL: aie.device{{.*}}@segment_orphan_1_0
 // Verify channel_1 is present and channel_0 is NOT present (orphaned)
 // FULL:         air.channel @channel_1
 // FULL-NOT:     air.channel @channel_0
+// Verify unique shim DMA allocation name with unroll indices
+// FULL:         aie.shim_dma_allocation @air_channel_orphan_1_0
 // FULL:       segment_unroll_x = 1 : i64
 
 module {
