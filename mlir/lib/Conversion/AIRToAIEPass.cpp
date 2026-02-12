@@ -711,6 +711,9 @@ void createAIEModulesAndOutlineCores(
     AIE::AIEDevice baseDevice = options.device;
     AIE::AIEDevice subDevice = computeSubDeviceType(baseDevice, totalUnroll);
 
+    // Track the last created device op to maintain correct ordering
+    AIE::DeviceOp lastDeviceOp = nullptr;
+
     // For each unroll iteration, create a separate aie.device
     for (int64_t uy = 0; uy < unrollY; uy++) {
       for (int64_t ux = 0; ux < unrollX; ux++) {
@@ -726,10 +729,17 @@ void createAIEModulesAndOutlineCores(
           segment_name += "_" + std::to_string(ux) + "_" + std::to_string(uy);
 
         std::string aie_module_name = "aie." + segment_name;
-        auto builder = OpBuilder::atBlockBegin(module.getBody());
+        OpBuilder builder(module.getContext());
+        // Insert after the last device to maintain iteration order (0_0, 1_0,
+        // etc.)
+        if (lastDeviceOp)
+          builder.setInsertionPointAfter(lastDeviceOp);
+        else
+          builder.setInsertionPointToStart(module.getBody());
         auto aie_dev = AIE::DeviceOp::create(
             builder, module.getLoc(),
             AIE::AIEDeviceAttr::get(builder.getContext(), subDevice));
+        lastDeviceOp = aie_dev;
         aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                          StringAttr::get(builder.getContext(), segment_name));
         setAIEDeviceDataLayout(builder, aie_dev);

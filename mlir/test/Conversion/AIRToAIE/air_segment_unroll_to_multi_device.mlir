@@ -15,19 +15,19 @@
 // - segment_2x1_0_0 with segment_unroll_x = 0, contains aie.core at tile(0, 2)
 // - segment_2x1_1_0 with segment_unroll_x = 1, contains aie.core at tile(0, 2)
 
-// First unrolled device: segment_2x1_1_0 with unroll_x = 1
-// CHECK-LABEL: aie.device{{.*}}@segment_2x1_1_0
-// CHECK:         aie.tile(0, 2)
-// CHECK:         aie.core
-// CHECK:       segment_unroll_x = 1 : i64
-// FULL-LABEL: aie.device{{.*}}@segment_2x1_1_0
-
-// Second unrolled device: segment_2x1_0_0 with unroll_x = 0  
+// First unrolled device: segment_2x1_0_0 with unroll_x = 0
 // CHECK-LABEL: aie.device{{.*}}@segment_2x1_0_0
 // CHECK:         aie.tile(0, 2)
 // CHECK:         aie.core
 // CHECK:       segment_unroll_x = 0 : i64
 // FULL-LABEL: aie.device{{.*}}@segment_2x1_0_0
+
+// Second unrolled device: segment_2x1_1_0 with unroll_x = 1
+// CHECK-LABEL: aie.device{{.*}}@segment_2x1_1_0
+// CHECK:         aie.tile(0, 2)
+// CHECK:         aie.core
+// CHECK:       segment_unroll_x = 1 : i64
+// FULL-LABEL: aie.device{{.*}}@segment_2x1_1_0
 
 module {
   // Channel with [2, 1] dimensions to match the 2x1 segment unroll factor
@@ -78,17 +78,17 @@ module {
 // (puts without matching gets, or gets without matching puts) are removed.
 
 // Test for orphaned channel removal (using full pass via FULL prefix)
-// FULL-LABEL: aie.device{{.*}}@segment_orphan_1_0
-// Verify channel_1 is present and channel_0 is NOT present (orphaned)
-// FULL:         air.channel @channel_1
-// FULL-NOT:     air.channel @channel_0
-// FULL:       segment_unroll_x = 1 : i64
-
 // FULL-LABEL: aie.device{{.*}}@segment_orphan_0_0
 // Verify channel_0 is present and channel_1 is NOT present (orphaned)
 // FULL:         air.channel @channel_0
 // FULL-NOT:     air.channel @channel_1
 // FULL:       segment_unroll_x = 0 : i64
+
+// FULL-LABEL: aie.device{{.*}}@segment_orphan_1_0
+// Verify channel_1 is present and channel_0 is NOT present (orphaned)
+// FULL:         air.channel @channel_1
+// FULL-NOT:     air.channel @channel_0
+// FULL:       segment_unroll_x = 1 : i64
 
 module {
   // Channel bundle [2, 1] will be specialized to @channel_0 and @channel_1
