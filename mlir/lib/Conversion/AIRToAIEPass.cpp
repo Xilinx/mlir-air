@@ -380,6 +380,16 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       for (unsigned ki = 0, ke = h.getNumKernelOperands(); ki < ke; ki++) {
         BlockArgument karg = h.getKernelArgument(ki);
 
+        // If the kernel operand is already mapped (e.g., segment unroll ID),
+        // use the mapped constant value instead of RTP load. This ensures that
+        // segment unroll IDs passed as herd kernel arguments become
+        // compile-time constants in the outlined cores.
+        Value koperand = h.getKernelOperand(ki);
+        if (remap.contains(koperand)) {
+          remap.map(karg, remap.lookup(koperand));
+          continue;
+        }
+
         // Remap the kernel operands to the rtp buffer.
         // For each kernel operand of a supported type, load the data from the
         // rtp buffer and remap uses of the kernel operand to the loaded value.
@@ -701,6 +711,9 @@ void createAIEModulesAndOutlineCores(
     AIE::AIEDevice baseDevice = options.device;
     AIE::AIEDevice subDevice = computeSubDeviceType(baseDevice, totalUnroll);
 
+    // Track the last created device op to maintain correct ordering
+    AIE::DeviceOp lastDeviceOp = nullptr;
+
     // For each unroll iteration, create a separate aie.device
     for (int64_t uy = 0; uy < unrollY; uy++) {
       for (int64_t ux = 0; ux < unrollX; ux++) {
@@ -716,10 +729,17 @@ void createAIEModulesAndOutlineCores(
           segment_name += "_" + std::to_string(ux) + "_" + std::to_string(uy);
 
         std::string aie_module_name = "aie." + segment_name;
-        auto builder = OpBuilder::atBlockBegin(module.getBody());
+        OpBuilder builder(module.getContext());
+        // Insert after the last device to maintain iteration order (0_0, 1_0,
+        // etc.)
+        if (lastDeviceOp)
+          builder.setInsertionPointAfter(lastDeviceOp);
+        else
+          builder.setInsertionPointToStart(module.getBody());
         auto aie_dev = AIE::DeviceOp::create(
             builder, module.getLoc(),
             AIE::AIEDeviceAttr::get(builder.getContext(), subDevice));
+        lastDeviceOp = aie_dev;
         aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                          StringAttr::get(builder.getContext(), segment_name));
         setAIEDeviceDataLayout(builder, aie_dev);
@@ -1849,6 +1869,49 @@ void specializeChannelBundle(
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
+// Remove orphaned specialized channels after specializeChannelBundle.
+// An orphaned channel is one that has puts but no gets, or gets but no puts.
+// This happens when cloning L3 ops to all devices, but each device only
+// using a subset of them.
+static void removeOrphanedChannels(AIE::DeviceOp &d) {
+  SmallVector<air::ChannelOp> channelsToRemove;
+  SmallVector<Operation *> opsToRemove;
+
+  for (auto channel : d.getOps<air::ChannelOp>()) {
+    auto puts = getChannelPutOpThroughSymbol(channel, d);
+    auto gets = getChannelGetOpThroughSymbol(channel, d);
+
+    // Orphaned: has puts but no gets, or has gets but no puts
+    if ((puts.empty() && !gets.empty()) || (!puts.empty() && gets.empty())) {
+      channelsToRemove.push_back(channel);
+      for (auto put : puts)
+        opsToRemove.push_back(put);
+      for (auto get : gets)
+        opsToRemove.push_back(get);
+    }
+  }
+
+  // Replace uses of async tokens before erasing orphaned put/get ops
+  OpBuilder builder(d.getContext());
+  IRMapping remap;
+  for (auto op : opsToRemove) {
+    if (air::isAsyncOp(op)) {
+      auto asyncToken = air::getAsyncTokenFromOp(op);
+      // Only materialize a wait_all if the async token has uses to preserve.
+      if (asyncToken && !asyncToken.use_empty()) {
+        builder.setInsertionPoint(op);
+        auto waitAll = air::replaceAsyncOpWithWaitAll(builder, remap, op,
+                                                      /*cloneDepList=*/true);
+        asyncToken.replaceAllUsesWith(waitAll.getAsyncToken());
+      }
+    }
+    op->erase();
+  }
+  // Then erase orphaned channel declarations
+  for (auto channel : channelsToRemove)
+    channel->erase();
+}
+
 struct LowerAIRPingPongPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -2083,6 +2146,13 @@ public:
 
     // Stage: Specialize channel bundle
     specializeChannelBundle(device, chan_to_chan_map);
+    // Remove orphaned channels that have puts but no gets (or vice versa).
+    // This cleans up channels cloned from L3 that don't match any channel
+    // in this device's segment unroll iteration.
+    // Only run this when segment unroll is active.
+    if (device->hasAttr("segment_unroll_x") ||
+        device->hasAttr("segment_unroll_y"))
+      removeOrphanedChannels(device);
     if (stopAfter == PipelineStage::AfterSpecializeChannel)
       return success();
 
@@ -4740,6 +4810,10 @@ public:
         lowerAirExecute(device);
         lowerScfAirTokens(device);
         specializeChannelBundle(device, chan_to_chan_map);
+        // Only remove orphaned channels when segment unroll is active
+        if (device->hasAttr("segment_unroll_x") ||
+            device->hasAttr("segment_unroll_y"))
+          removeOrphanedChannels(device);
         air::renumberMemcpyIfOps(&device.getRegion());
         LowerAIRPingPong(device);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
@@ -4754,6 +4828,10 @@ public:
         lowerAirExecute(device);
         lowerScfAirTokens(device);
         specializeChannelBundle(device, chan_to_chan_map);
+        // Only remove orphaned channels when segment unroll is active
+        if (device->hasAttr("segment_unroll_x") ||
+            device->hasAttr("segment_unroll_y"))
+          removeOrphanedChannels(device);
         specializeL2MemrefsIntoMemtiles(device);
         allocL1Buffers(device, tileToHerdMap, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
