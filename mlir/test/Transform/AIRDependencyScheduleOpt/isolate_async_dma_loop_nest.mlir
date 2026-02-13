@@ -1147,16 +1147,16 @@ module {
 // CHECK-LABEL: func16
 
 // CHECK: scf.for
-// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c0
+// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c0{{.*}}]
 // CHECK: air.channel.put{{.*}}@channel_1
 // CHECK: scf.for
-// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c1
+// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c1{{.*}}]
 // CHECK: air.channel.put{{.*}}@channel_2
 // CHECK: scf.for
-// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c2
+// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c2{{.*}}]
 // CHECK: air.channel.put{{.*}}@channel_3
 // CHECK: scf.for
-// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c3
+// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c3{{.*}}]
 // CHECK: air.channel.put{{.*}}@channel_4
 
 module {
