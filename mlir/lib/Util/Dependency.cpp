@@ -662,16 +662,17 @@ bool areAsyncDependent(Operation *a, Operation *b) {
     if (chanA.getChanName() == chanB.getChanName()) {
       if (chanA.getIndices().size() != chanB.getIndices().size())
         return true;
+      // Check all index positions. If ANY position has two different constant
+      // values, we can prove independence regardless of other positions.
       for (unsigned i = 0; i < chanA.getIndices().size(); i++) {
         auto constIdxA = getConstantIntValue(chanA.getIndices()[i]);
         auto constIdxB = getConstantIntValue(chanB.getIndices()[i]);
-        if (!constIdxA)
-          return true;
-        if (!constIdxB)
-          return true;
-        if (*constIdxA != *constIdxB)
+        // If BOTH are constants AND they differ → INDEPENDENT
+        if (constIdxA && constIdxB && (*constIdxA != *constIdxB))
           return false;
       }
+      // After checking all indices, if none were provably different →
+      // DEPENDENT
       return true;
     }
   return false;
