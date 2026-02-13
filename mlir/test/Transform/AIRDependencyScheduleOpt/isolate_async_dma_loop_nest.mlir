@@ -1139,6 +1139,81 @@ module {
 
 // -----
 
+// Isolating loops with mixed constant/non-constant channel indices.
+// When channel ops use the same channel with indices like [%arg, %c0] and [%arg, %c1],
+// they should be treated as independent (split into separate loops) because the
+// second index differs regardless of the first index's value.
+
+// CHECK-LABEL: func16
+
+// CHECK: scf.for
+// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c0{{.*}}]
+// CHECK: air.channel.put{{.*}}@channel_1
+// CHECK: scf.for
+// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c1{{.*}}]
+// CHECK: air.channel.put{{.*}}@channel_2
+// CHECK: scf.for
+// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c2{{.*}}]
+// CHECK: air.channel.put{{.*}}@channel_3
+// CHECK: scf.for
+// CHECK: air.channel.get{{.*}}@channel_0[%{{.*}}, %c3{{.*}}]
+// CHECK: air.channel.put{{.*}}@channel_4
+
+module {
+  air.channel @channel_0 [2, 4]
+  air.channel @channel_1 []
+  air.channel @channel_2 []
+  air.channel @channel_3 []
+  air.channel @channel_4 []
+  func.func @func16(%arg0: index) {
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async (%arg1, %arg2) in (%arg3=%c2, %arg4=%c2) args(%arg5=%arg0) : index attributes {id = 1 : i32} {
+      %1 = air.segment @segment_0 async args(%arg6=%arg5) : index attributes {id = 2 : i32} {
+        %c3 = arith.constant 3 : index
+        %c2_0 = arith.constant 2 : index
+        %c64 = arith.constant 64 : index
+        %c1 = arith.constant 1 : index
+        %c0 = arith.constant 0 : index
+        %c32 = arith.constant 32 : index
+        %async_token, %results = air.execute -> (memref<64x96xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x96xbf16, 1>
+          air.execute_terminator %alloc : memref<64x96xbf16, 1>
+        }
+        %async_token_1, %results_2 = air.execute -> (memref<64x96xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x96xbf16, 1>
+          air.execute_terminator %alloc : memref<64x96xbf16, 1>
+        }
+        %async_token_3, %results_4 = air.execute -> (memref<64x96xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x96xbf16, 1>
+          air.execute_terminator %alloc : memref<64x96xbf16, 1>
+        }
+        %async_token_5, %results_6 = air.execute -> (memref<64x96xbf16, 1>) {
+          %alloc = memref.alloc() : memref<64x96xbf16, 1>
+          air.execute_terminator %alloc : memref<64x96xbf16, 1>
+        }
+        %2 = air.wait_all async [%async_token, %async_token_1, %async_token_3, %async_token_5]
+        // These channel.get ops should be split into 4 separate loops because
+        // even though %arg6 is non-constant, the second index differs (0, 1, 2, 3).
+        %3 = scf.for %arg9 = %c0 to %c32 step %c1 iter_args(%arg10 = %2) -> (!air.async.token) {
+          %4 = air.channel.get async [%arg10]  @channel_0[%arg6, %c0] (%results[] [] []) {id = 1 : i32} : (memref<64x96xbf16, 1>)
+          %5 = air.channel.get async [%arg10]  @channel_0[%arg6, %c1] (%results_2[] [] []) {id = 2 : i32} : (memref<64x96xbf16, 1>)
+          %6 = air.channel.get async [%arg10]  @channel_0[%arg6, %c2_0] (%results_4[] [] []) {id = 3 : i32} : (memref<64x96xbf16, 1>)
+          %7 = air.channel.get async [%arg10]  @channel_0[%arg6, %c3] (%results_6[] [] []) {id = 4 : i32} : (memref<64x96xbf16, 1>)
+          %8 = air.channel.put async [%4]  @channel_1[] (%results[] [] []) {id = 5 : i32} : (memref<64x96xbf16, 1>)
+          %9 = air.channel.put async [%5]  @channel_2[] (%results_2[] [] []) {id = 6 : i32} : (memref<64x96xbf16, 1>)
+          %10 = air.channel.put async [%6]  @channel_3[] (%results_4[] [] []) {id = 7 : i32} : (memref<64x96xbf16, 1>)
+          %11 = air.channel.put async [%7]  @channel_4[] (%results_6[] [] []) {id = 8 : i32} : (memref<64x96xbf16, 1>)
+          %12 = air.wait_all async [%8, %9, %10, %11]
+          scf.yield %12 : !air.async.token
+        }
+      }
+    }
+    return
+  }
+}
+
+// -----
+
 // Hoisting for loop in the presence of affine.if loop nest
 
 // CHECK-LABEL: @func15
