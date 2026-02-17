@@ -2407,8 +2407,8 @@ public:
     const SetVector<Operation *> &flowMap =
         isShimFlow ? shimFlowOpToFlowIdMap : intraDeviceFlowOpToFlowIdMap;
 
-    // Convert flowOpToFlowIdMap from Operation pointers to channel symbol
-    // names. This is necessary because air.channel declarations are duplicated
+    // Convert flowMap from Operation pointers to channel symbol names.
+    // This is necessary because air.channel declarations are duplicated
     // under aie.device op and its parent module op, requiring symbol-based
     // matching.
     std::vector<std::string> flowOpStringsToFlowIdMap;
