@@ -18,7 +18,6 @@
 
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "air-merge-unrolled-devices"
@@ -157,8 +156,9 @@ public:
       builder.createBlock(&mergedDevice.getRegion());
       builder.create<AIE::EndOp>(mergedDevice.getLoc());
 
-      // Track function names already added to avoid O(n*m) lookup
-      llvm::StringSet<> addedFuncNames;
+      // Track function names and types already added to avoid duplicates
+      // and verify signature consistency
+      llvm::StringMap<FunctionType> addedFuncTypes;
 
       // Clone ops from each source device with tile offset
       for (auto [idx, srcDevice] : llvm::enumerate(devices)) {
@@ -167,8 +167,12 @@ public:
         int colOffset = unrollX * deviceWidth;
         LLVM_DEBUG(llvm::dbgs() << "  Cloning device " << idx
                                 << " with col offset " << colOffset << "\n");
-        cloneDeviceOpsWithOffset(builder, srcDevice, mergedDevice, colOffset,
-                                 idx, addedFuncNames);
+        if (cloneDeviceOpsWithOffset(builder, srcDevice, mergedDevice,
+                                     colOffset, idx, addedFuncTypes)
+                .failed()) {
+          signalPassFailure();
+          return;
+        }
       }
 
       // Merge airrt.segment_metadata entries
@@ -183,11 +187,14 @@ public:
 private:
   /// Clone all ops from srcDevice to mergedDevice, offsetting tile columns.
   /// unrollIdx is used to make symbol names unique across devices.
-  /// addedFuncNames tracks function names already added to avoid duplicates.
-  void cloneDeviceOpsWithOffset(OpBuilder &builder, AIE::DeviceOp srcDevice,
-                                AIE::DeviceOp mergedDevice, int colOffset,
-                                int64_t unrollIdx,
-                                llvm::StringSet<> &addedFuncNames) {
+  /// addedFuncTypes tracks function names and types already added to avoid
+  /// duplicates and verify signature consistency.
+  /// Returns failure if function signature mismatch is detected.
+  LogicalResult
+  cloneDeviceOpsWithOffset(OpBuilder &builder, AIE::DeviceOp srcDevice,
+                           AIE::DeviceOp mergedDevice, int colOffset,
+                           int64_t unrollIdx,
+                           llvm::StringMap<FunctionType> &addedFuncTypes) {
     IRMapping mapping;
     builder.setInsertionPoint(mergedDevice.getBody()->getTerminator());
 
@@ -222,11 +229,23 @@ private:
 
       // Skip func.FuncOp declarations that already exist in the merged device
       // (these are external function prototypes that are identical across
-      // all unrolled devices). Use addedFuncNames set for O(1) lookup.
+      // all unrolled devices). Use addedFuncTypes map for O(1) lookup.
+      // Also verify that function signatures match across devices.
       if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
         StringRef funcName = funcOp.getName();
-        if (!addedFuncNames.insert(funcName).second)
-          continue; // Already added, skip
+        FunctionType funcType = funcOp.getFunctionType();
+        auto [it, inserted] = addedFuncTypes.try_emplace(funcName, funcType);
+        if (!inserted) {
+          // Function already exists, verify signature matches
+          if (it->second != funcType) {
+            funcOp.emitError()
+                << "function '" << funcName
+                << "' has conflicting signatures across unrolled devices: "
+                << it->second << " vs " << funcType;
+            return failure();
+          }
+          continue; // Already added with matching signature, skip
+        }
       }
 
       auto *clonedOp = builder.clone(op, mapping);
@@ -247,6 +266,7 @@ private:
         }
       }
     }
+    return success();
   }
 
   /// Merge airrt.segment_metadata entries for the given devices.
