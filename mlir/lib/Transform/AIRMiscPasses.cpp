@@ -1542,8 +1542,17 @@ FailureOr<Value> tileChannelOpByFactor(
     AffineExpr originalExpr =
         getOriginalExpr(affineApplyOp, splitInfoAffineMap);
 
-    SmallVector<Value> newIndices{
-        arith::ConstantIndexOp::create(rewriter, loc, i), zeroIdx};
+    // Preserve original channel indices and prepend the split index
+    SmallVector<Value> newIndices;
+    newIndices.push_back(
+        arith::ConstantIndexOp::create(rewriter, loc, i)); // Split dimension
+    for (Value origIdx : originalChanOp.getIndices()) {
+      newIndices.push_back(origIdx); // Original indices (e.g., %arg13)
+    }
+    // If original had no indices, add a zero
+    if (originalChanOp.getIndices().empty()) {
+      newIndices.push_back(zeroIdx);
+    }
     // Create affine.apply on induction variable.
     auto checkpoint = rewriter.saveInsertionPoint();
     if (affineApplyOp)
@@ -2363,7 +2372,27 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       if (new_chan_op) {
         new_chan = dyn_cast<air::ChannelOp>(new_chan_op);
       } else {
-        SmallVector<int64_t, 2> channel_sizes = {targetColTilingFactor, 1};
+        // Get original channel shape and prepend split dimension
+        auto origChanOp = air::getChannelDeclarationThroughSymbol(chanUserOp);
+        SmallVector<int64_t> channel_sizes;
+        channel_sizes.push_back(targetColTilingFactor); // New split dimension
+
+        // Check if original had indices (non-scalar usage)
+        if (!chanUserOp.getIndices().empty()) {
+          // Preserve original index dimensions
+          ArrayAttr origSizeAttr = origChanOp.getSize();
+          for (auto sizeAttr : origSizeAttr) {
+            channel_sizes.push_back(cast<IntegerAttr>(sizeAttr).getInt());
+          }
+          // If somehow no size attr but had indices, add 1s
+          if (origSizeAttr.empty()) {
+            for (unsigned i = 0; i < chanUserOp.getIndices().size(); i++)
+              channel_sizes.push_back(1);
+          }
+        } else {
+          // Scalar channel (no indices used), just add one more dimension
+          channel_sizes.push_back(1);
+        }
         new_chan = air::ChannelOp::create(
             rewriter, loc, cname, rewriter.getI64ArrayAttr(channel_sizes),
             rewriter.getStringAttr("dma_stream"));
@@ -2388,106 +2417,110 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
                                   *newWaitAll);
 
       // Now that one side of those channels are tiled, perform tiling on the
-      // other side, too.
-      auto theOtherChanOp = air::getTheOtherChannelOpThroughSymbol(chanUserOp);
+      // other side, too. Process ALL channel ops on the other side.
+      auto theOtherChanOps = air::getTheOtherChannelOpThroughSymbol(chanUserOp);
 
-      // Account for cases where rank reduction results from at least
-      // of the dimensions being equal to one.
-      SmallVector<Value> wraps = theOtherChanOp[0].getSizes();
-      SmallVector<Value> offsets = theOtherChanOp[0].getOffsets();
-      SmallVector<Value> strides = theOtherChanOp[0].getStrides();
-      if (wraps.empty()) {
-        // Populate default wraps, if wraps is an empty vector.
-        rewriter.setInsertionPoint(theOtherChanOp[0]);
-        air::populateDefaultWrapsAndStrides(
-            rewriter, theOtherChanOp[0].getMemref(), offsets, wraps, strides);
-      }
-
-      // Bump up the offset, wrap and stride list to match both sides.
-      SmallVector<Value> refSizes = chanUserOp.getSizes();
-      SmallVector<Value> refOffsets = chanUserOp.getOffsets();
-      SmallVector<Value> refStrides = chanUserOp.getStrides();
-      if (refSizes.empty())
-        air::populateDefaultWrapsAndStrides(rewriter, chanUserOp.getMemref(),
-                                            refOffsets, refSizes, refStrides);
-      SmallVector<int> newSizes, newStrides;
-      rewriter.setInsertionPoint(theOtherChanOp[0]);
-      auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-      auto oneIdx = arith::ConstantIndexOp::create(rewriter, loc, 1);
-      if (wraps.size() < refSizes.size()) {
-        int currIdx = offsets.size() - 1;
-        for (int i = refSizes.size() - 1; i >= 0; i--) {
-          // Ref size one. Insert a size-one dimension.
-          if (*getConstantIntValue(refSizes[i]) == 1) {
-            offsets.insert(offsets.begin() + currIdx, zeroIdx);
-            wraps.insert(wraps.begin() + currIdx, oneIdx);
-            auto currStride = *getConstantIntValue(strides[currIdx]);
-            strides.insert(
-                strides.begin() + currIdx,
-                arith::ConstantIndexOp::create(rewriter, loc, currStride));
-            continue;
-          }
-          // Ref size equals curr size. Continue.
-          if (*getConstantIntValue(wraps[currIdx]) ==
-              *getConstantIntValue(refSizes[i])) {
-            currIdx = currIdx == 0 ? 0 : currIdx - 1;
-            continue;
-          }
-          if (*getConstantIntValue(wraps[currIdx]) %
-              *getConstantIntValue(refSizes[i]))
-            break; // encountered size not divisible
-          // Ref size neq curr size. Tile curr dimension.
-          int factor = *getConstantIntValue(wraps[currIdx]) /
-                       *getConstantIntValue(refSizes[i]);
-          offsets.insert(offsets.begin() + currIdx, zeroIdx);
-          auto newWrapVal =
-              arith::ConstantIndexOp::create(rewriter, loc, factor);
-          wraps.insert(wraps.begin() + currIdx, newWrapVal);
-          auto newStrideVal = arith::ConstantIndexOp::create(
-              rewriter, loc,
-              *getConstantIntValue(refSizes[i]) *
-                  *getConstantIntValue(strides[currIdx]));
-          strides.insert(strides.begin() + currIdx, newStrideVal);
-          wraps[currIdx + 1] = arith::ConstantIndexOp::create(
-              rewriter, loc, *getConstantIntValue(refSizes[i]));
+      // Process each channel op on the other side
+      for (auto &theOtherChanOp : theOtherChanOps) {
+        // Account for cases where rank reduction results from at least
+        // of the dimensions being equal to one.
+        SmallVector<Value> wraps = theOtherChanOp.getSizes();
+        SmallVector<Value> offsets = theOtherChanOp.getOffsets();
+        SmallVector<Value> strides = theOtherChanOp.getStrides();
+        if (wraps.empty()) {
+          // Populate default wraps, if wraps is an empty vector.
+          rewriter.setInsertionPoint(theOtherChanOp);
+          air::populateDefaultWrapsAndStrides(
+              rewriter, theOtherChanOp.getMemref(), offsets, wraps, strides);
         }
+
+        // Bump up the offset, wrap and stride list to match both sides.
+        SmallVector<Value> refSizes = chanUserOp.getSizes();
+        SmallVector<Value> refOffsets = chanUserOp.getOffsets();
+        SmallVector<Value> refStrides = chanUserOp.getStrides();
+        if (refSizes.empty())
+          air::populateDefaultWrapsAndStrides(rewriter, chanUserOp.getMemref(),
+                                              refOffsets, refSizes, refStrides);
+        SmallVector<int> newSizes, newStrides;
+        rewriter.setInsertionPoint(theOtherChanOp);
+        auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        auto oneIdx = arith::ConstantIndexOp::create(rewriter, loc, 1);
+        if (wraps.size() < refSizes.size()) {
+          int currIdx = offsets.size() - 1;
+          for (int i = refSizes.size() - 1; i >= 0; i--) {
+            // Ref size one. Insert a size-one dimension.
+            if (*getConstantIntValue(refSizes[i]) == 1) {
+              offsets.insert(offsets.begin() + currIdx, zeroIdx);
+              wraps.insert(wraps.begin() + currIdx, oneIdx);
+              auto currStride = *getConstantIntValue(strides[currIdx]);
+              strides.insert(
+                  strides.begin() + currIdx,
+                  arith::ConstantIndexOp::create(rewriter, loc, currStride));
+              continue;
+            }
+            // Ref size equals curr size. Continue.
+            if (*getConstantIntValue(wraps[currIdx]) ==
+                *getConstantIntValue(refSizes[i])) {
+              currIdx = currIdx == 0 ? 0 : currIdx - 1;
+              continue;
+            }
+            if (*getConstantIntValue(wraps[currIdx]) %
+                *getConstantIntValue(refSizes[i]))
+              break; // encountered size not divisible
+            // Ref size neq curr size. Tile curr dimension.
+            int factor = *getConstantIntValue(wraps[currIdx]) /
+                         *getConstantIntValue(refSizes[i]);
+            offsets.insert(offsets.begin() + currIdx, zeroIdx);
+            auto newWrapVal =
+                arith::ConstantIndexOp::create(rewriter, loc, factor);
+            wraps.insert(wraps.begin() + currIdx, newWrapVal);
+            auto newStrideVal = arith::ConstantIndexOp::create(
+                rewriter, loc,
+                *getConstantIntValue(refSizes[i]) *
+                    *getConstantIntValue(strides[currIdx]));
+            strides.insert(strides.begin() + currIdx, newStrideVal);
+            wraps[currIdx + 1] = arith::ConstantIndexOp::create(
+                rewriter, loc, *getConstantIntValue(refSizes[i]));
+          }
+        }
+        air::ChannelInterface updatedChanOp = theOtherChanOp;
+        if (auto put =
+                dyn_cast<air::ChannelPutOp>(theOtherChanOp.getOperation())) {
+          auto attrs = put->getDiscardableAttrDictionary();
+          erased.insert(put);
+          auto newPut = air::ChannelPutOp::create(
+              rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
+              put.getChanName(), put.getIndices(), put.getMemref(), offsets,
+              wraps, strides);
+          newPut->setAttrs(attrs);
+          rewriter.replaceAllUsesWith(put->getResults(), newPut->getResults());
+          updatedChanOp = newPut;
+        } else if (auto get = dyn_cast<air::ChannelGetOp>(
+                       theOtherChanOp.getOperation())) {
+          auto attrs = get->getDiscardableAttrDictionary();
+          erased.insert(get);
+          auto newGet = air::ChannelGetOp::create(
+              rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
+              get.getChanName(), get.getIndices(), get.getMemref(), offsets,
+              wraps, strides);
+          newGet->setAttrs(attrs);
+          rewriter.replaceAllUsesWith(get->getResults(), newGet->getResults());
+          updatedChanOp = newGet;
+        }
+
+        auto newWaitAll1 = tileChannelOpByFactor(
+            updatedChanOp, targetColTilingFactor,
+            *getConstantIntValue(wraps[offsetDim]), infoEntryVec,
+            opToSplitInfoMap, new_chan, loc, ctx);
+
+        if (failed(newWaitAll1))
+          return;
+
+        // Update dependency.
+        rewriter.replaceAllUsesWith(air::getAsyncTokenFromOp(updatedChanOp),
+                                    *newWaitAll1);
+        erased.insert(updatedChanOp);
       }
-      if (auto put =
-              dyn_cast<air::ChannelPutOp>(theOtherChanOp[0].getOperation())) {
-        auto attrs = put->getDiscardableAttrDictionary();
-        erased.insert(put);
-        auto newPut = air::ChannelPutOp::create(
-            rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
-            put.getChanName(), put.getIndices(), put.getMemref(), offsets,
-            wraps, strides);
-        newPut->setAttrs(attrs);
-        rewriter.replaceAllUsesWith(put->getResults(), newPut->getResults());
-        theOtherChanOp[0] = newPut;
-      } else if (auto get = dyn_cast<air::ChannelGetOp>(
-                     theOtherChanOp[0].getOperation())) {
-        auto attrs = get->getDiscardableAttrDictionary();
-        erased.insert(get);
-        auto newGet = air::ChannelGetOp::create(
-            rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
-            get.getChanName(), get.getIndices(), get.getMemref(), offsets,
-            wraps, strides);
-        newGet->setAttrs(attrs);
-        rewriter.replaceAllUsesWith(get->getResults(), newGet->getResults());
-        theOtherChanOp[0] = newGet;
-      }
-
-      auto newWaitAll1 = tileChannelOpByFactor(
-          theOtherChanOp[0], targetColTilingFactor,
-          *getConstantIntValue(wraps[offsetDim]), infoEntryVec,
-          opToSplitInfoMap, new_chan, loc, ctx);
-
-      if (failed(newWaitAll1))
-        return;
-
-      // Update dependency.
-      rewriter.replaceAllUsesWith(air::getAsyncTokenFromOp(theOtherChanOp[0]),
-                                  *newWaitAll1);
-      erased.insert(theOtherChanOp[0]);
       erased.insert(chanUserOp);
     }
   }
