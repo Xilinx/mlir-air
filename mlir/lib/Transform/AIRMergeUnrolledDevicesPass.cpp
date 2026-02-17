@@ -12,6 +12,7 @@
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 
@@ -155,6 +156,10 @@ public:
       builder.createBlock(&mergedDevice.getRegion());
       builder.create<AIE::EndOp>(mergedDevice.getLoc());
 
+      // Track function names and types already added to avoid duplicates
+      // and verify signature consistency
+      llvm::StringMap<FunctionType> addedFuncTypes;
+
       // Clone ops from each source device with tile offset
       for (auto [idx, srcDevice] : llvm::enumerate(devices)) {
         int64_t unrollX =
@@ -162,8 +167,12 @@ public:
         int colOffset = unrollX * deviceWidth;
         LLVM_DEBUG(llvm::dbgs() << "  Cloning device " << idx
                                 << " with col offset " << colOffset << "\n");
-        cloneDeviceOpsWithOffset(builder, srcDevice, mergedDevice, colOffset,
-                                 idx);
+        if (cloneDeviceOpsWithOffset(builder, srcDevice, mergedDevice,
+                                     colOffset, idx, addedFuncTypes)
+                .failed()) {
+          signalPassFailure();
+          return;
+        }
       }
 
       // Merge airrt.segment_metadata entries
@@ -178,9 +187,14 @@ public:
 private:
   /// Clone all ops from srcDevice to mergedDevice, offsetting tile columns.
   /// unrollIdx is used to make symbol names unique across devices.
-  void cloneDeviceOpsWithOffset(OpBuilder &builder, AIE::DeviceOp srcDevice,
-                                AIE::DeviceOp mergedDevice, int colOffset,
-                                int64_t unrollIdx) {
+  /// addedFuncTypes tracks function names and types already added to avoid
+  /// duplicates and verify signature consistency.
+  /// Returns failure if function signature mismatch is detected.
+  LogicalResult
+  cloneDeviceOpsWithOffset(OpBuilder &builder, AIE::DeviceOp srcDevice,
+                           AIE::DeviceOp mergedDevice, int colOffset,
+                           int64_t unrollIdx,
+                           llvm::StringMap<FunctionType> &addedFuncTypes) {
     IRMapping mapping;
     builder.setInsertionPoint(mergedDevice.getBody()->getTerminator());
 
@@ -213,20 +227,46 @@ private:
       if (isa<AIE::TileOp, AIE::EndOp>(op))
         continue;
 
+      // Skip func.FuncOp declarations that already exist in the merged device
+      // (these are external function prototypes that are identical across
+      // all unrolled devices). Use addedFuncTypes map for O(1) lookup.
+      // Also verify that function signatures match across devices.
+      if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+        StringRef funcName = funcOp.getName();
+        FunctionType funcType = funcOp.getFunctionType();
+        auto [it, inserted] = addedFuncTypes.try_emplace(funcName, funcType);
+        if (!inserted) {
+          // Function already exists, verify signature matches
+          if (it->second != funcType) {
+            funcOp.emitError()
+                << "function '" << funcName
+                << "' has conflicting signatures across unrolled devices: "
+                << it->second << " vs " << funcType;
+            return failure();
+          }
+          continue; // Already added with matching signature, skip
+        }
+      }
+
       auto *clonedOp = builder.clone(op, mapping);
 
       // If the op has a sym_name attribute, make it unique by appending unroll
-      // index. EXCEPT for ShimDMAAllocationOp - these names are already unique
-      // (they contain the unroll coordinates) and are referenced by host-side
-      // metadataArray in air.channel.put/get ops.
+      // index. EXCEPT for:
+      // - ShimDMAAllocationOp: these names are already unique (they contain
+      //   the unroll coordinates) and are referenced by host-side metadataArray
+      //   in air.channel.put/get ops.
+      // - func.FuncOp: these are external function declarations referenced by
+      //   func.call ops via callee attribute. Renaming them would break the
+      //   references since func.call's callee is not updated by IRMapping.
       if (auto symNameAttr = clonedOp->getAttrOfType<StringAttr>("sym_name")) {
-        if (!isa<AIE::ShimDMAAllocationOp>(clonedOp)) {
+        if (!isa<AIE::ShimDMAAllocationOp, func::FuncOp>(clonedOp)) {
           std::string newName = symNameAttr.getValue().str() + "_unroll_" +
                                 std::to_string(unrollIdx);
           clonedOp->setAttr("sym_name", builder.getStringAttr(newName));
         }
       }
     }
+    return success();
   }
 
   /// Merge airrt.segment_metadata entries for the given devices.
