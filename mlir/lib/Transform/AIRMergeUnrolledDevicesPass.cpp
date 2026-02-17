@@ -12,6 +12,7 @@
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 
@@ -213,14 +214,34 @@ private:
       if (isa<AIE::TileOp, AIE::EndOp>(op))
         continue;
 
+      // Skip func.FuncOp declarations that already exist in the merged device
+      // (these are external function prototypes that are identical across
+      // all unrolled devices)
+      if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+        StringRef funcName = funcOp.getName();
+        bool alreadyExists = false;
+        for (auto existingFunc : mergedDevice.getOps<func::FuncOp>()) {
+          if (existingFunc.getName() == funcName) {
+            alreadyExists = true;
+            break;
+          }
+        }
+        if (alreadyExists)
+          continue;
+      }
+
       auto *clonedOp = builder.clone(op, mapping);
 
       // If the op has a sym_name attribute, make it unique by appending unroll
-      // index. EXCEPT for ShimDMAAllocationOp - these names are already unique
-      // (they contain the unroll coordinates) and are referenced by host-side
-      // metadataArray in air.channel.put/get ops.
+      // index. EXCEPT for:
+      // - ShimDMAAllocationOp: these names are already unique (they contain
+      //   the unroll coordinates) and are referenced by host-side metadataArray
+      //   in air.channel.put/get ops.
+      // - func.FuncOp: these are external function declarations referenced by
+      //   func.call ops via callee attribute. Renaming them would break the
+      //   references since func.call's callee is not updated by IRMapping.
       if (auto symNameAttr = clonedOp->getAttrOfType<StringAttr>("sym_name")) {
-        if (!isa<AIE::ShimDMAAllocationOp>(clonedOp)) {
+        if (!isa<AIE::ShimDMAAllocationOp, func::FuncOp>(clonedOp)) {
           std::string newName = symNameAttr.getValue().str() + "_unroll_" +
                                 std::to_string(unrollIdx);
           clonedOp->setAttr("sym_name", builder.getStringAttr(newName));

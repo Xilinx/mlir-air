@@ -36,7 +36,11 @@
 // CHECK-DAG: aie.shim_dma_allocation @air_ChanOut_1
 // CHECK-DAG: aie.shim_dma_allocation @air_ChanIn_1
 
-// Test 5: Verify airrt.segment_metadata is merged
+// Test 5: Verify func.func declarations are NOT renamed and NOT duplicated
+// (external function prototypes should be identical across unrolled devices)
+// CHECK-DAG: func.func private @extern_kernel(memref<32xi32, 2 : i32>)
+
+// Test 6: Verify airrt.segment_metadata is merged
 // CHECK: airrt.segment_metadata attributes {{{.*}}sym_name = "segment_with_unroll"}
 // CHECK-NOT: airrt.segment_metadata attributes {{{.*}}sym_name = "segment_with_unroll_0_0"}
 // CHECK-NOT: airrt.segment_metadata attributes {{{.*}}sym_name = "segment_with_unroll_1_0"}
@@ -44,6 +48,7 @@
 #loop_annotation = #llvm.loop_annotation<mustProgress = true>
 module {
   aie.device(npu2_4col) @segment_with_unroll_0_0 {
+    func.func private @extern_kernel(memref<32xi32, 2 : i32>)
     %shim_noc_tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
     %lock_0_2 = aie.lock(%tile_0_2, 4) {init = 1 : i32}
@@ -87,6 +92,7 @@ module {
         %1 = arith.addi %0, %c10_i32 : i32
         memref.store %1, %buf0[%arg0] : memref<32xi32, 2 : i32>
       } {loop_annotation = #loop_annotation}
+      func.call @extern_kernel(%buf0) : (memref<32xi32, 2 : i32>) -> ()
       aie.use_lock(%lock_0_2, Release, 1)
       aie.use_lock(%lock_0_2_2, Release, 1)
       cf.br ^bb1
@@ -99,6 +105,7 @@ module {
     aie.shim_dma_allocation @air_ChanIn_0(%shim_noc_tile_0_0, MM2S, 0)
   } {dlti.dl_spec = #dlti.dl_spec<index = 32 : i64>, segment_unroll_x = 0 : i64, segment_unroll_y = 0 : i64}
   aie.device(npu2_4col) @segment_with_unroll_1_0 {
+    func.func private @extern_kernel(memref<32xi32, 2 : i32>)
     %shim_noc_tile_0_0 = aie.tile(0, 0)
     %tile_0_2 = aie.tile(0, 2)
     %lock_0_2 = aie.lock(%tile_0_2, 4) {init = 1 : i32}
@@ -142,6 +149,7 @@ module {
         %1 = arith.addi %0, %c10_i32 : i32
         memref.store %1, %buf2[%arg0] : memref<32xi32, 2 : i32>
       } {loop_annotation = #loop_annotation}
+      func.call @extern_kernel(%buf2) : (memref<32xi32, 2 : i32>) -> ()
       aie.use_lock(%lock_0_2, Release, 1)
       aie.use_lock(%lock_0_2_2, Release, 1)
       cf.br ^bb1
