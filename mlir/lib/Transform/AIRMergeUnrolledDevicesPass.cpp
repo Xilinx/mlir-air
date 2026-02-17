@@ -18,6 +18,7 @@
 
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "air-merge-unrolled-devices"
@@ -156,6 +157,9 @@ public:
       builder.createBlock(&mergedDevice.getRegion());
       builder.create<AIE::EndOp>(mergedDevice.getLoc());
 
+      // Track function names already added to avoid O(n*m) lookup
+      llvm::StringSet<> addedFuncNames;
+
       // Clone ops from each source device with tile offset
       for (auto [idx, srcDevice] : llvm::enumerate(devices)) {
         int64_t unrollX =
@@ -164,7 +168,7 @@ public:
         LLVM_DEBUG(llvm::dbgs() << "  Cloning device " << idx
                                 << " with col offset " << colOffset << "\n");
         cloneDeviceOpsWithOffset(builder, srcDevice, mergedDevice, colOffset,
-                                 idx);
+                                 idx, addedFuncNames);
       }
 
       // Merge airrt.segment_metadata entries
@@ -179,9 +183,11 @@ public:
 private:
   /// Clone all ops from srcDevice to mergedDevice, offsetting tile columns.
   /// unrollIdx is used to make symbol names unique across devices.
+  /// addedFuncNames tracks function names already added to avoid duplicates.
   void cloneDeviceOpsWithOffset(OpBuilder &builder, AIE::DeviceOp srcDevice,
                                 AIE::DeviceOp mergedDevice, int colOffset,
-                                int64_t unrollIdx) {
+                                int64_t unrollIdx,
+                                llvm::StringSet<> &addedFuncNames) {
     IRMapping mapping;
     builder.setInsertionPoint(mergedDevice.getBody()->getTerminator());
 
@@ -216,18 +222,11 @@ private:
 
       // Skip func.FuncOp declarations that already exist in the merged device
       // (these are external function prototypes that are identical across
-      // all unrolled devices)
+      // all unrolled devices). Use addedFuncNames set for O(1) lookup.
       if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
         StringRef funcName = funcOp.getName();
-        bool alreadyExists = false;
-        for (auto existingFunc : mergedDevice.getOps<func::FuncOp>()) {
-          if (existingFunc.getName() == funcName) {
-            alreadyExists = true;
-            break;
-          }
-        }
-        if (alreadyExists)
-          continue;
+        if (!addedFuncNames.insert(funcName).second)
+          continue; // Already added, skip
       }
 
       auto *clonedOp = builder.clone(op, mapping);
