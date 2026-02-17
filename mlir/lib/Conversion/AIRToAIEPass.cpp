@@ -2379,10 +2379,29 @@ public:
       return AIE::PacketFlowOp(); // Only air.channel_interface ops support
                                   // packet-flow routing.
 
-    // Determine if this is a shim flow by checking if the source tile is a
-    // shim tile
-    auto tileOp = source.getDefiningOp<AIE::TileOp>();
-    bool isShimFlow = tileOp && tileOp.isShimNOCorPLTile();
+    // Determine if this is a shim flow by checking if EITHER source OR
+    // destination tile is a shim tile. This must be consistent with
+    // placeDMAChannelsAndRouteFlows which uses the same criteria.
+    auto sourceTileOp = source.getDefiningOp<AIE::TileOp>();
+    bool sourceIsShim = sourceTileOp && sourceTileOp.isShimNOCorPLTile();
+
+    // Check if the destination involves a shim tile by examining the memcpy's
+    // memory spaces (L3 memory space indicates shim tile involvement)
+    bool destIsShim = false;
+    if (auto srcMemref = memcpyOp.getSrcMemref()) {
+      auto memrefTy = dyn_cast<BaseMemRefType>(srcMemref.getType());
+      if (memrefTy &&
+          memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+        destIsShim = true;
+    }
+    if (auto dstMemref = memcpyOp.getDstMemref()) {
+      auto memrefTy = dyn_cast<BaseMemRefType>(dstMemref.getType());
+      if (memrefTy &&
+          memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+        destIsShim = true;
+    }
+
+    bool isShimFlow = sourceIsShim || destIsShim;
 
     // Select the appropriate flow map based on whether this involves shim tiles
     const SetVector<Operation *> &flowMap =
