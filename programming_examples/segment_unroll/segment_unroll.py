@@ -32,6 +32,19 @@ SEGMENT_SIZE_X = 2  # Segment unroll factor in X dimension
 SEGMENT_SIZE_Y = 1  # Segment unroll factor in Y dimension
 INOUT_DATATYPE = np.int32
 
+# Sanity checks: ensure vector length is evenly divisible by segment dimensions
+# This is required because VECTOR_LEN // SEGMENT_SIZE_X is used to size L1 memrefs
+# and compute host-side slice sizes. Non-divisible configurations would silently
+# truncate and/or mis-size buffers.
+assert VECTOR_LEN % SEGMENT_SIZE_X == 0, (
+    f"VECTOR_LEN ({VECTOR_LEN}) must be evenly divisible by "
+    f"SEGMENT_SIZE_X ({SEGMENT_SIZE_X})"
+)
+assert VECTOR_LEN % (SEGMENT_SIZE_X * SEGMENT_SIZE_Y) == 0, (
+    f"VECTOR_LEN ({VECTOR_LEN}) must be evenly divisible by "
+    f"total segment count ({SEGMENT_SIZE_X * SEGMENT_SIZE_Y})"
+)
+
 
 @module_builder
 def build_module():
