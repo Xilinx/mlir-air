@@ -1,9 +1,10 @@
 # run.py -*- Python -*-
 #
-# Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
 import argparse
+import os
 import numpy as np
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
@@ -13,9 +14,19 @@ import air.passmanager
 import filelock
 from ml_dtypes import bfloat16
 
+# Get the directory containing this script
+script_dir = os.path.dirname(os.path.realpath(__file__))
+
 parser = argparse.ArgumentParser(
     prog="run.py",
-    description="Builds, runs, and tests the matmul example",
+    description="Builds, runs, and tests the softmax example",
+)
+parser.add_argument(
+    "--input-mlir",
+    type=str,
+    dest="input_mlir",
+    default=os.path.join(script_dir, "input_ir/initial/4x1024_1d.mlir"),
+    help="Input MLIR file path (default: input_ir/initial/4x1024_1d.mlir)",
 )
 parser.add_argument(
     "--transform-script",
@@ -35,8 +46,48 @@ parser.add_argument(
     "--N",
     type=int,
     dest="N",
-    default=256,
+    # default=256,
+    default=1024,
     help="N (reduction) dimension size",
+)
+parser.add_argument(
+    "--tile-rows",
+    type=int,
+    dest="tile_rows",
+    default=4,
+    help="Number of rows per herd tile (default: 4, use 16 for 4x4 herd)",
+)
+parser.add_argument(
+    "--herd-shape",
+    type=str,
+    dest="herd_shape",
+    default="1x4",
+    choices=["1x4", "4x4"],
+    help="Herd shape: '1x4' for 1D (4 cores), '4x4' for 2D (16 cores)",
+)
+parser.add_argument(
+    "--compile-only",
+    action="store_true",
+    help="Only compile to xclbin without running validation (for profiling)",
+)
+parser.add_argument(
+    "--verbose",
+    action="store_true",
+    help="Enable verbose mode to show all passes during compilation",
+)
+parser.add_argument(
+    "--debug-aircc",
+    action="store_true",
+    dest="debug_aircc",
+    help="Enable debug mode in aircc to emit IR after each individual pass for fine-grained inspection",
+)
+parser.add_argument(
+    "--pre-transformed-ir",
+    type=str,
+    dest="pre_transformed_ir",
+    default=None,
+    metavar="MLIR_FILE",
+    help="Load pre-transformed IR directly, skipping the transform script (for testing optimized IR)",
 )
 parser.add_argument(
     "--output-format",
@@ -58,160 +109,192 @@ def softmax(x, axis=-1):
 
 with air.ir.Context() as ctx, Location.unknown():
 
-    ################################################
-    ## Input SCF and Linalg IR
-    ################################################
-
-    air_tiled_ir_string = """
-    #map = affine_map<(d0, d1) -> (d0, d1)>
-    #map1 = affine_map<(d0, d1) -> (d0, 0)>
-    module {
-      func.func @softmax_kernel(%arg0: memref<*xbf16> {tt.divisibility = 16 : i32}, %arg1: memref<*xbf16> {tt.divisibility = 16 : i32}, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32) {
-        %c4_i32 = arith.constant 4 : i32
-        %c256 = arith.constant 256 : index
-        %cst = arith.constant 0xFF800000 : f32
-        %cst_0 = arith.constant 0.000000e+00 : f32
-        %0 = arith.muli %arg5, %c4_i32 : i32
-        %1 = arith.index_cast %0 : i32 to index
-        %2 = arith.muli %1, %c256 : index
-        %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%2], sizes: [4, 256], strides: [256, 1] : memref<*xbf16> to memref<4x256xbf16, strided<[256, 1], offset: ?>>
-        %alloc = memref.alloc() : memref<4x256xbf16>
-        memref.copy %reinterpret_cast, %alloc : memref<4x256xbf16, strided<[256, 1], offset: ?>> to memref<4x256xbf16>
-        %3 = bufferization.to_tensor %alloc restrict writable : memref<4x256xbf16> to tensor<4x256xbf16>
-        %4 = tensor.empty() : tensor<4x256xf32>
-        %5 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%3 : tensor<4x256xbf16>) outs(%4 : tensor<4x256xf32>) {
-        ^bb0(%in: bf16, %out: f32):
-          %17 = arith.extf %in : bf16 to f32
-          linalg.yield %17 : f32
-        } -> tensor<4x256xf32>
-        %6 = tensor.empty() : tensor<256x4xf32>
-        %transposed = linalg.transpose ins(%5 : tensor<4x256xf32>) outs(%6 : tensor<256x4xf32>) permutation = [1, 0] 
-        %7 = tensor.empty() : tensor<4xf32>
-        %8 = linalg.fill ins(%cst : f32) outs(%7 : tensor<4xf32>) -> tensor<4xf32>
-        %reduced = linalg.reduce ins(%transposed : tensor<256x4xf32>) outs(%8 : tensor<4xf32>) dimensions = [0] 
-          (%in: f32, %init: f32) {
-            %17 = arith.maxnumf %in, %init : f32
-            linalg.yield %17 : f32
-          }
-        %expanded = tensor.expand_shape %reduced [[0, 1]] output_shape [4, 1] : tensor<4xf32> into tensor<4x1xf32>
-        %9 = linalg.generic {indexing_maps = [#map1, #map], iterator_types = ["parallel", "parallel"]} ins(%expanded : tensor<4x1xf32>) outs(%4 : tensor<4x256xf32>) attrs =  {broadcastDims = array<i64: 1>} {
-        ^bb0(%in: f32, %out: f32):
-          linalg.yield %in : f32
-        } -> tensor<4x256xf32>
-        %10 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%5, %9 : tensor<4x256xf32>, tensor<4x256xf32>) outs(%5 : tensor<4x256xf32>) {
-        ^bb0(%in: f32, %in_5: f32, %out: f32):
-          %17 = arith.subf %in, %in_5 : f32
-          linalg.yield %17 : f32
-        } -> tensor<4x256xf32>
-        %11 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%10 : tensor<4x256xf32>) outs(%10 : tensor<4x256xf32>) {
-        ^bb0(%in: f32, %out: f32):
-          %17 = math.exp %in : f32
-          linalg.yield %17 : f32
-        } -> tensor<4x256xf32>
-        %transposed_1 = linalg.transpose ins(%11 : tensor<4x256xf32>) outs(%6 : tensor<256x4xf32>) permutation = [1, 0] 
-        %12 = linalg.fill ins(%cst_0 : f32) outs(%7 : tensor<4xf32>) -> tensor<4xf32>
-        %reduced_2 = linalg.reduce ins(%transposed_1 : tensor<256x4xf32>) outs(%12 : tensor<4xf32>) dimensions = [0] 
-          (%in: f32, %init: f32) {
-            %17 = arith.addf %in, %init : f32
-            linalg.yield %17 : f32
-          }
-        %expanded_3 = tensor.expand_shape %reduced_2 [[0, 1]] output_shape [4, 1] : tensor<4xf32> into tensor<4x1xf32>
-        %13 = linalg.generic {indexing_maps = [#map1, #map], iterator_types = ["parallel", "parallel"]} ins(%expanded_3 : tensor<4x1xf32>) outs(%4 : tensor<4x256xf32>) attrs =  {broadcastDims = array<i64: 1>} {
-        ^bb0(%in: f32, %out: f32):
-          linalg.yield %in : f32
-        } -> tensor<4x256xf32>
-        %14 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%11, %13 : tensor<4x256xf32>, tensor<4x256xf32>) outs(%11 : tensor<4x256xf32>) {
-        ^bb0(%in: f32, %in_5: f32, %out: f32):
-          %17 = arith.divf %in, %in_5 : f32
-          linalg.yield %17 : f32
-        } -> tensor<4x256xf32>
-        %reinterpret_cast_4 = memref.reinterpret_cast %arg1 to offset: [%2], sizes: [4, 256], strides: [256, 1] : memref<*xbf16> to memref<4x256xbf16, strided<[256, 1], offset: ?>>
-        %15 = tensor.empty() : tensor<4x256xbf16>
-        %16 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%14 : tensor<4x256xf32>) outs(%15 : tensor<4x256xbf16>) {
-        ^bb0(%in: f32, %out: bf16):
-          %17 = arith.truncf %in : f32 to bf16
-          linalg.yield %17 : bf16
-        } -> tensor<4x256xbf16>
-        bufferization.materialize_in_destination %16 in writable %reinterpret_cast_4 : (tensor<4x256xbf16>, memref<4x256xbf16, strided<[256, 1], offset: ?>>) -> ()
-        return
-      }
-    }
-    """
-    air_module = Module.parse(air_tiled_ir_string)
-
-    ################################################
-    ## Tiling
-    ################################################
-
-    pipeline = (
-        "builtin.module("
-        + ",".join(
-            [
-                "air-resolve-tensor-opoperand-conflicts",
-                "air-override-memref-memory-space{scope=func memory-space=1}",
-            ]
-        )
-        + ")"
-    )
-    pm = air.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module.operation)
-
-    ################################################
-    ## Tiling
-    ################################################
-
-    # Load the MLIR transform IR from an external file
-    with open(args.transform_script, "r") as f:
-        transform_ir_string = f.read()
-    transform_ir = Module.parse(transform_ir_string)
-    run_transform(transform_ir, air_module)
-
-    ###############################################
-    # Binding scf.paralell to air hierarchies
-    ###############################################
+    # Get M, N dimensions (used for validation)
     M, N = args.M, args.N
-    input_size = (M, N)
-    tile_size = (4, N)  # herd size = 4 (4 AIE cores)
-    launch_size = tuple(i // t for i, t in zip(input_size, tile_size))
 
-    pipeline = (
-        "builtin.module("
-        + ",".join(
-            [
-                f"func.func(air-wrap-func-with-parallel{{loop-bounds={launch_size[0]},{launch_size[1]},1}})",
-                "air-par-to-launch{depth=-1 has-air-segment=true}",
-                "air-copy-to-dma",
-                "canonicalize",
-                "cse",
-            ]
+    # Check if using pre-transformed IR (skip initial transform steps)
+    if args.pre_transformed_ir:
+        ################################################
+        ## Load Pre-Transformed IR Directly
+        ################################################
+        pre_transformed_path = args.pre_transformed_ir
+        if not os.path.isabs(pre_transformed_path) and not os.path.exists(
+            pre_transformed_path
+        ):
+            pre_transformed_path = os.path.join(script_dir, pre_transformed_path)
+
+        print(f"Loading pre-transformed IR from: {pre_transformed_path}")
+        with open(pre_transformed_path, "r") as f:
+            pre_transformed_ir_string = f.read()
+        air_module = Module.parse(pre_transformed_ir_string)
+        print("Skipping transform script - using pre-transformed IR")
+
+        ###############################################
+        # Binding scf.parallel to air hierarchies
+        ###############################################
+        # Parse herd shape (e.g., "1x4" -> (1, 4), "4x4" -> (4, 4))
+        herd_cols, herd_rows = map(int, args.herd_shape.split("x"))
+        total_cores = herd_cols * herd_rows
+
+        if args.herd_shape == "4x4":
+            # 2D mode: 4×4 herd (16 cores)
+            # Input is 256×1024, each of 16 cores handles 1 row (256/16=16 rows total per launch)
+            # loop-bounds = (M/16, 1, 1) for outer loop
+            # But the transform creates scf.forall with 4×4 iteration, so we just need outer wrapping
+            launch_rows = M // total_cores
+            launch_size = (launch_rows, 1, 1)
+            print(f"Herd configuration: 4×4 (16 cores), launch size: {launch_size}")
+        else:
+            # 1D mode: 1×4 herd (4 cores)
+            input_size = (M, N)
+            tile_size = (args.tile_rows, N)
+            launch_size = (M // args.tile_rows, 1, 1)
+            print(
+                f"Herd configuration: 1×{args.tile_rows} ({args.tile_rows} cores), launch size: {launch_size}"
+            )
+
+        pipeline = (
+            "builtin.module("
+            + ",".join(
+                [
+                    f"func.func(air-wrap-func-with-parallel{{loop-bounds={launch_size[0]},{launch_size[1]},{launch_size[2]}}})",
+                    "air-par-to-launch{depth=-1 has-air-segment=true}",
+                    "air-copy-to-dma",
+                    "canonicalize",
+                    "cse",
+                ]
+            )
+            + ")"
         )
-        + ")"
-    )
-    pm = air.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module.operation)
+        pm = air.passmanager.PassManager.parse(pipeline)
+        pm.run(air_module.operation)
+    else:
+        ################################################
+        ## Input SCF and Linalg IR
+        ################################################
+
+        # Resolve input MLIR path - if not absolute and not found, try script directory
+        input_mlir_path = args.input_mlir
+        if not os.path.isabs(input_mlir_path) and not os.path.exists(input_mlir_path):
+            input_mlir_path = os.path.join(script_dir, input_mlir_path)
+
+        # Load the input MLIR from file
+        print(f"Loading input MLIR from: {input_mlir_path}")
+        with open(input_mlir_path, "r") as f:
+            air_tiled_ir_string = f.read()
+        air_module = Module.parse(air_tiled_ir_string)
+
+        ################################################
+        ## Tiling
+        ################################################
+
+        pipeline = (
+            "builtin.module("
+            + ",".join(
+                [
+                    "air-resolve-tensor-opoperand-conflicts",
+                    "air-override-memref-memory-space{scope=func memory-space=1}",
+                ]
+            )
+            + ")"
+        )
+        pm = air.passmanager.PassManager.parse(pipeline)
+        pm.run(air_module.operation)
+
+        ################################################
+        ## Tiling
+        ################################################
+
+        # Load the MLIR transform IR from an external file
+        with open(args.transform_script, "r") as f:
+            transform_ir_string = f.read()
+        transform_ir = Module.parse(transform_ir_string)
+        run_transform(transform_ir, air_module)
+
+        ###############################################
+        # Binding scf.parallel to air hierarchies
+        ###############################################
+        # Parse herd shape (e.g., "1x4" -> (1, 4), "4x4" -> (4, 4))
+        herd_cols, herd_rows = map(int, args.herd_shape.split("x"))
+        total_cores = herd_cols * herd_rows
+
+        if args.herd_shape == "4x4":
+            # 2D mode: 4×4 herd (16 cores)
+            # Input is 256×1024, each of 16 cores handles 1 row (256/16=16 rows total per launch)
+            # loop-bounds = (M/16, 1, 1) for outer loop
+            # But the transform creates scf.forall with 4×4 iteration, so we just need outer wrapping
+            launch_rows = M // total_cores
+            launch_size = (launch_rows, 1, 1)
+            print(f"Herd configuration: 4×4 (16 cores), launch size: {launch_size}")
+        else:
+            # 1D mode: 1×4 herd (4 cores)
+            launch_size = (M // args.tile_rows, 1, 1)
+            print(
+                f"Herd configuration: 1×{args.tile_rows} ({args.tile_rows} cores), launch size: {launch_size}"
+            )
+
+        pipeline = (
+            "builtin.module("
+            + ",".join(
+                [
+                    f"func.func(air-wrap-func-with-parallel{{loop-bounds={launch_size[0]},{launch_size[1]},{launch_size[2]}}})",
+                    "air-par-to-launch{depth=-1 has-air-segment=true}",
+                    "air-copy-to-dma",
+                    "canonicalize",
+                    "cse",
+                ]
+            )
+            + ")"
+        )
+        pm = air.passmanager.PassManager.parse(pipeline)
+        pm.run(air_module.operation)
 
     ###############################################
     # Run compile and load
     ###############################################
 
-    # input_type = np.float32
-    input_type = bfloat16
-    A = np.random.rand(M, N).astype(input_type)  # Shape [M, N]
-    C = softmax(A).astype(input_type)
-
-    ###### Compile and test
-    runner = XRTRunner(
-        omit_while_true_loop=False,
-        output_format=args.output_format,
-        instance_name="softmax_kernel",
-        runtime_loop_tiling_sizes=[],  # disable loop tiling to improve shim DMA stream efficiency / avoid BD count limiting
-    )
-    exit(
-        runner.run_test(
-            air_module,
-            inputs=[A],
-            expected_outputs=[C],
-            rtol=1e-2,
-            atol=1e-3,
+    if args.compile_only:
+        # Compile-only mode: generate xclbin and instruction binary without validation
+        print("Compile-only mode: generating xclbin and instruction binary...")
+        backend = XRTBackend(
+            omit_while_true_loop=False,
+            verbose=args.verbose,
+            debug_ir=args.debug_aircc,
+            runtime_loop_tiling_sizes=[],
+            output_format=args.output_format,
+            instance_name="softmax_kernel",
         )
-    )
+        module_function = backend.compile(air_module)
+        backend.unload()
+        print("Compilation complete. Generated files:")
+        print("  - air.xclbin")
+        print("  - air.insts.bin")
+        print("Run profiling with: ./test.exe")
+        exit(0)
+    else:
+        # Normal mode: compile and run validation
+        input_type = bfloat16
+        # Generate random input in range [-512, 512]
+        A = (np.random.rand(M, N) * 1024 - 512).astype(
+            input_type
+        )  # Shape [M, N], range [-512, 512]
+        C = softmax(A).astype(input_type)
+
+        ###### Compile and test
+        runner = XRTRunner(
+            omit_while_true_loop=False,
+            runtime_loop_tiling_sizes=[],  # No tiling = single large DMA transfer
+            verbose=args.verbose,
+            debug_ir=args.debug_aircc,
+            output_format=args.output_format,
+            instance_name="softmax_kernel",
+        )
+        exit(
+            runner.run_test(
+                air_module,
+                inputs=[A],
+                expected_outputs=[C],
+                rtol=0.04,  # 4% relative tolerance (matches mlir-aie reference)
+                atol=0.001,  # Absolute tolerance (matches mlir-aie reference)
+            )
+        )
