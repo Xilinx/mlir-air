@@ -951,7 +951,6 @@ if __name__ == "__main__":
         runtime_loop_tiling_sizes=[1, 1],
         output_format="elf",
         instance_name="attention_bf16",
-        debug_ir=True,
     )
 
     if args.compile_mode == "run":
