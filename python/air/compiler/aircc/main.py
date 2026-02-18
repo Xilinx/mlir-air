@@ -781,7 +781,12 @@ def run(mlir_module, args=None):
             + f" use-lock-race-condition-fix={opts.use_lock_race_condition_fix}"
         )
         air_to_aie_pass = air_to_aie_pass + "}"
-        pass_pipeline = ",".join([air_to_aie_pass])
+        pass_pipeline = ",".join(
+            [
+                air_to_aie_pass,
+                "air-merge-unrolled-devices",
+            ]
+        )
 
         air_to_aie_file = opts.tmpdir + "/aie." + air_mlir_filename
         air_to_aie_module = Module.parse(str(air_placed_module))
