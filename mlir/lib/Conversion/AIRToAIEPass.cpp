@@ -593,12 +593,45 @@ LogicalResult validateSegmentUnrollFactors(air::SegmentOp seg) {
   return success();
 }
 
-// Map (original device, unroll factor) -> sub-device type for NPU2
+// Map (original device, unroll factor) -> sub-device type for NPU1 and NPU2
 // Returns the appropriate sub-device type based on column count division
 AIE::AIEDevice computeSubDeviceType(AIE::AIEDevice origDevice,
                                     int unrollFactor) {
-  // Only NPU2 family supports subdivision
   switch (origDevice) {
+  // NPU1 family (4 columns)
+  case AIE::AIEDevice::npu1:
+    // npu1 has 4 columns
+    switch (unrollFactor) {
+    case 1:
+      return AIE::AIEDevice::npu1;
+    case 2:
+      return AIE::AIEDevice::npu1_2col;
+    case 4:
+      return AIE::AIEDevice::npu1_1col;
+    default:
+      return origDevice;
+    }
+  case AIE::AIEDevice::npu1_3col:
+    // npu1_3col has 3 columns
+    switch (unrollFactor) {
+    case 1:
+      return AIE::AIEDevice::npu1_3col;
+    case 3:
+      return AIE::AIEDevice::npu1_1col;
+    default:
+      return origDevice;
+    }
+  case AIE::AIEDevice::npu1_2col:
+    // npu1_2col has 2 columns
+    switch (unrollFactor) {
+    case 1:
+      return AIE::AIEDevice::npu1_2col;
+    case 2:
+      return AIE::AIEDevice::npu1_1col;
+    default:
+      return origDevice;
+    }
+  // NPU2 family (8 columns)
   case AIE::AIEDevice::npu2:
     // npu2 has 8 columns
     switch (unrollFactor) {
