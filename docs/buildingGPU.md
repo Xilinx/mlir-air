@@ -194,6 +194,7 @@ source utils/env_setup_gpu.sh install
 # Run the compiled output
 mlir-runner --entry-point-result=void \
     --shared-libs=$LLVM_INSTALL_DIR/lib/libmlir_rocm_runtime.so \
+    --shared-libs=$MLIR_AIR_INSTALL_DIR/lib/libairgpu.so \
     output.mlir
 ```
 
@@ -203,6 +204,7 @@ For debugging with ISA output:
 mlir-runner --debug-only=serialize-to-isa \
     --entry-point-result=void \
     --shared-libs=$LLVM_INSTALL_DIR/lib/libmlir_rocm_runtime.so \
+    --shared-libs=$MLIR_AIR_INSTALL_DIR/lib/libairgpu.so \
     output.mlir
 ```
 
@@ -220,6 +222,7 @@ aircc.py --target gpu --gpu-arch gfx942 \
 # Run
 mlir-runner --entry-point-result=void \
     --shared-libs=$LLVM_INSTALL_DIR/lib/libmlir_rocm_runtime.so \
+    --shared-libs=$MLIR_AIR_INSTALL_DIR/lib/libairgpu.so \
     /tmp/output.mlir
 ```
 
@@ -264,6 +267,7 @@ mlir-opt step3_gpu.mlir \
 ```bash
 mlir-runner --entry-point-result=void \
     --shared-libs=$LLVM_INSTALL_DIR/lib/libmlir_rocm_runtime.so \
+    --shared-libs=$MLIR_AIR_INSTALL_DIR/lib/libairgpu.so \
     step4_final.mlir
 ```
 
