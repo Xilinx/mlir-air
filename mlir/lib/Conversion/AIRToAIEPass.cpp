@@ -695,6 +695,186 @@ void push_back_if_unique(std::vector<T> &vec, T entry) {
     vec.push_back(entry);
 }
 
+/// Collect all values that alias the given buffer through view-like operations.
+/// This includes memref.subview, memref.collapse_shape, memref.expand_shape,
+/// memref.reinterpret_cast, etc.
+static void collectBufferAliases(Value buffer,
+                                 llvm::SmallDenseSet<Value> &aliases) {
+  aliases.insert(buffer);
+  SmallVector<Value> worklist;
+  worklist.push_back(buffer);
+
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    for (Operation *user : current.getUsers()) {
+      // Check if this is a view-like op that creates an alias
+      Value result = nullptr;
+      if (auto viewOp = dyn_cast<ViewLikeOpInterface>(user)) {
+        result = viewOp->getResult(0);
+      }
+      if (result && !aliases.contains(result)) {
+        aliases.insert(result);
+        worklist.push_back(result);
+      }
+    }
+  }
+}
+
+/// Allocate producer/consumer locks for shared L1 buffer synchronization.
+/// This enables safe inter-core communication via shared L1 memory.
+///
+/// The function:
+/// 1. Uses getLockValuePair() to infer lock init values from IR patterns
+/// 2. Allocates producer and consumer locks on the owner tile
+/// 3. Inserts lock pairs around EACH operation that accesses the shared buffer
+///
+/// This general implementation handles:
+/// - memref.load, memref.store (via MemoryEffects::Read/Write)
+/// - vector.transfer_read, vector.transfer_write
+/// - linalg operations (linalg.generic, linalg.matmul, etc.)
+/// - func.call to external kernels (using operand position heuristic)
+/// - Any operation with memory effects on the buffer
+///
+/// \param aie_device The surrounding AIE device operation
+/// \param sharedBuffer The shared L1 buffer allocated on the owner tile
+/// \param ownerTile The tile that owns the shared buffer
+/// \param coreOps Set of cores that use the shared buffer
+static void
+allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
+                            AIE::BufferOp sharedBuffer, AIE::TileOp ownerTile,
+                            const llvm::SmallSet<AIE::CoreOp, 2> &coreOps) {
+
+  const auto &targetModel = aie_device.getTargetModel();
+  bool usesSemaphoreLocks =
+      targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
+
+  // Infer lock init values from buffer access patterns
+  auto initPair =
+      air::getLockValuePair(targetModel, sharedBuffer->getResult(0));
+  int prodLockInit = std::max(initPair.first, initPair.second);
+  int consLockInit = 0;
+
+  // Allocate producer and consumer locks
+  std::string bufName = sharedBuffer.getSymName().value_or("shared_l1").str();
+  OpBuilder lockBuilder(ownerTile);
+  AIE::LockOp prodLock =
+      air::allocateLockOp(aie_device, ownerTile, prodLockInit, -1,
+                          lockBuilder.getStringAttr(bufName + "_prod_lock"));
+  AIE::LockOp consLock =
+      air::allocateLockOp(aie_device, ownerTile, consLockInit, -1,
+                          lockBuilder.getStringAttr(bufName + "_cons_lock"));
+
+  LLVM_DEBUG(llvm::dbgs() << "AIRToAIE: Allocated locks for shared L1 buffer "
+                          << bufName << " - prod_lock(init=" << prodLockInit
+                          << "), cons_lock(init=" << consLockInit << ")\n");
+
+  AIE::LockAction acqAction = usesSemaphoreLocks
+                                  ? AIE::LockAction::AcquireGreaterEqual
+                                  : AIE::LockAction::Acquire;
+
+  // Helper lambda to find the last memref operand index in a func.call
+  auto findLastMemrefOperandIndex = [](func::CallOp callOp) -> int {
+    int lastMemrefIdx = -1;
+    for (int i = callOp.getNumOperands() - 1; i >= 0; --i) {
+      if (isa<MemRefType>(callOp.getOperand(i).getType())) {
+        lastMemrefIdx = i;
+        break;
+      }
+    }
+    return lastMemrefIdx;
+  };
+
+  // For each core that uses the shared buffer
+  for (auto coreOp : coreOps) {
+    // Collect all aliases of the shared buffer within this core
+    llvm::SmallDenseSet<Value> bufferAliases;
+    collectBufferAliases(sharedBuffer->getResult(0), bufferAliases);
+
+    // Walk all operations in the core and insert lock pairs around each
+    // operation that accesses the shared buffer
+    coreOp.walk([&](Operation *op) {
+      bool accessesBuffer = false;
+      bool isProducer = false; // writes to buffer
+      bool isConsumer = false; // reads from buffer
+
+      // Check memory effects for ops that have them (memref.load/store,
+      // vector.transfer_read/write, linalg ops, etc.)
+      for (Value alias : bufferAliases) {
+        if (hasEffect<MemoryEffects::Write>(op, alias)) {
+          accessesBuffer = true;
+          isProducer = true;
+        }
+        if (hasEffect<MemoryEffects::Read>(op, alias)) {
+          accessesBuffer = true;
+          isConsumer = true;
+        }
+      }
+
+      // Special handling for func.call (external functions don't have
+      // memory effect attributes). Use operand position heuristic:
+      // last memref operand = output (write), others = input (read).
+      if (auto callOp = dyn_cast<func::CallOp>(op)) {
+        int lastMemrefIdx = findLastMemrefOperandIndex(callOp);
+        for (int i = 0; i < (int)callOp.getNumOperands(); ++i) {
+          Value operand = callOp.getOperand(i);
+          if (bufferAliases.contains(operand)) {
+            accessesBuffer = true;
+            if (i == lastMemrefIdx) {
+              // Last memref operand → write (producer)
+              isProducer = true;
+            } else {
+              // Not last memref operand → read (consumer)
+              isConsumer = true;
+            }
+          }
+        }
+      }
+
+      if (!accessesBuffer)
+        return;
+
+      // Insert lock pair around THIS operation
+      OpBuilder builder(op);
+
+      if (isProducer && !isConsumer) {
+        // Pure producer: acquire prod_lock, do op, release cons_lock
+        AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
+        builder.setInsertionPointAfter(op);
+        AIE::UseLockOp::create(builder, op->getLoc(), consLock,
+                               AIE::LockAction::Release, 1);
+        LLVM_DEBUG(llvm::dbgs()
+                   << "AIRToAIE: Inserted producer lock pair around " << *op
+                   << " in core(" << coreOp.getTileOp().getCol() << ", "
+                   << coreOp.getTileOp().getRow() << ")\n");
+      } else if (isConsumer && !isProducer) {
+        // Pure consumer: acquire cons_lock, do op, release prod_lock
+        AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction, 1);
+        builder.setInsertionPointAfter(op);
+        AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
+                               AIE::LockAction::Release, 1);
+        LLVM_DEBUG(llvm::dbgs()
+                   << "AIRToAIE: Inserted consumer lock pair around " << *op
+                   << " in core(" << coreOp.getTileOp().getCol() << ", "
+                   << coreOp.getTileOp().getRow() << ")\n");
+      } else if (isProducer && isConsumer) {
+        // Both producer and consumer (read-modify-write):
+        // Need both locks to ensure exclusive access
+        AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
+        AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction, 1);
+        builder.setInsertionPointAfter(op);
+        AIE::UseLockOp::create(builder, op->getLoc(), consLock,
+                               AIE::LockAction::Release, 1);
+        AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
+                               AIE::LockAction::Release, 1);
+        LLVM_DEBUG(llvm::dbgs()
+                   << "AIRToAIE: Inserted read-modify-write lock pairs around "
+                   << *op << " in core(" << coreOp.getTileOp().getCol() << ", "
+                   << coreOp.getTileOp().getRow() << ")\n");
+      }
+    });
+  }
+}
+
 void createAIEModulesAndOutlineCores(
     ModuleOp module,
     std::vector<std::tuple<AIE::DeviceOp, air::HerdOp,
@@ -815,9 +995,10 @@ void createAIEModulesAndOutlineCores(
     outlineAIECores(builder, aie_dev, h, tileToHerdMap, device_options);
   }
   // Outline any L1 memref allocs used by herds but located outside of any herd
+  // This includes both local L1 buffers (used by single herd) and shared L1
+  // buffers (used by multiple herds for inter-herd communication).
   std::vector<Value> sharedL1Memrefs;
   for (auto &p : aie_modules) {
-    // for (auto h : herds) {
     auto h = std::get<1>(p);
     for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
       auto oper = h.getKernelOperand(i);
@@ -831,6 +1012,8 @@ void createAIEModulesAndOutlineCores(
       push_back_if_unique<Value>(sharedL1Memrefs, oper);
     }
   }
+
+  // Map each L1 memref alloc to the set of cores that use it
   std::map<Operation *, llvm::SmallSet<AIE::CoreOp, 2>> sharedL1AllocsToCoreMap;
   for (auto memref : sharedL1Memrefs) {
     for (auto user : memref.getUsers()) {
@@ -840,15 +1023,101 @@ void createAIEModulesAndOutlineCores(
       sharedL1AllocsToCoreMap[memref.getDefiningOp()].insert(coreOp);
     }
   }
+
+  // Process L1 memrefs: distinguish between local (single core) and shared
+  // (multiple cores) cases.
+  // - Local L1: Clone the alloc into the single core
+  // - Shared L1: Allocate a single aie.buffer on one tile, and have all cores
+  //              reference the same buffer. This enables shared L1 memory
+  //              communication between neighboring AIE tiles.
+  uint64_t sharedBufferId = 0;
   for (auto memref : sharedL1Memrefs) {
-    for (auto coreOp : sharedL1AllocsToCoreMap[memref.getDefiningOp()]) {
-      OpBuilder builder(coreOp);
-      builder.setInsertionPointToStart(&coreOp.getBody().front());
-      auto outlinedL1Alloc = builder.clone(*memref.getDefiningOp());
-      for (unsigned i = 0; i < memref.getDefiningOp()->getNumResults(); i++)
-        replaceAllUsesInRegionWith(memref.getDefiningOp()->getResult(i),
-                                   outlinedL1Alloc->getResult(i),
-                                   coreOp.getBody());
+    auto &coreOps = sharedL1AllocsToCoreMap[memref.getDefiningOp()];
+
+    if (coreOps.size() > 1) {
+      // SHARED L1 BUFFER: Multiple cores use the same memref
+      // Allocate a single aie.buffer on one "owner" tile and have all cores
+      // reference it. The downstream mlir-aie compiler will validate that
+      // the tiles are adjacent and can share L1 memory.
+
+      // Find a tile that has legal memory affinity with all other cores.
+      // Use AIE target model's isLegalMemAffinity() to validate placement.
+      AIE::TileOp ownerTile = nullptr;
+      for (auto coreOp : coreOps) {
+        AIE::TileOp candidateTile = coreOp.getTileOp();
+        auto aie_device = candidateTile->getParentOfType<AIE::DeviceOp>();
+        const auto &targetModel = aie_device.getTargetModel();
+        int memCol = candidateTile.getCol();
+        int memRow = candidateTile.getRow();
+
+        // Check if this tile has legal memory affinity with all other cores
+        bool validForAll = true;
+        for (auto otherCore : coreOps) {
+          AIE::TileOp otherTile = otherCore.getTileOp();
+          int coreCol = otherTile.getCol();
+          int coreRow = otherTile.getRow();
+          if (!targetModel.isLegalMemAffinity(coreCol, coreRow, memCol,
+                                              memRow)) {
+            validForAll = false;
+            break;
+          }
+        }
+        if (validForAll) {
+          ownerTile = candidateTile;
+          break;
+        }
+      }
+
+      // Fallback to first core if no tile has universal affinity
+      if (!ownerTile) {
+        AIE::CoreOp firstCore = *coreOps.begin();
+        ownerTile = firstCore.getTileOp();
+      }
+
+      // Get the memref type for buffer allocation
+      auto memrefTy = llvm::cast<MemRefType>(memref.getType());
+
+      // Create a single shared buffer on the owner tile
+      OpBuilder bufBuilder(ownerTile);
+      Operation *t = ownerTile.getOperation();
+      while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+        t = t->getNextNode();
+      bufBuilder.setInsertionPointAfter(t);
+
+      AIE::BufferOp sharedBuffer =
+          allocateBufferOp(sharedBufferId, memrefTy, ownerTile,
+                           bufBuilder.getStringAttr("shared_l1"));
+
+      LLVM_DEBUG(llvm::dbgs()
+                 << "AIRToAIE: Created shared L1 buffer "
+                 << sharedBuffer.getSymName().value_or("unnamed") << " on tile("
+                 << ownerTile.getCol() << ", " << ownerTile.getRow() << ") for "
+                 << coreOps.size() << " cores\n");
+
+      // Replace uses in ALL cores with the SAME shared buffer
+      for (auto coreOp : coreOps) {
+        for (unsigned i = 0; i < memref.getDefiningOp()->getNumResults(); i++) {
+          replaceAllUsesInRegionWith(memref.getDefiningOp()->getResult(i),
+                                     sharedBuffer->getResult(0),
+                                     coreOp.getBody());
+        }
+      }
+
+      // Allocate producer/consumer locks for shared L1 buffer synchronization
+      auto aie_device = ownerTile->getParentOfType<AIE::DeviceOp>();
+      allocateSharedL1BufferLocks(aie_device, sharedBuffer, ownerTile, coreOps);
+    } else {
+      // LOCAL L1 BUFFER: Single core uses the memref
+      // Clone the alloc into the core
+      for (auto coreOp : coreOps) {
+        OpBuilder builder(coreOp);
+        builder.setInsertionPointToStart(&coreOp.getBody().front());
+        auto outlinedL1Alloc = builder.clone(*memref.getDefiningOp());
+        for (unsigned i = 0; i < memref.getDefiningOp()->getNumResults(); i++)
+          replaceAllUsesInRegionWith(memref.getDefiningOp()->getResult(i),
+                                     outlinedL1Alloc->getResult(i),
+                                     coreOp.getBody());
+      }
     }
   }
 }
