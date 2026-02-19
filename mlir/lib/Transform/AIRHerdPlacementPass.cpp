@@ -47,6 +47,13 @@ struct CascadeConnection {
   air::ChannelOp channelOp;
 };
 
+// Represents a shared L1 memref connection between two herds
+struct SharedL1Connection {
+  std::string herd1Name;
+  std::string herd2Name;
+  Value sharedMemref;
+};
+
 class Herd {
 
 public:
@@ -191,6 +198,7 @@ public:
     module.walk([&](air::SegmentOp part) {
       std::vector<std::unique_ptr<Herd>> segmentHerds;
       std::vector<CascadeConnection> cascadeConnections;
+      std::vector<SharedL1Connection> sharedL1Connections;
 
       // Collect herds
       part.walk([&](air::HerdOp herd) {
@@ -217,6 +225,9 @@ public:
       // Analyze cascade channel connections
       analyzeCascadeConnections(part, cascadeConnections);
 
+      // Analyze shared L1 memref connections
+      analyzeSharedL1Connections(part, sharedL1Connections);
+
       // If the size and offset attributes of the segment op are set then use
       // them. Otherwise use the values from the command line.
       auto num_rows_op = part.getNumRows();
@@ -231,7 +242,8 @@ public:
       auto segment =
           std::make_unique<Segment>(num_rows, num_cols, row_offset, col_offset);
 
-      placeHerdsInSegment(segmentHerds, segment, cascadeConnections);
+      placeHerdsInSegment(segmentHerds, segment, cascadeConnections,
+                          sharedL1Connections);
 
       auto intTy = IntegerType::get(part->getContext(), 64);
       part->setAttr(part.getRowOffsetAttrName(),
@@ -289,6 +301,65 @@ private:
       return getHerdName(herd);
     }
     return "";
+  }
+
+  // Analyze shared L1 memref connections within a segment
+  // Detects when the same L1 memref (memory space 2) is accessed by multiple
+  // herds
+  void analyzeSharedL1Connections(
+      air::SegmentOp segment,
+      std::vector<SharedL1Connection> &sharedL1Connections) {
+
+    // Map: L1 memref value -> set of herds that access it
+    DenseMap<Value, std::set<std::string>> memrefToHerds;
+
+    // Walk through all herds and collect their L1 memref arguments
+    segment.walk([&](air::HerdOp herd) {
+      std::string herdName = getHerdName(herd);
+      if (herdName.empty())
+        return;
+
+      // Check herd's kernel arguments for L1 memrefs
+      // The herd operation has args that map segment-level values to herd
+      // arguments
+      for (auto arg : herd.getKernelOperands()) {
+        auto memrefType = dyn_cast<MemRefType>(arg.getType());
+        if (!memrefType)
+          continue;
+
+        // Check if memory space is 2 (L1)
+        auto memorySpace = memrefType.getMemorySpaceAsInt();
+        if (memorySpace == 2) {
+          memrefToHerds[arg].insert(herdName);
+          LLVM_DEBUG(llvm::dbgs() << "Found L1 memref accessed by herd "
+                                  << herdName << "\n");
+        }
+      }
+    });
+
+    // Create connections for memrefs shared by multiple herds
+    for (auto &entry : memrefToHerds) {
+      Value memref = entry.first;
+      const std::set<std::string> &herds = entry.second;
+
+      if (herds.size() > 1) {
+        // Create connections for all pairs of herds sharing this memref
+        std::vector<std::string> herdList(herds.begin(), herds.end());
+        for (size_t i = 0; i < herdList.size(); i++) {
+          for (size_t j = i + 1; j < herdList.size(); j++) {
+            SharedL1Connection conn;
+            conn.herd1Name = herdList[i];
+            conn.herd2Name = herdList[j];
+            conn.sharedMemref = memref;
+            sharedL1Connections.push_back(conn);
+
+            LLVM_DEBUG(llvm::dbgs()
+                       << "Found shared L1 connection: " << herdList[i]
+                       << " <-> " << herdList[j] << "\n");
+          }
+        }
+      }
+    }
   }
 
   // Analyze cascade channel connections within a segment
@@ -390,16 +461,19 @@ private:
     return westToEast || northToSouth;
   }
 
-  void placeHerdsInSegment(std::vector<std::unique_ptr<Herd>> &unplacedHerds,
-                           std::unique_ptr<Segment> &segment,
-                           std::vector<CascadeConnection> &cascadeConnections) {
+  void placeHerdsInSegment(
+      std::vector<std::unique_ptr<Herd>> &unplacedHerds,
+      std::unique_ptr<Segment> &segment,
+      std::vector<CascadeConnection> &cascadeConnections,
+      std::vector<SharedL1Connection> sharedL1Connections = {}) {
 
     std::vector<std::unique_ptr<Herd>> placedHerds;
 
-    // If there are cascade connections, use cascade-aware placement
-    if (!cascadeConnections.empty()) {
-      cascadeAwarePlacement(segment, unplacedHerds, placedHerds,
-                            cascadeConnections);
+    // If there are cascade or shared L1 connections, use neighbor-aware
+    // placement
+    if (!cascadeConnections.empty() || !sharedL1Connections.empty()) {
+      neighborAwarePlacement(segment, unplacedHerds, placedHerds,
+                             cascadeConnections, sharedL1Connections);
     } else {
       // Sort by size (largest first) for naive placement
       std::sort(
@@ -493,24 +567,172 @@ private:
     return order;
   }
 
-  // Cascade-aware placement algorithm
+  // Check if two herds are neighbors (adjacent tiles)
+  bool areNeighbors(Herd *herd1, Herd *herd2) {
+    if (herd1->getLocX() < 0 || herd2->getLocX() < 0)
+      return false;
+
+    int32_t x1 = herd1->getLocX();
+    int32_t y1 = herd1->getLocY();
+    int32_t x2 = herd2->getLocX();
+    int32_t y2 = herd2->getLocY();
+
+    // Check if herd2 is east of herd1
+    bool eastNeighbor = (x1 + herd1->getNumCols() == x2) && (y1 == y2);
+    // Check if herd2 is west of herd1
+    bool westNeighbor = (x2 + herd2->getNumCols() == x1) && (y1 == y2);
+    // Check if herd2 is north of herd1
+    bool northNeighbor = (x1 == x2) && (y1 == y2 + herd2->getNumRows());
+    // Check if herd2 is south of herd1
+    bool southNeighbor = (x1 == x2) && (y2 == y1 + herd1->getNumRows());
+
+    return eastNeighbor || westNeighbor || northNeighbor || southNeighbor;
+  }
+
+  // Place a herd adjacent to ALL of its L1 neighbors (if possible)
+  bool
+  placeAdjacentToAllL1Neighbors(std::unique_ptr<Segment> &segment,
+                                std::unique_ptr<Herd> &herd,
+                                const std::vector<Herd *> &placedL1Neighbors) {
+
+    if (placedL1Neighbors.empty()) {
+      return false;
+    }
+
+    // Try to find a position that is adjacent to ALL placed L1 neighbors
+    for (int64_t y = 0; y < segment->getNumRows(); y++) {
+      for (int64_t x = 0; x < segment->getNumCols(); x++) {
+        if (!segment->isLegalPlacement(herd, y, x)) {
+          continue;
+        }
+
+        // Temporarily set location to check adjacency
+        int32_t origX = herd->getLocX();
+        int32_t origY = herd->getLocY();
+        herd->setLocX(x);
+        herd->setLocY(y);
+
+        // Check if this position is adjacent to all placed L1 neighbors
+        bool adjacentToAll = true;
+        for (Herd *neighbor : placedL1Neighbors) {
+          if (!areNeighbors(herd.get(), neighbor)) {
+            adjacentToAll = false;
+            break;
+          }
+        }
+
+        // Reset location
+        herd->setLocX(origX);
+        herd->setLocY(origY);
+
+        if (adjacentToAll) {
+          segment->placeHerd(herd, y, x);
+          herd->setLocX(x);
+          herd->setLocY(y);
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Placed " << herd->getName(0) << " at (" << x << ", "
+                     << y << ") adjacent to all " << placedL1Neighbors.size()
+                     << " L1 neighbors\n");
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // Place a herd adjacent to another herd (any direction)
+  bool placeAdjacentToHerd(std::unique_ptr<Segment> &segment,
+                           std::unique_ptr<Herd> &herd, Herd *neighbor) {
+    int32_t neighX = neighbor->getLocX();
+    int32_t neighY = neighbor->getLocY();
+
+    // Try east
+    int32_t candidateX = neighX + neighbor->getNumCols();
+    int32_t candidateY = neighY;
+    if (segment->isLegalPlacement(herd, candidateY, candidateX)) {
+      segment->placeHerd(herd, candidateY, candidateX);
+      herd->setLocX(candidateX);
+      herd->setLocY(candidateY);
+      LLVM_DEBUG(llvm::dbgs() << "Placed " << herd->getName(0) << " east of "
+                              << neighbor->getName(0) << " at (" << candidateX
+                              << ", " << candidateY << ")\n");
+      return true;
+    }
+
+    // Try west
+    candidateX = neighX - herd->getNumCols();
+    candidateY = neighY;
+    if (candidateX >= 0 &&
+        segment->isLegalPlacement(herd, candidateY, candidateX)) {
+      segment->placeHerd(herd, candidateY, candidateX);
+      herd->setLocX(candidateX);
+      herd->setLocY(candidateY);
+      LLVM_DEBUG(llvm::dbgs() << "Placed " << herd->getName(0) << " west of "
+                              << neighbor->getName(0) << " at (" << candidateX
+                              << ", " << candidateY << ")\n");
+      return true;
+    }
+
+    // Try north
+    candidateX = neighX;
+    candidateY = neighY + neighbor->getNumRows();
+    if (candidateY < segment->getNumRows() &&
+        segment->isLegalPlacement(herd, candidateY, candidateX)) {
+      segment->placeHerd(herd, candidateY, candidateX);
+      herd->setLocX(candidateX);
+      herd->setLocY(candidateY);
+      LLVM_DEBUG(llvm::dbgs() << "Placed " << herd->getName(0) << " north of "
+                              << neighbor->getName(0) << " at (" << candidateX
+                              << ", " << candidateY << ")\n");
+      return true;
+    }
+
+    // Try south
+    candidateX = neighX;
+    candidateY = neighY - herd->getNumRows();
+    if (candidateY >= 0 &&
+        segment->isLegalPlacement(herd, candidateY, candidateX)) {
+      segment->placeHerd(herd, candidateY, candidateX);
+      herd->setLocX(candidateX);
+      herd->setLocY(candidateY);
+      LLVM_DEBUG(llvm::dbgs() << "Placed " << herd->getName(0) << " south of "
+                              << neighbor->getName(0) << " at (" << candidateX
+                              << ", " << candidateY << ")\n");
+      return true;
+    }
+
+    return false;
+  }
+
+  // Neighbor-aware placement algorithm that handles both cascade and shared L1
+  // connections
   void
-  cascadeAwarePlacement(std::unique_ptr<Segment> &segment,
-                        std::vector<std::unique_ptr<Herd>> &unplacedHerds,
-                        std::vector<std::unique_ptr<Herd>> &placedHerds,
-                        std::vector<CascadeConnection> &cascadeConnections) {
+  neighborAwarePlacement(std::unique_ptr<Segment> &segment,
+                         std::vector<std::unique_ptr<Herd>> &unplacedHerds,
+                         std::vector<std::unique_ptr<Herd>> &placedHerds,
+                         std::vector<CascadeConnection> &cascadeConnections,
+                         std::vector<SharedL1Connection> &sharedL1Connections) {
 
     LLVM_DEBUG(llvm::dbgs()
-               << "Starting cascade-aware placement with "
-               << cascadeConnections.size() << " cascade connections\n");
+               << "Starting neighbor-aware placement with "
+               << cascadeConnections.size() << " cascade connections and "
+               << sharedL1Connections.size() << " shared L1 connections\n");
 
-    // Build maps for cascade relationships
+    // Build maps for cascade relationships (directional: producer -> consumer)
     std::map<std::string, std::vector<std::string>> herdToConsumers;
     std::map<std::string, std::vector<std::string>> herdToProducers;
 
     for (const auto &conn : cascadeConnections) {
       herdToConsumers[conn.producerHerdName].push_back(conn.consumerHerdName);
       herdToProducers[conn.consumerHerdName].push_back(conn.producerHerdName);
+    }
+
+    // Build map for shared L1 relationships (bidirectional)
+    std::map<std::string, std::set<std::string>> herdToL1Neighbors;
+    for (const auto &conn : sharedL1Connections) {
+      herdToL1Neighbors[conn.herd1Name].insert(conn.herd2Name);
+      herdToL1Neighbors[conn.herd2Name].insert(conn.herd1Name);
     }
 
     // Find consumers with multiple producers - these need coordinated placement
@@ -523,7 +745,18 @@ private:
       }
     }
 
-    // Place herds in topological order
+    // Find herds that have multiple L1 neighbors - they need coordinated
+    // placement
+    std::set<std::string> multiL1NeighborHerds;
+    for (const auto &entry : herdToL1Neighbors) {
+      if (entry.second.size() > 1) {
+        multiL1NeighborHerds.insert(entry.first);
+        LLVM_DEBUG(llvm::dbgs() << "Herd " << entry.first << " has "
+                                << entry.second.size() << " L1 neighbors\n");
+      }
+    }
+
+    // Place herds in topological order (based on cascade connections)
     auto topOrder =
         buildCascadeTopologicalOrder(unplacedHerds, cascadeConnections);
 
@@ -548,17 +781,14 @@ private:
       auto &herd = unplacedHerds[herdIdx];
       bool placed = false;
 
-      // Check if this herd is a consumer with multiple producers
+      // Check if this herd is a consumer with multiple producers (cascade)
       auto prodIt = herdToProducers.find(herdName);
       if (prodIt != herdToProducers.end() && prodIt->second.size() > 1) {
-        // This is a consumer with multiple producers
-        // Try to find a position where it can be adjacent to all placed
-        // producers
         placed = placeConsumerWithMultipleProducers(segment, herd, placedHerds,
                                                     prodIt->second);
       }
 
-      // Check if this herd has a single placed producer
+      // Check if this herd has a single placed producer (cascade)
       if (!placed && prodIt != herdToProducers.end()) {
         for (const auto &producerName : prodIt->second) {
           Herd *placedProducer = findPlacedHerd(placedHerds, producerName);
@@ -569,15 +799,73 @@ private:
         }
       }
 
-      // Check if this producer's consumer has multiple producers
-      // If so, coordinate placement with other producers
+      // Check if this herd shares L1 with a herd that has multiple L1 neighbors
+      // (coordinate placement so the multi-neighbor herd can be adjacent to
+      // all) This must be checked BEFORE regular adjacent placement
+      if (!placed) {
+        auto l1It = herdToL1Neighbors.find(herdName);
+        if (l1It != herdToL1Neighbors.end()) {
+          for (const auto &neighborName : l1It->second) {
+            if (multiL1NeighborHerds.count(neighborName)) {
+              placed = placeForMultiL1NeighborHerd(
+                  segment, herd, herdName, neighborName,
+                  herdToL1Neighbors[neighborName], placedHerds,
+                  plannedConsumerPositions, unplacedHerds);
+              if (placed)
+                break;
+            }
+          }
+        }
+      }
+
+      // Check if this herd shares L1 memory with any placed herd
+      if (!placed) {
+        auto l1It = herdToL1Neighbors.find(herdName);
+        if (l1It != herdToL1Neighbors.end()) {
+          // Collect all placed L1 neighbors
+          std::vector<Herd *> placedL1Neighbors;
+          for (const auto &neighborName : l1It->second) {
+            Herd *placedNeighbor = findPlacedHerd(placedHerds, neighborName);
+            if (placedNeighbor) {
+              placedL1Neighbors.push_back(placedNeighbor);
+            }
+          }
+
+          if (!placedL1Neighbors.empty()) {
+            // Try to place adjacent to ALL L1 neighbors first
+            if (placedL1Neighbors.size() > 1) {
+              placed = placeAdjacentToAllL1Neighbors(segment, herd,
+                                                     placedL1Neighbors);
+              if (placed) {
+                LLVM_DEBUG(llvm::dbgs()
+                           << "Placed " << herdName << " adjacent to all "
+                           << placedL1Neighbors.size() << " L1 neighbors\n");
+              }
+            }
+
+            // Fallback: place adjacent to at least one L1 neighbor
+            if (!placed) {
+              for (Herd *placedNeighbor : placedL1Neighbors) {
+                placed = placeAdjacentToHerd(segment, herd, placedNeighbor);
+                if (placed) {
+                  LLVM_DEBUG(llvm::dbgs()
+                             << "Placed " << herdName << " adjacent to "
+                             << placedNeighbor->getName(0)
+                             << " (shared L1, partial)\n");
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Check if this producer's consumer has multiple producers (cascade)
       if (!placed) {
         auto consIt = herdToConsumers.find(herdName);
         if (consIt != herdToConsumers.end()) {
           for (const auto &consumerName : consIt->second) {
             if (multiProducerConsumers.count(consumerName)) {
-              // This producer feeds a multi-producer consumer
-              // Plan a coordinated placement
               placed = placeProducerForMultiConsumer(
                   segment, herd, herdName, consumerName,
                   herdToProducers[consumerName], placedHerds,
@@ -589,23 +877,29 @@ private:
         }
       }
 
-      // Fallback: standard placement with cascade awareness
+      // Fallback: standard placement with neighbor awareness
       if (!placed) {
         auto consIt = herdToConsumers.find(herdName);
         bool hasConsumers =
             consIt != herdToConsumers.end() && !consIt->second.empty();
+        auto l1It = herdToL1Neighbors.find(herdName);
+        bool hasL1Neighbors =
+            l1It != herdToL1Neighbors.end() && !l1It->second.empty();
 
         for (int64_t i = 0; i < segment->getNumRows() && !placed; i++) {
           for (int64_t j = 0; j < segment->getNumCols() && !placed; j++) {
             if (segment->grid[segment->getNumRows() - i - 1][j] == -1) {
               if (segment->isLegalPlacement(herd, i, j)) {
                 bool goodPosition = true;
-                if (hasConsumers) {
-                  // Ensure room for consumer east or south
+                if (hasConsumers || hasL1Neighbors) {
+                  // Ensure room for neighbor in any direction
                   bool roomEast =
                       (j + herd->getNumCols() < segment->getNumCols());
+                  bool roomWest = (j > 0);
                   bool roomSouth = (i > 0);
-                  goodPosition = roomEast || roomSouth;
+                  bool roomNorth =
+                      (i + herd->getNumRows() < segment->getNumRows());
+                  goodPosition = roomEast || roomWest || roomSouth || roomNorth;
                 }
                 if (goodPosition) {
                   segment->placeHerd(herd, i, j);
@@ -747,6 +1041,123 @@ private:
     return false;
   }
 
+  // Place a herd that shares L1 with a multi-L1-neighbor herd
+  // Coordinate placement so the multi-neighbor herd can be adjacent to all
+  bool placeForMultiL1NeighborHerd(
+      std::unique_ptr<Segment> &segment, std::unique_ptr<Herd> &herd,
+      const std::string &herdName, const std::string &multiNeighborHerdName,
+      const std::set<std::string> &allL1Neighbors,
+      std::vector<std::unique_ptr<Herd>> &placedHerds,
+      std::map<std::string, std::pair<int32_t, int32_t>>
+          &plannedCenterPositions,
+      std::vector<std::unique_ptr<Herd>> &unplacedHerds) {
+
+    // Find how many L1 neighbors for this multi-neighbor herd are already
+    // placed
+    std::vector<Herd *> alreadyPlacedNeighbors;
+    for (const auto &name : allL1Neighbors) {
+      Herd *p = findPlacedHerd(placedHerds, name);
+      if (p) {
+        alreadyPlacedNeighbors.push_back(p);
+      }
+    }
+
+    // If no neighbors placed yet, this is the first one
+    // Place it and plan where the multi-neighbor herd should go
+    if (alreadyPlacedNeighbors.empty()) {
+      // For a herd with 2 neighbors, we want them in an L-shape:
+      //   N1 at (x, y) - first neighbor
+      //   Center at (x, y+1) - multi-neighbor herd will go here
+      //   N2 at (x+1, y+1) - second neighbor goes east of center
+      //
+      // This ensures center is adjacent to both N1 (north) and N2 (west)
+      for (int64_t y = 0; y < segment->getNumRows() - 1; y++) {
+        for (int64_t x = 0; x < segment->getNumCols() - 1; x++) {
+          if (segment->isLegalPlacement(herd, y, x)) {
+            // Plan center position north of this herd
+            int32_t centerX = x;
+            int32_t centerY = y + herd->getNumRows();
+
+            // Verify there's room for center and another neighbor east of
+            // center
+            if (centerY < segment->getNumRows() &&
+                centerX + 1 < segment->getNumCols()) {
+              segment->placeHerd(herd, y, x);
+              herd->setLocX(x);
+              herd->setLocY(y);
+
+              // Record planned center position
+              plannedCenterPositions[multiNeighborHerdName] = {centerX,
+                                                               centerY};
+
+              LLVM_DEBUG(llvm::dbgs()
+                         << "Placed first L1 neighbor " << herdName << " at ("
+                         << x << ", " << y << "), planned center "
+                         << multiNeighborHerdName << " at (" << centerX << ", "
+                         << centerY << ")\n");
+              return true;
+            }
+          }
+        }
+      }
+    } else {
+      // Other neighbors already placed, position this one relative to planned
+      // center
+      auto it = plannedCenterPositions.find(multiNeighborHerdName);
+      if (it != plannedCenterPositions.end()) {
+        int32_t centerX = it->second.first;
+        int32_t centerY = it->second.second;
+
+        // Look up the center (multi-neighbor) herd to get its actual dimensions
+        int centerIdx = findHerdIdxByName(unplacedHerds, multiNeighborHerdName);
+        if (centerIdx < 0) {
+          // Center herd not found in unplacedHerds, may already be placed or
+          // invalid
+          return false;
+        }
+        auto &centerHerd = unplacedHerds[centerIdx];
+
+        // Place this neighbor east of the planned center position
+        // Use center herd's width to ensure neighbor's left edge touches
+        // center's right edge
+        int32_t neighX = centerX + centerHerd->getNumCols();
+        int32_t neighY = centerY;
+
+        if (neighX < segment->getNumCols() &&
+            segment->isLegalPlacement(herd, neighY, neighX)) {
+          segment->placeHerd(herd, neighY, neighX);
+          herd->setLocX(neighX);
+          herd->setLocY(neighY);
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Placed subsequent L1 neighbor " << herdName << " at ("
+                     << neighX << ", " << neighY
+                     << ") east of planned center position\n");
+          return true;
+        }
+
+        // Try north of center instead
+        // Use center herd's height to ensure neighbor's bottom edge touches
+        // center's top edge
+        neighX = centerX;
+        neighY = centerY + centerHerd->getNumRows();
+
+        if (neighY < segment->getNumRows() &&
+            segment->isLegalPlacement(herd, neighY, neighX)) {
+          segment->placeHerd(herd, neighY, neighX);
+          herd->setLocX(neighX);
+          herd->setLocY(neighY);
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Placed subsequent L1 neighbor " << herdName << " at ("
+                     << neighX << ", " << neighY
+                     << ") north of planned center position\n");
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
   // Place a producer that feeds a multi-producer consumer
   // Coordinate with other producers to ensure consumer can be adjacent to all
   bool placeProducerForMultiConsumer(
@@ -770,8 +1181,29 @@ private:
     // If no producers placed yet, this is the first one
     // Place it and plan where the consumer should go
     if (alreadyPlacedProducers.empty()) {
+      // Look up the consumer herd to get its actual dimensions
+      int consumerIdx = findHerdIdxByName(unplacedHerds, consumerName);
+      if (consumerIdx < 0) {
+        // Consumer not found in unplacedHerds
+        return false;
+      }
+      auto &consumer = unplacedHerds[consumerIdx];
+
+      // Find the maximum height among other producers (for space planning)
+      int32_t maxOtherProducerHeight = 1; // Default minimum
+      for (const auto &otherProdName : allProducerNames) {
+        if (otherProdName != producerName) {
+          int otherIdx = findHerdIdxByName(unplacedHerds, otherProdName);
+          if (otherIdx >= 0) {
+            maxOtherProducerHeight = std::max(
+                maxOtherProducerHeight, unplacedHerds[otherIdx]->getNumRows());
+          }
+        }
+      }
+
       // Find a position that leaves room for consumer east and another producer
-      // north
+      // north. The second producer goes north of consumer, so we need room for:
+      // consumer height + max other producer height above consY
       for (int64_t y = 1; y < segment->getNumRows();
            y++) { // Start at y=1 to leave room north
         for (int64_t x = 0; x < segment->getNumCols() - 1;
@@ -782,8 +1214,11 @@ private:
             int32_t consY = y;
 
             // Verify there's room for another producer north of consumer
-            // position
-            if (consY + 1 < segment->getNumRows()) {
+            // position. The second producer's Y will be consY + consumer
+            // height, and it needs maxOtherProducerHeight rows above that.
+            int32_t requiredTopY =
+                consY + consumer->getNumRows() + maxOtherProducerHeight;
+            if (requiredTopY <= segment->getNumRows()) {
               segment->placeHerd(producer, y, x);
               producer->setLocX(x);
               producer->setLocY(y);
@@ -809,9 +1244,20 @@ private:
         int32_t consX = it->second.first;
         int32_t consY = it->second.second;
 
+        // Look up the consumer herd to get its actual dimensions
+        int consumerIdx = findHerdIdxByName(unplacedHerds, consumerName);
+        if (consumerIdx < 0) {
+          // Consumer not found in unplacedHerds, may already be placed or
+          // invalid
+          return false;
+        }
+        auto &consumer = unplacedHerds[consumerIdx];
+
         // Place this producer north of the planned consumer position
+        // Use consumer's height to ensure producer's bottom edge touches
+        // consumer's top edge
         int32_t prodX = consX;
-        int32_t prodY = consY + producer->getNumRows();
+        int32_t prodY = consY + consumer->getNumRows();
 
         if (prodY < segment->getNumRows() &&
             segment->isLegalPlacement(producer, prodY, prodX)) {
