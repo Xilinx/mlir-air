@@ -62,9 +62,9 @@ extern "C" void mgpuCheckOutput(float *device, float *hostA, float *hostB,
           (std::fabs(expected) > 1.0f) ? diff / std::fabs(expected) : diff;
 
       if (relError > epsilon) {
-        std::cout << "Mismatch at (" << i << ", " << j << "): " << "expected "
-                  << expected << " != actual " << actual << " (diff: " << diff
-                  << ")" << std::endl;
+        std::cout << "Mismatch at (" << i << ", " << j << "): "
+                  << "expected " << expected << " != actual " << actual
+                  << " (diff: " << diff << ")" << std::endl;
         mismatch = true;
       }
     }
