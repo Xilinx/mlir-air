@@ -75,16 +75,22 @@ module {
 
 // -----
 
-// Test shared L1 buffer with both read and write in same core (producer-consumer in one core).
-// In this case, the core should acquire prod_lock, write, then read, then release prod_lock.
-// No consumer lock usage since the same core does both operations.
+// Test shared L1 buffer with WRITE-ONLY access pattern (two herds both write).
+// This triggers the deadlock avoidance logic: since there are no consumers,
+// using producer/consumer locks would deadlock. Instead, a single mutex lock
+// is allocated for mutual exclusion.
+// Expected warning: "shared L1 buffer has write-only access pattern"
 
 // CHECK-LABEL: aie.device
 // CHECK-DAG: %[[TILE0:.*]] = aie.tile(0, 2)
 // CHECK-DAG: %[[TILE1:.*]] = aie.tile(0, 3)
-// CHECK-DAG: %[[CONS_LOCK:.*]] = aie.lock({{.*}}) {init = 0 : i32, sym_name = "shared_l1{{.*}}_cons_lock"}
-// CHECK-DAG: %[[PROD_LOCK:.*]] = aie.lock({{.*}}) {init = 1 : i32, sym_name = "shared_l1{{.*}}_prod_lock"}
+// CHECK-DAG: %[[MUTEX_LOCK:.*]] = aie.lock({{.*}}) {init = 1 : i32, sym_name = "shared_l1{{.*}}_mutex_lock"}
 // CHECK-DAG: %[[SHARED_BUF:.*]] = aie.buffer({{.*}}) {sym_name = "shared_l1{{.*}}"} : memref<32x32xi32, 2>
+
+// Verify mutex strategy: acquire and release SAME lock (not cross-release)
+// CHECK: aie.core
+// CHECK: aie.use_lock(%[[MUTEX_LOCK]], AcquireGreaterEqual, 1)
+// CHECK: aie.use_lock(%[[MUTEX_LOCK]], Release, 1)
 
 module {
   func.func @shared_l1_single_herd_producer_only() {

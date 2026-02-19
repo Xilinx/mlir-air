@@ -724,16 +724,21 @@ static void collectBufferAliases(Value buffer,
 /// This enables safe inter-core communication via shared L1 memory.
 ///
 /// The function:
-/// 1. Uses getLockValuePair() to infer lock init values from IR patterns
-/// 2. Allocates producer and consumer locks on the owner tile
-/// 3. Inserts lock pairs around EACH operation that accesses the shared buffer
+/// 1. Pre-analyzes buffer access patterns across ALL participating cores
+/// 2. Determines if producer/consumer protocol is needed or if mutex suffices
+/// 3. Allocates appropriate locks and inserts lock pairs around operations
 ///
-/// This general implementation handles:
-/// - memref.load, memref.store (via MemoryEffects::Read/Write)
-/// - vector.transfer_read, vector.transfer_write
-/// - linalg operations (linalg.generic, linalg.matmul, etc.)
-/// - func.call to external kernels (using operand position heuristic)
-/// - Any operation with memory effects on the buffer
+/// Access pattern handling:
+/// - Both readers and writers exist: Use producer/consumer lock protocol
+/// - Only writers exist (write-only): Use mutex-style lock (same lock for
+/// acq/rel)
+/// - Only readers exist (read-only): Use mutex-style lock (same lock for
+/// acq/rel)
+/// - Neither exists: Skip lock insertion entirely
+///
+/// This prevents deadlocks that occur when the producer/consumer protocol is
+/// used on buffers that only have reads OR only have writes (locks never
+/// get replenished without the complementary operation).
 ///
 /// \param aie_device The surrounding AIE device operation
 /// \param sharedBuffer The shared L1 buffer allocated on the owner tile
@@ -748,29 +753,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   bool usesSemaphoreLocks =
       targetModel.hasProperty(AIE::AIETargetModel::UsesSemaphoreLocks);
 
-  // Infer lock init values from buffer access patterns
-  auto initPair =
-      air::getLockValuePair(targetModel, sharedBuffer->getResult(0));
-  int prodLockInit = std::max(initPair.first, initPair.second);
-  int consLockInit = 0;
-
-  // Allocate producer and consumer locks
   std::string bufName = sharedBuffer.getSymName().value_or("shared_l1").str();
-  OpBuilder lockBuilder(ownerTile);
-  AIE::LockOp prodLock =
-      air::allocateLockOp(aie_device, ownerTile, prodLockInit, -1,
-                          lockBuilder.getStringAttr(bufName + "_prod_lock"));
-  AIE::LockOp consLock =
-      air::allocateLockOp(aie_device, ownerTile, consLockInit, -1,
-                          lockBuilder.getStringAttr(bufName + "_cons_lock"));
-
-  LLVM_DEBUG(llvm::dbgs() << "AIRToAIE: Allocated locks for shared L1 buffer "
-                          << bufName << " - prod_lock(init=" << prodLockInit
-                          << "), cons_lock(init=" << consLockInit << ")\n");
-
-  AIE::LockAction acqAction = usesSemaphoreLocks
-                                  ? AIE::LockAction::AcquireGreaterEqual
-                                  : AIE::LockAction::Acquire;
 
   // Helper lambda to find the last memref operand index in a func.call
   auto findLastMemrefOperandIndex = [](func::CallOp callOp) -> int {
@@ -784,21 +767,136 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     return lastMemrefIdx;
   };
 
-  // For each core that uses the shared buffer
-  for (auto coreOp : coreOps) {
-    // Collect all aliases of the shared buffer within this core
-    llvm::SmallDenseSet<Value> bufferAliases;
-    collectBufferAliases(sharedBuffer->getResult(0), bufferAliases);
+  // ========================================================================
+  // PRE-ANALYSIS: Determine buffer access patterns across ALL participating
+  // cores to detect write-only or read-only scenarios that would deadlock
+  // with the standard producer/consumer protocol.
+  // ========================================================================
+  bool hasAnyProducer = false; // Any write to buffer across all cores
+  bool hasAnyConsumer = false; // Any read from buffer across all cores
 
-    // Walk all operations in the core and insert lock pairs around each
-    // operation that accesses the shared buffer
+  // Collect all aliases of the shared buffer
+  llvm::SmallDenseSet<Value> bufferAliases;
+  collectBufferAliases(sharedBuffer->getResult(0), bufferAliases);
+
+  for (auto coreOp : coreOps) {
+    coreOp.walk([&](Operation *op) {
+      // Check memory effects
+      for (Value alias : bufferAliases) {
+        if (hasEffect<MemoryEffects::Write>(op, alias))
+          hasAnyProducer = true;
+        if (hasEffect<MemoryEffects::Read>(op, alias))
+          hasAnyConsumer = true;
+      }
+
+      // Special handling for func.call
+      if (auto callOp = dyn_cast<func::CallOp>(op)) {
+        int lastMemrefIdx = findLastMemrefOperandIndex(callOp);
+        for (int i = 0; i < (int)callOp.getNumOperands(); ++i) {
+          Value operand = callOp.getOperand(i);
+          if (bufferAliases.contains(operand)) {
+            if (i == lastMemrefIdx)
+              hasAnyProducer = true;
+            else
+              hasAnyConsumer = true;
+          }
+        }
+      }
+    });
+  }
+
+  // ========================================================================
+  // DECISION: Determine lock strategy based on access patterns
+  // ========================================================================
+  enum class LockStrategy {
+    Skip,  // No synchronization needed (no accesses)
+    Mutex, // Single lock for mutual exclusion (write-only or read-only)
+    ProducerConsumer // Standard producer/consumer protocol (mixed read/write)
+  };
+
+  LockStrategy strategy;
+  if (!hasAnyProducer && !hasAnyConsumer) {
+    // No operations access the buffer - skip lock insertion entirely
+    strategy = LockStrategy::Skip;
+    LLVM_DEBUG(llvm::dbgs()
+               << "AIRToAIE: Skipping locks for shared L1 buffer " << bufName
+               << " - no read/write operations detected\n");
+  } else if (hasAnyProducer && hasAnyConsumer) {
+    // Both readers and writers exist - use producer/consumer protocol
+    strategy = LockStrategy::ProducerConsumer;
+    LLVM_DEBUG(
+        llvm::dbgs()
+        << "AIRToAIE: Using producer/consumer locks for shared L1 buffer "
+        << bufName << " - both readers and writers detected\n");
+  } else {
+    // Only writers OR only readers - use mutex to prevent deadlock
+    strategy = LockStrategy::Mutex;
+    // Emit warning about potential deadlock pattern that was avoided
+    sharedBuffer->emitWarning()
+        << "shared L1 buffer has "
+        << (hasAnyProducer ? "write-only" : "read-only")
+        << " access pattern; using mutex lock to avoid producer/consumer "
+           "deadlock";
+    LLVM_DEBUG(llvm::dbgs()
+               << "AIRToAIE: Using mutex lock for shared L1 buffer " << bufName
+               << " - " << (hasAnyProducer ? "write-only" : "read-only")
+               << " access pattern detected (avoids deadlock)\n");
+  }
+
+  if (strategy == LockStrategy::Skip)
+    return;
+
+  // ========================================================================
+  // LOCK ALLOCATION: Allocate locks based on chosen strategy
+  // ========================================================================
+  AIE::LockOp prodLock = nullptr;
+  AIE::LockOp consLock = nullptr;
+  AIE::LockOp mutexLock = nullptr;
+
+  OpBuilder lockBuilder(ownerTile);
+
+  if (strategy == LockStrategy::ProducerConsumer) {
+    // Standard producer/consumer: allocate both locks
+    auto initPair =
+        air::getLockValuePair(targetModel, sharedBuffer->getResult(0));
+    int prodLockInit = std::max(initPair.first, initPair.second);
+    int consLockInit = 0;
+
+    prodLock =
+        air::allocateLockOp(aie_device, ownerTile, prodLockInit, -1,
+                            lockBuilder.getStringAttr(bufName + "_prod_lock"));
+    consLock =
+        air::allocateLockOp(aie_device, ownerTile, consLockInit, -1,
+                            lockBuilder.getStringAttr(bufName + "_cons_lock"));
+
+    LLVM_DEBUG(llvm::dbgs()
+               << "AIRToAIE: Allocated producer/consumer locks for " << bufName
+               << " - prod_lock(init=" << prodLockInit
+               << "), cons_lock(init=" << consLockInit << ")\n");
+  } else {
+    // Mutex: allocate single lock initialized to 1 (available)
+    mutexLock =
+        air::allocateLockOp(aie_device, ownerTile, /*init=*/1, -1,
+                            lockBuilder.getStringAttr(bufName + "_mutex_lock"));
+
+    LLVM_DEBUG(llvm::dbgs() << "AIRToAIE: Allocated mutex lock for " << bufName
+                            << " - mutex_lock(init=1)\n");
+  }
+
+  AIE::LockAction acqAction = usesSemaphoreLocks
+                                  ? AIE::LockAction::AcquireGreaterEqual
+                                  : AIE::LockAction::Acquire;
+
+  // ========================================================================
+  // LOCK INSERTION: Insert lock pairs around buffer-accessing operations
+  // ========================================================================
+  for (auto coreOp : coreOps) {
     coreOp.walk([&](Operation *op) {
       bool accessesBuffer = false;
-      bool isProducer = false; // writes to buffer
-      bool isConsumer = false; // reads from buffer
+      bool isProducer = false;
+      bool isConsumer = false;
 
-      // Check memory effects for ops that have them (memref.load/store,
-      // vector.transfer_read/write, linalg ops, etc.)
+      // Check memory effects
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias)) {
           accessesBuffer = true;
@@ -810,22 +908,17 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
         }
       }
 
-      // Special handling for func.call (external functions don't have
-      // memory effect attributes). Use operand position heuristic:
-      // last memref operand = output (write), others = input (read).
+      // Special handling for func.call
       if (auto callOp = dyn_cast<func::CallOp>(op)) {
         int lastMemrefIdx = findLastMemrefOperandIndex(callOp);
         for (int i = 0; i < (int)callOp.getNumOperands(); ++i) {
           Value operand = callOp.getOperand(i);
           if (bufferAliases.contains(operand)) {
             accessesBuffer = true;
-            if (i == lastMemrefIdx) {
-              // Last memref operand → write (producer)
+            if (i == lastMemrefIdx)
               isProducer = true;
-            } else {
-              // Not last memref operand → read (consumer)
+            else
               isConsumer = true;
-            }
           }
         }
       }
@@ -833,43 +926,55 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       if (!accessesBuffer)
         return;
 
-      // Insert lock pair around THIS operation
       OpBuilder builder(op);
 
-      if (isProducer && !isConsumer) {
-        // Pure producer: acquire prod_lock, do op, release cons_lock
-        AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
+      if (strategy == LockStrategy::Mutex) {
+        // Mutex strategy: acquire and release the SAME lock
+        AIE::UseLockOp::create(builder, op->getLoc(), mutexLock, acqAction, 1);
         builder.setInsertionPointAfter(op);
-        AIE::UseLockOp::create(builder, op->getLoc(), consLock,
+        AIE::UseLockOp::create(builder, op->getLoc(), mutexLock,
                                AIE::LockAction::Release, 1);
         LLVM_DEBUG(llvm::dbgs()
-                   << "AIRToAIE: Inserted producer lock pair around " << *op
+                   << "AIRToAIE: Inserted mutex lock pair around " << *op
                    << " in core(" << coreOp.getTileOp().getCol() << ", "
                    << coreOp.getTileOp().getRow() << ")\n");
-      } else if (isConsumer && !isProducer) {
-        // Pure consumer: acquire cons_lock, do op, release prod_lock
-        AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction, 1);
-        builder.setInsertionPointAfter(op);
-        AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
-                               AIE::LockAction::Release, 1);
-        LLVM_DEBUG(llvm::dbgs()
-                   << "AIRToAIE: Inserted consumer lock pair around " << *op
-                   << " in core(" << coreOp.getTileOp().getCol() << ", "
-                   << coreOp.getTileOp().getRow() << ")\n");
-      } else if (isProducer && isConsumer) {
-        // Both producer and consumer (read-modify-write):
-        // Need both locks to ensure exclusive access
-        AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
-        AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction, 1);
-        builder.setInsertionPointAfter(op);
-        AIE::UseLockOp::create(builder, op->getLoc(), consLock,
-                               AIE::LockAction::Release, 1);
-        AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
-                               AIE::LockAction::Release, 1);
-        LLVM_DEBUG(llvm::dbgs()
-                   << "AIRToAIE: Inserted read-modify-write lock pairs around "
-                   << *op << " in core(" << coreOp.getTileOp().getCol() << ", "
-                   << coreOp.getTileOp().getRow() << ")\n");
+      } else {
+        // Producer/Consumer strategy
+        if (isProducer && !isConsumer) {
+          // Pure producer: acquire prod_lock, do op, release cons_lock
+          AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, op->getLoc(), consLock,
+                                 AIE::LockAction::Release, 1);
+          LLVM_DEBUG(llvm::dbgs()
+                     << "AIRToAIE: Inserted producer lock pair around " << *op
+                     << " in core(" << coreOp.getTileOp().getCol() << ", "
+                     << coreOp.getTileOp().getRow() << ")\n");
+        } else if (isConsumer && !isProducer) {
+          // Pure consumer: acquire cons_lock, do op, release prod_lock
+          AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction, 1);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
+                                 AIE::LockAction::Release, 1);
+          LLVM_DEBUG(llvm::dbgs()
+                     << "AIRToAIE: Inserted consumer lock pair around " << *op
+                     << " in core(" << coreOp.getTileOp().getCol() << ", "
+                     << coreOp.getTileOp().getRow() << ")\n");
+        } else if (isProducer && isConsumer) {
+          // Read-modify-write: acquire both locks, release both
+          AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
+          AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction, 1);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, op->getLoc(), consLock,
+                                 AIE::LockAction::Release, 1);
+          AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
+                                 AIE::LockAction::Release, 1);
+          LLVM_DEBUG(
+              llvm::dbgs()
+              << "AIRToAIE: Inserted read-modify-write lock pairs around "
+              << *op << " in core(" << coreOp.getTileOp().getCol() << ", "
+              << coreOp.getTileOp().getRow() << ")\n");
+        }
       }
     });
   }
