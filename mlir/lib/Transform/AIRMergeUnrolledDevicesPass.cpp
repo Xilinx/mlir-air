@@ -57,37 +57,54 @@ static std::string extractBaseSegmentName(StringRef fullName) {
   return prefix.substr(0, secondLastUnderscore).str();
 }
 
-/// Get the number of columns for an AIE device type.
+/// Get the number of columns for an AIE device type using the target model.
 static int getDeviceColumns(AIE::AIEDevice device) {
-  switch (device) {
-  case AIE::AIEDevice::npu2_1col:
-    return 1;
-  case AIE::AIEDevice::npu2_2col:
-    return 2;
-  case AIE::AIEDevice::npu2_4col:
-    return 4;
-  case AIE::AIEDevice::npu2:
-    return 8;
-  default:
-    return 4; // Default assumption
-  }
+  return AIE::getTargetModel(device).columns();
+}
+
+/// Check if the device is in the npu1 family using the target model.
+static bool isNpu1Device(AIE::AIEDevice device) {
+  return llvm::isa<AIE::BaseNPU1TargetModel>(AIE::getTargetModel(device));
+}
+
+/// Check if the device is in the npu2 family using the target model.
+static bool isNpu2Device(AIE::AIEDevice device) {
+  return llvm::isa<AIE::BaseNPU2TargetModel>(AIE::getTargetModel(device));
 }
 
 /// Compute the merged device type from sub-device type and number of devices.
 /// This reverses the computeSubDeviceType logic from AIRToAIEPass.
-static AIE::AIEDevice computeMergedDeviceType(AIE::AIEDevice subDevice,
-                                              int numDevices) {
+/// Preserves the device family (npu1 vs npu2).
+/// Returns std::nullopt if the device type is not supported.
+static std::optional<AIE::AIEDevice>
+computeMergedDeviceType(AIE::AIEDevice subDevice, int numDevices) {
   int subCols = getDeviceColumns(subDevice);
   int totalCols = subCols * numDevices;
 
-  if (totalCols >= 8)
-    return AIE::AIEDevice::npu2;
-  else if (totalCols >= 4)
-    return AIE::AIEDevice::npu2_4col;
-  else if (totalCols >= 2)
-    return AIE::AIEDevice::npu2_2col;
-  else
-    return AIE::AIEDevice::npu2_1col;
+  if (isNpu1Device(subDevice)) {
+    // npu1 family - max 4 columns
+    if (totalCols >= 4)
+      return AIE::AIEDevice::npu1;
+    else if (totalCols >= 3)
+      return AIE::AIEDevice::npu1_3col;
+    else if (totalCols >= 2)
+      return AIE::AIEDevice::npu1_2col;
+    else
+      return AIE::AIEDevice::npu1_1col;
+  } else if (isNpu2Device(subDevice)) {
+    // npu2 family - max 8 columns
+    if (totalCols >= 8)
+      return AIE::AIEDevice::npu2;
+    else if (totalCols >= 4)
+      return AIE::AIEDevice::npu2_4col;
+    else if (totalCols >= 2)
+      return AIE::AIEDevice::npu2_2col;
+    else
+      return AIE::AIEDevice::npu2_1col;
+  }
+
+  // Unsupported device type
+  return std::nullopt;
 }
 
 class AIRMergeUnrolledDevicesPass
@@ -135,8 +152,15 @@ public:
       LLVM_DEBUG(llvm::dbgs() << "  Device width: " << deviceWidth << "\n");
 
       // Compute merged device type
-      AIE::AIEDevice mergedType =
+      auto mergedTypeOpt =
           computeMergedDeviceType(subDeviceType, devices.size());
+      if (!mergedTypeOpt) {
+        devices[0].emitError() << "unsupported device type for merging: "
+                               << AIE::stringifyAIEDevice(subDeviceType);
+        signalPassFailure();
+        return;
+      }
+      AIE::AIEDevice mergedType = *mergedTypeOpt;
       LLVM_DEBUG(llvm::dbgs() << "  Merged device type: "
                               << AIE::stringifyAIEDevice(mergedType) << "\n");
 
