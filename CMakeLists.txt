@@ -225,6 +225,40 @@ foreach(target ${AIR_RUNTIME_TARGETS})
 endforeach()
 
 add_subdirectory(python)
+
+# Build native GPU runtime library when AIR_ENABLE_GPU is enabled
+if(AIR_ENABLE_GPU)
+  # Find ROCm/HIP
+  if(DEFINED ENV{ROCM_PATH})
+    set(ROCM_PATH $ENV{ROCM_PATH})
+  else()
+    set(ROCM_PATH "/opt/rocm")
+  endif()
+
+  if(EXISTS "${ROCM_PATH}/include/hip/hip_runtime.h")
+    message(STATUS "Building native GPU runtime library (airgpu)")
+    add_library(airgpu SHARED
+      ${PROJECT_SOURCE_DIR}/runtime_lib/airgpu/GpuTestUtils.cpp
+    )
+    set_property(TARGET airgpu PROPERTY POSITION_INDEPENDENT_CODE ON)
+    target_compile_definitions(airgpu PRIVATE
+      __HIP_PLATFORM_AMD__
+    )
+    target_include_directories(airgpu PRIVATE
+      ${ROCM_PATH}/include
+    )
+    target_link_libraries(airgpu PRIVATE
+      ${ROCM_PATH}/lib/libamdhip64.so
+    )
+    set_target_properties(airgpu PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    )
+    install(TARGETS airgpu DESTINATION lib)
+  else()
+    message(STATUS "ROCm not found at ${ROCM_PATH}, skipping airgpu build")
+  endif()
+endif()
+
 if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
   message(
     "Skipping e2e tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
