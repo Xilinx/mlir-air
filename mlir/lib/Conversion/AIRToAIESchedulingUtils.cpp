@@ -212,6 +212,41 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
         });
     return wrapsAndStridesAllEquivalent;
   };
+
+  // Check if two channel operations are part of an N-buffer rotation pattern.
+  // They are part of the same rotation if:
+  // 1. They belong to the same air.channel declaration
+  // 2. Their memrefs have the same type (shape, element type, memory space)
+  // 3. Their sizes and strides are equivalent (access pattern match)
+  // Note: Unlike chansMappedToEquivalentBDs, this allows different buffer
+  // values as long as they have the same type and access pattern.
+  auto chansPartOfSameRotation = [](air::ChannelInterface chanA,
+                                    air::ChannelInterface chanB) -> bool {
+    // Must use same channel declaration
+    auto chanDeclA = air::getChannelDeclarationThroughSymbol(chanA);
+    auto chanDeclB = air::getChannelDeclarationThroughSymbol(chanB);
+    if (chanDeclA != chanDeclB)
+      return false;
+
+    // Memrefs must have same type (but can be different buffer values)
+    auto memrefTypeA = llvm::cast<MemRefType>(chanA.getMemref().getType());
+    auto memrefTypeB = llvm::cast<MemRefType>(chanB.getMemref().getType());
+    if (memrefTypeA != memrefTypeB)
+      return false;
+
+    // Sizes and strides must match (ignoring offsets which vary per buffer)
+    if (chanA.getSizes().size() != chanB.getSizes().size() ||
+        chanA.getStrides().size() != chanB.getStrides().size())
+      return false;
+
+    auto zipped = llvm::zip_equal(
+        llvm::concat<Value>(chanA.getSizes(), chanA.getStrides()),
+        llvm::concat<Value>(chanB.getSizes(), chanB.getStrides()));
+    return llvm::all_of(zipped, [](std::tuple<Value, Value> pair) {
+      return isEqualConstantIntOrValue(std::get<0>(pair), std::get<1>(pair));
+    });
+  };
+
   auto dmasMappedToEquivalentBDs = [](air::DmaMemcpyNdOp dmaA,
                                       air::DmaMemcpyNdOp dmaB) {
     return OperationEquivalence::isEquivalentTo(
@@ -263,6 +298,47 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   auto uniqueMemcpyIPattern = getUniqueBDPattern(memcpyIOps);
   if (!uniqueMemcpyIPattern.empty())
     memcpyIOps = uniqueMemcpyIPattern;
+
+  // Detect if all operations form an N-buffer rotation pattern.
+  // For N-buffer rotation (e.g., 4-buffer sliding window), we need to generate
+  // a single circular BD chain even if operations have different loop contexts.
+  auto detectNBufferRotation =
+      [&chansPartOfSameRotation](
+          const llvm::SetVector<Operation *> &ops) -> bool {
+    if (ops.size() < 2)
+      return false;
+
+    // Check all ops are channel operations sharing same rotation pattern
+    auto *firstOp = *ops.begin();
+    auto firstChan = dyn_cast<air::ChannelInterface>(firstOp);
+    if (!firstChan)
+      return false;
+
+    // Count unique buffers
+    llvm::DenseSet<Value> uniqueBuffers;
+    for (auto *op : ops) {
+      auto chanOp = dyn_cast<air::ChannelInterface>(op);
+      if (!chanOp || !chansPartOfSameRotation(firstChan, chanOp))
+        return false;
+      uniqueBuffers.insert(chanOp.getMemref());
+    }
+
+    // Valid rotation: multiple unique buffers, total ops divisible by buffer
+    // count
+    unsigned numBuffers = uniqueBuffers.size();
+    return numBuffers >= 2 && ops.size() % numBuffers == 0;
+  };
+
+  // If N-buffer rotation pattern detected, return all ops with same repeat
+  // count. This ensures generateDmaBdProgram() creates a single circular BD
+  // chain (infiniteBDLoopMode = true) instead of separate terminated tasks.
+  if (detectNBufferRotation(memcpyIOps)) {
+    SmallVector<Operation *> opVec = memcpyIOps.takeVector();
+    for (auto *op : opVec) {
+      repeatCounts[0].insert(op);
+    }
+    return repeatCounts;
+  }
 
   // Get the deepest region which is ancestor to all memcpyIOps.
   SmallVector<Operation *> memcpyIOpVec = memcpyIOps.takeVector();
