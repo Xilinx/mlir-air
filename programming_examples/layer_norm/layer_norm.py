@@ -1,7 +1,7 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Layer Normalization Example
+"""Vectorized Layer Normalization Example
 
 Implements layer normalization on a 2D input [M, N]:
   1. mean = sum(x, axis=-1) / N
@@ -10,8 +10,8 @@ Implements layer normalization on a 2D input [M, N]:
   4. y    = (x - mean) * rstd
 
 Uses a single AIE tile with DMA transfers between L3 and L1 memory.
-Computation is done element-wise with scalar load/store, using a
-1-element L1 buffer as accumulator for reductions.
+Computation is vectorized using vector.transfer_read/write with
+configurable VECTOR_SIZE (default 16 for AIE2).
 """
 
 import argparse
@@ -19,7 +19,13 @@ import argparse
 from air.ir import *
 from air.dialects.air import *
 from air.dialects import arith, math as math_dialect
-from air.dialects.memref import AllocOp, DeallocOp, load, store
+from air.dialects.memref import AllocOp, DeallocOp, subview
+from air.dialects.vector import (
+    transfer_read,
+    transfer_write,
+    BroadcastOp,
+    reduction as vector_reduction,
+)
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
@@ -31,8 +37,14 @@ EPS = 1e-5
 
 
 @module_builder
-def build_module(M, N, np_dtype):
+def build_module(M, N, np_dtype, vector_size=16):
     xrt_dtype = type_mapper(np_dtype)
+    assert (
+        N % vector_size == 0
+    ), f"N ({N}) must be divisible by vector_size ({vector_size})"
+
+    vecTy = VectorType.get([vector_size], xrt_dtype)
+    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
 
     # L3 types
     l3MemrefTy = MemRefType.get([M, N], xrt_dtype)
@@ -40,7 +52,7 @@ def build_module(M, N, np_dtype):
     # L1 types
     l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
     l1RowTy = MemRefType.get([N], xrt_dtype, memory_space=l1_mem_space)
-    l1ScalarTy = MemRefType.get([1], xrt_dtype, memory_space=l1_mem_space)
+    l1VecTy = MemRefType.get([vector_size], xrt_dtype, memory_space=l1_mem_space)
 
     @FuncOp.from_py_func(l3MemrefTy, l3MemrefTy)
     def layer_norm(arg0, arg1):
@@ -49,9 +61,17 @@ def build_module(M, N, np_dtype):
         def herd_body(_tx, _ty, _sx, _sy, l3_in, l3_out):
             l1_row = AllocOp(l1RowTy, [], [])
             l1_out = AllocOp(l1RowTy, [], [])
-            l1_acc = AllocOp(l1ScalarTy, [], [])
+            # Vector accumulator buffer for reductions
+            l1_acc = AllocOp(l1VecTy, [], [])
 
             c0 = arith.ConstantOp.create_index(0)
+            cst0 = arith.ConstantOp(xrt_dtype, 0.0)
+            n_f = arith.ConstantOp(xrt_dtype, float(N))
+            eps_f = arith.ConstantOp(xrt_dtype, EPS)
+            one_f = arith.ConstantOp(xrt_dtype, 1.0)
+
+            # Zero vector for initializing accumulator
+            v_zero = BroadcastOp(vecTy, cst0)
 
             for row in range_(M):
                 # DMA: load one row from L3 to L1
@@ -63,33 +83,45 @@ def build_module(M, N, np_dtype):
                     src_strides=[N, 1],
                 )
 
-                zero_f = arith.ConstantOp(xrt_dtype, 0.0)
-                n_f = arith.ConstantOp(xrt_dtype, float(N))
-                eps_f = arith.ConstantOp(xrt_dtype, EPS)
-                one_f = arith.ConstantOp(xrt_dtype, 1.0)
-
-                # Step 1: mean = sum(x) / N
-                store(zero_f, l1_acc, [c0])
-                for i in range_(N):
-                    val = load(l1_row, [i])
-                    acc = load(l1_acc, [c0])
-                    new_acc = arith.addf(acc, val)
-                    store(new_acc, l1_acc, [c0])
+                # Step 1: Vectorized sum for mean
+                # Initialize accumulator to zero
+                transfer_write(None, v_zero, l1_acc, [c0], identity_map, [True])
+                for j in range_(0, N, vector_size):
+                    sub_row = subview(l1_row.result, [j], [vector_size], [1])
+                    v_x = transfer_read(
+                        vecTy, sub_row, [c0], identity_map, cst0, [True]
+                    )
+                    v_acc = transfer_read(
+                        vecTy, l1_acc, [c0], identity_map, cst0, [True]
+                    )
+                    v_sum = arith.addf(v_acc, v_x)
+                    transfer_write(None, v_sum, l1_acc, [c0], identity_map, [True])
                     yield_([])
-                sum_val = load(l1_acc, [c0])
-                mean = arith.divf(sum_val, n_f)
 
-                # Step 2: variance = sum((x - mean)^2) / N
-                store(zero_f, l1_acc, [c0])
-                for i in range_(N):
-                    val = load(l1_row, [i])
-                    diff = arith.subf(val, mean)
-                    sq = arith.mulf(diff, diff)
-                    acc = load(l1_acc, [c0])
-                    new_acc = arith.addf(acc, sq)
-                    store(new_acc, l1_acc, [c0])
+                # Horizontal reduce accumulator vector to scalar
+                v_final = transfer_read(vecTy, l1_acc, [c0], identity_map, cst0, [True])
+                total_sum = vector_reduction(xrt_dtype, "add", v_final)
+                mean = arith.divf(total_sum, n_f)
+
+                # Step 2: Vectorized variance = sum((x - mean)^2) / N
+                v_mean = BroadcastOp(vecTy, mean)
+                transfer_write(None, v_zero, l1_acc, [c0], identity_map, [True])
+                for j in range_(0, N, vector_size):
+                    sub_row = subview(l1_row.result, [j], [vector_size], [1])
+                    v_x = transfer_read(
+                        vecTy, sub_row, [c0], identity_map, cst0, [True]
+                    )
+                    v_diff = arith.subf(v_x, v_mean)
+                    v_sq = arith.mulf(v_diff, v_diff)
+                    v_acc = transfer_read(
+                        vecTy, l1_acc, [c0], identity_map, cst0, [True]
+                    )
+                    v_sum = arith.addf(v_acc, v_sq)
+                    transfer_write(None, v_sum, l1_acc, [c0], identity_map, [True])
                     yield_([])
-                var_sum = load(l1_acc, [c0])
+
+                v_var = transfer_read(vecTy, l1_acc, [c0], identity_map, cst0, [True])
+                var_sum = vector_reduction(xrt_dtype, "add", v_var)
                 variance = arith.divf(var_sum, n_f)
 
                 # Step 3: rstd = 1 / sqrt(var + eps)
@@ -97,12 +129,17 @@ def build_module(M, N, np_dtype):
                 std = math_dialect.SqrtOp(var_eps)
                 rstd = arith.divf(one_f, std)
 
-                # Step 4: y = (x - mean) * rstd
-                for j in range_(N):
-                    val = load(l1_row, [j])
-                    diff = arith.subf(val, mean)
-                    normed = arith.mulf(diff, rstd)
-                    store(normed, l1_out, [j])
+                # Step 4: Vectorized normalize: y = (x - mean) * rstd
+                v_rstd = BroadcastOp(vecTy, rstd)
+                for j in range_(0, N, vector_size):
+                    sub_row = subview(l1_row.result, [j], [vector_size], [1])
+                    v_x = transfer_read(
+                        vecTy, sub_row, [c0], identity_map, cst0, [True]
+                    )
+                    v_diff = arith.subf(v_x, v_mean)
+                    v_normed = arith.mulf(v_diff, v_rstd)
+                    sub_out = subview(l1_out.result, [j], [vector_size], [1])
+                    transfer_write(None, v_normed, sub_out, [c0], identity_map, [True])
                     yield_([])
 
                 # DMA: write result row from L1 to L3
@@ -124,6 +161,7 @@ def build_module(M, N, np_dtype):
 if __name__ == "__main__":
     M_DEFAULT = 32
     N_DEFAULT = 64
+    VECTOR_SIZE = 16
     INPUT_DATATYPE = np.float32
 
     parser = argparse.ArgumentParser(
@@ -134,6 +172,12 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--print-module-only", action="store_true")
     parser.add_argument("--M", type=int, default=M_DEFAULT, help="M dimension (rows)")
     parser.add_argument("--N", type=int, default=N_DEFAULT, help="N dimension (cols)")
+    parser.add_argument(
+        "--vector-size",
+        type=int,
+        default=VECTOR_SIZE,
+        help="Vector size for SIMD operations",
+    )
     parser.add_argument(
         "--compile-mode",
         type=str,
@@ -150,7 +194,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    mlir_module = build_module(args.M, args.N, INPUT_DATATYPE)
+    mlir_module = build_module(args.M, args.N, INPUT_DATATYPE, args.vector_size)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
