@@ -1162,18 +1162,40 @@ void createAIEModulesAndOutlineCores(
     }
   }
 
-  // Process L1 memrefs: distinguish between local (single core) and shared
-  // (multiple cores) cases.
-  // - Local L1: Clone the alloc into the single core
-  // - Shared L1: Allocate a single aie.buffer on one tile, and have all cores
-  //              reference the same buffer. This enables shared L1 memory
-  //              communication between neighboring AIE tiles.
+  // Map each L1 memref alloc to the set of herds that use it.
+  // This distinguishes truly shared L1 buffers (used by multiple herds for
+  // inter-herd communication) from local L1 buffers that appear in multiple
+  // cores only because a single herd was unrolled into multiple cores.
+  std::map<Operation *, llvm::SmallSet<air::HerdOp, 2>> sharedL1AllocsToHerdMap;
+  for (auto &p : aie_modules) {
+    auto h = std::get<1>(p);
+    for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
+      auto oper = h.getKernelOperand(i);
+      if (!oper.getDefiningOp())
+        continue;
+      auto memrefTy = llvm::dyn_cast<MemRefType>(oper.getType());
+      if (!memrefTy)
+        continue;
+      if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+        continue;
+      sharedL1AllocsToHerdMap[oper.getDefiningOp()].insert(h);
+    }
+  }
+
+  // Process L1 memrefs: distinguish between local and shared cases.
+  // - Local L1: Used by a single herd (even if multi-core). Clone the alloc
+  //             into each core.
+  // - Shared L1: Used by multiple herds. Allocate a single aie.buffer on one
+  //              tile, and have all cores reference the same buffer. This
+  //              enables shared L1 memory communication between neighboring
+  //              AIE tiles.
   uint64_t sharedBufferId = 0;
   for (auto memref : sharedL1Memrefs) {
     auto &coreOps = sharedL1AllocsToCoreMap[memref.getDefiningOp()];
+    auto &herds = sharedL1AllocsToHerdMap[memref.getDefiningOp()];
 
-    if (coreOps.size() > 1) {
-      // SHARED L1 BUFFER: Multiple cores use the same memref
+    if (herds.size() > 1) {
+      // SHARED L1 BUFFER: Multiple herds use the same memref
       // Allocate a single aie.buffer on one "owner" tile and have all cores
       // reference it. The downstream mlir-aie compiler will validate that
       // the tiles are adjacent and can share L1 memory.
@@ -1206,10 +1228,20 @@ void createAIEModulesAndOutlineCores(
         }
       }
 
-      // Fallback to first core if no tile has universal affinity
+      // If no tile has legal memory affinity with all cores, the cores are
+      // not adjacent and cannot share L1 memory. Fall back to the local path
+      // where each core gets its own copy of the buffer.
       if (!ownerTile) {
-        AIE::CoreOp firstCore = *coreOps.begin();
-        ownerTile = firstCore.getTileOp();
+        for (auto coreOp : coreOps) {
+          OpBuilder builder(coreOp);
+          builder.setInsertionPointToStart(&coreOp.getBody().front());
+          auto outlinedL1Alloc = builder.clone(*memref.getDefiningOp());
+          for (unsigned i = 0; i < memref.getDefiningOp()->getNumResults(); i++)
+            replaceAllUsesInRegionWith(memref.getDefiningOp()->getResult(i),
+                                       outlinedL1Alloc->getResult(i),
+                                       coreOp.getBody());
+        }
+        continue;
       }
 
       // Get the memref type for buffer allocation
