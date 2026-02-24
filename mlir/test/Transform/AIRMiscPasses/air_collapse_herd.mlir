@@ -90,3 +90,58 @@ func.func @test2() -> () {
   }
   return
 }
+
+// -----
+
+// Verify that herds with intra-herd cascade (both put and get on the
+// same cascade channel) are collapsed to (M*N, 1) — preserving columns
+// for west-to-east cascade — instead of the default (1, M*N).
+
+// CHECK-LABEL: func.func @test_intra_herd_cascade_to_cols
+// CHECK-DAG: %[[CST4:.*]] = arith.constant 4 : index
+// CHECK-DAG: %[[CST1:.*]] = arith.constant 1 : index
+// CHECK: air.herd @cascade_herd tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[CST4]], %{{.*}}=%[[CST1]])
+// MAXCOL-LABEL: func.func @test_intra_herd_cascade_to_cols
+// MAXCOL-DAG: %[[CST4:.*]] = arith.constant 4 : index
+// MAXCOL-DAG: %[[CST1:.*]] = arith.constant 1 : index
+// MAXCOL: air.herd @cascade_herd tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[CST4]], %{{.*}}=%[[CST1]])
+
+air.channel @cascade_chan [3] {channel_type = "cascade"}
+func.func @test_intra_herd_cascade_to_cols() -> () {
+  %c2 = arith.constant 2 : index
+  air.herd @cascade_herd tile (%x, %y) in (%sx=%c2, %sy=%c2) {
+    %alloc = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
+    %alloc2 = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
+    // Intra-herd cascade: same channel used for both put and get within one herd
+    air.channel.get @cascade_chan[%x] (%alloc2[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
+    air.channel.put @cascade_chan[%x] (%alloc[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
+    memref.dealloc %alloc : memref<1x1x2048xi32, 2 : i32>
+    memref.dealloc %alloc2 : memref<1x1x2048xi32, 2 : i32>
+  }
+  return
+}
+
+// -----
+
+// Verify that herds with inter-herd cascade (only put OR get, not both)
+// ARE still collapsed. This is the herd_dataflow pattern.
+
+// CHECK-LABEL: func.func @test_inter_herd_cascade_collapse
+// CHECK: %[[CST1:.*]] = arith.constant 1 : index
+// CHECK: %[[CST4:.*]] = arith.constant 4 : index
+// CHECK: air.herd @cascade_producer tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[CST1]], %{{.*}}=%[[CST4]])
+// MAXCOL-LABEL: func.func @test_inter_herd_cascade_collapse
+// MAXCOL: %[[CST1:.*]] = arith.constant 1 : index
+// MAXCOL: %[[CST4:.*]] = arith.constant 4 : index
+// MAXCOL: air.herd @cascade_producer tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[CST1]], %{{.*}}=%[[CST4]])
+
+air.channel @inter_cascade [1] {channel_type = "cascade"}
+func.func @test_inter_herd_cascade_collapse() -> () {
+  %c2 = arith.constant 2 : index
+  air.herd @cascade_producer tile (%x, %y) in (%sx=%c2, %sy=%c2) {
+    %alloc = memref.alloc() : memref<1x1x2048xi32, 2 : i32>
+    air.channel.put @inter_cascade[] (%alloc[] [] []) : (memref<1x1x2048xi32, 2 : i32>)
+    memref.dealloc %alloc : memref<1x1x2048xi32, 2 : i32>
+  }
+  return
+}
