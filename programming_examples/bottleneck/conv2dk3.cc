@@ -1398,10 +1398,11 @@ void conv2dk3_ui8(uint8_t *line0, uint8_t *line1, uint8_t *line2, int8_t *wts,
                   const int32_t input_channels, const int32_t output_channels,
                   const int32_t kernel_width, const int32_t kernel_height,
                   const int32_t check, const int scale,
-                  const int channel_offset) {
-  conv2dk3_ui8_scalar(line0, line1, line2, wts, output, input_width,
-                      input_channels, output_channels, kernel_width,
-                      kernel_height, check, scale, channel_offset);
+                  const int channel_offset, const int32_t output_offset) {
+  conv2dk3_ui8_scalar(line0, line1, line2, wts, output + output_offset,
+                      input_width, input_channels, output_channels,
+                      kernel_width, kernel_height, check, scale,
+                      channel_offset);
 }
 
 #endif // UINT8_ACT
@@ -1428,10 +1429,11 @@ void conv2dk3_ui8(uint8_t *line0, uint8_t *line1, uint8_t *line2, int8_t *wts,
                   const int32_t input_channels, const int32_t output_channels,
                   const int32_t kernel_width, const int32_t kernel_height,
                   const int32_t check, const int scale,
-                  const int channel_offset) {
-  conv2dk3_ui8_vector(line0, line1, line2, wts, output, input_width,
-                      input_channels, output_channels, kernel_width,
-                      kernel_height, check, scale, channel_offset);
+                  const int channel_offset, const int32_t output_offset) {
+  conv2dk3_ui8_vector(line0, line1, line2, wts, output + output_offset,
+                      input_width, input_channels, output_channels,
+                      kernel_width, kernel_height, check, scale,
+                      channel_offset);
 }
 
 #endif // UINT8_ACT

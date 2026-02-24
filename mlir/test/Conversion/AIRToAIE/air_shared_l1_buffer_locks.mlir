@@ -211,3 +211,70 @@ module {
     return
   }
 }
+
+// -----
+
+// Test multi-producer shared L1 buffer: 2x1 producer herd + 1x1 consumer herd.
+// Two producer cores write to different offsets of the same shared buffer.
+// Expected:
+// - Producer lock with init=2 (both producers can write concurrently)
+// - Consumer lock with init=0 (consumer waits for both producers)
+// - Consumer acquires cons_lock with count 2
+// - Consumer releases prod_lock with count 2
+
+// CHECK-LABEL: aie.device
+// CHECK-DAG: %[[CONS_LOCK:.*]] = aie.lock({{.*}}) {init = 0 : i32, sym_name = "shared_l1{{.*}}_cons_lock"}
+// CHECK-DAG: %[[PROD_LOCK:.*]] = aie.lock({{.*}}) {init = 2 : i32, sym_name = "shared_l1{{.*}}_prod_lock"}
+// CHECK-DAG: %[[SHARED_BUF:.*]] = aie.buffer({{.*}}) {sym_name = "shared_l1{{.*}}"} : memref<64x64xbf16, 2>
+
+// Consumer core: acquires cons_lock with count 2 (waits for both producers)
+// CHECK: aie.core
+// CHECK: aie.use_lock(%[[CONS_LOCK]], AcquireGreaterEqual, 2)
+// CHECK: aie.use_lock(%[[PROD_LOCK]], Release, 2)
+
+// Producer cores: each acquires prod_lock with count 1
+// CHECK: aie.core
+// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
+// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, 1)
+// CHECK: aie.core
+// CHECK: aie.use_lock(%[[PROD_LOCK]], AcquireGreaterEqual, 1)
+// CHECK: aie.use_lock(%[[CONS_LOCK]], Release, 1)
+
+module {
+  func.func @multi_producer_shared_l1() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    air.launch (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) {
+      air.segment @segment_0 {
+        // Shared L1 buffer allocated at segment level
+        %alloc_shared = memref.alloc() : memref<64x64xbf16, 2>
+        %c0_0 = arith.constant 0 : index
+        %c1_1 = arith.constant 1 : index
+        %c2_2 = arith.constant 2 : index
+
+        // 2x1 producer herd: two cores write to the shared buffer
+        air.herd @herd_producer tile (%tx, %ty) in (%sx=%c2_2, %sy=%c1_1) args(%shared_buf=%alloc_shared) : memref<64x64xbf16, 2> attributes {x_loc=0, y_loc=2} {
+          %c0_h = arith.constant 0 : index
+          %cst = arith.constant 1.0 : bf16
+          %v = vector.broadcast %cst : bf16 to vector<16xbf16>
+          vector.transfer_write %v, %shared_buf[%tx, %c0_h] {in_bounds = [true]} : vector<16xbf16>, memref<64x64xbf16, 2>
+          air.herd_terminator
+        }
+
+        // 1x1 consumer herd: reads from the shared buffer
+        air.herd @herd_consumer tile (%tx, %ty) in (%sx=%c1_1, %sy=%c1_1) args(%shared_buf=%alloc_shared) : memref<64x64xbf16, 2> attributes {x_loc=0, y_loc=3} {
+          %c0_h = arith.constant 0 : index
+          %cst0 = arith.constant 0.0 : bf16
+          %v = vector.transfer_read %shared_buf[%c0_h, %c0_h], %cst0 {in_bounds = [true]} : memref<64x64xbf16, 2>, vector<16xbf16>
+          air.herd_terminator
+        }
+
+        memref.dealloc %alloc_shared : memref<64x64xbf16, 2>
+        air.segment_terminator
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
