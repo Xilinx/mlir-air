@@ -169,6 +169,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Memory",
+        "name": "Shared L1 Buffer",
+        "path": "shared_l1",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Primitives",
         "name": "Scalar/Vector Operations",
         "path": "primitives",

@@ -31,6 +31,7 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | Dataflow | [Herd Dataflow](herd_dataflow/) | bf16 | 🟢 | 🟢 | [herd_dataflow/](herd_dataflow/) |
 | Control Flow | [Conditional Branching](conditional_branching/) | i32 | 🟢 | 🟢 | [conditional_branching/](conditional_branching/) |
 | CNN | [Bottleneck](bottleneck/) | bf16 | 🟢 | ⚪ | [bottleneck/](bottleneck/) |
+| Memory | [Shared L1 Buffer](shared_l1/) | bf16 | 🟢 | ⚪ | [shared_l1/](shared_l1/) |
 | Primitives | [Scalar/Vector Operations](primitives/) | various | 🟢 | 🟢 | [primitives/](primitives/) |
 
 ### Status Legend
