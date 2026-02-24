@@ -163,6 +163,12 @@ EXAMPLES = [
         "datatypes": "i32",
     },
     {
+        "category": "CNN",
+        "name": "Bottleneck",
+        "path": "bottleneck",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Primitives",
         "name": "Scalar/Vector Operations",
         "path": "primitives",
@@ -280,7 +286,7 @@ See the top-level [README](../README.md) for environment setup and build instruc
 
 ```bash
 # Example: run matrix multiplication (bf16, 4x4 herd, 512x512x512)
-cd programming_examples/matrix_multiplication/bf16
+cd matrix_multiplication/bf16
 make run4x4
 
 # Print generated MLIR without running
@@ -299,12 +305,12 @@ python3 run.py --print-module-only  # print IR only
 The [matrix multiplication](matrix_multiplication/) examples include sweep infrastructure for measuring end-to-end latency across problem sizes:
 
 ```bash
-cd programming_examples/matrix_multiplication/bf16
+cd matrix_multiplication/bf16
 make sweep4x4    # sweep problem sizes 256-2048 with a 4x4 herd
 make profile     # profile a single 1024^3 problem on hardware
 ```
 
-Results are saved as CSV files for analysis. See the [bf16 README](matrix_multiplication/bf16/README.md) for details on tile size configuration and architecture selection.
+Sweep results are saved as CSV files for analysis. See the [bf16 README](matrix_multiplication/bf16/README.md) for details on tile size configuration and architecture selection.
 """
 
 
