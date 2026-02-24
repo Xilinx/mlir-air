@@ -1,0 +1,7 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai, valid_xchess_license
+// RUN: mkdir -p test_chess
+// RUN: cd test_chess
+// RUN: %python %S/run.py
