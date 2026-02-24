@@ -131,6 +131,12 @@ def build_module():
     l1_layer2_out_ty = MemRefType.get(
         (TENSOR_IN_W, 1, TENSOR_L2_OUT_C // 2), i8, memory_space=l1_mem_space
     )
+    # Combined output buffer for both 3x3 conv cores (shared L1, flat 1D)
+    # Core 0 writes first 1024 bytes, Core 1 writes next 1024 bytes
+    CONV3X3_OUT_HALF_SIZE = TENSOR_IN_W * 1 * (TENSOR_L2_OUT_C // 2)  # 1024
+    l1_layer2_out_combined_ty = MemRefType.get(
+        (CONV3X3_OUT_HALF_SIZE * 2,), i8, memory_space=l1_mem_space
+    )
 
     # Layer 3 (1x1 conv + skip) types
     l1_layer3_in_ty = MemRefType.get(
@@ -186,7 +192,7 @@ def build_module():
                 l1_layer2_in_ty,
                 l1_layer2_in_ty,
                 l1_wts_layer2_ty,
-                l1_layer2_out_ty,  # Weights in L1 (via broadcast channel)
+                l1_layer2_out_combined_ty,  # shared output buffer (flat)
                 i32,
                 i32,
                 i32,
@@ -195,7 +201,8 @@ def build_module():
                 i32,
                 i32,
                 i32,
-            ],  # width, in_c, out_c, kernel_h, kernel_w, row_pos, scale, channel_offset
+                i32,
+            ],  # width, in_c, out_c, k_h, k_w, row_pos, scale, chan_offset, out_offset
             [],
         ),
         visibility="private",
@@ -207,8 +214,8 @@ def build_module():
         "conv2dk1_skip_i8",
         (
             [
-                l1_layer3_in_ty,
-                l1_layer3_in_ty,
+                l1_layer2_out_combined_ty,  # shared input buffer (flat)
+                i32,  # input1_offset
                 l1_wts_layer3_ty,
                 l1_layer3_out_ty,
                 l1_layer1_in_ty,  # skip input
@@ -362,12 +369,9 @@ def build_module():
                 # Allocated at segment level and passed to multiple herds
                 # This enables direct memory access between neighboring AIE tiles
                 # =============================================================
-                shared_l1_conv3x3_A_out = AllocOp(
-                    l1_layer2_out_ty, [], []
-                )  # Core A output
-                shared_l1_conv3x3_B_out = AllocOp(
-                    l1_layer2_out_ty, [], []
-                )  # Core B output
+                shared_l1_conv3x3_out = AllocOp(
+                    l1_layer2_out_combined_ty, [], []
+                )  # 2048-byte flat buffer for both 3x3 conv cores
 
                 # =============================================================
                 # Runtime Parameters (RTPs) - defined at segment level
@@ -428,38 +432,33 @@ def build_module():
                 herd_conv1_body.attributes["link_with"] = StringAttr.get("conv2dk1.o")
 
                 # =============================================================
-                # Herd 1: 3x3 Convolution - Core A (first half of output channels)
+                # Herd: 3x3 Convolution (2x1 herd: two cores, each half channels)
+                # Core (0,0) processes channels 0-31, Core (1,0) channels 32-63
                 # Receives L2 weights via broadcast channel to L1
                 # Output written to SHARED L1 buffer (passed as operand)
                 # Uses 4-buffer rotation pattern for proper sliding window
                 # =============================================================
                 @herd(
-                    name="conv3x3_coreA",
-                    sizes=[1, 1],
-                    operands=[shared_l1_conv3x3_A_out.result],
+                    name="conv3x3",
+                    sizes=[2, 1],
+                    operands=[shared_l1_conv3x3_out.result],
                 )
-                def herd_conv3x3_A_body(h1_x, h1_y, h1_sx, h1_sy, shared_out_buf):
+                def herd_conv3x3_body(tx, ty, sx, sy, shared_out_full):
                     c0_h = ConstantOp(index_type, 0)
-                    c1_h = ConstantOp(index_type, 1)
 
                     # Allocate L1 buffers - 4 rows for sliding window rotation
                     row_buf_0 = AllocOp(l1_layer2_in_ty, [], [])
                     row_buf_1 = AllocOp(l1_layer2_in_ty, [], [])
                     row_buf_2 = AllocOp(l1_layer2_in_ty, [], [])
                     row_buf_3 = AllocOp(l1_layer2_in_ty, [], [])
-                    # NOTE: Output buffer is shared_out_buf (passed from segment level)
 
-                    # Allocate L1 weight buffer and receive via broadcast channel (index 0)
+                    # Receive weights via broadcast (indexed by tile)
                     wts = AllocOp(l1_wts_layer2_ty, [], [])
-                    ChannelGet("L2ToL1_WtsL2", wts, indices=[0, 0])
+                    ChannelGet("L2ToL1_WtsL2", wts, indices=[tx, c0_h])
 
-                    # Pre-load first two rows (using broadcast index 0)
-                    ChannelGet(
-                        "L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[0, 0]
-                    )  # input row 0
-                    ChannelGet(
-                        "L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[0, 0]
-                    )  # input row 1
+                    # Pre-load first two rows (indexed by tile)
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[tx, c0_h])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[tx, c0_h])
 
                     # Constants for conv2dk3 calls
                     width = ConstantOp(i32, TENSOR_IN_W)
@@ -471,7 +470,13 @@ def build_module():
                     row_pos_mid = ConstantOp(i32, 1)  # middle
                     row_pos_bot = ConstantOp(i32, 2)  # bottom edge (pad bottom)
                     scale = ConstantOp(i32, 11)
-                    chan_offset = ConstantOp(i32, 0)  # first half of channels
+                    # chan_offset = tx * 32
+                    half_c_i32 = ConstantOp(i32, TENSOR_L2_OUT_C // 2)
+                    tx_i32 = arith.index_cast(i32, tx)
+                    chan_offset = arith.muli(tx_i32, half_c_i32)
+                    # output_offset = tx * 1024 (byte offset into shared buffer)
+                    half_size_i32 = ConstantOp(i32, CONV3X3_OUT_HALF_SIZE)
+                    output_offset = arith.muli(tx_i32, half_size_i32)
 
                     # Output row 0 (top padding): uses [row0, row0, row1]
                     CallOp(
@@ -481,7 +486,7 @@ def build_module():
                             row_buf_0,
                             row_buf_1,
                             wts,
-                            shared_out_buf,
+                            shared_out_full,
                             width,
                             in_c,
                             out_c,
@@ -490,14 +495,15 @@ def build_module():
                             row_pos_top,
                             scale,
                             chan_offset,
+                            output_offset,
                         ],
                     )
 
                     # Process middle rows 1-30 in groups of 4 (7 full groups = 28 rows)
-                    # Pattern: buffers rotate [0,1,2] -> [1,2,3] -> [2,3,0] -> [3,0,1] -> repeat
-                    for _ in range_(0, 7):  # 7 groups of 4
-                        # Group iteration 0: sliding window [buf0, buf1, buf2]
-                        ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[0, 0])
+                    for _ in range_(0, 7):
+                        ChannelGet(
+                            "L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[tx, c0_h]
+                        )
                         CallOp(
                             conv2dk3_ui8_func,
                             [
@@ -505,7 +511,7 @@ def build_module():
                                 row_buf_1,
                                 row_buf_2,
                                 wts,
-                                shared_out_buf,
+                                shared_out_full,
                                 width,
                                 in_c,
                                 out_c,
@@ -514,11 +520,13 @@ def build_module():
                                 row_pos_mid,
                                 scale,
                                 chan_offset,
+                                output_offset,
                             ],
                         )
 
-                        # Group iteration 1: sliding window [buf1, buf2, buf3]
-                        ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[0, 0])
+                        ChannelGet(
+                            "L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[tx, c0_h]
+                        )
                         CallOp(
                             conv2dk3_ui8_func,
                             [
@@ -526,7 +534,7 @@ def build_module():
                                 row_buf_2,
                                 row_buf_3,
                                 wts,
-                                shared_out_buf,
+                                shared_out_full,
                                 width,
                                 in_c,
                                 out_c,
@@ -535,11 +543,13 @@ def build_module():
                                 row_pos_mid,
                                 scale,
                                 chan_offset,
+                                output_offset,
                             ],
                         )
 
-                        # Group iteration 2: sliding window [buf2, buf3, buf0] (buf0 gets new data)
-                        ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[0, 0])
+                        ChannelGet(
+                            "L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[tx, c0_h]
+                        )
                         CallOp(
                             conv2dk3_ui8_func,
                             [
@@ -547,7 +557,7 @@ def build_module():
                                 row_buf_3,
                                 row_buf_0,
                                 wts,
-                                shared_out_buf,
+                                shared_out_full,
                                 width,
                                 in_c,
                                 out_c,
@@ -556,11 +566,13 @@ def build_module():
                                 row_pos_mid,
                                 scale,
                                 chan_offset,
+                                output_offset,
                             ],
                         )
 
-                        # Group iteration 3: sliding window [buf3, buf0, buf1] (buf1 gets new data)
-                        ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[0, 0])
+                        ChannelGet(
+                            "L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[tx, c0_h]
+                        )
                         CallOp(
                             conv2dk3_ui8_func,
                             [
@@ -568,7 +580,7 @@ def build_module():
                                 row_buf_0,
                                 row_buf_1,
                                 wts,
-                                shared_out_buf,
+                                shared_out_full,
                                 width,
                                 in_c,
                                 out_c,
@@ -577,16 +589,13 @@ def build_module():
                                 row_pos_mid,
                                 scale,
                                 chan_offset,
+                                output_offset,
                             ],
                         )
                         yield_([])
 
-                    # Handle remaining 2 rows (rows 29 and 30 of middle section)
-                    # After 7 groups (28 iterations), buffer state is: buf0=newest-1, buf1=newest
-                    # Continue rotation pattern:
-
-                    # Row 29: sliding window [buf0, buf1, buf2]
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[0, 0])
+                    # Remaining rows 29-30
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[tx, c0_h])
                     CallOp(
                         conv2dk3_ui8_func,
                         [
@@ -594,7 +603,7 @@ def build_module():
                             row_buf_1,
                             row_buf_2,
                             wts,
-                            shared_out_buf,
+                            shared_out_full,
                             width,
                             in_c,
                             out_c,
@@ -603,11 +612,11 @@ def build_module():
                             row_pos_mid,
                             scale,
                             chan_offset,
+                            output_offset,
                         ],
                     )
 
-                    # Row 30: sliding window [buf1, buf2, buf3]
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[0, 0])
+                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[tx, c0_h])
                     CallOp(
                         conv2dk3_ui8_func,
                         [
@@ -615,7 +624,7 @@ def build_module():
                             row_buf_2,
                             row_buf_3,
                             wts,
-                            shared_out_buf,
+                            shared_out_full,
                             width,
                             in_c,
                             out_c,
@@ -624,11 +633,11 @@ def build_module():
                             row_pos_mid,
                             scale,
                             chan_offset,
+                            output_offset,
                         ],
                     )
 
-                    # Output row 31 (bottom padding): uses [row30, row31, row31]
-                    # buf2=row30, buf3=row31
+                    # Output row 31 (bottom padding)
                     CallOp(
                         conv2dk3_ui8_func,
                         [
@@ -636,7 +645,7 @@ def build_module():
                             row_buf_3,
                             row_buf_3,
                             wts,
-                            shared_out_buf,
+                            shared_out_full,
                             width,
                             in_c,
                             out_c,
@@ -645,258 +654,22 @@ def build_module():
                             row_pos_bot,
                             scale,
                             chan_offset,
+                            output_offset,
                         ],
                     )
 
-                    # Deallocate LOCAL L1 buffers (NOT shared buffer)
                     DeallocOp(wts)
                     DeallocOp(row_buf_0)
                     DeallocOp(row_buf_1)
                     DeallocOp(row_buf_2)
                     DeallocOp(row_buf_3)
 
-                herd_conv3x3_A_body.attributes["link_with"] = StringAttr.get(
-                    "conv2dk3.o"
-                )
-
-                # =============================================================
-                # Herd 2: 3x3 Convolution - Core B (second half of output channels)
-                # Receives L2 weights via broadcast channel to L1
-                # Output written to SHARED L1 buffer (passed as operand)
-                # Uses 4-buffer rotation pattern for proper sliding window
-                # =============================================================
-                @herd(
-                    name="conv3x3_coreB",
-                    sizes=[1, 1],
-                    operands=[shared_l1_conv3x3_B_out.result],
-                )
-                def herd_conv3x3_B_body(h2_x, h2_y, h2_sx, h2_sy, shared_out_buf):
-                    c0_h = ConstantOp(index_type, 0)
-                    c1_h = ConstantOp(index_type, 1)
-
-                    # Allocate L1 buffers - 4 rows for sliding window rotation
-                    row_buf_0 = AllocOp(l1_layer2_in_ty, [], [])
-                    row_buf_1 = AllocOp(l1_layer2_in_ty, [], [])
-                    row_buf_2 = AllocOp(l1_layer2_in_ty, [], [])
-                    row_buf_3 = AllocOp(l1_layer2_in_ty, [], [])
-                    # NOTE: Output buffer is shared_out_buf (passed from segment level)
-
-                    # Allocate L1 weight buffer and receive via broadcast channel (index 1)
-                    wts = AllocOp(l1_wts_layer2_ty, [], [])
-                    ChannelGet("L2ToL1_WtsL2", wts, indices=[1, 0])
-
-                    # Pre-load first two rows (using broadcast index 1)
-                    ChannelGet(
-                        "L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[1, 0]
-                    )  # input row 0
-                    ChannelGet(
-                        "L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[1, 0]
-                    )  # input row 1
-
-                    # Constants for conv2dk3 calls
-                    width = ConstantOp(i32, TENSOR_IN_W)
-                    in_c = ConstantOp(i32, TENSOR_L2_IN_C)
-                    out_c = ConstantOp(i32, TENSOR_L2_OUT_C)
-                    k_h = ConstantOp(i32, 3)
-                    k_w = ConstantOp(i32, 3)
-                    row_pos_top = ConstantOp(i32, 0)  # top edge (pad top)
-                    row_pos_mid = ConstantOp(i32, 1)  # middle
-                    row_pos_bot = ConstantOp(i32, 2)  # bottom edge (pad bottom)
-                    scale = ConstantOp(i32, 11)
-                    chan_offset = ConstantOp(
-                        i32, TENSOR_L2_OUT_C // 2
-                    )  # second half of channels
-
-                    # Output row 0 (top padding): uses [row0, row0, row1]
-                    CallOp(
-                        conv2dk3_ui8_func,
-                        [
-                            row_buf_0,
-                            row_buf_0,
-                            row_buf_1,
-                            wts,
-                            shared_out_buf,
-                            width,
-                            in_c,
-                            out_c,
-                            k_h,
-                            k_w,
-                            row_pos_top,
-                            scale,
-                            chan_offset,
-                        ],
-                    )
-
-                    # Process middle rows 1-30 in groups of 4 (7 full groups = 28 rows)
-                    # Pattern: buffers rotate [0,1,2] -> [1,2,3] -> [2,3,0] -> [3,0,1] -> repeat
-                    for _ in range_(0, 7):  # 7 groups of 4
-                        # Group iteration 0: sliding window [buf0, buf1, buf2]
-                        ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[1, 0])
-                        CallOp(
-                            conv2dk3_ui8_func,
-                            [
-                                row_buf_0,
-                                row_buf_1,
-                                row_buf_2,
-                                wts,
-                                shared_out_buf,
-                                width,
-                                in_c,
-                                out_c,
-                                k_h,
-                                k_w,
-                                row_pos_mid,
-                                scale,
-                                chan_offset,
-                            ],
-                        )
-
-                        # Group iteration 1: sliding window [buf1, buf2, buf3]
-                        ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[1, 0])
-                        CallOp(
-                            conv2dk3_ui8_func,
-                            [
-                                row_buf_1,
-                                row_buf_2,
-                                row_buf_3,
-                                wts,
-                                shared_out_buf,
-                                width,
-                                in_c,
-                                out_c,
-                                k_h,
-                                k_w,
-                                row_pos_mid,
-                                scale,
-                                chan_offset,
-                            ],
-                        )
-
-                        # Group iteration 2: sliding window [buf2, buf3, buf0] (buf0 gets new data)
-                        ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[1, 0])
-                        CallOp(
-                            conv2dk3_ui8_func,
-                            [
-                                row_buf_2,
-                                row_buf_3,
-                                row_buf_0,
-                                wts,
-                                shared_out_buf,
-                                width,
-                                in_c,
-                                out_c,
-                                k_h,
-                                k_w,
-                                row_pos_mid,
-                                scale,
-                                chan_offset,
-                            ],
-                        )
-
-                        # Group iteration 3: sliding window [buf3, buf0, buf1] (buf1 gets new data)
-                        ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[1, 0])
-                        CallOp(
-                            conv2dk3_ui8_func,
-                            [
-                                row_buf_3,
-                                row_buf_0,
-                                row_buf_1,
-                                wts,
-                                shared_out_buf,
-                                width,
-                                in_c,
-                                out_c,
-                                k_h,
-                                k_w,
-                                row_pos_mid,
-                                scale,
-                                chan_offset,
-                            ],
-                        )
-                        yield_([])
-
-                    # Handle remaining 2 rows (rows 29 and 30 of middle section)
-                    # After 7 groups (28 iterations), buffer state is: buf0=newest-1, buf1=newest
-                    # Continue rotation pattern:
-
-                    # Row 29: sliding window [buf0, buf1, buf2]
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[1, 0])
-                    CallOp(
-                        conv2dk3_ui8_func,
-                        [
-                            row_buf_0,
-                            row_buf_1,
-                            row_buf_2,
-                            wts,
-                            shared_out_buf,
-                            width,
-                            in_c,
-                            out_c,
-                            k_h,
-                            k_w,
-                            row_pos_mid,
-                            scale,
-                            chan_offset,
-                        ],
-                    )
-
-                    # Row 30: sliding window [buf1, buf2, buf3]
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[1, 0])
-                    CallOp(
-                        conv2dk3_ui8_func,
-                        [
-                            row_buf_1,
-                            row_buf_2,
-                            row_buf_3,
-                            wts,
-                            shared_out_buf,
-                            width,
-                            in_c,
-                            out_c,
-                            k_h,
-                            k_w,
-                            row_pos_mid,
-                            scale,
-                            chan_offset,
-                        ],
-                    )
-
-                    # Output row 31 (bottom padding): uses [row30, row31, row31]
-                    # buf2=row30, buf3=row31
-                    CallOp(
-                        conv2dk3_ui8_func,
-                        [
-                            row_buf_2,
-                            row_buf_3,
-                            row_buf_3,
-                            wts,
-                            shared_out_buf,
-                            width,
-                            in_c,
-                            out_c,
-                            k_h,
-                            k_w,
-                            row_pos_bot,
-                            scale,
-                            chan_offset,
-                        ],
-                    )
-
-                    # Deallocate LOCAL L1 buffers (NOT shared buffer)
-                    DeallocOp(wts)
-                    DeallocOp(row_buf_0)
-                    DeallocOp(row_buf_1)
-                    DeallocOp(row_buf_2)
-                    DeallocOp(row_buf_3)
-
-                herd_conv3x3_B_body.attributes["link_with"] = StringAttr.get(
-                    "conv2dk3.o"
-                )
+                herd_conv3x3_body.attributes["link_with"] = StringAttr.get("conv2dk3.o")
 
                 # =============================================================
                 # Herd 3: 1x1 Convolution + Skip Addition (restore: 64→256)
                 # RTP: scale and skip_scale parameters passed as operands
-                # SHARED L1: reads from shared_l1_conv3x3_A_out and shared_l1_conv3x3_B_out
+                # SHARED L1: reads from shared_l1_conv3x3_out (64-ch buffer)
                 # =============================================================
                 @herd(
                     name="conv1x1_skip",
@@ -904,8 +677,7 @@ def build_module():
                     operands=[
                         rtp_scale_conv3,
                         rtp_skip_scale,
-                        shared_l1_conv3x3_A_out.result,  # Shared buffer from conv3x3_coreA
-                        shared_l1_conv3x3_B_out.result,  # Shared buffer from conv3x3_coreB
+                        shared_l1_conv3x3_out.result,  # 64-ch shared buffer
                     ],
                 )
                 def herd_skip_body(
@@ -915,11 +687,13 @@ def build_module():
                     h3_sy,
                     scale,
                     skip_scale,
-                    shared_in_A,
-                    shared_in_B,
+                    shared_in_full,
                 ):
                     c0_h = ConstantOp(index_type, 0)
                     c1_h = ConstantOp(index_type, 1)
+
+                    # input1_offset: offset to second half of shared buffer
+                    input1_offset = ConstantOp(i32, CONV3X3_OUT_HALF_SIZE)
 
                     # Allocate L1 buffers (NOT for 3x3 conv outputs - those are shared)
                     wts = AllocOp(l1_wts_layer3_ty, [], [])
@@ -935,22 +709,22 @@ def build_module():
 
                     for _ in range_(0, TENSOR_IN_H):
                         # NOTE: Input from 3x3 conv cores is read directly from SHARED L1 buffers
-                        # No ChannelGet needed - just use shared_in_A and shared_in_B
+                        # No ChannelGet needed - kernel reads directly from shared buffer
 
                         # Get skip connection input (this still comes via channel)
                         ChannelGet("L1ToL1_SkipBufToSkip", skip_in)
 
                         # Call 1x1 conv + skip addition kernel
                         # Note: scale and skip_scale come from RTP (passed as herd operands, cast to i32)
-                        # Note: shared_in_A and shared_in_B are SHARED L1 buffers written by 3x3 conv herds
+                        # Note: shared_in_full is the shared L1 buffer; kernel uses input1_offset internally
                         width = ConstantOp(i32, TENSOR_IN_W)
                         in_c = ConstantOp(i32, TENSOR_L3_IN_C)
                         out_c = ConstantOp(i32, TENSOR_L3_OUT_C)
                         CallOp(
                             conv2dk1_skip_i8_func,
                             [
-                                shared_in_A,
-                                shared_in_B,
+                                shared_in_full,
+                                input1_offset,
                                 wts,
                                 act_out,
                                 skip_in,

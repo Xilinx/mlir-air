@@ -838,6 +838,29 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
     });
   }
 
+  // Count how many cores are producers (write to the shared buffer)
+  int numProducerCores = 0;
+  for (auto coreOp : coreOps) {
+    bool coreIsProducer = false;
+    coreOp.walk([&](Operation *op) {
+      for (Value alias : bufferAliases) {
+        if (hasEffect<MemoryEffects::Write>(op, alias))
+          coreIsProducer = true;
+      }
+      if (auto callOp = dyn_cast<func::CallOp>(op)) {
+        int lastMemrefIdx = findLastMemrefOperandIndex(callOp);
+        for (int i = 0; i < (int)callOp.getNumOperands(); ++i) {
+          if (bufferAliases.contains(callOp.getOperand(i))) {
+            if (i == lastMemrefIdx)
+              coreIsProducer = true;
+          }
+        }
+      }
+    });
+    if (coreIsProducer)
+      numProducerCores++;
+  }
+
   // ========================================================================
   // DECISION: Determine lock strategy based on access patterns
   // ========================================================================
@@ -889,10 +912,9 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
   OpBuilder lockBuilder(ownerTile);
 
   if (strategy == LockStrategy::ProducerConsumer) {
-    // Standard producer/consumer: allocate both locks
-    auto initPair =
-        air::getLockValuePair(targetModel, sharedBuffer->getResult(0));
-    int prodLockInit = std::max(initPair.first, initPair.second);
+    // Producer/consumer: init prod lock to number of producers so all can
+    // write concurrently before consumer reads.
+    int prodLockInit = std::max(numProducerCores, 1);
     int consLockInit = 0;
 
     prodLock =
@@ -984,11 +1006,13 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
                      << " in core(" << coreOp.getTileOp().getCol() << ", "
                      << coreOp.getTileOp().getRow() << ")\n");
         } else if (isConsumer && !isProducer) {
-          // Pure consumer: acquire cons_lock, do op, release prod_lock
-          AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction, 1);
+          // Pure consumer: wait for ALL producers before reading, then
+          // release prod_lock for all producers to write next iteration
+          AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction,
+                                 numProducerCores);
           builder.setInsertionPointAfter(op);
           AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
-                                 AIE::LockAction::Release, 1);
+                                 AIE::LockAction::Release, numProducerCores);
           LLVM_DEBUG(llvm::dbgs()
                      << "AIRToAIE: Inserted consumer lock pair around " << *op
                      << " in core(" << coreOp.getTileOp().getCol() << ", "
