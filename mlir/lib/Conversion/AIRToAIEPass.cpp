@@ -1388,10 +1388,71 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
   }
 };
 
+struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  SpecializeScfIfPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(scf::IfOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto core = op->getParentOfType<AIE::CoreOp>();
+    if (!core)
+      return failure();
+
+    // Try to resolve the condition to a constant boolean.
+    Value cond = op.getCondition();
+    std::optional<bool> condValue;
+
+    // Case 1: condition is a constant i1.
+    if (auto constOp = cond.getDefiningOp<arith::ConstantOp>()) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+        condValue = intAttr.getValue().getBoolValue();
+    }
+    // Case 2: condition is arith.cmpi with constant operands.
+    else if (auto cmpOp = cond.getDefiningOp<arith::CmpIOp>()) {
+      auto lhsConst = mlir::getConstantIntValue(cmpOp.getLhs());
+      auto rhsConst = mlir::getConstantIntValue(cmpOp.getRhs());
+      if (lhsConst && rhsConst) {
+        unsigned bitWidth = cmpOp.getLhs().getType().getIntOrFloatBitWidth();
+        APInt lhs(bitWidth, *lhsConst, /*isSigned=*/true);
+        APInt rhs(bitWidth, *rhsConst, /*isSigned=*/true);
+        condValue = arith::applyCmpPredicate(cmpOp.getPredicate(), lhs, rhs);
+      }
+    }
+    // Case 3: condition is arith.index_cast of a constant to i1.
+    else if (auto castOp = cond.getDefiningOp<arith::IndexCastOp>()) {
+      if (auto constVal = mlir::getConstantIntValue(castOp.getIn()))
+        condValue = (*constVal != 0);
+    }
+
+    if (!condValue)
+      return failure();
+
+    Block *bb = nullptr;
+    if (*condValue) {
+      bb = op.thenBlock();
+    } else if (op.elseBlock()) {
+      bb = op.elseBlock();
+    }
+    if (bb) {
+      auto t = bb->getTerminator();
+      auto &ops = bb->getOperations();
+      op->getBlock()->getOperations().splice(Block::iterator(op), ops,
+                                             ops.begin(), --ops.end());
+      for (int i = 0, e = op.getNumResults(); i < e; i++)
+        op.getResult(i).replaceAllUsesWith(t->getOperand(i));
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 void specializeHerdAffineIf(AIE::DeviceOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<SpecializeAffineIfPattern>(ctx);
+  patterns.insert<SpecializeScfIfPattern>(ctx);
   (void)applyPatternsGreedily(m, std::move(patterns));
 }
 
@@ -5214,6 +5275,8 @@ public:
           ctx, tileToHerdMap, BufferId);
     if (clTestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
+    if (clTestPatterns.find("specialize-scf-if") != std::string::npos)
+      patterns.insert<SpecializeScfIfPattern>(ctx);
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
       patterns.insert<LowerScfTokenPattern>(ctx);
 
@@ -5801,6 +5864,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     auto ctx = aie_module->getContext();
     RewritePatternSet patterns(ctx);
     patterns.insert<SpecializeAffineIfPattern>(ctx);
+    patterns.insert<SpecializeScfIfPattern>(ctx);
     patterns.insert<LowerAIRExecutePattern>(ctx);
     patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);

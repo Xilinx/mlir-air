@@ -1,0 +1,8 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai, peano
+// RUN: mkdir -p test_peano
+// RUN: cd test_peano
+// RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: %python %S/run.py
