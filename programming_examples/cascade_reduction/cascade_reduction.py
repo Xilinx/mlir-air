@@ -70,46 +70,51 @@ def build_module():
             # Send input to tile 0
             ChannelPut("chan_in", l3_in)
 
-            @herd(name="herd_0", sizes=[1, NUM_TILES])
-            def herd_body(tx, ty, sx, sy):
-                c0 = arith.ConstantOp.create_index(0)
-                c1_i32 = arith.ConstantOp(IntegerAttr.get(T.i32(), 1), None)
-                last_tile = arith.ConstantOp.create_index(NUM_TILES - 1)
+            @segment(name="segment_0")
+            def segment_body():
 
-                # Each tile has a local buffer initialized to 1
-                local_buf = AllocOp(l1MemrefTy, [], [])
-                linalg.fill(c1_i32, outs=[local_buf])
+                # Herd oriented as NUM_TILES columns x 1 row so cascade flows
+                # go West-to-East between adjacent columns.
+                @herd(name="herd_0", sizes=[NUM_TILES, 1])
+                def herd_body(tx, ty, sx, sy):
+                    c0 = arith.ConstantOp.create_index(0)
+                    c1_i32 = arith.ConstantOp(IntegerAttr.get(T.i32(), 1), None)
+                    last_tile = arith.ConstantOp.create_index(NUM_TILES - 1)
 
-                # Receive buffer
-                recv_buf = AllocOp(l1MemrefTy, [], [])
+                    # Each tile has a local buffer initialized to 1
+                    local_buf = AllocOp(l1MemrefTy, [], [])
+                    linalg.fill(c1_i32, outs=[local_buf])
 
-                # Tile 0: read from chan_in
-                cmp_first = arith.CmpIOp(arith.CmpIPredicate.eq, ty, c0)
-                if_first = scf.IfOp(cmp_first, hasElse=True)
-                with InsertionPoint(if_first.then_block):
-                    ChannelGet("chan_in", recv_buf)
-                    linalg.add(recv_buf, local_buf, outs=[local_buf])
-                    ChannelPut("chan_cascade", local_buf, indices=[ty])
-                    yield_([])
+                    # Receive buffer
+                    recv_buf = AllocOp(l1MemrefTy, [], [])
 
-                # Tiles 1..N-1: read from previous tile's cascade channel
-                with InsertionPoint(if_first.else_block):
-                    c1_idx = arith.ConstantOp.create_index(1)
-                    prev_ty = arith.SubIOp(ty, c1_idx)
-                    ChannelGet("chan_cascade", recv_buf, indices=[prev_ty])
-                    linalg.add(recv_buf, local_buf, outs=[local_buf])
-
-                    # Last tile: write to chan_out; others: write to chan_cascade
-                    cmp_last = arith.CmpIOp(arith.CmpIPredicate.eq, ty, last_tile)
-                    if_last = scf.IfOp(cmp_last, hasElse=True)
-                    with InsertionPoint(if_last.then_block):
-                        ChannelPut("chan_out", local_buf)
-                        yield_([])
-                    with InsertionPoint(if_last.else_block):
-                        ChannelPut("chan_cascade", local_buf, indices=[ty])
+                    # Tile 0: read from chan_in
+                    cmp_first = arith.CmpIOp(arith.CmpIPredicate.eq, tx, c0)
+                    if_first = scf.IfOp(cmp_first, hasElse=True)
+                    with InsertionPoint(if_first.then_block):
+                        ChannelGet("chan_in", recv_buf)
+                        linalg.add(recv_buf, local_buf, outs=[local_buf])
+                        ChannelPut("chan_cascade", local_buf, indices=[tx])
                         yield_([])
 
-                    yield_([])
+                    # Tiles 1..N-1: read from previous tile's cascade channel
+                    with InsertionPoint(if_first.else_block):
+                        c1_idx = arith.ConstantOp.create_index(1)
+                        prev_tx = arith.SubIOp(tx, c1_idx)
+                        ChannelGet("chan_cascade", recv_buf, indices=[prev_tx])
+                        linalg.add(recv_buf, local_buf, outs=[local_buf])
+
+                        # Last tile: write to chan_out; others: write to chan_cascade
+                        cmp_last = arith.CmpIOp(arith.CmpIPredicate.eq, tx, last_tile)
+                        if_last = scf.IfOp(cmp_last, hasElse=True)
+                        with InsertionPoint(if_last.then_block):
+                            ChannelPut("chan_out", local_buf)
+                            yield_([])
+                        with InsertionPoint(if_last.else_block):
+                            ChannelPut("chan_cascade", local_buf, indices=[tx])
+                            yield_([])
+
+                        yield_([])
 
             # Receive output from last tile
             ChannelGet("chan_out", l3_out)

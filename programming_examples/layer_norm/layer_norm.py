@@ -15,6 +15,7 @@ configurable VECTOR_SIZE (default 16 for AIE2).
 """
 
 import argparse
+from ml_dtypes import bfloat16
 
 from air.ir import *
 from air.dialects.air import *
@@ -162,7 +163,7 @@ if __name__ == "__main__":
     M_DEFAULT = 32
     N_DEFAULT = 64
     VECTOR_SIZE = 16
-    INPUT_DATATYPE = np.float32
+    INPUT_DATATYPE = bfloat16
 
     parser = argparse.ArgumentParser(
         prog="run.py",
@@ -221,8 +222,8 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[x_input],
                 expected_outputs=[y_expected],
-                rtol=1e-2,
-                atol=1e-1,
+                rtol=5e-2,
+                atol=5e-1,
             )
         )
 
