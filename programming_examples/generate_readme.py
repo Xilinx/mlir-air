@@ -67,6 +67,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Normalization",
+        "name": "Layer Normalization",
+        "path": "layer_norm",
+        "datatypes": "f32",
+    },
+    {
         "category": "LLM Kernels",
         "name": "Multi-Head Attention (LLaMA2)",
         "path": "llama2_mha",
@@ -139,6 +145,12 @@ EXAMPLES = [
         "datatypes": "i32",
     },
     {
+        "category": "Communication",
+        "name": "Cascade Reduction",
+        "path": "cascade_reduction",
+        "datatypes": "i32",
+    },
+    {
         "category": "Memory",
         "name": "Segment Alloc",
         "path": "segment_alloc",
@@ -167,6 +179,12 @@ EXAMPLES = [
         "name": "Bottleneck",
         "path": "bottleneck",
         "datatypes": "bf16",
+    },
+    {
+        "category": "CNN",
+        "name": "2D Convolution",
+        "path": "conv2d",
+        "datatypes": "i32",
     },
     {
         "category": "Memory",
