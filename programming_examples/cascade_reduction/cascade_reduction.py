@@ -47,10 +47,11 @@ def build_module():
         memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
     )
 
-    # Channels
-    Channel("chan_in", size=[1])
-    Channel("chan_cascade", size=[NUM_TILES])
-    Channel("chan_out", size=[1])
+    # Channels: chan_in/chan_out use DMA (L3<->L1), chan_cascade uses
+    # direct core-to-core cascade connections between adjacent tiles.
+    channel("chan_in", size=[1])
+    channel("chan_cascade", size=[NUM_TILES], channel_type="cascade")
+    channel("chan_out", size=[1])
 
     @FuncOp.from_py_func(l3MemrefTy, l3MemrefTy)
     def cascade_reduce(arg0, arg1):
