@@ -1008,40 +1008,10 @@ struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
       auto lhsConst = mlir::getConstantIntValue(cmpOp.getLhs());
       auto rhsConst = mlir::getConstantIntValue(cmpOp.getRhs());
       if (lhsConst && rhsConst) {
-        int64_t lhs = *lhsConst;
-        int64_t rhs = *rhsConst;
-        switch (cmpOp.getPredicate()) {
-        case arith::CmpIPredicate::eq:
-          condValue = (lhs == rhs);
-          break;
-        case arith::CmpIPredicate::ne:
-          condValue = (lhs != rhs);
-          break;
-        case arith::CmpIPredicate::slt:
-          condValue = (lhs < rhs);
-          break;
-        case arith::CmpIPredicate::sle:
-          condValue = (lhs <= rhs);
-          break;
-        case arith::CmpIPredicate::sgt:
-          condValue = (lhs > rhs);
-          break;
-        case arith::CmpIPredicate::sge:
-          condValue = (lhs >= rhs);
-          break;
-        case arith::CmpIPredicate::ult:
-          condValue = ((uint64_t)lhs < (uint64_t)rhs);
-          break;
-        case arith::CmpIPredicate::ule:
-          condValue = ((uint64_t)lhs <= (uint64_t)rhs);
-          break;
-        case arith::CmpIPredicate::ugt:
-          condValue = ((uint64_t)lhs > (uint64_t)rhs);
-          break;
-        case arith::CmpIPredicate::uge:
-          condValue = ((uint64_t)lhs >= (uint64_t)rhs);
-          break;
-        }
+        unsigned bitWidth = cmpOp.getLhs().getType().getIntOrFloatBitWidth();
+        APInt lhs(bitWidth, *lhsConst, /*isSigned=*/true);
+        APInt rhs(bitWidth, *rhsConst, /*isSigned=*/true);
+        condValue = arith::applyCmpPredicate(cmpOp.getPredicate(), lhs, rhs);
       }
     }
     // Case 3: condition is arith.index_cast of a constant to i1.
