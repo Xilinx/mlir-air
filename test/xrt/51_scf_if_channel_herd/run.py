@@ -70,9 +70,7 @@ def build_module():
                     #   ty == 0: producer (get from ChanIn, square, put to Tile2Tile)
                     #   ty == 1: consumer (get from Tile2Tile, add 1, put to ChanOut)
                     c0 = arith.ConstantOp.create_index(0)
-                    cmp = arith.CmpIOp(
-                        arith.CmpIPredicate.eq, ty, c0
-                    )
+                    cmp = arith.CmpIOp(arith.CmpIPredicate.eq, ty, c0)
                     if_op = scf.IfOp(cmp, hasElse=True)
 
                     with InsertionPoint(if_op.then_block):
@@ -97,9 +95,7 @@ def build_module():
                         for i in range_(IMAGE_HEIGHT):
                             for j in range_(IMAGE_WIDTH):
                                 val = load(image_in, [i, j])
-                                plus_one = arith.addi(
-                                    val, ConstantOp(xrt_dtype, 1)
-                                )
+                                plus_one = arith.addi(val, ConstantOp(xrt_dtype, 1))
                                 store(plus_one, image_out, [i, j])
                                 yield_([])
                             yield_([])
