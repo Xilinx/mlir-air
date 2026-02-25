@@ -42,16 +42,20 @@ KW = 3
 
 @module_builder
 def build_module(H, W, Ci, Co, Kh, Kw, np_dtype):
+    assert (
+        H >= Kh and W >= Kw
+    ), f"Invalid convolution: require H >= Kh and W >= Kw, got H={H}, W={W}, Kh={Kh}, Kw={Kw}"
     xrt_dtype = type_mapper(np_dtype)
     Ho = H - Kh + 1
     Wo = W - Kw + 1
 
-    # L3 types (flattened for DMA compatibility)
+    # L3 types: NHWC input/output, HWCiCo filter
     l3InTy = MemRefType.get([1, H, W, Ci], xrt_dtype)
     l3FilterTy = MemRefType.get([Kh, Kw, Ci, Co], xrt_dtype)
     l3OutTy = MemRefType.get([1, Ho, Wo, Co], xrt_dtype)
 
-    # L1 types
+    # L1 types: drop the batch dimension (N=1) since we process one
+    # sample. The DMA copies the full extent which matches because N=1.
     l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
     l1InTy = MemRefType.get([H, W, Ci], xrt_dtype, memory_space=l1_mem_space)
     l1FilterTy = MemRefType.get([Kh, Kw, Ci, Co], xrt_dtype, memory_space=l1_mem_space)

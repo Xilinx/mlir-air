@@ -21,7 +21,7 @@ import argparse
 from air.ir import *
 from air.dialects.air import *
 from air.dialects import arith, linalg, memref, scf
-from air.dialects.memref import AllocOp
+from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
@@ -115,6 +115,9 @@ def build_module():
                             yield_([])
 
                         yield_([])
+
+                    DeallocOp(local_buf)
+                    DeallocOp(recv_buf)
 
             # Receive output from last tile
             ChannelGet("chan_out", l3_out)
