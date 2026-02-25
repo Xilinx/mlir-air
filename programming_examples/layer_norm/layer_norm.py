@@ -109,15 +109,24 @@ def build_module(M, N, np_dtype, vector_size=16):
                 transfer_write(None, v_zero, l1_acc, [c0], identity_map, [True])
                 for j in range_(0, N, vector_size):
                     sub_row = subview(l1_row.result, [j], [vector_size], [1])
+                    sub_tmp = subview(l1_out.result, [j], [vector_size], [1])
                     v_x = transfer_read(
                         vecTy, sub_row, [c0], identity_map, cst0, [True]
                     )
                     v_diff = arith.subf(v_x, v_mean)
                     v_sq = arith.mulf(v_diff, v_diff)
+                    # Write squared result to temp buffer and read back to
+                    # break the mulf→addf def-use chain. The aievec lowering
+                    # rejects addf when an operand is directly from mulf
+                    # (it defers to FMA matching which doesn't apply here).
+                    transfer_write(None, v_sq, sub_tmp, [c0], identity_map, [True])
+                    v_sq_rd = transfer_read(
+                        vecTy, sub_tmp, [c0], identity_map, cst0, [True]
+                    )
                     v_acc = transfer_read(
                         vecTy, l1_acc, [c0], identity_map, cst0, [True]
                     )
-                    v_sum = arith.addf(v_acc, v_sq)
+                    v_sum = arith.addf(v_acc, v_sq_rd)
                     transfer_write(None, v_sum, l1_acc, [c0], identity_map, [True])
                     yield_([])
 
@@ -126,8 +135,12 @@ def build_module(M, N, np_dtype, vector_size=16):
                 variance = arith.divf(var_sum, n_f)
 
                 # Step 3: rstd = 1 / sqrt(var + eps)
+                # Compute sqrt in f32 since AIE2P doesn't support bf16 sqrt.
+                f32 = F32Type.get()
                 var_eps = arith.addf(variance, eps_f)
-                std = math_dialect.SqrtOp(var_eps)
+                var_eps_f32 = arith.extf(f32, var_eps)
+                std_f32 = math_dialect.sqrt(var_eps_f32)
+                std = arith.truncf(xrt_dtype, std_f32)
                 rstd = arith.divf(one_f, std)
 
                 # Step 4: Vectorized normalize: y = (x - mean) * rstd
