@@ -14,6 +14,8 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | Element-wise | [Element-wise Add (with L2)](eltwise_add_with_l2/) | f32 | 🟢 | 🟢 | [eltwise_add_with_l2/](eltwise_add_with_l2/) |
 | Activation/Math | [Softmax](softmax/) | bf16 | 🟢 | 🟢 | [softmax/](softmax/) |
 | Activation/Math | [Sine / Cosine](sine_cosine/) | bf16 | 🟢 | ⚪ | [sine_cosine/](sine_cosine/) |
+| Activation/Math | [RELU](relu/) | bf16 | 🟢 | 🟢 | [relu/](relu/) |
+| Activation/Math | [Leaky RELU](leaky_relu/) | bf16 | 🟢 | 🟢 | [leaky_relu/](leaky_relu/) |
 | Normalization | [Layer Normalization](layer_norm/) | bf16 | ⚪ | 🟢 | [layer_norm/](layer_norm/) |
 | LLM Kernels | [Multi-Head Attention (LLaMA2)](llama2_mha/) | bf16 | 🟢 | ⚪ | [llama2_mha/](llama2_mha/) |
 | LLM Kernels | [RoPE (LLaMA2)](llama2_rope/) | bf16 | 🟢 | ⚪ | [llama2_rope/](llama2_rope/) |
