@@ -69,7 +69,6 @@ def build_module(M, N, np_dtype, vector_size=16):
             cst0 = arith.ConstantOp(xrt_dtype, 0.0)
             n_f = arith.ConstantOp(xrt_dtype, float(N))
             eps_f = arith.ConstantOp(xrt_dtype, EPS)
-            one_f = arith.ConstantOp(xrt_dtype, 1.0)
 
             # Zero vector for initializing accumulator
             v_zero = BroadcastOp(vecTy, cst0)
@@ -134,14 +133,14 @@ def build_module(M, N, np_dtype, vector_size=16):
                 var_sum = vector_reduction(xrt_dtype, "add", v_var)
                 variance = arith.divf(var_sum, n_f)
 
-                # Step 3: rstd = 1 / sqrt(var + eps)
-                # Compute sqrt in f32 since AIE2P doesn't support bf16 sqrt.
+                # Step 3: rstd = rsqrt(var + eps)
+                # Use math.rsqrt in f32 — AIE supports rsqrt (not sqrt),
+                # and scalar bf16 rsqrt isn't legalized by Peano.
                 f32 = F32Type.get()
                 var_eps = arith.addf(variance, eps_f)
                 var_eps_f32 = arith.extf(f32, var_eps)
-                std_f32 = math_dialect.sqrt(var_eps_f32)
-                std = arith.truncf(xrt_dtype, std_f32)
-                rstd = arith.divf(one_f, std)
+                rstd_f32 = math_dialect.rsqrt(var_eps_f32)
+                rstd = arith.truncf(xrt_dtype, rstd_f32)
 
                 # Step 4: Vectorized normalize: y = (x - mean) * rstd
                 v_rstd = BroadcastOp(vecTy, rstd)
