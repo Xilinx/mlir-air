@@ -14,6 +14,7 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | Element-wise | [Element-wise Add (with L2)](eltwise_add_with_l2/) | f32 | 🟢 | 🟢 | [eltwise_add_with_l2/](eltwise_add_with_l2/) |
 | Activation/Math | [Softmax](softmax/) | bf16 | 🟢 | 🟢 | [softmax/](softmax/) |
 | Activation/Math | [Sine / Cosine](sine_cosine/) | bf16 | 🟢 | ⚪ | [sine_cosine/](sine_cosine/) |
+| Normalization | [Layer Normalization](layer_norm/) | bf16 | ⚪ | 🟢 | [layer_norm/](layer_norm/) |
 | LLM Kernels | [Multi-Head Attention (LLaMA2)](llama2_mha/) | bf16 | 🟢 | ⚪ | [llama2_mha/](llama2_mha/) |
 | LLM Kernels | [RoPE (LLaMA2)](llama2_rope/) | bf16 | 🟢 | ⚪ | [llama2_rope/](llama2_rope/) |
 | Attention | [Flash Attention (Dataflow)](flash_attention/dataflow_based/) | bf16 | 🟢 | ⚪ | [flash_attention/dataflow_based/](flash_attention/dataflow_based/) |
@@ -26,10 +27,12 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | Data Movement | [Matrix Scalar Add](matrix_scalar_add/) | i32 | 🟢 | 🟢 | [matrix_scalar_add/](matrix_scalar_add/) |
 | Communication | [Channel Examples](channel_examples/) | i32 | 🟢 | 🟢 | [channel_examples/](channel_examples/) |
 | Communication | [Multi-Segment Examples](multi_segment/) | i32 | 🟡 | 🟡 | [multi_segment/](multi_segment/) |
+| Communication | [Cascade Reduction](cascade_reduction/) | i32 | 🟢 | 🟢 | [cascade_reduction/](cascade_reduction/) |
 | Memory | [Segment Alloc](segment_alloc/) | i32 | 🟢 | 🟢 | [segment_alloc/](segment_alloc/) |
 | Spatial | [Segment Unroll](segment_unroll/) | i32 | 🟢 | 🟢 | [segment_unroll/](segment_unroll/) |
 | Dataflow | [Herd Dataflow](herd_dataflow/) | bf16 | 🟢 | 🟢 | [herd_dataflow/](herd_dataflow/) |
 | Control Flow | [Conditional Branching](conditional_branching/) | i32 | 🟢 | 🟢 | [conditional_branching/](conditional_branching/) |
+| CNN | [2D Convolution](conv2d/) | i32 | 🟢 | 🟢 | [conv2d/](conv2d/) |
 | CNN | [Bottleneck](bottleneck/) | bf16 | 🟢 | ⚪ | [bottleneck/](bottleneck/) |
 | Memory | [Shared L1 Buffer](shared_l1/) | bf16 | 🟢 | ⚪ | [shared_l1/](shared_l1/) |
 | Primitives | [Scalar/Vector Operations](primitives/) | various | 🟢 | 🟢 | [primitives/](primitives/) |
