@@ -62,6 +62,18 @@ EXAMPLES = [
     },
     {
         "category": "Activation/Math",
+        "name": "SiLU",
+        "path": "silu",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
+        "name": "GELU",
+        "path": "gelu",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
         "name": "Softmax",
         "path": "softmax",
         "datatypes": "bf16",
@@ -94,6 +106,12 @@ EXAMPLES = [
         "category": "Normalization",
         "name": "RMS Normalization",
         "path": "rms_norm",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Normalization",
+        "name": "Weighted RMS Normalization",
+        "path": "weighted_rms_norm",
         "datatypes": "bf16",
     },
     {
