@@ -73,6 +73,18 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Activation/Math",
+        "name": "RELU",
+        "path": "relu",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
+        "name": "Leaky RELU",
+        "path": "leaky_relu",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Normalization",
         "name": "Layer Normalization",
         "path": "layer_norm",
