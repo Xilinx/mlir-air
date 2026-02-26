@@ -6,8 +6,7 @@ from ml_dtypes import bfloat16
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
-from air.dialects.arith import ConstantOp, cmpf, select
-from air.dialects._arith_enum_gen import CmpFPredicate
+from air.dialects.arith import ConstantOp, cmpf, select, CmpFPredicate
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp
