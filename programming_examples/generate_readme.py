@@ -43,6 +43,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Linear Algebra",
+        "name": "AXPY",
+        "path": "axpy",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Element-wise",
         "name": "Element-wise Add",
         "path": "eltwise_add",

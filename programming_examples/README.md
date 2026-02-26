@@ -10,6 +10,7 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 |:---------|:----------|:------------|:----:|:----:|:---------------|
 | Linear Algebra | [Matrix Multiplication](matrix_multiplication/) | bf16, i16, i8 | 🟢 | 🟢 | [matrix_multiplication/](matrix_multiplication/) |
 | Linear Algebra | [Vector-Matrix Multiplication](vector_matrix_multiplication/) | bf16 | 🟢 | 🟢 | [vector_matrix_multiplication/](vector_matrix_multiplication/) |
+| Linear Algebra | [AXPY](axpy/) | bf16 | 🟢 | 🟢 | [axpy/](axpy/) |
 | Element-wise | [Element-wise Add](eltwise_add/) | f32 | 🟢 | 🟢 | [eltwise_add/](eltwise_add/) |
 | Element-wise | [Element-wise Add (with L2)](eltwise_add_with_l2/) | f32 | 🟢 | 🟢 | [eltwise_add_with_l2/](eltwise_add_with_l2/) |
 | Activation/Math | [Softmax](softmax/) | bf16 | 🟢 | 🟢 | [softmax/](softmax/) |
