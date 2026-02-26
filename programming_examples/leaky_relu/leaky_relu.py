@@ -12,6 +12,7 @@ configurable VECTOR_SIZE (default 16).
 """
 
 import argparse
+import numpy as np
 from ml_dtypes import bfloat16
 
 from air.ir import *
@@ -120,13 +121,8 @@ def build_module(n, tile_n, np_dtype_in, alpha=0.01, vector_size=16):
                     v_x = transfer_read(vecTy, sub_in, [c0], identity_map, cst0, [True])
                     v_alpha_x = arith.MulFOp(v_x, v_alpha)
                     # Leaky RELU: x >= 0 ? x : alpha*x
-                    # Compare and select directly on bf16 vectors
                     cmp = arith.CmpFOp(arith.CmpFPredicate.OGE, v_x, v_zero)
-                    # aievec.sel convention: bit=0 selects lhs,
-                    # bit=1 selects rhs. The cmp mask has bit=1 where
-                    # the predicate is true, so swap: lhs=alpha_x
-                    # (false case), rhs=x (true case).
-                    v_result = arith.SelectOp(cmp, v_alpha_x, v_x)
+                    v_result = arith.SelectOp(cmp, v_x, v_alpha_x)
                     transfer_write(None, v_result, sub_out, [c0], identity_map, [True])
                     yield_([])
 

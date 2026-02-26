@@ -12,6 +12,7 @@ configurable VECTOR_SIZE (default 16).
 """
 
 import argparse
+import numpy as np
 from ml_dtypes import bfloat16
 
 from air.ir import *
