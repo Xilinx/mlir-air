@@ -85,6 +85,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Normalization",
+        "name": "RMS Normalization",
+        "path": "rms_norm",
+        "datatypes": "bf16",
+    },
+    {
         "category": "LLM Kernels",
         "name": "Multi-Head Attention (LLaMA2)",
         "path": "llama2_mha",
