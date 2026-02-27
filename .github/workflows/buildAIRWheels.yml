@@ -27,8 +27,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check-new-commits:
+    name: Check for new commits since last release
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    outputs:
+      has_new_commits: ${{ steps.check.outputs.has_new_commits }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if HEAD differs from last released wheel
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CURRENT_SHORT=$(git rev-parse --short=7 HEAD)
+          echo "Current HEAD: $CURRENT_SHORT"
+
+          # Get any wheel filename from the latest release to extract the commit hash
+          LAST_WHEEL=$(gh api repos/${{ github.repository }}/releases/tags/latest-air-wheels \
+            --jq '.assets[0].name' 2>/dev/null || echo "")
+
+          if [ -z "$LAST_WHEEL" ]; then
+            echo "No previous release found, building."
+            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Extract short hash from wheel name: mlir_air-0.0.1.DATETIME+HASH-...
+          LAST_HASH=$(echo "$LAST_WHEEL" | sed -n 's/.*+\([a-f0-9]\{7\}\)-.*/\1/p')
+          echo "Last released hash: $LAST_HASH"
+
+          if [ -z "$LAST_HASH" ]; then
+            echo "Could not extract hash from wheel name, building."
+            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$CURRENT_SHORT" = "$LAST_HASH" ]; then
+            echo "No new commits since last release. Skipping build."
+            echo "has_new_commits=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New commits detected. Building."
+            echo "has_new_commits=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build-repo:
     name: Build and upload mlir_air wheels
+    needs: check-new-commits
+    if: always() && (github.event_name != 'schedule' || needs.check-new-commits.outputs.has_new_commits == 'true')
 
     runs-on: ubuntu-latest
 
