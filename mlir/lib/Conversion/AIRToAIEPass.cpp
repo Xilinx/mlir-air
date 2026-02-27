@@ -943,15 +943,21 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
                                   : AIE::LockAction::Acquire;
 
   // ========================================================================
-  // LOCK INSERTION: Insert lock pairs around buffer-accessing operations
+  // LOCK INSERTION: Insert lock pairs around buffer-accessing operations.
+  // For inline MLIR kernels (memref.load/store in loops), locks are placed
+  // at the outermost loop scope that contains ALL accesses, not per-op.
   // ========================================================================
   for (auto coreOp : coreOps) {
+    // Step 1: Collect all ops that access the shared buffer
+    SmallVector<Operation *> accessingOps;
+    bool coreIsProducer = false;
+    bool coreIsConsumer = false;
+
     coreOp.walk([&](Operation *op) {
       bool accessesBuffer = false;
       bool isProducer = false;
       bool isConsumer = false;
 
-      // Check memory effects
       for (Value alias : bufferAliases) {
         if (hasEffect<MemoryEffects::Write>(op, alias)) {
           accessesBuffer = true;
@@ -963,7 +969,6 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
         }
       }
 
-      // Special handling for func.call
       if (auto callOp = dyn_cast<func::CallOp>(op)) {
         int lastMemrefIdx = findLastMemrefOperandIndex(callOp);
         for (int i = 0; i < (int)callOp.getNumOperands(); ++i) {
@@ -978,62 +983,108 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
         }
       }
 
-      if (!accessesBuffer)
-        return;
+      if (accessesBuffer) {
+        accessingOps.push_back(op);
+        if (isProducer)
+          coreIsProducer = true;
+        if (isConsumer)
+          coreIsConsumer = true;
+      }
+    });
 
-      OpBuilder builder(op);
+    if (accessingOps.empty())
+      continue;
+
+    // Step 2: Find the OUTERMOST scf.for that contains ALL accessing ops
+    Operation *lockScope = nullptr;
+    // Start from the first accessing op and walk up
+    Operation *candidate = accessingOps[0]->getParentOp();
+    while (candidate && candidate != coreOp.getOperation()) {
+      if (isa<scf::ForOp>(candidate)) {
+        bool containsAll = true;
+        for (auto *other : accessingOps) {
+          if (!candidate->isProperAncestor(other)) {
+            containsAll = false;
+            break;
+          }
+        }
+        if (containsAll)
+          lockScope = candidate; // outermost so far; keep going up
+      }
+      candidate = candidate->getParentOp();
+    }
+
+    // Step 3: Insert locks at the determined scope
+    if (lockScope) {
+      // Place at start/end of the outermost enclosing scf.for body
+      auto forOp = cast<scf::ForOp>(lockScope);
+      OpBuilder builder(forOp);
+      builder.setInsertionPointToStart(forOp.getBody());
+      auto loc = forOp.getLoc();
 
       if (strategy == LockStrategy::Mutex) {
-        // Mutex strategy: acquire and release the SAME lock
-        AIE::UseLockOp::create(builder, op->getLoc(), mutexLock, acqAction, 1);
-        builder.setInsertionPointAfter(op);
-        AIE::UseLockOp::create(builder, op->getLoc(), mutexLock,
+        AIE::UseLockOp::create(builder, loc, mutexLock, acqAction, 1);
+        builder.setInsertionPoint(forOp.getBody()->getTerminator());
+        AIE::UseLockOp::create(builder, loc, mutexLock,
                                AIE::LockAction::Release, 1);
-        LLVM_DEBUG(llvm::dbgs()
-                   << "AIRToAIE: Inserted mutex lock pair around " << *op
-                   << " in core(" << coreOp.getTileOp().getCol() << ", "
-                   << coreOp.getTileOp().getRow() << ")\n");
+      } else if (coreIsProducer && !coreIsConsumer) {
+        AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+        builder.setInsertionPoint(forOp.getBody()->getTerminator());
+        AIE::UseLockOp::create(builder, loc, consLock, AIE::LockAction::Release,
+                               1);
+      } else if (coreIsConsumer && !coreIsProducer) {
+        AIE::UseLockOp::create(builder, loc, consLock, acqAction,
+                               numProducerCores);
+        builder.setInsertionPoint(forOp.getBody()->getTerminator());
+        AIE::UseLockOp::create(builder, loc, prodLock, AIE::LockAction::Release,
+                               numProducerCores);
       } else {
-        // Producer/Consumer strategy
-        if (isProducer && !isConsumer) {
-          // Pure producer: acquire prod_lock, do op, release cons_lock
+        // Both producer and consumer
+        AIE::UseLockOp::create(builder, loc, prodLock, acqAction, 1);
+        AIE::UseLockOp::create(builder, loc, consLock, acqAction,
+                               numProducerCores);
+        builder.setInsertionPoint(forOp.getBody()->getTerminator());
+        AIE::UseLockOp::create(builder, loc, consLock, AIE::LockAction::Release,
+                               1);
+        AIE::UseLockOp::create(builder, loc, prodLock, AIE::LockAction::Release,
+                               numProducerCores);
+      }
+    } else {
+      // Fallback: no enclosing loop, wrap each op individually (original
+      // behavior)
+      for (auto *op : accessingOps) {
+        OpBuilder builder(op);
+
+        if (strategy == LockStrategy::Mutex) {
+          AIE::UseLockOp::create(builder, op->getLoc(), mutexLock, acqAction,
+                                 1);
+          builder.setInsertionPointAfter(op);
+          AIE::UseLockOp::create(builder, op->getLoc(), mutexLock,
+                                 AIE::LockAction::Release, 1);
+        } else if (coreIsProducer && !coreIsConsumer) {
           AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
           builder.setInsertionPointAfter(op);
           AIE::UseLockOp::create(builder, op->getLoc(), consLock,
                                  AIE::LockAction::Release, 1);
-          LLVM_DEBUG(llvm::dbgs()
-                     << "AIRToAIE: Inserted producer lock pair around " << *op
-                     << " in core(" << coreOp.getTileOp().getCol() << ", "
-                     << coreOp.getTileOp().getRow() << ")\n");
-        } else if (isConsumer && !isProducer) {
-          // Pure consumer: wait for ALL producers before reading, then
-          // release prod_lock for all producers to write next iteration
+        } else if (coreIsConsumer && !coreIsProducer) {
           AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction,
                                  numProducerCores);
           builder.setInsertionPointAfter(op);
           AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
                                  AIE::LockAction::Release, numProducerCores);
-          LLVM_DEBUG(llvm::dbgs()
-                     << "AIRToAIE: Inserted consumer lock pair around " << *op
-                     << " in core(" << coreOp.getTileOp().getCol() << ", "
-                     << coreOp.getTileOp().getRow() << ")\n");
-        } else if (isProducer && isConsumer) {
-          // Read-modify-write: acquire both locks, release both
+        } else {
+          // Both producer and consumer
           AIE::UseLockOp::create(builder, op->getLoc(), prodLock, acqAction, 1);
-          AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction, 1);
+          AIE::UseLockOp::create(builder, op->getLoc(), consLock, acqAction,
+                                 numProducerCores);
           builder.setInsertionPointAfter(op);
           AIE::UseLockOp::create(builder, op->getLoc(), consLock,
                                  AIE::LockAction::Release, 1);
           AIE::UseLockOp::create(builder, op->getLoc(), prodLock,
-                                 AIE::LockAction::Release, 1);
-          LLVM_DEBUG(
-              llvm::dbgs()
-              << "AIRToAIE: Inserted read-modify-write lock pairs around "
-              << *op << " in core(" << coreOp.getTileOp().getCol() << ", "
-              << coreOp.getTileOp().getRow() << ")\n");
+                                 AIE::LockAction::Release, numProducerCores);
         }
       }
-    });
+    }
   }
 }
 

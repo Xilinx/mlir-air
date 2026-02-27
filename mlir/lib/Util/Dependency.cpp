@@ -1301,6 +1301,11 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
                                   memcpy.getSrcMemref(), memcpy.getSrcOffsets(),
                                   memcpy.getSrcSizes(), memcpy.getSrcStrides()),
                               operands);
+  } else if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
+    // memref.load reads from the memref
+    pushMemrefEntryToVector(getMemrefEntry(loadOp.getMemRef()), operands);
+  } else if (isa<memref::StoreOp>(op)) {
+    // memref.store writes to the memref -- no read of the memref itself
   } else { // If unknown op, then assume all operands are read.
     for (auto oper : op->getOperands())
       pushMemrefEntryToVector(getMemrefEntry(oper), operands);
@@ -1367,6 +1372,11 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
                                   memcpy.getDstMemref(), memcpy.getDstOffsets(),
                                   memcpy.getDstSizes(), memcpy.getDstStrides()),
                               operands);
+  } else if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
+    // memref.store writes to the memref destination only
+    pushMemrefEntryToVector(getMemrefEntry(storeOp.getMemRef()), operands);
+  } else if (isa<memref::LoadOp>(op)) {
+    // memref.load reads from the memref -- no write access
   } else { // If unknown op, then assume all operands and results are written
            // to.
     for (auto oper : llvm::concat<Value>(op->getOperands(), op->getResults()))
