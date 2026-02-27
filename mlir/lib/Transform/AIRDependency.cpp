@@ -1798,12 +1798,15 @@ private:
           op->emitOpError("unknown async event type");
           continue;
         }
-        // Skip dependency if the source op is in a child region relative to
-        // the sink op. The 4th traversal (loop-carried deps) will handle
-        // this by threading the token through iter_args.
-        if (srcOp &&
-            !srcOp->getParentRegion()->isAncestor(op->getParentRegion())) {
-          continue;
+        // Skip dependency if the source op is inside an scf.if that does
+        // not contain the sink op. The token defined inside scf.if cannot
+        // dominate ops outside it; the 4th traversal (loop-carried deps)
+        // will handle this by threading the token through iter_args.
+        if (srcOp) {
+          if (auto ifOp = srcOp->getParentOfType<scf::IfOp>()) {
+            if (!ifOp->isAncestor(op))
+              continue;
+          }
         }
         async_op.addAsyncDependency(depToken);
       }
