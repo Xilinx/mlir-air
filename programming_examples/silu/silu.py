@@ -4,7 +4,11 @@
 """Vectorized SiLU (Sigmoid Linear Unit) Example
 
 Implements element-wise SiLU on a 1D input [N]:
-  SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
+  SiLU(x) = x * sigmoid(x) = x * 0.5 * (tanh(x/2) + 1)
+
+Uses the tanh-based sigmoid identity to avoid exp and division, which
+have precision and correctness issues on AIE2P. The hardware tanh
+intrinsic (__builtin_aie2p_tanh) is used directly.
 
 Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
 Computation is vectorized using vector.transfer_read/write.
@@ -84,9 +88,10 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
                 cVecSize = ConstantOp(index_type, VECTOR_SIZE)
                 cTileN = ConstantOp(index_type, tile_n)
                 cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
+                half_const = arith.ConstantOp(xrt_dtype_in, 0.5)
                 one_const = arith.ConstantOp(xrt_dtype_in, 1.0)
+                v_half = BroadcastOp(vecTy, half_const)
                 v_one = BroadcastOp(vecTy, one_const)
-                v_zero = BroadcastOp(vecTy, cst0)
 
                 for j in range_(c0, cTileN, cVecSize):
                     sub_in = subview(l1_in.result, [j], [VECTOR_SIZE], [1])
@@ -94,20 +99,14 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
 
                     v_x = transfer_read(vecTy, sub_in, [c0], identity_map, cst0, [True])
 
-                    # SiLU(x) = x / (1 + exp(-x))
-                    # Use subf(0, x) instead of negf — aievec.neg on f32
-                    # is not supported in the LLVM lowering.
-                    v_neg_x = arith.subf(v_zero.result, v_x)
-                    v_exp = math_dialect.ExpOp(v_neg_x)
-                    v_denom = arith.addf(v_one.result, v_exp)
-                    # Compute division in f32 — bf16 vector divf is not
-                    # legalized by Peano.
-                    f32 = F32Type.get()
-                    f32VecTy = VectorType.get([VECTOR_SIZE], f32)
-                    v_x_f32 = arith.extf(f32VecTy, v_x)
-                    v_denom_f32 = arith.extf(f32VecTy, v_denom)
-                    v_silu_f32 = arith.divf(v_x_f32, v_denom_f32)
-                    v_silu = arith.truncf(vecTy, v_silu_f32)
+                    # SiLU(x) = x * sigmoid(x)
+                    #         = x * 0.5 * (tanh(x/2) + 1)
+                    # Uses hardware tanh intrinsic — no exp or division needed.
+                    v_half_x = arith.mulf(v_x, v_half.result)
+                    v_tanh = math_dialect.tanh(v_half_x)
+                    v_tanh_plus_one = arith.addf(v_tanh, v_one.result)
+                    v_sigmoid = arith.mulf(v_tanh_plus_one, v_half.result)
+                    v_silu = arith.mulf(v_x, v_sigmoid)
 
                     transfer_write(None, v_silu, sub_out, [c0], identity_map, [True])
                     yield_([])
@@ -161,17 +160,16 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    # Restrict range to avoid bf16 exp overflow on large negative values
-    input_a = np.random.uniform(-3.0, 3.0, args.n).astype(INPUT_DATATYPE)
+    input_a = np.random.uniform(-4.0, 4.0, args.n).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
         num_samples = 100
         sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
 
-        # SiLU reference: x * sigmoid(x) = x / (1 + exp(-x))
+        # SiLU reference using tanh-based sigmoid (matches hardware computation)
         def silu_ref(x):
             x_f32 = x.astype(np.float32)
-            return x_f32 / (1.0 + np.exp(-x_f32))
+            return x_f32 * 0.5 * (np.tanh(x_f32 / 2.0) + 1.0)
 
         sampled_values = np.array(
             [silu_ref(input_a[i]) for i in zip(*sampled_indices)],

@@ -1,14 +1,15 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Vectorized GELU (Fast Approximation) Example
+"""Vectorized GELU (Tanh Approximation) Example
 
-Implements element-wise GELU on a 1D input [N] using the fast
-sigmoid approximation:
-  GELU(x) ≈ x * sigmoid(1.702 * x) = x / (1 + exp(-1.702 * x))
+Implements element-wise GELU on a 1D input [N] using the standard
+tanh approximation:
+  GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
 
-Standard GELU requires math.tanh which is not supported on AIE.
-The fast GELU approximation uses sigmoid instead.
+Uses the hardware tanh intrinsic (__builtin_aie2p_tanh) directly,
+matching the IRON project's GELU implementation. No exp or division
+needed.
 
 Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
 Computation is vectorized using vector.transfer_read/write.
@@ -32,7 +33,8 @@ from air.backend.xrt import XRTBackend
 
 range_ = for_
 
-GELU_ALPHA = 1.702
+SQRT_2_OVER_PI = 0.7978845608  # sqrt(2/pi)
+GELU_BETA = 0.044715
 
 
 @module_builder
@@ -90,11 +92,14 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
                 cVecSize = ConstantOp(index_type, VECTOR_SIZE)
                 cTileN = ConstantOp(index_type, tile_n)
                 cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
+                half_const = arith.ConstantOp(xrt_dtype_in, 0.5)
                 one_const = arith.ConstantOp(xrt_dtype_in, 1.0)
-                alpha_const = arith.ConstantOp(xrt_dtype_in, GELU_ALPHA)
+                beta_const = arith.ConstantOp(xrt_dtype_in, GELU_BETA)
+                s2opi_const = arith.ConstantOp(xrt_dtype_in, SQRT_2_OVER_PI)
+                v_half = BroadcastOp(vecTy, half_const)
                 v_one = BroadcastOp(vecTy, one_const)
-                v_alpha = BroadcastOp(vecTy, alpha_const)
-                v_zero = BroadcastOp(vecTy, cst0)
+                v_beta = BroadcastOp(vecTy, beta_const)
+                v_s2opi = BroadcastOp(vecTy, s2opi_const)
 
                 for j in range_(c0, cTileN, cVecSize):
                     sub_in = subview(l1_in.result, [j], [VECTOR_SIZE], [1])
@@ -102,22 +107,17 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
 
                     v_x = transfer_read(vecTy, sub_in, [c0], identity_map, cst0, [True])
 
-                    # Fast GELU: x * sigmoid(1.702 * x)
-                    # = x / (1 + exp(-1.702 * x))
-                    v_scaled = arith.mulf(v_x, v_alpha)
-                    # Use subf(0, x) instead of negf — aievec.neg on f32
-                    # is not supported in the LLVM lowering.
-                    v_neg_scaled = arith.subf(v_zero.result, v_scaled)
-                    v_exp = math_dialect.ExpOp(v_neg_scaled)
-                    v_denom = arith.addf(v_one.result, v_exp)
-                    # Compute division in f32 — bf16 vector divf is not
-                    # legalized by Peano.
-                    f32 = F32Type.get()
-                    f32VecTy = VectorType.get([VECTOR_SIZE], f32)
-                    v_x_f32 = arith.extf(f32VecTy, v_x)
-                    v_denom_f32 = arith.extf(f32VecTy, v_denom)
-                    v_gelu_f32 = arith.divf(v_x_f32, v_denom_f32)
-                    v_gelu = arith.truncf(vecTy, v_gelu_f32)
+                    # GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+                    # Uses hardware tanh intrinsic — no exp or division needed.
+                    v_x2 = arith.mulf(v_x, v_x)
+                    v_x3 = arith.mulf(v_x, v_x2)
+                    v_beta_x3 = arith.mulf(v_x3, v_beta.result)
+                    v_inner = arith.addf(v_x, v_beta_x3)
+                    v_scaled = arith.mulf(v_inner, v_s2opi.result)
+                    v_tanh = math_dialect.tanh(v_scaled)
+                    v_one_plus_tanh = arith.addf(v_tanh, v_one.result)
+                    v_half_x = arith.mulf(v_x, v_half.result)
+                    v_gelu = arith.mulf(v_half_x, v_one_plus_tanh)
 
                     transfer_write(None, v_gelu, sub_out, [c0], identity_map, [True])
                     yield_([])
@@ -171,17 +171,17 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    # Restrict range to avoid bf16 exp overflow on large negative values
-    input_a = np.random.uniform(-3.0, 3.0, args.n).astype(INPUT_DATATYPE)
+    input_a = np.random.uniform(-4.0, 4.0, args.n).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
         num_samples = 100
         sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
 
-        # Fast GELU reference: x * sigmoid(1.702 * x)
+        # Standard GELU reference: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715*x^3)))
         def gelu_ref(x):
             x_f32 = x.astype(np.float32)
-            return x_f32 / (1.0 + np.exp(-GELU_ALPHA * x_f32))
+            inner = SQRT_2_OVER_PI * (x_f32 + GELU_BETA * x_f32**3)
+            return (0.5 * x_f32 * (1.0 + np.tanh(inner))).astype(INPUT_DATATYPE)
 
         sampled_values = np.array(
             [gelu_ref(input_a[i]) for i in zip(*sampled_indices)],
@@ -205,7 +205,6 @@ if __name__ == "__main__":
                 inputs=[input_a],
                 stochastic_expected_outputs=[sampled_data],
                 rtol=1e-1,
-                atol=1e-1,
             )
         )
 
