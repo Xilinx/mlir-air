@@ -57,8 +57,7 @@ from air.dialects.func import FuncOp, CallOp
 from air.dialects import scf
 from air.dialects.scf import for_, yield_
 from air.dialects import vector as vector_dialect
-from aie.dialects import aievec as aievec_dialect
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner
 from air.backend.xrt import XRTBackend
 
 range_ = for_
@@ -356,7 +355,8 @@ def build_module():
 
     # conv2dk1 kernel is implemented inline in MLIR (no external .cc needed)
 
-    # conv2dk3 kernel is implemented inline in MLIR (scalar loops)
+    # conv2dk3 kernel is implemented inline in MLIR using vectorized_block_matmul
+    # (vector.contract / aievec.matmul) with scalar SRS post-processing
 
     # conv2dk1_skip kernel is implemented inline in MLIR (no external .cc needed)
 
