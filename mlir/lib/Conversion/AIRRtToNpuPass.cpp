@@ -1445,6 +1445,18 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                       std::move(funcToSeqPatterns))))
       signalPassFailure();
 
+    // Mark between-iteration load_pdi ops with skip_elfs=true so
+    // the aie-expand-load-pdi pass generates a lightweight PDI
+    // without ELF reload. The ELFs don't change between iterations.
+    //
+    // Note: A clone-device approach (creating a second device without
+    // cores and redirecting load_pdi to it) was considered, but the
+    // aie-materialize-runtime-sequences pass cycles @empty_N device
+    // names when inlining, causing the cloned device's load_pdi ops
+    // to incorrectly reference the full device's @empty_N on
+    // alternating iterations.
+    markLoadPdiSkipElfs(module);
+
     // Generate main device wrapper if needed. This handles two mutually
     // exclusive cases:
     // 1. Multi-device: pendingMainDevice was set by moveFuncOpToEndOfDeviceOp
@@ -1714,6 +1726,28 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     // Clear the pending request
     pendingMainDevice = std::nullopt;
+  }
+
+  // Mark between-iteration load_pdi ops with skip_elfs=true.
+  // The ELFs don't change between iterations — only DMA BDs, locks,
+  // and channel state need reset. This makes the PDI reload much
+  // lighter (skips the bulk ELF binary data).
+  void markLoadPdiSkipElfs(ModuleOp module) {
+    module.walk([&](AIE::DeviceOp device) {
+      if (!deviceHasRepeatCountDMAs(device))
+        return;
+      AIE::RuntimeSequenceOp runtimeSeq = nullptr;
+      device.walk([&](AIE::RuntimeSequenceOp seq) { runtimeSeq = seq; });
+      if (!runtimeSeq)
+        return;
+      runtimeSeq.walk([&](AIEX::NpuLoadPdiOp op) {
+        if (auto ref = op.getDeviceRefAttr()) {
+          if (ref.getValue() == device.getSymName()) {
+            op.setSkipElfs(true);
+          }
+        }
+      });
+    });
   }
 
   // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
