@@ -43,6 +43,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Linear Algebra",
+        "name": "AXPY",
+        "path": "axpy",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Element-wise",
         "name": "Element-wise Add",
         "path": "eltwise_add",
@@ -64,6 +70,18 @@ EXAMPLES = [
         "category": "Activation/Math",
         "name": "Sine / Cosine",
         "path": "sine_cosine",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
+        "name": "RELU",
+        "path": "relu",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
+        "name": "Leaky RELU",
+        "path": "leaky_relu",
         "datatypes": "bf16",
     },
     {
