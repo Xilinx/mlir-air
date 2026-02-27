@@ -51,23 +51,8 @@ run: compile-kernels
 	mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) ${powershell} python3 ${srcdir}/bottleneck.py
 
-# MLIR kernel targets: only conv2dk3 needs external compilation
-# (conv2dk1 and conv2dk1_skip are inline MLIR in bottleneck_mlir.py)
-compile-kernels-mlir:
-	mkdir -p $(BUILD_DIR)
-	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
-		echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET)"; \
-		$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DUINT8_ACT -c ${srcdir}/conv2dk3.cc -o $(BUILD_DIR)/conv2dk3.o; \
-	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
-		echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET)"; \
-		cd $(BUILD_DIR) && \
-		xchesscc_wrapper ${AIE_TARGET} -DUINT8_ACT -c ${srcdir}/conv2dk3.cc -o conv2dk3.o; \
-	else \
-		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
-		exit 1; \
-	fi
-
-run-mlir: compile-kernels-mlir
+# All kernels are inline MLIR in bottleneck_mlir.py — no .o files needed
+run-mlir:
 	mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) ${powershell} python3 ${srcdir}/bottleneck_mlir.py
 
