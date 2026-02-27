@@ -54,6 +54,7 @@ from air.dialects.linalg import fill
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects import memref
 from air.dialects.func import FuncOp, CallOp
+from air.dialects import scf
 from air.dialects.scf import for_, yield_
 from air.dialects import vector as vector_dialect
 from aie.dialects import aievec as aievec_dialect
@@ -79,6 +80,8 @@ def vectorized_block_matmul(
     N_grps,
     b_n_offset=None,
     unsigned_a=False,
+    b_ky=None,
+    b_kx=None,
 ):
     """
     Vectorized block matmul using vector.contract with leading-unit-dim pattern.
@@ -157,10 +160,15 @@ def vectorized_block_matmul(
                 b_n_idx = (
                     arith.addi(b_n_offset, n_grp) if b_n_offset is not None else n_grp
                 )
+                # B index: [n, k, ky, kx, 0, 0] for OIYXI8O8,
+                #       or [n, 0, 0, k, 0, 0] for 1x1 conv weights
+                b_dim1 = k_tile if b_ky is not None else c0
+                b_dim2 = b_ky if b_ky is not None else c0
+                b_dim3 = b_kx if b_kx is not None else k_tile
                 b_vec = vector_dialect.transfer_read(
                     b_vec_ty,
                     b_buf,
-                    [b_n_idx, c0, c0, k_tile, c0, c0],
+                    [b_n_idx, b_dim1, b_dim2, b_dim3, c0, c0],
                     AffineMap.get_minor_identity(6, 6),
                     pad_i8,
                     in_bounds_6d,
@@ -264,8 +272,22 @@ def build_module():
     l1_layer2_in_ty = MemRefType.get(
         (TENSOR_IN_W, 1, TENSOR_L2_IN_C), i8, memory_space=l1_mem_space
     )
-    # L1 weights for layer 2 (36KB fits in AIE2's 64KB L1)
-    l1_wts_layer2_ty = MemRefType.get((WEIGHTS_L2_SZ,), i8, memory_space=l1_mem_space)
+    # L1 weights for layer 2 in OIYXI8O8 layout [OC//8, IC//8, 3, 3, 8, 8]
+    l1_wts_layer2_ty = MemRefType.get(
+        (TENSOR_L2_OUT_C // 8, TENSOR_L2_IN_C // 8, 3, 3, 8, 8),
+        i8,
+        memory_space=l1_mem_space,
+    )  # [8, 8, 3, 3, 8, 8] = 36864 bytes
+    # Padded input row for spatial shift: flat [(W+2) * IC] bytes
+    CONV3X3_PAD_W = TENSOR_IN_W + 2  # 34
+    CONV3X3_PAD_BYTES = CONV3X3_PAD_W * TENSOR_L2_IN_C  # 2176
+    # i32 accumulator for conv3x3: 6D [N_grps, 1, 1, M_tiles, 4, 8]
+    OC_PER_CORE = TENSOR_L2_OUT_C // 2  # 32
+    l1_conv3x3_acc_ty = MemRefType.get(
+        (OC_PER_CORE // 8, 1, 1, TENSOR_IN_W // 4, 4, 8),
+        i32,
+        memory_space=l1_mem_space,
+    )  # [4, 1, 1, 8, 4, 8] i32 = 4096 bytes
     # Each 3x3 core produces half the output channels
     l1_layer2_out_ty = MemRefType.get(
         (TENSOR_IN_W, 1, TENSOR_L2_OUT_C // 2), i8, memory_space=l1_mem_space
@@ -321,7 +343,11 @@ def build_module():
 
     # L2 buffer types for weight staging
     l2_wts_layer1_ty = MemRefType.get((WEIGHTS_L1_SZ,), i8, memory_space=l2_mem_space)
-    l2_wts_layer2_ty = MemRefType.get((WEIGHTS_L2_SZ,), i8, memory_space=l2_mem_space)
+    l2_wts_layer2_ty = MemRefType.get(
+        (TENSOR_L2_OUT_C // 8, TENSOR_L2_IN_C // 8, 3, 3, 8, 8),
+        i8,
+        memory_space=l2_mem_space,
+    )
     l2_wts_layer3_ty = MemRefType.get(
         [TENSOR_L3_OUT_C // 8, 1, 1, TENSOR_L3_IN_C // 8, 8, 8],
         i8,
@@ -330,32 +356,7 @@ def build_module():
 
     # conv2dk1 kernel is implemented inline in MLIR (no external .cc needed)
 
-    # conv2dk3 uses L1 weights (36KB fits in AIE2's 64KB L1)
-    conv2dk3_ui8_func = FuncOp(
-        "conv2dk3_ui8",
-        (
-            [
-                l1_layer2_in_ty,
-                l1_layer2_in_ty,
-                l1_layer2_in_ty,
-                l1_wts_layer2_ty,
-                l1_layer2_out_combined_ty,  # shared output buffer (6D, passed as raw ptr)
-                i32,
-                i32,
-                i32,
-                i32,
-                i32,
-                i32,
-                i32,
-                i32,
-                i32,
-            ],  # width, in_c, out_c, k_h, k_w, row_pos, scale, chan_offset, out_offset
-            [],
-        ),
-        visibility="private",
-    )
-    conv2dk3_ui8_func.attributes["link_with"] = StringAttr.get("conv2dk3.o")
-    conv2dk3_ui8_func.attributes["llvm.emit_c_interface"] = UnitAttr.get()
+    # conv2dk3 kernel is implemented inline in MLIR (scalar loops)
 
     # conv2dk1_skip kernel is implemented inline in MLIR (no external .cc needed)
 
@@ -643,226 +644,396 @@ def build_module():
                 )
                 def herd_conv3x3_body(tx, ty, sx, sy, shared_out_full):
                     c0_h = ConstantOp(index_type, 0)
+                    W = TENSOR_IN_W  # 32
+                    IC = TENSOR_L2_IN_C  # 64
+                    OC = TENSOR_L2_OUT_C  # 64
+                    OC_HALF = OC // 2  # 32
+                    ROW_BYTES = W * IC  # 2048
 
-                    # Allocate L1 buffers - 4 rows for sliding window rotation
                     row_buf_0 = AllocOp(l1_layer2_in_ty, [], [])
                     row_buf_1 = AllocOp(l1_layer2_in_ty, [], [])
                     row_buf_2 = AllocOp(l1_layer2_in_ty, [], [])
                     row_buf_3 = AllocOp(l1_layer2_in_ty, [], [])
+                    wts = AllocOp(l1_wts_layer2_ty, [], [])  # [8,8,3,3,8,8]
+                    acc = AllocOp(l1_conv3x3_acc_ty, [], [])  # [4,32,8] i32
+                    # Padded row for spatial shift: flat 2176 bytes
+                    padded_row_ty = MemRefType.get(
+                        (CONV3X3_PAD_BYTES,), i8, memory_space=l1_mem_space
+                    )
+                    padded_row = AllocOp(padded_row_ty, [], [])
 
-                    # Receive weights via broadcast (indexed by tile)
-                    wts = AllocOp(l1_wts_layer2_ty, [], [])
                     ChannelGet("L2ToL1_WtsL2", wts, indices=[tx, c0_h])
-
-                    # Pre-load first two rows (indexed by tile)
                     ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[tx, c0_h])
                     ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[tx, c0_h])
 
-                    # Constants for conv2dk3 calls
-                    width = ConstantOp(i32, TENSOR_IN_W)
-                    in_c = ConstantOp(i32, TENSOR_L2_IN_C)
-                    out_c = ConstantOp(i32, TENSOR_L2_OUT_C)
-                    k_h = ConstantOp(i32, 3)
-                    k_w = ConstantOp(i32, 3)
-                    row_pos_top = ConstantOp(i32, 0)  # top edge (pad top)
-                    row_pos_mid = ConstantOp(i32, 1)  # middle
-                    row_pos_bot = ConstantOp(i32, 2)  # bottom edge (pad bottom)
-                    scale = ConstantOp(i32, 11)
-                    # chan_offset = tx * 32
-                    half_c_i32 = ConstantOp(i32, TENSOR_L2_OUT_C // 2)
-                    tx_i32 = arith.index_cast(i32, tx)
-                    chan_offset = arith.muli(tx_i32, half_c_i32)
-                    # output_offset = tx * 1024 (byte offset into shared buffer)
-                    half_size_i32 = ConstantOp(i32, CONV3X3_OUT_HALF_SIZE)
-                    output_offset = arith.muli(tx_i32, half_size_i32)
+                    # Shared output as flat
+                    shared_flat_ty = MemRefType.get(
+                        (CONV3X3_OUT_HALF_SIZE * 2,),
+                        i8,
+                        memory_space=l1_mem_space,
+                    )
+                    shared_flat = memref.ReinterpretCastOp(
+                        shared_flat_ty,
+                        shared_out_full,
+                        static_offsets=[0],
+                        static_sizes=[CONV3X3_OUT_HALF_SIZE * 2],
+                        static_strides=[1],
+                        offsets=[],
+                        sizes=[],
+                        strides=[],
+                    ).result
 
-                    # Output row 0 (top padding): uses [row0, row0, row1]
-                    CallOp(
-                        conv2dk3_ui8_func,
-                        [
-                            row_buf_0,
-                            row_buf_0,
-                            row_buf_1,
-                            wts,
-                            shared_out_full,
-                            width,
-                            in_c,
-                            out_c,
-                            k_h,
-                            k_w,
-                            row_pos_top,
-                            scale,
-                            chan_offset,
-                            output_offset,
-                        ],
+                    # Constants
+                    c0_idx = ConstantOp(index_type, 0)
+                    c0_i8 = ConstantOp(IntegerAttr.get(i8, 0), None)
+                    c0_i32 = ConstantOp(IntegerAttr.get(i32, 0), None)
+                    c255_i32 = ConstantOp(i32, 255)
+                    c_scale = ConstantOp(i32, 11)
+                    c_rounding = ConstantOp(i32, 1 << 10)
+                    c_8_idx = ConstantOp(index_type, 8)
+                    c_ic = ConstantOp(index_type, IC)
+
+                    tx_i32 = arith.index_cast(i32, tx)
+                    out_byte_offset = arith.index_cast(
+                        index_type,
+                        arith.muli(tx_i32, ConstantOp(i32, CONV3X3_OUT_HALF_SIZE)),
+                    )
+                    # Per-core N offset: tx * (OC_HALF // 8)
+                    n_offset = arith.muli(tx, ConstantOp(index_type, OC_HALF // 8))
+
+                    # Flat view for row copy
+                    flat_ty = MemRefType.get(
+                        (ROW_BYTES,), i8, memory_space=l1_mem_space
                     )
 
-                    # Process middle rows 1-30 in groups of 4 (7 full groups = 28 rows)
-                    for _ in range_(0, 7):
-                        ChannelGet(
-                            "L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[tx, c0_h]
-                        )
-                        CallOp(
-                            conv2dk3_ui8_func,
-                            [
-                                row_buf_0,
-                                row_buf_1,
-                                row_buf_2,
-                                wts,
-                                shared_out_full,
-                                width,
-                                in_c,
-                                out_c,
-                                k_h,
-                                k_w,
-                                row_pos_mid,
-                                scale,
-                                chan_offset,
-                                output_offset,
-                            ],
-                        )
+                    # Reinterpret padded row as 6D for vector.transfer_read
+                    # For kx offset: [1, 1, IC//8, (W+2)//4, 4, 8] won't work
+                    # because W+2=34 is not divisible by 4.
+                    # Instead, for each kx, create a 6D view at byte offset
+                    # kx*IC in the padded row.
+                    padded_6d_ty = MemRefType.get(
+                        [1, 1, IC // 8, W // 4, 4, 8],
+                        i8,
+                        layout=StridedLayoutAttr.get(
+                            offset=-9223372036854775808,
+                            strides=[ROW_BYTES, ROW_BYTES, W * 8, 4 * 8, 8, 1],
+                        ),
+                        memory_space=l1_mem_space,
+                    )
 
-                        ChannelGet(
-                            "L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[tx, c0_h]
-                        )
-                        CallOp(
-                            conv2dk3_ui8_func,
-                            [
-                                row_buf_1,
-                                row_buf_2,
-                                row_buf_3,
-                                wts,
-                                shared_out_full,
-                                width,
-                                in_c,
-                                out_c,
-                                k_h,
-                                k_w,
-                                row_pos_mid,
-                                scale,
-                                chan_offset,
-                                output_offset,
-                            ],
-                        )
+                    # Additional constants for the row loop
+                    c1_idx = ConstantOp(index_type, 1)
+                    c2_idx = ConstantOp(index_type, 2)
+                    c3_idx = ConstantOp(index_type, 3)
+                    c4_idx = ConstantOp(index_type, 4)
+                    c31_idx = ConstantOp(index_type, 31)
+                    c30_idx = ConstantOp(index_type, 30)
 
-                        ChannelGet(
-                            "L1ToL1_Conv1ToConv3x3", row_buf_0, indices=[tx, c0_h]
-                        )
-                        CallOp(
-                            conv2dk3_ui8_func,
-                            [
-                                row_buf_2,
-                                row_buf_3,
-                                row_buf_0,
-                                wts,
-                                shared_out_full,
-                                width,
-                                in_c,
-                                out_c,
-                                k_h,
-                                k_w,
-                                row_pos_mid,
-                                scale,
-                                chan_offset,
-                                output_offset,
-                            ],
-                        )
+                    # Flat view of padded_row at offset IC for memref.copy dst
+                    padded_dst_ty = MemRefType.get(
+                        (ROW_BYTES,),
+                        i8,
+                        layout=StridedLayoutAttr.get(
+                            offset=-9223372036854775808,
+                            strides=[1],
+                        ),
+                        memory_space=l1_mem_space,
+                    )
+                    padded_dst_view = memref.ReinterpretCastOp(
+                        padded_dst_ty,
+                        padded_row,
+                        static_offsets=[-9223372036854775808],
+                        static_sizes=[ROW_BYTES],
+                        static_strides=[1],
+                        offsets=[c_ic],
+                        sizes=[],
+                        strides=[],
+                    ).result
 
-                        ChannelGet(
-                            "L1ToL1_Conv1ToConv3x3", row_buf_1, indices=[tx, c0_h]
+                    # Pre-flatten all 4 row buffers for memref.copy
+                    row_buf_0_flat = memref.ReinterpretCastOp(
+                        flat_ty,
+                        row_buf_0,
+                        static_offsets=[0],
+                        static_sizes=[ROW_BYTES],
+                        static_strides=[1],
+                        offsets=[],
+                        sizes=[],
+                        strides=[],
+                    ).result
+                    row_buf_1_flat = memref.ReinterpretCastOp(
+                        flat_ty,
+                        row_buf_1,
+                        static_offsets=[0],
+                        static_sizes=[ROW_BYTES],
+                        static_strides=[1],
+                        offsets=[],
+                        sizes=[],
+                        strides=[],
+                    ).result
+                    row_buf_2_flat = memref.ReinterpretCastOp(
+                        flat_ty,
+                        row_buf_2,
+                        static_offsets=[0],
+                        static_sizes=[ROW_BYTES],
+                        static_strides=[1],
+                        offsets=[],
+                        sizes=[],
+                        strides=[],
+                    ).result
+                    row_buf_3_flat = memref.ReinterpretCastOp(
+                        flat_ty,
+                        row_buf_3,
+                        static_offsets=[0],
+                        static_sizes=[ROW_BYTES],
+                        static_strides=[1],
+                        offsets=[],
+                        sizes=[],
+                        strides=[],
+                    ).result
+
+                    # ===== Single scf.for over 32 output rows =====
+                    # Pre-load first 2 input rows into slots 0 and 1
+                    # (already done above: ChannelGet into row_buf_0 and row_buf_1)
+
+                    H = TENSOR_IN_H  # 32
+                    for out_row in range_(0, H):
+                        # --- Step A: Load next input row if needed ---
+                        # For out_row in [1, 30], load row (out_row+1) into
+                        # slot (out_row+1) % 4
+                        load_row = arith.addi(out_row, c1_idx)
+                        should_load = arith.andi(
+                            arith.cmpi(arith.CmpIPredicate.sge, out_row, c1_idx),
+                            arith.cmpi(arith.CmpIPredicate.sle, out_row, c30_idx),
                         )
-                        CallOp(
-                            conv2dk3_ui8_func,
-                            [
-                                row_buf_3,
-                                row_buf_0,
-                                row_buf_1,
-                                wts,
-                                shared_out_full,
-                                width,
-                                in_c,
-                                out_c,
-                                k_h,
-                                k_w,
-                                row_pos_mid,
-                                scale,
-                                chan_offset,
-                                output_offset,
-                            ],
+                        if_load = scf.IfOp(should_load, hasElse=True)
+                        with InsertionPoint(if_load.then_block):
+                            next_slot = arith.remui(load_row, c4_idx)
+                            # ChannelGet into correct buffer based on slot
+                            is_s0 = arith.cmpi(
+                                arith.CmpIPredicate.eq, next_slot, c0_idx
+                            )
+                            if_s0 = scf.IfOp(is_s0, hasElse=True)
+                            with InsertionPoint(if_s0.then_block):
+                                ChannelGet(
+                                    "L1ToL1_Conv1ToConv3x3",
+                                    row_buf_0,
+                                    indices=[tx, c0_h],
+                                )
+                                yield_([])
+                            with InsertionPoint(if_s0.else_block):
+                                yield_([])
+
+                            is_s1 = arith.cmpi(
+                                arith.CmpIPredicate.eq, next_slot, c1_idx
+                            )
+                            if_s1 = scf.IfOp(is_s1, hasElse=True)
+                            with InsertionPoint(if_s1.then_block):
+                                ChannelGet(
+                                    "L1ToL1_Conv1ToConv3x3",
+                                    row_buf_1,
+                                    indices=[tx, c0_h],
+                                )
+                                yield_([])
+                            with InsertionPoint(if_s1.else_block):
+                                yield_([])
+
+                            is_s2 = arith.cmpi(
+                                arith.CmpIPredicate.eq, next_slot, c2_idx
+                            )
+                            if_s2 = scf.IfOp(is_s2, hasElse=True)
+                            with InsertionPoint(if_s2.then_block):
+                                ChannelGet(
+                                    "L1ToL1_Conv1ToConv3x3",
+                                    row_buf_2,
+                                    indices=[tx, c0_h],
+                                )
+                                yield_([])
+                            with InsertionPoint(if_s2.else_block):
+                                yield_([])
+
+                            is_s3 = arith.cmpi(
+                                arith.CmpIPredicate.eq, next_slot, c3_idx
+                            )
+                            if_s3 = scf.IfOp(is_s3, hasElse=True)
+                            with InsertionPoint(if_s3.then_block):
+                                ChannelGet(
+                                    "L1ToL1_Conv1ToConv3x3",
+                                    row_buf_3,
+                                    indices=[tx, c0_h],
+                                )
+                                yield_([])
+                            with InsertionPoint(if_s3.else_block):
+                                yield_([])
+
+                            yield_([])
+                        with InsertionPoint(if_load.else_block):
+                            yield_([])
+
+                        # --- Step B: Compute slots for 3 sliding window rows ---
+                        # line0 = max(0, out_row - 1), line1 = out_row,
+                        # line2 = min(31, out_row + 1)
+                        row_minus_1 = arith.subi(out_row, c1_idx)
+                        line0_row = arith.select(
+                            arith.cmpi(arith.CmpIPredicate.sge, row_minus_1, c0_idx),
+                            row_minus_1,
+                            c0_idx,
                         )
+                        line1_row = out_row
+                        row_plus_1 = arith.addi(out_row, c1_idx)
+                        line2_row = arith.select(
+                            arith.cmpi(arith.CmpIPredicate.sle, row_plus_1, c31_idx),
+                            row_plus_1,
+                            c31_idx,
+                        )
+                        line0_slot = arith.remui(line0_row, c4_idx)
+                        line1_slot = arith.remui(line1_row, c4_idx)
+                        line2_slot = arith.remui(line2_row, c4_idx)
+
+                        # --- Step C: Conv3x3 body (emitted ONCE) ---
+                        fill(c0_i32, outs=[acc])
+
+                        for ky in range_(0, 3):
+                            # Select slot for this ky
+                            is_ky0 = arith.cmpi(arith.CmpIPredicate.eq, ky, c0_idx)
+                            is_ky1 = arith.cmpi(arith.CmpIPredicate.eq, ky, c1_idx)
+                            slot = arith.select(
+                                is_ky0,
+                                line0_slot,
+                                arith.select(is_ky1, line1_slot, line2_slot),
+                            )
+
+                            # Zero padded row, then copy selected row buffer
+                            fill(c0_i8, outs=[padded_row])
+
+                            # Copy from row_buf_{slot} to padded_row[IC:]
+                            # Using scf.for loop (single copy in IR, emitted
+                            # once inside the ky scf.for loop)
+                            for bi in range_(0, ROW_BYTES):
+                                # Select source byte based on slot
+                                v0 = load(row_buf_0_flat, [bi])
+                                v1 = load(row_buf_1_flat, [bi])
+                                v2 = load(row_buf_2_flat, [bi])
+                                v3 = load(row_buf_3_flat, [bi])
+                                is_s0 = arith.cmpi(arith.CmpIPredicate.eq, slot, c0_idx)
+                                is_s1 = arith.cmpi(arith.CmpIPredicate.eq, slot, c1_idx)
+                                is_s2 = arith.cmpi(arith.CmpIPredicate.eq, slot, c2_idx)
+                                v = arith.select(
+                                    is_s0,
+                                    v0,
+                                    arith.select(
+                                        is_s1,
+                                        v1,
+                                        arith.select(is_s2, v2, v3),
+                                    ),
+                                )
+                                di = arith.addi(c_ic, bi)
+                                store(v, padded_row, [di])
+                                yield_([])
+
+                            # 3x3 kernel: kx loop (scf.for, emitted once)
+                            for kx in range_(0, 3):
+                                kx_offset = arith.muli(kx, c_ic)
+                                shifted_a = memref.ReinterpretCastOp(
+                                    padded_6d_ty,
+                                    padded_row,
+                                    static_offsets=[-9223372036854775808],
+                                    static_sizes=[
+                                        1,
+                                        1,
+                                        IC // 8,
+                                        W // 4,
+                                        4,
+                                        8,
+                                    ],
+                                    static_strides=[
+                                        ROW_BYTES,
+                                        ROW_BYTES,
+                                        W * 8,
+                                        4 * 8,
+                                        8,
+                                        1,
+                                    ],
+                                    offsets=[kx_offset],
+                                    sizes=[],
+                                    strides=[],
+                                ).result
+
+                                vectorized_block_matmul(
+                                    shifted_a,
+                                    wts,
+                                    acc,
+                                    K_tiles=IC // AIE2_K,  # 8
+                                    M_tiles=W // AIE2_M,  # 8
+                                    N_grps=OC_HALF // AIE2_N,  # 4
+                                    b_n_offset=n_offset,
+                                    unsigned_a=True,
+                                    b_ky=ky,
+                                    b_kx=kx,
+                                )
+                                yield_([])
+                            yield_([])
+
+                        # --- Step D: SRS + store to shared L1 ---
+                        for oc_grp in range_(0, OC_HALF // 8):
+                            for d3 in range_(0, W // 4):
+                                for d4 in range_(0, 4):
+                                    for oc8 in range_(0, 8):
+                                        val = load(
+                                            acc,
+                                            [
+                                                oc_grp,
+                                                c0_idx,
+                                                c0_idx,
+                                                d3,
+                                                d4,
+                                                oc8,
+                                            ],
+                                        )
+                                        rounded = arith.addi(val, c_rounding)
+                                        shifted = arith.shrsi(rounded, c_scale)
+                                        clamped = arith.minsi(
+                                            arith.maxsi(shifted, c0_i32),
+                                            c255_i32,
+                                        )
+                                        result = arith.trunci(i8, clamped)
+                                        x_pos = arith.addi(
+                                            arith.muli(
+                                                d3,
+                                                ConstantOp(index_type, 4),
+                                            ),
+                                            d4,
+                                        )
+                                        out_flat = arith.addi(
+                                            out_byte_offset,
+                                            arith.addi(
+                                                arith.addi(
+                                                    arith.muli(
+                                                        oc_grp,
+                                                        ConstantOp(index_type, W * 8),
+                                                    ),
+                                                    arith.muli(x_pos, c_8_idx),
+                                                ),
+                                                oc8,
+                                            ),
+                                        )
+                                        store(result, shared_flat, [out_flat])
+                                        yield_([])
+                                    yield_([])
+                                yield_([])
+                            yield_([])
+
                         yield_([])
 
-                    # Remaining rows 29-30
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_2, indices=[tx, c0_h])
-                    CallOp(
-                        conv2dk3_ui8_func,
-                        [
-                            row_buf_0,
-                            row_buf_1,
-                            row_buf_2,
-                            wts,
-                            shared_out_full,
-                            width,
-                            in_c,
-                            out_c,
-                            k_h,
-                            k_w,
-                            row_pos_mid,
-                            scale,
-                            chan_offset,
-                            output_offset,
-                        ],
-                    )
-
-                    ChannelGet("L1ToL1_Conv1ToConv3x3", row_buf_3, indices=[tx, c0_h])
-                    CallOp(
-                        conv2dk3_ui8_func,
-                        [
-                            row_buf_1,
-                            row_buf_2,
-                            row_buf_3,
-                            wts,
-                            shared_out_full,
-                            width,
-                            in_c,
-                            out_c,
-                            k_h,
-                            k_w,
-                            row_pos_mid,
-                            scale,
-                            chan_offset,
-                            output_offset,
-                        ],
-                    )
-
-                    # Output row 31 (bottom padding)
-                    CallOp(
-                        conv2dk3_ui8_func,
-                        [
-                            row_buf_2,
-                            row_buf_3,
-                            row_buf_3,
-                            wts,
-                            shared_out_full,
-                            width,
-                            in_c,
-                            out_c,
-                            k_h,
-                            k_w,
-                            row_pos_bot,
-                            scale,
-                            chan_offset,
-                            output_offset,
-                        ],
-                    )
-
                     DeallocOp(wts)
+                    DeallocOp(acc)
+                    DeallocOp(padded_row)
                     DeallocOp(row_buf_0)
                     DeallocOp(row_buf_1)
                     DeallocOp(row_buf_2)
                     DeallocOp(row_buf_3)
 
-                herd_conv3x3_body.attributes["link_with"] = StringAttr.get("conv2dk3.o")
+                # No link_with -- kernel is inline MLIR (vectorized conv3x3)
 
                 # =============================================================
                 # Herd 3: 1x1 Convolution + Skip Addition (restore: 64→256)
@@ -1080,6 +1251,11 @@ def reorder_mat(in_tensor: np.ndarray, out_layout: str, in_layout: str) -> np.nd
         Y, C8, X, D = in_tensor.shape
         # Transpose (Y, C//8, X, 8) -> (C//8, 8, Y, X)
         return in_tensor.transpose(1, 3, 0, 2).copy()
+
+    elif in_layout == "OIYX" and out_layout == "HWCF":
+        # Weight reorder for linalg.conv_2d_nhwc_hwcf:
+        # (O, I, Y, X) -> (H=Y, W=X, C=I, F=O)
+        return in_tensor.transpose(2, 3, 1, 0).copy()
 
     else:
         raise NotImplementedError(
