@@ -13,12 +13,15 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | Linear Algebra | [AXPY](axpy/) | bf16 | 🟢 | 🟢 | [axpy/](axpy/) |
 | Element-wise | [Element-wise Add](eltwise_add/) | f32 | 🟢 | 🟢 | [eltwise_add/](eltwise_add/) |
 | Element-wise | [Element-wise Add (with L2)](eltwise_add_with_l2/) | f32 | 🟢 | 🟢 | [eltwise_add_with_l2/](eltwise_add_with_l2/) |
+| Activation/Math | [SiLU](silu/) | bf16 | 🟡 | 🟡 | [silu/](silu/) |
+| Activation/Math | [GELU](gelu/) | bf16 | 🟡 | 🟡 | [gelu/](gelu/) |
 | Activation/Math | [Softmax](softmax/) | bf16 | 🟢 | 🟢 | [softmax/](softmax/) |
 | Activation/Math | [Sine / Cosine](sine_cosine/) | bf16 | 🟢 | ⚪ | [sine_cosine/](sine_cosine/) |
 | Activation/Math | [RELU](relu/) | bf16 | 🟢 | 🟢 | [relu/](relu/) |
 | Activation/Math | [Leaky RELU](leaky_relu/) | bf16 | 🟢 | 🟢 | [leaky_relu/](leaky_relu/) |
 | Normalization | [Layer Normalization](layer_norm/) | bf16 | ⚪ | 🟢 | [layer_norm/](layer_norm/) |
 | Normalization | [RMS Normalization](rms_norm/) | bf16 | ⚪ | 🟢 | [rms_norm/](rms_norm/) |
+| Normalization | [Weighted RMS Normalization](weighted_rms_norm/) | bf16 | ⚪ | 🟢 | [weighted_rms_norm/](weighted_rms_norm/) |
 | LLM Kernels | [Multi-Head Attention (LLaMA2)](llama2_mha/) | bf16 | 🟢 | ⚪ | [llama2_mha/](llama2_mha/) |
 | LLM Kernels | [RoPE (LLaMA2)](llama2_rope/) | bf16 | 🟢 | ⚪ | [llama2_rope/](llama2_rope/) |
 | Attention | [Flash Attention (Dataflow)](flash_attention/dataflow_based/) | bf16 | 🟢 | ⚪ | [flash_attention/dataflow_based/](flash_attention/dataflow_based/) |
