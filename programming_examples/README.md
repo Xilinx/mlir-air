@@ -13,8 +13,8 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | Linear Algebra | [AXPY](axpy/) | bf16 | 🟢 | 🟢 | [axpy/](axpy/) |
 | Element-wise | [Element-wise Add](eltwise_add/) | f32 | 🟢 | 🟢 | [eltwise_add/](eltwise_add/) |
 | Element-wise | [Element-wise Add (with L2)](eltwise_add_with_l2/) | f32 | 🟢 | 🟢 | [eltwise_add_with_l2/](eltwise_add_with_l2/) |
-| Activation/Math | [SiLU](silu/) | bf16 | 🟡 | 🟡 | [silu/](silu/) |
-| Activation/Math | [GELU](gelu/) | bf16 | 🟡 | 🟡 | [gelu/](gelu/) |
+| Activation/Math | [SiLU](silu/) | bf16 | ⚪ | 🟢 | [silu/](silu/) |
+| Activation/Math | [GELU](gelu/) | bf16 | ⚪ | 🟢 | [gelu/](gelu/) |
 | Activation/Math | [Softmax](softmax/) | bf16 | 🟢 | 🟢 | [softmax/](softmax/) |
 | Activation/Math | [Sine / Cosine](sine_cosine/) | bf16 | 🟢 | ⚪ | [sine_cosine/](sine_cosine/) |
 | Activation/Math | [RELU](relu/) | bf16 | 🟢 | 🟢 | [relu/](relu/) |
