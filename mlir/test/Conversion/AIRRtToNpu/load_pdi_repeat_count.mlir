@@ -22,7 +22,7 @@
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId7 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
-// EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment0}
+// EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment0, skip_elfs = true}
 // EMIT-TRUE: }
 
 // EMIT-FALSE-LABEL: aie.device(npu2) @segment0 {
@@ -231,7 +231,7 @@ module {
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId11 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
-// EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment_memtile}
+// EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment_memtile, skip_elfs = true}
 // EMIT-TRUE: }
 
 // EMIT-FALSE-LABEL: aie.device(npu2) @segment_memtile {
