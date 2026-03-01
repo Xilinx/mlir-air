@@ -193,9 +193,7 @@ if __name__ == "__main__":
             one_plus_tanh = INPUT_DATATYPE(
                 np.float32(tanh_val) + np.float32(INPUT_DATATYPE(1.0))
             )
-            half_x = INPUT_DATATYPE(
-                np.float32(x_bf) * np.float32(INPUT_DATATYPE(0.5))
-            )
+            half_x = INPUT_DATATYPE(np.float32(x_bf) * np.float32(INPUT_DATATYPE(0.5)))
             return INPUT_DATATYPE(np.float32(half_x) * np.float32(one_plus_tanh))
 
         sampled_values = np.array(
