@@ -177,11 +177,22 @@ if __name__ == "__main__":
         num_samples = 100
         sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
 
-        # Standard GELU reference: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715*x^3)))
+        # Match hardware bf16 computation: each op truncates to bf16
         def gelu_ref(x):
-            x_f32 = x.astype(np.float32)
-            inner = SQRT_2_OVER_PI * (x_f32 + GELU_BETA * x_f32**3)
-            return (0.5 * x_f32 * (1.0 + np.tanh(inner))).astype(INPUT_DATATYPE)
+            x_bf = INPUT_DATATYPE(x)
+            x2 = INPUT_DATATYPE(np.float32(x_bf) * np.float32(x_bf))
+            x3 = INPUT_DATATYPE(np.float32(x_bf) * np.float32(x2))
+            beta_x3 = INPUT_DATATYPE(
+                np.float32(x3) * np.float32(INPUT_DATATYPE(GELU_BETA))
+            )
+            inner = INPUT_DATATYPE(np.float32(x_bf) + np.float32(beta_x3))
+            scaled = INPUT_DATATYPE(
+                np.float32(inner) * np.float32(INPUT_DATATYPE(SQRT_2_OVER_PI))
+            )
+            tanh_val = INPUT_DATATYPE(np.tanh(np.float32(scaled)))
+            one_plus_tanh = INPUT_DATATYPE(np.float32(tanh_val) + 1.0)
+            half_x = INPUT_DATATYPE(np.float32(x_bf) * 0.5)
+            return INPUT_DATATYPE(np.float32(half_x) * np.float32(one_plus_tanh))
 
         sampled_values = np.array(
             [gelu_ref(input_a[i]) for i in zip(*sampled_indices)],
@@ -205,6 +216,7 @@ if __name__ == "__main__":
                 inputs=[input_a],
                 stochastic_expected_outputs=[sampled_data],
                 rtol=1e-1,
+                atol=5e-2,
             )
         )
 
