@@ -561,8 +561,6 @@ def build_module():
                     c0_idx = ConstantOp(index_type, 0)
                     c0_i32 = ConstantOp(i32, 0)
                     c255_i32 = ConstantOp(i32, 255)
-                    rounding_val = ConstantOp(i32, 1)
-
                     # Process each row
                     for _ in range_(0, TENSOR_IN_H):
                         # Get input activation row (6D type, same bytes)
@@ -596,8 +594,8 @@ def build_module():
                                             act_out_acc,
                                             [d0, c0_idx, c0_idx, d3, d4, d5],
                                         )
-                                        rounded = arith.addi(val, rounding_val)
-                                        shifted = arith.shrsi(rounded, scale_i32)
+                                        # Hardware rounds via positive_inf SRS
+                                        shifted = arith.shrsi(val, scale_i32)
                                         clamped = arith.minsi(
                                             arith.maxsi(shifted, c0_i32),
                                             c255_i32,
@@ -689,7 +687,6 @@ def build_module():
                     c0_i32 = ConstantOp(IntegerAttr.get(i32, 0), None)
                     c255_i32 = ConstantOp(i32, 255)
                     c_scale = ConstantOp(i32, 11)
-                    c_rounding = ConstantOp(i32, 1 << 10)
                     c_8_idx = ConstantOp(index_type, 8)
                     c_ic = ConstantOp(index_type, IC)
 
@@ -990,8 +987,7 @@ def build_module():
                                                 oc8,
                                             ],
                                         )
-                                        rounded = arith.addi(val, c_rounding)
-                                        shifted = arith.shrsi(rounded, c_scale)
+                                        shifted = arith.shrsi(val, c_scale)
                                         clamped = arith.minsi(
                                             arith.maxsi(shifted, c0_i32),
                                             c255_i32,
@@ -1069,7 +1065,6 @@ def build_module():
                     c127_i32 = ConstantOp(i32, 127)
                     cn128_i32 = ConstantOp(i32, -128)
                     c255_i32 = ConstantOp(i32, 255)
-                    rounding_val = ConstantOp(i32, 1)
                     c_n_tile_grps = ConstantOp(index_type, N_TILE_SKIP // 8)
                     c_4 = ConstantOp(index_type, 4)
                     c_8_idx = ConstantOp(index_type, 8)
@@ -1114,8 +1109,8 @@ def build_module():
                                                 [d0, c0_idx, c0_idx, d3, d4, d5],
                                             )
                                             # Stage 1 SRS: signed clamp
-                                            rounded = arith.addi(val, rounding_val)
-                                            shifted = arith.shrsi(rounded, scale_i32)
+                                            # Hardware rounds via positive_inf SRS
+                                            shifted = arith.shrsi(val, scale_i32)
                                             clamped_s = arith.minsi(
                                                 arith.maxsi(shifted, cn128_i32),
                                                 c127_i32,
