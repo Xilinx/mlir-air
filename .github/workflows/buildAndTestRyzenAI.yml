@@ -119,7 +119,7 @@ jobs:
           PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
           CMAKEMODULES_DIR=$(pwd)/mlir-aie/cmake/modulesXilinx
 
-          mkdir build_assert
+          mkdir -p build_assert
           pushd build_assert
 
           sudo prlimit -lunlimited --pid $$
