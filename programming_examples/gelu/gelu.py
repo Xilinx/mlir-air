@@ -190,8 +190,12 @@ if __name__ == "__main__":
                 np.float32(inner) * np.float32(INPUT_DATATYPE(SQRT_2_OVER_PI))
             )
             tanh_val = INPUT_DATATYPE(np.tanh(np.float32(scaled)))
-            one_plus_tanh = INPUT_DATATYPE(np.float32(tanh_val) + 1.0)
-            half_x = INPUT_DATATYPE(np.float32(x_bf) * 0.5)
+            one_plus_tanh = INPUT_DATATYPE(
+                np.float32(tanh_val) + np.float32(INPUT_DATATYPE(1.0))
+            )
+            half_x = INPUT_DATATYPE(
+                np.float32(x_bf) * np.float32(INPUT_DATATYPE(0.5))
+            )
             return INPUT_DATATYPE(np.float32(half_x) * np.float32(one_plus_tanh))
 
         sampled_values = np.array(
