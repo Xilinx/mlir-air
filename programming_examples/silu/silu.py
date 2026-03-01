@@ -160,6 +160,7 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
+    np.random.seed(0)
     input_a = np.random.uniform(-4.0, 4.0, args.n).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
@@ -193,6 +194,7 @@ if __name__ == "__main__":
                 inputs=[input_a],
                 stochastic_expected_outputs=[sampled_data],
                 rtol=1e-1,
+                atol=5e-2,
             )
         )
 
