@@ -134,6 +134,13 @@ if __name__ == "__main__":
         help="Vector size for SIMD operations",
     )
     parser.add_argument(
+        "--arch",
+        type=str,
+        choices=["aie2", "aie2p"],
+        default="aie2p",
+        help="Target AIE architecture (aie2 or aie2p)",
+    )
+    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
