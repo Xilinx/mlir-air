@@ -945,7 +945,7 @@ if __name__ == "__main__":
         lazy_attn_output[h] = (Gp / sp).astype(OUTPUT_DATATYPE)
 
     runner = XRTRunner(
-        omit_while_true_loop=False,
+        omit_while_true_loop=True,
         omit_pingpong="all",
         verbose=args.verbose,
         runtime_loop_tiling_sizes=[1, 1],
@@ -964,7 +964,7 @@ if __name__ == "__main__":
         )
     elif args.compile_mode == "compile":
         backend = XRTBackend(
-            omit_while_true_loop=False,
+            omit_while_true_loop=True,
             omit_pingpong="all",
             verbose=args.verbose,
             runtime_loop_tiling_sizes=[1, 1],
