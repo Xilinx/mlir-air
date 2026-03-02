@@ -133,6 +133,18 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "LLM Kernels",
+        "name": "RoPE (LUT-based)",
+        "path": "rope_lut",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
+        "name": "RoPE (On-chip Sin/Cos)",
+        "path": "rope_sincos",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Attention",
         "name": "Flash Attention (Dataflow)",
         "path": "flash_attention/dataflow_based",
