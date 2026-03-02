@@ -34,17 +34,6 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Update operator dashboard
-        run: |
-          python3 programming_examples/generate_readme.py
-          if ! git diff --quiet programming_examples/README.md; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add programming_examples/README.md
-            git commit -m "Update operator dashboard [auto-generated]"
-            git push
-          fi
-
       - name: Install packages
         run: |
           sudo apt-get update
@@ -117,6 +106,10 @@ jobs:
             mkdir -p build_release/docs/platforms/$platform
             cp platforms/$platform/*.md build_release/docs/platforms/$platform
           done
+          mkdir -p build_release/docs/programming_examples
+          python3 programming_examples/generate_readme.py \
+            --output build_release/docs/programming_examples/index.md \
+            --base-url https://github.com/Xilinx/mlir-air/tree/main/programming_examples/
 
       - name: Save LLVM Version
         run: |
