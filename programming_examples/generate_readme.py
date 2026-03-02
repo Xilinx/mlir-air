@@ -127,6 +127,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "LLM Kernels",
+        "name": "SwiGLU",
+        "path": "swiglu",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Attention",
         "name": "Flash Attention (Dataflow)",
         "path": "flash_attention/dataflow_based",
