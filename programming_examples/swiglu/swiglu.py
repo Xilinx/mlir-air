@@ -124,9 +124,7 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
                     # up starts at offset tile_n in the L1 gate_up buffer
                     cTileNIdx = ConstantOp(index_type, tile_n)
                     up_offset = arith.addi(j, cTileNIdx)
-                    sub_up = subview(
-                        l1_gate_up.result, [up_offset], [VECTOR_SIZE], [1]
-                    )
+                    sub_up = subview(l1_gate_up.result, [up_offset], [VECTOR_SIZE], [1])
                     sub_out = subview(l1_out.result, [j], [VECTOR_SIZE], [1])
 
                     v_x = transfer_read(vecTy, sub_x, [c0], identity_map, cst0, [True])
