@@ -122,12 +122,6 @@ EXAMPLES = [
     },
     {
         "category": "LLM Kernels",
-        "name": "RoPE (LLaMA2)",
-        "path": "llama2_rope",
-        "datatypes": "bf16",
-    },
-    {
-        "category": "LLM Kernels",
         "name": "SwiGLU",
         "path": "swiglu",
         "datatypes": "bf16",
