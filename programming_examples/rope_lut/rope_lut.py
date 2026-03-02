@@ -95,10 +95,11 @@ def build_module(seq_len, embed_dim, np_dtype_in):
                     dst_sizes=[embed_dim],
                     dst_strides=[1],
                 )
-                DeallocOp(l1_in)
-                DeallocOp(l1_lut)
-                DeallocOp(l1_out)
                 yield_([])
+
+            DeallocOp(l1_in)
+            DeallocOp(l1_lut)
+            DeallocOp(l1_out)
 
         herd_body.attributes["link_with"] = StringAttr.get("rope.o")
 
