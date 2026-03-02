@@ -12,9 +12,10 @@ Uses the tanh-based sigmoid identity to avoid exp and division, which
 have precision and correctness issues on AIE2P. The hardware tanh
 intrinsic (__builtin_aie2p_tanh) is used directly.
 
-The gate and up weights are packed into a single interleaved buffer
-[gate_0..gate_N-1, up_0..up_N-1] to reduce the number of DMA channels
-needed (AIE2P tiles have only 2 S2MM channels).
+The gate and up weights are packed into a single rank-2 buffer
+[2, N] to reduce the number of DMA channels needed (AIE2P tiles
+have only 2 S2MM channels). The L1 buffer is a flat [2*tile_n]
+to allow simple 1D subview/transfer_read operations.
 
 Uses a single AIE tile with DMA transfers between L3 and L1 memory.
 Computation is vectorized using vector.transfer_read/write.
@@ -47,8 +48,8 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
     index_type = IndexType.get()
 
     l3memrefTy = MemRefType.get([n], xrt_dtype_in)
-    # gate and up packed contiguously: [gate_0..gate_N-1, up_0..up_N-1]
-    l3GateUpTy = MemRefType.get([2 * n], xrt_dtype_in)
+    # gate and up packed as [2, N]: row 0 = gate, row 1 = up
+    l3GateUpTy = MemRefType.get([2, n], xrt_dtype_in)
 
     l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
     l1MemrefTy = MemRefType.get(
@@ -56,7 +57,7 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
         element_type=xrt_dtype_in,
         memory_space=l1_mem_space,
     )
-    # L1 buffer for gate+up tile: 2 * tile_n elements
+    # L1 buffer for gate+up tile: flat [2*tile_n] for simple 1D indexing
     l1GateUpTy = MemRefType.get(
         shape=[2 * tile_n],
         element_type=xrt_dtype_in,
@@ -68,7 +69,7 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
 
     @FuncOp.from_py_func(l3memrefTy, l3GateUpTy, l3memrefTy)
     def swiglu(arg0, arg1, arg2):
-        # arg0 = x [N], arg1 = gate_up [2*N], arg2 = output [N]
+        # arg0 = x [N], arg1 = gate_up [2, N], arg2 = output [N]
 
         @herd(
             name="herd_0",
@@ -99,19 +100,19 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
                     src_sizes=[tile_n],
                     src_strides=[1],
                 )
-                # DMA: load gate and up tiles as one contiguous transfer
-                # gate is at offset [_l_ivx], up is at offset [n + _l_ivx]
-                # Use 2D DMA: 2 chunks of tile_n, stride n between them
+                # DMA: load gate and up tiles from [2, N] L3 buffer
+                # into flat [2*tile_n] L1 buffer
                 dma_memcpy_nd(
                     l1_gate_up,
                     _l3_gate_up,
-                    src_offsets=[_l_ivx],
+                    src_offsets=[0, _l_ivx],
                     src_sizes=[2, tile_n],
                     src_strides=[n, 1],
                 )
 
                 cVecSize = ConstantOp(index_type, VECTOR_SIZE)
                 cTileN = ConstantOp(index_type, tile_n)
+                cTileNIdx = ConstantOp(index_type, tile_n)
                 cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
                 half_const = arith.ConstantOp(xrt_dtype_in, 0.5)
                 one_const = arith.ConstantOp(xrt_dtype_in, 1.0)
@@ -120,9 +121,8 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
 
                 for j in range_(c0, cTileN, cVecSize):
                     sub_x = subview(l1_x.result, [j], [VECTOR_SIZE], [1])
+                    # gate is at [0..tile_n-1], up is at [tile_n..2*tile_n-1]
                     sub_gate = subview(l1_gate_up.result, [j], [VECTOR_SIZE], [1])
-                    # up starts at offset tile_n in the L1 gate_up buffer
-                    cTileNIdx = ConstantOp(index_type, tile_n)
                     up_offset = arith.addi(j, cTileNIdx)
                     sub_up = subview(l1_gate_up.result, [up_offset], [VECTOR_SIZE], [1])
                     sub_out = subview(l1_out.result, [j], [VECTOR_SIZE], [1])
@@ -212,8 +212,8 @@ if __name__ == "__main__":
     input_gate = np.random.uniform(-2.0, 2.0, args.n).astype(INPUT_DATATYPE)
     input_up = np.random.uniform(-2.0, 2.0, args.n).astype(INPUT_DATATYPE)
 
-    # Pack gate and up into a single contiguous buffer [gate, up]
-    input_gate_up = np.concatenate([input_gate, input_up]).astype(INPUT_DATATYPE)
+    # Pack gate and up into [2, N]: row 0 = gate, row 1 = up
+    input_gate_up = np.stack([input_gate, input_up]).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
         num_samples = 100
