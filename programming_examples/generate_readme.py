@@ -62,6 +62,18 @@ EXAMPLES = [
     },
     {
         "category": "Activation/Math",
+        "name": "SiLU",
+        "path": "silu",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
+        "name": "GELU",
+        "path": "gelu",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
         "name": "Softmax",
         "path": "softmax",
         "datatypes": "bf16",
@@ -97,6 +109,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Normalization",
+        "name": "Weighted RMS Normalization",
+        "path": "weighted_rms_norm",
+        "datatypes": "bf16",
+    },
+    {
         "category": "LLM Kernels",
         "name": "Multi-Head Attention (LLaMA2)",
         "path": "llama2_mha",
@@ -104,8 +122,20 @@ EXAMPLES = [
     },
     {
         "category": "LLM Kernels",
-        "name": "RoPE (LLaMA2)",
-        "path": "llama2_rope",
+        "name": "SwiGLU",
+        "path": "swiglu",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
+        "name": "RoPE (LUT-based)",
+        "path": "rope_lut",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
+        "name": "RoPE (On-chip Sin/Cos)",
+        "path": "rope_sincos",
         "datatypes": "bf16",
     },
     {
@@ -279,7 +309,7 @@ STATUS_EMOJI = {
 }
 
 
-def generate_dashboard_table():
+def generate_dashboard_table(base_url=""):
     """Generate the markdown table rows for the operator dashboard."""
     rows = []
     for ex in EXAMPLES:
@@ -290,21 +320,22 @@ def generate_dashboard_table():
             npu1, npu2 = get_npu_status(example_dir)
 
         path = ex["path"]
+        link = f"{base_url}{path}/"
         row = (
             f'| {ex["category"]} '
-            f'| [{ex["name"]}]({path}/) '
+            f'| [{ex["name"]}]({link}) '
             f'| {ex["datatypes"]} '
             f"| {STATUS_EMOJI[npu1]} "
             f"| {STATUS_EMOJI[npu2]} "
-            f"| [{path}/]({path}/) |"
+            f"| [{path}/]({link}) |"
         )
         rows.append(row)
     return rows
 
 
-def generate_readme():
+def generate_readme(base_url=""):
     """Generate the full README.md content."""
-    table_rows = generate_dashboard_table()
+    table_rows = generate_dashboard_table(base_url=base_url)
     table_body = "\n".join(table_rows)
 
     return f"""\
@@ -363,7 +394,23 @@ Sweep results are saved as CSV files for analysis. See the [bf16 README](matrix_
 
 
 if __name__ == "__main__":
-    readme_path = SCRIPT_DIR / "README.md"
-    content = generate_readme()
-    readme_path.write_text(content)
-    print(f"Generated {readme_path}")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate operator dashboard README.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=SCRIPT_DIR / "README.md",
+        help="Output file path (default: programming_examples/README.md)",
+    )
+    parser.add_argument(
+        "--base-url",
+        default="",
+        help="Base URL prefix for example links (default: relative links)",
+    )
+    args = parser.parse_args()
+
+    content = generate_readme(base_url=args.base_url)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(content)
+    print(f"Generated {args.output}")

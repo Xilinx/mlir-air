@@ -132,10 +132,16 @@ public:
           createAsyncDMA(rewriter, op);
         else if (isa<air::ChannelInterface>(op))
           createAsyncChannel(rewriter, op);
-        else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp,
-                     memref::CopyOp>(op))
+        else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp>(op))
           createAsyncExecute(rewriter, op);
-        else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op))
+        else if (isa<memref::CopyOp>(op)) {
+          // Skip wrapping memref.copy in air.execute when inside scf.if,
+          // as the resulting async token would not dominate uses outside
+          // the enclosing loop. L1-to-L1 copies are synchronous and don't
+          // need async tracking.
+          if (!op->getParentOfType<scf::IfOp>())
+            createAsyncExecute(rewriter, op);
+        } else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op))
           createAsyncHierarchyImpls(rewriter, hierarchy_op);
         // Create async execute region for memref.alloc
         else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op)) {
@@ -316,6 +322,8 @@ public:
 
     auto getYieldedTokens = [&](Region &region) {
       SmallVector<Value, 1> yielded_tokens;
+      if (region.empty())
+        return yielded_tokens;
       for (auto async_op : region.getOps<air::AsyncOpInterface>()) {
         auto token = async_op.getAsyncToken();
         if (!token)
@@ -379,6 +387,8 @@ public:
           auto new_branch_op = createAsyncRegionBranchOp(rewriter, branch_op);
           auto new_regions = (*new_branch_op)->getRegions();
           for (unsigned i = 0; i < new_regions.size(); i++) {
+            if (new_regions[i].empty())
+              continue;
             insertLoopCarriedDepsInRegion(rewriter, new_regions[i],
                                           yielded_tokens_per_region[i]);
           }
@@ -1277,6 +1287,8 @@ private:
     auto old_regions = branch_op->getRegions();
     auto new_regions = new_branch_op->getRegions();
     for (auto [o_r, n_r] : llvm::zip_equal(old_regions, new_regions)) {
+      if (o_r.empty() || n_r.empty())
+        continue;
       auto &bb = n_r.front().getOperations();
       auto &body = o_r.front().getOperations();
       bb.splice(bb.begin(), body, body.begin(), --body.end());
@@ -1471,6 +1483,8 @@ private:
     llvm::SetVector<Value> region_args;
     auto regions = branch_op->getRegions();
     for (auto &region : regions) {
+      if (region.empty())
+        continue;
       getUsedValuesDefinedAbove(region, region_args);
       for (Value v : region_args) {
         if (isa_and_present<arith::ConstantOp, ub::PoisonOp>(v.getDefiningOp()))
@@ -1760,27 +1774,41 @@ private:
       uint64_t dstTRVertex = getGraphGVertexFromAIROp(op);
       for (auto TRVertex :
            asyncExecuteGraph.inverseAdjacentVertices(dstTRVertex)) {
-        if (asyncExecuteGraph[TRVertex].asyncEventType == "execute")
-          async_op.addAsyncDependency(
-              getExecuteOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
-                  .getResult(0));
-        else if (asyncExecuteGraph[TRVertex].asyncEventType == "dma")
-          async_op.addAsyncDependency(
-              getDmaOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
-                  .getOperation()
-                  ->getResult(0));
-        else if (asyncExecuteGraph[TRVertex].asyncEventType == "channel")
-          async_op.addAsyncDependency(
+        Operation *srcOp = nullptr;
+        Value depToken;
+        if (asyncExecuteGraph[TRVertex].asyncEventType == "execute") {
+          auto execOp =
+              getExecuteOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap);
+          srcOp = execOp.getOperation();
+          depToken = execOp.getResult(0);
+        } else if (asyncExecuteGraph[TRVertex].asyncEventType == "dma") {
+          srcOp = getDmaOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
+                      .getOperation();
+          depToken = srcOp->getResult(0);
+        } else if (asyncExecuteGraph[TRVertex].asyncEventType == "channel") {
+          srcOp =
               getChannelOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
-                  .getOperation()
-                  ->getResult(0));
-        else if (asyncExecuteGraph[TRVertex].asyncEventType == "hierarchy")
-          async_op.addAsyncDependency(
-              getHierOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
-                  .getOperation()
-                  ->getResult(0));
-        else
+                  .getOperation();
+          depToken = srcOp->getResult(0);
+        } else if (asyncExecuteGraph[TRVertex].asyncEventType == "hierarchy") {
+          srcOp = getHierOpFromVertex(TRVertex, asyncExecuteGraph, opIdToOpMap)
+                      .getOperation();
+          depToken = srcOp->getResult(0);
+        } else {
           op->emitOpError("unknown async event type");
+          continue;
+        }
+        // Skip dependency if the source op is inside an scf.if that does
+        // not contain the sink op. The token defined inside scf.if cannot
+        // dominate ops outside it; the 4th traversal (loop-carried deps)
+        // will handle this by threading the token through iter_args.
+        if (srcOp) {
+          if (auto ifOp = srcOp->getParentOfType<scf::IfOp>()) {
+            if (!ifOp->isAncestor(op))
+              continue;
+          }
+        }
+        async_op.addAsyncDependency(depToken);
       }
     } else
       op->emitOpError("operation has no async interface");

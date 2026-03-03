@@ -11,6 +11,10 @@ from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 
+import numpy as np
+
+np.random.seed(42)
+
 range_ = for_
 
 

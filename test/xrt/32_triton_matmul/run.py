@@ -10,6 +10,10 @@ from air.ir import *
 import air.passmanager
 import filelock
 
+import numpy as np
+
+np.random.seed(42)
+
 with air.ir.Context() as ctx, Location.unknown():
 
     ################################################

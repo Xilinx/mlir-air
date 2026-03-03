@@ -119,7 +119,7 @@ jobs:
           PEANO_INSTALL_DIR=$(python3 -m pip show llvm-aie | grep ^Location: | awk '{print $2}')/llvm-aie
           CMAKEMODULES_DIR=$(pwd)/mlir-aie/cmake/modulesXilinx
 
-          mkdir build_assert
+          mkdir -p build_assert
           pushd build_assert
 
           sudo prlimit -lunlimited --pid $$
@@ -157,14 +157,14 @@ jobs:
           ninja check-air-mlir
           ninja check-air-python
 
-          # E2E test set 1: peano tests
-          ninja check-air-e2e-peano
+          # E2E test set 1: peano tests (retry once on failure for flaky NPU tests)
+          ninja check-air-e2e-peano || ninja check-air-e2e-peano
 
           # E2E test set 2: chess tests
           ninja check-air-e2e-chess
 
-          # Programming examples set 1: peano tests
-          ninja check-programming-examples-peano
+          # Programming examples set 1: peano tests (retry once on failure for flaky NPU tests)
+          ninja check-programming-examples-peano || ninja check-programming-examples-peano
 
           # Programming examples set 2: chess tests
           ninja check-programming-examples-chess

@@ -352,6 +352,24 @@ func.func @execute_5(%alloc : memref<4xi32>) -> (!air.async.token) {
   return %0 :!air.async.token
 }
 
+// Test that air.execute containing memref.store is NOT folded away even when
+// its async token is unused (consumed by wait_all that gets folded).
+// This prevents the FoldExecute canonicalization from eliminating side effects.
+// CHECK-LABEL: execute_store_preserved
+// CHECK: air.execute {
+// CHECK-NEXT: memref.store
+// CHECK-NEXT: }
+func.func @execute_store_preserved(%alloc : memref<4xi32>) {
+  %c0 = arith.constant 0 : index
+  %cst = arith.constant 42 : i32
+  %t = air.execute {
+    memref.store %cst, %alloc[%c0] : memref<4xi32>
+  }
+  // wait_all with single dep gets folded, making %t unused
+  %w = air.wait_all async [%t]
+  return
+}
+
 // CHECK: func.func @chan_0
 // CHECK: %[[TOKEN0:.*]] = air.channel.get async  @channel_0
 // CHECK: %[[TOKEN1:.*]] = air.channel.get async  @channel_1

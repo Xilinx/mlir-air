@@ -14,6 +14,10 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 from ml_dtypes import bfloat16
 
+import numpy as np
+
+np.random.seed(42)
+
 range_ = for_
 
 
@@ -46,7 +50,6 @@ def build_module(n, tile_n, herd_n, np_dtype_in):
 
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
     def softmax(arg0, arg1):
-
         @herd(
             name="herd_0",
             sizes=[1, herd_n],

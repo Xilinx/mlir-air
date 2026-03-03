@@ -14,6 +14,10 @@ from air.backend.xrt_runner import XRTRunner
 from air.ir import *
 import air.passmanager
 
+import numpy as np
+
+np.random.seed(42)
+
 
 @linalg_structured_op
 def matmul_mono(

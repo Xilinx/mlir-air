@@ -22,6 +22,8 @@ Final result: output = input + 3
 import argparse
 import numpy as np
 
+np.random.seed(42)
+
 import air
 from air.ir import *
 from air.dialects.affine import apply as affine_apply

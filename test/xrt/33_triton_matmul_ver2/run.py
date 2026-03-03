@@ -11,6 +11,10 @@ from air.ir import *
 import air.passmanager
 import filelock
 
+import numpy as np
+
+np.random.seed(42)
+
 parser = argparse.ArgumentParser(
     prog="run.py",
     description="Builds, runs, and tests the matmul example",

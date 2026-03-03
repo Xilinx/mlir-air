@@ -19,6 +19,8 @@ from air.backend.xrt import XRTBackend
 from ml_dtypes import bfloat16
 import numpy as np
 
+np.random.seed(42)
+
 parser = argparse.ArgumentParser(
     prog="run.py",
     description="Builds, runs, and tests the cascade example",

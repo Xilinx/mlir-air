@@ -51,5 +51,10 @@ run: compile-kernels
 	mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) ${powershell} python3 ${srcdir}/bottleneck.py
 
+# All kernels are inline MLIR in bottleneck_mlir.py — no .o files needed
+run-mlir:
+	mkdir -p $(BUILD_DIR)
+	cd $(BUILD_DIR) && PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) ${powershell} python3 ${srcdir}/bottleneck_mlir.py
+
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
