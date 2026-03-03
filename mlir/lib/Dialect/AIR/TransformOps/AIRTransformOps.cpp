@@ -60,8 +60,8 @@ transform::SegmentToAIEOp::applyToOne(transform::TransformRewriter &rewriter,
   results.push_back(res->getOperation());
   return DiagnosedSilenceableFailure::success();
 #else
-  return emitSilenceableError()
-         << "SegmentToAIEOp requires AIE support which is not enabled in this build";
+  return emitSilenceableError() << "SegmentToAIEOp requires AIE support which "
+                                   "is not enabled in this build";
 #endif
 }
 

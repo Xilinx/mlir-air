@@ -18,7 +18,6 @@ import tempfile
 import air.compiler.aircc.cl_arguments as cl_arguments
 from air.compiler.aircc.configure import *
 
-
 # Pass logging for documenting which passes are called
 _pass_counter = 0
 _pass_log = []
@@ -237,27 +236,24 @@ def run_gpu_compilation(opts):
 
     # Step 1: AIR to ROCDL
     step1_output = os.path.join(tmpdirname, f"{base_name}_step1_rocdl.mlir")
-    do_call([
-        air_opt, input_file,
-        "-air-to-rocdl",
-        "-o", step1_output
-    ], opts)
+    do_call([air_opt, input_file, "-air-to-rocdl", "-o", step1_output], opts)
 
     # Step 2: GPU Kernel Outlining (AIR-specific)
     step2_output = os.path.join(tmpdirname, f"{base_name}_step2_outlined.mlir")
-    do_call([
-        air_opt, step1_output,
-        "-air-gpu-outlining",
-        "-o", step2_output
-    ], opts)
+    do_call([air_opt, step1_output, "-air-gpu-outlining", "-o", step2_output], opts)
 
     # Step 3: LLVM Lowering + GPU kernel outlining
     step3_output = os.path.join(tmpdirname, f"{base_name}_step3_gpu.mlir")
-    do_call([
-        mlir_opt, step2_output,
-        "--pass-pipeline=builtin.module(func.func(lower-affine, convert-linalg-to-loops, convert-scf-to-cf), gpu-kernel-outlining)",
-        "-o", step3_output
-    ], opts)
+    do_call(
+        [
+            mlir_opt,
+            step2_output,
+            "--pass-pipeline=builtin.module(func.func(lower-affine, convert-linalg-to-loops, convert-scf-to-cf), gpu-kernel-outlining)",
+            "-o",
+            step3_output,
+        ],
+        opts,
+    )
 
     # Step 4: ROCDL Binary Generation
     # Build the pass pipeline for GPU binary generation
@@ -279,11 +275,10 @@ def run_gpu_compilation(opts):
     else:
         final_output = os.path.join(tmpdirname, f"{base_name}_final.mlir")
 
-    do_call([
-        mlir_opt, step3_output,
-        f"--pass-pipeline={gpu_pipeline}",
-        "-o", final_output
-    ], opts)
+    do_call(
+        [mlir_opt, step3_output, f"--pass-pipeline={gpu_pipeline}", "-o", final_output],
+        opts,
+    )
 
     if opts.verbose:
         print(f"\nGPU compilation complete!")
@@ -293,7 +288,7 @@ def run_gpu_compilation(opts):
 
     # Print to stdout if no output file specified
     if not opts.output_file:
-        with open(final_output, 'r') as f:
+        with open(final_output, "r") as f:
             print(f.read())
 
 
@@ -309,7 +304,9 @@ def run_aie_compilation(opts):
         from air.dialects import air as airdialect
         import aie.compiler.aiecc.main as aiecc
     except ImportError as e:
-        print(f"Error: AIE compilation requires Python bindings which are not available.")
+        print(
+            f"Error: AIE compilation requires Python bindings which are not available."
+        )
         print(f"       Import error: {e}")
         print(f"       ")
         print(f"       For GPU compilation, use: aircc.py --target gpu ...")
@@ -387,9 +384,7 @@ def run_aie_compilation(opts):
             label_pass = "air-label-scf-for-to-ping-pong"
             ping_pong_pass = "air-ping-pong-transform"
             if omit_pingpong in ["L1", "L2"]:
-                label_pass = (
-                    f"air-label-scf-for-to-ping-pong{{omit-memory-space={omit_pingpong}}}"
-                )
+                label_pass = f"air-label-scf-for-to-ping-pong{{omit-memory-space={omit_pingpong}}}"
                 ping_pong_pass = (
                     f"air-ping-pong-transform{{omit-memory-space={omit_pingpong}}}"
                 )
@@ -427,25 +422,17 @@ namespace segments {
 """
         s = s + f"namespace {herd_name} {{\n"
         s = s + f'#include "{include_name}"'
-        s = (
-            s
-            + """
+        s = s + """
 }
 }
 }
 """
-        )
         s = s + f"using namespace air::segments::{herd_name};"
-        s = (
-            s
-            + """
+        s = s + """
 extern "C" {
 """
-        )
         s = s + f"air_rt_aie_functions_t __airrt_{herd_name}_aie_functions {{"
-        s = (
-            s
-            + """
+        s = s + """
   .configure_cores = &mlir_aie_configure_cores,
   .configure_switchboxes = &mlir_aie_configure_switchboxes,
   .initialize_locks = &mlir_aie_initialize_locks,
@@ -454,7 +441,6 @@ extern "C" {
 };
 }
 """
-        )
         return s
 
     def run_single_pass(pass_str, mlir_module, opts):
@@ -520,7 +506,9 @@ extern "C" {
                 with open(outputfile, "w") as g:
                     g.write(str(mlir_module))
 
-    def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filename, opts, aiecc_path):
+    def lower_airrt_to_airhost(
+        air_to_aie_module, air_placed_module, air_mlir_filename, opts, aiecc_path
+    ):
         pass_pipeline = "air-split-devices{"
         pass_pipeline = pass_pipeline + f"output-prefix={opts.tmpdir}/" + "}"
         run_passes("builtin.module(" + pass_pipeline + ")", air_to_aie_module, opts)
@@ -546,7 +534,9 @@ extern "C" {
 
         aie_ctrl = opts.tmpdir + "/aie_ctrl." + air_mlir_filename
         pass_pipeline = ",".join(["airrt-to-llvm", "one-shot-bufferize"])
-        run_passes("builtin.module(" + pass_pipeline + ")", airrt_module, opts, aie_ctrl)
+        run_passes(
+            "builtin.module(" + pass_pipeline + ")", airrt_module, opts, aie_ctrl
+        )
 
         aie_ctrl_refback = opts.tmpdir + "/refback." + air_mlir_filename
         pass_pipeline = ",".join(
@@ -592,7 +582,14 @@ extern "C" {
 
         aie_ctrl_llvm_ir = opts.tmpdir + "/" + air_mlir_filename + ".ll"
         do_call(
-            ["aie-translate", "--mlir-to-llvmir", aie_ctrl_llvm, "-o", aie_ctrl_llvm_ir], opts
+            [
+                "aie-translate",
+                "--mlir-to-llvmir",
+                aie_ctrl_llvm,
+                "-o",
+                aie_ctrl_llvm_ir,
+            ],
+            opts,
         )
 
         aie_ctrl_llvm_opt_bc = opts.tmpdir + "/" + air_mlir_filename + ".opt.bc"
@@ -612,7 +609,8 @@ extern "C" {
         do_call(
             ["llc", "-O3", "--filetype=obj", "--relocation-model=pic"]
             + (["-march=" + llc_target] if llc_target else [])
-            + [aie_ctrl_llvm_opt_ir, "-o", aie_ctrl_obj], opts
+            + [aie_ctrl_llvm_opt_ir, "-o", aie_ctrl_obj],
+            opts,
         )
 
         t = do_run(["air-translate", "--airrt-generate-json", aie_ctrl_airrt], opts)
@@ -637,7 +635,8 @@ extern "C" {
                     "-cse",
                     "-o",
                     aiecc_file,
-                ], opts
+                ],
+                opts,
             )
 
             if "x86_64" in platform.uname()[5]:
@@ -657,7 +656,8 @@ extern "C" {
                 + ["--compile-host"]
                 + ["--xbridge" if opts.xbridge else "--no-xbridge"]
                 + ["--xchesscc" if opts.xchesscc else "--no-xchesscc"]
-                + [aiecc_file], opts
+                + [aiecc_file],
+                opts,
             )
 
             inc_file = opts.tmpdir + "/" + air_mlir_filename + "." + segment + ".inc"
@@ -1003,8 +1003,49 @@ extern "C" {
                     print(f"Pass log written to: {debug_pass_log}")
         else:
             lower_airrt_to_airhost(
-                air_to_aie_module, air_placed_module, air_mlir_filename, opts, aiecc_path
+                air_to_aie_module,
+                air_placed_module,
+                air_mlir_filename,
+                opts,
+                aiecc_path,
             )
+
+
+def run(mlir_module, args=None):
+    """Run the aircc compilation pipeline on an in-memory MLIR module.
+
+    This is the Python API entry point used by XRT backend and other callers.
+
+    Args:
+        mlir_module: An MLIR Module object (from Python bindings)
+        args: Optional list of command-line argument strings
+    """
+    reset_pass_log()
+
+    opts = (
+        cl_arguments.parse_args(args) if args is not None else cl_arguments.parse_args()
+    )
+
+    # Write the module to a temp file so run_aie_compilation can read it
+    if opts.tmpdir:
+        try:
+            os.mkdir(opts.tmpdir)
+        except FileExistsError:
+            pass
+    else:
+        opts.tmpdir = tempfile.mkdtemp()
+
+    input_file = os.path.join(opts.tmpdir, "input.mlir")
+    with open(input_file, "w") as f:
+        f.write(str(mlir_module))
+    opts.air_mlir_file = input_file
+
+    # Dispatch based on target
+    target = getattr(opts, "target", "aie")
+    if target == "gpu":
+        run_gpu_compilation(opts)
+    else:
+        run_aie_compilation(opts)
 
 
 def main():

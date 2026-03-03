@@ -37,7 +37,7 @@ namespace {
 
 #include "air/Conversion/Passes.h.inc"
 
-}
+} // namespace
 
 void xilinx::air::registerConversionPasses() {
   // Core passes (always available)

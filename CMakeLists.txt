@@ -41,7 +41,7 @@ set(PEANO_INSTALL_DIR
 # Option to enable/disable AIE support (for GPU-only builds)
 option(AIR_ENABLE_AIE "Enable AIE support (requires mlir-aie)" ON)
 # Option to enable/disable GPU/ROCDL support
-option(AIR_ENABLE_GPU "Enable GPU/ROCDL backend support" ON)
+option(AIR_ENABLE_GPU "Enable GPU/ROCDL backend support" OFF)
 
 include(ExternalProject)
 
@@ -214,6 +214,7 @@ foreach(target ${AIR_RUNTIME_TARGETS})
                -Dhsakmt_DIR=${hsakmt_DIR}
                -DAIR_RUNTIME_TARGET=${target}
                -DAIE_DIR=${AIE_DIR}
+               -DAIR_ENABLE_GPU=${AIR_ENABLE_GPU}
     BUILD_ALWAYS true
     STEP_TARGETS clean build install test
     USES_TERMINAL_CONFIGURE true

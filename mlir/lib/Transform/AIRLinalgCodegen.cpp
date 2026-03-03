@@ -5510,8 +5510,8 @@ transform::NormalizeForBoundsOp::apply(transform::TransformRewriter &rewriter,
   results.set(llvm::cast<OpResult>(getResult()), transformedOps);
   return DiagnosedSilenceableFailure::success();
 #else
-  return emitSilenceableError()
-         << "NormalizeForBoundsOp requires AIE support which is not enabled in this build";
+  return emitSilenceableError() << "NormalizeForBoundsOp requires AIE support "
+                                   "which is not enabled in this build";
 #endif
 }
 

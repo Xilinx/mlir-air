@@ -66,13 +66,15 @@ namespace {
 #define GEN_PASS_REGISTRATION_AIRSPECIALIZECHANNELWRAPANDSTRIDEPATTERN
 #define GEN_PASS_REGISTRATION_AIRUNROLLCHANNELBYFACTORPATTERN
 #define GEN_PASS_REGISTRATION_AIRUNROLLLOOPFORPIPELININGPATTERN
+// From AIRMergeUnrolledDevicesPass.cpp
+#define GEN_PASS_REGISTRATION_AIRMERGEUNROLLEDDEVICES
 // From AIRLowerLinalgTensors.cpp
 #define GEN_PASS_REGISTRATION_AIRLOWERLINALGTENSORS
 #endif
 
 #include "air/Transform/Passes.h.inc"
 
-}
+} // namespace
 
 void xilinx::air::registerTransformPasses() {
   // Core passes (always available)
@@ -132,6 +134,8 @@ void xilinx::air::registerTransformPasses() {
   registerAIRUnrollLoopForPipeliningPattern();
   // From AIRLinalgCodegen.cpp
   registerAIRLinalgCodegen();
+  // From AIRMergeUnrolledDevicesPass.cpp
+  registerAIRMergeUnrolledDevices();
   // From AIRLowerLinalgTensors.cpp
   registerAIRLowerLinalgTensors();
 #endif
