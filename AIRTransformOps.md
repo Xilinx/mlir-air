@@ -7,7 +7,7 @@ _Vectorize operations inside air.herd operations_
 Syntax:
 
 ```
-operation ::= `transform.air.herd_vectorize` $target attr-dict
+operation ::= `transform.air.herd_vectorize` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform takes a handle to air.herd operations and vectorizes the operations
@@ -24,12 +24,12 @@ The transform supports the same options as the AIRHerdVectorizePass:
 
 Example:
 ```mlir
-%herd = transform.structured.match ops{["air.herd"]} in %f : (!pdl.operation) -> !pdl.operation
+%herd = transform.structured.match ops{["air.herd"]} in %f : (!transform.any_op) -> !transform.any_op
 %vectorized = transform.air.herd_vectorize %herd {
   vectorize_nd_extract = false,
   flatten_1d_depthwise_conv = false,
   vectorize_padding = true
-} : (!pdl.operation) -> !pdl.operation
+} : (!transform.any_op) -> !transform.any_op
 ```
 
 Returns a handle to the transformed air.herd operations.
@@ -53,13 +53,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.hoist_static_alloc` (transform::AIRHoistStaticAllocOp)
@@ -112,10 +112,10 @@ func.func @foo(%arg0: memref<64xi32>) {
 ### Usage (Transform dialect)
 
 ```mlir
-transform.sequence %arg0 : !pdl.operation failures(propagate) {
-^bb0(%f: !pdl.operation):
+transform.sequence %arg0 : !transform.any_op failures(propagate) {
+^bb0(%f: !transform.any_op):
   transform.air.hoist_static_alloc %f
-    : (!pdl.operation) -> ()
+    : (!transform.any_op) -> ()
 }
 ```
 
@@ -127,7 +127,7 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.broadcast_before_unary` (transform::BroadcastBeforeUnaryOp)
@@ -137,7 +137,7 @@ _Move vector.broadcast before element-wise unary operations to enable vector exe
 Syntax:
 
 ```
-operation ::= `transform.air.broadcast_before_unary` $target attr-dict
+operation ::= `transform.air.broadcast_before_unary` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform identifies patterns where an element-wise unary operation operates on a 
@@ -180,14 +180,14 @@ Common in layer normalization and other neural network operations.
 Example usage (all qualifying unary ops):
 ```mlir
 %func = transform.structured.match ops{["func.func"]} in %arg0 
-  : (!pdl.operation) -> !pdl.operation
+  : (!transform.any_op) -> !transform.any_op
 transform.air.broadcast_before_unary %func
 ```
 
 Example usage (specific operation only):
 ```mlir
 %func = transform.structured.match ops{["func.func"]} in %arg0 
-  : (!pdl.operation) -> !pdl.operation
+  : (!transform.any_op) -> !transform.any_op
 transform.air.broadcast_before_unary %func {op_name = "math.rsqrt"}
 ```
 
@@ -208,13 +208,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.convert_divf_sqrt_to_rsqrt` (transform::ConvertDivfSqrtToRsqrtOp)
@@ -224,7 +224,7 @@ _Convert arith.divf(1.0, math.sqrt(x)) pattern to math.rsqrt(x)_
 Syntax:
 
 ```
-operation ::= `transform.air.convert_divf_sqrt_to_rsqrt` $target attr-dict
+operation ::= `transform.air.convert_divf_sqrt_to_rsqrt` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform walks through operations with the IsolatedFromAbove trait
@@ -256,7 +256,7 @@ normalization and other neural network operations.
 Example usage:
 ```mlir
 %herd = transform.structured.match ops{["air.herd"]} in %arg0 
-  : (!pdl.operation) -> !pdl.operation
+  : (!transform.any_op) -> !transform.any_op
 transform.air.convert_divf_sqrt_to_rsqrt %herd
 ```
 
@@ -270,13 +270,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.convert_memref_copy_to_linalg_copy` (transform::ConvertMemrefCopyToLinalgCopyOp)
@@ -286,7 +286,7 @@ _Convert memref.copy operations to linalg.copy operations_
 Syntax:
 
 ```
-operation ::= `transform.air.convert_memref_copy_to_linalg_copy` $target attr-dict
+operation ::= `transform.air.convert_memref_copy_to_linalg_copy` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform converts `memref.copy` operations to `linalg.copy` operations.
@@ -312,13 +312,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.convert_size1_vector_to_scalar` (transform::ConvertSize1VectorToScalarOp)
@@ -328,7 +328,7 @@ _Convert size-1 vector operations to scalar operations following LLVM's approach
 Syntax:
 
 ```
-operation ::= `transform.air.convert_size1_vector_to_scalar` $target attr-dict
+operation ::= `transform.air.convert_size1_vector_to_scalar` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform converts operations on size-1 vectors (e.g., vector<1xf32>, vector<1x1xi32>) 
@@ -403,7 +403,7 @@ at region boundaries. Canonicalization folds adjacent extract/broadcast pairs au
 Usage:
 ```mlir
 %func = transform.structured.match ops{["func.func"]} in %arg0 
-  : (!pdl.operation) -> !pdl.operation
+  : (!transform.any_op) -> !transform.any_op
 transform.air.convert_size1_vector_to_scalar %func
 ```
 
@@ -417,13 +417,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.copy_to_dma` (transform::CopyToDmaOp)
@@ -431,7 +431,7 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 Syntax:
 
 ```
-operation ::= `transform.air.copy_to_dma` $target attr-dict
+operation ::= `transform.air.copy_to_dma` $target attr-dict `:` functional-type(operands, results)
 ```
 
 Transform a `memref.copy` operation into a `air.dma_memcpy_nd` operation.
@@ -445,13 +445,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.eliminate_cascade_memcpy` (transform::EliminateCascadeMemcpyOp)
@@ -461,7 +461,7 @@ _Eliminate intermediate memref buffers in cascaded DMA operations_
 Syntax:
 
 ```
-operation ::= `transform.air.eliminate_cascade_memcpy` $target attr-dict
+operation ::= `transform.air.eliminate_cascade_memcpy` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform identifies and eliminates intermediate memref buffers in cascaded 
@@ -494,13 +494,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.eliminate_redundant_vector_transfers` (transform::EliminateRedundantVectorTransfersOp)
@@ -510,7 +510,7 @@ _Eliminate redundant vector.transfer_read operations_
 Syntax:
 
 ```
-operation ::= `transform.air.eliminate_redundant_vector_transfers` $target attr-dict
+operation ::= `transform.air.eliminate_redundant_vector_transfers` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform identifies and eliminates redundant vector.transfer_read operations
@@ -553,13 +553,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.flatten_for_iter_args` (transform::FlattenForIterArgsOp)
@@ -569,7 +569,7 @@ _Flatten vector-typed iter_args of an scf.for loop using vector.shape_cast_
 Syntax:
 
 ```
-operation ::= `transform.air.flatten_for_iter_args` $target attr-dict
+operation ::= `transform.air.flatten_for_iter_args` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform takes a handle to an scf.for loop and flattens all vector-typed
@@ -624,13 +624,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.forall_with_reduce_to_parallel` (transform::ForallWithReduceToParallelOp)
@@ -653,13 +653,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `transformed` | variadic of PDL handle to an `mlir::Operation *` |
+| `transformed` | variadic of TransformHandleTypeInterface instance |
 
 
 ### `transform.air.fuse_elementwise_linalg` (transform::FuseElementwiseLinalgOp)
@@ -669,7 +669,7 @@ _Apply linalg elementwise fusion patterns to a func.func operation_
 Syntax:
 
 ```
-operation ::= `transform.air.fuse_elementwise_linalg` $target attr-dict
+operation ::= `transform.air.fuse_elementwise_linalg` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform walks the body of a func.func operation and applies the 
@@ -726,13 +726,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.fuse_into_containing_op` (transform::FuseIntoContainingMemrefOp)
@@ -742,7 +742,7 @@ _Fuse a producer into a containing operation._
 Syntax:
 
 ```
-operation ::= `transform.air.fuse_into_containing_op` $producer_op `into` $containing_op attr-dict
+operation ::= `transform.air.fuse_into_containing_op` $producer_op `into` $containing_op attr-dict `:` functional-type(operands, results)
 ```
 
 Fuses the `producer_op` into the `containing_op`.
@@ -771,14 +771,14 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `producer_op` | PDL handle to an `mlir::Operation *` |
-| `containing_op` | PDL handle to an `mlir::Operation *` |
+| `producer_op` | TransformHandleTypeInterface instance |
+| `containing_op` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `fused_op` | PDL handle to an `mlir::Operation *` |
+| `fused_op` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.fuse_multi_op_linalg` (transform::FuseMultiOpLinalgOp)
@@ -788,7 +788,7 @@ _Fuse a linalg operation containing multiple element-wise ops with its consumer_
 Syntax:
 
 ```
-operation ::= `transform.air.fuse_multi_op_linalg` $first_op `,` $second_op attr-dict
+operation ::= `transform.air.fuse_multi_op_linalg` $first_op `,` $second_op attr-dict `:` functional-type(operands, results)
 ```
 
 This transform fuses two linalg operations where:
@@ -855,14 +855,14 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `first_op` | PDL handle to an `mlir::Operation *` |
-| `second_op` | PDL handle to an `mlir::Operation *` |
+| `first_op` | TransformHandleTypeInterface instance |
+| `second_op` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `fused_op` | PDL handle to an `mlir::Operation *` |
+| `fused_op` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.fuse_truncf_linalg` (transform::FuseTruncfLinalgOp)
@@ -872,7 +872,7 @@ _Fuse a linalg operation containing only arith.truncf into its producer_
 Syntax:
 
 ```
-operation ::= `transform.air.fuse_truncf_linalg` $truncf_op `,` $producer_op attr-dict
+operation ::= `transform.air.fuse_truncf_linalg` $truncf_op `,` $producer_op attr-dict `:` functional-type(operands, results)
 ```
 
 This transform fuses two linalg operations where:
@@ -923,14 +923,14 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `truncf_op` | PDL handle to an `mlir::Operation *` |
-| `producer_op` | PDL handle to an `mlir::Operation *` |
+| `truncf_op` | TransformHandleTypeInterface instance |
+| `producer_op` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `fused_op` | PDL handle to an `mlir::Operation *` |
+| `fused_op` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.get_segment_for` (transform::GetSegmentForOp)
@@ -940,7 +940,7 @@ _Gets a handle to the parent 'air.segment' of the given operation_
 Syntax:
 
 ```
-operation ::= `transform.air.get_segment_for` $target attr-dict
+operation ::= `transform.air.get_segment_for` $target attr-dict `:` functional-type(operands, results)
 ```
 
 Produces a handle to the parent `air.segment` op for each payload IR
@@ -958,13 +958,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `parent` | PDL handle to an `mlir::Operation *` |
+| `parent` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.hoist_cast_pair` (transform::HoistCastPairOp)
@@ -974,7 +974,7 @@ _Hoist extension/truncation operation pairs out of a loop_
 Syntax:
 
 ```
-operation ::= `transform.air.hoist_cast_pair` $extension_op `,` $truncation_op `,` $loop_op attr-dict
+operation ::= `transform.air.hoist_cast_pair` $extension_op `,` $truncation_op `,` $loop_op attr-dict `:` functional-type(operands, results)
 ```
 
 This transform takes handles to an extension operation (arith.extsi, arith.extui, or arith.extf),
@@ -1066,15 +1066,15 @@ Interfaces: `MemoryEffectOpInterface`, `MemoryEffectsOpInterface`, `TransformOpI
 
 | Operand | Description |
 | :-----: | ----------- |
-| `extension_op` | PDL handle to an `mlir::Operation *` |
-| `truncation_op` | PDL handle to an `mlir::Operation *` |
-| `loop_op` | PDL handle to an `mlir::Operation *` |
+| `extension_op` | TransformHandleTypeInterface instance |
+| `truncation_op` | TransformHandleTypeInterface instance |
+| `loop_op` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.hoist_loop_invariant_transfers` (transform::HoistLoopInvariantTransfersOp)
@@ -1084,7 +1084,7 @@ _Hoist a pair of loop-invariant vector.transfer_read/write operations_
 Syntax:
 
 ```
-operation ::= `transform.air.hoist_loop_invariant_transfers` $read_op `,` $write_op `,` $loop_op attr-dict
+operation ::= `transform.air.hoist_loop_invariant_transfers` $read_op `,` $write_op `,` $loop_op attr-dict `:` functional-type(operands, results)
 ```
 
 This transform takes handles to a vector.transfer_read, a vector.transfer_write,
@@ -1132,15 +1132,15 @@ Interfaces: `MemoryEffectOpInterface`, `MemoryEffectsOpInterface`, `TransformOpI
 
 | Operand | Description |
 | :-----: | ----------- |
-| `read_op` | PDL handle to an `mlir::Operation *` |
-| `write_op` | PDL handle to an `mlir::Operation *` |
-| `loop_op` | PDL handle to an `mlir::Operation *` |
+| `read_op` | TransformHandleTypeInterface instance |
+| `write_op` | TransformHandleTypeInterface instance |
+| `loop_op` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.hoist_vector_transfer_pointers` (transform::HoistVectorTransferPointersOp)
@@ -1150,7 +1150,7 @@ _Optimize vector transfers by hoisting pointer computations out of loops_
 Syntax:
 
 ```
-operation ::= `transform.air.hoist_vector_transfer_pointers` $target attr-dict
+operation ::= `transform.air.hoist_vector_transfer_pointers` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform takes a handle to an scf.for loop and optimizes vector transfer operations
@@ -1210,13 +1210,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.linalg_promote` (transform::LinalgPromoteOp)
@@ -1224,7 +1224,7 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 Syntax:
 
 ```
-operation ::= `transform.air.linalg_promote` $target attr-dict
+operation ::= `transform.air.linalg_promote` $target attr-dict `:` functional-type(operands, results)
 ```
 
 Promotes the specified operands of the target into a separate memory buffer
@@ -1244,7 +1244,7 @@ allocated buffers can be specified with with the memory_space attribute as
 
 example:
 ```mlir
-%0 = transform.structured.match ops{["linalg.matmul"]} in %code  : (!pdl.operation) -> !pdl.operation
+%0 = transform.structured.match ops{["linalg.matmul"]} in %code  : (!transform.any_op) -> !transform.any_op
 %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0]}
 ```
 
@@ -1255,9 +1255,9 @@ operands of the `N` operations in the order they appear in the target handle.
 
 For example,
 ```mlir
-%m = transform.structured.match ops{["linalg.matmul"]} in %f : (!pdl.operation) -> !pdl.operation
-%f = transform.structured.match ops{["linalg.fill"]} in %f : (!pdl.operation) -> !pdl.operation
-%h = transform.merge_handles %f, %m : !pdl.operation
+%m = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -> !transform.any_op
+%f = transform.structured.match ops{["linalg.fill"]} in %f : (!transform.any_op) -> !transform.any_op
+%h = transform.merge_handles %f, %m : !transform.any_op
 // promote the input of the fill operation and the output of the matmul operation to L1 memory
 transform.air.linalg_promote %h {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
 ```
@@ -1281,13 +1281,13 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `transformed` | PDL handle to an `mlir::Operation *` |
+| `transformed` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.linalg_tile` (transform::LinalgTileOp)
@@ -1312,15 +1312,15 @@ Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
-| `dynamic_sizes` | variadic of PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
+| `dynamic_sizes` | variadic of TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `tiled_linalg_op` | PDL handle to an `mlir::Operation *` |
-| `loops` | PDL handle to an `mlir::Operation *` |
+| `tiled_linalg_op` | TransformHandleTypeInterface instance |
+| `loops` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.linalg_to_library_call` (transform::LinalgToLibraryCallOp)
@@ -1343,8 +1343,8 @@ implementation of the function. If the linalg op is inside a herd, the
 
 Example:
 ```
-%matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!pdl.operation) -> !pdl.operation
-%call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!pdl.operation) -> !pdl.operation
+%matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -> !transform.any_op
+%call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!transform.any_op) -> !transform.any_op
 ```
 
 Traits: `FunctionalStyleTransformOpTrait`, `TransformEachOpTrait`
@@ -1363,13 +1363,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.normalize_for_bounds` (transform::NormalizeForBoundsOp)
@@ -1379,7 +1379,7 @@ _Normalize scf.for loop bounds by folding affine.apply on induction variable_
 Syntax:
 
 ```
-operation ::= `transform.air.normalize_for_bounds` $target attr-dict
+operation ::= `transform.air.normalize_for_bounds` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform normalizes an scf.for loop by folding affine.apply operations
@@ -1425,13 +1425,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.par_to_herd` (transform::ParToHerdOp)
@@ -1439,7 +1439,7 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 Syntax:
 
 ```
-operation ::= `transform.air.par_to_herd` $target attr-dict
+operation ::= `transform.air.par_to_herd` $target attr-dict `:` functional-type(operands, results)
 ```
 
 Transform a `scf.parallel` operation into a `air.herd` operation.
@@ -1462,13 +1462,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.par_to_launch` (transform::ParToLaunchOp)
@@ -1476,7 +1476,7 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 Syntax:
 
 ```
-operation ::= `transform.air.par_to_launch` $target attr-dict
+operation ::= `transform.air.par_to_launch` $target attr-dict `:` functional-type(operands, results)
 ```
 
 Transform a `scf.parallel` operation into a `air.launch` operation.
@@ -1497,13 +1497,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.par_to_segment` (transform::ParToSegmentOp)
@@ -1511,7 +1511,7 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 Syntax:
 
 ```
-operation ::= `transform.air.par_to_segment` $target attr-dict
+operation ::= `transform.air.par_to_segment` $target attr-dict `:` functional-type(operands, results)
 ```
 
 Transform a `scf.parallel` operation into a `air.segment` operation.
@@ -1532,13 +1532,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.pipeline_reduce` (transform::PipelineReduceOp)
@@ -1546,7 +1546,7 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 Syntax:
 
 ```
-operation ::= `transform.air.pipeline_reduce` $target attr-dict
+operation ::= `transform.air.pipeline_reduce` $target attr-dict `:` functional-type(operands, results)
 ```
 
 Experimental
@@ -1569,13 +1569,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.remove_uninitialized_copy` (transform::RemoveUninitializedCopyOp)
@@ -1585,7 +1585,7 @@ _Remove copy operations that copy from uninitialized memrefs_
 Syntax:
 
 ```
-operation ::= `transform.air.remove_uninitialized_copy` $target attr-dict
+operation ::= `transform.air.remove_uninitialized_copy` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform walks through a func.func operation and identifies memref.copy 
@@ -1622,13 +1622,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.segment_to_aie` (transform::SegmentToAIEOp)
@@ -1636,7 +1636,7 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 Syntax:
 
 ```
-operation ::= `transform.air.segment_to_aie` $target attr-dict
+operation ::= `transform.air.segment_to_aie` $target attr-dict `:` functional-type(operands, results)
 ```
 
 Lower air.segment operations to mlir-aie modules.
@@ -1649,13 +1649,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `transformed` | PDL handle to an `mlir::Operation *` |
+| `transformed` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.transpose_reduce` (transform::TransposeReduceOp)
@@ -1665,7 +1665,7 @@ _Transpose inputs of linalg.reduce ops to make reduction dimensions innermost_
 Syntax:
 
 ```
-operation ::= `transform.air.transpose_reduce` $target attr-dict
+operation ::= `transform.air.transpose_reduce` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform takes a handle to linalg.reduce operations and checks if the 
@@ -1697,13 +1697,13 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
 
 ### `transform.air.vector_type_cast` (transform::VectorTypeCastOp)
@@ -1713,7 +1713,7 @@ _Cast vector operands and results of vector operations to a user-provided dataty
 Syntax:
 
 ```
-operation ::= `transform.air.vector_type_cast` $target attr-dict
+operation ::= `transform.air.vector_type_cast` $target attr-dict `:` functional-type(operands, results)
 ```
 
 This transform takes a handle to vector dialect operations and casts input operands
@@ -1800,11 +1800,11 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *` |
+| `target` | TransformHandleTypeInterface instance |
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | PDL handle to an `mlir::Operation *` |
+| `result` | TransformHandleTypeInterface instance |
 
