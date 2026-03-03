@@ -100,19 +100,10 @@ void matvec_vectorized(T_in *__restrict a, T_in *__restrict b,
 
 // ============================================================
 // SwiGLU: output[i] = SiLU(gate[i]) * up[i]
-// SiLU(x) = x * 0.5 * (tanh(x/2) + 1)
-// Uses exp2-based computation: e^x = 2^(x * log2(e))
+// SiLU(x) = x * sigmoid(x) = x * 0.5 * (tanh(x/2) + 1)
+// Uses tanh-based sigmoid identity (avoids exp/div in bf16).
+// Requires n % 8 == 0.
 // ============================================================
-
-#define log2e_val 1.44269504089f
-
-__attribute__((always_inline)) aie::vector<bfloat16, 8>
-exp_bf16_v8(aie::vector<bfloat16, 8> x) {
-  aie::vector<bfloat16, 8> log2e_vec =
-      aie::broadcast<bfloat16, 8>((bfloat16)log2e_val);
-  aie::accum<accfloat, 8> exp_in = aie::mul(x, log2e_vec);
-  return aie::exp2<bfloat16>(exp_in.to_vector<float>());
-}
 
 // ============================================================
 // Extern C functions
@@ -131,10 +122,10 @@ void zero_vectorized_bf16(bfloat16 *c_out) {
 
 void swiglu_bf16(bfloat16 *gate, bfloat16 *up, bfloat16 *out, int32_t n) {
   // SwiGLU(gate, up) = SiLU(gate) * up
-  // SiLU(x) = x * sigmoid(x)
-  // sigmoid(x) = 1 / (1 + exp(-x)) = exp(x) / (1 + exp(x))
-  // Using: SiLU(x) = x * exp(x) / (1 + exp(x))
+  // SiLU(x) = x * sigmoid(x) = x * 0.5 * (1 + tanh(x/2))
   constexpr int VecLen = 8;
+  aie::vector<bfloat16, VecLen> half_vec =
+      aie::broadcast<bfloat16, VecLen>((bfloat16)0.5f);
   aie::vector<bfloat16, VecLen> one_vec =
       aie::broadcast<bfloat16, VecLen>((bfloat16)1.0f);
 
@@ -142,11 +133,14 @@ void swiglu_bf16(bfloat16 *gate, bfloat16 *up, bfloat16 *out, int32_t n) {
     aie::vector<bfloat16, VecLen> g = aie::load_v<VecLen>(gate + i);
     aie::vector<bfloat16, VecLen> u = aie::load_v<VecLen>(up + i);
 
-    // exp(gate)
-    aie::vector<bfloat16, VecLen> exp_g = exp_bf16_v8(g);
-    // sigmoid = exp(gate) / (1 + exp(gate))
-    aie::vector<bfloat16, VecLen> one_plus_exp = aie::add(one_vec, exp_g);
-    aie::vector<bfloat16, VecLen> sigmoid = aie::div(exp_g, one_plus_exp);
+    // sigmoid(g) = 0.5 * (1 + tanh(g/2))
+    aie::vector<bfloat16, VecLen> g_half = aie::mul(g, half_vec);
+    aie::accum<accfloat, VecLen> tanh_in;
+    tanh_in.from_vector(g_half);
+    aie::vector<bfloat16, VecLen> tanh_val =
+        aie::tanh<bfloat16>(tanh_in.to_vector<float>());
+    aie::vector<bfloat16, VecLen> one_plus_tanh = aie::add(one_vec, tanh_val);
+    aie::vector<bfloat16, VecLen> sigmoid = aie::mul(half_vec, one_plus_tanh);
     // SiLU = gate * sigmoid
     aie::vector<bfloat16, VecLen> silu = aie::mul(g, sigmoid);
     // SwiGLU = SiLU(gate) * up
