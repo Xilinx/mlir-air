@@ -44,6 +44,12 @@ EXAMPLES = [
     },
     {
         "category": "Linear Algebra",
+        "name": "Matrix-Vector Multiplication",
+        "path": "matrix_vector_multiplication/bf16",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Linear Algebra",
         "name": "AXPY",
         "path": "axpy",
         "datatypes": "bf16",
