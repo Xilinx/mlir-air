@@ -15,10 +15,8 @@ This test validates the multi-launch attention example by:
 4. Comparing results
 """
 
-from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
 from air.ir import *
-import air.passmanager
 from ml_dtypes import bfloat16
 import numpy as np
 import os
@@ -35,7 +33,7 @@ def softmax(x, axis=-1):
 # Matrix dimensions
 M, N, K = 256, 256, 256
 
-with air.ir.Context() as ctx, Location.unknown():
+with Context() as ctx, Location.unknown():
 
     # Read MLIR IR from file
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -59,6 +57,8 @@ with air.ir.Context() as ctx, Location.unknown():
     V = np.random.uniform(low=-512.0, high=1024.0, size=(K, N)).astype(input_type)
 
     # Compute expected output: O = softmax(Q @ K^T) @ V
+    # Use bf16 inputs cast to float32 for matmul precision, then cast back
+    # to bf16 at each stage to match hardware behavior
     # Step 1: S = Q @ K^T
     S = np.matmul(Q, K_T)
     # Step 2: P = softmax(S) (row-wise)
@@ -85,6 +85,6 @@ with air.ir.Context() as ctx, Location.unknown():
             mlir_module=air_module,
             inputs=[Q, K_T, V, S_buffer, P_buffer],
             expected_outputs=[O_expected],
-            atol=1e4,
+            atol=2e3,
         )
     )
