@@ -13,6 +13,10 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
+import numpy as np
+
+np.random.seed(42)
+
 range_ = for_
 
 
@@ -57,7 +61,6 @@ def build_module(n, tile_n, np_dtype_in):
             arg1_l,
             arg2_l,
         ):
-
             @segment(name="segment_0", operands=[arg0_l, arg1_l, arg2_l])
             def segment_body(
                 arg0_s,

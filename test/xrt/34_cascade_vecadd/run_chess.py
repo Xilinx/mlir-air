@@ -16,6 +16,10 @@ import sys
 from air.backend.xrt_runner import XRTRunner
 from air.backend.xrt import XRTBackend
 
+import numpy as np
+
+np.random.seed(42)
+
 parser = argparse.ArgumentParser(
     prog="run.py",
     description="Builds, runs, and tests the cascade example",

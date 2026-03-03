@@ -18,6 +18,10 @@ from air.extras import types as extrasT
 from air.dialects.linalg.opdsl.lang import *
 import air.dialects.linalg.opdsl.lang as linalg_lang
 
+import numpy as np
+
+np.random.seed(42)
+
 range_ = for_
 
 
@@ -152,7 +156,6 @@ def build_module(
             l3_b_data,
             l3_c_data,
         ):
-
             @segment(
                 name="matmul_seg",
                 operands=[launch_ivx, launch_ivy, l3_a_data, l3_b_data, l3_c_data],
