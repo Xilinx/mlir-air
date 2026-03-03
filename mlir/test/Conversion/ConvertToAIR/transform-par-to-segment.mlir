@@ -20,19 +20,10 @@ func.func @air_par_to_segment() {
   }
   return
 }
-
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-  pdl.pattern @match_par : benefit(1) {
-    %args = pdl.operands
-    %results = pdl.types
-    %op = pdl.operation "scf.parallel"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
-    pdl.rewrite %op with "transform.dialect"
-  }
-
-  sequence %arg0 : !pdl.operation failures(propagate) {
-  ^bb1(%arg1 : !pdl.operation):
-      %0 = pdl_match @match_par in %arg1 : (!pdl.operation) -> !pdl.operation
-      %1 = transform.air.par_to_segment %0
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+      %0 = transform.structured.match ops{["scf.parallel"]} in %arg1: (!transform.any_op) -> !transform.any_op
+      %1 = transform.air.par_to_segment %0 : (!transform.any_op) -> !transform.any_op
+      transform.yield
   }
 }

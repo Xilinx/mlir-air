@@ -10,12 +10,11 @@
 // Transform dialect test: fallback to library_call attribute
 // CHECK: transform.air.linalg_to_library_call
 
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-  transform.sequence %arg0 : !pdl.operation failures(propagate) {
-  ^bb1(%arg1: !pdl.operation):
-    %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
     // Should use the library_call attribute ("linalg_matmul_view4x4xf32_view4x4xf32_view4x4xf32")
-    %call = transform.air.linalg_to_library_call %matmul : (!pdl.operation) -> !pdl.operation
+    %call = transform.air.linalg_to_library_call %matmul : (!transform.any_op) -> !transform.any_op
+    transform.yield
   }
 }

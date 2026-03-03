@@ -9,8 +9,10 @@
 
 // CHECK: transform.air.convert_size1_vector_to_scalar
 
-transform.sequence failures(propagate) {
-^bb1(%arg1: !pdl.operation):
-  %func_op = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-  %transformed = transform.air.convert_size1_vector_to_scalar %func_op
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+  %func_op = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %transformed = transform.air.convert_size1_vector_to_scalar %func_op : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
 }

@@ -9,10 +9,12 @@
 
 // CHECK: transform.air.fuse_into_containing_op
 
-transform.sequence failures(propagate) {
-^bb1(%arg1: !pdl.operation):
-  %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-  %fill = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+  %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %fill = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
   %matmul_1, %loops_1 = transform.air.linalg_tile %matmul [32, 32, 0]
-  %fill_1 = transform.air.fuse_into_containing_op %fill into %loops_1
+  %fill_1 = transform.air.fuse_into_containing_op %fill into %loops_1 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+    transform.yield
+  }
 }

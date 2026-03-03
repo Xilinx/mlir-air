@@ -9,12 +9,11 @@
 
 // CHECK: transform.air.transpose_reduce
 
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-    transform.sequence %arg0 : !pdl.operation failures(propagate) {
-    ^bb1(%arg1: !pdl.operation):
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
         // Find linalg.reduce operations and apply transpose optimization
-        %reduce_op = transform.structured.match ops{["linalg.reduce"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        %transformed_reduce = transform.air.transpose_reduce %reduce_op
-    }
+        %reduce_op = transform.structured.match ops{["linalg.reduce"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %transformed_reduce = transform.air.transpose_reduce %reduce_op : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
 }

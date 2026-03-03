@@ -29,11 +29,13 @@ func.func @test_fuse_into_par(%D: memref<128x128xf32>) -> memref<128x128xf32> {
   return %D : memref<128x128xf32>
 }
 
-transform.sequence failures(propagate) {
-^bb1(%arg1: !pdl.operation):
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
   // Find the consumer and producer.
-  %consumer = transform.structured.match attributes{"__consumer__"} in %arg1 : (!pdl.operation) -> !pdl.operation
-  %producers = transform.structured.match attributes{"__producer__"} in %arg1 : (!pdl.operation) -> !pdl.operation
+  %consumer = transform.structured.match attributes{"__consumer__"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %producers = transform.structured.match attributes{"__producer__"} in %arg1 : (!transform.any_op) -> !transform.any_op
   %1, %loop = transform.air.linalg_tile %consumer [32, 32]
-  transform.air.fuse_into_containing_op %producers into %loop
+  transform.air.fuse_into_containing_op %producers into %loop : (!transform.any_op, !transform.any_op) -> !transform.any_op
+    transform.yield
+  }
 }

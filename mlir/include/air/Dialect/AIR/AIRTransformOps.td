@@ -11,7 +11,7 @@
 
 include "mlir/Dialect/Transform/IR/TransformDialect.td"
 include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.td"
-include "mlir/Dialect/PDL/IR/PDLTypes.td"
+include "mlir/Dialect/Transform/IR/TransformTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/OpBase.td"
 
@@ -29,10 +29,10 @@ def GetSegmentForOp : Op<Transform_Dialect, "air.get_segment_for",
   }];
 
   let arguments =
-    (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$parent);
+    (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$parent);
 
-  let assemblyFormat = "$target attr-dict";
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
@@ -41,9 +41,9 @@ def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
   let description = [{
     Lower air.segment operations to mlir-aie modules.
   }];
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$transformed);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$transformed);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -69,14 +69,14 @@ def LinalgToLibraryCallOp : Op<Transform_Dialect, "air.linalg_to_library_call",
 
     Example:
     ```
-    %matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!pdl.operation) -> !pdl.operation
-    %call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!pdl.operation) -> !pdl.operation
+    %matmul = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -> !transform.any_op
+    %call = transform.air.linalg_to_library_call %matmul { function_name = "my_matmul", link_with = "extern_func.o" } : (!transform.any_op) -> !transform.any_op
     ```
   }];
-  let arguments = (ins PDL_Operation:$target,
+  let arguments = (ins TransformHandleTypeInterface:$target,
                    OptionalAttr<StrAttr>:$function_name,
                    OptionalAttr<StrAttr>:$link_with);
-  let results = (outs PDL_Operation:$result);
+  let results = (outs TransformHandleTypeInterface:$result);
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
@@ -101,10 +101,10 @@ def ParToHerdOp : Op<Transform_Dialect, "air.par_to_herd",
     herd. Returns the new `air.herd` operation.
   }];
   let arguments =
-    (ins PDL_Operation:$target,
+    (ins TransformHandleTypeInterface:$target,
      DefaultValuedAttr<I64Attr, "0">:$first_dim);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -123,10 +123,10 @@ def ParToLaunchOp : Op<Transform_Dialect, "air.par_to_launch",
     Returns the new `air.launch` operation.
   }];
   let arguments =
-    (ins PDL_Operation:$target,
+    (ins TransformHandleTypeInterface:$target,
      DefaultValuedAttr<BoolAttr, "false">:$has_air_segment);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -145,10 +145,10 @@ def ParToSegmentOp : Op<Transform_Dialect, "air.par_to_segment",
     Returns the new `air.segment` operation.
   }];
   let arguments =
-    (ins PDL_Operation:$target,
+    (ins TransformHandleTypeInterface:$target,
      DefaultValuedAttr<BoolAttr, "false">:$has_air_segment);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -167,9 +167,9 @@ def CopyToDmaOp : Op<Transform_Dialect, "air.copy_to_dma",
     Returns the new `air.dma_memcpy_nd` operation.
   }];
   let arguments =
-    (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+    (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -187,8 +187,8 @@ def ForallWithReduceToParallelOp : Op<Transform_Dialect, "air.forall_with_reduce
   let description = [{
     .
   }];
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs Variadic<PDL_Operation>:$transformed);
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs Variadic<TransformHandleTypeInterface>:$transformed);
 
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
@@ -203,13 +203,13 @@ def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
     Experimental
   }];
   let arguments =
-    (ins PDL_Operation:$target,
+    (ins TransformHandleTypeInterface:$target,
          DefaultValuedAttr<I64ArrayAttr, "{}">:$tile_size,
          DefaultValuedAttr<I64Attr, "1">:$pipeline_depth,
          DefaultValuedAttr<StrAttr, "\"horiz\"">:$direction,
          UnitAttr:$promote);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict ";
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -241,7 +241,7 @@ def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
 
     example:
     ```mlir
-    %0 = transform.structured.match ops{["linalg.matmul"]} in %code  : (!pdl.operation) -> !pdl.operation
+    %0 = transform.structured.match ops{["linalg.matmul"]} in %code  : (!transform.any_op) -> !transform.any_op
     %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0]}
     ```
 
@@ -252,15 +252,15 @@ def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
 
     For example,
     ```mlir
-    %m = transform.structured.match ops{["linalg.matmul"]} in %f : (!pdl.operation) -> !pdl.operation
-    %f = transform.structured.match ops{["linalg.fill"]} in %f : (!pdl.operation) -> !pdl.operation
-    %h = transform.merge_handles %f, %m : !pdl.operation
+    %m = transform.structured.match ops{["linalg.matmul"]} in %f : (!transform.any_op) -> !transform.any_op
+    %f = transform.structured.match ops{["linalg.fill"]} in %f : (!transform.any_op) -> !transform.any_op
+    %h = transform.merge_handles %f, %m : !transform.any_op
     // promote the input of the fill operation and the output of the matmul operation to L1 memory
     transform.air.linalg_promote %h {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
     ```
   }];
 
-  let arguments = (ins PDL_Operation:$target,
+  let arguments = (ins TransformHandleTypeInterface:$target,
                    DefaultValuedAttr<I64ArrayAttr, "{}">:$operands_to_promote,
                    DefaultValuedAttr<I64Attr, "1">:$group_size,
                    DefaultValuedAttr<BoolArrayAttr, "{}">:$use_full_tile_buffers,
@@ -268,9 +268,9 @@ def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
                    UnitAttr:$use_alloca,
                    OptionalAttr<I64Attr>:$alignment,
                    DefaultValuedAttr<StrAttr, "\"L1\"">:$memory_space);
-  let results = (outs PDL_Operation:$transformed);
+  let results = (outs TransformHandleTypeInterface:$transformed);
 
-  let assemblyFormat = "$target attr-dict";
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 
 }
 
@@ -286,12 +286,12 @@ def LinalgTileOp : Op<Transform_Dialect, "air.linalg_tile",
     This is a variant of `transform.structured.tile_using_forall`.
   }];
 
-  let arguments = (ins PDL_Operation:$target,
-                   Variadic<PDL_Operation>:$dynamic_sizes,
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   Variadic<TransformHandleTypeInterface>:$dynamic_sizes,
                    DefaultValuedOptionalAttr<DenseI64ArrayAttr, "{}">:$static_sizes
                    );
-  let results = (outs PDL_Operation:$tiled_linalg_op,
-                      PDL_Operation:$loops);
+  let results = (outs TransformHandleTypeInterface:$tiled_linalg_op,
+                      TransformHandleTypeInterface:$loops);
   let builders = [
     OpBuilder<(ins "Value":$target,
                    "ArrayRef<int64_t>":$staticTileSizes)>,
@@ -336,10 +336,10 @@ def FuseIntoContainingMemrefOp :
     This operation reads the containing op handle.
   }];
 
-  let arguments = (ins PDL_Operation:$producer_op,
-                       PDL_Operation:$containing_op);
-  let results = (outs PDL_Operation:$fused_op);
-  let assemblyFormat = "$producer_op `into` $containing_op attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$producer_op,
+                       TransformHandleTypeInterface:$containing_op);
+  let results = (outs TransformHandleTypeInterface:$fused_op);
+  let assemblyFormat = "$producer_op `into` $containing_op attr-dict `:` functional-type(operands, results)";
 
   let builders = [
     OpBuilder<(ins "Value":$producerOp, "Value":$containingOp)>
@@ -378,9 +378,9 @@ def RemoveUninitializedCopyOp : Op<Transform_Dialect, "air.remove_uninitialized_
     ```
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def EliminateCascadeMemcpyOp : Op<Transform_Dialect, "air.eliminate_cascade_memcpy",
@@ -411,9 +411,9 @@ def EliminateCascadeMemcpyOp : Op<Transform_Dialect, "air.eliminate_cascade_memc
     Returns a handle to the modified operation.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def ConvertMemrefCopyToLinalgCopyOp : Op<Transform_Dialect, "air.convert_memref_copy_to_linalg_copy",
@@ -437,9 +437,9 @@ def ConvertMemrefCopyToLinalgCopyOp : Op<Transform_Dialect, "air.convert_memref_
     Returns a handle to the modified operation containing the transformed copies.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def TransposeReduceOp : Op<Transform_Dialect, "air.transpose_reduce",
@@ -469,9 +469,9 @@ def TransposeReduceOp : Op<Transform_Dialect, "air.transpose_reduce",
     Returns a handle to the transformed linalg.reduce operations.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def FuseMultiOpLinalgOp : Op<Transform_Dialect, "air.fuse_multi_op_linalg",
@@ -536,10 +536,10 @@ def FuseMultiOpLinalgOp : Op<Transform_Dialect, "air.fuse_multi_op_linalg",
     Returns a handle to the fused operation (the second operation after modification).
   }];
   
-  let arguments = (ins PDL_Operation:$first_op,
-                       PDL_Operation:$second_op);
-  let results = (outs PDL_Operation:$fused_op);
-  let assemblyFormat = "$first_op `,` $second_op attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$first_op,
+                       TransformHandleTypeInterface:$second_op);
+  let results = (outs TransformHandleTypeInterface:$fused_op);
+  let assemblyFormat = "$first_op `,` $second_op attr-dict `:` functional-type(operands, results)";
 }
 
 def FuseTruncfLinalgOp : Op<Transform_Dialect, "air.fuse_truncf_linalg",
@@ -588,10 +588,10 @@ def FuseTruncfLinalgOp : Op<Transform_Dialect, "air.fuse_truncf_linalg",
     Returns a handle to the fused operation (the producer operation after modification).
   }];
   
-  let arguments = (ins PDL_Operation:$truncf_op,
-                       PDL_Operation:$producer_op);
-  let results = (outs PDL_Operation:$fused_op);
-  let assemblyFormat = "$truncf_op `,` $producer_op attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$truncf_op,
+                       TransformHandleTypeInterface:$producer_op);
+  let results = (outs TransformHandleTypeInterface:$fused_op);
+  let assemblyFormat = "$truncf_op `,` $producer_op attr-dict `:` functional-type(operands, results)";
 }
 
 def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
@@ -667,12 +667,12 @@ def VectorTypeCastOp : Op<Transform_Dialect, "air.vector_type_cast",
     Returns a handle to the modified operations containing the transformed vector operations.
   }];
 
-  let arguments = (ins PDL_Operation:$target,
+  let arguments = (ins TransformHandleTypeInterface:$target,
                        TypeAttr:$target_element_type,
                        DefaultValuedAttr<I64ArrayAttr, "{}">:$input_indices,
                        DefaultValuedAttr<I64ArrayAttr, "{}">:$output_indices);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
@@ -694,25 +694,25 @@ def AIRHerdVectorizeOp : Op<Transform_Dialect, "air.herd_vectorize",
     
     Example:
     ```mlir
-    %herd = transform.structured.match ops{["air.herd"]} in %f : (!pdl.operation) -> !pdl.operation
+    %herd = transform.structured.match ops{["air.herd"]} in %f : (!transform.any_op) -> !transform.any_op
     %vectorized = transform.air.herd_vectorize %herd {
       vectorize_nd_extract = false,
       flatten_1d_depthwise_conv = false,
       vectorize_padding = true
-    } : (!pdl.operation) -> !pdl.operation
+    } : (!transform.any_op) -> !transform.any_op
     ```
     
     Returns a handle to the transformed air.herd operations.
   }];
   
-  let arguments = (ins PDL_Operation:$target,
+  let arguments = (ins TransformHandleTypeInterface:$target,
                    DefaultValuedAttr<BoolAttr, "false">:$vectorize_nd_extract,
                    DefaultValuedAttr<BoolAttr, "false">:$flatten_1d_depthwise_conv,
                    DefaultValuedAttr<BoolAttr, "false">:$disable_transfer_permutation_map_lowering_patterns,
                    DefaultValuedAttr<BoolAttr, "false">:$disable_multi_reduction_to_contract_patterns,
                    DefaultValuedAttr<BoolAttr, "false">:$vectorize_padding);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
@@ -778,9 +778,9 @@ def FuseElementwiseLinalgOp : Op<Transform_Dialect, "air.fuse_elementwise_linalg
     Returns a handle to the modified function.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
@@ -830,15 +830,15 @@ def AIRHoistStaticAllocOp :  Op<Transform_Dialect, "air.hoist_static_alloc",
     ### Usage (Transform dialect)
 
     ```mlir
-    transform.sequence %arg0 : !pdl.operation failures(propagate) {
-    ^bb0(%f: !pdl.operation):
+    transform.sequence %arg0 : !transform.any_op failures(propagate) {
+    ^bb0(%f: !transform.any_op):
       transform.air.hoist_static_alloc %f
-        : (!pdl.operation) -> ()
+        : (!transform.any_op) -> ()
     }
     ```
   }];
 
-  let arguments = (ins PDL_Operation:$target);
+  let arguments = (ins TransformHandleTypeInterface:$target);
   let results = (outs);
 
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
@@ -890,9 +890,9 @@ def EliminateRedundantVectorTransfersOp : Op<Transform_Dialect, "air.eliminate_r
     Returns a handle to the transformed operation.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def HoistLoopInvariantTransfersOp : Op<Transform_Dialect, "air.hoist_loop_invariant_transfers",
@@ -939,11 +939,11 @@ def HoistLoopInvariantTransfersOp : Op<Transform_Dialect, "air.hoist_loop_invari
     Returns a handle to the transformed loop.
   }];
   
-  let arguments = (ins PDL_Operation:$read_op,
-                       PDL_Operation:$write_op,
-                       PDL_Operation:$loop_op);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$read_op `,` $write_op `,` $loop_op attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$read_op,
+                       TransformHandleTypeInterface:$write_op,
+                       TransformHandleTypeInterface:$loop_op);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$read_op `,` $write_op `,` $loop_op attr-dict `:` functional-type(operands, results)";
 }
 
 def FlattenForIterArgsOp : Op<Transform_Dialect, "air.flatten_for_iter_args",
@@ -996,9 +996,9 @@ def FlattenForIterArgsOp : Op<Transform_Dialect, "air.flatten_for_iter_args",
     Returns a handle to the transformed loop.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def HoistCastPairOp : Op<Transform_Dialect, "air.hoist_cast_pair",
@@ -1089,11 +1089,11 @@ def HoistCastPairOp : Op<Transform_Dialect, "air.hoist_cast_pair",
     Returns a handle to the transformed loop.
   }];
   
-  let arguments = (ins PDL_Operation:$extension_op,
-                       PDL_Operation:$truncation_op,
-                       PDL_Operation:$loop_op);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$extension_op `,` $truncation_op `,` $loop_op attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$extension_op,
+                       TransformHandleTypeInterface:$truncation_op,
+                       TransformHandleTypeInterface:$loop_op);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$extension_op `,` $truncation_op `,` $loop_op attr-dict `:` functional-type(operands, results)";
 }
 
 def HoistVectorTransferPointersOp : Op<Transform_Dialect, "air.hoist_vector_transfer_pointers",
@@ -1151,9 +1151,9 @@ def HoistVectorTransferPointersOp : Op<Transform_Dialect, "air.hoist_vector_tran
     Returns a handle to the transformed loop.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def ConvertDivfSqrtToRsqrtOp : Op<Transform_Dialect, "air.convert_divf_sqrt_to_rsqrt",
@@ -1190,16 +1190,16 @@ def ConvertDivfSqrtToRsqrtOp : Op<Transform_Dialect, "air.convert_divf_sqrt_to_r
     Example usage:
     ```mlir
     %herd = transform.structured.match ops{["air.herd"]} in %arg0 
-      : (!pdl.operation) -> !pdl.operation
+      : (!transform.any_op) -> !transform.any_op
     transform.air.convert_divf_sqrt_to_rsqrt %herd
     ```
     
     Returns a handle to the transformed operation.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def BroadcastBeforeUnaryOp : Op<Transform_Dialect, "air.broadcast_before_unary",
@@ -1247,24 +1247,24 @@ def BroadcastBeforeUnaryOp : Op<Transform_Dialect, "air.broadcast_before_unary",
     Example usage (all qualifying unary ops):
     ```mlir
     %func = transform.structured.match ops{["func.func"]} in %arg0 
-      : (!pdl.operation) -> !pdl.operation
+      : (!transform.any_op) -> !transform.any_op
     transform.air.broadcast_before_unary %func
     ```
     
     Example usage (specific operation only):
     ```mlir
     %func = transform.structured.match ops{["func.func"]} in %arg0 
-      : (!pdl.operation) -> !pdl.operation
+      : (!transform.any_op) -> !transform.any_op
     transform.air.broadcast_before_unary %func {op_name = "math.rsqrt"}
     ```
     
     Returns a handle to the transformed operation.
   }];
   
-  let arguments = (ins PDL_Operation:$target,
+  let arguments = (ins TransformHandleTypeInterface:$target,
                        OptionalAttr<StrAttr>:$op_name);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def NormalizeForBoundsOp : Op<Transform_Dialect, "air.normalize_for_bounds",
@@ -1308,9 +1308,9 @@ def NormalizeForBoundsOp : Op<Transform_Dialect, "air.normalize_for_bounds",
     Returns a handle to the transformed loop.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 def ConvertSize1VectorToScalarOp : Op<Transform_Dialect, "air.convert_size1_vector_to_scalar",
@@ -1390,16 +1390,16 @@ def ConvertSize1VectorToScalarOp : Op<Transform_Dialect, "air.convert_size1_vect
     Usage:
     ```mlir
     %func = transform.structured.match ops{["func.func"]} in %arg0 
-      : (!pdl.operation) -> !pdl.operation
+      : (!transform.any_op) -> !transform.any_op
     transform.air.convert_size1_vector_to_scalar %func
     ```
     
     Returns a handle to the transformed operation.
   }];
   
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$result);
-  let assemblyFormat = "$target attr-dict";
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
 #endif // AIR_TRANSFORM_OPS

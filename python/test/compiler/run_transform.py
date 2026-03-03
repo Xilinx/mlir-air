@@ -53,18 +53,17 @@ def gemm_module():
 
     module = build_module()
     transform_ir_string = """
-    transform.with_pdl_patterns {
-    ^bb0(%arg0: !pdl.operation):
-        transform.sequence %arg0 : !pdl.operation failures(propagate) {
-        ^bb1(%arg1: !pdl.operation):
-            %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+        module attributes {transform.with_named_sequence} {
+          transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+            %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
             %matmul_1, %forall = transform.air.linalg_tile %matmul [64, 64, 0]
-            %parallal = transform.loop.forall_to_parallel %forall  : (!pdl.operation) -> !pdl.operation
-            %matmul_2 = transform.structured.match ops{["linalg.generic"]} in %parallal  : (!pdl.operation) -> !pdl.operation
+            %parallal = transform.loop.forall_to_parallel %forall  : (!transform.any_op) -> !transform.any_op
+            %matmul_2 = transform.structured.match ops{["linalg.generic"]} in %parallal  : (!transform.any_op) -> !transform.any_op
             %matmul_3, %forall_1 = transform.air.linalg_tile %matmul_2 [0, 0, 64]
-            %scffor = transform.loop.forall_to_for %forall_1  : (!pdl.operation) -> !pdl.operation
+            %scffor = transform.loop.forall_to_for %forall_1  : (!transform.any_op) -> !transform.any_op
+          transform.yield
         }
-    }
+        }
     """
     transform_ir = Module.parse(transform_ir_string, context=module.context)
     run_transform(transform_ir, module)

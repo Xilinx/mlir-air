@@ -11,8 +11,10 @@
 // RUN: air-opt %s | FileCheck %s
 
 // CHECK: transform.air.linalg_tile
-transform.sequence failures(propagate) {
-^bb1(%arg1: !pdl.operation):
-  %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+  %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
   %matmul_1, %loop = transform.air.linalg_tile %matmul [64, 64, 0]
+    transform.yield
+  }
 }
