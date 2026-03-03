@@ -5,7 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-// XFAIL: *
 // RUN: air-opt -air-to-std %s | FileCheck %s
 
 // CHECK-LABEL: func.func @execute

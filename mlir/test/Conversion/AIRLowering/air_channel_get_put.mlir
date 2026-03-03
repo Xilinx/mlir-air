@@ -5,7 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-// XFAIL: *
 // RUN: air-opt %s --split-input-file -air-to-std | FileCheck %s
 
 // CHECK-LABEL:   func.func @single_put_get
