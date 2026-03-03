@@ -31,9 +31,11 @@ module attributes {transform.with_named_sequence} {
         %tiled_copy1, %tile_copy_loop1 =
           transform.structured.tile_using_for %copy1 tile_sizes [0, 64]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        transform.annotate %tile_copy_loop1 "copy_a_loop" : !transform.any_op
         %tiled_copy2, %tile_copy_loop2 =
           transform.structured.tile_using_for %copy2 tile_sizes [64]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        transform.annotate %tile_copy_loop2 "copy_b_loop" : !transform.any_op
 
     //==========================================================================
     // PHASE 2: FUSE TRUNCF AND PREPARE MATMUL
@@ -110,6 +112,7 @@ module attributes {transform.with_named_sequence} {
         %tiled_reduction, %outer_for_loop =
           transform.structured.tile_using_for %packed_c tile_sizes [0, 0, 8]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        transform.annotate %outer_for_loop "k_reduction_loop" : !transform.any_op
 
     // Step 11: Fuse pack operations for A and B into the outer K-loop.
     // This moves data packing inside the loop for better locality and pipelining.
@@ -126,6 +129,8 @@ module attributes {transform.with_named_sequence} {
         %matmul_1 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %tiled_matmul_1, %inner_forall =
           transform.structured.tile_using_forall %matmul_1 tile_sizes [8, 8, 0] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        transform.annotate %inner_forall "compute_forall" : !transform.any_op
+        transform.annotate %tiled_matmul_1 "matmul_compute" : !transform.any_op
 
     // Step 13: Fuse pack operations into the inner parallel loop.
     // This ensures each core has its own data packing for independent execution.
@@ -157,12 +162,14 @@ module attributes {transform.with_named_sequence} {
         %fill_op = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %generic_fill_op = transform.structured.generalize %fill_op
             : (!transform.any_op) -> !transform.any_op
-        %interchanged_fill_op = transform.structured.interchange %generic_fill_op 
+        transform.annotate %generic_fill_op "init_fill" : !transform.any_op
+        %interchanged_fill_op = transform.structured.interchange %generic_fill_op
           iterator_interchange = [1, 0, 2, 3]
           : (!transform.any_op) -> !transform.any_op
         %prologue_tiled_fill, %prologue_forall =
           transform.structured.tile_using_forall %interchanged_fill_op tile_sizes [8, 8]
             : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        transform.annotate %prologue_forall "prologue_forall" : !transform.any_op
 
     // Step 17: Create tiled epilogue (unpack operation).
     // Tile sizes [64, 64] match the L2 tile dimensions.
@@ -170,6 +177,7 @@ module attributes {transform.with_named_sequence} {
         %epilogue_tiled_unpack, %epilogue_forall =
           transform.structured.tile_using_forall %unpack_op tile_sizes [64, 64]
             : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+        transform.annotate %epilogue_forall "epilogue_forall" : !transform.any_op
 
     // Step 18: Canonicalization and CSE after buffer promotion.
         %func_3 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
@@ -212,8 +220,10 @@ module attributes {transform.with_named_sequence} {
 
     // Step 21: Fuse L3->L2 copy loops with the main K-reduction loop.
     // This exposes L2 pingpong buffering opportunity by interleaving data transfer.
-        %for_loops = transform.structured.match ops{["scf.for"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %for_loop_copy_1, %for_loop_copy_2, %main_for_loop = transform.split_handle %for_loops : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+    // Use annotation-based matching instead of fragile split_handle.
+        %for_loop_copy_1 = transform.structured.match ops{["scf.for"]} attributes{copy_a_loop} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %for_loop_copy_2 = transform.structured.match ops{["scf.for"]} attributes{copy_b_loop} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %main_for_loop = transform.structured.match ops{["scf.for"]} attributes{k_reduction_loop} in %arg1 : (!transform.any_op) -> !transform.any_op
         %main_for_loop_norm = transform.air.normalize_for_bounds %main_for_loop : (!transform.any_op) -> !transform.any_op
         transform.apply_cse to %func_op_updated_1 : !transform.any_op
         %fused_for_loop_2 = transform.loop.fuse_sibling %for_loop_copy_2 into %main_for_loop_norm 
@@ -228,8 +238,9 @@ module attributes {transform.with_named_sequence} {
 
     // Step 22: Tile linalg.generic (matmul) for vectorization.
     // Tile sizes [2, 2, 1, 0, 0, 0] create register blocking for M and N.
-        %linalg_generics = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %generic1, %generic2 = transform.split_handle %linalg_generics : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+    // Use annotation-based matching instead of fragile split_handle.
+        %generic1 = transform.structured.match ops{["linalg.generic"]} attributes{init_fill} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %generic2 = transform.structured.match ops{["linalg.generic"]} attributes{matmul_compute} in %arg1 : (!transform.any_op) -> !transform.any_op
         %inner_most_generics, %vec_loops:3 =
           transform.structured.tile_using_for %generic2 tile_sizes [2, 2, 1, 0, 0, 0]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)   
@@ -254,14 +265,19 @@ module attributes {transform.with_named_sequence} {
 
     // Step 25: Convert scf.forall loops to AIE herd operations.
     // Each forall becomes an air.herd representing multi-core execution.
-        %foralls = transform.structured.match ops{["scf.forall"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %forall1, %forall2, %forall3 = transform.split_handle %foralls : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+    // Use annotation-based matching instead of fragile split_handle.
+        %forall1 = transform.structured.match ops{["scf.forall"]} attributes{prologue_forall} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %forall2 = transform.structured.match ops{["scf.forall"]} attributes{compute_forall} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %forall3 = transform.structured.match ops{["scf.forall"]} attributes{epilogue_forall} in %arg1 : (!transform.any_op) -> !transform.any_op
         %parallel1 = transform.loop.forall_to_parallel %forall1  : (!transform.any_op) -> !transform.any_op
         %herd1 = transform.air.par_to_herd %parallel1 : (!transform.any_op) -> !transform.any_op
+        transform.annotate %herd1 "prologue_herd" : !transform.any_op
         %parallel2 = transform.loop.forall_to_parallel %forall2  : (!transform.any_op) -> !transform.any_op
         %herd2 = transform.air.par_to_herd %parallel2 : (!transform.any_op) -> !transform.any_op
+        transform.annotate %herd2 "compute_herd" : !transform.any_op
         %parallel3 = transform.loop.forall_to_parallel %forall3  : (!transform.any_op) -> !transform.any_op
         %herd3 = transform.air.par_to_herd %parallel3 : (!transform.any_op) -> !transform.any_op
+        transform.annotate %herd3 "epilogue_herd" : !transform.any_op
 
     // Step 26: Apply vectorization to AIE herds.
     // Converts scalar operations to vector operations for AIE vector units.
@@ -286,31 +302,25 @@ module attributes {transform.with_named_sequence} {
     // Move vector reads/writes out of innermost loops for register reuse.
     //==========================================================================
 
-    // Step 29: Identify herds and vector operations for hoisting.
-    // The matmul herd (herd2) contains the accumulator reads/writes to optimize.
-        %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
+    // Step 29: Identify the matmul compute herd for hoisting.
+    // Use annotation-based matching instead of fragile split_handle.
+        %herd2_1 = transform.structured.match ops{["air.herd"]} attributes{compute_herd} in %arg1 : (!transform.any_op) -> !transform.any_op
         %all_reads_in_herd2 = transform.structured.match ops{["vector.transfer_read"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
         %all_writes_in_herd2 = transform.structured.match ops{["vector.transfer_write"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-        
+
     // Step 30: Identify the innermost K-loop for hoisting.
         %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
         %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-        
+
     // Step 31: Split handles to get individual read/write operations.
-    // After unrolling, there are 8 reads (4 for A tiles, 4 for C accumulators)
-    // and 4 writes (for C accumulators) due to 2x2 unrolling.
         %read0, %read1, %read2, %read3, %read4, %read5, %read6, %read7 = transform.split_handle %all_reads_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
         %write0, %write1, %write2, %write3 = transform.split_handle %all_writes_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-        
+
     // Step 32: Cast vector types for correct accumulation precision.
-    // Ensures vector.contract uses F32 for accumulation (BF16 inputs -> F32 output).
         %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
 
     // Step 33: Hoist accumulator read/write pairs from innermost K-loop.
-    // Moves C matrix tile loads/stores outside the loop for register reuse.
-    // Each of the 4 pairs corresponds to a position in the 2x2 unrolled tile.
         %innermost_for_updated = transform.air.hoist_loop_invariant_transfers %read2, %write0, %innermost_for : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
         %innermost_for_updated_1 = transform.air.hoist_loop_invariant_transfers %read4, %write1, %innermost_for_updated : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
         %innermost_for_updated_2 = transform.air.hoist_loop_invariant_transfers %read6, %write2, %innermost_for_updated_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
@@ -322,39 +332,23 @@ module attributes {transform.with_named_sequence} {
     //==========================================================================
 
     // Step 34: Match extf/truncf operations in the innermost loop.
-    // These handle BF16 accumulator -> F32 compute -> BF16 store conversions.
         %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
         %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-
         %all_extf_loop = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
         %all_truncf_loop = transform.structured.match ops{["arith.truncf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-
-    // Step 35: Hoist extf/truncf pairs iteratively.
-    // There are 4 pairs corresponding to the 4 vector.contract results.
-    // Each pair is hoisted one at a time, re-matching after each hoist.
-        
-        // Split to get individual operations (4 extf, 4 truncf)
         %extf_bf16_1, %extf_bf16_2, %extf_bf16_3, %extf_bf16_4 = transform.split_handle %all_extf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
         %truncf_1, %truncf_2, %truncf_3, %truncf_4 = transform.split_handle %all_truncf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-        
-        // Hoist first extf/truncf pair
         %for1_1_hoisted_1 = transform.air.hoist_cast_pair %extf_bf16_1, %truncf_1, %innermost_for1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-        
-        // Re-match and hoist second pair
         %all_extf_loop_2 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
         %all_truncf_loop_2 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
         %extf_bf16_2_new, %e2_5, %e2_6 = transform.split_handle %all_extf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
         %truncf_2_1, %truncf_2_2, %truncf_2_3 = transform.split_handle %all_truncf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
         %for1_1_hoisted_2 = transform.air.hoist_cast_pair %extf_bf16_2_new, %truncf_2_1, %for1_1_hoisted_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-        
-        // Re-match and hoist third pair
         %all_extf_loop_3 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
         %all_truncf_loop_3 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
         %extf_bf16_3_new, %e3_7 = transform.split_handle %all_extf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
         %truncf_3_1, %truncf_3_2 = transform.split_handle %all_truncf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
         %for1_1_hoisted_3 = transform.air.hoist_cast_pair %extf_bf16_3_new, %truncf_3_1, %for1_1_hoisted_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-        
-        // Re-match and hoist fourth pair
         %all_extf_loop_4 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
         %all_truncf_loop_4 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
         %for1_1_hoisted_final = transform.air.hoist_cast_pair %all_extf_loop_4, %all_truncf_loop_4, %for1_1_hoisted_3 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
