@@ -122,14 +122,20 @@ EXAMPLES = [
     },
     {
         "category": "LLM Kernels",
-        "name": "RoPE (LLaMA2)",
-        "path": "llama2_rope",
+        "name": "SwiGLU",
+        "path": "swiglu",
         "datatypes": "bf16",
     },
     {
         "category": "LLM Kernels",
-        "name": "SwiGLU",
-        "path": "swiglu",
+        "name": "RoPE (LUT-based)",
+        "path": "rope_lut",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
+        "name": "RoPE (On-chip Sin/Cos)",
+        "path": "rope_sincos",
         "datatypes": "bf16",
     },
     {
