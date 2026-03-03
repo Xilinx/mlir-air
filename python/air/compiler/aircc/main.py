@@ -292,7 +292,7 @@ def run_gpu_compilation(opts):
             print(f.read())
 
 
-def run_aie_compilation(opts):
+def run_aie_compilation(opts, mlir_module=None):
     """
     AIE compilation pipeline using Python bindings.
     Requires MLIR Python bindings and AIE support.
@@ -760,11 +760,24 @@ extern "C" {
     if opts.verbose:
         print("Using aiecc.py from: ", aiecc_path)
 
-    with Context() as ctx, Location.unknown():
-        with open(opts.air_mlir_file, "r") as f:
-            mlir_module = Module.parse(f.read())
+    if mlir_module is not None:
+        # Use the caller's module and context (from run() API)
+        ctx_manager = mlir_module.context
+        _, air_mlir_filename = os.path.split(
+            opts.air_mlir_file if hasattr(opts, "air_mlir_file") else "input.mlir"
+        )
+    else:
+        # Create new context and read from file (from main() CLI)
+        ctx_manager = Context()
 
-        _, air_mlir_filename = os.path.split(opts.air_mlir_file)
+    with ctx_manager as ctx, Location.unknown():
+        if mlir_module is None:
+            with open(opts.air_mlir_file, "r") as f:
+                mlir_module = Module.parse(f.read())
+
+        _, air_mlir_filename = os.path.split(
+            opts.air_mlir_file if hasattr(opts, "air_mlir_file") else "input.mlir"
+        )
         air_collapse_herd_to_cols_pass = (
             "func.func(air-collapse-herd{" + f"max-col-size={4} " + "})"
         )
@@ -1026,7 +1039,6 @@ def run(mlir_module, args=None):
         cl_arguments.parse_args(args) if args is not None else cl_arguments.parse_args()
     )
 
-    # Write the module to a temp file so run_aie_compilation can read it
     if opts.tmpdir:
         try:
             os.mkdir(opts.tmpdir)
@@ -1035,17 +1047,18 @@ def run(mlir_module, args=None):
     else:
         opts.tmpdir = tempfile.mkdtemp()
 
-    input_file = os.path.join(opts.tmpdir, "input.mlir")
-    with open(input_file, "w") as f:
-        f.write(str(mlir_module))
-    opts.air_mlir_file = input_file
-
     # Dispatch based on target
     target = getattr(opts, "target", "aie")
     if target == "gpu":
+        # GPU pipeline uses subprocess calls, needs file on disk
+        input_file = os.path.join(opts.tmpdir, "input.mlir")
+        with open(input_file, "w") as f:
+            f.write(str(mlir_module))
+        opts.air_mlir_file = input_file
         run_gpu_compilation(opts)
     else:
-        run_aie_compilation(opts)
+        # AIE pipeline uses Python bindings, pass module directly
+        run_aie_compilation(opts, mlir_module=mlir_module)
 
 
 def main():
