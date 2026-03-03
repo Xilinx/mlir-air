@@ -33,6 +33,10 @@ def transpose_32bit_words(A, M, K):
     For bf16 (2 bytes), this means pairs of adjacent rows are interleaved
     column-major.
     """
+    if K % 8 != 0:
+        raise ValueError(f"K must be divisible by 8; got K={K}.")
+    if M % 16 != 0:
+        raise ValueError(f"M must be divisible by 16; got M={M}.")
     return A.reshape(M, K // 2, 2).transpose(1, 0, 2).reshape(-1)
 
 

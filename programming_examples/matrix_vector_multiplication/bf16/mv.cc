@@ -1,8 +1,7 @@
 //===- mv.cc ----------------------------------------------000---*- C++ -*-===//
 //
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// This file is licensed under the MIT License.
+// SPDX-License-Identifier: MIT
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc.
 //
@@ -60,7 +59,7 @@ void matvec_vectorized(T_in *__restrict a, T_in *__restrict b,
   // 8*1-sized blocks.
   //
   // In the inner loop, we iterate through blocks of the A matrix in
-  // colum-major order, at each step consuming a r*8-sized block.
+  // column-major order, at each step consuming a r*8-sized block.
   //
   // At each iteration, we accumulate into r rows of the output. To
   // accumulate, we add the dot product of each row of A with the same
@@ -73,7 +72,7 @@ void matvec_vectorized(T_in *__restrict a, T_in *__restrict b,
   for (int col = 0; col < k; col += 8) {
     aie::vector<T_in, 8> b_vec = aie::load_v<8>(b_ptr);
     T_out *__restrict c_ptr = c; // reset to the first row of C output on
-                                 // each outer loop tieration
+                                 // each outer loop iteration
     AIE_LOOP_MIN_ITERATION_COUNT(m / r)
     for (int row = 0; row < m; row += r) {
       aie::accum<T_acc, r> c_acc_in;
