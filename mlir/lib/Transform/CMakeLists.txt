@@ -2,11 +2,19 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
+# Source order matches origin/main for consistent archive ordering.
 set(TRANSFORM_SOURCES
   AIRAutomaticTilingPass.cpp
   AIRDependency.cpp
   AIRDependencyCanonicalize.cpp
   AIRDependencyParseGraph.cpp
+)
+if(AIR_ENABLE_AIE)
+  list(APPEND TRANSFORM_SOURCES
+    AIRDependencyScheduleOpt.cpp
+  )
+endif()
+list(APPEND TRANSFORM_SOURCES
   AIRDmaToChannel.cpp
   AIRHerdAssignPass.cpp
   AIRHerdPlacementPass.cpp
@@ -15,8 +23,21 @@ set(TRANSFORM_SOURCES
   AIRLinalgCodegen.cpp
   AIRLinalgOpStats.cpp
   AIRLoopMergingPass.cpp
-  AIRMergeUnrolledDevicesPass.cpp
+)
+if(AIR_ENABLE_AIE)
+  list(APPEND TRANSFORM_SOURCES
+    AIRMergeUnrolledDevicesPass.cpp
+  )
+endif()
+list(APPEND TRANSFORM_SOURCES
   AIRLoopPermutationPass.cpp
+)
+if(AIR_ENABLE_AIE)
+  list(APPEND TRANSFORM_SOURCES
+    AIRLowerLinalgTensors.cpp
+  )
+endif()
+list(APPEND TRANSFORM_SOURCES
   AIRMiscPasses.cpp
   AIRRegularizeLoopPass.cpp
   AIRTilingUtils.cpp
@@ -36,12 +57,7 @@ set(TRANSFORM_LINK_LIBS
   MLIRSupport
 )
 
-# Add AIE-specific sources and libraries if AIE is enabled
 if(AIR_ENABLE_AIE)
-  list(APPEND TRANSFORM_SOURCES
-    AIRDependencyScheduleOpt.cpp
-    AIRLowerLinalgTensors.cpp
-  )
   list(APPEND TRANSFORM_LINK_LIBS
     AIE
     AIEX

@@ -297,12 +297,14 @@ def run_aie_compilation(opts, mlir_module=None):
     AIE compilation pipeline using Python bindings.
     Requires MLIR Python bindings and AIE support.
     """
-    # Import dependencies only when needed for AIE compilation
+    # Import AIR Python bindings (needed for all AIE compilation)
+    # Note: aiecc is imported later, just before use, to avoid loading
+    # libAIEAggregateCAPI.so before air-to-std runs. Loading both CAPI
+    # libraries simultaneously causes duplicate MLIR TypeID conflicts.
     try:
         from air.passmanager import PassManager
         from air.ir import Module, Context, Location
         from air.dialects import air as airdialect
-        import aie.compiler.aiecc.main as aiecc
     except ImportError as e:
         print(
             f"Error: AIE compilation requires Python bindings which are not available."
@@ -1006,6 +1008,8 @@ extern "C" {
             aiecc_options = [a for a in aiecc_options if a != ""]
             if opts.verbose:
                 print("Running aiecc.py with options:", " ".join(aiecc_options))
+            import aie.compiler.aiecc.main as aiecc
+
             aiecc.run(air_to_npu_module, aiecc_options)
 
             # Dump pass log to tmpdir for documentation

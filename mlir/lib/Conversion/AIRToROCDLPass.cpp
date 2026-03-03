@@ -219,7 +219,7 @@ class DMAMemcpyToSubPattern
 };
 
 struct ConvertAIRToROCDLPass
-    : public impl::ConvertAIRToROCDLBase<ConvertAIRToROCDLPass> {
+    : public xilinx::air::impl::ConvertAIRToROCDLBase<ConvertAIRToROCDLPass> {
 
   ConvertAIRToROCDLPass() = default;
   ConvertAIRToROCDLPass(const ConvertAIRToROCDLPass &pass) {}

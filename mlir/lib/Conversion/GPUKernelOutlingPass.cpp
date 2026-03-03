@@ -219,7 +219,8 @@ class DMAMemcpyToSubPattern
 };
 
 struct ConvertGPUKernelOutlinePass
-    : public impl::ConvertGPUKernelOutlineBase<ConvertGPUKernelOutlinePass> {
+    : public xilinx::air::impl::ConvertGPUKernelOutlineBase<
+          ConvertGPUKernelOutlinePass> {
 
   ConvertGPUKernelOutlinePass() = default;
   ConvertGPUKernelOutlinePass(const ConvertGPUKernelOutlinePass &pass) {}

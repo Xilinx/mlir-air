@@ -2,9 +2,30 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
+# Source order matches origin/main for consistent archive ordering.
+# When AIE is enabled, AIE-specific sources are interleaved at their
+# original positions to preserve the archive object order that the
+# MLIR shared library symbol resolution depends on.
 set(CONVERSION_SOURCES
   ConvertToAIRPass.cpp
+)
+if(AIR_ENABLE_AIE)
+  list(APPEND CONVERSION_SOURCES
+    AIRLoweringPass.cpp
+    AIRRtToLLVMPass.cpp
+    AIRToAIEPass.cpp
+    AIRToAIESchedulingUtils.cpp
+  )
+endif()
+list(APPEND CONVERSION_SOURCES
   AIRToAsyncPass.cpp
+)
+if(AIR_ENABLE_AIE)
+  list(APPEND CONVERSION_SOURCES
+    AIRRtToNpuPass.cpp
+  )
+endif()
+list(APPEND CONVERSION_SOURCES
   Passes.cpp
 )
 
@@ -19,6 +40,14 @@ set(CONVERSION_LINK_LIBS
   MLIRTransforms
   MLIRPass
 )
+
+# Add AIE-specific libraries if AIE is enabled
+if(AIR_ENABLE_AIE)
+  list(APPEND CONVERSION_LINK_LIBS
+    AIE
+    AIEX
+  )
+endif()
 
 # Add GPU-specific sources, libraries, and dependencies if GPU is enabled
 set(GPU_PASS_DEPENDS "")
@@ -35,21 +64,6 @@ if(AIR_ENABLE_GPU)
     MLIRSCFToControlFlow
     MLIRControlFlowDialect
     MLIRROCDLDialect
-  )
-endif()
-
-# Add AIE-specific sources and libraries if AIE is enabled
-if(AIR_ENABLE_AIE)
-  list(APPEND CONVERSION_SOURCES
-    AIRToAIEPass.cpp
-    AIRToAIESchedulingUtils.cpp
-    AIRLoweringPass.cpp
-    AIRRtToLLVMPass.cpp
-    AIRRtToNpuPass.cpp
-  )
-  list(APPEND CONVERSION_LINK_LIBS
-    AIE
-    AIEX
   )
 endif()
 
