@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------===//
 #include "air/Conversion/GPUKernelOutlinePass.h"
-#include "air/Conversion/PassDetail.h"
+#include "air/Conversion/GPUPassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"

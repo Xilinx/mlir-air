@@ -8,7 +8,7 @@
 #ifndef CONVERT_TO_GPU_OUTLINE
 #define CONVERT_TO_GPU_OUTLINE
 
-#include "air/Conversion/PassDetail.h"
+// GPU passes use GPUPassDetail.h in their .cpp files
 
 #include "mlir/Pass/Pass.h"
 #include <memory>

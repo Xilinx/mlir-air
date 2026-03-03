@@ -8,7 +8,7 @@
 #ifndef CONVERT_TO_AIR_ROCDL
 #define CONVERT_TO_AIR_ROCDL
 
-#include "air/Conversion/PassDetail.h"
+// GPU passes use GPUPassDetail.h in their .cpp files
 
 #include "mlir/Pass/Pass.h"
 #include <memory>

@@ -20,8 +20,10 @@ set(CONVERSION_LINK_LIBS
   MLIRPass
 )
 
-# Add GPU-specific sources and libraries if GPU is enabled
+# Add GPU-specific sources, libraries, and dependencies if GPU is enabled
+set(GPU_PASS_DEPENDS "")
 if(AIR_ENABLE_GPU)
+  set(GPU_PASS_DEPENDS AIRGPUConversionPassIncGen)
   list(APPEND CONVERSION_SOURCES
     AIRToROCDLPass.cpp
     GPUKernelOutlingPass.cpp
@@ -59,6 +61,7 @@ add_mlir_library(
 
   DEPENDS
   AIRConversionPassIncGen
+  ${GPU_PASS_DEPENDS}
   AIRTransformOpsIncGen
   AIRTransformPasses
   AIRDialect
