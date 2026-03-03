@@ -31,9 +31,11 @@ AIE_TARGET ?= aie2
 ifeq ($(AIE_TARGET),aie2p)
   PEANOWRAP_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
   ATTN_CC = ${srcdir}/attn_aie2p.cc
+  BFP16_FLAG = -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
 else
   PEANOWRAP_FLAGS = -O2 -std=c++20 --target=aie2-none-unknown-elf ${WARNING_FLAGS} -DNDEBUG -I ${AIEOPT_DIR}/include
   ATTN_CC = ${srcdir}/attn.cc
+  BFP16_FLAG =
 endif
 
 all: run
@@ -51,10 +53,10 @@ compile-kernel:
 	mkdir -p $(BUILD_DIR)
 	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
 		echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) with target $(AIE_TARGET)"; \
-		$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP_FLAGS} -DBIT_WIDTH=8 -c $(ATTN_CC) -o $(BUILD_DIR)/attn.o -Dlqp=$(LQP) -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV) -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16; \
+		$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP_FLAGS} -DBIT_WIDTH=8 -c $(ATTN_CC) -o $(BUILD_DIR)/attn.o -Dlqp=$(LQP) -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV) $(BFP16_FLAG); \
 	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
 		echo "Using xchesscc_wrapper from PATH with target $(AIE_TARGET)"; \
-		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper $(AIE_TARGET) -c $(ATTN_CC) -o attn.o -Dlqp=$(LQP) -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV); \
+		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper $(AIE_TARGET) -c $(ATTN_CC) -o attn.o -Dlqp=$(LQP) -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV) $(BFP16_FLAG); \
 	else \
 		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
 		exit 1; \
