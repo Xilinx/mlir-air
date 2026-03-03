@@ -325,6 +325,24 @@ def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
   let options = [];
 }
 
+def ConvertAIRToROCDL : Pass<"air-to-rocdl", "ModuleOp"> {
+  let summary = "Lower AIR dialect to ROCDL dialect";
+  let constructor = "xilinx::air::createAIRToROCDLPass()";
+  let description =  [{
+  }];
+  let dependentDialects = ["gpu::GPUDialect", "ROCDL::ROCDLDialect", "LLVM::LLVMDialect"];
+  let options = [];
+}
+
+def ConvertGPUKernelOutline : Pass<"air-gpu-outlining", "ModuleOp"> {
+  let summary = "Outline GPU Kernel Func from GPU Launch";
+  let constructor = "xilinx::air::createGPUKernelOutlinePass()";
+  let description =  [{
+  }];
+  let dependentDialects = ["gpu::GPUDialect", "ROCDL::ROCDLDialect", "LLVM::LLVMDialect"];
+  let options = [];
+}
+
 def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
   let summary = "Lower AIRRt dialect to AIEX.npu dialect";
   let constructor = "xilinx::airrt::createAIRRtToNpuPass()";

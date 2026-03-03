@@ -36,3 +36,4 @@ find_package(hsa-runtime64)
 
 add_subdirectory(airhost)
 add_subdirectory(aircpu)
+add_subdirectory(airgpu)
