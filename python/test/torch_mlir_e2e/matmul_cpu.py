@@ -31,40 +31,33 @@ def transform_to_air(module):
         )
         pm_br2op.run(module.operation)
         transform_ir_string = """
-        transform.with_pdl_patterns {
-        ^bb0(%arg0: !pdl.operation):
-            pdl.pattern @match_copy : benefit(1) {
-                %args = pdl.operands
-                %results = pdl.types
-                %op = pdl.operation "memref.copy"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
-                pdl.rewrite %op with "transform.dialect"
-            }
-            transform.sequence %arg0 : !pdl.operation failures(propagate) {
-            ^bb1(%arg1: !pdl.operation):
-                %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-                %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+            module attributes {transform.with_named_sequence} {
+              transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+                %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!transform.any_op) -> !transform.any_op
+                %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!transform.any_op) -> !transform.any_op
                 %matmul_1, %loop = transform.air.linalg_tile %matmul [64, 64, 0]
-                %fill_1 = transform.air.fuse_into_containing_op %fill into %loop
-                transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L2"}
-                transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[2], "memory_space"="L2"}
-                transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L2"}
+                %fill_1 = transform.air.fuse_into_containing_op %fill into %loop : (!transform.any_op, !transform.any_op) -> !transform.any_op
+                transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L2"} : (!transform.any_op) -> !transform.any_op
+                transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[2], "memory_space"="L2"} : (!transform.any_op) -> !transform.any_op
+                transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L2"} : (!transform.any_op) -> !transform.any_op
                 %matmul_2, %loop_2 = transform.air.linalg_tile %matmul_1 [32, 32, 0]
-                %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %loop_2
-                transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L1"}
-                transform.air.linalg_promote %matmul_2 {"operands_to_promote"=[2], "memory_space"="L1"}
+                %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %loop_2 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+                transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+                transform.air.linalg_promote %matmul_2 {"operands_to_promote"=[2], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
                 %matmul_3, %reduction_loop = transform.air.linalg_tile %matmul_2 [0, 0, 32]
-                transform.air.linalg_promote %matmul_3 {"operands_to_promote"=[0,1], "memory_space"="L1"}
+                transform.air.linalg_promote %matmul_3 {"operands_to_promote"=[0,1], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
 
-                %herd_tile_par = transform.loop.forall_to_parallel %loop_2  : (!pdl.operation) -> !pdl.operation
-                %herd = transform.air.par_to_herd %herd_tile_par
-                %launch_par = transform.loop.forall_to_parallel %loop  : (!pdl.operation) -> !pdl.operation
-                %launch = transform.air.par_to_launch %launch_par
-                %copies = transform.pdl_match @match_copy in %arg0 : (!pdl.operation) -> !pdl.operation
-                %h = transform.air.copy_to_dma %copies
-                %f = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+                %herd_tile_par = transform.loop.forall_to_parallel %loop_2  : (!transform.any_op) -> !transform.any_op
+                %herd = transform.air.par_to_herd %herd_tile_par : (!transform.any_op) -> !transform.any_op
+                %launch_par = transform.loop.forall_to_parallel %loop  : (!transform.any_op) -> !transform.any_op
+                %launch = transform.air.par_to_launch %launch_par : (!transform.any_op) -> !transform.any_op
+                %copies = transform.structured.match ops{["memref.copy"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                %h = transform.air.copy_to_dma %copies : (!transform.any_op) -> !transform.any_op
+                %f = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
        
+              transform.yield
             }
-        }
+            }
         """
         transform_ir = Module.parse(transform_ir_string)
         run_transform(transform_ir, module)

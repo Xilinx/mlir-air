@@ -13,6 +13,5 @@ add_mlir_dialect_library(AIRTransformOps
 
   LINK_LIBS PUBLIC
   MLIRIR
-  MLIRPDLDialect
   MLIRTransformDialect
 )

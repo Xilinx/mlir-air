@@ -9,12 +9,11 @@
 
 // CHECK: transform.air.herd_vectorize
 
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-    transform.sequence %arg0 : !pdl.operation failures(propagate) {
-    ^bb1(%arg1: !pdl.operation):
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
         // Find air.herd operations and apply vectorization
-        %herd_op = transform.structured.match ops{["air.herd"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        %vectorized_herd = transform.air.herd_vectorize %herd_op
-    }
+        %herd_op = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %vectorized_herd = transform.air.herd_vectorize %herd_op : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
 }
