@@ -1068,7 +1068,15 @@ def main():
     if opts.target == "gpu":
         run_gpu_compilation(opts)
     else:
-        run_aie_compilation(opts)
+        # Parse module and pass it to run_aie_compilation so it reuses
+        # this context (matches the original main() behavior on main branch)
+        from air.ir import Module, Context, Location
+        from air.dialects import air as airdialect
+
+        with Context() as ctx, Location.unknown():
+            with open(opts.air_mlir_file, "r") as f:
+                mlir_module = Module.parse(f.read())
+            run_aie_compilation(opts, mlir_module=mlir_module)
 
 
 if __name__ == "__main__":
