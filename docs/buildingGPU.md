@@ -89,7 +89,7 @@ With GPU-only build, the following passes are available:
 | `air-to-async` | Lower AIR dialect to async dialect |
 | `convert-to-air` | Convert operations to AIR dialect |
 
-AIE-specific passes (e.g., `air-to-aie`) are registered but will emit an error if invoked, indicating that AIE support is required.
+AIE-specific passes (e.g., `air-to-aie`) are not available in this configuration; attempts to invoke them will fail because AIE support is disabled (`AIR_ENABLE_AIE=OFF`).
 
 ## GPU Compilation with aircc.py
 
@@ -341,7 +341,7 @@ If you see:
 error: cannot evaluate equated symbol 'air_kernel_0.num_named_barrier'
 ```
 
-This is fixed by using `wave64=true` in the rocdl-attach-target pass, which is the default in aircc.py.
+This can be fixed by configuring the `rocdl-attach-target` pass with `wave64=true`. Note that this is not enabled by default in `aircc.py`, so you must pass this option explicitly in your GPU pipeline.
 
 ## Building with Both AIE and GPU Support
 
@@ -363,7 +363,7 @@ cmake .. \
 | Option | Default | Description |
 |--------|---------|-------------|
 | `AIR_ENABLE_AIE` | ON | Enable AIE backend (requires mlir-aie) |
-| `AIR_ENABLE_GPU` | ON | Enable GPU backend (ROCDL/HIP) |
+| `AIR_ENABLE_GPU` | OFF | Enable GPU backend (ROCDL/HIP) |
 
 Build configurations:
 - **GPU-only**: `-DAIR_ENABLE_AIE=OFF -DAIR_ENABLE_GPU=ON`

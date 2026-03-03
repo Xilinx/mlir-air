@@ -1,4 +1,4 @@
-//===- GPUKernelOutlingPass.cpp --------------------------*- C++ -*-===//
+//===- GPUKernelOutlinePass.cpp --------------------------*- C++ -*-===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT

@@ -29,6 +29,27 @@ mkdir -p $LLVM_DIR/$BUILD_DIR
 mkdir -p $LLVM_DIR/$INSTALL_DIR
 LLVM_ENABLE_RTTI=${LLVM_ENABLE_RTTI:OFF}
 
+# Use environment-specified compilers, fall back to ROCm clang if available,
+# then to system clang/gcc
+if [ -z "$CMAKE_C_COMPILER" ]; then
+  if [ -x "/opt/rocm/llvm/bin/clang" ]; then
+    CMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
+  elif [ -x "$(command -v clang)" ]; then
+    CMAKE_C_COMPILER=clang
+  else
+    CMAKE_C_COMPILER=gcc
+  fi
+fi
+if [ -z "$CMAKE_CXX_COMPILER" ]; then
+  if [ -x "/opt/rocm/llvm/bin/clang++" ]; then
+    CMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+  elif [ -x "$(command -v clang++)" ]; then
+    CMAKE_CXX_COMPILER=clang++
+  else
+    CMAKE_CXX_COMPILER=g++
+  fi
+fi
+
 # Enter a sub-shell to avoid messing up with current directory in case of error
 (
 cd $LLVM_DIR/$BUILD_DIR
@@ -37,8 +58,8 @@ set -e
 
 CMAKE_CONFIGS="\
     -GNinja \
-    -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang \
-    -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++ \
+    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER} \
+    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER} \
     -DPython3_FIND_VIRTUALENV=ONLY \
     -DLLVM_BUILD_EXAMPLES=OFF \
     -DLLVM_BUILD_UTILS=ON \

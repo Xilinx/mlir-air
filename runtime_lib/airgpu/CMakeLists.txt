@@ -30,7 +30,7 @@ if(EXISTS "${ROCM_PATH}/include/hip/hip_runtime.h")
   )
   
   install(TARGETS airgpu 
-    DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/${AIR_RUNTIME_TARGET}/airgpu
+    DESTINATION lib
   )
 else()
   message(STATUS "ROCm not found at ${ROCM_PATH}, skipping airgpu build")

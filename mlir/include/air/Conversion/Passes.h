@@ -9,12 +9,16 @@
 #ifndef AIR_CONVERSION_PASSES_H
 #define AIR_CONVERSION_PASSES_H
 
+#if AIR_ENABLE_AIE
 #include "air/Conversion/AIRLoweringPass.h"
 #include "air/Conversion/AIRRtToLLVMPass.h"
 #include "air/Conversion/AIRRtToNpuPass.h"
 #include "air/Conversion/AIRToAIEPass.h"
+#endif
+
 #include "air/Conversion/AIRToAsyncPass.h"
 #include "air/Conversion/ConvertToAIRPass.h"
+
 namespace xilinx {
 namespace air {
 
