@@ -21,7 +21,14 @@ range_ = for_
 
 @module_builder
 def build_module(
-    lk=3072, lkp=96, lq=128, dk=64, dv=64, num_q_tiles=4, num_cascade_stages=4
+    lk=3072,
+    lkp=96,
+    lq=128,
+    dk=64,
+    dv=64,
+    num_q_tiles=4,
+    num_cascade_stages=4,
+    arch="aie2",
 ):
     """Build the attention module using Python bindings
 
@@ -33,6 +40,7 @@ def build_module(
         dv: Value dimension (default: 64)
         num_q_tiles: Number of tiles to partition Q sequence into (default: 4)
         num_cascade_stages: Number of cascade pipeline stages (default: 4)
+        arch: Target architecture, "aie2" or "aie2p" (default: "aie2")
     """
 
     bf16 = Type.parse("bf16")
@@ -40,7 +48,10 @@ def build_module(
     index_type = IndexType.get()
 
     # Architecture-specific matrix multiplication dimensions
-    mmul_mkn = [4, 8, 4]  # For aie2
+    if arch == "aie2p":
+        mmul_mkn = [8, 8, 8]  # For aie2p
+    else:
+        mmul_mkn = [4, 8, 4]  # For aie2
     mmul_m, mmul_k, mmul_n = mmul_mkn
 
     # Derived parameters
@@ -430,7 +441,7 @@ def build_module(
                             arg29,
                             indices=[arg22, arg23],
                             offsets=[0, 0, 0],
-                            sizes=[tile_size_q, mmul_m * mmul_n, mmul_n],
+                            sizes=[tile_size_q, dv // mmul_n, mmul_n],
                             strides=[mmul_n, tile_size_q * mmul_n, 1],
                         )
                         DeallocOp(alloc_57)
@@ -630,6 +641,13 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "--arch",
+        type=str,
+        choices=["aie2", "aie2p"],
+        default="aie2",
+        help="Target architecture (default: aie2)",
+    )
 
     args = parser.parse_args()
 
@@ -643,6 +661,7 @@ if __name__ == "__main__":
         dv=dv,
         num_q_tiles=4,
         num_cascade_stages=4,
+        arch=args.arch,
     )
 
     if args.print_module_only:
