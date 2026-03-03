@@ -13,6 +13,8 @@ from air.ir import *
 
 import argparse
 import numpy as np
+
+np.random.seed(42)
 import filelock
 from ml_dtypes import bfloat16
 
@@ -120,7 +122,7 @@ def run_test(size, idtype, odtype):
     compiled_module = backend.compile(mlir_module)
     with filelock.FileLock("/tmp/npu.lock"):
         mul = backend.load(compiled_module)
-        (_, _, output_c) = mul(input_a, input_b, input_c)
+        _, _, output_c = mul(input_a, input_b, input_c)
         backend.unload()
 
     print("inputA:", input_a)

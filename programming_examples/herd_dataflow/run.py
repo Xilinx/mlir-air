@@ -9,6 +9,8 @@ This script demonstrates building and running a dataflow module using AIR and ML
 import argparse
 import numpy as np
 
+np.random.seed(42)
+
 import air
 from air.ir import *
 from air.dialects.affine import apply as affine_apply

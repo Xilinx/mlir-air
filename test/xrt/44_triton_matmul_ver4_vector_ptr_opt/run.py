@@ -12,6 +12,10 @@ import air.passmanager
 from ml_dtypes import bfloat16
 import filelock
 
+import numpy as np
+
+np.random.seed(42)
+
 parser = argparse.ArgumentParser(
     prog="run.py",
     description="Builds, runs, and tests the matmul example",

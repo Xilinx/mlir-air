@@ -15,6 +15,10 @@ from air.dialects.math import exp
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
+import numpy as np
+
+np.random.seed(42)
+
 range_ = for_
 
 

@@ -4,6 +4,8 @@
 # SPDX-License-Identifier: MIT
 
 import numpy as np
+
+np.random.seed(42)
 from ml_dtypes import bfloat16
 import pyxrt as xrt
 import sys

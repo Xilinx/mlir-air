@@ -3,6 +3,8 @@
 import argparse
 import numpy as np
 
+np.random.seed(42)
+
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
@@ -78,7 +80,6 @@ def build_module():
             # The arguments are still the input and the output
             @segment(name="seg")
             def segment_body():
-
                 @herd(
                     name="xaddherd",
                     sizes=[IMAGE_HEIGHT // TILE_HEIGHT, IMAGE_WIDTH // TILE_WIDTH],
