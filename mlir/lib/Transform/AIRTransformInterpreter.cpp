@@ -10,6 +10,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
+#include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/FileUtilities.h"
@@ -84,10 +85,38 @@ public:
 
 } // namespace
 
+/// Find the __transform_main named sequence in a module, searching both
+/// the top level and any nested modules with transform.with_named_sequence.
+static transform::NamedSequenceOp findEntryPoint(ModuleOp transformModule) {
+  // Check the top-level module directly.
+  if (auto namedSeq = transformModule.lookupSymbol<transform::NamedSequenceOp>(
+          transform::TransformDialect::kTransformEntryPointSymbolName))
+    return namedSeq;
+
+  // Check nested modules (the parsed file may wrap the transform module).
+  for (auto nestedModule : transformModule.getBody()->getOps<ModuleOp>()) {
+    if (auto namedSeq = nestedModule.lookupSymbol<transform::NamedSequenceOp>(
+            transform::TransformDialect::kTransformEntryPointSymbolName))
+      return namedSeq;
+  }
+  return nullptr;
+}
+
 LogicalResult xilinx::air::runAIRTransform(ModuleOp transformModule,
                                            ModuleOp payloadModule) {
+  // Try named_sequence entry point first (modern transform dialect style).
+  if (auto namedSeq = findEntryPoint(transformModule)) {
+    return transform::applyTransforms(
+        payloadModule, namedSeq, {},
+        transform::TransformOptions().enableExpensiveChecks(true),
+        /*enforceToplevelTransformOp=*/false);
+  }
+
+  // Fallback: iterate top-level TransformOpInterface ops (legacy style).
   for (auto op :
        transformModule.getBody()->getOps<transform::TransformOpInterface>()) {
+    if (isa<transform::NamedSequenceOp>(op))
+      continue;
     if (failed(transform::applyTransforms(
             payloadModule, op, {},
             transform::TransformOptions().enableExpensiveChecks(

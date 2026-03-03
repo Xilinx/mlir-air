@@ -54,31 +54,24 @@ module = generate_add_module([128, 128])
 context = module.context
 
 transform_ir_string = """
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-    pdl.pattern @match_copy : benefit(1) {
-    %args = pdl.operands
-    %results = pdl.types
-    %op = pdl.operation "memref.copy"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
-    pdl.rewrite %op with "transform.dialect"
-    }
-    transform.sequence %arg0 : !pdl.operation failures(propagate) {
-    ^bb1(%arg1: !pdl.operation):
-    %l0 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+    module attributes {transform.with_named_sequence} {
+      transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %l0 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
     %l1, %herd_tile_loop = transform.air.linalg_tile %l0 [0,128]
     %l3, %inner_tile_loop = transform.air.linalg_tile %l1 [32,32]
     %name = transform.param.constant "add_bf16" -> !transform.any_param
-    transform.annotate %l3 "library_call" = %name : !pdl.operation, !transform.any_param
-    transform.air.linalg_promote %l3 {"operands_to_promote"=[0,1,2], "memory_space"="L1"}
-    %inner_tile_par = transform.loop.forall_to_parallel %inner_tile_loop  : (!pdl.operation) -> !pdl.operation
-    %herd_tile_par = transform.loop.forall_to_parallel %herd_tile_loop  : (!pdl.operation) -> !pdl.operation
-    %herd = transform.air.par_to_herd %herd_tile_par
+    transform.annotate %l3 "library_call" = %name : !transform.any_op, !transform.any_param
+    transform.air.linalg_promote %l3 {"operands_to_promote"=[0,1,2], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+    %inner_tile_par = transform.loop.forall_to_parallel %inner_tile_loop  : (!transform.any_op) -> !transform.any_op
+    %herd_tile_par = transform.loop.forall_to_parallel %herd_tile_loop  : (!transform.any_op) -> !transform.any_op
+    %herd = transform.air.par_to_herd %herd_tile_par : (!transform.any_op) -> !transform.any_op
     %library = transform.param.constant "kernel.o" -> !transform.any_param
-    transform.annotate %herd "link_with" = %library : !pdl.operation, !transform.any_param
-    %copies = transform.pdl_match @match_copy in %arg0 : (!pdl.operation) -> !pdl.operation
-    %h = transform.air.copy_to_dma %copies
+    transform.annotate %herd "link_with" = %library : !transform.any_op, !transform.any_param
+    %copies = transform.structured.match ops{["memref.copy"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %h = transform.air.copy_to_dma %copies : (!transform.any_op) -> !transform.any_op
+      transform.yield
     }
-}
+    }
 """
 
 pm = PassManager.parse(

@@ -81,49 +81,42 @@ with open("air_input.mlir", "w") as f:
     f.write(str(air_module))
 
 transform_ir_string = """
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-    pdl.pattern @match_copy : benefit(1) {
-        %args = pdl.operands
-        %results = pdl.types
-        %op = pdl.operation "memref.copy"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
-        pdl.rewrite %op with "transform.dialect"
-    }
-    transform.sequence %arg0 : !pdl.operation failures(propagate) {
-    ^bb1(%arg1: !pdl.operation):
-        %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-        %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+    module attributes {transform.with_named_sequence} {
+      transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+        %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!transform.any_op) -> !transform.any_op
+        %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
         // First level tiling: air.launch
         %matmul_1, %loop = transform.air.linalg_tile %matmul [64, 64, 0]
-        %parallal = transform.loop.forall_to_parallel %loop  : (!pdl.operation) -> !pdl.operation
-        %fill_1 = transform.air.fuse_into_containing_op %fill into %parallal
-        %matmul_2 = transform.structured.match ops{["linalg.generic"]} in %parallal  : (!pdl.operation) -> !pdl.operation
+        %parallal = transform.loop.forall_to_parallel %loop  : (!transform.any_op) -> !transform.any_op
+        %fill_1 = transform.air.fuse_into_containing_op %fill into %parallal : (!transform.any_op, !transform.any_op) -> !transform.any_op
+        %matmul_2 = transform.structured.match ops{["linalg.generic"]} in %parallal  : (!transform.any_op) -> !transform.any_op
         // Second level tiling: air.segment
         %matmul_3, %loop_1 = transform.air.linalg_tile %matmul_2 [64, 64, 0]
-        %parallal_1 = transform.loop.forall_to_parallel %loop_1  : (!pdl.operation) -> !pdl.operation
-        %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %parallal_1
-        %matmul_3_1 = transform.structured.match ops{["linalg.generic"]} in %parallal_1  : (!pdl.operation) -> !pdl.operation
-        transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L2"}
-        transform.air.linalg_promote %matmul_3_1 {"operands_to_promote"=[2], "memory_space"="L2"}
-        transform.air.linalg_promote %matmul_3_1 {"operands_to_promote"=[0,1], "memory_space"="L2"}
+        %parallal_1 = transform.loop.forall_to_parallel %loop_1  : (!transform.any_op) -> !transform.any_op
+        %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %parallal_1 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+        %matmul_3_1 = transform.structured.match ops{["linalg.generic"]} in %parallal_1  : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L2"} : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %matmul_3_1 {"operands_to_promote"=[2], "memory_space"="L2"} : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %matmul_3_1 {"operands_to_promote"=[0,1], "memory_space"="L2"} : (!transform.any_op) -> !transform.any_op
         // Third level tiling: air.herd
         %matmul_4, %loop_2 = transform.air.linalg_tile %matmul_3_1 [32, 32, 0]
-        %parallal_2 = transform.loop.forall_to_parallel %loop_2  : (!pdl.operation) -> !pdl.operation
-        %fill_3 = transform.air.fuse_into_containing_op %fill_2 into %parallal_2
-        %matmul_5 = transform.structured.match ops{["linalg.generic"]} in %parallal_2  : (!pdl.operation) -> !pdl.operation
-        transform.air.linalg_promote %fill_3 {"operands_to_promote"=[1], "memory_space"="L1"}
-        transform.air.linalg_promote %matmul_5 {"operands_to_promote"=[2], "memory_space"="L1"}
+        %parallal_2 = transform.loop.forall_to_parallel %loop_2  : (!transform.any_op) -> !transform.any_op
+        %fill_3 = transform.air.fuse_into_containing_op %fill_2 into %parallal_2 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+        %matmul_5 = transform.structured.match ops{["linalg.generic"]} in %parallal_2  : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %fill_3 {"operands_to_promote"=[1], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+        transform.air.linalg_promote %matmul_5 {"operands_to_promote"=[2], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
         // Fourth level tiling: scf.for (reduction)
         %matmul_6, %reduction_loop = transform.air.linalg_tile %matmul_5 [0, 0, 32]
-        transform.air.linalg_promote %matmul_6 {"operands_to_promote"=[0,1], "memory_space"="L1"}
-        %scffor = transform.loop.forall_to_for %reduction_loop  : (!pdl.operation) -> !pdl.operation
-        %herd = transform.air.par_to_herd %parallal_2
-        %segment = transform.air.par_to_segment %parallal_1
-        %launch = transform.air.par_to_launch %parallal
-        %copies = transform.pdl_match @match_copy in %arg0 : (!pdl.operation) -> !pdl.operation
-        %h = transform.air.copy_to_dma %copies
+        transform.air.linalg_promote %matmul_6 {"operands_to_promote"=[0,1], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+        %scffor = transform.loop.forall_to_for %reduction_loop  : (!transform.any_op) -> !transform.any_op
+        %herd = transform.air.par_to_herd %parallal_2 : (!transform.any_op) -> !transform.any_op
+        %segment = transform.air.par_to_segment %parallal_1 : (!transform.any_op) -> !transform.any_op
+        %launch = transform.air.par_to_launch %parallal : (!transform.any_op) -> !transform.any_op
+        %copies = transform.structured.match ops{["memref.copy"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %h = transform.air.copy_to_dma %copies : (!transform.any_op) -> !transform.any_op
+      transform.yield
     }
-}
+    }
 """
 transform_ir = Module.parse(transform_ir_string, context=context)
 run_transform(transform_ir, air_module)

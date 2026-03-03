@@ -1925,7 +1925,7 @@ void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
   // attributes for multiple variadic operands. In the absence of this, horrible
   // bugs ensue.
   MLIRContext *ctx = builder.getContext();
-  auto operationType = pdl::OperationType::get(ctx);
+  auto operationType = transform::AnyOpType::get(ctx);
   auto staticTileSizesAttr = builder.getDenseI64ArrayAttr(staticTileSizes);
   build(builder, result,
         /*resultTypes=*/TypeRange{operationType, operationType},
@@ -2057,15 +2057,15 @@ ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
   OpAsmParser::UnresolvedOperand target;
   SmallVector<OpAsmParser::UnresolvedOperand> dynamicSizes;
   DenseI64ArrayAttr staticSizes;
-  auto pdlOperationType = pdl::OperationType::get(parser.getContext());
+  auto operationType = transform::AnyOpType::get(parser.getContext());
   if (parser.parseOperand(target) ||
-      parser.resolveOperand(target, pdlOperationType, result.operands) ||
+      parser.resolveOperand(target, operationType, result.operands) ||
       parseDynamicIndexList(parser, dynamicSizes, staticSizes) ||
-      parser.resolveOperands(dynamicSizes, pdlOperationType, result.operands))
+      parser.resolveOperands(dynamicSizes, operationType, result.operands))
     return ParseResult::failure();
 
   result.addAttribute(getStaticSizesAttrName(result.name), staticSizes);
-  result.addTypes(SmallVector<Type>(2, pdlOperationType));
+  result.addTypes(SmallVector<Type>(2, operationType));
   return success();
 }
 
@@ -2216,7 +2216,7 @@ void transform::FuseIntoContainingMemrefOp::build(OpBuilder &builder,
                                                   Value producerOp,
                                                   Value containingOp) {
   result.addOperands({producerOp, containingOp});
-  result.addTypes(pdl::OperationType::get(builder.getContext()));
+  result.addTypes(transform::AnyOpType::get(builder.getContext()));
 }
 
 void transform::FuseIntoContainingMemrefOp::getEffects(

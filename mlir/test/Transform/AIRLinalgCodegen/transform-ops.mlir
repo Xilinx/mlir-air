@@ -21,12 +21,11 @@ func.func @linalg_promote_L1(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x10
   linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%subview, %subview_0 : memref<1024x64xf32, strided<[1024, 1], offset: ?>>, memref<64x1024xf32, strided<[1024, 1], offset: ?>>) outs(%arg2 : memref<1024x1024xf32>)
   return
 }
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-  transform.sequence %arg0 : !pdl.operation failures(propagate) {
-  ^bb1(%arg1: !pdl.operation):
-    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-    %1 = transform.air.linalg_promote %0
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.linalg_promote %0 : (!transform.any_op) -> !transform.any_op
+    transform.yield
   }
 }
 
@@ -43,12 +42,11 @@ func.func @linalg_promote_L2(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x10
   linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%subview, %subview_0 : memref<1024x64xf32, strided<[1024, 1], offset: ?>>, memref<64x1024xf32, strided<[1024, 1], offset: ?>>) outs(%arg2 : memref<1024x1024xf32>)
   return
 }
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-  transform.sequence %arg0 : !pdl.operation failures(propagate) {
-  ^bb1(%arg1: !pdl.operation):
-    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-    %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0,1,2]}
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0,1,2]} : (!transform.any_op) -> !transform.any_op
+    transform.yield
   }
 }
 
@@ -66,12 +64,11 @@ func.func @linalg_promote_one(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1
   linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%subview, %subview_0 : memref<1024x64xf32, strided<[1024, 1], offset: ?>>, memref<64x1024xf32, strided<[1024, 1], offset: ?>>) outs(%arg2 : memref<1024x1024xf32>)
   return
 }
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-  transform.sequence %arg0 : !pdl.operation failures(propagate) {
-  ^bb1(%arg1: !pdl.operation):
-    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-    %1 = transform.air.linalg_promote %0 {operands_to_promote=[0]}
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.linalg_promote %0 {operands_to_promote=[0]} : (!transform.any_op) -> !transform.any_op
+    transform.yield
   }
 }
 
@@ -91,13 +88,12 @@ func.func @linalg_promote_multi_op(%arg0: memref<1024x1024xf32>, %arg1: memref<1
   linalg.matmul ins(%subview0, %subview1 : memref<16x16xf32, strided<[1024, 1]>>, memref<16x16xf32, strided<[1024, 1]>>) outs(%subview2 : memref<16x16xf32, strided<[1024, 1]>>)
   return
 }
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-  transform.sequence %arg0 : !pdl.operation failures(propagate) {
-  ^bb1(%arg1: !pdl.operation):
-    %0 = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-    %1 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-    %2 = transform.merge_handles %0, %1 : !pdl.operation
-    transform.air.linalg_promote %2 {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %0 = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %1 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %2 = transform.merge_handles %0, %1 : !transform.any_op
+    transform.air.linalg_promote %2 {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"} : (!transform.any_op) -> !transform.any_op
+    transform.yield
   }
 }

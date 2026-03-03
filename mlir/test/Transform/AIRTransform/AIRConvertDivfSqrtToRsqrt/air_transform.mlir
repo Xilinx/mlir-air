@@ -9,8 +9,10 @@
 
 // CHECK: transform.air.convert_divf_sqrt_to_rsqrt
 
-transform.sequence failures(propagate) {
-^bb1(%arg1: !pdl.operation):
-  %func = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-  transform.air.convert_divf_sqrt_to_rsqrt %func
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+  %func = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+  transform.air.convert_divf_sqrt_to_rsqrt %func : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
 }
