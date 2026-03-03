@@ -1746,8 +1746,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       // addCoreEnable re-enables cores. aiecc.py skips compilation
       // for cores without link_with/elf_file.
       SmallVector<AIE::RuntimeSequenceOp> seqsToErase;
-      clone.walk(
-          [&](AIE::RuntimeSequenceOp op) { seqsToErase.push_back(op); });
+      clone.walk([&](AIE::RuntimeSequenceOp op) { seqsToErase.push_back(op); });
       for (auto op : seqsToErase)
         op->erase();
 
@@ -1758,14 +1757,13 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       for (auto coreOp : coresToReplace) {
         OpBuilder b(coreOp);
         Value tile = coreOp.getTile();
-        auto newCore =
-            xilinx::AIE::CoreOp::create(b, coreOp.getLoc(), tile);
+        auto newCore = xilinx::AIE::CoreOp::create(b, coreOp.getLoc(), tile);
         Block *body = b.createBlock(&newCore.getBody());
         b.setInsertionPointToEnd(body);
         xilinx::AIE::EndOp::create(b, coreOp.getLoc());
         LLVM_DEBUG(llvm::dbgs()
-                   << "Created empty CoreOp in reset device for tile: "
-                   << tile << "\n");
+                   << "Created empty CoreOp in reset device for tile: " << tile
+                   << "\n");
         coreOp->erase();
       }
 
@@ -1774,8 +1772,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       device.walk([&](AIE::RuntimeSequenceOp seq) { runtimeSeq = seq; });
       if (!runtimeSeq)
         continue;
-      auto resetRef =
-          FlatSymbolRefAttr::get(module.getContext(), resetName);
+      auto resetRef = FlatSymbolRefAttr::get(module.getContext(), resetName);
       runtimeSeq.walk([&](AIEX::NpuLoadPdiOp op) {
         if (auto ref = op.getDeviceRefAttr()) {
           if (ref.getValue() == origName)

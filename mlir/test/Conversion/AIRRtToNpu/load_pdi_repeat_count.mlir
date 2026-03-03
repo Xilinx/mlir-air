@@ -26,7 +26,7 @@
 // EMIT-TRUE-NOT: runtime_sequence
 // EMIT-TRUE: }
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment0 {
-// EMIT-TRUE: aie.runtime_sequence @segment0_sequence
+// EMIT-TRUE: aie.runtime_sequence @func_with_repeat_count
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId7 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
@@ -130,7 +130,7 @@ module {
 // and output-elf=true (only NPU2 family devices get load_pdi)
 
 // EMIT-TRUE-LABEL: aie.device(npu1_1col) @segment_npu1 {
-// EMIT-TRUE: aie.runtime_sequence @segment_npu1_sequence
+// EMIT-TRUE: aie.runtime_sequence @func_npu1
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId9 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
@@ -182,7 +182,7 @@ module {
 // regardless of output-elf setting
 
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_no_launch_end {
-// EMIT-TRUE: aie.runtime_sequence @segment_no_launch_end_sequence
+// EMIT-TRUE: aie.runtime_sequence @func_no_launch_end
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId10 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
@@ -235,7 +235,7 @@ module {
 // when output-elf=true
 
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_memtile {
-// EMIT-TRUE: aie.runtime_sequence @segment_memtile_sequence
+// EMIT-TRUE: aie.runtime_sequence @func_memtile_repeat
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId11 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
@@ -299,7 +299,7 @@ module {
 // EMIT-TRUE: }
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_with_core {
 // EMIT-TRUE:   aie.core
-// EMIT-TRUE:   aie.runtime_sequence @segment_with_core_sequence
+// EMIT-TRUE:   aie.runtime_sequence @func_with_core
 // EMIT-TRUE:     aiex.npu.load_pdi {device_ref = @segment_with_core_reset}
 
 // EMIT-FALSE-LABEL: aie.device(npu2) @segment_with_core {
