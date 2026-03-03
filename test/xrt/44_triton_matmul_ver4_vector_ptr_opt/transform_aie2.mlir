@@ -314,8 +314,8 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Move vector reads/writes out of innermost loops for register reuse.
     //==========================================================================
 
-    // Step 28: Match herds and prepare for hoisting optimization.
-    // Purpose: Identifies herds and their vector operations for register optimization.
+    // Step 28: Match the compute herd and prepare for hoisting optimization.
+    // Purpose: Identifies the compute herd and its vector operations for register optimization.
     // Use annotation-based matching instead of fragile split_handle.
         %herd2_1 = transform.structured.match ops{["air.herd"]} attributes{compute_herd} in %arg1 : (!transform.any_op) -> !transform.any_op
         %all_reads_in_herd2 = transform.structured.match ops{["vector.transfer_read"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
