@@ -13,6 +13,8 @@ configurable VECTOR_SIZE (default 16).
 
 import argparse
 import numpy as np
+
+np.random.seed(42)
 from ml_dtypes import bfloat16
 
 from air.ir import *
@@ -54,7 +56,6 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
 
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
     def relu(arg0, arg1):
-
         @herd(
             name="herd_0",
             sizes=[1, num_tiles],

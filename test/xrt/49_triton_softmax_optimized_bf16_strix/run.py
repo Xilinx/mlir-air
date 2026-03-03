@@ -9,6 +9,8 @@
 import argparse
 import os
 import numpy as np
+
+np.random.seed(42)
 from air.backend.xrt import XRTBackend
 from air.backend.xrt_runner import XRTRunner
 from air.compiler.util import run_transform

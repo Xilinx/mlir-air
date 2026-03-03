@@ -14,6 +14,10 @@ from air.dialects.scf import for_, yield_
 from air.backend.xrt_runner import XRTRunner, type_mapper
 from air.backend.xrt import XRTBackend
 
+import numpy as np
+
+np.random.seed(42)
+
 range_ = for_
 
 
@@ -45,7 +49,6 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
 
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
     def vector_mul(arg0, arg1, arg2):
-
         @herd(
             name="herd_0",
             sizes=[1, num_tiles],

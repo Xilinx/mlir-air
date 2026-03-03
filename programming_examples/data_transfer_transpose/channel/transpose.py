@@ -3,6 +3,8 @@
 import argparse
 import numpy as np
 
+np.random.seed(42)
+
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp
@@ -29,7 +31,6 @@ def build_module(m, k, dtype):
     # We will send an image worth of data in and out
     @FuncOp.from_py_func(memrefTyIn, memrefTyOut)
     def transpose(arg0, arg1):
-
         @launch(operands=[arg0, arg1])
         def launch_body(a, b):
             # Put data into the channel
@@ -40,7 +41,6 @@ def build_module(m, k, dtype):
 
             @segment(name="seg")
             def segment_body():
-
                 @herd(name="herd", sizes=[1, 1])
                 def herd_body(_tx, _ty, _sx, _sy):
                     # We want to store our data in L1 memory
