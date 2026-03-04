@@ -528,10 +528,18 @@ is addressed with unit strides.
 ### 2.5 `air.channel`, `air.channel.put`, `air.channel.get`
 
 ```
-air.channel @name [dim₀, dim₁, …] {channel_type = "dma_stream"}
+// Channel declaration — at module scope
+air.channel @name [dim₀, dim₁, …] {channel_type = "dma_stream", depth = <N>}
 
+// Synchronous put/get — block until the transfer completes
 air.channel.put @name[indices] (src[offsets][sizes][strides]) : (type_src)
 air.channel.get @name[indices] (dst[offsets][sizes][strides]) : (type_dst)
+
+// Asynchronous put/get — return !air.token; transfer completes when token signals
+[%token =] air.channel.put @name[indices] [dependency = [%t₀, …]]
+           (src[offsets][sizes][strides]) : (type_src)
+[%token =] air.channel.get @name[indices] [dependency = [%t₀, …]]
+           (dst[offsets][sizes][strides]) : (type_dst)
 ```
 
 Channels are **declared** once (at module scope) and **used** at distinct producer and
@@ -551,6 +559,81 @@ The `channel_type` attribute controls the underlying mechanism:
 
 The `broadcast_shape` attribute enables one-to-many communication following NumPy
 broadcasting rules.
+
+#### Capacity and depth
+
+A channel has a finite buffer capacity set by the `depth` attribute (default **1**).
+The depth specifies how many transfers may be in-flight simultaneously:
+
+| Depth | Effect |
+|-------|--------|
+| 1 (default) | Rendezvous: each `put` must be consumed by a `get` before the next `put` can proceed. |
+| 2 | Double-buffering: producer may issue one transfer ahead of the consumer. |
+| N | Producer may have up to N transfers outstanding before it must wait. |
+
+Increasing depth relaxes the coupling between producer and consumer at the cost of
+additional buffer memory (each slot requires storage for one transfer's worth of data).
+
+#### Flow control semantics
+
+`put` and `get` are **blocking** at the channel boundary:
+
+- A `put` issued when the channel already holds `depth` unread transfers stalls until
+  the consumer issues a `get` and frees a slot.
+- A `get` issued when the channel holds no data stalls until the producer issues a `put`.
+
+In the asynchronous form the operation is dispatched immediately and the returned
+`!air.token` does not signal until the blocking condition is resolved and the transfer
+is complete. This allows other work to proceed while the channel handshake is in
+progress, but does not remove the fundamental flow-control constraint.
+
+#### Balance requirement
+
+For a channel to make progress, every `put` must be matched by a `get` on the same
+channel index, and vice versa. The compiler enforces the **static balance condition**:
+
+- Along every possible execution path through the program the number of `put` operations
+  and the number of `get` operations at each channel index must be equal.
+- For channels inside loop bodies, balance must hold per iteration (equal puts and gets
+  in the loop body).
+- For channels connecting herds with different iteration spaces, the total transfer count
+  must balance: `(puts per producer instance) × (producer instances)` must equal
+  `(gets per consumer instance) × (consumer instances)`.
+- For channels inside conditional branches, balance must hold independently on each
+  branch.
+
+A violation of the balance condition is a compile-time error.
+
+#### Deadlock conditions
+
+A program deadlocks when a `put` is waiting for a `get` that can never execute, or a
+`get` is waiting for a `put` that can never execute, and no other operation can break
+the wait.
+
+**Minimal deadlock** — `put` and `get` in the same sequential scope:
+
+```mlir
+air.channel @C [] {depth = 1}
+
+air.segment @deadlock {
+  // put blocks: channel is at capacity, waiting for a get to free space
+  air.channel.put @C[] (%src[][][]) : (memref<…, 1>)
+  // never reached — sequential control flow cannot reach get while put blocks
+  air.channel.get @C[] (%dst[][][]) : (memref<…, 1>)
+  air.segment_terminator
+}
+```
+
+The necessary condition for deadlock freedom is that for every channel there exists a
+**concurrent execution context** in which the matching `put` and `get` can both
+make progress simultaneously. In practice:
+
+- `put` and `get` on the same channel must appear in different herds, different async
+  branches, or different segment instances — any context that allows them to execute
+  concurrently.
+- The communication graph (nodes = ops, edges = channel put→get dependencies) must
+  be **acyclic**: a cycle means at least one op in the cycle is waiting on another in
+  the same cycle, which can never be resolved.
 
 ---
 
