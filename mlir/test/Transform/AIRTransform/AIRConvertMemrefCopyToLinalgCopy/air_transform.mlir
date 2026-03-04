@@ -9,12 +9,11 @@
 
 // CHECK: transform.air.convert_memref_copy_to_linalg_copy
 
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-    transform.sequence %arg0 : !pdl.operation failures(propagate) {
-    ^bb1(%arg1: !pdl.operation):
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
         // Convert memref.copy to linalg.copy
-        %func_op = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        %func_op_updated = transform.air.convert_memref_copy_to_linalg_copy %func_op
-    }
+        %func_op = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func_op_updated = transform.air.convert_memref_copy_to_linalg_copy %func_op : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
 }

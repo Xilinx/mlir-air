@@ -2,11 +2,8 @@
 // Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-transform.with_pdl_patterns {
-^bb0(%arg0: !transform.any_op):
-
-transform.sequence %arg0 : !transform.any_op failures(propagate) {
-^bb1(%variant_op: !transform.any_op):
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
     %fill = transform.structured.match ops{["linalg.fill"]} in %variant_op
       : (!transform.any_op) -> !transform.any_op
     %matmul = transform.structured.match ops{["linalg.generic"]} in %variant_op
@@ -70,7 +67,7 @@ transform.sequence %arg0 : !transform.any_op failures(propagate) {
     // Fuse fill operation into the forall loop.
     %fused_fill_1 = transform.structured.match ops{["linalg.fill"]} in %variant_op : (!transform.any_op) -> !transform.any_op
     %fill_consumer = transform.get_consumers_of_result %fused_fill_1[0] : (!transform.any_op) -> (!transform.any_op)
-    %fused_fill_2, %fused_loop_2 = transform.structured.fuse_into_containing_op %fused_fill_1 into %fill_consumer : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !pdl.operation)
+    %fused_fill_2, %fused_loop_2 = transform.structured.fuse_into_containing_op %fused_fill_1 into %fill_consumer : (!transform.any_op, !transform.any_op) -> (!transform.any_op, !transform.any_op)
 
     // Pack by applying data tiling, and the linalg.matmul becomes linalg.generic.
     // %packed = transform.structured.pack %tiled_matmul_1 packed_sizes = [4, 4, 8]

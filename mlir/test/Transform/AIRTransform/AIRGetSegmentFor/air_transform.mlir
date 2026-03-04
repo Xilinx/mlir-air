@@ -8,20 +8,11 @@
 // RUN: air-opt %s | FileCheck %s
 
 // CHECK: transform.air.get_segment_for
-
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-  pdl.pattern @match_addi : benefit(1) {
-    %args = pdl.operands
-    %results = pdl.types
-    %op = pdl.operation "arith.addi"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
-    pdl.rewrite %op with "transform.dialect"
-  }
-
-  sequence %arg0 : !pdl.operation failures(propagate) {
-  ^bb1(%arg1 : !pdl.operation):
-    %0 = pdl_match @match_addi in %arg1 : (!pdl.operation) -> !pdl.operation
-    %1 = transform.air.get_segment_for %0
-    transform.debug.emit_remark_at %1, "found segment" : !pdl.operation
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %0 = transform.structured.match ops{["arith.addi"]} in %arg1: (!transform.any_op) -> !transform.any_op
+    %1 = transform.air.get_segment_for %0 : (!transform.any_op) -> !transform.any_op
+    transform.debug.emit_remark_at %1, "found segment" : !transform.any_op
+      transform.yield
   }
 }

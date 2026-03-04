@@ -9,12 +9,11 @@
 
 // CHECK: transform.bufferization.one_shot_bufferize
 
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-    transform.sequence %arg0 : !pdl.operation failures(propagate) {
-    ^bb1(%arg1: !pdl.operation):
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
         // Bufferize
-        %func_op = transform.structured.match ops{["func.func"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-        %func_bufferized = transform.bufferization.one_shot_bufferize %func_op : (!pdl.operation) -> !pdl.operation
-    }
+        %func_op = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func_bufferized = transform.bufferization.one_shot_bufferize %func_op : (!transform.any_op) -> !transform.any_op
+    transform.yield
+  }
 }

@@ -17,12 +17,20 @@
 // With output-elf=true: load_pdi SHOULD be generated inside <device>_sequence
 // With output-elf=false: load_pdi should NOT be generated
 
+// The reset device should exist with preserved DMA BDs and no
+// runtime_sequence. It is a lightweight clone for between-iteration
+// load_pdi that resets DMA/lock state without reloading ELFs.
+// EMIT-TRUE-LABEL: aie.device(npu2) @segment0_reset {
+// EMIT-TRUE:   aie.mem
+// EMIT-TRUE:     aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 3)
+// EMIT-TRUE-NOT: runtime_sequence
+// EMIT-TRUE: }
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment0 {
-// EMIT-TRUE: aie.runtime_sequence @segment0_sequence
+// EMIT-TRUE: aie.runtime_sequence @func_with_repeat_count
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId7 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
-// EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment0}
+// EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment0_reset}
 // EMIT-TRUE: }
 
 // EMIT-FALSE-LABEL: aie.device(npu2) @segment0 {
@@ -122,7 +130,7 @@ module {
 // and output-elf=true (only NPU2 family devices get load_pdi)
 
 // EMIT-TRUE-LABEL: aie.device(npu1_1col) @segment_npu1 {
-// EMIT-TRUE: aie.runtime_sequence @segment_npu1_sequence
+// EMIT-TRUE: aie.runtime_sequence @func_npu1
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId9 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
@@ -174,7 +182,7 @@ module {
 // regardless of output-elf setting
 
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_no_launch_end {
-// EMIT-TRUE: aie.runtime_sequence @segment_no_launch_end_sequence
+// EMIT-TRUE: aie.runtime_sequence @func_no_launch_end
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId10 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
@@ -227,11 +235,11 @@ module {
 // when output-elf=true
 
 // EMIT-TRUE-LABEL: aie.device(npu2) @segment_memtile {
-// EMIT-TRUE: aie.runtime_sequence @segment_memtile_sequence
+// EMIT-TRUE: aie.runtime_sequence @func_memtile_repeat
 // EMIT-TRUE:   aiex.dma_configure_task_for @airMemcpyId11 {
 // EMIT-TRUE:   aiex.dma_start_task
 // EMIT-TRUE:   aiex.dma_await_task
-// EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment_memtile}
+// EMIT-TRUE:   aiex.npu.load_pdi {device_ref = @segment_memtile_reset}
 // EMIT-TRUE: }
 
 // EMIT-FALSE-LABEL: aie.device(npu2) @segment_memtile {
@@ -269,6 +277,66 @@ module {
     %0 = airrt.dma_memcpy_nd(%c11_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId11} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
     airrt.wait_all %0 {"air.launch_end"}
     %p = airrt.segment_load "segment_memtile" : i64
+    return
+  }
+}
+
+// -----
+
+// Test 6: Device with CoreOp — the reset device should have an empty
+// CoreOp (no elf_file, no link_with, empty body) so that initLocks
+// and addCoreEnable still fire during PDI expansion, but no ELF
+// is compiled or loaded.
+
+// The reset device has DMA BDs preserved, no runtime_sequence,
+// and CoreOps replaced with empty shells (no elf_file/link_with).
+// EMIT-TRUE-LABEL: aie.device(npu2) @segment_with_core_reset {
+// EMIT-TRUE:   aie.mem
+// EMIT-TRUE:     aie.dma_start(S2MM, 0, {{.*}}, {{.*}}, repeat_count = 3)
+// EMIT-TRUE-NOT: link_with
+// EMIT-TRUE-NOT: elf_file
+// EMIT-TRUE-NOT: runtime_sequence
+// EMIT-TRUE: }
+// EMIT-TRUE-LABEL: aie.device(npu2) @segment_with_core {
+// EMIT-TRUE:   aie.core
+// EMIT-TRUE:   aie.runtime_sequence @func_with_core
+// EMIT-TRUE:     aiex.npu.load_pdi {device_ref = @segment_with_core_reset}
+
+// EMIT-FALSE-LABEL: aie.device(npu2) @segment_with_core {
+// EMIT-FALSE-NOT: segment_with_core_reset
+// EMIT-FALSE-NOT: aiex.npu.load_pdi
+
+module {
+  aie.device(npu2) {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_2 = aie.tile(0, 2)
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId12(%shim_noc_tile_0_0, S2MM, 0)
+
+    %mem_0_2 = aie.mem(%tile_0_2) {
+      %0 = aie.dma_start(S2MM, 0, ^bb1, ^bb2, repeat_count = 3)
+    ^bb1:
+      aie.end
+    ^bb2:
+      aie.end
+    }
+
+    // Core with link_with — should be replaced with empty core in reset device
+    %core_0_2 = aie.core(%tile_0_2) {
+      aie.end
+    } {link_with = "kernel.o"}
+  } {sym_name = "segment_with_core"}
+
+  airrt.module_metadata{}
+
+  func.func @func_with_core(%arg0: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c12_i32 = arith.constant 12 : i32
+    %0 = airrt.dma_memcpy_nd(%c12_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId12} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    airrt.wait_all %0 {"air.launch_end"}
+    %p = airrt.segment_load "segment_with_core" : i64
     return
   }
 }
