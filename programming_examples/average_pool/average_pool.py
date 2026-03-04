@@ -160,9 +160,7 @@ def build_module(m, n, tile_m, np_dtype_in):
                     )
                     # Multiply by 1/N before reduction to avoid scalar bf16
                     # multiply which can produce corrupted output on AIE2.
-                    v_inv_n = broadcast(
-                        VectorType.get([n], xrt_dtype_in), inv_n
-                    )
+                    v_inv_n = broadcast(VectorType.get([n], xrt_dtype_in), inv_n)
                     v_scaled = arith.mulf(v_a, v_inv_n)
                     v_avg = reduction(xrt_dtype_in, CombiningKind.ADD, v_scaled)
                     store(v_avg, collapse_c, [c0])
