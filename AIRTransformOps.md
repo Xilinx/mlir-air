@@ -1079,48 +1079,46 @@ Interfaces: `MemoryEffectOpInterface`, `MemoryEffectsOpInterface`, `TransformOpI
 
 ### `transform.air.hoist_loop_invariant_transfers` (transform::HoistLoopInvariantTransfersOp)
 
-_Hoist a pair of loop-invariant vector.transfer_read/write operations_
+_Discover and hoist all loop-invariant vector transfer read/write pairs_
 
 Syntax:
 
 ```
-operation ::= `transform.air.hoist_loop_invariant_transfers` $read_op `,` $write_op `,` $loop_op attr-dict `:` functional-type(operands, results)
+operation ::= `transform.air.hoist_loop_invariant_transfers` $scope_op `,` $loop_op attr-dict `:` functional-type(operands, results)
 ```
 
-This transform takes handles to a vector.transfer_read, a vector.transfer_write,
-and their parent scf.for loop. If both operations have loop-invariant indices and
-operate on the same memref, it hoists them outside the loop along with any operations
-needed to compute their operands (like affine.apply operations).
+This transform takes handles to a scope operation and an scf.for loop inside it.
+It automatically discovers all vector.transfer_read/write pairs in the loop that:
+1. Have loop-invariant indices (don't depend on the loop induction variable)
+2. Access the same memref with equivalent indices (forming a load-modify-store pair)
 
-The read is hoisted before the loop, and the write is hoisted after the loop.
-All necessary operand-producing operations (constants, affine.apply, etc.) are
-also hoisted to maintain SSA dominance.
+Each discovered pair is hoisted out of the loop: the read is moved before the
+loop (with an iter_arg), and the write is moved after the loop. All necessary
+operand-producing operations (constants, affine.apply, etc.) are also hoisted
+to maintain SSA dominance.
 
-Example:
+Index equivalence is checked using areEquivalentIndices(), which handles direct
+SSA value equality, affine.apply ops with the same map and operands, and
+constant index equality.
+
+This eliminates the need for fragile split_handle patterns that depend on the
+exact number and ordering of transfer operations, which can change with
+different unroll factors, tile sizes, or data types.
+
+The op works across all matmul variants (BF16, I8, I16) and any unroll factor.
+
+Example usage:
 ```mlir
-// Before:
-scf.for %i = %c0 to %c4 step %c1 {
-  %idx = affine.apply #map()[%x]
-  %val = vector.transfer_read %A[%x, %idx], %pad : memref<8x8xi32>, vector<4xi32>
-  // ... computation using %val ...
-  %result = ... // some computation
-  vector.transfer_write %result, %A[%x, %idx] : vector<4xi32>, memref<8x8xi32>
-}
-
-// After:
-%idx = affine.apply #map()[%x]
-%val = vector.transfer_read %A[%x, %idx], %pad : memref<8x8xi32>, vector<4xi32>
-scf.for %i = %c0 to %c4 step %c1 {
-  // ... computation using %val ...
-  %result = ... // some computation
-}
-vector.transfer_write %result, %A[%x, %idx] : vector<4xi32>, memref<8x8xi32>
+%herd = transform.structured.match ops{["air.herd"]} attributes{compute_herd}
+  in %arg0 : (!transform.any_op) -> !transform.any_op
+%loop = ...  // innermost scf.for loop
+%updated_loop = transform.air.hoist_loop_invariant_transfers %herd, %loop
+  : (!transform.any_op, !transform.any_op) -> !transform.any_op
 ```
 
 Requirements:
-- Read and write must be in the same scf.for loop
-- Their indices must not depend on the loop induction variable
-- They should operate on the same memref
+- The loop must be inside the scope operation
+- Transfer operations to be hoisted must have loop-invariant indices
 
 Returns a handle to the transformed loop.
 
@@ -1132,8 +1130,7 @@ Interfaces: `MemoryEffectOpInterface`, `MemoryEffectsOpInterface`, `TransformOpI
 
 | Operand | Description |
 | :-----: | ----------- |
-| `read_op` | TransformHandleTypeInterface instance |
-| `write_op` | TransformHandleTypeInterface instance |
+| `scope_op` | TransformHandleTypeInterface instance |
 | `loop_op` | TransformHandleTypeInterface instance |
 
 #### Results:
