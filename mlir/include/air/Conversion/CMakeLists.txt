@@ -7,3 +7,9 @@ mlir_tablegen(Passes.h.inc -gen-pass-decls)
 add_public_tablegen_target(AIRConversionPassIncGen)
 
 add_mlir_doc(Passes AIRConversionPasses ./ -gen-pass-doc)
+
+if(AIR_ENABLE_GPU)
+  set(LLVM_TARGET_DEFINITIONS GPUPasses.td)
+  mlir_tablegen(GPUPasses.h.inc -gen-pass-decls)
+  add_public_tablegen_target(AIRGPUConversionPassIncGen)
+endif()

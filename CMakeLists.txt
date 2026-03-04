@@ -38,17 +38,28 @@ set(PEANO_INSTALL_DIR
     "<unset>"
     CACHE STRING "Location of Peano compiler")
 
+# Option to enable/disable AIE support (for GPU-only builds)
+option(AIR_ENABLE_AIE "Enable AIE support (requires mlir-aie)" ON)
+# Option to enable/disable GPU/ROCDL support
+option(AIR_ENABLE_GPU "Enable GPU/ROCDL backend support" OFF)
+
 include(ExternalProject)
 
 find_package(MLIR REQUIRED CONFIG)
-find_package(AIE REQUIRED)
-find_package(LibXAIE)
+if(AIR_ENABLE_AIE)
+  find_package(AIE REQUIRED)
+  find_package(LibXAIE)
+endif()
 find_package(XRT)
 find_package(hsa-runtime64)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
+if(AIR_ENABLE_AIE)
+  message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
+else()
+  message(STATUS "AIE support disabled (GPU-only build)")
+endif()
 
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
 option(LLVM_BUILD_TOOLS
@@ -102,10 +113,25 @@ include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/mlir/include)
 include_directories(${PROJECT_BINARY_DIR}/mlir/include)
 
-link_directories(${AIE_BINARY_DIR}/lib)
-include_directories(${AIE_INCLUDE_DIRS})
+if(AIR_ENABLE_AIE)
+  link_directories(${AIE_BINARY_DIR}/lib)
+  include_directories(${AIE_INCLUDE_DIRS})
+endif()
 
 add_definitions(${LLVM_DEFINITIONS})
+
+# Pass AIR_ENABLE_AIE and AIR_ENABLE_GPU as compile definitions for C++ code
+if(AIR_ENABLE_AIE)
+  add_definitions(-DAIR_ENABLE_AIE=1)
+else()
+  add_definitions(-DAIR_ENABLE_AIE=0)
+endif()
+
+if(AIR_ENABLE_GPU)
+  add_definitions(-DAIR_ENABLE_GPU=1)
+else()
+  add_definitions(-DAIR_ENABLE_GPU=0)
+endif()
 
 ## flags duplicated from mlir-aie
 add_flag_if_supported("-Werror=sign-compare" WERROR_SIGN_COMPARE)
@@ -188,6 +214,7 @@ foreach(target ${AIR_RUNTIME_TARGETS})
                -Dhsakmt_DIR=${hsakmt_DIR}
                -DAIR_RUNTIME_TARGET=${target}
                -DAIE_DIR=${AIE_DIR}
+               -DAIR_ENABLE_GPU=${AIR_ENABLE_GPU}
     BUILD_ALWAYS true
     STEP_TARGETS clean build install test
     USES_TERMINAL_CONFIGURE true
@@ -199,6 +226,40 @@ foreach(target ${AIR_RUNTIME_TARGETS})
 endforeach()
 
 add_subdirectory(python)
+
+# Build native GPU runtime library when AIR_ENABLE_GPU is enabled
+if(AIR_ENABLE_GPU)
+  # Find ROCm/HIP
+  if(DEFINED ENV{ROCM_PATH})
+    set(ROCM_PATH $ENV{ROCM_PATH})
+  else()
+    set(ROCM_PATH "/opt/rocm")
+  endif()
+
+  if(EXISTS "${ROCM_PATH}/include/hip/hip_runtime.h")
+    message(STATUS "Building native GPU runtime library (airgpu)")
+    add_library(airgpu SHARED
+      ${PROJECT_SOURCE_DIR}/runtime_lib/airgpu/GpuTestUtils.cpp
+    )
+    set_property(TARGET airgpu PROPERTY POSITION_INDEPENDENT_CODE ON)
+    target_compile_definitions(airgpu PRIVATE
+      __HIP_PLATFORM_AMD__
+    )
+    target_include_directories(airgpu PRIVATE
+      ${ROCM_PATH}/include
+    )
+    target_link_libraries(airgpu PRIVATE
+      ${ROCM_PATH}/lib/libamdhip64.so
+    )
+    set_target_properties(airgpu PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    )
+    install(TARGETS airgpu DESTINATION lib)
+  else()
+    message(STATUS "ROCm not found at ${ROCM_PATH}, skipping airgpu build")
+  endif()
+endif()
+
 if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
   message(
     "Skipping e2e tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
