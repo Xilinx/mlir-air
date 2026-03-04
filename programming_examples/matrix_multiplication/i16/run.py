@@ -650,11 +650,8 @@ if __name__ == "__main__":
                 %vector_contracts = transform.structured.match ops{{["vector.contract"]}} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %result11 = transform.air.vector_type_cast %vector_contracts {{target_element_type = {vector_acc_type}, input_indices = [2], output_indices = [0]}} : (!transform.any_op) -> !transform.any_op
                 
-                // Hoist read/write pair from the innermost loop (%innermost_for)
-                %innermost_for_updated = transform.air.hoist_loop_invariant_transfers %read2, %write0, %innermost_for : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                %innermost_for_updated_1 = transform.air.hoist_loop_invariant_transfers %read4, %write1, %innermost_for_updated : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                %innermost_for_updated_2 = transform.air.hoist_loop_invariant_transfers %read6, %write2, %innermost_for_updated_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %read7, %write3, %innermost_for_updated_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
+                // Hoist all accumulator transfer pairs from the innermost loop
+                %innermost_for_updated_3 = transform.air.hoist_all_accumulator_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
                 %innermost_for_updated_4 = transform.air.flatten_for_iter_args %innermost_for_updated_3 : (!transform.any_op) -> !transform.any_op
                 %innermost_for_updated_5 = transform.air.hoist_vector_transfer_pointers %innermost_for_updated_4 : (!transform.any_op) -> !transform.any_op
 

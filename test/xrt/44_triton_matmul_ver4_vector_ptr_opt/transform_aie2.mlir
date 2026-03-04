@@ -338,17 +338,8 @@ module attributes {transform.with_named_sequence} {
         %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
         
-    // Step 32: Hoist accumulator read/write pairs from innermost loop.
-    // Purpose: Moves C matrix tile loads/stores outside the K-loop for register reuse.
-    // Each pair accesses different C tile positions: [i,j], [i+1,j], [i,j+1], [i+1,j+1].
-        // Pair 1: reads[2] and writes[0] - C tile at position [arg27, arg26]
-        %innermost_for_updated = transform.air.hoist_loop_invariant_transfers %read2, %write0, %innermost_for : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-        // Pair 2: reads[4] and writes[1] - C tile at position [arg27+1, arg26]
-        %innermost_for_updated_1 = transform.air.hoist_loop_invariant_transfers %read4, %write1, %innermost_for_updated : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-        // Pair 3: reads[6] and writes[2] - C tile at position [arg27, arg26+1]
-        %innermost_for_updated_2 = transform.air.hoist_loop_invariant_transfers %read6, %write2, %innermost_for_updated_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-        // Pair 4: reads[7] and writes[3] - C tile at position [arg27+1, arg26+1]
-        %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %read7, %write3, %innermost_for_updated_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
+    // Step 32: Hoist all accumulator transfer pairs from innermost loop.
+        %innermost_for_updated_3 = transform.air.hoist_all_accumulator_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
 
     // Step 33: Flatten loop iteration arguments and hoist vector transfer pointers.
     // Purpose: Simplifies loop structure and moves pointer computations out of loops.

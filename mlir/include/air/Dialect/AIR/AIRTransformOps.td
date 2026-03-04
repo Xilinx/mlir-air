@@ -946,6 +946,48 @@ def HoistLoopInvariantTransfersOp : Op<Transform_Dialect, "air.hoist_loop_invari
   let assemblyFormat = "$read_op `,` $write_op `,` $loop_op attr-dict `:` functional-type(operands, results)";
 }
 
+def HoistAllAccumulatorTransfersOp : Op<Transform_Dialect, "air.hoist_all_accumulator_transfers",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let summary = "Discover and hoist all loop-invariant accumulator transfer pairs";
+  let description = [{
+    This transform takes handles to an air.herd and an scf.for loop inside it.
+    It automatically discovers all vector.transfer_read/write pairs that:
+    1. Have loop-invariant indices (don't depend on the loop induction variable)
+    2. Access the same memref with matching indices (forming a load-modify-store pair)
+
+    Each discovered pair is hoisted out of the loop: the read is moved before the
+    loop (with an iter_arg), and the write is moved after the loop.
+
+    This eliminates the need for fragile split_handle patterns that depend on the
+    exact number and ordering of transfer operations, which can change with
+    different unroll factors, tile sizes, or data types.
+
+    The op works across all matmul variants (BF16, I8, I16) and any unroll factor.
+
+    Example usage:
+    ```mlir
+    %herd = transform.structured.match ops{["air.herd"]} attributes{compute_herd}
+      in %arg0 : (!transform.any_op) -> !transform.any_op
+    %loop = ...  // innermost scf.for loop
+    %updated_loop = transform.air.hoist_all_accumulator_transfers %herd, %loop
+      : (!transform.any_op, !transform.any_op) -> !transform.any_op
+    ```
+
+    Requirements:
+    - The loop must be inside the herd
+    - Accumulator transfers must have loop-invariant indices
+
+    Returns a handle to the transformed loop.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$herd_op,
+                       TransformHandleTypeInterface:$loop_op);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$herd_op `,` $loop_op attr-dict `:` functional-type(operands, results)";
+}
+
 def FlattenForIterArgsOp : Op<Transform_Dialect, "air.flatten_for_iter_args",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
