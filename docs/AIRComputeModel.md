@@ -72,6 +72,55 @@ with subsequent operations. Token values are used to express data and control
 dependencies. `air.wait_all` merges multiple tokens into a single synchronization point.
 `air.execute` wraps sequential computation in an asynchronous region.
 
+### 1.5 Token taxonomy and operation lifetimes
+
+#### Operation lifetimes
+
+Every AIR hierarchy operation has two distinct lifetimes:
+
+- **Resource lifespan** — the interval during which the physical resources
+  assigned to the operation (compute tiles, memory banks, DMA channels) are
+  reserved and unavailable to other operations.
+- **Execution lifespan** — the interval during which the nested operations
+  within the body are actively executing.
+
+The execution lifespan must be a **subset** of the resource lifespan: resources
+must be allocated before execution begins and must remain allocated until
+execution completes.
+
+#### Token creation and scope
+
+Tokens are created with `alloc()` at any level of the hierarchy and constrain
+the temporal or spatial mapping of all operations dominated by them. The sole
+exception is `air.launch`: only **dependency tokens** may be passed into the
+body of a launch (constraining the execution of nested operations in time).
+Other token kinds may not cross the launch boundary.
+
+#### Token kinds
+
+| Kind | Effect on execution lifespan | Effect on resource lifespan |
+|------|-----------------------------|-----------------------------|
+| **Affinity** | Forces disjoint execution lifespans between the coupled operations | Forces disjoint resource lifespans — the same hardware resources are used by the operations sequentially |
+| **Concurrency** | Forces overlapping execution lifetimes | Forces overlapping resource allocation lifespans — all resources must be live simultaneously |
+| **Dependency** | Forces disjoint execution lifespans (happens-before ordering) | Impact on resource allocation determined by the compiler and runtime |
+
+- **Affinity tokens** couple operations to the same hardware resources, binding
+  them to a common execution context (e.g., the same hardware partition or
+  memory bank). Because the same resources are shared, the operations must
+  execute sequentially: both their execution lifespans and their resource
+  lifespans are disjoint in time.
+
+- **Concurrency tokens** assert that the coupled operations must have
+  overlapping execution lifetimes. This requires their resource allocations to
+  overlap as well — all resources for all coupled operations must be live at
+  the same time.
+
+- **Dependency tokens** impose a happens-before ordering between operations,
+  ensuring their execution lifespans are disjoint. Unlike affinity and
+  concurrency tokens, dependency tokens do not prescribe a resource allocation
+  strategy; the compiler and runtime may freely reuse resources across a
+  dependency edge or keep them live, as is most efficient.
+
 ---
 
 ## 2. Operation Semantics
@@ -185,7 +234,12 @@ elements** together with their associated L2 (on-device) memory. It:
   segment body. All instances run with **overlapping lifetimes**: the runtime
   guarantees that every instance is active simultaneously, so the full set of
   instances is co-resident on the device for the duration of the segment. This
-  is a "stamp-out" of the segment across independent hardware partitions.
+  is a "stamp-out" of the segment across independent hardware partitions. Each
+  instance occupies a **contiguous** rectangular block of compute resources
+  (columns × rows of tiles, L2 banks, DMA engines). The placement of distinct
+  instances across the iteration space is **independent**: instances need not be
+  adjacent or form a globally contiguous region; each may be placed anywhere in
+  the device array subject only to non-overlap with other live instances.
 - Has access to L2 memory (allocated within its body with `memref.alloc` at
   address space 1) and can access L3 memory through DMA or channel operations.
 
@@ -224,7 +278,10 @@ For a single instance of the segment body the compiler computes:
 Because all iterations of the segment iteration space execute with overlapping
 lifetimes, the per-instance bounds are **multiplied by the total number of
 iterations** (`N₀ × … × Nₙ`) to obtain the aggregate resource requirement. A
-segment with no iteration space has an implicit iteration count of 1.
+segment with no iteration space has an implicit iteration count of 1. This
+aggregate total describes the *sum* of per-instance footprints, not a single
+contiguous footprint: the compiler allocates a contiguous block per instance
+and may place those blocks anywhere in the device array that fits.
 
 These statically computed totals are used to:
 1. Verify that the segment (across all its iterations) fits within the target
@@ -235,10 +292,24 @@ These statically computed totals are used to:
    the same `air.launch` — can be **co-resident** without resource conflicts.
 
 Optional physical placement attributes (`x_loc`, `y_loc`, `x_size`, `y_size`)
-annotate the column/row offset and extent of a single instance on devices with
-2D tile arrays. When present they are taken as authoritative for one instance
-and tiled across the iteration space; when absent the compiler derives them
-from the worst-case analysis above.
+annotate the column/row offset and extent of **one** instance on devices with
+2D tile arrays. For a segment with an iteration space, the compiler assigns a
+separate `(x_loc, y_loc)` origin to each iteration point independently; those
+per-instance origins need not be adjacent. When these attributes are present
+they are taken as authoritative for a single instance's contiguous footprint;
+when absent the compiler derives a per-instance contiguous footprint from the
+worst-case analysis above and places each instance freely.
+
+The optional `backend-granularity` attribute communicates the hardware
+granularity that this segment instance should map to on the target backend.
+Currently defined values:
+
+| Value | Meaning |
+|-------|---------|
+| `XCD` | The segment maps to one XCD (Accelerator Complex Die) on AMD MI3xx GPUs. Used with a multi-XCD `air.launch` iteration space to achieve full-device occupancy (see §4.2). |
+
+When `backend-granularity` is absent the backend applies its default mapping
+(e.g., one workgroup / thread block on GPU).
 
 **Nesting constraint**: `air.herd` ops may appear inside `air.segment`, and
 `air.segment` must appear inside `air.launch` (directly or indirectly).
@@ -250,24 +321,23 @@ from the worst-case analysis above.
 #### Syntax
 
 ```
-// Asynchronous form (default)
-[%token =] air.herd [@name] [async [%dep₀, …]]
+// Default form — synchronous; acquires resources immediately, blocks until complete
+air.herd [@name] tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
+         args(%a₀=%v₀, …) : <types>
+         [x_loc=<col>] [y_loc=<row>]
+         [link_with="<object>"]
+         {
+  …
+  air.herd_terminator
+}
+
+// Asynchronous form — acquires resources when deps are met, signals token on completion
+[%token =] air.herd [@name] async [%dep₀, …]
            tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
            args(%a₀=%v₀, …) : <types>
            [x_loc=<col>] [y_loc=<row>]
            [link_with="<object>"]
            {
-  …
-  air.herd_terminator
-}
-
-// Synchronous form — caller blocks until all PE instances complete
-air.herd [@name] sync
-         tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
-         args(%a₀=%v₀, …) : <types>
-         [x_loc=<col>] [y_loc=<row>]
-         [link_with="<object>"]
-         {
   …
   air.herd_terminator
 }
@@ -281,8 +351,9 @@ of the hierarchy and maps directly to physical compute tiles (NPU) or GPU
 threads:
 
 - The iteration space `%Nx × %Ny` determines how many PE instances execute the
-  body. All instances run concurrently on distinct hardware resources; this is
-  **always-parallel** (not may-be-parallel).
+  body and defines a **contiguous** block of compute resources. All instances
+  run concurrently on distinct hardware resources; this is **always-parallel**
+  (not may-be-parallel).
 - Block arguments `%x` and `%y` give each instance its own coordinates,
   enabling each PE to independently address its portion of L1 or L2 memory.
 - Within the herd body, `L1` memory (address space 2) is per-PE local
@@ -295,12 +366,30 @@ Operations within the herd body may impose both **temporal constraints**
 **spatial constraints** (channel indices or tile-coordinate arithmetic that
 binds each PE to a specific region of a shared buffer).
 
+#### Platform-specific iteration space semantics
+
+The meaning of "contiguous" and the constraints imposed on iteration space
+dimensions depend on the target backend:
+
+- **AIE (NPU)**: A herd defines a logical rectangular array of compute units.
+  The compiler may **reshape** the iteration space (e.g., linearise a 2D herd
+  into a different tile arrangement) unless prevented by a per-herd attribute
+  that disables reshaping. The resulting contiguous rectangular region of
+  physical tiles is determined after any reshaping has been applied.
+
+- **GPU (AMD MI3xx family)**: A herd executes entirely within a single Compute
+  Unit (CU), with PE instances mapped to individual warps. The combined
+  resource requirements (register file, LDS, wavefront slots) of all PE
+  instances must fit within one CU. On MI3xx devices a CU provides fewer than
+  32 wavefront slots, so the total number of PE instances (`%Nx × %Ny`) is
+  correspondingly limited.
+
 #### Synchrony
 
 | Form | Behaviour |
 |------|-----------|
-| Default (async) | Returns an `air.async.token` when all PE instances have completed; the enclosing segment body may overlap subsequent work. |
-| `sync` | Blocks until every PE instance in the array has completed. |
+| Default (no `async`) | **Synchronous**: acquires the resources needed for execution immediately, blocks the enclosing body until all PE instances complete, and releases resources when the herd terminator is reached. |
+| `async [%dep₀, …]` | **Asynchronous**: acquires resources at the point when all input dependency tokens are ready; returns an `air.async.token` immediately; releases resources when that output token is signaled (i.e., when all PE instances complete). |
 
 Optional attributes `x_loc`/`y_loc` specify the base placement on 2D tile
 arrays; each PE at tile `(%x, %y)` occupies physical column/row
@@ -410,8 +499,11 @@ absolute physical tile location.
 
 ## 4. GPU (ROCDL/HIP) Backend Mapping
 
-On AMD GPU targets the same three-level hierarchy maps onto the GPU execution model. The
-`air-to-rocdl` and `air-gpu-outlining` passes perform this translation.
+On AMD GPU targets the AIR hierarchy maps onto the GPU execution model. The
+`air-to-rocdl` and `air-gpu-outlining` passes perform this translation. The
+basic mapping uses three levels (launch → segment → herd); on MI3xx devices a
+four-level mapping with nested segments is used to achieve full-device occupancy
+(see §4.2).
 
 ### 4.1 Hierarchy mapping
 
@@ -434,7 +526,47 @@ and their bodies are moved into the enclosing `gpu.launch` region. The
 and injects the appropriate `gpu.BlockIdOp`, `gpu.ThreadIdOp`, `gpu.GridDimOp`, and
 `gpu.BlockDimOp` intrinsics.
 
-### 4.2 Memory space mapping
+### 4.2 Device-scale mapping via nested segments (MI3xx)
+
+On AMD MI3xx devices the full device can be occupied using a four-level
+hierarchy built from a unit-iteration-space launch, two nested segments, and
+an innermost herd:
+
+| Level | AIR construct | MI3xx granularity |
+|-------|--------------|-------------------|
+| 1 | `air.launch` (no iteration space — implicit single instance) | Whole-device dispatch |
+| 2 | Outer `air.segment` (`backend-granularity=XCD`, iteration space = 8) | All 8 XCDs simultaneously — all instances stamp out concurrently |
+| 3 | Inner `air.segment` (iteration space = CUs per XCD) | One CU within the XCD — all instances stamp out concurrently |
+| 4 | `air.herd` (iteration space ≤ 32) | Concurrent warps on that CU |
+
+**`air.launch`** carries no iteration space (an implicit single-point space).
+Its sole purpose at this level is to anchor the co-residency guarantee for
+everything nested inside.
+
+**Outer `air.segment`** (`backend-granularity=XCD`) has an iteration space of
+cardinality 8, one instance per XCD on the MI3xx device. Because segment
+instances always execute with overlapping lifetimes, all 8 XCDs are occupied
+simultaneously.
+
+**Inner `air.segment`** is nested inside the outer and iterates over the CUs
+within its XCD. Again all instances run concurrently, so every CU in the XCD
+is active at the same time.
+
+**`air.herd`** is nested inside the inner segment and targets the warps running
+on that single CU. The iteration space must not exceed 32 PE instances (the
+wavefront-slot limit of a MI3xx CU, as described in §2.3). Iterations within
+the herd may communicate through:
+
+- **LDS memory** (`L2` address space) — per-CU local data store, shared among
+  all warps in the herd.
+- **Global memory** (`L3` address space) — device HBM, accessible to all
+  levels of the hierarchy.
+
+The `backend-granularity=XCD` attribute on the outer segment is the only
+MI3xx-specific annotation required; all other tiling falls out of the standard
+segment and herd iteration space mechanisms.
+
+### 4.3 Memory space mapping
 
 | AIR memory space | Enum | GPU address space | GPU scope |
 |-----------------|------|------------------|-----------|
@@ -447,7 +579,7 @@ and injects the appropriate `gpu.BlockIdOp`, `gpu.ThreadIdOp`, `gpu.GridDimOp`, 
 **private attributions** (one copy per thread). Explicit `memref.dealloc` ops are
 removed because GPU attributions have implicit kernel-scoped lifetimes.
 
-### 4.3 Data movement on GPU
+### 4.4 Data movement on GPU
 
 `air.dma_memcpy_nd` operations are lowered to explicit SCF loops containing
 `memref.load` / `memref.store` pairs. The offsets, sizes, and strides from the DMA
@@ -459,7 +591,7 @@ register-to-register moves depending on the inferred address spaces.
 by the compiler) synchronize threads at workgroup boundaries between DMA-equivalent
 loads into shared memory and subsequent compute.
 
-### 4.4 Example: 4k×4k matrix multiplication
+### 4.5 Example: 4k×4k matrix multiplication
 
 The GPU test in `test/gpu/4k_4k_mul/air_sync.mlir` illustrates the model:
 
@@ -501,7 +633,7 @@ The mapping:
 - L2 memrefs (space 1) → LDS (shared memory)
 - L1 memrefs (space 2) → VGPRs / private scratch
 
-### 4.5 Compilation pipeline
+### 4.6 Compilation pipeline
 
 The full GPU lowering pipeline is:
 
