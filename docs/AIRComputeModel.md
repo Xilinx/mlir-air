@@ -214,10 +214,15 @@ independent output tiles, one per segment.
 
 #### Synchrony
 
+The synchrony of `air.launch` is determined by whether a result value is bound,
+not by a separate `async` keyword. The `sync` keyword is an explicit synonym for
+the no-result form and is provided for readability.
+
 | Form | Behaviour |
 |------|-----------|
-| Default (async) | Returns an `air.async.token` immediately; the caller may overlap work with the launch. |
-| `sync` | Blocks the calling thread until all launch instances have completed; no token is produced. |
+| `[%token =] air.launch (…) {…}` | **Asynchronous**: dispatches immediately; returns `!air.token` that becomes signaled when all instances complete. Caller may overlap subsequent work. |
+| `air.launch (…) {…}` | **Synchronous** (implicit): blocks the calling thread until all launch instances complete. Equivalent to the `sync` form. |
+| `air.launch sync (…) {…}` | **Synchronous** (explicit): identical to the no-result form; `sync` keyword makes the blocking intent unambiguous, particularly useful when the op appears alongside async launches. |
 
 #### Allowed token lists
 
@@ -292,17 +297,21 @@ elements** together with their associated L2 (on-device) memory. It:
   address space 1) and can access L3 memory through DMA or channel operations.
 
 The body of a segment may contain operations that express both **temporal
-constraints** (sequencing via `air.async.token` dependencies,
+constraints** (sequencing via `!air.token` dependency lists,
 `air.wait_all`, `scf.for` iteration order) and **spatial constraints**
 (placement of `air.herd` tiles via `x_loc`/`y_loc`, channel routing that
 fixes communication topology).
 
 #### Synchrony
 
+As with `air.launch`, synchrony is determined by the presence or absence of a
+result value; `sync` is an explicit synonym for the no-result form.
+
 | Form | Behaviour |
 |------|-----------|
-| Default (async) | Returns an `air.async.token`; the enclosing launch body may overlap subsequent work. |
-| `sync` | Blocks until all herds and data-movement operations within the segment complete. |
+| `[%token =] air.segment (…) {…}` | **Asynchronous**: returns `!air.token` immediately; the enclosing launch body may overlap subsequent work with this segment. Token signals when all herds and data-movement ops within the segment complete. |
+| `air.segment (…) {…}` | **Synchronous** (implicit): blocks until all herds and data-movement operations within the segment complete. |
+| `air.segment sync (…) {…}` | **Synchronous** (explicit): identical to the no-result form. |
 
 #### Compile-time resource analysis
 
@@ -506,9 +515,9 @@ broadcasting rules.
 
 `air.execute` wraps a sequential block of host-visible computation (e.g., `memref.alloc`,
 arithmetic on scalars) in an asynchronous region. The region produces an
-`air.async.token` that becomes ready when all operations inside have completed.
+`!air.token` (dependency kind) that becomes ready when all operations inside have completed.
 
-`air.wait_all` takes a variadic list of `air.async.token` values and produces a single
+`air.wait_all` takes a variadic list of `!air.token` values and produces a single
 token that becomes ready only when all of its inputs are ready. It acts as a join node
 in the async dependency graph.
 
@@ -720,4 +729,4 @@ See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
 | `dma_memcpy_nd` | AIE Shim/Tile DMA engines | SCF load/store loops |
 | `channel` (`dma_stream`) | Streaming AXI-S switch | — (not yet mapped to GPU) |
 | Synchronization | AIE locks | `gpu.barrier` |
-| Async tokens | AIE runtime | GPU stream/event dependencies |
+| `!air.token` (dependency) | AIE runtime completion signals | GPU stream/event dependencies |
