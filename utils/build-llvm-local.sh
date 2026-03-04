@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 ##===- utils/build-llvm-local.sh - Build LLVM on local machine --*- Script -*-===##
-# 
+#
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-# 
+#
 ##===----------------------------------------------------------------------===##
 #
 # This script build LLVM with custom options intended to be called on your
@@ -29,6 +29,27 @@ mkdir -p $LLVM_DIR/$BUILD_DIR
 mkdir -p $LLVM_DIR/$INSTALL_DIR
 LLVM_ENABLE_RTTI=${LLVM_ENABLE_RTTI:OFF}
 
+# Use environment-specified compilers, fall back to ROCm clang if available,
+# then to system clang/gcc
+if [ -z "$CMAKE_C_COMPILER" ]; then
+  if [ -x "/opt/rocm/llvm/bin/clang" ]; then
+    CMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
+  elif [ -x "$(command -v clang)" ]; then
+    CMAKE_C_COMPILER=clang
+  else
+    CMAKE_C_COMPILER=gcc
+  fi
+fi
+if [ -z "$CMAKE_CXX_COMPILER" ]; then
+  if [ -x "/opt/rocm/llvm/bin/clang++" ]; then
+    CMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+  elif [ -x "$(command -v clang++)" ]; then
+    CMAKE_CXX_COMPILER=clang++
+  else
+    CMAKE_CXX_COMPILER=g++
+  fi
+fi
+
 # Enter a sub-shell to avoid messing up with current directory in case of error
 (
 cd $LLVM_DIR/$BUILD_DIR
@@ -37,17 +58,23 @@ set -e
 
 CMAKE_CONFIGS="\
     -GNinja \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER} \
+    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER} \
     -DPython3_FIND_VIRTUALENV=ONLY \
     -DLLVM_BUILD_EXAMPLES=OFF \
     -DLLVM_BUILD_UTILS=ON \
+    -DMLIR_ENABLE_ROCM_RUNNER=ON \
     -DLLVM_ENABLE_RTTI=$LLVM_ENABLE_RTTI \
     -DLLVM_INSTALL_UTILS=ON \
     -DCMAKE_INSTALL_PREFIX=../$INSTALL_DIR \
-    -DLLVM_ENABLE_PROJECTS=clang;lld;mlir \
-    -DLLVM_TARGETS_TO_BUILD:STRING=X86;ARM;AArch64; \
+    -DLLVM_ENABLE_PROJECTS=llvm;clang;lld;mlir \
+    -DCOMPILER_RT_BUILD_BUILTINS=ON \
+    -DCOMPILER_RT_DEFAULT_TARGET_TRIPLE=amdgcn-amd-amdhsa \
     -DCMAKE_BUILD_TYPE=Release \
+    -DMLIR_ENABLE_LLVM_DIALECT=ON \
+    -DMLIR_ENABLE_ROCDL=ON \
+    -DMLIR_ENABLE_GPU=ON \
+    -DLLVM_TARGETS_TO_BUILD:STRING=X86;ARM;AArch64;AMDGPU \
     -DLLVM_BUILD_LLVM_DYLIB=OFF \
     -DLLVM_LINK_LLVM_DYLIB=OFF \
     -DCLANG_LINK_CLANG_DYLIB=OFF \
@@ -58,8 +85,7 @@ CMAKE_CONFIGS="\
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DLLVM_OPTIMIZED_TABLEGEN=OFF \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-    -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
-    -DLLVM_DISTRIBUTION_COMPONENTS=cmake-exports;not;count;FileCheck;MLIRPythonModules;mlir-runner;mlir-linalg-ods-yaml-gen;mlir-opt;mlir-reduce;mlir-tblgen;mlir-translate;mlir-headers;mlir-cmake-exports"
+    -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11"
 
 if [ -x "$(command -v lld)" ]; then
   CMAKE_CONFIGS="${CMAKE_CONFIGS} -DLLVM_USE_LINKER=lld"

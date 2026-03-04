@@ -2,13 +2,19 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-add_mlir_library(
-  AIRTransformPasses
+# Source order matches origin/main for consistent archive ordering.
+set(TRANSFORM_SOURCES
   AIRAutomaticTilingPass.cpp
   AIRDependency.cpp
   AIRDependencyCanonicalize.cpp
   AIRDependencyParseGraph.cpp
-  AIRDependencyScheduleOpt.cpp
+)
+if(AIR_ENABLE_AIE)
+  list(APPEND TRANSFORM_SOURCES
+    AIRDependencyScheduleOpt.cpp
+  )
+endif()
+list(APPEND TRANSFORM_SOURCES
   AIRDmaToChannel.cpp
   AIRHerdAssignPass.cpp
   AIRHerdPlacementPass.cpp
@@ -17,9 +23,21 @@ add_mlir_library(
   AIRLinalgCodegen.cpp
   AIRLinalgOpStats.cpp
   AIRLoopMergingPass.cpp
-  AIRMergeUnrolledDevicesPass.cpp
+)
+if(AIR_ENABLE_AIE)
+  list(APPEND TRANSFORM_SOURCES
+    AIRMergeUnrolledDevicesPass.cpp
+  )
+endif()
+list(APPEND TRANSFORM_SOURCES
   AIRLoopPermutationPass.cpp
-  AIRLowerLinalgTensors.cpp
+)
+if(AIR_ENABLE_AIE)
+  list(APPEND TRANSFORM_SOURCES
+    AIRLowerLinalgTensors.cpp
+  )
+endif()
+list(APPEND TRANSFORM_SOURCES
   AIRMiscPasses.cpp
   AIRRegularizeLoopPass.cpp
   AIRTilingUtils.cpp
@@ -27,6 +45,30 @@ add_mlir_library(
   AffineLoopOptPass.cpp
   Passes.cpp
   ReturnEliminationPass.cpp
+)
+
+set(TRANSFORM_LINK_LIBS
+  AIRDialect
+  AIRRtDialect
+  AIRUtil
+  MLIRIR
+  MLIRLinalgTransforms
+  MLIRLinalgUtils
+  MLIRSupport
+)
+
+if(AIR_ENABLE_AIE)
+  list(APPEND TRANSFORM_LINK_LIBS
+    AIE
+    AIEX
+  )
+endif()
+
+add_mlir_library(
+  AIRTransformPasses
+  ${TRANSFORM_SOURCES}
+
+  PARTIAL_SOURCES_INTENDED
 
   DEPENDS
   AIRTransformOpsIncGen
@@ -38,11 +80,5 @@ add_mlir_library(
   Core
 
   LINK_LIBS PUBLIC
-  AIE
-  AIRDialect
-  AIRRtDialect
-  AIRUtil
-  MLIRIR
-  MLIRLinalgTransforms
-  MLIRLinalgUtils
-  MLIRSupport)
+  ${TRANSFORM_LINK_LIBS}
+)
