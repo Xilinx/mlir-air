@@ -297,10 +297,10 @@ elements** together with their associated L2 (on-device) memory. It:
   address space 1) and can access L3 memory through DMA or channel operations.
 
 The body of a segment may contain operations that express both **temporal
-constraints** (sequencing via `!air.token` dependency lists,
-`air.wait_all`, `scf.for` iteration order) and **spatial constraints**
-(placement of `air.herd` tiles via `x_loc`/`y_loc`, channel routing that
-fixes communication topology).
+constraints** (sequencing via `!air.token` dependency lists, `air.wait_all`,
+`scf.for` iter_arg-carried ordering, `scf.parallel` init/reduce token
+merging) and **spatial constraints** (placement of `air.herd` tiles via
+`x_loc`/`y_loc`, channel routing that fixes communication topology).
 
 #### Synchrony
 
@@ -324,20 +324,105 @@ The analysis at each level has two stages.
 
 **Stage 1 — per-instance worst-case analysis.**
 
-Two cases depending on whether the segment body contains nested `air.segment`
-ops or only `air.herd` ops.
+The analysis covers four structural cases: leaf segments (direct `air.herd`
+ops), containing segments (nested `air.segment` ops), `scf.for` loops (with
+iter_arg-based pipelining), and `scf.parallel` regions (all instances
+concurrent, tokens reduced).
 
 *Leaf segment* (body contains `air.herd` ops, no nested `air.segment`):
 
 - **L2 memory**: the maximum number of bytes in address space 1 that may be
   live simultaneously, taken over all possible execution paths (maximum across
-  conditional branches, accounting for loop-carried allocations).
+  conditional branches; see below for loop-carried allocations).
 - **Compute tiles**: the maximum number of `air.herd` tiles simultaneously
   active, derived from the herd iteration spaces and any `x_size`/`y_size`
   placement constraints.
 - **DMA channels**: the maximum number of concurrently active
   `air.dma_memcpy_nd` or `air.channel` operations, determined from the async
   dependency graph.
+
+*`scf.for` and `scf.parallel` loops within a segment body:*
+
+**`scf.for` — loop-carried token dependencies.**
+
+`scf.for` iterations are logically sequential in program order, but the async
+token model allows controlled overlap between consecutive iterations. The
+mechanism is **`iter_args`**: the token yielded by `scf.yield` at the end of
+iteration N becomes the iter_arg received at the start of iteration N+1.
+
+```mlir
+%t_final = scf.for %k = %lb to %ub step %s
+    iter_args(%t_prev = %t_init) -> !air.token {
+  // Ops that depend on %t_prev wait for iteration N-1 to reach a known point.
+  // Ops that do NOT depend on %t_prev may execute concurrently with N-1.
+  %t_dma = air.dma_memcpy_nd async [%t_prev] …
+  %t_compute = air.herd async [%t_dma] …
+  %t_out = air.wait_all async [%t_compute]
+  scf.yield %t_out : !air.token
+}
+```
+
+An op in iteration N+1 that lists `%t_prev` in its `dependency` list does not
+begin until iteration N has signaled that token. An op that does **not** depend
+on `%t_prev` may begin before iteration N's `scf.yield` fires, creating genuine
+concurrency between consecutive iterations.
+
+The **pipeline depth** D for a given resource type is the number of independent
+token chains maintained as separate `iter_args` for that resource:
+
+- **D = 1** (single `iter_arg` chaining all activity): strictly sequential — only
+  one iteration's worth of resources is active at a time.
+- **D = 2** (double-buffering): one DMA and one compute op from different
+  iterations are simultaneously active. The common pattern is to yield the compute
+  token as one iter_arg and a separate prefetch token as another, allowing the
+  next iteration's data fetch to overlap with the current iteration's compute.
+- **D > 2**: multiple independent in-flight streams tracked via multiple
+  `iter_args`. Each stream contributes independently to the concurrent resource
+  count.
+
+Resource bounds inside an `scf.for`:
+
+- **L2 memory**: `memref.alloc` results that are live across `scf.yield`
+  (loop-carried allocations) are permanently live for the entire loop and
+  contribute to every iteration's baseline. Allocations freed before `scf.yield`
+  require only one slot (reused each iteration).
+- **Compute tiles**: the maximum number of simultaneously active herd instances
+  across D iterations. Multiply the per-iteration herd footprint by the pipeline
+  depth D for the compute resource chain.
+- **DMA channels**: similarly, multiply the per-iteration DMA count by the
+  pipeline depth D for the DMA resource chain.
+
+**`scf.parallel` — broadcast and tree-reduction of tokens.**
+
+`scf.parallel` expresses a set of independent instances that may execute
+concurrently. The async token model for `scf.parallel` has two parts:
+
+```mlir
+%t_out = scf.parallel (%i, %j) = (%lb0, %lb1) to (%ub0, %ub1) step (%s0, %s1)
+    init (%t_in) -> !air.token {
+  // All instances may start as soon as %t_in is signaled.
+  %t_instance = air.channel.put async [%t_in] @ch[%i, %j] …
+  scf.reduce(%t_instance : !air.token) {
+  ^bb0(%a: !air.token, %b: !air.token):
+    %t_merge = air.wait_all async [%a, %b]
+    scf.reduce.return %t_merge : !air.token
+  }
+}
+// %t_out is signaled only when ALL instances have completed.
+```
+
+- **`init (%t_in)`**: a single token that all parallel instances must wait for
+  before beginning. It acts as a broadcast dependency — every instance sees the
+  same `%t_in` as a prerequisite.
+- **`scf.reduce` block**: performs a pairwise tree-reduction over the tokens
+  produced by each instance. Each call to the reduce block receives two instance
+  tokens (`%a`, `%b`) and uses `air.wait_all` to merge them. The final result
+  `%t_out` is signaled only when all instances' tokens have been reduced to one.
+
+Resource bounds inside `scf.parallel`: all instances execute concurrently, so
+their resource requirements are **summed** (not maxed), exactly as for a segment
+iteration space (Stage 2 above). The aggregate resource demand is the per-instance
+bound multiplied by the total number of parallel instances.
 
 *Containing segment* (body contains one or more nested `air.segment` ops):
 
