@@ -138,7 +138,7 @@ def build_module(seq_len, dim, num_cols, np_dtype):
                         dma_memcpy_nd(
                             hr,
                             l1_out,
-                            dst_offsets=[out_col_off, 0],
+                            dst_offsets=[out_col_off],
                             dst_sizes=[seq_len, dim_n],
                             dst_strides=[dim, 1],
                         )
@@ -177,14 +177,14 @@ def build_module(seq_len, dim, num_cols, np_dtype):
                     dma_memcpy_nd(
                         l1_g,
                         hg,
-                        src_offsets=[part_off, 0],
+                        src_offsets=[part_off],
                         src_sizes=[seq_len, dim_n],
                         src_strides=[dim, 1],
                     )
                     dma_memcpy_nd(
                         l1_u,
                         hu,
-                        src_offsets=[part_off, 0],
+                        src_offsets=[part_off],
                         src_sizes=[seq_len, dim_n],
                         src_strides=[dim, 1],
                     )
@@ -193,7 +193,7 @@ def build_module(seq_len, dim, num_cols, np_dtype):
                     dma_memcpy_nd(
                         hi,
                         l1_i,
-                        dst_offsets=[part_off, 0],
+                        dst_offsets=[part_off],
                         dst_sizes=[seq_len, dim_n],
                         dst_strides=[dim, 1],
                     )
@@ -287,16 +287,16 @@ if __name__ == "__main__":
     W_up = (np.random.randn(dim, dim) * 0.1).astype(INPUT_DATATYPE)
     W_down = (np.random.randn(dim, dim) * 0.1).astype(INPUT_DATATYPE)
 
-    # Pack weights: for GEMM x @ W^T, store W^T row-major = W column-major.
-    # Weight partition for column c: rows [c*dim_n : (c+1)*dim_n] of W^T
-    # = columns [c*dim_n : (c+1)*dim_n] of W = W[:, c*dim_n:(c+1)*dim_n]^T
-    # Stored as [dim_n, dim] row-major (i.e., W^T partition).
+    # Pack weights: for GEMM C = A @ B where B = W^T[K, N].
+    # Kernel indexes B as B[kk * N + j], i.e., B is [K, N] row-major.
+    # B = W^T has shape [dim, dim]. Partition column c gets N=dim_n columns:
+    #   B_part = W^T[:, c*dim_n : (c+1)*dim_n] = W[c*dim_n:(c+1)*dim_n, :]^T
+    # Stored as [dim, dim_n] row-major = W[:, c*dim_n:(c+1)*dim_n].
     def pack_weights(W, dim, dim_n, num_cols):
-        W_T = W.T  # [dim, dim] → [dim, dim] transposed
         parts = []
         for col in range(num_cols):
-            # W_T rows [col*dim_n : (col+1)*dim_n] = dim_n rows of dim elements
-            W_part = W_T[col * dim_n : (col + 1) * dim_n, :]
+            # W columns [col*dim_n : (col+1)*dim_n] → [dim, dim_n] row-major
+            W_part = W[:, col * dim_n : (col + 1) * dim_n]
             parts.append(W_part.reshape(-1))
         return np.concatenate(parts)
 

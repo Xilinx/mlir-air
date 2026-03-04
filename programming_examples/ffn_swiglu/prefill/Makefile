@@ -28,10 +28,18 @@ print:
 
 compile-kernel:
 	mkdir -p $(BUILD_DIR)
-	$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} \
-		-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 \
-		-DDIM_M=$(SEQ_LEN) -DDIM_K=$(DIM) -DDIM_N=$(DIM_N) \
-		-c ${srcdir}/ffn_kernels.cc -o $(BUILD_DIR)/ffn_kernels.o
+	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
+		$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} \
+			-DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 \
+			-DDIM_M=$(SEQ_LEN) -DDIM_K=$(DIM) -DDIM_N=$(DIM_N) \
+			-c ${srcdir}/ffn_kernels.cc -o $(BUILD_DIR)/ffn_kernels.o; \
+	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
+		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper aie2p -c ${srcdir}/ffn_kernels.cc \
+			-o ffn_kernels.o -DDIM_M=$(SEQ_LEN) -DDIM_K=$(DIM) -DDIM_N=$(DIM_N); \
+	else \
+		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
+		exit 1; \
+	fi
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)/air_project

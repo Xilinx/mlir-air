@@ -39,7 +39,7 @@ void zero_vectorized(T *__restrict c) {
 // ============================================================
 // Simple row-major matrix multiply
 // C[M,N] += A[M,K] @ B[K,N]
-// Uses aie::accumulate for vectorized dot products.
+// Implemented as a straightforward scalar triple loop.
 // ============================================================
 
 #ifndef DIM_M
