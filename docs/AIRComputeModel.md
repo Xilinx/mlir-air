@@ -316,10 +316,18 @@ result value; `sync` is an explicit synonym for the no-result form.
 #### Compile-time resource analysis
 
 The compiler **must** determine the total resource requirements of a segment
-statically, at compile time. The analysis has two stages.
+statically, at compile time. The analysis is **recursive and bottom-up**:
+inner segments are fully analysed before the segments that contain them, so
+that each level can treat its nested segments as opaque resource blocks.
+
+The analysis at each level has two stages.
 
 **Stage 1 — per-instance worst-case analysis.**
-For a single instance of the segment body the compiler computes:
+
+Two cases depending on whether the segment body contains nested `air.segment`
+ops or only `air.herd` ops.
+
+*Leaf segment* (body contains `air.herd` ops, no nested `air.segment`):
 
 - **L2 memory**: the maximum number of bytes in address space 1 that may be
   live simultaneously, taken over all possible execution paths (maximum across
@@ -331,20 +339,49 @@ For a single instance of the segment body the compiler computes:
   `air.dma_memcpy_nd` or `air.channel` operations, determined from the async
   dependency graph.
 
+*Containing segment* (body contains one or more nested `air.segment` ops):
+
+Each nested segment is first fully analysed through its own Stage 1 and Stage 2
+to produce a **total resource footprint** — a tuple (tiles, L2 bytes, DMA
+channels) representing the resources that nested segment holds across all of its
+iterations simultaneously. This footprint is then treated as an indivisible unit
+at the outer level. The containing segment's Stage 1 computes:
+
+- **Compute tiles**: the maximum number of tile-rows × tile-columns
+  simultaneously reserved, obtained by summing the footprints of all
+  concurrently active nested segments (and any direct `air.herd` ops) in the
+  outer body. "Concurrently active" is determined from the outer body's async
+  dependency graph: nested segments linked only by `dependency` tokens are
+  treated as sequential and their resources may be reused; nested segments with
+  no ordering constraint between them, or linked by `concurrency` tokens, are
+  treated as simultaneous and their resources are summed.
+- **L2 memory**: maximum simultaneous L2 allocation across all concurrently
+  active nested segments plus any direct allocations in the outer body.
+- **DMA channels**: maximum concurrent DMA/channel ops, counting each nested
+  segment's DMA footprint as a unit.
+
 **Stage 2 — scaling by the iteration space.**
-Because all iterations of the segment iteration space execute with overlapping
-lifetimes, the per-instance bounds are **multiplied by the total number of
-iterations** (`N₀ × … × Nₙ`) to obtain the aggregate resource requirement. A
-segment with no iteration space has an implicit iteration count of 1. This
-aggregate total describes the *sum* of per-instance footprints, not a single
-contiguous footprint: the compiler allocates a contiguous block per instance
-and may place those blocks anywhere in the device array that fits.
+Because all instances of a segment's iteration space execute with overlapping
+lifetimes, the per-instance bounds from Stage 1 are **multiplied by the total
+iteration count** (`N₀ × … × Nₙ`) to obtain that segment's total resource
+footprint. A segment with no iteration space has an implicit count of 1.
+
+Stage 2 applies **independently at each nesting level**: the inner segment
+scales by its own iteration count first; the resulting total footprint is what
+the outer Stage 1 sees as a unit; the outer segment then scales its own
+per-instance result by its iteration count. Resources are therefore multiplied
+by the product of all iteration counts along the nesting path, reflecting the
+fact that all instances at every level are simultaneously live.
+
+The total footprint describes the *sum* of per-instance blocks, not a single
+contiguous region: the compiler allocates a contiguous block per instance and
+may place those blocks anywhere in the device array that fits.
 
 These statically computed totals are used to:
-1. Verify that the segment (across all its iterations) fits within the target
-   hardware partition before lowering begins.
+1. Verify that the segment hierarchy (across all iterations at all levels) fits
+   within the target hardware partition before lowering begins.
 2. Assign physical resources (tile columns/rows, memory banks, DMA engines) to
-   each iteration without runtime negotiation.
+   each iteration at each level without runtime negotiation.
 3. Guarantee that all segment instances — and any other segments declared within
    the same `air.launch` — can be **co-resident** without resource conflicts.
 
@@ -368,8 +405,14 @@ Currently defined values:
 When `backend-granularity` is absent the backend applies its default mapping
 (e.g., one workgroup / thread block on GPU).
 
-**Nesting constraint**: `air.herd` ops may appear inside `air.segment`, and
-`air.segment` must appear inside `air.launch` (directly or indirectly).
+**Nesting constraints**:
+- `air.segment` must be nested inside `air.launch` or inside another
+  `air.segment` (directly or indirectly — the outermost segment must be inside
+  a launch).
+- `air.herd` must be nested inside `air.segment`. It is the innermost hierarchy
+  level and must not contain `air.segment` or another `air.herd`.
+- The nesting depth of `air.segment` is unbounded by the model; backends may
+  impose device-specific limits (e.g. two levels on MI3xx — XCD and CU).
 
 ---
 
