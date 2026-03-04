@@ -180,8 +180,12 @@ elements** together with their associated L2 (on-device) memory. It:
 
 - Groups all `air.herd` operations, L2 allocations, and inter-level data
   movement required to implement a coherent kernel.
-- Optionally defines its own **iteration space**, which spatially replicates the
-  segment across independent hardware resources (a "stamp-out" of the segment).
+- Optionally defines an **iteration space** of shape `N₀ × … × Nₙ`. When
+  present, every point in the space instantiates an independent copy of the
+  segment body. All instances run with **overlapping lifetimes**: the runtime
+  guarantees that every instance is active simultaneously, so the full set of
+  instances is co-resident on the device for the duration of the segment. This
+  is a "stamp-out" of the segment across independent hardware partitions.
 - Has access to L2 memory (allocated within its body with `memref.alloc` at
   address space 1) and can access L3 memory through DMA or channel operations.
 
@@ -200,31 +204,40 @@ fixes communication topology).
 
 #### Compile-time resource analysis
 
-The compiler **must** determine the resource requirements of a segment
-statically, at compile time, by performing a **worst-case analysis** of the
-operations inside its body:
+The compiler **must** determine the total resource requirements of a segment
+statically, at compile time. The analysis has two stages.
 
-- **L2 memory**: sum of all `memref.alloc` sizes in address space 1 that may be
-  live simultaneously, computed over all possible execution paths (taking the
-  maximum across conditional branches, and accounting for loop-carried
-  allocations).
-- **Compute tiles**: the maximum number of `air.herd` tiles that are
-  simultaneously active, derived from the herd iteration spaces and any
-  `x_size`/`y_size` placement constraints.
-- **DMA channels**: the maximum number of concurrently active `air.dma_memcpy_nd`
-  or `air.channel` operations, determined from the async dependency graph.
+**Stage 1 — per-instance worst-case analysis.**
+For a single instance of the segment body the compiler computes:
 
-These statically computed bounds are used to:
-1. Verify that the segment fits within the target hardware partition before
-   lowering begins.
-2. Assign physical resources (tile columns/rows, memory banks, DMA engines)
-   without runtime negotiation.
-3. Guarantee that multiple segments declared within the same `air.launch` can
-   be **co-resident** without resource conflicts.
+- **L2 memory**: the maximum number of bytes in address space 1 that may be
+  live simultaneously, taken over all possible execution paths (maximum across
+  conditional branches, accounting for loop-carried allocations).
+- **Compute tiles**: the maximum number of `air.herd` tiles simultaneously
+  active, derived from the herd iteration spaces and any `x_size`/`y_size`
+  placement constraints.
+- **DMA channels**: the maximum number of concurrently active
+  `air.dma_memcpy_nd` or `air.channel` operations, determined from the async
+  dependency graph.
+
+**Stage 2 — scaling by the iteration space.**
+Because all iterations of the segment iteration space execute with overlapping
+lifetimes, the per-instance bounds are **multiplied by the total number of
+iterations** (`N₀ × … × Nₙ`) to obtain the aggregate resource requirement. A
+segment with no iteration space has an implicit iteration count of 1.
+
+These statically computed totals are used to:
+1. Verify that the segment (across all its iterations) fits within the target
+   hardware partition before lowering begins.
+2. Assign physical resources (tile columns/rows, memory banks, DMA engines) to
+   each iteration without runtime negotiation.
+3. Guarantee that all segment instances — and any other segments declared within
+   the same `air.launch` — can be **co-resident** without resource conflicts.
 
 Optional physical placement attributes (`x_loc`, `y_loc`, `x_size`, `y_size`)
-annotate the column/row offset and extent on devices with 2D tile arrays. When
-present they are taken as authoritative; when absent the compiler derives them
+annotate the column/row offset and extent of a single instance on devices with
+2D tile arrays. When present they are taken as authoritative for one instance
+and tiled across the iteration space; when absent the compiler derives them
 from the worst-case analysis above.
 
 **Nesting constraint**: `air.herd` ops may appear inside `air.segment`, and
