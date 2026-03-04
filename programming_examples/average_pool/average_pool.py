@@ -44,6 +44,7 @@ def build_module(m, n, tile_m, np_dtype_in):
     out_size = [m]
     xrt_dtype_in = type_mapper(np_dtype_in)
     num_tiles = 2
+    assert n > 0, "Pool width N must be positive"
     assert m % (tile_m * num_tiles) == 0
     index_type = IndexType.get()
 
