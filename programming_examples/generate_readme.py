@@ -67,6 +67,18 @@ EXAMPLES = [
         "datatypes": "f32",
     },
     {
+        "category": "Element-wise",
+        "name": "Element-wise Add (bf16)",
+        "path": "primitives/vector_examples/vector_add",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Element-wise",
+        "name": "Element-wise Mul",
+        "path": "primitives/vector_examples/vector_mul",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Activation/Math",
         "name": "SiLU",
         "path": "silu",
@@ -100,6 +112,18 @@ EXAMPLES = [
         "category": "Activation/Math",
         "name": "Leaky RELU",
         "path": "leaky_relu",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
+        "name": "Sigmoid",
+        "path": "sigmoid",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
+        "name": "Tanh",
+        "path": "primitives/vector_examples/vector_tanh",
         "datatypes": "bf16",
     },
     {
