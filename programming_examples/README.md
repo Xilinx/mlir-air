@@ -30,6 +30,7 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | LLM Kernels | [Multi-Head Attention (LLaMA2)](llama2_mha/) | bf16 | 🟢 | ⚪ | [llama2_mha/](llama2_mha/) |
 | LLM Kernels | [SwiGLU](swiglu/) | bf16 | ⚪ | 🟢 | [swiglu/](swiglu/) |
 | LLM Kernels | [FFN SwiGLU (Decode)](ffn_swiglu/decode/) | bf16 | ⚪ | 🟢 | [ffn_swiglu/decode/](ffn_swiglu/decode/) |
+| LLM Kernels | [FFN SwiGLU (Prefill)](ffn_swiglu/prefill/) | bf16 | ⚪ | 🟢 | [ffn_swiglu/prefill/](ffn_swiglu/prefill/) |
 | LLM Kernels | [RoPE (LUT-based)](rope_lut/) | bf16 | ⚪ | 🟢 | [rope_lut/](rope_lut/) |
 | LLM Kernels | [RoPE (On-chip Sin/Cos)](rope_sincos/) | bf16 | 🟢 | 🟢 | [rope_sincos/](rope_sincos/) |
 | Attention | [Flash Attention (Dataflow)](flash_attention/dataflow_based/) | bf16 | 🟢 | 🟢 | [flash_attention/dataflow_based/](flash_attention/dataflow_based/) |
