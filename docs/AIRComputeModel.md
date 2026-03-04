@@ -67,10 +67,11 @@ Data movement between memory levels is expressed with:
 ### 1.4 Asynchrony
 
 All data-movement and hierarchy operations may execute **asynchronously**. An op that
-carries an `air.async.token` result is dispatched immediately and executes concurrently
-with subsequent operations. Token values are used to express data and control
-dependencies. `air.wait_all` merges multiple tokens into a single synchronization point.
-`air.execute` wraps sequential computation in an asynchronous region.
+produces an `!air.token` result is dispatched immediately and executes concurrently
+with subsequent operations. Token values are used to express data, control, affinity,
+and concurrency constraints (see §1.5). `air.wait_all` merges multiple tokens into a
+single synchronization point. `air.execute` wraps sequential computation in an
+asynchronous region.
 
 ### 1.5 Token taxonomy and operation lifetimes
 
@@ -88,38 +89,77 @@ The execution lifespan must be a **subset** of the resource lifespan: resources
 must be allocated before execution begins and must remain allocated until
 execution completes.
 
-#### Token creation and scope
+#### Token type
 
-Tokens are created with `alloc()` at any level of the hierarchy and constrain
-the temporal or spatial mapping of all operations dominated by them. The sole
-exception is `air.launch`: only **dependency tokens** may be passed into the
-body of a launch (constraining the execution of nested operations in time).
-Other token kinds may not cross the launch boundary.
+All token kinds share a single MLIR type: **`!air.token`**. The kind is
+determined by which attribute list the token appears in at a consumer op, not
+by the token's type. `!air.token` is the replacement for `air.async.token`;
+existing uses of `air.async.token` are dependency tokens.
 
-#### Token kinds
+#### Token creation
 
-| Kind | Effect on execution lifespan | Effect on resource lifespan |
-|------|-----------------------------|-----------------------------|
-| **Affinity** | Forces disjoint execution lifespans between the coupled operations | Forces disjoint resource lifespans — the same hardware resources are used by the operations sequentially |
-| **Concurrency** | Forces overlapping execution lifetimes | Forces overlapping resource allocation lifespans — all resources must be live simultaneously |
-| **Dependency** | Forces disjoint execution lifespans (happens-before ordering) | Impact on resource allocation determined by the compiler and runtime |
+A token is created in one of two ways:
 
-- **Affinity tokens** couple operations to the same hardware resources, binding
-  them to a common execution context (e.g., the same hardware partition or
-  memory bank). Because the same resources are shared, the operations must
-  execute sequentially: both their execution lifespans and their resource
-  lifespans are disjoint in time.
+**1. Explicit allocation:**
+```
+%t = air.token.alloc : !air.token
+```
+Used to introduce a token that groups a set of ops under a shared affinity or
+concurrency constraint without one op "owning" the token.
 
-- **Concurrency tokens** assert that the coupled operations must have
-  overlapping execution lifetimes. This requires their resource allocations to
-  overlap as well — all resources for all coupled operations must be live at
-  the same time.
+**2. Op result:**
+```
+%t = air.segment @foo { … }
+%t = air.herd tile (%x,%y) in (%sx=%Nx,%sy=%Ny) [dependency = [%dep]] { … }
+```
+The token becomes signaled when the op and all of its nested operations
+complete. The result is optional; omitting it gives the synchronous (blocking)
+form of the op.
 
-- **Dependency tokens** impose a happens-before ordering between operations,
-  ensuring their execution lifespans are disjoint. Unlike affinity and
-  concurrency tokens, dependency tokens do not prescribe a resource allocation
-  strategy; the compiler and runtime may freely reuse resources across a
-  dependency edge or keep them live, as is most efficient.
+#### Token consumption — the three attribute lists
+
+Tokens are consumed by including them in named attribute lists on hierarchy and
+data-movement ops. An op may carry any combination of the three lists:
+
+```
+air.segment @bar [dependency = [%t0, %t1]]
+                 [affinity   = [%ta]]
+                 [concurrency = [%tc]]
+                 { … }
+```
+
+| Attribute list | Constraint imposed | Effect on resource lifespan | Effect on execution lifespan |
+|----------------|-------------------|----------------------------|------------------------------|
+| `dependency`   | Op does not begin until all listed tokens are signaled (happens-before) | Compiler/runtime may reuse resources freely across the edge | Disjoint from the producers of the listed tokens |
+| `affinity`     | Op is placed on the same hardware resources as all other ops that list the same token | Disjoint — shared resources used sequentially | Disjoint — operations execute at different times |
+| `concurrency`  | Op must have an overlapping execution lifetime with all other ops that list the same token | Overlapping — all resource sets must be live simultaneously | Overlapping |
+
+- **`dependency` list**: The direct successor of `air.async.token` dependency
+  chains. The op waits for all listed tokens to be signaled before acquiring
+  resources or beginning execution. The compiler may reuse the releasing op's
+  resources for the waiting op once the token fires.
+
+- **`affinity` list**: All ops that share the same `!air.token` in their
+  `affinity` list are bound to the same hardware partition (e.g. the same set
+  of tile columns on NPU, or the same CU on GPU). Because they share resources
+  they must execute sequentially; both their resource and execution lifespans
+  are disjoint in time.
+
+- **`concurrency` list**: All ops sharing the same token in their `concurrency`
+  list are required to have overlapping execution lifetimes. The compiler must
+  allocate distinct, simultaneously live resource sets for each such op. This
+  is the mechanism that enforces co-residency (e.g. ensuring two segments are
+  stamped out on hardware at the same time).
+
+#### Scope rule
+
+Tokens are SSA values and follow normal MLIR dominance. When a token must be
+passed into a hierarchy body it is threaded through the `args(…)` operand list.
+The sole exception to free token passing is `air.launch`: only tokens used in a
+`dependency` list may be passed into the body of a launch. Affinity and
+concurrency tokens may not cross the launch boundary, because imposing shared-
+resource or forced-overlap constraints on the may-be-parallel instances of a
+launch would contradict its execution model.
 
 ---
 
@@ -130,11 +170,11 @@ Other token kinds may not cross the launch boundary.
 #### Syntax
 
 ```
-// Asynchronous form (default)
-[%token =] air.launch [async [%dep₀, …]] (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
+// Asynchronous form — produces !air.token, non-blocking
+[%token =] air.launch (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
            args(%a₀=%v₀, …) : <types>
-           [affinity = <affinity-expr>]
-           [depend  = [%dep₀, …]]
+           [dependency = [%t₀, …]]
+           [affinity   = [%t₀, …]]
            {
   …
   air.launch_terminator
@@ -143,8 +183,8 @@ Other token kinds may not cross the launch boundary.
 // Synchronous form — caller blocks until all launch instances complete
 air.launch sync (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
            args(%a₀=%v₀, …) : <types>
-           [affinity = <affinity-expr>]
-           [depend  = [%dep₀, …]]
+           [dependency = [%t₀, …]]
+           [affinity   = [%t₀, …]]
            {
   …
   air.launch_terminator
@@ -179,17 +219,19 @@ independent output tiles, one per segment.
 | Default (async) | Returns an `air.async.token` immediately; the caller may overlap work with the launch. |
 | `sync` | Blocks the calling thread until all launch instances have completed; no token is produced. |
 
-#### Allowed attributes
+#### Allowed token lists
 
-| Attribute | Purpose |
-|-----------|---------|
-| `affinity` | Hints or constrains which hardware partition (e.g. column range on NPU, compute unit on GPU) an instance may be placed on. |
-| `depend`   | A list of `air.async.token` values that must be ready before any instance begins executing (establishes a data/control dependency). |
+| List | Purpose |
+|------|---------|
+| `dependency` | `!air.token` values that must be signaled before any instance begins executing. Establishes a data/control dependency. |
+| `affinity`   | `!air.token` values that bind this launch to the same hardware partition as other ops sharing the same token (e.g. a specific column range on NPU or a specific XCD on GPU). |
 
-`air.launch` **must not** carry a `concurrency` attribute. Concurrency bounding
-belongs to operations with ordered-parallel semantics (`air.segment`,
-`air.herd`); `air.launch` instead expresses may-be-parallel work whose degree of
-parallelism is determined entirely by available hardware resources at runtime.
+`air.launch` **must not** carry a `concurrency` list. Concurrency constraints
+belong to operations with always-parallel semantics (`air.segment`, `air.herd`);
+`air.launch` instead expresses may-be-parallel work whose degree of parallelism
+is determined by available hardware resources at runtime. Similarly, affinity
+and concurrency tokens from enclosing scopes may not be passed into the launch
+body (see §1.5 scope rule).
 
 **Nesting constraint**: `air.segment` ops may appear inside `air.launch`, but not the
 reverse.
@@ -201,11 +243,14 @@ reverse.
 #### Syntax
 
 ```
-// Asynchronous form (default)
-[%token =] air.segment [@name] [async [%dep₀, …]]
+// Asynchronous form — produces !air.token, non-blocking
+[%token =] air.segment [@name]
            (%x₀, …, %xₙ) in (%sx₀=%N₀, …)
            args(%a₀=%v₀, …) : <types>
            [x_loc=<col>] [y_loc=<row>] [x_size=<cols>] [y_size=<rows>]
+           [dependency  = [%t₀, …]]
+           [affinity    = [%t₀, …]]
+           [concurrency = [%t₀, …]]
            {
   …
   air.segment_terminator
@@ -216,6 +261,9 @@ air.segment [@name] sync
            (%x₀, …, %xₙ) in (%sx₀=%N₀, …)
            args(%a₀=%v₀, …) : <types>
            [x_loc=<col>] [y_loc=<row>] [x_size=<cols>] [y_size=<rows>]
+           [dependency  = [%t₀, …]]
+           [affinity    = [%t₀, …]]
+           [concurrency = [%t₀, …]]
            {
   …
   air.segment_terminator
@@ -321,22 +369,28 @@ When `backend-granularity` is absent the backend applies its default mapping
 #### Syntax
 
 ```
-// Default form — synchronous; acquires resources immediately, blocks until complete
+// Synchronous form — acquires resources immediately, blocks until all PEs complete
 air.herd [@name] tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
          args(%a₀=%v₀, …) : <types>
          [x_loc=<col>] [y_loc=<row>]
          [link_with="<object>"]
+         [dependency  = [%t₀, …]]
+         [affinity    = [%t₀, …]]
+         [concurrency = [%t₀, …]]
          {
   …
   air.herd_terminator
 }
 
-// Asynchronous form — acquires resources when deps are met, signals token on completion
-[%token =] air.herd [@name] async [%dep₀, …]
+// Asynchronous form — produces !air.token; acquires resources when deps met, signals on completion
+[%token =] air.herd [@name]
            tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
            args(%a₀=%v₀, …) : <types>
            [x_loc=<col>] [y_loc=<row>]
            [link_with="<object>"]
+           [dependency  = [%t₀, …]]
+           [affinity    = [%t₀, …]]
+           [concurrency = [%t₀, …]]
            {
   …
   air.herd_terminator
@@ -388,8 +442,8 @@ dimensions depend on the target backend:
 
 | Form | Behaviour |
 |------|-----------|
-| Default (no `async`) | **Synchronous**: acquires the resources needed for execution immediately, blocks the enclosing body until all PE instances complete, and releases resources when the herd terminator is reached. |
-| `async [%dep₀, …]` | **Asynchronous**: acquires resources at the point when all input dependency tokens are ready; returns an `air.async.token` immediately; releases resources when that output token is signaled (i.e., when all PE instances complete). |
+| No result (synchronous) | Acquires resources immediately; blocks the enclosing body until all PE instances complete; releases resources at the herd terminator. |
+| `[%token =]` (asynchronous) | Acquires resources when all `dependency` tokens are signaled; returns `!air.token` immediately; releases resources when the token fires (all PE instances complete). |
 
 Optional attributes `x_loc`/`y_loc` specify the base placement on 2D tile
 arrays; each PE at tile `(%x, %y)` occupies physical column/row
