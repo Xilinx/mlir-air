@@ -104,7 +104,7 @@ jobs:
       - name: Get llvm-aie
         run: |
           source air-venv/bin/activate
-          python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+          python3 -m pip install --upgrade --force-reinstall llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test mlir-air (Assert)
