@@ -78,27 +78,69 @@ dependencies. `air.wait_all` merges multiple tokens into a single synchronizatio
 
 ### 2.1 `air.launch`
 
+#### Syntax
+
 ```
-air.launch (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
-           args(%a₀=%v₀, …) : <types> {
+// Asynchronous form (default)
+[%token =] air.launch [async [%dep₀, …]] (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
+           args(%a₀=%v₀, …) : <types>
+           [affinity = <affinity-expr>]
+           [depend  = [%dep₀, …]]
+           {
+  …
+  air.launch_terminator
+}
+
+// Synchronous form — caller blocks until all launch instances complete
+air.launch sync (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
+           args(%a₀=%v₀, …) : <types>
+           [affinity = <affinity-expr>]
+           [depend  = [%dep₀, …]]
+           {
   …
   air.launch_terminator
 }
 ```
 
+#### Semantics
+
 `air.launch` defines the outermost scope of an AIR program. It:
 
 - Declares an optional **iteration space** of shape `N₀ × … × Nₙ`. Each point
-  `(x₀, …, xₙ)` in this space executes the body concurrently as an independent
-  _launch instance_.
-- Ensures that all the initial `air.segment` operations (and their associated L2 allocations) are
-  **co-resident on the device** when the launch body begins executing.
-- Ensures that there is a bounded resource
+  `(x₀, …, xₙ)` in this space constitutes an independent _launch instance_.
+- Implements **may-be-parallel** semantics: the runtime is permitted to execute
+  instances concurrently, but is not required to. The compiler must not assume a
+  fixed ordering between instances. A `concurrency` list attribute is therefore
+  **not permitted** on `air.launch`; expressing an explicit concurrency bound
+  would impose ordering constraints that contradict may-be-parallel semantics.
+- Ensures that all `air.segment` operations declared within the body (and their
+  associated L2 allocations) are **co-resident on the device** when the launch
+  body begins executing, guaranteeing a bounded resource footprint.
+- Passes L3 memrefs and scalar values into the body through explicit kernel
+  operands. The body is `IsolatedFromAbove` and cannot implicitly capture values
+  from the enclosing scope.
 
-- Passes L3 memrefs and scalar values into the body through explicit kernel operands.
+The iteration space is typically used to divide the output problem into
+independent output tiles, one per segment.
 
-The iteration space of a launch is typically used to divide the output problem into
-independent tiles, one per segment.
+#### Synchrony
+
+| Form | Behaviour |
+|------|-----------|
+| Default (async) | Returns an `air.async.token` immediately; the caller may overlap work with the launch. |
+| `sync` | Blocks the calling thread until all launch instances have completed; no token is produced. |
+
+#### Allowed attributes
+
+| Attribute | Purpose |
+|-----------|---------|
+| `affinity` | Hints or constrains which hardware partition (e.g. column range on NPU, compute unit on GPU) an instance may be placed on. |
+| `depend`   | A list of `air.async.token` values that must be ready before any instance begins executing (establishes a data/control dependency). |
+
+`air.launch` **must not** carry a `concurrency` attribute. Concurrency bounding
+belongs to operations with ordered-parallel semantics (`air.segment`,
+`air.herd`); `air.launch` instead expresses may-be-parallel work whose degree of
+parallelism is determined entirely by available hardware resources at runtime.
 
 **Nesting constraint**: `air.segment` ops may appear inside `air.launch`, but not the
 reverse.
@@ -107,54 +149,150 @@ reverse.
 
 ### 2.2 `air.segment`
 
+#### Syntax
+
 ```
-air.segment @name (%x₀, …, %xₙ) in (%sx₀=%N₀, …) args(%a₀=%v₀, …) : <types> {
+// Asynchronous form (default)
+[%token =] air.segment [@name] [async [%dep₀, …]]
+           (%x₀, …, %xₙ) in (%sx₀=%N₀, …)
+           args(%a₀=%v₀, …) : <types>
+           [x_loc=<col>] [y_loc=<row>] [x_size=<cols>] [y_size=<rows>]
+           {
+  …
+  air.segment_terminator
+}
+
+// Synchronous form — caller blocks until the segment (and all its herds) complete
+air.segment [@name] sync
+           (%x₀, …, %xₙ) in (%sx₀=%N₀, …)
+           args(%a₀=%v₀, …) : <types>
+           [x_loc=<col>] [y_loc=<row>] [x_size=<cols>] [y_size=<rows>]
+           {
   …
   air.segment_terminator
 }
 ```
 
-`air.segment` represents a physically contiguous grouping of processing elements together
-with their associated L2 (on-device) memory. It:
+#### Semantics
 
-- Groups all `air.herd` operations, L2 allocations, and inter-level data movement
-  required to implement a coherent kernel.
-- Optionally defines its own **iteration space**, which spatially replicates the segment
-  across independent hardware resources (a "stamp-out" of the segment).
-- Has access to L2 memory (allocated within its body with `memref.alloc` at address
-  space 1) and can access L3 memory through DMA or channel operations.
+`air.segment` represents a **physically contiguous grouping of processing
+elements** together with their associated L2 (on-device) memory. It:
 
-Optional physical placement attributes (`x_loc`, `y_loc`, `x_size`, `y_size`) annotate
-the column/row offset and extent on devices with 2D tile arrays.
+- Groups all `air.herd` operations, L2 allocations, and inter-level data
+  movement required to implement a coherent kernel.
+- Optionally defines its own **iteration space**, which spatially replicates the
+  segment across independent hardware resources (a "stamp-out" of the segment).
+- Has access to L2 memory (allocated within its body with `memref.alloc` at
+  address space 1) and can access L3 memory through DMA or channel operations.
 
-**Nesting constraint**: `air.herd` ops may appear inside `air.segment`, and `air.segment`
-must appear inside `air.launch` (directly or indirectly).
+The body of a segment may contain operations that express both **temporal
+constraints** (sequencing via `air.async.token` dependencies,
+`air.wait_all`, `scf.for` iteration order) and **spatial constraints**
+(placement of `air.herd` tiles via `x_loc`/`y_loc`, channel routing that
+fixes communication topology).
+
+#### Synchrony
+
+| Form | Behaviour |
+|------|-----------|
+| Default (async) | Returns an `air.async.token`; the enclosing launch body may overlap subsequent work. |
+| `sync` | Blocks until all herds and data-movement operations within the segment complete. |
+
+#### Compile-time resource analysis
+
+The compiler **must** determine the resource requirements of a segment
+statically, at compile time, by performing a **worst-case analysis** of the
+operations inside its body:
+
+- **L2 memory**: sum of all `memref.alloc` sizes in address space 1 that may be
+  live simultaneously, computed over all possible execution paths (taking the
+  maximum across conditional branches, and accounting for loop-carried
+  allocations).
+- **Compute tiles**: the maximum number of `air.herd` tiles that are
+  simultaneously active, derived from the herd iteration spaces and any
+  `x_size`/`y_size` placement constraints.
+- **DMA channels**: the maximum number of concurrently active `air.dma_memcpy_nd`
+  or `air.channel` operations, determined from the async dependency graph.
+
+These statically computed bounds are used to:
+1. Verify that the segment fits within the target hardware partition before
+   lowering begins.
+2. Assign physical resources (tile columns/rows, memory banks, DMA engines)
+   without runtime negotiation.
+3. Guarantee that multiple segments declared within the same `air.launch` can
+   be **co-resident** without resource conflicts.
+
+Optional physical placement attributes (`x_loc`, `y_loc`, `x_size`, `y_size`)
+annotate the column/row offset and extent on devices with 2D tile arrays. When
+present they are taken as authoritative; when absent the compiler derives them
+from the worst-case analysis above.
+
+**Nesting constraint**: `air.herd` ops may appear inside `air.segment`, and
+`air.segment` must appear inside `air.launch` (directly or indirectly).
 
 ---
 
 ### 2.3 `air.herd`
 
+#### Syntax
+
 ```
-air.herd @name tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
-         args(%a₀=%v₀, …) : <types> {
+// Asynchronous form (default)
+[%token =] air.herd [@name] [async [%dep₀, …]]
+           tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
+           args(%a₀=%v₀, …) : <types>
+           [x_loc=<col>] [y_loc=<row>]
+           [link_with="<object>"]
+           {
+  …
+  air.herd_terminator
+}
+
+// Synchronous form — caller blocks until all PE instances complete
+air.herd [@name] sync
+         tile (%x, %y) in (%sx=%Nx, %sy=%Ny)
+         args(%a₀=%v₀, …) : <types>
+         [x_loc=<col>] [y_loc=<row>]
+         [link_with="<object>"]
+         {
   …
   air.herd_terminator
 }
 ```
 
-`air.herd` defines a **1D or 2D array of processing elements** that all execute the same
-body code. It is the innermost level of the hierarchy and maps directly to physical
-compute tiles or GPU threads:
+#### Semantics
 
-- The iteration space `%Nx × %Ny` determines how many PE instances execute the body.
-- Block arguments `%x` and `%y` give each instance its own coordinates, enabling each
-  PE to independently compute its tile of the output.
-- Within the herd body, `L1` memory (address space 2) is per-PE local scratchpad.
-- Data needed from L2 or L3 must be explicitly fetched via `air.dma_memcpy_nd` or
-  channel operations before use.
+`air.herd` defines a **1D or 2D array of processing elements** (PEs) that all
+execute the same body code in data-parallel fashion. It is the innermost level
+of the hierarchy and maps directly to physical compute tiles (NPU) or GPU
+threads:
 
-Optional attributes `x_loc`/`y_loc` specify placement on 2D tile arrays. The
-`link_with` attribute names an external kernel object to link into the herd.
+- The iteration space `%Nx × %Ny` determines how many PE instances execute the
+  body. All instances run concurrently on distinct hardware resources; this is
+  **always-parallel** (not may-be-parallel).
+- Block arguments `%x` and `%y` give each instance its own coordinates,
+  enabling each PE to independently address its portion of L1 or L2 memory.
+- Within the herd body, `L1` memory (address space 2) is per-PE local
+  scratchpad.
+- Data needed from L2 or L3 must be explicitly fetched via `air.dma_memcpy_nd`
+  or channel operations before use.
+
+Operations within the herd body may impose both **temporal constraints**
+(explicit token dependencies ordering DMA fetches before compute) and
+**spatial constraints** (channel indices or tile-coordinate arithmetic that
+binds each PE to a specific region of a shared buffer).
+
+#### Synchrony
+
+| Form | Behaviour |
+|------|-----------|
+| Default (async) | Returns an `air.async.token` when all PE instances have completed; the enclosing segment body may overlap subsequent work. |
+| `sync` | Blocks until every PE instance in the array has completed. |
+
+Optional attributes `x_loc`/`y_loc` specify the base placement on 2D tile
+arrays; each PE at tile `(%x, %y)` occupies physical column/row
+`(x_loc + %x, y_loc + %y)`. The `link_with` attribute names an external kernel
+object to link into the herd at compile time.
 
 ---
 
