@@ -18,6 +18,16 @@ import tempfile
 import air.compiler.aircc.cl_arguments as cl_arguments
 from air.compiler.aircc.configure import *
 
+# Import AIR Python bindings at module level to ensure the air dialect
+# is registered. Other modules (e.g. xrt.py) import aircc which triggers
+# this registration as a side effect.
+try:
+    from air.passmanager import PassManager
+    from air.ir import Module, Context, Location
+    from air.dialects import air as airdialect
+except ImportError:
+    pass  # GPU-only builds may not have AIR Python bindings
+
 # Pass logging for documenting which passes are called
 _pass_counter = 0
 _pass_log = []
