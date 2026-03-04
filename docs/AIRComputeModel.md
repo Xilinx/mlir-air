@@ -209,8 +209,63 @@ air.launch sync (%x₀, …, %xₙ) in (%sx₀=%N₀, …, %sxₙ=%Nₙ)
   operands. The body is `IsolatedFromAbove` and cannot implicitly capture values
   from the enclosing scope.
 
-The iteration space is typically used to divide the output problem into
-independent output tiles, one per segment.
+#### When to use the launch iteration space
+
+The launch iteration space expresses a pool of **independent work units** that
+the runtime should schedule as hardware becomes available. It does not guarantee
+simultaneous execution of all instances; it expresses that instances are
+independent and may be run in any order or concurrently at the runtime's
+discretion.
+
+Use the launch iteration space when:
+- Each instance is fully self-contained and produces no result that another
+  instance depends on.
+- The workload naturally decomposes into a variable number of tiles determined
+  at runtime or by a host-side loop.
+- Runtime flexibility in scheduling is acceptable or desirable (e.g. when
+  multiple launch streams share device resources).
+
+**Do not** use the launch iteration space when you need a **guarantee** that all
+instances execute simultaneously — for that, use the `air.segment` iteration
+space (§2.2), which provides always-concurrent semantics (all instances are
+co-resident and active for the duration of the segment).
+
+#### Expressing pipelining between output tiles
+
+A common goal is to overlap computation on one output tile with data movement
+for the next — "software pipelining" across tiles. This cannot be expressed
+across separate launch instances, because dependency tokens are the only token
+kind that may cross the launch boundary, and they only express ordering, not
+overlap.
+
+Instead, express inter-tile pipelining **within a single launch body**:
+
+- **Segment-level pipelining**: place two `air.segment` ops inside the launch
+  body — a compute segment and a prefetch segment — connected by `dependency`
+  tokens. Both segments are co-resident (the co-residency guarantee applies to
+  all segments in the same launch body), so their execution genuinely overlaps:
+  the compute segment processes tile N while the prefetch segment loads tile N+1.
+
+- **Loop-based pipelining**: use an `scf.for` loop inside the launch body (or
+  inside a segment) with `iter_args`-carried tokens to overlap consecutive tile
+  iterations, as described in the `scf.for` section of §2.2. This is the
+  standard double-buffering pattern and is typically the most efficient approach.
+
+#### Backend-specific concurrency behaviour
+
+The degree of actual concurrency achieved by a launch iteration space depends
+on the backend:
+
+| Backend | Launch iteration space behaviour |
+|---------|----------------------------------|
+| **GPU (ROCDL)** | Maps directly to `gpu.launch gridDim`; all instances execute in parallel as GPU thread blocks. The GPU scheduler guarantees concurrent dispatch of all grid points subject to occupancy. |
+| **NPU (AIE)** | The runtime schedules instances as hardware partitions become available. Instances may run sequentially if only one hardware partition is available for the launch, or concurrently if multiple are available. No concurrency is guaranteed. |
+
+This asymmetry is intentional: GPU hardware is designed for SIMT-style uniform
+parallel dispatch, while NPU execution is more task-queue-like with variable
+partition availability. Programs that require a guaranteed minimum concurrency
+should use `air.segment` iteration spaces or `concurrency` tokens on segments
+within a launch body rather than relying on the launch iteration space.
 
 #### Synchrony
 
