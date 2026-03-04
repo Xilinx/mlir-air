@@ -318,20 +318,10 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Identifies the compute herd and its vector operations for register optimization.
     // Use annotation-based matching instead of fragile split_handle.
         %herd2_1 = transform.structured.match ops{["air.herd"]} attributes{compute_herd} in %arg1 : (!transform.any_op) -> !transform.any_op
-        %all_reads_in_herd2 = transform.structured.match ops{["vector.transfer_read"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-        %all_writes_in_herd2 = transform.structured.match ops{["vector.transfer_write"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-        
+
     // Step 29: Identify the innermost loop for hoisting.
-    // Purpose: The innermost K-loop contains accumulator reads/writes that can be hoisted.
         %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
         %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-        
-    // Step 30: Split handles to get individual read/write operations.
-    // Purpose: Identifies the 4 read-write pairs for C matrix accumulator tiles.
-    // The 8 reads include: 4 for A tiles, 4 for C accumulator tiles.
-    // The 4 writes are for C accumulator tiles.
-        %read0, %read1, %read2, %read3, %read4, %read5, %read6, %read7 = transform.split_handle %all_reads_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-        %write0, %write1, %write2, %write3 = transform.split_handle %all_writes_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
         
     // Step 31: Cast vector types for correct accumulation precision.
     // Purpose: Ensures vector.contract uses INT32 for accumulation (INT8 inputs -> INT32 output).
@@ -339,7 +329,7 @@ module attributes {transform.with_named_sequence} {
         %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = i32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
         
     // Step 32: Hoist all accumulator transfer pairs from innermost loop.
-        %innermost_for_updated_3 = transform.air.hoist_all_accumulator_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
+        %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
 
     // Step 33: Flatten loop iteration arguments and hoist vector transfer pointers.
     // Purpose: Simplifies loop structure and moves pointer computations out of loops.

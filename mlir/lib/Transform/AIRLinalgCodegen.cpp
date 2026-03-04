@@ -2509,102 +2509,27 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     transform::TransformRewriter &rewriter,
     transform::TransformResults &results, transform::TransformState &state) {
 
-  SmallVector<Operation *> readOps =
-      llvm::to_vector(state.getPayloadOps(getReadOp()));
-  SmallVector<Operation *> writeOps =
-      llvm::to_vector(state.getPayloadOps(getWriteOp()));
+  SmallVector<Operation *> scopeOps =
+      llvm::to_vector(state.getPayloadOps(getScopeOp()));
   SmallVector<Operation *> loopOps =
       llvm::to_vector(state.getPayloadOps(getLoopOp()));
 
-  if (readOps.size() != 1 || writeOps.size() != 1 || loopOps.size() != 1) {
+  if (scopeOps.size() != 1 || loopOps.size() != 1) {
     return emitDefiniteFailure()
-           << "requires exactly one read_op, write_op, and loop_op handle";
+           << "requires exactly one scope_op and one loop_op handle";
   }
 
-  auto readOp = dyn_cast<vector::TransferReadOp>(readOps[0]);
-  auto writeOp = dyn_cast<vector::TransferWriteOp>(writeOps[0]);
-  auto loopOp = dyn_cast<scf::ForOp>(loopOps[0]);
-
-  if (!readOp || !writeOp || !loopOp) {
-    return emitDefiniteFailure() << "handles must be vector.transfer_read, "
-                                    "vector.transfer_write, and scf.for";
-  }
-
-  if (!loopOp->isProperAncestor(readOp) || !loopOp->isProperAncestor(writeOp)) {
-    return emitDefiniteFailure()
-           << "read and write operations must be inside the loop";
-  }
-
-  Value loopIV = loopOp.getInductionVar();
-
-  for (Value index : readOp.getIndices()) {
-    if (dependsOnLoopIV(index, loopIV)) {
-      return emitDefiniteFailure()
-             << "read operation indices depend on loop induction variable";
-    }
-  }
-
-  for (Value index : writeOp.getIndices()) {
-    if (dependsOnLoopIV(index, loopIV)) {
-      return emitDefiniteFailure()
-             << "write operation indices depend on loop induction variable";
-    }
-  }
-
-  if (readOp.getBase() != writeOp.getBase()) {
-    return emitDefiniteFailure()
-           << "read and write must operate on the same memref";
-  }
-
-  FailureOr<scf::ForOp> newLoop =
-      hoistTransferPairFromLoop(readOp, writeOp, loopOp, rewriter);
-  if (failed(newLoop)) {
-    return emitDefiniteFailure() << "failed to hoist transfer pair";
-  }
-
-  SmallVector<Operation *> resultOps = {newLoop->getOperation()};
-  results.set(llvm::cast<OpResult>(getResult()), resultOps);
-  return DiagnosedSilenceableFailure::success();
-}
-
-void transform::HoistLoopInvariantTransfersOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  consumesHandle(getReadOpMutable(), effects);
-  consumesHandle(getWriteOpMutable(), effects);
-  onlyReadsHandle(getLoopOpMutable(), effects);
-  producesHandle(getOperation()->getOpResults(), effects);
-  modifiesPayload(effects);
-}
-
-//===----------------------------------------------------------------------===//
-// HoistAllAccumulatorTransfersOp
-//===----------------------------------------------------------------------===//
-
-DiagnosedSilenceableFailure transform::HoistAllAccumulatorTransfersOp::apply(
-    transform::TransformRewriter &rewriter,
-    transform::TransformResults &results, transform::TransformState &state) {
-
-  SmallVector<Operation *> herdOps =
-      llvm::to_vector(state.getPayloadOps(getHerdOp()));
-  SmallVector<Operation *> loopOps =
-      llvm::to_vector(state.getPayloadOps(getLoopOp()));
-
-  if (herdOps.size() != 1 || loopOps.size() != 1) {
-    return emitDefiniteFailure()
-           << "requires exactly one herd_op and one loop_op handle";
-  }
-
-  auto herdOp = herdOps[0];
+  auto scopeOp = scopeOps[0];
   auto loopOp = dyn_cast<scf::ForOp>(loopOps[0]);
   if (!loopOp) {
     return emitDefiniteFailure() << "loop_op must be an scf.for";
   }
 
-  if (!herdOp->isProperAncestor(loopOp)) {
-    return emitDefiniteFailure() << "loop must be inside the herd";
+  if (!scopeOp->isProperAncestor(loopOp)) {
+    return emitDefiniteFailure() << "loop must be inside the scope operation";
   }
 
-  // Iteratively discover and hoist one accumulator transfer pair at a time.
+  // Iteratively discover and hoist one loop-invariant transfer pair at a time.
   // After each hoist, the loop is replaced with a new loop, so we re-discover
   // pairs in the new loop to avoid stale Operation* pointers.
   scf::ForOp currentLoop = loopOp;
@@ -2678,9 +2603,9 @@ DiagnosedSilenceableFailure transform::HoistAllAccumulatorTransfersOp::apply(
   return DiagnosedSilenceableFailure::success();
 }
 
-void transform::HoistAllAccumulatorTransfersOp::getEffects(
+void transform::HoistLoopInvariantTransfersOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  onlyReadsHandle(getHerdOpMutable(), effects);
+  onlyReadsHandle(getScopeOpMutable(), effects);
   onlyReadsHandle(getLoopOpMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
   modifiesPayload(effects);
