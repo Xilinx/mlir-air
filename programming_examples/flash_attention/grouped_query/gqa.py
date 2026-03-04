@@ -39,8 +39,11 @@ def build_module(num_q_heads, num_kv_heads, lq, lk, d, np_dtype):
     i32 = IntegerType.get_signless(32)
     index_type = IndexType.get()
 
+    assert num_kv_heads > 0, "num_kv_heads must be positive"
+    assert (
+        num_q_heads % num_kv_heads == 0
+    ), f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
     group_size = num_q_heads // num_kv_heads
-    assert num_q_heads % num_kv_heads == 0
 
     q_head_size = lq * d
     kv_head_size = d * lk + lk * d  # K[d,lk] + V[lk,d] packed
@@ -156,6 +159,14 @@ if __name__ == "__main__":
     lq = args.lq
     lk = args.lk
     d = args.d
+
+    if num_kv_heads <= 0:
+        parser.error("num_kv_heads must be positive")
+    if num_q_heads % num_kv_heads != 0:
+        parser.error(
+            f"num_q_heads ({num_q_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+        )
+
     group_size = num_q_heads // num_kv_heads
     INPUT_DATATYPE = bfloat16
 
