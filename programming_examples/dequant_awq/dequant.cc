@@ -7,10 +7,12 @@
 //
 // Input layout:
 //   weights: uint8[N/2] — two int4 values packed per byte (low nibble first)
-//   params:  bfloat16[2*N/GROUP_SIZE] — interleaved [scale0, zero0, scale1, zero1, ...]
+//   params:  bfloat16[2*N/GROUP_SIZE] — interleaved [scale0, zero0, scale1,
+//   zero1, ...]
 // Output:
 //   output:  bfloat16[N] — dequantized values
 
+#include <aie_api/aie.hpp>
 #include <cstdint>
 
 #ifndef DIM_N
@@ -23,8 +25,7 @@
 
 extern "C" {
 
-void dequant_int4_bf16(uint8_t *__restrict weights,
-                       bfloat16 *__restrict params,
+void dequant_int4_bf16(uint8_t *__restrict weights, bfloat16 *__restrict params,
                        bfloat16 *__restrict output) {
   for (unsigned i = 0; i < DIM_N; i += 2) {
     uint8_t packed = weights[i / 2];

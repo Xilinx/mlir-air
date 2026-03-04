@@ -111,8 +111,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    assert args.n % 2 == 0, "N must be even (2 int4 values per byte)"
-    assert args.n % args.group_size == 0, "N must be divisible by group_size"
+    if args.n % 2 != 0:
+        parser.error("N must be even (2 int4 values per byte)")
+    if args.n % args.group_size != 0:
+        parser.error("N must be divisible by group_size")
 
     mlir_module = build_module(args.n, args.group_size)
     if args.print_module_only:
