@@ -2470,9 +2470,8 @@ hoistTransferPairFromLoop(vector::TransferReadOp readOp,
 
   FailureOr<LoopLikeOpInterface> newLoopResult =
       cast<LoopLikeOpInterface>(loopOp.getOperation())
-          .replaceWithAdditionalYields(rewriter,
-                                       ValueRange{clonedReadResult}, true,
-                                       yieldValuesFn);
+          .replaceWithAdditionalYields(rewriter, ValueRange{clonedReadResult},
+                                       true, yieldValuesFn);
   if (failed(newLoopResult))
     return failure();
 
@@ -2531,8 +2530,7 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
                                     "vector.transfer_write, and scf.for";
   }
 
-  if (!loopOp->isProperAncestor(readOp) ||
-      !loopOp->isProperAncestor(writeOp)) {
+  if (!loopOp->isProperAncestor(readOp) || !loopOp->isProperAncestor(writeOp)) {
     return emitDefiniteFailure()
            << "read and write operations must be inside the loop";
   }
@@ -2582,8 +2580,7 @@ void transform::HoistLoopInvariantTransfersOp::getEffects(
 // HoistAllAccumulatorTransfersOp
 //===----------------------------------------------------------------------===//
 
-DiagnosedSilenceableFailure
-transform::HoistAllAccumulatorTransfersOp::apply(
+DiagnosedSilenceableFailure transform::HoistAllAccumulatorTransfersOp::apply(
     transform::TransformRewriter &rewriter,
     transform::TransformResults &results, transform::TransformState &state) {
 
