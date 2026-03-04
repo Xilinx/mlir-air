@@ -134,6 +134,12 @@ EXAMPLES = [
     },
     {
         "category": "LLM Kernels",
+        "name": "FFN SwiGLU (Decode)",
+        "path": "ffn_swiglu/decode",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
         "name": "RoPE (LUT-based)",
         "path": "rope_lut",
         "datatypes": "bf16",
