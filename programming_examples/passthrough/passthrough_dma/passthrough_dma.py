@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 import argparse
 import numpy as np
+from ml_dtypes import bfloat16
 
 from air.ir import *
 from air.dialects.air import *
@@ -12,13 +13,21 @@ from air.backend.xrt_runner import XRTRunner, type_mapper
 
 range_ = for_
 
-INOUT_DATATYPE = np.uint8
+dtype_map = {
+    "uint8": np.uint8,
+    "int8": np.int8,
+    "int16": np.int16,
+    "uint16": np.uint16,
+    "float32": np.float32,
+    "bfloat16": bfloat16,
+}
+DEFAULT_DTYPE = "uint8"
 
 
 @module_builder
-def build_module(vector_size, num_subvectors):
+def build_module(vector_size, num_subvectors, np_dtype):
     assert vector_size % num_subvectors == 0
-    xrt_dtype = type_mapper(INOUT_DATATYPE)
+    xrt_dtype = type_mapper(np_dtype)
 
     # Type and method of input/output
     memrefTyInOut = T.memref(vector_size, xrt_dtype)
@@ -121,15 +130,23 @@ if __name__ == "__main__":
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
     )
+    parser.add_argument(
+        "-t",
+        "--dtype",
+        default=DEFAULT_DTYPE,
+        choices=dtype_map.keys(),
+        help="The data type to use (default: uint8)",
+    )
     args = parser.parse_args()
 
-    mlir_module = build_module(args.vector_size, args.subvector_size)
+    np_dtype = dtype_map[args.dtype]
+    mlir_module = build_module(args.vector_size, args.subvector_size, np_dtype)
     if args.print_module_only:
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(args.vector_size, dtype=INOUT_DATATYPE)
-    output_b = np.arange(args.vector_size, dtype=INOUT_DATATYPE)
+    input_a = np.arange(args.vector_size, dtype=np_dtype)
+    output_b = np.arange(args.vector_size, dtype=np_dtype)
 
     runner = XRTRunner(
         verbose=args.verbose, output_format=args.output_format, instance_name="copy"
