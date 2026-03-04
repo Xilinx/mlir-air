@@ -6,8 +6,8 @@
 Implements 1D average pooling on a 2D input [M, N]:
   output[i] = mean(input[i, :]) for each row i
 
-Each row of N elements is reduced to a single scalar by summing with
-vector.reduction and multiplying by 1/N.
+Each row of N elements is scaled by 1/N (vectorized multiply) and then
+reduced to a single scalar using vector.reduction with ADD.
 
 Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
 """
@@ -25,6 +25,7 @@ from air.dialects.vector import (
     transfer_read,
     reduction,
     CombiningKind,
+    broadcast,
 )
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
@@ -157,8 +158,13 @@ def build_module(m, n, tile_m, np_dtype_in):
                         cst0,
                         [True],
                     )
-                    v_sum = reduction(xrt_dtype_in, CombiningKind.ADD, v_a)
-                    v_avg = arith.mulf(v_sum, inv_n)
+                    # Multiply by 1/N before reduction to avoid scalar bf16
+                    # multiply which can produce corrupted output on AIE2.
+                    v_inv_n = broadcast(
+                        VectorType.get([n], xrt_dtype_in), inv_n
+                    )
+                    v_scaled = arith.mulf(v_a, v_inv_n)
+                    v_avg = reduction(xrt_dtype_in, CombiningKind.ADD, v_scaled)
                     store(v_avg, collapse_c, [c0])
                     yield_([])
 
@@ -247,9 +253,10 @@ if __name__ == "__main__":
         num_samples = 100
         sampled_indices = np.vstack([np.random.randint(0, args.m, num_samples)])
 
-        # AveragePool reference: mean of each row
+        # AveragePool reference: sum of (each element * 1/N) per row
+        inv_n_bf16 = INPUT_DATATYPE(1.0 / args.n)
         sampled_values = np.array(
-            [np.mean(input_a[i].astype(np.float32)) for i in zip(*sampled_indices)],
+            [np.sum(input_a[i] * inv_n_bf16) for i in zip(*sampled_indices)],
             dtype=INPUT_DATATYPE,
         )
 
