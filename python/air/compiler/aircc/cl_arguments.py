@@ -130,6 +130,29 @@ def parse_args(args=None):
         help="Target AIE device",
     )
     parser.add_argument(
+        "--target",
+        type=str,
+        choices=["aie", "gpu"],
+        dest="target",
+        default="aie",
+        help="Target backend: 'aie' for AIE/NPU devices (default), 'gpu' for AMD GPU via ROCDL",
+    )
+    parser.add_argument(
+        "--gpu-arch",
+        type=str,
+        dest="gpu_arch",
+        default="gfx942",
+        help="GPU architecture for ROCDL target (e.g., gfx942, gfx90a, gfx908)",
+    )
+    parser.add_argument(
+        "--gpu-runtime",
+        type=str,
+        choices=["HIP", "OpenCL"],
+        dest="gpu_runtime",
+        default="HIP",
+        help="GPU runtime for ROCDL target (default: HIP)",
+    )
+    parser.add_argument(
         "--omit-while-true-loop",
         dest="omit_while_true_loop",
         default=False,

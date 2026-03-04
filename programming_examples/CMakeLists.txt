@@ -25,22 +25,25 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter)
 
-find_package(LibXAIE)
-
-if(NOT AIE_BINARY_DIR)
-find_package(AIE REQUIRED CONFIG)
+if(AIR_ENABLE_AIE)
+  find_package(LibXAIE)
+  if(NOT AIE_BINARY_DIR)
+    find_package(AIE REQUIRED CONFIG)
+  endif()
+  find_package(Vitis 2023.2 COMPONENTS AIE AIE2)
 endif()
 
 if(NOT AIR_BINARY_DIR)
-find_package(AIR REQUIRED CONFIG)
+  find_package(AIR REQUIRED CONFIG)
 endif()
 
-find_package(Vitis 2023.2 COMPONENTS AIE AIE2)
 find_package(XRT)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
+if(AIR_ENABLE_AIE)
+  message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
+endif()
 message(STATUS "Using AIRConfig.cmake in: ${AIR_DIR}")
 
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
