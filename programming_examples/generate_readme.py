@@ -295,6 +295,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Quantization",
+        "name": "Dequant (AWQ int4\u2192bf16)",
+        "path": "dequant_awq",
+        "datatypes": "int4/bf16",
+    },
+    {
         "category": "Primitives",
         "name": "Scalar/Vector Operations",
         "path": "primitives",

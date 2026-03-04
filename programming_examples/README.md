@@ -52,6 +52,7 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | CNN | [2D Convolution](conv2d/) | i32 | 🟢 | 🟢 | [conv2d/](conv2d/) |
 | CNN | [Bottleneck](bottleneck/) | bf16 | 🟢 | 🟢 | [bottleneck/](bottleneck/) |
 | Memory | [Shared L1 Buffer](shared_l1/) | bf16 | 🟢 | ⚪ | [shared_l1/](shared_l1/) |
+| Quantization | [Dequant (AWQ int4→bf16)](dequant_awq/) | int4/bf16 | ⚪ | 🟢 | [dequant_awq/](dequant_awq/) |
 | Primitives | [Scalar/Vector Operations](primitives/) | various | 🟢 | 🟢 | [primitives/](primitives/) |
 
 ### Status Legend
