@@ -187,6 +187,12 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Attention",
+        "name": "Grouped Query Attention (GQA)",
+        "path": "flash_attention/grouped_query",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Data Movement",
         "name": "Passthrough (DMA)",
         "path": "passthrough/passthrough_dma",
