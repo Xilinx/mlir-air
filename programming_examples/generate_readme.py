@@ -145,6 +145,24 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Aggregation",
+        "name": "Reduction (Add)",
+        "path": "primitives/vector_examples/vector_reduce_add",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Pooling",
+        "name": "MaxPool",
+        "path": "primitives/vector_examples/vector_reduce_max",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Pooling",
+        "name": "AveragePool",
+        "path": "average_pool",
+        "datatypes": "bf16",
+    },
+    {
         "category": "LLM Kernels",
         "name": "Multi-Head Attention (LLaMA2)",
         "path": "llama2_mha",
