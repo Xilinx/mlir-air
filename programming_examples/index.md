@@ -52,6 +52,7 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | CNN | [2D Convolution](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/conv2d/) | i32 | 🟢 | 🟢 | [conv2d/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/conv2d/) |
 | CNN | [Bottleneck](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/bottleneck/) | bf16 | 🟢 | 🟢 | [bottleneck/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/bottleneck/) |
 | Memory | [Shared L1 Buffer](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/shared_l1/) | bf16 | 🟢 | ⚪ | [shared_l1/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/shared_l1/) |
+| Quantization | [Dequant (AWQ int4→bf16)](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/dequant_awq/) | int4/bf16 | ⚪ | 🟢 | [dequant_awq/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/dequant_awq/) |
 | Primitives | [Scalar/Vector Operations](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/primitives/) | various | 🟢 | 🟢 | [primitives/](https://github.com/Xilinx/mlir-air/tree/main/programming_examples/primitives/) |
 
 ### Status Legend
