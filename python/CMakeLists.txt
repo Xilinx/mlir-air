@@ -96,6 +96,12 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       AirPythonExtensions
   )
 
+  # Remove -Wl,-z,defs from shared linker flags for nanobind targets.
+  # Nanobind shared libraries have undefined Python symbols that are resolved
+  # at import time, not link time. LLVM's HandleLLVMOptions.cmake sets
+  # -Wl,-z,defs globally which prevents this.
+  string(REPLACE "-Wl,-z,defs" "" CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS}")
+
   # Set NB_DOMAIN for nanobind, to avoid domain conflict with other llvm projects.
   set(MLIR_BINDINGS_PYTHON_NB_DOMAIN "_air")
   add_mlir_python_modules(AirMLIRPythonModules
