@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
@@ -328,24 +329,34 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         return failure();
     }
 
-    // Get static offsets
+    // Get static offsets. Non-constant offsets indicate an unresolved loop
+    // induction variable (e.g., from an unhandled scf.forall). Warn so that
+    // such bugs are caught early instead of silently producing wrong results.
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 3) defaulting to 0");
       staticOffsets.push_back(0);
+    }
     if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 2) defaulting to 0");
       staticOffsets.push_back(0);
+    }
     if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 1) defaulting to 0");
       staticOffsets.push_back(0);
+    }
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 0) defaulting to 0");
       staticOffsets.push_back(0);
+    }
 
     // Get static sizes
     SmallVector<int64_t> staticSizes;
@@ -1346,12 +1357,44 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Remove any duplicate shim dma allocations
     purgeDuplicateShimDmaAllocs(module);
 
-    // Simplify affine apply ops
     auto ctx = &getContext();
+
+    // Convert any surviving scf.forall ops to scf.for before unrolling.
+    // scf.forall is not handled by the loop unrolling passes below and would
+    // leave dynamic induction variables that DmaToNpuPattern silently zeros.
+    {
+      SmallVector<scf::ForallOp> forallOps;
+      module.walk([&](scf::ForallOp op) { forallOps.push_back(op); });
+      if (!forallOps.empty()) {
+        IRRewriter rewriter(ctx);
+        for (auto forallOp : forallOps) {
+          if (failed(scf::forallToForLoop(rewriter, forallOp))) {
+            forallOp->emitOpError("failed to convert forall to for loop");
+            signalPassFailure();
+            return;
+          }
+        }
+      }
+    }
 
     // Unroll for loops
     unrollAffineFors(module);
     unrollSCFFors(module);
+
+    // Fold affine.apply ops with constant operands after loop unrolling.
+    // After unrolling, induction variables become constants, but
+    // affine.apply(constant) is not automatically folded. Without this,
+    // DmaToNpuPattern's getConstantIntValue() fails and defaults offsets to 0.
+    {
+      RewritePatternSet affinePatterns(ctx);
+      affine::AffineApplyOp::getCanonicalizationPatterns(affinePatterns, ctx);
+      if (failed(applyPatternsGreedily(module, std::move(affinePatterns)))) {
+        module.emitError("failed to canonicalize affine.apply ops after loop "
+                         "unrolling");
+        signalPassFailure();
+        return;
+      }
+    }
 
     // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
     // This must happen BEFORE DMA conversion because:
