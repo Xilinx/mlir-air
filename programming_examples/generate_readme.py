@@ -478,8 +478,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output",
         type=Path,
-        default=SCRIPT_DIR / "README.md",
-        help="Output file path (default: programming_examples/README.md)",
+        default=SCRIPT_DIR / "dashboard.md",
+        help="Output file path (default: programming_examples/dashboard.md). CI uses --output for GitHub Pages.",
     )
     parser.add_argument(
         "--base-url",
