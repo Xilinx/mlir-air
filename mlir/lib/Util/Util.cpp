@@ -1015,45 +1015,29 @@ LogicalResult eraseWrapNStrideDim(OpBuilder builder,
         offset_producer->emitOpError("unknown ssa offset producer, NYI.");
         return failure();
       }
-      if (affine_apply->getNumOperands() > 1)
+      // Compose affine map: new_expr = original_expr * stride / next_stride +
+      // next_offset. This handles both single-operand and multi-operand
+      // affine.apply ops (e.g., head_idx * lq + tile_offset).
+      AffineMap originalMap = affine_apply.getAffineMap();
+      if (originalMap.getNumResults() != 1)
         continue;
-      // Compose affine map
-      SmallVector<AffineExpr, 8> exprReplacements(
-          affine_apply.getAffineMap().getResults().begin(),
-          affine_apply.getAffineMap().getResults().end());
-      if (exprReplacements.size() > 1)
-        continue;
-      bool affineApplyOnDim = exprReplacements.front().isFunctionOfDim(0);
-      bool affineApplyOnSymbol = exprReplacements.front().isFunctionOfSymbol(0);
-      AffineExpr offset_expr = AffineExpr();
-      if (affineApplyOnDim)
-        offset_expr = builder.getAffineDimExpr(0);
-      else if (affineApplyOnSymbol)
-        offset_expr = builder.getAffineSymbolExpr(0);
-      else
-        continue;
+      AffineExpr originalExpr = originalMap.getResult(0);
       auto stride_expr = builder.getAffineConstantExpr(*const_stride);
       auto next_stride_expr = builder.getAffineConstantExpr(*const_stride_next);
-      offset_expr = offset_expr * stride_expr;
-      offset_expr = offset_expr.ceilDiv(next_stride_expr);
-      offset_expr =
-          offset_expr + builder.getAffineConstantExpr(*const_offset_next);
-      AffineMap next_offset_map = AffineMap();
-      if (affineApplyOnDim) {
-        offset_expr = offset_expr.replaceDims(exprReplacements);
-        next_offset_map = AffineMap::get(1, 0, offset_expr);
-      } else if (affineApplyOnSymbol) {
-        offset_expr = offset_expr.replaceSymbols(exprReplacements);
-        next_offset_map = AffineMap::get(0, 1, offset_expr);
-      }
-      // Apply affine map
+      AffineExpr composedExpr = originalExpr * stride_expr;
+      composedExpr = composedExpr.ceilDiv(next_stride_expr);
+      composedExpr =
+          composedExpr + builder.getAffineConstantExpr(*const_offset_next);
+      AffineMap composedMap = AffineMap::get(
+          originalMap.getNumDims(), originalMap.getNumSymbols(), composedExpr);
+      // Apply composed affine map
       builder.setInsertionPoint(affine_apply);
       if (auto exec =
               dyn_cast_if_present<air::ExecuteOp>(affine_apply->getParentOp()))
         builder.setInsertionPoint(exec);
-      auto newAffineApply =
-          dyn_cast<affine::AffineApplyOp>(builder.clone(*affine_apply));
-      newAffineApply.setMap(next_offset_map);
+      auto newAffineApply = affine::AffineApplyOp::create(
+          builder, affine_apply.getLoc(), composedMap,
+          affine_apply.getOperands());
       offsets[i] = newAffineApply->getResult(0);
       offsets[*j] = offsets[i];
     }
