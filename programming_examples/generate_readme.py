@@ -164,6 +164,12 @@ EXAMPLES = [
     },
     {
         "category": "LLM Kernels",
+        "name": "FFN SwiGLU (Prefill)",
+        "path": "ffn_swiglu/prefill",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
         "name": "RoPE (LUT-based)",
         "path": "rope_lut",
         "datatypes": "bf16",
@@ -190,7 +196,7 @@ EXAMPLES = [
         "category": "Data Movement",
         "name": "Passthrough (DMA)",
         "path": "passthrough/passthrough_dma",
-        "datatypes": "u8",
+        "datatypes": "u8, i8, i16, u16, f32, bf16",
     },
     {
         "category": "Data Movement",
@@ -215,6 +221,12 @@ EXAMPLES = [
         "name": "Data Transfer Transpose",
         "path": "data_transfer_transpose",
         "datatypes": "u32",
+    },
+    {
+        "category": "Data Movement",
+        "name": "Transpose (bf16)",
+        "path": "data_transfer_transpose/dma_bf16",
+        "datatypes": "bf16",
     },
     {
         "category": "Data Movement",
@@ -281,6 +293,12 @@ EXAMPLES = [
         "name": "Shared L1 Buffer",
         "path": "shared_l1",
         "datatypes": "bf16",
+    },
+    {
+        "category": "Quantization",
+        "name": "Dequant (AWQ int4\u2192bf16)",
+        "path": "dequant_awq",
+        "datatypes": "int4/bf16",
     },
     {
         "category": "Primitives",
