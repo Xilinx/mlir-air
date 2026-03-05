@@ -362,6 +362,17 @@ struct AnnotateFrontAndBackOpsInForPattern
     if (!for_op->hasAttr("unroll"))
       return failure();
 
+    // Skip if already annotated
+    bool alreadyAnnotated = false;
+    for (auto &op : for_op.getOps()) {
+      if (op.hasAttr("async_front") || op.hasAttr("async_back")) {
+        alreadyAnnotated = true;
+        break;
+      }
+    }
+    if (alreadyAnnotated)
+      return failure();
+
     // Check if the for loop is async
     SmallVector<Value> iterTokens;
     for (auto iter_arg : for_op.getRegionIterArgs()) {
@@ -412,12 +423,12 @@ struct AnnotateFrontAndBackOpsInForPattern
         continue;
 
       if (!dep_list.size())
-        setBoolAttrForAsyncOp(rewriter, &op, "async_front");
+        setBoolAttrForAsyncOp(&op, "async_front");
       for (auto dep : dep_list) {
         // Token is in iter_args
         if (llvm::any_of(iterTokens,
                          [dep](Value token) { return token == dep; }))
-          setBoolAttrForAsyncOp(rewriter, &op, "async_front");
+          setBoolAttrForAsyncOp(&op, "async_front");
       }
       // Token is declared outside of for loop
       if (llvm::any_of(dep_list, [for_op](Value token) {
@@ -426,7 +437,7 @@ struct AnnotateFrontAndBackOpsInForPattern
               return false;
             return !for_op->isProperAncestor(tokenDefOp);
           })) {
-        setBoolAttrForAsyncOp(rewriter, &op, "async_front");
+        setBoolAttrForAsyncOp(&op, "async_front");
       }
     }
 
@@ -458,7 +469,9 @@ struct AnnotateFrontAndBackOpsInForPattern
       }
     }
     for (auto op : back_candidates) {
-      setBoolAttrForAsyncOp(rewriter, op, "async_back");
+      if (!op)
+        continue;
+      setBoolAttrForAsyncOp(op, "async_back");
       if (op->hasAttr("async_front"))
         // An op cannot be both "async_back" and "async_front".
         op->removeAttr("async_front");
@@ -489,20 +502,24 @@ private:
     return result;
   }
 
-  void setBoolAttrForAsyncOp(OpBuilder builder, Operation *op,
-                             std::string attr) const {
+  void setBoolAttrForAsyncOp(Operation *op, std::string attr) const {
+    if (!op)
+      return;
+    auto boolAttr = BoolAttr::get(op->getContext(), true);
     if (auto aif = dyn_cast_if_present<affine::AffineIfOp>(op)) {
-      aif.getThenBlock()->walk([&](Operation *child_op) {
-        child_op->setAttr(attr, builder.getBoolAttr(true));
-      });
-      aif.getElseBlock()->walk([&](Operation *child_op) {
-        child_op->setAttr(attr, builder.getBoolAttr(true));
-      });
-    } else
-      op->setAttr(attr, builder.getBoolAttr(true));
+      if (aif.getThenBlock())
+        aif.getThenBlock()->walk(
+            [&](Operation *child_op) { child_op->setAttr(attr, boolAttr); });
+      if (aif.hasElse() && aif.getElseBlock())
+        aif.getElseBlock()->walk(
+            [&](Operation *child_op) { child_op->setAttr(attr, boolAttr); });
+    } else {
+      op->setAttr(attr, boolAttr);
+    }
   }
 
-  Operation *getOpAsBackOpCandidate(OpBuilder builder, Operation *op) const {
+  Operation *getOpAsBackOpCandidate(PatternRewriter &builder,
+                                    Operation *op) const {
     if (auto for_candidate = dyn_cast_if_present<scf::ForOp>(op)) {
       // Note: if back candidate is scf.for, then since scf.yield is non
       // blocking, an air.wait_all barrier needs to be inserted here
@@ -1129,6 +1146,11 @@ struct ConstructPingPongDependencyPattern
       if (!v)
         return failure();
     }
+    // Erase the old yield (spliced from the original loop) before creating
+    // the new one with correct operands for the new iter args.
+    if (auto oldYield = dyn_cast_if_present<scf::YieldOp>(
+            new_loop_op.getBody()->getTerminator()))
+      rewriter.eraseOp(oldYield);
     scf::YieldOp::create(rewriter, new_loop_op.getLoc(), yield_operands);
 
     for_op.erase();
@@ -1176,18 +1198,27 @@ private:
                                SmallVector<Value, 1> iter_operands) const {
 
     builder.setInsertionPoint(loop_op);
-    scf::ForOp new_loop_op = scf::ForOp::create(
-        builder, loop_op.getLoc(), loop_op.getLowerBound(),
+    scf::ForOp new_loop_op = builder.create<scf::ForOp>(
+        loop_op.getLoc(), loop_op.getLowerBound(),
         loop_op.getUpperBound(), loop_op.getStep(), iter_operands);
 
     if (auto attr = loop_op->getAttrOfType<StringAttr>(
             SymbolTable::getSymbolAttrName()))
       new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
 
-    // Splice the operations inside loop op
+    // Splice ops from old loop body into new one, excluding the yield.
     auto &bb = new_loop_op.getBody()->getOperations();
     auto &body = loop_op.getBody()->getOperations();
     bb.splice(bb.begin(), body, body.begin(), --body.end());
+    // Ensure the body has a yield. LLVM 23's ForOp::create may not
+    // auto-insert one. Add a temporary yield that callers will replace.
+    if (bb.empty() || !bb.back().hasTrait<OpTrait::IsTerminator>()) {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToEnd(new_loop_op.getBody());
+      // Yield the iter args as placeholders (callers replace this)
+      scf::YieldOp::create(builder, new_loop_op.getLoc(),
+                           ValueRange(new_loop_op.getRegionIterArgs()));
+    }
 
     auto iv = loop_op.getInductionVar();
     iv.replaceAllUsesWith(new_loop_op.getInductionVar());
