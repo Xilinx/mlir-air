@@ -38,6 +38,7 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | LLM Kernels | [RoPE (On-chip Sin/Cos)](rope_sincos/) | bf16 | 🟢 | 🟢 | [rope_sincos/](rope_sincos/) |
 | Attention | [Flash Attention (Dataflow)](flash_attention/dataflow_based/) | bf16 | 🟢 | 🟢 | [flash_attention/dataflow_based/](flash_attention/dataflow_based/) |
 | Attention | [Flash Attention (Kernel Fusion)](flash_attention/kernel_fusion_based/) | bf16 | ⚪ | 🟢 | [flash_attention/kernel_fusion_based/](flash_attention/kernel_fusion_based/) |
+| Attention | [Grouped Query Attention (GQA)](flash_attention/kernel_fusion_based/) | bf16 | ⚪ | 🟢 | [flash_attention/kernel_fusion_based/](flash_attention/kernel_fusion_based/) |
 | Data Movement | [Passthrough (DMA)](passthrough/passthrough_dma/) | u8, i8, i16, u16, f32, bf16 | 🟢 | 🟢 | [passthrough/passthrough_dma/](passthrough/passthrough_dma/) |
 | Data Movement | [Passthrough (Channel)](passthrough/passthrough_channel/) | u8 | 🟢 | 🟢 | [passthrough/passthrough_channel/](passthrough/passthrough_channel/) |
 | Data Movement | [Passthrough (Kernel)](passthrough/passthrough_kernel/) | u8 | 🟢 | 🟢 | [passthrough/passthrough_kernel/](passthrough/passthrough_kernel/) |
