@@ -904,6 +904,13 @@ if __name__ == "__main__":
     num_heads = args.num_heads
     num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else num_heads
 
+    if num_kv_heads <= 0:
+        raise ValueError(f"num_kv_heads must be positive, got {num_kv_heads}")
+    if num_heads % num_kv_heads != 0:
+        raise ValueError(
+            f"num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+        )
+
     if args.mlir_file:
         with open(args.mlir_file, "r") as f:
             mlir_source = f.read()

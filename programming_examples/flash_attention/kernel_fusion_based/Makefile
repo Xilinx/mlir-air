@@ -63,7 +63,7 @@ profile: compile-kernel build-test-exe
 			--compile-mode compile; \
 	fi
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_elf.exe -e air.elf -k "main:attention_bf16" \
-		--lq $(LQ) --lk $(LK) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS)
+		--lq $(LQ) --lk $(LK) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS)
 
 build-test-exe:
 	@GPP=$$( \
