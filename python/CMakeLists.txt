@@ -64,8 +64,6 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
       AIRCAPI
     PRIVATE_LINK_LIBS
       LLVMSupport
-    PYTHON_BINDINGS_LIBRARY
-      nanobind
   )
 
   # Only building this if we are building the hsa runtime, as it requires hsa.h
@@ -81,8 +79,6 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
         AIRCAPI
       PRIVATE_LINK_LIBS
         LLVMSupport
-      PYTHON_BINDINGS_LIBRARY
-        nanobind
     )
   endif()
 
