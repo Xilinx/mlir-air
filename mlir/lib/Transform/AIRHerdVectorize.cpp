@@ -198,7 +198,7 @@ AIRHerdVectorizeOp::applyToOne(transform::TransformRewriter &rewriter,
                                transform::TransformState &state) {
 
   // Cast the target to HerdOp and verify it's the right type
-  auto herdOp = dyn_cast<xilinx::air::HerdOp>(target);
+  auto herdOp = dyn_cast_if_present<xilinx::air::HerdOp>(target);
   if (!herdOp) {
     return emitDefiniteFailure() << "expected air.herd operation";
   }

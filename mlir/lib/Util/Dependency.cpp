@@ -37,9 +37,9 @@ bool areEqualIndices(mlir::Value index_0, mlir::Value index_1) {
       return false;
     else {
       if (auto index_0_const_op =
-              dyn_cast<arith::ConstantOp>(index_0.getDefiningOp())) {
-        if (auto index_1_const_op =
-                dyn_cast<arith::ConstantOp>(index_1.getDefiningOp())) {
+              dyn_cast_if_present<arith::ConstantOp>(index_0.getDefiningOp())) {
+        if (auto index_1_const_op = dyn_cast_if_present<arith::ConstantOp>(
+                index_1.getDefiningOp())) {
           if (index_0_const_op.getValue() == index_1_const_op.getValue())
             return true;
         }
@@ -141,14 +141,14 @@ void traceDependentInductionVar(Operation *op,
                                 std::vector<Operation *> &op_history) {
   SmallVector<Value, 1> candidate_scalar_operands;
   // Get child op if op is air.execute
-  if (auto air_region_op = dyn_cast<air::ExecuteOp>(op)) {
+  if (auto air_region_op = dyn_cast_if_present<air::ExecuteOp>(op)) {
     if (air_region_op.getRegion().front().getOperations().size() != 2) {
       air_region_op->emitOpError("air::ExecuteOp should have only one child "
                                  "operation beside the terminator");
       return;
     }
     for (auto &child_op : air_region_op.getRegion().front().getOperations()) {
-      if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
+      if (!dyn_cast_if_present<air::ExecuteTerminatorOp>(child_op))
         op = &child_op;
     }
   }
@@ -177,7 +177,7 @@ void traceDependentHerdId(Operation *async_op,
     return;
   // Get child op if async_op is air.execute
   Operation *op = nullptr;
-  if (auto air_execute_op = dyn_cast<air::ExecuteOp>(async_op)) {
+  if (auto air_execute_op = dyn_cast_if_present<air::ExecuteOp>(async_op)) {
     op = &air_execute_op.getChildOps().front();
   } else {
     op = async_op;
@@ -200,7 +200,8 @@ void traceDependentHerdId(Operation *async_op,
     if (operand && llvm::isa<IndexType>(
                        operand.getType())) { // Only tracing scalar operands
       if (operand.getDefiningOp() &&
-          mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
+          mlir::dyn_cast_if_present<air::AsyncOpInterface>(
+              operand.getDefiningOp())) {
         op_history.push_back(operand.getDefiningOp());
         traceDependentHerdId(operand.getDefiningOp(), loop_dep_history,
                              op_history);
@@ -257,7 +258,7 @@ traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
         llvm::isa<IndexType>(
             std::get<0>(elem).getType())) { // Only tracing scalar operands
       if (std::get<0>(elem).getDefiningOp() &&
-          mlir::dyn_cast<air::AsyncOpInterface>(
+          mlir::dyn_cast_if_present<air::AsyncOpInterface>(
               std::get<0>(elem).getDefiningOp())) {
         auto ancestor_async_op = std::get<0>(elem).getDefiningOp();
         std::get<2>(elem).push_back(ancestor_async_op);
@@ -316,7 +317,8 @@ void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op) {
 void clearAsyncDependenciesOfAsyncOpImpl(scf::ParallelOp op) {
   SmallVector<Value> operands_without_wait_all;
   for (auto init_val : op.getInitVals()) {
-    if (auto wa_op = dyn_cast<air::WaitAllOp>(init_val.getDefiningOp())) {
+    if (auto wa_op =
+            dyn_cast_if_present<air::WaitAllOp>(init_val.getDefiningOp())) {
       clearAsyncDependenciesOfAsyncOpImpl(wa_op);
     } else {
       // Push to vec if unique
@@ -340,11 +342,11 @@ void clearAsyncDependenciesOfAsyncOp(Operation *op) {
   if (!isAsyncOp(op)) {
     return;
   }
-  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+  if (auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op)) {
     clearAsyncDependenciesOfAsyncOpImpl(async_op);
-  } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
+  } else if (auto for_op = dyn_cast_if_present<scf::ForOp>(op)) {
     clearAsyncDependenciesOfAsyncOpImpl(for_op);
-  } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+  } else if (auto parallel_op = dyn_cast_if_present<scf::ParallelOp>(op)) {
     clearAsyncDependenciesOfAsyncOpImpl(parallel_op);
   } else
     op->emitOpError("unknown async op");
@@ -441,13 +443,13 @@ SmallVector<Value> getAsyncDependenciesFromOpImpl(affine::AffineIfOp op) {
   return depList;
 }
 SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
-  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
+  if (auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op))
     return getAsyncDependenciesFromOpImpl(async_op);
-  else if (auto for_op = dyn_cast<scf::ForOp>(op))
+  else if (auto for_op = dyn_cast_if_present<scf::ForOp>(op))
     return getAsyncDependenciesFromOpImpl(for_op);
-  else if (auto par_op = dyn_cast<scf::ParallelOp>(op))
+  else if (auto par_op = dyn_cast_if_present<scf::ParallelOp>(op))
     return getAsyncDependenciesFromOpImpl(par_op);
-  else if (auto aif_op = dyn_cast<affine::AffineIfOp>(op))
+  else if (auto aif_op = dyn_cast_if_present<affine::AffineIfOp>(op))
     return getAsyncDependenciesFromOpImpl(aif_op);
   else
     return SmallVector<Value>();
@@ -465,7 +467,7 @@ Value getAsyncTokenFromOpImpl(Operation *op) {
   return nullptr;
 }
 Value getAsyncTokenFromOp(Operation *op) {
-  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
+  if (auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op))
     return getAsyncTokenFromOpImpl(async_op);
   else
     return getAsyncTokenFromOpImpl(op);
@@ -545,7 +547,8 @@ void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
   for (auto init_val : op.getInitVals()) {
     if (init_val.getDefiningOp() &&
         isa<air::WaitAllOp>(init_val.getDefiningOp())) {
-      auto wa_op = dyn_cast<air::WaitAllOp>(init_val.getDefiningOp());
+      auto wa_op =
+          dyn_cast_if_present<air::WaitAllOp>(init_val.getDefiningOp());
       addAsyncDependencyIfNewImpl(wa_op, token);
     } else {
       // Push to vec if unique
@@ -577,7 +580,8 @@ void addAsyncDependencyIfNewImpl(affine::AffineIfOp op, Value token) {
       continue;
 
     // Recursively process nested affine.if operations
-    if (auto nested_affine_if = dyn_cast<affine::AffineIfOp>(nested_op)) {
+    if (auto nested_affine_if =
+            dyn_cast_if_present<affine::AffineIfOp>(nested_op)) {
       addAsyncDependencyIfNewImpl(nested_affine_if, token);
     } else {
       // For non-affine.if operations, call addAsyncDependencyIfNew
@@ -593,7 +597,8 @@ void addAsyncDependencyIfNewImpl(affine::AffineIfOp op, Value token) {
         continue;
 
       // Recursively process nested affine.if operations
-      if (auto nested_affine_if = dyn_cast<affine::AffineIfOp>(nested_op)) {
+      if (auto nested_affine_if =
+              dyn_cast_if_present<affine::AffineIfOp>(nested_op)) {
         addAsyncDependencyIfNewImpl(nested_affine_if, token);
       } else {
         // For non-affine.if operations, call addAsyncDependencyIfNew
@@ -611,13 +616,13 @@ void addAsyncDependencyIfNew(Operation *op, Value token) {
     return;
   if (token.getDefiningOp() && token.getDefiningOp() == op)
     return;
-  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+  if (auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op)) {
     addAsyncDependencyIfNewImpl(async_op, token);
-  } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
+  } else if (auto for_op = dyn_cast_if_present<scf::ForOp>(op)) {
     addAsyncDependencyIfNewImpl(for_op, token);
-  } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+  } else if (auto parallel_op = dyn_cast_if_present<scf::ParallelOp>(op)) {
     addAsyncDependencyIfNewImpl(parallel_op, token);
-  } else if (auto affine_if_op = dyn_cast<affine::AffineIfOp>(op)) {
+  } else if (auto affine_if_op = dyn_cast_if_present<affine::AffineIfOp>(op)) {
     addAsyncDependencyIfNewImpl(affine_if_op, token);
   } else
     op->emitOpError("unknown async op");
@@ -656,8 +661,8 @@ bool areAsyncDependent(Operation *a, Operation *b) {
   if (isAsyncDependent(b, a))
     return true;
 
-  auto chanA = dyn_cast<air::ChannelInterface>(a);
-  auto chanB = dyn_cast<air::ChannelInterface>(b);
+  auto chanA = dyn_cast_if_present<air::ChannelInterface>(a);
+  auto chanB = dyn_cast_if_present<air::ChannelInterface>(b);
   if (chanA && chanB)
     if (chanA.getChanName() == chanB.getChanName()) {
       if (chanA.getIndices().size() != chanB.getIndices().size())
@@ -821,7 +826,8 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
 // (e.g., 0 for the first result, etc.).
 void labelYieldDefiningOpsOfForLoop(scf::ForOp forOp, StringRef attrName) {
   // Get the yield operation in the loop body.
-  auto yieldOp = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+  auto yieldOp =
+      dyn_cast_if_present<scf::YieldOp>(forOp.getBody()->getTerminator());
   if (!yieldOp)
     return;
 
@@ -890,7 +896,7 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
 
     for (OpOperand *use : tokenUses) {
       Operation *user = use->getOwner();
-      if (auto yieldUser = dyn_cast<scf::YieldOp>(user)) {
+      if (auto yieldUser = dyn_cast_if_present<scf::YieldOp>(user)) {
         OpBuilder builder(yieldUser);
         user = air::WaitAllOp::create(
             builder, yieldUser->getLoc(),
@@ -899,7 +905,8 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
         use->assign(user->getResult(0));
       }
 
-      air::AsyncOpInterface asyncUser = dyn_cast<air::AsyncOpInterface>(user);
+      air::AsyncOpInterface asyncUser =
+          dyn_cast_if_present<air::AsyncOpInterface>(user);
       if (!asyncUser) {
         user->emitWarning(
             "An async token returned by an unrolled scf.for loop is used by "
@@ -1290,18 +1297,19 @@ getAllReadAccessedMemrefOperandsFromOp(Operation *op) {
   };
   // Below is an incomplete list of common mlir ops that provide interfaces
   // allowing for separating read and write accesses in its operands.
-  if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
+  if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
     for (auto oper : linalgop.getDpsInputs())
       pushMemrefEntryToVector(getMemrefEntry(oper), operands);
-  } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
+  } else if (auto memref_copy = dyn_cast_if_present<memref::CopyOp>(op)) {
     pushMemrefEntryToVector(getMemrefEntry(memref_copy.getSource()), operands);
-  } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
+  } else if (auto memcpy =
+                 mlir::dyn_cast_if_present<xilinx::air::MemcpyInterface>(op)) {
     if (memcpy.getSrcMemref())
       pushMemrefEntryToVector(getMemrefAndAccessPatternEntry(
                                   memcpy.getSrcMemref(), memcpy.getSrcOffsets(),
                                   memcpy.getSrcSizes(), memcpy.getSrcStrides()),
                               operands);
-  } else if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
+  } else if (auto loadOp = dyn_cast_if_present<memref::LoadOp>(op)) {
     // memref.load reads from the memref
     pushMemrefEntryToVector(getMemrefEntry(loadOp.getMemRef()), operands);
   } else if (isa<memref::StoreOp>(op)) {
@@ -1360,19 +1368,20 @@ getAllWriteAccessedMemrefOperandsFromOp(Operation *op) {
   };
   // Below is an incomplete list of common mlir ops that provide interfaces
   // allowing for separating read and write accesses in its operands.
-  if (auto linalgop = dyn_cast<linalg::LinalgOp>(op)) {
+  if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(op)) {
     for (auto oper :
          llvm::concat<Value>(linalgop.getDpsInits(), linalgop->getResults()))
       pushMemrefEntryToVector(getMemrefEntry(oper), operands);
-  } else if (auto memref_copy = dyn_cast<memref::CopyOp>(op)) {
+  } else if (auto memref_copy = dyn_cast_if_present<memref::CopyOp>(op)) {
     pushMemrefEntryToVector(getMemrefEntry(memref_copy.getTarget()), operands);
-  } else if (auto memcpy = mlir::dyn_cast<xilinx::air::MemcpyInterface>(op)) {
+  } else if (auto memcpy =
+                 mlir::dyn_cast_if_present<xilinx::air::MemcpyInterface>(op)) {
     if (memcpy.getDstMemref())
       pushMemrefEntryToVector(getMemrefAndAccessPatternEntry(
                                   memcpy.getDstMemref(), memcpy.getDstOffsets(),
                                   memcpy.getDstSizes(), memcpy.getDstStrides()),
                               operands);
-  } else if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
+  } else if (auto storeOp = dyn_cast_if_present<memref::StoreOp>(op)) {
     // memref.store writes to the memref destination only
     pushMemrefEntryToVector(getMemrefEntry(storeOp.getMemRef()), operands);
   } else if (isa<memref::LoadOp>(op)) {
@@ -1468,18 +1477,18 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
   toplevel.walk([&](Operation *op) {
     if (!op->getParentOfType<air::HierarchyInterface>()) {
       addVertexFromOpImpls(op, &global_graph, dep_ctx);
-      if (auto launch = dyn_cast<air::LaunchOp>(op)) {
+      if (auto launch = dyn_cast_if_present<air::LaunchOp>(op)) {
         addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx,
                             expandHier);
-      } else if (dyn_cast<air::SegmentOp>(op) &&
+      } else if (dyn_cast_if_present<air::SegmentOp>(op) &&
                  (!op->getParentOfType<air::LaunchOp>())) {
-        auto segment = dyn_cast<air::SegmentOp>(op);
+        auto segment = dyn_cast_if_present<air::SegmentOp>(op);
         addVerticesInSegment(global_graph.subgraphs, segment, dep_ctx,
                              expandHier);
-      } else if (dyn_cast<air::HerdOp>(op) &&
+      } else if (dyn_cast_if_present<air::HerdOp>(op) &&
                  (!op->getParentOfType<air::LaunchOp>()) &&
                  (!op->getParentOfType<air::SegmentOp>())) {
-        auto herd = dyn_cast<air::HerdOp>(op);
+        auto herd = dyn_cast_if_present<air::HerdOp>(op);
         addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx, expandHier);
       }
     }
@@ -1510,7 +1519,8 @@ void dependencyCanonicalizer::addVerticesInHerd(
   // Build up herd graph
   bool showCores = std::get<3>(expandHier);
   if (showCores) {
-    auto hier = dyn_cast<air::HierarchyInterface>(herd.getOperation());
+    auto hier =
+        dyn_cast_if_present<air::HierarchyInterface>(herd.getOperation());
     for (unsigned i = 0; i < getTripCountInHierarchyOp(hier); i++) {
       herd_subgraphs.push_back(dependencyGraph(herd.getOperation(), true));
       dependencyGraph *current_herd_graph = &(herd_subgraphs.back());
@@ -1529,7 +1539,7 @@ void dependencyCanonicalizer::addVerticesInHerd(
           .detailed_description = position_str;
 
       herd.walk([&](Operation *herd_childop) {
-        if (!dyn_cast<air::HerdOp>(herd_childop)) {
+        if (!dyn_cast_if_present<air::HerdOp>(herd_childop)) {
           addVertexFromOpImpls(herd_childop, current_herd_graph, dep_ctx);
         }
       });
@@ -1539,7 +1549,7 @@ void dependencyCanonicalizer::addVerticesInHerd(
     dependencyGraph *current_herd_graph = &(herd_subgraphs.back());
 
     herd.walk([&](Operation *herd_childop) {
-      if (!dyn_cast<air::HerdOp>(herd_childop)) {
+      if (!dyn_cast_if_present<air::HerdOp>(herd_childop)) {
         addVertexFromOpImpls(herd_childop, current_herd_graph, dep_ctx);
       }
     });
@@ -1555,9 +1565,9 @@ void dependencyCanonicalizer::addVerticesInSegment(
 
   segment.walk([&](Operation *part_childop) {
     if (!part_childop->getParentOfType<air::HerdOp>() &&
-        !dyn_cast<air::SegmentOp>(part_childop)) {
+        !dyn_cast_if_present<air::SegmentOp>(part_childop)) {
       addVertexFromOpImpls(part_childop, current_part_graph, dep_ctx);
-      if (auto herd = dyn_cast<air::HerdOp>(part_childop)) {
+      if (auto herd = dyn_cast_if_present<air::HerdOp>(part_childop)) {
         addVerticesInHerd(current_part_graph->subgraphs, herd, dep_ctx,
                           expandHier);
       }
@@ -1575,14 +1585,14 @@ void dependencyCanonicalizer::addVerticesInLaunch(
   launch.walk([&](Operation *launch_childop) {
     if (!launch_childop->getParentOfType<air::SegmentOp>() &&
         !launch_childop->getParentOfType<air::HerdOp>() &&
-        !dyn_cast<air::LaunchOp>(launch_childop)) {
+        !dyn_cast_if_present<air::LaunchOp>(launch_childop)) {
       addVertexFromOpImpls(launch_childop, current_launch_graph, dep_ctx);
-      if (auto segment = dyn_cast<air::SegmentOp>(launch_childop)) {
+      if (auto segment = dyn_cast_if_present<air::SegmentOp>(launch_childop)) {
         addVerticesInSegment(current_launch_graph->subgraphs, segment, dep_ctx,
                              expandHier);
-      } else if (dyn_cast<air::HerdOp>(launch_childop) &&
+      } else if (dyn_cast_if_present<air::HerdOp>(launch_childop) &&
                  (!launch_childop->getParentOfType<air::SegmentOp>())) {
-        auto herd = dyn_cast<air::HerdOp>(launch_childop);
+        auto herd = dyn_cast_if_present<air::HerdOp>(launch_childop);
         addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx,
                           expandHier);
       }
@@ -1593,26 +1603,28 @@ void dependencyCanonicalizer::addVerticesInLaunch(
 Graph::VertexId
 dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
                                               dependencyContext &dep_ctx) {
-  if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
+  if (auto dma_op = mlir::dyn_cast_if_present<xilinx::air::DmaMemcpyNdOp>(op)) {
     return addVertexFromDmaOp(dma_op, G, dep_ctx);
   } else if (auto channel_op =
-                 mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
+                 mlir::dyn_cast_if_present<xilinx::air::ChannelInterface>(op)) {
     return addVertexFromChannelOp(channel_op, G, dep_ctx);
-  } else if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)) {
+  } else if (auto execute_op =
+                 dyn_cast_if_present<xilinx::air::ExecuteOp>(op)) {
     return addVertexFromExecuteOp(execute_op, G, dep_ctx);
-  } else if (auto wa_op = dyn_cast<xilinx::air::WaitAllOp>(op)) {
+  } else if (auto wa_op = dyn_cast_if_present<xilinx::air::WaitAllOp>(op)) {
     return addVertexFromWaitAllOp(wa_op, G, dep_ctx);
-  } else if (auto forop = dyn_cast<scf::ForOp>(op)) {
+  } else if (auto forop = dyn_cast_if_present<scf::ForOp>(op)) {
     return addVertexFromOp(op, dep_ctx.ForOpID, "for_loop", "ScfForOp",
                            graphNodeProperties("control"), G, dep_ctx);
-  } else if (auto parallelop = dyn_cast<scf::ParallelOp>(op)) {
+  } else if (auto parallelop = dyn_cast_if_present<scf::ParallelOp>(op)) {
     return addVertexFromOp(op, dep_ctx.ParallelOpID, "parallel_loop",
                            "ScfParallelOp", graphNodeProperties("control"), G,
                            dep_ctx);
   } else if (auto hier_op =
-                 mlir::dyn_cast<xilinx::air::HierarchyInterface>(op)) {
+                 mlir::dyn_cast_if_present<xilinx::air::HierarchyInterface>(
+                     op)) {
     return addVertexFromHierarchyOp(hier_op, G, dep_ctx);
-  } else if (auto reduce_op = dyn_cast<scf::ReduceOp>(op)) {
+  } else if (auto reduce_op = dyn_cast_if_present<scf::ReduceOp>(op)) {
     return addVertexFromReduceOp(reduce_op, G, dep_ctx);
   } else if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
     return addVertexFromTerminatorOp(op, G, dep_ctx);
@@ -1649,7 +1661,7 @@ Graph::VertexId
 dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyNdOp op,
                                             dependencyGraph *G,
                                             dependencyContext &dep_ctx) {
-  if (dyn_cast<xilinx::air::DmaMemcpyNdOp>(op.getOperation())) {
+  if (dyn_cast_if_present<xilinx::air::DmaMemcpyNdOp>(op.getOperation())) {
     return addVertexFromOp(op, dep_ctx.DmaOpID, "dma", "DmaMemcpyNdOp",
                            graphNodeProperties("data"), G, dep_ctx);
   } else {
@@ -1662,7 +1674,7 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
     xilinx::air::ChannelInterface op, dependencyGraph *G,
     dependencyContext &dep_ctx) {
   if (auto channel_put =
-          dyn_cast<xilinx::air::ChannelPutOp>(op.getOperation())) {
+          dyn_cast_if_present<xilinx::air::ChannelPutOp>(op.getOperation())) {
     std::string memorySpaceSrcStr =
         getMemorySpaceAsString(channel_put.getSrc());
     std::vector<air::ChannelGetOp> channel_gets =
@@ -1697,8 +1709,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
     return addVertexFromOp(op, dep_ctx.ChannelOpID, "channel", event_name,
                            graphNodeProperties("data", detailed_description), G,
                            dep_ctx);
-  } else if (auto channel_get =
-                 dyn_cast<xilinx::air::ChannelGetOp>(op.getOperation())) {
+  } else if (auto channel_get = dyn_cast_if_present<xilinx::air::ChannelGetOp>(
+                 op.getOperation())) {
     std::string memorySpaceDstStr =
         getMemorySpaceAsString(channel_get.getDst());
     std::vector<air::ChannelPutOp> channel_puts =
@@ -1748,11 +1760,12 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromHierarchyOp(
   // Annotate hierarchy op's symbolic name
   if (nameAttr)
     detailed_description += "(" + nameAttr.str() + ")";
-  if (dyn_cast<xilinx::air::LaunchOp>(op.getOperation())) {
+  if (dyn_cast_if_present<xilinx::air::LaunchOp>(op.getOperation())) {
     return addVertexFromOp(
         op, dep_ctx.HierarchyOpID, "hierarchy", "LaunchOp",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
-  } else if (auto seg = dyn_cast<xilinx::air::SegmentOp>(op.getOperation())) {
+  } else if (auto seg = dyn_cast_if_present<xilinx::air::SegmentOp>(
+                 op.getOperation())) {
     // Annotate with physical address, if already placed
     if (seg.getNumRows() && seg.getNumCols()) {
       detailed_description += "[" + std::to_string(*seg.getNumCols()) + ", " +
@@ -1761,7 +1774,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromHierarchyOp(
     return addVertexFromOp(
         op, dep_ctx.HierarchyOpID, "hierarchy", "SegmentOp",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
-  } else if (auto herd = dyn_cast<xilinx::air::HerdOp>(op.getOperation())) {
+  } else if (auto herd =
+                 dyn_cast_if_present<xilinx::air::HerdOp>(op.getOperation())) {
     // Annotate with physical address, if already placed
     if (herd.getNumRows() && herd.getNumCols()) {
       detailed_description += "[" + std::to_string(herd.getNumCols()) + ", " +
@@ -1779,15 +1793,15 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromHierarchyOp(
 Graph::VertexId dependencyCanonicalizer::addVertexFromTerminatorOp(
     Operation *op, dependencyGraph *G, dependencyContext &dep_ctx) {
   std::string detailed_description = "";
-  if (dyn_cast<xilinx::air::LaunchTerminatorOp>(op)) {
+  if (dyn_cast_if_present<xilinx::air::LaunchTerminatorOp>(op)) {
     return addVertexFromOp(
         op, dep_ctx.TerminatorID, "hierarchy_terminator", "LaunchTerminator",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
-  } else if (dyn_cast<xilinx::air::SegmentTerminatorOp>(op)) {
+  } else if (dyn_cast_if_present<xilinx::air::SegmentTerminatorOp>(op)) {
     return addVertexFromOp(
         op, dep_ctx.TerminatorID, "hierarchy_terminator", "SegmentTerminator",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
-  } else if (dyn_cast<xilinx::air::HerdTerminatorOp>(op)) {
+  } else if (dyn_cast_if_present<xilinx::air::HerdTerminatorOp>(op)) {
     // Annotate core id, if showing cores
     if (G->position.size()) {
       detailed_description += "core id: ";
@@ -1827,7 +1841,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
   Operation *pointer_op = op;
   int num_non_shape_alt_ops = 0;
   for (auto &child_op : op->getRegions().front().getOps()) {
-    if (auto linalg_child_op = dyn_cast<linalg::LinalgOp>(child_op)) {
+    if (auto linalg_child_op =
+            dyn_cast_if_present<linalg::LinalgOp>(child_op)) {
       std::string detailed_description = "";
       // Annotate linalg op's type
       if (auto broadcast_pattern = linalg_child_op->getAttrOfType<StringAttr>(
@@ -1839,7 +1854,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "LinalgOp",
                           graphNodeProperties("compute", detailed_description),
                           G, dep_ctx, pointer_op);
-    } else if (auto alloc_child_op = dyn_cast<memref::AllocOp>(child_op)) {
+    } else if (auto alloc_child_op =
+                   dyn_cast_if_present<memref::AllocOp>(child_op)) {
       std::string detailed_description = "";
       // Annotate memref's memory space
       std::string memorySpaceStr =
@@ -1852,7 +1868,8 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "AllocOp",
                           graphNodeProperties("compute", detailed_description),
                           G, dep_ctx, pointer_op);
-    } else if (auto dealloc_child_op = dyn_cast<memref::DeallocOp>(child_op)) {
+    } else if (auto dealloc_child_op =
+                   dyn_cast_if_present<memref::DeallocOp>(child_op)) {
       std::string detailed_description = "";
       // Annotate memref's memory space
       std::string memorySpaceStr =
@@ -1866,10 +1883,11 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
                           "DeallocOp",
                           graphNodeProperties("compute", detailed_description),
                           G, dep_ctx, pointer_op);
-    } else if (dyn_cast<memref::CopyOp>(child_op)) {
+    } else if (dyn_cast_if_present<memref::CopyOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "CopyOp",
                           graphNodeProperties("data"), G, dep_ctx, pointer_op);
-    } else if (dyn_cast<xilinx::air::ExecuteTerminatorOp>(child_op)) {
+    } else if (dyn_cast_if_present<xilinx::air::ExecuteTerminatorOp>(
+                   child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
                           "ExecuteTerminatorOp", graphNodeProperties("compute"),
                           G, dep_ctx, pointer_op);
@@ -1956,7 +1974,7 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
                                          dependencyContext dep_ctx,
                                          std::string front_or_back) {
   std::pair<Graph::VertexId, dependencyGraph *> output;
-  if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)) {
+  if (auto execute_op = dyn_cast_if_present<xilinx::air::ExecuteOp>(op)) {
     if (front_or_back == "front") {
       auto execute_front_op = &execute_op.getChildOps().front();
       std::pair<std::string, unsigned> entry_pair =
@@ -1998,31 +2016,32 @@ void dependencyCanonicalizer::connectOpToItsDepListImpls(
     Operation *op, Graph &g, dependencyContext dep_ctx) {
   SmallVector<Value, 1> dep_list;
   // air.asyncopinterface
-  if (auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op)) {
+  if (auto async_op =
+          mlir::dyn_cast_if_present<xilinx::air::AsyncOpInterface>(op)) {
     for (auto dep_token : async_op.getAsyncDependencies()) {
       dep_list.push_back(dep_token);
     }
   }
   // scf.for
-  else if (auto forop = dyn_cast<scf::ForOp>(op)) {
+  else if (auto forop = dyn_cast_if_present<scf::ForOp>(op)) {
     for (auto iter_operand : forop.getInitArgs()) {
       dep_list.push_back(iter_operand);
     }
   }
   // scf.parallel
-  else if (auto parallelop = dyn_cast<scf::ParallelOp>(op)) {
+  else if (auto parallelop = dyn_cast_if_present<scf::ParallelOp>(op)) {
     for (auto operand : parallelop->getOperands()) {
       dep_list.push_back(operand);
     }
   }
   // scf.yield
-  else if (auto yieldop = dyn_cast<scf::YieldOp>(op)) {
+  else if (auto yieldop = dyn_cast_if_present<scf::YieldOp>(op)) {
     for (auto operand : yieldop->getOperands()) {
       dep_list.push_back(operand);
     }
   }
   // scf.reduce
-  else if (auto reduceop = dyn_cast<scf::ReduceOp>(op)) {
+  else if (auto reduceop = dyn_cast_if_present<scf::ReduceOp>(op)) {
     for (auto operand : reduceop->getOperands()) {
       dep_list.push_back(operand);
     }
@@ -2070,23 +2089,24 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
   }
   // Else if dependency token originates from async op
   else if (dep_token.getDefiningOp() &&
-           mlir::dyn_cast<xilinx::air::AsyncOpInterface>(
+           mlir::dyn_cast_if_present<xilinx::air::AsyncOpInterface>(
                dep_token.getDefiningOp())) {
     output.push_back(dep_token.getDefiningOp());
     return output;
   }
   // Else if dependency token is yielded from scf.for
   else if (dep_token.getDefiningOp() &&
-           dyn_cast<scf::ForOp>(dep_token.getDefiningOp())) {
-    auto forop = dyn_cast<scf::ForOp>(dep_token.getDefiningOp());
+           dyn_cast_if_present<scf::ForOp>(dep_token.getDefiningOp())) {
+    auto forop = dyn_cast_if_present<scf::ForOp>(dep_token.getDefiningOp());
     auto forop_terminator = forop.getBody()->getTerminator();
     output.push_back(forop_terminator);
     return output;
   }
   // Else if dependency token is yielded from scf.parallel
   else if (dep_token.getDefiningOp() &&
-           dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp())) {
-    auto parallelop = dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp());
+           dyn_cast_if_present<scf::ParallelOp>(dep_token.getDefiningOp())) {
+    auto parallelop =
+        dyn_cast_if_present<scf::ParallelOp>(dep_token.getDefiningOp());
     for (auto parallelop_reduceop : parallelop.getOps<scf::ReduceOp>()) {
       output.push_back(parallelop_reduceop);
       return output;
@@ -2094,8 +2114,9 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
   }
   // Else if dependency token is from affine if (joint token from multiple ops)
   else if (dep_token.getDefiningOp() &&
-           dyn_cast<affine::AffineIfOp>(dep_token.getDefiningOp())) {
-    auto aifop = dyn_cast<affine::AffineIfOp>(dep_token.getDefiningOp());
+           dyn_cast_if_present<affine::AffineIfOp>(dep_token.getDefiningOp())) {
+    auto aifop =
+        dyn_cast_if_present<affine::AffineIfOp>(dep_token.getDefiningOp());
     // The first then block
     auto then_terminator = aifop.getThenBlock()->getTerminator();
     for (auto operand : then_terminator->getOperands()) {
@@ -2199,7 +2220,7 @@ void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
     if (G.subgraphs[idx].position.size()) {
       if (!isa<air::HerdOp>(G.g[v].op))
         G.g[v].op->emitOpError("found non-herd op with core id");
-      auto hier = dyn_cast<air::HierarchyInterface>(G.g[v].op);
+      auto hier = dyn_cast_if_present<air::HierarchyInterface>(G.g[v].op);
       for (unsigned i = 0; i < getTripCountInHierarchyOp(hier); i++) {
         G.g[v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
         if (G.g[v].op != G.subgraphs[idx].hierarchyOp)
@@ -2301,7 +2322,8 @@ void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
     auto op = graph.g[dstTRVertex].op;
     if (!op)
       continue;
-    auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
+    auto async_op =
+        mlir::dyn_cast_if_present<xilinx::air::AsyncOpInterface>(op);
     if (!async_op)
       continue;
     clearAsyncDependenciesOfAsyncOp(async_op);
@@ -2315,7 +2337,8 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
     auto op = graph.g[dstTRVertex].op;
     if (!op)
       continue;
-    auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
+    auto async_op =
+        mlir::dyn_cast_if_present<xilinx::air::AsyncOpInterface>(op);
     if (!async_op)
       continue;
     auto incoming_deps = graph.g.inverseAdjacentVertices(dstTRVertex);
@@ -2326,13 +2349,13 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
       if (op == src_op)
         continue; // Avoid dep to itself
       if (graph.g[TRVertex].asyncEventType == "for_loop") {
-        auto value = getLoopCarriedTokenFromScfOp(dyn_cast<scf::ForOp>(src_op),
-                                                  "argument");
+        auto value = getLoopCarriedTokenFromScfOp(
+            dyn_cast_if_present<scf::ForOp>(src_op), "argument");
         if (value)
           async_op.addAsyncDependency(value);
       } else if (graph.g[TRVertex].asyncEventType == "parallel_loop") {
-        auto value =
-            getLoopCarriedTokenFromScfOp(dyn_cast<scf::ParallelOp>(src_op));
+        auto value = getLoopCarriedTokenFromScfOp(
+            dyn_cast_if_present<scf::ParallelOp>(src_op));
         if (value)
           async_op.addAsyncDependency(value);
       } else if (graph.g[TRVertex].asyncEventType == "terminator") {
@@ -2341,10 +2364,12 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
         if (value)
           async_op.addAsyncDependency(value);
       } else if (auto async_src_op =
-                     dyn_cast<xilinx::air::AsyncOpInterface>(src_op)) {
+                     dyn_cast_if_present<xilinx::air::AsyncOpInterface>(
+                         src_op)) {
         // Elevate src token if src op is in affine if
         while (auto parent_affine_if_op =
-                   dyn_cast<affine::AffineIfOp>(src_op->getParentOp())) {
+                   dyn_cast_if_present<affine::AffineIfOp>(
+                       src_op->getParentOp())) {
           DominanceInfo domInfo(src_op);
           if (domInfo.properlyDominates(src_op, async_op)) {
             // SSA dominance check passed. Jump to adding dependency edge.
@@ -2386,7 +2411,7 @@ dependencyCanonicalizer::getPositionFromIterator(unsigned iter,
 unsigned
 dependencyCanonicalizer::getIteratorFromPosition(std::vector<unsigned> position,
                                                  Operation *hier_op) {
-  auto herd = dyn_cast<air::HerdOp>(hier_op);
+  auto herd = dyn_cast_if_present<air::HerdOp>(hier_op);
   if (!herd) {
     return 0;
   }
@@ -2482,7 +2507,8 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
     op->emitOpError("operand being traced is not a memref");
   for (auto &u : operand.getUses()) {
     // If used in MemcpyInterface Op
-    if (auto memcpy = dyn_cast<xilinx::air::MemcpyInterface>(u.getOwner())) {
+    if (auto memcpy =
+            dyn_cast_if_present<xilinx::air::MemcpyInterface>(u.getOwner())) {
       partialMemref memcpy_src, memcpy_dst;
       if (memcpy.getSrcMemref()) {
         memcpy_src =
@@ -2527,8 +2553,10 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
     }
 
     // If used in a linalg op
-    else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())) {
-      if (auto ar = dyn_cast<xilinx::air::ExecuteOp>(linalgop->getParentOp())) {
+    else if (auto linalgop =
+                 mlir::dyn_cast_if_present<linalg::LinalgOp>(u.getOwner())) {
+      if (auto ar = dyn_cast_if_present<xilinx::air::ExecuteOp>(
+              linalgop->getParentOp())) {
         if (rw == 'r') {
           if (u.getOperandNumber() <
               linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
@@ -2547,8 +2575,8 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
     }
 
     // If used in hierarchy op
-    else if (auto hier =
-                 dyn_cast<xilinx::air::HierarchyInterface>(u.getOwner())) {
+    else if (auto hier = dyn_cast_if_present<xilinx::air::HierarchyInterface>(
+                 u.getOwner())) {
       // check if the use inside hierarchy op matches with the tracing mode
       // (r or w)
       for (unsigned hier_argument_id = 0;
@@ -2566,8 +2594,8 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
     // If used in an unknown op
     else {
       auto unknownop = u.getOwner();
-      if (auto ar =
-              dyn_cast<xilinx::air::ExecuteOp>(unknownop->getParentOp())) {
+      if (auto ar = dyn_cast_if_present<xilinx::air::ExecuteOp>(
+              unknownop->getParentOp())) {
         addDependencyBetweenOps(ar.getOperation(), op.getOperation());
       }
     }
@@ -2620,11 +2648,12 @@ void dependencyTracer::getPartialMemrefFromOp(
 // Add dependency edge
 void dependencyTracer::addDependencyBetweenOps(Operation *source,
                                                Operation *sink) {
-  auto async_sink = dyn_cast<air::AsyncOpInterface>(sink);
+  auto async_sink = dyn_cast_if_present<air::AsyncOpInterface>(sink);
   if (!async_sink)
     sink->emitOpError("dependency sink op has no async interface");
   if (source->getBlock() == sink->getBlock() && source->isBeforeInBlock(sink)) {
-    if (auto async_source = dyn_cast<air::AsyncOpInterface>(source)) {
+    if (auto async_source =
+            dyn_cast_if_present<air::AsyncOpInterface>(source)) {
       addAsyncDependencyIfNew(async_sink, async_source.getAsyncToken());
       return;
     }
@@ -2633,7 +2662,8 @@ void dependencyTracer::addDependencyBetweenOps(Operation *source,
        parent = parent->getParentOp()) {
     if (parent->getBlock() == sink->getBlock() &&
         parent->isBeforeInBlock(sink)) {
-      if (auto async_source = dyn_cast<air::AsyncOpInterface>(parent)) {
+      if (auto async_source =
+              dyn_cast_if_present<air::AsyncOpInterface>(parent)) {
         addAsyncDependencyIfNew(async_sink, async_source.getAsyncToken());
         return;
       }
@@ -2764,22 +2794,24 @@ LogicalResult dependencyTracer::traceDependencyFromScfForOp(scf::ForOp &forOp) {
 void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
   // Get async sink op wrt op
   air::AsyncOpInterface async_op = nullptr;
-  if (dyn_cast<air::AsyncOpInterface>(op)) {
-    async_op = dyn_cast<air::AsyncOpInterface>(op);
-  } else if (auto scf_par = dyn_cast<scf::ParallelOp>(op)) {
+  if (dyn_cast_if_present<air::AsyncOpInterface>(op)) {
+    async_op = dyn_cast_if_present<air::AsyncOpInterface>(op);
+  } else if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(op)) {
     auto token = getLoopCarriedTokenFromScfOp(scf_par);
     if (!token.getDefiningOp()) {
       // loop carried token has no defining op
       return;
     }
-    async_op = dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
-  } else if (auto scf_for = dyn_cast<scf::ForOp>(op)) {
+    async_op =
+        dyn_cast_if_present<air::AsyncOpInterface>(token.getDefiningOp());
+  } else if (auto scf_for = dyn_cast_if_present<scf::ForOp>(op)) {
     auto token = getLoopCarriedTokenFromScfOp(scf_for, "operand");
     if (!token.getDefiningOp()) {
       // loop carried token has no defining op
       return;
     }
-    async_op = dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
+    async_op =
+        dyn_cast_if_present<air::AsyncOpInterface>(token.getDefiningOp());
   } else {
     op->emitOpError("unsupported op for loop-carried dependency");
   }
@@ -2789,7 +2821,7 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
 
   // Get parent scf loop op
   auto parent = op->getParentOp();
-  if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)) {
+  if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
     // Get scf parallel's loop-carried token
     auto token = getLoopCarriedTokenFromScfOp(scf_par);
 
@@ -2805,8 +2837,8 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
       scf_par->emitOpError("number of reduce ops is not one");
     if (reduce_ops[0].getNumOperands() != 1)
       scf_par->emitOpError("number of reduce operands is not one");
-    auto reduce_wait_all =
-        dyn_cast<air::WaitAllOp>(reduce_ops[0].getOperand(0).getDefiningOp());
+    auto reduce_wait_all = dyn_cast_if_present<air::WaitAllOp>(
+        reduce_ops[0].getOperand(0).getDefiningOp());
     if (!reduce_wait_all)
       scf_par->emitOpError("reduce op is not dependent on any air::WaitAllOp");
 
@@ -2817,7 +2849,7 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
 
     // Recurse with parent
     reconnectLoopCarriedDependencyFromOp(parent);
-  } else if (auto scf_for = dyn_cast<scf::ForOp>(parent)) {
+  } else if (auto scf_for = dyn_cast_if_present<scf::ForOp>(parent)) {
     // Get scf for's loop-carried token
     auto token = getLoopCarriedTokenFromScfOp(scf_for, "argument");
 
@@ -2826,12 +2858,12 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
 
     // Get scf for's wait_all op before yield
     auto scf_for_yield =
-        dyn_cast<scf::YieldOp>(scf_for.getBody()->getTerminator());
+        dyn_cast_if_present<scf::YieldOp>(scf_for.getBody()->getTerminator());
 
     // The async token is the last operand in the yield
     Value tokenOperand = scf_for_yield.getOperands().back();
     auto yield_wait_all =
-        dyn_cast<air::WaitAllOp>(tokenOperand.getDefiningOp());
+        dyn_cast_if_present<air::WaitAllOp>(tokenOperand.getDefiningOp());
     if (!yield_wait_all) {
       OpBuilder b_yield(scf_for_yield);
 

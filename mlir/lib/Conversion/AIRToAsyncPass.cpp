@@ -140,7 +140,7 @@ public:
     dimSizes.reserve(launch_size.size());
 
     for (auto sv : launch_size) {
-      auto ci = dyn_cast<arith::ConstantIndexOp>(sv.getDefiningOp());
+      auto ci = dyn_cast_if_present<arith::ConstantIndexOp>(sv.getDefiningOp());
       int64_t v = ci ? ci.value() : 1;
       dimSizes.push_back(v);
     }
@@ -201,7 +201,7 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
   SmallVector<Value, 4> dependencies;
   for (auto o : operands) {
     // erase the size to reduce the number of manglings
-    if (auto memrefTy = llvm::dyn_cast<MemRefType>(o.getType())) {
+    if (auto memrefTy = llvm::dyn_cast_if_present<MemRefType>(o.getType())) {
       auto t = MemRefType::get(
           std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
           memrefTy.getElementType(), memrefTy.getLayout(),
@@ -220,7 +220,7 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
   SmallVector<MemRefType, 16> real_result_tys;
   SmallVector<Type, 1> token_result_tys;
   for (auto t : op->getResultTypes()) {
-    if (auto memrefTy = llvm::dyn_cast<MemRefType>(t)) {
+    if (auto memrefTy = llvm::dyn_cast_if_present<MemRefType>(t)) {
       auto mrt = MemRefType::get(
           std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
           memrefTy.getElementType(), memrefTy.getLayout(),
@@ -265,7 +265,7 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
     results = call.getResults();
     for (unsigned i = 0, real_result_idx = 0; i < results.size(); ++i) {
       auto r = results[i];
-      if (auto memrefTy = llvm::dyn_cast<MemRefType>(r.getType())) {
+      if (auto memrefTy = llvm::dyn_cast_if_present<MemRefType>(r.getType())) {
         auto t = real_result_tys[real_result_idx++];
         auto c =
             UnrealizedConversionCastOp::create(rewriter, op->getLoc(), t, r);
@@ -658,7 +658,7 @@ struct ChannelOpConversion : public OpConversionPattern<air::ChannelOp> {
 
     SmallVector<int64_t, 2> shape;
     for (auto i : op.getSize()) {
-      shape.push_back(llvm::dyn_cast<IntegerAttr>(i).getInt());
+      shape.push_back(llvm::dyn_cast_if_present<IntegerAttr>(i).getInt());
     }
     // if channel dim < 2, add until dim = 2
     while (shape.size() < 2) {
@@ -780,9 +780,9 @@ public:
     TypeConverter converter;
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert air::AsyncTokenType to async::TokenType
-      if (auto t = llvm::dyn_cast<air::AsyncTokenType>(type))
+      if (auto t = llvm::dyn_cast_if_present<air::AsyncTokenType>(type))
         return async::TokenType::get(context);
-      if (auto t = llvm::dyn_cast<MemRefType>(type))
+      if (auto t = llvm::dyn_cast_if_present<MemRefType>(type))
         if (t.getMemorySpaceAsInt() != 0)
           return MemRefType::get(t.getShape(), t.getElementType(),
                                  t.getLayout(), 0);
@@ -822,7 +822,7 @@ public:
     TypeConverter herdConverter;
     herdConverter.addConversion([&](Type type) -> std::optional<Type> {
       // convert air::AsyncTokenType to async::TokenType
-      if (llvm::dyn_cast<air::AsyncTokenType>(type))
+      if (llvm::dyn_cast_if_present<air::AsyncTokenType>(type))
         return async::TokenType::get(context);
       return type;
     });
@@ -858,7 +858,7 @@ public:
       auto isIllegal = [](Type t) {
         if (llvm::isa<air::AsyncTokenType>(t))
           return true;
-        if (auto mt = llvm::dyn_cast<MemRefType>(t))
+        if (auto mt = llvm::dyn_cast_if_present<MemRefType>(t))
           return mt.getMemorySpaceAsInt() != 0;
         return false;
       };

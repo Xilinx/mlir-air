@@ -140,22 +140,23 @@ public:
     auto node = G[it];
     if (node.asyncEventType == "start") {
       this->executeOp(it);
-    } else if (auto Op = dyn_cast<xilinx::air::HierarchyInterface>(node.op)) {
+    } else if (auto Op = dyn_cast_if_present<xilinx::air::HierarchyInterface>(
+                   node.op)) {
       for (auto sub_dependency_graph : node.nextDependencyGraphs) {
         auto sub_runner_node = sub_dependency_graph->runner_node;
         this->executeOp(Op, time, sub_runner_node, it);
       }
-    } else if (auto Op = dyn_cast<scf::ForOp>(node.op)) {
+    } else if (auto Op = dyn_cast_if_present<scf::ForOp>(node.op)) {
       this->executeOp(Op, it);
-    } else if (dyn_cast<scf::YieldOp>(node.op) &&
+    } else if (dyn_cast_if_present<scf::YieldOp>(node.op) &&
                getScfParentOpFromYieldOp<scf::ForOp>(node.op)) {
-      auto Op = dyn_cast<scf::YieldOp>(node.op);
-      auto parent_for_op =
-          dyn_cast<scf::ForOp>(getScfParentOpFromYieldOp<scf::ForOp>(node.op));
+      auto Op = dyn_cast_if_present<scf::YieldOp>(node.op);
+      auto parent_for_op = dyn_cast_if_present<scf::ForOp>(
+          getScfParentOpFromYieldOp<scf::ForOp>(node.op));
       this->executeOp(Op, time, parent_for_op, it);
-    } else if (auto Op = dyn_cast<air::ChannelPutOp>(node.op)) {
+    } else if (auto Op = dyn_cast_if_present<air::ChannelPutOp>(node.op)) {
       this->executeOp(Op, it);
-    } else if (auto Op = dyn_cast<air::ChannelGetOp>(node.op)) {
+    } else if (auto Op = dyn_cast_if_present<air::ChannelGetOp>(node.op)) {
       this->executeOp(Op, it);
     } else {
       this->executeOp(it);
@@ -273,7 +274,8 @@ public:
     Graph G = this->ctrl_g->g;
     // If current vertex is ChannelGet, then add implicit ChannelPut vertex to
     // dep list
-    if (air::ChannelGetOp channel_get = dyn_cast<air::ChannelGetOp>(G[v].op)) {
+    if (air::ChannelGetOp channel_get =
+            dyn_cast_if_present<air::ChannelGetOp>(G[v].op)) {
       dep_list.push_back(std::make_pair(G[v], "sym"));
     }
     auto inv_adj_set = G.inverseAdjacentVertices(v);
@@ -307,13 +309,13 @@ public:
     // At any point in time, if segment or herd op fails to allocate enough
     // resources, then the entire launch is invalid due to failing to allocate
     // enough resources upon launch.
-    if (auto Op = dyn_cast<air::SegmentOp>(op)) {
+    if (auto Op = dyn_cast_if_present<air::SegmentOp>(op)) {
       bool result = this->checkResourceFulfillmentForOp(Op);
       if (!result) {
         op->emitOpError("isn't allocated with enough resources to run");
       }
       return result;
-    } else if (auto Op = dyn_cast<air::HerdOp>(op)) {
+    } else if (auto Op = dyn_cast_if_present<air::HerdOp>(op)) {
       bool result = this->checkResourceFulfillmentForOp(Op);
       if (!result) {
         op->emitOpError("isn't allocated with enough resources to run");
@@ -322,17 +324,17 @@ public:
     }
     // If the ops below fails to be allocated with enough resources, then defer
     // their execution until enough resources are freed up.
-    else if (auto Op = dyn_cast<air::ChannelPutOp>(op)) {
+    else if (auto Op = dyn_cast_if_present<air::ChannelPutOp>(op)) {
       return (bool)this->checkResourceFulfillmentForOp(Op);
-    } else if (auto Op = dyn_cast<air::ChannelGetOp>(op)) {
+    } else if (auto Op = dyn_cast_if_present<air::ChannelGetOp>(op)) {
       return (bool)this->checkResourceFulfillmentForOp(Op);
-    } else if (auto Op = dyn_cast<air::ExecuteOp>(op)) {
+    } else if (auto Op = dyn_cast_if_present<air::ExecuteOp>(op)) {
       auto child_op = &Op.getChildOps().front();
       if (name == "AllocOp") {
-        auto Op = dyn_cast<memref::AllocOp>(child_op);
+        auto Op = dyn_cast_if_present<memref::AllocOp>(child_op);
         return this->checkResourceFulfillmentForOp(Op);
       } else if (name == "DeallocOp") {
-        auto Op = dyn_cast<memref::DeallocOp>(child_op);
+        auto Op = dyn_cast_if_present<memref::DeallocOp>(child_op);
         return this->checkResourceFulfillmentForOp(Op);
       }
     }
@@ -699,14 +701,14 @@ private:
                                 Operation *op = nullptr,
                                 std::string name = "") {
     if (op) {
-      if (auto exec_op = dyn_cast<air::ExecuteOp>(op)) {
+      if (auto exec_op = dyn_cast_if_present<air::ExecuteOp>(op)) {
         auto child_op = &exec_op.getChildOps().front();
         // Memory allocation/deallocation
         if (name == "AllocOp") {
-          auto Op = dyn_cast<memref::AllocOp>(child_op);
+          auto Op = dyn_cast_if_present<memref::AllocOp>(child_op);
           this->allocateEventToResources(Op, reserved_resources);
         } else if (name == "DeallocOp") {
-          auto Op = dyn_cast<memref::DeallocOp>(child_op);
+          auto Op = dyn_cast_if_present<memref::DeallocOp>(child_op);
           this->allocateEventToResources(Op, reserved_resources);
         }
       }
@@ -720,15 +722,17 @@ private:
         for (auto res : this->resource_hiers) {
           res->isReserved = false;
         }
-      } else if (auto Op = dyn_cast<air::ChannelPutOp>(op)) {
+      } else if (auto Op = dyn_cast_if_present<air::ChannelPutOp>(op)) {
         this->allocateEventToResources(Op, reserved_resources);
-      } else if (auto Op = dyn_cast<air::ChannelGetOp>(op)) {
+      } else if (auto Op = dyn_cast_if_present<air::ChannelGetOp>(op)) {
         this->allocateEventToResources(Op, reserved_resources);
       }
     } else {
-      if (auto Op = dyn_cast<air::SegmentOp>(this->ctrl_g->hierarchyOp)) {
+      if (auto Op =
+              dyn_cast_if_present<air::SegmentOp>(this->ctrl_g->hierarchyOp)) {
         this->allocateEventToResources(Op, reserved_resources);
-      } else if (auto Op = dyn_cast<air::HerdOp>(this->ctrl_g->hierarchyOp)) {
+      } else if (auto Op = dyn_cast_if_present<air::HerdOp>(
+                     this->ctrl_g->hierarchyOp)) {
         this->allocateEventToResources(Op, reserved_resources);
       }
     }
@@ -782,7 +786,8 @@ private:
   }
   void allocateEventToResources(air::ChannelPutOp Op,
                                 std::vector<resource *> &reserved_resources) {
-    auto chan_interface = dyn_cast<air::ChannelInterface>(Op.getOperation());
+    auto chan_interface =
+        dyn_cast_if_present<air::ChannelInterface>(Op.getOperation());
     unsigned dispatched = 0;
 
     // Check how many evnets need to be dispatched in this op
@@ -816,7 +821,8 @@ private:
   }
   void allocateEventToResources(air::ChannelGetOp Op,
                                 std::vector<resource *> &reserved_resources) {
-    auto chan_interface = dyn_cast<air::ChannelInterface>(Op.getOperation());
+    auto chan_interface =
+        dyn_cast_if_present<air::ChannelInterface>(Op.getOperation());
     unsigned dispatched = 0;
     // Check how many evnets need to be dispatched in this op
     unsigned total =
@@ -863,11 +869,13 @@ private:
     // difference to put op
     unsigned remaining = 0;
     std::string put_or_get = "";
-    if (auto getOp = dyn_cast<air::ChannelGetOp>(Op.getOperation())) {
+    if (auto getOp =
+            dyn_cast_if_present<air::ChannelGetOp>(Op.getOperation())) {
       remaining =
           launch_runner->getRemainingDispatchesForDynamicDispatch(getOp);
       put_or_get = "get";
-    } else if (auto putOp = dyn_cast<air::ChannelPutOp>(Op.getOperation())) {
+    } else if (auto putOp =
+                   dyn_cast_if_present<air::ChannelPutOp>(Op.getOperation())) {
       remaining =
           launch_runner->getRemainingDispatchesForDynamicDispatch(putOp);
       put_or_get = "put";
@@ -902,7 +910,7 @@ private:
 
   // Get broadcast size from channel declaration
   unsigned getBCastSizeFromChannelDeclaration(Operation *op) {
-    auto chan_op = dyn_cast<air::ChannelInterface>(op);
+    auto chan_op = dyn_cast_if_present<air::ChannelInterface>(op);
     if (!chan_op)
       return 1;
     auto chan_declr = getChannelDeclarationThroughSymbol(chan_op);
@@ -1342,7 +1350,7 @@ private:
       reset_vertices_end =
           canonicalizer.getVertexFromOp(token_op, *(this->dep_ctx), "back")
               .first;
-    } else if (auto forop = dyn_cast<scf::ForOp>(token_op)) {
+    } else if (auto forop = dyn_cast_if_present<scf::ForOp>(token_op)) {
       auto forop_terminator = forop.getBody()->getTerminator();
       reset_vertices_end =
           canonicalizer
@@ -1359,7 +1367,7 @@ private:
   // Check if a channel dependence has been fulfilled
   bool checkChannelDependenceFulfillment(dependencyNodeEntry dep_node,
                                          std::vector<unsigned> position) {
-    auto channel_op = dyn_cast<air::ChannelInterface>(dep_node.op);
+    auto channel_op = dyn_cast_if_present<air::ChannelInterface>(dep_node.op);
     this->runner_assertion(channel_op, "op being checked is not a channel op");
     std::string chan_name = channel_op.getChanName().str();
     unsigned th =
@@ -1469,7 +1477,7 @@ private:
     // If op is producer to a channel broadcast, then bump up token count by
     // fanout
     if (isa<air::ChannelPutOp>(op)) {
-      auto channel_op = dyn_cast<air::ChannelInterface>(op);
+      auto channel_op = dyn_cast_if_present<air::ChannelInterface>(op);
       auto chan = getChannelDeclarationThroughSymbol(channel_op);
       if (chan->hasAttr("broadcast_shape")) {
         auto size = extractFromIntegerArrayAttr<int64_t>(
@@ -1485,7 +1493,7 @@ private:
     }
     for (auto parent = op->getParentOp(); !isa<func::FuncOp>(parent);
          parent = parent->getParentOp()) {
-      if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)) {
+      if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
         for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
           auto lbCstOp = scf_par.getLowerBound()[i]
                              .getDefiningOp<arith::ConstantIndexOp>();
@@ -1497,12 +1505,14 @@ private:
               ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
           output *= tripCount;
         }
-      } else if (auto hier = dyn_cast<air::HierarchyInterface>(parent)) {
+      } else if (auto hier =
+                     dyn_cast_if_present<air::HierarchyInterface>(parent)) {
         if (this->sim_granularity == "core" && isa<air::HerdOp>(parent)) {
         } else {
           output *= canonicalizer.getTripCountInHierarchyOp(hier);
         }
-      } else if (auto affine_if = dyn_cast<affine::AffineIfOp>(parent)) {
+      } else if (auto affine_if =
+                     dyn_cast_if_present<affine::AffineIfOp>(parent)) {
         // Fast forward through affine.if nest
         std::vector<Operation *> affine_if_nest;
         Operation *spatial_loop = nullptr;
@@ -1510,7 +1520,7 @@ private:
                                                      spatial_loop);
 
         // If showing cores
-        auto herd = dyn_cast<air::HerdOp>(spatial_loop);
+        auto herd = dyn_cast_if_present<air::HerdOp>(spatial_loop);
         if (herd && this->sim_granularity == "core") {
           output =
               (positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
@@ -1534,7 +1544,7 @@ private:
     // If op is producer to a channel broadcast, then bump up token count by
     // fanout
     if (isa<air::ChannelPutOp>(op)) {
-      auto channel_op = dyn_cast<air::ChannelInterface>(op);
+      auto channel_op = dyn_cast_if_present<air::ChannelInterface>(op);
       auto chan = getChannelDeclarationThroughSymbol(channel_op);
       if (chan->hasAttr("broadcast_shape")) {
         auto size = extractFromIntegerArrayAttr<int64_t>(
@@ -1550,7 +1560,7 @@ private:
     }
     for (auto parent = op->getParentOp(); !isa<func::FuncOp>(parent);
          parent = parent->getParentOp()) {
-      if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)) {
+      if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
         for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
           auto lbCstOp = scf_par.getLowerBound()[i]
                              .getDefiningOp<arith::ConstantIndexOp>();
@@ -1562,12 +1572,14 @@ private:
               ubCstOp.value() - lbCstOp.value(), stepCstOp.value());
           output *= tripCount;
         }
-      } else if (auto hier = dyn_cast<air::HierarchyInterface>(parent)) {
+      } else if (auto hier =
+                     dyn_cast_if_present<air::HierarchyInterface>(parent)) {
         if (this->sim_granularity == "core" && isa<air::HerdOp>(parent)) {
         } else {
           output *= this->canonicalizer.getTripCountInHierarchyOp(hier);
         }
-      } else if (auto affine_if = dyn_cast<affine::AffineIfOp>(parent)) {
+      } else if (auto affine_if =
+                     dyn_cast_if_present<affine::AffineIfOp>(parent)) {
         // Fast forward through affine.if nest
         std::vector<Operation *> affine_if_nest;
         Operation *spatial_loop = nullptr;
@@ -1575,7 +1587,7 @@ private:
                                                      spatial_loop);
 
         // If showing cores
-        auto herd = dyn_cast<air::HerdOp>(spatial_loop);
+        auto herd = dyn_cast_if_present<air::HerdOp>(spatial_loop);
         if (herd && this->sim_granularity == "core") {
           output = (positionHitsAffineIfCondition(op, spatial_loop,
                                                   affine_if_nest, position))
@@ -1599,7 +1611,7 @@ private:
     auto parent = op;
     while ((!isa<T>(parent)) && !(isa<func::FuncOp>(parent))) {
       parent = parent->getParentOp();
-      if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)) {
+      if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(parent)) {
         for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
           auto lbCstOp = scf_par.getLowerBound()[i]
                              .getDefiningOp<arith::ConstantIndexOp>();
@@ -1613,9 +1625,10 @@ private:
         }
       } else if (isa<air::HierarchyInterface>(parent) &&
                  !isa<air::LaunchOp>(parent)) {
-        auto hier = dyn_cast<air::HierarchyInterface>(parent);
+        auto hier = dyn_cast_if_present<air::HierarchyInterface>(parent);
         output *= this->canonicalizer.getTripCountInHierarchyOp(hier);
-      } else if (auto affine_if = dyn_cast<affine::AffineIfOp>(parent)) {
+      } else if (auto affine_if =
+                     dyn_cast_if_present<affine::AffineIfOp>(parent)) {
         // Fast forward through affine.if nest
         std::vector<Operation *> affine_if_nest;
         Operation *spatial_loop = nullptr;
@@ -1635,7 +1648,7 @@ private:
     // Threshold token_count for dep fulfillment = how many iter_args does node
     // depend on
     unsigned th = 0;
-    if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+    if (auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op)) {
       for (auto token : async_op.getAsyncDependencies()) {
         if (getForRegionIterArgsOwner(token)) {
           th++;

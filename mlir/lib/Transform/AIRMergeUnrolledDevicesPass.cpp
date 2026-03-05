@@ -255,7 +255,7 @@ private:
       // (these are external function prototypes that are identical across
       // all unrolled devices). Use addedFuncTypes map for O(1) lookup.
       // Also verify that function signatures match across devices.
-      if (auto funcOp = dyn_cast<func::FuncOp>(op)) {
+      if (auto funcOp = dyn_cast_if_present<func::FuncOp>(op)) {
         StringRef funcName = funcOp.getName();
         FunctionType funcType = funcOp.getFunctionType();
         auto [it, inserted] = addedFuncTypes.try_emplace(funcName, funcType);

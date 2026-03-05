@@ -42,7 +42,7 @@ static uint64_t getTensorVolume(const ShapedType ty) {
 }
 
 static uint64_t getTensorVolume(const Type ty) {
-  if (auto t = llvm::dyn_cast<ShapedType>(ty)) {
+  if (auto t = llvm::dyn_cast_if_present<ShapedType>(ty)) {
     return getTensorVolume(t);
   } else {
     return 1;
@@ -66,16 +66,16 @@ void CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
   int64_t writes = 0;
   uint64_t footprint = 0;
   for (auto size : shapeSizes) {
-    if (auto v = llvm::dyn_cast<Value>(size)) {
-      auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
+    if (auto v = llvm::dyn_cast_if_present<Value>(size)) {
+      auto c = dyn_cast_if_present<arith::ConstantIndexOp>(v.getDefiningOp());
       if (!c) {
         LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
         return;
       }
       iters *= c.value();
     } else {
-      auto a = llvm::dyn_cast<Attribute>(size);
-      auto c = llvm::dyn_cast<IntegerAttr>(a);
+      auto a = llvm::dyn_cast_if_present<Attribute>(size);
+      auto c = llvm::dyn_cast_if_present<IntegerAttr>(a);
       if (!c) {
         LLVM_DEBUG(llvm::outs() << "unhandled addr!\n");
         return;

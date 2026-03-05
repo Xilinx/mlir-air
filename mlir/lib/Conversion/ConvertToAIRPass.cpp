@@ -100,7 +100,8 @@ static void extractOperandsFromReinterpretCast(
       [](MemRefType rankedMemRefType,
          memref::ReinterpretCastOp reinterpretCast) {
         StridedLayoutAttr stridedLayout =
-            dyn_cast<StridedLayoutAttr>(rankedMemRefType.getLayout());
+            dyn_cast_if_present<StridedLayoutAttr>(
+                rankedMemRefType.getLayout());
         SmallVector<int64_t> correctedStaticStrides(
             stridedLayout.getStrides().size(), 0);
         for (auto [index, stride] :
@@ -155,8 +156,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   rewriter.setInsertionPoint(op);
 
   // It must already be a memref
-  auto src_type = llvm::dyn_cast<MemRefType>(src.getType());
-  auto dst_type = llvm::dyn_cast<MemRefType>(dst.getType());
+  auto src_type = llvm::dyn_cast_if_present<MemRefType>(src.getType());
+  auto dst_type = llvm::dyn_cast_if_present<MemRefType>(dst.getType());
   if (!src_type)
     return failure();
 
@@ -287,10 +288,10 @@ public:
     normalizeAffineParallel(op);
 
     auto loc = op.getLoc();
-    auto ub0 =
-        dyn_cast<AffineConstantExpr>(op.getUpperBoundsMap().getResult(0));
-    auto ub1 =
-        dyn_cast<AffineConstantExpr>(op.getUpperBoundsMap().getResult(1));
+    auto ub0 = dyn_cast_if_present<AffineConstantExpr>(
+        op.getUpperBoundsMap().getResult(0));
+    auto ub1 = dyn_cast_if_present<AffineConstantExpr>(
+        op.getUpperBoundsMap().getResult(1));
 
     if (!ub0 || !ub1) {
       return op->emitOpError("failed conversion to 'air.herd': only constant "
@@ -866,7 +867,7 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
     dims.push_back(arith::ConstantIndexOp::create(rewriter, loc, bounds[id]));
   auto hierOp = hierTy::create(rewriter, op.getLoc(), dims, args);
   auto &body = op.getBody()->getOperations();
-  if (auto herdOp = dyn_cast<air::HerdOp>(hierOp.getOperation()))
+  if (auto herdOp = dyn_cast_if_present<air::HerdOp>(hierOp.getOperation()))
     propagateLinkWith(op, herdOp);
   auto &bb = hierOp.getBody().front();
   auto ivs = op.getInductionVars();
@@ -877,7 +878,8 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
 
   // If scf.parallel has scf.reduce with non-empty region, then convert to
   // affine.if.
-  auto reduceOp = dyn_cast<scf::ReduceOp>(op.getBody()->getTerminator());
+  auto reduceOp =
+      dyn_cast_if_present<scf::ReduceOp>(op.getBody()->getTerminator());
   if (!reduceOp.getReductions().empty()) {
     rewriter.setInsertionPoint(bb.getTerminator());
     if (failed(ScfReduceToAffineIf(reduceOp, hierOp, rewriter)))
@@ -956,7 +958,7 @@ getMemrefBackwardSlices(Value &memref, Operation *&memrefAlloc,
     if (!memrefAlloc)
       return failure();
   }
-  memref = dyn_cast<memref::AllocOp>(memrefAlloc).getMemref();
+  memref = dyn_cast_if_present<memref::AllocOp>(memrefAlloc).getMemref();
   return success();
 }
 
@@ -983,7 +985,7 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
   memref::SubViewOp tilingHintSubview = nullptr;
   scf::ParallelOp previousTilingScfPar = nullptr;
   for (auto user : L1Memref.getUsers()) {
-    if (auto subViewUser = dyn_cast<memref::SubViewOp>(user))
+    if (auto subViewUser = dyn_cast_if_present<memref::SubViewOp>(user))
       tilingHintSubview = subViewUser;
     else
       continue;
@@ -1009,11 +1011,11 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
               newTilingPar.getInductionVars()[i]);
   // Generate memref subview op leading the tiling of the L1 memref
   builder.setInsertionPointToStart(newTilingPar.getBody());
-  auto newL1Subview =
-      dyn_cast<memref::SubViewOp>(builder.clone(*tilingHintSubview, remap));
+  auto newL1Subview = dyn_cast_if_present<memref::SubViewOp>(
+      builder.clone(*tilingHintSubview, remap));
   remap.map(L1Memref, newL1Subview.getResult());
   for (auto o : L1MemrefOpLog) {
-    if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
+    if (auto tr = dyn_cast_if_present<memref::TransposeOp>(o)) {
       memref::TransposeOp transposeOp =
           memref::TransposeOp::create(builder, loc, newL1Subview.getResult(),
                                       AffineMapAttr::get(tr.getPermutation()));
@@ -1069,7 +1071,7 @@ LogicalResult TileL1L2AIRMemcpyUsingScfParallel(air::DmaMemcpyNdOp op,
       builder, loc, subviewOutputType, L2Memref, L2Offsets, L2Sizes, L2Strides);
   remap.map(L2Memref, newL2Subview.getResult());
   for (auto o : L2MemrefOpLog) {
-    if (auto tr = dyn_cast<memref::TransposeOp>(o)) {
+    if (auto tr = dyn_cast_if_present<memref::TransposeOp>(o)) {
       memref::TransposeOp transposeOp =
           memref::TransposeOp::create(builder, loc, newL2Subview.getResult(),
                                       AffineMapAttr::get(tr.getPermutation()));
@@ -1198,8 +1200,10 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
                       affine::AffineYieldOp>();
 
     target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
-      auto src_type = llvm::dyn_cast<MemRefType>(co.getSource().getType());
-      auto dst_type = llvm::dyn_cast<MemRefType>(co.getTarget().getType());
+      auto src_type =
+          llvm::dyn_cast_if_present<MemRefType>(co.getSource().getType());
+      auto dst_type =
+          llvm::dyn_cast_if_present<MemRefType>(co.getTarget().getType());
       return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
     });
 
@@ -1226,7 +1230,7 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
     std::vector<Operation *> waits;
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        if (auto wo = dyn_cast<affine::AffineDmaWaitOp>(op)) {
+        if (auto wo = dyn_cast_if_present<affine::AffineDmaWaitOp>(op)) {
           auto memref = wo.getTagMemRef();
           for (auto u : memref.getUsers()) {
             waits.push_back(u);
@@ -1377,7 +1381,7 @@ ConvertForallToParallelInFilteredOps(SmallPtrSet<Operation *, 8> &filteredOps,
   IRRewriter rewriter(context);
   SmallVector<Operation *> fErased, fAdded;
   for (auto op : filteredOps) {
-    auto forall = dyn_cast<scf::ForallOp>(op);
+    auto forall = dyn_cast_if_present<scf::ForallOp>(op);
     if (!forall)
       continue;
     scf::ParallelOp newPar;
@@ -2076,7 +2080,7 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
   // Find the linalg.reduce operation that uses the forall result
   linalg::ReduceOp linalgReduceOp = nullptr;
   for (auto user : forallOp->getUsers()) {
-    auto reduceOp = dyn_cast<linalg::ReduceOp>(user);
+    auto reduceOp = dyn_cast_if_present<linalg::ReduceOp>(user);
     if (!reduceOp)
       continue;
     // Check if this reduce uses the forall result as input
@@ -2096,7 +2100,8 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
   if (linalgReduceOp && !sharedOuts.empty()) {
     for (unsigned i = 0; i < forallOp.getRank(); i++) {
       Type expectedOutputType = linalgReduceOp.getDpsInits()[i].getType();
-      if (auto tensorType = dyn_cast<RankedTensorType>(expectedOutputType)) {
+      if (auto tensorType =
+              dyn_cast_if_present<RankedTensorType>(expectedOutputType)) {
         auto newInitMemrefTy =
             MemRefType::get(tensorType.getShape(), tensorType.getElementType(),
                             AffineMap(), (int)xilinx::air::MemorySpace::L1);
@@ -2143,7 +2148,8 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
   SmallVector<Value> reduceValues;
   for (const auto &[i, yieldingOp] :
        llvm::enumerate(forallTerminator.getYieldingOps())) {
-    if (auto insertOp = dyn_cast<tensor::ParallelInsertSliceOp>(yieldingOp)) {
+    if (auto insertOp =
+            dyn_cast_if_present<tensor::ParallelInsertSliceOp>(yieldingOp)) {
       Value sourceValue = mapping.lookupOrDefault(insertOp.getSource());
       Value sourceBufferValue = bufferization::ToBufferOp::create(
           rewriter, insertOp.getLoc(), modifiedInitVals[i].getType(),
@@ -2247,7 +2253,7 @@ DiagnosedSilenceableFailure transform::ForallWithReduceToParallelOp::apply(
   if (!llvm::hasSingleElement(payload))
     return emitSilenceableError() << "expected a single payload op";
 
-  auto target = dyn_cast<scf::ForallOp>(*payload.begin());
+  auto target = dyn_cast_if_present<scf::ForallOp>(*payload.begin());
   if (!target) {
     DiagnosedSilenceableFailure diag =
         emitSilenceableError() << "expected the payload to be scf.forall";
@@ -2285,7 +2291,7 @@ DiagnosedSilenceableFailure transform::LinalgToLibraryCallOp::applyToOne(
   using namespace mlir;
   using namespace mlir::linalg;
 
-  auto linalgOp = dyn_cast<LinalgOp>(target);
+  auto linalgOp = dyn_cast_if_present<LinalgOp>(target);
   if (!linalgOp)
     return emitSilenceableError() << "expected linalg op as target";
 
