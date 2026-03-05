@@ -27,6 +27,9 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | Normalization | [Layer Normalization](layer_norm/) | bf16 | ⚪ | 🟢 | [layer_norm/](layer_norm/) |
 | Normalization | [RMS Normalization](rms_norm/) | bf16 | ⚪ | 🟢 | [rms_norm/](rms_norm/) |
 | Normalization | [Weighted RMS Normalization](weighted_rms_norm/) | bf16 | ⚪ | 🟢 | [weighted_rms_norm/](weighted_rms_norm/) |
+| Aggregation | [Reduction (Add)](primitives/vector_examples/vector_reduce_add/) | bf16 | 🟢 | 🟢 | [primitives/vector_examples/vector_reduce_add/](primitives/vector_examples/vector_reduce_add/) |
+| Pooling | [MaxPool](primitives/vector_examples/vector_reduce_max/) | bf16 | 🟢 | 🟢 | [primitives/vector_examples/vector_reduce_max/](primitives/vector_examples/vector_reduce_max/) |
+| Pooling | [AveragePool](average_pool/) | bf16 | 🟢 | 🟢 | [average_pool/](average_pool/) |
 | LLM Kernels | [Multi-Head Attention (LLaMA2)](llama2_mha/) | bf16 | 🟢 | ⚪ | [llama2_mha/](llama2_mha/) |
 | LLM Kernels | [SwiGLU](swiglu/) | bf16 | ⚪ | 🟢 | [swiglu/](swiglu/) |
 | LLM Kernels | [FFN SwiGLU (Decode)](ffn_swiglu/decode/) | bf16 | ⚪ | 🟢 | [ffn_swiglu/decode/](ffn_swiglu/decode/) |
