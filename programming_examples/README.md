@@ -33,15 +33,17 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | LLM Kernels | [Multi-Head Attention (LLaMA2)](llama2_mha/) | bf16 | 🟢 | ⚪ | [llama2_mha/](llama2_mha/) |
 | LLM Kernels | [SwiGLU](swiglu/) | bf16 | ⚪ | 🟢 | [swiglu/](swiglu/) |
 | LLM Kernels | [FFN SwiGLU (Decode)](ffn_swiglu/decode/) | bf16 | ⚪ | 🟢 | [ffn_swiglu/decode/](ffn_swiglu/decode/) |
+| LLM Kernels | [FFN SwiGLU (Prefill)](ffn_swiglu/prefill/) | bf16 | ⚪ | 🟢 | [ffn_swiglu/prefill/](ffn_swiglu/prefill/) |
 | LLM Kernels | [RoPE (LUT-based)](rope_lut/) | bf16 | ⚪ | 🟢 | [rope_lut/](rope_lut/) |
 | LLM Kernels | [RoPE (On-chip Sin/Cos)](rope_sincos/) | bf16 | 🟢 | 🟢 | [rope_sincos/](rope_sincos/) |
 | Attention | [Flash Attention (Dataflow)](flash_attention/dataflow_based/) | bf16 | 🟢 | 🟢 | [flash_attention/dataflow_based/](flash_attention/dataflow_based/) |
 | Attention | [Flash Attention (Kernel Fusion)](flash_attention/kernel_fusion_based/) | bf16 | ⚪ | 🟢 | [flash_attention/kernel_fusion_based/](flash_attention/kernel_fusion_based/) |
-| Data Movement | [Passthrough (DMA)](passthrough/passthrough_dma/) | u8 | 🟢 | 🟢 | [passthrough/passthrough_dma/](passthrough/passthrough_dma/) |
+| Data Movement | [Passthrough (DMA)](passthrough/passthrough_dma/) | u8, i8, i16, u16, f32, bf16 | 🟢 | 🟢 | [passthrough/passthrough_dma/](passthrough/passthrough_dma/) |
 | Data Movement | [Passthrough (Channel)](passthrough/passthrough_channel/) | u8 | 🟢 | 🟢 | [passthrough/passthrough_channel/](passthrough/passthrough_channel/) |
 | Data Movement | [Passthrough (Kernel)](passthrough/passthrough_kernel/) | u8 | 🟢 | 🟢 | [passthrough/passthrough_kernel/](passthrough/passthrough_kernel/) |
 | Data Movement | [Shim DMA 2D](shim_dma_2d/) | i32 | 🟢 | 🟢 | [shim_dma_2d/](shim_dma_2d/) |
 | Data Movement | [Data Transfer Transpose](data_transfer_transpose/) | u32 | 🟢 | 🟢 | [data_transfer_transpose/](data_transfer_transpose/) |
+| Data Movement | [Transpose (bf16)](data_transfer_transpose/dma_bf16/) | bf16 | ⚪ | 🟢 | [data_transfer_transpose/dma_bf16/](data_transfer_transpose/dma_bf16/) |
 | Data Movement | [Matrix Scalar Add](matrix_scalar_add/) | i32 | 🟢 | 🟢 | [matrix_scalar_add/](matrix_scalar_add/) |
 | Communication | [Channel Examples](channel_examples/) | i32 | 🟢 | 🟢 | [channel_examples/](channel_examples/) |
 | Communication | [Multi-Segment Examples](multi_segment/) | i32 | 🟡 | 🟡 | [multi_segment/](multi_segment/) |
@@ -53,6 +55,7 @@ These programming examples demonstrate how to leverage the AIR design flow with 
 | CNN | [2D Convolution](conv2d/) | i32 | 🟢 | 🟢 | [conv2d/](conv2d/) |
 | CNN | [Bottleneck](bottleneck/) | bf16 | 🟢 | 🟢 | [bottleneck/](bottleneck/) |
 | Memory | [Shared L1 Buffer](shared_l1/) | bf16 | 🟢 | ⚪ | [shared_l1/](shared_l1/) |
+| Quantization | [Dequant (AWQ int4→bf16)](dequant_awq/) | int4/bf16 | ⚪ | 🟢 | [dequant_awq/](dequant_awq/) |
 | Primitives | [Scalar/Vector Operations](primitives/) | various | 🟢 | 🟢 | [primitives/](primitives/) |
 
 ### Status Legend

@@ -2364,8 +2364,11 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
 }
 
 //===----------------------------------------------------------------------===//
-// HoistLoopInvariantTransfersOp
+// HoistLoopInvariantTransfersOp / HoistAllAccumulatorTransfersOp
 //===----------------------------------------------------------------------===//
+
+// Forward declaration (defined in EliminateRedundantVectorTransfersOp section)
+static bool areEquivalentIndices(Value idx1, Value idx2);
 
 /// Check if a value depends on the given loop induction variable
 static bool dependsOnLoopIV(Value val, Value loopIV) {
@@ -2437,127 +2440,57 @@ static Value cloneOpAndOperands(Operation *op, Value loopIV, scf::ForOp loopOp,
     return cloned->getResult(0);
 }
 
-DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
-    transform::TransformRewriter &rewriter,
-    transform::TransformResults &results, transform::TransformState &state) {
-
-  SmallVector<Operation *> readOps =
-      llvm::to_vector(state.getPayloadOps(getReadOp()));
-  SmallVector<Operation *> writeOps =
-      llvm::to_vector(state.getPayloadOps(getWriteOp()));
-  SmallVector<Operation *> loopOps =
-      llvm::to_vector(state.getPayloadOps(getLoopOp()));
-
-  if (readOps.size() != 1 || writeOps.size() != 1 || loopOps.size() != 1) {
-    return emitDefiniteFailure()
-           << "requires exactly one read_op, write_op, and loop_op handle";
-  }
-
-  auto readOp = dyn_cast<vector::TransferReadOp>(readOps[0]);
-  auto writeOp = dyn_cast<vector::TransferWriteOp>(writeOps[0]);
-  auto loopOp = dyn_cast<scf::ForOp>(loopOps[0]);
-
-  if (!readOp || !writeOp || !loopOp) {
-    return emitDefiniteFailure() << "handles must be vector.transfer_read, "
-                                    "vector.transfer_write, and scf.for";
-  }
-
-  // Verify read and write are in the loop
-  if (!loopOp->isProperAncestor(readOp) || !loopOp->isProperAncestor(writeOp)) {
-    return emitDefiniteFailure()
-           << "read and write operations must be inside the loop";
-  }
-
+/// Hoist a single transfer read/write pair out of a loop. The read is cloned
+/// before the loop, the write is cloned after the loop, and an iter_arg is
+/// added to carry the accumulator value through the loop body.
+/// Returns the new ForOp on success.
+static FailureOr<scf::ForOp>
+hoistTransferPairFromLoop(vector::TransferReadOp readOp,
+                          vector::TransferWriteOp writeOp, scf::ForOp loopOp,
+                          RewriterBase &rewriter) {
   Value loopIV = loopOp.getInductionVar();
 
-  // Check if read indices are loop-invariant
-  for (Value index : readOp.getIndices()) {
-    if (dependsOnLoopIV(index, loopIV)) {
-      return emitDefiniteFailure()
-             << "read operation indices depend on loop induction variable";
-    }
-  }
-
-  // Check if write indices are loop-invariant
-  for (Value index : writeOp.getIndices()) {
-    if (dependsOnLoopIV(index, loopIV)) {
-      return emitDefiniteFailure()
-             << "write operation indices depend on loop induction variable";
-    }
-  }
-
-  // Check if they operate on the same memref
-  if (readOp.getBase() != writeOp.getBase()) {
-    return emitDefiniteFailure()
-           << "read and write must operate on the same memref";
-  }
-
-  // Step 1: Clone the read and its operands before the loop
+  // Clone the read and its operands before the loop
   rewriter.setInsertionPoint(loopOp);
   IRMapping readMapping;
   Value clonedReadResult =
       cloneOpAndOperands(readOp, loopIV, loopOp, rewriter, readMapping);
 
-  // Step 2: Get the value that the write op is writing (its vector operand)
+  // Capture writeVector before replaceWithAdditionalYields
   Value writeVector = writeOp.getVector();
-
-  // Step 3: Use replaceWithAdditionalYields to add the read result as iter_arg
-  // and yield the value to be written
   auto yieldValuesFn =
       [&](OpBuilder &b, Location loc,
           ArrayRef<BlockArgument> newBbArgs) -> SmallVector<Value> {
-    // The new block argument is the last one (the hoisted read result)
     BlockArgument readIterArg = newBbArgs.back();
-
-    // Replace uses of the original read with the iter_arg
     rewriter.replaceAllUsesWith(readOp.getResult(), readIterArg);
-
-    // Return the value to yield (what the write op was writing)
     SmallVector<Value> yieldValues;
     yieldValues.push_back(writeVector);
     return yieldValues;
   };
 
-  // Create new loop with additional iter_arg
   FailureOr<LoopLikeOpInterface> newLoopResult =
       cast<LoopLikeOpInterface>(loopOp.getOperation())
-          .replaceWithAdditionalYields(
-              rewriter, ValueRange{clonedReadResult}, // new init operand
-              true,                                   // replace uses in loop
-              yieldValuesFn);
-
-  if (failed(newLoopResult)) {
-    return emitDefiniteFailure() << "failed to add iter_args to loop";
-  }
+          .replaceWithAdditionalYields(rewriter, ValueRange{clonedReadResult},
+                                       true, yieldValuesFn);
+  if (failed(newLoopResult))
+    return failure();
 
   auto newLoop = cast<scf::ForOp>(newLoopResult->getOperation());
-
-  // Step 4: Erase the original read (now passed as iter_arg)
   rewriter.eraseOp(readOp);
 
-  // Step 5: Create the write operation after the loop using the yielded value
+  // Clone the write operation after the loop using the yielded value
   Value valueToWrite = newLoop.getResults().back();
-
-  // Clone the write operation with updated vector value
   IRMapping writeMapping;
   writeMapping.map(writeVector, valueToWrite);
 
-  // Clone ALL index dependencies FIRST, before creating the write
-  // Set insertion point after the loop for index cloning
   rewriter.setInsertionPointAfter(newLoop);
 
   for (Value index : writeOp.getIndices()) {
     Operation *defOp = index.getDefiningOp();
     if (!defOp || dependsOnLoopIV(index, loopIV))
-      continue; // Skip loop IV-dependent or non-operation indices
-
-    // Check if this index is already outside the loop (from previous hoisting)
-    if (!newLoop->isProperAncestor(defOp)) {
-      // Index is already available outside - use it directly
       continue;
-    }
-
-    // Index is inside loop and needs to be cloned
+    if (!newLoop->isProperAncestor(defOp))
+      continue;
     if (!writeMapping.contains(index)) {
       Value clonedIndex =
           cloneOpAndOperands(defOp, loopIV, newLoop, rewriter, writeMapping);
@@ -2566,22 +2499,113 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
     }
   }
 
-  // NOW clone the write operation - DON'T reset insertion point, it's already
-  // at the end after cloning indices
   rewriter.clone(*writeOp.getOperation(), writeMapping);
-
-  // Step 6: Erase the original write
   rewriter.eraseOp(writeOp);
 
-  SmallVector<Operation *> resultOps = {newLoop.getOperation()};
+  return newLoop;
+}
+
+DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> scopeOps =
+      llvm::to_vector(state.getPayloadOps(getScopeOp()));
+  SmallVector<Operation *> loopOps =
+      llvm::to_vector(state.getPayloadOps(getLoopOp()));
+
+  if (scopeOps.size() != 1 || loopOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one scope_op and one loop_op handle";
+  }
+
+  auto scopeOp = scopeOps[0];
+  auto loopOp = dyn_cast<scf::ForOp>(loopOps[0]);
+  if (!loopOp) {
+    return emitDefiniteFailure() << "loop_op must be an scf.for";
+  }
+
+  if (!scopeOp->isProperAncestor(loopOp)) {
+    return emitDefiniteFailure() << "loop must be inside the scope operation";
+  }
+
+  // Iteratively discover and hoist one loop-invariant transfer pair at a time.
+  // After each hoist, the loop is replaced with a new loop, so we re-discover
+  // pairs in the new loop to avoid stale Operation* pointers.
+  scf::ForOp currentLoop = loopOp;
+
+  while (true) {
+    Value loopIV = currentLoop.getInductionVar();
+
+    // Find one loop-invariant write and its paired read
+    vector::TransferWriteOp foundWrite = nullptr;
+    vector::TransferReadOp foundRead = nullptr;
+
+    currentLoop->walk([&](vector::TransferWriteOp writeOp) {
+      if (foundWrite)
+        return;
+      if (writeOp->getParentOfType<scf::ForOp>() != currentLoop)
+        return;
+
+      // Check all write indices are loop-invariant
+      bool allInvariant = true;
+      for (Value index : writeOp.getIndices()) {
+        if (dependsOnLoopIV(index, loopIV)) {
+          allInvariant = false;
+          break;
+        }
+      }
+      if (!allInvariant)
+        return;
+
+      // Find paired read with same memref and matching loop-invariant indices
+      currentLoop->walk([&](vector::TransferReadOp readOp) {
+        if (foundRead)
+          return;
+        if (readOp->getParentOfType<scf::ForOp>() != currentLoop)
+          return;
+        if (readOp.getBase() != writeOp.getBase())
+          return;
+
+        for (Value index : readOp.getIndices()) {
+          if (dependsOnLoopIV(index, loopIV))
+            return;
+        }
+
+        if (readOp.getIndices().size() != writeOp.getIndices().size())
+          return;
+        for (auto [ri, wi] :
+             llvm::zip(readOp.getIndices(), writeOp.getIndices())) {
+          if (!areEquivalentIndices(ri, wi))
+            return;
+        }
+
+        foundRead = readOp;
+      });
+
+      if (foundRead)
+        foundWrite = writeOp;
+    });
+
+    if (!foundWrite || !foundRead)
+      break; // No more pairs to hoist
+
+    FailureOr<scf::ForOp> newLoop =
+        hoistTransferPairFromLoop(foundRead, foundWrite, currentLoop, rewriter);
+    if (failed(newLoop)) {
+      return emitDefiniteFailure() << "failed to hoist transfer pair";
+    }
+    currentLoop = *newLoop;
+  }
+
+  SmallVector<Operation *> resultOps = {currentLoop.getOperation()};
   results.set(llvm::cast<OpResult>(getResult()), resultOps);
   return DiagnosedSilenceableFailure::success();
 }
 
 void transform::HoistLoopInvariantTransfersOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  consumesHandle(getReadOpMutable(), effects);
-  consumesHandle(getWriteOpMutable(), effects);
+  onlyReadsHandle(getScopeOpMutable(), effects);
   onlyReadsHandle(getLoopOpMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
   modifiesPayload(effects);

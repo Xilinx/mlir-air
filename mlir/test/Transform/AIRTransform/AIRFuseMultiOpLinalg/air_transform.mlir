@@ -40,6 +40,16 @@ module attributes {transform.with_named_sequence} {
   %ops5 = transform.structured.match ops{["linalg.generic"]} in %func5 : (!transform.any_op) -> !transform.any_op
   %first_op5, %consumer_op5 = transform.split_handle %ops5 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
   %fused5 = transform.air.fuse_multi_op_linalg %first_op5, %consumer_op5 : (!transform.any_op, !transform.any_op) -> !transform.any_op
+
+  // Test case 6: linalg.generic + linalg.reduce (per-handle generalize pattern)
+  // Tests the AIE2P softmax pattern: data-flow navigation captures linalg.reduce
+  // as typed anchor, then generalize is applied per-handle before fusion.
+  %func6 = transform.structured.match ops{["func.func"]} attributes{sym_name = "fuse_generic_with_reduce"} in %arg1 : (!transform.any_op) -> !transform.any_op
+  %generic6 = transform.structured.match ops{["linalg.generic"]} in %func6 : (!transform.any_op) -> !transform.any_op
+  %reduce6 = transform.structured.match ops{["linalg.reduce"]} in %func6 : (!transform.any_op) -> !transform.any_op
+  // Per-handle generalize: convert linalg.reduce to linalg.generic just before fusion
+  %reduce6_gen = transform.structured.generalize %reduce6 : (!transform.any_op) -> !transform.any_op
+  %fused6 = transform.air.fuse_multi_op_linalg %generic6, %reduce6_gen : (!transform.any_op, !transform.any_op) -> !transform.any_op
     transform.yield
   }
 }
