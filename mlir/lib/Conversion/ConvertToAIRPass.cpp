@@ -1898,26 +1898,31 @@ struct WrapFuncWithParallelPattern : public OpRewritePattern<func::FuncOp> {
     auto parallelOp = scf::ParallelOp::create(rewriter, loc, lowerBounds,
                                               upperBoundsVals, steps);
 
-    // Redirect arguments properly inside the loop
+    // Create index_cast ops for induction variable type remapping.
     Block &loopBlock = parallelOp.getRegion().front();
     rewriter.setInsertionPointToStart(&loopBlock);
-    IRMapping remap;
+    SmallVector<Value> remappedIVs;
     for (unsigned i = 0; i < N; i++) {
       Value loopBlockArg = loopBlock.getArgument(i);
       if (inductionVars[i].getType() != loopBlockArg.getType())
         loopBlockArg = arith::IndexCastOp::create(
             rewriter, loc, inductionVars[i].getType(), loopBlockArg);
-      remap.map(inductionVars[i], loopBlockArg);
+      remappedIVs.push_back(loopBlockArg);
     }
 
-    // Move function body into the loop
+    // Move function body ops into the loop body instead of clone+erase.
+    // This preserves all SSA use-def chains and avoids issues with
+    // IRMapping not fully remapping scalar SSA chains between linalg ops
+    // (see https://github.com/Xilinx/mlir-air/issues/1367).
+    Operation *yield = loopBlock.getTerminator();
     for (auto op : originalFuncBodyOps) {
-      rewriter.clone(*op, remap);
+      rewriter.moveOpBefore(op, yield);
     }
 
-    // Erase original function body ops
-    for (auto o : llvm::reverse(originalFuncBodyOps))
-      rewriter.eraseOp(o);
+    // Replace induction variable uses with parallel block arguments.
+    for (unsigned i = 0; i < N; i++) {
+      rewriter.replaceAllUsesWith(inductionVars[i], remappedIVs[i]);
+    }
 
     return success();
   }
