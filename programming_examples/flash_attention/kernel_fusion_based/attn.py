@@ -28,6 +28,7 @@ def build_module(
     num_q_tiles=4,
     num_cascade_stages=4,
     num_heads=12,
+    num_kv_heads=None,
 ):
     """Build the attention module using Python bindings
 
@@ -40,8 +41,12 @@ def build_module(
         dv: Value dimension (default: 64)
         num_q_tiles: Number of tiles to partition Q chunk (lqp) into (default: 4)
         num_cascade_stages: Number of cascade pipeline stages (default: 4)
-        num_heads: Number of attention heads (default: 12)
+        num_heads: Number of Q attention heads (default: 12)
+        num_kv_heads: Number of K/V heads (default: num_heads for MHA, < num_heads for GQA)
     """
+    if num_kv_heads is None:
+        num_kv_heads = num_heads  # MHA: every Q head has its own KV head
+
     # Validate divisibility requirements
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
     assert (
@@ -54,6 +59,11 @@ def build_module(
     assert (
         num_heads % 2 == 0
     ), f"num_heads ({num_heads}) must be divisible by 2 (segment unroll constraint)"
+    assert num_kv_heads > 0, "num_kv_heads must be positive"
+    assert (
+        num_heads % num_kv_heads == 0
+    ), f"num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+    gqa_group_size = num_heads // num_kv_heads
 
     bf16 = Type.parse("bf16")
     i32 = IntegerType.get_signless(32)
@@ -94,8 +104,8 @@ def build_module(
     # L3 MemRefTypes (no memory space annotation = default L3) - with head dimension
     memref_input_q_lq_dk = MemRefType.get([num_heads, lq, dk], bf16)
     memref_output_lq_dv = MemRefType.get([num_heads, lq, dk], bf16)
-    memref_input_k_dk_lk = MemRefType.get([num_heads, dk, lk], bf16)
-    memref_input_v_lk_dv = MemRefType.get([num_heads, lk, dk], bf16)
+    memref_input_k_dk_lk = MemRefType.get([num_kv_heads, dk, lk], bf16)
+    memref_input_v_lk_dv = MemRefType.get([num_kv_heads, lk, dk], bf16)
     memref_input_m_lq_lk = MemRefType.get([num_heads, lq, lk], bf16)
 
     # Helper function to create external function declarations
@@ -229,6 +239,26 @@ def build_module(
             )
             head_1 = affine_apply(affine_map_add_one, [head_base])
 
+            # GQA: compute KV head indices from Q head indices
+            # kv_head = q_head // gqa_group_size
+            if gqa_group_size == 1:
+                # MHA: kv_head == q_head
+                kv_head_base = head_base
+                kv_head_1 = head_1
+            else:
+                affine_map_kv_head = AffineMap.get(
+                    0,
+                    1,
+                    [
+                        AffineExpr.get_floor_div(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(gqa_group_size),
+                        )
+                    ],
+                )
+                kv_head_base = affine_apply(affine_map_kv_head, [head_base])
+                kv_head_1 = affine_apply(affine_map_kv_head, [head_1])
+
             # Affine map for Q tile partitioning within lqp chunk
             affine_map_tileq = AffineMap.get(
                 0,
@@ -324,8 +354,8 @@ def build_module(
             # L3 to L2 channel puts for K matrix - both heads in group
             for i in range(num_cascade_stages):
                 col_off = ConstantOp(index_type, i * lkp)
-                # Head 0 in group
-                k_head0_off = affine_apply(affine_map_head_col, [head_base, col_off])
+                # Head 0 in group (use KV head index for K)
+                k_head0_off = affine_apply(affine_map_head_col, [kv_head_base, col_off])
                 ChannelPut(
                     "L3ToL2Chan1",
                     arg10,
@@ -334,8 +364,8 @@ def build_module(
                     sizes=[chunks_per_stage, dk, lkp],
                     strides=[lkp * num_cascade_stages, lk, 1],
                 )
-                # Head 1 in group
-                k_head1_off = affine_apply(affine_map_head_col, [head_1, col_off])
+                # Head 1 in group (use KV head index for K)
+                k_head1_off = affine_apply(affine_map_head_col, [kv_head_1, col_off])
                 ChannelPut(
                     "L3ToL2Chan1",
                     arg10,
@@ -347,8 +377,8 @@ def build_module(
 
             # L3 to L2 channel puts for V matrix - both heads in group
             for i in range(num_cascade_stages):
-                # Head 0 in group
-                v_head0_off = affine_apply(affine_map_v_head_offset, [head_base])
+                # Head 0 in group (use KV head index for V)
+                v_head0_off = affine_apply(affine_map_v_head_offset, [kv_head_base])
                 ChannelPut(
                     "L3ToL2Chan2",
                     arg11,
@@ -357,8 +387,8 @@ def build_module(
                     sizes=[chunks_per_stage, lkp, dv],
                     strides=[lkp * num_cascade_stages * dv, dv, 1],
                 )
-                # Head 1 in group
-                v_head1_off = affine_apply(affine_map_v_head_offset, [head_1])
+                # Head 1 in group (use KV head index for V)
+                v_head1_off = affine_apply(affine_map_v_head_offset, [kv_head_1])
                 ChannelPut(
                     "L3ToL2Chan2",
                     arg11,
@@ -853,7 +883,13 @@ if __name__ == "__main__":
     parser.add_argument("--dk", type=int, default=64, help="Key dimension")
     parser.add_argument("--dv", type=int, default=64, help="Value dimension")
     parser.add_argument(
-        "--num-heads", type=int, default=12, help="Number of attention heads"
+        "--num-heads", type=int, default=12, help="Number of Q attention heads"
+    )
+    parser.add_argument(
+        "--num-kv-heads",
+        type=int,
+        default=None,
+        help="Number of K/V heads (default: num_heads for MHA, set < num_heads for GQA)",
     )
     parser.add_argument(
         "--compile-mode",
@@ -866,6 +902,14 @@ if __name__ == "__main__":
 
     lk, lkp, lq, lqp, dk, dv = args.lk, args.lkp, args.lq, args.lqp, args.dk, args.dv
     num_heads = args.num_heads
+    num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else num_heads
+
+    if num_kv_heads <= 0:
+        raise ValueError(f"num_kv_heads must be positive, got {num_kv_heads}")
+    if num_heads % num_kv_heads != 0:
+        raise ValueError(
+            f"num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+        )
 
     if args.mlir_file:
         with open(args.mlir_file, "r") as f:
@@ -888,6 +932,7 @@ if __name__ == "__main__":
             num_q_tiles=4,
             num_cascade_stages=4,
             num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
         )
 
     if args.print_module_only:
@@ -901,15 +946,18 @@ if __name__ == "__main__":
 
     INPUT_DATATYPE = VM_ACC_DATATYPE = OUTPUT_DATATYPE = bfloat16
 
+    gqa_group_size = num_heads // num_kv_heads
+
     input_q = np.zeros((num_heads, lq, dk), dtype=INPUT_DATATYPE)
-    input_k = np.zeros((num_heads, dk, lk), dtype=INPUT_DATATYPE)
-    input_v = np.zeros((num_heads, lk, dv), dtype=INPUT_DATATYPE)
+    input_k = np.zeros((num_kv_heads, dk, lk), dtype=INPUT_DATATYPE)
+    input_v = np.zeros((num_kv_heads, lk, dv), dtype=INPUT_DATATYPE)
     input_m = np.zeros((num_heads, lq, lk), dtype=INPUT_DATATYPE)
 
     for h in range(num_heads):
         input_q[h] = (
             np.arange(0, lq * dk, dtype=INPUT_DATATYPE).reshape(lq, dk) / (lq * dk) * 2
         ).astype(INPUT_DATATYPE)
+    for h in range(num_kv_heads):
         input_k[h] = (
             np.arange(0, dk * lk, dtype=INPUT_DATATYPE).reshape(dk, lk) / (dk * lk) * 2
         ).astype(INPUT_DATATYPE)
@@ -921,20 +969,21 @@ if __name__ == "__main__":
 
     lazy_attn_output = np.zeros((num_heads, lq, dv), dtype=OUTPUT_DATATYPE)
     for h in range(num_heads):
+        kv_h = h // gqa_group_size  # GQA: map Q head to KV head
         A = input_q_scaled[h]
         Gp = np.zeros((lq, dv), dtype=VM_ACC_DATATYPE)
         up = np.full((lq, 1), -np.inf, dtype=VM_ACC_DATATYPE)
         sp = np.zeros((lq, 1), dtype=VM_ACC_DATATYPE)
         for j in range(0, lk // lkp):
             G = input_m[h, :, j * lkp : (j + 1) * lkp]
-            B = input_k[h, :, j * lkp : (j + 1) * lkp]
+            B = input_k[kv_h, :, j * lkp : (j + 1) * lkp]
             G = A @ B + G
             G = G.astype(VM_ACC_DATATYPE)
             u = np.max(G, axis=-1, keepdims=True).astype(VM_ACC_DATATYPE)
             u = np.maximum(u, up)
             G = np.exp(G - u)
             G = G.astype(VM_ACC_DATATYPE)
-            B = input_v[h, j * lkp : (j + 1) * lkp, :]
+            B = input_v[kv_h, j * lkp : (j + 1) * lkp, :]
             r = np.exp(up - u).astype(VM_ACC_DATATYPE)
             Gp = Gp * r
             Gp = G @ B + Gp
