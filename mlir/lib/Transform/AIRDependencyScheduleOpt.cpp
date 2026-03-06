@@ -4631,11 +4631,58 @@ private:
           }
           return connectedComponents;
         };
+    // Check if two candidate ops have a same-direction channel-resource
+    // dependency, looking through nested loops to find channel ops that
+    // share a channel name, direction (both puts or both gets), and
+    // non-provably-different indices.  This prevents the isolation
+    // pattern from splitting same-channel, same-direction ops at
+    // different loop depths into independent loops, which would break
+    // the per-iteration interleaving needed by cycling tile BD chains.
+    auto haveChannelResourceDep = [](Operation *a, Operation *b) -> bool {
+      SmallVector<air::ChannelInterface> chansA, chansB;
+      auto collectChans = [](Operation *op,
+                             SmallVector<air::ChannelInterface> &out) {
+        if (auto chan = dyn_cast<air::ChannelInterface>(op)) {
+          out.push_back(chan);
+        } else {
+          op->walk([&](air::ChannelInterface chan) { out.push_back(chan); });
+        }
+      };
+      collectChans(a, chansA);
+      collectChans(b, chansB);
+      for (auto chanA : chansA) {
+        bool isPutA = isa<air::ChannelPutOp>(chanA.getOperation());
+        for (auto chanB : chansB) {
+          bool isPutB = isa<air::ChannelPutOp>(chanB.getOperation());
+          if (isPutA != isPutB)
+            continue;
+          if (chanA.getChanName() != chanB.getChanName())
+            continue;
+          // Check indices: if all constant and any differ → independent.
+          if (chanA.getIndices().size() != chanB.getIndices().size())
+            return true;
+          bool provenIndependent = false;
+          for (unsigned i = 0; i < chanA.getIndices().size(); i++) {
+            auto cA = getConstantIntValue(chanA.getIndices()[i]);
+            auto cB = getConstantIntValue(chanB.getIndices()[i]);
+            if (cA && cB && *cA != *cB) {
+              provenIndependent = true;
+              break;
+            }
+          }
+          if (!provenIndependent)
+            return true;
+        }
+      }
+      return false;
+    };
     llvm::MapVector<Operation *, SmallVector<Operation *>> depGraph;
     for (auto sinkOp : candidate_ops) {
       depGraph[sinkOp] = SmallVector<Operation *>{};
       for (auto sourceOp : candidate_ops)
-        if (areAsyncDependent(sourceOp, sinkOp) && sourceOp != sinkOp)
+        if (sourceOp != sinkOp &&
+            (areAsyncDependent(sourceOp, sinkOp) ||
+             haveChannelResourceDep(sourceOp, sinkOp)))
           depGraph[sinkOp].push_back(sourceOp);
     }
     // Partition the graph.
