@@ -3874,13 +3874,37 @@ transform::FuseTruncfLinalgOp::apply(transform::TransformRewriter &rewriter,
                                     "is consumed by truncf_op";
   }
 
-  // Perform the fusion
+  // Perform the fusion: create a fused generic, then replace it with a
+  // linalg.matmul that has the fused output type (bf16). LLVM 23's
+  // specialize rejects generics with output casts, so we bypass it by
+  // directly creating the matmul with the fused type.
   FailureOr<linalg::GenericOp> fusedOp =
       fuseTruncfIntoProducer(rewriter, producerLinalgOp, truncfLinalgOp);
   if (failed(fusedOp)) {
     return emitDefiniteFailure() << "failed to fuse the operations";
   }
 
+  // LLVM 23: specialize rejects generics with output casts (truncf→yield).
+  // If the fused op has 2D+ inputs (matmul-compatible), replace with a
+  // linalg.matmul directly, bypassing specialize. The matmul body auto-
+  // generates in the output element type (bf16), and Phase 12 adds
+  // extf/truncf pairs for f32 accumulation during vectorization.
+  auto inputType =
+      dyn_cast<RankedTensorType>(fusedOp->getDpsInputs()[0].getType());
+  if (inputType && inputType.getRank() >= 2) {
+    rewriter.setInsertionPoint(*fusedOp);
+    auto matmulOp = linalg::MatmulOp::create(
+        rewriter, fusedOp->getLoc(), fusedOp->getResultTypes(),
+        ValueRange{fusedOp->getDpsInputs()[0], fusedOp->getDpsInputs()[1]},
+        ValueRange{fusedOp->getDpsInits()[0]});
+    rewriter.replaceOp(*fusedOp, matmulOp->getResults());
+
+    SmallVector<Operation *> resultOps = {matmulOp.getOperation()};
+    results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  // For non-matmul cases (1D, etc.), return the generic as-is.
   SmallVector<Operation *> resultOps = {*fusedOp};
   results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
   return DiagnosedSilenceableFailure::success();
