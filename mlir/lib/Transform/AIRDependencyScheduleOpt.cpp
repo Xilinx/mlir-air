@@ -4631,41 +4631,53 @@ private:
           }
           return connectedComponents;
         };
+    // Precompute channel info per candidate op, walking nested ops once.
+    // Each entry is (channel_name, is_put, const_indices).
+    struct ChanKey {
+      StringRef name;
+      bool isPut;
+      SmallVector<std::optional<int64_t>> constIndices;
+    };
+    llvm::DenseMap<Operation *, SmallVector<ChanKey>> candidateChanKeys;
+    for (auto op : candidate_ops) {
+      SmallVector<ChanKey> keys;
+      auto collect = [&](air::ChannelInterface chan) {
+        ChanKey k;
+        k.name = chan.getChanName();
+        k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
+        for (auto idx : chan.getIndices())
+          k.constIndices.push_back(getConstantIntValue(idx));
+        keys.push_back(std::move(k));
+      };
+      if (auto chan = dyn_cast<air::ChannelInterface>(op))
+        collect(chan);
+      else
+        op->walk([&](air::ChannelInterface chan) { collect(chan); });
+      candidateChanKeys[op] = std::move(keys);
+    }
+
     // Check if two candidate ops have a same-direction channel-resource
-    // dependency, looking through nested loops to find channel ops that
-    // share a channel name, direction (both puts or both gets), and
-    // non-provably-different indices.  This prevents the isolation
+    // dependency using the precomputed keys.  This prevents the isolation
     // pattern from splitting same-channel, same-direction ops at
     // different loop depths into independent loops, which would break
     // the per-iteration interleaving needed by cycling tile BD chains.
-    auto haveChannelResourceDep = [](Operation *a, Operation *b) -> bool {
-      SmallVector<air::ChannelInterface> chansA, chansB;
-      auto collectChans = [](Operation *op,
-                             SmallVector<air::ChannelInterface> &out) {
-        if (auto chan = dyn_cast<air::ChannelInterface>(op)) {
-          out.push_back(chan);
-        } else {
-          op->walk([&](air::ChannelInterface chan) { out.push_back(chan); });
-        }
-      };
-      collectChans(a, chansA);
-      collectChans(b, chansB);
-      for (auto chanA : chansA) {
-        bool isPutA = isa<air::ChannelPutOp>(chanA.getOperation());
-        for (auto chanB : chansB) {
-          bool isPutB = isa<air::ChannelPutOp>(chanB.getOperation());
-          if (isPutA != isPutB)
+    auto haveChannelResourceDep = [&](Operation *a, Operation *b) -> bool {
+      for (auto &keyA : candidateChanKeys[a]) {
+        for (auto &keyB : candidateChanKeys[b]) {
+          if (keyA.isPut != keyB.isPut)
             continue;
-          if (chanA.getChanName() != chanB.getChanName())
+          if (keyA.name != keyB.name)
             continue;
-          // Check indices: if all constant and any differ → independent.
-          if (chanA.getIndices().size() != chanB.getIndices().size())
+          // Check indices: if we can prove they differ in at least one
+          // dimension (both indices constant and unequal), we treat the
+          // accesses as independent; otherwise we conservatively assume a
+          // dependency (including when ranks differ).
+          if (keyA.constIndices.size() != keyB.constIndices.size())
             return true;
           bool provenIndependent = false;
-          for (unsigned i = 0; i < chanA.getIndices().size(); i++) {
-            auto cA = getConstantIntValue(chanA.getIndices()[i]);
-            auto cB = getConstantIntValue(chanB.getIndices()[i]);
-            if (cA && cB && *cA != *cB) {
+          for (unsigned i = 0; i < keyA.constIndices.size(); i++) {
+            if (keyA.constIndices[i] && keyB.constIndices[i] &&
+                *keyA.constIndices[i] != *keyB.constIndices[i]) {
               provenIndependent = true;
               break;
             }
@@ -4680,9 +4692,8 @@ private:
     for (auto sinkOp : candidate_ops) {
       depGraph[sinkOp] = SmallVector<Operation *>{};
       for (auto sourceOp : candidate_ops)
-        if (sourceOp != sinkOp &&
-            (areAsyncDependent(sourceOp, sinkOp) ||
-             haveChannelResourceDep(sourceOp, sinkOp)))
+        if (sourceOp != sinkOp && (areAsyncDependent(sourceOp, sinkOp) ||
+                                   haveChannelResourceDep(sourceOp, sinkOp)))
           depGraph[sinkOp].push_back(sourceOp);
     }
     // Partition the graph.
