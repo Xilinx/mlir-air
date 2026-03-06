@@ -132,9 +132,13 @@ public:
           createAsyncDMA(rewriter, op);
         else if (isa<air::ChannelInterface>(op))
           createAsyncChannel(rewriter, op);
-        else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp>(op))
-          createAsyncExecute(rewriter, op);
-        else if (isa<memref::CopyOp>(op)) {
+        else if (isa<linalg::LinalgOp, func::CallOp, memref::DeallocOp>(op)) {
+          if (op->getNumResults())
+            createAsyncExecute(rewriter, op,
+                               op->getResults().front().getType());
+          else
+            createAsyncExecute(rewriter, op);
+        } else if (isa<memref::CopyOp>(op)) {
           // Skip wrapping memref.copy in air.execute when inside scf.if,
           // as the resulting async token would not dominate uses outside
           // the enclosing loop. L1-to-L1 copies are synchronous and don't
