@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
@@ -328,24 +329,34 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         return failure();
     }
 
-    // Get static offsets
+    // Get static offsets. Non-constant offsets indicate an unresolved loop
+    // induction variable (e.g., from an unhandled scf.forall). Warn so that
+    // such bugs are caught early instead of silently producing wrong results.
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 3) defaulting to 0");
       staticOffsets.push_back(0);
+    }
     if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 2) defaulting to 0");
       staticOffsets.push_back(0);
+    }
     if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 1) defaulting to 0");
       staticOffsets.push_back(0);
+    }
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
       staticOffsets.push_back(*const_int);
-    else
+    else {
+      op->emitWarning("non-constant DMA offset (dim 0) defaulting to 0");
       staticOffsets.push_back(0);
+    }
 
     // Get static sizes
     SmallVector<int64_t> staticSizes;
@@ -728,20 +739,29 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // Insert aiex.npu.load_pdi to reset DMA engine state if:
-          // 1. output-elf mode is enabled, AND
-          // 2. The device has core/memtile DMAs with repeat_count > 0
           if (outputElf && deviceHasRepeatCountDMAs(device)) {
+            // Insert aiex.npu.load_pdi to reset DMA engine state when
+            // core/memtile DMAs have repeat_count > 0.
             rewriter.setInsertionPoint(op);
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+          } else if (outputElf) {
+            // No PDI reload needed (no repeat_count DMAs), but still need
+            // between-iteration synchronization to prevent the next
+            // iteration's shim DMA configuration from racing with the
+            // current iteration's compute (issue #1373).
+            rewriter.setInsertionPoint(op);
+            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
+              AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                         alloc.getSymName());
+            }
           }
         }
       }
     }
 
-    // Erase the op - synchronization is handled by NpuDmaWaitOp
+    // Erase the op - synchronization is handled by NpuDmaWaitOp/load_pdi
     rewriter.eraseOp(op);
     return success();
   }
@@ -847,6 +867,7 @@ public:
         }))
       return failure();
 
+    llvm::SmallDenseSet<StringRef> waitedChannels;
     for (auto oper : op->getOperands()) {
       auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
       if (!airrtDmaOp)
@@ -861,22 +882,29 @@ public:
       // based on channel direction
       StringRef metadata = metadataAttr.getValue();
       AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
+      waitedChannels.insert(metadata);
     }
 
-    // Check if this is a launch_end wait_all and needs load_pdi
+    // Check if this is a launch_end wait_all and needs between-iteration sync
     if (op->hasAttr("air.launch_end")) {
       auto device = op->getParentOfType<AIE::DeviceOp>();
       if (device) {
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // Insert aiex.npu.load_pdi to reset DMA engine state if:
-          // 1. output-elf mode is enabled, AND
-          // 2. The device has core/memtile DMAs with repeat_count > 0
           if (outputElf && deviceHasRepeatCountDMAs(device)) {
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+          } else if (outputElf) {
+            // No PDI reload needed, but emit NpuDmaWaitOp for any shim
+            // channels not already waited on to synchronize before the
+            // next iteration (issue #1373).
+            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
+              if (!waitedChannels.contains(alloc.getSymName()))
+                AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                           alloc.getSymName());
+            }
           }
         }
       }
@@ -1346,12 +1374,44 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Remove any duplicate shim dma allocations
     purgeDuplicateShimDmaAllocs(module);
 
-    // Simplify affine apply ops
     auto ctx = &getContext();
+
+    // Convert any surviving scf.forall ops to scf.for before unrolling.
+    // scf.forall is not handled by the loop unrolling passes below and would
+    // leave dynamic induction variables that DmaToNpuPattern silently zeros.
+    {
+      SmallVector<scf::ForallOp> forallOps;
+      module.walk([&](scf::ForallOp op) { forallOps.push_back(op); });
+      if (!forallOps.empty()) {
+        IRRewriter rewriter(ctx);
+        for (auto forallOp : forallOps) {
+          if (failed(scf::forallToForLoop(rewriter, forallOp))) {
+            forallOp->emitOpError("failed to convert forall to for loop");
+            signalPassFailure();
+            return;
+          }
+        }
+      }
+    }
 
     // Unroll for loops
     unrollAffineFors(module);
     unrollSCFFors(module);
+
+    // Fold affine.apply ops with constant operands after loop unrolling.
+    // After unrolling, induction variables become constants, but
+    // affine.apply(constant) is not automatically folded. Without this,
+    // DmaToNpuPattern's getConstantIntValue() fails and defaults offsets to 0.
+    {
+      RewritePatternSet affinePatterns(ctx);
+      affine::AffineApplyOp::getCanonicalizationPatterns(affinePatterns, ctx);
+      if (failed(applyPatternsGreedily(module, std::move(affinePatterns)))) {
+        module.emitError("failed to canonicalize affine.apply ops after loop "
+                         "unrolling");
+        signalPassFailure();
+        return;
+      }
+    }
 
     // Convert WaitAllOp → NpuDmaWaitOp and purge DMA async tokens.
     // This must happen BEFORE DMA conversion because:
