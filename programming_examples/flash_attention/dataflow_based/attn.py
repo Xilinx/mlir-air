@@ -596,9 +596,7 @@ def build_module(
                             ChannelPut(
                                 "cascade", Gp_cascade.result, indices=[arg22, subi]
                             )
-                            ChannelPut(
-                                "cascade", arg27, indices=[arg22, subi]
-                            )
+                            ChannelPut("cascade", arg27, indices=[arg22, subi])
                             ChannelPut(
                                 "cascade", sp_cascade.result, indices=[arg22, subi]
                             )
