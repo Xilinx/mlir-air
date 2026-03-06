@@ -2031,9 +2031,11 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
   AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims,
                                             int &maxSize,
-                                            bool &enableRepeatAtHighestDim)
+                                            bool &enableRepeatAtHighestDim,
+                                            bool &skipZeroStride)
       : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize),
-        enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
+        enableRepeatAtHighestDim(enableRepeatAtHighestDim),
+        skipZeroStride(skipZeroStride) {}
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
@@ -2080,7 +2082,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
-        wraps, strides, channel_op.getMemref());
+        wraps, strides, channel_op.getMemref(), skipZeroStride);
     if (res.failed())
       return failure();
 
@@ -2205,6 +2207,7 @@ private:
   int &maxNumDims;
   int &maxSize;
   bool &enableRepeatAtHighestDim;
+  bool &skipZeroStride;
 };
 
 // This pattern should be executed after
@@ -2326,7 +2329,7 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
-        wraps, strides, channel_op.getMemref());
+        wraps, strides, channel_op.getMemref(), false);
     if (res.failed())
       return failure();
 
@@ -3291,7 +3294,8 @@ private:
 
 LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
     Region *region, int maxNumDims = -1, int maxSize = -1,
-    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false) {
+    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false,
+    bool skipZeroStride = false) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
   preproc_patterns
@@ -3319,7 +3323,7 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
                   CanonicalizeArithIndexCastOpOnLoopInductionVar,
                   AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
-      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim);
+      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim, skipZeroStride);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
@@ -6354,7 +6358,8 @@ public:
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           &seg.getBody(),
           /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
-          /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ false);
+          /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ false,
+          /*skipZeroStride*/ true);
 
       // Create wait_all to synchronize body.
       IRRewriter rewriter(func.getContext());
@@ -6920,11 +6925,11 @@ void populateAIRCanonicalizeChannelWrapAndStridePatterns(
 }
 
 void applyAIRSpecializeChannelWrapAndStridePattern(
-    Region *region, int maxNumDims = -1, int maxSize = -1,
-    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false) {
-  (void)AIRSpecializeChannelWrapAndStrideImpl(region, maxNumDims, maxSize,
-                                              enableForLoopUnrolling,
-                                              enableRepeatAtHighestDim);
+    Region *region, int maxNumDims, int maxSize, bool enableForLoopUnrolling,
+    bool enableRepeatAtHighestDim, bool skipZeroStride) {
+  (void)AIRSpecializeChannelWrapAndStrideImpl(
+      region, maxNumDims, maxSize, enableForLoopUnrolling,
+      enableRepeatAtHighestDim, skipZeroStride);
 }
 
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {

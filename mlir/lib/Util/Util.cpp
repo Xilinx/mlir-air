@@ -1224,7 +1224,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(
 LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
-    SmallVector<Value> &strides, Value memref) {
+    SmallVector<Value> &strides, Value memref, bool skipZeroStride) {
   auto loc = for_op->getLoc();
 
   // Fold for loops into channel op's wrap and stride fields
@@ -1309,6 +1309,11 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
         }
       }
     }
+    // Skip loops that don't affect the channel offset (stride=0).
+    // LLVM 23's canonicalize no longer hoists loop-invariant channel ops,
+    // so we skip them here when requested to avoid stride=0 DMA dimensions.
+    if (skipZeroStride && ind_var_factor == 0)
+      continue;
     int trip_count = -1;
     if (auto afo = dyn_cast_if_present<affine::AffineForOp>(o))
       trip_count = *getStaticAffineForTripCountAsInt(afo);
@@ -1335,6 +1340,25 @@ LogicalResult air::foldForLoopNestAsExtendedSizesAndStrides(
     }
 
     // Insert new dimension into the wraps and strides list.
+    // Validate that the new dimension doesn't cause out-of-bounds access.
+    // This check is only for skipZeroStride mode (memtile/tile DMAs that
+    // don't support wrap-around addressing).
+    if (skipZeroStride) {
+      int64_t bufferVolume = getTensorVolume(memref.getType());
+      if (bufferVolume > 1) {
+        int64_t maxIndex = 0;
+        for (unsigned i = 0; i < wraps.size(); ++i) {
+          auto w = getConstantIntValue(wraps[i]);
+          auto s = getConstantIntValue(strides[i]);
+          if (w && s)
+            maxIndex += (*w - 1) * (*s);
+        }
+        maxIndex += (trip_count - 1) * new_stride_value;
+        if (maxIndex >= bufferVolume)
+          continue;
+      }
+    }
+
     offsets.insert(offsets.begin(),
                    arith::ConstantIndexOp::create(builder, loc, 0));
     wraps.insert(wraps.begin(), new_wrap);
