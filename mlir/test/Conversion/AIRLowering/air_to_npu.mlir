@@ -154,9 +154,9 @@ module {
 // CHECK-DAG:  %[[CST_4:.*]] = arith.constant 4 : i32
 // CHECK-DAG:  %[[CST_1:.*]] = arith.constant 1 : i64
 // CHECK-DAG:  %[[CST_0:.*]] = arith.constant 0 : i64
-// CHECK: airrt.dma_memcpy_nd(%[[CST_4]], %{{.*}}, %{{.*}}, %[[VAL_0]][%[[CST_0]], %[[CST_0]], %{{.*}}, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_8]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_16]]]) {chan_name = @channel_0}
-// CHECK: airrt.dma_memcpy_nd(%[[CST_5]], %{{.*}}, %{{.*}}, %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_16]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) {chan_name = @channel_1}
-// CHECK: airrt.dma_memcpy_nd(%[[CST_6]], %{{.*}}, %{{.*}}, %[[VAL_2]][%[[CST_0]], %[[CST_0]], %{{.*}}, %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_8]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) {chan_name = @channel_2}
+// CHECK: airrt.dma_memcpy_nd(%[[CST_4]], %{{.*}}, %{{.*}}, %[[VAL_0]][%[[CST_0]], %[[CST_0]], %{{.*}}, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_8]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_16]]]) {chan_name = @channel_0} : (i32, i64, i64, memref<8x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK: airrt.dma_memcpy_nd(%[[CST_5]], %{{.*}}, %{{.*}}, %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_16]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) {chan_name = @channel_1} : (i32, i64, i64, memref<16x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK: airrt.dma_memcpy_nd(%[[CST_6]], %{{.*}}, %{{.*}}, %[[VAL_2]][%[[CST_0]], %[[CST_0]], %{{.*}}, %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_8]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) {chan_name = @channel_2} : (i32, i64, i64, memref<8x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
 
 #map = affine_map<(d0)[] -> (d0 * 8)>
 #map1 = affine_map<(d0)[] -> (d0 * 16)>

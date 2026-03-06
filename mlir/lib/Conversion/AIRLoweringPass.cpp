@@ -605,7 +605,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   airrtOp->setAttrs(thisOp->getDiscardableAttrDictionary());
   // Preserve channel name for downstream ordering decisions.
   if (auto chanName = thisOp->getAttrOfType<FlatSymbolRefAttr>("chan_name"))
-    airrtOp->setAttr("chan_name", chanName);
+    airrtOp->setDiscardableAttr("chan_name", chanName);
 
   if (airrtOp->hasAttr("metadata") || !airrtOp->hasAttr("metadataArray")) {
     return airrtOp;
