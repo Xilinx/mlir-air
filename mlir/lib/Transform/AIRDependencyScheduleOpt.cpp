@@ -362,17 +362,6 @@ struct AnnotateFrontAndBackOpsInForPattern
     if (!for_op->hasAttr("unroll"))
       return failure();
 
-    // Skip if already annotated
-    bool alreadyAnnotated = false;
-    for (auto &op : for_op.getOps()) {
-      if (op.hasAttr("async_front") || op.hasAttr("async_back")) {
-        alreadyAnnotated = true;
-        break;
-      }
-    }
-    if (alreadyAnnotated)
-      return failure();
-
     // Check if the for loop is async
     SmallVector<Value> iterTokens;
     for (auto iter_arg : for_op.getRegionIterArgs()) {
@@ -451,7 +440,23 @@ struct AnnotateFrontAndBackOpsInForPattern
     }
     SmallVector<Operation *> back_candidates;
     for (auto token : yielded_tokens) {
-      auto back_candidate = token.getDefiningOp();
+      auto *back_candidate = token.getDefiningOp();
+      // If the yielded token is a block argument (iter_arg), the loop body
+      // passes through the token without modifying it. Find the last async
+      // op in the body that produces a token as the back candidate.
+      if (!back_candidate) {
+        for (auto &bodyOp : llvm::reverse(for_op.getBody()->getOperations())) {
+          if (&bodyOp == yield)
+            continue;
+          if (auto asyncOp =
+                  dyn_cast_if_present<air::AsyncOpInterface>(&bodyOp)) {
+            if (asyncOp.getAsyncToken()) {
+              back_candidate = &bodyOp;
+              break;
+            }
+          }
+        }
+      }
       if (auto exec_op = dyn_cast_if_present<air::ExecuteOp>(back_candidate)) {
         auto child_op = &exec_op.getChildOps().front();
         if (isa<memref::DeallocOp>(child_op)) {
@@ -468,9 +473,14 @@ struct AnnotateFrontAndBackOpsInForPattern
             getOpAsBackOpCandidate(rewriter, back_candidate));
       }
     }
+    LLVM_DEBUG(llvm::dbgs()
+               << "back_candidates size: " << back_candidates.size() << "\n");
     for (auto op : back_candidates) {
-      if (!op)
+      if (!op) {
+        LLVM_DEBUG(llvm::dbgs() << "  null back candidate\n");
         continue;
+      }
+      LLVM_DEBUG(llvm::dbgs() << "  setting async_back on: " << *op << "\n");
       setBoolAttrForAsyncOp(op, "async_back");
       if (op->hasAttr("async_front"))
         // An op cannot be both "async_back" and "async_front".
@@ -1135,22 +1145,34 @@ struct ConstructPingPongDependencyPattern
 
     // Part 4: Connect yield
     // Note: currently only supports producer and consumer dep graphs with
-    // single back
-    rewriter.setInsertionPointToEnd(new_loop_op.getBody());
+    // single back.
+    // Insert new ops BEFORE the yield terminator (not after).
+    auto *yieldTerm = new_loop_op.getBody()->getTerminator();
+    if (yieldTerm)
+      rewriter.setInsertionPoint(yieldTerm);
+    else
+      rewriter.setInsertionPointToEnd(new_loop_op.getBody());
     SmallVector<Value, 1> yield_operands = {
         getJointTokenFromOps(rewriter, ping_consumer_backs),
         getJointTokenFromOps(rewriter, pong_consumer_backs),
         getJointTokenFromOps(rewriter, pong_consumer_backs),
         getJointTokenFromOps(rewriter, pong_producer_backs)};
-    for (auto v : yield_operands) {
-      if (!v)
-        return failure();
+    for (unsigned i = 0; i < yield_operands.size(); i++) {
+      if (!yield_operands[i]) {
+        // Create a placeholder wait_all if yield operand is null (e.g.,
+        // when consumer/producer backs are empty after isolation).
+        yield_operands[i] = air::WaitAllOp::create(
+                                rewriter, new_loop_op.getLoc(),
+                                air::AsyncTokenType::get(rewriter.getContext()),
+                                SmallVector<Value>{})
+                                .getAsyncToken();
+      }
     }
-    // Erase the old yield (spliced from the original loop) before creating
-    // the new one with correct operands for the new iter args.
-    if (auto oldYield = dyn_cast_if_present<scf::YieldOp>(
-            new_loop_op.getBody()->getTerminator()))
-      rewriter.eraseOp(oldYield);
+    // Erase any existing yield and create a new one with the correct operands.
+    auto *bodyBlock = new_loop_op.getBody();
+    if (!bodyBlock->empty() &&
+        bodyBlock->back().hasTrait<OpTrait::IsTerminator>())
+      rewriter.eraseOp(&bodyBlock->back());
     scf::YieldOp::create(rewriter, new_loop_op.getLoc(), yield_operands);
 
     for_op.erase();
@@ -1199,26 +1221,27 @@ private:
 
     builder.setInsertionPoint(loop_op);
     scf::ForOp new_loop_op = builder.create<scf::ForOp>(
-        loop_op.getLoc(), loop_op.getLowerBound(),
-        loop_op.getUpperBound(), loop_op.getStep(), iter_operands);
+        loop_op.getLoc(), loop_op.getLowerBound(), loop_op.getUpperBound(),
+        loop_op.getStep(), iter_operands);
 
-    if (auto attr = loop_op->getAttrOfType<StringAttr>(
-            SymbolTable::getSymbolAttrName()))
-      new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
-
-    // Splice ops from old loop body into new one, excluding the yield.
-    auto &bb = new_loop_op.getBody()->getOperations();
-    auto &body = loop_op.getBody()->getOperations();
-    bb.splice(bb.begin(), body, body.begin(), --body.end());
-    // Ensure the body has a yield. LLVM 23's ForOp::create may not
-    // auto-insert one. Add a temporary yield that callers will replace.
-    if (bb.empty() || !bb.back().hasTrait<OpTrait::IsTerminator>()) {
+    // LLVM 23: ForOp::create may not auto-insert a yield. Ensure one
+    // exists before splicing so ops get inserted before it.
+    if (new_loop_op.getBody()->empty() ||
+        !new_loop_op.getBody()->back().hasTrait<OpTrait::IsTerminator>()) {
       OpBuilder::InsertionGuard guard(builder);
       builder.setInsertionPointToEnd(new_loop_op.getBody());
-      // Yield the iter args as placeholders (callers replace this)
       scf::YieldOp::create(builder, new_loop_op.getLoc(),
                            ValueRange(new_loop_op.getRegionIterArgs()));
     }
+
+    // Copy all attributes from old loop (sym_name, unroll, etc.)
+    for (auto attr : loop_op->getAttrs())
+      new_loop_op->setAttr(attr.getName(), attr.getValue());
+
+    // Splice the operations inside loop op
+    auto &bb = new_loop_op.getBody()->getOperations();
+    auto &body = loop_op.getBody()->getOperations();
+    bb.splice(bb.begin(), body, body.begin(), --body.end());
 
     auto iv = loop_op.getInductionVar();
     iv.replaceAllUsesWith(new_loop_op.getInductionVar());
@@ -3194,12 +3217,16 @@ public:
       runIsolateScfForOpForPingPong(f);
     for (auto f : funcOps)
       runOpAnnotationPatterns(f);
+    LLVM_DEBUG(llvm::dbgs() << "After annotation:\n" << module << "\n");
     for (auto f : funcOps)
       runLoopUnroll(f);
+    LLVM_DEBUG(llvm::dbgs() << "After unroll:\n" << module << "\n");
     for (auto f : funcOps)
       runHoistMemallocPatterns(f);
+    LLVM_DEBUG(llvm::dbgs() << "After hoist:\n" << module << "\n");
     for (auto f : funcOps)
       runConstructPingPongDependencyPatterns(f);
+    LLVM_DEBUG(llvm::dbgs() << "After construct:\n" << module << "\n");
     for (auto f : funcOps)
       runCleanUpAttrs(f);
   }

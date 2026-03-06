@@ -449,6 +449,7 @@ static LogicalResult CanonicalizeAsyncOpDeps(OpT op,
 template <class OpT>
 static LogicalResult
 CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
+  // Bail out for large regions to avoid O(N²) analysis cost.
   // Get async tokens used by ops within region.getOps(), which are defined
   // above this region.
   auto getUsedAsyncTokensDefinedAbove = [](Region *region,
@@ -465,7 +466,7 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
     return;
   };
   // Get all scf.for ops which might require loop-carried token
-  // canonicalization.
+  // canonicalization. Limit walk to avoid O(N²) for large container ops.
   SetVector<scf::ForOp> candidateForOps;
   op.getBody().template walk<WalkOrder::PreOrder, ForwardDominanceIterator<>>(
       [&](Operation *o) {
@@ -487,13 +488,24 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
   if (candidateForOps.empty())
     return failure();
   // Enforce that all loop-carried tokens must be passed in from the iter_args.
+  bool modified = false;
   for (auto forOp : candidateForOps) {
     SetVector<Value> regionTokens;
     getUsedAsyncTokensDefinedAbove(&forOp.getRegion(), regionTokens);
+    // Skip if no external tokens need consolidation
+    if (regionTokens.empty())
+      continue;
     BlockArgument loopCarriedTokenArg =
         *llvm::find_if(forOp.getRegionIterArgs(), [](BlockArgument arg) {
           return isa<air::AsyncTokenType>(arg.getType());
         });
+    // Check if tokens are already the loop-carried arg's init value
+    // (already consolidated by a previous pattern application).
+    auto initArgIdx =
+        loopCarriedTokenArg.getArgNumber() - forOp.getNumInductionVars();
+    Value currentInit = forOp.getInitArgs()[initArgIdx];
+    if (regionTokens.size() == 1 && regionTokens[0] == currentInit)
+      continue;
     for (auto tok : regionTokens)
       replaceAllUsesInRegionWith(tok, loopCarriedTokenArg, forOp.getRegion());
     rewriter.setInsertionPoint(forOp);
@@ -505,12 +517,10 @@ CanonicalizeAsyncLoopCarriedDepsInRegion(OpT op, PatternRewriter &rewriter) {
         air::WaitAllOp::create(rewriter, forOp->getLoc(),
                                air::AsyncTokenType::get(forOp->getContext()),
                                regionTokens.takeVector());
-    forOp
-        .getInitsMutable()[loopCarriedTokenArg.getArgNumber() -
-                           forOp.getNumInductionVars()]
-        .assign(newWaitAll.getAsyncToken());
+    forOp.getInitsMutable()[initArgIdx].assign(newWaitAll.getAsyncToken());
+    modified = true;
   }
-  return success();
+  return modified ? success() : failure();
 }
 
 //

@@ -25,6 +25,7 @@
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
@@ -264,6 +265,98 @@ class LinalgCopyToMemRefCopy : public OpRewritePattern<linalg::CopyOp> {
     }
     rewriter.replaceOpWithNewOp<memref::CopyOp>(
         copyOp, copyOp.getInputs().front(), copyOp.getDpsInits().front());
+    return success();
+  }
+};
+
+// Helpers for linalg.pack → DMA lowering (copied from
+// AIRBufferizationInterfaces.cpp for standalone use in ConvertToAIRPass).
+static SmallVector<int64_t>
+getPackUnpackNormalizedPerm(int rank, ArrayRef<int64_t> perm) {
+  if (rank == (int)perm.size()) {
+    SmallVector<int64_t> vec;
+    for (auto [index, value] : llvm::enumerate(perm))
+      vec.push_back(index);
+    return vec;
+  }
+  SmallVector<int64_t> vec;
+  for (auto i : llvm::seq<unsigned>(0, rank)) {
+    if (llvm::any_of(perm, [i](int64_t elem) { return elem == i; }))
+      continue;
+    vec.push_back(i);
+  }
+  vec.insert(vec.end(), perm.begin(), perm.end());
+  return vec;
+}
+
+static SmallVector<int64_t>
+getPackUnpackStripMinedPerm(ArrayRef<int64_t> shape,
+                            ArrayRef<int64_t> innerDimsPos,
+                            ArrayRef<int64_t> outerDimsPerm) {
+  int64_t numPackedDims = innerDimsPos.size();
+  int64_t packedRank = shape.size();
+  auto lastDims = llvm::to_vector(
+      llvm::seq<int64_t>(packedRank - numPackedDims, packedRank));
+  PackingMetadata packingMetadata =
+      computePackingMetadata(packedRank, innerDimsPos);
+  SmallVector<int64_t> innerPositionsPerm = computePermutationVector(
+      packedRank, lastDims, packingMetadata.insertPositions);
+  SmallVector<int64_t> outerPos = packingMetadata.outerPositions;
+  if (!outerDimsPerm.empty())
+    applyPermutationToVector(outerPos, outerDimsPerm);
+  SmallVector<int64_t> outerPositionPerm = computePermutationVector(
+      packedRank, packingMetadata.outerPositions, outerPos);
+  SmallVector<int64_t> result = innerPositionsPerm;
+  applyPermutationToVector(result, outerPositionPerm);
+  return result;
+}
+
+// Pattern to lower `linalg.pack` on memrefs into expand_shape + transpose +
+// dma_memcpy_nd. LLVM 23 no longer decomposes linalg.pack during
+// one-shot-bufferize, so we handle it explicitly in the copy-to-dma pass.
+class LinalgPackToAIRDma : public OpRewritePattern<linalg::PackOp> {
+  using OpRewritePattern<linalg::PackOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(linalg::PackOp op,
+                                PatternRewriter &rewriter) const override {
+    auto srcType = dyn_cast_if_present<MemRefType>(op.getSource().getType());
+    auto dstType = dyn_cast_if_present<MemRefType>(op.getDest().getType());
+    if (!srcType || !dstType)
+      return failure();
+    if (llvm::any_of(op.getStaticInnerTiles(),
+                     [](int64_t s) { return ShapedType::isDynamic(s); }))
+      return failure();
+
+    Location loc = op->getLoc();
+    auto innerDimsPos = op.getInnerDimsPos();
+    auto destShape = dstType.getShape();
+    SmallVector<int64_t> transpPerm;
+    Value tile = nullptr;
+
+    if (llvm::any_of(innerDimsPos,
+                     [destShape](int64_t i) { return destShape[i] != 1; })) {
+      auto packMeta = computePackingMetadata(dstType.getRank(), innerDimsPos);
+      auto perm = getPackUnpackStripMinedPerm(destShape, innerDimsPos,
+                                              op.getOuterDimsPerm());
+      SmallVector<int64_t> stripMinedShape(destShape);
+      applyPermutationToVector(stripMinedShape, perm);
+      tile = memref::ExpandShapeOp::create(rewriter, loc, stripMinedShape,
+                                           op.getSource(),
+                                           packMeta.reassociations);
+      transpPerm = invertPermutationVector(perm);
+    } else {
+      tile = op.getSource();
+      transpPerm = getPackUnpackNormalizedPerm(srcType.getRank(), innerDimsPos);
+    }
+
+    auto transposeOp = memref::TransposeOp::create(
+        rewriter, loc, tile,
+        AffineMapAttr::get(
+            AffineMap::getPermutationMap(transpPerm, op->getContext())));
+    SmallVector<Value, 2> empty;
+    xilinx::air::DmaMemcpyNdOp::create(
+        rewriter, loc, SmallVector<Type, 1>{}, empty, op.getDest(), empty,
+        empty, empty, transposeOp.getResult(), empty, empty, empty);
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -1218,8 +1311,8 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
     (void)applyPatternsGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
-    stage2Patterns.insert<LinalgCopyToMemRefCopy, MemrefCopyToAIRDmaConversion>(
-        context);
+    stage2Patterns.insert<LinalgCopyToMemRefCopy, MemrefCopyToAIRDmaConversion,
+                          LinalgPackToAIRDma>(context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(stage2Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");

@@ -766,6 +766,12 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
   auto new_for_op = scf::ForOp::create(rewriter, loc, for_op.getLowerBound(),
                                        for_op.getUpperBound(), for_op.getStep(),
                                        for_op.getInitArgs());
+  // Copy select attributes from old loop (sym_name, etc.)
+  // Don't copy "unroll" — the new loop is the hoisted subset,
+  // not the one targeted for ping-pong.
+  if (auto attr =
+          for_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    new_for_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
