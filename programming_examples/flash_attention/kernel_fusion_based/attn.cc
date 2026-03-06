@@ -360,10 +360,10 @@ void mul_r_gp(bfloat16 *r, bfloat16 *gp) {
                         row_block1 * (VecLen * VecLen) + row_in_block1 * VecLen;
           temp0 = aie::load_v<VecLen>(gp + offset0);
           temp1 = aie::load_v<VecLen>(gp + offset1);
-          temp0 = aie::mul(temp0, r_bcast0);
-          temp1 = aie::mul(temp1, r_bcast1);
-          aie::store_v(gp + offset0, temp0);
-          aie::store_v(gp + offset1, temp1);
+          aie::accum<accfloat, VecLen> acc0 = aie::mul(temp0, r_bcast0);
+          aie::accum<accfloat, VecLen> acc1 = aie::mul(temp1, r_bcast1);
+          aie::store_v(gp + offset0, acc0.to_vector<bfloat16>());
+          aie::store_v(gp + offset1, acc1.to_vector<bfloat16>());
         }
     }
   }
@@ -383,7 +383,7 @@ void sum_g(bfloat16 *g, bfloat16 *s) {
     aie::vector<bfloat16, VecLen> sVec;
     for (int rowVecElem = 0; rowVecElem < VecLen; rowVecElem++) {
       aie::vector<bfloat16, VecLen> temp;
-      bfloat16 sum_value = 0.0;
+      float sum_value = 0.0f;
       int row = rowVec + rowVecElem;
       int row_block = row / VecLen;
       int row_in_block = row % VecLen;
@@ -394,7 +394,7 @@ void sum_g(bfloat16 *g, bfloat16 *s) {
           temp = aie::load_v<VecLen>(g + offset);
           sum_value += aie::reduce_add(temp);
         }
-      sVec[rowVecElem] = sum_value;
+      sVec[rowVecElem] = (bfloat16)sum_value;
     }
     aie::store_v(ps, sVec);
     ps += VecLen;
@@ -457,6 +457,8 @@ void div_gp_sp(bfloat16 *sp, bfloat16 *gp) {
           aie::broadcast<bfloat16, VecLen>(spVec[rowVecElem]);
       aie::vector<bfloat16, VecLen> sp_bcast1 =
           aie::broadcast<bfloat16, VecLen>(spVec[rowVecElem + 1]);
+      aie::vector<bfloat16, VecLen> sp_inv0 = aie::inv(sp_bcast0);
+      aie::vector<bfloat16, VecLen> sp_inv1 = aie::inv(sp_bcast1);
       aie::vector<bfloat16, VecLen> temp0, temp1;
       int row0 = rowVec + rowVecElem;
       int row1 = rowVec + rowVecElem + 1;
@@ -472,10 +474,10 @@ void div_gp_sp(bfloat16 *sp, bfloat16 *gp) {
                         row_block1 * (VecLen * VecLen) + row_in_block1 * VecLen;
           temp0 = aie::load_v<VecLen>(gp + offset0);
           temp1 = aie::load_v<VecLen>(gp + offset1);
-          temp0 = aie::div(temp0, sp_bcast0);
-          temp1 = aie::div(temp1, sp_bcast1);
-          aie::store_v(gp + offset0, temp0);
-          aie::store_v(gp + offset1, temp1);
+          aie::accum<accfloat, VecLen> dacc0 = aie::mul(temp0, sp_inv0);
+          aie::accum<accfloat, VecLen> dacc1 = aie::mul(temp1, sp_inv1);
+          aie::store_v(gp + offset0, dacc0.to_vector<bfloat16>());
+          aie::store_v(gp + offset1, dacc1.to_vector<bfloat16>());
         }
     }
   }
