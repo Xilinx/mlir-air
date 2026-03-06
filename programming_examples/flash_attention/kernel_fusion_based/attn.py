@@ -724,29 +724,71 @@ def build_module(
                             ChannelGet(
                                 "cascade", sp_cascade.result, indices=[arg22, arg23]
                             )
+                            # Save local max before maximum overwrites arg27
+                            up_B_saved = AllocOp(memref_lqp_l1, [], [])
+                            c0_i32_m = ConstantOp(i32, 0)
+                            CallOp(
+                                [],
+                                "vector_copy_32elems",
+                                [c0_i32_m, arg27, up_B_saved.result],
+                            )
+
+                            # arg27 = max(up_cascade, arg27) = new_max
                             CallOp([], "maximum_up_u_bf16", [up_cascade.result, arg27])
+
+                            # r_A = exp(up_cascade - new_max)
                             CallOp(
                                 [],
                                 "exp_up_minus_u",
                                 [up_cascade.result, arg27, r_l1.result],
                             )
+                            # r_B = exp(up_B_saved - new_max)
+                            r_B = AllocOp(memref_lqp_l1, [], [])
+                            CallOp(
+                                [],
+                                "exp_up_minus_u",
+                                [up_B_saved.result, arg27, r_B.result],
+                            )
+
+                            # Rescale both sides
                             CallOp([], "mul_r_gp", [r_l1.result, Gp_cascade.result])
+                            CallOp([], "mul_r_gp", [r_B.result, arg29])
+
+                            # Merge Gp
                             CallOp([], "add_gp_g", [arg29, Gp_cascade.result])
+
+                            # sp merge: sp_A * r_A + sp_B * r_B
+                            sp_temp = AllocOp(memref_lqp_l1, [], [])
+                            CallOp([], "zero_fill_sp_bf16", [sp_temp.result])
                             CallOp(
                                 [],
                                 "accum_sp_r_s",
-                                [arg28, r_l1.result, sp_cascade.result],
+                                [sp_cascade.result, r_l1.result, sp_temp.result],
                             )
+                            CallOp(
+                                [],
+                                "accum_sp_r_s",
+                                [arg28, r_B.result, sp_temp.result],
+                            )
+                            CallOp(
+                                [],
+                                "vector_copy_32elems",
+                                [c0_i32_m, sp_temp.result, sp_cascade.result],
+                            )
+
                             subi = arith.SubIOp(arg23, c1_h)
                             ChannelPut(
                                 "cascade", Gp_cascade.result, indices=[arg22, subi]
                             )
                             ChannelPut(
-                                "cascade", up_cascade.result, indices=[arg22, subi]
+                                "cascade", arg27, indices=[arg22, subi]
                             )
                             ChannelPut(
                                 "cascade", sp_cascade.result, indices=[arg22, subi]
                             )
+                            DeallocOp(up_B_saved)
+                            DeallocOp(r_B)
+                            DeallocOp(sp_temp)
                             affine.AffineYieldOp([])
 
                         with InsertionPoint(affine_if_middle.else_block):
@@ -762,22 +804,65 @@ def build_module(
                             ChannelGet(
                                 "cascade", sp_cascade.result, indices=[arg22, arg23]
                             )
+                            # Save local max before maximum overwrites arg27
+                            up_B_saved = AllocOp(memref_lqp_l1, [], [])
+                            c0_i32_f = ConstantOp(i32, 0)
+                            CallOp(
+                                [],
+                                "vector_copy_32elems",
+                                [c0_i32_f, arg27, up_B_saved.result],
+                            )
+
+                            # arg27 = max(up_cascade, arg27) = new_max
                             CallOp([], "maximum_up_u_bf16", [up_cascade.result, arg27])
+
+                            # r_A = exp(up_cascade - new_max)
                             CallOp(
                                 [],
                                 "exp_up_minus_u",
                                 [up_cascade.result, arg27, r_l1.result],
                             )
+                            # r_B = exp(up_B_saved - new_max)
+                            r_B = AllocOp(memref_lqp_l1, [], [])
+                            CallOp(
+                                [],
+                                "exp_up_minus_u",
+                                [up_B_saved.result, arg27, r_B.result],
+                            )
+
+                            # Rescale both sides
                             CallOp([], "mul_r_gp", [r_l1.result, Gp_cascade.result])
+                            CallOp([], "mul_r_gp", [r_B.result, arg29])
+
+                            # Merge Gp
                             CallOp([], "add_gp_g", [arg29, Gp_cascade.result])
+
+                            # sp merge: sp_A * r_A + sp_B * r_B
+                            sp_temp = AllocOp(memref_lqp_l1, [], [])
+                            CallOp([], "zero_fill_sp_bf16", [sp_temp.result])
                             CallOp(
                                 [],
                                 "accum_sp_r_s",
-                                [arg28, r_l1.result, sp_cascade.result],
+                                [sp_cascade.result, r_l1.result, sp_temp.result],
                             )
+                            CallOp(
+                                [],
+                                "accum_sp_r_s",
+                                [arg28, r_B.result, sp_temp.result],
+                            )
+                            CallOp(
+                                [],
+                                "vector_copy_32elems",
+                                [c0_i32_f, sp_temp.result, sp_cascade.result],
+                            )
+
+                            # Final normalization
                             CallOp(
                                 [], "div_gp_sp", [sp_cascade.result, Gp_cascade.result]
                             )
+                            DeallocOp(up_B_saved)
+                            DeallocOp(r_B)
+                            DeallocOp(sp_temp)
                             ChannelPut(
                                 "L1ToL2Chan1",
                                 Gp_cascade.result,
