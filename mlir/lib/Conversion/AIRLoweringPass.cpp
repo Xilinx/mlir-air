@@ -603,6 +603,9 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   thisOp->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id
                             // has been assigned.
   airrtOp->setAttrs(thisOp->getDiscardableAttrDictionary());
+  // Preserve channel name for downstream ordering decisions.
+  if (auto chanName = thisOp->getAttrOfType<FlatSymbolRefAttr>("chan_name"))
+    airrtOp->setAttr("chan_name", chanName);
 
   if (airrtOp->hasAttr("metadata") || !airrtOp->hasAttr("metadataArray")) {
     return airrtOp;
