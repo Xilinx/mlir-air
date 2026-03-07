@@ -13,14 +13,18 @@ endif
 OUTPUT_FORMAT ?= xclbin
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
+# Data type: uint8 (default) or bfloat16
+DTYPE ?= uint8
+DTYPE_FLAG = --dtype $(DTYPE)
+
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/passthrough_dma.py $(OUTPUT_FORMAT_FLAG) -p
+	${powershell} python3 ${srcdir}/passthrough_dma.py $(OUTPUT_FORMAT_FLAG) $(DTYPE_FLAG) -p
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/passthrough_dma.py $(OUTPUT_FORMAT_FLAG)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/passthrough_dma.py $(OUTPUT_FORMAT_FLAG) $(DTYPE_FLAG)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

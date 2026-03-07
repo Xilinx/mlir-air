@@ -195,3 +195,40 @@ func.func @fuse_multi_input_with_reduce(%input: tensor<4x256xbf16>, %max_vals: t
   
   return %result : tensor<4xf32>
 }
+
+// Test case 6: Fuse linalg.generic (extf) with linalg.reduce (via per-handle generalize)
+// This tests the pattern used in softmax AIE2P: data-flow navigation captures
+// linalg.reduce handles, then generalize is applied per-handle before fusion.
+// CHECK-LABEL: @fuse_generic_with_reduce
+func.func @fuse_generic_with_reduce(%input: tensor<4x256xbf16>) -> tensor<4xf32> {
+  %cst_neg_inf = arith.constant 0xFF80 : bf16
+  %cst_neg_inf_f32 = arith.extf %cst_neg_inf : bf16 to f32
+  %empty1 = tensor.empty() : tensor<4x256xf32>
+  %empty2 = tensor.empty() : tensor<4xf32>
+
+  // First op: extf (bf16 -> f32)
+  %extended = linalg.generic {
+    indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>],
+    iterator_types = ["parallel", "parallel"]
+  } ins(%input : tensor<4x256xbf16>) outs(%empty1 : tensor<4x256xf32>) {
+  ^bb0(%in: bf16, %out: f32):
+    %0 = arith.extf %in : bf16 to f32
+    linalg.yield %0 : f32
+  } -> tensor<4x256xf32>
+
+  // Second op: linalg.reduce (max reduction along dim 1)
+  // After generalize, this becomes a linalg.generic with reduction iterator
+  // CHECK: linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["parallel", "reduction"]} ins(%arg0 : tensor<4x256xbf16>) outs(%{{.*}} : tensor<4xf32>)
+  // CHECK: ^bb0(%[[IN:.+]]: bf16, %[[ACC:.+]]: f32):
+  // CHECK-NEXT: %[[EXT:.+]] = arith.extf %[[IN]] : bf16 to f32
+  // CHECK-NEXT: %[[MAX:.+]] = arith.maximumf %[[EXT]], %[[ACC]]
+  // CHECK-NEXT: linalg.yield %[[MAX]]
+  %init = linalg.fill ins(%cst_neg_inf_f32 : f32) outs(%empty2 : tensor<4xf32>) -> tensor<4xf32>
+  %result = linalg.reduce ins(%extended : tensor<4x256xf32>) outs(%init : tensor<4xf32>) dimensions = [1]
+    (%in: f32, %acc: f32) {
+      %3 = arith.maximumf %in, %acc : f32
+      linalg.yield %3 : f32
+    }
+
+  return %result : tensor<4xf32>
+}

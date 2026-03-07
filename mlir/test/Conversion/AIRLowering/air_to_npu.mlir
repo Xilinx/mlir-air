@@ -15,8 +15,8 @@
 // CHECK-DAG: %[[CST_7:.*]] = arith.constant 7 : i32
 // CHECK-DAG: %[[CST_64:.*]] = arith.constant 64 : i64
 // CHECK: %[[VAL_2:.*]] = airrt.segment_load "segment0" : i64
-// CHECK: airrt.dma_memcpy_nd(%[[CST_2]], %[[CST_0]], %[[CST_0]], %[[VAL_0]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-// CHECK: airrt.dma_memcpy_nd(%[[CST_7]], %[[CST_0]], %[[CST_0]], %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+// CHECK: airrt.dma_memcpy_nd(%[[CST_2]], %[[CST_0]], %[[CST_0]], %[[VAL_0]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {chan_name = @channel_0, metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+// CHECK: airrt.dma_memcpy_nd(%[[CST_7]], %[[CST_0]], %[[CST_0]], %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {chan_name = @channel_3, metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 
 module {
   aie.device(npu1_1col) @segment0 {
@@ -72,8 +72,8 @@ module {
 // CHECK-DAG: %[[CST_7:.*]] = arith.constant 7 : i32
 // CHECK-DAG: %[[CST_64:.*]] = arith.constant 64 : i64
 // CHECK: %[[VAL_2:.*]] = airrt.segment_load "segment0" : i64
-// CHECK: airrt.dma_memcpy_nd(%[[CST_2]], %[[CST_0]], %[[CST_0]], %[[VAL_0]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-// CHECK: airrt.dma_memcpy_nd(%[[CST_7]], %[[CST_0]], %[[CST_0]], %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+// CHECK: airrt.dma_memcpy_nd(%[[CST_2]], %[[CST_0]], %[[CST_0]], %[[VAL_0]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {chan_name = @channel_0, metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+// CHECK: airrt.dma_memcpy_nd(%[[CST_7]], %[[CST_0]], %[[CST_0]], %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {chan_name = @channel_3, metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 
 module {
   aie.device(npu1_1col) {
@@ -154,9 +154,9 @@ module {
 // CHECK-DAG:  %[[CST_4:.*]] = arith.constant 4 : i32
 // CHECK-DAG:  %[[CST_1:.*]] = arith.constant 1 : i64
 // CHECK-DAG:  %[[CST_0:.*]] = arith.constant 0 : i64
-// CHECK: airrt.dma_memcpy_nd(%[[CST_4]], %{{.*}}, %{{.*}}, %[[VAL_0]][%[[CST_0]], %[[CST_0]], %{{.*}}, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_8]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_16]]]) : (i32, i64, i64, memref<8x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-// CHECK: airrt.dma_memcpy_nd(%[[CST_5]], %{{.*}}, %{{.*}}, %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_16]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) : (i32, i64, i64, memref<16x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-// CHECK: airrt.dma_memcpy_nd(%[[CST_6]], %{{.*}}, %{{.*}}, %[[VAL_2]][%[[CST_0]], %[[CST_0]], %{{.*}}, %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_8]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) : (i32, i64, i64, memref<8x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+// CHECK: airrt.dma_memcpy_nd(%[[CST_4]], %{{.*}}, %{{.*}}, %[[VAL_0]][%[[CST_0]], %[[CST_0]], %{{.*}}, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_8]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_16]]]) {chan_name = @channel_0} : (i32, i64, i64, memref<8x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK: airrt.dma_memcpy_nd(%[[CST_5]], %{{.*}}, %{{.*}}, %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_16]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) {chan_name = @channel_1} : (i32, i64, i64, memref<16x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK: airrt.dma_memcpy_nd(%[[CST_6]], %{{.*}}, %{{.*}}, %[[VAL_2]][%[[CST_0]], %[[CST_0]], %{{.*}}, %{{.*}}], [%[[CST_1]], %[[CST_1]], %[[CST_8]], %[[CST_16]]], [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) {chan_name = @channel_2} : (i32, i64, i64, memref<8x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
 
 #map = affine_map<(d0)[] -> (d0 * 8)>
 #map1 = affine_map<(d0)[] -> (d0 * 16)>
@@ -241,9 +241,9 @@ module {
 // CHECK-DAG: %[[CST_0:.*]] = arith.constant 0 : i64
 // CHECK: affine.for %[[VAL_0:.*]] = 0 to 2 {
 // CHECK:   %[[VAL_1:.*]] = arith.index_cast %[[VAL_0]] : index to i64
-// CHECK:   airrt.dma_memcpy_nd(%[[CST_4]], %0, %[[CST_0]], %arg0[%[[CST_0]], %[[CST_0]], %0, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_1152]]], [%[[CST_0]], %[[CST_0]], %[[CST_1152]]]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<2x6x6x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-// CHECK:   airrt.dma_memcpy_nd(%[[CST_5]], %0, %[[CST_0]], %arg1[%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_1152]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {metadata = @airMemcpyId5} : (i32, i64, i64, memref<3x3x32x4xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
-// CHECK:   airrt.dma_memcpy_nd(%[[CST_18]], %0, %[[CST_0]], %arg2[%[[CST_0]], %[[CST_0]], %0, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_64]]]) {metadata = @airMemcpyId18} : (i32, i64, i64, memref<2x4x4x4xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK:   airrt.dma_memcpy_nd(%[[CST_4]], %0, %[[CST_0]], %arg0[%[[CST_0]], %[[CST_0]], %0, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_1152]]], [%[[CST_0]], %[[CST_0]], %[[CST_1152]]]) {chan_name = @channel_1, metadata = @airMemcpyId4} : (i32, i64, i64, memref<2x6x6x32xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK:   airrt.dma_memcpy_nd(%[[CST_5]], %0, %[[CST_0]], %arg1[%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_1152]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {chan_name = @channel_2, metadata = @airMemcpyId5} : (i32, i64, i64, memref<3x3x32x4xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK:   airrt.dma_memcpy_nd(%[[CST_18]], %0, %[[CST_0]], %arg2[%[[CST_0]], %[[CST_0]], %0, %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_64]]]) {chan_name = @channel_5, metadata = @airMemcpyId18} : (i32, i64, i64, memref<2x4x4x4xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
 
 module {
   air.channel @channel_5 [1, 1]

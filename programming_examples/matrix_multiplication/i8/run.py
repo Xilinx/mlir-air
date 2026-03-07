@@ -631,28 +631,15 @@ if __name__ == "__main__":
                 // Hoist loop-invariant vector transfers out of innermost loop
                 %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %herd1_1, %herd2_1, %herd3_1 = transform.split_handle %herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
-                %all_reads_in_herd2 = transform.structured.match ops{["vector.transfer_read"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
-                %all_writes_in_herd2 = transform.structured.match ops{["vector.transfer_write"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 
-                // Split handles to get individual read/write operations
                 %scf_fors_1 = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 %innermost_for, %outer_fors = transform.split_handle %scf_fors_1 {overflow_result = 1} : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
-                // The innermost loop has 4 read-write pairs accessing arg22
-                %read0, %read1, %read2, %read3, %read4, %read5, %read6, %read7 = transform.split_handle %all_reads_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                %write0, %write1, %write2, %write3 = transform.split_handle %all_writes_in_herd2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
                 
                 %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = i32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
                 
-                // Hoist each read/write pair from the innermost loop (%innermost_for)
-                // Pair 1: reads[2] (%8) and writes[0] (%13) - accessing [arg27, arg26]
-                %innermost_for_updated = transform.air.hoist_loop_invariant_transfers %read2, %write0, %innermost_for : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                // // Pair 2: reads[4] (%17) and writes[1] (%22) - accessing [arg27+1, arg26]
-                %innermost_for_updated_1 = transform.air.hoist_loop_invariant_transfers %read4, %write1, %innermost_for_updated : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                // Pair 3: reads[6] (%27) and writes[2] (%32) - accessing [arg27, arg26+1]
-                %innermost_for_updated_2 = transform.air.hoist_loop_invariant_transfers %read6, %write2, %innermost_for_updated_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                // Pair 4: reads[7] (%38) and writes[3] (%43) - accessing [arg27+1, arg26+1]
-                %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %read7, %write3, %innermost_for_updated_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
+                // Hoist all accumulator transfer pairs from the innermost loop
+                %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
 
                 %innermost_for_updated_4 = transform.air.flatten_for_iter_args %innermost_for_updated_3 : (!transform.any_op) -> !transform.any_op
                 %innermost_for_updated_5 = transform.air.hoist_vector_transfer_pointers %innermost_for_updated_4 : (!transform.any_op) -> !transform.any_op

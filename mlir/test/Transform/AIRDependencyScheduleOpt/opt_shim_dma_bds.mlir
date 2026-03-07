@@ -856,6 +856,39 @@ module {
     return
   }
 
+  // Multi-operand affine.apply in channel.put offset. The offset
+  // d0 * 64 + s0 is computed from one dim operand and one symbol operand. When
+  // eraseWrapNStrideDim folds adjacent dimensions (stride[0] == size[1] *
+  // stride[1]), it must compose the stride factor into the affine expression:
+  // new_offset = (d0 * 64 + s0) * 64 / 1 = d0 * 4096 + s0 * 64.
+  // Previously, multi-operand affine.apply expressions were skipped by
+  // eraseWrapNStrideDim in Util.cpp, causing the stride multiplication to be
+  // lost.
+
+  // CHECK-LABEL: func16
+  // CHECK: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[] [] [])
+  // NPUTILED-LABEL: func16
+  // NPUTILED: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}] (%{{.*}}[] [] [])
+  // AIE1-LABEL: func16
+  // AIE1: air.channel.put async{{.*}}@channel_0[%c0{{.*}}, %c0{{.*}}]
+
+  func.func @func16(%arg0: memref<2x64x64xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg3) in (%arg4=%c1) args(%arg5=%arg0) : memref<2x64x64xbf16> {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c64 = arith.constant 64 : index
+      // scf.for loop that won't be unrolled by this pass
+      scf.for %arg6 = %c0 to %c2 step %c1_0 {
+        // head_offset = arg6 * 64 + 0, i.e., multi-operand affine.apply
+        %head_off = affine.apply affine_map<(d0)[s0] -> (d0 * 64 + s0)>(%arg6)[%c0]
+        %1 = air.channel.put async @channel_0[%c0, %c0] (%arg5[%head_off, %c0] [%c64, %c64] [%c64, %c1_0]) {id = 1 : i32} : (memref<2x64x64xbf16>)
+      }
+    }
+    return
+  }
+
   // Canonicalizing repeat dimension at highest dimension.
 
   // CHECK-LABEL: func15
