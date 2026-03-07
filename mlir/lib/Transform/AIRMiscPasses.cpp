@@ -2718,11 +2718,14 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
         return failure();
     } else if (clScope == "launch") {
       parent = alloc->getParentOfType<air::LaunchOp>();
-      if (alloc->getParentOfType<air::SegmentOp>())
+      if (alloc->getParentOfType<air::SegmentOp>() ||
+          alloc->getParentOfType<air::HerdOp>())
         return failure();
     } else if (clScope == "func") {
       parent = alloc->getParentOfType<func::FuncOp>();
-      if (alloc->getParentOfType<air::LaunchOp>())
+      if (alloc->getParentOfType<air::LaunchOp>() ||
+          alloc->getParentOfType<air::SegmentOp>() ||
+          alloc->getParentOfType<air::HerdOp>())
         return failure();
     } else
       return alloc->emitOpError(
