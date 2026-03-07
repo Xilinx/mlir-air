@@ -59,7 +59,7 @@ namespace {
 
 // Helper function to check if a value is a memref on host memory (space 0)
 static bool isHostMemory(Value val) {
-  if (auto memrefType = dyn_cast<BaseMemRefType>(val.getType()))
+  if (auto memrefType = dyn_cast_if_present<BaseMemRefType>(val.getType()))
     return memrefType.getMemorySpaceAsInt() == 0;
   return false;
 }
@@ -67,7 +67,7 @@ static bool isHostMemory(Value val) {
 // Helper function to check if an op has memory effects on host memory
 static bool hasMemoryEffectsOnHostMemory(Operation *op) {
   // Check if this op has memory effects interface
-  auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+  auto effects = dyn_cast_if_present<MemoryEffectOpInterface>(op);
   if (!effects)
     return false;
 
@@ -243,7 +243,8 @@ struct RelocateAssumeAlignmentOp
 
     auto castConsumerOp = [&]() -> mlir::Operation * {
       for (auto u : producerOp->getUsers()) {
-        if (auto castOp = dyn_cast<mlir::UnrealizedConversionCastOp>(u)) {
+        if (auto castOp =
+                dyn_cast_if_present<mlir::UnrealizedConversionCastOp>(u)) {
           return castOp;
         }
       }
@@ -2261,11 +2262,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
         // find all packet flow with trace port as source
         for (Operation &Op : b.getOperations()) {
-          if (auto pktSrc = dyn_cast<AIE::PacketSourceOp>(Op)) {
-            srcTile = dyn_cast<AIE::TileOp>(pktSrc.getTile().getDefiningOp());
+          if (auto pktSrc = dyn_cast_if_present<AIE::PacketSourceOp>(Op)) {
+            srcTile = dyn_cast_if_present<AIE::TileOp>(
+                pktSrc.getTile().getDefiningOp());
             sourcePort = pktSrc.port();
-          } else if (auto pktDest = dyn_cast<AIE::PacketDestOp>(Op)) {
-            destTile = dyn_cast<AIE::TileOp>(pktDest.getTile().getDefiningOp());
+          } else if (auto pktDest =
+                         dyn_cast_if_present<AIE::PacketDestOp>(Op)) {
+            destTile = dyn_cast_if_present<AIE::TileOp>(
+                pktDest.getTile().getDefiningOp());
             destPort = pktDest.port();
           }
         }
@@ -2442,9 +2446,9 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       });
     OpBuilder builder(blk->getParentOp());
     blk->walk([&](Operation *op) {
-      auto dma = dyn_cast<AIEX::NpuDmaMemcpyNdOp>(op);
-      auto sync = dyn_cast<AIEX::NpuSyncOp>(op);
-      auto wait = dyn_cast<AIEX::NpuDmaWaitOp>(op);
+      auto dma = dyn_cast_if_present<AIEX::NpuDmaMemcpyNdOp>(op);
+      auto sync = dyn_cast_if_present<AIEX::NpuSyncOp>(op);
+      auto wait = dyn_cast_if_present<AIEX::NpuDmaWaitOp>(op);
       if (sync || wait) {
         chanToIdMap.clear();
         return;

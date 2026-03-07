@@ -290,9 +290,15 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
             transform.apply_patterns.memref.fold_memref_alias_ops
         } : !transform.any_op
+        %func7_fold = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        transform.sequence %func7_fold : !transform.any_op failures(suppress) {
+        ^bb0(%arg_fold: !transform.any_op):
+          transform.apply_patterns to %arg_fold {
+              transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
+          } {max_iterations = 10} : !transform.any_op
+        }
                 
     // Step 28: Eliminate redundant vector.transfer_read operations.
         %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func7 : (!transform.any_op) -> !transform.any_op
@@ -358,9 +364,15 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
             transform.apply_patterns.memref.fold_memref_alias_ops
         } : !transform.any_op
+        %func9_fold = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        transform.sequence %func9_fold : !transform.any_op failures(suppress) {
+        ^bb0(%arg_fold: !transform.any_op):
+          transform.apply_patterns to %arg_fold {
+              transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
+          } {max_iterations = 10} : !transform.any_op
+        }
 
     transform.yield
   }

@@ -1136,7 +1136,7 @@ public:
     if (!sym)
       return failure();
 
-    auto funcOp = dyn_cast<func::FuncOp>(sym);
+    auto funcOp = dyn_cast_if_present<func::FuncOp>(sym);
     if (!funcOp)
       return failure();
 
@@ -1171,12 +1171,12 @@ public:
 
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert L1 memrefs to L3
-      if (auto memref = llvm::dyn_cast<MemRefType>(type))
+      if (auto memref = llvm::dyn_cast_if_present<MemRefType>(type))
         if (memref.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
           return mlir::MemRefType::get(memref.getShape(),
                                        memref.getElementType(),
                                        memref.getLayout(), 0);
-      if (auto t = llvm::dyn_cast<xilinx::airrt::EventType>(type))
+      if (auto t = llvm::dyn_cast_if_present<xilinx::airrt::EventType>(type))
         return LLVM::LLVMPointerType::get(context);
       return std::optional<Type>(type);
     });
@@ -1250,12 +1250,12 @@ public:
 
     target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
       for (auto t : op.getOperandTypes()) {
-        if (auto mty = llvm::dyn_cast<MemRefType>(t))
+        if (auto mty = llvm::dyn_cast_if_present<MemRefType>(t))
           if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
             return false;
       }
       for (auto t : op.getResultTypes()) {
-        if (auto mty = llvm::dyn_cast<MemRefType>(t))
+        if (auto mty = llvm::dyn_cast_if_present<MemRefType>(t))
           if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
             return false;
       }

@@ -94,7 +94,7 @@ int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
   else {
     int output = 1;
     for (auto s : sizes) {
-      auto c = dyn_cast<arith::ConstantIndexOp>(s.getDefiningOp());
+      auto c = dyn_cast_if_present<arith::ConstantIndexOp>(s.getDefiningOp());
       if (!c) {
         output = -1;
         break;
@@ -266,7 +266,8 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       llvm::SmallDenseSet<Value> hierarchyIdSet;
       for (auto *parentOp = h->getParentOp(); parentOp;
            parentOp = parentOp->getParentOp()) {
-        if (auto hierarchy = dyn_cast<air::HierarchyInterface>(parentOp)) {
+        if (auto hierarchy =
+                dyn_cast_if_present<air::HierarchyInterface>(parentOp)) {
           for (auto id : hierarchy.getIds())
             hierarchyIdSet.insert(id);
         }
@@ -332,8 +333,9 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
             entry_bb = &b;
         Block *prev_bb_back = &core.getBody().back();
         auto prev_bb_branch =
-            dyn_cast<cf::BranchOp>(prev_bb_back->getTerminator());
-        auto prev_bb_end = dyn_cast<AIE::EndOp>(prev_bb_back->getTerminator());
+            dyn_cast_if_present<cf::BranchOp>(prev_bb_back->getTerminator());
+        auto prev_bb_end =
+            dyn_cast_if_present<AIE::EndOp>(prev_bb_back->getTerminator());
         core_bb = core_builder.createBlock(&core.getBody());
         if (prev_bb_branch)
           prev_bb_branch.setDest(core_bb);
@@ -451,7 +453,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
             h.emitWarning("Unsupported runtime parmeter int or float type");
         }
 
-        auto memrefTy = llvm::dyn_cast<MemRefType>(karg.getType());
+        auto memrefTy = llvm::dyn_cast_if_present<MemRefType>(karg.getType());
         if (!memrefTy)
           continue;
 
@@ -490,13 +492,14 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       }
 
       if (options.emit_while) {
-        auto entry_bb_br = dyn_cast<cf::BranchOp>(entry_bb->getTerminator());
+        auto entry_bb_br =
+            dyn_cast_if_present<cf::BranchOp>(entry_bb->getTerminator());
         cf::BranchOp::create(core_builder, hloc, entry_bb_br.getDest());
       } else
         AIE::EndOp::create(core_builder, hloc);
 
       core.walk([&](Operation *op) {
-        if (auto call = dyn_cast<func::CallOp>(op)) {
+        if (auto call = dyn_cast_if_present<func::CallOp>(op)) {
           auto fn = aie_device.lookupSymbol<func::FuncOp>(call.getCallee());
           if (!fn) {
             fn = func::FuncOp::create(aie_device.getLoc(), call.getCallee(),
@@ -541,7 +544,8 @@ getSegmentUnrollFactors(air::SegmentOp seg) {
       unrollX = constOp.value();
     } else if (auto constIntOp =
                    sizeOperands[0].getDefiningOp<arith::ConstantOp>()) {
-      if (auto intAttr = dyn_cast<IntegerAttr>(constIntOp.getValue()))
+      if (auto intAttr =
+              dyn_cast_if_present<IntegerAttr>(constIntOp.getValue()))
         unrollX = intAttr.getInt();
       else {
         seg.emitOpError("segment unroll X-dimension size must be a static "
@@ -559,7 +563,8 @@ getSegmentUnrollFactors(air::SegmentOp seg) {
         unrollY = constOp.value();
       } else if (auto constIntOp =
                      sizeOperands[1].getDefiningOp<arith::ConstantOp>()) {
-        if (auto intAttr = dyn_cast<IntegerAttr>(constIntOp.getValue()))
+        if (auto intAttr =
+                dyn_cast_if_present<IntegerAttr>(constIntOp.getValue()))
           unrollY = intAttr.getInt();
         else {
           seg.emitOpError("segment unroll Y-dimension size must be a static "
@@ -742,7 +747,7 @@ static void collectBufferAliases(Value buffer,
     for (Operation *user : current.getUsers()) {
       // Check if this is a view-like op that creates an alias
       Value result = nullptr;
-      if (auto viewOp = dyn_cast<ViewLikeOpInterface>(user)) {
+      if (auto viewOp = dyn_cast_if_present<ViewLikeOpInterface>(user)) {
         result = viewOp->getResult(0);
       }
       if (result && !aliases.contains(result)) {
@@ -823,7 +828,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
       }
 
       // Special handling for func.call
-      if (auto callOp = dyn_cast<func::CallOp>(op)) {
+      if (auto callOp = dyn_cast_if_present<func::CallOp>(op)) {
         int lastMemrefIdx = findLastMemrefOperandIndex(callOp);
         for (int i = 0; i < (int)callOp.getNumOperands(); ++i) {
           Value operand = callOp.getOperand(i);
@@ -847,7 +852,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
         if (hasEffect<MemoryEffects::Write>(op, alias))
           coreIsProducer = true;
       }
-      if (auto callOp = dyn_cast<func::CallOp>(op)) {
+      if (auto callOp = dyn_cast_if_present<func::CallOp>(op)) {
         int lastMemrefIdx = findLastMemrefOperandIndex(callOp);
         for (int i = 0; i < (int)callOp.getNumOperands(); ++i) {
           if (bufferAliases.contains(callOp.getOperand(i))) {
@@ -969,7 +974,7 @@ allocateSharedL1BufferLocks(AIE::DeviceOp aie_device,
         }
       }
 
-      if (auto callOp = dyn_cast<func::CallOp>(op)) {
+      if (auto callOp = dyn_cast_if_present<func::CallOp>(op)) {
         int lastMemrefIdx = findLastMemrefOperandIndex(callOp);
         for (int i = 0; i < (int)callOp.getNumOperands(); ++i) {
           Value operand = callOp.getOperand(i);
@@ -1217,7 +1222,7 @@ void createAIEModulesAndOutlineCores(
       auto oper = h.getKernelOperand(i);
       if (!oper.getDefiningOp())
         continue;
-      auto memrefTy = llvm::dyn_cast<MemRefType>(oper.getType());
+      auto memrefTy = llvm::dyn_cast_if_present<MemRefType>(oper.getType());
       if (!memrefTy)
         continue;
       if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
@@ -1248,7 +1253,7 @@ void createAIEModulesAndOutlineCores(
       auto oper = h.getKernelOperand(i);
       if (!oper.getDefiningOp())
         continue;
-      auto memrefTy = llvm::dyn_cast<MemRefType>(oper.getType());
+      auto memrefTy = llvm::dyn_cast_if_present<MemRefType>(oper.getType());
       if (!memrefTy)
         continue;
       if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
@@ -1373,7 +1378,8 @@ bool isInSet(IntegerSet is) {
 
   int i = 0;
   for (auto c : constraints) {
-    auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(c, 0, 1));
+    auto expr =
+        dyn_cast_if_present<AffineConstantExpr>(simplifyAffineExpr(c, 0, 1));
     if (!expr)
       return false;
     if (eqFlags[i++]) {
@@ -1416,9 +1422,11 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
     if (op.getNumOperands() == 2) {
       SmallVector<int64_t, 2> operands;
       for (auto o : op.getOperands()) {
-        if (auto v = dyn_cast<arith::ConstantIndexOp>(o.getDefiningOp()))
+        if (auto v =
+                dyn_cast_if_present<arith::ConstantIndexOp>(o.getDefiningOp()))
           operands.push_back(v.value());
-        else if (auto v = dyn_cast<arith::RemSIOp>(o.getDefiningOp())) {
+        else if (auto v =
+                     dyn_cast_if_present<arith::RemSIOp>(o.getDefiningOp())) {
           if (mlir::getConstantIntValue(v.getLhs()) &&
               mlir::getConstantIntValue(v.getRhs())) {
             int lhs = *mlir::getConstantIntValue(v.getLhs());
@@ -1426,7 +1434,8 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
             operands.push_back(llvm::mod(lhs, rhs));
           } else
             return failure();
-        } else if (auto v = dyn_cast<arith::DivSIOp>(o.getDefiningOp())) {
+        } else if (auto v =
+                       dyn_cast_if_present<arith::DivSIOp>(o.getDefiningOp())) {
           if (mlir::getConstantIntValue(v.getLhs()) &&
               mlir::getConstantIntValue(v.getRhs())) {
             int lhs = *mlir::getConstantIntValue(v.getLhs());
@@ -1481,7 +1490,7 @@ struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
 
     // Case 1: condition is a constant i1.
     if (auto constOp = cond.getDefiningOp<arith::ConstantOp>()) {
-      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+      if (auto intAttr = dyn_cast_if_present<IntegerAttr>(constOp.getValue()))
         condValue = intAttr.getValue().getBoolValue();
     }
     // Case 2: condition is arith.cmpi with constant operands.
@@ -1836,8 +1845,8 @@ void allocL1Buffers(AIE::DeviceOp m,
 bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b) {
   for (auto user_a : memref_a.getUsers()) {
     for (auto user_b : memref_b.getUsers()) {
-      auto chan_user_a = dyn_cast<air::ChannelInterface>(user_a);
-      auto chan_user_b = dyn_cast<air::ChannelInterface>(user_b);
+      auto chan_user_a = dyn_cast_if_present<air::ChannelInterface>(user_a);
+      auto chan_user_b = dyn_cast_if_present<air::ChannelInterface>(user_b);
       if (!chan_user_a || !chan_user_b)
         continue;
       if (chan_user_a.getChanName().str() != chan_user_b.getChanName().str())
@@ -1995,10 +2004,10 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           endOfLink = channelPuts[0].getOperation();
           linkFound = true;
         } else {
-          AIE::BufferOp buff = dyn_cast<AIE::BufferOp>(
+          AIE::BufferOp buff = dyn_cast_if_present<AIE::BufferOp>(
               channelPuts[0].getMemref().getDefiningOp());
           for (auto user : buff->getUsers()) {
-            if (auto pairedGet = dyn_cast<air::ChannelGetOp>(user)) {
+            if (auto pairedGet = dyn_cast_if_present<air::ChannelGetOp>(user)) {
               endOfLink = pairedGet.getOperation();
               linkToComplete = true;
             }
@@ -2035,10 +2044,10 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           endOfLink = get.getOperation();
           linkFound = true;
         } else {
-          AIE::BufferOp buff =
-              dyn_cast<AIE::BufferOp>(get.getMemref().getDefiningOp());
+          AIE::BufferOp buff = dyn_cast_if_present<AIE::BufferOp>(
+              get.getMemref().getDefiningOp());
           for (auto user : buff->getUsers()) {
-            if (auto pairedPut = dyn_cast<air::ChannelPutOp>(user)) {
+            if (auto pairedPut = dyn_cast_if_present<air::ChannelPutOp>(user)) {
               endOfLink = pairedPut.getOperation();
               linkToComplete = true;
             }
@@ -2097,7 +2106,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       // clear any dependence to put
       if (put.getAsyncToken()) {
         for (auto u : put.getAsyncToken().getUsers()) {
-          if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
+          if (auto async_u = dyn_cast_if_present<air::AsyncOpInterface>(u))
             air::eraseAsyncDependencyFromAsyncOp(async_u, put.getAsyncToken());
           // TODO: complete else: account for scf.for and scf.parallel users
         }
@@ -2112,7 +2121,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       // clear any dependence to get
       if (get.getAsyncToken()) {
         for (auto u : get.getAsyncToken().getUsers()) {
-          if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
+          if (auto async_u = dyn_cast_if_present<air::AsyncOpInterface>(u))
             air::eraseAsyncDependencyFromAsyncOp(async_u, get.getAsyncToken());
           // TODO: complete else: account for scf.for and scf.parallel users
         }
@@ -2151,9 +2160,9 @@ private:
       *tile = core.getTileOp();
       return success();
     } else if (mem_space == (int)air::MemorySpace::L2) {
-      if (bufferToMemtileMap.find(dyn_cast<AIE::BufferOp>(
+      if (bufferToMemtileMap.find(dyn_cast_if_present<AIE::BufferOp>(
               op.getMemref().getDefiningOp())) != bufferToMemtileMap.end()) {
-        *tile = bufferToMemtileMap[dyn_cast<AIE::BufferOp>(
+        *tile = bufferToMemtileMap[dyn_cast_if_present<AIE::BufferOp>(
             op.getMemref().getDefiningOp())];
       } else {
         return op.emitOpError("missing L2 alloc");
@@ -2217,7 +2226,8 @@ private:
             rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
 
     // replace uses of alloc with result of acquire
-    if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
+    if (auto a = dyn_cast_if_present<memref::AllocOp>(
+            op.getMemref().getDefiningOp()))
       rewriter.replaceOpWithNewOp<UnrealizedConversionCastOp>(
           a.getOperation(), a.getType(), producerAccess.getOutput());
   }
@@ -2234,7 +2244,7 @@ private:
       return;
     }
     for (auto u : op.getMemref().getDefiningOp()->getUsers()) {
-      if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
+      if (auto dealloc = dyn_cast_if_present<memref::DeallocOp>(u)) {
         rewriter.setInsertionPoint(&op->getBlock()->back());
         AIE::ObjectFifoReleaseOp::create(rewriter, dealloc->getLoc(), port,
                                          objFifo.getName(), 1);
@@ -2317,8 +2327,8 @@ struct SpecializeChannelBundlePattern
           rewriter.setInsertionPoint(put);
           auto new_put = createChannelPutGetWithoutBundle(rewriter, new_chan,
                                                           put, maxSize);
-          auto async_new_put =
-              dyn_cast<air::AsyncOpInterface>(new_put.getOperation());
+          auto async_new_put = dyn_cast_if_present<air::AsyncOpInterface>(
+              new_put.getOperation());
           if (put.getAsyncToken()) {
             replaceAllUsesInRegionWith(put.getAsyncToken(),
                                        async_new_put.getAsyncToken(),
@@ -2335,8 +2345,8 @@ struct SpecializeChannelBundlePattern
           rewriter.setInsertionPoint(get);
           auto new_get = createChannelPutGetWithoutBundle(rewriter, new_chan,
                                                           get, maxSize);
-          auto async_new_get =
-              dyn_cast<air::AsyncOpInterface>(new_get.getOperation());
+          auto async_new_get = dyn_cast_if_present<air::AsyncOpInterface>(
+              new_get.getOperation());
           if (get.getAsyncToken()) {
             replaceAllUsesInRegionWith(get.getAsyncToken(),
                                        async_new_get.getAsyncToken(),
@@ -2405,7 +2415,8 @@ private:
                                    int maxSize) const {
     SmallVector<Type, 4> tys = {};
     SmallVector<Value, 4> deps = {};
-    auto asyncOp = dyn_cast<air::AsyncOpInterface>(ci.getOperation());
+    auto asyncOp =
+        dyn_cast_if_present<air::AsyncOpInterface>(ci.getOperation());
     if (asyncOp.getAsyncToken()) {
       tys.push_back(air::AsyncTokenType::get(builder.getContext()));
       deps = asyncOp.getAsyncDependencies();
@@ -2438,7 +2449,8 @@ private:
     std::vector<Attribute> new_shape;
     for (int i = 0; i < (int)broadcast_shape.size(); i++) {
       if (i == diffDimension) {
-        auto broadcast_dim = dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt();
+        auto broadcast_dim =
+            dyn_cast_if_present<IntegerAttr>(broadcast_shape[i]).getInt();
         new_shape.push_back(builder.getI64IntegerAttr(broadcast_dim));
       } else
         new_shape.push_back(builder.getI64IntegerAttr(1));
@@ -2527,13 +2539,13 @@ struct LowerAIRPingPongPattern : public OpRewritePattern<scf::ForOp> {
 
     // Annotate channels with buffer_resource, i.e. object count
     for_op.walk([&](Operation *op) {
-      if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
+      if (auto get = dyn_cast_if_present<air::ChannelGetOp>(op)) {
         auto chan_op = air::getChannelDeclarationThroughSymbol(get);
         chan_op->setAttr(
             "buffer_resources",
             IntegerAttr::get(IntegerType::get(chan_op->getContext(), 32),
                              unroll_factor));
-      } else if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
+      } else if (auto put = dyn_cast_if_present<air::ChannelPutOp>(op)) {
         auto chan_op = air::getChannelDeclarationThroughSymbol(put);
         chan_op->setAttr(
             "buffer_resources",
@@ -2635,8 +2647,10 @@ struct LinalgCopyToLoopsPattern : public OpRewritePattern<linalg::CopyOp> {
     if (inputs.size() != 1 || outputs.size() != 1)
       return failure();
 
-    auto srcType = llvm::dyn_cast<MemRefType>(inputs[0]->get().getType());
-    auto dstType = llvm::dyn_cast<MemRefType>(outputs[0].get().getType());
+    auto srcType =
+        llvm::dyn_cast_if_present<MemRefType>(inputs[0]->get().getType());
+    auto dstType =
+        llvm::dyn_cast_if_present<MemRefType>(outputs[0].get().getType());
     if (!srcType || !dstType)
       return failure();
 
@@ -2832,7 +2846,7 @@ public:
                         uint32_t destChannel) {
     AIE::FlowOp flowOp = nullptr;
     aie_device.walk([&](Operation *op) {
-      if (auto fop = dyn_cast<AIE::FlowOp>(op))
+      if (auto fop = dyn_cast_if_present<AIE::FlowOp>(op))
         if (source == fop.getSource() && dest == fop.getDest() &&
             sourceBundle == fop.getSourceBundle() &&
             destBundle == fop.getDestBundle() &&
@@ -2949,7 +2963,8 @@ public:
   AIE::PacketFlowOp getExistingPacketFlowOpFromDevice(
       mlir::Value source, xilinx::AIE::WireBundle sourceBundle,
       uint32_t sourceChannel, air::MemcpyInterface memcpyOp) {
-    auto chanIfOp = dyn_cast<air::ChannelInterface>(memcpyOp.getOperation());
+    auto chanIfOp =
+        dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation());
     if (!chanIfOp)
       return AIE::PacketFlowOp(); // Only air.channel_interface ops support
                                   // packet-flow routing.
@@ -2964,13 +2979,13 @@ public:
     // memory spaces (L3 memory space indicates shim tile involvement)
     bool destIsShim = false;
     if (auto srcMemref = memcpyOp.getSrcMemref()) {
-      auto memrefTy = dyn_cast<BaseMemRefType>(srcMemref.getType());
+      auto memrefTy = dyn_cast_if_present<BaseMemRefType>(srcMemref.getType());
       if (memrefTy &&
           memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
         destIsShim = true;
     }
     if (auto dstMemref = memcpyOp.getDstMemref()) {
-      auto memrefTy = dyn_cast<BaseMemRefType>(dstMemref.getType());
+      auto memrefTy = dyn_cast_if_present<BaseMemRefType>(dstMemref.getType());
       if (memrefTy &&
           memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
         destIsShim = true;
@@ -2988,7 +3003,7 @@ public:
     // matching.
     std::vector<std::string> flowOpStringsToFlowIdMap;
     for (auto op : flowMap) {
-      auto flowChanOp = dyn_cast<air::ChannelOp>(op);
+      auto flowChanOp = dyn_cast_if_present<air::ChannelOp>(op);
       if (!flowChanOp) {
         flowOpStringsToFlowIdMap.push_back("");
         continue;
@@ -3081,7 +3096,7 @@ public:
     // Search the device for an existing CascadeFlowOp that matches the
     // source/dest tiles.
     aie_device.walk([&](Operation *op) {
-      if (auto fop = dyn_cast<AIE::CascadeFlowOp>(op))
+      if (auto fop = dyn_cast_if_present<AIE::CascadeFlowOp>(op))
         if (source == fop.getSourceTile() && dest == fop.getDestTile())
           flowOp = fop;
     });
@@ -3138,15 +3153,17 @@ public:
     // on L2 memrefs
     aieDevice.walk<mlir::WalkOrder::PreOrder, ForwardDominanceIterator<>>(
         [&](air::ChannelInterface chanI) {
-          auto memrefTy = dyn_cast<BaseMemRefType>(chanI.getMemref().getType());
+          auto memrefTy =
+              dyn_cast_if_present<BaseMemRefType>(chanI.getMemref().getType());
           if (!memrefTy || memrefTy.getMemorySpaceAsInt() !=
                                static_cast<int>(air::MemorySpace::L2))
             return mlir::WalkResult::advance();
 
-          if (auto chanPut = dyn_cast<air::ChannelPutOp>(chanI.getOperation()))
+          if (auto chanPut =
+                  dyn_cast_if_present<air::ChannelPutOp>(chanI.getOperation()))
             l2MemrefPutsGets[chanI.getMemref()].first.push_back(chanPut);
-          else if (auto chanGet =
-                       dyn_cast<air::ChannelGetOp>(chanI.getOperation()))
+          else if (auto chanGet = dyn_cast_if_present<air::ChannelGetOp>(
+                       chanI.getOperation()))
             l2MemrefPutsGets[chanI.getMemref()].second.push_back(chanGet);
 
           return mlir::WalkResult::advance();
@@ -3183,8 +3200,10 @@ public:
           arith::ConstantIndexOp::create(builder, builder.getUnknownLoc(), 1);
 
       // Use the original op as a template to emit new dummy ops
-      auto templateAsyncIf = dyn_cast<air::AsyncOpInterface>(templateOp);
-      auto templateChanIf = dyn_cast<air::ChannelInterface>(templateOp);
+      auto templateAsyncIf =
+          dyn_cast_if_present<air::AsyncOpInterface>(templateOp);
+      auto templateChanIf =
+          dyn_cast_if_present<air::ChannelInterface>(templateOp);
       assert(templateAsyncIf && templateChanIf &&
              "Expected valid async/channel op");
 
@@ -3288,7 +3307,7 @@ public:
         }
         // Check for L3 memref operands
         for (auto operand : op->getOperands()) {
-          auto memrefTy = dyn_cast<MemRefType>(operand.getType());
+          auto memrefTy = dyn_cast_if_present<MemRefType>(operand.getType());
           if (!memrefTy)
             continue;
           if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L3)
@@ -3508,7 +3527,7 @@ public:
                           ty.getLayout().getAffineMap(), ty.getMemorySpace()));
       for (auto op : chanOpPartitions[key]) {
         int memrefOperandOffset =
-            dyn_cast<air::AsyncOpInterface>(op.getOperation())
+            dyn_cast_if_present<air::AsyncOpInterface>(op.getOperation())
                 .getAsyncDependencies()
                 .size();
         auto &memrefOpOper = op->getOpOperand(memrefOperandOffset);
@@ -3561,10 +3580,10 @@ public:
         std::vector<std::string> uniqueS2MMChannels;
         std::vector<std::string> uniqueMM2SChannels;
         for (auto user : memref.getUsers()) {
-          if (auto get = dyn_cast<air::ChannelGetOp>(user))
+          if (auto get = dyn_cast_if_present<air::ChannelGetOp>(user))
             push_back_if_unique<std::string>(uniqueS2MMChannels,
                                              get.getChanName().str());
-          else if (auto put = dyn_cast<air::ChannelPutOp>(user))
+          else if (auto put = dyn_cast_if_present<air::ChannelPutOp>(user))
             push_back_if_unique<std::string>(uniqueMM2SChannels,
                                              put.getChanName().str());
         }
@@ -3572,7 +3591,8 @@ public:
             (int)uniqueS2MMChannels.size() > maxMemtileDstConnections ||
             (int)uniqueMM2SChannels.size() > maxMemtileSrcConnections;
         if (tooManyChannelConnections) {
-          if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
+          if (auto exec =
+                  dyn_cast_if_present<air::ExecuteOp>(allocOp->getParentOp()))
             memrefs.push_back(exec->getResult(1));
           else
             memrefs.push_back(memref);
@@ -3587,9 +3607,9 @@ public:
       std::vector<air::ChannelPutOp> puts;
       std::vector<air::ChannelGetOp> gets;
       for (auto user : memref.getUsers()) {
-        if (auto put = dyn_cast<air::ChannelPutOp>(user))
+        if (auto put = dyn_cast_if_present<air::ChannelPutOp>(user))
           puts.push_back(put);
-        else if (auto get = dyn_cast<air::ChannelGetOp>(user))
+        else if (auto get = dyn_cast_if_present<air::ChannelGetOp>(user))
           gets.push_back(get);
       }
       if (everyAIRChannelAccessIsNonOverlapping(gets) &&
@@ -3618,13 +3638,13 @@ public:
     // bundle of memcpy ops which share the same aie.flow.
     std::vector<air::MemcpyBundleAsFlow> memcpy_flows;
     for (auto o : dma_memcpy_ops) {
-      if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(o)) {
+      if (auto dma = dyn_cast_if_present<air::DmaMemcpyNdOp>(o)) {
         // DMA memcpy always creates a new flow bundle.
         air::MemcpyBundleAsFlow flow = air::MemcpyBundleAsFlow(dma);
         if (failed(flow.pushBackMemcpyOpToBundle(dma)))
           return failure();
         memcpy_flows.push_back(flow);
-      } else if (auto putget = dyn_cast<air::ChannelInterface>(o)) {
+      } else if (auto putget = dyn_cast_if_present<air::ChannelInterface>(o)) {
         // Lookup channel declaration.
         auto chan = air::getChannelDeclarationThroughSymbol(putget);
         if (!chan) {
@@ -3635,7 +3655,8 @@ public:
         // Check if new pair
         bool found_in_flows = false;
         for (auto &f : memcpy_flows) {
-          auto air_flow_op_chan = dyn_cast<air::ChannelOp>(f.air_flow_op);
+          auto air_flow_op_chan =
+              dyn_cast_if_present<air::ChannelOp>(f.air_flow_op);
           if (!air_flow_op_chan)
             continue;
           if (chan_name != air_flow_op_chan.getSymName().str())
@@ -3760,12 +3781,13 @@ public:
 
     int64_t col_offset = 0;
     int64_t row_offset = 0;
-    if (auto herd = dyn_cast<air::HerdOp>(op.getOperation())) {
+    if (auto herd = dyn_cast_if_present<air::HerdOp>(op.getOperation())) {
       auto c = herd.getColOffset();
       auto r = herd.getRowOffset();
       col_offset = c ? *c : 0;
       row_offset = r ? *r : 0;
-    } else if (auto seg = dyn_cast<air::SegmentOp>(op.getOperation())) {
+    } else if (auto seg =
+                   dyn_cast_if_present<air::SegmentOp>(op.getOperation())) {
       auto c = seg.getColOffset();
       auto r = seg.getRowOffset();
       col_offset = c ? *c : 0;
@@ -3858,16 +3880,18 @@ public:
           else {
             auto constInternalIdx = getConstantIntValue(internalIdx);
             auto constExternalIdx = getConstantIntValue(externalIdx);
-            auto internalBlockArg = dyn_cast<BlockArgument>(internalIdx);
-            auto externalBlockArg = dyn_cast<BlockArgument>(externalIdx);
+            auto internalBlockArg =
+                dyn_cast_if_present<BlockArgument>(internalIdx);
+            auto externalBlockArg =
+                dyn_cast_if_present<BlockArgument>(externalIdx);
             SmallVector<int> internalSteps, externalSteps;
             if (internalBlockArg) {
               if (LoopLikeOpInterface loopLikeOwner =
-                      dyn_cast<LoopLikeOpInterface>(
+                      dyn_cast_if_present<LoopLikeOpInterface>(
                           internalBlockArg.getOwner()->getParentOp()))
                 internalSteps = getAllStaticStepsInLoopLike(loopLikeOwner,
                                                             internalBlockArg);
-              else if (air::HerdOp herdOwner = dyn_cast<air::HerdOp>(
+              else if (air::HerdOp herdOwner = dyn_cast_if_present<air::HerdOp>(
                            internalBlockArg.getOwner()->getParentOp()))
                 internalSteps =
                     getAllStaticStepsInAIRHerd(herdOwner, internalBlockArg);
@@ -3875,11 +3899,11 @@ public:
               internalSteps.push_back(*constInternalIdx);
             if (externalBlockArg) {
               if (LoopLikeOpInterface loopLikeOwner =
-                      dyn_cast<LoopLikeOpInterface>(
+                      dyn_cast_if_present<LoopLikeOpInterface>(
                           externalBlockArg.getOwner()->getParentOp()))
                 externalSteps = getAllStaticStepsInLoopLike(loopLikeOwner,
                                                             externalBlockArg);
-              else if (air::HerdOp herdOwner = dyn_cast<air::HerdOp>(
+              else if (air::HerdOp herdOwner = dyn_cast_if_present<air::HerdOp>(
                            externalBlockArg.getOwner()->getParentOp()))
                 externalSteps =
                     getAllStaticStepsInAIRHerd(herdOwner, externalBlockArg);
@@ -3951,7 +3975,8 @@ public:
 
     // If memcpy op is air.channel: filter out channel bundles based on
     // metadata; get metadata from metadataArray based on channel indices.
-    if (auto ci = dyn_cast<air::ChannelInterface>(memcpyOpIf.getOperation())) {
+    if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
+            memcpyOpIf.getOperation())) {
       // Get index to metadataArray based on channel indices.
       auto iter = air::getIndexToMetadataArrayFromChannelIndices(ci);
       if (!iter) {
@@ -3963,7 +3988,7 @@ public:
       auto metadataArray = ci->getAttrOfType<ArrayAttr>("metadataArray");
       if (!metadataArray || (size_t)*iter >= metadataArray.size())
         return success();
-      auto dictAttr = dyn_cast<DictionaryAttr>(metadataArray[*iter]);
+      auto dictAttr = dyn_cast_if_present<DictionaryAttr>(metadataArray[*iter]);
       if (!dictAttr)
         return success();
       auto shimNameAttr = dictAttr.getAs<StringAttr>("base");
@@ -3983,11 +4008,13 @@ public:
   // Determine the tile-side memref type of the DMA op.
   MemRefType getTileSideMemrefTypeForMemcpy(air::MemcpyInterface dmaOp,
                                             AIE::DMAChannelDir dir) {
-    if (auto dma = dyn_cast<air::DmaMemcpyNdOp>(dmaOp.getOperation()))
+    if (auto dma =
+            dyn_cast_if_present<air::DmaMemcpyNdOp>(dmaOp.getOperation()))
       return cast<MemRefType>((dir == AIE::DMAChannelDir::MM2S)
                                   ? dma.getDstMemref().getType()
                                   : dma.getSrcMemref().getType());
-    if (auto chan = dyn_cast<air::ChannelInterface>(dmaOp.getOperation())) {
+    if (auto chan =
+            dyn_cast_if_present<air::ChannelInterface>(dmaOp.getOperation())) {
       air::ChannelInterface tileSideChannelOp =
           air::getTheOtherChannelOpThroughSymbol(chan).front();
       return cast<MemRefType>(tileSideChannelOp.getMemref().getType());
@@ -4006,15 +4033,18 @@ public:
 
     // Separate memcpy ops into S2MM and MM2S based on direction.
     for (auto memcpyIf : shimSideMemcpyIfOps) {
-      if (auto put = dyn_cast<air::ChannelPutOp>(memcpyIf.getOperation()))
+      if (auto put =
+              dyn_cast_if_present<air::ChannelPutOp>(memcpyIf.getOperation()))
         shimMemcpyMM2SOps.push_back(memcpyIf);
-      if (auto get = dyn_cast<air::ChannelGetOp>(memcpyIf.getOperation()))
+      if (auto get =
+              dyn_cast_if_present<air::ChannelGetOp>(memcpyIf.getOperation()))
         shimMemcpyS2MMOps.push_back(memcpyIf);
-      if (auto dmaOp = dyn_cast<air::DmaMemcpyNdOp>(memcpyIf.getOperation())) {
+      if (auto dmaOp = dyn_cast_if_present<air::DmaMemcpyNdOp>(
+              memcpyIf.getOperation())) {
         auto srcMemrefTy =
-            dyn_cast<BaseMemRefType>(dmaOp.getSrcMemref().getType());
+            dyn_cast_if_present<BaseMemRefType>(dmaOp.getSrcMemref().getType());
         auto dstMemrefTy =
-            dyn_cast<BaseMemRefType>(dmaOp.getDstMemref().getType());
+            dyn_cast_if_present<BaseMemRefType>(dmaOp.getDstMemref().getType());
         if (srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
           shimMemcpyMM2SOps.push_back(memcpyIf);
         if (dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
@@ -4070,10 +4100,11 @@ public:
     // Helper function getting dma_name from the air::MemcpyInterface op.
     auto getDmaNameFromMemcpyIfOp = [](air::MemcpyInterface memcpyIfOp) {
       std::string dma_name = "";
-      if (auto ci = dyn_cast<air::ChannelInterface>(memcpyIfOp.getOperation()))
+      if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
+              memcpyIfOp.getOperation()))
         return "air_" + ci.getChanName().str();
-      else if (auto dmaOp =
-                   dyn_cast<air::DmaMemcpyNdOp>(memcpyIfOp.getOperation()))
+      else if (auto dmaOp = dyn_cast_if_present<air::DmaMemcpyNdOp>(
+                   memcpyIfOp.getOperation()))
         return "airMemcpyId" + std::to_string(dmaOp.getId());
       return dma_name;
     };
@@ -4088,7 +4119,7 @@ public:
       // the "internal" (tile-side) data movement op ids.
       auto memcpyIfOpIt = llvm::find_if(
           shimSideMemcpyIfOps, [&](air::MemcpyInterface memcpyIfOp) {
-            if (auto ci = dyn_cast<air::ChannelInterface>(
+            if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
                     memcpyIfOp.getOperation())) {
               for (auto tileSideChannelOp :
                    air::getTheOtherChannelOpThroughSymbol(ci)) {
@@ -4098,7 +4129,7 @@ public:
                                        tileSideChannelOp.getId()))
                   return true;
               }
-            } else if (auto dmaOp = dyn_cast<air::DmaMemcpyNdOp>(
+            } else if (auto dmaOp = dyn_cast_if_present<air::DmaMemcpyNdOp>(
                            memcpyIfOp.getOperation())) {
               auto linkedTileSideDmaIds =
                   getOriginalTileSideDmaIds(t, chanRenumberReverseMap);
@@ -4404,13 +4435,15 @@ public:
       alloc = memcpyOpIf.getSrcMemref();
     }
 
-    if (auto bco = dyn_cast<bufferization::ToBufferOp>(alloc.getDefiningOp()))
+    if (auto bco = dyn_cast_if_present<bufferization::ToBufferOp>(
+            alloc.getDefiningOp()))
       builder.setInsertionPoint(bco.getOperand().getDefiningOp());
     else if (isa<memref::AllocaOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(alloc.getDefiningOp());
     else if (!tileInbound.value() &&
              isa<AIE::BufferOp>(alloc.getDefiningOp())) {
-      auto br = dyn_cast<cf::BranchOp>(memcpyOpIf->getBlock()->getTerminator());
+      auto br = dyn_cast_if_present<cf::BranchOp>(
+          memcpyOpIf->getBlock()->getTerminator());
       if (br)
         builder.setInsertionPointToStart(br.getDest());
       else
@@ -4476,7 +4509,7 @@ public:
       // Find dummy BDs.
       auto containsDummyBDs = [isVectorOfZeros](std::vector<Operation *> ops) {
         return llvm::any_of(ops, [&](Operation *op) {
-          auto chanIf = dyn_cast<air::ChannelInterface>(op);
+          auto chanIf = dyn_cast_if_present<air::ChannelInterface>(op);
           return chanIf && isVectorOfZeros(chanIf.getSizes());
         });
       };
@@ -4859,18 +4892,21 @@ public:
         rewriter.getIndexAttr(cascadeTileSize)};
     options.setTileSizes(tileSizesOfr);
 
-    if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation())) {
+    if (auto put = dyn_cast_if_present<air::ChannelPutOp>(op.getOperation())) {
       FailureOr<scf::SCFTilingResult> tilingResult =
           scf::tileUsingSCF(rewriter, put, options);
       if (failed(tilingResult))
         return failure();
-      return dyn_cast<air::ChannelInterface>(tilingResult->tiledOps.front());
-    } else if (auto get = dyn_cast<air::ChannelGetOp>(op.getOperation())) {
+      return dyn_cast_if_present<air::ChannelInterface>(
+          tilingResult->tiledOps.front());
+    } else if (auto get =
+                   dyn_cast_if_present<air::ChannelGetOp>(op.getOperation())) {
       FailureOr<scf::SCFTilingResult> tilingResult =
           scf::tileUsingSCF(rewriter, get, options);
       if (failed(tilingResult))
         return failure();
-      return dyn_cast<air::ChannelInterface>(tilingResult->tiledOps.front());
+      return dyn_cast_if_present<air::ChannelInterface>(
+          tilingResult->tiledOps.front());
     }
     return failure();
   }
@@ -4878,7 +4914,7 @@ public:
   AIE::ShimDMAOp getShimDMAOp(AIE::TileOp tile) {
     auto users = tile.getResult().getUsers();
     for (auto user : users)
-      if (auto shimDMAOp = dyn_cast<AIE::ShimDMAOp>(*user))
+      if (auto shimDMAOp = dyn_cast_if_present<AIE::ShimDMAOp>(*user))
         return shimDMAOp;
     return nullptr;
   }
@@ -4886,7 +4922,7 @@ public:
   AIE::MemTileDMAOp getMemTileDMAOp(AIE::TileOp tile) {
     auto users = tile.getResult().getUsers();
     for (auto user : users)
-      if (auto memTileDMAOp = dyn_cast<AIE::MemTileDMAOp>(*user))
+      if (auto memTileDMAOp = dyn_cast_if_present<AIE::MemTileDMAOp>(*user))
         return memTileDMAOp;
     return nullptr;
   }
@@ -4931,7 +4967,7 @@ public:
         for (auto o : alloc.memcpyOps) {
           if (!o)
             continue;
-          auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
+          auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(o);
           if (!memcpyOpIf)
             return o->emitOpError("does not have air::MemcpyInterface");
           if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
@@ -4947,7 +4983,7 @@ public:
         for (auto o : alloc.memcpyOps) {
           if (!o)
             continue;
-          auto memcpyOpIf = dyn_cast<air::MemcpyInterface>(o);
+          auto memcpyOpIf = dyn_cast_if_present<air::MemcpyInterface>(o);
           if (!memcpyOpIf)
             return o->emitOpError("does not have air::MemcpyInterface");
           if (failed(allocateCoreLocksPerMemcpyOp(rewriter, memcpyOpIf,
@@ -4961,7 +4997,7 @@ public:
       for (auto o : allocs_to_remap) {
         Value alloc = o->getResult(0);
         for (auto u : alloc.getUsers()) {
-          if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
+          if (auto dealloc = dyn_cast_if_present<memref::DeallocOp>(u)) {
             dealloc.erase();
             break;
           }
@@ -5028,7 +5064,7 @@ public:
           for (auto o : alloc.memcpyOps) {
             if (!o)
               continue;
-            auto channelOpIf = dyn_cast<air::ChannelInterface>(o);
+            auto channelOpIf = dyn_cast_if_present<air::ChannelInterface>(o);
             if (!channelOpIf)
               return o->emitOpError("does not have air::ChannelInterface");
             auto tiledChannelIf = TileCascadeChannelIfUsingScfFor(
@@ -5192,7 +5228,7 @@ public:
     std::vector<Operation *> memcpy_ops;
     getAIRMemcpyOpInRegion<T>(device.getRegion(), memcpy_ops);
     for (auto o : memcpy_ops) {
-      auto a = dyn_cast<air::AsyncOpInterface>(o);
+      auto a = dyn_cast_if_present<air::AsyncOpInterface>(o);
       if (a && a.getAsyncToken()) {
         OpBuilder b(o);
         o->replaceAllUsesWith(air::WaitAllOp::create(
@@ -5588,11 +5624,12 @@ public:
           auto parentLaunch = o->getParentOfType<air::LaunchOp>();
           if (parentLaunch && parentLaunch != targetLaunch)
             return;
-          auto memrefTy = dyn_cast<BaseMemRefType>(o.getMemref().getType());
+          auto memrefTy =
+              dyn_cast_if_present<BaseMemRefType>(o.getMemref().getType());
           if (memrefTy &&
               memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
             shimMemcpyIfOps.push_back(
-                dyn_cast<air::MemcpyInterface>(o.getOperation()));
+                dyn_cast_if_present<air::MemcpyInterface>(o.getOperation()));
         });
         func.walk([&](air::DmaMemcpyNdOp o) {
           // Filter by target launch: only collect ops from the current launch
@@ -5600,12 +5637,12 @@ public:
           if (parentLaunch && parentLaunch != targetLaunch)
             return;
           auto srcMemrefTy =
-              dyn_cast<BaseMemRefType>(o.getSrcMemref().getType());
+              dyn_cast_if_present<BaseMemRefType>(o.getSrcMemref().getType());
           if (srcMemrefTy &&
               srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
             shimMemcpyIfOps.push_back(o);
           auto dstMemrefTy =
-              dyn_cast<BaseMemRefType>(o.getDstMemref().getType());
+              dyn_cast_if_present<BaseMemRefType>(o.getDstMemref().getType());
           if (dstMemrefTy &&
               dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
             shimMemcpyIfOps.push_back(o);
@@ -5686,7 +5723,7 @@ private:
     if (numDims < 2)
       return val;
     // Ensure the value has a MemRefType.
-    auto memRefTy = dyn_cast<MemRefType>(val.getType());
+    auto memRefTy = dyn_cast_if_present<MemRefType>(val.getType());
     if (!memRefTy)
       return nullptr;
 

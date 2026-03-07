@@ -39,7 +39,7 @@ public:
       return;
     visitedOps.insert(op);
 
-    if (auto callOp = dyn_cast<func::CallOp>(op)) {
+    if (auto callOp = dyn_cast_if_present<func::CallOp>(op)) {
 
       auto builder = std::make_unique<mlir::OpBuilder>(op);
 
@@ -115,7 +115,7 @@ public:
 
       std::vector<func::ReturnOp> retOps;
       graph.walk([&](Operation *op) {
-        if (auto r = dyn_cast<func::ReturnOp>(op))
+        if (auto r = dyn_cast_if_present<func::ReturnOp>(op))
           retOps.push_back(r);
       });
 

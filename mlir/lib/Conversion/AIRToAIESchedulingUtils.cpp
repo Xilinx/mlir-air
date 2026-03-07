@@ -255,11 +255,11 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   auto memcpyIMappedToEquivalentBDs =
       [chansMappedToEquivalentBDs, dmasMappedToEquivalentBDs](Operation *opA,
                                                               Operation *opB) {
-        if (auto chanA = dyn_cast<air::ChannelInterface>(opA))
-          if (auto chanB = dyn_cast<air::ChannelInterface>(opB))
+        if (auto chanA = dyn_cast_if_present<air::ChannelInterface>(opA))
+          if (auto chanB = dyn_cast_if_present<air::ChannelInterface>(opB))
             return chansMappedToEquivalentBDs(chanA, chanB);
-        if (auto dmaA = dyn_cast<air::DmaMemcpyNdOp>(opA))
-          if (auto dmaB = dyn_cast<air::DmaMemcpyNdOp>(opB))
+        if (auto dmaA = dyn_cast_if_present<air::DmaMemcpyNdOp>(opA))
+          if (auto dmaB = dyn_cast_if_present<air::DmaMemcpyNdOp>(opB))
             return dmasMappedToEquivalentBDs(dmaA, dmaB);
         return false; // Unknown or different air::MemcpyInterface op types.
       };
@@ -310,14 +310,14 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
 
     // Check all ops are channel operations sharing same rotation pattern
     auto *firstOp = *ops.begin();
-    auto firstChan = dyn_cast<air::ChannelInterface>(firstOp);
+    auto firstChan = dyn_cast_if_present<air::ChannelInterface>(firstOp);
     if (!firstChan)
       return false;
 
     // Count unique buffers
     llvm::DenseSet<Value> uniqueBuffers;
     for (auto *op : ops) {
-      auto chanOp = dyn_cast<air::ChannelInterface>(op);
+      auto chanOp = dyn_cast_if_present<air::ChannelInterface>(op);
       if (!chanOp || !chansPartOfSameRotation(firstChan, chanOp))
         return false;
       uniqueBuffers.insert(chanOp.getMemref());
@@ -354,8 +354,8 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
     while (commonRegion->isAncestor(currRegion)) {
       Operation *parent = currRegion->getParentOp();
       currRegion = currRegion->getParentRegion();
-      auto affineFor = dyn_cast<affine::AffineForOp>(parent);
-      auto scfFor = dyn_cast<scf::ForOp>(parent);
+      auto affineFor = dyn_cast_if_present<affine::AffineForOp>(parent);
+      auto scfFor = dyn_cast_if_present<scf::ForOp>(parent);
       if (affineFor && affineFor.hasConstantBounds()) {
         tripCount *= *air::getStaticAffineForTripCountAsInt(affineFor);
       } else if (scfFor && air::getStaticScfForTripCountAsInt(scfFor)) {
@@ -398,7 +398,7 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
   int read_counter = 0;
   int write_counter = 0;
   for (auto user : buffer_memref.getUsers()) {
-    if (auto memcpyOp = dyn_cast<air::MemcpyInterface>(user)) {
+    if (auto memcpyOp = dyn_cast_if_present<air::MemcpyInterface>(user)) {
       if (buffer_memref == memcpyOp.getSrcMemref())
         read_counter++;
       else if (buffer_memref == memcpyOp.getDstMemref())
@@ -407,7 +407,7 @@ air::getLockValuePair(const AIE::AIETargetModel &targetModel,
       read_counter++;
     else if (isa<affine::AffineStoreOp>(user))
       write_counter++;
-    else if (auto linalgop = dyn_cast<linalg::LinalgOp>(user)) {
+    else if (auto linalgop = dyn_cast_if_present<linalg::LinalgOp>(user)) {
       for (auto opoperand : linalgop.getDpsInputOperands())
         if (opoperand->is(buffer_memref))
           read_counter++;
@@ -505,7 +505,7 @@ AIE::TileOp xilinx::air::allocation_info_t::getDmaTile() { return dma_tile; }
 bool xilinx::air::allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
   if (channel_op) {
     for (auto o : memcpyOps) {
-      if (auto chan_op = dyn_cast<air::ChannelInterface>(o)) {
+      if (auto chan_op = dyn_cast_if_present<air::ChannelInterface>(o)) {
         auto chan_declr = getChannelDeclarationThroughSymbol(chan_op);
         if (chan_declr == channel_op)
           return true;
@@ -570,7 +570,7 @@ bool xilinx::air::allocation_info_t::foundPacketFlowAllocInTile(int32_t col,
   if (!foundAlloc(col, row))
     return false;
   for (auto o : memcpyOps) {
-    auto memcpy_op = dyn_cast<air::MemcpyInterface>(o);
+    auto memcpy_op = dyn_cast_if_present<air::MemcpyInterface>(o);
     if (!memcpy_op)
       continue;
     auto chanTypeRes = air::getChannelType(memcpy_op);
@@ -594,8 +594,8 @@ static void selection(std::vector<Operation *> &a) {
   for (i = 0; i < a.size() - 1; i++) {
     min = i;
     for (j = i + 1; j < a.size(); j++) {
-      auto a_j = dyn_cast<air::MemcpyInterface>(a[j]);
-      auto a_min = dyn_cast<air::MemcpyInterface>(a[min]);
+      auto a_j = dyn_cast_if_present<air::MemcpyInterface>(a[j]);
+      auto a_min = dyn_cast_if_present<air::MemcpyInterface>(a[min]);
       if (a_j.getId() < a_min.getId())
         min = j;
     }
@@ -637,7 +637,7 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col,
   AIE::TileOp tile = alloc.value().getDmaTile();
   air::ChannelOp air_chan = nullptr;
   if (auto air_chan_op =
-          dyn_cast<air::ChannelInterface>(memcpyOp.getOperation())) {
+          dyn_cast_if_present<air::ChannelInterface>(memcpyOp.getOperation())) {
     air_chan = getChannelDeclarationThroughSymbol(air_chan_op);
   }
   const auto &target_model = device.getTargetModel();
@@ -789,10 +789,10 @@ FailureOr<air::allocation_info_t> air::DMAAllocator::allocNewDmaChannel(
         return t;
       }
     }
-    if (t.foundAlloc(
-            tile.getCol(), tile.getRow(),
-            getChannelDeclarationThroughSymbol(
-                dyn_cast<air::ChannelInterface>(memcpyOp.getOperation())))) {
+    if (t.foundAlloc(tile.getCol(), tile.getRow(),
+                     getChannelDeclarationThroughSymbol(
+                         dyn_cast_if_present<air::ChannelInterface>(
+                             memcpyOp.getOperation())))) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -907,7 +907,8 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   // Search for existing dma channel allocation
   for (auto &t : *allocs) {
     if (t.foundAlloc(getChannelDeclarationThroughSymbol(
-            dyn_cast<air::ChannelInterface>(memcpyOp.getOperation())))) {
+            dyn_cast_if_present<air::ChannelInterface>(
+                memcpyOp.getOperation())))) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -1249,10 +1250,10 @@ air::CascadeAllocator::allocNewCascade(air::MemcpyInterface &memcpyOp,
       return t;
     }
     // Also check for an allocation tied to the channel declaration
-    if (t.foundAlloc(
-            tile.getCol(), tile.getRow(),
-            getChannelDeclarationThroughSymbol(
-                dyn_cast<air::ChannelInterface>(memcpyOp.getOperation())))) {
+    if (t.foundAlloc(tile.getCol(), tile.getRow(),
+                     getChannelDeclarationThroughSymbol(
+                         dyn_cast_if_present<air::ChannelInterface>(
+                             memcpyOp.getOperation())))) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
@@ -1355,9 +1356,11 @@ air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp) {
 
 LogicalResult air::MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(
     air::ChannelInterface memcpyOp) {
-  if (auto get = dyn_cast<air::ChannelGetOp>(memcpyOp.getOperation()))
+  if (auto get =
+          dyn_cast_if_present<air::ChannelGetOp>(memcpyOp.getOperation()))
     return pushBackMemcpyOpToBundle(get);
-  else if (auto put = dyn_cast<air::ChannelPutOp>(memcpyOp.getOperation()))
+  else if (auto put =
+               dyn_cast_if_present<air::ChannelPutOp>(memcpyOp.getOperation()))
     return pushBackMemcpyOpToBundle(put);
   else
     return memcpyOp->emitOpError("unknown op type in air::ChannelInterface");

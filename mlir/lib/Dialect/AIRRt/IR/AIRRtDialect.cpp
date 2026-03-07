@@ -106,7 +106,7 @@ static LogicalResult FoldSegmentLoad(SegmentLoadOp op,
   for (Operation *prevOp = op->getPrevNode(); prevOp;
        prevOp = prevOp->getPrevNode()) {
     // Check if prevOp itself is a SegmentLoadOp.
-    if (auto prevSegmentLoad = dyn_cast<SegmentLoadOp>(prevOp)) {
+    if (auto prevSegmentLoad = dyn_cast_if_present<SegmentLoadOp>(prevOp)) {
       if (prevSegmentLoad.getSymName() == symName) {
         rewriter.replaceOp(op, prevSegmentLoad.getResults());
         return success();
@@ -140,7 +140,7 @@ static LogicalResult FoldHerdLoad(HerdLoadOp op, PatternRewriter &rewriter) {
   for (Operation *prevOp = op->getPrevNode(); prevOp;
        prevOp = prevOp->getPrevNode()) {
     // Check if prevOp itself is a HerdLoadOp.
-    if (auto prevHerdLoad = dyn_cast<HerdLoadOp>(prevOp)) {
+    if (auto prevHerdLoad = dyn_cast_if_present<HerdLoadOp>(prevOp)) {
       if (areHerdLoadsEquivalent(op, prevHerdLoad)) {
         rewriter.replaceOp(op, prevHerdLoad.getResults());
         return success();

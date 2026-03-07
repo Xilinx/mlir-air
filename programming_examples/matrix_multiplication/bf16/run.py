@@ -595,8 +595,14 @@ if __name__ == "__main__":
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
-                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
                 } : !transform.any_op
+                %func0_fold = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                transform.sequence %func0_fold : !transform.any_op failures(suppress) {
+                ^bb0(%arg_fold: !transform.any_op):
+                  transform.apply_patterns to %arg_fold {
+                      transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
+                  } {max_iterations = 10} : !transform.any_op
+                }
 
 
                 %matmul = transform.structured.match ops{["linalg.generic"]} in %arg1  : (!transform.any_op) -> !transform.any_op
@@ -626,9 +632,15 @@ if __name__ == "__main__":
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
-                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
                     transform.apply_patterns.memref.fold_memref_alias_ops
                 } : !transform.any_op
+                %func1_fold = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                transform.sequence %func1_fold : !transform.any_op failures(suppress) {
+                ^bb0(%arg_fold: !transform.any_op):
+                  transform.apply_patterns to %arg_fold {
+                      transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
+                  } {max_iterations = 10} : !transform.any_op
+                }
                 
                 // Eliminate redundant vector.transfer_read operations
                 %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func1 : (!transform.any_op) -> !transform.any_op
@@ -690,9 +702,15 @@ if __name__ == "__main__":
                     transform.apply_patterns.linalg.tiling_canonicalization
                     transform.apply_patterns.scf.for_loop_canonicalization
                     transform.apply_patterns.canonicalization
-                    transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
                     transform.apply_patterns.memref.fold_memref_alias_ops
                 } : !transform.any_op
+                %func2_fold = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+                transform.sequence %func2_fold : !transform.any_op failures(suppress) {
+                ^bb0(%arg_fold: !transform.any_op):
+                  transform.apply_patterns to %arg_fold {
+                      transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
+                  } {max_iterations = 10} : !transform.any_op
+                }
               transform.yield
             }
             }
