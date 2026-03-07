@@ -8,6 +8,7 @@
 // RUN: air-opt %s -air-override-memref-memory-space="scope=herd memory-space=2" | FileCheck %s
 // RUN: air-opt %s -air-override-memref-memory-space="scope=launch memory-space=2" | FileCheck %s --check-prefix=LAUNCH
 // RUN: air-opt %s -air-override-memref-memory-space="scope=segment memory-space=1" | FileCheck %s --check-prefix=SEGMENT
+// RUN: air-opt %s -air-override-memref-memory-space="scope=func memory-space=1" | FileCheck %s --check-prefix=FUNC
 
 module {
 
@@ -104,6 +105,28 @@ module {
           memref.copy %h1, %herd_buf : memref<32xf32, 3> to memref<32xf32, 3>
         }
       }
+    }
+    return
+  }
+
+  // Test scope=func with herd directly inside func (no launch/segment).
+  // scope=func should NOT override the herd alloc (issue #1379 follow-up).
+
+  // FUNC-LABEL: func.func @func_herd_no_launch
+  // scope=func changes func-level alloc from 3 to 1, herd alloc stays at 3
+  // FUNC: memref.alloc() : memref<64xf32, 1 : i32>
+  // FUNC: air.herd
+  // FUNC:   memref.alloc() : memref<32xf32, 3>
+
+  func.func @func_herd_no_launch(%arg0: memref<32xf32, 3>) {
+    %c1 = arith.constant 1 : index
+    // Alloc at func level (outside herd) — starts at memory_space 3
+    %func_buf = memref.alloc() : memref<64xf32, 3>
+    memref.dealloc %func_buf : memref<64xf32, 3>
+    air.herd @herd tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%h0=%arg0) : memref<32xf32, 3> {
+      // Alloc at herd level — should NOT be changed by scope=func
+      %herd_buf = memref.alloc() : memref<32xf32, 3>
+      memref.copy %h0, %herd_buf : memref<32xf32, 3> to memref<32xf32, 3>
     }
     return
   }
