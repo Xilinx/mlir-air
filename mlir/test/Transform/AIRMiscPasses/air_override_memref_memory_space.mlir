@@ -7,13 +7,15 @@
 
 // RUN: air-opt %s -air-override-memref-memory-space="scope=herd memory-space=2" | FileCheck %s
 // RUN: air-opt %s -air-override-memref-memory-space="scope=launch memory-space=2" | FileCheck %s --check-prefix=LAUNCH
+// RUN: air-opt %s -air-override-memref-memory-space="scope=segment memory-space=1" | FileCheck %s --check-prefix=SEGMENT
 
 module {
 
   // CHECK-LABEL: func.func @func0
   // CHECK: memref.alloc() : memref<32x64xf32, 2 : i32>
   // LAUNCH-LABEL: func.func @func0
-  // LAUNCH: memref.alloc() : memref<32x64xf32, 2 : i32>
+  // scope=launch is exclusive: alloc inside herd/segment is unchanged
+  // LAUNCH: memref.alloc() : memref<32x64xf32, 3>
   // MS1-LABEL: func.func @func0
   // MS1: memref.alloc() : memref<32x64xf32, 2 : i32>
 
@@ -69,7 +71,39 @@ module {
       linalg.matmul ins(%collapse_shape, %collapse_shape_4 : memref<32x32xf32>, memref<32x32xf32>) outs(%alloc_5 : memref<32x32xf32>)
       %expand_shape = memref.expand_shape %alloc_5 [[0, 1], [2, 3]] output_shape [8, 4, 8, 4] : memref<32x32xf32> into memref<8x4x8x4xf32>
       %alloc_6 = memref.alloc() {alignment = 64 : i64} : memref<8x8x4x4xf32>
-      linalg.transpose ins(%expand_shape : memref<8x4x8x4xf32>) outs(%alloc_6 : memref<8x8x4x4xf32>) permutation = [0, 2, 1, 3] 
+      linalg.transpose ins(%expand_shape : memref<8x4x8x4xf32>) outs(%alloc_6 : memref<8x8x4x4xf32>) permutation = [0, 2, 1, 3]
+    }
+    return
+  }
+
+  // Test exclusive scoping: scope=herd should only change herd allocs,
+  // scope=segment should only change segment allocs (issue #1379).
+
+  // CHECK-LABEL: func.func @func_exclusive_scope
+  // scope=herd: herd alloc changes to memory_space 2, segment alloc unchanged
+  // CHECK: air.segment
+  // CHECK:   memref.alloc() : memref<64xf32, 3>
+  // CHECK:   air.herd
+  // CHECK:     memref.alloc() : memref<32xf32, 2 : i32>
+
+  // SEGMENT-LABEL: func.func @func_exclusive_scope
+  // scope=segment: segment alloc changes to memory_space 1, herd alloc unchanged
+  // SEGMENT: air.segment
+  // SEGMENT:   memref.alloc() : memref<64xf32, 1 : i32>
+  // SEGMENT:   air.herd
+  // SEGMENT:     memref.alloc() : memref<32xf32, 3>
+
+  func.func @func_exclusive_scope(%arg0: memref<64xf32, 3>, %arg1: memref<32xf32, 3>) {
+    air.launch () in () args(%a0=%arg0, %a1=%arg1) : memref<64xf32, 3>, memref<32xf32, 3> {
+      air.segment @seg args(%s0=%a0, %s1=%a1) : memref<64xf32, 3>, memref<32xf32, 3> {
+        %c1 = arith.constant 1 : index
+        %seg_buf = memref.alloc() : memref<64xf32, 3>
+        memref.copy %s0, %seg_buf : memref<64xf32, 3> to memref<64xf32, 3>
+        air.herd @herd tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%h1=%s1) : memref<32xf32, 3> {
+          %herd_buf = memref.alloc() : memref<32xf32, 3>
+          memref.copy %h1, %herd_buf : memref<32xf32, 3> to memref<32xf32, 3>
+        }
+      }
     }
     return
   }
