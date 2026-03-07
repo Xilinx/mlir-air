@@ -37,3 +37,6 @@ libadf.a
 *.elf
 *.elf.*
 CLAUDE.md
+
+# documents
+*.pdf
