@@ -2819,6 +2819,29 @@ void AIROverrideMemRefMemorySpacePass::runOnOperation() {
   RewritePatternSet patterns(context);
   patterns.add<OverrideMemorySpacePattern>(context, clScope, clMemorySpace);
   (void)applyPatternsGreedily(moduleOp, std::move(patterns));
+
+  // After alloc types change, propagate types through AIR hierarchy block
+  // arguments. When an alloc outside a herd/segment/launch changes type,
+  // the hierarchy op's operand updates but the body block argument retains
+  // the old type (issue #1384).
+  auto updateBlockArgTypes = [](auto hierarchyOp) {
+    auto kernelOperands = hierarchyOp.getKernelOperands();
+    auto kernelArgs = hierarchyOp.getKernelArguments();
+    for (unsigned i = 0; i < kernelArgs.size(); i++) {
+      if (kernelArgs[i].getType() != kernelOperands[i].getType()) {
+        // Get a mutable reference via the block directly.
+        auto &block = hierarchyOp.getBody().front();
+        block.getArgument(kernelArgs[i].getArgNumber())
+            .setType(kernelOperands[i].getType());
+      }
+    }
+  };
+  // Propagate types from outermost to innermost hierarchy ops so that
+  // updated alloc types are visible when updating inner block arguments.
+  moduleOp.walk([&](air::LaunchOp op) { updateBlockArgTypes(op); });
+  moduleOp.walk([&](air::SegmentOp op) { updateBlockArgTypes(op); });
+  moduleOp.walk([&](air::HerdOp op) { updateBlockArgTypes(op); });
+
   RewritePatternSet fixResTypePatterns(context);
   if (clScope == "herd") {
     fixResTypePatterns.add<correctViewLikeOpIOMemorySpacesInScope<air::HerdOp>>(

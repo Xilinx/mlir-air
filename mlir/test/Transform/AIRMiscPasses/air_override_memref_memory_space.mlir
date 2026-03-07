@@ -130,4 +130,30 @@ module {
     }
     return
   }
+
+  // Test that subview source type is updated when herd arg type changes
+  // due to segment-level alloc override (issue #1384).
+
+  // SEGMENT-LABEL: func.func @func_subview_type_propagation
+  // SEGMENT: air.segment
+  // SEGMENT:   memref.alloc() : memref<64xbf16, 1 : i32>
+  // SEGMENT:   air.herd
+  // SEGMENT:     memref.subview %{{.*}}[0] [32] [1] : memref<64xbf16, 1 : i32> to memref<32xbf16, strided<[1]>, 1 : i32>
+
+  func.func @func_subview_type_propagation() {
+    air.launch () in () {
+      air.segment @seg {
+        %c1 = arith.constant 1 : index
+        %buf = memref.alloc() : memref<64xbf16, 3>
+        air.herd @herd tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%h0=%buf) : memref<64xbf16, 3> {
+          %local = memref.alloc() : memref<32xbf16, 3>
+          %sv = memref.subview %h0[0] [32] [1] : memref<64xbf16, 3> to memref<32xbf16, strided<[1]>, 3>
+          memref.copy %sv, %local : memref<32xbf16, strided<[1]>, 3> to memref<32xbf16, 3>
+          memref.dealloc %local : memref<32xbf16, 3>
+        }
+        memref.dealloc %buf : memref<64xbf16, 3>
+      }
+    }
+    return
+  }
 }
