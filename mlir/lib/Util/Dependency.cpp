@@ -1667,8 +1667,10 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_put.getSrc());
     std::vector<air::ChannelGetOp> channel_gets =
         getTheOtherChannelOpThroughSymbol(channel_put);
-    if (!channel_gets.size())
+    if (!channel_gets.size()) {
       op->emitOpError("found channel op not in pairs");
+      return 0;
+    }
     std::string memorySpaceDstStr =
         getMemorySpaceAsString(channel_gets[0].getDst());
     std::string event_name = "ChannelPutOp@" + channel_put.getChanName().str() +
@@ -1703,8 +1705,10 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_get.getDst());
     std::vector<air::ChannelPutOp> channel_puts =
         getTheOtherChannelOpThroughSymbol(channel_get);
-    if (!channel_puts.size())
+    if (!channel_puts.size()) {
       op->emitOpError("found channel op not in pairs");
+      return 0;
+    }
     std::string memorySpaceSrcStr =
         getMemorySpaceAsString(channel_puts[0].getSrc());
     std::string event_name = "ChannelGetOp@" + channel_get.getChanName().str() +

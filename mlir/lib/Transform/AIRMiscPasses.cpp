@@ -2706,15 +2706,28 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
                                 PatternRewriter &rewriter) const override {
     Operation *parent = nullptr;
 
-    if (clScope == "herd")
+    // Scope matching is exclusive: each scope only matches allocs at that
+    // level of the AIR hierarchy, not allocs nested in deeper scopes.
+    // This allows assigning different memory spaces at different levels
+    // (e.g., L1 for herd, L2 for segment) via sequential pass invocations.
+    if (clScope == "herd") {
       parent = alloc->getParentOfType<air::HerdOp>();
-    else if (clScope == "segment")
+    } else if (clScope == "segment") {
       parent = alloc->getParentOfType<air::SegmentOp>();
-    else if (clScope == "launch")
+      if (alloc->getParentOfType<air::HerdOp>())
+        return failure();
+    } else if (clScope == "launch") {
       parent = alloc->getParentOfType<air::LaunchOp>();
-    else if (clScope == "func")
+      if (alloc->getParentOfType<air::SegmentOp>() ||
+          alloc->getParentOfType<air::HerdOp>())
+        return failure();
+    } else if (clScope == "func") {
       parent = alloc->getParentOfType<func::FuncOp>();
-    else
+      if (alloc->getParentOfType<air::LaunchOp>() ||
+          alloc->getParentOfType<air::SegmentOp>() ||
+          alloc->getParentOfType<air::HerdOp>())
+        return failure();
+    } else
       return alloc->emitOpError(
           "Invalid clScope value: expected one of herd/segment/launch/func");
 
