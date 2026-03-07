@@ -21,11 +21,13 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
@@ -36,6 +38,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/InliningUtils.h"
@@ -5279,6 +5282,62 @@ void transform::HoistCastPairOp::getEffects(
   onlyReadsHandle(getLoopOpMutable(), effects);
   producesHandle(getOperation()->getOpResults(), effects);
   modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// FoldUnitExtentDimsOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::FoldUnitExtentDimsOp::apply(transform::TransformRewriter &rewriter,
+                                       transform::TransformResults &results,
+                                       transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  SmallVector<Operation *> transformedOps;
+  for (Operation *target : targets) {
+    auto funcOp = dyn_cast_if_present<func::FuncOp>(target);
+    if (!funcOp)
+      return emitDefiniteFailure() << "target must be a func.func operation";
+
+    MLIRContext *ctx = funcOp.getContext();
+
+    // LLVM 23's collapseValue rejects memrefs with non-identity layouts
+    // (strided memrefs from subview ops). Override collapseFn to use
+    // rank-reducing subviews for strided memrefs, allowing the fold to
+    // handle linalg ops with subview outputs inside air.herd regions.
+    RewritePatternSet foldPatterns(ctx);
+    linalg::ControlDropUnitDims options;
+    options.collapseFn =
+        [](RewriterBase &rewriter, Location loc, Value operand,
+           ArrayRef<int64_t> targetShape,
+           ArrayRef<ReassociationIndices> reassociation,
+           const linalg::ControlDropUnitDims &control) -> FailureOr<Value> {
+      if (auto memrefType = dyn_cast<MemRefType>(operand.getType())) {
+        if (!memrefType.getLayout().isIdentity()) {
+          return memref::SubViewOp::rankReduceIfNeeded(rewriter, loc, operand,
+                                                       targetShape);
+        }
+        MemRefLayoutAttrInterface layout;
+        auto targetType =
+            MemRefType::get(targetShape, memrefType.getElementType(), layout,
+                            memrefType.getMemorySpace());
+        return memref::CollapseShapeOp::create(rewriter, loc, targetType,
+                                               operand, reassociation)
+            .getResult();
+      }
+      return failure();
+    };
+    linalg::populateFoldUnitExtentDimsPatterns(foldPatterns, options);
+    (void)applyPatternsGreedily(funcOp, std::move(foldPatterns));
+
+    transformedOps.push_back(funcOp);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
 }
 
 //===----------------------------------------------------------------------===//

@@ -1399,4 +1399,28 @@ def ConvertSize1VectorToScalarOp : Op<Transform_Dialect, "air.convert_size1_vect
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
+def FoldUnitExtentDimsOp : Op<Transform_Dialect, "air.fold_unit_extent_dims",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Fold unit-extent dimensions with bounded greedy iterations";
+  let description = [{
+    Applies linalg fold_unit_extent_dims_via_reshapes patterns to the target
+    function with a bounded number of greedy rewrite iterations. This is needed
+    because LLVM 23's populateFoldUnitExtentDimsPatterns doesn't converge in
+    the greedy driver on IR with air.herd ops containing unit-extent memref
+    dimensions. This op runs the patterns with a limited iteration count and
+    ignores non-convergence, preserving the partial results.
+
+    Also applies canonicalization, tiling canonicalization, and scf.for loop
+    canonicalization patterns alongside fold_unit_extent to ensure proper
+    pattern interactions.
+
+    Returns a handle to the modified function.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
 #endif // AIR_TRANSFORM_OPS
