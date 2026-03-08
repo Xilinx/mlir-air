@@ -1,3 +1,10 @@
+//===- linalg_pack_to_dma.mlir --------------------------------*- MLIR -*-===//
+//
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: air-opt %s -air-copy-to-dma | FileCheck %s
 
 // CHECK-LABEL: func.func @pack_2d
