@@ -633,6 +633,46 @@ Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 | `result` | TransformHandleTypeInterface instance |
 
 
+### `transform.air.fold_unit_extent_dims` (transform::FoldUnitExtentDimsOp)
+
+_Fold unit-extent dimensions with bounded greedy iterations_
+
+Syntax:
+
+```
+operation ::= `transform.air.fold_unit_extent_dims` $target attr-dict `:` functional-type(operands, results)
+```
+
+Applies linalg fold_unit_extent_dims_via_reshapes patterns to the target
+function with a bounded number of greedy rewrite iterations. This is needed
+because LLVM 23's populateFoldUnitExtentDimsPatterns doesn't converge in
+the greedy driver on IR with air.herd ops containing unit-extent memref
+dimensions. This op runs the patterns with a limited iteration count and
+ignores non-convergence, preserving the partial results.
+
+Also applies canonicalization, tiling canonicalization, and scf.for loop
+canonicalization patterns alongside fold_unit_extent to ensure proper
+pattern interactions.
+
+Returns a handle to the modified function.
+
+Traits: `FunctionalStyleTransformOpTrait`
+
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | TransformHandleTypeInterface instance |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | TransformHandleTypeInterface instance |
+
+
 ### `transform.air.forall_with_reduce_to_parallel` (transform::ForallWithReduceToParallelOp)
 
 _Converts a pattern of scf.forall and linalg.reduce to scf.parallel_
