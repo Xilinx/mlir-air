@@ -2789,6 +2789,8 @@ struct correctViewLikeOpIOMemorySpacesInScope : public OpRewritePattern<OpTy> {
         rewriter.modifyOpInPlace(viewLike, [&]() { res.setType(builder); });
       }
     }
+    if (viewLikeOpsToRes.empty())
+      return failure();
     return success();
   }
 };

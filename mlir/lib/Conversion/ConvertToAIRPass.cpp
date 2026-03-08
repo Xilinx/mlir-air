@@ -1608,11 +1608,9 @@ struct ParallelToLaunchPass
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           air::airDialect, arith::ArithDialect>();
-
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
-                      affine::AffineLoadOp, affine::AffineStoreOp,
-                      affine::AffineYieldOp, scf::YieldOp>();
+                           air::airDialect, arith::ArithDialect, ub::UBDialect,
+                           affine::AffineDialect, memref::MemRefDialect,
+                           scf::SCFDialect, linalg::LinalgDialect>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
@@ -1704,11 +1702,9 @@ struct ParallelToSegmentPass
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           air::airDialect, arith::ArithDialect>();
-
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
-                      affine::AffineLoadOp, affine::AffineStoreOp,
-                      affine::AffineYieldOp, scf::YieldOp>();
+                           air::airDialect, arith::ArithDialect, ub::UBDialect,
+                           affine::AffineDialect, memref::MemRefDialect,
+                           scf::SCFDialect, linalg::LinalgDialect>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
