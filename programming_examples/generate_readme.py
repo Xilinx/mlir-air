@@ -67,6 +67,18 @@ EXAMPLES = [
         "datatypes": "f32",
     },
     {
+        "category": "Element-wise",
+        "name": "Element-wise Add (bf16)",
+        "path": "primitives/vector_examples/vector_add",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Element-wise",
+        "name": "Element-wise Mul",
+        "path": "primitives/vector_examples/vector_mul",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Activation/Math",
         "name": "SiLU",
         "path": "silu",
@@ -103,6 +115,18 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Activation/Math",
+        "name": "Sigmoid",
+        "path": "sigmoid",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Activation/Math",
+        "name": "Tanh",
+        "path": "primitives/vector_examples/vector_tanh",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Normalization",
         "name": "Layer Normalization",
         "path": "layer_norm",
@@ -121,6 +145,24 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Aggregation",
+        "name": "Reduction (Add)",
+        "path": "primitives/vector_examples/vector_reduce_add",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Pooling",
+        "name": "MaxPool",
+        "path": "primitives/vector_examples/vector_reduce_max",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Pooling",
+        "name": "AveragePool",
+        "path": "average_pool",
+        "datatypes": "bf16",
+    },
+    {
         "category": "LLM Kernels",
         "name": "Multi-Head Attention (LLaMA2)",
         "path": "llama2_mha",
@@ -136,6 +178,12 @@ EXAMPLES = [
         "category": "LLM Kernels",
         "name": "FFN SwiGLU (Decode)",
         "path": "ffn_swiglu/decode",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "LLM Kernels",
+        "name": "FFN SwiGLU (Prefill)",
+        "path": "ffn_swiglu/prefill",
         "datatypes": "bf16",
     },
     {
@@ -163,10 +211,16 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "Attention",
+        "name": "Grouped Query Attention (GQA)",
+        "path": "flash_attention/kernel_fusion_based",
+        "datatypes": "bf16",
+    },
+    {
         "category": "Data Movement",
         "name": "Passthrough (DMA)",
         "path": "passthrough/passthrough_dma",
-        "datatypes": "u8",
+        "datatypes": "u8, i8, i16, u16, f32, bf16",
     },
     {
         "category": "Data Movement",
@@ -191,6 +245,12 @@ EXAMPLES = [
         "name": "Data Transfer Transpose",
         "path": "data_transfer_transpose",
         "datatypes": "u32",
+    },
+    {
+        "category": "Data Movement",
+        "name": "Transpose (bf16)",
+        "path": "data_transfer_transpose/dma_bf16",
+        "datatypes": "bf16",
     },
     {
         "category": "Data Movement",
@@ -257,6 +317,12 @@ EXAMPLES = [
         "name": "Shared L1 Buffer",
         "path": "shared_l1",
         "datatypes": "bf16",
+    },
+    {
+        "category": "Quantization",
+        "name": "Dequant (AWQ int4\u2192bf16)",
+        "path": "dequant_awq",
+        "datatypes": "int4/bf16",
     },
     {
         "category": "Primitives",
@@ -412,8 +478,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output",
         type=Path,
-        default=SCRIPT_DIR / "README.md",
-        help="Output file path (default: programming_examples/README.md)",
+        default=SCRIPT_DIR / "dashboard.md",
+        help="Output file path (default: programming_examples/dashboard.md). CI uses --output for GitHub Pages.",
     )
     parser.add_argument(
         "--base-url",

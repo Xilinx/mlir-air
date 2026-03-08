@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
@@ -603,6 +604,9 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   thisOp->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id
                             // has been assigned.
   airrtOp->setAttrs(thisOp->getDiscardableAttrDictionary());
+  // Preserve channel name for downstream ordering decisions.
+  if (auto chanName = thisOp->getAttrOfType<FlatSymbolRefAttr>("chan_name"))
+    airrtOp->setDiscardableAttr("chan_name", chanName);
 
   if (airrtOp->hasAttr("metadata") || !airrtOp->hasAttr("metadataArray")) {
     return airrtOp;

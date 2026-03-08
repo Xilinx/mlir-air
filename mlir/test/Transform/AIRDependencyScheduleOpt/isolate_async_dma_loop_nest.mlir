@@ -1333,3 +1333,36 @@ module {
     return
   }
 }
+
+// -----
+
+// Same-channel, same-direction puts at different loop depths should NOT be
+// split into independent loops (they share a channel resource).  The outer
+// channel.put and the inner scf.for containing another channel.put on the
+// same @channel_0 must remain in one loop.
+
+// CHECK-LABEL: func_same_chan_diff_depth
+// CHECK: scf.for
+// CHECK:   air.channel.put{{.*}}@channel_0
+// CHECK:   scf.for
+// CHECK:     air.channel.put{{.*}}@channel_0
+
+module {
+  air.channel @channel_0 [1, 1]
+  func.func @func_same_chan_diff_depth(%arg0: memref<512xbf16>, %arg1: memref<512xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c4 = arith.constant 4 : index
+    %c64 = arith.constant 64 : index
+    %0 = scf.for %i = %c0 to %c2 step %c1 iter_args(%t0 = %c0) -> (index) {
+      %1 = air.channel.put async @channel_0[%c0, %c0] (%arg0[%c0] [%c64] [%c1]) {id = 1 : i32} : (memref<512xbf16>)
+      %2 = scf.for %j = %c0 to %c4 step %c1 iter_args(%t1 = %c0) -> (index) {
+        %3 = air.channel.put async @channel_0[%c0, %c0] (%arg1[%c0] [%c64] [%c1]) {id = 2 : i32} : (memref<512xbf16>)
+        scf.yield %c0 : index
+      }
+      scf.yield %c0 : index
+    }
+    return
+  }
+}

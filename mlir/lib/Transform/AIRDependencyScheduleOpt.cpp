@@ -4631,11 +4631,69 @@ private:
           }
           return connectedComponents;
         };
+    // Precompute channel info per candidate op, walking nested ops once.
+    // Each entry is (channel_name, is_put, const_indices).
+    struct ChanKey {
+      StringRef name;
+      bool isPut;
+      SmallVector<std::optional<int64_t>> constIndices;
+    };
+    llvm::DenseMap<Operation *, SmallVector<ChanKey>> candidateChanKeys;
+    for (auto op : candidate_ops) {
+      SmallVector<ChanKey> keys;
+      auto collect = [&](air::ChannelInterface chan) {
+        ChanKey k;
+        k.name = chan.getChanName();
+        k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
+        for (auto idx : chan.getIndices())
+          k.constIndices.push_back(getConstantIntValue(idx));
+        keys.push_back(std::move(k));
+      };
+      if (auto chan = dyn_cast<air::ChannelInterface>(op))
+        collect(chan);
+      else
+        op->walk([&](air::ChannelInterface chan) { collect(chan); });
+      candidateChanKeys[op] = std::move(keys);
+    }
+
+    // Check if two candidate ops have a same-direction channel-resource
+    // dependency using the precomputed keys.  This prevents the isolation
+    // pattern from splitting same-channel, same-direction ops at
+    // different loop depths into independent loops, which would break
+    // the per-iteration interleaving needed by cycling tile BD chains.
+    auto haveChannelResourceDep = [&](Operation *a, Operation *b) -> bool {
+      for (auto &keyA : candidateChanKeys[a]) {
+        for (auto &keyB : candidateChanKeys[b]) {
+          if (keyA.isPut != keyB.isPut)
+            continue;
+          if (keyA.name != keyB.name)
+            continue;
+          // Check indices: if we can prove they differ in at least one
+          // dimension (both indices constant and unequal), we treat the
+          // accesses as independent; otherwise we conservatively assume a
+          // dependency (including when ranks differ).
+          if (keyA.constIndices.size() != keyB.constIndices.size())
+            return true;
+          bool provenIndependent = false;
+          for (unsigned i = 0; i < keyA.constIndices.size(); i++) {
+            if (keyA.constIndices[i] && keyB.constIndices[i] &&
+                *keyA.constIndices[i] != *keyB.constIndices[i]) {
+              provenIndependent = true;
+              break;
+            }
+          }
+          if (!provenIndependent)
+            return true;
+        }
+      }
+      return false;
+    };
     llvm::MapVector<Operation *, SmallVector<Operation *>> depGraph;
     for (auto sinkOp : candidate_ops) {
       depGraph[sinkOp] = SmallVector<Operation *>{};
       for (auto sourceOp : candidate_ops)
-        if (areAsyncDependent(sourceOp, sinkOp) && sourceOp != sinkOp)
+        if (sourceOp != sinkOp && (areAsyncDependent(sourceOp, sinkOp) ||
+                                   haveChannelResourceDep(sourceOp, sinkOp)))
           depGraph[sinkOp].push_back(sourceOp);
     }
     // Partition the graph.
