@@ -740,20 +740,29 @@ public:
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // Insert aiex.npu.load_pdi to reset DMA engine state if:
-          // 1. output-elf mode is enabled, AND
-          // 2. The device has core/memtile DMAs with repeat_count > 0
           if (outputElf && deviceHasRepeatCountDMAs(device)) {
+            // Insert aiex.npu.load_pdi to reset DMA engine state when
+            // core/memtile DMAs have repeat_count > 0.
             rewriter.setInsertionPoint(op);
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+          } else if (outputElf) {
+            // No PDI reload needed (no repeat_count DMAs), but still need
+            // between-iteration synchronization to prevent the next
+            // iteration's shim DMA configuration from racing with the
+            // current iteration's compute (issue #1373).
+            rewriter.setInsertionPoint(op);
+            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
+              AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                         alloc.getSymName());
+            }
           }
         }
       }
     }
 
-    // Erase the op - synchronization is handled by NpuDmaWaitOp
+    // Erase the op - synchronization is handled by NpuDmaWaitOp/load_pdi
     rewriter.eraseOp(op);
     return success();
   }
@@ -859,6 +868,7 @@ public:
         }))
       return failure();
 
+    llvm::SmallDenseSet<StringRef> waitedChannels;
     for (auto oper : op->getOperands()) {
       auto airrtDmaOp = oper.getDefiningOp<airrt::DmaMemcpyNdOp>();
       if (!airrtDmaOp)
@@ -873,22 +883,29 @@ public:
       // based on channel direction
       StringRef metadata = metadataAttr.getValue();
       AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(), metadata);
+      waitedChannels.insert(metadata);
     }
 
-    // Check if this is a launch_end wait_all and needs load_pdi
+    // Check if this is a launch_end wait_all and needs between-iteration sync
     if (op->hasAttr("air.launch_end")) {
       auto device = op->getParentOfType<AIE::DeviceOp>();
       if (device) {
         // Only apply for NPU2 family devices
         const AIE::AIETargetModel &tm = device.getTargetModel();
         if (llvm::isa<AIE::BaseNPU2TargetModel>(tm)) {
-          // Insert aiex.npu.load_pdi to reset DMA engine state if:
-          // 1. output-elf mode is enabled, AND
-          // 2. The device has core/memtile DMAs with repeat_count > 0
           if (outputElf && deviceHasRepeatCountDMAs(device)) {
             auto deviceRef = FlatSymbolRefAttr::get(rewriter.getContext(),
                                                     device.getSymName());
             AIEX::NpuLoadPdiOp::create(rewriter, op.getLoc(), deviceRef);
+          } else if (outputElf) {
+            // No PDI reload needed, but emit NpuDmaWaitOp for any shim
+            // channels not already waited on to synchronize before the
+            // next iteration (issue #1373).
+            for (auto alloc : device.getOps<AIE::ShimDMAAllocationOp>()) {
+              if (!waitedChannels.contains(alloc.getSymName()))
+                AIEX::NpuDmaWaitOp::create(rewriter, op.getLoc(),
+                                           alloc.getSymName());
+            }
           }
         }
       }
@@ -1817,9 +1834,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (!runtimeSeq)
         continue;
       auto resetRef = FlatSymbolRefAttr::get(module.getContext(), resetName);
-      runtimeSeq.walk([&](AIEX::NpuLoadPdiOp op) {
+      auto &origNameRef = origName;
+      runtimeSeq.walk([&origNameRef, &resetRef](AIEX::NpuLoadPdiOp op) {
         if (auto ref = op.getDeviceRefAttr()) {
-          if (ref.getValue() == origName)
+          if (ref.getValue() == origNameRef)
             op.setDeviceRefAttr(resetRef);
         }
       });

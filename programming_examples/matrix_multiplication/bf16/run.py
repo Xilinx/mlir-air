@@ -724,15 +724,14 @@ if __name__ == "__main__":
             ]
         )
 
-        # Compute reference results for sampled indices
+        # Compute reference results for sampled indices.
+        # Accumulate in F32 to match hardware behavior (AIE mmul accumulates in F32),
+        # then cast the final result to the output type.
         sampled_values = np.array(
             [
                 np.sum(
-                    (
-                        input_a[i, :].astype(OUTPUT_DATATYPE)
-                        * input_b[:, j].astype(OUTPUT_DATATYPE)
-                    ),
-                    dtype=OUTPUT_DATATYPE,
+                    input_a[i, :].astype(np.float32) * input_b[:, j].astype(np.float32),
+                    dtype=np.float32,
                 )
                 for i, j in zip(*sampled_indices)
             ],
