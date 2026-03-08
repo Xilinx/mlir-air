@@ -1833,9 +1833,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       if (!runtimeSeq)
         continue;
       auto resetRef = FlatSymbolRefAttr::get(module.getContext(), resetName);
-      runtimeSeq.walk([&](AIEX::NpuLoadPdiOp op) {
+      auto &origNameRef = origName;
+      runtimeSeq.walk([&origNameRef, &resetRef](AIEX::NpuLoadPdiOp op) {
         if (auto ref = op.getDeviceRefAttr()) {
-          if (ref.getValue() == origName)
+          if (ref.getValue() == origNameRef)
             op.setDeviceRefAttr(resetRef);
         }
       });
