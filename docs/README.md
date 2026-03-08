@@ -21,6 +21,9 @@ runtimes and compilers.
 ### AIR Platform Documentation
 - [VCK5000 platform](https://github.com/Xilinx/ROCm-air-platforms) 
 
+### AIR Compute Model
+- [AIR Compute Model](AIRComputeModel.md) — formal semantics of the AIR hierarchy and memory model, with NPU and GPU backend mappings
+
 ### Tutorials
 - [AIR Asynchronous Concurrency](AIRAsyncConcurrency.md)
 - [AIR Runner](AIRRunner.md)
