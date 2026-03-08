@@ -21,11 +21,13 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
@@ -36,6 +38,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/InliningUtils.h"
@@ -150,7 +153,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
         op, MemRefType::get(shape, ty.getElementType(), nullptr,
                             ty.getMemorySpace()));
     for (auto use : newOp.getUsers()) {
-      if (auto launch = dyn_cast<air::HerdOp>(use)) {
+      if (auto launch = dyn_cast_if_present<air::HerdOp>(use)) {
         for (unsigned int i = 0; i < launch.getNumKernelOperands(); i++) {
           auto arg = launch.getKernelArguments()[i];
           auto oper = launch.getKernelOperand(i);
@@ -176,8 +179,9 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 
 //   LogicalResult matchAndRewrite(memref::DimOp op,
 //                                 PatternRewriter &rewriter) const override {
-//     auto operTy = llvm::dyn_cast<ShapedType>(op.memrefOrTensor().getType());
-//     if (!operTy.hasStaticShape())
+//     auto operTy =
+//     llvm::dyn_cast_if_present<ShapedType>(op.memrefOrTensor().getType()); if
+//     (!operTy.hasStaticShape())
 //       return failure();
 
 //     auto indexOp = op.index().getDefiningOp<arith::ConstantIndexOp>();
@@ -273,7 +277,7 @@ struct RemoveFillCopyLinalgPattern : public OpRewritePattern<memref::CopyOp> {
                                 PatternRewriter &rewriter) const override {
 
     auto iter = copyOp->getIterator();
-    auto linalgOp = dyn_cast<linalg::LinalgOp>(++iter);
+    auto linalgOp = dyn_cast_if_present<linalg::LinalgOp>(++iter);
     if (!linalgOp)
       return failure();
 
@@ -286,7 +290,7 @@ struct RemoveFillCopyLinalgPattern : public OpRewritePattern<memref::CopyOp> {
       return failure();
 
     iter = allocOp->getIterator();
-    Operation *fillOp = dyn_cast<linalg::FillOp>(++iter);
+    Operation *fillOp = dyn_cast_if_present<linalg::FillOp>(++iter);
     if (!fillOp)
       return failure();
 
@@ -321,10 +325,10 @@ struct RemoveDeadCopyPattern : public OpRewritePattern<memref::CopyOp> {
                                 PatternRewriter &rewriter) const override {
 
     auto iter = op->getIterator();
-    auto linalgOp = dyn_cast<linalg::LinalgOp>(++iter);
+    auto linalgOp = dyn_cast_if_present<linalg::LinalgOp>(++iter);
     if (!linalgOp)
       return failure();
-    auto copyOp = dyn_cast<memref::CopyOp>(++iter);
+    auto copyOp = dyn_cast_if_present<memref::CopyOp>(++iter);
     if (!copyOp)
       return failure();
 
@@ -369,17 +373,17 @@ struct RemoveExtraAllocPattern : public OpRewritePattern<memref::CopyOp> {
       return failure();
 
     auto iter = op->getIterator();
-    auto deallocOp = dyn_cast<memref::DeallocOp>(++iter);
+    auto deallocOp = dyn_cast_if_present<memref::DeallocOp>(++iter);
     if (!deallocOp)
       return failure();
 
-    auto allocOp = dyn_cast<memref::AllocOp>(++iter);
+    auto allocOp = dyn_cast_if_present<memref::AllocOp>(++iter);
     if (!allocOp)
       return failure();
     if (allocOp.getType() != existingAlloc.getType())
       return failure();
 
-    auto copyOp = dyn_cast<memref::CopyOp>(++iter);
+    auto copyOp = dyn_cast_if_present<memref::CopyOp>(++iter);
     if (!copyOp)
       return failure();
 
@@ -424,13 +428,13 @@ struct RemoveAllocLinalgOpCopyPattern
     Operation *linalgOp = nullptr;
     Operation *copyOp = nullptr;
     for (auto &u : op->getUses())
-      if (auto c = dyn_cast<memref::CastOp>(u.getOwner()))
+      if (auto c = dyn_cast_if_present<memref::CastOp>(u.getOwner()))
         castOp = c;
-      else if (auto c = dyn_cast<memref::CopyOp>(u.getOwner())) {
+      else if (auto c = dyn_cast_if_present<memref::CopyOp>(u.getOwner())) {
         if (u.getOperandNumber() == 0)
           copyOp = c;
         else {
-          if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
+          if (auto l = dyn_cast_if_present<linalg::LinalgOp>(u.getOwner())) {
             linalgOp = l;
             if (l.isInitTensor(&u))
               return failure();
@@ -446,7 +450,7 @@ struct RemoveAllocLinalgOpCopyPattern
     if (!copyOp) {
       if (!castOp->hasOneUse())
         return failure();
-      copyOp = dyn_cast<memref::CopyOp>(*castOp->user_begin());
+      copyOp = dyn_cast_if_present<memref::CopyOp>(*castOp->user_begin());
       if (!copyOp)
         return failure();
     }
@@ -487,7 +491,7 @@ struct RemoveAllocCopyLinalgOpCopyPattern
     // find the next linalg use in this block
     linalg::LinalgOp linalgOp = nullptr;
     for (auto &u : allocOp->getResult(0).getUses()) {
-      if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
+      if (auto l = dyn_cast_if_present<linalg::LinalgOp>(u.getOwner())) {
         // bail without trying to resolve the ordering
         // if there's a linalg use in a different block
         if (l->getBlock() != op->getBlock())
@@ -615,7 +619,7 @@ struct EliminateIntermediateMemrefPattern
     // Find the second memcpy that uses the intermediate buffer as source
     air::DmaMemcpyNdOp secondMemcpy = nullptr;
     for (auto user : intermediate.getUsers()) {
-      auto memcpyOp = dyn_cast<air::DmaMemcpyNdOp>(user);
+      auto memcpyOp = dyn_cast_if_present<air::DmaMemcpyNdOp>(user);
       if (!memcpyOp)
         continue;
       if (memcpyOp.getSrcMemref() != intermediate)
@@ -730,7 +734,7 @@ struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
     if (!kernelOp || !DeallocOp || !otherCpy)
       return failure();
 
-    auto linalgCpy = dyn_cast<linalg::CopyOp>(otherCpy);
+    auto linalgCpy = dyn_cast_if_present<linalg::CopyOp>(otherCpy);
 
     // d. 2_linalg.copy input defining op is memref.subview
     if (isa<memref::SubViewOp>(linalgCpy.getInputs()[0].getDefiningOp()))
@@ -893,7 +897,7 @@ struct TileLinalgOpPattern : public RewritePattern {
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
 
-    linalg::LinalgOp linalgOp = dyn_cast<linalg::LinalgOp>(op);
+    linalg::LinalgOp linalgOp = dyn_cast_if_present<linalg::LinalgOp>(op);
     if (!linalgOp)
       return failure();
     if (failed(filter.checkAndNotify(rewriter, linalgOp)))
@@ -1143,7 +1147,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     } else {
       auto mref = tiledOperands[resultIdx];
       if (promote && first_stage) {
-        memref::SubViewOp sv = dyn_cast<memref::SubViewOp>(
+        memref::SubViewOp sv = dyn_cast_if_present<memref::SubViewOp>(
             linalgOp.getDpsInitOperand(0)->get().getDefiningOp());
         mref = sv.getSource();
         sv.replaceAllUsesWith(mref);
@@ -1189,7 +1193,7 @@ struct PipelineReducePattern : public RewritePattern {
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    linalg::LinalgOp linalgOp = dyn_cast<linalg::LinalgOp>(op);
+    linalg::LinalgOp linalgOp = dyn_cast_if_present<linalg::LinalgOp>(op);
     if (!linalgOp)
       return failure();
 
@@ -1290,7 +1294,7 @@ public:
       if (body.begin() != std::prev(body.end(), 2))
         return;
 
-      rootForOp = dyn_cast<T>(&body.front());
+      rootForOp = dyn_cast_if_present<T>(&body.front());
       if (!rootForOp)
         return;
     }
@@ -1316,16 +1320,16 @@ public:
         affine::makeComposedFoldedMultiResultAffineApply(
             b, loc, shapeSizesToLoopsMap, allShapeSizes);
     for (auto size : shapeSizes) {
-      if (auto v = llvm::dyn_cast<Value>(size)) {
-        auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
+      if (auto v = llvm::dyn_cast_if_present<Value>(size)) {
+        auto c = dyn_cast_if_present<arith::ConstantIndexOp>(v.getDefiningOp());
         if (!c) {
           LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
           return {};
         }
         tripCounts.push_back(c.value());
       } else {
-        auto a = llvm::dyn_cast<Attribute>(size);
-        auto c = llvm::dyn_cast<IntegerAttr>(a);
+        auto a = llvm::dyn_cast_if_present<Attribute>(size);
+        auto c = llvm::dyn_cast_if_present<IntegerAttr>(a);
         if (!c) {
           LLVM_DEBUG(llvm::outs() << "unhandled addr!\n");
           return {};
@@ -1797,7 +1801,7 @@ public:
       /// Capture the perfectly nested loops
       SmallVector<scf::ForOp, 6> loops;
       called.walk([&](Operation *op) {
-        if (auto scfForOp = dyn_cast<scf::ForOp>(op))
+        if (auto scfForOp = dyn_cast_if_present<scf::ForOp>(op))
           if (!op->getParentOfType<scf::ForOp>())
             getPerfectlyNestedLoops(loops, scfForOp);
       });
@@ -2136,7 +2140,7 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   uint32_t group_size = getGroupSize();
   uint32_t group = 0;
   for (Operation *target : state.getPayloadOps(getTarget())) {
-    auto linalgOp = dyn_cast<linalg::LinalgOp>(target);
+    auto linalgOp = dyn_cast_if_present<linalg::LinalgOp>(target);
     if (!linalgOp)
       continue;
 
@@ -2237,7 +2241,7 @@ static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
                                              Operation *producerOp,
                                              Operation *containingOp) {
   LLVM_DEBUG(llvm::dbgs() << "Try to fuse a direct extract use\n");
-  auto tileableProducer = dyn_cast<TilingInterface>(producerOp);
+  auto tileableProducer = dyn_cast_if_present<TilingInterface>(producerOp);
   if (!tileableProducer) {
     diag.attachNote(producerOp->getLoc())
         << "producer is not a TileableInterface: " << *producerOp;
@@ -2247,7 +2251,7 @@ static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
   linalg::LinalgOp producerLinalgOp = cast<linalg::LinalgOp>(producerOp);
   auto users = producerLinalgOp.getDpsInits()[0].getUsers();
   auto it = llvm::find_if(users, [&](Operation *user) {
-    auto sliceOp = dyn_cast<memref::SubViewOp>(user);
+    auto sliceOp = dyn_cast_if_present<memref::SubViewOp>(user);
     return sliceOp && containingOp->isProperAncestor(sliceOp);
   });
 
@@ -2320,7 +2324,8 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
   }
   Operation *containingOp = containingOps.front();
 
-  linalg::LinalgOp producerLinalgOp = dyn_cast<linalg::LinalgOp>(producerOp);
+  linalg::LinalgOp producerLinalgOp =
+      dyn_cast_if_present<linalg::LinalgOp>(producerOp);
   if (!producerLinalgOp) {
     return emitDefiniteFailure() << "requires producer_op to be LinalgOp";
   }
@@ -2520,7 +2525,7 @@ DiagnosedSilenceableFailure transform::HoistLoopInvariantTransfersOp::apply(
   }
 
   auto scopeOp = scopeOps[0];
-  auto loopOp = dyn_cast<scf::ForOp>(loopOps[0]);
+  auto loopOp = dyn_cast_if_present<scf::ForOp>(loopOps[0]);
   if (!loopOp) {
     return emitDefiniteFailure() << "loop_op must be an scf.for";
   }
@@ -2637,7 +2642,7 @@ static memref::AllocOp traceToAlloc(Value value) {
 /// derived from it
 static bool hasWriteEffectOn(Operation *op, Value allocResult) {
   SmallVector<MemoryEffects::EffectInstance> effects;
-  auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
+  auto memInterface = dyn_cast_if_present<MemoryEffectOpInterface>(op);
   if (!memInterface) {
     // If the operation doesn't implement the memory effect interface,
     // conservatively assume it might have side effects unless it's pure
@@ -2738,7 +2743,7 @@ static WriteAnalysis analyzeWritesBetween(memref::AllocOp allocOp,
       bool isWriteToAlloc = false;
 
       // Check if this operation writes to our allocation
-      if (auto fillOp = dyn_cast<linalg::FillOp>(op)) {
+      if (auto fillOp = dyn_cast_if_present<linalg::FillOp>(op)) {
         // Verify this fill writes to our allocation
         if (traceToAlloc(fillOp.getOutputs()[0]) == allocOp) {
           isWriteToAlloc = true;
@@ -2833,7 +2838,7 @@ DiagnosedSilenceableFailure transform::RemoveUninitializedCopyOp::apply(
   SmallVector<Operation *> transformedOps;
 
   for (Operation *target : targets) {
-    auto funcOp = dyn_cast<func::FuncOp>(target);
+    auto funcOp = dyn_cast_if_present<func::FuncOp>(target);
     if (!funcOp) {
       return emitDefiniteFailure() << "target must be a func.func operation";
     }
@@ -2938,12 +2943,12 @@ static bool isConstantOne(Value val) {
   auto attr = constOp.getValue();
 
   // Check for scalar float constant
-  if (auto floatAttr = dyn_cast<FloatAttr>(attr)) {
+  if (auto floatAttr = dyn_cast_if_present<FloatAttr>(attr)) {
     return floatAttr.getValue().isExactlyValue(1.0);
   }
 
   // Check for dense vector constant (splat)
-  if (auto denseAttr = dyn_cast<DenseFPElementsAttr>(attr)) {
+  if (auto denseAttr = dyn_cast_if_present<DenseFPElementsAttr>(attr)) {
     if (denseAttr.isSplat()) {
       return denseAttr.getSplatValue<FloatAttr>().getValue().isExactlyValue(
           1.0);
@@ -3115,7 +3120,8 @@ transform::BroadcastBeforeUnaryOp::apply(transform::TransformRewriter &rewriter,
         return;
 
       // Check if unary op operates on a vector type
-      auto unaryType = dyn_cast<VectorType>(unaryOp->getOperand(0).getType());
+      auto unaryType =
+          dyn_cast_if_present<VectorType>(unaryOp->getOperand(0).getType());
       if (!unaryType)
         return;
 
@@ -3134,7 +3140,8 @@ transform::BroadcastBeforeUnaryOp::apply(transform::TransformRewriter &rewriter,
         return;
 
       // Check type consistency
-      auto broadcastType = dyn_cast<VectorType>(broadcastOp.getType());
+      auto broadcastType =
+          dyn_cast_if_present<VectorType>(broadcastOp.getType());
       if (!broadcastType)
         return;
 
@@ -3376,7 +3383,7 @@ fuseMultiOpLinalgOps(RewriterBase &rewriter, linalg::LinalgOp firstOp,
   // Determine the yield value from the actual yield operation
   Value firstOpYieldValue;
   if (auto firstYield =
-          dyn_cast<linalg::YieldOp>(firstOpBody->getTerminator())) {
+          dyn_cast_if_present<linalg::YieldOp>(firstOpBody->getTerminator())) {
     if (firstYield.getNumOperands() > 0) {
       firstOpYieldValue = firstOpMapping.lookup(firstYield.getOperand(0));
     }
@@ -3431,8 +3438,8 @@ transform::FuseMultiOpLinalgOp::apply(transform::TransformRewriter &rewriter,
            << "requires exactly one first_op and one second_op handle";
   }
 
-  auto firstLinalgOp = dyn_cast<linalg::LinalgOp>(firstOps[0]);
-  auto secondLinalgOp = dyn_cast<linalg::LinalgOp>(secondOps[0]);
+  auto firstLinalgOp = dyn_cast_if_present<linalg::LinalgOp>(firstOps[0]);
+  auto secondLinalgOp = dyn_cast_if_present<linalg::LinalgOp>(secondOps[0]);
 
   if (!firstLinalgOp || !secondLinalgOp) {
     return emitDefiniteFailure() << "both operations must be linalg operations";
@@ -3583,7 +3590,7 @@ transform::TransposeReduceOp::apply(transform::TransformRewriter &rewriter,
   SmallVector<Operation *> transformedOps;
 
   for (Operation *target : targets) {
-    auto reduceOp = dyn_cast<linalg::ReduceOp>(target);
+    auto reduceOp = dyn_cast_if_present<linalg::ReduceOp>(target);
     if (!reduceOp) {
       return emitDefiniteFailure()
              << "target must be a linalg.reduce operation";
@@ -3650,7 +3657,7 @@ DiagnosedSilenceableFailure transform::FuseElementwiseLinalgOp::apply(
   SmallVector<Operation *> transformedOps;
 
   for (Operation *target : targets) {
-    auto funcOp = dyn_cast<func::FuncOp>(target);
+    auto funcOp = dyn_cast_if_present<func::FuncOp>(target);
     if (!funcOp) {
       return emitDefiniteFailure() << "target must be a func.func operation";
     }
@@ -3716,7 +3723,7 @@ static Type getOutputTypeAfterTruncf(linalg::LinalgOp linalgOp) {
     return nullptr;
 
   for (Operation &op : body->getOperations()) {
-    if (auto truncfOp = dyn_cast<arith::TruncFOp>(op)) {
+    if (auto truncfOp = dyn_cast_if_present<arith::TruncFOp>(op)) {
       return truncfOp.getOut().getType();
     }
   }
@@ -3851,8 +3858,8 @@ transform::FuseTruncfLinalgOp::apply(transform::TransformRewriter &rewriter,
            << "requires exactly one truncf_op and one producer_op handle";
   }
 
-  auto truncfLinalgOp = dyn_cast<linalg::LinalgOp>(truncfOps[0]);
-  auto producerLinalgOp = dyn_cast<linalg::LinalgOp>(producerOps[0]);
+  auto truncfLinalgOp = dyn_cast_if_present<linalg::LinalgOp>(truncfOps[0]);
+  auto producerLinalgOp = dyn_cast_if_present<linalg::LinalgOp>(producerOps[0]);
 
   if (!truncfLinalgOp || !producerLinalgOp) {
     return emitDefiniteFailure() << "both operations must be linalg operations";
@@ -3870,13 +3877,37 @@ transform::FuseTruncfLinalgOp::apply(transform::TransformRewriter &rewriter,
                                     "is consumed by truncf_op";
   }
 
-  // Perform the fusion
+  // Perform the fusion: create a fused generic, then replace it with a
+  // linalg.matmul that has the fused output type (bf16). LLVM 23's
+  // specialize rejects generics with output casts, so we bypass it by
+  // directly creating the matmul with the fused type.
   FailureOr<linalg::GenericOp> fusedOp =
       fuseTruncfIntoProducer(rewriter, producerLinalgOp, truncfLinalgOp);
   if (failed(fusedOp)) {
     return emitDefiniteFailure() << "failed to fuse the operations";
   }
 
+  // LLVM 23: specialize rejects generics with output casts (truncf→yield).
+  // If the fused op has 2D+ inputs (matmul-compatible), replace with a
+  // linalg.matmul directly, bypassing specialize. The matmul body auto-
+  // generates in the output element type (bf16), and Phase 12 adds
+  // extf/truncf pairs for f32 accumulation during vectorization.
+  auto inputType =
+      dyn_cast<RankedTensorType>(fusedOp->getDpsInputs()[0].getType());
+  if (inputType && inputType.getRank() >= 2) {
+    rewriter.setInsertionPoint(*fusedOp);
+    auto matmulOp = linalg::MatmulOp::create(
+        rewriter, fusedOp->getLoc(), fusedOp->getResultTypes(),
+        ValueRange{fusedOp->getDpsInputs()[0], fusedOp->getDpsInputs()[1]},
+        ValueRange{fusedOp->getDpsInits()[0]});
+    rewriter.replaceOp(*fusedOp, matmulOp->getResults());
+
+    SmallVector<Operation *> resultOps = {matmulOp.getOperation()};
+    results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  // For non-matmul cases (1D, etc.), return the generic as-is.
   SmallVector<Operation *> resultOps = {*fusedOp};
   results.set(llvm::cast<OpResult>(getFusedOp()), resultOps);
   return DiagnosedSilenceableFailure::success();
@@ -3912,7 +3943,7 @@ static Value createTypeCast(OpBuilder &builder, Location loc, Value input,
   Type sourceElementType;
   Type targetType;
 
-  if (auto inputVectorType = dyn_cast<VectorType>(inputType)) {
+  if (auto inputVectorType = dyn_cast_if_present<VectorType>(inputType)) {
     // Handle vector types
     sourceElementType = inputVectorType.getElementType();
     targetType = VectorType::get(inputVectorType.getShape(), targetElementType);
@@ -3984,7 +4015,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   bool hasAnyVectors = false;
 
   for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
-    if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+    if (auto vectorType = dyn_cast_if_present<VectorType>(operand.getType())) {
       hasAnyVectors = true;
       if (getVectorNumElements(vectorType) != 1) {
         allVectorsAreSingleElement = false;
@@ -3993,7 +4024,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   }
 
   for (auto [idx, result] : llvm::enumerate(op->getResults())) {
-    if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
+    if (auto vectorType = dyn_cast_if_present<VectorType>(result.getType())) {
       hasAnyVectors = true;
       if (getVectorNumElements(vectorType) != 1) {
         allVectorsAreSingleElement = false;
@@ -4007,7 +4038,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   }
 
   for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
-    if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+    if (auto vectorType = dyn_cast_if_present<VectorType>(operand.getType())) {
       hasVectorOperands = true;
       bool shouldCast =
           castAllInsAndOuts || inputIndicesToCastSet.contains((int64_t)idx);
@@ -4018,7 +4049,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   }
 
   for (auto [idx, result] : llvm::enumerate(op->getResults())) {
-    if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
+    if (auto vectorType = dyn_cast_if_present<VectorType>(result.getType())) {
       hasVectorResults = true;
       bool shouldCast =
           castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
@@ -4046,7 +4077,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
     originalOperandTypes.push_back(operand.getType());
 
-    if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+    if (auto vectorType = dyn_cast_if_present<VectorType>(operand.getType())) {
       Type currentElementType = vectorType.getElementType();
       bool shouldCast =
           castAllInsAndOuts || inputIndicesToCastSet.contains((int64_t)idx);
@@ -4071,7 +4102,7 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
   for (auto [idx, resultType] : llvm::enumerate(op->getResultTypes())) {
     originalResultTypes.push_back(resultType);
 
-    if (auto vectorType = dyn_cast<VectorType>(resultType)) {
+    if (auto vectorType = dyn_cast_if_present<VectorType>(resultType)) {
       bool shouldCast =
           castAllInsAndOuts || outputIndicesToCastSet.contains((int64_t)idx);
 
@@ -4123,7 +4154,8 @@ static FailureOr<Operation *> applyVectorTypeCastToOp(
 
     Type originalElementType = originalType;
 
-    if (auto originalVectorType = dyn_cast<VectorType>(originalType)) {
+    if (auto originalVectorType =
+            dyn_cast_if_present<VectorType>(originalType)) {
       originalElementType = originalVectorType.getElementType();
     }
 
@@ -4199,7 +4231,8 @@ transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
     // Check if this operation has vector types that need casting
     bool needsTransformation = false;
     for (Value operand : target->getOperands()) {
-      if (auto vectorType = dyn_cast<VectorType>(operand.getType())) {
+      if (auto vectorType =
+              dyn_cast_if_present<VectorType>(operand.getType())) {
         if (vectorType.getElementType() != targetElementType) {
           needsTransformation = true;
           break;
@@ -4208,7 +4241,8 @@ transform::VectorTypeCastOp::apply(transform::TransformRewriter &rewriter,
     }
     if (!needsTransformation) {
       for (Value result : target->getResults()) {
-        if (auto vectorType = dyn_cast<VectorType>(result.getType())) {
+        if (auto vectorType =
+                dyn_cast_if_present<VectorType>(result.getType())) {
           if (vectorType.getElementType() != targetElementType) {
             needsTransformation = true;
             break;
@@ -4328,7 +4362,7 @@ static bool hasWritesBetweenReads(vector::TransferReadOp firstRead,
     Operation *op = &(*it);
 
     // Check if this operation writes to the source memref
-    auto memInterface = dyn_cast<MemoryEffectOpInterface>(op);
+    auto memInterface = dyn_cast_if_present<MemoryEffectOpInterface>(op);
     if (!memInterface) {
       // Conservative: if we can't determine effects, assume it might write
       if (!op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
@@ -4449,7 +4483,7 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
   SmallVector<Operation *> transformedOps;
 
   for (Operation *target : targets) {
-    auto forOp = dyn_cast<scf::ForOp>(target);
+    auto forOp = dyn_cast_if_present<scf::ForOp>(target);
     if (!forOp) {
       return emitDefiniteFailure() << "target must be an scf.for operation";
     }
@@ -4462,7 +4496,7 @@ transform::FlattenForIterArgsOp::apply(transform::TransformRewriter &rewriter,
     SmallVector<VectorType> flattenedVectorTypes;
 
     for (auto [idx, iterArg] : llvm::enumerate(forOp.getInitArgs())) {
-      if (auto vecType = dyn_cast<VectorType>(iterArg.getType())) {
+      if (auto vecType = dyn_cast_if_present<VectorType>(iterArg.getType())) {
         vectorIterArgIndices.push_back(idx);
         originalVectorTypes.push_back(vecType);
 
@@ -4633,7 +4667,7 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
   SmallVector<Operation *> transformedOps;
 
   for (Operation *target : targets) {
-    auto forOp = dyn_cast<scf::ForOp>(target);
+    auto forOp = dyn_cast_if_present<scf::ForOp>(target);
     if (!forOp) {
       return emitDefiniteFailure() << "target must be an scf.for operation";
     }
@@ -4656,19 +4690,20 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
     SmallVector<TransferOpInfo> transferOps;
 
     for (Operation &op : forOp.getBody()->without_terminator()) {
-      auto transferOp = dyn_cast<VectorTransferOpInterface>(&op);
+      auto transferOp = dyn_cast_if_present<VectorTransferOpInterface>(&op);
       if (!transferOp)
         continue;
 
       Value base = transferOp.getBase();
-      auto memrefType = dyn_cast<MemRefType>(base.getType());
+      auto memrefType = dyn_cast_if_present<MemRefType>(base.getType());
       if (!memrefType)
         continue;
 
       VectorType vectorType;
-      if (auto readOp = dyn_cast<vector::TransferReadOp>(&op)) {
+      if (auto readOp = dyn_cast_if_present<vector::TransferReadOp>(&op)) {
         vectorType = readOp.getVectorType();
-      } else if (auto writeOp = dyn_cast<vector::TransferWriteOp>(&op)) {
+      } else if (auto writeOp =
+                     dyn_cast_if_present<vector::TransferWriteOp>(&op)) {
         vectorType = writeOp.getVectorType();
       } else {
         continue;
@@ -4831,7 +4866,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
             1, 0, rewriter.getAffineDimExpr(0), rewriter.getContext());
         auto inBoundsAttr = rewriter.getBoolArrayAttr({true});
 
-        if (auto readOp = dyn_cast<vector::TransferReadOp>(info.op)) {
+        if (auto readOp =
+                dyn_cast_if_present<vector::TransferReadOp>(info.op)) {
           Value flatRead = vector::TransferReadOp::create(
               rewriter, loc, flatVectorType, flatMemref,
               ValueRange{currentPointer}, AffineMapAttr::get(identityMap1D),
@@ -4840,7 +4876,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
           Value shapedRead = vector::ShapeCastOp::create(
               rewriter, loc, info.vectorType, flatRead);
           rewriter.replaceOp(readOp, shapedRead);
-        } else if (auto writeOp = dyn_cast<vector::TransferWriteOp>(info.op)) {
+        } else if (auto writeOp =
+                       dyn_cast_if_present<vector::TransferWriteOp>(info.op)) {
           Value flatValue = vector::ShapeCastOp::create(
               rewriter, loc, flatVectorType, writeOp.getVector());
           rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
@@ -4882,7 +4919,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
             AffineMap::get(1, 0, b.getAffineDimExpr(0), b.getContext());
         auto inBoundsAttr = b.getBoolArrayAttr({true});
 
-        if (auto readOp = dyn_cast<vector::TransferReadOp>(info.op)) {
+        if (auto readOp =
+                dyn_cast_if_present<vector::TransferReadOp>(info.op)) {
           Value flatRead = vector::TransferReadOp::create(
               b, loc, flatVectorType, flatMemref, ValueRange{ptrIterArg},
               AffineMapAttr::get(identityMap1D), readOp.getPadding(),
@@ -4890,7 +4928,8 @@ DiagnosedSilenceableFailure transform::HoistVectorTransferPointersOp::apply(
           Value shapedRead =
               vector::ShapeCastOp::create(b, loc, info.vectorType, flatRead);
           rewriter.replaceOp(readOp, shapedRead);
-        } else if (auto writeOp = dyn_cast<vector::TransferWriteOp>(info.op)) {
+        } else if (auto writeOp =
+                       dyn_cast_if_present<vector::TransferWriteOp>(info.op)) {
           Value flatValue = vector::ShapeCastOp::create(b, loc, flatVectorType,
                                                         writeOp.getVector());
           rewriter.replaceOpWithNewOp<vector::TransferWriteOp>(
@@ -4955,7 +4994,7 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
 
   Operation *extensionOp = extensionOps[0];
   Operation *truncationOp = truncationOps[0];
-  auto loopOp = dyn_cast<scf::ForOp>(loopOps[0]);
+  auto loopOp = dyn_cast_if_present<scf::ForOp>(loopOps[0]);
 
   if (!loopOp) {
     return emitDefiniteFailure() << "loop_op handle must be scf.for";
@@ -4966,30 +5005,30 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
   Value truncationInput, truncationOutput;
   bool isFloatingPoint = false;
 
-  if (auto extsiOp = dyn_cast<arith::ExtSIOp>(extensionOp)) {
+  if (auto extsiOp = dyn_cast_if_present<arith::ExtSIOp>(extensionOp)) {
     extensionInput = extsiOp.getIn();
     extensionOutput = extsiOp.getOut();
-    auto trunciOp = dyn_cast<arith::TruncIOp>(truncationOp);
+    auto trunciOp = dyn_cast_if_present<arith::TruncIOp>(truncationOp);
     if (!trunciOp) {
       return emitDefiniteFailure()
              << "arith.extsi must be paired with arith.trunci";
     }
     truncationInput = trunciOp.getIn();
     truncationOutput = trunciOp.getOut();
-  } else if (auto extuiOp = dyn_cast<arith::ExtUIOp>(extensionOp)) {
+  } else if (auto extuiOp = dyn_cast_if_present<arith::ExtUIOp>(extensionOp)) {
     extensionInput = extuiOp.getIn();
     extensionOutput = extuiOp.getOut();
-    auto trunciOp = dyn_cast<arith::TruncIOp>(truncationOp);
+    auto trunciOp = dyn_cast_if_present<arith::TruncIOp>(truncationOp);
     if (!trunciOp) {
       return emitDefiniteFailure()
              << "arith.extui must be paired with arith.trunci";
     }
     truncationInput = trunciOp.getIn();
     truncationOutput = trunciOp.getOut();
-  } else if (auto extfOp = dyn_cast<arith::ExtFOp>(extensionOp)) {
+  } else if (auto extfOp = dyn_cast_if_present<arith::ExtFOp>(extensionOp)) {
     extensionInput = extfOp.getIn();
     extensionOutput = extfOp.getOut();
-    auto truncfOp = dyn_cast<arith::TruncFOp>(truncationOp);
+    auto truncfOp = dyn_cast_if_present<arith::TruncFOp>(truncationOp);
     if (!truncfOp) {
       return emitDefiniteFailure()
              << "arith.extf must be paired with arith.truncf";
@@ -5016,7 +5055,7 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
 
   // The extension input might be the iter_arg directly, or derived from it
   // through shape_cast
-  if (auto blockArg = dyn_cast<BlockArgument>(extensionInput)) {
+  if (auto blockArg = dyn_cast_if_present<BlockArgument>(extensionInput)) {
     if (blockArg.getOwner() == loopOp.getBody() &&
         blockArg.getArgNumber() > 0) {
       iterArg = blockArg;
@@ -5025,7 +5064,7 @@ transform::HoistCastPairOp::apply(transform::TransformRewriter &rewriter,
   } else if (auto shapeCastOp =
                  extensionInput.getDefiningOp<vector::ShapeCastOp>()) {
     Value shapeCastSource = shapeCastOp.getSource();
-    if (auto blockArg = dyn_cast<BlockArgument>(shapeCastSource)) {
+    if (auto blockArg = dyn_cast_if_present<BlockArgument>(shapeCastSource)) {
       if (blockArg.getOwner() == loopOp.getBody() &&
           blockArg.getArgNumber() > 0) {
         iterArg = blockArg;
@@ -5246,12 +5285,68 @@ void transform::HoistCastPairOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// FoldUnitExtentDimsOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::FoldUnitExtentDimsOp::apply(transform::TransformRewriter &rewriter,
+                                       transform::TransformResults &results,
+                                       transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  SmallVector<Operation *> transformedOps;
+  for (Operation *target : targets) {
+    auto funcOp = dyn_cast_if_present<func::FuncOp>(target);
+    if (!funcOp)
+      return emitDefiniteFailure() << "target must be a func.func operation";
+
+    MLIRContext *ctx = funcOp.getContext();
+
+    // LLVM 23's collapseValue rejects memrefs with non-identity layouts
+    // (strided memrefs from subview ops). Override collapseFn to use
+    // rank-reducing subviews for strided memrefs, allowing the fold to
+    // handle linalg ops with subview outputs inside air.herd regions.
+    RewritePatternSet foldPatterns(ctx);
+    linalg::ControlDropUnitDims options;
+    options.collapseFn =
+        [](RewriterBase &rewriter, Location loc, Value operand,
+           ArrayRef<int64_t> targetShape,
+           ArrayRef<ReassociationIndices> reassociation,
+           const linalg::ControlDropUnitDims &control) -> FailureOr<Value> {
+      if (auto memrefType = dyn_cast<MemRefType>(operand.getType())) {
+        if (!memrefType.getLayout().isIdentity()) {
+          return memref::SubViewOp::rankReduceIfNeeded(rewriter, loc, operand,
+                                                       targetShape);
+        }
+        MemRefLayoutAttrInterface layout;
+        auto targetType =
+            MemRefType::get(targetShape, memrefType.getElementType(), layout,
+                            memrefType.getMemorySpace());
+        return memref::CollapseShapeOp::create(rewriter, loc, targetType,
+                                               operand, reassociation)
+            .getResult();
+      }
+      return failure();
+    };
+    linalg::populateFoldUnitExtentDimsPatterns(foldPatterns, options);
+    (void)applyPatternsGreedily(funcOp, std::move(foldPatterns));
+
+    transformedOps.push_back(funcOp);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
 // ConvertSize1VectorToScalarOp
 //===----------------------------------------------------------------------===//
 
 /// Check if a type is a size-1 vector type
 static bool isSize1VectorType(Type type) {
-  auto vecType = dyn_cast<VectorType>(type);
+  auto vecType = dyn_cast_if_present<VectorType>(type);
   if (!vecType)
     return false;
 
@@ -5403,7 +5498,7 @@ struct ConvertSize1VectorOpsToScalar : public RewritePattern {
     // Determine scalar result types
     SmallVector<Type> scalarResultTypes;
     for (Type resultType : op->getResultTypes()) {
-      if (auto vecType = dyn_cast<VectorType>(resultType)) {
+      if (auto vecType = dyn_cast_if_present<VectorType>(resultType)) {
         if (isSize1VectorType(vecType)) {
           scalarResultTypes.push_back(vecType.getElementType());
         } else {
@@ -5514,7 +5609,7 @@ transform::NormalizeForBoundsOp::apply(transform::TransformRewriter &rewriter,
   SmallVector<Operation *> transformedOps;
 
   for (Operation *target : targets) {
-    auto forOp = dyn_cast<scf::ForOp>(target);
+    auto forOp = dyn_cast_if_present<scf::ForOp>(target);
     if (!forOp) {
       return emitDefiniteFailure() << "target must be an scf.for operation";
     }
