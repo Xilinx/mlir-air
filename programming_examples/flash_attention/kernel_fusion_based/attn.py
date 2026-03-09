@@ -158,6 +158,7 @@ def build_module(
     external_func(
         "vector_copy_32elems", [i32, memref_lqp_l1, memref_lqp_l1], link_with="attn.o"
     )
+    external_func("copy_tile", [memref_dv_lkp_l1, memref_lqp_dv_l1], link_with="attn.o")
     external_func("div_gp_sp", [memref_lqp_l1, memref_lqp_dv_l1], link_with="attn.o")
     external_func(
         "vector_copy_swizzle_elems",
@@ -529,8 +530,7 @@ def build_module(
                         arg30,
                     ):
                         ChannelGet("L2ToL1Chan2", arg30, indices=[arg22, arg23])
-                        CallOp([], "zero_fill_gp_bf16", [arg26])
-                        CallOp([], "add_gp_g", [arg26, arg30])
+                        CallOp([], "copy_tile", [arg30, arg26])
                         CallOp([], "zero_fill_gp_bf16", [arg29])
                         CallOp([], "zero_fill_sp_bf16", [arg28])
                         CallOp([], "neg_inf_fill_up_bf16", [arg27])

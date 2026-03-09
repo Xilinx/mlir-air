@@ -158,6 +158,21 @@ __attribute__((always_inline)) v8bfloat16 getExpBf16(v8bfloat16 x) {
 
 extern "C" {
 
+// Copy tile_size_q×dk elements from src to dst (single-pass vector copy)
+void copy_tile(bfloat16 *src, bfloat16 *dst) {
+  constexpr int VecLen = 32;
+  constexpr int num_elems = lqp * dk;
+  bfloat16 *__restrict ps = src;
+  bfloat16 *__restrict pd = dst;
+  for (unsigned j = 0; j < num_elems / VecLen; j++)
+    chess_prepare_for_pipelining chess_loop_range(8, ) {
+      aie::vector<bfloat16, VecLen> v = aie::load_v<VecLen>(ps);
+      aie::store_v(pd, v);
+      ps += VecLen;
+      pd += VecLen;
+    }
+}
+
 void matmul_a_b_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *out) {
   // Buffer shapes:
   // A: [lqp, dk] = [32, 64]
