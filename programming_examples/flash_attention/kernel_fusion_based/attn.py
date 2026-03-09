@@ -423,22 +423,27 @@ def build_module(
                     strides=[lkp * dv, dv, 1],
                 )
 
-            # Compute q_block_base for causal masking (launch level)
-            if causal:
-                q_block_base = arith.MulIOp(
-                    arg5, ConstantOp(index_type, num_q_tiles)
-                ).result
-
             # Segment unrolls over 2 heads (hardware constraint)
             c_num_heads_unroll = ConstantOp(index_type, num_heads_per_unroll)
             c_dummy_size = ConstantOp(index_type, 1)
 
+            seg_operands = [arg5] if causal else []
+
             @segment(
                 name="attention_seg",
-                operands=[],
+                operands=seg_operands,
                 sizes=[c_num_heads_unroll, c_dummy_size],
             )
-            def segment_body(head_idx, dummy_idx, head_size, dummy_size):
+            def segment_body(head_idx, dummy_idx, head_size, dummy_size, *seg_args):
+                # Compute q_block_base inside segment (lowers to host runtime_sequence)
+                if causal:
+                    launch_iter = seg_args[0]
+                    q_block_base = arith.MulIOp(
+                        launch_iter, ConstantOp(index_type, num_q_tiles)
+                    ).result
+                else:
+                    q_block_base = None
+
                 # L2 allocations
                 if enable_shared_buffers:
                     alloc = alloc_col1 = alloc_col2 = alloc_col3 = None
