@@ -61,6 +61,10 @@ def build_module(
     enable_shared_buffers = lkp == dk
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
+        assert lq == lqp, (
+            f"Causal masking currently requires lq == lqp (single launch iter), "
+            f"got lq={lq}, lqp={lqp}. RTP writes only support compile-time constants."
+        )
         tile_size_q = lqp // num_q_tiles
         assert tile_size_q == lkp, (
             f"Causal masking requires tile_size_q == lkp, got {tile_size_q} vs {lkp}"
@@ -427,22 +431,15 @@ def build_module(
             c_num_heads_unroll = ConstantOp(index_type, num_heads_per_unroll)
             c_dummy_size = ConstantOp(index_type, 1)
 
-            seg_operands = [arg5] if causal else []
-
             @segment(
                 name="attention_seg",
-                operands=seg_operands,
+                operands=[],
                 sizes=[c_num_heads_unroll, c_dummy_size],
             )
-            def segment_body(head_idx, dummy_idx, head_size, dummy_size, *seg_args):
-                # Compute q_block_base inside segment (lowers to host runtime_sequence)
-                if causal:
-                    launch_iter = seg_args[0]
-                    q_block_base = arith.MulIOp(
-                        launch_iter, ConstantOp(index_type, num_q_tiles)
-                    ).result
-                else:
-                    q_block_base = None
+            def segment_body(head_idx, dummy_idx, head_size, dummy_size):
+                # q_block_base: with lq==lqp (asserted for causal), there's
+                # only one launch iteration so q_block_base is always 0.
+                q_block_base = None
 
                 # L2 allocations
                 if enable_shared_buffers:
@@ -640,7 +637,9 @@ def build_module(
                 # Unified herd: init + compute loop + cascade merge + output
                 unified_operands = [alloc_6, up, sp, Gp, G_shared, QK_shared] if enable_shared_buffers else [alloc_6, up, sp, Gp]
                 if causal:
-                    unified_operands.append(q_block_base)
+                    # With lq==lqp (single launch iteration), q_block_base = 0
+                    c_q_block_base = arith.ConstantOp.create_index(0)
+                    unified_operands.append(c_q_block_base)
 
                 @herd(
                     name="herd_0",
