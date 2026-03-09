@@ -213,47 +213,44 @@ void neg_inf_fill_up_bf16(bfloat16 *c_out) {
 
 void max_g_bf16(bfloat16 *in, bfloat16 *out) {
   // u = np.max(G, axis=-1, keepdims=True)
-  // Buffer shape:
-  // Input: [lqp, lkp] = [32, 96]
-  // Layout: [12x4x8x8xbf16]
-  // Output: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 8;
-  constexpr int num_elems = lkp;
-  constexpr int num_rows = lqp;
+  // G is in column-major 8x8 tiled layout.
+  // Each block is 64 contiguous elements (8 rows × 8 cols).
+  // VecLen=32 reads 4 rows at once (half a block).
+  constexpr int VecLen = 32;
+  constexpr int BlockSize = 64;  // 8×8 block
+  constexpr int ColsPerBlock = 8;
+  constexpr int RowsPerBlock = 8;
+  constexpr int col_blocks = lkp / ColsPerBlock;
+  constexpr int row_blocks = lqp / RowsPerBlock;
+  constexpr int block_stride = lqp * ColsPerBlock;  // stride between column blocks
+
+  uint16_t neg_inf_u16 = (uint16_t)0xff80;
+  bfloat16 neg_inf = *(bfloat16 *)&neg_inf_u16;
+
   bfloat16 *__restrict pOut = out;
-  uint16_t neg_infinity = (uint16_t)0xff80;
-  bfloat16 *bf_neg_infinity = (bfloat16 *)&neg_infinity;
-  aie::vector<bfloat16, VecLen> outputVec;
-  for (int rowVec = 0; rowVec < num_rows; rowVec += VecLen) {
-    // Unroll by 2 to process 2 rows simultaneously
-    for (int rowVecElem = 0; rowVecElem < VecLen; rowVecElem += 2) {
-      aie::vector<bfloat16, VecLen> max_vec0 =
-          aie::broadcast<bfloat16, VecLen>((*bf_neg_infinity));
-      aie::vector<bfloat16, VecLen> max_vec1 =
-          aie::broadcast<bfloat16, VecLen>((*bf_neg_infinity));
-      aie::vector<bfloat16, VecLen> temp0, temp1;
-      int row0 = rowVec + rowVecElem;
-      int row1 = rowVec + rowVecElem + 1;
-      int row_block0 = row0 / VecLen;
-      int row_in_block0 = row0 % VecLen;
-      int row_block1 = row1 / VecLen;
-      int row_in_block1 = row1 % VecLen;
-      for (int32_t col_block = 0; col_block < num_elems / VecLen; col_block++)
-        chess_prepare_for_pipelining chess_loop_range(12, ) {
-          int offset0 = col_block * (num_rows * VecLen) +
-                        row_block0 * (VecLen * VecLen) + row_in_block0 * VecLen;
-          int offset1 = col_block * (num_rows * VecLen) +
-                        row_block1 * (VecLen * VecLen) + row_in_block1 * VecLen;
-          temp0 = aie::load_v<VecLen>(in + offset0);
-          temp1 = aie::load_v<VecLen>(in + offset1);
-          max_vec0 = aie::max(max_vec0, temp0);
-          max_vec1 = aie::max(max_vec1, temp1);
+  for (int rb = 0; rb < row_blocks; rb++) {
+    // Process 4 rows at a time (half block = 32 elements)
+    for (int half = 0; half < 2; half++) {
+      aie::vector<bfloat16, VecLen> max_vec =
+          aie::broadcast<bfloat16, VecLen>(neg_inf);
+      int base = rb * BlockSize + half * VecLen;
+      for (int cb = 0; cb < col_blocks; cb++)
+        chess_prepare_for_pipelining chess_loop_range(8, ) {
+          aie::vector<bfloat16, VecLen> v =
+              aie::load_v<VecLen>(in + base + cb * block_stride);
+          max_vec = aie::max(max_vec, v);
         }
-      outputVec[rowVecElem] = aie::reduce_max(max_vec0);
-      outputVec[rowVecElem + 1] = aie::reduce_max(max_vec1);
+      // Extract per-row max from 32-wide vector (4 rows × 8 cols)
+      aie::vector<bfloat16, 8> r0 = max_vec.extract<8>(0);
+      aie::vector<bfloat16, 8> r1 = max_vec.extract<8>(1);
+      aie::vector<bfloat16, 8> r2 = max_vec.extract<8>(2);
+      aie::vector<bfloat16, 8> r3 = max_vec.extract<8>(3);
+      pOut[half * 4 + 0] = aie::reduce_max(r0);
+      pOut[half * 4 + 1] = aie::reduce_max(r1);
+      pOut[half * 4 + 2] = aie::reduce_max(r2);
+      pOut[half * 4 + 3] = aie::reduce_max(r3);
     }
-    aie::store_v(pOut, outputVec);
-    pOut += VecLen;
+    pOut += RowsPerBlock;
   }
 }
 
@@ -275,68 +272,69 @@ void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
 }
 
 void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
-  // G = np.exp(G - u)
-  // Buffer shape:
-  // u: [lqp, 1] = [32, 1]
-  // G: [lqp, lkp] = [32, 96]
-  // Layout: [12x4x8x8xbf16]
-  constexpr int VecLen = 8;
-  constexpr int num_elems = lkp;
-  constexpr int num_rows = lqp;
-  aie::vector<bfloat16, VecLen> uVec;
+  // G = exp(G - u) in-place. G is column-major 8×8 tiled.
+  // VecLen=32 processes 4 rows at once (half a block).
+  // exp2 native width is 16, so split 32→2×16 for exp.
+  constexpr int VecLen = 32;
+  constexpr int BlockSize = 64;
+  constexpr int ColsPerBlock = 8;
+  constexpr int RowsPerBlock = 8;
+  constexpr int col_blocks = lkp / ColsPerBlock;
+  constexpr int row_blocks = lqp / RowsPerBlock;
+  constexpr int block_stride = lqp * ColsPerBlock;
 
-  // G <- exp(G - u) - fused subtraction and exponentiation with unrolled rows
-  for (int rowVec = 0; rowVec < num_rows; rowVec += VecLen) {
-    uVec = aie::load_v<VecLen>(u + rowVec);
-    // Unroll by 2 to process 2 rows simultaneously
-    for (int rowVecElem = 0; rowVecElem < VecLen; rowVecElem += 2) {
-      aie::vector<bfloat16, VecLen> u_bcast0 =
-          aie::broadcast<bfloat16, VecLen>(uVec[rowVecElem]);
-      aie::vector<bfloat16, VecLen> u_bcast1 =
-          aie::broadcast<bfloat16, VecLen>(uVec[rowVecElem + 1]);
-      aie::vector<bfloat16, VecLen> temp0, temp1, exp_val0, exp_val1;
-      int row0 = rowVec + rowVecElem;
-      int row1 = rowVec + rowVecElem + 1;
-      int row_block0 = row0 / VecLen;
-      int row_in_block0 = row0 % VecLen;
-      int row_block1 = row1 / VecLen;
-      int row_in_block1 = row1 % VecLen;
-      for (int32_t col_block = 0; col_block < num_elems / VecLen; col_block++)
-        chess_prepare_for_pipelining chess_loop_range(12, ) {
-          int offset0 = col_block * (num_rows * VecLen) +
-                        row_block0 * (VecLen * VecLen) + row_in_block0 * VecLen;
-          int offset1 = col_block * (num_rows * VecLen) +
-                        row_block1 * (VecLen * VecLen) + row_in_block1 * VecLen;
-          temp0 = aie::load_v<VecLen>(g + offset0);
-          temp1 = aie::load_v<VecLen>(g + offset1);
-          temp0 = aie::sub(temp0, u_bcast0);
-          temp1 = aie::sub(temp1, u_bcast1);
-          exp_val0 = getExpBf16(temp0);
-          exp_val1 = getExpBf16(temp1);
-          aie::store_v(g + offset0, exp_val0);
-          aie::store_v(g + offset1, exp_val1);
+  for (int rb = 0; rb < row_blocks; rb++) {
+    for (int half = 0; half < 2; half++) {
+      // Build 32-wide u vector: 4 rows × 8 cols, each row broadcast
+      int row_start = rb * RowsPerBlock + half * 4;
+      aie::vector<bfloat16, 8> u0 = aie::broadcast<bfloat16, 8>(u[row_start]);
+      aie::vector<bfloat16, 8> u1 = aie::broadcast<bfloat16, 8>(u[row_start + 1]);
+      aie::vector<bfloat16, 8> u2 = aie::broadcast<bfloat16, 8>(u[row_start + 2]);
+      aie::vector<bfloat16, 8> u3 = aie::broadcast<bfloat16, 8>(u[row_start + 3]);
+      aie::vector<bfloat16, VecLen> u_vec;
+      u_vec.insert(0, u0);
+      u_vec.insert(1, u1);
+      u_vec.insert(2, u2);
+      u_vec.insert(3, u3);
+
+      int base = rb * BlockSize + half * VecLen;
+      for (int cb = 0; cb < col_blocks; cb++)
+        chess_prepare_for_pipelining chess_loop_range(8, ) {
+          int off = base + cb * block_stride;
+          aie::vector<bfloat16, VecLen> v = aie::load_v<VecLen>(g + off);
+          v = aie::sub(v, u_vec);
+          // exp2(log2e * v) — split into 2×16 for native exp2 width
+          aie::vector<bfloat16, 16> lo = v.extract<16>(0);
+          aie::vector<bfloat16, 16> hi = v.extract<16>(1);
+          lo = aie::exp2<bfloat16>(
+              aie::mul(lo, aie::broadcast<bfloat16, 16>((bfloat16)log2e))
+                  .to_vector<float>());
+          hi = aie::exp2<bfloat16>(
+              aie::mul(hi, aie::broadcast<bfloat16, 16>((bfloat16)log2e))
+                  .to_vector<float>());
+          v.insert(0, lo);
+          v.insert(1, hi);
+          aie::store_v(g + off, v);
         }
     }
   }
 }
 
 void exp_up_minus_u(bfloat16 *up, bfloat16 *u, bfloat16 *r) {
-  // r = exp(up - u)
-  // Buffer shape:
-  // up: [lqp, 1] = [32, 1]
-  // u: [lqp, 1] = [32, 1]
-  // r: [lqp, 1] = [32, 1]
-  constexpr int VecLen = 8;
+  // r = exp(up - u) — VecLen=16 to match exp2 native width
+  constexpr int VecLen = 16;
   constexpr int num_elems = lqp;
-  // r <- exp(up - u) - fused subtraction and exponentiation
   bfloat16 *__restrict pr = r;
   bfloat16 *__restrict pu = u;
   bfloat16 *__restrict pup = up;
+  aie::vector<bfloat16, VecLen> log2e_vec =
+      aie::broadcast<bfloat16, VecLen>((bfloat16)log2e);
   for (int i = 0; i < num_elems; i += VecLen) {
     aie::vector<bfloat16, VecLen> uTemp = aie::load_v<VecLen>(pu);
     aie::vector<bfloat16, VecLen> upTemp = aie::load_v<VecLen>(pup);
-    aie::vector<bfloat16, VecLen> rTemp = aie::sub(upTemp, uTemp);
-    aie::vector<bfloat16, VecLen> exp_val = getExpBf16(rTemp);
+    aie::vector<bfloat16, VecLen> diff = aie::sub(upTemp, uTemp);
+    aie::vector<bfloat16, VecLen> exp_val =
+        aie::exp2<bfloat16>(aie::mul(diff, log2e_vec).to_vector<float>());
     aie::store_v(pr, exp_val);
     pr += VecLen;
     pu += VecLen;
@@ -438,33 +436,40 @@ void fused_exp_sum(bfloat16 *u, bfloat16 *g, bfloat16 *s) {
 
 void sum_g(bfloat16 *g, bfloat16 *s) {
   // s = sum(G, axis=-1, keepdims=True)
-  // Buffer shape:
-  // G: [lqp, lkp] = [32, 96]
-  // Layout: [12x4x8x8xbf16]
-  // s: [lqp, 1] = [32, 1]
+  // G is column-major 8×8 tiled. VecLen=32 loads 4 rows at once.
   constexpr int VecLen = 32;
-  constexpr int num_elems = lkp;
-  constexpr int num_rows = lqp;
+  constexpr int BlockSize = 64;
+  constexpr int ColsPerBlock = 8;
+  constexpr int RowsPerBlock = 8;
+  constexpr int col_blocks = lkp / ColsPerBlock;
+  constexpr int row_blocks = lqp / RowsPerBlock;
+  constexpr int block_stride = lqp * ColsPerBlock;
+
   bfloat16 *__restrict ps = s;
-  for (int rowVec = 0; rowVec < num_rows; rowVec += VecLen) {
-    aie::vector<bfloat16, VecLen> sVec;
-    for (int rowVecElem = 0; rowVecElem < VecLen; rowVecElem++) {
-      aie::vector<bfloat16, VecLen> temp;
-      float sum_value = 0.0f;
-      int row = rowVec + rowVecElem;
-      int row_block = row / VecLen;
-      int row_in_block = row % VecLen;
-      for (int32_t col_block = 0; col_block < num_elems / VecLen; col_block++)
-        chess_prepare_for_pipelining chess_loop_range(12, ) {
-          int offset = col_block * (num_rows * VecLen) +
-                       row_block * (VecLen * VecLen) + row_in_block * VecLen;
-          temp = aie::load_v<VecLen>(g + offset);
-          sum_value += aie::reduce_add(temp);
+  for (int rb = 0; rb < row_blocks; rb++) {
+    for (int half = 0; half < 2; half++) {
+      // Accumulate sum across column blocks for 4 rows
+      aie::accum<accfloat, VecLen> sum_acc =
+          aie::zeros<accfloat, VecLen>();
+      int base = rb * BlockSize + half * VecLen;
+      for (int cb = 0; cb < col_blocks; cb++)
+        chess_prepare_for_pipelining chess_loop_range(8, ) {
+          aie::vector<bfloat16, VecLen> v =
+              aie::load_v<VecLen>(g + base + cb * block_stride);
+          sum_acc = aie::add(sum_acc, v);
         }
-      sVec[rowVecElem] = (bfloat16)sum_value;
+      // Reduce each 8-element row slice to get per-row sum
+      aie::vector<bfloat16, VecLen> sum_v = sum_acc.to_vector<bfloat16>();
+      aie::vector<bfloat16, 8> r0 = sum_v.extract<8>(0);
+      aie::vector<bfloat16, 8> r1 = sum_v.extract<8>(1);
+      aie::vector<bfloat16, 8> r2 = sum_v.extract<8>(2);
+      aie::vector<bfloat16, 8> r3 = sum_v.extract<8>(3);
+      ps[half * 4 + 0] = (bfloat16)aie::reduce_add(r0);
+      ps[half * 4 + 1] = (bfloat16)aie::reduce_add(r1);
+      ps[half * 4 + 2] = (bfloat16)aie::reduce_add(r2);
+      ps[half * 4 + 3] = (bfloat16)aie::reduce_add(r3);
     }
-    aie::store_v(ps, sVec);
-    ps += VecLen;
+    ps += RowsPerBlock;
   }
 }
 
