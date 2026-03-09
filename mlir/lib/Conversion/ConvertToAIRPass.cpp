@@ -149,9 +149,9 @@ static void extractOperandsFromReinterpretCast(
 }
 
 // Detect self-copies that would produce invalid self-DMAs. After unwrapping
-// subview/reinterpret_cast ops, check if src and dst resolve to the same base
-// buffer with identical offsets/sizes/strides. This can happen when
-// structured.pad with copy_back_op creates a redundant copy-back.
+// subview ops, check if src and dst resolve to the same base buffer with
+// identical offsets/sizes/strides (including dynamic operands). This can happen
+// when structured.pad with copy_back_op creates a redundant copy-back.
 static bool isSelfCopy(memref::CopyOp op) {
   Value src = op.getSource();
   Value dst = op.getTarget();
@@ -160,27 +160,23 @@ static bool isSelfCopy(memref::CopyOp op) {
   if (src == dst)
     return true;
 
-  // Unwrap subview/reinterpret_cast to find base buffers and access parameters.
-  SmallVector<int64_t> srcStaticOffsets, srcStaticSizes, srcStaticStrides;
-  SmallVector<int64_t> dstStaticOffsets, dstStaticSizes, dstStaticStrides;
+  // Unwrap subviews to find base buffers and access parameters.
+  // Uses getMixedOffsets/Sizes/Strides to correctly handle both static and
+  // dynamic operands (avoids false positives from dynamic sentinel values).
+  SmallVector<OpFoldResult> srcOffsets, srcSizes, srcStrides;
+  SmallVector<OpFoldResult> dstOffsets, dstSizes, dstStrides;
 
   if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-    srcStaticOffsets.append(subview.getStaticOffsets().begin(),
-                            subview.getStaticOffsets().end());
-    srcStaticSizes.append(subview.getStaticSizes().begin(),
-                          subview.getStaticSizes().end());
-    srcStaticStrides.append(subview.getStaticStrides().begin(),
-                            subview.getStaticStrides().end());
+    srcOffsets = subview.getMixedOffsets();
+    srcSizes = subview.getMixedSizes();
+    srcStrides = subview.getMixedStrides();
     src = subview.getSource();
   }
 
   if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-    dstStaticOffsets.append(subview.getStaticOffsets().begin(),
-                            subview.getStaticOffsets().end());
-    dstStaticSizes.append(subview.getStaticSizes().begin(),
-                          subview.getStaticSizes().end());
-    dstStaticStrides.append(subview.getStaticStrides().begin(),
-                            subview.getStaticStrides().end());
+    dstOffsets = subview.getMixedOffsets();
+    dstSizes = subview.getMixedSizes();
+    dstStrides = subview.getMixedStrides();
     dst = subview.getSource();
   }
 
@@ -188,10 +184,9 @@ static bool isSelfCopy(memref::CopyOp op) {
   if (src != dst)
     return false;
 
-  // Same base buffer: self-copy if no subviews or identical static parameters.
-  return srcStaticOffsets == dstStaticOffsets &&
-         srcStaticSizes == dstStaticSizes &&
-         srcStaticStrides == dstStaticStrides;
+  // Same base buffer: self-copy if no subviews or identical parameters.
+  return srcOffsets == dstOffsets && srcSizes == dstSizes &&
+         srcStrides == dstStrides;
 }
 
 static FailureOr<air::DmaMemcpyNdOp>
