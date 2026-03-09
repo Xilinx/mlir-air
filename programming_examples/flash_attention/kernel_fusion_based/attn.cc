@@ -86,11 +86,13 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
               aie::vector<T_in, MMUL::size_A> A1 =
                   aie::load_v<MMUL::size_A>(pA2);
               pA2 += rowA * MMUL::size_A;
+              // K at L1 is [lkp, dk] row-major tiled as [lkp/t, dk/s, t, s].
+              // Transpose each [t, s] block to [s, t] for mmul (IRON B_COL_MAJ).
               aie::vector<T_in, MMUL::size_B> B0 =
-                  aie::load_v<MMUL::size_B>(pB1);
+                  aie::transpose(aie::load_v<MMUL::size_B>(pB1), t, s);
               pB1 += MMUL::size_B;
               aie::vector<T_in, MMUL::size_B> B1 =
-                  aie::load_v<MMUL::size_B>(pB2);
+                  aie::transpose(aie::load_v<MMUL::size_B>(pB2), t, s);
               pB2 += MMUL::size_B;
 
               C00.mac(A0, B0);
@@ -176,7 +178,7 @@ void copy_tile(bfloat16 *src, bfloat16 *dst) {
 void matmul_a_b_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *out) {
   // Buffer shapes:
   // A: [lqp, dk] = [32, 64]
-  // B: [dk, lkp] = [64, 96]
+  // B: [lkp, dk] = [96, 64]  (K row-major, aie::transpose per block)
   // Out: [lqp, lkp] = [32, 96]
   matmul_vectorized_8x8x8_bf16_bf16<lqp, dk, lkp>(a_in, b_in, out);
 }

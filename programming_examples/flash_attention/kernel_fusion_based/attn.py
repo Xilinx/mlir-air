@@ -92,12 +92,12 @@ def build_module(
     memref_lqp_dv_l1 = MemRefType.get([tile_size_q, dk], bf16, memory_space=l1_space)
     memref_lqp_l1 = MemRefType.get([tile_size_q, 1], bf16, memory_space=l1_space)
     memref_lqp_lkp_l1 = MemRefType.get([tile_size_q * lkp], bf16, memory_space=l1_space)
-    memref_dv_lkp_l1 = MemRefType.get([dk, lkp], bf16, memory_space=l1_space)
+    memref_dv_lkp_l1 = MemRefType.get([lkp, dk], bf16, memory_space=l1_space)
     memref_g_shared_l1 = MemRefType.get([tile_size_q, lkp], bf16, memory_space=l1_space)
 
     # L2 MemRefTypes (memory space 1 : i32) - segment allocations
     memref_lqp_dk_l2 = MemRefType.get([tile_size_q, dk], bf16, memory_space=l2_space)
-    memref_dk_lkp_l2 = MemRefType.get([dk, lkp], bf16, memory_space=l2_space)
+    memref_dk_lkp_l2 = MemRefType.get([lkp, dk], bf16, memory_space=l2_space)
     memref_lkp_dv_l2 = MemRefType.get([lkp, dk], bf16, memory_space=l2_space)
     memref_output_lqp_dv_l2 = MemRefType.get(
         [lqp, dk], bf16, memory_space=l2_space
@@ -106,7 +106,7 @@ def build_module(
     # L3 MemRefTypes (no memory space annotation = default L3) - with head dimension
     memref_input_q_lq_dk = MemRefType.get([num_heads, lq, dk], bf16)
     memref_output_lq_dv = MemRefType.get([num_heads, lq, dk], bf16)
-    memref_input_k_dk_lk = MemRefType.get([num_kv_heads, dk, lk], bf16)
+    memref_input_k_dk_lk = MemRefType.get([num_kv_heads, lk, dk], bf16)
     memref_input_v_lk_dv = MemRefType.get([num_kv_heads, lk, dk], bf16)
     memref_input_m_lq_lk = MemRefType.get([num_heads, lq, lk], bf16)
 
@@ -296,16 +296,19 @@ def build_module(
                     )
                 ],
             )
-            # Affine map for K head offset with column: head * dk * lk + col_offset
-            affine_map_head_col = AffineMap.get(
+            # Affine map for K head offset: head * lk * dk + row_offset * dk
+            # K stored as [num_kv_heads, lk, dk] (row-major, matching IRON)
+            affine_map_head_row = AffineMap.get(
                 0,
                 2,
                 [
                     AffineExpr.get_add(
                         AffineExpr.get_mul(
-                            AffineSymbolExpr.get(0), AffineConstantExpr.get(dk * lk)
+                            AffineSymbolExpr.get(0), AffineConstantExpr.get(lk * dk)
                         ),
-                        AffineSymbolExpr.get(1),
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(1), AffineConstantExpr.get(dk)
+                        ),
                     )
                 ],
             )
@@ -356,29 +359,29 @@ def build_module(
                 scf.InParallelOp()
 
             # L3 to L2 channel puts for K matrix - both heads in group
-            # K is stored as [num_kv_heads, dk, lk] (column-major). Each cascade
-            # stage gets a contiguous block of chunks_per_stage * lkp columns.
+            # K stored as [num_kv_heads, lk, dk] (row-major, matching IRON).
+            # Fully linear shim DMA — each chunk [lkp, dk] is contiguous.
             for i in range(num_cascade_stages):
-                col_off = ConstantOp(index_type, i * chunks_per_stage * lkp)
+                row_off = ConstantOp(index_type, i * chunks_per_stage * lkp)
                 # Head 0 in group (use KV head index for K)
-                k_head0_off = affine_apply(affine_map_head_col, [kv_head_base, col_off])
+                k_head0_off = affine_apply(affine_map_head_row, [kv_head_base, row_off])
                 ChannelPut(
                     "L3ToL2Chan1",
                     arg10,
                     indices=[c0, i],
                     offsets=[0, 0, k_head0_off],
-                    sizes=[chunks_per_stage, dk, lkp],
-                    strides=[lkp, lk, 1],
+                    sizes=[chunks_per_stage, lkp, dk],
+                    strides=[lkp * dk, dk, 1],
                 )
                 # Head 1 in group (use KV head index for K)
-                k_head1_off = affine_apply(affine_map_head_col, [kv_head_1, col_off])
+                k_head1_off = affine_apply(affine_map_head_row, [kv_head_1, row_off])
                 ChannelPut(
                     "L3ToL2Chan1",
                     arg10,
                     indices=[c1, i],
                     offsets=[0, 0, k_head1_off],
-                    sizes=[chunks_per_stage, dk, lkp],
-                    strides=[lkp, lk, 1],
+                    sizes=[chunks_per_stage, lkp, dk],
+                    strides=[lkp * dk, dk, 1],
                 )
 
             # L3 to L2 channel puts for V matrix - both heads in group
@@ -584,38 +587,40 @@ def build_module(
                     )
 
                     # Channel puts for K matrix to L1
-                    # L2 K buffer is [dk, lkp] (shim DMA transposes from L3 [lk, dk]).
+                    # L2 K buffer is [lkp, dk] (row-major K, matching IRON).
+                    # Tile as [lkp/t, dk/s, t, s] matching IRON's k_dims.
+                    # Innermost stride=1 along dk. Kernel transposes each block.
                     ChannelPut(
                         "L2ToL1Chan2",
                         alloc_2.result,
                         indices=[c0_seg, c0_seg],
                         offsets=[0, 0, 0, 0],
-                        sizes=[lkp // mmul_n, dk // mmul_k, mmul_k, mmul_n],
-                        strides=[mmul_n, lkp * mmul_n, lkp, 1],
+                        sizes=[lkp // mmul_n, dk // mmul_k, mmul_n, mmul_k],
+                        strides=[mmul_n * dk, mmul_k, dk, 1],
                     )
                     ChannelPut(
                         "L2ToL1Chan2",
                         alloc_21.result,
                         indices=[c0_seg, c1_seg],
                         offsets=[0, 0, 0, 0],
-                        sizes=[lkp // mmul_n, dk // mmul_k, mmul_k, mmul_n],
-                        strides=[mmul_n, lkp * mmul_n, lkp, 1],
+                        sizes=[lkp // mmul_n, dk // mmul_k, mmul_n, mmul_k],
+                        strides=[mmul_n * dk, mmul_k, dk, 1],
                     )
                     ChannelPut(
                         "L2ToL1Chan2",
                         alloc_22.result,
                         indices=[c0_seg, c2_seg],
                         offsets=[0, 0, 0, 0],
-                        sizes=[lkp // mmul_n, dk // mmul_k, mmul_k, mmul_n],
-                        strides=[mmul_n, lkp * mmul_n, lkp, 1],
+                        sizes=[lkp // mmul_n, dk // mmul_k, mmul_n, mmul_k],
+                        strides=[mmul_n * dk, mmul_k, dk, 1],
                     )
                     ChannelPut(
                         "L2ToL1Chan2",
                         alloc_23.result,
                         indices=[c0_seg, c3_seg],
                         offsets=[0, 0, 0, 0],
-                        sizes=[lkp // mmul_n, dk // mmul_k, mmul_k, mmul_n],
-                        strides=[mmul_n, lkp * mmul_n, lkp, 1],
+                        sizes=[lkp // mmul_n, dk // mmul_k, mmul_n, mmul_k],
+                        strides=[mmul_n * dk, mmul_k, dk, 1],
                     )
 
                     # Channel puts for V matrix to L1
@@ -1265,7 +1270,7 @@ if __name__ == "__main__":
     input_q = (rng.uniform(0, 1, (num_heads, lq, dk)) * 0.5 + 0.5).astype(
         INPUT_DATATYPE
     )
-    input_k = (rng.uniform(0, 1, (num_kv_heads, dk, lk)) * 0.5 + 0.5).astype(
+    input_k = (rng.uniform(0, 1, (num_kv_heads, lk, dk)) * 0.5 + 0.5).astype(
         INPUT_DATATYPE
     )
     input_v = (rng.uniform(0, 1, (num_kv_heads, lk, dv)) * 0.5 + 0.5).astype(
@@ -1287,7 +1292,7 @@ if __name__ == "__main__":
         for ci in range(chunks_per_stage_ref):
             j = stage * chunks_per_stage_ref + ci
             G = mask_h[:, j * lkp : (j + 1) * lkp]
-            B = input_k[kv_h, :, j * lkp : (j + 1) * lkp]
+            B = input_k[kv_h, j * lkp : (j + 1) * lkp, :].T
             G = A @ B + G
             G = G.astype(VM_ACC_DATATYPE)
             u = np.max(G, axis=-1, keepdims=True).astype(VM_ACC_DATATYPE)
