@@ -672,57 +672,78 @@ def build_module(
                     c_chunks = ConstantOp(index_type, chunks_per_stage)
                     c0_loop = ConstantOp(index_type, 0)
                     c1_loop = ConstantOp(index_type, 1)
-                    for chunk_idx in range_(c0_loop, c_chunks, c1_loop):
-                        if enable_shared_buffers:
-                            G_l1 = CollapseShapeOp(memref_lqp_lkp_l1, arg30, [[0, 1]])
-                            CallOp([], "zero_fill_g_bf16", [G_l1])
-                            ChannelGet("L2ToL1Chan2", arg31, indices=[arg22, arg23])
-                            CallOp([], "matmul_a_b_bf16", [arg26, arg31, G_l1])
-                        else:
-                            G_alloc = AllocOp(memref_g_shared_l1, [], [])
-                            G_l1 = CollapseShapeOp(memref_lqp_lkp_l1, G_alloc.result, [[0, 1]])
-                            CallOp([], "zero_fill_g_bf16", [G_l1])
-                            QK_alloc = AllocOp(memref_dv_lkp_l1, [], [])
-                            ChannelGet("L2ToL1Chan2", QK_alloc.result, indices=[arg22, arg23])
-                            CallOp([], "matmul_a_b_bf16", [arg26, QK_alloc.result, G_l1])
 
-                        if causal:
-                            c_cps = ConstantOp(index_type, chunks_per_stage)
-                            kv_block = arith.AddIOp(arith.MulIOp(arg23, c_cps).result, chunk_idx)
-                            q_block = arith.AddIOp(q_base, arg22)
-                            kv_i32 = arith.IndexCastOp(i32, kv_block.result)
-                            q_i32 = arith.IndexCastOp(i32, q_block.result)
+                    def _build_chunk_compute(G_l1, K_buf, V_buf, arg26, arg27, arg28, arg29,
+                                             kv_block_val=None, q_block_val=None):
+                        """Build matmul + softmax compute ops for one chunk."""
+                        CallOp([], "zero_fill_g_bf16", [G_l1])
+                        CallOp([], "matmul_a_b_bf16", [arg26, K_buf, G_l1])
+                        if causal and kv_block_val is not None:
+                            kv_i32 = arith.IndexCastOp(i32, kv_block_val)
+                            q_i32 = arith.IndexCastOp(i32, q_block_val)
                             CallOp([], "apply_causal_mask", [G_l1, q_i32, kv_i32])
-
                         c0_i32 = ConstantOp(i32, 0)
                         u_l1 = AllocOp(memref_lqp_l1, [], [])
                         s_l1 = AllocOp(memref_lqp_l1, [], [])
                         r_l1 = AllocOp(memref_lqp_l1, [], [])
-
                         CallOp([], "max_g_bf16", [G_l1, u_l1.result])
                         CallOp([], "maximum_up_u_bf16", [arg27, u_l1.result])
                         CallOp([], "exp_g_minus_u", [u_l1.result, G_l1])
                         CallOp([], "exp_up_minus_u", [arg27, u_l1.result, r_l1.result])
                         CallOp([], "mul_r_gp", [r_l1.result, arg29])
-
-                        alloc_57 = AllocOp(memref_dv_lkp_l1, [], [])
-                        ChannelGet("L2ToL1Chan3", alloc_57.result, indices=[arg22, arg23])
-                        CallOp([], "matmul_g_b_bf16", [G_l1, alloc_57.result, arg29])
-                        DeallocOp(alloc_57)
-
-                        if not enable_shared_buffers:
-                            DeallocOp(QK_alloc)
-
+                        CallOp([], "matmul_g_b_bf16", [G_l1, V_buf, arg29])
                         CallOp([], "sum_g", [G_l1, s_l1.result])
                         CallOp([], "accum_sp_r_s", [arg28, r_l1.result, s_l1.result])
                         CallOp([], "vector_copy_32elems", [c0_i32, s_l1.result, arg28])
                         CallOp([], "vector_copy_32elems", [c0_i32, u_l1.result, arg27])
-
-                        if not enable_shared_buffers:
-                            DeallocOp(G_alloc)
                         DeallocOp(u_l1)
                         DeallocOp(s_l1)
                         DeallocOp(r_l1)
+
+                    for chunk_idx in range_(c0_loop, c_chunks, c1_loop):
+                        # Always consume K and V DMA BDs
+                        if enable_shared_buffers:
+                            G_l1 = CollapseShapeOp(memref_lqp_lkp_l1, arg30, [[0, 1]])
+                            ChannelGet("L2ToL1Chan2", arg31, indices=[arg22, arg23])
+                            K_buf = arg31
+                        else:
+                            G_alloc = AllocOp(memref_g_shared_l1, [], [])
+                            G_l1 = CollapseShapeOp(memref_lqp_lkp_l1, G_alloc.result, [[0, 1]])
+                            QK_alloc = AllocOp(memref_dv_lkp_l1, [], [])
+                            ChannelGet("L2ToL1Chan2", QK_alloc.result, indices=[arg22, arg23])
+                            K_buf = QK_alloc.result
+                        alloc_57 = AllocOp(memref_dv_lkp_l1, [], [])
+                        ChannelGet("L2ToL1Chan3", alloc_57.result, indices=[arg22, arg23])
+
+                        if causal:
+                            # Compute block indices
+                            c_cps = ConstantOp(index_type, chunks_per_stage)
+                            kv_block = arith.AddIOp(arith.MulIOp(arg23, c_cps).result, chunk_idx)
+                            q_block = arith.AddIOp(q_base, arg22)
+                            # Skip computation for above-diagonal blocks
+                            not_above = arith.CmpIOp(
+                                arith.CmpIPredicate.sle, kv_block.result, q_block.result
+                            )
+                            causal_if = scf.IfOp(not_above, has_else=True)
+                            with InsertionPoint(causal_if.then_block):
+                                _build_chunk_compute(
+                                    G_l1, K_buf, alloc_57.result,
+                                    arg26, arg27, arg28, arg29,
+                                    kv_block.result, q_block.result,
+                                )
+                                scf.YieldOp([])
+                            with InsertionPoint(causal_if.else_block):
+                                scf.YieldOp([])
+                        else:
+                            _build_chunk_compute(
+                                G_l1, K_buf, alloc_57.result,
+                                arg26, arg27, arg28, arg29,
+                            )
+
+                        DeallocOp(alloc_57)
+                        if not enable_shared_buffers:
+                            DeallocOp(QK_alloc)
+                            DeallocOp(G_alloc)
                         yield_([])
 
                     # === CASCADE MERGE ===
