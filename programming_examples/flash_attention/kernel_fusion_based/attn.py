@@ -531,54 +531,7 @@ def build_module(
                     strides=[mmul_k, dk * mmul_k, dk, 1],
                 )
 
-                # First herd - initialization
-                if enable_shared_buffers:
-                    init_operands = [alloc_6, up, sp, Gp, QK_shared]
-                else:
-                    init_operands = [alloc_6, up, sp, Gp]
-
-                if enable_shared_buffers:
-
-                    @herd(
-                        name="herd_0",
-                        sizes=[c_num_q_tiles, c_num_cascade],
-                        operands=init_operands,
-                        link_with="attn.o",
-                    )
-                    def herd_body_init(
-                        arg22,
-                        arg23,
-                        arg24,
-                        arg25,
-                        arg26,
-                        arg27,
-                        arg28,
-                        arg29,
-                        arg30,
-                    ):
-                        ChannelGet("L2ToL1Chan2", arg30, indices=[arg22, arg23])
-                        CallOp([], "copy_tile", [arg30, arg26])
-                        CallOp([], "zero_fill_gp_bf16", [arg29])
-                        CallOp([], "zero_fill_sp_bf16", [arg28])
-                        CallOp([], "neg_inf_fill_up_bf16", [arg27])
-
-                else:
-
-                    @herd(
-                        name="herd_0",
-                        sizes=[c_num_q_tiles, c_num_cascade],
-                        operands=init_operands,
-                        link_with="attn.o",
-                    )
-                    def herd_body_init(
-                        arg22, arg23, arg24, arg25, arg26, arg27, arg28, arg29
-                    ):
-                        ChannelGet("L2ToL1Chan1", arg26, indices=[arg22, arg23])
-                        CallOp([], "zero_fill_gp_bf16", [arg29])
-                        CallOp([], "zero_fill_sp_bf16", [arg28])
-                        CallOp([], "neg_inf_fill_up_bf16", [arg27])
-
-                # Main loop over lk chunks
+                # DMA loop: L3→L2 + L2→L1 for K/V (runs before herd)
                 for arg21 in range_(0, chunks_per_stage, 1):
                     # Channel gets for K and V - use head_idx
                     ChannelGet(
@@ -677,241 +630,117 @@ def build_module(
                         strides=[mmul_n, dv * mmul_n, dv, 1],
                     )
 
-                    # Second herd - computation inside loop
+                    yield_([])
+
+                # Unified herd: init + compute loop + cascade merge + output
+                unified_operands = [alloc_6, up, sp, Gp, G_shared, QK_shared] if enable_shared_buffers else [alloc_6, up, sp, Gp]
+                if causal:
+                    unified_operands.append(q_block_base)
+
+                @herd(
+                    name="herd_0",
+                    sizes=[c_num_q_tiles, c_num_cascade],
+                    operands=unified_operands,
+                    link_with="attn.o",
+                )
+                def unified_herd_body(*args):
+                    arg22, arg23, arg24, arg25 = args[0], args[1], args[2], args[3]
                     if enable_shared_buffers:
-                        compute_operands = [
-                            alloc_6,
-                            up,
-                            sp,
-                            Gp,
-                            G_shared,
-                            QK_shared,
-                        ]
+                        arg26, arg27, arg28, arg29, arg30, arg31 = args[4:10]
+                        q_base = args[10] if causal else None
                     else:
-                        compute_operands = [alloc_6, up, sp, Gp]
-                    if causal:
-                        compute_operands += [arg21, q_block_base]
+                        arg26, arg27, arg28, arg29 = args[4:8]
+                        arg30 = arg31 = None
+                        q_base = args[8] if causal else None
 
+                    # === INIT PHASE ===
                     if enable_shared_buffers:
+                        ChannelGet("L2ToL1Chan2", arg31, indices=[arg22, arg23])
+                        CallOp([], "copy_tile", [arg31, arg26])
+                    else:
+                        ChannelGet("L2ToL1Chan1", arg26, indices=[arg22, arg23])
+                    CallOp([], "zero_fill_gp_bf16", [arg29])
+                    CallOp([], "zero_fill_sp_bf16", [arg28])
+                    CallOp([], "neg_inf_fill_up_bf16", [arg27])
 
-                        @herd(
-                            name="herd_0",
-                            sizes=[c_num_q_tiles, c_num_cascade],
-                            operands=compute_operands,
-                            link_with="attn.o",
-                        )
-                        def herd_body_compute(
-                            arg22,
-                            arg23,
-                            arg24,
-                            arg25,
-                            arg26,
-                            arg27,
-                            arg28,
-                            arg29,
-                            arg30,
-                            arg31,
-                            *causal_args,
-                        ):
-                            u_l1 = AllocOp(memref_lqp_l1, [], [])
-                            s_l1 = AllocOp(memref_lqp_l1, [], [])
-                            r_l1 = AllocOp(memref_lqp_l1, [], [])
-                            alloc_57 = AllocOp(memref_dv_lkp_l1, [], [])
-                            G_l1 = CollapseShapeOp(
-                                memref_lqp_lkp_l1,
-                                arg30,
-                                [[0, 1]],
-                            )
-
+                    # === COMPUTE LOOP (on-device) ===
+                    c_chunks = ConstantOp(index_type, chunks_per_stage)
+                    c0_loop = ConstantOp(index_type, 0)
+                    c1_loop = ConstantOp(index_type, 1)
+                    for chunk_idx in range_(c0_loop, c_chunks, c1_loop):
+                        if enable_shared_buffers:
+                            G_l1 = CollapseShapeOp(memref_lqp_lkp_l1, arg30, [[0, 1]])
                             CallOp([], "zero_fill_g_bf16", [G_l1])
                             ChannelGet("L2ToL1Chan2", arg31, indices=[arg22, arg23])
                             CallOp([], "matmul_a_b_bf16", [arg26, arg31, G_l1])
-
-                            if causal:
-                                # Compute global block indices from herd operands
-                                kv_chunk_arg, q_base_arg = causal_args[0], causal_args[1]
-                                c_cps = ConstantOp(index_type, chunks_per_stage)
-                                kv_block = arith.AddIOp(arith.MulIOp(arg23, c_cps).result, kv_chunk_arg)
-                                q_block = arith.AddIOp(q_base_arg, arg22)
-                                kv_i32 = arith.IndexCastOp(i32, kv_block.result)
-                                q_i32 = arith.IndexCastOp(i32, q_block.result)
-                                CallOp([], "apply_causal_mask", [G_l1, q_i32, kv_i32])
-
-                            c0_i32 = ConstantOp(i32, 0)
-                            CallOp([], "max_g_bf16", [G_l1, u_l1.result])
-                            CallOp([], "maximum_up_u_bf16", [arg27, u_l1.result])
-                            CallOp([], "exp_g_minus_u", [u_l1.result, G_l1])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [arg27, u_l1.result, r_l1.result],
-                            )
-                            CallOp([], "mul_r_gp", [r_l1.result, arg29])
-                            ChannelGet(
-                                "L2ToL1Chan3",
-                                alloc_57.result,
-                                indices=[arg22, arg23],
-                            )
-                            CallOp(
-                                [],
-                                "matmul_g_b_bf16",
-                                [G_l1, alloc_57.result, arg29],
-                            )
-                            DeallocOp(alloc_57)
-                            CallOp([], "sum_g", [G_l1, s_l1.result])
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [arg28, r_l1.result, s_l1.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32, s_l1.result, arg28],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32, u_l1.result, arg27],
-                            )
-
-                            DeallocOp(u_l1)
-                            DeallocOp(s_l1)
-                            DeallocOp(r_l1)
-
-                    else:
-
-                        @herd(
-                            name="herd_0",
-                            sizes=[c_num_q_tiles, c_num_cascade],
-                            operands=compute_operands,
-                            link_with="attn.o",
-                        )
-                        def herd_body_compute(
-                            arg22,
-                            arg23,
-                            arg24,
-                            arg25,
-                            arg26,
-                            arg27,
-                            arg28,
-                            arg29,
-                            *causal_args,
-                        ):
-                            u_l1 = AllocOp(memref_lqp_l1, [], [])
-                            s_l1 = AllocOp(memref_lqp_l1, [], [])
-                            r_l1 = AllocOp(memref_lqp_l1, [], [])
-                            alloc_57 = AllocOp(memref_dv_lkp_l1, [], [])
+                        else:
                             G_alloc = AllocOp(memref_g_shared_l1, [], [])
-                            G_l1 = CollapseShapeOp(
-                                memref_lqp_lkp_l1,
-                                G_alloc.result,
-                                [[0, 1]],
-                            )
-
+                            G_l1 = CollapseShapeOp(memref_lqp_lkp_l1, G_alloc.result, [[0, 1]])
                             CallOp([], "zero_fill_g_bf16", [G_l1])
                             QK_alloc = AllocOp(memref_dv_lkp_l1, [], [])
-                            ChannelGet(
-                                "L2ToL1Chan2",
-                                QK_alloc.result,
-                                indices=[arg22, arg23],
-                            )
-                            CallOp(
-                                [],
-                                "matmul_a_b_bf16",
-                                [arg26, QK_alloc.result, G_l1],
-                            )
+                            ChannelGet("L2ToL1Chan2", QK_alloc.result, indices=[arg22, arg23])
+                            CallOp([], "matmul_a_b_bf16", [arg26, QK_alloc.result, G_l1])
 
-                            if causal:
-                                kv_chunk_arg, q_base_arg = causal_args[0], causal_args[1]
-                                c_cps = ConstantOp(index_type, chunks_per_stage)
-                                kv_block = arith.AddIOp(arith.MulIOp(arg23, c_cps).result, kv_chunk_arg)
-                                q_block = arith.AddIOp(q_base_arg, arg22)
-                                kv_i32 = arith.IndexCastOp(i32, kv_block.result)
-                                q_i32 = arith.IndexCastOp(i32, q_block.result)
-                                CallOp([], "apply_causal_mask", [G_l1, q_i32, kv_i32])
+                        if causal:
+                            c_cps = ConstantOp(index_type, chunks_per_stage)
+                            kv_block = arith.AddIOp(arith.MulIOp(arg23, c_cps).result, chunk_idx)
+                            q_block = arith.AddIOp(q_base, arg22)
+                            kv_i32 = arith.IndexCastOp(i32, kv_block.result)
+                            q_i32 = arith.IndexCastOp(i32, q_block.result)
+                            CallOp([], "apply_causal_mask", [G_l1, q_i32, kv_i32])
 
-                            c0_i32 = ConstantOp(i32, 0)
-                            CallOp([], "max_g_bf16", [G_l1, u_l1.result])
-                            CallOp([], "maximum_up_u_bf16", [arg27, u_l1.result])
-                            CallOp([], "exp_g_minus_u", [u_l1.result, G_l1])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [arg27, u_l1.result, r_l1.result],
-                            )
-                            CallOp([], "mul_r_gp", [r_l1.result, arg29])
-                            ChannelGet(
-                                "L2ToL1Chan3",
-                                alloc_57.result,
-                                indices=[arg22, arg23],
-                            )
-                            CallOp(
-                                [],
-                                "matmul_g_b_bf16",
-                                [G_l1, alloc_57.result, arg29],
-                            )
-                            DeallocOp(alloc_57)
+                        c0_i32 = ConstantOp(i32, 0)
+                        u_l1 = AllocOp(memref_lqp_l1, [], [])
+                        s_l1 = AllocOp(memref_lqp_l1, [], [])
+                        r_l1 = AllocOp(memref_lqp_l1, [], [])
+
+                        CallOp([], "max_g_bf16", [G_l1, u_l1.result])
+                        CallOp([], "maximum_up_u_bf16", [arg27, u_l1.result])
+                        CallOp([], "exp_g_minus_u", [u_l1.result, G_l1])
+                        CallOp([], "exp_up_minus_u", [arg27, u_l1.result, r_l1.result])
+                        CallOp([], "mul_r_gp", [r_l1.result, arg29])
+
+                        alloc_57 = AllocOp(memref_dv_lkp_l1, [], [])
+                        ChannelGet("L2ToL1Chan3", alloc_57.result, indices=[arg22, arg23])
+                        CallOp([], "matmul_g_b_bf16", [G_l1, alloc_57.result, arg29])
+                        DeallocOp(alloc_57)
+
+                        if not enable_shared_buffers:
                             DeallocOp(QK_alloc)
-                            CallOp([], "sum_g", [G_l1, s_l1.result])
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [arg28, r_l1.result, s_l1.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32, s_l1.result, arg28],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32, u_l1.result, arg27],
-                            )
 
+                        CallOp([], "sum_g", [G_l1, s_l1.result])
+                        CallOp([], "accum_sp_r_s", [arg28, r_l1.result, s_l1.result])
+                        CallOp([], "vector_copy_32elems", [c0_i32, s_l1.result, arg28])
+                        CallOp([], "vector_copy_32elems", [c0_i32, u_l1.result, arg27])
+
+                        if not enable_shared_buffers:
                             DeallocOp(G_alloc)
-                            DeallocOp(u_l1)
-                            DeallocOp(s_l1)
-                            DeallocOp(r_l1)
+                        DeallocOp(u_l1)
+                        DeallocOp(s_l1)
+                        DeallocOp(r_l1)
+                        yield_([])
 
-                    yield_([])
-
-                # Third herd - final processing with cascade and affine.if
-                if enable_shared_buffers:
-                    final_operands = [alloc_6, up, sp, Gp, G_shared]
-                else:
-                    final_operands = [alloc_6, up, sp, Gp]
-
-                def _build_final_herd_body(
-                    arg22, arg23, arg26, arg27, arg28, arg29, get_gp_cascade
-                ):
+                    # === CASCADE MERGE ===
                     c1_h = ConstantOp(index_type, 1)
-                    r_l1 = AllocOp(memref_lqp_l1, [], [])
+                    r_l1_c = AllocOp(memref_lqp_l1, [], [])
+
+                    def get_gp_cascade():
+                        if enable_shared_buffers:
+                            return arg30
+                        else:
+                            return AllocOp(memref_lqp_dv_l1, [], []).result
 
                     # affine.if for last cascade stage
                     affine_set_last = IntegerSet.get(
-                        0,
-                        2,
+                        0, 2,
                         [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(-num_cascade_stages + 1),
-                            ),
+                            AffineExpr.get_add(AffineSymbolExpr.get(1), AffineConstantExpr.get(-num_cascade_stages + 1)),
                             AffineSymbolExpr.get(0),
-                            AffineExpr.get_add(
-                                AffineConstantExpr.get(num_q_tiles - 1),
-                                AffineExpr.get_mul(
-                                    AffineSymbolExpr.get(0), AffineConstantExpr.get(-1)
-                                ),
-                            ),
+                            AffineExpr.get_add(AffineConstantExpr.get(num_q_tiles - 1), AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(-1))),
                         ],
                         [True, False, False],
                     )
-
-                    affine_if_last = affine.AffineIfOp(
-                        affine_set_last, cond_operands=[arg22, arg23], has_else=True
-                    )
+                    affine_if_last = affine.AffineIfOp(affine_set_last, cond_operands=[arg22, arg23], has_else=True)
                     with InsertionPoint(affine_if_last.then_block):
                         subi = arith.SubIOp(arg23, c1_h)
                         ChannelPut("cascade", arg29, indices=[arg22, subi])
@@ -921,242 +750,82 @@ def build_module(
 
                     with InsertionPoint(affine_if_last.else_block):
                         affine_set_middle = IntegerSet.get(
-                            0,
-                            2,
+                            0, 2,
                             [
-                                AffineExpr.get_add(
-                                    AffineSymbolExpr.get(1), AffineConstantExpr.get(-1)
-                                ),
-                                AffineExpr.get_add(
-                                    AffineConstantExpr.get(num_cascade_stages - 2),
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(1),
-                                        AffineConstantExpr.get(-1),
-                                    ),
-                                ),
+                                AffineExpr.get_add(AffineSymbolExpr.get(1), AffineConstantExpr.get(-1)),
+                                AffineExpr.get_add(AffineConstantExpr.get(num_cascade_stages - 2), AffineExpr.get_mul(AffineSymbolExpr.get(1), AffineConstantExpr.get(-1))),
                                 AffineSymbolExpr.get(0),
-                                AffineExpr.get_add(
-                                    AffineConstantExpr.get(num_q_tiles - 1),
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(0),
-                                        AffineConstantExpr.get(-1),
-                                    ),
-                                ),
+                                AffineExpr.get_add(AffineConstantExpr.get(num_q_tiles - 1), AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(-1))),
                             ],
                             [False, False, False, False],
                         )
-
-                        affine_if_middle = affine.AffineIfOp(
-                            affine_set_middle,
-                            cond_operands=[arg22, arg23],
-                            has_else=True,
-                        )
+                        affine_if_middle = affine.AffineIfOp(affine_set_middle, cond_operands=[arg22, arg23], has_else=True)
                         with InsertionPoint(affine_if_middle.then_block):
                             Gp_cascade = get_gp_cascade()
                             up_cascade = AllocOp(memref_lqp_l1, [], [])
                             sp_cascade = AllocOp(memref_lqp_l1, [], [])
                             ChannelGet("cascade", Gp_cascade, indices=[arg22, arg23])
-                            ChannelGet(
-                                "cascade", up_cascade.result, indices=[arg22, arg23]
-                            )
-                            ChannelGet(
-                                "cascade", sp_cascade.result, indices=[arg22, arg23]
-                            )
-                            # Save local max before maximum overwrites arg27
+                            ChannelGet("cascade", up_cascade.result, indices=[arg22, arg23])
+                            ChannelGet("cascade", sp_cascade.result, indices=[arg22, arg23])
                             up_B_saved = AllocOp(memref_lqp_l1, [], [])
                             c0_i32_m = ConstantOp(i32, 0)
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32_m, arg27, up_B_saved.result],
-                            )
-
-                            # arg27 = max(up_cascade, arg27) = new_max
+                            CallOp([], "vector_copy_32elems", [c0_i32_m, arg27, up_B_saved.result])
                             CallOp([], "maximum_up_u_bf16", [up_cascade.result, arg27])
-
-                            # r_A = exp(up_cascade - new_max)
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_cascade.result, arg27, r_l1.result],
-                            )
-                            # r_B = exp(up_B_saved - new_max)
+                            CallOp([], "exp_up_minus_u", [up_cascade.result, arg27, r_l1_c.result])
                             r_B = AllocOp(memref_lqp_l1, [], [])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_B_saved.result, arg27, r_B.result],
-                            )
-
-                            # Rescale both sides
-                            CallOp([], "mul_r_gp", [r_l1.result, Gp_cascade])
+                            CallOp([], "exp_up_minus_u", [up_B_saved.result, arg27, r_B.result])
+                            CallOp([], "mul_r_gp", [r_l1_c.result, Gp_cascade])
                             CallOp([], "mul_r_gp", [r_B.result, arg29])
-
-                            # Merge Gp
                             CallOp([], "add_gp_g", [arg29, Gp_cascade])
-
-                            # sp merge: sp_A * r_A + sp_B * r_B
                             sp_temp = AllocOp(memref_lqp_l1, [], [])
                             CallOp([], "zero_fill_sp_bf16", [sp_temp.result])
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_cascade.result, r_l1.result, sp_temp.result],
-                            )
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [arg28, r_B.result, sp_temp.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32_m, sp_temp.result, sp_cascade.result],
-                            )
-
-                            subi = arith.SubIOp(arg23, c1_h)
-                            ChannelPut("cascade", Gp_cascade, indices=[arg22, subi])
-                            ChannelPut("cascade", arg27, indices=[arg22, subi])
-                            ChannelPut(
-                                "cascade", sp_cascade.result, indices=[arg22, subi]
-                            )
+                            CallOp([], "accum_sp_r_s", [sp_cascade.result, r_l1_c.result, sp_temp.result])
+                            CallOp([], "accum_sp_r_s", [arg28, r_B.result, sp_temp.result])
+                            CallOp([], "vector_copy_32elems", [c0_i32_m, sp_temp.result, sp_cascade.result])
+                            subi2 = arith.SubIOp(arg23, c1_h)
+                            ChannelPut("cascade", Gp_cascade, indices=[arg22, subi2])
+                            ChannelPut("cascade", arg27, indices=[arg22, subi2])
+                            ChannelPut("cascade", sp_cascade.result, indices=[arg22, subi2])
                             DeallocOp(up_B_saved)
                             DeallocOp(r_B)
                             DeallocOp(sp_temp)
                             affine.AffineYieldOp([])
 
                         with InsertionPoint(affine_if_middle.else_block):
-                            Gp_cascade = get_gp_cascade()
-                            up_cascade = AllocOp(memref_lqp_l1, [], [])
-                            sp_cascade = AllocOp(memref_lqp_l1, [], [])
-                            ChannelGet("cascade", Gp_cascade, indices=[arg22, arg23])
-                            ChannelGet(
-                                "cascade", up_cascade.result, indices=[arg22, arg23]
-                            )
-                            ChannelGet(
-                                "cascade", sp_cascade.result, indices=[arg22, arg23]
-                            )
-                            # Save local max before maximum overwrites arg27
-                            up_B_saved = AllocOp(memref_lqp_l1, [], [])
+                            Gp_cascade2 = get_gp_cascade()
+                            up_cascade2 = AllocOp(memref_lqp_l1, [], [])
+                            sp_cascade2 = AllocOp(memref_lqp_l1, [], [])
+                            ChannelGet("cascade", Gp_cascade2, indices=[arg22, arg23])
+                            ChannelGet("cascade", up_cascade2.result, indices=[arg22, arg23])
+                            ChannelGet("cascade", sp_cascade2.result, indices=[arg22, arg23])
+                            up_B_saved2 = AllocOp(memref_lqp_l1, [], [])
                             c0_i32_f = ConstantOp(i32, 0)
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32_f, arg27, up_B_saved.result],
-                            )
-
-                            # arg27 = max(up_cascade, arg27) = new_max
-                            CallOp([], "maximum_up_u_bf16", [up_cascade.result, arg27])
-
-                            # r_A = exp(up_cascade - new_max)
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_cascade.result, arg27, r_l1.result],
-                            )
-                            # r_B = exp(up_B_saved - new_max)
-                            r_B = AllocOp(memref_lqp_l1, [], [])
-                            CallOp(
-                                [],
-                                "exp_up_minus_u",
-                                [up_B_saved.result, arg27, r_B.result],
-                            )
-
-                            # Rescale both sides
-                            CallOp([], "mul_r_gp", [r_l1.result, Gp_cascade])
-                            CallOp([], "mul_r_gp", [r_B.result, arg29])
-
-                            # Merge Gp
-                            CallOp([], "add_gp_g", [arg29, Gp_cascade])
-
-                            # sp merge: sp_A * r_A + sp_B * r_B
-                            sp_temp = AllocOp(memref_lqp_l1, [], [])
-                            CallOp([], "zero_fill_sp_bf16", [sp_temp.result])
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [sp_cascade.result, r_l1.result, sp_temp.result],
-                            )
-                            CallOp(
-                                [],
-                                "accum_sp_r_s",
-                                [arg28, r_B.result, sp_temp.result],
-                            )
-                            CallOp(
-                                [],
-                                "vector_copy_32elems",
-                                [c0_i32_f, sp_temp.result, sp_cascade.result],
-                            )
-
-                            # Final normalization
-                            CallOp([], "div_gp_sp", [sp_cascade.result, Gp_cascade])
-                            DeallocOp(up_B_saved)
-                            DeallocOp(r_B)
-                            DeallocOp(sp_temp)
+                            CallOp([], "vector_copy_32elems", [c0_i32_f, arg27, up_B_saved2.result])
+                            CallOp([], "maximum_up_u_bf16", [up_cascade2.result, arg27])
+                            CallOp([], "exp_up_minus_u", [up_cascade2.result, arg27, r_l1_c.result])
+                            r_B2 = AllocOp(memref_lqp_l1, [], [])
+                            CallOp([], "exp_up_minus_u", [up_B_saved2.result, arg27, r_B2.result])
+                            CallOp([], "mul_r_gp", [r_l1_c.result, Gp_cascade2])
+                            CallOp([], "mul_r_gp", [r_B2.result, arg29])
+                            CallOp([], "add_gp_g", [arg29, Gp_cascade2])
+                            sp_temp2 = AllocOp(memref_lqp_l1, [], [])
+                            CallOp([], "zero_fill_sp_bf16", [sp_temp2.result])
+                            CallOp([], "accum_sp_r_s", [sp_cascade2.result, r_l1_c.result, sp_temp2.result])
+                            CallOp([], "accum_sp_r_s", [arg28, r_B2.result, sp_temp2.result])
+                            CallOp([], "vector_copy_32elems", [c0_i32_f, sp_temp2.result, sp_cascade2.result])
+                            CallOp([], "div_gp_sp", [sp_cascade2.result, Gp_cascade2])
+                            DeallocOp(up_B_saved2)
+                            DeallocOp(r_B2)
+                            DeallocOp(sp_temp2)
                             ChannelPut(
-                                "L1ToL2Chan1",
-                                Gp_cascade,
+                                "L1ToL2Chan1", Gp_cascade2,
                                 indices=[arg22, 0],
                                 offsets=[0, 0, 0, 0],
-                                sizes=[
-                                    tile_size_q // mmul_n,
-                                    mmul_m,
-                                    dv // mmul_m,
-                                    mmul_n,
-                                ],
-                                strides=[
-                                    mmul_m * mmul_n,
-                                    mmul_n,
-                                    tile_size_q * mmul_n,
-                                    1,
-                                ],
+                                sizes=[tile_size_q // mmul_n, mmul_m, dv // mmul_m, mmul_n],
+                                strides=[mmul_m * mmul_n, mmul_n, tile_size_q * mmul_n, 1],
                             )
                             affine.AffineYieldOp([])
                         affine.AffineYieldOp([])
-
-                if enable_shared_buffers:
-
-                    @herd(
-                        name="herd_0",
-                        sizes=[c_num_q_tiles, c_num_cascade],
-                        operands=final_operands,
-                        link_with="attn.o",
-                    )
-                    def herd_body_final(
-                        arg22, arg23, arg24, arg25, arg26, arg27, arg28, arg29, arg30
-                    ):
-                        _build_final_herd_body(
-                            arg22,
-                            arg23,
-                            arg26,
-                            arg27,
-                            arg28,
-                            arg29,
-                            get_gp_cascade=lambda: arg30,
-                        )
-
-                else:
-
-                    @herd(
-                        name="herd_0",
-                        sizes=[c_num_q_tiles, c_num_cascade],
-                        operands=final_operands,
-                        link_with="attn.o",
-                    )
-                    def herd_body_final(
-                        arg22, arg23, arg24, arg25, arg26, arg27, arg28, arg29
-                    ):
-                        _build_final_herd_body(
-                            arg22,
-                            arg23,
-                            arg26,
-                            arg27,
-                            arg28,
-                            arg29,
-                            get_gp_cascade=lambda: AllocOp(
-                                memref_lqp_dv_l1, [], []
-                            ).result,
-                        )
 
                 # Parallel gather results from L1 to L2
                 affine_map_tileq_seg = AffineMap.get(
