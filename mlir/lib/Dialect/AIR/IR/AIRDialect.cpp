@@ -2083,8 +2083,7 @@ static LogicalResult EraseSelfCopyDma(air::DmaMemcpyNdOp op,
 
   if (auto token = op.getAsyncToken()) {
     auto waitAll = air::WaitAllOp::create(
-        rewriter, op.getLoc(),
-        air::AsyncTokenType::get(op->getContext()),
+        rewriter, op.getLoc(), air::AsyncTokenType::get(op->getContext()),
         op.getAsyncDependencies());
     token.replaceAllUsesWith(waitAll.getAsyncToken());
   }

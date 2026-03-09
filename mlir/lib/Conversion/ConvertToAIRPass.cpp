@@ -166,7 +166,7 @@ static bool isSelfCopy(memref::CopyOp op) {
 
   if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
     srcStaticOffsets.append(subview.getStaticOffsets().begin(),
-                           subview.getStaticOffsets().end());
+                            subview.getStaticOffsets().end());
     srcStaticSizes.append(subview.getStaticSizes().begin(),
                           subview.getStaticSizes().end());
     srcStaticStrides.append(subview.getStaticStrides().begin(),
@@ -176,7 +176,7 @@ static bool isSelfCopy(memref::CopyOp op) {
 
   if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
     dstStaticOffsets.append(subview.getStaticOffsets().begin(),
-                           subview.getStaticOffsets().end());
+                            subview.getStaticOffsets().end());
     dstStaticSizes.append(subview.getStaticSizes().begin(),
                           subview.getStaticSizes().end());
     dstStaticStrides.append(subview.getStaticStrides().begin(),
