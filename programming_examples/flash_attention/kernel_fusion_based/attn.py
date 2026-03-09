@@ -29,6 +29,7 @@ def build_module(
     num_cascade_stages=4,
     num_heads=12,
     num_kv_heads=None,
+    causal=False,
 ):
     """Build the attention module using Python bindings
 
@@ -43,6 +44,7 @@ def build_module(
         num_cascade_stages: Number of cascade pipeline stages (default: 4)
         num_heads: Number of Q attention heads (default: 12)
         num_kv_heads: Number of K/V heads (default: num_heads for MHA, < num_heads for GQA)
+        causal: Enable causal masking (default: False)
     """
     if num_kv_heads is None:
         num_kv_heads = num_heads  # MHA: every Q head has its own KV head
@@ -57,6 +59,12 @@ def build_module(
         lk % (lkp * num_cascade_stages) == 0
     ), f"lk ({lk}) must be divisible by lkp * num_cascade_stages ({lkp * num_cascade_stages})"
     enable_shared_buffers = lkp == dk
+    if causal:
+        assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
+        tile_size_q = lqp // num_q_tiles
+        assert tile_size_q == lkp, (
+            f"Causal masking requires tile_size_q == lkp, got {tile_size_q} vs {lkp}"
+        )
     assert (
         num_heads % 2 == 0
     ), f"num_heads ({num_heads}) must be divisible by 2 (segment unroll constraint)"
@@ -171,6 +179,12 @@ def build_module(
         link_with="attn.o",
     )
     external_func("add_gp_g", [memref_lqp_dv_l1, memref_lqp_dv_l1], link_with="attn.o")
+    if causal:
+        external_func(
+            "apply_causal_mask",
+            [memref_lqp_lkp_l1, i32, i32],
+            link_with="attn.o",
+        )
 
     # Channel declarations - use num_heads_per_unroll (2) for segment unroll
     Channel("L3ToL2Chan1", size=[num_heads_per_unroll, num_cascade_stages])
@@ -408,6 +422,12 @@ def build_module(
                     sizes=[chunks_per_stage, lkp, dv],
                     strides=[lkp * dv, dv, 1],
                 )
+
+            # Compute q_block_base for causal masking (launch level)
+            if causal:
+                q_block_base = arith.MulIOp(
+                    arg5, ConstantOp(index_type, num_q_tiles)
+                ).result
 
             # Segment unrolls over 2 heads (hardware constraint)
             c_num_heads_unroll = ConstantOp(index_type, num_heads_per_unroll)
@@ -669,6 +689,8 @@ def build_module(
                         ]
                     else:
                         compute_operands = [alloc_6, up, sp, Gp]
+                    if causal:
+                        compute_operands += [arg21, q_block_base]
 
                     if enable_shared_buffers:
 
@@ -689,6 +711,7 @@ def build_module(
                             arg29,
                             arg30,
                             arg31,
+                            *causal_args,
                         ):
                             u_l1 = AllocOp(memref_lqp_l1, [], [])
                             s_l1 = AllocOp(memref_lqp_l1, [], [])
@@ -703,6 +726,16 @@ def build_module(
                             CallOp([], "zero_fill_g_bf16", [G_l1])
                             ChannelGet("L2ToL1Chan2", arg31, indices=[arg22, arg23])
                             CallOp([], "matmul_a_b_bf16", [arg26, arg31, G_l1])
+
+                            if causal:
+                                # Compute global block indices from herd operands
+                                kv_chunk_arg, q_base_arg = causal_args[0], causal_args[1]
+                                c_cps = ConstantOp(index_type, chunks_per_stage)
+                                kv_block = arith.AddIOp(arith.MulIOp(arg23, c_cps).result, kv_chunk_arg)
+                                q_block = arith.AddIOp(q_base_arg, arg22)
+                                kv_i32 = arith.IndexCastOp(i32, kv_block.result)
+                                q_i32 = arith.IndexCastOp(i32, q_block.result)
+                                CallOp([], "apply_causal_mask", [G_l1, q_i32, kv_i32])
 
                             c0_i32 = ConstantOp(i32, 0)
                             CallOp([], "max_g_bf16", [G_l1, u_l1.result])
@@ -763,6 +796,7 @@ def build_module(
                             arg27,
                             arg28,
                             arg29,
+                            *causal_args,
                         ):
                             u_l1 = AllocOp(memref_lqp_l1, [], [])
                             s_l1 = AllocOp(memref_lqp_l1, [], [])
@@ -787,6 +821,15 @@ def build_module(
                                 "matmul_a_b_bf16",
                                 [arg26, QK_alloc.result, G_l1],
                             )
+
+                            if causal:
+                                kv_chunk_arg, q_base_arg = causal_args[0], causal_args[1]
+                                c_cps = ConstantOp(index_type, chunks_per_stage)
+                                kv_block = arith.AddIOp(arith.MulIOp(arg23, c_cps).result, kv_chunk_arg)
+                                q_block = arith.AddIOp(q_base_arg, arg22)
+                                kv_i32 = arith.IndexCastOp(i32, kv_block.result)
+                                q_i32 = arith.IndexCastOp(i32, q_block.result)
+                                CallOp([], "apply_causal_mask", [G_l1, q_i32, kv_i32])
 
                             c0_i32 = ConstantOp(i32, 0)
                             CallOp([], "max_g_bf16", [G_l1, u_l1.result])
@@ -1214,9 +1257,15 @@ if __name__ == "__main__":
         choices=["run", "compile"],
         help="Compilation mode: run (default, compile + test), compile (generate binary only)",
     )
+    parser.add_argument(
+        "--causal",
+        action="store_true",
+        help="Enable causal masking (autoregressive attention)",
+    )
     args = parser.parse_args()
 
     lk, lkp, lq, lqp, dk, dv = args.lk, args.lkp, args.lq, args.lqp, args.dk, args.dv
+    causal = args.causal
     num_heads = args.num_heads
     num_kv_heads = args.num_kv_heads if args.num_kv_heads is not None else num_heads
 
@@ -1249,6 +1298,7 @@ if __name__ == "__main__":
             num_cascade_stages=4,
             num_heads=num_heads,
             num_kv_heads=num_kv_heads,
+            causal=causal,
         )
 
     if args.print_module_only:
@@ -1294,6 +1344,12 @@ if __name__ == "__main__":
             G = mask_h[:, j * lkp : (j + 1) * lkp]
             B = input_k[kv_h, j * lkp : (j + 1) * lkp, :].T
             G = A @ B + G
+            if causal:
+                # Apply causal mask: mask positions where kv_col > q_row
+                for qi in range(lq):
+                    for ki in range(lkp):
+                        if j * lkp + ki > qi:
+                            G[qi, ki] = -np.inf
             G = G.astype(VM_ACC_DATATYPE)
             u = np.max(G, axis=-1, keepdims=True).astype(VM_ACC_DATATYPE)
             u = np.maximum(u, up)

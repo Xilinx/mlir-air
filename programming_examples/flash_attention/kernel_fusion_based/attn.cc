@@ -571,4 +571,54 @@ void add_gp_g(bfloat16 *gp, bfloat16 *g) {
   }
 }
 
+// Apply causal mask to QK scores in-place. Sets elements where
+// global_kv_col > global_q_row to -inf in the tiled G buffer.
+// G is in column-major 8×8 tiled layout: block(col_blk, row_blk) at
+// offset col_blk * (lqp * 8) + row_blk * 64, element within block at
+// row_in_blk * 8 + col_in_blk.
+void apply_causal_mask(bfloat16 *g, int32_t q_block_idx,
+                       int32_t kv_block_idx) {
+  uint16_t neg_inf_u16 = (uint16_t)0xff80;
+  bfloat16 neg_inf_val = *(bfloat16 *)&neg_inf_u16;
+
+  // 1. Block above diagonal: all masked → fill with -inf
+  if (kv_block_idx > q_block_idx) {
+    constexpr int VecLen = 32;
+    aie::vector<bfloat16, VecLen> neg_inf_vec =
+        aie::broadcast<bfloat16, VecLen>(neg_inf_val);
+    bfloat16 *p = g;
+    for (int i = 0; i < lqp * lkp; i += VecLen) {
+      aie::store_v(p, neg_inf_vec);
+      p += VecLen;
+    }
+    return;
+  }
+
+  // 2. Block below diagonal: no masking needed
+  if (kv_block_idx < q_block_idx) {
+    return;
+  }
+
+  // 3. Diagonal block (kv_block_idx == q_block_idx):
+  //    Mask upper triangle where col > row (in local block coords,
+  //    assuming tile_size_q == lkp so global offsets cancel).
+  //    For row r, mask cols c where c > r.
+  constexpr int BlkDim = 8;
+  for (int row = 0; row < lqp; row++) {
+    int mask_start = row + 1;
+    if (mask_start >= lkp)
+      continue;
+    int row_blk = row / BlkDim;
+    int row_in = row % BlkDim;
+    // Scalar loop for correctness — can vectorize later
+    for (int col = mask_start; col < lkp; col++) {
+      int col_blk = col / BlkDim;
+      int col_in = col % BlkDim;
+      int offset =
+          col_blk * (lqp * BlkDim) + row_blk * (BlkDim * BlkDim) + row_in * BlkDim + col_in;
+      g[offset] = neg_inf_val;
+    }
+  }
+}
+
 } // extern "C"
