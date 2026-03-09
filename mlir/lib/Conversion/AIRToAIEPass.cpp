@@ -3490,6 +3490,8 @@ public:
     std::map<int, SmallVector<air::ChannelInterface>> chanOpPartitions;
     std::vector<int> keys;
     for (auto op : puts) {
+      if (op.getOffsets().empty())
+        return; // Default access pattern (full memref), cannot partition.
       int firstOffset = *getConstantIntValue(op.getOffsets().front());
       push_back_if_unique<int>(keys, firstOffset);
       if (!chanOpPartitions.count(firstOffset))
@@ -3498,6 +3500,8 @@ public:
         chanOpPartitions[firstOffset].push_back(op);
     }
     for (auto op : gets) {
+      if (op.getOffsets().empty())
+        return; // Default access pattern (full memref), cannot partition.
       int firstOffset = *getConstantIntValue(op.getOffsets().front());
       push_back_if_unique<int>(keys, firstOffset);
       if (!chanOpPartitions.count(firstOffset))
