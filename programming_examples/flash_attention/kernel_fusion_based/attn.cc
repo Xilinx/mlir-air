@@ -193,22 +193,22 @@ void matmul_g_b_bf16(bfloat16 *g_in, bfloat16 *b_in, bfloat16 *out) {
 
 void zero_fill_gp_bf16(bfloat16 *c_out) {
   // Buffer shape: [lqp, dv] = [32, 64]
-  zero_vectorized<bfloat16, lqp, dv, 16>(c_out);
+  zero_vectorized<bfloat16, lqp, dv, 32>(c_out);
 }
 
 void zero_fill_sp_bf16(bfloat16 *c_out) {
   // Buffer shape: [lqp, 1] = [32, 1]
-  zero_vectorized<bfloat16, lqp, 1, 16>(c_out);
+  zero_vectorized<bfloat16, lqp, 1, 32>(c_out);
 }
 
 void zero_fill_g_bf16(bfloat16 *c_out) {
   // Buffer shape: [lqp, lkp] = [32, 96]
-  zero_vectorized<bfloat16, lqp, lkp, 16>(c_out);
+  zero_vectorized<bfloat16, lqp, lkp, 32>(c_out);
 }
 
 void neg_inf_fill_up_bf16(bfloat16 *c_out) {
   // Buffer shape: [lqp, 1] = [32, 1]
-  neg_inf_vectorized<bfloat16, lqp, 1, 16>(c_out);
+  neg_inf_vectorized<bfloat16, lqp, 1, 32>(c_out);
 }
 
 void max_g_bf16(bfloat16 *in, bfloat16 *out) {
@@ -283,6 +283,9 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
   constexpr int row_blocks = lqp / RowsPerBlock;
   constexpr int block_stride = lqp * ColsPerBlock;
 
+  aie::vector<bfloat16, 16> log2e_vec16 =
+      aie::broadcast<bfloat16, 16>((bfloat16)log2e);
+
   for (int rb = 0; rb < row_blocks; rb++) {
     for (int half = 0; half < 2; half++) {
       // Build 32-wide u vector: 4 rows × 8 cols, each row broadcast
@@ -307,11 +310,9 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
           aie::vector<bfloat16, 16> lo = v.extract<16>(0);
           aie::vector<bfloat16, 16> hi = v.extract<16>(1);
           lo = aie::exp2<bfloat16>(
-              aie::mul(lo, aie::broadcast<bfloat16, 16>((bfloat16)log2e))
-                  .to_vector<float>());
+              aie::mul(lo, log2e_vec16).to_vector<float>());
           hi = aie::exp2<bfloat16>(
-              aie::mul(hi, aie::broadcast<bfloat16, 16>((bfloat16)log2e))
-                  .to_vector<float>());
+              aie::mul(hi, log2e_vec16).to_vector<float>());
           v.insert(0, lo);
           v.insert(1, hi);
           aie::store_v(g + off, v);
