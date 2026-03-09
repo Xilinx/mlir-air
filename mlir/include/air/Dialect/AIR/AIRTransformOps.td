@@ -1423,4 +1423,49 @@ def FoldUnitExtentDimsOp : Op<Transform_Dialect, "air.fold_unit_extent_dims",
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }
 
+def OverrideMemRefMemorySpaceOp : Op<Transform_Dialect, "air.override_memref_memory_space",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Override memref memory spaces within a target operation scope";
+  let description = [{
+    Overrides the memory space of all `memref.alloc` operations within the target
+    operation to the specified `memory_space` value. The scope is inferred from
+    the target operation type:
+
+    - `air.herd` -> overrides allocs inside the herd (L1)
+    - `air.segment` -> overrides allocs inside the segment but NOT inside herds (L2)
+    - `air.launch` -> overrides allocs inside the launch but NOT inside segments/herds
+    - `func.func` -> overrides allocs inside the function but NOT inside launch/segment/herds
+
+    This exclusive scoping allows assigning different memory spaces at different
+    hierarchy levels by invoking the op multiple times with different targets.
+
+    After overriding alloc types, the op also:
+    1. Propagates updated types through AIR hierarchy block arguments
+    2. Corrects memory spaces of view-like operations (subview, reinterpret_cast, etc.)
+
+    This is the transform dialect equivalent of the `air-override-memref-memory-space` pass.
+
+    Example:
+    ```mlir
+    // Override herd allocs to L1 (memory_space 2)
+    %herd = transform.structured.match ops{["air.herd"]} in %arg1
+      : (!transform.any_op) -> !transform.any_op
+    transform.air.override_memref_memory_space %herd {memory_space = 2}
+      : (!transform.any_op) -> !transform.any_op
+
+    // Override func-level allocs to L2 (memory_space 1), excluding herds
+    %func = transform.structured.match ops{["func.func"]} in %arg1
+      : (!transform.any_op) -> !transform.any_op
+    transform.air.override_memref_memory_space %func {memory_space = 1}
+      : (!transform.any_op) -> !transform.any_op
+    ```
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   I32Attr:$memory_space);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
 #endif // AIR_TRANSFORM_OPS

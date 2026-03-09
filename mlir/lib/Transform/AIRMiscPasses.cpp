@@ -14,6 +14,7 @@
 
 #include "air/Transform/AIRMiscPasses.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRTilingUtils.h"
@@ -2874,6 +2875,92 @@ void AIROverrideMemRefMemorySpacePass::runOnOperation() {
 }
 
 } // namespace xilinx
+
+//===----------------------------------------------------------------------===//
+// OverrideMemRefMemorySpaceOp (transform dialect op)
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::OverrideMemRefMemorySpaceOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  int memSpace = getMemorySpace();
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    // Infer scope from target op type.
+    StringRef scope;
+    if (isa<xilinx::air::HerdOp>(target))
+      scope = "herd";
+    else if (isa<xilinx::air::SegmentOp>(target))
+      scope = "segment";
+    else if (isa<xilinx::air::LaunchOp>(target))
+      scope = "launch";
+    else if (isa<func::FuncOp>(target))
+      scope = "func";
+    else
+      return emitDefiniteFailure()
+             << "target must be one of: air.herd, air.segment, air.launch, "
+                "func.func; got "
+             << target->getName();
+
+    MLIRContext *ctx = target->getContext();
+
+    // Step 1: Override alloc memory spaces within the target scope.
+    RewritePatternSet patterns(ctx);
+    patterns.add<xilinx::OverrideMemorySpacePattern>(ctx, scope, memSpace);
+    (void)applyPatternsGreedily(target, std::move(patterns));
+
+    // Step 2: Propagate updated types through AIR hierarchy block arguments.
+    auto updateBlockArgTypes = [](auto hierarchyOp) {
+      auto kernelOperands = hierarchyOp.getKernelOperands();
+      auto kernelArgs = hierarchyOp.getKernelArguments();
+      for (unsigned i = 0; i < kernelArgs.size(); i++) {
+        if (kernelArgs[i].getType() != kernelOperands[i].getType()) {
+          auto &block = hierarchyOp.getBody().front();
+          block.getArgument(kernelArgs[i].getArgNumber())
+              .setType(kernelOperands[i].getType());
+        }
+      }
+    };
+    target->walk([&](xilinx::air::LaunchOp op) { updateBlockArgTypes(op); });
+    target->walk([&](xilinx::air::SegmentOp op) { updateBlockArgTypes(op); });
+    target->walk([&](xilinx::air::HerdOp op) { updateBlockArgTypes(op); });
+
+    // Step 3: Fix view-like op result types to match source memory spaces.
+    // Walk the target directly rather than using the pattern-based approach,
+    // since applyPatternsGreedily on a target doesn't match the target itself.
+    target->walk([&](ViewLikeOpInterface viewLike) {
+      auto srcTy =
+          dyn_cast_if_present<MemRefType>(viewLike.getViewSource().getType());
+      if (!srcTy)
+        return;
+      for (auto res : viewLike->getResults()) {
+        auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
+        if (!destTy)
+          continue;
+        if (srcTy.getMemorySpaceAsInt() == destTy.getMemorySpaceAsInt())
+          continue;
+        MemRefType::Builder builder(destTy);
+        builder.setMemorySpace(srcTy.getMemorySpace());
+        res.setType(MemRefType(builder));
+      }
+    });
+
+    transformedOps.push_back(target);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
 
 namespace xilinx {
 namespace air {
