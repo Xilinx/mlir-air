@@ -356,8 +356,10 @@ def build_module(
                 scf.InParallelOp()
 
             # L3 to L2 channel puts for K matrix - both heads in group
+            # K is stored as [num_kv_heads, dk, lk] (column-major). Each cascade
+            # stage gets a contiguous block of chunks_per_stage * lkp columns.
             for i in range(num_cascade_stages):
-                col_off = ConstantOp(index_type, i * lkp)
+                col_off = ConstantOp(index_type, i * chunks_per_stage * lkp)
                 # Head 0 in group (use KV head index for K)
                 k_head0_off = affine_apply(affine_map_head_col, [kv_head_base, col_off])
                 ChannelPut(
@@ -366,7 +368,7 @@ def build_module(
                     indices=[c0, i],
                     offsets=[0, 0, k_head0_off],
                     sizes=[chunks_per_stage, dk, lkp],
-                    strides=[lkp * num_cascade_stages, lk, 1],
+                    strides=[lkp, lk, 1],
                 )
                 # Head 1 in group (use KV head index for K)
                 k_head1_off = affine_apply(affine_map_head_col, [kv_head_1, col_off])
@@ -376,10 +378,12 @@ def build_module(
                     indices=[c1, i],
                     offsets=[0, 0, k_head1_off],
                     sizes=[chunks_per_stage, dk, lkp],
-                    strides=[lkp * num_cascade_stages, lk, 1],
+                    strides=[lkp, lk, 1],
                 )
 
             # L3 to L2 channel puts for V matrix - both heads in group
+            # V is stored as [num_kv_heads, lk, dv]. Each cascade stage gets a
+            # contiguous block of chunks_per_stage * lkp rows (no interleaving).
             for i in range(num_cascade_stages):
                 # Head 0 in group (use KV head index for V)
                 v_head0_off = affine_apply(affine_map_v_head_offset, [kv_head_base])
@@ -387,9 +391,9 @@ def build_module(
                     "L3ToL2Chan2",
                     arg11,
                     indices=[c0, i],
-                    offsets=[0, i * lkp, v_head0_off],
+                    offsets=[0, i * chunks_per_stage * lkp, v_head0_off],
                     sizes=[chunks_per_stage, lkp, dv],
-                    strides=[lkp * num_cascade_stages * dv, dv, 1],
+                    strides=[lkp * dv, dv, 1],
                 )
                 # Head 1 in group (use KV head index for V)
                 v_head1_off = affine_apply(affine_map_v_head_offset, [kv_head_1])
@@ -397,9 +401,9 @@ def build_module(
                     "L3ToL2Chan2",
                     arg11,
                     indices=[c1, i],
-                    offsets=[0, i * lkp, v_head1_off],
+                    offsets=[0, i * chunks_per_stage * lkp, v_head1_off],
                     sizes=[chunks_per_stage, lkp, dv],
-                    strides=[lkp * num_cascade_stages * dv, dv, 1],
+                    strides=[lkp * dv, dv, 1],
                 )
 
             # Segment unrolls over 2 heads (hardware constraint)
@@ -580,6 +584,7 @@ def build_module(
                     )
 
                     # Channel puts for K matrix to L1
+                    # L2 K buffer is [dk, lkp] (shim DMA transposes from L3 [lk, dk]).
                     ChannelPut(
                         "L2ToL1Chan2",
                         alloc_2.result,
@@ -1275,12 +1280,12 @@ if __name__ == "__main__":
     chunks_per_stage_ref = num_chunks_ref // num_cascade_stages_ref
 
     def flash_attn_per_stage(A, kv_h, stage, mask_h):
-        """Run flash attention on interleaved K chunks for one cascade stage."""
+        """Run flash attention on contiguous K chunks for one cascade stage."""
         Gp = np.zeros((lq, dv), dtype=VM_ACC_DATATYPE)
         up = np.full((lq, 1), -np.inf, dtype=VM_ACC_DATATYPE)
         sp = np.zeros((lq, 1), dtype=VM_ACC_DATATYPE)
         for ci in range(chunks_per_stage_ref):
-            j = stage + ci * num_cascade_stages_ref
+            j = stage * chunks_per_stage_ref + ci
             G = mask_h[:, j * lkp : (j + 1) * lkp]
             B = input_k[kv_h, :, j * lkp : (j + 1) * lkp]
             G = A @ B + G
