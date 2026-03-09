@@ -274,7 +274,8 @@ void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
 void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
   // G = exp(G - u) in-place. G is column-major 8×8 tiled.
   // VecLen=32 processes 4 rows at once (half a block).
-  // exp2 native width is 16, so split 32→2×16 for exp.
+  // exp2 native width is 16, so split 30→2×16 for exp.
+  // Handles -inf - (-inf) = NaN by clamping: if G=-inf, result is 0.
   constexpr int VecLen = 32;
   constexpr int BlockSize = 64;
   constexpr int ColsPerBlock = 8;
@@ -283,8 +284,12 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
   constexpr int row_blocks = lqp / RowsPerBlock;
   constexpr int block_stride = lqp * ColsPerBlock;
 
+  uint16_t neg_inf_u16 = (uint16_t)0xff80;
+  bfloat16 neg_inf_val = *(bfloat16 *)&neg_inf_u16;
   aie::vector<bfloat16, 16> log2e_vec16 =
       aie::broadcast<bfloat16, 16>((bfloat16)log2e);
+  aie::vector<bfloat16, VecLen> neg_inf_vec =
+      aie::broadcast<bfloat16, VecLen>(neg_inf_val);
 
   for (int rb = 0; rb < row_blocks; rb++) {
     for (int half = 0; half < 2; half++) {
@@ -306,6 +311,9 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
           int off = base + cb * block_stride;
           aie::vector<bfloat16, VecLen> v = aie::load_v<VecLen>(g + off);
           v = aie::sub(v, u_vec);
+          // Clamp NaN from -inf - (-inf) to -inf using max(-inf, v).
+          // NaN compared with -inf gives -inf in max (IEEE 754 on AIE).
+          v = aie::max(v, neg_inf_vec);
           // exp2(log2e * v) — split into 2×16 for native exp2 width
           aie::vector<bfloat16, 16> lo = v.extract<16>(0);
           aie::vector<bfloat16, 16> hi = v.extract<16>(1);
@@ -323,8 +331,13 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
 
 void exp_up_minus_u(bfloat16 *up, bfloat16 *u, bfloat16 *r) {
   // r = exp(up - u) — VecLen=16 to match exp2 native width
+  // Handles -inf - (-inf) = NaN: if up=-inf, result is 0 (=exp(-inf)).
   constexpr int VecLen = 16;
   constexpr int num_elems = lqp;
+  uint16_t neg_inf_u16 = (uint16_t)0xff80;
+  bfloat16 neg_inf_val = *(bfloat16 *)&neg_inf_u16;
+  aie::vector<bfloat16, VecLen> neg_inf_vec =
+      aie::broadcast<bfloat16, VecLen>(neg_inf_val);
   bfloat16 *__restrict pr = r;
   bfloat16 *__restrict pu = u;
   bfloat16 *__restrict pup = up;
@@ -334,6 +347,8 @@ void exp_up_minus_u(bfloat16 *up, bfloat16 *u, bfloat16 *r) {
     aie::vector<bfloat16, VecLen> uTemp = aie::load_v<VecLen>(pu);
     aie::vector<bfloat16, VecLen> upTemp = aie::load_v<VecLen>(pup);
     aie::vector<bfloat16, VecLen> diff = aie::sub(upTemp, uTemp);
+    // Clamp NaN from -inf - (-inf) to -inf
+    diff = aie::max(diff, neg_inf_vec);
     aie::vector<bfloat16, VecLen> exp_val =
         aie::exp2<bfloat16>(aie::mul(diff, log2e_vec).to_vector<float>());
     aie::store_v(pr, exp_val);
