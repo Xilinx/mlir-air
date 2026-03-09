@@ -33,15 +33,25 @@ module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
 
         //===================================================================
+        // PHASE 0: Override Memory Spaces
+        //===================================================================
+        // PURPOSE: Ensure any allocs created by prior bufferization passes
+        // (e.g., air-resolve-tensor-opoperand-conflicts) have the correct
+        // memory space. Func-level allocs get L2 (memory_space 1).
+        %func_ms = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func_ms_updated = transform.air.override_memref_memory_space %func_ms {memory_space = 1 : i32}
+          : (!transform.any_op) -> !transform.any_op
+
+        //===================================================================
         // PHASE 1: Initial Canonicalization and Cleanup
         //===================================================================
         // PURPOSE: Prepare the IR for subsequent transformations by applying
         // standard optimization patterns that simplify operations and remove
         // redundancies. This creates a clean foundation for tiling and fusion.
-        
+
         // Match the function containing all softmax operations
         %func0 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
-        
+
         // Apply comprehensive canonicalization patterns:
         transform.apply_patterns to %func0 {
             // Simplify tiling-related patterns (e.g., empty tensor operations)

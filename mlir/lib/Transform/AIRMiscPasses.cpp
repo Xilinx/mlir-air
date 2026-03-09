@@ -2920,16 +2920,28 @@ DiagnosedSilenceableFailure transform::OverrideMemRefMemorySpaceOp::apply(
     (void)applyPatternsGreedily(target, std::move(patterns));
 
     // Step 2: Propagate updated types through AIR hierarchy block arguments.
-    auto updateBlockArgTypes = [](auto hierarchyOp) {
+    // Use rewriter.modifyOpInPlace so transform state tracking is notified.
+    auto updateBlockArgTypes = [&rewriter](auto hierarchyOp) {
       auto kernelOperands = hierarchyOp.getKernelOperands();
       auto kernelArgs = hierarchyOp.getKernelArguments();
+      bool needsUpdate = false;
       for (unsigned i = 0; i < kernelArgs.size(); i++) {
         if (kernelArgs[i].getType() != kernelOperands[i].getType()) {
-          auto &block = hierarchyOp.getBody().front();
-          block.getArgument(kernelArgs[i].getArgNumber())
-              .setType(kernelOperands[i].getType());
+          needsUpdate = true;
+          break;
         }
       }
+      if (!needsUpdate)
+        return;
+      rewriter.modifyOpInPlace(hierarchyOp, [&]() {
+        for (unsigned i = 0; i < kernelArgs.size(); i++) {
+          if (kernelArgs[i].getType() != kernelOperands[i].getType()) {
+            auto &block = hierarchyOp.getBody().front();
+            block.getArgument(kernelArgs[i].getArgNumber())
+                .setType(kernelOperands[i].getType());
+          }
+        }
+      });
     };
     target->walk([&](xilinx::air::LaunchOp op) { updateBlockArgTypes(op); });
     target->walk([&](xilinx::air::SegmentOp op) { updateBlockArgTypes(op); });
@@ -2938,21 +2950,36 @@ DiagnosedSilenceableFailure transform::OverrideMemRefMemorySpaceOp::apply(
     // Step 3: Fix view-like op result types to match source memory spaces.
     // Walk the target directly rather than using the pattern-based approach,
     // since applyPatternsGreedily on a target doesn't match the target itself.
+    // Use rewriter.modifyOpInPlace for proper transform state notification.
     target->walk([&](ViewLikeOpInterface viewLike) {
       auto srcTy =
           dyn_cast_if_present<MemRefType>(viewLike.getViewSource().getType());
       if (!srcTy)
         return;
+      bool needsUpdate = false;
       for (auto res : viewLike->getResults()) {
         auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
         if (!destTy)
           continue;
-        if (srcTy.getMemorySpaceAsInt() == destTy.getMemorySpaceAsInt())
-          continue;
-        MemRefType::Builder builder(destTy);
-        builder.setMemorySpace(srcTy.getMemorySpace());
-        res.setType(MemRefType(builder));
+        if (srcTy.getMemorySpaceAsInt() != destTy.getMemorySpaceAsInt()) {
+          needsUpdate = true;
+          break;
+        }
       }
+      if (!needsUpdate)
+        return;
+      rewriter.modifyOpInPlace(viewLike, [&]() {
+        for (auto res : viewLike->getResults()) {
+          auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
+          if (!destTy)
+            continue;
+          if (srcTy.getMemorySpaceAsInt() == destTy.getMemorySpaceAsInt())
+            continue;
+          MemRefType::Builder builder(destTy);
+          builder.setMemorySpace(srcTy.getMemorySpace());
+          res.setType(MemRefType(builder));
+        }
+      });
     });
 
     transformedOps.push_back(target);
