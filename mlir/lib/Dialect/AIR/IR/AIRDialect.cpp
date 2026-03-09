@@ -2069,8 +2069,31 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
   return success();
 }
 
+// Erase self-copy DMAs where src and dst are the same buffer with identical
+// offsets/sizes/strides. If the DMA produces an async token, replace it with a
+// wait_all to preserve the dependency chain.
+static LogicalResult EraseSelfCopyDma(air::DmaMemcpyNdOp op,
+                                      PatternRewriter &rewriter) {
+  if (op.getSrcMemref() != op.getDstMemref())
+    return failure();
+  if (op.getSrcOffsets() != op.getDstOffsets() ||
+      op.getSrcSizes() != op.getDstSizes() ||
+      op.getSrcStrides() != op.getDstStrides())
+    return failure();
+
+  if (auto token = op.getAsyncToken()) {
+    auto waitAll = air::WaitAllOp::create(
+        rewriter, op.getLoc(), air::AsyncTokenType::get(op->getContext()),
+        op.getAsyncDependencies());
+    token.replaceAllUsesWith(waitAll.getAsyncToken());
+  }
+  rewriter.eraseOp(op);
+  return success();
+}
+
 void air::DmaMemcpyNdOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *context) {
+  patterns.add(EraseSelfCopyDma);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdSrc);
   patterns.add(ComposeMemrefOpOnDmaMemcpyNdDst);
   patterns.add(CanonicalizeAsyncOpDeps<air::DmaMemcpyNdOp>);

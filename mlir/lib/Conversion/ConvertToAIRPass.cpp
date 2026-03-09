@@ -148,6 +148,47 @@ static void extractOperandsFromReinterpretCast(
                    arith::ConstantIndexOp::create(builder, loc, 0));
 }
 
+// Detect self-copies that would produce invalid self-DMAs. After unwrapping
+// subview ops, check if src and dst resolve to the same base buffer with
+// identical offsets/sizes/strides (including dynamic operands). This can happen
+// when structured.pad with copy_back_op creates a redundant copy-back.
+static bool isSelfCopy(memref::CopyOp op) {
+  Value src = op.getSource();
+  Value dst = op.getTarget();
+
+  // Quick check: same SSA value means trivially a self-copy.
+  if (src == dst)
+    return true;
+
+  // Unwrap subviews to find base buffers and access parameters.
+  // Uses getMixedOffsets/Sizes/Strides to correctly handle both static and
+  // dynamic operands (avoids false positives from dynamic sentinel values).
+  SmallVector<OpFoldResult> srcOffsets, srcSizes, srcStrides;
+  SmallVector<OpFoldResult> dstOffsets, dstSizes, dstStrides;
+
+  if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
+    srcOffsets = subview.getMixedOffsets();
+    srcSizes = subview.getMixedSizes();
+    srcStrides = subview.getMixedStrides();
+    src = subview.getSource();
+  }
+
+  if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
+    dstOffsets = subview.getMixedOffsets();
+    dstSizes = subview.getMixedSizes();
+    dstStrides = subview.getMixedStrides();
+    dst = subview.getSource();
+  }
+
+  // Different base buffers means not a self-copy.
+  if (src != dst)
+    return false;
+
+  // Same base buffer: self-copy if no subviews or identical parameters.
+  return srcOffsets == dstOffsets && srcSizes == dstSizes &&
+         srcStrides == dstStrides;
+}
+
 static FailureOr<air::DmaMemcpyNdOp>
 matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   auto loc = op.getLoc();
@@ -248,6 +289,10 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
   using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(memref::CopyOp op,
                                 PatternRewriter &rewriter) const override {
+    if (isSelfCopy(op)) {
+      rewriter.eraseOp(op);
+      return success();
+    }
     if (failed(matchAndRewriteCopyOp(op, rewriter)))
       return failure();
     return success();
@@ -2144,6 +2189,10 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
                                    memref::CopyOp op,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
+  if (xilinx::air::isSelfCopy(op)) {
+    rewriter.eraseOp(op);
+    return DiagnosedSilenceableFailure::success();
+  }
   auto res = xilinx::air::matchAndRewriteCopyOp(op, rewriter);
   if (failed(res))
     return emitDefaultDefiniteFailure(op);
