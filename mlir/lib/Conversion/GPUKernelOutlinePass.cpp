@@ -45,7 +45,8 @@ class AffineApplyToSubPattern
     for (unsigned j = 0; j < affineOp.getNumOperands(); ++j) {
       mlir::Value nestedOperand = affineOp.getOperand(j);
 
-      if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(nestedOperand)) {
+      if (auto blockArg =
+              mlir::dyn_cast_if_present<mlir::BlockArgument>(nestedOperand)) {
         mlir::Block *parentBlock = blockArg.getOwner();
 
         mlir::Operation *parentOp = parentBlock->getParentOp();
@@ -73,32 +74,40 @@ class SCFForToSubPattern : public mlir::OpRewritePattern<scf::ForOp> {
 
     mlir::Block &entryBlock = region.front();
     for (mlir::Operation &nestedOp : entryBlock.getOperations()) {
-      if (auto storeOp = llvm::dyn_cast<mlir::memref::StoreOp>(nestedOp)) {
+      if (auto storeOp =
+              llvm::dyn_cast_if_present<mlir::memref::StoreOp>(nestedOp)) {
         mlir::Value memref = storeOp.getMemRef();
         llvm::SmallVector<mlir::Value> indices(storeOp.getIndices().begin(),
                                                storeOp.getIndices().end());
 
-        if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(memref)) {
+        if (auto blockArg =
+                mlir::dyn_cast_if_present<mlir::BlockArgument>(memref)) {
           mlir::Block *parentBlock = blockArg.getOwner();
           mlir::Operation *parentOp = parentBlock->getParentOp();
           Type operandType = memref.getType();
-          if (auto memRefType = mlir::dyn_cast<MemRefType>(operandType)) {
+          if (auto memRefType =
+                  mlir::dyn_cast_if_present<MemRefType>(operandType)) {
             unsigned argNumber = blockArg.getArgNumber();
-            if (auto segmentOp = mlir::dyn_cast<air::SegmentOp>(parentOp)) {
-              if (auto memRefType = mlir::dyn_cast<MemRefType>(operandType)) {
+            if (auto segmentOp =
+                    mlir::dyn_cast_if_present<air::SegmentOp>(parentOp)) {
+              if (auto memRefType =
+                      mlir::dyn_cast_if_present<MemRefType>(operandType)) {
                 mlir::Value correspondingValue = segmentOp.getKernelOperand(
                     argNumber); // Map back to the original value
                 storeOp->setOperand(1, correspondingValue);
               }
-            } else if (auto herdOp = mlir::dyn_cast<air::HerdOp>(parentOp)) {
-              if (auto memRefType = mlir::dyn_cast<MemRefType>(operandType)) {
+            } else if (auto herdOp =
+                           mlir::dyn_cast_if_present<air::HerdOp>(parentOp)) {
+              if (auto memRefType =
+                      mlir::dyn_cast_if_present<MemRefType>(operandType)) {
                 mlir::Value correspondingValue =
                     herdOp.getKernelOperand(argNumber - 4);
                 storeOp->setOperand(1, correspondingValue);
               }
             } else if (auto launchOp =
-                           mlir::dyn_cast<air::LaunchOp>(parentOp)) {
-              if (auto memRefType = mlir::dyn_cast<MemRefType>(operandType)) {
+                           mlir::dyn_cast_if_present<air::LaunchOp>(parentOp)) {
+              if (auto memRefType =
+                      mlir::dyn_cast_if_present<MemRefType>(operandType)) {
                 mlir::Value correspondingValue =
                     launchOp.getKernelOperand(argNumber - 4);
                 storeOp->setOperand(1, correspondingValue);
@@ -108,37 +117,40 @@ class SCFForToSubPattern : public mlir::OpRewritePattern<scf::ForOp> {
         }
       }
       for (mlir::Value operand : nestedOp.getOperands()) {
-        if (auto opResult = dyn_cast<mlir::OpResult>(operand)) {
+        if (auto opResult = dyn_cast_if_present<mlir::OpResult>(operand)) {
           mlir::Operation *op = operand.getDefiningOp();
           for (unsigned j = 0; j < op->getNumOperands(); ++j) {
             mlir::Value nestedOperand = op->getOperand(j);
 
-            if (auto blockArg =
-                    mlir::dyn_cast<mlir::BlockArgument>(nestedOperand)) {
+            if (auto blockArg = mlir::dyn_cast_if_present<mlir::BlockArgument>(
+                    nestedOperand)) {
               mlir::Block *parentBlock = blockArg.getOwner();
               mlir::Operation *parentOp = parentBlock->getParentOp();
               Type operandType = nestedOperand.getType();
-              if (auto memRefType = mlir::dyn_cast<MemRefType>(operandType)) {
+              if (auto memRefType =
+                      mlir::dyn_cast_if_present<MemRefType>(operandType)) {
                 unsigned argNumber = blockArg.getArgNumber();
-                if (auto segmentOp = mlir::dyn_cast<air::SegmentOp>(parentOp)) {
+                if (auto segmentOp =
+                        mlir::dyn_cast_if_present<air::SegmentOp>(parentOp)) {
                   if (auto memRefType =
-                          mlir::dyn_cast<MemRefType>(operandType)) {
+                          mlir::dyn_cast_if_present<MemRefType>(operandType)) {
                     mlir::Value correspondingValue = segmentOp.getKernelOperand(
                         argNumber); // Map back to the original value
                     op->setOperand(j, correspondingValue);
                   }
-                } else if (auto herdOp =
-                               mlir::dyn_cast<air::HerdOp>(parentOp)) {
+                } else if (auto herdOp = mlir::dyn_cast_if_present<air::HerdOp>(
+                               parentOp)) {
                   if (auto memRefType =
-                          mlir::dyn_cast<MemRefType>(operandType)) {
+                          mlir::dyn_cast_if_present<MemRefType>(operandType)) {
                     mlir::Value correspondingValue =
                         herdOp.getKernelOperand(argNumber - 4);
                     op->setOperand(j, correspondingValue);
                   }
                 } else if (auto launchOp =
-                               mlir::dyn_cast<air::LaunchOp>(parentOp)) {
+                               mlir::dyn_cast_if_present<air::LaunchOp>(
+                                   parentOp)) {
                   if (auto memRefType =
-                          mlir::dyn_cast<MemRefType>(operandType)) {
+                          mlir::dyn_cast_if_present<MemRefType>(operandType)) {
                     mlir::Value correspondingValue =
                         launchOp.getKernelOperand(argNumber - 4);
                     op->setOperand(j, correspondingValue);
@@ -181,19 +193,23 @@ class DMAMemcpyToSubPattern
     }
     // Get the parent operation of the block
     mlir::Operation *parentOp = parentBlock->getParentOp();
-    if (auto segmentOp = mlir::dyn_cast<air::SegmentOp>(parentOp)) {
-      if (auto memRefType = mlir::dyn_cast<MemRefType>(operandType)) {
+    if (auto segmentOp = mlir::dyn_cast_if_present<air::SegmentOp>(parentOp)) {
+      if (auto memRefType =
+              mlir::dyn_cast_if_present<MemRefType>(operandType)) {
         mlir::Value correspondingValue = segmentOp.getKernelOperand(
             argNumber); // Map back to the original value
         dmaOp.setOperand(numOp, correspondingValue);
       }
-    } else if (auto herdOp = mlir::dyn_cast<air::HerdOp>(parentOp)) {
-      if (auto memRefType = mlir::dyn_cast<MemRefType>(operandType)) {
+    } else if (auto herdOp = mlir::dyn_cast_if_present<air::HerdOp>(parentOp)) {
+      if (auto memRefType =
+              mlir::dyn_cast_if_present<MemRefType>(operandType)) {
         mlir::Value correspondingValue = herdOp.getKernelOperand(argNumber - 4);
         dmaOp.setOperand(numOp, correspondingValue);
       }
-    } else if (auto launchOp = mlir::dyn_cast<air::LaunchOp>(parentOp)) {
-      if (auto memRefType = mlir::dyn_cast<MemRefType>(operandType)) {
+    } else if (auto launchOp =
+                   mlir::dyn_cast_if_present<air::LaunchOp>(parentOp)) {
+      if (auto memRefType =
+              mlir::dyn_cast_if_present<MemRefType>(operandType)) {
         mlir::Value correspondingValue =
             launchOp.getKernelOperand(argNumber - 4);
         dmaOp.setOperand(numOp, correspondingValue);
@@ -207,10 +223,11 @@ class DMAMemcpyToSubPattern
 
     mlir::Value sourceMemRef = dmaOp.getSrcMemref();
     mlir::Value dstMemRef = dmaOp.getDstMemref();
-    if (auto blockArg = mlir::dyn_cast<BlockArgument>(sourceMemRef)) {
+    if (auto blockArg =
+            mlir::dyn_cast_if_present<BlockArgument>(sourceMemRef)) {
       replaceDMAOperand(blockArg, dmaOp);
     }
-    if (auto blockArg = mlir::dyn_cast<BlockArgument>(dstMemRef)) {
+    if (auto blockArg = mlir::dyn_cast_if_present<BlockArgument>(dstMemRef)) {
       replaceDMAOperand(blockArg, dmaOp);
     }
 
@@ -296,7 +313,7 @@ struct ConvertGPUKernelOutlinePass
 
     for (Value operand : operands) {
       if (auto defOp = operand.getDefiningOp()) {
-        if (auto constOp = dyn_cast<arith::ConstantOp>(defOp)) {
+        if (auto constOp = dyn_cast_if_present<arith::ConstantOp>(defOp)) {
           // Record the constant value for later inlining
           constantValues[operand] = constOp.getValue();
           continue; // Don't pass this constant as an argument
@@ -374,7 +391,7 @@ struct ConvertGPUKernelOutlinePass
     for (Block &block : launchOpBody) {
       Block *clonedBlock = map.lookup(&block);
       auto terminator =
-          dyn_cast<gpu::TerminatorOp>(clonedBlock->getTerminator());
+          dyn_cast_if_present<gpu::TerminatorOp>(clonedBlock->getTerminator());
       if (!terminator)
         continue;
       OpBuilder replacer(terminator);
@@ -477,7 +494,7 @@ struct ConvertGPUKernelOutlinePass
   // Function to print detailed information about a Value (including block
   // arguments)
   void printValueDetails(Value val) {
-    if (auto blockArg = mlir::dyn_cast<BlockArgument>(val)) {
+    if (auto blockArg = mlir::dyn_cast_if_present<BlockArgument>(val)) {
       llvm::outs() << "Block argument: index=" << blockArg.getArgNumber()
                    << " type=" << blockArg.getType() << "\n";
     } else {
@@ -488,7 +505,8 @@ struct ConvertGPUKernelOutlinePass
   void deleteAirSegment(air::LaunchOp launchOp, OpBuilder &builder,
                         gpu::LaunchOp gpuLaunchOp) {
     launchOp.walk([&](Operation *childOp) {
-      if (auto segmentOp = dyn_cast<xilinx::air::SegmentOp>(childOp)) {
+      if (auto segmentOp =
+              dyn_cast_if_present<xilinx::air::SegmentOp>(childOp)) {
         if (!segmentOp.getRegion().empty()) {
           Block &segmentBlock =
               segmentOp.getRegion()
@@ -509,7 +527,7 @@ struct ConvertGPUKernelOutlinePass
                      gpu::LaunchOp gpuLaunchOp) {
     // Traverse the children of the segment to find the air.herd
     segmentOp.walk([&](Operation *childOp) {
-      if (auto herdOp = dyn_cast<xilinx::air::HerdOp>(childOp)) {
+      if (auto herdOp = dyn_cast_if_present<xilinx::air::HerdOp>(childOp)) {
         // Check if the herd operation has a region (body)
         if (!herdOp.getRegion().empty()) {
           Block &herdBlock =

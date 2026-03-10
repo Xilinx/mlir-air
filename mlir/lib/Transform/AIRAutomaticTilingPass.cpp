@@ -92,7 +92,7 @@ void AIRAutomaticTilingPass::runOnOperation() {
 
       // Normalize the loop space after tiling each dimension.
       func.walk([](Operation *op) {
-        if (auto affineFor = dyn_cast<affine::AffineForOp>(op))
+        if (auto affineFor = dyn_cast_if_present<affine::AffineForOp>(op))
           if (failed(normalizeAffineFor(affineFor)))
             return;
       });

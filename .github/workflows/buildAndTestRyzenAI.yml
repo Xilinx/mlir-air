@@ -78,6 +78,7 @@ jobs:
           export PATH=$VITIS/bin:$VITIS/aietools/bin:$PATH
           cmake .. \
             -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DPython3_EXECUTABLE=$(which python) \
             -DCMAKE_INSTALL_PREFIX=$PWD/../install \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \

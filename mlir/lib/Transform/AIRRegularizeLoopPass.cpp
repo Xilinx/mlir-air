@@ -93,11 +93,11 @@ bool isIndependent(Operation *op, affine::AffineForOp forOp,
                    SmallPtrSetImpl<Operation *> &opsWithUsers,
                    SmallPtrSetImpl<Operation *> &opsToHoist) {
   auto indVar = forOp.getInductionVar();
-  if (auto aif = dyn_cast<affine::AffineIfOp>(op)) {
+  if (auto aif = dyn_cast_if_present<affine::AffineIfOp>(op)) {
     if (!checkInvarianceOfNestedIfOps(aif, forOp, opsWithUsers, opsToHoist)) {
       return false;
     }
-  } else if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+  } else if (auto forOp = dyn_cast_if_present<affine::AffineForOp>(op)) {
     if (!areAllOpsInTheBlockListInvariant(forOp.getRegion(), forOp,
                                           opsWithUsers, opsToHoist)) {
       return false;
@@ -214,7 +214,8 @@ void AIRRegularizeLoopPass::runOnAffineForNest(
     auto *loopBody = innerForOp.getBody();
     endOfLoopNest = true;
     for (auto &opInLoop : *loopBody) {
-      if (affine::AffineForOp forOp = dyn_cast<affine::AffineForOp>(opInLoop)) {
+      if (affine::AffineForOp forOp =
+              dyn_cast_if_present<affine::AffineForOp>(opInLoop)) {
         innerBand.push_back(forOp);
         endOfLoopNest = false;
         innerForOp = forOp;

@@ -172,7 +172,7 @@ public:
         segment->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
     rewriter.setInsertionPointToStart(scfPar.getBody());
     for (auto &o : segment.getBody().front().getOperations()) {
-      if (auto herdOp = dyn_cast<air::HerdOp>(o)) {
+      if (auto herdOp = dyn_cast_if_present<air::HerdOp>(o)) {
         if (segmentName) {
           herdOp->setAttr("segment_name", segmentName);
         }
@@ -180,7 +180,7 @@ public:
       if (!isa<air::ChannelGetOp, air::ChannelPutOp, air::SegmentTerminatorOp>(
               o)) {
         rewriter.clone(o, remap);
-      } else if (auto chanOp = dyn_cast<air::ChannelInterface>(o)) {
+      } else if (auto chanOp = dyn_cast_if_present<air::ChannelInterface>(o)) {
         // clone L3 get/put
         BaseMemRefType memrefTy =
             llvm::cast<BaseMemRefType>(chanOp.getMemref().getType());
@@ -604,6 +604,9 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   thisOp->removeAttr("id"); // Op's id is no longer useful. Airrt.dma op's id
                             // has been assigned.
   airrtOp->setAttrs(thisOp->getDiscardableAttrDictionary());
+  // Preserve channel name for downstream ordering decisions.
+  if (auto chanName = thisOp->getAttrOfType<FlatSymbolRefAttr>("chan_name"))
+    airrtOp->setDiscardableAttr("chan_name", chanName);
 
   if (airrtOp->hasAttr("metadata") || !airrtOp->hasAttr("metadataArray")) {
     return airrtOp;
@@ -622,7 +625,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     if (!metadataArray || i >= metadataArray.size())
       return false;
 
-    if (auto dictAttr = dyn_cast<DictionaryAttr>(metadataArray[i])) {
+    if (auto dictAttr = dyn_cast_if_present<DictionaryAttr>(metadataArray[i])) {
       if (auto shimNameAttr = dictAttr.getAs<StringAttr>("base")) {
         op->setAttr("metadata",
                     FlatSymbolRefAttr::get(op->getContext(), shimNameAttr));
@@ -739,7 +742,7 @@ public:
 };
 
 LogicalResult lowerAirExecute(Operation *op) {
-  ModuleOp module = dyn_cast<ModuleOp>(op);
+  ModuleOp module = dyn_cast_if_present<ModuleOp>(op);
   if (!module)
     return failure();
 
@@ -793,7 +796,7 @@ LogicalResult lowerAirExecute(Operation *op) {
 
 template <typename hierTy, typename loadTy>
 LogicalResult generateLoadForHierarchy(Operation *op) {
-  ModuleOp module = dyn_cast<ModuleOp>(op);
+  ModuleOp module = dyn_cast_if_present<ModuleOp>(op);
   if (!module)
     return failure();
 
@@ -941,8 +944,8 @@ public:
   LogicalResult
   matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    scf::ForOp newOp =
-        dyn_cast<scf::ForOp>(rewriter.cloneWithoutRegions(*op.getOperation()));
+    scf::ForOp newOp = dyn_cast_if_present<scf::ForOp>(
+        rewriter.cloneWithoutRegions(*op.getOperation()));
     rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(),
                                 newOp.getRegion().end());
 
@@ -965,7 +968,7 @@ public:
   LogicalResult
   matchAndRewrite(scf::ParallelOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    scf::ParallelOp newOp = dyn_cast<scf::ParallelOp>(
+    scf::ParallelOp newOp = dyn_cast_if_present<scf::ParallelOp>(
         rewriter.cloneWithoutRegions(*op.getOperation()));
     rewriter.inlineRegionBefore(op.getRegion(), newOp.getRegion(),
                                 newOp.getRegion().end());
@@ -983,7 +986,7 @@ public:
 };
 
 LogicalResult ScfParToAffineForConversion(Operation *op) {
-  func::FuncOp f = dyn_cast<func::FuncOp>(op);
+  func::FuncOp f = dyn_cast_if_present<func::FuncOp>(op);
   if (!f)
     return failure();
 
@@ -1016,7 +1019,8 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
     std::vector<int> par_sizes = {};
     for (auto v : scf_par.getUpperBound())
       par_sizes.push_back(
-          dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value());
+          dyn_cast_if_present<arith::ConstantIndexOp>(v.getDefiningOp())
+              .value());
 
     OpBuilder builder(scf_par);
     SmallVector<affine::AffineForOp> loops;
@@ -1074,7 +1078,7 @@ public:
     TypeConverter converter;
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert !air.async.token to !airrt.event
-      if (auto t = llvm::dyn_cast<air::AsyncTokenType>(type))
+      if (auto t = llvm::dyn_cast_if_present<air::AsyncTokenType>(type))
         return airrt::EventType::get(context);
       else
         return type;
@@ -1255,15 +1259,15 @@ private:
                                 IRMapping &remap) const {
     for (auto operand : op->getOperands()) {
       if (operand.getDefiningOp()) {
-        if (auto index_cast =
-                dyn_cast<arith::IndexCastOp>(operand.getDefiningOp())) {
+        if (auto index_cast = dyn_cast_if_present<arith::IndexCastOp>(
+                operand.getDefiningOp())) {
           remapOpAndOperands(builder, operand.getDefiningOp(), remap);
           builder.clone(*index_cast, remap);
-        } else if (auto const_op =
-                       dyn_cast<arith::ConstantOp>(operand.getDefiningOp())) {
+        } else if (auto const_op = dyn_cast_if_present<arith::ConstantOp>(
+                       operand.getDefiningOp())) {
           builder.clone(*const_op, remap);
-        } else if (auto muli_op =
-                       dyn_cast<arith::MulIOp>(operand.getDefiningOp())) {
+        } else if (auto muli_op = dyn_cast_if_present<arith::MulIOp>(
+                       operand.getDefiningOp())) {
           remapOpAndOperands(builder, operand.getDefiningOp(), remap);
           builder.clone(*muli_op, remap);
         }
@@ -1290,10 +1294,10 @@ private:
     }
   }
   void remapLoop(Operation *src, Operation *dst, IRMapping &remap) const {
-    auto src_for = dyn_cast<scf::ForOp>(src);
-    auto dst_for = dyn_cast<scf::ForOp>(dst);
-    auto src_par = dyn_cast<scf::ParallelOp>(src);
-    auto dst_par = dyn_cast<scf::ParallelOp>(dst);
+    auto src_for = dyn_cast_if_present<scf::ForOp>(src);
+    auto dst_for = dyn_cast_if_present<scf::ForOp>(dst);
+    auto src_par = dyn_cast_if_present<scf::ParallelOp>(src);
+    auto dst_par = dyn_cast_if_present<scf::ParallelOp>(dst);
     if (src_for && dst_for) {
       remapLoop(src_for, dst_for, remap);
     } else if (src_par && dst_par) {
@@ -1317,9 +1321,9 @@ private:
 
   // Get (the first) memcpy op from loop nest
   Operation *getInnerMostMemcpyFromLoopNest(Operation *op) const {
-    if (auto scf_par = dyn_cast<scf::ParallelOp>(op))
+    if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(op))
       return getInnerMostMemcpyFromLoopNest(scf_par);
-    else if (auto scf_for = dyn_cast<scf::ForOp>(op))
+    else if (auto scf_for = dyn_cast_if_present<scf::ForOp>(op))
       return getInnerMostMemcpyFromLoopNest(scf_for);
     // else return nullptr;
     else {
@@ -1363,7 +1367,7 @@ private:
       bool merge_candidate_loop = false;
       if (isa<scf::ForOp>(scf_loop))
         merge_candidate_loop = true;
-      else if (auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop)) {
+      else if (auto scf_par = dyn_cast_if_present<scf::ParallelOp>(scf_loop)) {
         merge_candidate_loop = false;
         for (auto child_scf_for_loop :
              scf_par.getBody()->getOps<scf::ForOp>()) {
@@ -1415,11 +1419,11 @@ private:
           if (i == bucket.size() - 1) {
             SmallVector<Value, 8> operands{};
             if (auto new_ctrl_loop_par =
-                    dyn_cast<scf::ParallelOp>(dst_loop_nest[0])) {
+                    dyn_cast_if_present<scf::ParallelOp>(dst_loop_nest[0])) {
               if (!new_ctrl_loop_par.getInitVals().empty())
                 operands.push_back(new_ctrl_loop_par.getInitVals()[0]);
             } else if (auto new_ctrl_loop_for =
-                           dyn_cast<scf::ForOp>(dst_loop_nest[0])) {
+                           dyn_cast_if_present<scf::ForOp>(dst_loop_nest[0])) {
               if (!new_ctrl_loop_for.getRegionIterArgs().empty())
                 operands.push_back(new_ctrl_loop_for.getRegionIterArgs()[0]);
             }

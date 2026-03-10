@@ -290,12 +290,14 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
             transform.apply_patterns.memref.fold_memref_alias_ops
         } : !transform.any_op
-                
+        %func_fold_1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func_folded_1 = transform.air.fold_unit_extent_dims %func_fold_1 : (!transform.any_op) -> !transform.any_op
+
     // Step 28: Eliminate redundant vector.transfer_read operations.
-        %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func7 : (!transform.any_op) -> !transform.any_op
+        %func7_rematch = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func1_optimized = transform.air.eliminate_redundant_vector_transfers %func7_rematch : (!transform.any_op) -> !transform.any_op
 
     //==========================================================================
     // PHASE 11: HOIST LOOP-INVARIANT VECTOR TRANSFERS
@@ -358,9 +360,10 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.linalg.tiling_canonicalization
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
-            transform.apply_patterns.linalg.fold_unit_extent_dims_via_reshapes
             transform.apply_patterns.memref.fold_memref_alias_ops
         } : !transform.any_op
+        %func_fold_2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+        %func_folded_2 = transform.air.fold_unit_extent_dims %func_fold_2 : (!transform.any_op) -> !transform.any_op
 
     transform.yield
   }

@@ -109,7 +109,7 @@ mlir::LogicalResult AIRHerdsToJSONTranslate(mlir::ModuleOp module,
   auto status = success();
   for (auto f : module.getOps<func::FuncOp>()) {
     f.walk([&](Operation *op) {
-      if (auto herd = dyn_cast<xilinx::air::HerdOp>(op)) {
+      if (auto herd = dyn_cast_if_present<xilinx::air::HerdOp>(op)) {
         std::string name = "herd";
         if (auto attr = herd->getAttrOfType<StringAttr>(
                 SymbolTable::getSymbolAttrName())) {

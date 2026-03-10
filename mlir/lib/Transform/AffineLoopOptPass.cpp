@@ -168,7 +168,8 @@ void AffineLoopOptPass::tileLoops(
           band[i].getStepAsInt();
       // Make sure the tile size divides the untiled size and is less than or
       // equal to the desired tile size.
-      actualTileSizes[i] = air::findLargestFactor(untiledSize, actualTileSizes[i]);
+      actualTileSizes[i] =
+          air::findLargestFactor(untiledSize, actualTileSizes[i]);
     }
 
     if (failed(tilePerfectlyNested(band, actualTileSizes, &tiledNest)))
@@ -251,7 +252,7 @@ void AffineLoopOptPass::getTileableBands(
 
   for (auto &block : f)
     for (auto &op : block)
-      if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+      if (auto forOp = dyn_cast_if_present<affine::AffineForOp>(op)) {
         auto targetForOp = getLabel(forOp, label);
         if (targetForOp) {
           getMaximalPerfectLoopNest(targetForOp);

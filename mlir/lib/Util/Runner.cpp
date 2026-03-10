@@ -174,7 +174,7 @@ public:
     if (type == "wait_all") {
       execution_time = 1;
     } else if (type == "dma") {
-      auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(c.op);
+      auto Op = mlir::dyn_cast_if_present<xilinx::air::DmaMemcpyNdOp>(c.op);
       if (!Op)
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'dma' as event type, but op isn't of type "
@@ -191,7 +191,7 @@ public:
         execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
     } else if (type == "channel" &&
                (name.find("ChannelGetOp") != std::string::npos)) {
-      auto getOp = mlir::dyn_cast<xilinx::air::ChannelGetOp>(c.op);
+      auto getOp = mlir::dyn_cast_if_present<xilinx::air::ChannelGetOp>(c.op);
       if (!getOp)
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'channel' as event type, but op isn't of type "
@@ -219,15 +219,17 @@ public:
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'execute' as event type, but op isn't of type "
                "air::ExecuteOp";
-      auto child_op = &dyn_cast<air::ExecuteOp>(c.op).getChildOps().front();
-      if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
+      auto child_op =
+          &dyn_cast_if_present<air::ExecuteOp>(c.op).getChildOps().front();
+      if (auto Op = mlir::dyn_cast_if_present<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
         uint64_t compute_op_cost = getComputeCostFromCostModel(d, child_op);
         execution_time = std::max(compute_op_cost, compute_xfer_cost);
         // Add extra cycles as base latency for linalg ops, to model the
         // overhead of external function.
         execution_time += 100;
-      } else if (auto custom_op = dyn_cast<air::CustomOp>(child_op)) {
+      } else if (auto custom_op =
+                     dyn_cast_if_present<air::CustomOp>(child_op)) {
         execution_time = getComputeCostFromJSON(d, custom_op);
       }
     } else {
@@ -388,7 +390,8 @@ public:
 
       // air launch iteration space
       iter_count = 1;
-      auto launch_op = dyn_cast<air::LaunchOp>(launchGraph.hierarchyOp);
+      auto launch_op =
+          dyn_cast_if_present<air::LaunchOp>(launchGraph.hierarchyOp);
       for (auto s_op : launch_op.getSizeOperands()) {
         int64_t s = cast<arith::ConstantIndexOp>(s_op.getDefiningOp()).value();
         iter_count *= s;
@@ -531,7 +534,8 @@ private:
       for (auto &segmentGraph : launchGraph.subgraphs) {
         // Write segment process name to trace metadata
         std::string seg_process_info = "";
-        auto seg = dyn_cast<air::SegmentOp>(segmentGraph.hierarchyOp);
+        auto seg =
+            dyn_cast_if_present<air::SegmentOp>(segmentGraph.hierarchyOp);
         seg_process_info += air::to_string(seg);
         seg_process_info += "[" + std::to_string(*seg.getNumCols()) + ", " +
                             std::to_string(*seg.getNumRows()) + "]";
@@ -556,7 +560,7 @@ private:
           if (print_pid_metadata_for_herd) {
             // Write herd process name to trace metadata
             std::string herd_process_info = "";
-            auto herd = dyn_cast<air::HerdOp>(herdGraph.hierarchyOp);
+            auto herd = dyn_cast_if_present<air::HerdOp>(herdGraph.hierarchyOp);
             herd_process_info += air::to_string(herd);
             herd_process_info += "[" + std::to_string(herd.getNumCols()) +
                                  ", " + std::to_string(herd.getNumRows()) + "]";
@@ -748,7 +752,7 @@ private:
 
   // Check if op is a non-blocking event
   bool isNonBlocking(Operation *op) {
-    if (auto yield = dyn_cast<scf::YieldOp>(op)) {
+    if (auto yield = dyn_cast_if_present<scf::YieldOp>(op)) {
       if (yield->getOperands().size() > 1) {
         // Multi-token for loop requires scf.yield to be non-blocking per async
         // token

@@ -83,3 +83,6 @@ tool_dirs = [config.air_tools_dir, config.aie_tools_dir, config.llvm_tools_dir]
 tools = ["air-opt", "air-translate", "air-runner", "aie-opt"]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)
+
+if config.air_enable_gpu:
+    config.available_features.add("gpu")
