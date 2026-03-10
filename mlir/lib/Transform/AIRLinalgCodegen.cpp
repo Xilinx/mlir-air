@@ -208,12 +208,35 @@ struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     if (!alloc)
       return failure();
 
+    // Resolve static shapes from constant size operands to avoid creating
+    // dynamic allocs that later canonicalize into static alloc + memref.cast.
+    // Note: getSizes() returns only dynamic size operands (one per `?` in the
+    // shape), so we iterate over the full shape and consume from getSizes()
+    // only for dynamic dimensions.
+    SmallVector<int64_t> staticShape;
+    SmallVector<Value> dynamicSizes;
+    unsigned dynamicIdx = 0;
+    for (int64_t dim : op.getType().getShape()) {
+      if (ShapedType::isStatic(dim)) {
+        staticShape.push_back(dim);
+      } else {
+        Value size = op.getSizes()[dynamicIdx++];
+        APInt constVal;
+        if (matchPattern(size, m_ConstantInt(&constVal))) {
+          staticShape.push_back(constVal.getSExtValue());
+        } else {
+          staticShape.push_back(ShapedType::kDynamic);
+          dynamicSizes.push_back(size);
+        }
+      }
+    }
+
     /* Force memory space */
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
         op,
-        MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
-                        AffineMap(), rewriter.getI32IntegerAttr(fast_space)),
-        op.getSizes());
+        MemRefType::get(staticShape, op.getType().getElementType(), AffineMap(),
+                        rewriter.getI32IntegerAttr(fast_space)),
+        dynamicSizes);
     alloc.replaceAllUsesWith(newOp);
     return success();
   }
@@ -233,12 +256,35 @@ struct RemoveViewOpsPattern : public OpRewritePattern<memref::ViewOp> {
     if (!alloc)
       return failure();
 
+    // Resolve static shapes from constant size operands to avoid creating
+    // dynamic allocs that later canonicalize into static alloc + memref.cast.
+    // Note: getSizes() returns only dynamic size operands (one per `?` in the
+    // shape), so we iterate over the full shape and consume from getSizes()
+    // only for dynamic dimensions.
+    SmallVector<int64_t> staticShape;
+    SmallVector<Value> dynamicSizes;
+    unsigned dynamicIdx = 0;
+    for (int64_t dim : op.getType().getShape()) {
+      if (ShapedType::isStatic(dim)) {
+        staticShape.push_back(dim);
+      } else {
+        Value size = op.getSizes()[dynamicIdx++];
+        APInt constVal;
+        if (matchPattern(size, m_ConstantInt(&constVal))) {
+          staticShape.push_back(constVal.getSExtValue());
+        } else {
+          staticShape.push_back(ShapedType::kDynamic);
+          dynamicSizes.push_back(size);
+        }
+      }
+    }
+
     /* Force memory space */
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
         op,
-        MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
-                        AffineMap(), rewriter.getI32IntegerAttr(fast_space)),
-        op.getSizes());
+        MemRefType::get(staticShape, op.getType().getElementType(), AffineMap(),
+                        rewriter.getI32IntegerAttr(fast_space)),
+        dynamicSizes);
     alloc.replaceAllUsesWith(newOp);
     return success();
   }
