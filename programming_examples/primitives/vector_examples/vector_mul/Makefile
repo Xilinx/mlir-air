@@ -19,14 +19,20 @@ OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 #   make run AIE_TARGET=aie2p # uses aie2p target
 AIE_TARGET ?= aie2
 
+# BF16_EMULATION can be set to enable f32 input with bf16 emulation
+# Usage examples:
+#   make run                       # uses default bf16 data type
+#   make run BF16_EMULATION=1      # uses f32 with bf16 emulation
+BF16_EMULATION ?=
+
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_mul.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET)
+	${powershell} python3 ${srcdir}/vector_mul.py $(OUTPUT_FORMAT_FLAG) -p --arch $(AIE_TARGET) $(if $(BF16_EMULATION),--bf16-emulation,)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_mul.py $(OUTPUT_FORMAT_FLAG) --arch $(AIE_TARGET)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_mul.py $(OUTPUT_FORMAT_FLAG) --arch $(AIE_TARGET) $(if $(BF16_EMULATION),--bf16-emulation,)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

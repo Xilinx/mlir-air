@@ -258,5 +258,13 @@ def parse_args(args=None):
         help="Enable debug mode to emit IR after each individual pass for fine-grained inspection. "
         "IRs are saved to <tmpdir>/debug_ir/ with pass sequence numbers and checkpoint markers.",
     )
+    parser.add_argument(
+        "--bf16-emulation",
+        dest="bf16_emulation",
+        default=False,
+        action="store_true",
+        help="Emulate f32 vector arithmetic using bf16 operations. "
+        "Passes bf16-emulation=true to convert-vector-to-aievec.",
+    )
     opts = parser.parse_args(args)
     return opts

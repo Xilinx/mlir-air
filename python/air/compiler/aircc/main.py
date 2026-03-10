@@ -1018,6 +1018,11 @@ extern "C" {
                     else []
                 )
                 + (["-O", "3"])
+                + (
+                    ["--bf16-emulation"]
+                    if getattr(opts, "bf16_emulation", False)
+                    else []
+                )
                 + aiecc_output_file_options
                 + aiecc_existing_xclbin_options
                 + [air_to_npu_file]
