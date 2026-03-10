@@ -63,6 +63,7 @@ class XRTBackend(AirBackend):
         xclbin_input: str = "",
         num_device_cols: int = 0,
         debug_ir: bool = False,
+        bf16_emulation: bool = False,
     ):
         """Constructor for XRTBackend
 
@@ -89,6 +90,7 @@ class XRTBackend(AirBackend):
                 For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
             debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
                 IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
+            bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
         """
         super().__init__()
         self.verbose = verbose
@@ -115,6 +117,7 @@ class XRTBackend(AirBackend):
         self.xclbin_input = xclbin_input
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
+        self.bf16_emulation = bf16_emulation
 
     def __del__(self):
         self.unload()
@@ -316,6 +319,9 @@ class XRTBackend(AirBackend):
 
             if self.debug_ir:
                 aircc_options += ["--debug-ir"]
+
+            if self.bf16_emulation:
+                aircc_options += ["--bf16-emulation"]
 
             if self.verbose:
                 print("Running aircc.py with options:", " ".join(aircc_options))
