@@ -8,6 +8,7 @@ add_mlir_library(AIRUtil
   CostModel.cpp
   Runner.cpp
   Dependency.cpp
+  DependencyDot.cpp
   DirectedAdjacencyMap.cpp
 
   DEPENDS
