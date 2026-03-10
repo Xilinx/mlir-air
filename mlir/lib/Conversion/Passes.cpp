@@ -8,9 +8,26 @@
 
 #include "air/Conversion/Passes.h"
 
-namespace {
+#if AIR_ENABLE_GPU
+#include "air/Conversion/AIRToROCDLPass.h"
+#include "air/Conversion/GPUKernelOutlinePass.h"
+#endif
+
+namespace air_conv_passes {
 #define GEN_PASS_REGISTRATION
 #include "air/Conversion/Passes.h.inc"
-} // namespace
+} // namespace air_conv_passes
 
-void xilinx::air::registerConversionPasses() { ::registerPasses(); }
+#if AIR_ENABLE_GPU
+namespace air_gpu_passes {
+#define GEN_PASS_REGISTRATION
+#include "air/Conversion/GPUPasses.h.inc"
+} // namespace air_gpu_passes
+#endif
+
+void xilinx::air::registerConversionPasses() {
+  air_conv_passes::registerPasses();
+#if AIR_ENABLE_GPU
+  air_gpu_passes::registerPasses();
+#endif
+}

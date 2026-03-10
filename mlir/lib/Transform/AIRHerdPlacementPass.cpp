@@ -323,7 +323,7 @@ private:
       // The herd operation has args that map segment-level values to herd
       // arguments
       for (auto arg : herd.getKernelOperands()) {
-        auto memrefType = dyn_cast<MemRefType>(arg.getType());
+        auto memrefType = dyn_cast_if_present<MemRefType>(arg.getType());
         if (!memrefType)
           continue;
 

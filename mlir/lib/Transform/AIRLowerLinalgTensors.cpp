@@ -68,7 +68,7 @@ struct RemoveAllocCopyPattern : public OpRewritePattern<memref::AllocOp> {
     }
 
     for (auto u : op->getUsers())
-      if (auto copy = dyn_cast<linalg::CopyOp>(u)) {
+      if (auto copy = dyn_cast_if_present<linalg::CopyOp>(u)) {
         memref = copy.getInputs()[0];
         rewriter.eraseOp(copy);
       }
@@ -103,8 +103,9 @@ struct RemoveAllocCopyPattern : public OpRewritePattern<memref::AllocOp> {
 //     if (!op->hasOneUse())
 //       return failure();
 
-//     auto store = dyn_cast<memref::TensorStoreOp>(*op->user_begin());
-//     if (!store)
+//     auto store =
+//     dyn_cast_if_present<memref::TensorStoreOp>(*op->user_begin()); if
+//     (!store)
 //       return failure();
 
 //     rewriter.replaceOp(alloc, store.getMemref());

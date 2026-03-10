@@ -94,7 +94,7 @@ def build_module():
 
                     # Tile 0: read from chan_in
                     cmp_first = arith.CmpIOp(arith.CmpIPredicate.eq, tx, c0)
-                    if_first = scf.IfOp(cmp_first, hasElse=True)
+                    if_first = scf.IfOp(cmp_first, has_else=True)
                     with InsertionPoint(if_first.then_block):
                         ChannelGet("chan_in", recv_buf)
                         linalg.add(recv_buf, local_buf, outs=[local_buf])
@@ -110,7 +110,7 @@ def build_module():
 
                         # Last tile: write to chan_out; others: write to chan_cascade
                         cmp_last = arith.CmpIOp(arith.CmpIPredicate.eq, tx, last_tile)
-                        if_last = scf.IfOp(cmp_last, hasElse=True)
+                        if_last = scf.IfOp(cmp_last, has_else=True)
                         with InsertionPoint(if_last.then_block):
                             ChannelPut("chan_out", local_buf)
                             yield_([])

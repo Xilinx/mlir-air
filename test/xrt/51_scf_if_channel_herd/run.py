@@ -71,7 +71,7 @@ def build_module():
                     #   ty == 1: consumer (get from Tile2Tile, add 1, put to ChanOut)
                     c0 = arith.ConstantOp.create_index(0)
                     cmp = arith.CmpIOp(arith.CmpIPredicate.eq, ty, c0)
-                    if_op = scf.IfOp(cmp, hasElse=True)
+                    if_op = scf.IfOp(cmp, has_else=True)
 
                     with InsertionPoint(if_op.then_block):
                         # Producer: get input, square each element, put to Tile2Tile

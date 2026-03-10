@@ -298,7 +298,7 @@ void hoistStaticallyBoundAllocationsInFunc(
     // hoisted allocation installs its own dealloc in the entry block.
     SmallVector<memref::DeallocOp> deallocOps;
     for (Operation *user : allocLikeOp->getUsers()) {
-      auto dealloc = dyn_cast<memref::DeallocOp>(user);
+      auto dealloc = dyn_cast_if_present<memref::DeallocOp>(user);
       if (dealloc)
         deallocOps.push_back(dealloc);
     }

@@ -27,7 +27,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
-#include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
@@ -92,7 +92,7 @@ void AIRAutomaticTilingPass::runOnOperation() {
 
       // Normalize the loop space after tiling each dimension.
       func.walk([](Operation *op) {
-        if (auto affineFor = dyn_cast<affine::AffineForOp>(op))
+        if (auto affineFor = dyn_cast_if_present<affine::AffineForOp>(op))
           if (failed(normalizeAffineFor(affineFor)))
             return;
       });

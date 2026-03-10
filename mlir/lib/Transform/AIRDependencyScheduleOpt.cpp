@@ -75,7 +75,7 @@ air::ExecuteOp getDependentExecuteContainingOpTy(Operation *op) {
   });
   if (it == air::getAsyncDependenciesFromOp(op).end())
     return air::ExecuteOp();
-  return dyn_cast<air::ExecuteOp>(it->getDefiningOp());
+  return dyn_cast_if_present<air::ExecuteOp>(it->getDefiningOp());
 }
 
 // Return the air.execute op which depends on this op and contains an op of type
@@ -86,7 +86,7 @@ air::ExecuteOp getUserExecuteOpContainingOpTy(Operation *op) {
   if (!opTok)
     return air::ExecuteOp();
   auto it = llvm::find_if(opTok.getUsers(), [](Operation *usr) {
-    if (auto execOp = dyn_cast<air::ExecuteOp>(usr))
+    if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(usr))
       if (llvm::any_of(execOp.getChildOps(),
                        [](Operation &o) { return isa<OpTy>(o); }))
         return true;
@@ -94,17 +94,18 @@ air::ExecuteOp getUserExecuteOpContainingOpTy(Operation *op) {
   });
   if (it == opTok.getUsers().end())
     return air::ExecuteOp();
-  return dyn_cast<air::ExecuteOp>(*it);
+  return dyn_cast_if_present<air::ExecuteOp>(*it);
 }
 
 // Reconnect incoming DMA event in the dependency graph
 void reconnectIncomingDataMovements(Operation *op, scf::ForOp for_op) {
-  air::AsyncOpInterface async_op = dyn_cast<air::AsyncOpInterface>(op);
+  air::AsyncOpInterface async_op =
+      dyn_cast_if_present<air::AsyncOpInterface>(op);
   auto dependency_list = async_op.getAsyncDependencies();
   if (dependency_list.size()) {
     // Erase dependence to upstream scf.forOp
     eraseAsyncDependencyFromAsyncOp(
-        dyn_cast<air::AsyncOpInterface>(async_op.getOperation()),
+        dyn_cast_if_present<air::AsyncOpInterface>(async_op.getOperation()),
         for_op.getRegionIterArgs()[0]);
     auto for_op_iter_operand = for_op.getInitArgs()[0];
     op->getResult(0).replaceAllUsesWith(for_op.getRegionIterArgs()[0]);
@@ -119,7 +120,8 @@ void reconnectIncomingDataMovements(Operation *op, scf::ForOp for_op) {
 void reconnectOutgoingEvents(Operation *op, air::ExecuteOp dealloc_op,
                              scf::ForOp for_op,
                              air::WaitAllOp wait_all_after_for) {
-  air::AsyncOpInterface async_op = dyn_cast<air::AsyncOpInterface>(op);
+  air::AsyncOpInterface async_op =
+      dyn_cast_if_present<air::AsyncOpInterface>(op);
   auto dependency_list = async_op.getAsyncDependencies();
   if (dependency_list.size()) {
     for (unsigned i = 0; i < dependency_list.size(); i++) {
@@ -127,9 +129,9 @@ void reconnectOutgoingEvents(Operation *op, air::ExecuteOp dealloc_op,
     }
     clearAsyncDependenciesOfAsyncOp(async_op);
   }
-  eraseAsyncDependencyFromAsyncOp(
-      dyn_cast<air::AsyncOpInterface>(wait_all_after_for.getOperation()),
-      dealloc_op.getAsyncToken());
+  eraseAsyncDependencyFromAsyncOp(dyn_cast_if_present<air::AsyncOpInterface>(
+                                      wait_all_after_for.getOperation()),
+                                  dealloc_op.getAsyncToken());
   for_op.getResult(0).replaceAllUsesWith(dealloc_op.getResult(0));
   async_op.addAsyncDependency(for_op.getResult(0));
 }
@@ -209,17 +211,18 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
 
           // Reconnect outgoing dealloc event
           // Reconnect outgoing dma event
-          scf::YieldOp yield_op =
-              dyn_cast<scf::YieldOp>(for_op.getBody()->getTerminator());
+          scf::YieldOp yield_op = dyn_cast_if_present<scf::YieldOp>(
+              for_op.getBody()->getTerminator());
           air::WaitAllOp wait_all_after_for =
-              dyn_cast<air::WaitAllOp>(yield_op->getOperand(0).getDefiningOp());
+              dyn_cast_if_present<air::WaitAllOp>(
+                  yield_op->getOperand(0).getDefiningOp());
           reconnectOutgoingEvents(op_2, dealloc_exec_op, for_op,
                                   wait_all_after_for);
           // If wait_all depends on outgoing dma, then erase this dependency
           eraseAsyncDependencyFromAsyncOp(
-              dyn_cast<air::AsyncOpInterface>(
+              dyn_cast_if_present<air::AsyncOpInterface>(
                   wait_all_after_for.getOperation()),
-              dyn_cast<air::AsyncOpInterface>(op_2.getOperation())
+              dyn_cast_if_present<air::AsyncOpInterface>(op_2.getOperation())
                   .getAsyncToken());
           // Move ops to after the for loop
           dealloc_exec_op->moveAfter(for_op);
@@ -261,7 +264,7 @@ private:
     bool foundMemrefAllocDep = false;
     Operation *current_op = dma_op.getOperation();
     air::AsyncOpInterface current_async_op =
-        dyn_cast<air::AsyncOpInterface>(current_op);
+        dyn_cast_if_present<air::AsyncOpInterface>(current_op);
     auto dependency_list = current_async_op.getAsyncDependencies();
     if (dependency_list.size()) {
       for (auto dep_op : dependency_list) {
@@ -269,8 +272,8 @@ private:
             current_op->getParentOfType<scf::ForOp>().getRegionIterArgs()[0]) {
           // Found scf.forOp in upstream dependency
           foundScfForDep = true;
-        } else if (auto exec_op =
-                       dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
+        } else if (auto exec_op = dyn_cast_if_present<air::ExecuteOp>(
+                       dep_op.getDefiningOp())) {
           // Found air.ExecuteOp in upstream dependency
           if (llvm::any_of(exec_op.getChildOps(), [](Operation &child_op) {
                 return isa<memref::AllocOp>(child_op);
@@ -290,10 +293,10 @@ private:
     bool foundDepToMemrefDealloc = false;
     Operation *current_op = dma_op.getOperation();
     air::AsyncOpInterface current_async_op =
-        dyn_cast<air::AsyncOpInterface>(current_op);
+        dyn_cast_if_present<air::AsyncOpInterface>(current_op);
     auto dependency_token = current_async_op.getAsyncToken();
     for (auto user : dependency_token.getUsers()) {
-      auto exec_op = dyn_cast<air::ExecuteOp>(user);
+      auto exec_op = dyn_cast_if_present<air::ExecuteOp>(user);
       if (!exec_op)
         continue;
       // Found air.ExecuteOp in downstream dependency
@@ -314,8 +317,10 @@ private:
     bool areSymmetric = op_1.getSrcMemref() == op_2.getDstMemref();
     areSymmetric &= op_2.getSrcMemref() == op_1.getDstMemref();
     // Check offsets, sizes and strides
-    auto op_1_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_1.getOperation());
-    auto op_2_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_2.getOperation());
+    auto op_1_dmaNd =
+        dyn_cast_if_present<air::DmaMemcpyNdOp>(op_1.getOperation());
+    auto op_2_dmaNd =
+        dyn_cast_if_present<air::DmaMemcpyNdOp>(op_2.getOperation());
     unsigned op_1_dst_num_entries = op_1_dmaNd.getDstOffsets().size();
     unsigned op_1_src_num_entries = op_1_dmaNd.getSrcOffsets().size();
     unsigned op_2_dst_num_entries = op_2_dmaNd.getDstOffsets().size();
@@ -370,7 +375,7 @@ struct AnnotateFrontAndBackOpsInForPattern
     // Get async alloc ops
     SmallVector<Operation *> allocOps;
     for (auto &op : for_op.getOps()) {
-      if (auto exec_op = dyn_cast<air::ExecuteOp>(op)) {
+      if (auto exec_op = dyn_cast_if_present<air::ExecuteOp>(op)) {
         bool isFrontCandidate = false;
         if (!exec_op.getAsyncDependencies().size())
           isFrontCandidate = true;
@@ -407,12 +412,12 @@ struct AnnotateFrontAndBackOpsInForPattern
         continue;
 
       if (!dep_list.size())
-        setBoolAttrForAsyncOp(rewriter, &op, "async_front");
+        setBoolAttrForAsyncOp(&op, "async_front");
       for (auto dep : dep_list) {
         // Token is in iter_args
         if (llvm::any_of(iterTokens,
                          [dep](Value token) { return token == dep; }))
-          setBoolAttrForAsyncOp(rewriter, &op, "async_front");
+          setBoolAttrForAsyncOp(&op, "async_front");
       }
       // Token is declared outside of for loop
       if (llvm::any_of(dep_list, [for_op](Value token) {
@@ -421,7 +426,7 @@ struct AnnotateFrontAndBackOpsInForPattern
               return false;
             return !for_op->isProperAncestor(tokenDefOp);
           })) {
-        setBoolAttrForAsyncOp(rewriter, &op, "async_front");
+        setBoolAttrForAsyncOp(&op, "async_front");
       }
     }
 
@@ -435,8 +440,24 @@ struct AnnotateFrontAndBackOpsInForPattern
     }
     SmallVector<Operation *> back_candidates;
     for (auto token : yielded_tokens) {
-      auto back_candidate = token.getDefiningOp();
-      if (auto exec_op = dyn_cast<air::ExecuteOp>(back_candidate)) {
+      auto *back_candidate = token.getDefiningOp();
+      // If the yielded token is a block argument (iter_arg), the loop body
+      // passes through the token without modifying it. Find the last async
+      // op in the body that produces a token as the back candidate.
+      if (!back_candidate) {
+        for (auto &bodyOp : llvm::reverse(for_op.getBody()->getOperations())) {
+          if (&bodyOp == yield)
+            continue;
+          if (auto asyncOp =
+                  dyn_cast_if_present<air::AsyncOpInterface>(&bodyOp)) {
+            if (asyncOp.getAsyncToken()) {
+              back_candidate = &bodyOp;
+              break;
+            }
+          }
+        }
+      }
+      if (auto exec_op = dyn_cast_if_present<air::ExecuteOp>(back_candidate)) {
         auto child_op = &exec_op.getChildOps().front();
         if (isa<memref::DeallocOp>(child_op)) {
           for (auto d : exec_op.getAsyncDependencies()) {
@@ -452,8 +473,15 @@ struct AnnotateFrontAndBackOpsInForPattern
             getOpAsBackOpCandidate(rewriter, back_candidate));
       }
     }
+    LLVM_DEBUG(llvm::dbgs()
+               << "back_candidates size: " << back_candidates.size() << "\n");
     for (auto op : back_candidates) {
-      setBoolAttrForAsyncOp(rewriter, op, "async_back");
+      if (!op) {
+        LLVM_DEBUG(llvm::dbgs() << "  null back candidate\n");
+        continue;
+      }
+      LLVM_DEBUG(llvm::dbgs() << "  setting async_back on: " << *op << "\n");
+      setBoolAttrForAsyncOp(op, "async_back");
       if (op->hasAttr("async_front"))
         // An op cannot be both "async_back" and "async_front".
         op->removeAttr("async_front");
@@ -466,13 +494,15 @@ private:
   bool getAsyncDependenciesFromOp(Operation *op,
                                   SmallVector<Value> &dep_list) const {
     bool result = true;
-    if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+    if (auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op)) {
       dep_list = async_op.getAsyncDependencies();
-    } else if (auto async_for_op = dyn_cast<scf::ForOp>(op)) {
+    } else if (auto async_for_op = dyn_cast_if_present<scf::ForOp>(op)) {
       dep_list = async_for_op.getInitArgs();
-    } else if (auto async_parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+    } else if (auto async_parallel_op =
+                   dyn_cast_if_present<scf::ParallelOp>(op)) {
       dep_list = async_parallel_op.getInitVals();
-    } else if (auto affine_if_op = dyn_cast<mlir::affine::AffineIfOp>(op)) {
+    } else if (auto affine_if_op =
+                   dyn_cast_if_present<mlir::affine::AffineIfOp>(op)) {
       auto &first_child_op_in_then_block =
           affine_if_op.getThenBlock()->getOperations().front();
       return getAsyncDependenciesFromOp(&first_child_op_in_then_block,
@@ -482,21 +512,25 @@ private:
     return result;
   }
 
-  void setBoolAttrForAsyncOp(OpBuilder builder, Operation *op,
-                             std::string attr) const {
-    if (auto aif = dyn_cast<affine::AffineIfOp>(op)) {
-      aif.getThenBlock()->walk([&](Operation *child_op) {
-        child_op->setAttr(attr, builder.getBoolAttr(true));
-      });
-      aif.getElseBlock()->walk([&](Operation *child_op) {
-        child_op->setAttr(attr, builder.getBoolAttr(true));
-      });
-    } else
-      op->setAttr(attr, builder.getBoolAttr(true));
+  void setBoolAttrForAsyncOp(Operation *op, std::string attr) const {
+    if (!op)
+      return;
+    auto boolAttr = BoolAttr::get(op->getContext(), true);
+    if (auto aif = dyn_cast_if_present<affine::AffineIfOp>(op)) {
+      if (aif.getThenBlock())
+        aif.getThenBlock()->walk(
+            [&](Operation *child_op) { child_op->setAttr(attr, boolAttr); });
+      if (aif.hasElse() && aif.getElseBlock())
+        aif.getElseBlock()->walk(
+            [&](Operation *child_op) { child_op->setAttr(attr, boolAttr); });
+    } else {
+      op->setAttr(attr, boolAttr);
+    }
   }
 
-  Operation *getOpAsBackOpCandidate(OpBuilder builder, Operation *op) const {
-    if (auto for_candidate = dyn_cast<scf::ForOp>(op)) {
+  Operation *getOpAsBackOpCandidate(PatternRewriter &builder,
+                                    Operation *op) const {
+    if (auto for_candidate = dyn_cast_if_present<scf::ForOp>(op)) {
       // Note: if back candidate is scf.for, then since scf.yield is non
       // blocking, an air.wait_all barrier needs to be inserted here
       builder.setInsertionPointAfter(for_candidate);
@@ -586,7 +620,7 @@ private:
   void skipOverOpInDependencyGraph(OpBuilder &builder, Operation *op,
                                    mlir::Region &region) const {
 
-    auto async_op = dyn_cast<air::AsyncOpInterface>(op);
+    auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op);
     if (!async_op)
       return;
 
@@ -621,7 +655,7 @@ FailureOr<air::HerdOp> hoistAIRHerdInForImpl(air::HerdOp herdOp,
   SmallVector<scf::ForOp> for_loop_nest;
   Operation *parent = herdOp->getParentOp();
   while (parent && parent != destRegion->getParentOp()) {
-    if (auto fop = dyn_cast<scf::ForOp>(parent)) {
+    if (auto fop = dyn_cast_if_present<scf::ForOp>(parent)) {
       if (hasNImpureOps(fop.getBody(), 1))
         for_loop_nest.push_back(fop);
       else
@@ -878,8 +912,8 @@ struct HoistAIRHerdsToSharedRegionPattern
     // Hoist herds to the shared parent region
     SmallVector<Operation *> processed, unprocessed;
     for (auto h : herdsWithSameName) {
-      auto newHerd =
-          hoistAIRHerdInForImpl(dyn_cast<air::HerdOp>(h), region, rewriter);
+      auto newHerd = hoistAIRHerdInForImpl(dyn_cast_if_present<air::HerdOp>(h),
+                                           region, rewriter);
       if (succeeded(newHerd)) {
         rewriter.eraseOp(h);
         processed.push_back(*newHerd);
@@ -1005,8 +1039,8 @@ struct ConstructPingPongDependencyPattern
 
     // Part 1: alloc to for
 
-    auto alloc_ping_exec = dyn_cast<air::ExecuteOp>(alloc_execs[0]);
-    auto alloc_pong_exec = dyn_cast<air::ExecuteOp>(alloc_execs[1]);
+    auto alloc_ping_exec = dyn_cast_if_present<air::ExecuteOp>(alloc_execs[0]);
+    auto alloc_pong_exec = dyn_cast_if_present<air::ExecuteOp>(alloc_execs[1]);
     auto alloc_ping_token = alloc_ping_exec.getAsyncToken();
     auto alloc_pong_token = alloc_pong_exec.getAsyncToken();
     air::WaitAllOp ping_pong_token_wait = air::WaitAllOp::create(
@@ -1111,17 +1145,34 @@ struct ConstructPingPongDependencyPattern
 
     // Part 4: Connect yield
     // Note: currently only supports producer and consumer dep graphs with
-    // single back
-    rewriter.setInsertionPointToEnd(new_loop_op.getBody());
+    // single back.
+    // Insert new ops BEFORE the yield terminator (not after).
+    auto *yieldTerm = new_loop_op.getBody()->getTerminator();
+    if (yieldTerm)
+      rewriter.setInsertionPoint(yieldTerm);
+    else
+      rewriter.setInsertionPointToEnd(new_loop_op.getBody());
     SmallVector<Value, 1> yield_operands = {
         getJointTokenFromOps(rewriter, ping_consumer_backs),
         getJointTokenFromOps(rewriter, pong_consumer_backs),
         getJointTokenFromOps(rewriter, pong_consumer_backs),
         getJointTokenFromOps(rewriter, pong_producer_backs)};
-    for (auto v : yield_operands) {
-      if (!v)
-        return failure();
+    for (unsigned i = 0; i < yield_operands.size(); i++) {
+      if (!yield_operands[i]) {
+        // Create a placeholder wait_all if yield operand is null (e.g.,
+        // when consumer/producer backs are empty after isolation).
+        yield_operands[i] = air::WaitAllOp::create(
+                                rewriter, new_loop_op.getLoc(),
+                                air::AsyncTokenType::get(rewriter.getContext()),
+                                SmallVector<Value>{})
+                                .getAsyncToken();
+      }
     }
+    // Erase any existing yield and create a new one with the correct operands.
+    auto *bodyBlock = new_loop_op.getBody();
+    if (!bodyBlock->empty() &&
+        bodyBlock->back().hasTrait<OpTrait::IsTerminator>())
+      rewriter.eraseOp(&bodyBlock->back());
     scf::YieldOp::create(rewriter, new_loop_op.getLoc(), yield_operands);
 
     for_op.erase();
@@ -1169,13 +1220,23 @@ private:
                                SmallVector<Value, 1> iter_operands) const {
 
     builder.setInsertionPoint(loop_op);
-    scf::ForOp new_loop_op = scf::ForOp::create(
-        builder, loop_op.getLoc(), loop_op.getLowerBound(),
-        loop_op.getUpperBound(), loop_op.getStep(), iter_operands);
+    scf::ForOp new_loop_op = builder.create<scf::ForOp>(
+        loop_op.getLoc(), loop_op.getLowerBound(), loop_op.getUpperBound(),
+        loop_op.getStep(), iter_operands);
 
-    if (auto attr = loop_op->getAttrOfType<StringAttr>(
-            SymbolTable::getSymbolAttrName()))
-      new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+    // LLVM 23: ForOp::create may not auto-insert a yield. Ensure one
+    // exists before splicing so ops get inserted before it.
+    if (new_loop_op.getBody()->empty() ||
+        !new_loop_op.getBody()->back().hasTrait<OpTrait::IsTerminator>()) {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToEnd(new_loop_op.getBody());
+      scf::YieldOp::create(builder, new_loop_op.getLoc(),
+                           ValueRange(new_loop_op.getRegionIterArgs()));
+    }
+
+    // Copy all attributes from old loop (sym_name, unroll, etc.)
+    for (auto attr : loop_op->getAttrs())
+      new_loop_op->setAttr(attr.getName(), attr.getValue());
 
     // Splice the operations inside loop op
     auto &bb = new_loop_op.getBody()->getOperations();
@@ -1210,12 +1271,12 @@ private:
         parent = parent->getParentOp();
       }
       return token;
-    } else if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+    } else if (auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op)) {
       return async_op.getAsyncToken();
-    } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
+    } else if (auto for_op = dyn_cast_if_present<scf::ForOp>(op)) {
       token = getAsyncTokenFromValues(for_op->getResults());
       return token;
-    } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+    } else if (auto parallel_op = dyn_cast_if_present<scf::ParallelOp>(op)) {
       token = getAsyncTokenFromValues(parallel_op->getResults());
       return token;
     } else
@@ -1261,7 +1322,7 @@ private:
     Operation *parent = op->getParentOp();
     scf::ForOp output = nullptr;
     while (parent != ancestor_for.getOperation()) {
-      if (auto parent_for = dyn_cast<scf::ForOp>(parent)) {
+      if (auto parent_for = dyn_cast_if_present<scf::ForOp>(parent)) {
         output = parent_for;
       }
       parent = parent->getParentOp();
@@ -1278,7 +1339,7 @@ private:
     Operation *parent = op->getParentOp();
     scf::ParallelOp output = nullptr;
     while (parent != ancestor_for.getOperation()) {
-      if (auto parent_parallel = dyn_cast<scf::ParallelOp>(parent)) {
+      if (auto parent_parallel = dyn_cast_if_present<scf::ParallelOp>(parent)) {
         output = parent_parallel;
       }
       parent = parent->getParentOp();
@@ -1398,7 +1459,7 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
     if (!omitMemorySpace.empty()) {
       bool shouldSkip = false;
       for (auto op : alloc_ops) {
-        auto alloc_op = dyn_cast<memref::AllocOp>(op);
+        auto alloc_op = dyn_cast_if_present<memref::AllocOp>(op);
         if (!alloc_op)
           continue;
         auto memref_type = llvm::cast<MemRefType>(alloc_op.getType());
@@ -1599,7 +1660,7 @@ LogicalResult eraseOpFromScfFor(RewriterBase &rewriter, scf::ForOp sfo,
                                 Operation *op) {
   OpBuilder::InsertionGuard guard(rewriter);
   IRMapping remap;
-  if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp())) {
+  if (auto exec = dyn_cast_if_present<air::ExecuteOp>(op->getParentOp())) {
     rewriter.replaceAllUsesWith(exec.getResult(1), sfo.getInductionVar());
     if (sfo.getNumRegionIterArgs())
       rewriter.replaceAllUsesWith(exec.getAsyncToken(),
@@ -1630,7 +1691,7 @@ static FailureOr<scf::ForOp> foldSingleAffineApplyIntoScfForBounds(
   if (apply.getAffineMap().getNumInputs() != 1)
     return failure();
   auto val = apply->getOperand(0);
-  auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+  auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
   if (!ivArg)
     return failure();
   if (!ivArg.getOwner())
@@ -1641,7 +1702,8 @@ static FailureOr<scf::ForOp> foldSingleAffineApplyIntoScfForBounds(
     return failure();
   if (apply.getResult().use_empty())
     return failure();
-  if (auto exec_apply = dyn_cast<air::ExecuteOp>(apply->getParentOp()))
+  if (auto exec_apply =
+          dyn_cast_if_present<air::ExecuteOp>(apply->getParentOp()))
     if (exec_apply->getResult(1).use_empty())
       return failure();
 
@@ -1687,7 +1749,7 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
     if (apply.getAffineMap().getNumInputs() != 1)
       return failure();
     auto val = apply->getOperand(0);
-    auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+    auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
     if (!ivArg)
       return failure();
     if (!ivArg.getOwner())
@@ -1696,15 +1758,17 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
       return failure();
     if (apply.getResult().use_empty())
       return failure();
-    if (auto exec_apply = dyn_cast<air::ExecuteOp>(apply->getParentOp()))
+    if (auto exec_apply =
+            dyn_cast_if_present<air::ExecuteOp>(apply->getParentOp()))
       if (exec_apply->getResult(1).use_empty())
         return failure();
     auto *containingOp = ivArg.getOwner()->getParentOp();
 
     // Apply affine map to loop step and bound
-    if (auto sfo = dyn_cast<scf::ForOp>(containingOp)) {
+    if (auto sfo = dyn_cast_if_present<scf::ForOp>(containingOp)) {
       return foldSingleAffineApplyIntoScfForBounds(sfo, apply, rewriter);
-    } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
+    } else if (auto afo =
+                   dyn_cast_if_present<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
       int tripCount = *getStaticAffineForTripCountAsInt(afo);
@@ -1753,7 +1817,7 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
         const_val = val;
         continue;
       }
-      auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+      auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
       if (!ivArg)
         continue;
       if (!ivArg.getOwner())
@@ -1762,7 +1826,8 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
         continue;
       if (op.getResult().use_empty())
         continue;
-      if (auto exec_muli = dyn_cast<air::ExecuteOp>(op->getParentOp()))
+      if (auto exec_muli =
+              dyn_cast_if_present<air::ExecuteOp>(op->getParentOp()))
         if (exec_muli->getResult(1).use_empty())
           continue;
       if (isa<scf::ForOp>(ivArg.getOwner()->getParentOp())) {
@@ -1782,7 +1847,7 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
 
     // Apply arith muli to loop step and bound
     int muli_factor = *mlir::getConstantIntValue(const_val);
-    if (auto sfo = dyn_cast<scf::ForOp>(containingOp)) {
+    if (auto sfo = dyn_cast_if_present<scf::ForOp>(containingOp)) {
       if (!getStaticScfForTripCountAsInt(sfo))
         return failure();
       int tripCount = *getStaticScfForTripCountAsInt(sfo);
@@ -1798,7 +1863,8 @@ struct CanonicalizeArithMuliOpOnLoopInductionVar
                                     valueType);
       if (failed(res))
         return failure();
-    } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
+    } else if (auto afo =
+                   dyn_cast_if_present<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
       int tripCount = *getStaticAffineForTripCountAsInt(afo);
@@ -1833,7 +1899,7 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
         const_val = val;
         continue;
       }
-      auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+      auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
       if (!ivArg)
         continue;
       if (!ivArg.getOwner())
@@ -1842,7 +1908,8 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
         continue;
       if (op.getResult().use_empty())
         continue;
-      if (auto exec_addi = dyn_cast<air::ExecuteOp>(op->getParentOp()))
+      if (auto exec_addi =
+              dyn_cast_if_present<air::ExecuteOp>(op->getParentOp()))
         if (exec_addi->getResult(1).use_empty())
           continue;
       if (isa<scf::ForOp>(ivArg.getOwner()->getParentOp())) {
@@ -1862,7 +1929,7 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
 
     // Apply arith muli to loop step and bound
     int addi_operand = *mlir::getConstantIntValue(const_val);
-    if (auto sfo = dyn_cast<scf::ForOp>(containingOp)) {
+    if (auto sfo = dyn_cast_if_present<scf::ForOp>(containingOp)) {
       if (!getStaticScfForTripCountAsInt(sfo))
         return failure();
       int tripCount = *getStaticScfForTripCountAsInt(sfo);
@@ -1878,7 +1945,8 @@ struct CanonicalizeArithAddiOpOnLoopInductionVar
                                     valueType);
       if (failed(res))
         return failure();
-    } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
+    } else if (auto afo =
+                   dyn_cast_if_present<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
       int tripCount = *getStaticAffineForTripCountAsInt(afo);
@@ -1912,7 +1980,7 @@ struct CanonicalizeArithIndexCastOpOnLoopInductionVar
     Value val = op.getOperand();
     if (!val)
       return failure();
-    auto ivArg = llvm::dyn_cast<BlockArgument>(val);
+    auto ivArg = llvm::dyn_cast_if_present<BlockArgument>(val);
     if (!ivArg)
       return failure();
     if (!ivArg.getOwner())
@@ -1921,11 +1989,11 @@ struct CanonicalizeArithIndexCastOpOnLoopInductionVar
       return failure();
     if (op.getResult().use_empty())
       return failure();
-    if (auto exec = dyn_cast<air::ExecuteOp>(op->getParentOp()))
+    if (auto exec = dyn_cast_if_present<air::ExecuteOp>(op->getParentOp()))
       if (exec->getResult(1).use_empty())
         return failure();
     if (auto containingScfFor =
-            dyn_cast<scf::ForOp>(ivArg.getOwner()->getParentOp())) {
+            dyn_cast_if_present<scf::ForOp>(ivArg.getOwner()->getParentOp())) {
       if (containingScfFor.getInductionVar() != ivArg)
         return failure();
       containingOp = containingScfFor;
@@ -1937,7 +2005,7 @@ struct CanonicalizeArithIndexCastOpOnLoopInductionVar
       return failure();
 
     // Cast back all of the loop's bounds to index type.
-    auto sfo = dyn_cast<scf::ForOp>(containingOp);
+    auto sfo = dyn_cast_if_present<scf::ForOp>(containingOp);
     if (!getStaticScfForTripCountAsInt(sfo))
       return failure();
     int new_ub = *mlir::getConstantIntValue(sfo.getUpperBound());
@@ -1963,9 +2031,11 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
   AIRSpecializeChannelWrapAndStrideInScfFor(MLIRContext *ctx, int &maxNumDims,
                                             int &maxSize,
-                                            bool &enableRepeatAtHighestDim)
+                                            bool &enableRepeatAtHighestDim,
+                                            bool &skipZeroStride)
       : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize),
-        enableRepeatAtHighestDim(enableRepeatAtHighestDim) {}
+        enableRepeatAtHighestDim(enableRepeatAtHighestDim),
+        skipZeroStride(skipZeroStride) {}
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
@@ -2012,7 +2082,7 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
-        wraps, strides, channel_op.getMemref());
+        wraps, strides, channel_op.getMemref(), skipZeroStride);
     if (res.failed())
       return failure();
 
@@ -2121,9 +2191,9 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     // Clear all external uses of for_op before erasing it.
     for (auto res : for_op.getResults()) {
       if (isa<air::AsyncTokenType>(res.getType())) {
-        res.replaceAllUsesWith(
-            dyn_cast<air::AsyncOpInterface>(new_chan_op.getOperation())
-                .getAsyncToken());
+        res.replaceAllUsesWith(dyn_cast_if_present<air::AsyncOpInterface>(
+                                   new_chan_op.getOperation())
+                                   .getAsyncToken());
       }
     }
     rewriter.replaceAllUsesWith(for_op.getInductionVar(),
@@ -2137,6 +2207,7 @@ private:
   int &maxNumDims;
   int &maxSize;
   bool &enableRepeatAtHighestDim;
+  bool &skipZeroStride;
 };
 
 // This pattern should be executed after
@@ -2258,7 +2329,7 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
 
     auto res = foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
-        wraps, strides, channel_op.getMemref());
+        wraps, strides, channel_op.getMemref(), false);
     if (res.failed())
       return failure();
 
@@ -2312,9 +2383,9 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
 
     for (auto res : for_op.getResults()) {
       if (isa<air::AsyncTokenType>(res.getType())) {
-        res.replaceAllUsesWith(
-            dyn_cast<air::AsyncOpInterface>(new_chan_op.getOperation())
-                .getAsyncToken());
+        res.replaceAllUsesWith(dyn_cast_if_present<air::AsyncOpInterface>(
+                                   new_chan_op.getOperation())
+                                   .getAsyncToken());
       }
     }
     rewriter.replaceAllUsesWith(
@@ -2432,7 +2503,7 @@ struct UnrollChannelByFactorPattern {
 public:
   void runUnrollChannelByFactorPattern(func::FuncOp funcOp, Operation *op,
                                        int chanDim, int factor) {
-    air::ChannelOp chan_op = dyn_cast<air::ChannelOp>(op);
+    air::ChannelOp chan_op = dyn_cast_if_present<air::ChannelOp>(op);
     OpBuilder builder(op);
     SmallVector<int64_t, 2> sizes =
         extractFromIntegerArrayAttr<int64_t>(chan_op.getSize());
@@ -2484,7 +2555,7 @@ private:
   int factor = 1;
 
   Value createWaitAllToCollectIncomingTokens(OpBuilder builder, Operation *op) {
-    auto async_op = dyn_cast<air::AsyncOpInterface>(op);
+    auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op);
     if (!async_op) {
       op->emitOpError("is air.channel_put but not async");
       return nullptr;
@@ -2618,7 +2689,8 @@ public:
         dma_op_history.push_back(dma_op);
         SmallVector<Value, 1> loop_dep_history;
         std::vector<Operation *> op_history;
-        auto memcpyif_op = dyn_cast<MemcpyInterface>(dma_op.getOperation());
+        auto memcpyif_op =
+            dyn_cast_if_present<MemcpyInterface>(dma_op.getOperation());
         traceDependentInductionVar(memcpyif_op, loop_dep_history, op_history);
         dma_op_loop_dep_history.push_back(loop_dep_history);
       }
@@ -2657,10 +2729,10 @@ public:
         isVariantWrtHerdCols = false;
       }
 
-      auto numColsOp = dyn_cast<arith::ConstantIndexOp>(
+      auto numColsOp = dyn_cast_if_present<arith::ConstantIndexOp>(
           hl_op.getSizeOperands()[1].getDefiningOp());
       auto numCols = numColsOp.value();
-      auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(
+      auto numRowsOp = dyn_cast_if_present<arith::ConstantIndexOp>(
           hl_op.getSizeOperands()[0].getDefiningOp());
       auto numRows = numRowsOp.value();
       if (isVariantWrtHerdRows && !isVariantWrtHerdCols) {
@@ -2775,11 +2847,15 @@ public:
 
     air::AsyncOpInterface async_op;
     if (air::ExecuteOp exec_op = op->getParentOfType<air::ExecuteOp>()) {
-      async_op = dyn_cast<air::AsyncOpInterface>(exec_op.getOperation());
-    } else if (auto hl_op = dyn_cast<air::HerdOp>(op)) {
-      async_op = dyn_cast<air::AsyncOpInterface>(hl_op.getOperation());
-    } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
-      async_op = dyn_cast<air::AsyncOpInterface>(hier_op.getOperation());
+      async_op =
+          dyn_cast_if_present<air::AsyncOpInterface>(exec_op.getOperation());
+    } else if (auto hl_op = dyn_cast_if_present<air::HerdOp>(op)) {
+      async_op =
+          dyn_cast_if_present<air::AsyncOpInterface>(hl_op.getOperation());
+    } else if (auto hier_op =
+                   dyn_cast_if_present<air::HierarchyInterface>(op)) {
+      async_op =
+          dyn_cast_if_present<air::AsyncOpInterface>(hier_op.getOperation());
     } else {
       return;
     }
@@ -2792,8 +2868,8 @@ public:
           // Disconnect dependency between async op and upstream dma
           async_op.eraseAsyncDependency(i);
           // Reconnect upstream dma's dep list to async op
-          auto upstream_dma_async =
-              dyn_cast<air::AsyncOpInterface>(upstream_dma.getOperation());
+          auto upstream_dma_async = dyn_cast_if_present<air::AsyncOpInterface>(
+              upstream_dma.getOperation());
           for (auto token : upstream_dma_async.getAsyncDependencies()) {
             async_op.addAsyncDependency(token);
           }
@@ -2816,9 +2892,9 @@ public:
           }
           // Elevate from argument to operand of hierarchy op
           if (auto hier_op = getHierarchyArgOwner(srcMemref)) {
-            auto dep_list =
-                dyn_cast<air::AsyncOpInterface>(hier_op.getOperation())
-                    .getAsyncDependencies();
+            auto dep_list = dyn_cast_if_present<air::AsyncOpInterface>(
+                                hier_op.getOperation())
+                                .getAsyncDependencies();
             for (unsigned i = 0; i < hier_op.getNumKernelOperands(); i++) {
               if (hier_op.getKernelArgument(i) == srcMemref) {
                 auto &hier_opoperand = hier_op->getOpOperand(
@@ -3144,12 +3220,16 @@ public:
       runIsolateScfForOpForPingPong(f);
     for (auto f : funcOps)
       runOpAnnotationPatterns(f);
+    LLVM_DEBUG(llvm::dbgs() << "After annotation:\n" << module << "\n");
     for (auto f : funcOps)
       runLoopUnroll(f);
+    LLVM_DEBUG(llvm::dbgs() << "After unroll:\n" << module << "\n");
     for (auto f : funcOps)
       runHoistMemallocPatterns(f);
+    LLVM_DEBUG(llvm::dbgs() << "After hoist:\n" << module << "\n");
     for (auto f : funcOps)
       runConstructPingPongDependencyPatterns(f);
+    LLVM_DEBUG(llvm::dbgs() << "After construct:\n" << module << "\n");
     for (auto f : funcOps)
       runCleanUpAttrs(f);
   }
@@ -3214,7 +3294,8 @@ private:
 
 LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
     Region *region, int maxNumDims = -1, int maxSize = -1,
-    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false) {
+    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false,
+    bool skipZeroStride = false) {
   MLIRContext *ctx = region->getContext();
   RewritePatternSet preproc_patterns(ctx);
   preproc_patterns
@@ -3242,7 +3323,7 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
                   CanonicalizeArithIndexCastOpOnLoopInductionVar,
                   AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
   patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor>(
-      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim);
+      ctx, maxNumDims, maxSize, enableRepeatAtHighestDim, skipZeroStride);
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
@@ -3677,7 +3758,7 @@ private:
       } else
         newForOp = scf::ForOp::create(builder, loc, zeroIdx, oneIdx, oneIdx);
       builder.setInsertionPointToStart(newForOp.getBody());
-      auto newOp = dyn_cast<T>(builder.clone(*op, remap));
+      auto newOp = dyn_cast_if_present<T>(builder.clone(*op, remap));
 
       if (auto oldAsyncToken = air::getAsyncTokenFromOp(op)) {
         scf::YieldOp::create(builder, loc, newOp.getAsyncToken());
@@ -3813,7 +3894,7 @@ private:
       auto aLoop = shorter_loop_nest[i];
       auto bLoop = longer_loop_nest[index++];
       if (!areEquivalentControlLoops(aLoop, bLoop)) {
-        mismatchScfFor = dyn_cast<scf::ForOp>(bLoop->getParentOp());
+        mismatchScfFor = dyn_cast_if_present<scf::ForOp>(bLoop->getParentOp());
         bLoop = longer_loop_nest[index++];
         if (!areEquivalentControlLoops(aLoop, bLoop))
           return scf::ForOp();
@@ -3901,10 +3982,10 @@ private:
       return true;
     // Try to resolve their defining operations through hierarchy, if they're
     // block arguments.
-    auto aHierOper =
-        getHierOperandFromHierBlockArgument(llvm::dyn_cast<BlockArgument>(a));
-    auto bHierOper =
-        getHierOperandFromHierBlockArgument(llvm::dyn_cast<BlockArgument>(b));
+    auto aHierOper = getHierOperandFromHierBlockArgument(
+        llvm::dyn_cast_if_present<BlockArgument>(a));
+    auto bHierOper = getHierOperandFromHierBlockArgument(
+        llvm::dyn_cast_if_present<BlockArgument>(b));
     // If either couldn't be resolved, conservatively assume no affinity.
     if (!(aHierOper && bHierOper))
       return false;
@@ -3942,10 +4023,10 @@ private:
         auto b_parent = b_loop_nest[j]->getParentOp();
         if (!b_parent)
           continue;
-        a_aif = dyn_cast<affine::AffineIfOp>(a_parent);
+        a_aif = dyn_cast_if_present<affine::AffineIfOp>(a_parent);
         if (!a_aif)
           continue;
-        b_aif = dyn_cast<affine::AffineIfOp>(b_parent);
+        b_aif = dyn_cast_if_present<affine::AffineIfOp>(b_parent);
         if (!b_aif)
           continue;
         // Reached innermost affine.if op for both a and b loop nests.
@@ -4093,13 +4174,14 @@ private:
     std::vector<Block *> parent_loop_nest;
     Operation *parent = op;
     while (parent) {
-      if (auto forOp = dyn_cast<scf::ForOp>(parent))
+      if (auto forOp = dyn_cast_if_present<scf::ForOp>(parent))
         parent_loop_nest.push_back(forOp.getBody());
-      else if (auto parOp = dyn_cast<scf::ParallelOp>(parent))
+      else if (auto parOp = dyn_cast_if_present<scf::ParallelOp>(parent))
         parent_loop_nest.push_back(parOp.getBody());
-      else if (auto hierOp = dyn_cast<air::HierarchyInterface>(parent))
+      else if (auto hierOp =
+                   dyn_cast_if_present<air::HierarchyInterface>(parent))
         parent_loop_nest.push_back(&hierOp->getRegion(0).front());
-      else if (auto aifOp = dyn_cast<affine::AffineIfOp>(parent)) {
+      else if (auto aifOp = dyn_cast_if_present<affine::AffineIfOp>(parent)) {
         if (aifOp.getThenBlock()->findAncestorOpInBlock(*op))
           parent_loop_nest.push_back(aifOp.getThenBlock());
         else if (aifOp.hasElse() &&
@@ -4118,8 +4200,8 @@ private:
     if (!b)
       return false;
     if (isa<scf::ForOp>(a) && isa<scf::ForOp>(b)) {
-      auto a_for = dyn_cast<scf::ForOp>(a);
-      auto b_for = dyn_cast<scf::ForOp>(b);
+      auto a_for = dyn_cast_if_present<scf::ForOp>(a);
+      auto b_for = dyn_cast_if_present<scf::ForOp>(b);
       if (a_for == b_for)
         return true;
       std::optional<int64_t> aLbCstOp =
@@ -4140,8 +4222,8 @@ private:
             *aStepCstOp == *bStepCstOp)
           return true;
     } else if (isa<scf::ParallelOp>(a) && isa<scf::ParallelOp>(b)) {
-      auto a_par = dyn_cast<scf::ParallelOp>(a);
-      auto b_par = dyn_cast<scf::ParallelOp>(b);
+      auto a_par = dyn_cast_if_present<scf::ParallelOp>(a);
+      auto b_par = dyn_cast_if_present<scf::ParallelOp>(b);
       if (a_par == b_par)
         return true;
       if (a_par.getStep().size() != b_par.getStep().size())
@@ -4182,8 +4264,8 @@ private:
       if (a == b)
         return false; // Sharing the same affine.if means spatially parallel
                       // ops. Cannot merge by for loop (i.e. in time).
-      auto aIf = dyn_cast<affine::AffineIfOp>(a);
-      auto bIf = dyn_cast<affine::AffineIfOp>(b);
+      auto aIf = dyn_cast_if_present<affine::AffineIfOp>(a);
+      auto bIf = dyn_cast_if_present<affine::AffineIfOp>(b);
       if (aBlock == aIf.getThenBlock() && bBlock == bIf.getThenBlock())
         return true;
       if (aIf.hasElse() && bIf.hasElse() && aBlock == aIf.getElseBlock() &&
@@ -4330,18 +4412,20 @@ private:
     if (a_loop_nest.size() != b_loop_nest.size())
       return;
     for (unsigned i = 0; i < a_loop_nest.size(); i++) {
-      if (auto a_for = dyn_cast<scf::ForOp>(a_loop_nest[i]->getParentOp())) {
-        if (auto b_for = dyn_cast<scf::ForOp>(b_loop_nest[i]->getParentOp())) {
+      if (auto a_for =
+              dyn_cast_if_present<scf::ForOp>(a_loop_nest[i]->getParentOp())) {
+        if (auto b_for = dyn_cast_if_present<scf::ForOp>(
+                b_loop_nest[i]->getParentOp())) {
           for (unsigned j = 0; j < a_for.getBody()->getNumArguments(); j++) {
             remap.map(b_for.getBody()->getArgument(j),
                       a_for.getBody()->getArgument(j));
           }
         }
       }
-      if (auto a_par =
-              dyn_cast<scf::ParallelOp>(a_loop_nest[i]->getParentOp())) {
-        if (auto b_par =
-                dyn_cast<scf::ParallelOp>(b_loop_nest[i]->getParentOp())) {
+      if (auto a_par = dyn_cast_if_present<scf::ParallelOp>(
+              a_loop_nest[i]->getParentOp())) {
+        if (auto b_par = dyn_cast_if_present<scf::ParallelOp>(
+                b_loop_nest[i]->getParentOp())) {
           for (unsigned j = 0; j < a_par.getBody()->getNumArguments(); j++)
             remap.map(b_par.getBody()->getArgument(j),
                       a_par.getBody()->getArgument(j));
@@ -4587,7 +4671,7 @@ private:
       if (isa<memref::AllocOp, memref::DeallocOp>(o))
         continue; // Skip over allocs and deallocs; they are hoisted separately
                   // beforehand.
-      if (auto exec = dyn_cast<air::ExecuteOp>(o)) {
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(o)) {
         if (llvm::any_of(exec.getChildOps(), [](Operation &child) {
               return isa<memref::AllocOp, memref::DeallocOp>(child);
             })) {
@@ -4631,11 +4715,69 @@ private:
           }
           return connectedComponents;
         };
+    // Precompute channel info per candidate op, walking nested ops once.
+    // Each entry is (channel_name, is_put, const_indices).
+    struct ChanKey {
+      StringRef name;
+      bool isPut;
+      SmallVector<std::optional<int64_t>> constIndices;
+    };
+    llvm::DenseMap<Operation *, SmallVector<ChanKey>> candidateChanKeys;
+    for (auto op : candidate_ops) {
+      SmallVector<ChanKey> keys;
+      auto collect = [&](air::ChannelInterface chan) {
+        ChanKey k;
+        k.name = chan.getChanName();
+        k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
+        for (auto idx : chan.getIndices())
+          k.constIndices.push_back(getConstantIntValue(idx));
+        keys.push_back(std::move(k));
+      };
+      if (auto chan = dyn_cast<air::ChannelInterface>(op))
+        collect(chan);
+      else
+        op->walk([&](air::ChannelInterface chan) { collect(chan); });
+      candidateChanKeys[op] = std::move(keys);
+    }
+
+    // Check if two candidate ops have a same-direction channel-resource
+    // dependency using the precomputed keys.  This prevents the isolation
+    // pattern from splitting same-channel, same-direction ops at
+    // different loop depths into independent loops, which would break
+    // the per-iteration interleaving needed by cycling tile BD chains.
+    auto haveChannelResourceDep = [&](Operation *a, Operation *b) -> bool {
+      for (auto &keyA : candidateChanKeys[a]) {
+        for (auto &keyB : candidateChanKeys[b]) {
+          if (keyA.isPut != keyB.isPut)
+            continue;
+          if (keyA.name != keyB.name)
+            continue;
+          // Check indices: if we can prove they differ in at least one
+          // dimension (both indices constant and unequal), we treat the
+          // accesses as independent; otherwise we conservatively assume a
+          // dependency (including when ranks differ).
+          if (keyA.constIndices.size() != keyB.constIndices.size())
+            return true;
+          bool provenIndependent = false;
+          for (unsigned i = 0; i < keyA.constIndices.size(); i++) {
+            if (keyA.constIndices[i] && keyB.constIndices[i] &&
+                *keyA.constIndices[i] != *keyB.constIndices[i]) {
+              provenIndependent = true;
+              break;
+            }
+          }
+          if (!provenIndependent)
+            return true;
+        }
+      }
+      return false;
+    };
     llvm::MapVector<Operation *, SmallVector<Operation *>> depGraph;
     for (auto sinkOp : candidate_ops) {
       depGraph[sinkOp] = SmallVector<Operation *>{};
       for (auto sourceOp : candidate_ops)
-        if (areAsyncDependent(sourceOp, sinkOp) && sourceOp != sinkOp)
+        if (sourceOp != sinkOp && (areAsyncDependent(sourceOp, sinkOp) ||
+                                   haveChannelResourceDep(sourceOp, sinkOp)))
           depGraph[sinkOp].push_back(sourceOp);
     }
     // Partition the graph.
@@ -4766,7 +4908,7 @@ struct ShrinkMemrefSizesByAccessPattern
 
     // Get memref.
     Value memref = alloc.getMemref();
-    if (auto exec = dyn_cast<air::ExecuteOp>(alloc->getParentOp()))
+    if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc->getParentOp()))
       memref = exec->getResult(1);
 
     if (alloc->hasAttr("shrinkage"))
@@ -4799,7 +4941,7 @@ struct ShrinkMemrefSizesByAccessPattern
     if (shrinkMemref) {
       // Shrink access patterns to memref.
       for (auto user : users) {
-        auto chanOp = dyn_cast<air::ChannelInterface>(user);
+        auto chanOp = dyn_cast_if_present<air::ChannelInterface>(user);
         if (!chanOp)
           continue;
         if (updateAccessPatternAfterShrinkage(chanOp, memref_shape,
@@ -4811,7 +4953,7 @@ struct ShrinkMemrefSizesByAccessPattern
       }
       for (auto user : users) {
         // Update access patterns to shrunk memref from memref.subview.
-        auto subViewOp = dyn_cast<memref::SubViewOp>(user);
+        auto subViewOp = dyn_cast_if_present<memref::SubViewOp>(user);
         if (!subViewOp)
           continue;
         if (updateAccessPatternAfterShrinkage(subViewOp, users,
@@ -4824,8 +4966,8 @@ struct ShrinkMemrefSizesByAccessPattern
       for (auto user : users) {
         // Update access patterns to shrunk memref from
         // vector.transfer_read/write.
-        auto transReadOp = dyn_cast<vector::TransferReadOp>(user);
-        auto transWriteOp = dyn_cast<vector::TransferWriteOp>(user);
+        auto transReadOp = dyn_cast_if_present<vector::TransferReadOp>(user);
+        auto transWriteOp = dyn_cast_if_present<vector::TransferWriteOp>(user);
         if (transReadOp) {
           if (updateAccessPatternAfterShrinkage(transReadOp, rewriter)
                   .failed()) {
@@ -4848,7 +4990,8 @@ struct ShrinkMemrefSizesByAccessPattern
           llvm::cast<BaseMemRefType>(memref.getType()).getMemorySpace();
       auto newMemrefType = MemRefType::get(overall_access_bounds, elemType,
                                            nullptr, memorySpace);
-      if (auto execOp = dyn_cast<air::ExecuteOp>(alloc->getParentOp())) {
+      if (auto execOp =
+              dyn_cast_if_present<air::ExecuteOp>(alloc->getParentOp())) {
         rewriter.setInsertionPoint(execOp);
         auto newExecOp = air::ExecuteOp::create(
             rewriter, execOp->getLoc(),
@@ -4868,7 +5011,7 @@ struct ShrinkMemrefSizesByAccessPattern
           for (auto user : res.getUsers()) {
             if (!isa<air::HerdOp>(user))
               continue;
-            auto herdOp = dyn_cast<air::HerdOp>(user);
+            auto herdOp = dyn_cast_if_present<air::HerdOp>(user);
             updateHerdArgumentTypes(herdOp);
           }
         rewriter.eraseOp(execOp);
@@ -4899,7 +5042,7 @@ private:
                                 memref::DeallocOp &dealloc,
                                 OpBuilder &builder) const {
     for (auto user : memref.getUsers()) {
-      if (auto da = dyn_cast<memref::DeallocOp>(user))
+      if (auto da = dyn_cast_if_present<memref::DeallocOp>(user))
         dealloc = da;
       else if (isa<air::ChannelInterface>(user))
         users.push_back(user);
@@ -4909,7 +5052,7 @@ private:
         users.push_back(user);
       else if (isa<mlir::vector::TransferWriteOp>(user))
         users.push_back(user);
-      else if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
+      else if (auto herdOp = dyn_cast_if_present<air::HerdOp>(user)) {
         auto memrefInHerd = herdOp.getTiedKernelArgument(memref);
         if (memrefInHerd &&
             getAllChanUsers(memrefInHerd, users, dealloc, builder).failed())
@@ -4950,7 +5093,7 @@ private:
     auto new_offsets = getUpdatedOffsetsAfterShrinkage(
         memref_shape, overall_access_bounds, chanOp.getOffsets());
     int offsetListIdxOffset =
-        dyn_cast<air::AsyncOpInterface>(chanOp.getOperation())
+        dyn_cast_if_present<air::AsyncOpInterface>(chanOp.getOperation())
             .getAsyncDependencies()
             .size() +
         chanOp.getIndices().size() + 1;
@@ -5200,7 +5343,7 @@ private:
   // op, get all values being used by its region but defined above.
   SetVector<Value> getOperandsToOpOrExecute(Operation *op) const {
     SetVector<Value> opers;
-    if (auto execOp = dyn_cast<air::ExecuteOp>(op))
+    if (auto execOp = dyn_cast_if_present<air::ExecuteOp>(op))
       getUsedValuesDefinedAbove(execOp.getRegion(), opers);
     else
       opers.insert(op->getOperands().begin(), op->getOperands().end());
@@ -5214,11 +5357,12 @@ SmallVector<T> getTokenUsersOfType(air::AsyncOpInterface asyncOp) {
   SmallVector<T> tokenUsers;
   Value token = asyncOp.getAsyncToken();
   for (auto token_user : token.getUsers()) {
-    if (auto token_user_of_type = dyn_cast<T>(token_user))
+    if (auto token_user_of_type = dyn_cast_if_present<T>(token_user))
       tokenUsers.push_back(token_user_of_type);
-    else if (auto token_user_wait_all = dyn_cast<air::WaitAllOp>(token_user))
+    else if (auto token_user_wait_all =
+                 dyn_cast_if_present<air::WaitAllOp>(token_user))
       for (auto wa_user : token_user_wait_all.getAsyncToken().getUsers())
-        if (auto token_user_of_type = dyn_cast<T>(wa_user))
+        if (auto token_user_of_type = dyn_cast_if_present<T>(wa_user))
           tokenUsers.push_back(token_user_of_type);
   }
   return tokenUsers;
@@ -5482,7 +5626,8 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
           return isa<memref::DeallocOp>(child_op);
         }))
       continue;
-    auto dealloc = dyn_cast<memref::DeallocOp>(execOp.getChildOps().front());
+    auto dealloc =
+        dyn_cast_if_present<memref::DeallocOp>(execOp.getChildOps().front());
     for (auto &pair : alloc_dealloc_execs) {
       if (dealloc.getMemref() == pair.first.getResult(1)) {
         pair.second = execOp;
@@ -5689,7 +5834,7 @@ LogicalResult fuseLoopsInRegion(Region *region, PatternRewriter &rewriter,
   new_loop_op.walk([&](air::ChannelPutOp putOp) {
     air::ChannelGetOp getOp = nullptr;
     for (auto user : putOp.getMemref().getUsers())
-      if (auto get_user = dyn_cast<air::ChannelGetOp>(user))
+      if (auto get_user = dyn_cast_if_present<air::ChannelGetOp>(user))
         getOp = get_user;
     Operation *put_parent = putOp;
     while (put_parent->getParentOp() != new_loop_op) {
@@ -5807,11 +5952,11 @@ public:
     // Find indirect funcCall users of memref.
     auto getFuncCallIndirUser = [](Operation *u,
                                    SmallVector<func::CallOp> &funcCalls) {
-      if (auto funcCall = dyn_cast<func::CallOp>(u))
+      if (auto funcCall = dyn_cast_if_present<func::CallOp>(u))
         funcCalls.push_back(funcCall);
-      else if (auto subview = dyn_cast<memref::SubViewOp>(u)) {
+      else if (auto subview = dyn_cast_if_present<memref::SubViewOp>(u)) {
         for (auto subViewUser : subview.getResult().getUsers())
-          if (auto funcCall = dyn_cast<func::CallOp>(subViewUser))
+          if (auto funcCall = dyn_cast_if_present<func::CallOp>(subViewUser))
             funcCalls.push_back(funcCall);
       }
     };
@@ -5819,11 +5964,11 @@ public:
     SmallVector<func::CallOp> funcCalls;
     for (auto alloc : shrunkMemallocs) {
       Value memref = alloc.getMemref();
-      if (auto exec = dyn_cast<air::ExecuteOp>(alloc->getParentOp()))
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc->getParentOp()))
         memref = exec.getResult(1);
       for (auto user : memref.getUsers()) {
         getFuncCallIndirUser(user, funcCalls);
-        if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
+        if (auto herdOp = dyn_cast_if_present<air::HerdOp>(user)) {
           auto herdArg = herdOp.getTiedKernelArgument(memref);
           if (!herdArg)
             continue;
@@ -6101,7 +6246,8 @@ public:
             tiledLoops[i]->emitOpError("adding iter operands failed.");
             signalPassFailure();
           }
-          tiledLoops[i] = dyn_cast<scf::ForOp>(replaceRes->getOperation());
+          tiledLoops[i] =
+              dyn_cast_if_present<scf::ForOp>(replaceRes->getOperation());
         }
         // Backward traversing through tiledLoops, to update yields.
         for (auto tiledLoop : llvm::reverse(tiledLoops)) {
@@ -6270,7 +6416,8 @@ public:
       air::applyAIRSpecializeChannelWrapAndStridePattern(
           &seg.getBody(),
           /*maxNumDims*/ maxNumDims, /*maxSize*/ maxSize,
-          /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ false);
+          /*enableForLoopUnrolling*/ true, /*enableRepeatAtHighestDim*/ false,
+          /*skipZeroStride*/ true);
 
       // Create wait_all to synchronize body.
       IRRewriter rewriter(func.getContext());
@@ -6436,14 +6583,14 @@ struct AIRFuseAllocDeallocToAIRHierarchy : public OpRewritePattern<OpTy> {
          llvm::concat<std::pair<Operation *, Operation *>>(allocDeallocExecs,
                                                            allocsDeallocs)) {
       Value memref = nullptr;
-      if (auto exec = dyn_cast<air::ExecuteOp>(alloc))
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc))
         memref = alloc->getResult(1);
       else
-        memref = dyn_cast<memref::AllocOp>(alloc).getMemref();
+        memref = dyn_cast_if_present<memref::AllocOp>(alloc).getMemref();
       rewriter.replaceAllUsesWith(op.getTiedKernelArgument(memref), memref);
       // Remove alloc and dealloc results from the new herd's arg list.
       llvm::erase(kernelOpers, memref);
-      if (auto exec = dyn_cast<air::ExecuteOp>(alloc))
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc))
         llvm::erase(deps, exec.getAsyncToken());
       if (auto exec = dyn_cast_if_present<air::ExecuteOp>(dealloc))
         llvm::erase(deps, exec.getAsyncToken());
@@ -6638,22 +6785,22 @@ public:
     // Find indirect funcCall users of memref.
     auto getFuncCallIndirUser = [](Operation *u,
                                    SmallVector<func::CallOp> &funcCalls) {
-      if (auto funcCall = dyn_cast<func::CallOp>(u))
+      if (auto funcCall = dyn_cast_if_present<func::CallOp>(u))
         funcCalls.push_back(funcCall);
-      else if (auto subview = dyn_cast<memref::SubViewOp>(u)) {
+      else if (auto subview = dyn_cast_if_present<memref::SubViewOp>(u)) {
         for (auto subViewUser : subview.getResult().getUsers())
-          if (auto funcCall = dyn_cast<func::CallOp>(subViewUser))
+          if (auto funcCall = dyn_cast_if_present<func::CallOp>(subViewUser))
             funcCalls.push_back(funcCall);
       }
     };
     SmallVector<func::CallOp> funcCalls;
     for (auto alloc : shrunkMemallocs) {
       Value memref = alloc.getMemref();
-      if (auto exec = dyn_cast<air::ExecuteOp>(alloc->getParentOp()))
+      if (auto exec = dyn_cast_if_present<air::ExecuteOp>(alloc->getParentOp()))
         memref = exec.getResult(1);
       for (auto user : memref.getUsers()) {
         getFuncCallIndirUser(user, funcCalls);
-        if (auto herdOp = dyn_cast<air::HerdOp>(user)) {
+        if (auto herdOp = dyn_cast_if_present<air::HerdOp>(user)) {
           auto herdArg = herdOp.getTiedKernelArgument(memref);
           if (!herdArg)
             continue;
@@ -6836,11 +6983,11 @@ void populateAIRCanonicalizeChannelWrapAndStridePatterns(
 }
 
 void applyAIRSpecializeChannelWrapAndStridePattern(
-    Region *region, int maxNumDims = -1, int maxSize = -1,
-    bool enableForLoopUnrolling = true, bool enableRepeatAtHighestDim = false) {
-  (void)AIRSpecializeChannelWrapAndStrideImpl(region, maxNumDims, maxSize,
-                                              enableForLoopUnrolling,
-                                              enableRepeatAtHighestDim);
+    Region *region, int maxNumDims, int maxSize, bool enableForLoopUnrolling,
+    bool enableRepeatAtHighestDim, bool skipZeroStride) {
+  (void)AIRSpecializeChannelWrapAndStrideImpl(
+      region, maxNumDims, maxSize, enableForLoopUnrolling,
+      enableRepeatAtHighestDim, skipZeroStride);
 }
 
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {

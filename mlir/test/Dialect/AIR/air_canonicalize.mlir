@@ -39,7 +39,7 @@ func.func @herd_async(%arg0: i32, %e0 : !air.async.token) {
 // CHECK: air.execute_terminator
 // CHECK: air.herd async [{{.*}}] tile (
 // CHECK: air.dma_memcpy_nd
-func.func @herd_async_1() {
+func.func @herd_async_1(%arg0: memref<1xi32>) {
   %cst2 = arith.constant 2 : index
   %t0, %results = air.execute -> (memref<1xi32>) {
     %1 = memref.alloc() : memref<1xi32>
@@ -47,8 +47,8 @@ func.func @herd_async_1() {
   }
   %t1 = air.wait_all async [%t0]
   %e0 = air.wait_all async [%t0, %t1]
-  %e1 = air.herd async [%t0, %t1, %e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args (%op0=%results) : memref<1xi32> {
-    %d0 = air.dma_memcpy_nd async (%op0[] [] [], %op0[] [] []) : (memref<1xi32>, memref<1xi32>)
+  %e1 = air.herd async [%t0, %t1, %e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args (%op0=%results, %op1=%arg0) : memref<1xi32>, memref<1xi32> {
+    %d0 = air.dma_memcpy_nd async (%op0[] [] [], %op1[] [] []) : (memref<1xi32>, memref<1xi32>)
   }
   air.wait_all [%e1]
   return
@@ -295,11 +295,11 @@ func.func @execute_2() -> (index, !air.async.token) {
 // CHECK-NEXT: arith.constant 0 : index
 // CHECK-NEXT: air.wait_all async 
 // CHECK-NEXT: return %{{.*}}, %{{.*}} : index, !air.async.token
-func.func @execute_3() -> (index, !air.async.token) {
+func.func @execute_3(%arg0: memref<1xi32>) -> (index, !air.async.token) {
   %c0 = arith.constant 0 : index
   %async_token, %results = air.execute -> (index) {
     %1 = memref.alloc() : memref<1xi32>
-    air.dma_memcpy_nd (%1[] [] [], %1[] [] []) : (memref<1xi32>, memref<1xi32>)
+    air.dma_memcpy_nd (%1[] [] [], %arg0[] [] []) : (memref<1xi32>, memref<1xi32>)
     air.execute_terminator %c0 : index
   }
   %t = air.wait_all async [%async_token]
@@ -313,11 +313,11 @@ func.func @execute_3() -> (index, !air.async.token) {
 // CHECK: air.execute_terminator
 // CHECK: air.execute
 // CHECK: memref.dealloc
-func.func @execute_4() -> (memref<1xi32>, !air.async.token) {
+func.func @execute_4(%arg0: memref<1xi32>) -> (memref<1xi32>, !air.async.token) {
   %c0 = arith.constant 0 : index
   %async_token, %results = air.execute -> (memref<1xi32>) {
     %1 = memref.alloc() : memref<1xi32>
-    air.dma_memcpy_nd (%1[] [] [], %1[] [] []) : (memref<1xi32>, memref<1xi32>)
+    air.dma_memcpy_nd (%1[] [] [], %arg0[] [] []) : (memref<1xi32>, memref<1xi32>)
     air.execute_terminator %1 : memref<1xi32>
   }
   %t = air.wait_all async [%async_token]

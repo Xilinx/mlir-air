@@ -11,6 +11,14 @@
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
 
+    // Step 0: Override func-level allocs to L2 (memory_space 1).
+    // This ensures any allocs created by prior bufferization passes have the
+    // correct memory space, making the policy visible in the transform script.
+    %funcs = transform.structured.match ops{["func.func"]} in %arg1
+      : (!transform.any_op) -> !transform.any_op
+    %funcs_updated = transform.air.override_memref_memory_space %funcs {memory_space = 1 : i32}
+      : (!transform.any_op) -> !transform.any_op
+
     // Step 1: Match the main elementwise op (linalg.generic).
     // Assumption: The IR contains a linalg.generic op representing the elementwise add.
     // This is the main computation to be transformed.

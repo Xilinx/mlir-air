@@ -81,7 +81,7 @@ void populateAIRCanonicalizeChannelWrapAndStridePatterns(
 // Apply AIRSpecializeChannelWrapAndStridePattern on region.
 void applyAIRSpecializeChannelWrapAndStridePattern(
     Region *region, int maxNumDims, int maxSize, bool enableForLoopUnrolling,
-    bool enableRepeatAtHighestDim);
+    bool enableRepeatAtHighestDim, bool skipZeroStride = false);
 
 // Populate patterns for fusing scf.for loops within air.launch.
 void populateAIRLoopFusionPattern(RewritePatternSet &patterns);
