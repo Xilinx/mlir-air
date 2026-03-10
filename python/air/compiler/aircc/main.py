@@ -519,7 +519,12 @@ extern "C" {
                     g.write(str(mlir_module))
 
     def lower_airrt_to_airhost(
-        air_to_aie_module, air_placed_module, air_mlir_filename, opts, aiecc_path
+        air_to_aie_module,
+        air_placed_module,
+        air_mlir_filename,
+        opts,
+        aiecc_path,
+        aiecc_exe="aiecc",
     ):
         pass_pipeline = "air-split-devices{"
         pass_pipeline = pass_pipeline + f"output-prefix={opts.tmpdir}/" + "}"
@@ -659,7 +664,7 @@ extern "C" {
 
             sysroot = opts.sysroot if opts.sysroot else "/"
             do_call(
-                ["aiecc.py"]
+                [aiecc_exe]
                 + (["-v"] if opts.verbose else [])
                 + ["--sysroot", sysroot]
                 + ["--host-target", aiecc_target]
@@ -763,14 +768,16 @@ extern "C" {
         if opts.verbose:
             print(f"Debug mode enabled: saving intermediate IRs to {debug_dir}")
 
-    aiecc_path = shutil.which("aiecc.py")
-    if aiecc_path == None:
-        print("Error: could not find aiecc.py")
+    aiecc_exe = shutil.which("aiecc")
+    if aiecc_exe is None:
+        aiecc_exe = shutil.which("aiecc.py")  # fallback for older mlir-aie
+    if aiecc_exe is None:
+        print("Error: could not find aiecc")
         sys.exit(1)
 
-    aiecc_path = os.path.dirname(os.path.realpath(aiecc_path)) + "/.."
+    aiecc_path = os.path.dirname(os.path.realpath(aiecc_exe)) + "/.."
     if opts.verbose:
-        print("Using aiecc.py from: ", aiecc_path)
+        print("Using aiecc from: ", aiecc_path)
 
     if mlir_module is not None:
         # Use the caller's module and context (from run() API)
@@ -999,7 +1006,7 @@ extern "C" {
             # (ELF mode embeds instructions in the ELF file)
             if opts.output_format != "elf":
                 aiecc_base_options += [
-                    "--aie-generate-npu",
+                    "--aie-generate-npu-insts",
                     "--npu-insts-name=" + insts_file,
                 ]
             aiecc_options = (
@@ -1017,10 +1024,13 @@ extern "C" {
             )
             aiecc_options = [a for a in aiecc_options if a != ""]
             if opts.verbose:
-                print("Running aiecc.py with options:", " ".join(aiecc_options))
-            import aie.compiler.aiecc.main as aiecc
+                print("Running aiecc with options:", " ".join(aiecc_options))
+            try:
+                import aie.compiler.aiecc.main as aiecc
 
-            aiecc.run(air_to_npu_module, aiecc_options)
+                aiecc.run(air_to_npu_module, aiecc_options)
+            except ImportError:
+                do_call([aiecc_exe] + aiecc_options, opts)
 
             # Dump pass log to tmpdir for documentation
             if getattr(opts, "debug_ir", False) and _debug_ir_dir:
@@ -1035,6 +1045,7 @@ extern "C" {
                 air_mlir_filename,
                 opts,
                 aiecc_path,
+                aiecc_exe=aiecc_exe,
             )
 
 
