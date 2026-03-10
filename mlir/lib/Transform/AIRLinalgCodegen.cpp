@@ -3119,33 +3119,35 @@ transform::BroadcastBeforeUnaryOp::apply(transform::TransformRewriter &rewriter,
       if (unaryOp->getNumOperands() != 1 || unaryOp->getNumResults() != 1)
         return;
 
-      // Check if unary op operates on a vector type
-      auto unaryType =
-          dyn_cast_if_present<VectorType>(unaryOp->getOperand(0).getType());
-      if (!unaryType)
-        return;
+      // Get the unary op's operand type - can be scalar or vector<1xT>
+      Type unaryOperandType = unaryOp->getOperand(0).getType();
+      Type unaryElementType;
 
-      // Calculate number of elements
-      int64_t numElements = 1;
-      for (int64_t dim : unaryType.getShape()) {
-        numElements *= dim;
+      if (auto unaryVecType = dyn_cast<VectorType>(unaryOperandType)) {
+        // Vector case: must be single-element vector (e.g., vector<1xf32>)
+        int64_t numElements = 1;
+        for (int64_t dim : unaryVecType.getShape()) {
+          numElements *= dim;
+        }
+        if (numElements != 1)
+          return;
+        unaryElementType = unaryVecType.getElementType();
+      } else {
+        // Scalar case (e.g., f32) - inherently single-element
+        unaryElementType = unaryOperandType;
       }
-
-      // Only transform if unary op operates on single-element vector
-      if (numElements != 1)
-        return;
 
       // Check if unary op result has exactly one use (this broadcast)
       if (!unaryOp->getResult(0).hasOneUse())
         return;
 
-      // Check type consistency
+      // Check type consistency: element type must match broadcast element type
       auto broadcastType =
           dyn_cast_if_present<VectorType>(broadcastOp.getType());
       if (!broadcastType)
         return;
 
-      if (unaryType.getElementType() != broadcastType.getElementType())
+      if (unaryElementType != broadcastType.getElementType())
         return;
 
       // This broadcast op matches the pattern
