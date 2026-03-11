@@ -74,7 +74,7 @@ func.func @herd_l2_load_rejected() {
   %l2_alloc = memref.alloc() : memref<32xi32, 1 : i32>
   air.herd tile (%x, %y) in (%sx=%c1, %sy=%c1) args(%buf=%l2_alloc) : memref<32xi32, 1 : i32> {
     %c0 = arith.constant 0 : index
-    // expected-error @+1 {{'memref.load' op inside 'air.herd' accesses memref with memory_space 1; AIE core tiles can only access L1 (memory_space >= 2) directly. Use air.dma_memcpy_nd to stage data first.}}
+    // expected-error @+1 {{'memref.load' op inside 'air.herd' accesses memref with memory_space L2; AIE core tiles can only access L1 or more local memory directly. Use air.dma_memcpy_nd to stage data first.}}
     %v = memref.load %buf[%c0] : memref<32xi32, 1 : i32>
     air.herd_terminator
   }
@@ -91,7 +91,7 @@ func.func @herd_l3_store_rejected() {
   air.herd tile (%x, %y) in (%sx=%c1, %sy=%c1) args(%buf=%l3_alloc) : memref<32xi32> {
     %c0 = arith.constant 0 : index
     %cst = arith.constant 42 : i32
-    // expected-error @+1 {{'memref.store' op inside 'air.herd' accesses memref with memory_space 0; AIE core tiles can only access L1 (memory_space >= 2) directly. Use air.dma_memcpy_nd to stage data first.}}
+    // expected-error @+1 {{'memref.store' op inside 'air.herd' accesses memref with memory_space L3; AIE core tiles can only access L1 or more local memory directly. Use air.dma_memcpy_nd to stage data first.}}
     memref.store %cst, %buf[%c0] : memref<32xi32>
     air.herd_terminator
   }
@@ -108,7 +108,7 @@ func.func @herd_l3_transfer_read_rejected() {
   air.herd tile (%x, %y) in (%sx=%c1, %sy=%c1) args(%buf=%l3_alloc) : memref<32xf32> {
     %c0 = arith.constant 0 : index
     %cst = arith.constant 0.0 : f32
-    // expected-error @+1 {{'vector.transfer_read' op inside 'air.herd' accesses memref with memory_space 0; AIE core tiles can only access L1 (memory_space >= 2) directly. Use air.dma_memcpy_nd to stage data first.}}
+    // expected-error @+1 {{'vector.transfer_read' op inside 'air.herd' accesses memref with memory_space L3; AIE core tiles can only access L1 or more local memory directly. Use air.dma_memcpy_nd to stage data first.}}
     %v = vector.transfer_read %buf[%c0], %cst : memref<32xf32>, vector<16xf32>
     air.herd_terminator
   }

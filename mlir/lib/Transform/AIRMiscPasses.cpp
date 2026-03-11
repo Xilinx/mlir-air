@@ -1539,9 +1539,8 @@ FailureOr<Value> tileChannelOpByFactor(
   Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
   // Create and apply affine map onto the split channel ops.
   SmallVector<Value> tokens;
-  int memorySpace =
-      dyn_cast_if_present<BaseMemRefType>(originalChanOp.getMemref().getType())
-          .getMemorySpaceAsInt();
+  auto memorySpace = air::getMemorySpace(dyn_cast_if_present<BaseMemRefType>(
+      originalChanOp.getMemref().getType()));
   for (int i = 0; i < factor; i++) {
     // Get affine map and split size from splitInfo.
     auto &[splitInfoDimOnOffsets, splitInfoAffineMap, splitInfoSplitOffset,
@@ -1687,8 +1686,7 @@ FailureOr<Value> tileChannelOpByFactor(
     // Strategy: add one dimension to wrap-and-stride list. Rationale: (1) the
     // stride factor should apply on existing size, (2) original offset must
     // continue with the original stride.
-    if (splitInfoSplitStrideFactor &&
-        memorySpace == (int)air::MemorySpace::L3) {
+    if (splitInfoSplitStrideFactor && memorySpace == air::MemorySpace::L3) {
       newStrides.insert(newStrides.begin() + splitDimOnOffsets,
                         newStrides[splitDimOnOffsets]);
       newStrides[splitDimOnOffsets + 1] = arith::ConstantIndexOp::create(
@@ -2060,8 +2058,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   SmallVector<memref::AllocOp> allocOps;
   func.walk([&](memref::AllocOp allocOp) {
     if (allocOp->getParentOfType<air::SegmentOp>() &&
-        llvm::cast<MemRefType>(allocOp.getMemref().getType())
-                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+        air::isL2(llvm::cast<MemRefType>(allocOp.getMemref().getType()))) {
       allocOps.push_back(allocOp);
     }
   });
@@ -2321,8 +2318,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   func.walk([&](memref::AllocOp allocOp) {
     auto parentSeg = allocOp->getParentOfType<air::SegmentOp>();
     if (parentSeg && segmentsNeedingSplit.contains(parentSeg) &&
-        llvm::cast<MemRefType>(allocOp.getMemref().getType())
-                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+        air::isL2(llvm::cast<MemRefType>(allocOp.getMemref().getType()))) {
       allocOps.push_back(allocOp);
     }
   });
@@ -2748,13 +2744,17 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
         dyn_cast_if_present<MemRefType>(alloc.getMemref().getType());
     if (!memrefTy)
       return failure();
-    if ((int)memrefTy.getMemorySpaceAsInt() == clMemorySpace)
+    auto targetMS =
+        air::symbolizeMemorySpace(static_cast<uint32_t>(clMemorySpace));
+    if (!targetMS)
+      return failure();
+    if (air::getMemorySpace(memrefTy) == *targetMS)
       return failure();
 
-    auto newMemrefType =
-        MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
-                        memrefTy.getLayout().getAffineMap(),
-                        rewriter.getI32IntegerAttr(clMemorySpace));
+    auto newMemrefType = MemRefType::get(
+        memrefTy.getShape(), memrefTy.getElementType(),
+        memrefTy.getLayout().getAffineMap(),
+        air::MemorySpaceAttr::get(rewriter.getContext(), *targetMS));
 
     rewriter.replaceOpWithNewOp<memref::AllocOp>(alloc, newMemrefType);
 
@@ -2787,7 +2787,7 @@ struct correctViewLikeOpIOMemorySpacesInScope : public OpRewritePattern<OpTy> {
         auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
         if (!destTy)
           return;
-        if (srcTy.getMemorySpaceAsInt() == destTy.getMemorySpaceAsInt())
+        if (air::getMemorySpace(srcTy) == air::getMemorySpace(destTy))
           continue;
         viewLikeOpsToRes[viewLike].push_back(res);
       }
@@ -2961,7 +2961,8 @@ DiagnosedSilenceableFailure transform::OverrideMemRefMemorySpaceOp::apply(
         auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
         if (!destTy)
           continue;
-        if (srcTy.getMemorySpaceAsInt() != destTy.getMemorySpaceAsInt()) {
+        if (xilinx::air::getMemorySpace(srcTy) !=
+            xilinx::air::getMemorySpace(destTy)) {
           needsUpdate = true;
           break;
         }
@@ -2973,7 +2974,8 @@ DiagnosedSilenceableFailure transform::OverrideMemRefMemorySpaceOp::apply(
           auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
           if (!destTy)
             continue;
-          if (srcTy.getMemorySpaceAsInt() == destTy.getMemorySpaceAsInt())
+          if (xilinx::air::getMemorySpace(srcTy) ==
+              xilinx::air::getMemorySpace(destTy))
             continue;
           MemRefType::Builder builder(destTy);
           builder.setMemorySpace(srcTy.getMemorySpace());

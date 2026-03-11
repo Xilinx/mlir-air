@@ -1019,7 +1019,7 @@ allocBufferCallBack(OpBuilder &b, memref::SubViewOp subView,
   MemRefType viewType = subView.getType();
   MemRefType allocType = MemRefType::get(
       viewType.getShape(), viewType.getElementType(), AffineMap(),
-      b.getI32IntegerAttr((int)air::MemorySpace::L1));
+      air::MemorySpaceAttr::get(b.getContext(), air::MemorySpace::L1));
   Value buffer = b.createOrFold<memref::AllocOp>(subView.getLoc(), allocType);
   return buffer;
 }
@@ -1141,8 +1141,9 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       auto ty = llvm::cast<MemRefType>(tiledOperands[resultIdx].getType());
       auto alloc = memref::AllocOp::create(
           b, loc,
-          MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
-                          b.getI32IntegerAttr((int)air::MemorySpace::L1)));
+          MemRefType::get(
+              ty.getShape(), ty.getElementType(), AffineMap(),
+              air::MemorySpaceAttr::get(b.getContext(), air::MemorySpace::L1)));
       tiledOperands[resultIdx] = alloc.getResult();
       SmallVector<Value> src_offsets;
       SmallVector<Value> src_sizes;
@@ -2172,13 +2173,8 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   };
   promotionOptions.setCopyInOutFns(copyCallBack, copyCallBack);
 
-  auto memorySpace = xilinx::air::MemorySpace::L1;
-  if (getMemorySpace() == "L1")
-    memorySpace = xilinx::air::MemorySpace::L1;
-  else if (getMemorySpace() == "L2")
-    memorySpace = xilinx::air::MemorySpace::L2;
-  else if (getMemorySpace() == "L3")
-    memorySpace = xilinx::air::MemorySpace::L3;
+  auto memorySpace = xilinx::air::symbolizeMemorySpace(getMemorySpace())
+                         .value_or(xilinx::air::MemorySpace::L1);
 
   SetVector<Operation *> transformed;
   int64_t operandOffset = 0;

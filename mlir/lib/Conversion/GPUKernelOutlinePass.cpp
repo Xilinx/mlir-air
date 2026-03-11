@@ -7,6 +7,7 @@
 #include "air/Conversion/GPUKernelOutlinePass.h"
 #include "air/Conversion/GPUPassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Util/Util.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
@@ -584,7 +585,7 @@ struct ConvertGPUKernelOutlinePass
     launchOp.walk([&](memref::AllocOp allocOp) {
       // workgroup
       MemRefType memRefType = allocOp.getType();
-      if (memRefType.getMemorySpaceAsInt() == 1) {
+      if (air::isL2(memRefType)) {
         mlir::Type elementType = memRefType.getElementType();
         llvm::ArrayRef<int64_t> shape = memRefType.getShape();
 
@@ -596,7 +597,7 @@ struct ConvertGPUKernelOutlinePass
         auto wg = launchOp.addWorkgroupAttribution(newType, loc);
         allocOp.replaceAllUsesWith(wg); // Replace row with globalRow
         allocOp.erase();
-      } else if (memRefType.getMemorySpaceAsInt() == 2) {
+      } else if (air::isL1(memRefType)) {
         mlir::Type elementType = memRefType.getElementType();
         llvm::ArrayRef<int64_t> shape = memRefType.getShape();
 
