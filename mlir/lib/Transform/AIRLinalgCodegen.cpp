@@ -2253,8 +2253,10 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
       if (!operandType)
         continue;
 
-      // Skip if already in the target memory space.
-      if (operandType.getMemorySpace() == targetMemSpaceAttr)
+      // Skip if already in the target memory space. Compare integer
+      // values to handle format mismatch (2 vs 2:i32).
+      if (operandType.getMemorySpaceAsInt() ==
+          static_cast<unsigned>(memorySpace))
         continue;
 
       // Reuse an existing promoted buffer if the same Value was already
