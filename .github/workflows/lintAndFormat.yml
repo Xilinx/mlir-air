@@ -3,6 +3,7 @@ name: Lint and Format
 on:
   pull_request:
     types: [assigned, opened, synchronize, reopened]
+  merge_group:
   workflow_dispatch:
 
 env:
