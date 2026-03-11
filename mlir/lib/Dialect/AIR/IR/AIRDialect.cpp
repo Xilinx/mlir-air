@@ -1081,7 +1081,8 @@ static LogicalResult verifyAllocMemorySpace(OpT op, unsigned minMemorySpace,
 }
 
 /// Return the memref value accessed by a direct memory access operation (load,
-/// store, vector transfer), or nullptr if the op is not a direct memory access.
+/// store, vector transfer), or an empty Value if the op is not a direct memory
+/// access.
 /// This only covers low-level ops that become actual core load/store
 /// instructions, not higher-level ops (linalg, DMA) that are lowered later.
 static Value getDirectlyAccessedMemref(Operation *op) {
