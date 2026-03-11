@@ -100,7 +100,7 @@ compile-kernel:
 		echo "Detected PEANO_INSTALL_DIR from environment: $(PEANO_INSTALL_DIR)"; \
 		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
 			echo "Using clang++ from PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)"; \
-			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/attn.cc -o $(BUILD_DIR)/attn.o -Dlqp=$(LQP_TILE) -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV) -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16; \
+			$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANOWRAP2P_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/attn.cc -o $(BUILD_DIR)/attn.o -Dlqp=$(LQP_TILE) -Dlkp=$(LKP) -Ddk=$(DK) -Ddv=$(DV) -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 -DROUND_CONV_EVEN $(EXTRA_KERNEL_FLAGS); \
 		else \
 			echo "Error: invalid PEANO_INSTALL_DIR, clang++ not found."; \
 			exit 1; \
