@@ -13,22 +13,26 @@
 // CHECK: vector.transfer_write
 
 module {
-  func.func @test_herd_vectorize(%arg0: memref<32x32xf32>, %arg1: memref<32x32xf32>, %arg2: memref<32x32xf32>) {
+  func.func @test_herd_vectorize() {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
-    air.herd @herd_0 tile (%tx, %ty) in (%size_x = %c2, %size_y = %c2) args(%a0=%arg0, %a1=%arg1, %a2=%arg2) : memref<32x32xf32>, memref<32x32xf32>, memref<32x32xf32> {
-      %c0 = arith.constant 0 : index
-      %c16 = arith.constant 16 : index
-      %subview_a0 = memref.subview %a0[%tx, %ty] [16, 16] [1, 1] : memref<32x32xf32> to memref<16x16xf32, strided<[32, 1], offset: ?>>
-      %subview_a1 = memref.subview %a1[%tx, %ty] [16, 16] [1, 1] : memref<32x32xf32> to memref<16x16xf32, strided<[32, 1], offset: ?>>
-      %subview_a2 = memref.subview %a2[%tx, %ty] [16, 16] [1, 1] : memref<32x32xf32> to memref<16x16xf32, strided<[32, 1], offset: ?>>
-      
+    %alloc0 = memref.alloc() : memref<32x32xf32, 2 : i32>
+    %alloc1 = memref.alloc() : memref<32x32xf32, 2 : i32>
+    %alloc2 = memref.alloc() : memref<32x32xf32, 2 : i32>
+    air.herd @herd_0 tile (%tx, %ty) in (%size_x = %c2, %size_y = %c2) args(%a0=%alloc0, %a1=%alloc1, %a2=%alloc2) : memref<32x32xf32, 2 : i32>, memref<32x32xf32, 2 : i32>, memref<32x32xf32, 2 : i32> {
+      %subview_a0 = memref.subview %a0[%tx, %ty] [16, 16] [1, 1] : memref<32x32xf32, 2 : i32> to memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>
+      %subview_a1 = memref.subview %a1[%tx, %ty] [16, 16] [1, 1] : memref<32x32xf32, 2 : i32> to memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>
+      %subview_a2 = memref.subview %a2[%tx, %ty] [16, 16] [1, 1] : memref<32x32xf32, 2 : i32> to memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>
+
       // This linalg.add should be vectorized by our transform op
-      linalg.add ins(%subview_a0, %subview_a1 : memref<16x16xf32, strided<[32, 1], offset: ?>>, memref<16x16xf32, strided<[32, 1], offset: ?>>) 
-                 outs(%subview_a2 : memref<16x16xf32, strided<[32, 1], offset: ?>>)
-      
+      linalg.add ins(%subview_a0, %subview_a1 : memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>, memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>)
+                 outs(%subview_a2 : memref<16x16xf32, strided<[32, 1], offset: ?>, 2 : i32>)
+
       air.herd_terminator
     }
+    memref.dealloc %alloc0 : memref<32x32xf32, 2 : i32>
+    memref.dealloc %alloc1 : memref<32x32xf32, 2 : i32>
+    memref.dealloc %alloc2 : memref<32x32xf32, 2 : i32>
     return
   }
 }
