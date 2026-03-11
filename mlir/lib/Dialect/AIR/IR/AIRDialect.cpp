@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -1079,6 +1080,59 @@ static LogicalResult verifyAllocMemorySpace(OpT op, unsigned minMemorySpace,
   return success();
 }
 
+/// Return the memref value accessed by a direct memory access operation (load,
+/// store, vector transfer), or nullptr if the op is not a direct memory access.
+/// This only covers low-level ops that become actual core load/store
+/// instructions, not higher-level ops (linalg, DMA) that are lowered later.
+static Value getDirectlyAccessedMemref(Operation *op) {
+  return llvm::TypeSwitch<Operation *, Value>(op)
+      .Case<memref::LoadOp>([](auto op) { return op.getMemRef(); })
+      .Case<memref::StoreOp>([](auto op) { return op.getMemRef(); })
+      .Case<affine::AffineLoadOp>([](auto op) { return op.getMemRef(); })
+      .Case<affine::AffineStoreOp>([](auto op) { return op.getMemRef(); })
+      .Case<vector::TransferReadOp>([](auto op) -> Value {
+        return dyn_cast<MemRefType>(op.getBase().getType()) ? op.getBase()
+                                                            : Value();
+      })
+      .Case<vector::TransferWriteOp>([](auto op) -> Value {
+        return dyn_cast<MemRefType>(op.getBase().getType()) ? op.getBase()
+                                                            : Value();
+      })
+      .Case<vector::LoadOp>([](auto op) { return op.getBase(); })
+      .Case<vector::StoreOp>([](auto op) { return op.getBase(); })
+      .Default([](Operation *) { return Value(); });
+}
+
+/// Verify that direct memory access operations inside an air.herd body only
+/// reference memrefs with memory space >= minMemorySpace (L1). AIE core tiles
+/// can only access their local L1 memory directly; non-local memory must be
+/// staged via DMA. This checks low-level load/store and vector transfer ops
+/// but not higher-level ops (linalg, memref.copy) that are lowered later.
+static LogicalResult verifyComputeMemoryAccess(air::HerdOp op,
+                                               unsigned minMemorySpace) {
+  WalkResult result = op.getBody().walk([&](Operation *innerOp) -> WalkResult {
+    Value memref = getDirectlyAccessedMemref(innerOp);
+    if (!memref)
+      return WalkResult::advance();
+    auto memrefType = dyn_cast<MemRefType>(memref.getType());
+    if (!memrefType)
+      return WalkResult::advance();
+    unsigned memorySpace = memrefType.getMemorySpaceAsInt();
+    if (memorySpace < minMemorySpace) {
+      innerOp->emitOpError()
+          << "inside 'air.herd' accesses memref with memory_space "
+          << memorySpace
+          << "; AIE core tiles can only access L1 (memory_space >= "
+          << minMemorySpace
+          << ") directly. Use air.dma_memcpy_nd to stage data first.";
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+
+  return failure(result.wasInterrupted());
+}
+
 LogicalResult air::SegmentOp::verify() {
   return verifyAllocMemorySpace(*this, /*minMemorySpace=*/1, "air.segment");
 }
@@ -1359,7 +1413,9 @@ uint64_t air::HerdOp::getNumRows() {
 }
 
 LogicalResult air::HerdOp::verify() {
-  return verifyAllocMemorySpace(*this, /*minMemorySpace=*/2, "air.herd");
+  if (failed(verifyAllocMemorySpace(*this, /*minMemorySpace=*/2, "air.herd")))
+    return failure();
+  return verifyComputeMemoryAccess(*this, /*minMemorySpace=*/2);
 }
 
 //
