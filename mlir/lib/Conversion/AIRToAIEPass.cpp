@@ -2678,6 +2678,35 @@ void lowerMemRefCopyToLoops(AIE::DeviceOp d) {
   (void)applyPatternsGreedily(d, std::move(patterns));
 }
 
+/// Remove dead memref.get_global ops and their corresponding memref.global
+/// declarations. outlineAIECores creates these for ALL L2/L3 herd memref
+/// args, but DMA/channel lowering erases the ops that referenced them,
+/// leaving orphaned globals that cause linker errors (issue #1404).
+static void removeDeadGlobalOps(AIE::DeviceOp device) {
+  // Erase dead memref.get_global ops (no users).
+  SmallVector<memref::GetGlobalOp> deadGetGlobals;
+  device.walk([&](memref::GetGlobalOp op) {
+    if (op.use_empty())
+      deadGetGlobals.push_back(op);
+  });
+  for (auto op : deadGetGlobals)
+    op->erase();
+
+  // Collect symbols still referenced by remaining get_global ops.
+  llvm::DenseSet<StringRef> referencedGlobals;
+  device.walk(
+      [&](memref::GetGlobalOp op) { referencedGlobals.insert(op.getName()); });
+
+  // Erase unreferenced memref.global declarations.
+  SmallVector<memref::GlobalOp> deadGlobals;
+  for (auto globalOp : device.getOps<memref::GlobalOp>()) {
+    if (!referencedGlobals.contains(globalOp.getSymName()))
+      deadGlobals.push_back(globalOp);
+  }
+  for (auto op : deadGlobals)
+    op->erase();
+}
+
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 
   uint64_t BufferId = 0;
@@ -2821,6 +2850,10 @@ public:
     if (failed(
             applyPartialConversion(device, target, std::move(removepatterns))))
       return failure();
+
+    // Clean up dead memref.get_global/memref.global left by outlineAIECores
+    // after DMA/channel lowering consumed their users.
+    removeDeadGlobalOps(device);
 
     return success();
   }
@@ -5689,6 +5722,10 @@ public:
       if (failed(applyPartialConversion(device, target,
                                         std::move(removepatterns))))
         signalPassFailure();
+
+      // Clean up dead memref.get_global/memref.global left by outlineAIECores
+      // after DMA/channel lowering consumed their users.
+      removeDeadGlobalOps(device);
     }
   }
 
