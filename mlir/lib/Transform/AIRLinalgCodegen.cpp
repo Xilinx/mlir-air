@@ -2213,16 +2213,113 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
     if (opersToPromote.empty())
       continue;
 
-    promotionOptions.setOperandsToPromote(opersToPromote);
+    // Partition operands into subview (handled by upstream promoteSubViews)
+    // and non-subview (handled manually below). Non-subview operands arise
+    // from broadcast indexing maps where tiling doesn't produce a subview.
+    SmallVector<int64_t, 4> subviewOperands;
+    SmallVector<int64_t, 4> nonSubviewOperands;
+    for (int64_t idx : opersToPromote) {
+      Value operand = linalgOp->getOperand(idx);
+      if (isa_and_nonnull<memref::SubViewOp>(operand.getDefiningOp()))
+        subviewOperands.push_back(idx);
+      else
+        nonSubviewOperands.push_back(idx);
+    }
 
-    if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
-      return emitDefaultDefiniteFailure(target);
+    // Promote subview operands using upstream LLVM infrastructure.
+    if (!subviewOperands.empty()) {
+      promotionOptions.setOperandsToPromote(subviewOperands);
 
-    rewriter.setInsertionPoint(target);
-    FailureOr<linalg::LinalgOp> res =
-        promoteSubViews(rewriter, linalgOp, promotionOptions);
-    if (failed(res))
-      return emitDefaultDefiniteFailure(target);
+      if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
+        return emitDefaultDefiniteFailure(target);
+
+      rewriter.setInsertionPoint(target);
+      FailureOr<linalg::LinalgOp> res =
+          promoteSubViews(rewriter, linalgOp, promotionOptions);
+      if (failed(res))
+        return emitDefaultDefiniteFailure(target);
+    }
+
+    // Manually promote non-subview operands (e.g., broadcast-indexed memrefs).
+    // Deduplicate by Value so that if the same memref appears in multiple
+    // operand positions, only one promoted buffer and copy is created.
+    auto targetMemSpaceAttr =
+        rewriter.getI32IntegerAttr(static_cast<int>(memorySpace));
+    DenseMap<Value, Value> promotedValueMap;
+    SmallVector<std::pair<Value, Value>> outputWritebacks;
+    for (int64_t operandIdx : nonSubviewOperands) {
+      Value operand = linalgOp->getOperand(operandIdx);
+      auto operandType = dyn_cast<MemRefType>(operand.getType());
+      if (!operandType)
+        continue;
+
+      // Skip if already in the target memory space.
+      if (operandType.getMemorySpace() == targetMemSpaceAttr)
+        continue;
+
+      // Reuse an existing promoted buffer if the same Value was already
+      // promoted.
+      auto it = promotedValueMap.find(operand);
+      if (it != promotedValueMap.end()) {
+        rewriter.modifyOpInPlace(
+            linalgOp, [&]() { linalgOp->setOperand(operandIdx, it->second); });
+        continue;
+      }
+
+      rewriter.setInsertionPoint(linalgOp);
+
+      // Build promoted memref type with target memory space.
+      auto promotedType =
+          MemRefType::get(operandType.getShape(), operandType.getElementType(),
+                          AffineMap(), targetMemSpaceAttr);
+
+      // Handle dynamic dimensions.
+      SmallVector<Value> dynamicSizes;
+      for (unsigned i = 0; i < operandType.getRank(); ++i) {
+        if (operandType.isDynamicDim(i))
+          dynamicSizes.push_back(
+              memref::DimOp::create(rewriter, linalgOp.getLoc(), operand, i));
+      }
+
+      // Choose allocation strategy based on promotion options.
+      Value promotedAlloc;
+      if (getUseAlloca()) {
+        promotedAlloc = memref::AllocaOp::create(rewriter, linalgOp.getLoc(),
+                                                 promotedType, dynamicSizes);
+      } else {
+        promotedAlloc = memref::AllocOp::create(rewriter, linalgOp.getLoc(),
+                                                promotedType, dynamicSizes);
+      }
+
+      // Copy data into the promoted buffer for input operands, or for
+      // init operands whose values are read by the linalg payload.
+      bool isInput =
+          (operandIdx < static_cast<int64_t>(linalgOp.getNumDpsInputs()));
+      OpOperand *opOperand = &linalgOp->getOpOperand(operandIdx);
+      bool needsCopyIn =
+          isInput || linalgOp.payloadUsesValueFromOperand(opOperand);
+      if (needsCopyIn)
+        memref::CopyOp::create(rewriter, linalgOp.getLoc(), operand,
+                               promotedAlloc);
+
+      // Replace operand on the linalg op.
+      rewriter.modifyOpInPlace(
+          linalgOp, [&]() { linalgOp->setOperand(operandIdx, promotedAlloc); });
+
+      promotedValueMap[operand] = promotedAlloc;
+
+      // For output (init) operands, record for copy-back after the linalg op.
+      if (!isInput)
+        outputWritebacks.emplace_back(promotedAlloc, operand);
+    }
+
+    // Emit copy-backs for promoted output operands.
+    if (!outputWritebacks.empty()) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointAfter(linalgOp);
+      for (auto &[promoted, original] : outputWritebacks)
+        memref::CopyOp::create(rewriter, linalgOp.getLoc(), promoted, original);
+    }
 
     transformed.insert(linalgOp);
   }
