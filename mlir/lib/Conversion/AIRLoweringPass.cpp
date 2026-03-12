@@ -633,11 +633,36 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   return airrtOp;
 }
 
+// Cache for channel name → first counterpart op lookups, avoiding O(n)
+// module walks per channel op during conversion.
+struct ChannelCounterpartCache {
+  llvm::DenseMap<StringAttr, air::ChannelGetOp> firstGet;
+  llvm::DenseMap<StringAttr, air::ChannelPutOp> firstPut;
+
+  void build(ModuleOp module) {
+    module.walk([&](air::ChannelGetOp get) {
+      auto name = get->getAttrOfType<FlatSymbolRefAttr>("chan_name").getAttr();
+      if (!firstGet.count(name))
+        firstGet[name] = get;
+    });
+    module.walk([&](air::ChannelPutOp put) {
+      auto name = put->getAttrOfType<FlatSymbolRefAttr>("chan_name").getAttr();
+      if (!firstPut.count(name))
+        firstPut[name] = put;
+    });
+  }
+};
+
 template <typename OpT>
 class AIRChannelGetPutToAIRRtConversion : public OpConversionPattern<OpT> {
 public:
   using OpConversionPattern<OpT>::OpConversionPattern;
   using OpAdaptor = typename OpT::Adaptor;
+
+  AIRChannelGetPutToAIRRtConversion(const TypeConverter &typeConverter,
+                                    MLIRContext *context,
+                                    ChannelCounterpartCache &cache)
+      : OpConversionPattern<OpT>(typeConverter, context), cache(cache) {}
 
   LogicalResult
   matchAndRewrite(OpT op, OpAdaptor adaptor,
@@ -649,10 +674,22 @@ public:
     if (llvm::isa<AIE::CoreOp>(op->getParentOp()))
       return failure();
 
-    auto otherOps = getTheOtherChannelOpThroughSymbol(op);
-    if (otherOps.empty())
-      return op->emitOpError("failed to find the other side of air.channel");
-    auto otherOp = otherOps[0];
+    // Use cached lookup instead of module-wide walk per op.
+    auto name = op->template getAttrOfType<FlatSymbolRefAttr>("chan_name");
+    if (!name)
+      return op->emitOpError("missing chan_name attribute");
+    air::ChannelInterface otherOp;
+    if constexpr (std::is_same_v<OpT, air::ChannelPutOp>) {
+      auto it = cache.firstGet.find(name.getAttr());
+      if (it == cache.firstGet.end())
+        return op->emitOpError("failed to find the other side of air.channel");
+      otherOp = cast<air::ChannelInterface>(it->second.getOperation());
+    } else {
+      auto it = cache.firstPut.find(name.getAttr());
+      if (it == cache.firstPut.end())
+        return op->emitOpError("failed to find the other side of air.channel");
+      otherOp = cast<air::ChannelInterface>(it->second.getOperation());
+    }
 
     auto airrtOp =
         AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, otherOp);
@@ -695,6 +732,9 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  ChannelCounterpartCache &cache;
 };
 
 class L2AllocToAIRRtConversion : public ConversionPattern {
@@ -1177,10 +1217,17 @@ public:
     air_patterns.add<
         ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
         ScfParOpConversion, ScfReduceReturnOpConversion, ScfReduceOpConversion,
-        AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion,
-        AIRChannelGetPutToAIRRtConversion<air::ChannelGetOp>,
-        AIRChannelGetPutToAIRRtConversion<air::ChannelPutOp>>(converter,
-                                                              context);
+        AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(converter,
+                                                                      context);
+
+    // Build channel counterpart cache to avoid O(n) module walks per channel
+    // op during conversion. Without this cache, each of the N channel ops
+    // performs a module-wide walk, resulting in O(N^2) total work.
+    ChannelCounterpartCache channelCache;
+    channelCache.build(module);
+    air_patterns.add<AIRChannelGetPutToAIRRtConversion<air::ChannelGetOp>,
+                     AIRChannelGetPutToAIRRtConversion<air::ChannelPutOp>>(
+        converter, context, channelCache);
 
     if (failed(
             applyPartialConversion(module, target, std::move(air_patterns)))) {
