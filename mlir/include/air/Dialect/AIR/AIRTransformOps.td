@@ -1204,57 +1204,63 @@ def BroadcastBeforeUnaryOp : Op<Transform_Dialect, "air.broadcast_before_unary",
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
   let summary = "Move vector.broadcast before element-wise unary operations to enable vector execution";
   let description = [{
-    This transform identifies patterns where an element-wise unary operation operates on a 
-    single-element vector and its result is immediately broadcast to a larger vector. 
+    This transform identifies patterns where an element-wise unary operation operates on a
+    single-element vector or scalar and its result is immediately broadcast to a larger vector.
     It rearranges the operations to broadcast first, then apply the unary operation,
-    allowing the operation to execute on the full vector which can be more efficient on 
+    allowing the operation to execute on the full vector which can be more efficient on
     vector engines.
-    
-    Pattern matched:
+
+    Pattern matched (vector<1xT>):
     ```mlir
     %unary_result = unary_op %x : vector<1xT>
     %result = vector.broadcast %unary_result : vector<1xT> to vector<NxT>
     ```
-    
+
+    Pattern matched (scalar):
+    ```mlir
+    %unary_result = unary_op %x : T
+    %result = vector.broadcast %unary_result : T to vector<NxT>
+    ```
+
     Transformed to:
     ```mlir
-    %broadcast = vector.broadcast %x : vector<1xT> to vector<NxT>
+    %broadcast = vector.broadcast %x : vector<1xT> (or T) to vector<NxT>
     %result = unary_op %broadcast : vector<NxT>
     ```
-    
+
     This is mathematically valid for element-wise operations where op(broadcast(x)) == broadcast(op(x)).
-    
-    By default (when op_name is not specified), the transform uses trait-based checking to 
-    automatically support all Pure, single-operand, single-result, element-wise operations 
-    in math/arith dialects. If op_name is specified, only operations with that exact name 
+
+    By default (when op_name is not specified), the transform uses trait-based checking to
+    automatically support all Pure, single-operand, single-result, element-wise operations
+    in math/arith dialects. If op_name is specified, only operations with that exact name
     are transformed.
-    
+
     Safety conditions checked:
-    1. The unary op must operate on a single-element vector (e.g., vector<1xf32>)
+    1. The unary op must operate on a single-element vector (e.g., vector<1xf32>) or a scalar (e.g., f32)
     2. The unary op result must have exactly one use (the broadcast)
     3. The unary op must have exactly one operand and one result
     4. Both operations must work on the same element type
     5. If op_name is specified, the operation name must match
     6. If op_name is empty, the operation must pass trait-based validation
-    
+
     This optimization is particularly beneficial for hardware accelerators like AMD AIEs
-    that can only execute certain operations on vector engines, not on scalar units. 
+    that can only execute certain operations on vector engines, not on scalar units.
     Common in layer normalization and other neural network operations.
-    
+
     Example usage (all qualifying unary ops):
     ```mlir
-    %func = transform.structured.match ops{["func.func"]} in %arg0 
+    %func = transform.structured.match ops{["func.func"]} in %arg0
       : (!transform.any_op) -> !transform.any_op
     transform.air.broadcast_before_unary %func
     ```
-    
+
     Example usage (specific operation only):
     ```mlir
-    %func = transform.structured.match ops{["func.func"]} in %arg0 
+    %func = transform.structured.match ops{["func.func"]} in %arg0
       : (!transform.any_op) -> !transform.any_op
     transform.air.broadcast_before_unary %func {op_name = "math.rsqrt"}
     ```
-    
+
     Returns a handle to the transformed operation.
   }];
   
@@ -1419,6 +1425,51 @@ def FoldUnitExtentDimsOp : Op<Transform_Dialect, "air.fold_unit_extent_dims",
   }];
 
   let arguments = (ins TransformHandleTypeInterface:$target);
+  let results = (outs TransformHandleTypeInterface:$result);
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+}
+
+def OverrideMemRefMemorySpaceOp : Op<Transform_Dialect, "air.override_memref_memory_space",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+     DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Override memref memory spaces within a target operation scope";
+  let description = [{
+    Overrides the memory space of all `memref.alloc` operations within the target
+    operation to the specified `memory_space` value. The scope is inferred from
+    the target operation type:
+
+    - `air.herd` -> overrides allocs inside the herd (L1)
+    - `air.segment` -> overrides allocs inside the segment but NOT inside herds (L2)
+    - `air.launch` -> overrides allocs inside the launch but NOT inside segments/herds
+    - `func.func` -> overrides allocs inside the function but NOT inside launch/segment/herds
+
+    This exclusive scoping allows assigning different memory spaces at different
+    hierarchy levels by invoking the op multiple times with different targets.
+
+    After overriding alloc types, the op also:
+    1. Propagates updated types through AIR hierarchy block arguments
+    2. Corrects memory spaces of view-like operations (subview, reinterpret_cast, etc.)
+
+    This is the transform dialect equivalent of the `air-override-memref-memory-space` pass.
+
+    Example:
+    ```mlir
+    // Override herd allocs to L1 (memory_space 2)
+    %herd = transform.structured.match ops{["air.herd"]} in %arg1
+      : (!transform.any_op) -> !transform.any_op
+    transform.air.override_memref_memory_space %herd {memory_space = 2}
+      : (!transform.any_op) -> !transform.any_op
+
+    // Override func-level allocs to L2 (memory_space 1), excluding herds
+    %func = transform.structured.match ops{["func.func"]} in %arg1
+      : (!transform.any_op) -> !transform.any_op
+    transform.air.override_memref_memory_space %func {memory_space = 1}
+      : (!transform.any_op) -> !transform.any_op
+    ```
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$target,
+                   I32Attr:$memory_space);
   let results = (outs TransformHandleTypeInterface:$result);
   let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
 }

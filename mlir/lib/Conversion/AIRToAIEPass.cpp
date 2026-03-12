@@ -129,8 +129,10 @@ struct ShimTileAllocator {
     }
   }
 
-  AIE::TileOp getShimTile(AIE::DeviceOp aie_device, int src_memory_space,
-                          int dst_memory_space, std::string chan_name) {
+  AIE::TileOp getShimTile(AIE::DeviceOp aie_device,
+                          air::MemorySpace src_memory_space,
+                          air::MemorySpace dst_memory_space,
+                          std::string chan_name) {
     bool isMM2S = (src_memory_space < dst_memory_space);
     auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
@@ -457,7 +459,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         if (!memrefTy)
           continue;
 
-        if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L1) {
+        if (air::isL1(memrefTy)) {
           // fused herds sometimes have L1 memref allocation outside of herds.
           // mapping them back
           remap.map(karg, h.getKernelOperand(ki));
@@ -1225,7 +1227,7 @@ void createAIEModulesAndOutlineCores(
       auto memrefTy = llvm::dyn_cast_if_present<MemRefType>(oper.getType());
       if (!memrefTy)
         continue;
-      if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+      if (!air::isL1(memrefTy))
         continue;
       push_back_if_unique<Value>(sharedL1Memrefs, oper);
     }
@@ -1256,7 +1258,7 @@ void createAIEModulesAndOutlineCores(
       auto memrefTy = llvm::dyn_cast_if_present<MemRefType>(oper.getType());
       if (!memrefTy)
         continue;
-      if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+      if (!air::isL1(memrefTy))
         continue;
       sharedL1AllocsToHerdMap[oper.getDefiningOp()].insert(h);
     }
@@ -1744,7 +1746,7 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     MemRefType memrefTy = nullptr;
     memrefTy = alloc.getType();
 
-    if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+    if (!air::isL1(memrefTy))
       return failure();
 
     auto herd = tileToHerdMap[tile];
@@ -1795,7 +1797,7 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     MemRefType memrefTy = nullptr;
     memrefTy = alloc.getType();
 
-    if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L2)
+    if (!air::isL2(memrefTy))
       return failure();
 
     // Allocation of L2 memrefs in segment to buffer ops
@@ -1872,8 +1874,7 @@ void L2MemrefToMemTileMap(
     std::map<memref::AllocOp, AIE::TileOp> &memrefToMemTileMap) {
   std::vector<memref::AllocOp> allocs;
   m.walk([&](memref::AllocOp alloc) {
-    if (llvm::cast<MemRefType>(alloc.getMemref().getType())
-            .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    if (air::isL2(llvm::cast<MemRefType>(alloc.getMemref().getType()))) {
       allocs.push_back(alloc);
     }
   });
@@ -1997,8 +1998,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       // check if this put is linked to a get from another channel
       BaseMemRefType memref =
           llvm::cast<BaseMemRefType>(channelPuts[0].getMemref().getType());
-      int mem_space = memref.getMemorySpaceAsInt();
-      if (mem_space == (int)air::MemorySpace::L2) {
+      if (air::isL2(memref)) {
         if (linksToComplete.find(channelPuts[0].getOperation()) !=
             linksToComplete.end()) {
           endOfLink = channelPuts[0].getOperation();
@@ -2016,9 +2016,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       }
     } else {
       // put from L3
-      producerTile = shimTileAlloc.getShimTile(
-          device, (int)air::MemorySpace::L3, (int)air::MemorySpace::L1,
-          channel.getName().str());
+      producerTile = shimTileAlloc.getShimTile(device, air::MemorySpace::L3,
+                                               air::MemorySpace::L1,
+                                               channel.getName().str());
     }
 
     // put/get come in pairs, if one is missing then it's L3
@@ -2038,8 +2038,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       // check if this get is linked to a put from another channel
       BaseMemRefType memref =
           llvm::cast<BaseMemRefType>(get.getMemref().getType());
-      int mem_space = memref.getMemorySpaceAsInt();
-      if (mem_space == (int)air::MemorySpace::L2) {
+      if (air::isL2(memref)) {
         if (linksToComplete.find(get.getOperation()) != linksToComplete.end()) {
           endOfLink = get.getOperation();
           linkFound = true;
@@ -2057,9 +2056,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     }
     for (int i = 0; i < expectedGets - (int)channelGets.size(); i++) {
       // get from L3
-      consumerTile = shimTileAlloc.getShimTile(
-          device, (int)air::MemorySpace::L1, (int)air::MemorySpace::L3,
-          channel.getName().str());
+      consumerTile = shimTileAlloc.getShimTile(device, air::MemorySpace::L1,
+                                               air::MemorySpace::L3,
+                                               channel.getName().str());
       consumers.push_back(consumerTile);
     }
 
@@ -2150,16 +2149,16 @@ private:
   LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
                                       AIE::AIEObjectFifoType *datatype) const {
     MemRefType memref = llvm::cast<MemRefType>(op.getMemref().getType());
-    int mem_space = memref.getMemorySpaceAsInt();
+    auto mem_space = air::getMemorySpace(memref);
     *datatype = AIE::AIEObjectFifoType::get(
         MemRefType::get(memref.getShape(), memref.getElementType()));
-    if (mem_space == (int)air::MemorySpace::L1) {
+    if (mem_space == air::MemorySpace::L1) {
       AIE::CoreOp core = op->template getParentOfType<AIE::CoreOp>();
       if (!core)
         return op.emitOpError("could not retrieve core for channel put/get op");
       *tile = core.getTileOp();
       return success();
-    } else if (mem_space == (int)air::MemorySpace::L2) {
+    } else if (mem_space == air::MemorySpace::L2) {
       if (bufferToMemtileMap.find(dyn_cast_if_present<AIE::BufferOp>(
               op.getMemref().getDefiningOp())) != bufferToMemtileMap.end()) {
         *tile = bufferToMemtileMap[dyn_cast_if_present<AIE::BufferOp>(
@@ -2202,8 +2201,7 @@ private:
                        AIE::ObjectFifoPort port,
                        llvm::SmallSet<Operation *, 2> &erased_allocs) const {
     BaseMemRefType memref = cast<BaseMemRefType>(op.getMemref().getType());
-    int mem_space = memref.getMemorySpaceAsInt();
-    if (mem_space == (int)air::MemorySpace::L2) {
+    if (air::isL2(memref)) {
       // add alloc to list of ops to erase
       erased_allocs.insert(op.getMemref().getDefiningOp());
       return;
@@ -2239,8 +2237,7 @@ private:
       llvm::SmallSet<Operation *, 2> &erased_deallocs) const {
     BaseMemRefType memref =
         llvm::cast<BaseMemRefType>(op.getMemref().getType());
-    int mem_space = memref.getMemorySpaceAsInt();
-    if (mem_space == (int)air::MemorySpace::L2) {
+    if (air::isL2(memref)) {
       return;
     }
     for (auto u : op.getMemref().getDefiningOp()->getUsers()) {
@@ -2604,8 +2601,7 @@ struct OpRemovalPattern : public OpConversionPattern<OpT> {
 static bool isL1ToL1CopyInCore(MemRefType srcType, MemRefType dstType,
                                Operation *op) {
   // Only handle L1-to-L1 copies (memory space 2)
-  if (srcType.getMemorySpaceAsInt() != (int)air::MemorySpace::L1 ||
-      dstType.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+  if (!air::isL1(srcType) || !air::isL1(dstType))
     return false;
 
   // Only handle copies inside AIE cores
@@ -2676,6 +2672,35 @@ void lowerMemRefCopyToLoops(AIE::DeviceOp d) {
   patterns.insert<MemRefCopyToLinalgCopyPattern>(ctx);
   patterns.insert<LinalgCopyToLoopsPattern>(ctx);
   (void)applyPatternsGreedily(d, std::move(patterns));
+}
+
+/// Remove dead memref.get_global ops and their corresponding memref.global
+/// declarations. outlineAIECores creates these for ALL L2/L3 herd memref
+/// args, but DMA/channel lowering erases the ops that referenced them,
+/// leaving orphaned globals that cause linker errors (issue #1404).
+static void removeDeadGlobalOps(AIE::DeviceOp device) {
+  // Erase dead memref.get_global ops (no users).
+  SmallVector<memref::GetGlobalOp> deadGetGlobals;
+  device.walk([&](memref::GetGlobalOp op) {
+    if (op.use_empty())
+      deadGetGlobals.push_back(op);
+  });
+  for (auto op : deadGetGlobals)
+    op->erase();
+
+  // Collect symbols still referenced by remaining get_global ops.
+  llvm::DenseSet<StringRef> referencedGlobals;
+  device.walk(
+      [&](memref::GetGlobalOp op) { referencedGlobals.insert(op.getName()); });
+
+  // Erase unreferenced memref.global declarations.
+  SmallVector<memref::GlobalOp> deadGlobals;
+  for (auto globalOp : device.getOps<memref::GlobalOp>()) {
+    if (!referencedGlobals.contains(globalOp.getSymName()))
+      deadGlobals.push_back(globalOp);
+  }
+  for (auto op : deadGlobals)
+    op->erase();
 }
 
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
@@ -2821,6 +2846,10 @@ public:
     if (failed(
             applyPartialConversion(device, target, std::move(removepatterns))))
       return failure();
+
+    // Clean up dead memref.get_global/memref.global left by outlineAIECores
+    // after DMA/channel lowering consumed their users.
+    removeDeadGlobalOps(device);
 
     return success();
   }
@@ -2980,14 +3009,12 @@ public:
     bool destIsShim = false;
     if (auto srcMemref = memcpyOp.getSrcMemref()) {
       auto memrefTy = dyn_cast_if_present<BaseMemRefType>(srcMemref.getType());
-      if (memrefTy &&
-          memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+      if (memrefTy && air::isL3(memrefTy))
         destIsShim = true;
     }
     if (auto dstMemref = memcpyOp.getDstMemref()) {
       auto memrefTy = dyn_cast_if_present<BaseMemRefType>(dstMemref.getType());
-      if (memrefTy &&
-          memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+      if (memrefTy && air::isL3(memrefTy))
         destIsShim = true;
     }
 
@@ -3155,8 +3182,7 @@ public:
         [&](air::ChannelInterface chanI) {
           auto memrefTy =
               dyn_cast_if_present<BaseMemRefType>(chanI.getMemref().getType());
-          if (!memrefTy || memrefTy.getMemorySpaceAsInt() !=
-                               static_cast<int>(air::MemorySpace::L2))
+          if (!memrefTy || !air::isL2(memrefTy))
             return mlir::WalkResult::advance();
 
           if (auto chanPut =
@@ -3310,7 +3336,7 @@ public:
           auto memrefTy = dyn_cast_if_present<MemRefType>(operand.getType());
           if (!memrefTy)
             continue;
-          if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L3)
+          if (!air::isL3(memrefTy))
             continue;
           // Skip if already handled
           if (l3MemrefsHandled.contains(operand))
@@ -3579,7 +3605,7 @@ public:
     d.walk([&](memref::AllocOp allocOp) {
       auto memref = allocOp.getMemref();
       auto memrefTy = llvm::cast<MemRefType>(memref.getType());
-      if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+      if (air::isL2(memrefTy)) {
         // Count the number of unique incoming and outgoing channels.
         std::vector<std::string> uniqueS2MMChannels;
         std::vector<std::string> uniqueMM2SChannels;
@@ -4049,9 +4075,9 @@ public:
             dyn_cast_if_present<BaseMemRefType>(dmaOp.getSrcMemref().getType());
         auto dstMemrefTy =
             dyn_cast_if_present<BaseMemRefType>(dmaOp.getDstMemref().getType());
-        if (srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+        if (air::isL3(srcMemrefTy))
           shimMemcpyMM2SOps.push_back(memcpyIf);
-        if (dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+        if (air::isL3(dstMemrefTy))
           shimMemcpyS2MMOps.push_back(memcpyIf);
       }
     }
@@ -4426,7 +4452,7 @@ public:
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
     Value alloc = nullptr;
-    auto tileInbound = isTileInbound(memcpyOpIf, (int)air::MemorySpace::L1);
+    auto tileInbound = isTileInbound(memcpyOpIf, air::MemorySpace::L1);
     if (failed(tileInbound))
       return failure();
     if (tileInbound.value()) {
@@ -4656,22 +4682,22 @@ public:
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 
-    if (failed(isTileInbound(ndcpy, (int)air::MemorySpace::L1)))
+    if (failed(isTileInbound(ndcpy, air::MemorySpace::L1)))
       return failure();
 
-    Value memref = isTileInbound(ndcpy, (int)air::MemorySpace::L1).value()
+    Value memref = isTileInbound(ndcpy, air::MemorySpace::L1).value()
                        ? ndcpy.getDstMemref()
                        : ndcpy.getSrcMemref();
     SmallVector<Value> sizes =
-        isTileInbound(ndcpy, (int)air::MemorySpace::L1).value()
+        isTileInbound(ndcpy, air::MemorySpace::L1).value()
             ? ndcpy.getDstSizes()
             : ndcpy.getSrcSizes();
     SmallVector<Value> offsets =
-        isTileInbound(ndcpy, (int)air::MemorySpace::L1).value()
+        isTileInbound(ndcpy, air::MemorySpace::L1).value()
             ? ndcpy.getDstOffsets()
             : ndcpy.getSrcOffsets();
     SmallVector<Value> strides =
-        isTileInbound(ndcpy, (int)air::MemorySpace::L1).value()
+        isTileInbound(ndcpy, air::MemorySpace::L1).value()
             ? ndcpy.getDstStrides()
             : ndcpy.getSrcStrides();
 
@@ -5630,8 +5656,7 @@ public:
             return;
           auto memrefTy =
               dyn_cast_if_present<BaseMemRefType>(o.getMemref().getType());
-          if (memrefTy &&
-              memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+          if (memrefTy && air::isL3(memrefTy))
             shimMemcpyIfOps.push_back(
                 dyn_cast_if_present<air::MemcpyInterface>(o.getOperation()));
         });
@@ -5642,13 +5667,11 @@ public:
             return;
           auto srcMemrefTy =
               dyn_cast_if_present<BaseMemRefType>(o.getSrcMemref().getType());
-          if (srcMemrefTy &&
-              srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+          if (srcMemrefTy && air::isL3(srcMemrefTy))
             shimMemcpyIfOps.push_back(o);
           auto dstMemrefTy =
               dyn_cast_if_present<BaseMemRefType>(o.getDstMemref().getType());
-          if (dstMemrefTy &&
-              dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+          if (dstMemrefTy && air::isL3(dstMemrefTy))
             shimMemcpyIfOps.push_back(o);
         });
         builder.setInsertionPoint(device.getBody()->getTerminator());
@@ -5693,6 +5716,10 @@ public:
       if (failed(applyPartialConversion(device, target,
                                         std::move(removepatterns))))
         signalPassFailure();
+
+      // Clean up dead memref.get_global/memref.global left by outlineAIECores
+      // after DMA/channel lowering consumed their users.
+      removeDeadGlobalOps(device);
     }
   }
 

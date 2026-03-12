@@ -148,6 +148,47 @@ static void extractOperandsFromReinterpretCast(
                    arith::ConstantIndexOp::create(builder, loc, 0));
 }
 
+// Detect self-copies that would produce invalid self-DMAs. After unwrapping
+// subview ops, check if src and dst resolve to the same base buffer with
+// identical offsets/sizes/strides (including dynamic operands). This can happen
+// when structured.pad with copy_back_op creates a redundant copy-back.
+static bool isSelfCopy(memref::CopyOp op) {
+  Value src = op.getSource();
+  Value dst = op.getTarget();
+
+  // Quick check: same SSA value means trivially a self-copy.
+  if (src == dst)
+    return true;
+
+  // Unwrap subviews to find base buffers and access parameters.
+  // Uses getMixedOffsets/Sizes/Strides to correctly handle both static and
+  // dynamic operands (avoids false positives from dynamic sentinel values).
+  SmallVector<OpFoldResult> srcOffsets, srcSizes, srcStrides;
+  SmallVector<OpFoldResult> dstOffsets, dstSizes, dstStrides;
+
+  if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
+    srcOffsets = subview.getMixedOffsets();
+    srcSizes = subview.getMixedSizes();
+    srcStrides = subview.getMixedStrides();
+    src = subview.getSource();
+  }
+
+  if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
+    dstOffsets = subview.getMixedOffsets();
+    dstSizes = subview.getMixedSizes();
+    dstStrides = subview.getMixedStrides();
+    dst = subview.getSource();
+  }
+
+  // Different base buffers means not a self-copy.
+  if (src != dst)
+    return false;
+
+  // Same base buffer: self-copy if no subviews or identical parameters.
+  return srcOffsets == dstOffsets && srcSizes == dstSizes &&
+         srcStrides == dstStrides;
+}
+
 static FailureOr<air::DmaMemcpyNdOp>
 matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   auto loc = op.getLoc();
@@ -162,8 +203,7 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   if (!src_type)
     return failure();
 
-  if ((src_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) &&
-      (dst_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3))
+  if (air::isL3(src_type) && air::isL3(dst_type))
     return failure();
 
   if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
@@ -248,6 +288,10 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
   using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(memref::CopyOp op,
                                 PatternRewriter &rewriter) const override {
+    if (isSelfCopy(op)) {
+      rewriter.eraseOp(op);
+      return success();
+    }
     if (failed(matchAndRewriteCopyOp(op, rewriter)))
       return failure();
     return success();
@@ -1297,7 +1341,7 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
           llvm::dyn_cast_if_present<MemRefType>(co.getSource().getType());
       auto dst_type =
           llvm::dyn_cast_if_present<MemRefType>(co.getTarget().getType());
-      return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
+      return air::getMemorySpace(src_type) == air::getMemorySpace(dst_type);
     });
 
     DmaMemcpyOpID = 0;
@@ -1372,11 +1416,9 @@ static void getHerdNames(ModuleOp module) {
                 continue;
               if (!isa<MemRefType>(operJ.getType()))
                 continue;
-              if (llvm::cast<MemRefType>(operI.getType())
-                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+              if (!air::isL1(llvm::cast<MemRefType>(operI.getType())))
                 continue;
-              if (llvm::cast<MemRefType>(operJ.getType())
-                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+              if (!air::isL1(llvm::cast<MemRefType>(operJ.getType())))
                 continue;
               if (operI != operJ)
                 continue;
@@ -1518,15 +1560,11 @@ struct ParallelToHerdPass
       Value L1Memref = nullptr;
       Value L2Memref = nullptr;
       bool SrcIsL1 = false;
-      if ((srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L1) &&
-          (dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L2)) {
+      if (air::isL1(srcMemrefTy) && air::isL2(dstMemrefTy)) {
         L1Memref = op.getSrcMemref();
         L2Memref = op.getDstMemref();
         SrcIsL1 = true;
-      } else if ((srcMemrefTy.getMemorySpaceAsInt() ==
-                  (int)air::MemorySpace::L2) &&
-                 (dstMemrefTy.getMemorySpaceAsInt() ==
-                  (int)air::MemorySpace::L1)) {
+      } else if (air::isL2(srcMemrefTy) && air::isL1(dstMemrefTy)) {
         L1Memref = op.getDstMemref();
         L2Memref = op.getSrcMemref();
         SrcIsL1 = false;
@@ -2144,6 +2182,10 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
                                    memref::CopyOp op,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
+  if (xilinx::air::isSelfCopy(op)) {
+    rewriter.eraseOp(op);
+    return DiagnosedSilenceableFailure::success();
+  }
   auto res = xilinx::air::matchAndRewriteCopyOp(op, rewriter);
   if (failed(res))
     return emitDefaultDefiniteFailure(op);
@@ -2196,9 +2238,9 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
       Type expectedOutputType = linalgReduceOp.getDpsInits()[i].getType();
       if (auto tensorType =
               dyn_cast_if_present<RankedTensorType>(expectedOutputType)) {
-        auto newInitMemrefTy =
-            MemRefType::get(tensorType.getShape(), tensorType.getElementType(),
-                            AffineMap(), (int)xilinx::air::MemorySpace::L1);
+        auto newInitMemrefTy = MemRefType::get(
+            tensorType.getShape(), tensorType.getElementType(), AffineMap(),
+            static_cast<unsigned>(xilinx::air::MemorySpace::L1));
         Value bufferInitVal = bufferization::ToBufferOp::create(
             rewriter, loc, newInitMemrefTy, linalgReduceOp.getDpsInits()[i]);
         modifiedInitVals.push_back(bufferInitVal);

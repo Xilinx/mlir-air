@@ -35,6 +35,39 @@ using namespace mlir;
 
 namespace xilinx {
 
+// ===----------------------------------------------------------------------===//
+// Memory space helpers
+// ===----------------------------------------------------------------------===//
+
+std::optional<air::MemorySpace> air::getMemorySpace(BaseMemRefType memrefTy) {
+  return symbolizeMemorySpace(memrefTy.getMemorySpaceAsInt());
+}
+
+bool air::isL1(BaseMemRefType memrefTy) {
+  return memrefTy.getMemorySpaceAsInt() ==
+         static_cast<unsigned>(MemorySpace::L1);
+}
+
+bool air::isL2(BaseMemRefType memrefTy) {
+  return memrefTy.getMemorySpaceAsInt() ==
+         static_cast<unsigned>(MemorySpace::L2);
+}
+
+bool air::isL3(BaseMemRefType memrefTy) {
+  return memrefTy.getMemorySpaceAsInt() ==
+         static_cast<unsigned>(MemorySpace::L3);
+}
+
+bool air::isMoreLocal(air::MemorySpace a, air::MemorySpace b) {
+  return static_cast<uint32_t>(a) > static_cast<uint32_t>(b);
+}
+
+air::MemorySpace air::moreLocal(air::MemorySpace a, air::MemorySpace b) {
+  return static_cast<uint32_t>(a) > static_cast<uint32_t>(b) ? a : b;
+}
+
+// ===----------------------------------------------------------------------===//
+
 const StringLiteral air::LinalgTransforms::kLinalgTransformMarker =
     "__internal_linalg_transform__";
 
@@ -348,21 +381,13 @@ std::string air::getMemorySpaceAsString(Value memref) {
     memref.getDefiningOp()->emitOpError("value returned is not a memref");
     return "";
   }
-  auto memory_space_as_int =
-      llvm::dyn_cast_if_present<BaseMemRefType>(memref.getType())
-          .getMemorySpaceAsInt();
-  std::string memorySpaceStr = "";
-  if (memory_space_as_int == (int)air::MemorySpace::L1) {
-    memorySpaceStr = "L1";
-  } else if (memory_space_as_int == (int)air::MemorySpace::L2) {
-    memorySpaceStr = "L2";
-  } else if (memory_space_as_int == (int)air::MemorySpace::L3) {
-    memorySpaceStr = "L3";
-  } else {
+  auto ms = getMemorySpace(llvm::cast<BaseMemRefType>(memref.getType()));
+  if (!ms) {
     memref.getDefiningOp()->emitOpError(
         "value returned has an unexpected memory space");
+    return "";
   }
-  return memorySpaceStr;
+  return std::string(stringifyMemorySpace(*ms));
 }
 
 // Returns the first affine if op in block; nullptr otherwise
@@ -2061,7 +2086,7 @@ struct BufferMemrefToFuncArgsPattern : public OpRewritePattern<func::FuncOp> {
             dyn_cast_if_present<BaseMemRefType>(res.getType());
         if (!resType)
           continue;
-        if (resType.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+        if (air::isL3(resType))
           memrefs.insert(res);
       }
     }

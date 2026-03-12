@@ -9,6 +9,7 @@
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
@@ -1463,13 +1464,10 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
         if (!alloc_op)
           continue;
         auto memref_type = llvm::cast<MemRefType>(alloc_op.getType());
-        int memorySpace = memref_type.getMemorySpaceAsInt();
 
         // Check if this alloc's memory space matches the omit criteria
-        if ((omitMemorySpace == "L1" &&
-             memorySpace == (int)air::MemorySpace::L1) ||
-            (omitMemorySpace == "L2" &&
-             memorySpace == (int)air::MemorySpace::L2)) {
+        if ((omitMemorySpace == "L1" && air::isL1(memref_type)) ||
+            (omitMemorySpace == "L2" && air::isL2(memref_type))) {
           shouldSkip = true;
           break;
         }
@@ -2672,18 +2670,13 @@ public:
   // Trace dma ops' dependency to loop induction variables
   void getDmaOpLoopDependency(func::FuncOp f) {
     f.walk([&](air::DmaMemcpyNdOp dma_op) {
-      int src_memspace = -1;
-      int dst_memspace = -1;
+      bool isL1Memcpy = false;
       if (dma_op.getSrcMemref())
-        src_memspace =
-            llvm::cast<BaseMemRefType>(dma_op.getSrcMemref().getType())
-                .getMemorySpaceAsInt();
+        isL1Memcpy |= air::isL1(
+            llvm::cast<BaseMemRefType>(dma_op.getSrcMemref().getType()));
       if (dma_op.getDstMemref())
-        dst_memspace =
-            llvm::cast<BaseMemRefType>(dma_op.getDstMemref().getType())
-                .getMemorySpaceAsInt();
-      bool isL1Memcpy = (src_memspace == (int)air::MemorySpace::L1) ||
-                        (dst_memspace == (int)air::MemorySpace::L1);
+        isL1Memcpy |= air::isL1(
+            llvm::cast<BaseMemRefType>(dma_op.getDstMemref().getType()));
       if (dma_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
         // Start recursively tracing for loop induction variables
         dma_op_history.push_back(dma_op);
@@ -3617,18 +3610,15 @@ public:
     if (clAggressiveMode.empty())
       return;
     for (unsigned i = 0; i < clAggressiveMode.size(); ++i) {
-      if (clAggressiveMode[i] == "L1")
-        targetMemorySpaces.push_back((unsigned)air::MemorySpace::L1);
-      else if (clAggressiveMode[i] == "L2")
-        targetMemorySpaces.push_back((unsigned)air::MemorySpace::L2);
-      else if (clAggressiveMode[i] == "L3")
-        targetMemorySpaces.push_back((unsigned)air::MemorySpace::L3);
+      auto ms = air::symbolizeMemorySpace(clAggressiveMode[i]);
+      if (ms)
+        targetMemorySpaces.push_back(*ms);
       LLVM_DEBUG(llvm::outs() << "clAggressiveMode[" << i
                               << "] = " << clAggressiveMode[i] << "\n");
     }
   }
 
-  SmallVector<unsigned> targetMemorySpaces;
+  SmallVector<air::MemorySpace> targetMemorySpaces;
 
 private:
   // Get a vector of channel ops which can be fused using a new for loop.
@@ -3819,17 +3809,15 @@ private:
                                  std::vector<air::ChannelGetOp> &gets) {
     for (auto put : puts) {
       BaseMemRefType ty = llvm::cast<BaseMemRefType>(put.getMemref().getType());
-      if (llvm::any_of(targetMemorySpaces, [&](unsigned memSpace) {
-            return memSpace == ty.getMemorySpaceAsInt();
-          })) {
+      auto ms = air::getMemorySpace(ty);
+      if (ms && llvm::is_contained(targetMemorySpaces, *ms)) {
         return true;
       }
     }
     for (auto get : gets) {
       BaseMemRefType ty = llvm::cast<BaseMemRefType>(get.getMemref().getType());
-      if (llvm::any_of(targetMemorySpaces, [&](unsigned memSpace) {
-            return memSpace == ty.getMemorySpaceAsInt();
-          })) {
+      auto ms = air::getMemorySpace(ty);
+      if (ms && llvm::is_contained(targetMemorySpaces, *ms)) {
         return true;
       }
     }
@@ -3961,14 +3949,14 @@ private:
   // share the same channel.
   bool memrefsAreAffinitiveToSameChannel(Value a, Value b) {
     // Extract the memory space (e.g., L1, L2, L3) from the memref types.
-    int aMemorySpace =
-        llvm::cast<BaseMemRefType>(a.getType()).getMemorySpaceAsInt();
-    int bMemorySpace =
-        llvm::cast<BaseMemRefType>(b.getType()).getMemorySpaceAsInt();
+    auto aMemorySpace =
+        air::getMemorySpace(llvm::cast<BaseMemRefType>(a.getType()));
+    auto bMemorySpace =
+        air::getMemorySpace(llvm::cast<BaseMemRefType>(b.getType()));
     // If both memrefs are in L3 (DDR), they are considered affinitive to all
     // shim DMA channels.
-    if (aMemorySpace == (int)air::MemorySpace::L3 &&
-        bMemorySpace == (int)air::MemorySpace::L3)
+    if (aMemorySpace == air::MemorySpace::L3 &&
+        bMemorySpace == air::MemorySpace::L3)
       return true;
     // For non-L3 cases, memrefs are only guaranteed to share a channel if they
     // are the same. First, check if both values are proper MemRefType values.

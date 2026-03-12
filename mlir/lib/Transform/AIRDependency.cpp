@@ -1297,7 +1297,7 @@ private:
         air::AsyncTokenType::get(rewriter.getContext())};
     scf::IfOp new_branch_op = scf::IfOp::create(
         rewriter, branch_op.getLoc(), yielded_tys, branch_op.getCondition(),
-        /*withElseRegion*/ (bool)branch_op.elseBlock());
+        /*withElseRegion*/ true);
 
     if (auto attr = branch_op->getAttrOfType<StringAttr>(
             SymbolTable::getSymbolAttrName()))
@@ -1325,7 +1325,7 @@ private:
     affine::AffineIfOp new_branch_op = affine::AffineIfOp::create(
         rewriter, branch_op.getLoc(), yielded_tys, branch_op.getIntegerSet(),
         branch_op.getOperands(),
-        /*withElseRegion*/ (bool)branch_op.hasElse());
+        /*withElseRegion*/ true);
 
     if (auto attr = branch_op->getAttrOfType<StringAttr>(
             SymbolTable::getSymbolAttrName()))
@@ -1335,6 +1335,8 @@ private:
     auto old_regions = branch_op->getRegions();
     auto new_regions = new_branch_op->getRegions();
     for (auto [o_r, n_r] : llvm::zip_equal(old_regions, new_regions)) {
+      if (o_r.empty() || n_r.empty())
+        continue;
       auto &bb = n_r.front().getOperations();
       auto &body = o_r.front().getOperations();
       bb.splice(bb.begin(), body, body.begin(), --body.end());

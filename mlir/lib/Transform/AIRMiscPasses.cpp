@@ -14,6 +14,7 @@
 
 #include "air/Transform/AIRMiscPasses.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRTilingUtils.h"
@@ -1538,9 +1539,8 @@ FailureOr<Value> tileChannelOpByFactor(
   Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
   // Create and apply affine map onto the split channel ops.
   SmallVector<Value> tokens;
-  int memorySpace =
-      dyn_cast_if_present<BaseMemRefType>(originalChanOp.getMemref().getType())
-          .getMemorySpaceAsInt();
+  auto memorySpace = air::getMemorySpace(dyn_cast_if_present<BaseMemRefType>(
+      originalChanOp.getMemref().getType()));
   for (int i = 0; i < factor; i++) {
     // Get affine map and split size from splitInfo.
     auto &[splitInfoDimOnOffsets, splitInfoAffineMap, splitInfoSplitOffset,
@@ -1686,8 +1686,7 @@ FailureOr<Value> tileChannelOpByFactor(
     // Strategy: add one dimension to wrap-and-stride list. Rationale: (1) the
     // stride factor should apply on existing size, (2) original offset must
     // continue with the original stride.
-    if (splitInfoSplitStrideFactor &&
-        memorySpace == (int)air::MemorySpace::L3) {
+    if (splitInfoSplitStrideFactor && memorySpace == air::MemorySpace::L3) {
       newStrides.insert(newStrides.begin() + splitDimOnOffsets,
                         newStrides[splitDimOnOffsets]);
       newStrides[splitDimOnOffsets + 1] = arith::ConstantIndexOp::create(
@@ -2059,8 +2058,7 @@ AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(
   SmallVector<memref::AllocOp> allocOps;
   func.walk([&](memref::AllocOp allocOp) {
     if (allocOp->getParentOfType<air::SegmentOp>() &&
-        llvm::cast<MemRefType>(allocOp.getMemref().getType())
-                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+        air::isL2(llvm::cast<MemRefType>(allocOp.getMemref().getType()))) {
       allocOps.push_back(allocOp);
     }
   });
@@ -2320,8 +2318,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   func.walk([&](memref::AllocOp allocOp) {
     auto parentSeg = allocOp->getParentOfType<air::SegmentOp>();
     if (parentSeg && segmentsNeedingSplit.contains(parentSeg) &&
-        llvm::cast<MemRefType>(allocOp.getMemref().getType())
-                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+        air::isL2(llvm::cast<MemRefType>(allocOp.getMemref().getType()))) {
       allocOps.push_back(allocOp);
     }
   });
@@ -2747,13 +2744,17 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
         dyn_cast_if_present<MemRefType>(alloc.getMemref().getType());
     if (!memrefTy)
       return failure();
-    if ((int)memrefTy.getMemorySpaceAsInt() == clMemorySpace)
+    auto targetMS =
+        air::symbolizeMemorySpace(static_cast<uint32_t>(clMemorySpace));
+    if (!targetMS)
+      return failure();
+    if (air::getMemorySpace(memrefTy) == *targetMS)
       return failure();
 
-    auto newMemrefType =
-        MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
-                        memrefTy.getLayout().getAffineMap(),
-                        rewriter.getI32IntegerAttr(clMemorySpace));
+    auto newMemrefType = MemRefType::get(
+        memrefTy.getShape(), memrefTy.getElementType(),
+        memrefTy.getLayout().getAffineMap(),
+        air::MemorySpaceAttr::get(rewriter.getContext(), *targetMS));
 
     rewriter.replaceOpWithNewOp<memref::AllocOp>(alloc, newMemrefType);
 
@@ -2786,7 +2787,7 @@ struct correctViewLikeOpIOMemorySpacesInScope : public OpRewritePattern<OpTy> {
         auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
         if (!destTy)
           return;
-        if (srcTy.getMemorySpaceAsInt() == destTy.getMemorySpaceAsInt())
+        if (air::getMemorySpace(srcTy) == air::getMemorySpace(destTy))
           continue;
         viewLikeOpsToRes[viewLike].push_back(res);
       }
@@ -2874,6 +2875,121 @@ void AIROverrideMemRefMemorySpacePass::runOnOperation() {
 }
 
 } // namespace xilinx
+
+//===----------------------------------------------------------------------===//
+// OverrideMemRefMemorySpaceOp (transform dialect op)
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure transform::OverrideMemRefMemorySpaceOp::apply(
+    transform::TransformRewriter &rewriter,
+    transform::TransformResults &results, transform::TransformState &state) {
+
+  SmallVector<Operation *> targets =
+      llvm::to_vector(state.getPayloadOps(getTarget()));
+
+  if (targets.empty()) {
+    results.set(llvm::cast<OpResult>(getResult()), ArrayRef<Operation *>());
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  int memSpace = getMemorySpace();
+  SmallVector<Operation *> transformedOps;
+
+  for (Operation *target : targets) {
+    // Infer scope from target op type.
+    StringRef scope;
+    if (isa<xilinx::air::HerdOp>(target))
+      scope = "herd";
+    else if (isa<xilinx::air::SegmentOp>(target))
+      scope = "segment";
+    else if (isa<xilinx::air::LaunchOp>(target))
+      scope = "launch";
+    else if (isa<func::FuncOp>(target))
+      scope = "func";
+    else
+      return emitDefiniteFailure()
+             << "target must be one of: air.herd, air.segment, air.launch, "
+                "func.func; got "
+             << target->getName();
+
+    MLIRContext *ctx = target->getContext();
+
+    // Step 1: Override alloc memory spaces within the target scope.
+    RewritePatternSet patterns(ctx);
+    patterns.add<xilinx::OverrideMemorySpacePattern>(ctx, scope, memSpace);
+    (void)applyPatternsGreedily(target, std::move(patterns));
+
+    // Step 2: Propagate updated types through AIR hierarchy block arguments.
+    // Use rewriter.modifyOpInPlace so transform state tracking is notified.
+    auto updateBlockArgTypes = [&rewriter](auto hierarchyOp) {
+      auto kernelOperands = hierarchyOp.getKernelOperands();
+      auto kernelArgs = hierarchyOp.getKernelArguments();
+      bool needsUpdate = false;
+      for (unsigned i = 0; i < kernelArgs.size(); i++) {
+        if (kernelArgs[i].getType() != kernelOperands[i].getType()) {
+          needsUpdate = true;
+          break;
+        }
+      }
+      if (!needsUpdate)
+        return;
+      rewriter.modifyOpInPlace(hierarchyOp, [&]() {
+        for (unsigned i = 0; i < kernelArgs.size(); i++) {
+          if (kernelArgs[i].getType() != kernelOperands[i].getType()) {
+            auto &block = hierarchyOp.getBody().front();
+            block.getArgument(kernelArgs[i].getArgNumber())
+                .setType(kernelOperands[i].getType());
+          }
+        }
+      });
+    };
+    target->walk([&](xilinx::air::LaunchOp op) { updateBlockArgTypes(op); });
+    target->walk([&](xilinx::air::SegmentOp op) { updateBlockArgTypes(op); });
+    target->walk([&](xilinx::air::HerdOp op) { updateBlockArgTypes(op); });
+
+    // Step 3: Fix view-like op result types to match source memory spaces.
+    // Walk the target directly rather than using the pattern-based approach,
+    // since applyPatternsGreedily on a target doesn't match the target itself.
+    // Use rewriter.modifyOpInPlace for proper transform state notification.
+    target->walk([&](ViewLikeOpInterface viewLike) {
+      auto srcTy =
+          dyn_cast_if_present<MemRefType>(viewLike.getViewSource().getType());
+      if (!srcTy)
+        return;
+      bool needsUpdate = false;
+      for (auto res : viewLike->getResults()) {
+        auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
+        if (!destTy)
+          continue;
+        if (xilinx::air::getMemorySpace(srcTy) !=
+            xilinx::air::getMemorySpace(destTy)) {
+          needsUpdate = true;
+          break;
+        }
+      }
+      if (!needsUpdate)
+        return;
+      rewriter.modifyOpInPlace(viewLike, [&]() {
+        for (auto res : viewLike->getResults()) {
+          auto destTy = dyn_cast_if_present<MemRefType>(res.getType());
+          if (!destTy)
+            continue;
+          if (xilinx::air::getMemorySpace(srcTy) ==
+              xilinx::air::getMemorySpace(destTy))
+            continue;
+          MemRefType::Builder builder(destTy);
+          builder.setMemorySpace(srcTy.getMemorySpace());
+          res.setType(MemRefType(builder));
+        }
+      });
+    });
+
+    transformedOps.push_back(target);
+  }
+
+  results.set(llvm::cast<OpResult>(getResult()), transformedOps);
+  return DiagnosedSilenceableFailure::success();
+}
 
 namespace xilinx {
 namespace air {

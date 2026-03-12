@@ -19,9 +19,9 @@ namespace xilinx {
 namespace air {
 
 FailureOr<bool> isTileInbound(air::MemcpyInterface memcpyOp,
-                              int tileMemSpaceAsInt);
+                              air::MemorySpace tileMemSpace);
 FailureOr<bool> isTileOutbound(air::MemcpyInterface memcpyOp,
-                               int tileMemSpaceAsInt);
+                               air::MemorySpace tileMemSpace);
 
 AIE::TileOp getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col, int row);
 
@@ -102,8 +102,8 @@ struct MemcpyBundleAsFlow {
   std::vector<std::vector<Operation *>> S2MM;
   allocation_info_t MM2S_alloc;
   std::vector<Operation *> MM2S; // air::ChannelPuts
-  int MM2S_memspace_as_int;
-  int S2MM_memspace_as_int;
+  air::MemorySpace MM2S_memspace;
+  air::MemorySpace S2MM_memspace;
   int numMM2SAllocs = 0;
   int numS2MMAllocs = 0;
   std::string
@@ -121,8 +121,8 @@ class DMAAllocator {
 
 public:
   DMAAllocator() = delete;
-  DMAAllocator(AIE::DeviceOp device, int dmaMemorySpaceAsInt)
-      : device(device), DMAMemorySpaceAsInt(dmaMemorySpaceAsInt) {}
+  DMAAllocator(AIE::DeviceOp device, air::MemorySpace dmaMemorySpace)
+      : device(device), dmaMemorySpace(dmaMemorySpace) {}
 
   FailureOr<allocation_info_t>
   lookupDMAAllocation(int64_t col, int64_t row, air::MemcpyInterface &memcpyOp);
@@ -136,7 +136,7 @@ public:
 
 protected:
   AIE::DeviceOp device;
-  int DMAMemorySpaceAsInt;
+  air::MemorySpace dmaMemorySpace;
 
 public:
   std::vector<allocation_info_t> mm2s_allocs, s2mm_allocs;
@@ -150,7 +150,7 @@ class TileDMAAllocator : public DMAAllocator {
 
 public:
   TileDMAAllocator(AIE::DeviceOp device)
-      : DMAAllocator(device, (int)air::MemorySpace::L1) {}
+      : DMAAllocator(device, air::MemorySpace::L1) {}
 
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
@@ -217,7 +217,7 @@ public:
   // CascadeAllocator constructor: only core-to-core (L1-level) cascade
   // connection supported.
   CascadeAllocator(AIE::DeviceOp device)
-      : device(device), DMAMemorySpaceAsInt((int)air::MemorySpace::L1) {}
+      : device(device), dmaMemorySpace(air::MemorySpace::L1) {}
   FailureOr<allocation_info_t> coreCascadeAlloc(air::MemcpyInterface &memcpyOp);
   FailureOr<allocation_info_t> allocNewCascade(air::MemcpyInterface &memcpyOp,
                                                AIE::TileOp tile);
@@ -227,7 +227,7 @@ public:
 
 protected:
   AIE::DeviceOp device;
-  int DMAMemorySpaceAsInt;
+  air::MemorySpace dmaMemorySpace;
 
 public:
   std::vector<allocation_info_t> cascade_put_allocs, cascade_get_allocs;

@@ -212,12 +212,35 @@ struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     if (!alloc)
       return failure();
 
+    // Resolve static shapes from constant size operands to avoid creating
+    // dynamic allocs that later canonicalize into static alloc + memref.cast.
+    // Note: getSizes() returns only dynamic size operands (one per `?` in the
+    // shape), so we iterate over the full shape and consume from getSizes()
+    // only for dynamic dimensions.
+    SmallVector<int64_t> staticShape;
+    SmallVector<Value> dynamicSizes;
+    unsigned dynamicIdx = 0;
+    for (int64_t dim : op.getType().getShape()) {
+      if (ShapedType::isStatic(dim)) {
+        staticShape.push_back(dim);
+      } else {
+        Value size = op.getSizes()[dynamicIdx++];
+        APInt constVal;
+        if (matchPattern(size, m_ConstantInt(&constVal))) {
+          staticShape.push_back(constVal.getSExtValue());
+        } else {
+          staticShape.push_back(ShapedType::kDynamic);
+          dynamicSizes.push_back(size);
+        }
+      }
+    }
+
     /* Force memory space */
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
         op,
-        MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
-                        AffineMap(), rewriter.getI32IntegerAttr(fast_space)),
-        op.getSizes());
+        MemRefType::get(staticShape, op.getType().getElementType(), AffineMap(),
+                        rewriter.getI32IntegerAttr(fast_space)),
+        dynamicSizes);
     alloc.replaceAllUsesWith(newOp);
     return success();
   }
@@ -237,12 +260,35 @@ struct RemoveViewOpsPattern : public OpRewritePattern<memref::ViewOp> {
     if (!alloc)
       return failure();
 
+    // Resolve static shapes from constant size operands to avoid creating
+    // dynamic allocs that later canonicalize into static alloc + memref.cast.
+    // Note: getSizes() returns only dynamic size operands (one per `?` in the
+    // shape), so we iterate over the full shape and consume from getSizes()
+    // only for dynamic dimensions.
+    SmallVector<int64_t> staticShape;
+    SmallVector<Value> dynamicSizes;
+    unsigned dynamicIdx = 0;
+    for (int64_t dim : op.getType().getShape()) {
+      if (ShapedType::isStatic(dim)) {
+        staticShape.push_back(dim);
+      } else {
+        Value size = op.getSizes()[dynamicIdx++];
+        APInt constVal;
+        if (matchPattern(size, m_ConstantInt(&constVal))) {
+          staticShape.push_back(constVal.getSExtValue());
+        } else {
+          staticShape.push_back(ShapedType::kDynamic);
+          dynamicSizes.push_back(size);
+        }
+      }
+    }
+
     /* Force memory space */
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
         op,
-        MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
-                        AffineMap(), rewriter.getI32IntegerAttr(fast_space)),
-        op.getSizes());
+        MemRefType::get(staticShape, op.getType().getElementType(), AffineMap(),
+                        rewriter.getI32IntegerAttr(fast_space)),
+        dynamicSizes);
     alloc.replaceAllUsesWith(newOp);
     return success();
   }
@@ -973,7 +1019,7 @@ allocBufferCallBack(OpBuilder &b, memref::SubViewOp subView,
   MemRefType viewType = subView.getType();
   MemRefType allocType = MemRefType::get(
       viewType.getShape(), viewType.getElementType(), AffineMap(),
-      b.getI32IntegerAttr((int)air::MemorySpace::L1));
+      air::MemorySpaceAttr::get(b.getContext(), air::MemorySpace::L1));
   Value buffer = b.createOrFold<memref::AllocOp>(subView.getLoc(), allocType);
   return buffer;
 }
@@ -1095,8 +1141,9 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       auto ty = llvm::cast<MemRefType>(tiledOperands[resultIdx].getType());
       auto alloc = memref::AllocOp::create(
           b, loc,
-          MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
-                          b.getI32IntegerAttr((int)air::MemorySpace::L1)));
+          MemRefType::get(
+              ty.getShape(), ty.getElementType(), AffineMap(),
+              air::MemorySpaceAttr::get(b.getContext(), air::MemorySpace::L1)));
       tiledOperands[resultIdx] = alloc.getResult();
       SmallVector<Value> src_offsets;
       SmallVector<Value> src_sizes;
@@ -2126,13 +2173,8 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   };
   promotionOptions.setCopyInOutFns(copyCallBack, copyCallBack);
 
-  auto memorySpace = xilinx::air::MemorySpace::L1;
-  if (getMemorySpace() == "L1")
-    memorySpace = xilinx::air::MemorySpace::L1;
-  else if (getMemorySpace() == "L2")
-    memorySpace = xilinx::air::MemorySpace::L2;
-  else if (getMemorySpace() == "L3")
-    memorySpace = xilinx::air::MemorySpace::L3;
+  auto memorySpace = xilinx::air::symbolizeMemorySpace(getMemorySpace())
+                         .value_or(xilinx::air::MemorySpace::L1);
 
   SetVector<Operation *> transformed;
   int64_t operandOffset = 0;
@@ -2167,16 +2209,115 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
     if (opersToPromote.empty())
       continue;
 
-    promotionOptions.setOperandsToPromote(opersToPromote);
+    // Partition operands into subview (handled by upstream promoteSubViews)
+    // and non-subview (handled manually below). Non-subview operands arise
+    // from broadcast indexing maps where tiling doesn't produce a subview.
+    SmallVector<int64_t, 4> subviewOperands;
+    SmallVector<int64_t, 4> nonSubviewOperands;
+    for (int64_t idx : opersToPromote) {
+      Value operand = linalgOp->getOperand(idx);
+      if (isa_and_nonnull<memref::SubViewOp>(operand.getDefiningOp()))
+        subviewOperands.push_back(idx);
+      else
+        nonSubviewOperands.push_back(idx);
+    }
 
-    if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
-      return emitDefaultDefiniteFailure(target);
+    // Promote subview operands using upstream LLVM infrastructure.
+    if (!subviewOperands.empty()) {
+      promotionOptions.setOperandsToPromote(subviewOperands);
 
-    rewriter.setInsertionPoint(target);
-    FailureOr<linalg::LinalgOp> res =
-        promoteSubViews(rewriter, linalgOp, promotionOptions);
-    if (failed(res))
-      return emitDefaultDefiniteFailure(target);
+      if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
+        return emitDefaultDefiniteFailure(target);
+
+      rewriter.setInsertionPoint(target);
+      FailureOr<linalg::LinalgOp> res =
+          promoteSubViews(rewriter, linalgOp, promotionOptions);
+      if (failed(res))
+        return emitDefaultDefiniteFailure(target);
+    }
+
+    // Manually promote non-subview operands (e.g., broadcast-indexed memrefs).
+    // Deduplicate by Value so that if the same memref appears in multiple
+    // operand positions, only one promoted buffer and copy is created.
+    auto targetMemSpaceAttr =
+        rewriter.getI32IntegerAttr(static_cast<int>(memorySpace));
+    DenseMap<Value, Value> promotedValueMap;
+    SmallVector<std::pair<Value, Value>> outputWritebacks;
+    for (int64_t operandIdx : nonSubviewOperands) {
+      Value operand = linalgOp->getOperand(operandIdx);
+      auto operandType = dyn_cast<MemRefType>(operand.getType());
+      if (!operandType)
+        continue;
+
+      // Skip if already in the target memory space. Compare integer
+      // values to handle format mismatch (2 vs 2:i32).
+      if (operandType.getMemorySpaceAsInt() ==
+          static_cast<unsigned>(memorySpace))
+        continue;
+
+      // Reuse an existing promoted buffer if the same Value was already
+      // promoted.
+      auto it = promotedValueMap.find(operand);
+      if (it != promotedValueMap.end()) {
+        rewriter.modifyOpInPlace(
+            linalgOp, [&]() { linalgOp->setOperand(operandIdx, it->second); });
+        continue;
+      }
+
+      rewriter.setInsertionPoint(linalgOp);
+
+      // Build promoted memref type with target memory space.
+      auto promotedType =
+          MemRefType::get(operandType.getShape(), operandType.getElementType(),
+                          AffineMap(), targetMemSpaceAttr);
+
+      // Handle dynamic dimensions.
+      SmallVector<Value> dynamicSizes;
+      for (unsigned i = 0; i < operandType.getRank(); ++i) {
+        if (operandType.isDynamicDim(i))
+          dynamicSizes.push_back(
+              memref::DimOp::create(rewriter, linalgOp.getLoc(), operand, i));
+      }
+
+      // Choose allocation strategy based on promotion options.
+      Value promotedAlloc;
+      if (getUseAlloca()) {
+        promotedAlloc = memref::AllocaOp::create(rewriter, linalgOp.getLoc(),
+                                                 promotedType, dynamicSizes);
+      } else {
+        promotedAlloc = memref::AllocOp::create(rewriter, linalgOp.getLoc(),
+                                                promotedType, dynamicSizes);
+      }
+
+      // Copy data into the promoted buffer for input operands, or for
+      // init operands whose values are read by the linalg payload.
+      bool isInput =
+          (operandIdx < static_cast<int64_t>(linalgOp.getNumDpsInputs()));
+      OpOperand *opOperand = &linalgOp->getOpOperand(operandIdx);
+      bool needsCopyIn =
+          isInput || linalgOp.payloadUsesValueFromOperand(opOperand);
+      if (needsCopyIn)
+        memref::CopyOp::create(rewriter, linalgOp.getLoc(), operand,
+                               promotedAlloc);
+
+      // Replace operand on the linalg op.
+      rewriter.modifyOpInPlace(
+          linalgOp, [&]() { linalgOp->setOperand(operandIdx, promotedAlloc); });
+
+      promotedValueMap[operand] = promotedAlloc;
+
+      // For output (init) operands, record for copy-back after the linalg op.
+      if (!isInput)
+        outputWritebacks.emplace_back(promotedAlloc, operand);
+    }
+
+    // Emit copy-backs for promoted output operands.
+    if (!outputWritebacks.empty()) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointAfter(linalgOp);
+      for (auto &[promoted, original] : outputWritebacks)
+        memref::CopyOp::create(rewriter, linalgOp.getLoc(), promoted, original);
+    }
 
     transformed.insert(linalgOp);
   }
@@ -3119,33 +3260,35 @@ transform::BroadcastBeforeUnaryOp::apply(transform::TransformRewriter &rewriter,
       if (unaryOp->getNumOperands() != 1 || unaryOp->getNumResults() != 1)
         return;
 
-      // Check if unary op operates on a vector type
-      auto unaryType =
-          dyn_cast_if_present<VectorType>(unaryOp->getOperand(0).getType());
-      if (!unaryType)
-        return;
+      // Get the unary op's operand type - can be scalar or vector<1xT>
+      Type unaryOperandType = unaryOp->getOperand(0).getType();
+      Type unaryElementType;
 
-      // Calculate number of elements
-      int64_t numElements = 1;
-      for (int64_t dim : unaryType.getShape()) {
-        numElements *= dim;
+      if (auto unaryVecType = dyn_cast<VectorType>(unaryOperandType)) {
+        // Vector case: must be single-element vector (e.g., vector<1xf32>)
+        int64_t numElements = 1;
+        for (int64_t dim : unaryVecType.getShape()) {
+          numElements *= dim;
+        }
+        if (numElements != 1)
+          return;
+        unaryElementType = unaryVecType.getElementType();
+      } else {
+        // Scalar case (e.g., f32) - inherently single-element
+        unaryElementType = unaryOperandType;
       }
-
-      // Only transform if unary op operates on single-element vector
-      if (numElements != 1)
-        return;
 
       // Check if unary op result has exactly one use (this broadcast)
       if (!unaryOp->getResult(0).hasOneUse())
         return;
 
-      // Check type consistency
+      // Check type consistency: element type must match broadcast element type
       auto broadcastType =
           dyn_cast_if_present<VectorType>(broadcastOp.getType());
       if (!broadcastType)
         return;
 
-      if (unaryType.getElementType() != broadcastType.getElementType())
+      if (unaryElementType != broadcastType.getElementType())
         return;
 
       // This broadcast op matches the pattern

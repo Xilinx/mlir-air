@@ -60,7 +60,7 @@ namespace {
 // Helper function to check if a value is a memref on host memory (space 0)
 static bool isHostMemory(Value val) {
   if (auto memrefType = dyn_cast_if_present<BaseMemRefType>(val.getType()))
-    return memrefType.getMemorySpaceAsInt() == 0;
+    return xilinx::air::isL3(memrefType);
   return false;
 }
 
@@ -665,7 +665,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(memrefTy))
       return failure();
 
     rewriter.eraseOp(op);
@@ -682,7 +682,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<BaseMemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(memrefTy))
       return failure();
 
     rewriter.eraseOp(op);
@@ -1439,15 +1439,14 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         [&](affine::AffineStoreOp op) {
           if (op->getParentOfType<AIE::CoreOp>())
             return true;
-          return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
-                      .getMemorySpaceAsInt() !=
-                  (int)xilinx::air::MemorySpace::L1);
+          return !xilinx::air::isL1(
+              llvm::cast<BaseMemRefType>(op.getMemref().getType()));
         });
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
       if (op->getParentOfType<AIE::CoreOp>())
         return true;
-      return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
-                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
+      return !xilinx::air::isL1(
+          llvm::cast<BaseMemRefType>(op.getMemref().getType()));
     });
     target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
       auto f = op->getParentOfType<func::FuncOp>();

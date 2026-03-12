@@ -150,7 +150,6 @@ with air.ir.Context() as ctx, Location.unknown():
         + ",".join(
             [
                 "air-resolve-tensor-opoperand-conflicts",
-                "air-override-memref-memory-space{scope=func memory-space=1}",
             ]
         )
         + ")"

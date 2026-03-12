@@ -13,6 +13,7 @@ add_mlir_dialect_library(
   MLIRAIRIncGen
   MLIRAIROpInterfacesIncGen
   MLIRLinalgDialect
+  MLIRVectorDialect
 
   LINK_LIBS PUBLIC
   MLIRIR)
