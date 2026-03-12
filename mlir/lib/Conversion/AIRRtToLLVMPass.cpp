@@ -736,7 +736,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = op.getType();
-    if (op.getType().getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(op.getType()))
       return failure();
 
     auto alloc = memref::AllocOp::create(
@@ -757,7 +757,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(memrefTy))
       return failure();
 
     memref::DeallocOp::create(rewriter, op.getLoc(), adaptor.getMemref());
@@ -776,7 +776,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(memrefTy))
       return failure();
 
     rewriter.eraseOp(op);
@@ -793,7 +793,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(memrefTy))
       return failure();
 
     auto load =
@@ -813,7 +813,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(memrefTy))
       return failure();
 
     rewriter.eraseOp(op);
@@ -831,7 +831,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+    if (!xilinx::air::isL1(memrefTy))
       return failure();
 
     auto load = affine::AffineLoadOp::create(
@@ -856,7 +856,7 @@ public:
     auto ctx = op->getContext();
 
     auto memrefTy = llvm::cast<MemRefType>(op.getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2)
+    if (!xilinx::air::isL2(memrefTy))
       return failure();
 
     tys.push_back(IndexType::get(ctx));
@@ -908,7 +908,7 @@ public:
     auto ctx = op->getContext();
 
     auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2)
+    if (!xilinx::air::isL2(memrefTy))
       return failure();
 
     tys.push_back(MemRefType::get(
@@ -1172,7 +1172,7 @@ public:
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert L1 memrefs to L3
       if (auto memref = llvm::dyn_cast_if_present<MemRefType>(type))
-        if (memref.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
+        if (xilinx::air::isL1(memref))
           return mlir::MemRefType::get(memref.getShape(),
                                        memref.getElementType(),
                                        memref.getLayout(), 0);
@@ -1211,37 +1211,34 @@ public:
                            arith::ArithDialect, affine::AffineDialect,
                            scf::SCFDialect, memref::MemRefDialect>();
 
-    target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-      return (op.getType().getMemorySpaceAsInt() == 0);
-    });
+    target.addDynamicallyLegalOp<memref::AllocOp>(
+        [&](memref::AllocOp op) { return xilinx::air::isL3(op.getType()); });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (llvm::cast<MemRefType>(op.getMemref().getType())
-                  .getMemorySpaceAsInt() == 0);
+      return xilinx::air::isL3(
+          llvm::cast<MemRefType>(op.getMemref().getType()));
     });
 
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
         [&](affine::AffineStoreOp op) {
-          return (llvm::cast<MemRefType>(op.getMemref().getType())
-                      .getMemorySpaceAsInt() !=
-                  (int)xilinx::air::MemorySpace::L1);
+          return !xilinx::air::isL1(
+              llvm::cast<MemRefType>(op.getMemref().getType()));
         });
 
     target.addDynamicallyLegalOp<affine::AffineLoadOp>(
         [&](affine::AffineLoadOp op) {
-          return (llvm::cast<MemRefType>(op.getMemref().getType())
-                      .getMemorySpaceAsInt() !=
-                  (int)xilinx::air::MemorySpace::L1);
+          return !xilinx::air::isL1(
+              llvm::cast<MemRefType>(op.getMemref().getType()));
         });
 
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
-      return (llvm::cast<MemRefType>(op.getMemref().getType())
-                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
+      return !xilinx::air::isL1(
+          llvm::cast<MemRefType>(op.getMemref().getType()));
     });
 
     target.addDynamicallyLegalOp<memref::LoadOp>([&](memref::LoadOp op) {
-      return (llvm::cast<MemRefType>(op.getMemref().getType())
-                  .getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1);
+      return !xilinx::air::isL1(
+          llvm::cast<MemRefType>(op.getMemref().getType()));
     });
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
@@ -1251,12 +1248,12 @@ public:
     target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
       for (auto t : op.getOperandTypes()) {
         if (auto mty = llvm::dyn_cast_if_present<MemRefType>(t))
-          if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
+          if (xilinx::air::isL1(mty))
             return false;
       }
       for (auto t : op.getResultTypes()) {
         if (auto mty = llvm::dyn_cast_if_present<MemRefType>(t))
-          if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
+          if (xilinx::air::isL1(mty))
             return false;
       }
       return true;

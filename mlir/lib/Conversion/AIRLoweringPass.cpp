@@ -184,7 +184,7 @@ public:
         // clone L3 get/put
         BaseMemRefType memrefTy =
             llvm::cast<BaseMemRefType>(chanOp.getMemref().getType());
-        if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
+        if (air::isL3(memrefTy)) {
           rewriter.clone(o, remap);
           continue;
         }
@@ -361,23 +361,17 @@ public:
         llvm::cast<BaseMemRefType>(op.getDstMemref().getType());
     bool isFromTile = false;
     bool isFullMemcpy = false;
-    if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
-        dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
+    if (air::isL1(src) && air::isL3(dst)) {
       isFromTile = true;
-    } else if (dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
-               src.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
+    } else if (air::isL1(dst) && air::isL3(src)) {
       isFromTile = false;
-    } else if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
-               dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    } else if (air::isL1(src) && air::isL2(dst)) {
       isFromTile = true;
-    } else if (dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
-               src.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    } else if (air::isL1(dst) && air::isL2(src)) {
       isFromTile = false;
-    } else if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
-               dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    } else if (air::isL3(src) && air::isL2(dst)) {
       isFullMemcpy = true;
-    } else if (dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
-               src.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    } else if (air::isL3(dst) && air::isL2(src)) {
       isFromTile = true;
       isFullMemcpy = true;
     } else
@@ -489,8 +483,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   BaseMemRefType thisMemrefType =
       llvm::cast<BaseMemRefType>(thisOp.getMemref().getType());
 
-  bool thisOpIsInShim =
-      thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
+  bool thisOpIsInShim = xilinx::air::isL3(thisMemrefType);
   if (!thisOpIsInShim)
     return nullptr;
 
@@ -714,7 +707,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto alloc = cast<memref::AllocOp>(op);
     auto type = alloc.getType();
-    if (type.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    if (air::isL2(type)) {
       rewriter.replaceOpWithNewOp<airrt::AllocOp>(op, type);
       return success();
     }
@@ -732,7 +725,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto dealloc = cast<memref::DeallocOp>(op);
     auto type = llvm::cast<BaseMemRefType>(dealloc.getMemref().getType());
-    if (type.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+    if (air::isL2(type)) {
       rewriter.replaceOpWithNewOp<airrt::DeallocOp>(op, SmallVector<Type>{},
                                                     op->getOperands());
       return success();
@@ -1117,13 +1110,11 @@ public:
     // DMA and HerdOp conversion
     RewritePatternSet air_patterns(context);
 
-    target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-      return (op.getType().getMemorySpaceAsInt() != (int)air::MemorySpace::L2);
-    });
+    target.addDynamicallyLegalOp<memref::AllocOp>(
+        [&](memref::AllocOp op) { return !air::isL2(op.getType()); });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (llvm::cast<BaseMemRefType>(op.getMemref().getType())
-                  .getMemorySpaceAsInt() != (int)air::MemorySpace::L2);
+      return !air::isL2(llvm::cast<BaseMemRefType>(op.getMemref().getType()));
     });
 
     target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {

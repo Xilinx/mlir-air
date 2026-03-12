@@ -327,9 +327,8 @@ private:
         if (!memrefType)
           continue;
 
-        // Check if memory space is 2 (L1)
-        auto memorySpace = memrefType.getMemorySpaceAsInt();
-        if (memorySpace == 2) {
+        // Check if memory space is L1
+        if (air::isL1(memrefType)) {
           memrefToHerds[arg].insert(herdName);
           LLVM_DEBUG(llvm::dbgs() << "Found L1 memref accessed by herd "
                                   << herdName << "\n");

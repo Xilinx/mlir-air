@@ -8,6 +8,7 @@
 #include "air/Transform/AIRDmaToChannel.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -324,7 +325,8 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
 }
 
 static void replaceAIRDmaWithAIRChannelPairs(
-    OpBuilder &builder, unsigned innerMemorySpace, air::DmaMemcpyNdOp op,
+    OpBuilder &builder, air::MemorySpace innerMemorySpace,
+    air::DmaMemcpyNdOp op,
     SmallVector<air::ChannelInterface, 1> &internalGetPutVector,
     SmallVector<air::ChannelInterface, 1> &externalGetPutVector) {
   auto loc = op->getLoc();
@@ -427,7 +429,7 @@ static void replaceAIRDmaWithAIRChannelPairs(
   if (auto op_token = op.getAsyncToken()) {
     tys.push_back(air::AsyncTokenType::get(ctx));
   }
-  if (dst_type.getMemorySpaceAsInt() == innerMemorySpace) {
+  if (air::getMemorySpace(dst_type) == innerMemorySpace) {
     auto internal = air::ChannelGetOp::create(
         builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_internal, dst, dst_offsets, dst_sizes, dst_strides);
@@ -441,7 +443,7 @@ static void replaceAIRDmaWithAIRChannelPairs(
         dyn_cast_if_present<air::ChannelInterface>(external.getOperation());
   }
 
-  if (src_type.getMemorySpaceAsInt() == innerMemorySpace) {
+  if (air::getMemorySpace(src_type) == innerMemorySpace) {
     auto internal = air::ChannelPutOp::create(
         builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_internal, src, src_offsets, src_sizes, src_strides);
@@ -496,12 +498,11 @@ bool isInMatchingHierarchy(air::ChannelInterface getput) {
   if (!getput->getParentOfType<air::HierarchyInterface>())
     return true;
   if (isa<air::HerdOp>(getput->getParentOfType<air::HierarchyInterface>()) &&
-      (memrefType.getMemorySpaceAsInt() == (int)air::MemorySpace::L1))
+      air::isL1(memrefType))
     return true;
   else if (isa<air::SegmentOp>(
                getput->getParentOfType<air::HierarchyInterface>()) &&
-           (memrefType.getMemorySpaceAsInt() == (int)air::MemorySpace::L2 ||
-            memrefType.getMemorySpaceAsInt() == (int)air::MemorySpace::L1))
+           (air::isL2(memrefType) || air::isL1(memrefType)))
     return true;
   else if (isa<air::LaunchOp>(
                getput->getParentOfType<air::HierarchyInterface>())) {
@@ -553,25 +554,24 @@ class AIRDmaToAIRChannelConversion
     if (!src_type)
       return failure();
 
-    if ((src_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) &&
-        (dst_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3))
+    if (air::isL3(src_type) && air::isL3(dst_type))
       return failure();
 
     if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
       return failure();
 
     air::HierarchyInterface hier_op = nullptr;
-    unsigned int innerMemorySpace = 0;
+    air::MemorySpace innerMemorySpace = air::MemorySpace::L3;
     auto herd = op->getParentOfType<air::HerdOp>();
     auto segment = op->getParentOfType<air::SegmentOp>();
     if (herd) {
       hier_op =
           dyn_cast_if_present<air::HierarchyInterface>(herd.getOperation());
-      innerMemorySpace = (int)air::MemorySpace::L1;
+      innerMemorySpace = air::MemorySpace::L1;
     } else if (segment) {
       hier_op =
           dyn_cast_if_present<air::HierarchyInterface>(segment.getOperation());
-      innerMemorySpace = (int)air::MemorySpace::L2;
+      innerMemorySpace = air::MemorySpace::L2;
     } else
       return failure();
 
@@ -882,11 +882,11 @@ static LogicalResult AIRDemoteMemrefToAIRHierarchy(
     OpBuilder &builder) {
 
   air::HierarchyInterface hier_op = pair.first;
-  unsigned int hierMemorySpace = 0;
+  air::MemorySpace hierMemorySpace = air::MemorySpace::L3;
   if (isa<air::HerdOp>(hier_op.getOperation())) {
-    hierMemorySpace = (int)air::MemorySpace::L1;
+    hierMemorySpace = air::MemorySpace::L1;
   } else if (isa<air::SegmentOp>(hier_op.getOperation())) {
-    hierMemorySpace = (int)air::MemorySpace::L2;
+    hierMemorySpace = air::MemorySpace::L2;
   } else
     return failure();
 
@@ -902,9 +902,12 @@ static LogicalResult AIRDemoteMemrefToAIRHierarchy(
       auto memref_type =
           llvm::dyn_cast_if_present<BaseMemRefType>(memref.getType());
 
-      if (memref_type.getMemorySpaceAsInt() == hierMemorySpace)
+      auto allocMemSpace = air::getMemorySpace(memref_type);
+      if (!allocMemSpace)
+        continue; // Unrecognized memory space, skip
+      if (*allocMemSpace == hierMemorySpace)
         continue; // Alloc op is already under correct hierarchy
-      else if (memref_type.getMemorySpaceAsInt() > hierMemorySpace)
+      else if (air::isMoreLocal(*allocMemSpace, hierMemorySpace))
         continue; // This pass is currently not able to promote in memory tier
 
       // Get dealloc
@@ -993,27 +996,30 @@ class AIRDemoteDmaToAIRHierarchyConversion
     auto herd = op->getParentOfType<air::HerdOp>();
     auto segment = op->getParentOfType<air::SegmentOp>();
 
-    if (src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt())
+    if (air::getMemorySpace(src_type) == air::getMemorySpace(dst_type))
       return failure(); // Src and dst under same memory space
 
     air::HierarchyInterface hier_op = nullptr;
-    unsigned int innerMemorySpace = 0;
+    air::MemorySpace innerMemorySpace = air::MemorySpace::L3;
     if (herd) {
       hier_op =
           dyn_cast_if_present<air::HierarchyInterface>(herd.getOperation());
-      innerMemorySpace = (int)air::MemorySpace::L1;
+      innerMemorySpace = air::MemorySpace::L1;
     } else if (segment) {
       hier_op =
           dyn_cast_if_present<air::HierarchyInterface>(segment.getOperation());
-      innerMemorySpace = (int)air::MemorySpace::L2;
+      innerMemorySpace = air::MemorySpace::L2;
     } else
       return failure();
 
-    auto memcpyInnerMemorySpace = std::max(src_type.getMemorySpaceAsInt(),
-                                           dst_type.getMemorySpaceAsInt());
+    auto srcMS = air::getMemorySpace(src_type);
+    auto dstMS = air::getMemorySpace(dst_type);
+    if (!srcMS || !dstMS)
+      return failure();
+    auto memcpyInnerMemorySpace = air::moreLocal(*srcMS, *dstMS);
     if (memcpyInnerMemorySpace == innerMemorySpace)
       return failure(); // Dma op is already under correct hierarchy
-    else if (memcpyInnerMemorySpace > innerMemorySpace)
+    else if (air::isMoreLocal(memcpyInnerMemorySpace, innerMemorySpace))
       return failure(); // This pass is currently not able to promote in memory
                         // tier
 
@@ -1196,13 +1202,13 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       f.walk([&](memref::AllocOp alloc) {
         auto memref_type =
             dyn_cast_if_present<BaseMemRefType>(alloc.getMemref().getType());
-        int hierMemorySpace = (int)air::MemorySpace::L3;
+        air::MemorySpace hierMemorySpace = air::MemorySpace::L3;
         air::HierarchyInterface hier_op =
             alloc->getParentOfType<air::HierarchyInterface>();
         if (hier_op && isa<air::HerdOp>(hier_op.getOperation()))
-          hierMemorySpace = (int)air::MemorySpace::L1;
+          hierMemorySpace = air::MemorySpace::L1;
         else if (hier_op && isa<air::SegmentOp>(hier_op.getOperation()))
-          hierMemorySpace = (int)air::MemorySpace::L2;
+          hierMemorySpace = air::MemorySpace::L2;
         else
           return;
         // If async, then log the execute op around alloc
@@ -1210,7 +1216,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
             alloc->getParentOfType<air::ExecuteOp>()
                 ? alloc->getParentOfType<air::ExecuteOp>().getOperation()
                 : alloc.getOperation();
-        if (memref_type.getMemorySpaceAsInt() < (unsigned)hierMemorySpace) {
+        auto allocMemSpace = air::getMemorySpace(memref_type);
+        if (allocMemSpace &&
+            air::isMoreLocal(hierMemorySpace, *allocMemSpace)) {
           hier_to_allocs[hier_op].push_back(alloc_op);
         }
       });
@@ -1235,8 +1243,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           auto dst_type = llvm::dyn_cast_if_present<BaseMemRefType>(
               dma.getDstMemref().getType());
           if (dma->getParentOfType<air::HerdOp>()) {
-            if (src_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1 &&
-                dst_type.getMemorySpaceAsInt() < (int)air::MemorySpace::L1)
+            if (!air::isL1(src_type) && !air::isL1(dst_type))
               return false;
           }
           return true;

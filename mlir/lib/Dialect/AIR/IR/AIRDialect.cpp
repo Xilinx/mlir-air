@@ -29,6 +29,7 @@
 using namespace mlir;
 
 #include "air/Dialect/AIR/AIRDialect.cpp.inc"
+#include "air/Dialect/AIR/AIREnums.cpp.inc"
 
 namespace xilinx {
 
@@ -1053,22 +1054,36 @@ unsigned air::SegmentOp::getNumDims() {
 }
 
 /// Utility function to verify that all memref.alloc operations within a region
-/// have a memory space greater than or equal to the specified minimum.
+/// have a memory space at least as local as the specified minimum.
+/// For example, minMemorySpace=L2 means allocations must be L2 or L1;
+/// minMemorySpace=L1 means allocations must be L1.
 /// Returns failure if any alloc violates the constraint.
 template <typename OpT>
-static LogicalResult verifyAllocMemorySpace(OpT op, unsigned minMemorySpace,
+static LogicalResult verifyAllocMemorySpace(OpT op,
+                                            air::MemorySpace minMemorySpace,
                                             StringRef opName) {
+  auto minVal = static_cast<uint32_t>(minMemorySpace);
   WalkResult result =
       op.getBody().walk([&](memref::AllocOp allocOp) -> WalkResult {
         auto memrefType = allocOp.getType();
-        // Get memory space (defaults to 0 if not specified)
         unsigned memorySpace = memrefType.getMemorySpaceAsInt();
 
-        if (memorySpace < minMemorySpace) {
-          allocOp.emitOpError()
-              << "memref.alloc inside " << opName
-              << " must have memory space >= " << minMemorySpace
-              << ", but found memory space " << memorySpace;
+        // Verify that the memory space is at least as local as the minimum.
+        // Higher numeric value = more local (L1=2 > L2=1 > L3=0).
+        if (memorySpace < minVal) {
+          if (auto actualEnum = air::symbolizeMemorySpace(memorySpace)) {
+            allocOp.emitOpError() << "memref.alloc inside " << opName
+                                  << " must have memory space >= "
+                                  << stringifyMemorySpace(minMemorySpace)
+                                  << ", but found memory space "
+                                  << stringifyMemorySpace(*actualEnum);
+          } else {
+            allocOp.emitOpError()
+                << "memref.alloc inside " << opName
+                << " must have memory space >= "
+                << stringifyMemorySpace(minMemorySpace)
+                << ", but found numeric memory space " << memorySpace;
+          }
           return WalkResult::interrupt();
         }
         return WalkResult::advance();
@@ -1109,8 +1124,9 @@ static Value getDirectlyAccessedMemref(Operation *op) {
 /// can only access their local L1 memory directly; non-local memory must be
 /// staged via DMA. This checks low-level load/store and vector transfer ops
 /// but not higher-level ops (linalg, memref.copy) that are lowered later.
-static LogicalResult verifyComputeMemoryAccess(air::HerdOp op,
-                                               unsigned minMemorySpace) {
+static LogicalResult
+verifyComputeMemoryAccess(air::HerdOp op, air::MemorySpace minMemorySpace) {
+  auto minVal = static_cast<uint32_t>(minMemorySpace);
   WalkResult result = op.getBody().walk([&](Operation *innerOp) -> WalkResult {
     Value memref = getDirectlyAccessedMemref(innerOp);
     if (!memref)
@@ -1119,13 +1135,17 @@ static LogicalResult verifyComputeMemoryAccess(air::HerdOp op,
     if (!memrefType)
       return WalkResult::advance();
     unsigned memorySpace = memrefType.getMemorySpaceAsInt();
-    if (memorySpace < minMemorySpace) {
+    if (memorySpace < minVal) {
+      auto msStr = air::symbolizeMemorySpace(memorySpace)
+                       ? std::string(stringifyMemorySpace(
+                             *air::symbolizeMemorySpace(memorySpace)))
+                       : std::to_string(memorySpace);
       innerOp->emitOpError()
-          << "inside 'air.herd' accesses memref with memory_space "
-          << memorySpace
-          << "; AIE core tiles can only access L1 (memory_space >= "
-          << minMemorySpace
-          << ") directly. Use air.dma_memcpy_nd to stage data first.";
+          << "inside 'air.herd' accesses memref with memory_space " << msStr
+          << "; AIE core tiles can only access "
+          << stringifyMemorySpace(minMemorySpace)
+          << " or more local memory directly. "
+             "Use air.dma_memcpy_nd to stage data first.";
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
@@ -1135,7 +1155,7 @@ static LogicalResult verifyComputeMemoryAccess(air::HerdOp op,
 }
 
 LogicalResult air::SegmentOp::verify() {
-  return verifyAllocMemorySpace(*this, /*minMemorySpace=*/1, "air.segment");
+  return verifyAllocMemorySpace(*this, air::MemorySpace::L2, "air.segment");
 }
 
 //
@@ -1414,9 +1434,9 @@ uint64_t air::HerdOp::getNumRows() {
 }
 
 LogicalResult air::HerdOp::verify() {
-  if (failed(verifyAllocMemorySpace(*this, /*minMemorySpace=*/2, "air.herd")))
+  if (failed(verifyAllocMemorySpace(*this, air::MemorySpace::L1, "air.herd")))
     return failure();
-  return verifyComputeMemoryAccess(*this, /*minMemorySpace=*/2);
+  return verifyComputeMemoryAccess(*this, air::MemorySpace::L1);
 }
 
 //

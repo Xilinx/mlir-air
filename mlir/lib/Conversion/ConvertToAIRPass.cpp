@@ -203,8 +203,7 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   if (!src_type)
     return failure();
 
-  if ((src_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) &&
-      (dst_type.getMemorySpaceAsInt() == (int)air::MemorySpace::L3))
+  if (air::isL3(src_type) && air::isL3(dst_type))
     return failure();
 
   if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
@@ -1342,7 +1341,7 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
           llvm::dyn_cast_if_present<MemRefType>(co.getSource().getType());
       auto dst_type =
           llvm::dyn_cast_if_present<MemRefType>(co.getTarget().getType());
-      return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
+      return air::getMemorySpace(src_type) == air::getMemorySpace(dst_type);
     });
 
     DmaMemcpyOpID = 0;
@@ -1417,11 +1416,9 @@ static void getHerdNames(ModuleOp module) {
                 continue;
               if (!isa<MemRefType>(operJ.getType()))
                 continue;
-              if (llvm::cast<MemRefType>(operI.getType())
-                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+              if (!air::isL1(llvm::cast<MemRefType>(operI.getType())))
                 continue;
-              if (llvm::cast<MemRefType>(operJ.getType())
-                      .getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+              if (!air::isL1(llvm::cast<MemRefType>(operJ.getType())))
                 continue;
               if (operI != operJ)
                 continue;
@@ -1563,15 +1560,11 @@ struct ParallelToHerdPass
       Value L1Memref = nullptr;
       Value L2Memref = nullptr;
       bool SrcIsL1 = false;
-      if ((srcMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L1) &&
-          (dstMemrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L2)) {
+      if (air::isL1(srcMemrefTy) && air::isL2(dstMemrefTy)) {
         L1Memref = op.getSrcMemref();
         L2Memref = op.getDstMemref();
         SrcIsL1 = true;
-      } else if ((srcMemrefTy.getMemorySpaceAsInt() ==
-                  (int)air::MemorySpace::L2) &&
-                 (dstMemrefTy.getMemorySpaceAsInt() ==
-                  (int)air::MemorySpace::L1)) {
+      } else if (air::isL2(srcMemrefTy) && air::isL1(dstMemrefTy)) {
         L1Memref = op.getDstMemref();
         L2Memref = op.getSrcMemref();
         SrcIsL1 = false;
@@ -2245,9 +2238,9 @@ LogicalResult forallWithReduceToParallelLoop(RewriterBase &rewriter,
       Type expectedOutputType = linalgReduceOp.getDpsInits()[i].getType();
       if (auto tensorType =
               dyn_cast_if_present<RankedTensorType>(expectedOutputType)) {
-        auto newInitMemrefTy =
-            MemRefType::get(tensorType.getShape(), tensorType.getElementType(),
-                            AffineMap(), (int)xilinx::air::MemorySpace::L1);
+        auto newInitMemrefTy = MemRefType::get(
+            tensorType.getShape(), tensorType.getElementType(), AffineMap(),
+            static_cast<unsigned>(xilinx::air::MemorySpace::L1));
         Value bufferInitVal = bufferization::ToBufferOp::create(
             rewriter, loc, newInitMemrefTy, linalgReduceOp.getDpsInits()[i]);
         modifiedInitVals.push_back(bufferInitVal);

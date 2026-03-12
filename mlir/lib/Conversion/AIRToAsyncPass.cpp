@@ -358,7 +358,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = op.getType();
-    if (op.getType().getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+    if (air::isL3(op.getType()))
       return failure();
 
     auto alloc = memref::AllocOp::create(
@@ -382,7 +382,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = llvm::cast<MemRefType>(op.getMemref().getType());
-    if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3)
+    if (air::isL3(memrefTy))
       return failure();
 
     memref::DeallocOp::create(rewriter, op.getLoc(), adaptor.getMemref());
@@ -783,7 +783,7 @@ public:
       if (auto t = llvm::dyn_cast_if_present<air::AsyncTokenType>(type))
         return async::TokenType::get(context);
       if (auto t = llvm::dyn_cast_if_present<MemRefType>(type))
-        if (t.getMemorySpaceAsInt() != 0)
+        if (!air::isL3(t))
           return MemRefType::get(t.getShape(), t.getElementType(),
                                  t.getLayout(), 0);
       return type;
@@ -859,7 +859,7 @@ public:
         if (llvm::isa<air::AsyncTokenType>(t))
           return true;
         if (auto mt = llvm::dyn_cast_if_present<MemRefType>(t))
-          return mt.getMemorySpaceAsInt() != 0;
+          return !air::isL3(mt);
         return false;
       };
       return (!llvm::any_of(op->getResultTypes(), isIllegal) &&
@@ -885,13 +885,11 @@ public:
       return true;
     });
 
-    target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-      return (op.getType().getMemorySpaceAsInt() == 0);
-    });
+    target.addDynamicallyLegalOp<memref::AllocOp>(
+        [&](memref::AllocOp op) { return air::isL3(op.getType()); });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (llvm::cast<MemRefType>(op.getMemref().getType())
-                  .getMemorySpaceAsInt() == 0);
+      return air::isL3(llvm::cast<MemRefType>(op.getMemref().getType()));
     });
 
     RewritePatternSet typeConversionPatterns(context);

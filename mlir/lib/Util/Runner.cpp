@@ -815,27 +815,15 @@ std::string to_string(std::vector<unsigned> vec) {
 std::string to_string(dependencyNodeEntry &c) { return air::to_string(c.op); }
 
 std::string lookUpMemorySpaceFromInt(unsigned memory_space) {
-  std::string output = "";
-  if (memory_space == 0) {
-    output += "L3";
-  } else if (memory_space == 1) {
-    output += "L2";
-  } else if (memory_space == 2) {
-    output += "L1";
-  }
-  return output;
+  if (auto ms = symbolizeMemorySpace(memory_space))
+    return std::string(stringifyMemorySpace(*ms));
+  return "";
 }
 
 unsigned lookUpMemorySpaceIntFromString(std::string memory_space) {
-  unsigned output = 0;
-  if (memory_space == "L3") {
-    output = 0;
-  } else if (memory_space == "L2") {
-    output = 1;
-  } else if (memory_space == "L1") {
-    output = 2;
-  }
-  return output;
+  if (auto ms = symbolizeMemorySpace(llvm::StringRef(memory_space)))
+    return static_cast<unsigned>(*ms);
+  return 0;
 }
 
 template <typename T>
