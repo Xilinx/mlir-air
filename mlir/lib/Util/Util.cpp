@@ -1413,6 +1413,15 @@ void air::populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
   }
 }
 
+// Copy padding attributes (pad_before, pad_after) from one operation to
+// another.
+void air::copyPaddingAttributes(Operation *src, Operation *dst) {
+  if (auto padBefore = src->getAttrOfType<DenseI32ArrayAttr>("pad_before"))
+    dst->setAttr("pad_before", padBefore);
+  if (auto padAfter = src->getAttrOfType<DenseI32ArrayAttr>("pad_after"))
+    dst->setAttr("pad_after", padAfter);
+}
+
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
 bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,

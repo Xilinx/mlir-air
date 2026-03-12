@@ -799,7 +799,8 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
                               /*async_deps*/ ValueRange{}, ch, idx, val,
                               /*offsets*/ ValueRange{},
                               /*sizes*/ ValueRange{},
-                              /*strides*/ ValueRange{});
+                              /*strides*/ ValueRange{},
+                              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
   };
 
   // Emit a ChannelGetOp with given channel name, indices, and value.
@@ -808,7 +809,8 @@ LogicalResult ScfReduceToAffineIf(scf::ReduceOp reduceOp,
                               /*async_deps*/ ValueRange{}, ch, idx, val,
                               /*offsets*/ ValueRange{},
                               /*sizes*/ ValueRange{},
-                              /*strides*/ ValueRange{});
+                              /*strides*/ ValueRange{},
+                              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
   };
 
   // Clone a list of ops into the current insertion point using a remap.

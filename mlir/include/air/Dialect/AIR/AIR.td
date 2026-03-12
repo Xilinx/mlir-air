@@ -502,26 +502,31 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
         AnyRankedOrUnrankedMemRef:$src,
         Variadic<Index>:$src_offsets,
         Variadic<Index>:$src_sizes,
-        Variadic<Index>:$src_strides)>,
+        Variadic<Index>:$src_strides,
+        OptionalAttr<DenseI32ArrayAttr>:$pad_before,
+        OptionalAttr<DenseI32ArrayAttr>:$pad_after)>,
     Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Push for air channels.";
   let description = [{
-    The `air.channel.put` operation represents a **push** (send) operation that copies data from a 
+    The `air.channel.put` operation represents a **push** (send) operation that copies data from a
     source memref into a specified channel.
 
-    This operation models one-way data movement into a channel endpoint, enabling asynchronous 
-    communication between producer and consumer operations. It is typically paired with 
+    This operation models one-way data movement into a channel endpoint, enabling asynchronous
+    communication between producer and consumer operations. It is typically paired with
     `air.channel.get` operations on the receiving side.
 
     ### Semantics
-    - The source data is specified by the `src` memref, along with its associated 
+    - The source data is specified by the `src` memref, along with its associated
       `src_offsets`, `src_sizes`, and `src_strides` which describe the subview being transferred.
     - The channel being targeted is identified by the symbol referenced by `chan_name`.
     - The channel must have been declared earlier via an `air.channel` operation.
-    - The operation may be asynchronous: if an async token is produced, it can be used to 
+    - The operation may be asynchronous: if an async token is produced, it can be used to
       synchronize with subsequent dependent operations.
     - The specific channel it operates on, when `chan_name` references an array of channels, is
       identified by `indices`.
+    - Optionally, `pad_before` and `pad_after` specify constant zero-padding to apply per
+      dimension during the DMA transfer. This maps to hardware DMA buffer descriptor padding
+      on AIE memtile DMAs.
 
     ### Interfaces
     - Implements `air_AsyncOpInterface`, allowing it to participate in async dependency chains.
@@ -533,9 +538,13 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
     ```mlir
     // Send a 4x4 tile from %src into channel @chan_0
     air.channel.put @chan_0(%src[%c0, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>)
-    
+
     // Asynchronous put with dependency on %t0
     %t1 = air.channel.put async [%t0] @chan_1(%src[%c8, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>)
+
+    // Put with padding: read 13 elements, pad 2 before and 1 after
+    air.channel.put @chan_2(%src[%c0] [13] [%c1])
+        {pad_before = array<i32: 2>, pad_after = array<i32: 1>} : (memref<16xi32>)
     ```
   }];
   let assemblyFormat = [{
@@ -560,8 +569,12 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
       }
       return -1;
     }
+    bool hasPadding() {
+      return getPadBefore().has_value() || getPadAfter().has_value();
+    }
   }];
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 }
 
 def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface, 
@@ -580,26 +593,31 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
         AnyRankedOrUnrankedMemRef:$dst,
         Variadic<Index>:$dst_offsets,
         Variadic<Index>:$dst_sizes,
-        Variadic<Index>:$dst_strides)>,
+        Variadic<Index>:$dst_strides,
+        OptionalAttr<DenseI32ArrayAttr>:$pad_before,
+        OptionalAttr<DenseI32ArrayAttr>:$pad_after)>,
     Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Get for air channels.";
   let description = [{
-    The `air.channel.get` operation represents a **pull** (receive) operation that copies data from a 
+    The `air.channel.get` operation represents a **pull** (receive) operation that copies data from a
     specified channel into a destination memref.
 
-    This operation models one-way data movement from a channel endpoint into memory, enabling 
-    asynchronous communication where data previously sent by a corresponding 
+    This operation models one-way data movement from a channel endpoint into memory, enabling
+    asynchronous communication where data previously sent by a corresponding
     `air.channel.put` becomes available to the consumer.
 
     ### Semantics
-    - The destination buffer is specified by the `dst` memref, along with its associated 
+    - The destination buffer is specified by the `dst` memref, along with its associated
       `dst_offsets`, `dst_sizes`, and `dst_strides` which describe the subview being written to.
     - The channel being read is identified by the symbol referenced by `chan_name`.
     - The channel must have been declared earlier via an `air.channel` operation.
-    - The operation may be asynchronous: if an async token is produced, it can be used to 
+    - The operation may be asynchronous: if an async token is produced, it can be used to
       synchronize with subsequent dependent operations.
     - The specific channel it operates on, when `chan_name` references an array of channels, is
       identified by `indices`.
+    - Optionally, `pad_before` and `pad_after` specify constant zero-padding to apply per
+      dimension during the DMA transfer. This maps to hardware DMA buffer descriptor padding
+      on AIE memtile DMAs.
 
     ### Interfaces
     - Implements `air_AsyncOpInterface`, enabling participation in async dependency chains.
@@ -611,7 +629,7 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
     ```mlir
     // Receive a 4x4 tile into %dst from channel @chan_0
     air.channel.get @chan_0(%dst[%c0, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>)
-    
+
     // Asynchronous get with dependency on %t1
     %t2 = air.channel.get async [%t1] @chan_1(%dst[%c8, %c0][%c4, %c4][%c1, %c1]) : (memref<16x16xf32>)
     ```
@@ -638,8 +656,12 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
       }
       return -1;
     }
+    bool hasPadding() {
+      return getPadBefore().has_value() || getPadAfter().has_value();
+    }
   }];
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 }
 
 // AIR asynchronous region for dynamic event dispatching.

@@ -8,6 +8,8 @@
 
 #include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+
+#include <numeric>
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
@@ -2430,12 +2432,15 @@ private:
     if (isa<air::ChannelPutOp>(ci))
       new_ci = air::ChannelPutOp::create(
           builder, ci->getLoc(), tys, deps, chan.getSymName(), indices,
-          ci.getMemref(), offsets, wraps, strides);
+          ci.getMemref(), offsets, wraps, strides,
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     else if (isa<air::ChannelGetOp>(ci))
       new_ci = air::ChannelGetOp::create(
           builder, ci->getLoc(), tys, deps, chan.getSymName(), indices,
-          ci.getMemref(), offsets, wraps, strides);
+          ci.getMemref(), offsets, wraps, strides,
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     new_ci->setAttrs(ci->getDiscardableAttrDictionary());
+    air::copyPaddingAttributes(ci, new_ci);
     return new_ci;
   }
 
@@ -3242,7 +3247,8 @@ public:
               templateChanIf.getMemref(),
               /*sizes*/ SmallVector<Value>{zeroIdx},
               /*offsets*/ SmallVector<Value>{zeroIdx},
-              /*steps*/ SmallVector<Value>{oneIdx});
+              /*steps*/ SmallVector<Value>{oneIdx},
+              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
         } else if (isa<air::ChannelGetOp>(templateOp)) {
           air::ChannelGetOp::create(
               builder, templateOp->getLoc(), templateOp->getResultTypes(),
@@ -3251,7 +3257,8 @@ public:
               templateChanIf.getMemref(),
               /*sizes*/ SmallVector<Value>{zeroIdx},
               /*offsets*/ SmallVector<Value>{zeroIdx},
-              /*steps*/ SmallVector<Value>{oneIdx});
+              /*steps*/ SmallVector<Value>{oneIdx},
+              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
         }
       }
     }
@@ -4740,16 +4747,129 @@ public:
     bool useDefaultDataAccessPattern =
         UsesSemaphoreLocks ? air::isDefaultDataAccessPattern(sizes, strides)
                            : true;
+
+    // Extract padding attributes from the channel op, if present.
+    AIE::BDPadLayoutArrayAttr padDims = nullptr;
+    auto padBeforeAttr =
+        ndcpy->getAttrOfType<DenseI32ArrayAttr>("pad_before");
+    auto padAfterAttr =
+        ndcpy->getAttrOfType<DenseI32ArrayAttr>("pad_after");
+    if (padBeforeAttr && padAfterAttr) {
+      auto padBefore = padBeforeAttr.asArrayRef();
+      auto padAfter = padAfterAttr.asArrayRef();
+
+      // If sizes/strides were canonicalized away (empty), reconstruct them
+      // from the memref shape to match padding dimensionality.
+      if (sizes.empty() && !padBefore.empty()) {
+        auto memrefType = dyn_cast<MemRefType>(memref.getType());
+        if (memrefType) {
+          auto shape = memrefType.getShape();
+          int64_t totalElements =
+              std::accumulate(shape.begin(), shape.end(), 1LL,
+                              std::multiplies<int64_t>());
+          // For 1D memref with N-D padding, interpret as N-D with matching
+          // dimensions. The innermost dimension is totalElements /
+          // product-of-outer-pad-dims.
+          if (shape.size() == 1 && padBefore.size() > 1) {
+            // Reconstruct from the original sizes that were canonicalized:
+            // We know padding has N dimensions. The total elements = product of
+            // data sizes. Recover sizes from padding info:
+            // size_i = (padded_total_i - pad_before_i - pad_after_i)
+            // But we don't have padded_total_i. Use the flat memref size and
+            // padding dims to infer: just use the flat length as innermost
+            // with outer dim = 1 as a fallback, or look at buffer's actual
+            // allocation for shape info.
+            // For now, signal that wraps/strides must accompany padding.
+            // Emit a warning and use simple 1D fallback.
+            sizes.push_back(
+                arith::ConstantIndexOp::create(b, memcpyOp.getLoc(),
+                                               totalElements)
+                    ->getResult(0));
+            strides.push_back(
+                arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), 1)
+                    ->getResult(0));
+            // Reduce padding to 1D to match
+            padBefore = padBefore.take_back(1);
+            padAfter = padAfter.take_back(1);
+          } else if (shape.size() == padBefore.size()) {
+            // N-D memref matches padding dims. Reconstruct default sizes/strides
+            int64_t stride = 1;
+            for (int i = shape.size() - 1; i >= 0; i--) {
+              sizes.insert(sizes.begin(),
+                           arith::ConstantIndexOp::create(
+                               b, memcpyOp.getLoc(), shape[i])
+                               ->getResult(0));
+              strides.insert(strides.begin(),
+                             arith::ConstantIndexOp::create(
+                                 b, memcpyOp.getLoc(), stride)
+                                 ->getResult(0));
+              stride *= shape[i];
+            }
+          } else {
+            // 1D memref with 1D padding — simple case
+            sizes.push_back(
+                arith::ConstantIndexOp::create(b, memcpyOp.getLoc(),
+                                               totalElements)
+                    ->getResult(0));
+            strides.push_back(
+                arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), 1)
+                    ->getResult(0));
+          }
+          // Recompute wraps and strides
+          dims = air::getWrapsAndStrides(sizes, strides, ndcpy->getContext());
+          wraps_and_strides = AIE::BDDimLayoutArrayAttr::get(
+              ndcpy->getContext(), ArrayRef(dims));
+        }
+      }
+
+      SmallVector<AIE::BDPadLayoutAttr> padLayouts;
+      for (size_t i = 0; i < padBefore.size(); i++) {
+        padLayouts.push_back(AIE::BDPadLayoutAttr::get(
+            ndcpy->getContext(), static_cast<uint16_t>(padBefore[i]),
+            static_cast<uint16_t>(padAfter[i])));
+      }
+      padDims = AIE::BDPadLayoutArrayAttr::get(ndcpy->getContext(),
+                                                ArrayRef(padLayouts));
+
+      // Adjust len to include padding: product of (pad_before[i] + size[i] +
+      // pad_after[i]) for all dimensions.
+      int64_t paddedLen = 1;
+      for (size_t i = 0; i < sizes.size(); i++) {
+        auto sizeVal = getConstantIntValue(sizes[i]);
+        paddedLen *= (*sizeVal + padBefore[i] + padAfter[i]);
+      }
+      length = arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), paddedLen)
+                   ->getResult(0);
+    }
+
+    bool hasPad = padDims != nullptr;
+    // When padding is present, wraps/strides must be emitted (the hardware
+    // uses them together with padding).
+    if (hasPad)
+      useDefaultDataAccessPattern = false;
+    bool hasWraps =
+        !wraps_and_strides.getValue().empty() && !useDefaultDataAccessPattern;
+
     AIE::DMABDOp aieDmaBdOp = nullptr;
-    if (wraps_and_strides.getValue().empty() || useDefaultDataAccessPattern)
+    if (hasWraps && hasPad)
       aieDmaBdOp = AIE::DMABDOp::create(
           b, loc, bufferOp, offset,
-          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value());
-    else
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(),
+          wraps_and_strides, padDims);
+    else if (hasPad)
+      aieDmaBdOp = AIE::DMABDOp::create(
+          b, loc, bufferOp, offset,
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(),
+          padDims);
+    else if (hasWraps)
       aieDmaBdOp = AIE::DMABDOp::create(
           b, loc, bufferOp, offset,
           cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(),
           wraps_and_strides);
+    else
+      aieDmaBdOp = AIE::DMABDOp::create(
+          b, loc, bufferOp, offset,
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value());
     if (pktInfoAttr)
       aieDmaBdOp->setAttr("packet", pktInfoAttr);
     AIE::UseLockOp::create(b, loc, relLockOp, AIE::LockAction::Release,

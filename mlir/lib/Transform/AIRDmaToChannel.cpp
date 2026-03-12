@@ -432,13 +432,15 @@ static void replaceAIRDmaWithAIRChannelPairs(
   if (air::getMemorySpace(dst_type) == innerMemorySpace) {
     auto internal = air::ChannelGetOp::create(
         builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
-        channel_idx_internal, dst, dst_offsets, dst_sizes, dst_strides);
+        channel_idx_internal, dst, dst_offsets, dst_sizes, dst_strides,
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     internalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(internal.getOperation());
   } else {
     auto external = air::ChannelGetOp::create(
         builder, loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
-        channel_idx_external, dst, dst_offsets, dst_sizes, dst_strides);
+        channel_idx_external, dst, dst_offsets, dst_sizes, dst_strides,
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     externalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(external.getOperation());
   }
@@ -446,13 +448,15 @@ static void replaceAIRDmaWithAIRChannelPairs(
   if (air::getMemorySpace(src_type) == innerMemorySpace) {
     auto internal = air::ChannelPutOp::create(
         builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
-        channel_idx_internal, src, src_offsets, src_sizes, src_strides);
+        channel_idx_internal, src, src_offsets, src_sizes, src_strides,
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     internalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(internal.getOperation());
   } else {
     auto external = air::ChannelPutOp::create(
         builder, loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
-        channel_idx_external, src, src_offsets, src_sizes, src_strides);
+        channel_idx_external, src, src_offsets, src_sizes, src_strides,
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     externalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(external.getOperation());
   }
