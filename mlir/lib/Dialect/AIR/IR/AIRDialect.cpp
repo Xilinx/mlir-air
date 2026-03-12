@@ -2512,9 +2512,17 @@ LogicalResult air::ChannelPutOp::verify() {
   if (padBefore.has_value() != padAfter.has_value())
     return emitOpError(
         "pad_before and pad_after must both be present or both absent");
-  if (padBefore.has_value() && padBefore->size() != padAfter->size())
-    return emitOpError(
-        "pad_before and pad_after must have the same number of dimensions");
+  if (padBefore.has_value()) {
+    if (padBefore->size() != padAfter->size())
+      return emitOpError(
+          "pad_before and pad_after must have the same number of dimensions");
+    for (size_t i = 0; i < padBefore->size(); i++) {
+      if ((*padBefore)[i] < 0 || (*padAfter)[i] < 0)
+        return emitOpError("padding values must be non-negative");
+      if ((*padBefore)[i] > 65535 || (*padAfter)[i] > 65535)
+        return emitOpError("padding values must be <= 65535");
+    }
+  }
   return success();
 }
 
@@ -2566,9 +2574,17 @@ LogicalResult air::ChannelGetOp::verify() {
   if (padBefore.has_value() != padAfter.has_value())
     return emitOpError(
         "pad_before and pad_after must both be present or both absent");
-  if (padBefore.has_value() && padBefore->size() != padAfter->size())
-    return emitOpError(
-        "pad_before and pad_after must have the same number of dimensions");
+  if (padBefore.has_value()) {
+    if (padBefore->size() != padAfter->size())
+      return emitOpError(
+          "pad_before and pad_after must have the same number of dimensions");
+    for (size_t i = 0; i < padBefore->size(); i++) {
+      if ((*padBefore)[i] < 0 || (*padAfter)[i] < 0)
+        return emitOpError("padding values must be non-negative");
+      if ((*padBefore)[i] > 65535 || (*padAfter)[i] > 65535)
+        return emitOpError("padding values must be <= 65535");
+    }
+  }
   return success();
 }
 

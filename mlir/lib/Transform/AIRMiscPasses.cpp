@@ -243,6 +243,7 @@ public:
             get.getIndices(), get.getMemref(), get.getOffsets(), get.getSizes(),
             get.getStrides(),
             /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+        air::copyPaddingAttributes(get, newGet);
         affine::AffineYieldOp::create(rewriter, loc, newGet.getAsyncToken());
         return newGet.getAsyncToken();
       };

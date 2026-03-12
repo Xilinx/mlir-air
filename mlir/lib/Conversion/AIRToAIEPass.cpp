@@ -4815,6 +4815,12 @@ public:
         }
       }
 
+      // Validate padding rank matches sizes rank.
+      if (!sizes.empty() && padBefore.size() != sizes.size()) {
+        return memcpyOp->emitOpError(
+            "padding rank does not match transfer rank");
+      }
+
       SmallVector<AIE::BDPadLayoutAttr> padLayouts;
       for (size_t i = 0; i < padBefore.size(); i++) {
         padLayouts.push_back(AIE::BDPadLayoutAttr::get(
@@ -4829,6 +4835,10 @@ public:
       int64_t paddedLen = 1;
       for (size_t i = 0; i < sizes.size(); i++) {
         auto sizeVal = getConstantIntValue(sizes[i]);
+        if (!sizeVal) {
+          return memcpyOp->emitOpError(
+              "padding requires constant sizes for DMA BD length computation");
+        }
         paddedLen *= (*sizeVal + padBefore[i] + padAfter[i]);
       }
       length = arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), paddedLen)
