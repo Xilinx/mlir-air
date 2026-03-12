@@ -1153,7 +1153,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       SmallVector<Type> tys;
       air::ChannelGetOp::create(b, loc, tys, deps, channels[i - 1].getSymName(),
                                 channel_idx, tiledOperands[resultIdx],
-                                src_offsets, src_sizes, src_strides);
+                                src_offsets, src_sizes, src_strides,
+                                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     }
 
     linalg::LinalgOp linalgOp = clone(b, op, {}, tiledOperands);
@@ -1214,7 +1215,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       SmallVector<Type> tys;
       air::ChannelPutOp::create(b, loc, tys, deps,
                                 FlatSymbolRefAttr::get(ctx, cname), channel_idx,
-                                mref, src_offsets, src_sizes, src_strides);
+                                mref, src_offsets, src_sizes, src_strides,
+                                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
       channels[i] = channel_op;
     }
     // if (erased) erased.erase();

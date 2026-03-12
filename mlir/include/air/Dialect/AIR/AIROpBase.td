@@ -223,6 +223,24 @@ def air_ChannelInterface : OpInterface<"ChannelInterface"> {
     InterfaceMethod<"",
     "Value", "getMemref"
     >,
+    InterfaceMethod<"Get optional padding-before attribute",
+    "std::optional<DenseI32ArrayAttr>", "getPadBeforeAttr", (ins),
+    [{}], [{
+      if (auto attr = this->getOperation()->template
+              getAttrOfType<DenseI32ArrayAttr>("pad_before"))
+        return attr;
+      return std::nullopt;
+    }]
+    >,
+    InterfaceMethod<"Get optional padding-after attribute",
+    "std::optional<DenseI32ArrayAttr>", "getPadAfterAttr", (ins),
+    [{}], [{
+      if (auto attr = this->getOperation()->template
+              getAttrOfType<DenseI32ArrayAttr>("pad_after"))
+        return attr;
+      return std::nullopt;
+    }]
+    >,
   ];
 }
 

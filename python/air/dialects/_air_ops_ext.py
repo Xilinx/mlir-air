@@ -173,9 +173,15 @@ class ChannelGet(ChannelGetOp):
         indices=[],
         async_token=None,
         async_dependencies=[],
+        pad_before=None,
+        pad_after=None,
         loc=None,
         ip=None,
     ):
+        if (pad_before is None) != (pad_after is None):
+            raise ValueError(
+                "pad_before and pad_after must both be specified or both omitted"
+            )
         indices_typed = list(map(pyint_to_index, indices))
         dst_offsets_typed = list(map(pyint_to_index, offsets))
         dst_sizes_typed = list(map(pyint_to_index, sizes))
@@ -189,6 +195,12 @@ class ChannelGet(ChannelGetOp):
             dst_offsets=dst_offsets_typed,
             dst_sizes=dst_sizes_typed,
             dst_strides=dst_strides_typed,
+            pad_before=(
+                DenseI32ArrayAttr.get(pad_before) if pad_before is not None else None
+            ),
+            pad_after=(
+                DenseI32ArrayAttr.get(pad_after) if pad_after is not None else None
+            ),
             loc=loc,
             ip=ip,
         )
@@ -205,9 +217,15 @@ class ChannelPut(ChannelPutOp):
         indices=[],
         async_token=None,
         async_dependencies=[],
+        pad_before=None,
+        pad_after=None,
         loc=None,
         ip=None,
     ):
+        if (pad_before is None) != (pad_after is None):
+            raise ValueError(
+                "pad_before and pad_after must both be specified or both omitted"
+            )
         indices_typed = list(map(pyint_to_index, indices))
         offsets_typed = list(map(pyint_to_index, offsets))
         sizes_typed = list(map(pyint_to_index, sizes))
@@ -221,6 +239,12 @@ class ChannelPut(ChannelPutOp):
             src_offsets=offsets_typed,
             src_sizes=sizes_typed,
             src_strides=strides_typed,
+            pad_before=(
+                DenseI32ArrayAttr.get(pad_before) if pad_before is not None else None
+            ),
+            pad_after=(
+                DenseI32ArrayAttr.get(pad_after) if pad_after is not None else None
+            ),
             loc=loc,
             ip=ip,
         )

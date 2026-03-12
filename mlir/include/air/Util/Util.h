@@ -204,6 +204,11 @@ void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
                                     SmallVector<Value> &wraps,
                                     SmallVector<Value> &strides);
 
+// Copy padding attributes (pad_before, pad_after) from one operation to
+// another. These are inherent ODS attributes and are not included in the
+// discardable attr dictionary, so they must be copied explicitly.
+void copyPaddingAttributes(Operation *src, Operation *dst);
+
 // Check if the wraps and strides imply the default (contiguous, row-major) data
 // access pattern.
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,

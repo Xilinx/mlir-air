@@ -2176,7 +2176,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
           air::lookupOrDefaultRange(channel_op.getMemref(), remap),
           air::lookupOrDefaultRange(offsets, remap),
           air::lookupOrDefaultRange(wraps, remap),
-          air::lookupOrDefaultRange(strides, remap));
+          air::lookupOrDefaultRange(strides, remap),
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     else if (isa<air::ChannelGetOp>(channel_op))
       new_chan_op = air::ChannelGetOp::create(
           rewriter, loc, tys, deps, channel_op.getChanName(),
@@ -2184,8 +2185,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
           air::lookupOrDefaultRange(channel_op.getMemref(), remap),
           air::lookupOrDefaultRange(offsets, remap),
           air::lookupOrDefaultRange(wraps, remap),
-          air::lookupOrDefaultRange(strides, remap));
+          air::lookupOrDefaultRange(strides, remap),
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     new_chan_op->setAttrs(channel_op->getDiscardableAttrDictionary());
+    air::copyPaddingAttributes(channel_op, new_chan_op);
 
     // Clear all external uses of for_op before erasing it.
     for (auto res : for_op.getResults()) {
@@ -2369,7 +2372,8 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
           air::lookupOrDefaultRange(channel_op.getMemref(), remap),
           air::lookupOrDefaultRange(offsets, remap),
           air::lookupOrDefaultRange(wraps, remap),
-          air::lookupOrDefaultRange(strides, remap));
+          air::lookupOrDefaultRange(strides, remap),
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     else if (isa<air::ChannelGetOp>(channel_op))
       new_chan_op = air::ChannelGetOp::create(
           rewriter, loc, tys, deps, channel_op.getChanName(),
@@ -2377,8 +2381,10 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
           air::lookupOrDefaultRange(channel_op.getMemref(), remap),
           air::lookupOrDefaultRange(offsets, remap),
           air::lookupOrDefaultRange(wraps, remap),
-          air::lookupOrDefaultRange(strides, remap));
+          air::lookupOrDefaultRange(strides, remap),
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     new_chan_op->setAttrs(channel_op->getDiscardableAttrDictionary());
+    air::copyPaddingAttributes(channel_op, new_chan_op);
 
     for (auto res : for_op.getResults()) {
       if (isa<air::AsyncTokenType>(res.getType())) {
@@ -2454,6 +2460,12 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
     if (highestDimRepeatActive && (int)offsets.size() == maxNumDims) {
       return failure();
     } else {
+      // Skip wrap/stride canonicalization when padding is present, as padding
+      // requires explicit sizes/strides in the generated DMA BD.
+      auto padBeforeCheck =
+          op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+      if (padBeforeCheck)
+        return failure();
       // Canonicalize offsets/sizes/strides using a helper function.
       if (failed(canonicalizeWrapAndStrideList(
               rewriter, offsets, sizes, strides,
@@ -2483,9 +2495,13 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
 
     // Create a new op with the canonicalized attributes and operands.
     auto attrs = op->getDiscardableAttrDictionary();
+    auto padBefore =
+        op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+    auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
     auto new_op = rewriter.replaceOpWithNewOp<OpT>(
         op, tys, deps, op.getChanName(), op.getIndices(), op.getMemref(),
-        offsets, sizes, strides);
+        offsets, sizes, strides,
+        /*pad_before=*/padBefore, /*pad_after=*/padAfter);
     new_op->setAttrs(attrs);
 
     return success();
@@ -2642,9 +2658,13 @@ private:
 
     // Create new channel op
     SmallVector<Type, 1> tys = {air::AsyncTokenType::get(builder.getContext())};
+    auto padBefore =
+        op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+    auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
     auto new_op = T::create(builder, par.getLoc(), tys, merged_incoming_token,
                             op.getChanName(), new_channel_idx, op.getMemref(),
-                            new_offsets, new_sizes, new_strides);
+                            new_offsets, new_sizes, new_strides,
+                            /*pad_before=*/padBefore, /*pad_after=*/padAfter);
 
     // Create scf::ReduceOp
     air::createSCFReduceForAsyncSCFParallel(

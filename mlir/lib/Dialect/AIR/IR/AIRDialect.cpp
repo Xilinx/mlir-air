@@ -2348,13 +2348,16 @@ FailureOr<TilingResult> getTiledImplementationFromChanIf(
   // attributes.
   air::AsyncOpInterface asyncIf =
       dyn_cast_if_present<air::AsyncOpInterface>(op.getOperation());
+  auto padBefore = op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+  auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
   PutGetTy tiledOp = PutGetTy::create(
       builder, op.getLoc(), op->getResultTypes(),
       asyncIf.getAsyncDependencies(), op.getChanName(), op.getIndices(),
       inputSlice->getResult(0),
       materializeOpFoldResultAsValues(offsets, op.getLoc(), builder),
       materializeOpFoldResultAsValues(sizes, op.getLoc(), builder),
-      materializeOpFoldResultAsValues(strides, op.getLoc(), builder));
+      materializeOpFoldResultAsValues(strides, op.getLoc(), builder),
+      /*pad_before=*/padBefore, /*pad_after=*/padAfter);
 
   // Return the tiling result, including the new op and the sliced input.
   return TilingResult{{tiledOp},
@@ -2385,11 +2388,15 @@ static LogicalResult FoldMemrefCastOnChannelOp(OpT op,
       !op.getStrides().empty())
     return failure();
 
+  // Extract padding attributes before replacing (old op will be erased).
+  auto padBefore = op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+  auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
   // Replace the channel op with a new one using the cast's source
   rewriter.replaceOpWithNewOp<OpT>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
       op.getIndices(), castOp.getSource(), op.getOffsets(), op.getSizes(),
-      op.getStrides());
+      op.getStrides(),
+      /*pad_before=*/padBefore, /*pad_after=*/padAfter);
 
   return success();
 }
@@ -2445,16 +2452,24 @@ static LogicalResult ComposeMemrefOpOnChannelOp(OpT op,
 
   auto composeMemrefRes =
       ComposeMemrefOp(memref, rewriter, input_memref, offsets, sizes, strides);
-  auto canonicalizeListsRes = canonicalizeEmptyLists(
-      offsets, sizes, strides,
-      dyn_cast_if_present<BaseMemRefType>(input_memref.getType()));
+  // Extract padding attributes before replacing (old op will be erased).
+  auto padBefore = op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+  auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
+  // Don't canonicalize sizes/strides to empty when padding is present;
+  // padding requires explicit wraps/strides in the generated DMA BD.
+  LogicalResult canonicalizeListsRes = failure();
+  if (!padBefore && !padAfter) {
+    canonicalizeListsRes = canonicalizeEmptyLists(
+        offsets, sizes, strides,
+        dyn_cast_if_present<BaseMemRefType>(input_memref.getType()));
+  }
 
   if (failed(composeMemrefRes) && failed(canonicalizeListsRes))
     return failure();
-
   rewriter.replaceOpWithNewOp<OpT>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getChanName(),
-      op.getIndices(), input_memref, offsets, sizes, strides);
+      op.getIndices(), input_memref, offsets, sizes, strides,
+      /*pad_before=*/padBefore, /*pad_after=*/padAfter);
 
   return success();
 }
@@ -2488,6 +2503,26 @@ LogicalResult air::ChannelPutOp::getResultTilePosition(
     SmallVector<OpFoldResult> &resultSizes) {
   // An optional result (air::AsyncTokenType) may be returned, but it doesn't
   // represent any tile.
+  return success();
+}
+
+LogicalResult air::ChannelPutOp::verify() {
+  auto padBefore = getPadBefore();
+  auto padAfter = getPadAfter();
+  if (padBefore.has_value() != padAfter.has_value())
+    return emitOpError(
+        "pad_before and pad_after must both be present or both absent");
+  if (padBefore.has_value()) {
+    if (padBefore->size() != padAfter->size())
+      return emitOpError(
+          "pad_before and pad_after must have the same number of dimensions");
+    for (size_t i = 0; i < padBefore->size(); i++) {
+      if ((*padBefore)[i] < 0 || (*padAfter)[i] < 0)
+        return emitOpError("padding values must be non-negative");
+      if ((*padBefore)[i] > 65535 || (*padAfter)[i] > 65535)
+        return emitOpError("padding values must be <= 65535");
+    }
+  }
   return success();
 }
 
@@ -2530,6 +2565,26 @@ LogicalResult air::ChannelGetOp::getResultTilePosition(
     SmallVector<OpFoldResult> &resultSizes) {
   // An optional result (air::AsyncTokenType) may be returned, but it doesn't
   // represent any tile.
+  return success();
+}
+
+LogicalResult air::ChannelGetOp::verify() {
+  auto padBefore = getPadBefore();
+  auto padAfter = getPadAfter();
+  if (padBefore.has_value() != padAfter.has_value())
+    return emitOpError(
+        "pad_before and pad_after must both be present or both absent");
+  if (padBefore.has_value()) {
+    if (padBefore->size() != padAfter->size())
+      return emitOpError(
+          "pad_before and pad_after must have the same number of dimensions");
+    for (size_t i = 0; i < padBefore->size(); i++) {
+      if ((*padBefore)[i] < 0 || (*padAfter)[i] < 0)
+        return emitOpError("padding values must be non-negative");
+      if ((*padBefore)[i] > 65535 || (*padAfter)[i] > 65535)
+        return emitOpError("padding values must be <= 65535");
+    }
+  }
   return success();
 }
 

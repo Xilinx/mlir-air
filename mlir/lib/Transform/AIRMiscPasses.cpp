@@ -241,7 +241,9 @@ public:
             rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
             rewriter.getStringAttr(specializedChannels[idx].getSymName()),
             get.getIndices(), get.getMemref(), get.getOffsets(), get.getSizes(),
-            get.getStrides());
+            get.getStrides(),
+            /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+        air::copyPaddingAttributes(get, newGet);
         affine::AffineYieldOp::create(rewriter, loc, newGet.getAsyncToken());
         return newGet.getAsyncToken();
       };
@@ -1707,15 +1709,19 @@ FailureOr<Value> tileChannelOpByFactor(
     if (isa<air::ChannelGetOp>(originalChanOp)) {
       auto newGetOp = air::ChannelGetOp::create(
           rewriter, loc, tys, deps, newChanOp.getSymName(), newIndices,
-          originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
+          originalChanOp.getMemref(), newOffsets, newWraps, newStrides,
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
       newGetOp->setAttrs(originalChanOp->getDiscardableAttrDictionary());
+      air::copyPaddingAttributes(originalChanOp, newGetOp);
       tokens.push_back(newGetOp.getAsyncToken());
       opToSplitInfoMap[newGetOp] = splitInfoVec[i];
     } else {
       auto newPutOp = air::ChannelPutOp::create(
           rewriter, loc, tys, deps, newChanOp.getSymName(), newIndices,
-          originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
+          originalChanOp.getMemref(), newOffsets, newWraps, newStrides,
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
       newPutOp->setAttrs(originalChanOp->getDiscardableAttrDictionary());
+      air::copyPaddingAttributes(originalChanOp, newPutOp);
       tokens.push_back(newPutOp.getAsyncToken());
       opToSplitInfoMap[newPutOp] = splitInfoVec[i];
     }
@@ -2553,8 +2559,10 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
           auto newPut = air::ChannelPutOp::create(
               rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
               put.getChanName(), put.getIndices(), put.getMemref(), offsets,
-              wraps, strides);
+              wraps, strides,
+              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
           newPut->setAttrs(attrs);
+          air::copyPaddingAttributes(put, newPut);
           rewriter.replaceAllUsesWith(put->getResults(), newPut->getResults());
           updatedChanOp = newPut;
         } else if (auto get = dyn_cast_if_present<air::ChannelGetOp>(
@@ -2564,8 +2572,10 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
           auto newGet = air::ChannelGetOp::create(
               rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
               get.getChanName(), get.getIndices(), get.getMemref(), offsets,
-              wraps, strides);
+              wraps, strides,
+              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
           newGet->setAttrs(attrs);
+          air::copyPaddingAttributes(get, newGet);
           rewriter.replaceAllUsesWith(get->getResults(), newGet->getResults());
           updatedChanOp = newGet;
         }

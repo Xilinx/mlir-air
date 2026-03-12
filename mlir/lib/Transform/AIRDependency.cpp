@@ -9,6 +9,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/DirectedAdjacencyMap.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -559,7 +560,9 @@ private:
           rewriter, loc, air::AsyncTokenType::get(channel_put_op->getContext()),
           deps, channel_put_op.getChanName(), channel_put_op.getIndices(),
           channel_put_op.getSrc(), channel_put_op.getSrcOffsets(),
-          channel_put_op.getSrcSizes(), channel_put_op.getSrcStrides());
+          channel_put_op.getSrcSizes(), channel_put_op.getSrcStrides(),
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+      air::copyPaddingAttributes(channel_put_op, new_channel_put_op);
       assignOpId(new_channel_put_op);
       event_name = "Put";
       // Update op-to-graph map
@@ -570,7 +573,9 @@ private:
           rewriter, loc, air::AsyncTokenType::get(channel_get_op->getContext()),
           deps, channel_get_op.getChanName(), channel_get_op.getIndices(),
           channel_get_op.getDst(), channel_get_op.getDstOffsets(),
-          channel_get_op.getDstSizes(), channel_get_op.getDstStrides());
+          channel_get_op.getDstSizes(), channel_get_op.getDstStrides(),
+          /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+      air::copyPaddingAttributes(channel_get_op, new_channel_get_op);
       assignOpId(new_channel_get_op);
       event_name = "Get";
       // Update op-to-graph map
