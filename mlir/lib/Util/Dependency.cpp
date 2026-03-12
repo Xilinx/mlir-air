@@ -930,7 +930,7 @@ void preserveAsyncDependenciesAfterUnroll(Block &parentBlock) {
         if (!domInfo.properlyDominates(op, asyncUser))
           continue;
 
-        asyncUser.addAsyncDependency(air::getAsyncTokenFromOp(op));
+        air::addAsyncDependencyIfNew(asyncUser, air::getAsyncTokenFromOp(op));
       }
     }
   }

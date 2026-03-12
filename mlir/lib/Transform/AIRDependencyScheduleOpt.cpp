@@ -37,6 +37,7 @@
 #include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/RegionUtils.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallSet.h"
@@ -3342,6 +3343,26 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
       cano_patterns, maxSize, maxNumDims, enableRepeatAtHighestDim);
   ExecuteOp::getCanonicalizationPatterns(cano_patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(cano_patterns));
+
+  // Remove duplicate async token dependencies created by loop unrolling.
+  // Without this, the downstream canonicalize pass spends O(n^2) time
+  // scanning the expanded IR to remove these duplicates.
+  region->walk([](Operation *op) {
+    auto asyncOp = dyn_cast<air::AsyncOpInterface>(op);
+    if (!asyncOp)
+      return;
+    auto deps = asyncOp.getAsyncDependencies();
+    if (deps.empty())
+      return;
+    llvm::SmallDenseSet<Value> seen;
+    SmallVector<unsigned> toRemove;
+    for (unsigned i = 0; i < deps.size(); i++) {
+      if (!seen.insert(deps[i]).second)
+        toRemove.push_back(i);
+    }
+    for (auto it = toRemove.rbegin(); it != toRemove.rend(); ++it)
+      asyncOp.eraseAsyncDependency(*it);
+  });
 
   return success();
 }
