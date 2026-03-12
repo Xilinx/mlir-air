@@ -163,8 +163,10 @@ if __name__ == "__main__":
 
     # Generate input: [64x500] with sequential values mod 1000
     input_data = (
-        np.arange(INPUT_ROWS * INPUT_COLS, dtype=np.int64) % 1000
-    ).astype(INOUT_DATATYPE).reshape(INPUT_ROWS, INPUT_COLS)
+        (np.arange(INPUT_ROWS * INPUT_COLS, dtype=np.int64) % 1000)
+        .astype(INOUT_DATATYPE)
+        .reshape(INPUT_ROWS, INPUT_COLS)
+    )
 
     # Expected output: [64x512] with original data + 12 zero-padded columns
     expected = np.zeros((INPUT_ROWS, PADDED_COLS), dtype=INOUT_DATATYPE)
