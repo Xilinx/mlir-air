@@ -2178,6 +2178,10 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
 
   SetVector<Operation *> transformed;
   int64_t operandOffset = 0;
+  // Shared across ops so that the same Value promoted for one op is reused
+  // by another op, avoiding duplicate DMAs.
+  DenseMap<Value, Value> promotedValueMap;
+  DominanceInfo dominance(payloadOps[0]->getParentOfType<func::FuncOp>());
 
   uint32_t group_size = getGroupSize();
   uint32_t group = 0;
@@ -2222,9 +2226,54 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
         nonSubviewOperands.push_back(idx);
     }
 
+    // For subview input operands already promoted by a previous op,
+    // replace the operand directly and remove from the promotion list.
+    // This enables cross-op buffer sharing (e.g., weighted_rms_norm where
+    // sq and out generics both read from the same X subview).
+    SmallVector<int64_t, 4> subviewsNeedingPromotion;
+    for (int64_t idx : subviewOperands) {
+      Value operand = linalgOp->getOperand(idx);
+      bool isInput = (idx < static_cast<int64_t>(linalgOp.getNumDpsInputs()));
+      if (isInput) {
+        auto it = promotedValueMap.find(operand);
+        if (it != promotedValueMap.end()) {
+          Value promoted = it->second;
+          if (dominance.properlyDominates(promoted, linalgOp)) {
+            rewriter.modifyOpInPlace(
+                linalgOp, [&]() { linalgOp->setOperand(idx, promoted); });
+            // Remove deallocs of the promoted buffer since it's now
+            // shared across multiple ops and must stay live.
+            // Walk up through view/subview chains to find the alloc.
+            Value allocRoot = promoted;
+            while (auto *def = allocRoot.getDefiningOp()) {
+              if (auto sv = dyn_cast<memref::SubViewOp>(def))
+                allocRoot = sv.getSource();
+              else if (auto vw = dyn_cast<memref::ViewOp>(def))
+                allocRoot = vw.getSource();
+              else
+                break;
+            }
+            SmallVector<memref::DeallocOp> toErase;
+            for (auto *user : allocRoot.getUsers())
+              if (auto dealloc = dyn_cast<memref::DeallocOp>(user))
+                toErase.push_back(dealloc);
+            for (auto d : toErase)
+              rewriter.eraseOp(d);
+            continue;
+          }
+        }
+      }
+      subviewsNeedingPromotion.push_back(idx);
+    }
+
     // Promote subview operands using upstream LLVM infrastructure.
-    if (!subviewOperands.empty()) {
-      promotionOptions.setOperandsToPromote(subviewOperands);
+    if (!subviewsNeedingPromotion.empty()) {
+      // Save original operand values before promoteSubViews replaces them.
+      DenseMap<int64_t, Value> originalOperands;
+      for (int64_t idx : subviewsNeedingPromotion)
+        originalOperands[idx] = linalgOp->getOperand(idx);
+
+      promotionOptions.setOperandsToPromote(subviewsNeedingPromotion);
 
       if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
         return emitDefaultDefiniteFailure(target);
@@ -2234,6 +2283,16 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
           promoteSubViews(rewriter, linalgOp, promotionOptions);
       if (failed(res))
         return emitDefaultDefiniteFailure(target);
+
+      // Record promoted values for cross-op sharing.
+      // Map original subview → new promoted operand so subsequent ops
+      // sharing the same subview input can reuse the promoted buffer.
+      for (int64_t idx : subviewsNeedingPromotion) {
+        Value newOperand = linalgOp->getOperand(idx);
+        Value origOperand = originalOperands[idx];
+        if (newOperand != origOperand)
+          promotedValueMap[origOperand] = newOperand;
+      }
     }
 
     // Manually promote non-subview operands (e.g., broadcast-indexed memrefs).
@@ -2241,7 +2300,6 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
     // operand positions, only one promoted buffer and copy is created.
     auto targetMemSpaceAttr =
         rewriter.getI32IntegerAttr(static_cast<int>(memorySpace));
-    DenseMap<Value, Value> promotedValueMap;
     SmallVector<std::pair<Value, Value>> outputWritebacks;
     for (int64_t operandIdx : nonSubviewOperands) {
       Value operand = linalgOp->getOperand(operandIdx);
@@ -2257,11 +2315,19 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
 
       // Reuse an existing promoted buffer if the same Value was already
       // promoted.
-      auto it = promotedValueMap.find(operand);
-      if (it != promotedValueMap.end()) {
-        rewriter.modifyOpInPlace(
-            linalgOp, [&]() { linalgOp->setOperand(operandIdx, it->second); });
-        continue;
+      bool isInput =
+          (operandIdx < static_cast<int64_t>(linalgOp.getNumDpsInputs()));
+      if (isInput) {
+        auto it = promotedValueMap.find(operand);
+        if (it != promotedValueMap.end()) {
+          Value promoted = it->second;
+          if (dominance.properlyDominates(promoted, linalgOp)) {
+            rewriter.modifyOpInPlace(linalgOp, [&]() {
+              linalgOp->setOperand(operandIdx, promoted);
+            });
+            continue;
+          }
+        }
       }
 
       rewriter.setInsertionPoint(linalgOp);
@@ -2291,8 +2357,6 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
 
       // Copy data into the promoted buffer for input operands, or for
       // init operands whose values are read by the linalg payload.
-      bool isInput =
-          (operandIdx < static_cast<int64_t>(linalgOp.getNumDpsInputs()));
       OpOperand *opOperand = &linalgOp->getOpOperand(operandIdx);
       bool needsCopyIn =
           isInput || linalgOp.payloadUsesValueFromOperand(opOperand);
