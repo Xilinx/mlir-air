@@ -2495,7 +2495,8 @@ struct AIRCanonicalizeChannelPutGetOpWrapAndStrideList
 
     // Create a new op with the canonicalized attributes and operands.
     auto attrs = op->getDiscardableAttrDictionary();
-    auto padBefore = op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+    auto padBefore =
+        op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
     auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
     auto new_op = rewriter.replaceOpWithNewOp<OpT>(
         op, tys, deps, op.getChanName(), op.getIndices(), op.getMemref(),
@@ -2657,7 +2658,8 @@ private:
 
     // Create new channel op
     SmallVector<Type, 1> tys = {air::AsyncTokenType::get(builder.getContext())};
-    auto padBefore = op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
+    auto padBefore =
+        op->template getAttrOfType<DenseI32ArrayAttr>("pad_before");
     auto padAfter = op->template getAttrOfType<DenseI32ArrayAttr>("pad_after");
     auto new_op = T::create(builder, par.getLoc(), tys, merged_incoming_token,
                             op.getChanName(), new_channel_idx, op.getMemref(),

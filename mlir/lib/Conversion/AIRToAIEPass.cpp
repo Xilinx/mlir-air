@@ -8,13 +8,12 @@
 
 #include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Dialect/AIR/AIRDialect.h"
-
-#include <numeric>
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
+#include <numeric>
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
@@ -4750,10 +4749,8 @@ public:
 
     // Extract padding attributes from the channel op, if present.
     AIE::BDPadLayoutArrayAttr padDims = nullptr;
-    auto padBeforeAttr =
-        ndcpy->getAttrOfType<DenseI32ArrayAttr>("pad_before");
-    auto padAfterAttr =
-        ndcpy->getAttrOfType<DenseI32ArrayAttr>("pad_after");
+    auto padBeforeAttr = ndcpy->getAttrOfType<DenseI32ArrayAttr>("pad_before");
+    auto padAfterAttr = ndcpy->getAttrOfType<DenseI32ArrayAttr>("pad_after");
     if (padBeforeAttr && padAfterAttr) {
       auto padBefore = padBeforeAttr.asArrayRef();
       auto padAfter = padAfterAttr.asArrayRef();
@@ -4764,9 +4761,8 @@ public:
         auto memrefType = dyn_cast<MemRefType>(memref.getType());
         if (memrefType) {
           auto shape = memrefType.getShape();
-          int64_t totalElements =
-              std::accumulate(shape.begin(), shape.end(), 1LL,
-                              std::multiplies<int64_t>());
+          int64_t totalElements = std::accumulate(
+              shape.begin(), shape.end(), 1LL, std::multiplies<int64_t>());
           // For 1D memref with N-D padding, interpret as N-D with matching
           // dimensions. The innermost dimension is totalElements /
           // product-of-outer-pad-dims.
@@ -4781,10 +4777,9 @@ public:
             // allocation for shape info.
             // For now, signal that wraps/strides must accompany padding.
             // Emit a warning and use simple 1D fallback.
-            sizes.push_back(
-                arith::ConstantIndexOp::create(b, memcpyOp.getLoc(),
-                                               totalElements)
-                    ->getResult(0));
+            sizes.push_back(arith::ConstantIndexOp::create(b, memcpyOp.getLoc(),
+                                                           totalElements)
+                                ->getResult(0));
             strides.push_back(
                 arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), 1)
                     ->getResult(0));
@@ -4792,25 +4787,23 @@ public:
             padBefore = padBefore.take_back(1);
             padAfter = padAfter.take_back(1);
           } else if (shape.size() == padBefore.size()) {
-            // N-D memref matches padding dims. Reconstruct default sizes/strides
+            // N-D memref matches padding dims. Reconstruct default
+            // sizes/strides
             int64_t stride = 1;
             for (int i = shape.size() - 1; i >= 0; i--) {
-              sizes.insert(sizes.begin(),
-                           arith::ConstantIndexOp::create(
-                               b, memcpyOp.getLoc(), shape[i])
-                               ->getResult(0));
-              strides.insert(strides.begin(),
-                             arith::ConstantIndexOp::create(
-                                 b, memcpyOp.getLoc(), stride)
-                                 ->getResult(0));
+              sizes.insert(sizes.begin(), arith::ConstantIndexOp::create(
+                                              b, memcpyOp.getLoc(), shape[i])
+                                              ->getResult(0));
+              strides.insert(strides.begin(), arith::ConstantIndexOp::create(
+                                                  b, memcpyOp.getLoc(), stride)
+                                                  ->getResult(0));
               stride *= shape[i];
             }
           } else {
             // 1D memref with 1D padding — simple case
-            sizes.push_back(
-                arith::ConstantIndexOp::create(b, memcpyOp.getLoc(),
-                                               totalElements)
-                    ->getResult(0));
+            sizes.push_back(arith::ConstantIndexOp::create(b, memcpyOp.getLoc(),
+                                                           totalElements)
+                                ->getResult(0));
             strides.push_back(
                 arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), 1)
                     ->getResult(0));
@@ -4829,7 +4822,7 @@ public:
             static_cast<uint16_t>(padAfter[i])));
       }
       padDims = AIE::BDPadLayoutArrayAttr::get(ndcpy->getContext(),
-                                                ArrayRef(padLayouts));
+                                               ArrayRef(padLayouts));
 
       // Adjust len to include padding: product of (pad_before[i] + size[i] +
       // pad_after[i]) for all dimensions.
