@@ -63,9 +63,9 @@ def build_module(
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
         tile_size_q = lqp // num_q_tiles
-        assert tile_size_q == lkp, (
-            f"Causal masking requires tile_size_q == lkp, got {tile_size_q} vs {lkp}"
-        )
+        assert (
+            tile_size_q == lkp
+        ), f"Causal masking requires tile_size_q == lkp, got {tile_size_q} vs {lkp}"
     assert (
         num_heads % 2 == 0
     ), f"num_heads ({num_heads}) must be divisible by 2 (segment unroll constraint)"
@@ -360,7 +360,9 @@ def build_module(
                     tile_offset = affine_apply(
                         affine_map_tileq, [par_1.induction_variables[0]]
                     )
-                    launch_offset = affine_apply(affine_map_launch_offset, [q_iter_global.result])
+                    launch_offset = affine_apply(
+                        affine_map_launch_offset, [q_iter_global.result]
+                    )
                     # Head 0 in group (head_base)
                     q_head0_off = affine_apply(
                         affine_map_q_head_offset, [head_base, launch_offset]
@@ -390,7 +392,9 @@ def build_module(
                 # (B) K: L3→L2 for this q_iter (same K data re-sent each iter)
                 for i in range(num_cascade_stages):
                     row_off = ConstantOp(index_type, i * chunks_per_stage * lkp)
-                    k_head0_off = affine_apply(affine_map_head_row, [kv_head_base, row_off])
+                    k_head0_off = affine_apply(
+                        affine_map_head_row, [kv_head_base, row_off]
+                    )
                     ChannelPut(
                         "L3ToL2Chan1",
                         arg10,
@@ -399,7 +403,9 @@ def build_module(
                         sizes=[chunks_per_stage, lkp, dk],
                         strides=[lkp * dk, dk, 1],
                     )
-                    k_head1_off = affine_apply(affine_map_head_row, [kv_head_1, row_off])
+                    k_head1_off = affine_apply(
+                        affine_map_head_row, [kv_head_1, row_off]
+                    )
                     ChannelPut(
                         "L3ToL2Chan1",
                         arg10,
@@ -431,7 +437,9 @@ def build_module(
                     )
 
                 # (D) Output: L2→L3 for this q_iter
-                launch_offset_out = affine_apply(affine_map_launch_offset, [q_iter_global.result])
+                launch_offset_out = affine_apply(
+                    affine_map_launch_offset, [q_iter_global.result]
+                )
                 out_head0_off = affine_apply(
                     affine_map_q_head_offset, [head_base, launch_offset_out]
                 )
@@ -667,7 +675,8 @@ def build_module(
                         1,
                         [
                             AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0), AffineConstantExpr.get(tile_size_q)
+                                AffineSymbolExpr.get(0),
+                                AffineConstantExpr.get(tile_size_q),
                             )
                         ],
                     )
@@ -694,7 +703,11 @@ def build_module(
                     yield_([])
 
                 # Unified herd: init + compute loop + cascade merge + output
-                unified_operands = [alloc_6, up, sp, Gp, G_shared, QK_shared] if enable_shared_buffers else [alloc_6, up, sp, Gp]
+                unified_operands = (
+                    [alloc_6, up, sp, Gp, G_shared, QK_shared]
+                    if enable_shared_buffers
+                    else [alloc_6, up, sp, Gp]
+                )
 
                 @herd(
                     name="herd_0",
@@ -734,10 +747,14 @@ def build_module(
 
                         for chunk_idx in range_(c0_loop, c_chunks, c1_loop):
                             if enable_shared_buffers:
-                                G_l1 = CollapseShapeOp(memref_lqp_lkp_l1, arg30, [[0, 1]])
+                                G_l1 = CollapseShapeOp(
+                                    memref_lqp_lkp_l1, arg30, [[0, 1]]
+                                )
                             else:
                                 G_alloc = AllocOp(memref_g_shared_l1, [], [])
-                                G_l1 = CollapseShapeOp(memref_lqp_lkp_l1, G_alloc.result, [[0, 1]])
+                                G_l1 = CollapseShapeOp(
+                                    memref_lqp_lkp_l1, G_alloc.result, [[0, 1]]
+                                )
 
                             CallOp([], "zero_fill_g_bf16", [G_l1])
 
@@ -746,11 +763,21 @@ def build_module(
                                 CallOp([], "matmul_a_b_bf16", [arg26, arg31, G_l1])
                             else:
                                 QK_alloc = AllocOp(memref_dv_lkp_l1, [], [])
-                                ChannelGet("L2ToL1Chan2", QK_alloc.result, indices=[arg22, arg23])
-                                CallOp([], "matmul_a_b_bf16", [arg26, QK_alloc.result, G_l1])
+                                ChannelGet(
+                                    "L2ToL1Chan2",
+                                    QK_alloc.result,
+                                    indices=[arg22, arg23],
+                                )
+                                CallOp(
+                                    [],
+                                    "matmul_a_b_bf16",
+                                    [arg26, QK_alloc.result, G_l1],
+                                )
 
                             alloc_57 = AllocOp(memref_dv_lkp_l1, [], [])
-                            ChannelGet("L2ToL1Chan3", alloc_57.result, indices=[arg22, arg23])
+                            ChannelGet(
+                                "L2ToL1Chan3", alloc_57.result, indices=[arg22, arg23]
+                            )
 
                             if causal:
                                 # Compute block indices for causal masking
@@ -759,15 +786,21 @@ def build_module(
                                     arith.MulIOp(q_iter, c_nqt).result, arg22
                                 )
                                 c_cps = ConstantOp(index_type, chunks_per_stage)
-                                kv_block = arith.AddIOp(arith.MulIOp(arg23, c_cps).result, chunk_idx)
+                                kv_block = arith.AddIOp(
+                                    arith.MulIOp(arg23, c_cps).result, chunk_idx
+                                )
 
                                 # Block-level skip using scf.if
                                 cmp = arith.CmpIOp(
-                                    arith.CmpIPredicate.sle, kv_block.result, q_block_global.result
+                                    arith.CmpIPredicate.sle,
+                                    kv_block.result,
+                                    q_block_global.result,
                                 )
                                 if_op = scf.IfOp(cmp)
                                 with InsertionPoint(if_op.then_block):
-                                    q_i32 = arith.IndexCastOp(i32, q_block_global.result)
+                                    q_i32 = arith.IndexCastOp(
+                                        i32, q_block_global.result
+                                    )
                                     kv_i32 = arith.IndexCastOp(i32, kv_block.result)
 
                                     c0_i32_c = ConstantOp(i32, 0)
@@ -776,17 +809,41 @@ def build_module(
                                     r_l1_c = AllocOp(memref_lqp_l1, [], [])
 
                                     # Apply causal mask AFTER matmul
-                                    CallOp([], "apply_causal_mask", [G_l1, q_i32, kv_i32])
+                                    CallOp(
+                                        [], "apply_causal_mask", [G_l1, q_i32, kv_i32]
+                                    )
                                     CallOp([], "max_g_bf16", [G_l1, u_l1_c.result])
-                                    CallOp([], "maximum_up_u_bf16", [arg27, u_l1_c.result])
+                                    CallOp(
+                                        [], "maximum_up_u_bf16", [arg27, u_l1_c.result]
+                                    )
                                     CallOp([], "exp_g_minus_u", [u_l1_c.result, G_l1])
-                                    CallOp([], "exp_up_minus_u", [arg27, u_l1_c.result, r_l1_c.result])
+                                    CallOp(
+                                        [],
+                                        "exp_up_minus_u",
+                                        [arg27, u_l1_c.result, r_l1_c.result],
+                                    )
                                     CallOp([], "mul_r_gp", [r_l1_c.result, arg29])
-                                    CallOp([], "matmul_g_b_bf16", [G_l1, alloc_57.result, arg29])
+                                    CallOp(
+                                        [],
+                                        "matmul_g_b_bf16",
+                                        [G_l1, alloc_57.result, arg29],
+                                    )
                                     CallOp([], "sum_g", [G_l1, s_l1_c.result])
-                                    CallOp([], "accum_sp_r_s", [arg28, r_l1_c.result, s_l1_c.result])
-                                    CallOp([], "vector_copy_32elems", [c0_i32_c, s_l1_c.result, arg28])
-                                    CallOp([], "vector_copy_32elems", [c0_i32_c, u_l1_c.result, arg27])
+                                    CallOp(
+                                        [],
+                                        "accum_sp_r_s",
+                                        [arg28, r_l1_c.result, s_l1_c.result],
+                                    )
+                                    CallOp(
+                                        [],
+                                        "vector_copy_32elems",
+                                        [c0_i32_c, s_l1_c.result, arg28],
+                                    )
+                                    CallOp(
+                                        [],
+                                        "vector_copy_32elems",
+                                        [c0_i32_c, u_l1_c.result, arg27],
+                                    )
 
                                     DeallocOp(u_l1_c)
                                     DeallocOp(s_l1_c)
@@ -802,13 +859,33 @@ def build_module(
                                 CallOp([], "max_g_bf16", [G_l1, u_l1.result])
                                 CallOp([], "maximum_up_u_bf16", [arg27, u_l1.result])
                                 CallOp([], "exp_g_minus_u", [u_l1.result, G_l1])
-                                CallOp([], "exp_up_minus_u", [arg27, u_l1.result, r_l1.result])
+                                CallOp(
+                                    [],
+                                    "exp_up_minus_u",
+                                    [arg27, u_l1.result, r_l1.result],
+                                )
                                 CallOp([], "mul_r_gp", [r_l1.result, arg29])
-                                CallOp([], "matmul_g_b_bf16", [G_l1, alloc_57.result, arg29])
+                                CallOp(
+                                    [],
+                                    "matmul_g_b_bf16",
+                                    [G_l1, alloc_57.result, arg29],
+                                )
                                 CallOp([], "sum_g", [G_l1, s_l1.result])
-                                CallOp([], "accum_sp_r_s", [arg28, r_l1.result, s_l1.result])
-                                CallOp([], "vector_copy_32elems", [c0_i32, s_l1.result, arg28])
-                                CallOp([], "vector_copy_32elems", [c0_i32, u_l1.result, arg27])
+                                CallOp(
+                                    [],
+                                    "accum_sp_r_s",
+                                    [arg28, r_l1.result, s_l1.result],
+                                )
+                                CallOp(
+                                    [],
+                                    "vector_copy_32elems",
+                                    [c0_i32, s_l1.result, arg28],
+                                )
+                                CallOp(
+                                    [],
+                                    "vector_copy_32elems",
+                                    [c0_i32, u_l1.result, arg27],
+                                )
 
                                 DeallocOp(u_l1)
                                 DeallocOp(s_l1)
@@ -833,15 +910,27 @@ def build_module(
 
                         # affine.if for last cascade stage
                         affine_set_last = IntegerSet.get(
-                            0, 2,
+                            0,
+                            2,
                             [
-                                AffineExpr.get_add(AffineSymbolExpr.get(1), AffineConstantExpr.get(-num_cascade_stages + 1)),
+                                AffineExpr.get_add(
+                                    AffineSymbolExpr.get(1),
+                                    AffineConstantExpr.get(-num_cascade_stages + 1),
+                                ),
                                 AffineSymbolExpr.get(0),
-                                AffineExpr.get_add(AffineConstantExpr.get(num_q_tiles - 1), AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(-1))),
+                                AffineExpr.get_add(
+                                    AffineConstantExpr.get(num_q_tiles - 1),
+                                    AffineExpr.get_mul(
+                                        AffineSymbolExpr.get(0),
+                                        AffineConstantExpr.get(-1),
+                                    ),
+                                ),
                             ],
                             [True, False, False],
                         )
-                        affine_if_last = affine.AffineIfOp(affine_set_last, cond_operands=[arg22, arg23], has_else=True)
+                        affine_if_last = affine.AffineIfOp(
+                            affine_set_last, cond_operands=[arg22, arg23], has_else=True
+                        )
                         with InsertionPoint(affine_if_last.then_block):
                             subi = arith.SubIOp(arg23, c1_h)
                             ChannelPut("cascade", arg29, indices=[arg22, subi])
@@ -851,42 +940,98 @@ def build_module(
 
                         with InsertionPoint(affine_if_last.else_block):
                             affine_set_middle = IntegerSet.get(
-                                0, 2,
+                                0,
+                                2,
                                 [
-                                    AffineExpr.get_add(AffineSymbolExpr.get(1), AffineConstantExpr.get(-1)),
-                                    AffineExpr.get_add(AffineConstantExpr.get(num_cascade_stages - 2), AffineExpr.get_mul(AffineSymbolExpr.get(1), AffineConstantExpr.get(-1))),
+                                    AffineExpr.get_add(
+                                        AffineSymbolExpr.get(1),
+                                        AffineConstantExpr.get(-1),
+                                    ),
+                                    AffineExpr.get_add(
+                                        AffineConstantExpr.get(num_cascade_stages - 2),
+                                        AffineExpr.get_mul(
+                                            AffineSymbolExpr.get(1),
+                                            AffineConstantExpr.get(-1),
+                                        ),
+                                    ),
                                     AffineSymbolExpr.get(0),
-                                    AffineExpr.get_add(AffineConstantExpr.get(num_q_tiles - 1), AffineExpr.get_mul(AffineSymbolExpr.get(0), AffineConstantExpr.get(-1))),
+                                    AffineExpr.get_add(
+                                        AffineConstantExpr.get(num_q_tiles - 1),
+                                        AffineExpr.get_mul(
+                                            AffineSymbolExpr.get(0),
+                                            AffineConstantExpr.get(-1),
+                                        ),
+                                    ),
                                 ],
                                 [False, False, False, False],
                             )
-                            affine_if_middle = affine.AffineIfOp(affine_set_middle, cond_operands=[arg22, arg23], has_else=True)
+                            affine_if_middle = affine.AffineIfOp(
+                                affine_set_middle,
+                                cond_operands=[arg22, arg23],
+                                has_else=True,
+                            )
                             with InsertionPoint(affine_if_middle.then_block):
                                 Gp_cascade = get_gp_cascade()
                                 up_cascade = AllocOp(memref_lqp_l1, [], [])
                                 sp_cascade = AllocOp(memref_lqp_l1, [], [])
-                                ChannelGet("cascade", Gp_cascade, indices=[arg22, arg23])
-                                ChannelGet("cascade", up_cascade.result, indices=[arg22, arg23])
-                                ChannelGet("cascade", sp_cascade.result, indices=[arg22, arg23])
+                                ChannelGet(
+                                    "cascade", Gp_cascade, indices=[arg22, arg23]
+                                )
+                                ChannelGet(
+                                    "cascade", up_cascade.result, indices=[arg22, arg23]
+                                )
+                                ChannelGet(
+                                    "cascade", sp_cascade.result, indices=[arg22, arg23]
+                                )
                                 up_B_saved = AllocOp(memref_lqp_l1, [], [])
                                 c0_i32_m = ConstantOp(i32, 0)
-                                CallOp([], "vector_copy_32elems", [c0_i32_m, arg27, up_B_saved.result])
-                                CallOp([], "maximum_up_u_bf16", [up_cascade.result, arg27])
-                                CallOp([], "exp_up_minus_u", [up_cascade.result, arg27, r_l1_c.result])
+                                CallOp(
+                                    [],
+                                    "vector_copy_32elems",
+                                    [c0_i32_m, arg27, up_B_saved.result],
+                                )
+                                CallOp(
+                                    [], "maximum_up_u_bf16", [up_cascade.result, arg27]
+                                )
+                                CallOp(
+                                    [],
+                                    "exp_up_minus_u",
+                                    [up_cascade.result, arg27, r_l1_c.result],
+                                )
                                 r_B = AllocOp(memref_lqp_l1, [], [])
-                                CallOp([], "exp_up_minus_u", [up_B_saved.result, arg27, r_B.result])
+                                CallOp(
+                                    [],
+                                    "exp_up_minus_u",
+                                    [up_B_saved.result, arg27, r_B.result],
+                                )
                                 CallOp([], "mul_r_gp", [r_l1_c.result, Gp_cascade])
                                 CallOp([], "mul_r_gp", [r_B.result, arg29])
                                 CallOp([], "add_gp_g", [arg29, Gp_cascade])
                                 sp_temp = AllocOp(memref_lqp_l1, [], [])
                                 CallOp([], "zero_fill_sp_bf16", [sp_temp.result])
-                                CallOp([], "accum_sp_r_s", [sp_cascade.result, r_l1_c.result, sp_temp.result])
-                                CallOp([], "accum_sp_r_s", [arg28, r_B.result, sp_temp.result])
-                                CallOp([], "vector_copy_32elems", [c0_i32_m, sp_temp.result, sp_cascade.result])
+                                CallOp(
+                                    [],
+                                    "accum_sp_r_s",
+                                    [sp_cascade.result, r_l1_c.result, sp_temp.result],
+                                )
+                                CallOp(
+                                    [],
+                                    "accum_sp_r_s",
+                                    [arg28, r_B.result, sp_temp.result],
+                                )
+                                CallOp(
+                                    [],
+                                    "vector_copy_32elems",
+                                    [c0_i32_m, sp_temp.result, sp_cascade.result],
+                                )
                                 subi2 = arith.SubIOp(arg23, c1_h)
-                                ChannelPut("cascade", Gp_cascade, indices=[arg22, subi2])
+                                ChannelPut(
+                                    "cascade", Gp_cascade, indices=[arg22, subi2]
+                                )
                                 ChannelPut("cascade", arg27, indices=[arg22, subi2])
-                                ChannelPut("cascade", sp_cascade.result, indices=[arg22, subi2])
+                                ChannelPut(
+                                    "cascade", sp_cascade.result, indices=[arg22, subi2]
+                                )
                                 DeallocOp(up_B_saved)
                                 DeallocOp(r_B)
                                 DeallocOp(sp_temp)
@@ -896,34 +1041,87 @@ def build_module(
                                 Gp_cascade2 = get_gp_cascade()
                                 up_cascade2 = AllocOp(memref_lqp_l1, [], [])
                                 sp_cascade2 = AllocOp(memref_lqp_l1, [], [])
-                                ChannelGet("cascade", Gp_cascade2, indices=[arg22, arg23])
-                                ChannelGet("cascade", up_cascade2.result, indices=[arg22, arg23])
-                                ChannelGet("cascade", sp_cascade2.result, indices=[arg22, arg23])
+                                ChannelGet(
+                                    "cascade", Gp_cascade2, indices=[arg22, arg23]
+                                )
+                                ChannelGet(
+                                    "cascade",
+                                    up_cascade2.result,
+                                    indices=[arg22, arg23],
+                                )
+                                ChannelGet(
+                                    "cascade",
+                                    sp_cascade2.result,
+                                    indices=[arg22, arg23],
+                                )
                                 up_B_saved2 = AllocOp(memref_lqp_l1, [], [])
                                 c0_i32_f = ConstantOp(i32, 0)
-                                CallOp([], "vector_copy_32elems", [c0_i32_f, arg27, up_B_saved2.result])
-                                CallOp([], "maximum_up_u_bf16", [up_cascade2.result, arg27])
-                                CallOp([], "exp_up_minus_u", [up_cascade2.result, arg27, r_l1_c.result])
+                                CallOp(
+                                    [],
+                                    "vector_copy_32elems",
+                                    [c0_i32_f, arg27, up_B_saved2.result],
+                                )
+                                CallOp(
+                                    [], "maximum_up_u_bf16", [up_cascade2.result, arg27]
+                                )
+                                CallOp(
+                                    [],
+                                    "exp_up_minus_u",
+                                    [up_cascade2.result, arg27, r_l1_c.result],
+                                )
                                 r_B2 = AllocOp(memref_lqp_l1, [], [])
-                                CallOp([], "exp_up_minus_u", [up_B_saved2.result, arg27, r_B2.result])
+                                CallOp(
+                                    [],
+                                    "exp_up_minus_u",
+                                    [up_B_saved2.result, arg27, r_B2.result],
+                                )
                                 CallOp([], "mul_r_gp", [r_l1_c.result, Gp_cascade2])
                                 CallOp([], "mul_r_gp", [r_B2.result, arg29])
                                 CallOp([], "add_gp_g", [arg29, Gp_cascade2])
                                 sp_temp2 = AllocOp(memref_lqp_l1, [], [])
                                 CallOp([], "zero_fill_sp_bf16", [sp_temp2.result])
-                                CallOp([], "accum_sp_r_s", [sp_cascade2.result, r_l1_c.result, sp_temp2.result])
-                                CallOp([], "accum_sp_r_s", [arg28, r_B2.result, sp_temp2.result])
-                                CallOp([], "vector_copy_32elems", [c0_i32_f, sp_temp2.result, sp_cascade2.result])
-                                CallOp([], "div_gp_sp", [sp_cascade2.result, Gp_cascade2])
+                                CallOp(
+                                    [],
+                                    "accum_sp_r_s",
+                                    [
+                                        sp_cascade2.result,
+                                        r_l1_c.result,
+                                        sp_temp2.result,
+                                    ],
+                                )
+                                CallOp(
+                                    [],
+                                    "accum_sp_r_s",
+                                    [arg28, r_B2.result, sp_temp2.result],
+                                )
+                                CallOp(
+                                    [],
+                                    "vector_copy_32elems",
+                                    [c0_i32_f, sp_temp2.result, sp_cascade2.result],
+                                )
+                                CallOp(
+                                    [], "div_gp_sp", [sp_cascade2.result, Gp_cascade2]
+                                )
                                 DeallocOp(up_B_saved2)
                                 DeallocOp(r_B2)
                                 DeallocOp(sp_temp2)
                                 ChannelPut(
-                                    "L1ToL2Chan1", Gp_cascade2,
+                                    "L1ToL2Chan1",
+                                    Gp_cascade2,
                                     indices=[arg22, 0],
                                     offsets=[0, 0, 0, 0],
-                                    sizes=[tile_size_q // mmul_n, mmul_m, dv // mmul_m, mmul_n],
-                                    strides=[mmul_m * mmul_n, mmul_n, tile_size_q * mmul_n, 1],
+                                    sizes=[
+                                        tile_size_q // mmul_n,
+                                        mmul_m,
+                                        dv // mmul_m,
+                                        mmul_n,
+                                    ],
+                                    strides=[
+                                        mmul_m * mmul_n,
+                                        mmul_n,
+                                        tile_size_q * mmul_n,
+                                        1,
+                                    ],
                                 )
                                 affine.AffineYieldOp([])
                             affine.AffineYieldOp([])
@@ -1054,7 +1252,9 @@ if __name__ == "__main__":
     chunks_per_stage_ref = num_chunks_ref // num_cascade_stages_ref
 
     # bf16 lowest (0xff7f) ≈ -3.39e38, used instead of -inf to avoid NaN on AIE2P
-    bf16_lowest = np.float32(np.frombuffer(np.array([0xff7f], dtype=np.uint16).tobytes(), dtype=bfloat16)[0])
+    bf16_lowest = np.float32(
+        np.frombuffer(np.array([0xFF7F], dtype=np.uint16).tobytes(), dtype=bfloat16)[0]
+    )
 
     def flash_attn_per_stage(A, kv_h, stage, mask_h):
         """Run flash attention on contiguous K chunks for one cascade stage."""

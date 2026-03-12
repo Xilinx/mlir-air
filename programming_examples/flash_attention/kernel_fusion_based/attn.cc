@@ -87,7 +87,8 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
                   aie::load_v<MMUL::size_A>(pA2);
               pA2 += rowA * MMUL::size_A;
               // K at L1 is [lkp, dk] row-major tiled as [lkp/t, dk/s, t, s].
-              // Transpose each [t, s] block to [s, t] for mmul (IRON B_COL_MAJ).
+              // Transpose each [t, s] block to [s, t] for mmul (IRON
+              // B_COL_MAJ).
               aie::vector<T_in, MMUL::size_B> B0 =
                   aie::transpose(aie::load_v<MMUL::size_B>(pB1), t, s);
               pB1 += MMUL::size_B;
@@ -228,12 +229,13 @@ void max_g_bf16(bfloat16 *in, bfloat16 *out) {
   // Each block is 64 contiguous elements (8 rows × 8 cols).
   // VecLen=32 reads 4 rows at once (half a block).
   constexpr int VecLen = 32;
-  constexpr int BlockSize = 64;  // 8×8 block
+  constexpr int BlockSize = 64; // 8×8 block
   constexpr int ColsPerBlock = 8;
   constexpr int RowsPerBlock = 8;
   constexpr int col_blocks = lkp / ColsPerBlock;
   constexpr int row_blocks = lqp / RowsPerBlock;
-  constexpr int block_stride = lqp * ColsPerBlock;  // stride between column blocks
+  constexpr int block_stride =
+      lqp * ColsPerBlock; // stride between column blocks
 
   // Use bf16 lowest (0xff7f) instead of -inf (0xff80) as initial max value.
   // For fully-masked rows (all -inf), max returns bf16_lowest > -inf,
@@ -316,9 +318,12 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
       // Build 32-wide u vector: 4 rows × 8 cols, each row broadcast
       int row_start = rb * RowsPerBlock + half * 4;
       aie::vector<bfloat16, 8> u0 = aie::broadcast<bfloat16, 8>(u[row_start]);
-      aie::vector<bfloat16, 8> u1 = aie::broadcast<bfloat16, 8>(u[row_start + 1]);
-      aie::vector<bfloat16, 8> u2 = aie::broadcast<bfloat16, 8>(u[row_start + 2]);
-      aie::vector<bfloat16, 8> u3 = aie::broadcast<bfloat16, 8>(u[row_start + 3]);
+      aie::vector<bfloat16, 8> u1 =
+          aie::broadcast<bfloat16, 8>(u[row_start + 1]);
+      aie::vector<bfloat16, 8> u2 =
+          aie::broadcast<bfloat16, 8>(u[row_start + 2]);
+      aie::vector<bfloat16, 8> u3 =
+          aie::broadcast<bfloat16, 8>(u[row_start + 3]);
       aie::vector<bfloat16, VecLen> u_vec;
       u_vec.insert(0, u0);
       u_vec.insert(1, u1);
@@ -335,10 +340,10 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
           // exp2(log2e * v) — split into 2×16 for native exp2 width
           aie::vector<bfloat16, 16> lo = v.extract<16>(0);
           aie::vector<bfloat16, 16> hi = v.extract<16>(1);
-          lo = aie::exp2<bfloat16>(
-              aie::mul(lo, log2e_vec16).to_vector<float>());
-          hi = aie::exp2<bfloat16>(
-              aie::mul(hi, log2e_vec16).to_vector<float>());
+          lo =
+              aie::exp2<bfloat16>(aie::mul(lo, log2e_vec16).to_vector<float>());
+          hi =
+              aie::exp2<bfloat16>(aie::mul(hi, log2e_vec16).to_vector<float>());
           v.insert(0, lo);
           v.insert(1, hi);
           aie::store_v(g + off, v);
@@ -390,21 +395,25 @@ void mul_r_gp(bfloat16 *r, bfloat16 *gp) {
   // element within block at row_in * 8 + col_in.
   // VecLen=32 reads 4 rows × 8 cols (half a block).
   constexpr int VecLen = 32;
-  constexpr int BlockSize = 64;  // 8×8 block
+  constexpr int BlockSize = 64; // 8×8 block
   constexpr int ColsPerBlock = 8;
   constexpr int RowsPerBlock = 8;
   constexpr int col_blocks = dv / ColsPerBlock;
   constexpr int row_blocks = lqp / RowsPerBlock;
-  constexpr int block_stride = lqp * ColsPerBlock;  // stride between column blocks
+  constexpr int block_stride =
+      lqp * ColsPerBlock; // stride between column blocks
 
   for (int rb = 0; rb < row_blocks; rb++) {
     for (int half = 0; half < 2; half++) {
       // Build 32-wide r vector: 4 rows × 8 cols, each row's r broadcast to 8
       int row_start = rb * RowsPerBlock + half * 4;
       aie::vector<bfloat16, 8> r0 = aie::broadcast<bfloat16, 8>(r[row_start]);
-      aie::vector<bfloat16, 8> r1 = aie::broadcast<bfloat16, 8>(r[row_start + 1]);
-      aie::vector<bfloat16, 8> r2 = aie::broadcast<bfloat16, 8>(r[row_start + 2]);
-      aie::vector<bfloat16, 8> r3 = aie::broadcast<bfloat16, 8>(r[row_start + 3]);
+      aie::vector<bfloat16, 8> r1 =
+          aie::broadcast<bfloat16, 8>(r[row_start + 1]);
+      aie::vector<bfloat16, 8> r2 =
+          aie::broadcast<bfloat16, 8>(r[row_start + 2]);
+      aie::vector<bfloat16, 8> r3 =
+          aie::broadcast<bfloat16, 8>(r[row_start + 3]);
       aie::vector<bfloat16, VecLen> r_vec;
       r_vec.insert(0, r0);
       r_vec.insert(1, r1);
@@ -491,8 +500,7 @@ void sum_g(bfloat16 *g, bfloat16 *s) {
   for (int rb = 0; rb < row_blocks; rb++) {
     for (int half = 0; half < 2; half++) {
       // Accumulate sum across column blocks for 4 rows
-      aie::accum<accfloat, VecLen> sum_acc =
-          aie::zeros<accfloat, VecLen>();
+      aie::accum<accfloat, VecLen> sum_acc = aie::zeros<accfloat, VecLen>();
       int base = rb * BlockSize + half * VecLen;
       for (int cb = 0; cb < col_blocks; cb++)
         chess_prepare_for_pipelining chess_loop_range(8, ) {
@@ -567,21 +575,26 @@ void div_gp_sp(bfloat16 *sp, bfloat16 *gp) {
   // element within block at row_in * 8 + col_in.
   // VecLen=32 reads 4 rows × 8 cols (half a block).
   constexpr int VecLen = 32;
-  constexpr int BlockSize = 64;  // 8×8 block
+  constexpr int BlockSize = 64; // 8×8 block
   constexpr int ColsPerBlock = 8;
   constexpr int RowsPerBlock = 8;
   constexpr int col_blocks = dv / ColsPerBlock;
   constexpr int row_blocks = lqp / RowsPerBlock;
-  constexpr int block_stride = lqp * ColsPerBlock;  // stride between column blocks
+  constexpr int block_stride =
+      lqp * ColsPerBlock; // stride between column blocks
 
   for (int rb = 0; rb < row_blocks; rb++) {
     for (int half = 0; half < 2; half++) {
-      // Build 32-wide 1/sp vector: 4 rows × 8 cols, each row's inv(sp) broadcast
+      // Build 32-wide 1/sp vector: 4 rows × 8 cols, each row's inv(sp)
+      // broadcast
       int row_start = rb * RowsPerBlock + half * 4;
       aie::vector<bfloat16, 8> sp0 = aie::broadcast<bfloat16, 8>(sp[row_start]);
-      aie::vector<bfloat16, 8> sp1 = aie::broadcast<bfloat16, 8>(sp[row_start + 1]);
-      aie::vector<bfloat16, 8> sp2 = aie::broadcast<bfloat16, 8>(sp[row_start + 2]);
-      aie::vector<bfloat16, 8> sp3 = aie::broadcast<bfloat16, 8>(sp[row_start + 3]);
+      aie::vector<bfloat16, 8> sp1 =
+          aie::broadcast<bfloat16, 8>(sp[row_start + 1]);
+      aie::vector<bfloat16, 8> sp2 =
+          aie::broadcast<bfloat16, 8>(sp[row_start + 2]);
+      aie::vector<bfloat16, 8> sp3 =
+          aie::broadcast<bfloat16, 8>(sp[row_start + 3]);
       aie::vector<bfloat16, VecLen> sp_vec;
       sp_vec.insert(0, sp0);
       sp_vec.insert(1, sp1);
@@ -621,8 +634,7 @@ void add_gp_g(bfloat16 *gp, bfloat16 *g) {
 // G is in column-major 8×8 tiled layout: block(col_blk, row_blk) at
 // offset col_blk * (lqp * 8) + row_blk * 64, element within block at
 // row_in_blk * 8 + col_in_blk.
-void apply_causal_mask(bfloat16 *g, int32_t q_block_idx,
-                       int32_t kv_block_idx) {
+void apply_causal_mask(bfloat16 *g, int32_t q_block_idx, int32_t kv_block_idx) {
   uint16_t neg_inf_u16 = (uint16_t)0xff80;
   bfloat16 neg_inf_val = *(bfloat16 *)&neg_inf_u16;
 
