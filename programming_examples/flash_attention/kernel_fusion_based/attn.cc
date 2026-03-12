@@ -220,6 +220,9 @@ void neg_inf_fill_up_bf16(bfloat16 *c_out) {
 }
 
 void max_g_bf16(bfloat16 *in, bfloat16 *out) {
+#ifdef SKIP_SOFTMAX
+  return;
+#endif
   // u = np.max(G, axis=-1, keepdims=True)
   // G is in column-major 8x8 tiled layout.
   // Each block is 64 contiguous elements (8 rows × 8 cols).
@@ -266,6 +269,9 @@ void max_g_bf16(bfloat16 *in, bfloat16 *out) {
 }
 
 void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
+#ifdef SKIP_SOFTMAX
+  return;
+#endif
   // u = np.maximum(u, up)
   // Buffer shape:
   // up: [lqp, 1] = [32, 1]
@@ -283,6 +289,9 @@ void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
 }
 
 void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
+#ifdef SKIP_SOFTMAX
+  return;
+#endif
   // G = exp(G - u) in-place. G is column-major 8×8 tiled.
   // VecLen=32 processes 4 rows at once (half a block).
   // exp2 native width is 16, so split 30→2×16 for exp.
@@ -339,6 +348,9 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
 }
 
 void exp_up_minus_u(bfloat16 *up, bfloat16 *u, bfloat16 *r) {
+#ifdef SKIP_SOFTMAX
+  return;
+#endif
   // r = exp(up - u) — VecLen=16 to match exp2 native width
   // With bf16 lowest (not -inf), lowest - lowest = 0 (not NaN).
   constexpr int VecLen = 16;
@@ -368,6 +380,9 @@ void exp_up_minus_u(bfloat16 *up, bfloat16 *u, bfloat16 *r) {
 }
 
 void mul_r_gp(bfloat16 *r, bfloat16 *gp) {
+#ifdef SKIP_SOFTMAX
+  return;
+#endif
   // Gp = Gp * r (per-row scaling)
   // Buffer shape: Gp: [lqp, dv], r: [lqp, 1]
   // Layout: column-major 8×8 block tiled (same as matmul output).
@@ -459,6 +474,9 @@ void fused_exp_sum(bfloat16 *u, bfloat16 *g, bfloat16 *s) {
 }
 
 void sum_g(bfloat16 *g, bfloat16 *s) {
+#ifdef SKIP_SOFTMAX
+  return;
+#endif
   // s = sum(G, axis=-1, keepdims=True)
   // G is column-major 8×8 tiled. VecLen=32 loads 4 rows at once.
   constexpr int VecLen = 32;
@@ -498,6 +516,9 @@ void sum_g(bfloat16 *g, bfloat16 *s) {
 }
 
 void accum_sp_r_s(bfloat16 *sp, bfloat16 *r, bfloat16 *s) {
+#ifdef SKIP_SOFTMAX
+  return;
+#endif
   // s += sp * r
   // Buffer shape:
   // sp: [lqp, 1] = [32, 1]
@@ -536,8 +557,8 @@ void vector_copy_32elems(const int offset, const bfloat16 *__restrict inputs,
 }
 
 void div_gp_sp(bfloat16 *sp, bfloat16 *gp) {
-#ifdef SKIP_DIV
-  return;  // Output unnormalized Gp for debugging
+#if defined(SKIP_SOFTMAX) || defined(SKIP_DIV)
+  return;
 #endif
   // Gp = Gp / sp (per-row normalization)
   // Buffer shape: Gp: [lqp, dv], sp: [lqp, 1]
