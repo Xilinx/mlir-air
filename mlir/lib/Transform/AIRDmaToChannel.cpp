@@ -149,6 +149,11 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
       auto clonedAifOps = air::cloneAffineIfUsingRemap(builder, remap, aif_op);
       clonedOps.insert(clonedOps.end(), clonedAifOps.begin(),
                        clonedAifOps.end());
+    } else if (auto scf_if_op = dyn_cast_if_present<scf::IfOp>(o)) {
+      auto clonedScfIfOps =
+          air::cloneScfIfUsingRemap(builder, remap, scf_if_op);
+      clonedOps.insert(clonedOps.end(), clonedScfIfOps.begin(),
+                       clonedScfIfOps.end());
     } else if (auto dma_op = dyn_cast_if_present<air::DmaMemcpyNdOp>(o)) {
       if (o.hasAttr("loop-carried-dep"))
         clonedOps.push_back(builder.clone(o, remap));
@@ -182,6 +187,67 @@ air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
     clonedOps.insert(clonedOps.end(), clonedElseOps.begin(),
                      clonedElseOps.end());
   }
+  return clonedOps;
+}
+
+SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
+                                                   IRMapping &remap,
+                                                   scf::IfOp scf_if_op) {
+  // Clone scf.if preserving the if structure with remapped condition.
+  // Only supports scf.if with no results (the expected pattern for hoisting
+  // external channel ops). Fall back to flattening if results are present.
+  SmallVector<Operation *> clonedOps;
+  if (scf_if_op.getNumResults() != 0) {
+    // Flatten: clone body ops without the scf.if wrapper.
+    auto clonedThenOps = cloneOpsInBlock(scf_if_op.thenBlock(), builder, remap);
+    clonedOps.insert(clonedOps.end(), clonedThenOps.begin(),
+                     clonedThenOps.end());
+    if (scf_if_op.elseBlock()) {
+      auto clonedElseOps =
+          cloneOpsInBlock(scf_if_op.elseBlock(), builder, remap);
+      clonedOps.insert(clonedOps.end(), clonedElseOps.begin(),
+                       clonedElseOps.end());
+    }
+    return clonedOps;
+  }
+
+  // Remap the condition value.
+  Value cond = remap.lookupOrDefault(scf_if_op.getCondition());
+
+  // Create a new scf.if with no results (external channel ops are async and
+  // don't return values through the scf.if).
+  bool hasElse = (scf_if_op.elseBlock() != nullptr);
+  auto newIfOp =
+      scf::IfOp::create(builder, scf_if_op.getLoc(), /*resultTypes=*/{}, cond,
+                        /*withElseRegion=*/hasElse);
+  // Mark the new scf.if with "hoist" to prevent it from being erased during
+  // the cleanup step that removes non-hoisted ops from the hoisted
+  // scf.parallel.
+  newIfOp->setAttr("hoist", StringAttr::get(builder.getContext(), "dep"));
+
+  // Clone ops in the then block. Insert before the existing yield terminator.
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(newIfOp.thenBlock()->getTerminator());
+    auto clonedThenOps = cloneOpsInBlock(scf_if_op.thenBlock(), builder, remap);
+    // Collect channel ops from the then block.
+    for (auto *op : clonedThenOps) {
+      if (isa<air::ChannelInterface>(op))
+        clonedOps.push_back(op);
+    }
+  }
+
+  // Clone ops in the else block if present.
+  if (hasElse) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(newIfOp.elseBlock()->getTerminator());
+    auto clonedElseOps = cloneOpsInBlock(scf_if_op.elseBlock(), builder, remap);
+    for (auto *op : clonedElseOps) {
+      if (isa<air::ChannelInterface>(op))
+        clonedOps.push_back(op);
+    }
+  }
+
   return clonedOps;
 }
 
@@ -424,6 +490,10 @@ static void replaceAIRDmaWithAIRChannelPairs(
     }
   }
 
+  // Extract padding attributes from the DMA op (applies to source/put side).
+  DenseI32ArrayAttr padBefore = op.getPadBeforeAttr();
+  DenseI32ArrayAttr padAfter = op.getPadAfterAttr();
+
   // Create channel put-get pair
   SmallVector<Type, 4> tys;
   if (auto op_token = op.getAsyncToken()) {
@@ -449,14 +519,14 @@ static void replaceAIRDmaWithAIRChannelPairs(
     auto internal = air::ChannelPutOp::create(
         builder, loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_internal, src, src_offsets, src_sizes, src_strides,
-        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+        padBefore, padAfter);
     internalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(internal.getOperation());
   } else {
     auto external = air::ChannelPutOp::create(
         builder, loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
         channel_idx_external, src, src_offsets, src_sizes, src_strides,
-        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+        padBefore, padAfter);
     externalGetPut =
         dyn_cast_if_present<air::ChannelInterface>(external.getOperation());
   }

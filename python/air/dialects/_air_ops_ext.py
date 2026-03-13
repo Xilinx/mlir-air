@@ -265,7 +265,13 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
         src_offsets=[],
         src_sizes=[],
         src_strides=[],
+        pad_before=None,
+        pad_after=None,
     ):
+        if (pad_before is None) != (pad_after is None):
+            raise ValueError(
+                "pad_before and pad_after must both be specified or both omitted"
+            )
         dst_offsets_typed = list(map(pyint_to_index, dst_offsets))
         dst_sizes_typed = list(map(pyint_to_index, dst_sizes))
         dst_strides_typed = list(map(pyint_to_index, dst_strides))
@@ -285,6 +291,12 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             src_offsets=src_offsets_typed,
             src_sizes=src_sizes_typed,
             src_strides=src_strides_typed,
+            pad_before=(
+                DenseI32ArrayAttr.get(pad_before) if pad_before is not None else None
+            ),
+            pad_after=(
+                DenseI32ArrayAttr.get(pad_after) if pad_after is not None else None
+            ),
         )
 
 

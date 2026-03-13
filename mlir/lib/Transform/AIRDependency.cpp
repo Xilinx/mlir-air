@@ -537,7 +537,8 @@ private:
         rewriter, loc, air::AsyncTokenType::get(dma_op->getContext()), deps,
         dma_op.getDstMemref(), dma_op.getDstOffsets(), dma_op.getDstSizes(),
         dma_op.getDstStrides(), dma_op.getSrcMemref(), dma_op.getSrcOffsets(),
-        dma_op.getSrcSizes(), dma_op.getSrcStrides());
+        dma_op.getSrcSizes(), dma_op.getSrcStrides(), dma_op.getPadBeforeAttr(),
+        dma_op.getPadAfterAttr());
     assignOpId(new_dmaNd_op);
 
     // Update op-to-graph map

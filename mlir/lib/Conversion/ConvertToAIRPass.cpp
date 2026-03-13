@@ -239,7 +239,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   SmallVector<Type, 4> tys;
   auto dma = air::DmaMemcpyNdOp::create(
       rewriter, loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
-      src_offsets, src_sizes, src_strides);
+      src_offsets, src_sizes, src_strides, /*pad_before=*/nullptr,
+      /*pad_after=*/nullptr);
   dma->setAttr(
       "id", mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
                                    ++DmaMemcpyOpID));
@@ -399,7 +400,8 @@ class LinalgPackToAIRDma : public OpRewritePattern<linalg::PackOp> {
     SmallVector<Value, 2> empty;
     xilinx::air::DmaMemcpyNdOp::create(
         rewriter, loc, SmallVector<Type, 1>{}, empty, op.getDest(), empty,
-        empty, empty, transposeOp.getResult(), empty, empty, empty);
+        empty, empty, transposeOp.getResult(), empty, empty, empty,
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
     rewriter.eraseOp(op);
     return success();
   }
