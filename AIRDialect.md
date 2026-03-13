@@ -333,6 +333,14 @@ Traits: `AttrSizedOperandSegments`
 
 Interfaces: `air_AsyncOpInterface`, `air_MemcpyInterface`
 
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>pad_before</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
+<tr><td><code>pad_after</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
+</table>
+
 #### Operands:
 
 | Operand | Description |
