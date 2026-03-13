@@ -485,6 +485,8 @@ air::getChannelPutOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
 std::vector<air::ChannelGetOp>
 air::getChannelGetOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
 
+  if (!channel)
+    return {};
   if (!scope)
     scope = channel->getParentOfType<ModuleOp>();
 

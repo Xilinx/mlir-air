@@ -185,15 +185,58 @@ public:
         continue;
       auto idxVal = put.getIndices()[specializeDim];
       auto idxOpt = getConstantIntValue(idxVal);
-      if (!idxOpt || *idxOpt < 0 ||
-          *idxOpt >= (int64_t)specializedChannels.size())
-        continue;
-      int64_t idx = *idxOpt;
-      put.setChanName(specializedChannels[idx].getSymName());
-      if ((int64_t)put.getIndices().size() > specializeDim)
-        put->setOperand(put.getAsyncDependencies().size() + specializeDim,
-                        getValueOrCreateConstantIndexOp(
-                            rewriter, loc, rewriter.getIndexAttr(0)));
+      if (idxOpt && *idxOpt >= 0 &&
+          *idxOpt < (int64_t)specializedChannels.size()) {
+        // Static index: directly rewrite to specialized channel
+        int64_t idx = *idxOpt;
+        put.setChanName(specializedChannels[idx].getSymName());
+        if ((int64_t)put.getIndices().size() > specializeDim)
+          put->setOperand(put.getAsyncDependencies().size() + specializeDim,
+                          getValueOrCreateConstantIndexOp(
+                              rewriter, loc, rewriter.getIndexAttr(0)));
+      } else {
+        // Dynamic index: generate scf.if dispatch to specialized channels
+        auto numSegments = (int64_t)specializedChannels.size();
+        auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        Value result;
+        for (int64_t i = numSegments - 1; i >= 0; --i) {
+          SmallVector<Value> newIndices(put.getIndices().begin(),
+                                        put.getIndices().end());
+          newIndices[specializeDim] = zeroIdx;
+          if (i == numSegments - 1) {
+            // Default case (last segment)
+            auto newPut = air::ChannelPutOp::create(
+                rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
+                rewriter.getStringAttr(specializedChannels[i].getSymName()),
+                newIndices, put.getMemref(), put.getOffsets(), put.getSizes(),
+                put.getStrides());
+            newPut->setAttrs(put->getDiscardableAttrDictionary());
+            result = newPut.getAsyncToken();
+          } else {
+            auto cmpVal = arith::ConstantIndexOp::create(rewriter, loc, i);
+            auto cond = arith::CmpIOp::create(
+                rewriter, loc, arith::CmpIPredicate::eq, idxVal, cmpVal);
+            auto ifOp = scf::IfOp::create(rewriter, loc, put.getResultTypes(),
+                                          cond, /*withElse=*/true);
+            rewriter.setInsertionPointToStart(ifOp.thenBlock());
+            auto newPut = air::ChannelPutOp::create(
+                rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
+                rewriter.getStringAttr(specializedChannels[i].getSymName()),
+                newIndices, put.getMemref(), put.getOffsets(), put.getSizes(),
+                put.getStrides());
+            newPut->setAttrs(put->getDiscardableAttrDictionary());
+            scf::YieldOp::create(rewriter, loc, newPut->getResults());
+            rewriter.setInsertionPointToStart(ifOp.elseBlock());
+            if (result.getDefiningOp())
+              result.getDefiningOp()->moveBefore(ifOp.elseBlock(),
+                                                 ifOp.elseBlock()->begin());
+            scf::YieldOp::create(rewriter, loc, ValueRange{result});
+            rewriter.setInsertionPoint(put);
+            result = ifOp.getResult(0);
+          }
+        }
+        rewriter.replaceOp(put, result);
+      }
     }
   }
 
