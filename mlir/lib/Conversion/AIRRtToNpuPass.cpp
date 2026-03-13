@@ -1491,6 +1491,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // DMAConfigureTaskForOp result.
     generateAwaitsFromWaitAllOps(module);
 
+    // Insert BD recycling points when task count per shim tile exceeds
+    // the hardware BD limit. This prevents BD exhaustion for designs
+    // with many DMA tasks per launch iteration (e.g., direct L3→L1).
+    insertBdRecyclingPoints(module);
+
     // Renumber npu dma ops
     renumberNpuDmaOps(module.getBody());
 
@@ -1857,6 +1862,63 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // Now that WaitAllOps with DMA operands are erased, purge DMA async
     // tokens (they no longer have uses from WaitAllOps)
     purgeDmaAsyncTokens(module);
+  }
+
+  // Insert DMAAwaitTaskOp + DMAFreeTaskOp at regular intervals when the
+  // number of outstanding tasks per shim tile exceeds a threshold. This
+  // prevents BD exhaustion for designs with many DMA tasks per launch
+  // iteration (e.g., direct L3→L1 without memtile staging).
+  void insertBdRecyclingPoints(ModuleOp module) {
+    // Maximum outstanding tasks per shim tile before inserting a recycle point.
+    // Shim tiles have 16 BDs total; leave headroom for concurrent tasks.
+    constexpr unsigned kMaxOutstandingPerTile = 12;
+
+    module.walk([&](AIE::DeviceOp device) {
+      device.walk([&](func::FuncOp f) {
+        if (f.getBody().empty())
+          return;
+
+        // Collect all DMAConfigureTaskForOp in order, grouped by shim tile
+        llvm::MapVector<StringRef, unsigned> tileTaskCount;
+        SmallVector<AIEX::DMAConfigureTaskForOp> outstandingTasks;
+
+        auto getShimTile =
+            [&](AIEX::DMAConfigureTaskForOp configTask) -> StringRef {
+          auto allocSymbol = configTask.getAlloc();
+          return allocSymbol.getLeafReference().getValue();
+        };
+
+        // Walk ops in order within runtime_sequence blocks
+        f.walk([&](AIEX::DMAConfigureTaskForOp configTask) {
+          StringRef tile = getShimTile(configTask);
+          tileTaskCount[tile]++;
+          outstandingTasks.push_back(configTask);
+
+          // Check if any tile exceeds the threshold
+          bool needRecycle = false;
+          for (auto &kv : tileTaskCount)
+            if (kv.second > kMaxOutstandingPerTile)
+              needRecycle = true;
+
+          if (needRecycle) {
+            // Free the OLDEST outstanding task's BD for reuse.
+            // Use DMAFreeTaskOp (not DMAAwaitTaskOp) because MM2S tasks
+            // don't issue tokens and can't be awaited.
+            if (!outstandingTasks.empty()) {
+              auto oldestTask = outstandingTasks.front();
+              OpBuilder builder(configTask);
+              builder.setInsertionPoint(configTask);
+              AIEX::DMAFreeTaskOp::create(builder, configTask.getLoc(),
+                                          oldestTask.getResult());
+              outstandingTasks.erase(outstandingTasks.begin());
+              StringRef oldTile = getShimTile(oldestTask);
+              if (tileTaskCount.count(oldTile) && tileTaskCount[oldTile] > 0)
+                tileTaskCount[oldTile]--;
+            }
+          }
+        });
+      });
+    });
   }
 
   // Convert NpuDmaWaitOp → DMAAwaitTaskOp or DMAFreeTaskOp AFTER DMA
