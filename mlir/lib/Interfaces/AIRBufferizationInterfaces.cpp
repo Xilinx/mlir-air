@@ -184,7 +184,8 @@ FailureOr<LowerPackUnPackResult> lowerPack(RewriterBase &rewriter, Value source,
   SmallVector<Value, 2> emptyVec;
   xilinx::air::DmaMemcpyNdOp dmaOp = xilinx::air::DmaMemcpyNdOp::create(
       rewriter, loc, SmallVector<Type, 1>{}, emptyVec, dest, emptyVec, emptyVec,
-      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec);
+      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec,
+      /*pad_before=*/nullptr, /*pad_after=*/nullptr);
 
   return LowerPackUnPackResult{transposeOp, dmaOp};
 }
@@ -308,7 +309,8 @@ FailureOr<LowerPackUnPackResult> lowerUnPack(RewriterBase &rewriter,
   SmallVector<Value, 2> emptyVec;
   xilinx::air::DmaMemcpyNdOp dmaOp = xilinx::air::DmaMemcpyNdOp::create(
       rewriter, loc, SmallVector<Type, 1>{}, emptyVec, dest, emptyVec, emptyVec,
-      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec);
+      emptyVec, transposeOp.getResult(), emptyVec, emptyVec, emptyVec,
+      /*pad_before=*/nullptr, /*pad_after=*/nullptr);
 
   return LowerPackUnPackResult{transposeOp, dmaOp};
 }

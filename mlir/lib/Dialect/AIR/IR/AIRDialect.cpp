@@ -2112,7 +2112,7 @@ ComposeMemrefOpOnDmaMemcpyNdSrc(air::DmaMemcpyNdOp op,
   rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
       op, op->getResultTypes(), op.getAsyncDependencies(), op.getDstMemref(),
       op.getDstOffsets(), op.getDstSizes(), op.getDstStrides(), input_memref,
-      offsets, sizes, strides);
+      offsets, sizes, strides, op.getPadBeforeAttr(), op.getPadAfterAttr());
 
   return success();
 }
@@ -2141,7 +2141,8 @@ ComposeMemrefOpOnDmaMemcpyNdDst(air::DmaMemcpyNdOp op,
   rewriter.replaceOpWithNewOp<air::DmaMemcpyNdOp>(
       op, op->getResultTypes(), op.getAsyncDependencies(), input_memref,
       offsets, sizes, strides, op.getSrcMemref(), op.getSrcOffsets(),
-      op.getSrcSizes(), op.getSrcStrides());
+      op.getSrcSizes(), op.getSrcStrides(), op.getPadBeforeAttr(),
+      op.getPadAfterAttr());
 
   return success();
 }
@@ -2165,6 +2166,26 @@ static LogicalResult EraseSelfCopyDma(air::DmaMemcpyNdOp op,
     token.replaceAllUsesWith(waitAll.getAsyncToken());
   }
   rewriter.eraseOp(op);
+  return success();
+}
+
+LogicalResult air::DmaMemcpyNdOp::verify() {
+  auto padBefore = getPadBefore();
+  auto padAfter = getPadAfter();
+  if (padBefore.has_value() != padAfter.has_value())
+    return emitOpError(
+        "pad_before and pad_after must both be present or both absent");
+  if (padBefore.has_value()) {
+    if (padBefore->size() != padAfter->size())
+      return emitOpError(
+          "pad_before and pad_after must have the same number of dimensions");
+    for (size_t i = 0; i < padBefore->size(); i++) {
+      if ((*padBefore)[i] < 0 || (*padAfter)[i] < 0)
+        return emitOpError("padding values must be non-negative");
+      if ((*padBefore)[i] > 65535 || (*padAfter)[i] > 65535)
+        return emitOpError("padding values must be <= 65535");
+    }
+  }
   return success();
 }
 

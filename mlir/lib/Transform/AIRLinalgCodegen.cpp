@@ -718,8 +718,8 @@ struct EliminateIntermediateMemrefPattern
         secondMemcpy.getDstMemref(),        // destination from second memcpy
         emptyOffsets, emptySizes, emptyStrides, // dst access pattern
         firstMemcpy.getSrcMemref(),             // source from first memcpy
-        emptyOffsets, emptySizes, emptyStrides  // src access pattern
-    );
+        emptyOffsets, emptySizes, emptyStrides, // src access pattern
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
 
     // Replace the async token of the second memcpy with the new one if needed
     if (secondMemcpy.getAsyncToken() && newMemcpy.getAsyncToken()) {

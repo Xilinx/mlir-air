@@ -351,7 +351,9 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         AnyRankedOrUnrankedMemRef:$src,
         Variadic<Index>:$src_offsets,
         Variadic<Index>:$src_sizes,
-        Variadic<Index>:$src_strides
+        Variadic<Index>:$src_strides,
+        OptionalAttr<DenseI32ArrayAttr>:$pad_before,
+        OptionalAttr<DenseI32ArrayAttr>:$pad_after
   );
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
@@ -372,8 +374,12 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
       }
       return -1;
     }
+    bool hasPadding() {
+      return getPadBefore().has_value();
+    }
   }];
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 }
 
 def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
