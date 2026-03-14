@@ -297,6 +297,26 @@ air::getRepeatCounts(std::vector<Operation *> memcpy_ops) {
   if (!uniqueMemcpyIPattern.empty())
     memcpyIOps = uniqueMemcpyIPattern;
 
+  // Handle "prefix + repeating suffix" pattern (e.g., [Q, K, K, K...K]).
+  // Collapse to [Q, K] circular chain (2 BDs instead of N+1), avoiding
+  // memtile BD exhaustion for large chunks_per_stage.
+  if (uniqueMemcpyIPattern.empty() && memcpyIOps.size() > 2) {
+    llvm::SetVector<Operation *> suffix;
+    auto it = memcpyIOps.begin();
+    ++it;
+    while (it != memcpyIOps.end()) {
+      suffix.insert(*it);
+      ++it;
+    }
+    auto suffixPattern = getUniqueBDPattern(suffix);
+    if (!suffixPattern.empty() && suffixPattern.size() == 1) {
+      llvm::SetVector<Operation *> prefixPlusSuffix;
+      prefixPlusSuffix.insert(*memcpyIOps.begin());
+      prefixPlusSuffix.insert(*suffixPattern.begin());
+      memcpyIOps = prefixPlusSuffix;
+    }
+  }
+
   // Detect if all operations form an N-buffer rotation pattern.
   // For N-buffer rotation (e.g., 4-buffer sliding window), we need to generate
   // a single circular BD chain even if operations have different loop contexts.
