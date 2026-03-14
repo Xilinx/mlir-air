@@ -211,9 +211,10 @@ public:
             // Default case (last segment)
             auto newPut = air::ChannelPutOp::create(
                 rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
-                rewriter.getStringAttr(specializedChannels[i].getSymName()),
-                newIndices, put.getMemref(), put.getOffsets(), put.getSizes(),
-                put.getStrides());
+                specializedChannels[i].getSymName(), newIndices,
+                put.getMemref(), put.getOffsets(), put.getSizes(),
+                put.getStrides(),
+                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
             newPut->setAttrs(put->getDiscardableAttrDictionary());
             result = newPut.getAsyncToken();
           } else {
@@ -225,9 +226,10 @@ public:
             rewriter.setInsertionPointToStart(ifOp.thenBlock());
             auto newPut = air::ChannelPutOp::create(
                 rewriter, loc, put.getResultTypes(), put.getAsyncDependencies(),
-                rewriter.getStringAttr(specializedChannels[i].getSymName()),
-                newIndices, put.getMemref(), put.getOffsets(), put.getSizes(),
-                put.getStrides());
+                specializedChannels[i].getSymName(), newIndices,
+                put.getMemref(), put.getOffsets(), put.getSizes(),
+                put.getStrides(),
+                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
             newPut->setAttrs(put->getDiscardableAttrDictionary());
             scf::YieldOp::create(rewriter, loc, newPut->getResults());
             rewriter.setInsertionPointToStart(ifOp.elseBlock());
