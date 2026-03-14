@@ -4685,8 +4685,9 @@ private:
     SmallVector<Operation *> candidate_ops;
     for (auto &o : for_op.getBody()->getOperations()) {
       // Get for_op's immediate child op
-      if (!isAsyncOp(&o))
+      if (!isAsyncOp(&o)) {
         continue; // This pass requires an async IR.
+      }
 
       if (o.getParentOfType<air::HerdOp>())
         continue; // Skip over herd op's body for now. TODO: generalize this.
@@ -4745,11 +4746,12 @@ private:
           return connectedComponents;
         };
     // Precompute channel info per candidate op, walking nested ops once.
-    // Each entry is (channel_name, is_put, const_indices).
+    // Each entry is (channel_name, is_put, const_indices, memref).
     struct ChanKey {
       StringRef name;
       bool isPut;
       SmallVector<std::optional<int64_t>> constIndices;
+      Value memref; // The memref operand of the channel op.
     };
     llvm::DenseMap<Operation *, SmallVector<ChanKey>> candidateChanKeys;
     for (auto op : candidate_ops) {
@@ -4760,6 +4762,7 @@ private:
         k.isPut = isa<air::ChannelPutOp>(chan.getOperation());
         for (auto idx : chan.getIndices())
           k.constIndices.push_back(getConstantIntValue(idx));
+        k.memref = chan.getMemref();
         keys.push_back(std::move(k));
       };
       if (auto chan = dyn_cast<air::ChannelInterface>(op))
@@ -4774,29 +4777,33 @@ private:
     // pattern from splitting same-channel, same-direction ops at
     // different loop depths into independent loops, which would break
     // the per-iteration interleaving needed by cycling tile BD chains.
+    //
+    // Also treats same-direction channel ops accessing the same memref as
+    // dependent, even with different channel names.  This handles the case
+    // where scf.if-based DMA padding splits a single logical DMA into two
+    // channels (one padded, one non-padded) that both target the same L2
+    // buffer.  Without this, the isolation pass may hoist them into separate
+    // loops, dropping channel.get ops for the padded variant.
     auto haveChannelResourceDep = [&](Operation *a, Operation *b) -> bool {
       for (auto &keyA : candidateChanKeys[a]) {
         for (auto &keyB : candidateChanKeys[b]) {
           if (keyA.isPut != keyB.isPut)
             continue;
-          if (keyA.name != keyB.name)
-            continue;
-          // Check indices: if we can prove they differ in at least one
-          // dimension (both indices constant and unequal), we treat the
-          // accesses as independent; otherwise we conservatively assume a
-          // dependency (including when ranks differ).
-          if (keyA.constIndices.size() != keyB.constIndices.size())
-            return true;
-          bool provenIndependent = false;
-          for (unsigned i = 0; i < keyA.constIndices.size(); i++) {
-            if (keyA.constIndices[i] && keyB.constIndices[i] &&
-                *keyA.constIndices[i] != *keyB.constIndices[i]) {
-              provenIndependent = true;
-              break;
+          if (keyA.name == keyB.name) {
+            // Same channel name: check indices as before.
+            if (keyA.constIndices.size() != keyB.constIndices.size())
+              return true;
+            bool provenIndependent = false;
+            for (unsigned i = 0; i < keyA.constIndices.size(); i++) {
+              if (keyA.constIndices[i] && keyB.constIndices[i] &&
+                  *keyA.constIndices[i] != *keyB.constIndices[i]) {
+                provenIndependent = true;
+                break;
+              }
             }
+            if (!provenIndependent)
+              return true;
           }
-          if (!provenIndependent)
-            return true;
         }
       }
       return false;
@@ -7028,6 +7035,452 @@ void populateAIRLoopFusionPattern(RewritePatternSet &patterns) {
 
 void applyAIRIsolateAsyncDmaLoopNestsPattern(Region *region) {
   (void)AIRIsolateAsyncDmaLoopNestsImpl(region);
+}
+
+// ===----------------------------------------------------------------------===//
+// AIRSplitLaunchForPadding
+// ===----------------------------------------------------------------------===//
+
+class AIRSplitLaunchForPadding
+    : public xilinx::air::impl::AIRSplitLaunchForPaddingBase<
+          AIRSplitLaunchForPadding> {
+public:
+  AIRSplitLaunchForPadding() = default;
+  AIRSplitLaunchForPadding(const AIRSplitLaunchForPadding &pass) {}
+  AIRSplitLaunchForPadding(
+      const ::xilinx::air::AIRSplitLaunchForPaddingOptions &options)
+      : AIRSplitLaunchForPaddingBase(options) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect, arith::ArithDialect>();
+  }
+
+  // Trace a memref Value through block args to its function argument index.
+  static unsigned traceFuncArgIdx(Value memref) {
+    Value traced = memref;
+    while (auto ba = dyn_cast<BlockArgument>(traced)) {
+      auto parentOp = ba.getOwner()->getParentOp();
+      if (auto lo = dyn_cast<air::LaunchOp>(parentOp)) {
+        auto kernelBodyArgs = lo.getKernelArguments();
+        auto kernelOperands = lo.getKernelOperands();
+        bool found = false;
+        for (unsigned i = 0; i < kernelBodyArgs.size(); i++) {
+          if (kernelBodyArgs[i] == ba) {
+            traced = kernelOperands[i];
+            found = true;
+            break;
+          }
+        }
+        if (!found)
+          return UINT_MAX;
+      } else if (isa<func::FuncOp>(parentOp)) {
+        return ba.getArgNumber();
+      } else {
+        return UINT_MAX;
+      }
+    }
+    return UINT_MAX;
+  }
+
+  // Per-shim padding info for a channel.put/get op.
+  struct ShimPadInfo {
+    int64_t shimIdx;
+    int64_t chunkSize;
+    int64_t actualForShim;
+    int64_t padForShim;
+    int64_t padDimIdx; // 0 for A (M-rows), last for B (N-cols)
+  };
+
+  // Compute per-shim padding info for an L3 channel op.
+  std::optional<ShimPadInfo> computeShimPadInfo(air::ChannelInterface chOp,
+                                                bool isA, int64_t mActualLast,
+                                                int64_t nActualLast) {
+    auto sizes = chOp.getSizes();
+    if (sizes.empty())
+      return std::nullopt;
+
+    int64_t padDimIdx = isA ? 0 : ((int64_t)sizes.size() - 1);
+    auto chunkSizeOpt = getConstantIntValue(sizes[padDimIdx]);
+    if (!chunkSizeOpt)
+      return std::nullopt;
+    int64_t chunkSize = *chunkSizeOpt;
+
+    auto indices = chOp.getIndices();
+    int64_t shimIdx = 0;
+    if (!indices.empty()) {
+      auto shimIdxOpt = getConstantIntValue(indices[0]);
+      if (shimIdxOpt)
+        shimIdx = *shimIdxOpt;
+    }
+
+    int64_t dimActualLast = isA ? mActualLast : nActualLast;
+    int64_t shimOffset = shimIdx * chunkSize;
+    int64_t actualForShim =
+        std::max(int64_t(0), std::min(chunkSize, dimActualLast - shimOffset));
+    int64_t padForShim = chunkSize - actualForShim;
+
+    return ShimPadInfo{shimIdx, chunkSize, actualForShim, padForShim,
+                       padDimIdx};
+  }
+
+  // Modify sizes on a channel op for a boundary partition.
+  // Reduces the padded dimension to actualForShim by replacing the
+  // size operand in-place.
+  void reduceChannelSizes(air::ChannelInterface chOp, ShimPadInfo &info) {
+    OpBuilder builder(chOp);
+    Location loc = chOp.getLoc();
+    auto actualVal =
+        arith::ConstantIndexOp::create(builder, loc, info.actualForShim);
+
+    // Find the operand index for the size at padDimIdx.
+    auto sizes = chOp.getSizes();
+    if (sizes.empty() || info.padDimIdx >= (int64_t)sizes.size())
+      return;
+
+    // getSizes() returns an OperandRange. Get the absolute operand index.
+    unsigned sizeBegin = sizes.getBeginOperandIndex();
+    chOp->setOperand(sizeBegin + info.padDimIdx, actualVal);
+  }
+
+  // Add pad_after on an L2→L1 channel.put (segment level, memtile MM2S).
+  void addMemtilePadding(air::ChannelPutOp putOp, int64_t padDimIdx,
+                         int64_t padAmount) {
+    auto sizes = putOp.getSizes();
+    int numDims = sizes.size();
+    SmallVector<int32_t> padBefore(numDims, 0);
+    SmallVector<int32_t> padAfter(numDims, 0);
+    padAfter[padDimIdx] = padAmount;
+    putOp->setAttr("pad_before",
+                   DenseI32ArrayAttr::get(putOp.getContext(), padBefore));
+    putOp->setAttr("pad_after",
+                   DenseI32ArrayAttr::get(putOp.getContext(), padAfter));
+  }
+
+  // Clone an air.launch and specialize it for a boundary partition.
+  // fixedDimM: if >= 0, replace block index M with this constant.
+  // fixedDimN: if >= 0, replace block index N with this constant.
+  // interiorM/interiorN: iteration count for the non-fixed dimensions.
+  air::LaunchOp cloneAndSpecializeLaunch(air::LaunchOp origLaunch,
+                                         OpBuilder &builder, Location loc,
+                                         int64_t fixedDimM, int64_t fixedDimN,
+                                         int64_t interiorM, int64_t interiorN,
+                                         StringRef suffix) {
+    // Pre-compute new size values for each dimension.
+    unsigned numDims = origLaunch.getSizeOperands().size();
+    SmallVector<int64_t> newSizes(numDims);
+    for (unsigned i = 0; i < numDims; i++) {
+      if (i == 0)
+        newSizes[i] = fixedDimM >= 0 ? 1 : interiorM;
+      else if (i == 1)
+        newSizes[i] = fixedDimN >= 0 ? 1 : interiorN;
+      else {
+        // Preserve original size for non-M/N dimensions (e.g., K).
+        auto origSzOpt = getConstantIntValue(origLaunch.getSizeOperands()[i]);
+        if (!origSzOpt)
+          return origLaunch; // Bail: non-constant size in non-M/N dim.
+        newSizes[i] = *origSzOpt;
+      }
+    }
+
+    // Create size constant Values BEFORE cloning (so they dominate the clone).
+    SmallVector<Value> newSizeVals;
+    for (unsigned i = 0; i < numDims; i++)
+      newSizeVals.push_back(
+          arith::ConstantIndexOp::create(builder, loc, newSizes[i]));
+
+    // Clone the entire launch op (deep copy including all regions).
+    auto clonedOp = cast<air::LaunchOp>(builder.clone(*origLaunch));
+
+    // Replace size operands on the cloned launch.
+    {
+      auto sizeRange = clonedOp.getSizeOperands();
+      unsigned sizeBegin = sizeRange.getBeginOperandIndex();
+      for (unsigned i = 0; i < numDims; i++)
+        clonedOp->setOperand(sizeBegin + i, newSizeVals[i]);
+    }
+
+    // Replace uses of fixed dimension block args inside the body.
+    // When a dim is fixed, its iteration range is 0..0 (size=1), so the
+    // block arg is always 0. We replace it with the actual block index.
+    auto &bodyBlock = clonedOp.getBody().front();
+    unsigned numIds = numDims; // IDs and sizes have same count
+    OpBuilder bodyBuilder = OpBuilder::atBlockBegin(&bodyBlock);
+    if (fixedDimM >= 0 && numIds > 0) {
+      Value mConst =
+          arith::ConstantIndexOp::create(bodyBuilder, loc, fixedDimM);
+      bodyBlock.getArgument(0).replaceAllUsesWith(mConst);
+    }
+    if (fixedDimN >= 0 && numIds > 1) {
+      Value nConst =
+          arith::ConstantIndexOp::create(bodyBuilder, loc, fixedDimN);
+      bodyBlock.getArgument(1).replaceAllUsesWith(nConst);
+    }
+
+    // Also replace the size block args for the fixed dims.
+    // Size block args come after IDs in the launch body block.
+    for (unsigned i = 0; i < numDims; i++) {
+      Value szConst =
+          arith::ConstantIndexOp::create(bodyBuilder, loc, newSizes[i]);
+      bodyBlock.getArgument(numIds + i).replaceAllUsesWith(szConst);
+    }
+
+    // Set a unique segment name if there's a segment inside.
+    clonedOp.walk([&](air::SegmentOp segOp) {
+      if (auto name = segOp.getSymName()) {
+        segOp.setSymName((*name + suffix).str());
+      }
+    });
+
+    // Clone channel declarations and rename references.
+    // Each partition needs its own channels to avoid conflicts.
+    auto module = clonedOp->getParentOfType<ModuleOp>();
+    DenseMap<StringRef, std::string> chanRenameMap;
+
+    // Collect all channel names referenced by this launch.
+    clonedOp.walk([&](air::ChannelInterface chOp) {
+      auto chanName = chOp.getChanName();
+      if (chanRenameMap.count(chanName))
+        return;
+      std::string newName = (chanName + suffix).str();
+      chanRenameMap[chanName] = newName;
+    });
+
+    // Create new channel declarations at the module level.
+    OpBuilder moduleBuilder = OpBuilder::atBlockEnd(module.getBody());
+    for (auto &[origName, newName] : chanRenameMap) {
+      // Find the original channel declaration.
+      auto origChanOp = module.lookupSymbol<air::ChannelOp>(origName);
+      if (!origChanOp)
+        continue;
+      // Guard against duplicate channel names (e.g., if pass runs twice).
+      if (module.lookupSymbol<air::ChannelOp>(newName))
+        continue;
+      // Clone the channel declaration with new name.
+      moduleBuilder.setInsertionPointAfter(origChanOp);
+      auto clonedChan = cast<air::ChannelOp>(moduleBuilder.clone(*origChanOp));
+      clonedChan.setSymName(newName);
+    }
+
+    // Rename channel references in the cloned launch.
+    clonedOp.walk([&](air::ChannelInterface chOp) {
+      auto it = chanRenameMap.find(chOp.getChanName());
+      if (it != chanRenameMap.end()) {
+        chOp->setAttr("chan_name",
+                      FlatSymbolRefAttr::get(chOp->getContext(), it->second));
+      }
+    });
+
+    return clonedOp;
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    int64_t actualM = clActualM;
+    int64_t actualN = clActualN;
+    int64_t tileM = clTileM;
+    int64_t tileN = clTileN;
+
+    if (actualM == 0 && actualN == 0)
+      return;
+
+    if ((actualM > 0 && tileM <= 0) || (actualN > 0 && tileN <= 0)) {
+      module.emitError("air-split-launch-for-padding: tile-m and tile-n must "
+                       "be positive when their corresponding actual dimension "
+                       "is specified");
+      return signalPassFailure();
+    }
+
+    int64_t mRem = actualM > 0 ? (actualM % tileM) : 0;
+    int64_t nRem = actualN > 0 ? (actualN % tileN) : 0;
+    if (!mRem && !nRem)
+      return;
+
+    SmallVector<air::LaunchOp> launchOps;
+    module.walk([&](air::LaunchOp op) { launchOps.push_back(op); });
+
+    for (auto launchOp : launchOps) {
+      auto launchIds = launchOp.getIds();
+      if (launchIds.size() < 2)
+        continue;
+
+      // Read actual launch dimensions from the op.
+      auto sizeOperands = launchOp.getSizeOperands();
+      auto launchMOpt = getConstantIntValue(sizeOperands[0]);
+      auto launchNOpt = getConstantIntValue(sizeOperands[1]);
+      if (!launchMOpt || !launchNOpt)
+        continue;
+      int64_t launchM = *launchMOpt;
+      int64_t launchN = *launchNOpt;
+
+      // Compute actual last-block data sizes.
+      [[maybe_unused]] int64_t mActualLast =
+          mRem ? (actualM - (launchM - 1) * tileM) : tileM;
+      [[maybe_unused]] int64_t nActualLast =
+          nRem ? (actualN - (launchN - 1) * tileN) : tileN;
+
+      OpBuilder builder(launchOp);
+      Location loc = launchOp.getLoc();
+
+      // Fully unroll the launch grid: create one 1×1×1 launch per block.
+      // Full unrolling is required because multi-iteration launches within
+      // ELF multi-launch mode (with PDI reconfiguration between launches)
+      // produce incorrect hardware results on NPU2. Only single-iteration
+      // 1×1 launches work reliably with load_pdi reconfiguration.
+      // A partition-based approach (interior + boundaries) was tried but
+      // failed for the same reason when the interior had >1 iteration.
+      for (int64_t m = 0; m < launchM; m++) {
+        for (int64_t n = 0; n < launchN; n++) {
+          bool isMBoundary = mRem && (m == launchM - 1);
+          bool isNBoundary = nRem && (n == launchN - 1);
+
+          std::string suffix =
+              "_b" + std::to_string(m) + "_" + std::to_string(n);
+          auto newLaunch =
+              cloneAndSpecializeLaunch(launchOp, builder, loc, /*fixedDimM=*/m,
+                                       /*fixedDimN=*/n, 1, 1, suffix);
+
+          if (isMBoundary || isNBoundary) {
+            addMemtilePaddingToLaunch(newLaunch, isMBoundary, isNBoundary,
+                                      mActualLast, nActualLast);
+          }
+        }
+      }
+
+      // Erase the original launch.
+      launchOp.erase();
+    }
+  }
+
+  // Add memtile (L2→L1) padding to a boundary launch.
+  // Only modifies the segment-level channel.put ops that send data from L2 to
+  // L1. L3-level ops are NOT modified — the host must provide zero-padded
+  // (tile-aligned) buffers to avoid out-of-bounds reads. Memtile padding is
+  // best-effort: applied when the required padding fits in the hardware limit
+  // (max 31 per BD dimension). When padding exceeds this limit, the shim is
+  // left unpadded and the host zero-padding provides correctness.
+  void addMemtilePaddingToLaunch(air::LaunchOp launch, bool padM, bool padN,
+                                 int64_t mActualLast, int64_t nActualLast) {
+    // Step 1: Build mapping from L3 channel names to input type (A=0, B=1).
+    DenseMap<StringRef, unsigned> chanToArgIdx;
+    launch.walk([&](air::ChannelPutOp putOp) {
+      if (putOp->getParentOfType<air::SegmentOp>())
+        return;
+      auto memrefType = dyn_cast<BaseMemRefType>(putOp.getMemref().getType());
+      if (memrefType && getMemorySpace(memrefType) == air::MemorySpace::L3) {
+        unsigned argIdx = traceFuncArgIdx(putOp.getMemref());
+        chanToArgIdx[putOp.getChanName()] = argIdx;
+      }
+    });
+
+    // Step 2: Map L2 buffers to their source input via segment-level gets.
+    DenseMap<Value, unsigned> l2BufToArgIdx;
+    DenseMap<Value, int64_t> l2BufToShimIdx;
+    launch.walk([&](air::ChannelGetOp getOp) {
+      if (!getOp->getParentOfType<air::SegmentOp>())
+        return;
+      if (!chanToArgIdx.count(getOp.getChanName()))
+        return;
+      unsigned argIdx = chanToArgIdx.lookup(getOp.getChanName());
+      l2BufToArgIdx[getOp.getMemref()] = argIdx;
+      auto indices = getOp.getIndices();
+      if (!indices.empty()) {
+        auto shimIdxOpt = getConstantIntValue(indices[0]);
+        if (shimIdxOpt)
+          l2BufToShimIdx[getOp.getMemref()] = *shimIdxOpt;
+      }
+    });
+
+    // Step 3: Add padding on L2→L1 channel.put ops.
+    launch.walk([&](air::ChannelPutOp putOp) {
+      if (!putOp->getParentOfType<air::SegmentOp>())
+        return;
+      Value srcBuf = putOp.getMemref();
+      auto it = l2BufToArgIdx.find(srcBuf);
+      if (it == l2BufToArgIdx.end())
+        return;
+
+      unsigned argIdx = it->second;
+      bool isA = (argIdx == 0);
+      bool isB = (argIdx == 1);
+      if (isA && !padM)
+        return;
+      if (isB && !padN)
+        return;
+      if (!isA && !isB)
+        return;
+
+      auto shimIt = l2BufToShimIdx.find(srcBuf);
+      if (shimIt == l2BufToShimIdx.end())
+        return;
+      int64_t shimIdx = shimIt->second;
+
+      auto sizes = putOp.getSizes();
+      auto strides = putOp.getStrides();
+      if (sizes.empty() || strides.empty())
+        return;
+
+      // L2→L1 padded dimension is ALWAYS dim 1 for both A and B:
+      // - A sizes [8, 64, 8] strides [8, 64, 1]: dim1=M-rows (stride=64)
+      // - B sizes [4, 8, 64, 8] strides [0, 8, 64, 1]: dim1=N-blocks (stride=8)
+      int64_t l2l1PadDimIdx = 1;
+      if (l2l1PadDimIdx >= (int64_t)sizes.size())
+        return;
+
+      auto fullBlocksOpt = getConstantIntValue(sizes[l2l1PadDimIdx]);
+      if (!fullBlocksOpt)
+        return;
+      int64_t fullBlocks = *fullBlocksOpt;
+
+      // Determine innerBlockSize: if stride[padDim] == sizes[lastDim],
+      // then the padded dim and last dim are connected (sub-tiles),
+      // and innerBlockSize = sizes[lastDim]. Otherwise innerBlockSize = 1.
+      auto strideAtPadDimOpt = getConstantIntValue(strides[l2l1PadDimIdx]);
+      auto lastSizeOpt = getConstantIntValue(sizes[sizes.size() - 1]);
+      int64_t innerBlockSize = 1;
+      if (strideAtPadDimOpt && lastSizeOpt &&
+          *strideAtPadDimOpt == *lastSizeOpt)
+        innerBlockSize = *lastSizeOpt;
+
+      int64_t l3ChunkSize = fullBlocks * innerBlockSize;
+      int64_t dimActualLast = isA ? mActualLast : nActualLast;
+      int64_t shimOffset = shimIdx * l3ChunkSize;
+      int64_t actualForShim = std::max(
+          int64_t(0), std::min(l3ChunkSize, dimActualLast - shimOffset));
+
+      if (actualForShim >= l3ChunkSize || actualForShim <= 0)
+        return;
+
+      int64_t actualBlocks =
+          (actualForShim + innerBlockSize - 1) / innerBlockSize;
+      int64_t padBlocks = fullBlocks - actualBlocks;
+      if (padBlocks <= 0)
+        return;
+      // Hardware limit: memtile DMA BD padding field is 5 bits (max 31).
+      // When exceeded, skip padding for this shim — host must provide
+      // zero-padded buffers for correctness.
+      if (padBlocks > 31) {
+        putOp.emitRemark("memtile padding of ")
+            << padBlocks << " blocks exceeds hardware limit of 31; "
+            << "host-side zero-padded buffers required for this shim";
+        return;
+      }
+
+      // Reduce sizes and add pad_after in-place.
+      ShimPadInfo info{shimIdx, fullBlocks, actualBlocks, padBlocks,
+                       l2l1PadDimIdx};
+      reduceChannelSizes(cast<air::ChannelInterface>(putOp.getOperation()),
+                         info);
+      addMemtilePadding(putOp, l2l1PadDimIdx, padBlocks);
+    });
+  }
+};
+
+std::unique_ptr<mlir::Pass> createAIRSplitLaunchForPadding() {
+  return std::make_unique<AIRSplitLaunchForPadding>();
+}
+std::unique_ptr<Pass>
+createAIRSplitLaunchForPadding(AIRSplitLaunchForPaddingOptions options) {
+  return std::make_unique<AIRSplitLaunchForPadding>(options);
 }
 
 } // namespace air

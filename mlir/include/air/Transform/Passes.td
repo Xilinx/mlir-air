@@ -1054,6 +1054,39 @@ def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "Modul
   ];
 }
 
+def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
+  let summary = "Split air.launch into partitions for device-side DMA padding";
+  let constructor = "xilinx::air::createAIRSplitLaunchForPadding()";
+  let description = [{
+    For non-tile-aligned matrix dimensions, fully unrolls the air.launch
+    iteration grid so that each (M-block, N-block) pair becomes a separate
+    single-iteration air.launch. This is required because multi-iteration
+    launches within ELF multi-launch mode produce incorrect hardware results.
+
+    For boundary blocks, memtile DMA padding (pad_after via BDPadLayoutAttr)
+    is applied on L2->L1 channel.put ops where the hardware supports
+    zero-padding (max 31 per dimension). When padding exceeds the hardware
+    limit, a diagnostic is emitted and the shim is left unpadded (host must
+    provide zero-padded buffers). L3-level channel ops are not modified.
+
+    Each launch gets unique channel names and segment names. The core program
+    is identical across all partitions; lightweight load_pdi reconfigures
+    memtile DMAs between launches.
+
+    Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.
+  }];
+  let options = [
+    Option<"clActualM", "actual-m", "int64_t", /*default=*/"0",
+            "Actual M dimension (0 = no M padding)">,
+    Option<"clActualN", "actual-n", "int64_t", /*default=*/"0",
+            "Actual N dimension (0 = no N padding)">,
+    Option<"clTileM", "tile-m", "int64_t", /*default=*/"128",
+            "M tile size">,
+    Option<"clTileN", "tile-n", "int64_t", /*default=*/"256",
+            "N tile size">
+  ];
+}
+
 def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
   let summary = "Hoist dma ops into perfectly nested loop";
   let constructor = "xilinx::air::createAIRLoopFusion()";

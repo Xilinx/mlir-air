@@ -53,6 +53,10 @@ createAIRFuseChannels(const AIRFuseChannelsOptions &);
 
 std::unique_ptr<mlir::Pass> createAIRIsolateAsyncDmaLoopNests();
 
+std::unique_ptr<mlir::Pass> createAIRSplitLaunchForPadding();
+std::unique_ptr<Pass>
+createAIRSplitLaunchForPadding(AIRSplitLaunchForPaddingOptions options);
+
 std::unique_ptr<mlir::Pass> createAIRLoopFusion();
 
 std::unique_ptr<mlir::Pass> createAIROptimizeShimDMABDs();

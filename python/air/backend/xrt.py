@@ -64,6 +64,10 @@ class XRTBackend(AirBackend):
         num_device_cols: int = 0,
         debug_ir: bool = False,
         bf16_emulation: bool = False,
+        actual_m: int = 0,
+        actual_n: int = 0,
+        tile_m: int = 128,
+        tile_n: int = 256,
     ):
         """Constructor for XRTBackend
 
@@ -118,6 +122,10 @@ class XRTBackend(AirBackend):
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
         self.bf16_emulation = bf16_emulation
+        self.actual_m = actual_m
+        self.actual_n = actual_n
+        self.tile_m = tile_m
+        self.tile_n = tile_n
 
     def __del__(self):
         self.unload()
@@ -322,6 +330,12 @@ class XRTBackend(AirBackend):
 
             if self.bf16_emulation:
                 aircc_options += ["--bf16-emulation"]
+            if self.actual_m > 0:
+                aircc_options += ["--actual-m", str(self.actual_m)]
+                aircc_options += ["--tile-m", str(self.tile_m)]
+            if self.actual_n > 0:
+                aircc_options += ["--actual-n", str(self.actual_n)]
+                aircc_options += ["--tile-n", str(self.tile_n)]
 
             if self.verbose:
                 print("Running aircc.py with options:", " ".join(aircc_options))

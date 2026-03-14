@@ -851,6 +851,19 @@ extern "C" {
             if _debug_ir_dir:
                 dump_pass_log(os.path.join(_debug_ir_dir, "pass.log"))
 
+        # Optional: split launch for non-tile-aligned DMA padding.
+        if opts.actual_m > 0 or opts.actual_n > 0:
+            pad_parts = ["air-split-launch-for-padding{"]
+            if opts.actual_m > 0:
+                pad_parts.append(f"actual-m={opts.actual_m} tile-m={opts.tile_m} ")
+            if opts.actual_n > 0:
+                pad_parts.append(f"actual-n={opts.actual_n} tile-n={opts.tile_n} ")
+            pad_parts.append("}")
+            pad_pass = "".join(pad_parts)
+            if opts.verbose:
+                print(f"Running DMA padding pass: {pad_pass}")
+            run_passes(f"builtin.module({pad_pass})", air_placed_module, opts)
+
         air_to_aie_pass = "air-to-aie{"
         air_to_aie_pass = (
             air_to_aie_pass

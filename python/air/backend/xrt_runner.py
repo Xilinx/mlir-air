@@ -77,6 +77,10 @@ class XRTRunner:
         num_device_cols: int = 0,
         debug_ir: bool = False,
         bf16_emulation: bool = False,
+        actual_m: int = 0,
+        actual_n: int = 0,
+        tile_m: int = 128,
+        tile_n: int = 256,
     ):
         """
         Args:
@@ -128,6 +132,10 @@ class XRTRunner:
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
         self.bf16_emulation = bf16_emulation
+        self.actual_m = actual_m
+        self.actual_n = actual_n
+        self.tile_m = tile_m
+        self.tile_n = tile_n
 
     def run_test(
         self,
@@ -173,6 +181,10 @@ class XRTRunner:
             num_device_cols=self.num_device_cols,
             debug_ir=self.debug_ir,
             bf16_emulation=self.bf16_emulation,
+            actual_m=self.actual_m,
+            actual_n=self.actual_n,
+            tile_m=self.tile_m,
+            tile_n=self.tile_n,
         )
 
         # Use per-test trace file if provided, otherwise use instance default
