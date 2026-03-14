@@ -4815,10 +4815,31 @@ public:
         }
       }
 
-      // Validate padding rank matches sizes rank.
+      // Adjust padding rank to match sizes rank.
+      // The sizes may have been recomputed by getWrapsAndStrides which can
+      // change dimensionality (e.g., collapsing broadcast dimensions with
+      // stride=0). Truncate leading zero-pad dimensions or extend with zeros.
       if (!sizes.empty() && padBefore.size() != sizes.size()) {
-        return memcpyOp->emitOpError(
-            "padding rank does not match transfer rank");
+        if (padBefore.size() > sizes.size()) {
+          size_t excess = padBefore.size() - sizes.size();
+          bool canTruncate = true;
+          for (size_t i = 0; i < excess; i++) {
+            if (padBefore[i] != 0 || padAfter[i] != 0) {
+              canTruncate = false;
+              break;
+            }
+          }
+          if (canTruncate) {
+            padBefore = padBefore.drop_front(excess);
+            padAfter = padAfter.drop_front(excess);
+          } else {
+            return memcpyOp->emitOpError(
+                "padding rank does not match transfer rank and cannot "
+                "truncate non-zero leading padding dimensions");
+          }
+        }
+        // If padding has fewer dims than sizes, no adjustment needed —
+        // the loop below will just iterate over padding's dimensions.
       }
 
       SmallVector<AIE::BDPadLayoutAttr> padLayouts;

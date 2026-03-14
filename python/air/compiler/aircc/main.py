@@ -851,6 +851,13 @@ extern "C" {
             if _debug_ir_dir:
                 dump_pass_log(os.path.join(_debug_ir_dir, "pass.log"))
 
+        # Optional: inject DMA padding for non-tile-aligned dimensions.
+        inject_pad = os.environ.get("AIR_INJECT_CHANNEL_PADDING", "")
+        if inject_pad:
+            if opts.verbose:
+                print(f"Running DMA padding pass: {inject_pad}")
+            run_passes(f"builtin.module({inject_pad})", air_placed_module, opts)
+
         air_to_aie_pass = "air-to-aie{"
         air_to_aie_pass = (
             air_to_aie_pass
