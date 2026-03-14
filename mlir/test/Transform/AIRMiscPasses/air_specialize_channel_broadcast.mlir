@@ -7,6 +7,8 @@
 
 // RUN: air-opt %s -air-specialize-dma-broadcast | FileCheck %s
 
+// Test static-index puts (constant indices). Original test case.
+
 // CHECK: [[$SET0:#set[0-9]*]] = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
 // CHECK: [[$SET1:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0, -s1 + 3 >= 0)>
 // CHECK: [[$SET2:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 - 2 == 0, s1 >= 0, -s1 + 3 >= 0)>
@@ -14,6 +16,8 @@
 // CHECK: air.channel @L2ToL1Chan1_1 [1, 1] {broadcast_shape = [1, 4]}
 // CHECK: air.channel @L2ToL1Chan1_2 [1, 1] {broadcast_shape = [1, 4]}
 // CHECK: air.channel @L2ToL1Chan1_3 [1, 1] {broadcast_shape = [1, 4]}
+
+// CHECK-LABEL: func.func @attention_bf16
 // CHECK: air.channel.put async
 // CHECK: @L2ToL1Chan1_0
 // CHECK: air.channel.put async
@@ -41,6 +45,18 @@
 // CHECK: air.channel.get async
 // CHECK: @L2ToL1Chan1_3
 // CHECK: affine.yield
+
+// Test dynamic-index puts (scf.forall induction variable as channel index).
+// The pass should generate scf.if dispatch chains for these.
+
+// CHECK-LABEL: func.func @dynamic_index_puts
+// CHECK: scf.forall (%[[IV:.*]]) in (2)
+// CHECK:   arith.cmpi eq, %[[IV]], %c0
+// CHECK:   scf.if
+// CHECK:     air.channel.put async {{.*}} @L3ToL1Chan_0
+// CHECK:   } else {
+// CHECK:     air.channel.put async {{.*}} @L3ToL1Chan_1
+// CHECK:   }
 
 module {
   air.channel @L2ToL1Chan1 [4, 1] {broadcast_shape = [4, 4]}
@@ -82,6 +98,35 @@ module {
         %5 = air.channel.put async [%async_token_5]  @L2ToL1Chan1[%c3, %c0] (%results_6[%c0, %c0, %c0, %c0] [%c8, %c8, %c4, %c8] [%c8, %c256, %c64, %c1_0]) {id = 4 : i32} : (memref<32x64xbf16, 1 : i32>)
         %6 = air.herd @herd_0 async [%async_token_7]  tile (%arg9, %arg10) in (%arg11=%c4, %arg12=%c4) args(%arg13=%results_8) : memref<32x64xbf16, 2 : i32> attributes {id = 1 : i32} {
           %7 = air.channel.get async  @L2ToL1Chan1[%arg9, %arg10] (%arg13[] [] []) {id = 5 : i32} : (memref<32x64xbf16, 2 : i32>)
+        }
+      }
+    }
+    return
+  }
+
+  air.channel @L3ToL1Chan [2, 1] {broadcast_shape = [2, 2]}
+  func.func @dynamic_index_puts(%arg0: memref<64x64xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%arg5, %arg6) in (%arg7=%c1, %arg8=%c1) attributes {id = 1 : i32} {
+      %1 = air.segment @seg async  attributes {id = 1 : i32} {
+        %c0 = arith.constant 0 : index
+        %c2 = arith.constant 2 : index
+        %c32 = arith.constant 32 : index
+        %c64 = arith.constant 64 : index
+        %c1_0 = arith.constant 1 : index
+        %async_token, %results = air.execute -> (memref<32x64xbf16, 1 : i32>) {
+          %alloc = memref.alloc() : memref<32x64xbf16, 1 : i32>
+          air.execute_terminator %alloc : memref<32x64xbf16, 1 : i32>
+        } {id = 1 : i32}
+        scf.forall (%i) in (2) {
+          %2 = air.channel.put async [%async_token]  @L3ToL1Chan[%i, %c0] (%results[%c0, %c0] [%c32, %c64] [%c64, %c1_0]) {id = 1 : i32} : (memref<32x64xbf16, 1 : i32>)
+        }
+        %async_token_1, %results_2 = air.execute -> (memref<32x64xbf16, 2 : i32>) {
+          %alloc = memref.alloc() : memref<32x64xbf16, 2 : i32>
+          air.execute_terminator %alloc : memref<32x64xbf16, 2 : i32>
+        } {id = 2 : i32}
+        %3 = air.herd @herd_0 async [%async_token_1]  tile (%arg9, %arg10) in (%arg11=%c2, %arg12=%c2) args(%arg13=%results_2) : memref<32x64xbf16, 2 : i32> attributes {id = 1 : i32} {
+          %4 = air.channel.get async  @L3ToL1Chan[%arg9, %arg10] (%arg13[] [] []) {id = 2 : i32} : (memref<32x64xbf16, 2 : i32>)
         }
       }
     }

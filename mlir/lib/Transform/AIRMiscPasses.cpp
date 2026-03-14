@@ -194,8 +194,12 @@ public:
           put->setOperand(put.getAsyncDependencies().size() + specializeDim,
                           getValueOrCreateConstantIndexOp(
                               rewriter, loc, rewriter.getIndexAttr(0)));
-      } else {
-        // Dynamic index: generate scf.if dispatch to specialized channels
+      } else if (!idxOpt) {
+        // Dynamic index: generate scf.if dispatch to specialized channels.
+        // Puts must be async (produce a token) for result forwarding through
+        // the scf.if chain.
+        assert(!put.getResultTypes().empty() &&
+               "dynamic-index channel.put dispatch requires async put");
         auto numSegments = (int64_t)specializedChannels.size();
         auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
         Value result;
@@ -227,9 +231,10 @@ public:
             newPut->setAttrs(put->getDiscardableAttrDictionary());
             scf::YieldOp::create(rewriter, loc, newPut->getResults());
             rewriter.setInsertionPointToStart(ifOp.elseBlock());
-            if (result.getDefiningOp())
-              result.getDefiningOp()->moveBefore(ifOp.elseBlock(),
-                                                 ifOp.elseBlock()->begin());
+            assert(result.getDefiningOp() &&
+                   "expected result to have a defining op");
+            result.getDefiningOp()->moveBefore(ifOp.elseBlock(),
+                                               ifOp.elseBlock()->begin());
             scf::YieldOp::create(rewriter, loc, ValueRange{result});
             rewriter.setInsertionPoint(put);
             result = ifOp.getResult(0);
