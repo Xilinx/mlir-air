@@ -3175,10 +3175,14 @@ public:
   ///
   void insertDummyChannelOpsForL2Memrefs(AIE::DeviceOp aieDevice,
                                          OpBuilder &builder) {
-    // Map from L2 memref -> (list of puts, list of gets)
+    // Map from L2 memref -> (list of puts, list of gets).
+    // Use DenseMap for fast lookup, but track walk-order in a separate vector
+    // to ensure deterministic iteration (DenseMap iterates in pointer-hash
+    // order which varies with binary layout).
     llvm::DenseMap<Value, std::pair<llvm::SmallVector<air::ChannelPutOp>,
                                     llvm::SmallVector<air::ChannelGetOp>>>
         l2MemrefPutsGets;
+    llvm::SmallVector<Value> l2MemrefOrder;
 
     // Walk all ChannelInterface ops under the device and categorize puts/gets
     // on L2 memrefs
@@ -3189,18 +3193,24 @@ public:
           if (!memrefTy || !air::isL2(memrefTy))
             return mlir::WalkResult::advance();
 
+          Value memref = chanI.getMemref();
+          if (!l2MemrefPutsGets.count(memref))
+            l2MemrefOrder.push_back(memref);
+
           if (auto chanPut =
                   dyn_cast_if_present<air::ChannelPutOp>(chanI.getOperation()))
-            l2MemrefPutsGets[chanI.getMemref()].first.push_back(chanPut);
+            l2MemrefPutsGets[memref].first.push_back(chanPut);
           else if (auto chanGet = dyn_cast_if_present<air::ChannelGetOp>(
                        chanI.getOperation()))
-            l2MemrefPutsGets[chanI.getMemref()].second.push_back(chanGet);
+            l2MemrefPutsGets[memref].second.push_back(chanGet);
 
           return mlir::WalkResult::advance();
         });
 
-    // Balance puts and gets by inserting dummy ops
-    for (auto &[memref, putsAndGets] : l2MemrefPutsGets) {
+    // Balance puts and gets by inserting dummy ops (iterate in walk order
+    // for deterministic output regardless of binary layout)
+    for (Value memref : l2MemrefOrder) {
+      auto &putsAndGets = l2MemrefPutsGets[memref];
       auto &[puts, gets] = putsAndGets;
       if (puts.empty() || gets.empty())
         continue; // Skip buffers that only appear in one direction
@@ -4432,7 +4442,7 @@ public:
 
   LogicalResult allocateCoreLocksPerMemcpyOp(
       OpBuilder builder, air::MemcpyInterface memcpyOpIf,
-      std::unordered_set<Operation *> &allocs_to_remap,
+      llvm::SetVector<Operation *> &allocs_to_remap,
       const AIE::AIETargetModel &targetModel,
       air::TileDMAAllocator &tileDmaAlloc, int x, int y) {
     bool UsesSemaphoreLocks =
@@ -5112,7 +5122,7 @@ public:
 
       // emit the acquire and release of the L1 buffer locks
       // lock_allocation_list lock_allocs;
-      std::unordered_set<Operation *> allocs_to_remap;
+      llvm::SetVector<Operation *> allocs_to_remap;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
         if (!alloc.foundAlloc(x, y))
