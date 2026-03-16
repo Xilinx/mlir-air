@@ -148,3 +148,15 @@ module {
 // Corner (block 2,1): both A and B padding
 // CHECK-DAG: @channel_A_l2l1_0_b2_1[] {{.*}} pad_after = array<i32: 0, 20, 0>
 // CHECK-DAG: @channel_B_l2l1_0_b2_1[] {{.*}} pad_after = array<i32: 0, 2, 0, 0>
+
+// L3→L2 shim DMA sizes reduced for boundary blocks:
+// M-boundary (block 2,0): A shim 0 reads only 44 M-rows instead of 64
+// CHECK-DAG: @channel_A_l3_b2_0[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c44{{[_0-9]*}}, %c64
+// N-boundary (block 0,1): B shim 0 reads only 44 N-cols instead of 64
+// CHECK-DAG: @channel_B_l3_b0_1[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, %c44
+
+// L3→L2 channel.get with explicit strides for boundary shims (memtile S2MM):
+// A boundary: receives [44, 64] with stride [64, 1]
+// CHECK-DAG: channel.get {{.*}} @channel_A_l3_b2_0[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}}[%c44{{[_0-9]*}}, %c64{{[_0-9]*}}] [%c64{{[_0-9]*}}, %c1
+// B boundary: receives [64, 44] with stride [64, 1]
+// CHECK-DAG: channel.get {{.*}} @channel_B_l3_b0_1[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}}[%c64{{[_0-9]*}}, %c44{{[_0-9]*}}] [%c64{{[_0-9]*}}, %c1

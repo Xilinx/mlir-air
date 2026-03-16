@@ -7351,13 +7351,15 @@ public:
     }
   }
 
-  // Add memtile (L2→L1) padding to a boundary launch.
-  // Only modifies the segment-level channel.put ops that send data from L2 to
-  // L1. L3-level ops are NOT modified — the host must provide zero-padded
-  // (tile-aligned) buffers to avoid out-of-bounds reads. Memtile padding is
-  // best-effort: applied when the required padding fits in the hardware limit
-  // (max 31 per BD dimension). When padding exceeds this limit, the shim is
-  // left unpadded and the host zero-padding provides correctness.
+  // Add memtile (L2→L1) padding and reduce L3→L2 shim DMA sizes for a
+  // boundary launch. Steps:
+  // 1-3: Map channels, compute padding, add pad_after on L2→L1 ops.
+  // 4: Reduce L3→L2 channel.put sizes so shims read only actual data.
+  // 5: Add explicit sizes/strides to L3→L2 channel.get (memtile S2MM) so
+  //    data lands in the correct L2 buffer positions for the strided L2→L1
+  //    DMA read pattern.
+  // Host buffers need only be padded to innerBlockSize alignment (8 elements),
+  // not full tile alignment. Memtile padding provides the rest.
   void addMemtilePaddingToLaunch(air::LaunchOp launch, bool padM, bool padN,
                                  int64_t mActualLast, int64_t nActualLast) {
     // Step 1: Build mapping from L3 channel names to input type (A=0, B=1).
@@ -7472,6 +7474,139 @@ public:
                          info);
       addMemtilePadding(putOp, l2l1PadDimIdx, padBlocks);
     });
+
+    // Step 4: Reduce L3→L2 channel.put sizes (launch-level shim DMAs).
+    // Shims read only the block-aligned actual data from DDR instead of
+    // full tile size. E.g., for 44 actual M-rows: read ceil(44/8)*8 = 48
+    // rows instead of 64.
+    launch.walk([&](air::ChannelPutOp putOp) {
+      if (putOp->getParentOfType<air::SegmentOp>())
+        return;
+      if (!chanToArgIdx.count(putOp.getChanName()))
+        return;
+      unsigned argIdx = chanToArgIdx.lookup(putOp.getChanName());
+      bool isA = (argIdx == 0);
+      bool isB = (argIdx == 1);
+      if (isA && !padM)
+        return;
+      if (isB && !padN)
+        return;
+      if (!isA && !isB)
+        return;
+
+      auto info =
+          computeShimPadInfo(cast<air::ChannelInterface>(putOp.getOperation()),
+                             isA, mActualLast, nActualLast);
+      if (!info || info->actualForShim >= info->chunkSize ||
+          info->actualForShim <= 0)
+        return;
+
+      reduceChannelSizes(cast<air::ChannelInterface>(putOp.getOperation()),
+                         *info);
+    });
+
+    // Step 5: Add explicit sizes/strides to L3→L2 channel.get (segment-level
+    // memtile S2MM). With reduced shim reads, the contiguous write into L2
+    // misaligns with the L2→L1 strided read pattern. Adding explicit strides
+    // on the S2MM preserves the original buffer row-major layout.
+    //
+    // For A (M boundary, e.g., 48 actual rows):
+    //   channel.get (%buf[0,0] [48, 64] [64, 1]) — same as contiguous for A
+    // For B (N boundary, e.g., 48 actual cols):
+    //   channel.get (%buf[0,0] [64, 48] [64, 1]) — writes each 48-col row
+    //   at 64-element intervals, preserving the stride layout
+    //
+    // Collect first, then modify (walk+erase in same pass is unsafe).
+    SmallVector<air::ChannelGetOp> getsToReplace;
+    launch.walk([&](air::ChannelGetOp getOp) {
+      if (!getOp->getParentOfType<air::SegmentOp>())
+        return;
+      if (!chanToArgIdx.count(getOp.getChanName()))
+        return;
+      if (!getOp.getSizes().empty())
+        return;
+      unsigned argIdx = chanToArgIdx.lookup(getOp.getChanName());
+      bool isA = (argIdx == 0);
+      bool isB = (argIdx == 1);
+      if (isA && !padM)
+        return;
+      if (isB && !padN)
+        return;
+      if (!isA && !isB)
+        return;
+      auto memrefType = dyn_cast<MemRefType>(getOp.getMemref().getType());
+      if (!memrefType || memrefType.getRank() != 2)
+        return;
+      int64_t chunkSize =
+          isA ? memrefType.getShape()[0] : memrefType.getShape()[1];
+      auto indices = getOp.getIndices();
+      int64_t shimIdx = 0;
+      if (!indices.empty()) {
+        auto shimIdxOpt = getConstantIntValue(indices[0]);
+        if (shimIdxOpt)
+          shimIdx = *shimIdxOpt;
+      }
+      int64_t dimActualLast = isA ? mActualLast : nActualLast;
+      int64_t shimOffset = shimIdx * chunkSize;
+      int64_t actualForShim =
+          std::max(int64_t(0), std::min(chunkSize, dimActualLast - shimOffset));
+      if (actualForShim >= chunkSize || actualForShim <= 0)
+        return;
+      getsToReplace.push_back(getOp);
+    });
+    for (auto getOp : getsToReplace) {
+      unsigned argIdx = chanToArgIdx.lookup(getOp.getChanName());
+      bool isA = (argIdx == 0);
+      auto memrefType = cast<MemRefType>(getOp.getMemref().getType());
+      int64_t bufRows = memrefType.getShape()[0];
+      int64_t bufCols = memrefType.getShape()[1];
+      int64_t chunkSize = isA ? bufRows : bufCols;
+      auto indices = getOp.getIndices();
+      int64_t shimIdx = 0;
+      if (!indices.empty()) {
+        auto shimIdxOpt = getConstantIntValue(indices[0]);
+        if (shimIdxOpt)
+          shimIdx = *shimIdxOpt;
+      }
+      int64_t dimActualLast = isA ? mActualLast : nActualLast;
+      int64_t actualForShim = std::max(
+          int64_t(0), std::min(chunkSize, dimActualLast - shimIdx * chunkSize));
+
+      OpBuilder builder(getOp);
+      Location loc = getOp.getLoc();
+      int64_t reducedDim = actualForShim;
+      int64_t otherDim = isA ? bufCols : bufRows;
+
+      SmallVector<Value, 2> offsets, sizes, strides;
+      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
+      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
+      if (isA) {
+        sizes.push_back(
+            arith::ConstantIndexOp::create(builder, loc, reducedDim));
+        sizes.push_back(arith::ConstantIndexOp::create(builder, loc, otherDim));
+      } else {
+        sizes.push_back(arith::ConstantIndexOp::create(builder, loc, otherDim));
+        sizes.push_back(
+            arith::ConstantIndexOp::create(builder, loc, reducedDim));
+      }
+      strides.push_back(arith::ConstantIndexOp::create(builder, loc, bufCols));
+      strides.push_back(arith::ConstantIndexOp::create(builder, loc, 1));
+
+      auto newGet = air::ChannelGetOp::create(
+          builder, loc,
+          getOp.getAsyncToken() ? getOp.getAsyncToken().getType() : Type(),
+          getOp.getAsyncDependencies(), getOp.getChanName(), getOp.getIndices(),
+          getOp.getMemref(), offsets, sizes, strides,
+          /*pad_before=*/DenseI32ArrayAttr(),
+          /*pad_after=*/DenseI32ArrayAttr());
+      for (auto attr : getOp->getAttrs()) {
+        if (attr.getName() != "operandSegmentSizes")
+          newGet->setAttr(attr.getName(), attr.getValue());
+      }
+      if (getOp.getAsyncToken())
+        getOp.getAsyncToken().replaceAllUsesWith(newGet.getAsyncToken());
+      getOp.erase();
+    }
   }
 };
 
