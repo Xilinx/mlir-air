@@ -45,7 +45,9 @@
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
@@ -54,8 +56,9 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdio>
 #include <cstdlib>
-#include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -93,25 +96,25 @@ static cl::alias verboseShort("v", cl::desc("Alias for --verbose"),
                               cl::aliasopt(verbose),
                               cl::cat(airCompilerOptions));
 
-static cl::opt<std::string>
+static cl::opt<int>
     rowOffset("row-offset",
               cl::desc("Default row offset for generated segments"),
-              cl::init(""), cl::cat(airCompilerOptions));
+              cl::init(-1), cl::cat(airCompilerOptions));
 
-static cl::opt<std::string>
+static cl::opt<int>
     colOffset("col-offset",
               cl::desc("Default column offset for generated segments"),
-              cl::init(""), cl::cat(airCompilerOptions));
+              cl::init(-1), cl::cat(airCompilerOptions));
 
-static cl::opt<std::string>
+static cl::opt<int>
     numRows("num-rows",
             cl::desc("Default number of rows for generated segments"),
-            cl::init(""), cl::cat(airCompilerOptions));
+            cl::init(-1), cl::cat(airCompilerOptions));
 
-static cl::opt<std::string>
+static cl::opt<int>
     numCols("num-cols",
             cl::desc("Default number of columns for generated segments"),
-            cl::init(""), cl::cat(airCompilerOptions));
+            cl::init(-1), cl::cat(airCompilerOptions));
 
 static cl::opt<unsigned>
     traceSize("trace-size",
@@ -180,10 +183,13 @@ static cl::opt<bool>
                                "logic"),
                       cl::init(false), cl::cat(airCompilerOptions));
 
-static cl::opt<std::string>
-    omitPingpong("omit-ping-pong-transform",
-                 cl::desc("Omit ping-pong buffering (values: '', L1, L2, all)"),
-                 cl::init(""), cl::cat(airCompilerOptions));
+// Use ValueOptional so --omit-ping-pong-transform (no value) defaults to "all"
+// matching Python argparse nargs="?" const="all" behavior.
+static cl::opt<std::string> omitPingpong(
+    "omit-ping-pong-transform",
+    cl::desc("Omit ping-pong buffering (values: '', L1, L2, all). "
+             "Using the flag without a value is equivalent to 'all'."),
+    cl::init(""), cl::ValueOptional, cl::cat(airCompilerOptions));
 
 static cl::opt<std::string>
     lowerLinalgToFunc("lower-linalg-to-func",
@@ -198,8 +204,12 @@ static cl::opt<bool>
 
 static cl::list<unsigned> runtimeLoopTilingSizes(
     "air-runtime-loop-tiling-sizes",
-    cl::desc("Tiling factors for runtime host affine loop nest"),
+    cl::desc("Tiling factors for runtime host affine loop nest. "
+             "Omit for default [4,4]; use flag with no values to disable."),
     cl::cat(airCompilerOptions));
+
+// Track whether the flag was present on the command line at all
+static bool runtimeLoopTilingSizesPresent = false;
 
 static cl::opt<bool> omitAutoBroadcast(
     "omit-auto-broadcast",
@@ -216,10 +226,15 @@ static cl::opt<bool> useLockRaceConditionFix(
     cl::desc("Enable fix for lock race condition (inserts extra dummy BDs)"),
     cl::init(false), cl::cat(airCompilerOptions));
 
-static cl::opt<std::string>
-    outputFormat("output-format",
-                 cl::desc("Output format: xclbin, txn, elf, none"),
-                 cl::init("xclbin"), cl::cat(airCompilerOptions));
+enum OutputFormatKind { OF_xclbin, OF_txn, OF_elf, OF_none };
+
+static cl::opt<OutputFormatKind> outputFormat(
+    "output-format", cl::desc("Output format for the generated binary"),
+    cl::values(clEnumValN(OF_xclbin, "xclbin", "Generate xclbin"),
+               clEnumValN(OF_txn, "txn", "Generate transaction binary"),
+               clEnumValN(OF_elf, "elf", "Generate ELF"),
+               clEnumValN(OF_none, "none", "Compile-only, no binary output")),
+    cl::init(OF_xclbin), cl::cat(airCompilerOptions));
 
 static cl::opt<std::string> kernelName("xclbin-kernel-name",
                                        cl::desc("Kernel name in xclbin file"),
@@ -493,16 +508,17 @@ static LogicalResult runCommandCaptureOutput(ArrayRef<std::string> command,
     return failure();
   }
 
-  StringRef nullFile;
-#ifdef _WIN32
-  nullFile = "NUL";
-#else
-  nullFile = "/dev/null";
-#endif
+  // Also capture stderr to a temp file for diagnostics on failure
+  SmallString<128> stderrFile;
+  ec = sys::fs::createTemporaryFile("aircc", "err", stderrFile);
+  if (ec) {
+    llvm::errs() << "Error creating stderr temp file: " << ec.message() << "\n";
+    return failure();
+  }
 
-  std::optional<StringRef> redirects[] = {/*stdin=*/nullFile,
+  std::optional<StringRef> redirects[] = {/*stdin=*/std::nullopt,
                                           /*stdout=*/StringRef(tempFile),
-                                          /*stderr=*/nullFile};
+                                          /*stderr=*/StringRef(stderrFile)};
 
   std::string errMsg;
   int result = sys::ExecuteAndWait(*program, args,
@@ -510,14 +526,24 @@ static LogicalResult runCommandCaptureOutput(ArrayRef<std::string> command,
                                    /*secondsToWait=*/0,
                                    /*memoryLimit=*/0, &errMsg);
 
-  // Read the captured output
+  // Read the captured stdout
   auto bufOrErr = MemoryBuffer::getFile(tempFile);
   if (bufOrErr) {
     output = (*bufOrErr)->getBuffer().str();
   }
 
-  // Clean up temp file
+  if (result != 0) {
+    llvm::errs() << "Error running command: " << command[0] << "\n";
+    // Print captured stderr on failure for diagnostics
+    auto stderrBuf = MemoryBuffer::getFile(stderrFile);
+    if (stderrBuf && !(*stderrBuf)->getBuffer().empty()) {
+      llvm::errs() << (*stderrBuf)->getBuffer();
+    }
+  }
+
+  // Clean up temp files
   sys::fs::remove(tempFile);
+  sys::fs::remove(stderrFile);
 
   if (result != 0) {
     return failure();
@@ -828,36 +854,27 @@ static std::string buildOptimizationPipeline() {
 static LogicalResult runAieCompilation() {
   SmallString<256> airMlirFilename(sys::path::filename(inputFilename));
 
-  // Resolve default device parameters
-  int resolvedNumCols = 0;
-  if (!numCols.empty()) {
-    resolvedNumCols = std::stoi(numCols.getValue());
-  } else if (deviceName.getValue().find("npu1") != std::string::npos) {
-    resolvedNumCols = 4;
-  } else if (deviceName.getValue() == "npu2_4col") {
-    resolvedNumCols = 4;
-  } else if (deviceName.getValue().find("npu2") != std::string::npos) {
-    resolvedNumCols = 8;
-  } else {
-    resolvedNumCols = 10;
+  // Resolve default device parameters (-1 means unset / use default)
+  int resolvedNumCols = numCols;
+  if (resolvedNumCols < 0) {
+    if (deviceName.getValue().find("npu1") != std::string::npos)
+      resolvedNumCols = 4;
+    else if (deviceName.getValue() == "npu2_4col")
+      resolvedNumCols = 4;
+    else if (deviceName.getValue().find("npu2") != std::string::npos)
+      resolvedNumCols = 8;
+    else
+      resolvedNumCols = 10;
   }
 
-  int resolvedColOffset = 0;
-  if (!colOffset.empty()) {
-    resolvedColOffset = std::stoi(colOffset.getValue());
-  } else if (deviceName.getValue().find("npu") != std::string::npos) {
-    resolvedColOffset = 0;
-  } else {
-    resolvedColOffset = 7;
+  int resolvedColOffset = colOffset;
+  if (resolvedColOffset < 0) {
+    resolvedColOffset =
+        (deviceName.getValue().find("npu") != std::string::npos) ? 0 : 7;
   }
 
-  int resolvedNumRows = 6;
-  if (!numRows.empty())
-    resolvedNumRows = std::stoi(numRows.getValue());
-
-  int resolvedRowOffset = 2;
-  if (!rowOffset.empty())
-    resolvedRowOffset = std::stoi(rowOffset.getValue());
+  int resolvedNumRows = numRows >= 0 ? (int)numRows : 6;
+  int resolvedRowOffset = rowOffset >= 0 ? (int)rowOffset : 2;
 
   if (verbose) {
     llvm::outs() << "compiling " << inputFilename << " for "
@@ -865,7 +882,7 @@ static LogicalResult runAieCompilation() {
   }
 
   // Validate output format
-  if (outputFormat.getValue() == "elf" &&
+  if (outputFormat == OF_elf &&
       deviceName.getValue().find("npu1") != std::string::npos) {
     llvm::errs() << "Error: output_format='elf' is not supported for "
                  << deviceName.getValue() << " target.\n";
@@ -1032,13 +1049,15 @@ static LogicalResult runAieCompilation() {
     {
       raw_string_ostream os(shimBdPass);
       os << "func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue();
-      // Default tiling sizes [4, 4] unless overridden
+      // Default tiling sizes [4, 4] unless overridden.
+      // If flag was explicitly passed with no values, disable tiling.
       std::vector<unsigned> tilingSizes;
-      if (runtimeLoopTilingSizes.empty()) {
-        tilingSizes = {4, 4};
+      if (!runtimeLoopTilingSizesPresent) {
+        tilingSizes = {4, 4}; // Default when flag not used
       } else {
         tilingSizes.assign(runtimeLoopTilingSizes.begin(),
                            runtimeLoopTilingSizes.end());
+        // Flag present but empty = disable tiling (no sizes)
       }
       if (!tilingSizes.empty()) {
         os << " shim-dma-tile-sizes=";
@@ -1058,7 +1077,7 @@ static LogicalResult runAieCompilation() {
       os << "airrt-to-npu{";
       os << " trace-size=" << traceSize;
       os << " trace-offset=" << traceOffset;
-      bool outputElf = (outputFormat.getValue() == "elf");
+      bool outputElf = (outputFormat == OF_elf);
       os << " output-elf=" << (outputElf ? "true" : "false");
       os << "}";
     }
@@ -1131,26 +1150,26 @@ static LogicalResult runAieCompilation() {
     aieccCmd.push_back("--tmpdir=" + tmpDir.getValue());
 
     // Output format options
-    if (outputFormat.getValue() == "elf") {
+    if (outputFormat == OF_elf) {
       aieccCmd.push_back("--generate-full-elf");
       aieccCmd.push_back("--expand-load-pdis");
       aieccCmd.push_back("--full-elf-name=" + elfName.getValue());
-    } else if (outputFormat.getValue() == "xclbin") {
+    } else if (outputFormat == OF_xclbin) {
       aieccCmd.push_back("--aie-generate-xclbin");
       aieccCmd.push_back("--xclbin-name=" + xclbinFile);
-    } else if (outputFormat.getValue() == "txn") {
+    } else if (outputFormat == OF_txn) {
       aieccCmd.push_back("--aie-generate-txn");
     }
-    // "none" = no output generation options
+    // OF_none = no output generation options
 
     // NPU instruction generation (not for ELF mode)
-    if (outputFormat.getValue() != "elf") {
+    if (outputFormat != OF_elf) {
       aieccCmd.push_back("--aie-generate-npu-insts");
       aieccCmd.push_back("--npu-insts-name=" + instsFile);
     }
 
     // Xclbin metadata (not for ELF mode)
-    if (outputFormat.getValue() != "elf") {
+    if (outputFormat != OF_elf) {
       if (!kernelName.empty())
         aieccCmd.push_back("--xclbin-kernel-name=" + kernelName.getValue());
       if (!instanceName.empty())
@@ -1444,13 +1463,46 @@ static LogicalResult runAieCompilation() {
       if (!hostTarget.empty())
         compileCmd.push_back("--target=" + hostTarget.getValue());
 
-      // Find the aircc executable directory for include paths
+      // Find include paths relative to the aircc/aiecc executable directory.
+      // This mirrors the Python driver's include path setup.
       SmallString<256> exePath(sys::fs::getMainExecutable(nullptr, nullptr));
       sys::path::remove_filename(exePath);
+
+      // AIR host runtime include
       SmallString<256> airHostInclude(exePath);
       sys::path::append(airHostInclude, "..", "runtime_lib", "airhost",
                         "include");
       compileCmd.push_back("-I" + airHostInclude.str().str());
+
+      // aiecc runtime test_lib includes (architecture-specific)
+      SmallString<256> aieccPath(*aiecc);
+      sys::path::remove_filename(aieccPath);
+      if (StringRef(aieccTarget).contains("x86_64")) {
+        SmallString<256> testLibInc(aieccPath);
+        sys::path::append(testLibInc, "..");
+        sys::path::append(testLibInc, "runtime_lib", "x86_64");
+        sys::path::append(testLibInc, "test_lib", "include");
+        compileCmd.push_back("-I" + testLibInc.str().str());
+      }
+      if (StringRef(aieccTarget).contains("aarch64")) {
+        SmallString<256> testLibInc(aieccPath);
+        sys::path::append(testLibInc, "..");
+        sys::path::append(testLibInc, "runtime_lib", "aarch64");
+        sys::path::append(testLibInc, "test_lib", "include");
+        compileCmd.push_back("-I" + testLibInc.str().str());
+      }
+
+      // libxaie include (from LIBXAIE_DIR env var if set)
+      if (auto libxaiePath = sys::Process::GetEnv("LIBXAIE_DIR")) {
+        compileCmd.push_back("-I" + *libxaiePath + "/include");
+      }
+
+      // ROCm/HSA include (from ROCM_PATH env var if set)
+      if (auto rocmPath = sys::Process::GetEnv("ROCM_PATH")) {
+        SmallString<256> hsaInc(*rocmPath);
+        sys::path::append(hsaInc, "..", "..", "..", "include");
+        compileCmd.push_back("-I" + hsaInc.str().str());
+      }
 
       compileCmd.push_back("-DLIBXAIENGINEV2");
       compileCmd.push_back("-DAIE_LIBXAIE_ENABLE");
@@ -1478,7 +1530,7 @@ static LogicalResult runAieCompilation() {
     sys::path::append(libFile, airMlirFilename.str() + libExt);
 
     if (shared) {
-      std::vector<std::string> linkCmd = {"clang", "-shared"};
+      std::vector<std::string> linkCmd = {cc.getValue(), "-shared"};
       if (!sysroot.empty()) {
         linkCmd.push_back("--sysroot");
         linkCmd.push_back(sysroot.getValue());
@@ -1537,6 +1589,17 @@ int main(int argc, char **argv) {
     xbridge = false;
   if (noXchesscc)
     xchesscc = false;
+
+  // Handle --omit-ping-pong-transform with no value (ValueOptional).
+  // When the flag is present but no value given, cl::ValueOptional sets the
+  // string to "". Map this to "all" for backward compatibility with Python
+  // argparse nargs="?" const="all".
+  if (omitPingpong.getNumOccurrences() > 0 && omitPingpong.getValue().empty())
+    omitPingpong.setValue("all");
+
+  // Track whether --air-runtime-loop-tiling-sizes was explicitly passed
+  runtimeLoopTilingSizesPresent =
+      runtimeLoopTilingSizes.getNumOccurrences() > 0;
 
   // Dispatch based on target
   if (target.getValue() == "gpu") {
