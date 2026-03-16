@@ -19,13 +19,19 @@ OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 #   make run VECTOR_SIZE=32       # uses vector size of 32
 VECTOR_SIZE ?= 16
 
+# BF16_EMULATION can be set to enable f32 input with bf16 emulation
+# Usage examples:
+#   make run                       # uses default bf16 data type
+#   make run BF16_EMULATION=1      # uses f32 with bf16 emulation
+BF16_EMULATION ?=
+
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/vector_max.py $(OUTPUT_FORMAT_FLAG) -p --vector-size $(VECTOR_SIZE)
+	${powershell} python3 ${srcdir}/vector_max.py $(OUTPUT_FORMAT_FLAG) -p --vector-size $(VECTOR_SIZE) $(if $(BF16_EMULATION),--bf16-emulation,)
 
 run:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_max.py $(OUTPUT_FORMAT_FLAG) --vector-size $(VECTOR_SIZE)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/vector_max.py $(OUTPUT_FORMAT_FLAG) --vector-size $(VECTOR_SIZE) $(if $(BF16_EMULATION),--bf16-emulation,)
 clean:
 	rm -rf $(BUILD_DIR) __pycache__

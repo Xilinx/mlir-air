@@ -76,6 +76,7 @@ class XRTRunner:
         trace_file: str = "trace_data.txt",
         num_device_cols: int = 0,
         debug_ir: bool = False,
+        bf16_emulation: bool = False,
     ):
         """
         Args:
@@ -101,6 +102,7 @@ class XRTRunner:
                 For npu2 (8 columns total): valid values are 0 (entire device), 1, 2, 3, 4, 5, 6, 7
             debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
                 IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
+            bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -125,6 +127,7 @@ class XRTRunner:
         self.trace_file = trace_file
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
+        self.bf16_emulation = bf16_emulation
 
     def run_test(
         self,
@@ -169,6 +172,7 @@ class XRTRunner:
             xclbin_input=self.xclbin_input,
             num_device_cols=self.num_device_cols,
             debug_ir=self.debug_ir,
+            bf16_emulation=self.bf16_emulation,
         )
 
         # Use per-test trace file if provided, otherwise use instance default
