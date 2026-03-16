@@ -59,7 +59,10 @@ def build_module(
     assert (
         lk % (lkp * num_cascade_stages) == 0
     ), f"lk ({lk}) must be divisible by lkp * num_cascade_stages ({lkp * num_cascade_stages})"
-    enable_shared_buffers = lkp == dk
+    # Shared buffers: Q and K reuse the same L2 buffer (sized lkp×dk).
+    # Only valid when tile_size_q <= lkp so Q tile fits in the K buffer.
+    tile_size_q_check = lqp // num_q_tiles
+    enable_shared_buffers = lkp == dk and tile_size_q_check <= lkp
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
         assert lkp == dk, (
@@ -1388,7 +1391,7 @@ if __name__ == "__main__":
         else:
             lazy_attn_output[h] = (Gp_acc / sp_acc).astype(OUTPUT_DATATYPE)
 
-    enable_shared_buffers_main = lkp == dk
+    enable_shared_buffers_main = lkp == dk and lqp // 4 <= lkp
     # Causal requires enable_shared_buffers (lkp==dk), which already sets
     # omit_while_true_loop=False. The while-true loop lets the core maintain
     # a local counter across launch iterations without PDI reset.
