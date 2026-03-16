@@ -7280,8 +7280,8 @@ public:
     Value blockIdx = ids[dimIdx];
     for (auto &use : blockIdx.getUses()) {
       if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
-        Value other = (mulOp.getLhs() == blockIdx) ? mulOp.getRhs()
-                                                   : mulOp.getLhs();
+        Value other =
+            (mulOp.getLhs() == blockIdx) ? mulOp.getRhs() : mulOp.getLhs();
         if (auto constVal = getConstantIntValue(other))
           return *constVal;
       }
@@ -7318,9 +7318,8 @@ public:
       int64_t tileN = inferTileSize(launchOp, 1);
 
       if ((actualM > 0 && tileM <= 0) || (actualN > 0 && tileN <= 0)) {
-        launchOp.emitError(
-            "air-split-launch-for-padding: could not infer tile "
-            "sizes from launch body offset computations");
+        launchOp.emitError("air-split-launch-for-padding: could not infer tile "
+                           "sizes from launch body offset computations");
         return signalPassFailure();
       }
 

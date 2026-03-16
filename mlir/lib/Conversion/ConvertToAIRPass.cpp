@@ -1008,7 +1008,8 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
     dims.push_back(arith::ConstantIndexOp::create(rewriter, loc, bounds[id]));
   auto hierOp = hierTy::create(rewriter, op.getLoc(), dims, args);
   // Transfer air.actual_sizes attribute from scf.parallel to air hierarchy op.
-  if (auto actualSizes = op->getAttrOfType<DenseI64ArrayAttr>("air.actual_sizes"))
+  if (auto actualSizes =
+          op->getAttrOfType<DenseI64ArrayAttr>("air.actual_sizes"))
     hierOp->setAttr("air.actual_sizes", actualSizes);
   auto &body = op.getBody()->getOperations();
   if (auto herdOp = dyn_cast_if_present<air::HerdOp>(hierOp.getOperation()))
