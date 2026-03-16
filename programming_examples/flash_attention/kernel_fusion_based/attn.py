@@ -62,6 +62,11 @@ def build_module(
     enable_shared_buffers = lkp == dk
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
+        assert lkp == dk, (
+            f"Causal masking requires lkp == dk (enable_shared_buffers) for "
+            f"the prefix+suffix BD collapse to produce infinite-loop DMAs "
+            f"(no PDI reset between iterations). Got lkp={lkp}, dk={dk}."
+        )
         tile_size_q = lqp // num_q_tiles
         assert (
             tile_size_q == lkp
@@ -91,10 +96,15 @@ def build_module(
     num_chunks = lk // lkp
     chunks_per_stage = num_chunks // num_cascade_stages
     num_lq_iters = lq // lqp  # Total Q iterations
-    # Non-causal: Q iteration at launch level (no BD chain limit, better perf)
-    # Causal: Q iteration inside herd (device-local q_block_global needed)
-    launch_lq_iters = 1 if causal else num_lq_iters
-    device_lq_iters = num_lq_iters if causal else 1
+    # Q iteration at launch level for both causal and non-causal.
+    # Keeping Q at launch level avoids DMA task ordering conflicts: when Q
+    # iterates on-device, Q and K share the same compute-tile S2MM channel,
+    # and getRepeatCounts groups them into sequential tasks [Q×N, K×M]
+    # instead of interleaved [Q, K×M, Q, K×M, ...], causing deadlock.
+    # For causal masking, the launch Q index is threaded through to the herd
+    # body for the block index computation.
+    launch_lq_iters = num_lq_iters
+    device_lq_iters = 1
     tile_size_q = lqp // num_q_tiles  # Tile size within each lqp chunk
 
     # Memory spaces: L1 = 2 : i32, L2 = 1 : i32
@@ -184,6 +194,10 @@ def build_module(
         link_with="attn.o",
     )
     external_func("add_gp_g", [memref_lqp_dv_l1, memref_lqp_dv_l1], link_with="attn.o")
+    # Local i32 buffer for passing block indices to apply_causal_mask
+    # (IRON pattern: unconditional i32 stores, kernel handles conditionals)
+    # counter[0]=q_block, counter[1]=boot_flag, counter[2]=head_iter
+    memref_2xi32_l1 = MemRefType.get([3], i32, memory_space=l1_space)
     if causal:
         external_func(
             "apply_causal_mask",
@@ -469,12 +483,15 @@ def build_module(
             c_num_heads_unroll = ConstantOp(index_type, num_heads_per_unroll)
             c_dummy_size = ConstantOp(index_type, 1)
 
+            seg_operands = []
+
             @segment(
                 name="attention_seg",
-                operands=[],
+                operands=seg_operands,
                 sizes=[c_num_heads_unroll, c_dummy_size],
             )
-            def segment_body(head_idx, dummy_idx, head_size, dummy_size):
+            def segment_body(*seg_args):
+                head_idx, dummy_idx, head_size, dummy_size = seg_args[:4]
                 # L2 allocations
                 if enable_shared_buffers:
                     alloc = alloc_col1 = alloc_col2 = alloc_col3 = None
@@ -502,6 +519,9 @@ def build_module(
                 else:
                     G_shared = None
                     QK_shared = None
+                # Local counter for causal block index tracking (IRON pattern).
+                # Passed as memref operand (NOT scalar) → no RTP, no herd lock.
+                causal_counter = AllocOp(memref_2xi32_l1, [], []) if causal else None
 
                 c_num_q_tiles = ConstantOp(index_type, num_q_tiles)
                 c_num_cascade = ConstantOp(index_type, num_cascade_stages)
@@ -708,6 +728,9 @@ def build_module(
                     if enable_shared_buffers
                     else [alloc_6, up, sp, Gp]
                 )
+                # Causal: pass counter as memref operand (no RTP/lock)
+                if causal:
+                    unified_operands = unified_operands + [causal_counter]
 
                 @herd(
                     name="herd_0",
@@ -719,9 +742,33 @@ def build_module(
                     arg22, arg23, arg24, arg25 = args[0], args[1], args[2], args[3]
                     if enable_shared_buffers:
                         arg26, arg27, arg28, arg29, arg30, arg31 = args[4:10]
+                        counter_buf = args[10] if causal else None
                     else:
                         arg26, arg27, arg28, arg29 = args[4:8]
                         arg30 = arg31 = None
+                        counter_buf = args[8] if causal else None
+
+                    if causal:
+                        # IRON-style local counter. With lkp==dk (shared
+                        # buffers), DMAs are infinite loops → no PDI reset
+                        # → core loops continuously → counter persists.
+                        # counter[0] = q_block_global
+                        # counter[1] = boot flag (CDO initializes to 0)
+                        # counter[2] = head iteration counter
+                        c0_ctr = ConstantOp(index_type, 0)
+                        c1_ctr = ConstantOp(index_type, 1)
+                        boot_flag = load(counter_buf, [c1_ctr])
+                        c0_i32_ctr = ConstantOp(i32, 0)
+                        is_first = arith.CmpIOp(
+                            arith.CmpIPredicate.eq, boot_flag, c0_i32_ctr
+                        )
+                        if_first = scf.IfOp(is_first)
+                        with InsertionPoint(if_first.then_block):
+                            q_init = arith.IndexCastOp(i32, arg22)
+                            store(q_init, counter_buf, [c0_ctr])
+                            c1_i32_f = ConstantOp(i32, 1)
+                            store(c1_i32_f, counter_buf, [c1_ctr])
+                            scf.YieldOp([])
 
                     # === OUTER Q ITERATION LOOP (device-side) ===
                     c_lq_iters_herd = ConstantOp(index_type, device_lq_iters)
@@ -780,76 +827,57 @@ def build_module(
                             )
 
                             if causal:
-                                # Compute block indices for causal masking
-                                c_nqt = ConstantOp(index_type, num_q_tiles)
-                                q_block_global = arith.AddIOp(
-                                    arith.MulIOp(q_iter, c_nqt).result, arg22
-                                )
+                                # Local counter gives q_block_global.
+                                # No RTP/herd lock — counter loaded from
+                                # local L1 buffer (IRON pattern).
                                 c_cps = ConstantOp(index_type, chunks_per_stage)
                                 kv_block = arith.AddIOp(
                                     arith.MulIOp(arg23, c_cps).result, chunk_idx
                                 )
+                                kv_i32 = arith.IndexCastOp(i32, kv_block.result)
+                                c0_ctr_use = ConstantOp(index_type, 0)
+                                q_i32 = load(counter_buf, [c0_ctr_use])
+                                CallOp([], "apply_causal_mask", [G_l1, q_i32, kv_i32])
 
-                                # Block-level skip using scf.if
-                                cmp = arith.CmpIOp(
-                                    arith.CmpIPredicate.sle,
-                                    kv_block.result,
-                                    q_block_global.result,
+                                c0_i32 = ConstantOp(i32, 0)
+                                u_l1 = AllocOp(memref_lqp_l1, [], [])
+                                s_l1 = AllocOp(memref_lqp_l1, [], [])
+                                r_l1 = AllocOp(memref_lqp_l1, [], [])
+
+                                CallOp([], "max_g_bf16", [G_l1, u_l1.result])
+                                CallOp([], "maximum_up_u_bf16", [arg27, u_l1.result])
+                                CallOp([], "exp_g_minus_u", [u_l1.result, G_l1])
+                                CallOp(
+                                    [],
+                                    "exp_up_minus_u",
+                                    [arg27, u_l1.result, r_l1.result],
                                 )
-                                if_op = scf.IfOp(cmp)
-                                with InsertionPoint(if_op.then_block):
-                                    q_i32 = arith.IndexCastOp(
-                                        i32, q_block_global.result
-                                    )
-                                    kv_i32 = arith.IndexCastOp(i32, kv_block.result)
+                                CallOp([], "mul_r_gp", [r_l1.result, arg29])
+                                CallOp(
+                                    [],
+                                    "matmul_g_b_bf16",
+                                    [G_l1, alloc_57.result, arg29],
+                                )
+                                CallOp([], "sum_g", [G_l1, s_l1.result])
+                                CallOp(
+                                    [],
+                                    "accum_sp_r_s",
+                                    [arg28, r_l1.result, s_l1.result],
+                                )
+                                CallOp(
+                                    [],
+                                    "vector_copy_32elems",
+                                    [c0_i32, s_l1.result, arg28],
+                                )
+                                CallOp(
+                                    [],
+                                    "vector_copy_32elems",
+                                    [c0_i32, u_l1.result, arg27],
+                                )
 
-                                    c0_i32_c = ConstantOp(i32, 0)
-                                    u_l1_c = AllocOp(memref_lqp_l1, [], [])
-                                    s_l1_c = AllocOp(memref_lqp_l1, [], [])
-                                    r_l1_c = AllocOp(memref_lqp_l1, [], [])
-
-                                    # Apply causal mask AFTER matmul
-                                    CallOp(
-                                        [], "apply_causal_mask", [G_l1, q_i32, kv_i32]
-                                    )
-                                    CallOp([], "max_g_bf16", [G_l1, u_l1_c.result])
-                                    CallOp(
-                                        [], "maximum_up_u_bf16", [arg27, u_l1_c.result]
-                                    )
-                                    CallOp([], "exp_g_minus_u", [u_l1_c.result, G_l1])
-                                    CallOp(
-                                        [],
-                                        "exp_up_minus_u",
-                                        [arg27, u_l1_c.result, r_l1_c.result],
-                                    )
-                                    CallOp([], "mul_r_gp", [r_l1_c.result, arg29])
-                                    CallOp(
-                                        [],
-                                        "matmul_g_b_bf16",
-                                        [G_l1, alloc_57.result, arg29],
-                                    )
-                                    CallOp([], "sum_g", [G_l1, s_l1_c.result])
-                                    CallOp(
-                                        [],
-                                        "accum_sp_r_s",
-                                        [arg28, r_l1_c.result, s_l1_c.result],
-                                    )
-                                    CallOp(
-                                        [],
-                                        "vector_copy_32elems",
-                                        [c0_i32_c, s_l1_c.result, arg28],
-                                    )
-                                    CallOp(
-                                        [],
-                                        "vector_copy_32elems",
-                                        [c0_i32_c, u_l1_c.result, arg27],
-                                    )
-
-                                    DeallocOp(u_l1_c)
-                                    DeallocOp(s_l1_c)
-                                    DeallocOp(r_l1_c)
-                                    scf.YieldOp([])
-                                # else: kv_block > q_block → skip softmax
+                                DeallocOp(u_l1)
+                                DeallocOp(s_l1)
+                                DeallocOp(r_l1)
                             else:
                                 c0_i32 = ConstantOp(i32, 0)
                                 u_l1 = AllocOp(memref_lqp_l1, [], [])
@@ -1126,6 +1154,46 @@ def build_module(
                                 affine.AffineYieldOp([])
                             affine.AffineYieldOp([])
 
+                        # Increment counters. The launch is 2D
+                        # [launch_lq_iters, num_head_groups], so the
+                        # while-true loop runs once per (Q_iter, head_group).
+                        # Only advance q_block after all head groups are done.
+                        if causal:
+                            c0_ci = ConstantOp(index_type, 0)
+                            c2_ci = ConstantOp(index_type, 2)
+                            c1_i32_ci = ConstantOp(i32, 1)
+                            # Increment head counter
+                            head_cur = load(counter_buf, [c2_ci])
+                            head_next = arith.AddIOp(head_cur, c1_i32_ci)
+                            total_heads_i32 = ConstantOp(
+                                i32, num_head_groups * num_heads_per_unroll
+                            )
+                            wrapped = arith.CmpIOp(
+                                arith.CmpIPredicate.sge,
+                                head_next,
+                                total_heads_i32,
+                            )
+                            if_wrap = scf.IfOp(wrapped)
+                            with InsertionPoint(if_wrap.then_block):
+                                # All heads done: increment q_block, reset head
+                                q_cur = load(counter_buf, [c0_ci])
+                                c_nqt_i32 = ConstantOp(i32, num_q_tiles)
+                                q_next = arith.AddIOp(q_cur, c_nqt_i32)
+                                store(q_next, counter_buf, [c0_ci])
+                                c0_i32_ci = ConstantOp(i32, 0)
+                                store(c0_i32_ci, counter_buf, [c2_ci])
+                                scf.YieldOp([])
+                            if_wrap_else = scf.IfOp(
+                                arith.CmpIOp(
+                                    arith.CmpIPredicate.slt,
+                                    head_next,
+                                    total_heads_i32,
+                                )
+                            )
+                            with InsertionPoint(if_wrap_else.then_block):
+                                store(head_next, counter_buf, [c2_ci])
+                                scf.YieldOp([])
+
                         yield_([])  # end of q_iter loop
 
             # Output channel gets are inside the combined Q/K/V/output loop above
@@ -1270,10 +1338,9 @@ if __name__ == "__main__":
                 # Apply causal mask: mask positions where kv_col > q_row
                 # Pre-fill mask: bf16_lowest for masked positions.
                 # The matmul adds scores, producing bf16_lowest+score≈bf16_lowest.
-                for qi in range(lq):
-                    for ki in range(lkp):
-                        if j * lkp + ki > qi:
-                            G[qi, ki] = bf16_lowest
+                kv_cols = np.arange(j * lkp, (j + 1) * lkp)
+                q_rows = np.arange(lq)[:, np.newaxis]
+                G = np.where(kv_cols > q_rows, bf16_lowest, G)
             G = G.astype(VM_ACC_DATATYPE)
             u = np.max(G, axis=-1, keepdims=True).astype(VM_ACC_DATATYPE)
             # Clamp u to bf16_lowest (matching hardware max_g_bf16 which uses
@@ -1322,8 +1389,12 @@ if __name__ == "__main__":
             lazy_attn_output[h] = (Gp_acc / sp_acc).astype(OUTPUT_DATATYPE)
 
     enable_shared_buffers_main = lkp == dk
+    # Causal requires enable_shared_buffers (lkp==dk), which already sets
+    # omit_while_true_loop=False. The while-true loop lets the core maintain
+    # a local counter across launch iterations without PDI reset.
+    omit_loop = not enable_shared_buffers_main
     runner = XRTRunner(
-        omit_while_true_loop=not enable_shared_buffers_main,
+        omit_while_true_loop=omit_loop,
         omit_pingpong="all",
         verbose=args.verbose,
         runtime_loop_tiling_sizes=[1, 1],
@@ -1343,7 +1414,7 @@ if __name__ == "__main__":
         )
     elif args.compile_mode == "compile":
         backend = XRTBackend(
-            omit_while_true_loop=not enable_shared_buffers_main,
+            omit_while_true_loop=omit_loop,
             omit_pingpong="all",
             verbose=args.verbose,
             runtime_loop_tiling_sizes=[1, 1],
