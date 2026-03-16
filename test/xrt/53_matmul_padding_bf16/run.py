@@ -206,7 +206,7 @@ with air.ir.Context() as ctx, Location.unknown():
         "builtin.module("
         + ",".join(
             [
-                f"func.func(air-wrap-func-with-parallel{{loop-bounds={LAUNCH_M},{LAUNCH_N},1}})",
+                f"func.func(air-wrap-func-with-parallel{{loop-bounds={LAUNCH_M},{LAUNCH_N},1 actual-sizes={M_actual},{N_actual},1}})",
                 "air-par-to-launch{depth=0 has-air-segment=true}",
                 "canonicalize",
                 "cse",
@@ -221,9 +221,6 @@ with air.ir.Context() as ctx, Location.unknown():
     ###############################################
     # Compile and run
     ###############################################
-
-    pad_actual_m = M_actual if needs_padding and (M_actual % M_TILE != 0) else 0
-    pad_actual_n = N_actual if needs_padding and (N_actual % N_TILE != 0) else 0
 
     input_type = bfloat16
     output_type = bfloat16
@@ -247,10 +244,6 @@ with air.ir.Context() as ctx, Location.unknown():
             runtime_loop_tiling_sizes=[1, 1],
             output_format="elf" if needs_padding else "xclbin",
             instance_name="matmul_bf16",
-            actual_m=pad_actual_m,
-            actual_n=pad_actual_n,
-            tile_m=M_TILE,
-            tile_n=N_TILE,
         )
 
         num_samples = 200

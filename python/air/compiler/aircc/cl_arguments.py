@@ -266,33 +266,5 @@ def parse_args(args=None):
         help="Emulate f32 vector arithmetic using bf16 operations. "
         "Passes bf16-emulation=true to convert-vector-to-aievec.",
     )
-    parser.add_argument(
-        "--actual-m",
-        type=int,
-        dest="actual_m",
-        default=0,
-        help="Actual M dimension for non-tile-aligned padding (0=no M padding)",
-    )
-    parser.add_argument(
-        "--actual-n",
-        type=int,
-        dest="actual_n",
-        default=0,
-        help="Actual N dimension for non-tile-aligned padding (0=no N padding)",
-    )
-    parser.add_argument(
-        "--tile-m",
-        type=int,
-        dest="tile_m",
-        default=128,
-        help="M tile size for padding computation (default: 128)",
-    )
-    parser.add_argument(
-        "--tile-n",
-        type=int,
-        dest="tile_n",
-        default=256,
-        help="N tile size for padding computation (default: 256)",
-    )
     opts = parser.parse_args(args)
     return opts

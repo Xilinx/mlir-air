@@ -459,6 +459,10 @@ def AIRWrapFuncWithParallelPass : Pass<"air-wrap-func-with-parallel", "func::Fun
     ListOption<"clLoopBounds", "loop-bounds", "unsigned",
                "Specify upper bounds for scf.parallel loops",
                "llvm::cl::ZeroOrMore">,
+    ListOption<"clActualSizes", "actual-sizes", "unsigned",
+               "Actual data sizes per launch dimension (for DMA padding). "
+               "Attached as 'air.actual_sizes' on the created loop.",
+               "llvm::cl::ZeroOrMore">,
   ];
 }
 

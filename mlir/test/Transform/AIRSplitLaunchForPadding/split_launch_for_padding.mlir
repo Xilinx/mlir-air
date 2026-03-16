@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-split-launch-for-padding='actual-m=300 tile-m=128 actual-n=300 tile-n=256' | FileCheck %s
+// RUN: air-opt %s -air-split-launch-for-padding | FileCheck %s
 
 // M=300, M_TILE=128 → launchM=3, last M-block has 44 rows (300-2*128=44)
 // N=300, N_TILE=256 → launchN=2, last N-block has 44 cols (300-256=44)
@@ -41,7 +41,7 @@ module {
     %c3 = arith.constant 3 : index
     %c2 = arith.constant 2 : index
 
-    air.launch (%arg9, %arg10, %arg11) in (%arg12=%c3, %arg13=%c2, %arg14=%c1) args(%arg15=%arg0, %arg16=%arg1, %arg17=%arg2) : memref<*xbf16>, memref<*xbf16>, memref<*xbf16> {
+    air.launch (%arg9, %arg10, %arg11) in (%arg12=%c3, %arg13=%c2, %arg14=%c1) args(%arg15=%arg0, %arg16=%arg1, %arg17=%arg2) : memref<*xbf16>, memref<*xbf16>, memref<*xbf16> attributes {air.actual_sizes = array<i64: 300, 300, 1>} {
       %c0_0 = arith.constant 0 : index
       %c1_0 = arith.constant 1 : index
       %c8 = arith.constant 8 : index
@@ -123,40 +123,43 @@ module {
   }
 }
 
-// Channel declarations for all 6 blocks (before function)
-// CHECK-DAG: air.channel @channel_A_l3_b0_0
-// CHECK-DAG: air.channel @channel_A_l3_b2_1
-// CHECK-DAG: air.channel @channel_B_l3_b0_0
-// CHECK-DAG: air.channel @channel_B_l3_b2_1
+// Channel declarations for 4 partitions (interior, m_boundary, n_boundary, corner)
+// CHECK-DAG: air.channel @channel_A_l3_interior
+// CHECK-DAG: air.channel @channel_A_l3_m_boundary
+// CHECK-DAG: air.channel @channel_A_l3_n_boundary
+// CHECK-DAG: air.channel @channel_A_l3_corner
+// CHECK-DAG: air.channel @channel_B_l3_interior
+// CHECK-DAG: air.channel @channel_B_l3_corner
 
 // CHECK-LABEL: func.func @matmul_bf16
 
-// 6 unique segment names (one per block in 3x2 grid)
-// CHECK-DAG: air.segment @matmul_bf16_0_b0_0
-// CHECK-DAG: air.segment @matmul_bf16_0_b0_1
-// CHECK-DAG: air.segment @matmul_bf16_0_b1_0
-// CHECK-DAG: air.segment @matmul_bf16_0_b1_1
-// CHECK-DAG: air.segment @matmul_bf16_0_b2_0
-// CHECK-DAG: air.segment @matmul_bf16_0_b2_1
+// 4 unique segment names (one per partition)
+// CHECK-DAG: air.segment @matmul_bf16_0_interior
+// CHECK-DAG: air.segment @matmul_bf16_0_m_boundary
+// CHECK-DAG: air.segment @matmul_bf16_0_n_boundary
+// CHECK-DAG: air.segment @matmul_bf16_0_corner
 
-// M-boundary (block 2,0): A shim 0 has 44 actual M-rows, pad 20
-// CHECK-DAG: @channel_A_l2l1_0_b2_0[] {{.*}} pad_after = array<i32: 0, 20, 0>
+// Interior launch has multi-iteration grid (2x1)
+// CHECK-DAG: air.launch ({{.*}}) in ({{.*}}=%c2{{[_0-9]*}}, {{.*}}=%c1{{[_0-9]*}}, {{.*}}=%c1{{[_0-9]*}})
 
-// N-boundary (block 0,1): B shim 0 has ceil(44/8)=6 blocks, pad 2
-// CHECK-DAG: @channel_B_l2l1_0_b0_1[] {{.*}} pad_after = array<i32: 0, 2, 0, 0>
+// M-boundary: A shim 0 has 44 actual M-rows, pad 20
+// CHECK-DAG: @channel_A_l2l1_0_m_boundary[] {{.*}} pad_after = array<i32: 0, 20, 0>
 
-// Corner (block 2,1): both A and B padding
-// CHECK-DAG: @channel_A_l2l1_0_b2_1[] {{.*}} pad_after = array<i32: 0, 20, 0>
-// CHECK-DAG: @channel_B_l2l1_0_b2_1[] {{.*}} pad_after = array<i32: 0, 2, 0, 0>
+// N-boundary: B shim 0 has ceil(44/8)=6 blocks, pad 2
+// CHECK-DAG: @channel_B_l2l1_0_n_boundary[] {{.*}} pad_after = array<i32: 0, 2, 0, 0>
+
+// Corner: both A and B padding
+// CHECK-DAG: @channel_A_l2l1_0_corner[] {{.*}} pad_after = array<i32: 0, 20, 0>
+// CHECK-DAG: @channel_B_l2l1_0_corner[] {{.*}} pad_after = array<i32: 0, 2, 0, 0>
 
 // L3→L2 shim DMA sizes reduced for boundary blocks:
-// M-boundary (block 2,0): A shim 0 reads only 44 M-rows instead of 64
-// CHECK-DAG: @channel_A_l3_b2_0[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c44{{[_0-9]*}}, %c64
-// N-boundary (block 0,1): B shim 0 reads only 44 N-cols instead of 64
-// CHECK-DAG: @channel_B_l3_b0_1[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, %c44
+// M-boundary: A shim 0 reads only 44 M-rows instead of 64
+// CHECK-DAG: @channel_A_l3_m_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c44{{[_0-9]*}}, %c64
+// N-boundary: B shim 0 reads only 44 N-cols instead of 64
+// CHECK-DAG: @channel_B_l3_n_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c64{{[_0-9]*}}, %c44
 
 // L3→L2 channel.get with explicit strides for boundary shims (memtile S2MM):
 // A boundary: receives [44, 64] with stride [64, 1]
-// CHECK-DAG: channel.get {{.*}} @channel_A_l3_b2_0[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}}[%c44{{[_0-9]*}}, %c64{{[_0-9]*}}] [%c64{{[_0-9]*}}, %c1
+// CHECK-DAG: channel.get {{.*}} @channel_A_l3_m_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}}[%c44{{[_0-9]*}}, %c64{{[_0-9]*}}] [%c64{{[_0-9]*}}, %c1
 // B boundary: receives [64, 44] with stride [64, 1]
-// CHECK-DAG: channel.get {{.*}} @channel_B_l3_b0_1[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}}[%c64{{[_0-9]*}}, %c44{{[_0-9]*}}] [%c64{{[_0-9]*}}, %c1
+// CHECK-DAG: channel.get {{.*}} @channel_B_l3_n_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}}[%c64{{[_0-9]*}}, %c44{{[_0-9]*}}] [%c64{{[_0-9]*}}, %c1

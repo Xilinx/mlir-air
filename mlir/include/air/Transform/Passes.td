@@ -1058,33 +1058,30 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
   let summary = "Split air.launch into partitions for device-side DMA padding";
   let constructor = "xilinx::air::createAIRSplitLaunchForPadding()";
   let description = [{
-    For non-tile-aligned matrix dimensions, fully unrolls the air.launch
-    iteration grid so that each (M-block, N-block) pair becomes a separate
-    single-iteration air.launch. This is required because multi-iteration
-    launches within ELF multi-launch mode produce incorrect hardware results.
+    For non-tile-aligned dimensions, splits the air.launch into up to 4
+    partitions: interior (multi-iteration, no padding), M-boundary,
+    N-boundary, and corner (single-iteration each, with padding).
 
-    For boundary blocks, memtile DMA padding (pad_after via BDPadLayoutAttr)
-    is applied on L2->L1 channel.put ops where the hardware supports
-    zero-padding (max 31 per dimension). When padding exceeds the hardware
-    limit, a diagnostic is emitted and the shim is left unpadded (host must
-    provide zero-padded buffers). L3-level channel ops are not modified.
+    Reads the `air.actual_sizes` attribute from air.launch to determine
+    actual data dimensions. If absent, the launch is left unchanged.
+    Tile sizes are inferred from arith.muli offset computations in the
+    launch body.
 
-    Each launch gets unique channel names and segment names. The core program
-    is identical across all partitions; lightweight load_pdi reconfigures
-    memtile DMAs between launches.
+    For boundary partitions:
+    - L2->L1 channel.put ops get memtile DMA padding (pad_after via
+      BDPadLayoutAttr) where hardware supports zero-padding (max 31 per
+      dimension). When exceeded, a diagnostic is emitted.
+    - L3->L2 channel.put sizes are reduced so shim DMAs read only
+      block-aligned actual data from DDR.
+    - L3->L2 channel.get ops get explicit sizes/strides to preserve L2
+      buffer layout when receiving fewer elements.
+
+    Each partition gets unique channel names and segment names. The core
+    program is identical across all partitions; lightweight load_pdi
+    reconfigures memtile DMAs between launches.
 
     Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.
   }];
-  let options = [
-    Option<"clActualM", "actual-m", "int64_t", /*default=*/"0",
-            "Actual M dimension (0 = no M padding)">,
-    Option<"clActualN", "actual-n", "int64_t", /*default=*/"0",
-            "Actual N dimension (0 = no N padding)">,
-    Option<"clTileM", "tile-m", "int64_t", /*default=*/"128",
-            "M tile size">,
-    Option<"clTileN", "tile-n", "int64_t", /*default=*/"256",
-            "N tile size">
-  ];
 }
 
 def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {

@@ -7047,9 +7047,6 @@ class AIRSplitLaunchForPadding
 public:
   AIRSplitLaunchForPadding() = default;
   AIRSplitLaunchForPadding(const AIRSplitLaunchForPadding &pass) {}
-  AIRSplitLaunchForPadding(
-      const ::xilinx::air::AIRSplitLaunchForPaddingOptions &options)
-      : AIRSplitLaunchForPaddingBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect, arith::ArithDialect>();
@@ -7273,34 +7270,63 @@ public:
     return clonedOp;
   }
 
+  // Infer tile size from the launch body by finding arith.muli of a launch
+  // block index with a constant. E.g., %offset = arith.muli %arg9, %c128
+  // means tileM = 128.
+  int64_t inferTileSize(air::LaunchOp launchOp, unsigned dimIdx) {
+    auto ids = launchOp.getIds();
+    if (dimIdx >= ids.size())
+      return 0;
+    Value blockIdx = ids[dimIdx];
+    for (auto &use : blockIdx.getUses()) {
+      if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
+        Value other = (mulOp.getLhs() == blockIdx) ? mulOp.getRhs()
+                                                   : mulOp.getLhs();
+        if (auto constVal = getConstantIntValue(other))
+          return *constVal;
+      }
+    }
+    return 0;
+  }
+
   void runOnOperation() override {
     auto module = getOperation();
-    int64_t actualM = clActualM;
-    int64_t actualN = clActualN;
-    int64_t tileM = clTileM;
-    int64_t tileN = clTileN;
-
-    if (actualM == 0 && actualN == 0)
-      return;
-
-    if ((actualM > 0 && tileM <= 0) || (actualN > 0 && tileN <= 0)) {
-      module.emitError("air-split-launch-for-padding: tile-m and tile-n must "
-                       "be positive when their corresponding actual dimension "
-                       "is specified");
-      return signalPassFailure();
-    }
-
-    int64_t mRem = actualM > 0 ? (actualM % tileM) : 0;
-    int64_t nRem = actualN > 0 ? (actualN % tileN) : 0;
-    if (!mRem && !nRem)
-      return;
 
     SmallVector<air::LaunchOp> launchOps;
     module.walk([&](air::LaunchOp op) { launchOps.push_back(op); });
 
     for (auto launchOp : launchOps) {
+      // Read actual sizes from the air.actual_sizes attribute.
+      // If absent, this launch doesn't need padding — skip.
+      auto actualSizesAttr =
+          launchOp->getAttrOfType<DenseI64ArrayAttr>("air.actual_sizes");
+      if (!actualSizesAttr)
+        continue;
+      auto actualSizes = actualSizesAttr.asArrayRef();
+
       auto launchIds = launchOp.getIds();
-      if (launchIds.size() < 2)
+      if (launchIds.size() < 2 || actualSizes.size() < 2)
+        continue;
+
+      int64_t actualM = actualSizes[0];
+      int64_t actualN = actualSizes[1];
+      if (actualM == 0 && actualN == 0)
+        continue;
+
+      // Infer tile sizes from offset computations in the launch body.
+      int64_t tileM = inferTileSize(launchOp, 0);
+      int64_t tileN = inferTileSize(launchOp, 1);
+
+      if ((actualM > 0 && tileM <= 0) || (actualN > 0 && tileN <= 0)) {
+        launchOp.emitError(
+            "air-split-launch-for-padding: could not infer tile "
+            "sizes from launch body offset computations");
+        return signalPassFailure();
+      }
+
+      int64_t mRem = actualM > 0 ? (actualM % tileM) : 0;
+      int64_t nRem = actualN > 0 ? (actualN % tileN) : 0;
+      if (!mRem && !nRem)
         continue;
 
       // Read actual launch dimensions from the op.
@@ -7321,29 +7347,41 @@ public:
       OpBuilder builder(launchOp);
       Location loc = launchOp.getLoc();
 
-      // Fully unroll the launch grid: create one 1×1×1 launch per block.
-      // Full unrolling is required because multi-iteration launches within
-      // ELF multi-launch mode (with PDI reconfiguration between launches)
-      // produce incorrect hardware results on NPU2. Only single-iteration
-      // 1×1 launches work reliably with load_pdi reconfiguration.
-      // A partition-based approach (interior + boundaries) was tried but
-      // failed for the same reason when the interior had >1 iteration.
-      for (int64_t m = 0; m < launchM; m++) {
-        for (int64_t n = 0; n < launchN; n++) {
-          bool isMBoundary = mRem && (m == launchM - 1);
-          bool isNBoundary = nRem && (n == launchN - 1);
+      // Partition the launch grid into up to 4 partitions:
+      // interior, M-boundary, N-boundary, corner.
+      int64_t interiorM = mRem ? (launchM - 1) : launchM;
+      int64_t interiorN = nRem ? (launchN - 1) : launchN;
 
-          std::string suffix =
-              "_b" + std::to_string(m) + "_" + std::to_string(n);
-          auto newLaunch =
-              cloneAndSpecializeLaunch(launchOp, builder, loc, /*fixedDimM=*/m,
-                                       /*fixedDimN=*/n, 1, 1, suffix);
-
-          if (isMBoundary || isNBoundary) {
-            addMemtilePaddingToLaunch(newLaunch, isMBoundary, isNBoundary,
-                                      mActualLast, nActualLast);
-          }
-        }
+      // Interior partition: no padding needed.
+      if (interiorM > 0 && interiorN > 0) {
+        auto interior = cloneAndSpecializeLaunch(
+            launchOp, builder, loc, /*fixedDimM=*/-1, /*fixedDimN=*/-1,
+            interiorM, interiorN, "_interior");
+        (void)interior;
+      }
+      // M-boundary: last M-block, all interior N-blocks.
+      if (mRem && interiorN > 0) {
+        auto mBound = cloneAndSpecializeLaunch(
+            launchOp, builder, loc, /*fixedDimM=*/launchM - 1,
+            /*fixedDimN=*/-1, 1, interiorN, "_m_boundary");
+        addMemtilePaddingToLaunch(mBound, /*padM=*/true, /*padN=*/false,
+                                  mActualLast, nActualLast);
+      }
+      // N-boundary: all interior M-blocks, last N-block.
+      if (nRem && interiorM > 0) {
+        auto nBound = cloneAndSpecializeLaunch(
+            launchOp, builder, loc, /*fixedDimM=*/-1,
+            /*fixedDimN=*/launchN - 1, interiorM, 1, "_n_boundary");
+        addMemtilePaddingToLaunch(nBound, /*padM=*/false, /*padN=*/true,
+                                  mActualLast, nActualLast);
+      }
+      // Corner: last M-block, last N-block.
+      if (mRem && nRem) {
+        auto corner = cloneAndSpecializeLaunch(
+            launchOp, builder, loc, /*fixedDimM=*/launchM - 1,
+            /*fixedDimN=*/launchN - 1, 1, 1, "_corner");
+        addMemtilePaddingToLaunch(corner, /*padM=*/true, /*padN=*/true,
+                                  mActualLast, nActualLast);
       }
 
       // Erase the original launch.
@@ -7612,10 +7650,6 @@ public:
 
 std::unique_ptr<mlir::Pass> createAIRSplitLaunchForPadding() {
   return std::make_unique<AIRSplitLaunchForPadding>();
-}
-std::unique_ptr<Pass>
-createAIRSplitLaunchForPadding(AIRSplitLaunchForPaddingOptions options) {
-  return std::make_unique<AIRSplitLaunchForPadding>(options);
 }
 
 } // namespace air
