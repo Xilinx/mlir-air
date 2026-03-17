@@ -59,8 +59,6 @@ def build_module(
     assert (
         lk % (lkp * num_cascade_stages) == 0
     ), f"lk ({lk}) must be divisible by lkp * num_cascade_stages ({lkp * num_cascade_stages})"
-    # Shared buffers: Q and K reuse the same L2 buffer (sized lkp×dk).
-    # Only valid when tile_size_q <= lkp so Q tile fits in the K buffer.
     tile_size_q_check = lqp // num_q_tiles
     enable_shared_buffers = lkp == dk and tile_size_q_check <= lkp
     if causal:
@@ -198,9 +196,8 @@ def build_module(
     )
     external_func("add_gp_g", [memref_lqp_dv_l1, memref_lqp_dv_l1], link_with="attn.o")
     # Local i32 buffer for passing block indices to apply_causal_mask
-    # (IRON pattern: unconditional i32 stores, kernel handles conditionals)
-    # counter[0]=q_block, counter[1]=boot_flag, counter[2]=head_iter
-    memref_2xi32_l1 = MemRefType.get([3], i32, memory_space=l1_space)
+    # (unconditional i32 stores, kernel handles conditionals)
+    memref_2xi32_l1 = MemRefType.get([2], i32, memory_space=l1_space)
     if causal:
         external_func(
             "apply_causal_mask",
@@ -334,7 +331,7 @@ def build_module(
                 ],
             )
             # Affine map for K head offset: head * lk * dk + row_offset * dk
-            # K stored as [num_kv_heads, lk, dk] (row-major, matching IRON)
+            # K stored as [num_kv_heads, lk, dk] (row-major)
             affine_map_head_row = AffineMap.get(
                 0,
                 2,
@@ -486,6 +483,10 @@ def build_module(
             c_num_heads_unroll = ConstantOp(index_type, num_heads_per_unroll)
             c_dummy_size = ConstantOp(index_type, 1)
 
+            # In causal mode, pass launch Q index through segment to herd
+            # for causal block index computation. After runtime loop tiling
+            # (runtime_loop_tiling_sizes=[1,1]), arg5 becomes a constant in
+            # each tiled iteration, so the RTP write in airrt-to-npu succeeds.
             seg_operands = []
 
             @segment(
@@ -495,6 +496,7 @@ def build_module(
             )
             def segment_body(*seg_args):
                 head_idx, dummy_idx, head_size, dummy_size = seg_args[:4]
+                launch_q_idx = seg_args[4] if (causal and len(seg_args) > 4) else None
                 # L2 allocations
                 if enable_shared_buffers:
                     alloc = alloc_col1 = alloc_col2 = alloc_col3 = None
@@ -522,7 +524,7 @@ def build_module(
                 else:
                     G_shared = None
                     QK_shared = None
-                # Local counter for causal block index tracking (IRON pattern).
+                # Local counter for causal block index tracking.
                 # Passed as memref operand (NOT scalar) → no RTP, no herd lock.
                 causal_counter = AllocOp(memref_2xi32_l1, [], []) if causal else None
 
@@ -752,12 +754,11 @@ def build_module(
                         counter_buf = args[8] if causal else None
 
                     if causal:
-                        # IRON-style local counter. With lkp==dk (shared
+                        # Local counter. With lkp==dk (shared
                         # buffers), DMAs are infinite loops → no PDI reset
                         # → core loops continuously → counter persists.
                         # counter[0] = q_block_global
-                        # counter[1] = boot flag (CDO initializes to 0)
-                        # counter[2] = head iteration counter
+                        # counter[1] = boot flag (0=first, 1=initialized)
                         c0_ctr = ConstantOp(index_type, 0)
                         c1_ctr = ConstantOp(index_type, 1)
                         boot_flag = load(counter_buf, [c1_ctr])
@@ -832,7 +833,7 @@ def build_module(
                             if causal:
                                 # Local counter gives q_block_global.
                                 # No RTP/herd lock — counter loaded from
-                                # local L1 buffer (IRON pattern).
+                                # local L1 buffer.
                                 c_cps = ConstantOp(index_type, chunks_per_stage)
                                 kv_block = arith.AddIOp(
                                     arith.MulIOp(arg23, c_cps).result, chunk_idx
@@ -1157,10 +1158,7 @@ def build_module(
                                 affine.AffineYieldOp([])
                             affine.AffineYieldOp([])
 
-                        # Increment counters. The launch is 2D
-                        # [launch_lq_iters, num_head_groups], so the
-                        # while-true loop runs once per (Q_iter, head_group).
-                        # Only advance q_block after all head groups are done.
+                        # Increment q_block counter for next launch iteration
                         if causal:
                             c0_ci = ConstantOp(index_type, 0)
                             c2_ci = ConstantOp(index_type, 2)
@@ -1384,16 +1382,14 @@ if __name__ == "__main__":
             Gp_acc, up_acc, sp_acc = cascade_merge(
                 Gp_acc, up_acc, sp_acc, Gp_local, up_local, sp_local
             )
-        if os.environ.get("SKIP_DIV"):
-            lazy_attn_output[h] = Gp_acc.astype(OUTPUT_DATATYPE)
-        else:
-            lazy_attn_output[h] = (Gp_acc / sp_acc).astype(OUTPUT_DATATYPE)
+        lazy_attn_output[h] = (Gp_acc / sp_acc).astype(OUTPUT_DATATYPE)
 
-    enable_shared_buffers_main = lkp == dk and lqp // 4 <= lkp
-    # Causal requires enable_shared_buffers (lkp==dk), which already sets
-    # omit_while_true_loop=False. The while-true loop lets the core maintain
-    # a local counter across launch iterations without PDI reset.
-    omit_loop = not enable_shared_buffers_main
+    enable_shared_buffers_main = lkp == dk
+    # Causal mode requires while-true loop: the herd RTP mechanism needs the
+    # core to loop back and re-acquire the herd lock for each launch iteration.
+    # Without the loop, the core exits after one iteration and subsequent
+    # RTP writes / lock releases go to a dead core.
+    omit_loop = False if causal else not enable_shared_buffers_main
     runner = XRTRunner(
         omit_while_true_loop=omit_loop,
         omit_pingpong="all",
@@ -1409,8 +1405,8 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_q_scaled, input_k, input_v, input_m],
                 expected_outputs=[lazy_attn_output],
-                atol=0.5,
-                rtol=0.2,
+                atol=0.15,
+                rtol=0.04,
             )
         )
     elif args.compile_mode == "compile":

@@ -36,8 +36,15 @@
 #define dv 64
 #endif
 
+// Column-major B matmul with compile-time transpose control.
+// transpose_b: true  = apply aie::transpose before mac (K DMA: inner [n_in,
+// k_in])
+//              false = load B as-is, hardware mul_8x8_8x8T transposes (V DMA:
+//              inner [k_in, n_in])
+// A and C are always column-major tiled.
 template <typename T_in, typename T_out, unsigned rowA, unsigned colA,
-          unsigned colB, unsigned r, unsigned s, unsigned t>
+          unsigned colB, unsigned r, unsigned s, unsigned t,
+          bool transpose_b = true>
 static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
                                               const T_in *__restrict pB,
                                               T_out *__restrict pC) {
@@ -86,14 +93,20 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
               aie::vector<T_in, MMUL::size_A> A1 =
                   aie::load_v<MMUL::size_A>(pA2);
               pA2 += rowA * MMUL::size_A;
-              // K at L1 is [lkp, dk] row-major tiled as [lkp/t, dk/s, t, s].
-              // Transpose each [t, s] block to [s, t] for mmul (IRON
-              // B_COL_MAJ).
-              aie::vector<T_in, MMUL::size_B> B0 =
-                  aie::transpose(aie::load_v<MMUL::size_B>(pB1), t, s);
+
+              aie::vector<T_in, MMUL::size_B> B0, B1;
+              if constexpr (transpose_b) {
+                // K DMA inner layout is [n_in, k_in] — need software transpose
+                // to [k_in, n_in] before hardware mul_8x8_8x8T.
+                B0 = aie::transpose(aie::load_v<MMUL::size_B>(pB1), t, s);
+                B1 = aie::transpose(aie::load_v<MMUL::size_B>(pB2), t, s);
+              } else {
+                // V DMA inner layout is [k_in, n_in] — already correct for
+                // hardware mul_8x8_8x8T, no software transpose needed.
+                B0 = aie::load_v<MMUL::size_B>(pB1);
+                B1 = aie::load_v<MMUL::size_B>(pB2);
+              }
               pB1 += MMUL::size_B;
-              aie::vector<T_in, MMUL::size_B> B1 =
-                  aie::transpose(aie::load_v<MMUL::size_B>(pB2), t, s);
               pB2 += MMUL::size_B;
 
               C00.mac(A0, B0);
@@ -116,29 +129,22 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
   event1();
 }
 
-// bf16 MatMul kernel definion with bf16 outputs.
-template <unsigned m, unsigned k, unsigned n>
+// bf16 MatMul kernel with bf16 outputs.
+// transpose_b: controls whether B blocks are software-transposed before mac.
+template <unsigned m, unsigned k, unsigned n, bool transpose_b = true>
 static inline void
 matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
                                   const bfloat16 *__restrict pB,
                                   bfloat16 *__restrict pC) {
-
-  // After extensive experimentation, the 4x8x4 aie::mmul size was found to be
-  // optimal for AIE2, in combination with the 4x4 mmul expanded kernel
   constexpr int r = 8;
   constexpr int s = 8;
   constexpr int t = 8;
-
-  // Since the kernel has been expanded 4 times for both A ('m' dimension) and B
-  // ('n' dimension), the following assertions verify this even division for
-  // the single AIE MatMul dimensionality Notice that 'k' dimension is not
-  // spatially expanded.
   static_assert(m % (2 * r) == 0); // 'm' dimension
   static_assert(k % s == 0);       // 'k' dimension
   static_assert(n % (2 * t) == 0); // 'n' dimension
 
   return matmul_vectorized_2x2_mmul<bfloat16, bfloat16, (m / r), (k / s),
-                                    (n / t), r, s, t>(pA, pB, pC);
+                                    (n / t), r, s, t, transpose_b>(pA, pB, pC);
 }
 
 #define log2e 1.44269504089
@@ -161,12 +167,6 @@ __attribute__((always_inline)) v8bfloat16 getExpBf16(v8bfloat16 x) {
 
 extern "C" {
 
-#ifdef ROUND_CONV_EVEN
-#define SET_ROUNDING() ::aie::set_rounding(aie::rounding_mode::conv_even)
-#else
-#define SET_ROUNDING()
-#endif
-
 // Copy tile_size_q×dk elements from src to dst (single-pass vector copy)
 void copy_tile(bfloat16 *src, bfloat16 *dst) {
   constexpr int VecLen = 32;
@@ -183,7 +183,6 @@ void copy_tile(bfloat16 *src, bfloat16 *dst) {
 }
 
 void matmul_a_b_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *out) {
-  SET_ROUNDING();
   // Buffer shapes:
   // A: [lqp, dk] = [32, 64]
   // B: [lkp, dk] = [96, 64]  (K row-major, aie::transpose per block)
@@ -192,12 +191,14 @@ void matmul_a_b_bf16(bfloat16 *a_in, bfloat16 *b_in, bfloat16 *out) {
 }
 
 void matmul_g_b_bf16(bfloat16 *g_in, bfloat16 *b_in, bfloat16 *out) {
-  SET_ROUNDING();
   // Buffer shapes:
   // G: [lqp, lkp] = [32, 96]
   // B: [lkp, dv] = [96, 64]
   // Out: [lqp, dv] = [32, 64]
-  matmul_vectorized_8x8x8_bf16_bf16<lqp, lkp, dv>(g_in, b_in, out);
+  // G@V: V DMA inner layout is [k_in, n_in], so NO software transpose needed.
+  // The hardware mul_8x8_8x8T already transposes B internally.
+  matmul_vectorized_8x8x8_bf16_bf16<lqp, lkp, dv, /*transpose_b=*/false>(
+      g_in, b_in, out);
 }
 
 void zero_fill_gp_bf16(bfloat16 *c_out) {
@@ -221,9 +222,6 @@ void neg_inf_fill_up_bf16(bfloat16 *c_out) {
 }
 
 void max_g_bf16(bfloat16 *in, bfloat16 *out) {
-#ifdef SKIP_SOFTMAX
-  return;
-#endif
   // u = np.max(G, axis=-1, keepdims=True)
   // G is in column-major 8x8 tiled layout.
   // Each block is 64 contiguous elements (8 rows × 8 cols).
@@ -271,9 +269,6 @@ void max_g_bf16(bfloat16 *in, bfloat16 *out) {
 }
 
 void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
-#ifdef SKIP_SOFTMAX
-  return;
-#endif
   // u = np.maximum(u, up)
   // Buffer shape:
   // up: [lqp, 1] = [32, 1]
@@ -291,9 +286,6 @@ void maximum_up_u_bf16(bfloat16 *up, bfloat16 *u) {
 }
 
 void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
-#ifdef SKIP_SOFTMAX
-  return;
-#endif
   // G = exp(G - u) in-place. G is column-major 8×8 tiled.
   // VecLen=32 processes 4 rows at once (half a block).
   // exp2 native width is 16, so split 30→2×16 for exp.
@@ -353,9 +345,6 @@ void exp_g_minus_u(bfloat16 *u, bfloat16 *g) {
 }
 
 void exp_up_minus_u(bfloat16 *up, bfloat16 *u, bfloat16 *r) {
-#ifdef SKIP_SOFTMAX
-  return;
-#endif
   // r = exp(up - u) — VecLen=16 to match exp2 native width
   // With bf16 lowest (not -inf), lowest - lowest = 0 (not NaN).
   constexpr int VecLen = 16;
@@ -385,9 +374,6 @@ void exp_up_minus_u(bfloat16 *up, bfloat16 *u, bfloat16 *r) {
 }
 
 void mul_r_gp(bfloat16 *r, bfloat16 *gp) {
-#ifdef SKIP_SOFTMAX
-  return;
-#endif
   // Gp = Gp * r (per-row scaling)
   // Buffer shape: Gp: [lqp, dv], r: [lqp, 1]
   // Layout: column-major 8×8 block tiled (same as matmul output).
@@ -483,9 +469,6 @@ void fused_exp_sum(bfloat16 *u, bfloat16 *g, bfloat16 *s) {
 }
 
 void sum_g(bfloat16 *g, bfloat16 *s) {
-#ifdef SKIP_SOFTMAX
-  return;
-#endif
   // s = sum(G, axis=-1, keepdims=True)
   // G is column-major 8×8 tiled. VecLen=32 loads 4 rows at once.
   constexpr int VecLen = 32;
@@ -524,9 +507,6 @@ void sum_g(bfloat16 *g, bfloat16 *s) {
 }
 
 void accum_sp_r_s(bfloat16 *sp, bfloat16 *r, bfloat16 *s) {
-#ifdef SKIP_SOFTMAX
-  return;
-#endif
   // s += sp * r
   // Buffer shape:
   // sp: [lqp, 1] = [32, 1]
@@ -565,9 +545,6 @@ void vector_copy_32elems(const int offset, const bfloat16 *__restrict inputs,
 }
 
 void div_gp_sp(bfloat16 *sp, bfloat16 *gp) {
-#if defined(SKIP_SOFTMAX) || defined(SKIP_DIV)
-  return;
-#endif
   // Gp = Gp / sp (per-row normalization)
   // Buffer shape: Gp: [lqp, dv], sp: [lqp, 1]
   // Layout: column-major 8×8 block tiled (same as matmul output).
@@ -622,8 +599,9 @@ void add_gp_g(bfloat16 *gp, bfloat16 *g) {
   for (unsigned j = 0; j < num_elems / VecLen; j++) {
     aie::vector<bfloat16, VecLen> gp_vec = aie::load_v<VecLen>(gp_ptr);
     aie::vector<bfloat16, VecLen> g_vec = aie::load_v<VecLen>(g_ptr);
-    auto accTemp = aie::add(gp_vec, g_vec);
-    aie::store_v(g_ptr, accTemp);
+    aie::accum<accfloat, VecLen> acc(gp_vec);
+    acc = aie::add(acc, g_vec);
+    aie::store_v(g_ptr, acc.to_vector<bfloat16>());
     gp_ptr += VecLen;
     g_ptr += VecLen;
   }
