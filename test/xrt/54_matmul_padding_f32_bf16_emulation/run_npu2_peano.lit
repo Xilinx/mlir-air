@@ -1,0 +1,14 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// Non-tile-aligned F32 matmul with bf16/bfp16 emulation and memtile DMA padding.
+// Tests M and N dimensions that are not multiples of M_TILE=128, N_TILE=256.
+// Inputs and outputs are f32; convert-vector-to-aievec with bf16-emulation=true
+// emulates f32 arithmetic using bf16/bfp16 operations on AIE2P.
+//
+// RUN: mkdir -p test_npu2_peano
+// RUN: cd test_npu2_peano
+// RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: %python %S/run.py --transform-script %S/transform_aie2p.mlir --M 500 --N 500 --K 784 --k-l2-tile 16
