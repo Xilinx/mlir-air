@@ -1168,9 +1168,7 @@ def build_module(
                             # Increment head counter
                             head_cur = load(counter_buf, [c2_ci])
                             head_next = arith.AddIOp(head_cur, c1_i32_ci)
-                            total_heads_i32 = ConstantOp(
-                                i32, num_head_groups * num_heads_per_unroll
-                            )
+                            total_heads_i32 = ConstantOp(i32, num_head_groups)
                             wrapped = arith.CmpIOp(
                                 arith.CmpIPredicate.sge,
                                 head_next,
