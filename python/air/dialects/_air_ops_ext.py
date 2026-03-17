@@ -195,15 +195,13 @@ class ChannelGet(ChannelGetOp):
             dst_offsets=dst_offsets_typed,
             dst_sizes=dst_sizes_typed,
             dst_strides=dst_strides_typed,
-            pad_before=(
-                DenseI32ArrayAttr.get(pad_before) if pad_before is not None else None
-            ),
-            pad_after=(
-                DenseI32ArrayAttr.get(pad_after) if pad_after is not None else None
-            ),
             loc=loc,
             ip=ip,
         )
+        if pad_before is not None:
+            self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
+        if pad_after is not None:
+            self.operation.attributes["pad_after"] = DenseI32ArrayAttr.get(pad_after)
 
 
 class ChannelPut(ChannelPutOp):
@@ -239,15 +237,13 @@ class ChannelPut(ChannelPutOp):
             src_offsets=offsets_typed,
             src_sizes=sizes_typed,
             src_strides=strides_typed,
-            pad_before=(
-                DenseI32ArrayAttr.get(pad_before) if pad_before is not None else None
-            ),
-            pad_after=(
-                DenseI32ArrayAttr.get(pad_after) if pad_after is not None else None
-            ),
             loc=loc,
             ip=ip,
         )
+        if pad_before is not None:
+            self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
+        if pad_after is not None:
+            self.operation.attributes["pad_after"] = DenseI32ArrayAttr.get(pad_after)
 
 
 class DmaMemcpyNd(DmaMemcpyNdOp):
@@ -291,13 +287,13 @@ class DmaMemcpyNd(DmaMemcpyNdOp):
             src_offsets=src_offsets_typed,
             src_sizes=src_sizes_typed,
             src_strides=src_strides_typed,
-            pad_before=(
-                DenseI32ArrayAttr.get(pad_before) if pad_before is not None else None
-            ),
-            pad_after=(
-                DenseI32ArrayAttr.get(pad_after) if pad_after is not None else None
-            ),
         )
+        # Set optional pad_before/pad_after attributes after construction,
+        # since the generated __init__ doesn't accept them as kwargs.
+        if pad_before is not None:
+            self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
+        if pad_after is not None:
+            self.operation.attributes["pad_after"] = DenseI32ArrayAttr.get(pad_after)
 
 
 dma_memcpy_nd = DmaMemcpyNd
