@@ -166,4 +166,22 @@ module {
 // L3→L2 B channel.put sizes reduced from [1,1,16,32] to [1,1,16,20]
 // CHECK-DAG: @channel_B_l3_n_boundary[%c3{{[_0-9]*}}, %c0{{[_0-9]*}}] {{.*}} [%c1{{[_0-9]*}}, %c1{{[_0-9]*}}, %c16{{[_0-9]*}}, %c20
 // L2→L1 B channel.put for herd 3: dim0 padded (N-blocks: 4→3, with innerBlock=8, pad=1)
-// CHECK-DAG: @channel_B_l2l1_3_n_boundary[] {{.*}} pad_after = array<i32:
+// CHECK-DAG: @channel_B_l2l1_3_n_boundary[] {{.*}} pad_after = array<i32: 1, 0, 0>
+
+// Non-boundary herds retain original sizes (no padding):
+// M-boundary: A herd 0 keeps full [2, 64, 8] L2→L1 sizes (no pad_after)
+// CHECK-DAG: @channel_A_l2l1_0_m_boundary[] (%alloc{{[^)]*}}[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}, %c0{{[_0-9]*}}] [%c2{{[_0-9]*}}, %c64{{[_0-9]*}}, %c8{{[_0-9]*}}]
+// N-boundary: B herd 0 keeps full [4, 16, 8] L2→L1 sizes (no pad_after)
+// CHECK-DAG: @channel_B_l2l1_0_n_boundary[] (%alloc{{[^)]*}}[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}, %c0{{[_0-9]*}}] [%c4{{[_0-9]*}}, %c16{{[_0-9]*}}, %c8{{[_0-9]*}}]
+
+// S2MM explicit strides for boundary shims (rank-4 memrefs):
+// M-boundary A herd 3: sizes [1,1,52,16] strides [1024,1024,16,1]
+// CHECK-DAG: channel.get {{.*}} @channel_A_l3_m_boundary[%c3{{[_0-9]*}}, %c0{{[_0-9]*}}] (%alloc{{[^)]*}}[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}, %c0{{[_0-9]*}}, %c0{{[_0-9]*}}] [%c1{{[_0-9]*}}, %c1{{[_0-9]*}}, %c52{{[_0-9]*}}, %c16{{[_0-9]*}}] [%c1024{{[_0-9]*}}, %c1024{{[_0-9]*}}, %c16{{[_0-9]*}}, %c1
+// N-boundary B herd 3: sizes [1,1,16,20] strides [512,512,32,1]
+// CHECK-DAG: channel.get {{.*}} @channel_B_l3_n_boundary[%c3{{[_0-9]*}}, %c0{{[_0-9]*}}] (%alloc{{[^)]*}}[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}, %c0{{[_0-9]*}}, %c0{{[_0-9]*}}] [%c1{{[_0-9]*}}, %c1{{[_0-9]*}}, %c16{{[_0-9]*}}, %c20{{[_0-9]*}}] [%c512{{[_0-9]*}}, %c512{{[_0-9]*}}, %c32{{[_0-9]*}}, %c1
+// Non-boundary shims: no strides added
+// CHECK-DAG: channel.get {{.*}} @channel_A_l3_m_boundary[%c0{{[_0-9]*}}, %c0{{[_0-9]*}}] (%alloc{{[^)]*}}[] [] [])
+
+// Corner partition: both A and B have padding
+// CHECK-DAG: @channel_A_l2l1_3_corner[] {{.*}} pad_after = array<i32: 0, 12, 0>
+// CHECK-DAG: @channel_B_l2l1_3_corner[] {{.*}} pad_after = array<i32: 1, 0, 0>
