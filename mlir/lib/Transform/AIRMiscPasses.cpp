@@ -2810,6 +2810,10 @@ struct OverrideMemorySpacePattern : public OpRewritePattern<memref::AllocOp> {
       return failure();
     if (air::getMemorySpace(memrefTy) == *targetMS)
       return failure();
+    // Skip allocs that already have a non-default memory space (e.g., L1=2
+    // when target is L2=1). Only override allocs with default memory space (L3=0).
+    if (air::getMemorySpace(memrefTy) != air::MemorySpace::L3)
+      return failure();
 
     auto newMemrefType = MemRefType::get(
         memrefTy.getShape(), memrefTy.getElementType(),
