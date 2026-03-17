@@ -52,6 +52,21 @@ parser.add_argument(
     action="store_true",
     help="Use bf16-emulation mode: compute f32 ops using bf16 hardware intrinsics",
 )
+parser.add_argument(
+    "-v",
+    "--verbose",
+    dest="verbose",
+    default=False,
+    action="store_true",
+    help="Enable verbose output from aircc/aiecc",
+)
+parser.add_argument(
+    "--debug-ir",
+    dest="debug_ir",
+    default=False,
+    action="store_true",
+    help="Dump intermediate IR after each pass for debugging",
+)
 args = parser.parse_args()
 
 
@@ -285,6 +300,8 @@ with air.ir.Context() as ctx, Location.unknown():
         output_format=args.output_format,
         instance_name="_layer_norm_fwd_fused",
         bf16_emulation=args.bf16_emulation,
+        verbose=args.verbose,
+        debug_ir=args.debug_ir,
     )
     exit(
         runner.run_test(
