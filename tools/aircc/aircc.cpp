@@ -771,6 +771,13 @@ static LogicalResult runGpuCompilation() {
   if (verbose)
     llvm::outs() << "GPU compilation complete! Output: " << finalOutput << "\n";
 
+  // Print to stdout if no output file specified (matches Python behavior)
+  if (outputFilename.empty()) {
+    auto bufOrErr = MemoryBuffer::getFile(finalOutput);
+    if (bufOrErr)
+      llvm::outs() << (*bufOrErr)->getBuffer();
+  }
+
   return success();
 }
 
@@ -1250,13 +1257,43 @@ static LogicalResult runAieCompilation() {
         return failure();
     }
 
-    // Lower to LLVM
+    // Lower to LLVM (airrt-to-llvm + bufferize)
+    SmallString<256> aieCtrlFile(tmpDir);
+    sys::path::append(aieCtrlFile, "aie_ctrl." + airMlirFilename);
     {
       std::string pipeline;
       raw_string_ostream os(pipeline);
       os << "builtin.module(airrt-to-llvm,one-shot-bufferize)";
       if (failed(runPassPipeline(pipeline, airrtModule.get())))
         return failure();
+      if (failed(saveModule(airrtModule.get(), aieCtrlFile)))
+        return failure();
+    }
+
+    // Generate refback (reference backend) by running the full AIRRt→LLVM
+    // pipeline on a fresh clone of the placed module.
+    {
+      auto refbackModule = cloneModule(placedModule.get());
+      if (refbackModule) {
+        SmallString<256> refbackFile(tmpDir);
+        sys::path::append(refbackFile, "refback." + airMlirFilename);
+        std::string pipeline;
+        raw_string_ostream os(pipeline);
+        os << "builtin.module(";
+        os << "convert-vector-to-llvm,convert-math-to-llvm";
+        os << ",func.func(air-label-broadcast-channel-with-tile)";
+        os << ",lower-affine";
+        os << ",func.func(air-opt-shim-dma-bds{device=" << deviceName.getValue()
+           << "})";
+        os << ",air-to-std,air-lower-linalg-tensors";
+        os << ",canonicalize,cse";
+        os << ",airrt-to-llvm";
+        os << ",canonicalize,cse";
+        os << ")";
+        if (succeeded(runPassPipeline(pipeline, refbackModule.get())))
+          (void)saveModule(refbackModule.get(), refbackFile);
+        // Failure is non-fatal — refback is a debugging artifact
+      }
     }
 
     SmallString<256> aieCtrlLlvm(tmpDir);
