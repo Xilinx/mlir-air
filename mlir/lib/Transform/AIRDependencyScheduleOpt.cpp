@@ -7088,6 +7088,15 @@ public:
     int64_t padDimIdx; // dimension index of the padded dim in sizes
   };
 
+  // Pre-computed info for an L3→L2 channel.get that needs explicit
+  // sizes/strides added (Step 5 of addMemtilePaddingToLaunch).
+  struct S2MMReplaceInfo {
+    air::ChannelGetOp getOp;
+    int64_t padDimInMemref;
+    int64_t shimIdx;
+    int64_t actualForShim;
+  };
+
   // Find the dimension index in L3→L2 channel.put sizes that corresponds to
   // the padded dimension (M for A, N for B). Traces which offset depends on
   // the launch block index BEFORE the launch is cloned/specialized.
@@ -7183,6 +7192,34 @@ public:
 
     return ShimPadInfo{shimIdx, chunkSize, actualForShim, padForShim,
                        padDimIdx};
+  }
+
+  // Find the dimension in a memref shape where shimIdx * shape[d] partially
+  // overlaps dimActualLast, indicating that dimension needs padding.
+  // searchForward: true for A (M is early dim), false for B (N is late dim).
+  // Returns -1 if no dimension needs padding.
+  static int64_t findPadDimInMemrefShape(ArrayRef<int64_t> shape,
+                                         int64_t shimIdx,
+                                         int64_t dimActualLast,
+                                         bool searchForward) {
+    auto check = [&](int64_t d) -> bool {
+      if (shape[d] <= 1)
+        return false;
+      int64_t shimOffset = shimIdx * shape[d];
+      int64_t actual =
+          std::max(int64_t(0), std::min(shape[d], dimActualLast - shimOffset));
+      return actual > 0 && actual < shape[d];
+    };
+    if (searchForward) {
+      for (int64_t d = 0; d < (int64_t)shape.size(); ++d)
+        if (check(d))
+          return d;
+    } else {
+      for (int64_t d = (int64_t)shape.size() - 1; d >= 0; --d)
+        if (check(d))
+          return d;
+    }
+    return -1;
   }
 
   // Modify sizes on a channel op for a boundary partition.
@@ -7542,38 +7579,10 @@ public:
       if (sizes.empty() || strides.empty())
         return;
 
-      // Find the padded dimension in L2→L1 channel sizes.
-      // For A: the M-rows dimension. For B: the N-blocks dimension.
-      //
-      // Test 53 (transform-script):
-      //   A sizes [8, 64, 8]: dim1=M-rows=64
-      //   B sizes [4, 8, 64, 8]: dim1=N-blocks=8
-      // Test 54 (@module_builder):
-      //   A sizes [2, 64, 8]: dim1=M-rows=64
-      //   B sizes [4, 16, 8]: dim0=N-blocks=4 (NOT dim1=K=16)
-      //
-      // Heuristic: find the dimension whose total data (size * innerBlock)
-      // matches the per-herd tile size for the padded dimension.
-      // The per-herd tile size for A is inferred from the L2 buffer shape;
-      // for B it's the product of sizes[padDim] * innerBlockSize.
-      //
-      // Simpler approach: look for the correct matching of shimOffset*chunkSize
-      // against mActualLast/nActualLast. The padded dimension is the one where
-      // shimIdx * l3ChunkSize < dimActualLast (meaningful padding).
-      // Use findPadDimInL3ChannelPut to find the L3 pad dimension, then
-      // find the corresponding L2→L1 dimension by checking which one has a
-      // matching product with the L3 chunk size.
-      //
-      // Fallback: try each dimension and pick the one that produces meaningful
-      // padding (i.e., padBlocks > 0 and ≤ 31).
-      // L2→L1 padded dimension: default to dim 1 (matches both test 53 and
-      // test 54 A patterns). If dim 1 doesn't produce meaningful padding,
-      // search other dimensions.
-      //
-      // Test 53: A sizes [8, 64, 8] → dim1=64 (M-rows)
-      // Test 54: A sizes [2, 64, 8] → dim1=64 (M-rows)
-      // Test 53: B sizes [4, 8, 64, 8] → dim1=8 (N-blocks)
-      // Test 54: B sizes [4, 16, 8] → need dim0=4 (N-blocks), not dim1=16 (K)
+      // Find the padded dimension in L2→L1 channel sizes. The padded dim
+      // is where shimIdx * (size * innerBlock) partially overlaps
+      // dimActualLast. Default to dim 1 (correct for A in all known
+      // patterns); fall back to searching other dimensions for B.
       int64_t l2l1PadDimIdx = 1;
       int64_t dimActualLast = isA ? mActualLast : nActualLast;
 
@@ -7700,7 +7709,7 @@ public:
     //   at 64-element intervals, preserving the stride layout
     //
     // Collect first, then modify (walk+erase in same pass is unsafe).
-    SmallVector<air::ChannelGetOp> getsToReplace;
+    SmallVector<S2MMReplaceInfo> getsToReplace;
     launch.walk([&](air::ChannelGetOp getOp) {
       if (!getOp->getParentOfType<air::SegmentOp>())
         return;
@@ -7721,126 +7730,35 @@ public:
       if (!memrefType || memrefType.getRank() < 2)
         return;
 
-      // Find the padded dimension in the L2 memref shape.
-      // Use the pre-computed L3 padDimIdx to identify which shape dimension
-      // corresponds to M (for A) or N (for B).
-      int64_t l3PadDim = isA ? padDimIdxA : padDimIdxB;
-      if (l3PadDim < 0)
-        l3PadDim = isA ? 0 : (memrefType.getRank() - 1);
-
-      // For the L2 memref, the padded dimension may be at a different index
-      // than in the L3 channel. Find it by matching the L3 chunk size against
-      // the memref shape dimensions.
       auto shape = memrefType.getShape();
-      int64_t padDimInMemref = -1;
       int64_t dimActualLast = isA ? mActualLast : nActualLast;
 
-      // Try each dimension to find the padded one. Search from last dim
-      // for B (N is typically the last dimension) and from first dim for A.
-      auto shimIt0 = l2BufToShimIdx.find(getOp.getMemref());
-      int64_t shimIdx0 = 0;
-      if (shimIt0 != l2BufToShimIdx.end())
-        shimIdx0 = shimIt0->second;
-      if (isA) {
-        // A: M is typically an early dimension; search forward.
-        for (int64_t d = 0; d < (int64_t)shape.size(); ++d) {
-          if (shape[d] <= 1)
-            continue;
-          int64_t shimOffset = shimIdx0 * shape[d];
-          int64_t actual = std::max(
-              int64_t(0), std::min(shape[d], dimActualLast - shimOffset));
-          if (actual > 0 && actual < shape[d]) {
-            padDimInMemref = d;
-            break;
-          }
-        }
-      } else {
-        // B: N is typically the last dimension; search backward.
-        for (int64_t d = (int64_t)shape.size() - 1; d >= 0; --d) {
-          if (shape[d] <= 1)
-            continue;
-          int64_t shimOffset = shimIdx0 * shape[d];
-          int64_t actual = std::max(
-              int64_t(0), std::min(shape[d], dimActualLast - shimOffset));
-          if (actual > 0 && actual < shape[d]) {
-            padDimInMemref = d;
-            break;
-          }
-        }
-      }
+      auto shimIt = l2BufToShimIdx.find(getOp.getMemref());
+      int64_t shimIdx = 0;
+      if (shimIt != l2BufToShimIdx.end())
+        shimIdx = shimIt->second;
+
+      // Find the padded dimension: search forward for A, backward for B.
+      int64_t padDimInMemref = findPadDimInMemrefShape(
+          shape, shimIdx, dimActualLast, /*searchForward=*/isA);
       if (padDimInMemref < 0)
         return;
 
       // Check that this shim actually needs reduced S2MM sizes.
       int64_t chunkSize = shape[padDimInMemref];
-      auto shimIt = l2BufToShimIdx.find(getOp.getMemref());
-      int64_t shimIdx = 0;
-      if (shimIt != l2BufToShimIdx.end())
-        shimIdx = shimIt->second;
       int64_t shimOffset = shimIdx * chunkSize;
       int64_t actualForShim =
           std::max(int64_t(0), std::min(chunkSize, dimActualLast - shimOffset));
       if (actualForShim >= chunkSize || actualForShim <= 0)
         return;
 
-      // Only need explicit strides if the padded dimension is NOT the last
-      // dimension. When it's the last dimension, contiguous S2MM is correct
-      // because the stride between elements in the padded dim is 1.
-      // When the padded dimension is inner (not last), data from later
-      // dimensions would be written at wrong positions without strides.
-      if (padDimInMemref == (int64_t)shape.size() - 1) {
-        // Last dimension: contiguous write is correct. But we still need to
-        // check if the padded dim has a non-unit stride in the L2→L1 read.
-        // For safety, always add explicit strides.
-      }
-
-      getsToReplace.push_back(getOp);
+      getsToReplace.push_back({getOp, padDimInMemref, shimIdx, actualForShim});
     });
-    for (auto getOp : getsToReplace) {
-      unsigned argIdx = chanToArgIdx.lookup(getOp.getChanName());
-      bool isA = (argIdx == 0);
+    for (auto &replaceInfo : getsToReplace) {
+      auto getOp = replaceInfo.getOp;
       auto memrefType = cast<MemRefType>(getOp.getMemref().getType());
       auto shape = memrefType.getShape();
       int64_t rank = memrefType.getRank();
-      int64_t dimActualLast = isA ? mActualLast : nActualLast;
-
-      // Re-find the padded dimension. Search backward for B, forward for A.
-      int64_t padDimInMemref = -1;
-      auto shimIt = l2BufToShimIdx.find(getOp.getMemref());
-      int64_t shimIdx = 0;
-      if (shimIt != l2BufToShimIdx.end())
-        shimIdx = shimIt->second;
-      if (isA) {
-        for (int64_t d = 0; d < rank; ++d) {
-          if (shape[d] <= 1)
-            continue;
-          int64_t shimOffset = shimIdx * shape[d];
-          int64_t actual = std::max(
-              int64_t(0), std::min(shape[d], dimActualLast - shimOffset));
-          if (actual > 0 && actual < shape[d]) {
-            padDimInMemref = d;
-            break;
-          }
-        }
-      } else {
-        for (int64_t d = rank - 1; d >= 0; --d) {
-          if (shape[d] <= 1)
-            continue;
-          int64_t shimOffset = shimIdx * shape[d];
-          int64_t actual = std::max(
-              int64_t(0), std::min(shape[d], dimActualLast - shimOffset));
-          if (actual > 0 && actual < shape[d]) {
-            padDimInMemref = d;
-            break;
-          }
-        }
-      }
-      if (padDimInMemref < 0)
-        continue;
-
-      int64_t chunkSize = shape[padDimInMemref];
-      int64_t actualForShim = std::max(
-          int64_t(0), std::min(chunkSize, dimActualLast - shimIdx * chunkSize));
 
       OpBuilder builder(getOp);
       Location loc = getOp.getLoc();
@@ -7850,7 +7768,9 @@ public:
       SmallVector<Value> offsets, sizes, strides;
       for (int64_t d = 0; d < rank; ++d) {
         offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
-        int64_t dimSize = (d == padDimInMemref) ? actualForShim : shape[d];
+        int64_t dimSize = (d == replaceInfo.padDimInMemref)
+                              ? replaceInfo.actualForShim
+                              : shape[d];
         sizes.push_back(arith::ConstantIndexOp::create(builder, loc, dimSize));
         // Row-major stride: product of shape[d+1..rank-1]
         int64_t stride = 1;
