@@ -4825,17 +4825,46 @@ public:
         }
       }
 
-      // Validate padding rank matches sizes rank.
-      if (!sizes.empty() && padBefore.size() != sizes.size()) {
-        return memcpyOp->emitOpError(
-            "padding rank does not match transfer rank");
+      // Adjust padding rank to match sizes rank.
+      // The sizes may have been recomputed by getWrapsAndStrides which can
+      // change dimensionality (e.g., collapsing broadcast dimensions with
+      // stride=0). Truncate leading zero-pad dimensions or extend with zeros.
+      // Use SmallVectors for persistent storage of adjusted padding.
+      SmallVector<int32_t> adjPadBefore(padBefore.begin(), padBefore.end());
+      SmallVector<int32_t> adjPadAfter(padAfter.begin(), padAfter.end());
+      if (!sizes.empty() && adjPadBefore.size() != sizes.size()) {
+        if (adjPadBefore.size() > sizes.size()) {
+          size_t excess = adjPadBefore.size() - sizes.size();
+          bool canTruncate = true;
+          for (size_t i = 0; i < excess; i++) {
+            if (adjPadBefore[i] != 0 || adjPadAfter[i] != 0) {
+              canTruncate = false;
+              break;
+            }
+          }
+          if (canTruncate) {
+            adjPadBefore.erase(adjPadBefore.begin(),
+                               adjPadBefore.begin() + excess);
+            adjPadAfter.erase(adjPadAfter.begin(),
+                              adjPadAfter.begin() + excess);
+          } else {
+            return memcpyOp->emitOpError(
+                "padding rank does not match transfer rank and cannot "
+                "truncate non-zero leading padding dimensions");
+          }
+        }
+        if (adjPadBefore.size() < sizes.size()) {
+          size_t deficit = sizes.size() - adjPadBefore.size();
+          adjPadBefore.insert(adjPadBefore.begin(), deficit, 0);
+          adjPadAfter.insert(adjPadAfter.begin(), deficit, 0);
+        }
       }
 
       SmallVector<AIE::BDPadLayoutAttr> padLayouts;
-      for (size_t i = 0; i < padBefore.size(); i++) {
+      for (size_t i = 0; i < adjPadBefore.size(); i++) {
         padLayouts.push_back(AIE::BDPadLayoutAttr::get(
-            ndcpy->getContext(), static_cast<uint16_t>(padBefore[i]),
-            static_cast<uint16_t>(padAfter[i])));
+            ndcpy->getContext(), static_cast<uint16_t>(adjPadBefore[i]),
+            static_cast<uint16_t>(adjPadAfter[i])));
       }
       padDims = AIE::BDPadLayoutArrayAttr::get(ndcpy->getContext(),
                                                ArrayRef(padLayouts));
@@ -4849,7 +4878,9 @@ public:
           return memcpyOp->emitOpError(
               "padding requires constant sizes for DMA BD length computation");
         }
-        paddedLen *= (*sizeVal + padBefore[i] + padAfter[i]);
+        int32_t pb = i < adjPadBefore.size() ? adjPadBefore[i] : 0;
+        int32_t pa = i < adjPadAfter.size() ? adjPadAfter[i] : 0;
+        paddedLen *= (*sizeVal + pb + pa);
       }
       length = arith::ConstantIndexOp::create(b, memcpyOp.getLoc(), paddedLen)
                    ->getResult(0);

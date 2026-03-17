@@ -1007,6 +1007,10 @@ FailureOr<hierTy> ScfParToAIRHierarchyConversionImpl(
   for (auto id : ids)
     dims.push_back(arith::ConstantIndexOp::create(rewriter, loc, bounds[id]));
   auto hierOp = hierTy::create(rewriter, op.getLoc(), dims, args);
+  // Transfer air.actual_sizes attribute from scf.parallel to air hierarchy op.
+  if (auto actualSizes =
+          op->getAttrOfType<DenseI64ArrayAttr>("air.actual_sizes"))
+    hierOp->setAttr("air.actual_sizes", actualSizes);
   auto &body = op.getBody()->getOperations();
   if (auto herdOp = dyn_cast_if_present<air::HerdOp>(hierOp.getOperation()))
     propagateLinkWith(op, herdOp);
@@ -2093,6 +2097,16 @@ void AIRWrapFuncWithParallelPass::runOnOperation() {
   wrapParPatterns.add<WrapFuncWithParallelPattern>(context, loopBoundsVec);
   (void)applyOpPatternsGreedily(SmallVector<Operation *>{funcOp.getOperation()},
                                 std::move(wrapParPatterns));
+
+  // Attach actual-sizes attribute on the created scf.parallel if specified.
+  if (!clActualSizes.empty()) {
+    SmallVector<int64_t> actualSizesVec(clActualSizes.begin(),
+                                        clActualSizes.end());
+    funcOp.walk([&](scf::ParallelOp parOp) {
+      parOp->setAttr("air.actual_sizes",
+                     DenseI64ArrayAttr::get(context, actualSizesVec));
+    });
+  }
 
   RewritePatternSet patterns(context);
   patterns.add<CanonicalizeArithAddIOpToIndexTypePattern,

@@ -851,6 +851,14 @@ extern "C" {
             if _debug_ir_dir:
                 dump_pass_log(os.path.join(_debug_ir_dir, "pass.log"))
 
+        # Split launch for non-tile-aligned DMA padding. No-op if no launch
+        # has the air.actual_sizes attribute (set by air-wrap-func-with-parallel).
+        run_passes(
+            "builtin.module(air-split-launch-for-padding)",
+            air_placed_module,
+            opts,
+        )
+
         air_to_aie_pass = "air-to-aie{"
         air_to_aie_pass = (
             air_to_aie_pass
