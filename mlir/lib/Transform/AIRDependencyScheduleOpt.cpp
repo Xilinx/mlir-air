@@ -7199,8 +7199,7 @@ public:
   // searchForward: true for A (M is early dim), false for B (N is late dim).
   // Returns -1 if no dimension needs padding.
   static int64_t findPadDimInMemrefShape(ArrayRef<int64_t> shape,
-                                         int64_t shimIdx,
-                                         int64_t dimActualLast,
+                                         int64_t shimIdx, int64_t dimActualLast,
                                          bool searchForward) {
     auto check = [&](int64_t d) -> bool {
       if (shape[d] <= 1)
