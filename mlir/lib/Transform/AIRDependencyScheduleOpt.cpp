@@ -7085,18 +7085,83 @@ public:
     int64_t chunkSize;
     int64_t actualForShim;
     int64_t padForShim;
-    int64_t padDimIdx; // 0 for A (M-rows), last for B (N-cols)
+    int64_t padDimIdx; // dimension index of the padded dim in sizes
   };
 
+  // Find the dimension index in L3→L2 channel.put sizes that corresponds to
+  // the padded dimension (M for A, N for B). Traces which offset depends on
+  // the launch block index BEFORE the launch is cloned/specialized.
+  //
+  // For test 53 (transform-script): 2D sizes [64, 64], A padDim=0, B padDim=1
+  // For test 54 (@module_builder): 4D sizes [1, 1, 64, 16], A padDim=2
+  //
+  // Must be called on the ORIGINAL launch (before cloneAndSpecializeLaunch
+  // replaces block indices with constants). Returns {A_padDimIdx, B_padDimIdx}.
+  std::pair<int64_t, int64_t>
+  inferL3PadDimIndices(air::LaunchOp launchOp,
+                       DenseMap<StringRef, unsigned> &chanToArgIdx) {
+    int64_t aPadDim = 0;
+    int64_t bPadDim = -1; // Will use last dim as fallback
+
+    auto launchIds = launchOp.getIds();
+    if (launchIds.size() < 2)
+      return {aPadDim, bPadDim};
+
+    // Find launch offset values for M (dim 0) and N (dim 1).
+    Value mOffset = nullptr, nOffset = nullptr;
+    for (auto &use : launchIds[0].getUses()) {
+      if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
+        mOffset = mulOp.getResult();
+        break;
+      }
+    }
+    for (auto &use : launchIds[1].getUses()) {
+      if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
+        nOffset = mulOp.getResult();
+        break;
+      }
+    }
+
+    // Scan L3→L2 channel.puts to find which offset dim uses the launch offset.
+    launchOp.walk([&](air::ChannelPutOp putOp) {
+      if (putOp->getParentOfType<air::SegmentOp>())
+        return;
+      if (!chanToArgIdx.count(putOp.getChanName()))
+        return;
+      unsigned argIdx = chanToArgIdx.lookup(putOp.getChanName());
+      auto offsets = putOp.getOffsets();
+      auto sizes = putOp.getSizes();
+      if (offsets.empty() || sizes.empty())
+        return;
+
+      for (unsigned i = 0; i < offsets.size() && i < sizes.size(); ++i) {
+        if (argIdx == 0 && mOffset && offsets[i] == mOffset) {
+          aPadDim = i;
+        } else if (argIdx == 1 && nOffset && offsets[i] == nOffset) {
+          bPadDim = i;
+        }
+      }
+    });
+
+    return {aPadDim, bPadDim};
+  }
+
   // Compute per-shim padding info for an L3 channel op.
+  // padDimIdxA/B are pre-computed from the original launch (before cloning).
   std::optional<ShimPadInfo> computeShimPadInfo(air::ChannelInterface chOp,
                                                 bool isA, int64_t mActualLast,
-                                                int64_t nActualLast) {
+                                                int64_t nActualLast,
+                                                int64_t padDimIdxA,
+                                                int64_t padDimIdxB) {
     auto sizes = chOp.getSizes();
     if (sizes.empty())
       return std::nullopt;
 
-    int64_t padDimIdx = isA ? 0 : ((int64_t)sizes.size() - 1);
+    int64_t padDimIdx =
+        isA ? padDimIdxA
+            : (padDimIdxB >= 0 ? padDimIdxB : ((int64_t)sizes.size() - 1));
+    if (padDimIdx < 0 || padDimIdx >= (int64_t)sizes.size())
+      return std::nullopt;
     auto chunkSizeOpt = getConstantIntValue(sizes[padDimIdx]);
     if (!chunkSizeOpt)
       return std::nullopt;
@@ -7346,6 +7411,21 @@ public:
       OpBuilder builder(launchOp);
       Location loc = launchOp.getLoc();
 
+      // Pre-compute L3→L2 pad dimension indices from the ORIGINAL launch
+      // (before cloning replaces block indices with constants).
+      DenseMap<StringRef, unsigned> chanToArgIdxOrig;
+      launchOp.walk([&](air::ChannelPutOp putOp) {
+        if (putOp->getParentOfType<air::SegmentOp>())
+          return;
+        auto memrefType = dyn_cast<BaseMemRefType>(putOp.getMemref().getType());
+        if (memrefType && getMemorySpace(memrefType) == air::MemorySpace::L3) {
+          unsigned argIdx = traceFuncArgIdx(putOp.getMemref());
+          chanToArgIdxOrig[putOp.getChanName()] = argIdx;
+        }
+      });
+      auto [padDimIdxA, padDimIdxB] =
+          inferL3PadDimIndices(launchOp, chanToArgIdxOrig);
+
       // Partition the launch grid into up to 4 partitions:
       // interior, M-boundary, N-boundary, corner.
       int64_t interiorM = mRem ? (launchM - 1) : launchM;
@@ -7364,7 +7444,8 @@ public:
             launchOp, builder, loc, /*fixedDimM=*/launchM - 1,
             /*fixedDimN=*/-1, 1, interiorN, "_m_boundary");
         addMemtilePaddingToLaunch(mBound, /*padM=*/true, /*padN=*/false,
-                                  mActualLast, nActualLast);
+                                  mActualLast, nActualLast, padDimIdxA,
+                                  padDimIdxB);
       }
       // N-boundary: all interior M-blocks, last N-block.
       if (nRem && interiorM > 0) {
@@ -7372,7 +7453,8 @@ public:
             launchOp, builder, loc, /*fixedDimM=*/-1,
             /*fixedDimN=*/launchN - 1, interiorM, 1, "_n_boundary");
         addMemtilePaddingToLaunch(nBound, /*padM=*/false, /*padN=*/true,
-                                  mActualLast, nActualLast);
+                                  mActualLast, nActualLast, padDimIdxA,
+                                  padDimIdxB);
       }
       // Corner: last M-block, last N-block.
       if (mRem && nRem) {
@@ -7380,7 +7462,8 @@ public:
             launchOp, builder, loc, /*fixedDimM=*/launchM - 1,
             /*fixedDimN=*/launchN - 1, 1, 1, "_corner");
         addMemtilePaddingToLaunch(corner, /*padM=*/true, /*padN=*/true,
-                                  mActualLast, nActualLast);
+                                  mActualLast, nActualLast, padDimIdxA,
+                                  padDimIdxB);
       }
 
       // Erase the original launch.
@@ -7398,7 +7481,8 @@ public:
   // Host buffers need only be padded to innerBlockSize alignment (8 elements),
   // not full tile alignment. Memtile padding provides the rest.
   void addMemtilePaddingToLaunch(air::LaunchOp launch, bool padM, bool padN,
-                                 int64_t mActualLast, int64_t nActualLast) {
+                                 int64_t mActualLast, int64_t nActualLast,
+                                 int64_t padDimIdxA, int64_t padDimIdxB) {
     // Step 1: Build mapping from L3 channel names to input type (A=0, B=1).
     DenseMap<StringRef, unsigned> chanToArgIdx;
     launch.walk([&](air::ChannelPutOp putOp) {
@@ -7458,11 +7542,74 @@ public:
       if (sizes.empty() || strides.empty())
         return;
 
-      // L2→L1 padded dimension is ALWAYS dim 1 for both A and B:
-      // - A sizes [8, 64, 8] strides [8, 64, 1]: dim1=M-rows (stride=64)
-      // - B sizes [4, 8, 64, 8] strides [0, 8, 64, 1]: dim1=N-blocks (stride=8)
+      // Find the padded dimension in L2→L1 channel sizes.
+      // For A: the M-rows dimension. For B: the N-blocks dimension.
+      //
+      // Test 53 (transform-script):
+      //   A sizes [8, 64, 8]: dim1=M-rows=64
+      //   B sizes [4, 8, 64, 8]: dim1=N-blocks=8
+      // Test 54 (@module_builder):
+      //   A sizes [2, 64, 8]: dim1=M-rows=64
+      //   B sizes [4, 16, 8]: dim0=N-blocks=4 (NOT dim1=K=16)
+      //
+      // Heuristic: find the dimension whose total data (size * innerBlock)
+      // matches the per-herd tile size for the padded dimension.
+      // The per-herd tile size for A is inferred from the L2 buffer shape;
+      // for B it's the product of sizes[padDim] * innerBlockSize.
+      //
+      // Simpler approach: look for the correct matching of shimOffset*chunkSize
+      // against mActualLast/nActualLast. The padded dimension is the one where
+      // shimIdx * l3ChunkSize < dimActualLast (meaningful padding).
+      // Use findPadDimInL3ChannelPut to find the L3 pad dimension, then
+      // find the corresponding L2→L1 dimension by checking which one has a
+      // matching product with the L3 chunk size.
+      //
+      // Fallback: try each dimension and pick the one that produces meaningful
+      // padding (i.e., padBlocks > 0 and ≤ 31).
+      // L2→L1 padded dimension: default to dim 1 (matches both test 53 and
+      // test 54 A patterns). If dim 1 doesn't produce meaningful padding,
+      // search other dimensions.
+      //
+      // Test 53: A sizes [8, 64, 8] → dim1=64 (M-rows)
+      // Test 54: A sizes [2, 64, 8] → dim1=64 (M-rows)
+      // Test 53: B sizes [4, 8, 64, 8] → dim1=8 (N-blocks)
+      // Test 54: B sizes [4, 16, 8] → need dim0=4 (N-blocks), not dim1=16 (K)
       int64_t l2l1PadDimIdx = 1;
-      if (l2l1PadDimIdx >= (int64_t)sizes.size())
+      int64_t dimActualLast = isA ? mActualLast : nActualLast;
+
+      // Check if default dim 1 produces meaningful padding.
+      auto checkDim = [&](int64_t d) -> bool {
+        if (d < 0 || d >= (int64_t)sizes.size())
+          return false;
+        auto sizeOpt = getConstantIntValue(sizes[d]);
+        if (!sizeOpt || *sizeOpt <= 1)
+          return false;
+        auto strideAtDimOpt = getConstantIntValue(strides[d]);
+        auto lastSizeOpt = getConstantIntValue(sizes[sizes.size() - 1]);
+        int64_t innerBlock = 1;
+        if (strideAtDimOpt && lastSizeOpt && *strideAtDimOpt == *lastSizeOpt)
+          innerBlock = *lastSizeOpt;
+        int64_t chunkSz = *sizeOpt * innerBlock;
+        int64_t shimOff = shimIdx * chunkSz;
+        int64_t actual =
+            std::max(int64_t(0), std::min(chunkSz, dimActualLast - shimOff));
+        return actual > 0 && actual < chunkSz;
+      };
+
+      if (!checkDim(l2l1PadDimIdx)) {
+        // Dim 1 doesn't need padding; search other dimensions.
+        l2l1PadDimIdx = -1;
+        for (int64_t d = 0; d < (int64_t)sizes.size(); ++d) {
+          if (d == 1)
+            continue; // Already checked
+          if (checkDim(d)) {
+            l2l1PadDimIdx = d;
+            break;
+          }
+        }
+      }
+
+      if (l2l1PadDimIdx < 0 || l2l1PadDimIdx >= (int64_t)sizes.size())
         return;
 
       auto fullBlocksOpt = getConstantIntValue(sizes[l2l1PadDimIdx]);
@@ -7481,7 +7628,6 @@ public:
         innerBlockSize = *lastSizeOpt;
 
       int64_t l3ChunkSize = fullBlocks * innerBlockSize;
-      int64_t dimActualLast = isA ? mActualLast : nActualLast;
       int64_t shimOffset = shimIdx * l3ChunkSize;
       int64_t actualForShim = std::max(
           int64_t(0), std::min(l3ChunkSize, dimActualLast - shimOffset));
@@ -7531,9 +7677,9 @@ public:
       if (!isA && !isB)
         return;
 
-      auto info =
-          computeShimPadInfo(cast<air::ChannelInterface>(putOp.getOperation()),
-                             isA, mActualLast, nActualLast);
+      auto info = computeShimPadInfo(
+          cast<air::ChannelInterface>(putOp.getOperation()), isA, mActualLast,
+          nActualLast, padDimIdxA, padDimIdxB);
       if (!info || info->actualForShim >= info->chunkSize ||
           info->actualForShim <= 0)
         return;
@@ -7572,62 +7718,146 @@ public:
       if (!isA && !isB)
         return;
       auto memrefType = dyn_cast<MemRefType>(getOp.getMemref().getType());
-      if (!memrefType || memrefType.getRank() != 2)
+      if (!memrefType || memrefType.getRank() < 2)
         return;
-      int64_t chunkSize =
-          isA ? memrefType.getShape()[0] : memrefType.getShape()[1];
-      auto indices = getOp.getIndices();
-      int64_t shimIdx = 0;
-      if (!indices.empty()) {
-        auto shimIdxOpt = getConstantIntValue(indices[0]);
-        if (shimIdxOpt)
-          shimIdx = *shimIdxOpt;
-      }
+
+      // Find the padded dimension in the L2 memref shape.
+      // Use the pre-computed L3 padDimIdx to identify which shape dimension
+      // corresponds to M (for A) or N (for B).
+      int64_t l3PadDim = isA ? padDimIdxA : padDimIdxB;
+      if (l3PadDim < 0)
+        l3PadDim = isA ? 0 : (memrefType.getRank() - 1);
+
+      // For the L2 memref, the padded dimension may be at a different index
+      // than in the L3 channel. Find it by matching the L3 chunk size against
+      // the memref shape dimensions.
+      auto shape = memrefType.getShape();
+      int64_t padDimInMemref = -1;
       int64_t dimActualLast = isA ? mActualLast : nActualLast;
+
+      // Try each dimension to find the padded one. Search from last dim
+      // for B (N is typically the last dimension) and from first dim for A.
+      auto shimIt0 = l2BufToShimIdx.find(getOp.getMemref());
+      int64_t shimIdx0 = 0;
+      if (shimIt0 != l2BufToShimIdx.end())
+        shimIdx0 = shimIt0->second;
+      if (isA) {
+        // A: M is typically an early dimension; search forward.
+        for (int64_t d = 0; d < (int64_t)shape.size(); ++d) {
+          if (shape[d] <= 1)
+            continue;
+          int64_t shimOffset = shimIdx0 * shape[d];
+          int64_t actual = std::max(
+              int64_t(0), std::min(shape[d], dimActualLast - shimOffset));
+          if (actual > 0 && actual < shape[d]) {
+            padDimInMemref = d;
+            break;
+          }
+        }
+      } else {
+        // B: N is typically the last dimension; search backward.
+        for (int64_t d = (int64_t)shape.size() - 1; d >= 0; --d) {
+          if (shape[d] <= 1)
+            continue;
+          int64_t shimOffset = shimIdx0 * shape[d];
+          int64_t actual = std::max(
+              int64_t(0), std::min(shape[d], dimActualLast - shimOffset));
+          if (actual > 0 && actual < shape[d]) {
+            padDimInMemref = d;
+            break;
+          }
+        }
+      }
+      if (padDimInMemref < 0)
+        return;
+
+      // Check that this shim actually needs reduced S2MM sizes.
+      int64_t chunkSize = shape[padDimInMemref];
+      auto shimIt = l2BufToShimIdx.find(getOp.getMemref());
+      int64_t shimIdx = 0;
+      if (shimIt != l2BufToShimIdx.end())
+        shimIdx = shimIt->second;
       int64_t shimOffset = shimIdx * chunkSize;
       int64_t actualForShim =
           std::max(int64_t(0), std::min(chunkSize, dimActualLast - shimOffset));
       if (actualForShim >= chunkSize || actualForShim <= 0)
         return;
+
+      // Only need explicit strides if the padded dimension is NOT the last
+      // dimension. When it's the last dimension, contiguous S2MM is correct
+      // because the stride between elements in the padded dim is 1.
+      // When the padded dimension is inner (not last), data from later
+      // dimensions would be written at wrong positions without strides.
+      if (padDimInMemref == (int64_t)shape.size() - 1) {
+        // Last dimension: contiguous write is correct. But we still need to
+        // check if the padded dim has a non-unit stride in the L2→L1 read.
+        // For safety, always add explicit strides.
+      }
+
       getsToReplace.push_back(getOp);
     });
     for (auto getOp : getsToReplace) {
       unsigned argIdx = chanToArgIdx.lookup(getOp.getChanName());
       bool isA = (argIdx == 0);
       auto memrefType = cast<MemRefType>(getOp.getMemref().getType());
-      int64_t bufRows = memrefType.getShape()[0];
-      int64_t bufCols = memrefType.getShape()[1];
-      int64_t chunkSize = isA ? bufRows : bufCols;
-      auto indices = getOp.getIndices();
-      int64_t shimIdx = 0;
-      if (!indices.empty()) {
-        auto shimIdxOpt = getConstantIntValue(indices[0]);
-        if (shimIdxOpt)
-          shimIdx = *shimIdxOpt;
-      }
+      auto shape = memrefType.getShape();
+      int64_t rank = memrefType.getRank();
       int64_t dimActualLast = isA ? mActualLast : nActualLast;
+
+      // Re-find the padded dimension. Search backward for B, forward for A.
+      int64_t padDimInMemref = -1;
+      auto shimIt = l2BufToShimIdx.find(getOp.getMemref());
+      int64_t shimIdx = 0;
+      if (shimIt != l2BufToShimIdx.end())
+        shimIdx = shimIt->second;
+      if (isA) {
+        for (int64_t d = 0; d < rank; ++d) {
+          if (shape[d] <= 1)
+            continue;
+          int64_t shimOffset = shimIdx * shape[d];
+          int64_t actual = std::max(
+              int64_t(0), std::min(shape[d], dimActualLast - shimOffset));
+          if (actual > 0 && actual < shape[d]) {
+            padDimInMemref = d;
+            break;
+          }
+        }
+      } else {
+        for (int64_t d = rank - 1; d >= 0; --d) {
+          if (shape[d] <= 1)
+            continue;
+          int64_t shimOffset = shimIdx * shape[d];
+          int64_t actual = std::max(
+              int64_t(0), std::min(shape[d], dimActualLast - shimOffset));
+          if (actual > 0 && actual < shape[d]) {
+            padDimInMemref = d;
+            break;
+          }
+        }
+      }
+      if (padDimInMemref < 0)
+        continue;
+
+      int64_t chunkSize = shape[padDimInMemref];
       int64_t actualForShim = std::max(
           int64_t(0), std::min(chunkSize, dimActualLast - shimIdx * chunkSize));
 
       OpBuilder builder(getOp);
       Location loc = getOp.getLoc();
-      int64_t reducedDim = actualForShim;
-      int64_t otherDim = isA ? bufCols : bufRows;
 
-      SmallVector<Value, 2> offsets, sizes, strides;
-      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
-      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
-      if (isA) {
-        sizes.push_back(
-            arith::ConstantIndexOp::create(builder, loc, reducedDim));
-        sizes.push_back(arith::ConstantIndexOp::create(builder, loc, otherDim));
-      } else {
-        sizes.push_back(arith::ConstantIndexOp::create(builder, loc, otherDim));
-        sizes.push_back(
-            arith::ConstantIndexOp::create(builder, loc, reducedDim));
+      // Build N-dimensional offsets (all zeros), sizes (reduced at padDim),
+      // and strides (row-major based on original shape).
+      SmallVector<Value> offsets, sizes, strides;
+      for (int64_t d = 0; d < rank; ++d) {
+        offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
+        int64_t dimSize = (d == padDimInMemref) ? actualForShim : shape[d];
+        sizes.push_back(arith::ConstantIndexOp::create(builder, loc, dimSize));
+        // Row-major stride: product of shape[d+1..rank-1]
+        int64_t stride = 1;
+        for (int64_t j = d + 1; j < rank; ++j)
+          stride *= shape[j];
+        strides.push_back(arith::ConstantIndexOp::create(builder, loc, stride));
       }
-      strides.push_back(arith::ConstantIndexOp::create(builder, loc, bufCols));
-      strides.push_back(arith::ConstantIndexOp::create(builder, loc, 1));
 
       auto newGet = air::ChannelGetOp::create(
           builder, loc,
