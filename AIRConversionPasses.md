@@ -280,7 +280,8 @@ The pass assumes that:
 #### Options
 
 ```
--loop-bounds : Specify upper bounds for scf.parallel loops
+-loop-bounds  : Specify upper bounds for scf.parallel loops
+-actual-sizes : Actual data sizes per launch dimension (for DMA padding). Attached as 'air.actual_sizes' on the created loop.
 ```
 
 ### `-airrt-to-llvm`

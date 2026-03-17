@@ -1400,6 +1400,34 @@ _Split L2 memref into smaller buffers to better fit with the data movement harwa
 -tiles-per-l2-tile : Number of compute tiles per L2 memory tile. Used to estimate if an air.segment shall allocate to multiple L2 memory tiles, and therefore requires L2 memref splitting.
 ```
 
+### `-air-split-launch-for-padding`
+
+_Split air.launch into partitions for device-side DMA padding_
+
+For non-tile-aligned dimensions, splits the air.launch into up to 4
+partitions: interior (multi-iteration, no padding), M-boundary,
+N-boundary, and corner (single-iteration each, with padding).
+
+Reads the `air.actual_sizes` attribute from air.launch to determine
+actual data dimensions. If absent, the launch is left unchanged.
+Tile sizes are inferred from arith.muli offset computations in the
+launch body.
+
+For boundary partitions:
+- L2->L1 channel.put ops get memtile DMA padding (pad_after via
+  BDPadLayoutAttr) where hardware supports zero-padding (max 31 per
+  dimension). When exceeded, a diagnostic is emitted.
+- L3->L2 channel.put sizes are reduced so shim DMAs read only
+  block-aligned actual data from DDR.
+- L3->L2 channel.get ops get explicit sizes/strides to preserve L2
+  buffer layout when receiving fewer elements.
+
+Each partition gets unique channel names and segment names. The core
+program is identical across all partitions; lightweight load_pdi
+reconfigures memtile DMAs between launches.
+
+Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.
+
 ### `-air-transform`
 
 _Transform IR with transform dialect_
