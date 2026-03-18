@@ -23,6 +23,11 @@
 
 #include "zero.cc"
 
+// Set rounding mode to convergent even for bf16 matmul accuracy.
+// Without this, BFP16 emulation uses floor rounding which introduces
+// a systematic negative bias (~-0.07 per K element).
+constexpr aie::rounding_mode round_mode = aie::rounding_mode::conv_even;
+
 template <typename T_in, typename T_out, int rowA, int colA, int colB>
 static inline void matmul_scalar(T_in *a, T_in *b, T_out *c) {
   event0();
@@ -125,20 +130,39 @@ matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
                                   const bfloat16 *__restrict pB,
                                   bfloat16 *__restrict pC) {
 
-  // For AIE2P external library, use 8x8x8 shape with 2x2 expansion
   constexpr int r = 8;
   constexpr int s = 8;
   constexpr int t = 8;
 
-  // Since the kernel has been expanded 2 times for both A ('m' dimension) and B
-  // ('n' dimension), the following assertions verify this even division for
-  // the single AIE MatMul dimensionality. Notice that 'k' dimension is not
-  // spatially expanded.
-  static_assert(m % (2 * r) == 0); // 'm' dimension
-  static_assert(k % s == 0);       // 'k' dimension
-  static_assert(n % (2 * t) == 0); // 'n' dimension
+  static_assert(m % (2 * r) == 0);
+  static_assert(k % s == 0);
+  static_assert(n % (2 * t) == 0);
 
+  ::aie::set_rounding(round_mode);
   return matmul_vectorized_2x2_mmul<bfloat16, bfloat16, (m / r), (k / s),
+                                    (n / t), r, s, t>(pA, pB, pC);
+}
+
+// bf16 MatMul kernel with f32 accumulation output using 8x8x8 shape.
+// Keeps the accumulator as f32 between K-tile iterations, avoiding bf16
+// truncation of partial sums. This gives higher precision at the cost of
+// 2x L1 memory for the C buffer.
+template <unsigned m, unsigned k, unsigned n>
+static inline void
+matmul_vectorized_8x8x8_bf16_f32(const bfloat16 *__restrict pA,
+                                 const bfloat16 *__restrict pB,
+                                 float *__restrict pC) {
+
+  constexpr int r = 8;
+  constexpr int s = 8;
+  constexpr int t = 8;
+
+  static_assert(m % (2 * r) == 0);
+  static_assert(k % s == 0);
+  static_assert(n % (2 * t) == 0);
+
+  ::aie::set_rounding(round_mode);
+  return matmul_vectorized_2x2_mmul<bfloat16, float, (m / r), (k / s),
                                     (n / t), r, s, t>(pA, pB, pC);
 }
 
@@ -171,8 +195,7 @@ extern "C" {
 #endif
 
 #ifndef combos
-#define combos(X) X(bfloat16, bf16, bfloat16, bf16, 8, 8, 8)
-// #define combos(X) X(bfloat16, bf16, bfloat16, bf16, 4, 8, 4)
+#define combos(X) X(bfloat16, bf16, float, f32, 8, 8, 8)
 #endif
 
 #define matmul_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,            \
@@ -203,7 +226,7 @@ extern "C" {
 
 #define zero_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,              \
                                mlir_type_out, r, s, t)                         \
-  void MAKE_LINALG_FILL_NAME(mlir_type_in, mlir_type_out, DIM_N_DIV_##t,       \
+  void MAKE_LINALG_FILL_NAME(mlir_type_out, mlir_type_out, DIM_N_DIV_##t,      \
                              DIM_M_DIV_##r, r##x##t)(ctype_out * c_out) {      \
     zero_vectorized<ctype_out, DIM_M, DIM_N, 32>(c_out);                       \
   }

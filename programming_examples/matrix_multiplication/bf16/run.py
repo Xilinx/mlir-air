@@ -478,7 +478,7 @@ if __name__ == "__main__":
     HERD_M = 4
     HERD_N = 4
     INPUT_DATATYPE = bfloat16
-    OUTPUT_DATATYPE = bfloat16  # also supports np.float32
+    OUTPUT_DATATYPE = np.float32
 
     parser = argparse.ArgumentParser(
         prog="run.py",
@@ -707,12 +707,8 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.m * args.k, dtype=INPUT_DATATYPE).reshape(
-        args.m, args.k
-    )
-    input_b = np.arange(0, args.k * args.n, dtype=INPUT_DATATYPE).reshape(
-        args.k, args.n
-    )
+    input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
+    input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
         # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
@@ -761,7 +757,8 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e0,
+                rtol=0.01,
+                atol=4,
             )
         )
 
