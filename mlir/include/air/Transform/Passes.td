@@ -1573,7 +1573,9 @@ def AIROverrideMemRefMemorySpace : Pass<"air-override-memref-memory-space", "Mod
   let summary = "Force all memrefs allocated within code region to have the specified memory space.";
   let constructor = "xilinx::air::createAIROverrideMemRefMemorySpacePass()";
   let description = [{
-    Experimental pass. Force all memrefs allocated within a specified code region to have the specified memory space.
+    Experimental pass. Force all memrefs allocated within a specified code region
+    to have the specified memory space. Allocs that already have an explicitly set
+    non-default memory space (i.e., not L3/0) are preserved and not overridden.
   }];
   let options = [
     Option<"clMemorySpace", "memory-space", "unsigned", /*default=*/"0",
