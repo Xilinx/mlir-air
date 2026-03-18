@@ -962,7 +962,9 @@ Optimize the logical data movement by transforming them, represented as air.chan
 
 _Force all memrefs allocated within code region to have the specified memory space._
 
-Experimental pass. Force all memrefs allocated within a specified code region to have the specified memory space.
+Experimental pass. Force all memrefs allocated within a specified code region
+to have the specified memory space. Allocs that already have an explicitly set
+non-default memory space (i.e., not L3/0) are preserved and not overridden.
 
 #### Options
 
