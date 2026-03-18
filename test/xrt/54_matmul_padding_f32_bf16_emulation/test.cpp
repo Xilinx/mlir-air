@@ -40,9 +40,9 @@ void add_default_options(cxxopts::Options &options) {
       cxxopts::value<std::string>())("size_m,M", "Actual matrix M (for GFLOPS)",
                                      cxxopts::value<int>())(
       "size_n,N", "Actual matrix N (for GFLOPS)", cxxopts::value<int>())(
-      "size_k,K", "Matrix K dimension", cxxopts::value<int>())(
-      "alloc_m", "M buffer alloc size (default: M)",
-      cxxopts::value<int>()->default_value("0"))(
+      "size_k,K", "Matrix K dimension",
+      cxxopts::value<int>())("alloc_m", "M buffer alloc size (default: M)",
+                             cxxopts::value<int>()->default_value("0"))(
       "alloc_n", "N buffer alloc size (default: N)",
       cxxopts::value<int>()->default_value("0"));
 }
@@ -61,8 +61,10 @@ int main(int argc, const char *argv[]) {
   // M/N are the actual dimensions used for GFLOPS calculation.
   int M_buf = vm["alloc_m"].as<int>();
   int N_buf = vm["alloc_n"].as<int>();
-  if (M_buf <= 0) M_buf = M;
-  if (N_buf <= 0) N_buf = N;
+  if (M_buf <= 0)
+    M_buf = M;
+  if (N_buf <= 0)
+    N_buf = N;
 
   // A is K×M_buf (transposed layout), B is K×N_buf, C is M_buf×N_buf
   int A_VOLUME = K * M_buf;
@@ -164,8 +166,8 @@ int main(int argc, const char *argv[]) {
   }
 
   std::cout << std::endl
-            << "Avg NPU matmul time: " << npu_time_total / n_iterations
-            << "us." << std::endl;
+            << "Avg NPU matmul time: " << npu_time_total / n_iterations << "us."
+            << std::endl;
   std::cout << "Avg NPU gflops: "
             << macs / (1000 * npu_time_total / n_iterations) << std::endl;
 
