@@ -156,4 +156,52 @@ module {
     }
     return
   }
+
+  // Test that allocs with explicit non-default memory space are preserved
+  // while unset memory space allocs are overridden (PR #1436).
+  // Uses memory_space=3 (raw int) for "unassigned" allocs to satisfy verifier,
+  // and memory_space=2 (L1) / memory_space=1 (L2) for "already set" allocs.
+
+  // CHECK-LABEL: func.func @func_skip_existing_memspace
+  // scope=herd, target=L1(2): unassigned herd alloc overridden, L1 alloc preserved
+  // CHECK: air.herd
+  // CHECK:   memref.alloc() : memref<32xf32, 2 : i32>
+  // CHECK:   memref.alloc() : memref<32xf32, 2 : i32>
+
+  // SEGMENT-LABEL: func.func @func_skip_existing_memspace
+  // scope=segment, target=L2(1): unassigned segment alloc overridden,
+  // L2 segment alloc preserved, herd allocs unchanged by scope exclusion
+  // SEGMENT: air.segment
+  // SEGMENT:   memref.alloc() : memref<64xf32, 1 : i32>
+  // SEGMENT:   memref.alloc() : memref<64xf32, 1 : i32>
+  // SEGMENT:   air.herd
+  // SEGMENT:     memref.alloc() : memref<32xf32, 3>
+  // SEGMENT:     memref.alloc() : memref<32xf32, 2 : i32>
+
+  func.func @func_skip_existing_memspace(%arg0: memref<*xf32>) {
+    air.launch () in () args(%a0=%arg0) : memref<*xf32> {
+      air.segment @seg args(%s0=%a0) : memref<*xf32> {
+        %c1 = arith.constant 1 : index
+        %c64 = arith.constant 64 : index
+        %rc64 = memref.reinterpret_cast %s0 to offset: [0], sizes: [64], strides: [1] : memref<*xf32> to memref<64xf32, strided<[1], offset: ?>>
+        // Unassigned (memory_space=3) alloc at segment level - should be overridden
+        %seg_default = memref.alloc() : memref<64xf32, 3>
+        memref.copy %rc64, %seg_default : memref<64xf32, strided<[1], offset: ?>> to memref<64xf32, 3>
+        // Explicit L2 (memory_space=1) alloc at segment level - should be preserved
+        %seg_l2 = memref.alloc() : memref<64xf32, 1 : i32>
+        memref.copy %rc64, %seg_l2 : memref<64xf32, strided<[1], offset: ?>> to memref<64xf32, 1 : i32>
+        air.herd @herd tile (%tx, %ty) in (%sx=%c1, %sy=%c1) args(%h0=%s0) : memref<*xf32> {
+          %c32 = arith.constant 32 : index
+          %rc32 = memref.reinterpret_cast %h0 to offset: [0], sizes: [32], strides: [1] : memref<*xf32> to memref<32xf32, strided<[1], offset: ?>>
+          // Unassigned (memory_space=3) alloc at herd level - should be overridden by scope=herd
+          %herd_default = memref.alloc() : memref<32xf32, 3>
+          memref.copy %rc32, %herd_default : memref<32xf32, strided<[1], offset: ?>> to memref<32xf32, 3>
+          // Explicit L1 (memory_space=2) alloc at herd level - should be preserved
+          %herd_l1 = memref.alloc() : memref<32xf32, 2 : i32>
+          memref.copy %rc32, %herd_l1 : memref<32xf32, strided<[1], offset: ?>> to memref<32xf32, 2 : i32>
+        }
+      }
+    }
+    return
+  }
 }

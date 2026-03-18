@@ -459,6 +459,20 @@ if __name__ == "__main__":
     parser.add_argument("--K", type=int, default=K)
     parser.add_argument("--N", type=int, default=N_actual)
     parser.add_argument(
+        "--transform-script",
+        type=str,
+        dest="transform_script",
+        default=None,
+        help="Path to transform script MLIR file (overrides inline transform)",
+    )
+    parser.add_argument(
+        "--k-l2-tile",
+        type=int,
+        default=TILE_K_L2,
+        dest="k_l2_tile",
+        help="L2 K-dimension tile size (K must be a multiple of this)",
+    )
+    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
@@ -470,6 +484,8 @@ if __name__ == "__main__":
     M_actual = args.M
     K = args.K
     N_actual = args.N
+    TILE_K_L2 = args.k_l2_tile
+    TILE_K_L1 = args.k_l2_tile
 
     # Pad M, N to tile-aligned for the module
     M_padded = math.ceil(M_actual / (TILE_M * HERD_M)) * (TILE_M * HERD_M)
@@ -634,6 +650,11 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
+    # Use external transform script if provided, otherwise use inline transform.
+    if args.transform_script:
+        with open(args.transform_script, "r") as f:
+            transform_ir_string = f.read()
+
     transform_ir = Module.parse(transform_ir_string, context=mlir_module.context)
     run_transform(transform_ir, mlir_module)
 
@@ -647,10 +668,12 @@ if __name__ == "__main__":
     # Host data: f32. A is K×M_alloc (transposed, block-aligned actual size).
     # B is K×N_alloc. Zero-padded beyond M_actual/N_actual.
     # Device-side padding (air-split-launch-for-padding) handles boundary tiles.
+    #
+    # Use random inputs scaled by 4 (matching IRON methodology from PR #1440).
     input_a = np.zeros((K, M_alloc), dtype=np.float32)
-    input_a[:, :M_actual] = np.random.rand(K, M_actual).astype(np.float32)
+    input_a[:, :M_actual] = (np.random.rand(K, M_actual) * 4).astype(np.float32)
     input_b = np.zeros((K, N_alloc), dtype=np.float32)
-    input_b[:, :N_actual] = np.random.rand(K, N_actual).astype(np.float32)
+    input_b[:, :N_actual] = (np.random.rand(K, N_actual) * 4).astype(np.float32)
 
     if args.compile_mode == "compile-and-run":
         num_samples = 200
@@ -660,10 +683,42 @@ if __name__ == "__main__":
                 np.random.randint(0, N_actual, num_samples),
             ]
         )
-        # Golden: A[:, :M_actual].T @ B[:, :N_actual] in f32
+
+        # Add deterministic boundary-tile samples to catch padding errors.
+        # These sample the last few rows/cols of each boundary herd.
+        boundary_m = list(
+            set(
+                [
+                    min(M_actual - 1, m)
+                    for m in [M_actual - 1, M_actual - TILE_M + 1, 0]
+                    if m >= 0
+                ]
+            )
+        )
+        boundary_n = list(
+            set(
+                [
+                    min(N_actual - 1, n)
+                    for n in [N_actual - 1, N_actual - TILE_N + 1, 0]
+                    if n >= 0
+                ]
+            )
+        )
+        boundary_indices = np.array([[m, n] for m in boundary_m for n in boundary_n]).T
+        sampled_indices = np.hstack([sampled_indices, boundary_indices])
+
+        # Golden: truncate f32 inputs to bf16 (matching hardware truncf_op),
+        # then compute dot product with f32 accumulation. This eliminates the
+        # f32-vs-bf16 rounding bias that inflated the tolerance (PR #1440).
+        input_a_bf16 = input_a.astype(bfloat16)
+        input_b_bf16 = input_b.astype(bfloat16)
         sampled_values = np.array(
             [
-                np.sum(input_a[:, i] * input_b[:, j], dtype=np.float32)
+                np.sum(
+                    input_a_bf16[:, i].astype(np.float32)
+                    * input_b_bf16[:, j].astype(np.float32),
+                    dtype=np.float32,
+                )
                 for i, j in zip(*sampled_indices)
             ],
             dtype=np.float32,
@@ -683,12 +738,17 @@ if __name__ == "__main__":
             instance_name="matmul_f32",
             bf16_emulation=True,
         )
+        # With bf16-truncated golden, remaining error is from BFP16 block
+        # floating point quantization and floor rounding in direct-codegen.
+        # Tolerance matches PR #1440 (rtol=0.05, atol=4); requires
+        # mlir-aie#2987 (conv_even rounding) for full precision.
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e0,
+                rtol=0.05,
+                atol=4,
             )
         )
     elif args.compile_mode == "compile-only":

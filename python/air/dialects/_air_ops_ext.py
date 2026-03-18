@@ -198,6 +198,8 @@ class ChannelGet(ChannelGetOp):
             loc=loc,
             ip=ip,
         )
+        # Set optional pad_before/pad_after attributes after construction,
+        # since the generated __init__ doesn't accept them as kwargs.
         if pad_before is not None:
             self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
         if pad_after is not None:
@@ -240,6 +242,8 @@ class ChannelPut(ChannelPutOp):
             loc=loc,
             ip=ip,
         )
+        # Set optional pad_before/pad_after attributes after construction,
+        # since the generated __init__ doesn't accept them as kwargs.
         if pad_before is not None:
             self.operation.attributes["pad_before"] = DenseI32ArrayAttr.get(pad_before)
         if pad_after is not None:
