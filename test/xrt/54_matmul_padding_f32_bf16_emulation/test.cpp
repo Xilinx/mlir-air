@@ -37,10 +37,14 @@ void add_default_options(cxxopts::Options &options) {
                                      "the verbosity of the output",
                                      cxxopts::value<int>()->default_value("0"))(
       "instr,i", "path of file containing instructions",
-      cxxopts::value<std::string>())("size_m,M", "Matrix size M",
+      cxxopts::value<std::string>())("size_m,M", "Actual matrix M (for GFLOPS)",
                                      cxxopts::value<int>())(
-      "size_n,N", "Matrix size N", cxxopts::value<int>())(
-      "size_k,K", "Matrix size K", cxxopts::value<int>());
+      "size_n,N", "Actual matrix N (for GFLOPS)", cxxopts::value<int>())(
+      "size_k,K", "Matrix K dimension", cxxopts::value<int>())(
+      "alloc_m", "M buffer alloc size (default: M)",
+      cxxopts::value<int>()->default_value("0"))(
+      "alloc_n", "N buffer alloc size (default: N)",
+      cxxopts::value<int>()->default_value("0"));
 }
 
 int main(int argc, const char *argv[]) {
@@ -53,11 +57,17 @@ int main(int argc, const char *argv[]) {
   int M = vm["size_m"].as<int>();
   int K = vm["size_k"].as<int>();
   int N = vm["size_n"].as<int>();
+  // Buffer alloc sizes (padded to tile-aligned for hardware).
+  // M/N are the actual dimensions used for GFLOPS calculation.
+  int M_buf = vm["alloc_m"].as<int>();
+  int N_buf = vm["alloc_n"].as<int>();
+  if (M_buf <= 0) M_buf = M;
+  if (N_buf <= 0) N_buf = N;
 
-  // A is K×M (transposed layout), B is K×N
-  int A_VOLUME = K * M;
-  int B_VOLUME = K * N;
-  int C_VOLUME = M * N;
+  // A is K×M_buf (transposed layout), B is K×N_buf, C is M_buf×N_buf
+  int A_VOLUME = K * M_buf;
+  int B_VOLUME = K * N_buf;
+  int C_VOLUME = M_buf * N_buf;
 
   int A_SIZE = A_VOLUME * sizeof(A_DATATYPE);
   int B_SIZE = B_VOLUME * sizeof(B_DATATYPE);

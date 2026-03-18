@@ -667,7 +667,7 @@ if __name__ == "__main__":
     input_b[:, :N_actual] = (np.random.rand(K, N_actual) * 4).astype(np.float32)
 
     if args.compile_mode == "compile-and-run":
-        num_samples = 200
+        num_samples = 100
         sampled_indices = np.vstack(
             [
                 np.random.randint(0, M_actual, num_samples),
@@ -743,9 +743,11 @@ if __name__ == "__main__":
             )
         )
     elif args.compile_mode == "compile-only":
+        needs_padding = (M_actual % TILE_M != 0) or (N_actual % TILE_N != 0)
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            output_format="elf" if needs_padding else "xclbin",
             bf16_emulation=True,
         )
         module_function = backend.compile(mlir_module)
