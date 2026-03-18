@@ -78,6 +78,7 @@ def build_module(
     tile_n,
     herd_m,
     herd_n,
+    mmul_mkn,
 ):
     """Build matmul module. m/n are padded (tile-aligned) dimensions for the
     launch grid. m_alloc/n_alloc are the actual host buffer sizes (block-aligned)
@@ -89,7 +90,6 @@ def build_module(
 
     xrt_dtype_f32 = type_mapper(np.float32)
     xrt_dtype_bf16 = type_mapper(bfloat16)
-    mmul_mkn = [8, 8, 8]  # aie2p
 
     # L3 uses actual alloc sizes (not padded). A is K×M_alloc, B is K×N_alloc.
     # C uses padded sizes (output shim DMAs write full tiles).
@@ -476,6 +476,13 @@ if __name__ == "__main__":
         help="Herd N dimension (default: 4)",
     )
     parser.add_argument(
+        "--arch",
+        type=str,
+        choices=["aie2", "aie2p"],
+        default="aie2p",
+        help="Target AIE architecture (aie2 for NPU1, aie2p for NPU2)",
+    )
+    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
@@ -491,6 +498,16 @@ if __name__ == "__main__":
     TILE_K_L1 = args.k_l2_tile
     HERD_M = args.herd_m
     HERD_N = args.herd_n
+
+    # Architecture-specific matmul dimensions
+    # aie2p: 8x8x8 (BFP16 emulation via --bf16-emulation)
+    # aie2:  4x8x4 (native bf16 matmul)
+    if args.arch == "aie2p":
+        mmul_mkn = [8, 8, 8]
+        use_bf16_emulation = True
+    else:
+        mmul_mkn = [4, 8, 4]
+        use_bf16_emulation = False
 
     # Pad M, N to tile-aligned for the module
     M_padded = math.ceil(M_actual / (TILE_M * HERD_M)) * (TILE_M * HERD_M)
@@ -517,6 +534,7 @@ if __name__ == "__main__":
         TILE_N,
         HERD_M,
         HERD_N,
+        mmul_mkn,
     )
 
     # Add actual_sizes attribute to air.launch for device-side padding.
@@ -727,7 +745,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format="elf" if needs_padding else "xclbin",
             instance_name="matmul_f32",
-            bf16_emulation=True,
+            bf16_emulation=use_bf16_emulation,
         )
         # With bf16-truncated golden, remaining error is from BFP16 block
         # floating point quantization and floor rounding in direct-codegen.
@@ -748,7 +766,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format="elf" if needs_padding else "xclbin",
-            bf16_emulation=True,
+            bf16_emulation=use_bf16_emulation,
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

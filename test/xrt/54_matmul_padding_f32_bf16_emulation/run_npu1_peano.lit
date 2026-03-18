@@ -1,0 +1,15 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu1, peano
+// XFAIL: *
+//
+// Non-tile-aligned F32 matmul with in-core bf16 truncation on AIE2 (NPU1).
+// Uses native 4x8x4 bf16 matmul (no BFP16 emulation).
+//
+// XFAIL reason: requires mlir-aie#2987 (conv_even rounding in
+// AIECoreToStandard) to pass with rtol=0.05, atol=4.
+//
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run M=500 N=500 K=784 AIE_TARGET=aie2 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS
