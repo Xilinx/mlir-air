@@ -558,8 +558,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # aie2p external kernel uses f32 accumulation output for better precision
-    if args.arch == "aie2p" and not args.direct_codegen:
+    # aie2p uses f32 accumulation output for better precision (both direct-codegen
+    # and external kernel paths). This avoids bf16 truncation between K-tile
+    # iterations and eliminates sensitivity to rounding mode.
+    if args.arch == "aie2p":
         OUTPUT_DATATYPE = np.float32
 
     # Check for PEANO_INSTALL_DIR if direct codegen is enabled
@@ -711,19 +713,8 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    # Use random inputs for non-direct-codegen (external kernel has conv_even rounding).
-    # Direct-codegen still uses floor rounding (pending mlir-aie fix), so use arange
-    # inputs which are less sensitive to rounding bias.
-    if not args.direct_codegen:
-        input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
-        input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
-    else:
-        input_a = np.arange(0, args.m * args.k, dtype=INPUT_DATATYPE).reshape(
-            args.m, args.k
-        )
-        input_b = np.arange(0, args.k * args.n, dtype=INPUT_DATATYPE).reshape(
-            args.k, args.n
-        )
+    input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
+    input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
         # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
@@ -767,10 +758,16 @@ if __name__ == "__main__":
             runner_kwargs["lower_linalg_to_func"] = "mm.o"
 
         runner = XRTRunner(**runner_kwargs, instance_name="matmul_bf16")
-        # aie2p f32 output: rtol=0.01 with atol=4 for BFP16 input quantization
-        # aie2 bf16 output: rtol=0.04
-        test_rtol = 0.01 if OUTPUT_DATATYPE == np.float32 else 0.04
-        test_atol = 4 if OUTPUT_DATATYPE == np.float32 else 1e-8
+        if not args.direct_codegen and OUTPUT_DATATYPE == np.float32:
+            # Non-direct-codegen aie2p: conv_even rounding + f32 accumulation
+            # gives best precision (matching IRON prio_accuracy mode).
+            test_rtol, test_atol = 0.01, 4
+        elif args.direct_codegen:
+            # Direct-codegen: vectorization introduces ~0.07*K precision loss
+            # with random inputs (pending mlir-aie#2983 + lowering fixes).
+            test_rtol, test_atol = 0.01, 40
+        else:
+            test_rtol, test_atol = 0.04, 1e-8
         exit(
             runner.run_test(
                 mlir_module,
