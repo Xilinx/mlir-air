@@ -5,5 +5,6 @@
 
 // RUN: mkdir -p test_npu2_peano_bf16_emu
 // RUN: cd test_npu2_peano_bf16_emu
-// RUN: %python %S/run.py --transform-script %S/transform_aie2p_bf16emu.mlir --bf16-emulation -v | FileCheck %s
+// RUN: export PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: %python %S/run.py --transform-script %S/transform_aie2p_bf16emu.mlir --bf16-emulation | FileCheck %s
 // CHECK: PASS!
