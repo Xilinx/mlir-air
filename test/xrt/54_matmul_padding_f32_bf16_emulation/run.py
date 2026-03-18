@@ -462,6 +462,20 @@ if __name__ == "__main__":
         help="L2 K-dimension tile size (K must be a multiple of this)",
     )
     parser.add_argument(
+        "--herd-m",
+        type=int,
+        default=HERD_M,
+        dest="herd_m",
+        help="Herd M dimension (default: 4)",
+    )
+    parser.add_argument(
+        "--herd-n",
+        type=int,
+        default=HERD_N,
+        dest="herd_n",
+        help="Herd N dimension (default: 4)",
+    )
+    parser.add_argument(
         "--compile-mode",
         type=str,
         choices=["compile-only", "compile-and-run"],
@@ -475,6 +489,8 @@ if __name__ == "__main__":
     N_actual = args.N
     TILE_K_L2 = args.k_l2_tile
     TILE_K_L1 = args.k_l2_tile
+    HERD_M = args.herd_m
+    HERD_N = args.herd_n
 
     # Pad M, N to tile-aligned for the module
     M_padded = math.ceil(M_actual / (TILE_M * HERD_M)) * (TILE_M * HERD_M)

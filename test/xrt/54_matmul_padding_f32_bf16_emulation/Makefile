@@ -9,24 +9,30 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 BUILD_DIR := build
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 
+# Herd dimensions (NPU2/Strix: 4 rows x 8 cols compute tiles)
+HERD_M ?= 4
+HERD_N ?= 4
+
 # Correctness test dimensions (non-tile-aligned, exercises padding)
 RUN_M ?= 500
 RUN_N ?= 500
 RUN_K ?= 784
 K_L2_TILE ?= 16
 
-# Profiling dimensions (tile-aligned: M=1024, N=512, K=784)
+# Profiling dimensions (tile-aligned)
 PROFILE_M ?= 1024
 PROFILE_N ?= 512
 PROFILE_K ?= 784
+
+COMMON_FLAGS = --transform-script ${srcdir}/transform_aie2p.mlir \
+	--k-l2-tile $(K_L2_TILE) --herd-m $(HERD_M) --herd-n $(HERD_N)
 
 all: run
 
 run:
 	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 ${srcdir}/run.py \
-		--transform-script ${srcdir}/transform_aie2p.mlir \
-		--M $(RUN_M) --N $(RUN_N) --K $(RUN_K) --k-l2-tile $(K_L2_TILE) -v
+	cd $(BUILD_DIR) && python3 ${srcdir}/run.py $(COMMON_FLAGS) \
+		--M $(RUN_M) --N $(RUN_N) --K $(RUN_K) -v
 
 build-test-exe:
 	@GPP=$$( \
@@ -55,10 +61,9 @@ build-test-exe:
 
 profile: build-test-exe
 	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && python3 ${srcdir}/run.py \
-		--transform-script ${srcdir}/transform_aie2p.mlir \
+	cd $(BUILD_DIR) && python3 ${srcdir}/run.py $(COMMON_FLAGS) \
 		--M $(PROFILE_M) --N $(PROFILE_N) --K $(PROFILE_K) \
-		--k-l2-tile $(K_L2_TILE) --compile-mode compile-only
+		--compile-mode compile-only
 	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin \
 		-M $(PROFILE_M) -K $(PROFILE_K) -N $(PROFILE_N)
 
