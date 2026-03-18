@@ -161,8 +161,8 @@ matmul_vectorized_8x8x8_bf16_f32(const bfloat16 *__restrict pA,
   static_assert(n % (2 * t) == 0);
 
   ::aie::set_rounding(round_mode);
-  return matmul_vectorized_2x2_mmul<bfloat16, float, (m / r), (k / s),
-                                    (n / t), r, s, t>(pA, pB, pC);
+  return matmul_vectorized_2x2_mmul<bfloat16, float, (m / r), (k / s), (n / t),
+                                    r, s, t>(pA, pB, pC);
 }
 
 extern "C" {
