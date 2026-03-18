@@ -711,8 +711,19 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
-    input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
+    # Use random inputs for non-direct-codegen (external kernel has conv_even rounding).
+    # Direct-codegen still uses floor rounding (pending mlir-aie fix), so use arange
+    # inputs which are less sensitive to rounding bias.
+    if not args.direct_codegen:
+        input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
+        input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
+    else:
+        input_a = np.arange(0, args.m * args.k, dtype=INPUT_DATATYPE).reshape(
+            args.m, args.k
+        )
+        input_b = np.arange(0, args.k * args.n, dtype=INPUT_DATATYPE).reshape(
+            args.k, args.n
+        )
 
     if args.compile_mode == "compile-and-run":
         # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
