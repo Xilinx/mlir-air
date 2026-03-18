@@ -5,7 +5,7 @@
 // XFAIL: *
 //
 // Non-tile-aligned F32 matmul with bf16/bfp16 emulation and memtile DMA padding.
-// Tests M and N dimensions that are not multiples of M_TILE=128, N_TILE=256.
+// Tests M and N dimensions that are not multiples of TILE_M*HERD_M=256, TILE_N*HERD_N=128.
 // Inputs and outputs are f32; convert-vector-to-aievec with bf16-emulation=true
 // emulates f32 arithmetic using bf16/bfp16 operations on AIE2P.
 //

@@ -146,17 +146,6 @@ def build_module(
         shape=b_l1_size, element_type=xrt_dtype_bf16, memory_space=l1_mem_space
     )
 
-    layout = StridedLayoutAttr.get(
-        ShapedType.get_dynamic_size(),
-        [
-            tile_m * tile_n * herd_n,
-            tile_m * tile_n,
-            tile_m * mmul_mkn[2],
-            mmul_mkn[0] * mmul_mkn[2],
-            mmul_mkn[2],
-            1,
-        ],
-    )
     l1MemrefTyCHerd = MemRefType.get(
         shape=c_herd_l1_size, element_type=xrt_dtype_f32, memory_space=l1_mem_space
     )
@@ -516,20 +505,6 @@ if __name__ == "__main__":
 
     # Add actual_sizes attribute to air.launch for device-side padding.
     # air-split-launch-for-padding reads this to split boundary blocks.
-    import air.passmanager
-
-    pipeline = (
-        "builtin.module("
-        + ",".join(
-            [
-                f"func.func(air-wrap-func-with-parallel{{loop-bounds={M_padded // TILE_M // HERD_M},{N_padded // TILE_N // HERD_N},1 actual-sizes={M_actual},{N_actual},1}})",
-                "air-par-to-launch{depth=0 has-air-segment=true}",
-            ]
-        )
-        + ")"
-    )
-    # Note: can't use air-wrap-func-with-parallel because air.launch already
-    # exists. Instead, manually set the attribute on the existing launch.
     with mlir_module.context:
         for op in mlir_module.body.operations:
             for inner_op in op.body.blocks[0].operations:
