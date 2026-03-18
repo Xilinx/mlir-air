@@ -448,13 +448,6 @@ if __name__ == "__main__":
     parser.add_argument("--K", type=int, default=K)
     parser.add_argument("--N", type=int, default=N_actual)
     parser.add_argument(
-        "--transform-script",
-        type=str,
-        dest="transform_script",
-        default=None,
-        help="Path to transform script MLIR file (overrides inline transform)",
-    )
-    parser.add_argument(
         "--k-l2-tile",
         type=int,
         default=TILE_K_L2,
@@ -478,9 +471,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--arch",
         type=str,
-        choices=["aie2", "aie2p"],
+        choices=["aie2p"],
         default="aie2p",
-        help="Target AIE architecture (aie2 for NPU1, aie2p for NPU2)",
+        help="Target AIE architecture (aie2p for NPU2)",
     )
     parser.add_argument(
         "--compile-mode",
@@ -499,15 +492,9 @@ if __name__ == "__main__":
     HERD_M = args.herd_m
     HERD_N = args.herd_n
 
-    # Architecture-specific matmul dimensions
     # aie2p: 8x8x8 (BFP16 emulation via --bf16-emulation)
-    # aie2:  4x8x4 (native bf16 matmul)
-    if args.arch == "aie2p":
-        mmul_mkn = [8, 8, 8]
-        use_bf16_emulation = True
-    else:
-        mmul_mkn = [4, 8, 4]
-        use_bf16_emulation = False
+    mmul_mkn = [8, 8, 8]
+    use_bf16_emulation = True
 
     # Pad M, N to tile-aligned for the module
     M_padded = math.ceil(M_actual / (TILE_M * HERD_M)) * (TILE_M * HERD_M)
@@ -658,11 +645,6 @@ if __name__ == "__main__":
     if args.print_module_only:
         print(mlir_module)
         exit(0)
-
-    # Use external transform script if provided, otherwise use inline transform.
-    if args.transform_script:
-        with open(args.transform_script, "r") as f:
-            transform_ir_string = f.read()
 
     transform_ir = Module.parse(transform_ir_string, context=mlir_module.context)
     run_transform(transform_ir, mlir_module)
