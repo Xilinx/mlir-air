@@ -120,10 +120,9 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
   event1();
 }
 
-// bf16 MatMul kernel definition with bf16 outputs using 8x8x8 shape.
-// This is used when compiling external library (non-direct-codegen mode) with
-// -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16 flag.
-// For direct codegen mode, the kernel is generated directly by the compiler.
+// bf16 MatMul kernel with bf16 outputs using 8x8x8 shape.
+// Not used by default (combos selects bf16_f32 variant instead).
+// Available for configurations that require bf16 output.
 template <unsigned m, unsigned k, unsigned n>
 static inline void
 matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,

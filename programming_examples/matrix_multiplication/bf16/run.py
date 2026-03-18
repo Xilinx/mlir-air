@@ -478,7 +478,7 @@ if __name__ == "__main__":
     HERD_M = 4
     HERD_N = 4
     INPUT_DATATYPE = bfloat16
-    OUTPUT_DATATYPE = np.float32
+    OUTPUT_DATATYPE = bfloat16
 
     parser = argparse.ArgumentParser(
         prog="run.py",
@@ -557,6 +557,10 @@ if __name__ == "__main__":
         help="Target AIE architecture (aie2 or aie2p)",
     )
     args = parser.parse_args()
+
+    # aie2p external kernel uses f32 accumulation output for better precision
+    if args.arch == "aie2p" and not args.direct_codegen:
+        OUTPUT_DATATYPE = np.float32
 
     # Check for PEANO_INSTALL_DIR if direct codegen is enabled
     if args.direct_codegen:
@@ -752,13 +756,17 @@ if __name__ == "__main__":
             runner_kwargs["lower_linalg_to_func"] = "mm.o"
 
         runner = XRTRunner(**runner_kwargs, instance_name="matmul_bf16")
+        # aie2p f32 output: rtol=0.01 with atol=4 for BFP16 input quantization
+        # aie2 bf16 output: rtol=0.04
+        test_rtol = 0.01 if OUTPUT_DATATYPE == np.float32 else 0.04
+        test_atol = 4 if OUTPUT_DATATYPE == np.float32 else 1e-8
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=0.01,
-                atol=4,
+                rtol=test_rtol,
+                atol=test_atol,
             )
         )
 
