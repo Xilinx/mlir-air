@@ -11,6 +11,7 @@ DK ?= 64
 DV ?= 64
 NUM_HEADS ?= 12
 NUM_KV_HEADS ?= $(NUM_HEADS)
+VAL_RANGE ?= 3
 
 # Derived: kernel tile size = LQP / num_q_tiles (4)
 NUM_Q_TILES ?= 4
@@ -35,7 +36,7 @@ print:
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py --lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS) $(EXTRA_PY_FLAGS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py --lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS) --val-range $(VAL_RANGE) $(EXTRA_PY_FLAGS)
 
 # Run with user-provided MLIR file
 # Usage: make run-mlir MLIR_FILE=path/to/your.mlir [LK=...] [LQ=...] etc.
