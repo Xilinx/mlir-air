@@ -6,5 +6,5 @@
 // RUN: mkdir -p test_causal
 // RUN: cd test_causal
 // RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR LK=2048 LKP=64 LQ=2048 LQP=256 NUM_HEADS=2 EXTRA_PY_FLAGS="--causal" | FileCheck %s
+// RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR LK=16384 LKP=64 LQ=16384 LQP=256 DK=64 DV=64 NUM_HEADS=2 VAL_RANGE=3 EXTRA_PY_FLAGS="--causal" | FileCheck %s
 // CHECK: PASS!

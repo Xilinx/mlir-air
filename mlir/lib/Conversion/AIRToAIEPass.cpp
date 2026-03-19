@@ -4266,6 +4266,113 @@ public:
                                                   t.dma_channel.channel)))
             return failure();
       }
+
+      // When segment unroll is active, the metadataArray may be in
+      // device-iteration order (device 0 allocations first, then device 1),
+      // but getIteratorFromMDVector expects a different linearization. Sort
+      // the metadataArray to match by computing each entry's linearized
+      // position from its channel coordinates.
+      if (auto ci = dyn_cast_if_present<air::ChannelInterface>(
+              memcpyIfOp.getOperation())) {
+        ArrayAttr metadataArray =
+            memcpyIfOp->getAttrOfType<ArrayAttr>("metadataArray");
+        if (metadataArray && metadataArray.size() > 1) {
+          auto chanDecl = air::getChannelDeclarationThroughSymbol(ci);
+          if (chanDecl && chanDecl.getSize() &&
+              chanDecl.getSize().size() >= 2) {
+            // Check if any entry comes from a segment-unrolled device.
+            bool hasUnroll = false;
+            for (auto attr : metadataArray) {
+              if (auto dict = dyn_cast_if_present<DictionaryAttr>(attr)) {
+                auto base = dict.getAs<StringAttr>("base");
+                if (base) {
+                  // Segment unroll appends _X_ to the name. Check if the
+                  // name has more than the usual number of underscores.
+                  StringRef name = base.getValue();
+                  // Count underscore-separated segments: "air_channel_0_X_Y_Z"
+                  // Without unroll: "air_channel_0_Z" (4 segments)
+                  // With unroll: "air_channel_0_X_Y_Z" (6+ segments)
+                  size_t count = 0;
+                  for (char c : name)
+                    if (c == '_')
+                      count++;
+                  if (count >= 5) {
+                    hasUnroll = true;
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (hasUnroll) {
+              // Build the linearized-index-to-entry map. Parse each entry's
+              // base name to extract [tileIdx, unrollCopy] and compute the
+              // linearized position.
+              std::vector<unsigned> channelDims;
+              for (auto a : chanDecl.getSize()) {
+                if (auto intAttr = dyn_cast_if_present<IntegerAttr>(a))
+                  channelDims.push_back(
+                      static_cast<unsigned>(intAttr.getInt()));
+              }
+
+              unsigned totalExpected = 1;
+              for (unsigned d : channelDims)
+                totalExpected *= d;
+
+              if (totalExpected == metadataArray.size()) {
+                SmallVector<Attribute, 8> sorted(totalExpected);
+
+                for (auto attr : metadataArray) {
+                  auto dict = dyn_cast_if_present<DictionaryAttr>(attr);
+                  if (!dict)
+                    continue;
+                  auto base = dict.getAs<StringAttr>("base");
+                  if (!base)
+                    continue;
+
+                  // Parse "air_channel_0_X_Y_Z" to extract X (unroll copy)
+                  // and Z (tile within copy). Name format:
+                  // air_<chanName>_<unrollX>_<unrollY>_<tileIdx>
+                  StringRef name = base.getValue();
+                  SmallVector<StringRef, 8> parts;
+                  name.split(parts, '_');
+                  // For "air_channel_0_X_Y_Z": parts = [air, channel, 0, X, Y,
+                  // Z] X = unroll copy, Y = channel dim (usually 0), Z = tile
+                  // idx
+                  if (parts.size() >= 6) {
+                    int unrollCopy = 0, tileIdx = 0;
+                    parts[3].getAsInteger(10, unrollCopy);
+                    parts.back().getAsInteger(10, tileIdx);
+
+                    std::vector<unsigned> position = {
+                        static_cast<unsigned>(tileIdx),
+                        static_cast<unsigned>(unrollCopy)};
+                    if (position.size() == channelDims.size()) {
+                      unsigned linIdx =
+                          air::getIteratorFromMDVector(channelDims, position);
+                      if (linIdx < totalExpected)
+                        sorted[linIdx] = attr;
+                    }
+                  }
+                }
+
+                // Verify all positions were filled.
+                bool allFilled = true;
+                for (auto &a : sorted) {
+                  if (!a) {
+                    allFilled = false;
+                    break;
+                  }
+                }
+                if (allFilled) {
+                  memcpyIfOp->setAttr("metadataArray",
+                                      builder.getArrayAttr(sorted));
+                }
+              }
+            }
+          }
+        }
+      }
     }
     return success();
   }
