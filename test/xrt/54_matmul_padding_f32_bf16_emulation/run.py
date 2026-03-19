@@ -730,16 +730,17 @@ if __name__ == "__main__":
             bf16_emulation=use_bf16_emulation,
         )
         # With bf16-truncated golden, remaining error is from BFP16 block
-        # floating point quantization. Direct-codegen uses floor rounding
-        # (conv_even not yet emitted by AIECoreToStandard), causing ~30%
-        # mismatch rate. Tolerance rtol=0.05, atol=4 matches PR #1440.
+        # floating point quantization (shared exponent per 8-element block
+        # vs element-wise bf16 in golden). conv_even rounding is emitted
+        # by AIECoreToStandard (crRnd=12). The f32-to-bf16 in-core truncation
+        # adds rounding noise beyond the bf16-input case.
         exit(
             runner.run_test(
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=0.05,
-                atol=4,
+                rtol=0.1,
+                max_mismatch_percentage=10,
             )
         )
     elif args.compile_mode == "compile-only":

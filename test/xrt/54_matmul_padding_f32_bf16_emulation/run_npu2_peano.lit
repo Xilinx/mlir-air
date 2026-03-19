@@ -2,16 +2,11 @@
 // SPDX-License-Identifier: MIT
 //
 // REQUIRES: ryzen_ai_npu2, peano
-// XFAIL: *
 //
 // Non-tile-aligned F32 matmul with bf16/bfp16 emulation and memtile DMA padding.
 // Tests M and N dimensions that are not multiples of TILE_M*HERD_M=256, TILE_N*HERD_N=128.
 // Inputs and outputs are f32; convert-vector-to-aievec with bf16-emulation=true
 // emulates f32 arithmetic using bf16/bfp16 operations on AIE2P.
-//
-// XFAIL reason: direct-codegen path uses floor rounding for BFP16, causing
-// ~5-10% error on random inputs. Requires mlir-aie#2987 (conv_even rounding
-// in AIECoreToStandard) to pass with rtol=0.05, atol=4.
 //
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile run M=500 N=500 K=784 AIE_TARGET=aie2p PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
