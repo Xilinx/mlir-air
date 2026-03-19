@@ -341,6 +341,6 @@ if __name__ == "__main__":
             mlir_module,
             inputs=[input_a, input_b],
             expected_outputs=[output_c],
-            rtol=1e0,
+            rtol=0.04,
         )
     )
