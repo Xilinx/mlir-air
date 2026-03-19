@@ -7194,6 +7194,15 @@ public:
                        padDimIdx};
   }
 
+  // Returns true if this input (A=0, B=1) should be skipped for padding.
+  static bool skipInput(unsigned argIdx, bool padM, bool padN) {
+    if (argIdx == 0)
+      return !padM;
+    if (argIdx == 1)
+      return !padN;
+    return true; // unknown input
+  }
+
   // Find the dimension in a memref shape where shimIdx * shape[d] partially
   // overlaps dimActualLast, indicating that dimension needs padding.
   // searchForward: true for A (M is early dim), false for B (N is late dim).
@@ -7217,6 +7226,44 @@ public:
       for (int64_t d = (int64_t)shape.size() - 1; d >= 0; --d)
         if (check(d))
           return d;
+    }
+    return -1;
+  }
+
+  // Find the padded dimension in L2→L1 channel sizes/strides.
+  // Accounts for innerBlock (when stride[d] == sizes[lastDim], the padded
+  // dim and last dim form connected sub-tiles). Checks defaultDim first,
+  // then scans other dimensions. Returns -1 if no dimension needs padding.
+  static int64_t findPadDimInChannelSizes(OperandRange sizes,
+                                          OperandRange strides, int64_t shimIdx,
+                                          int64_t dimActualLast,
+                                          int64_t defaultDim = 1) {
+    auto checkDim = [&](int64_t d) -> bool {
+      if (d < 0 || d >= (int64_t)sizes.size())
+        return false;
+      auto sizeOpt = getConstantIntValue(sizes[d]);
+      if (!sizeOpt || *sizeOpt <= 1)
+        return false;
+      auto strideAtDimOpt = getConstantIntValue(strides[d]);
+      auto lastSizeOpt = getConstantIntValue(sizes[sizes.size() - 1]);
+      int64_t innerBlock = 1;
+      if (strideAtDimOpt && lastSizeOpt && *strideAtDimOpt == *lastSizeOpt)
+        innerBlock = *lastSizeOpt;
+      int64_t chunkSz = *sizeOpt * innerBlock;
+      int64_t shimOff = shimIdx * chunkSz;
+      int64_t actual =
+          std::max(int64_t(0), std::min(chunkSz, dimActualLast - shimOff));
+      return actual > 0 && actual < chunkSz;
+    };
+
+    if (checkDim(defaultDim))
+      return defaultDim;
+    // Default dim doesn't need padding; search other dimensions.
+    for (int64_t d = 0; d < (int64_t)sizes.size(); ++d) {
+      if (d == defaultDim)
+        continue;
+      if (checkDim(d))
+        return d;
     }
     return -1;
   }
@@ -7516,6 +7563,10 @@ public:
   //    DMA read pattern.
   // Host buffers need only be padded to innerBlockSize alignment (8 elements),
   // not full tile alignment. Memtile padding provides the rest.
+  //
+  // CONVENTION: Function argument 0 = matrix A (M×K), argument 1 = matrix B
+  // (K×N). M padding applies to A, N padding applies to B. This matches the
+  // @module_builder and transform-script patterns.
   void addMemtilePaddingToLaunch(air::LaunchOp launch, bool padM, bool padN,
                                  int64_t mActualLast, int64_t nActualLast,
                                  int64_t padDimIdxA, int64_t padDimIdxB) {
@@ -7559,14 +7610,9 @@ public:
         return;
 
       unsigned argIdx = it->second;
+      if (skipInput(argIdx, padM, padN))
+        return;
       bool isA = (argIdx == 0);
-      bool isB = (argIdx == 1);
-      if (isA && !padM)
-        return;
-      if (isB && !padN)
-        return;
-      if (!isA && !isB)
-        return;
 
       auto shimIt = l2BufToShimIdx.find(srcBuf);
       if (shimIt == l2BufToShimIdx.end())
@@ -7578,45 +7624,12 @@ public:
       if (sizes.empty() || strides.empty())
         return;
 
-      // Find the padded dimension in L2→L1 channel sizes. The padded dim
-      // is where shimIdx * (size * innerBlock) partially overlaps
-      // dimActualLast. Default to dim 1 (correct for A in all known
-      // patterns); fall back to searching other dimensions for B.
-      int64_t l2l1PadDimIdx = 1;
+      // Find the padded dimension in L2→L1 channel sizes. Default to dim 1
+      // (correct for A in both 2D and 4D patterns). If dim 1 doesn't need
+      // padding, search other dimensions.
       int64_t dimActualLast = isA ? mActualLast : nActualLast;
-
-      // Check if default dim 1 produces meaningful padding.
-      auto checkDim = [&](int64_t d) -> bool {
-        if (d < 0 || d >= (int64_t)sizes.size())
-          return false;
-        auto sizeOpt = getConstantIntValue(sizes[d]);
-        if (!sizeOpt || *sizeOpt <= 1)
-          return false;
-        auto strideAtDimOpt = getConstantIntValue(strides[d]);
-        auto lastSizeOpt = getConstantIntValue(sizes[sizes.size() - 1]);
-        int64_t innerBlock = 1;
-        if (strideAtDimOpt && lastSizeOpt && *strideAtDimOpt == *lastSizeOpt)
-          innerBlock = *lastSizeOpt;
-        int64_t chunkSz = *sizeOpt * innerBlock;
-        int64_t shimOff = shimIdx * chunkSz;
-        int64_t actual =
-            std::max(int64_t(0), std::min(chunkSz, dimActualLast - shimOff));
-        return actual > 0 && actual < chunkSz;
-      };
-
-      if (!checkDim(l2l1PadDimIdx)) {
-        // Dim 1 doesn't need padding; search other dimensions.
-        l2l1PadDimIdx = -1;
-        for (int64_t d = 0; d < (int64_t)sizes.size(); ++d) {
-          if (d == 1)
-            continue; // Already checked
-          if (checkDim(d)) {
-            l2l1PadDimIdx = d;
-            break;
-          }
-        }
-      }
-
+      int64_t l2l1PadDimIdx = findPadDimInChannelSizes(
+          sizes, strides, shimIdx, dimActualLast, /*defaultDim=*/1);
       if (l2l1PadDimIdx < 0 || l2l1PadDimIdx >= (int64_t)sizes.size())
         return;
 
@@ -7676,14 +7689,9 @@ public:
       if (!chanToArgIdx.count(putOp.getChanName()))
         return;
       unsigned argIdx = chanToArgIdx.lookup(putOp.getChanName());
+      if (skipInput(argIdx, padM, padN))
+        return;
       bool isA = (argIdx == 0);
-      bool isB = (argIdx == 1);
-      if (isA && !padM)
-        return;
-      if (isB && !padN)
-        return;
-      if (!isA && !isB)
-        return;
 
       auto info = computeShimPadInfo(
           cast<air::ChannelInterface>(putOp.getOperation()), isA, mActualLast,
@@ -7717,14 +7725,9 @@ public:
       if (!getOp.getSizes().empty())
         return;
       unsigned argIdx = chanToArgIdx.lookup(getOp.getChanName());
+      if (skipInput(argIdx, padM, padN))
+        return;
       bool isA = (argIdx == 0);
-      bool isB = (argIdx == 1);
-      if (isA && !padM)
-        return;
-      if (isB && !padN)
-        return;
-      if (!isA && !isB)
-        return;
       auto memrefType = dyn_cast<MemRefType>(getOp.getMemref().getType());
       if (!memrefType || memrefType.getRank() < 2)
         return;
