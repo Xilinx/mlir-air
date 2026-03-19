@@ -1023,10 +1023,6 @@ LogicalResult unrollScfParallel(
     IRMapping localRemap = remap;
     std::vector<unsigned> position =
         air::getMDVectorFromIterator(par_size, iter);
-    std::reverse(
-        position.begin(),
-        position
-            .end()); // scf.parallel induction vars. have LSD at highest index.
     for (unsigned i = 0; i < position.size(); i++) {
       localRemap.map(par.getInductionVars()[i],
                      arith::ConstantIndexOp::create(

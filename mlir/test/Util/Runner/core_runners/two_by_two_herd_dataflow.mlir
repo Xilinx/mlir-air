@@ -9,17 +9,20 @@
 
 // Air channels forming dataflow through a two-by-two herd. 
 
+// With row-major core iteration, all x=0 cores (puts) are enumerated before
+// x=1 cores (gets).
+
 // CHECK: "name": "ChannelPutOp@channel_0(L1-->L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0:.*]],
 
-// CHECK: "name": "ChannelGetOp@channel_0(L1<--L1)",
+// CHECK: "name": "ChannelPutOp@channel_0(L1-->L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],
 
-// CHECK: "name": "ChannelPutOp@channel_0(L1-->L1)",
+// CHECK: "name": "ChannelGetOp@channel_0(L1<--L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],
