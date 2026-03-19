@@ -415,6 +415,52 @@ def AIRRtToNpu : Pass<"airrt-to-npu", "ModuleOp"> {
   let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
 }
 
+//===----------------------------------------------------------------------===//
+// AirChannelToConduit — air-channel-to-conduit (Pass B)
+// Requires: AIR_ENABLE_AIE (depends on mlir-aie Conduit dialect)
+//===----------------------------------------------------------------------===//
+
+def AirChannelToConduit : Pass<"air-channel-to-conduit", "ModuleOp"> {
+  let summary = "Lift air.channel.put/get ops into Conduit IR (Pass B)";
+  let constructor = "xilinx::conduit::createAirChannelToConduitPass()";
+  let description = [{
+    Converts air.channel declarations and their put/get/wait_all ops into
+    Conduit IR Tier 3 memref-DMA ops (conduit.put_memref_async,
+    conduit.get_memref_async, conduit.wait_all_async).
+
+    This is Pass B of the Conduit lowering pipeline. The pass is implemented
+    in mlir-aie (AirChannelToConduit.cpp) and registered here so that
+    air-opt can invoke it with --air-channel-to-conduit.
+
+    Requires --allow-unregistered-dialect when the AIR dialect is not linked.
+
+    Pass option:
+      --air-channel-to-conduit-infer-rates=<bool>  (default: true)
+        Run --conduit-infer-rates inline at the end to attach
+        CSDF producer_rates/consumer_rates and enable M6/M7 verification.
+  }];
+  let options = [
+    Option<"inferRates", "infer-rates", "bool", /*default=*/"false",
+           "Run conduit-infer-rates inline at the end of the pass. "
+           "Default is false because air.channel capacity does not match "
+           "CSDF buffer-slot semantics; enabling triggers spurious M7.">,
+  ];
+  let dependentDialects = [
+    "xilinx::conduit::ConduitDialect",
+    "::mlir::memref::MemRefDialect",
+  ];
+}
+
+def AirChannelIndexFlattener : Pass<"air-channel-flatten-indices", "ModuleOp"> {
+  let summary = "Flatten multi-dimensional air.channel index ops to scalar channels";
+  let constructor = "xilinx::conduit::createAirChannelIndexFlattenerPass()";
+  let description = [{
+    Rewrites multi-dimensional air.channel declarations and their put/get ops
+    to use scalar channels, as a prerequisite for --air-channel-to-conduit
+    when multi-dimensional channels are present.
+  }];
+}
+
 def AIRSplitDevices : Pass<"air-split-devices", "ModuleOp"> {
   let summary = "Split the input into one output per aie.device op";
   let constructor = "xilinx::air::createAIRSplitDevicesPass()";

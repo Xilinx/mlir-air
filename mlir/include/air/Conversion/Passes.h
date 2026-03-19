@@ -16,6 +16,12 @@
 #include "air/Conversion/AIRToAsyncPass.h"
 #include "air/Conversion/ConvertToAIRPass.h"
 
+#if AIR_ENABLE_AIE
+// Conduit dialect passes (Pass B: air.channel.* → Conduit IR).
+// Implemented in mlir-aie; wired here so air-opt can invoke them.
+#include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
+#endif
+
 namespace xilinx {
 namespace air {
 
