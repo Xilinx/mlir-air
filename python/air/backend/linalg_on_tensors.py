@@ -19,10 +19,12 @@ from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import (
 from .abc import AirBackend
 
 import air.compiler.util
-import air.compiler.aircc.main as aircc
 
 # Used to get the paths used to configure aircc
 from air.compiler.aircc.configure import *
+
+import shutil
+import subprocess
 
 import ctypes
 from pathlib import Path
@@ -177,7 +179,21 @@ class LinalgOnTensorsAirBackend(AirBackend):
             if verbose:
                 aircc_options = aircc_options + ["-v"]
 
-            aircc.run(air_module, aircc_options)
+            # Write module to file and invoke C++ aircc binary
+            with open("torch.mlir", "w") as f:
+                f.write(str(air_module))
+
+            aircc_exe = shutil.which("aircc")
+            if not aircc_exe:
+                raise RuntimeError("aircc binary not found in PATH")
+            result = subprocess.run(
+                [aircc_exe] + aircc_options,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                error_msg = result.stderr if result.stderr else result.stdout
+                raise RuntimeError(f"aircc compilation failed:\n{error_msg}")
 
             with open("air_project/refback.torch.mlir") as f:
                 imported_module = torch_mlir.ir.Module.parse(

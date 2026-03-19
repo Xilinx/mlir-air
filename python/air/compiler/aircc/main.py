@@ -321,7 +321,7 @@ def run_aie_compilation(opts, mlir_module=None):
         )
         print(f"       Import error: {e}")
         print(f"       ")
-        print(f"       For GPU compilation, use: aircc.py --target gpu ...")
+        print(f"       For GPU compilation, use: aircc --target gpu ...")
         print(f"       For AIE compilation, rebuild with Python bindings enabled.")
         sys.exit(1)
 

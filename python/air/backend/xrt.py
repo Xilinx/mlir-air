@@ -9,10 +9,15 @@ import air.passmanager
 from .abc import AirBackend, AirBackendError
 
 import air.compiler.util
-import air.compiler.aircc.main as aircc
+
+# Register the AIR dialect so air.ir.Context() can parse AIR ops.
+# This was previously done as a side effect of importing aircc.main.
+from air.dialects import air as _air_dialect  # noqa: F401
 
 import numpy as np
 import os
+import shutil
+import subprocess
 
 from ml_dtypes import bfloat16
 
@@ -156,7 +161,6 @@ class XRTBackend(AirBackend):
             # Try to auto-detect device via xrt-smi
             target_device = "npu1"  # Default fallback
             try:
-                import subprocess
                 import re
 
                 xrtsmi = "/opt/xilinx/xrt/bin/xrt-smi"
@@ -257,9 +261,8 @@ class XRTBackend(AirBackend):
                 aircc_options += ["-o", output_binary]
                 aircc_options += ["-i", insts]
 
-            aircc_options += ["--air-runtime-loop-tiling-sizes"]
             for s in self.runtime_loop_tiling_sizes:
-                aircc_options += [str(s)]
+                aircc_options += [f"--air-runtime-loop-tiling-sizes={s}"]
 
             if self.verbose:
                 aircc_options = aircc_options + ["-v"]
@@ -268,7 +271,11 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--omit-while-true-loop"]
 
             if self.omit_pingpong:
-                aircc_options += ["--omit-ping-pong-transform", self.omit_pingpong]
+                # Handle both bool (True -> "all") and string ("L1", "L2", "all")
+                pp_val = (
+                    "all" if self.omit_pingpong is True else str(self.omit_pingpong)
+                )
+                aircc_options += [f"--omit-ping-pong-transform={pp_val}"]
 
             if self.lower_linalg_to_func:
                 aircc_options += ["--lower-linalg-to-func"]
@@ -281,8 +288,8 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--omit-auto-broadcast"]
 
             if len(self.channel_multiplexing) != 0:
-                aircc_options += ["--air-channel-multiplexing"]
-                aircc_options += self.channel_multiplexing
+                for ch in self.channel_multiplexing:
+                    aircc_options += [f"--air-channel-multiplexing={ch}"]
 
             if self.use_lock_race_condition_fix:
                 aircc_options += ["--use-lock-race-condition-fix"]
@@ -324,8 +331,27 @@ class XRTBackend(AirBackend):
                 aircc_options += ["--bf16-emulation"]
 
             if self.verbose:
-                print("Running aircc.py with options:", " ".join(aircc_options))
-            aircc.run(air_module, aircc_options)
+                print("Running aircc with options:", " ".join(aircc_options))
+
+            # Write the in-memory module to the input file expected by aircc
+            with open("air.mlir", "w") as f:
+                f.write(str(air_module))
+
+            # Invoke the C++ aircc binary
+            aircc_exe = shutil.which("aircc")
+            if not aircc_exe:
+                raise AirBackendError(
+                    "aircc binary not found in PATH. "
+                    "Ensure mlir-air is installed and aircc is on PATH."
+                )
+            result = subprocess.run(
+                [aircc_exe] + aircc_options,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                error_msg = result.stderr if result.stderr else result.stdout
+                raise AirBackendError(f"aircc compilation failed:\n{error_msg}")
 
         # For ELF mode, the kernel identifier is "main:instance_name"
         # This is used when loading the ELF via xrt.ext.kernel()

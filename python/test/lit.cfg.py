@@ -143,7 +143,7 @@ tools = [
     "aie-opt",
     "aie-translate",
     "aiecc.py",
-    "aircc.py",
+    "aircc",
     "air-opt",
     "clang",
     "clang++",

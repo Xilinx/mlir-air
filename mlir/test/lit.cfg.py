@@ -80,7 +80,7 @@ llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 llvm_config.with_environment("PATH", config.aie_tools_dir, append_path=True)
 
 tool_dirs = [config.air_tools_dir, config.aie_tools_dir, config.llvm_tools_dir]
-tools = ["air-opt", "air-translate", "air-runner", "aie-opt"]
+tools = ["air-opt", "air-translate", "air-runner", "aie-opt", "aircc"]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)
 

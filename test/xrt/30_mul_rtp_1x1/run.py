@@ -4,7 +4,6 @@
 # RUN: %PYTHON %s | FileCheck %s
 
 import air.backend.xrt as xrt_backend
-import air.compiler.aircc.main as aircc
 from air.dialects.air import *
 from air.dialects.func import FuncOp, ReturnOp
 import air.dialects.linalg.opdsl.lang as linalg_lang
