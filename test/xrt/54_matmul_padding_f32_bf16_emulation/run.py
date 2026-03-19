@@ -730,9 +730,9 @@ if __name__ == "__main__":
             bf16_emulation=use_bf16_emulation,
         )
         # With bf16-truncated golden, remaining error is from BFP16 block
-        # floating point quantization and floor rounding in direct-codegen.
-        # Tolerance matches PR #1440 (rtol=0.05, atol=4); requires
-        # mlir-aie#2987 (conv_even rounding) for full precision.
+        # floating point quantization. Direct-codegen uses floor rounding
+        # (conv_even not yet emitted by AIECoreToStandard), causing ~30%
+        # mismatch rate. Tolerance rtol=0.05, atol=4 matches PR #1440.
         exit(
             runner.run_test(
                 mlir_module,
