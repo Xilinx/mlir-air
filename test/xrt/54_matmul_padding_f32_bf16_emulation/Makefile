@@ -5,7 +5,7 @@ srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 BUILD_DIR := build
 AIEOPT_DIR = $(shell realpath $(dir $(shell which aie-opt))/..)
 
-# AIE_TARGET: aie2 (NPU1) or aie2p (NPU2, default)
+# AIE_TARGET: aie2p (NPU2) only — npu1 not supported (requires ELF reload)
 AIE_TARGET ?= aie2p
 
 TILE_M ?= 64
@@ -15,19 +15,10 @@ N ?= 500
 K ?= 784
 K_L2_TILE ?= 16
 
-# Architecture-specific defaults
-ifeq ($(AIE_TARGET),aie2p)
-  HERD_M ?= 4
-  HERD_N ?= 4
-  TRANSFORM_SCRIPT ?= ${srcdir}/transform_aie2p.mlir
-else
-  HERD_M ?= 4
-  HERD_N ?= 4
-  TRANSFORM_SCRIPT ?= ${srcdir}/transform_aie2.mlir
-endif
+HERD_M ?= 4
+HERD_N ?= 4
 
-COMMON_FLAGS = --transform-script $(TRANSFORM_SCRIPT) \
-	--k-l2-tile $(K_L2_TILE) --herd-m $(HERD_M) --herd-n $(HERD_N) \
+COMMON_FLAGS = --k-l2-tile $(K_L2_TILE) --herd-m $(HERD_M) --herd-n $(HERD_N) \
 	--arch $(AIE_TARGET)
 
 # Pad M/N to launch-tile-aligned for profile (test.exe needs xclbin format)
