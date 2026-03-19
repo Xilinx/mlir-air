@@ -185,11 +185,11 @@ if __name__ == "__main__":
         num_samples = 100
         sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
 
-        # Reference: SRS (Shift-Round-Saturate) with truncation.
-        # The AIE SRS intrinsic performs floor-toward-negative-infinity
-        # (same as arithmetic right shift).
+        # Reference: SRS (Shift-Round-Saturate) with positive_inf rounding.
+        # AIECoreToStandard sets rounding mode 9 (positive_inf) for integer SRS,
+        # which rounds toward positive infinity at the midpoint.
         def ref_shift_saturate(x, shift):
-            shifted = x >> shift
+            shifted = (x + (1 << (shift - 1))) >> shift
             return np.clip(shifted, -128, 127).astype(np.int8).astype(np.int32)
 
         sampled_values = np.array(
