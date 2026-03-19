@@ -137,6 +137,7 @@ class XRTRunner:
         stochastic_expected_outputs: List[np.ndarray] = [],
         rtol: float = 1e-3,
         atol: float = 1e-8,
+        max_mismatch_percentage: float = 0,
         trace_file: str = None,
     ):
         """
@@ -147,6 +148,7 @@ class XRTRunner:
             stochastic_expected_outputs: expected output matrices stored in sparse coordinates. Expect each matrix to be a dictionary containing "shape", "indices" and "values" fields.
             rtol: relative error tolerance.
             atol: absolute error tolerance.
+            max_mismatch_percentage: max percentage (0-100) of elements allowed to exceed tolerance (0 = all must pass, 20 = 20% can fail).
             trace_file: optional override for trace data filename. If None, uses instance default.
         """
         if self.verbose:
@@ -288,6 +290,7 @@ class XRTRunner:
                 expected_outputs=expected_outputs,
                 rtol=rtol,
                 atol=atol,
+                max_mismatch_percentage=max_mismatch_percentage,
             ):
                 print("PASS!")
                 return_code = 0
@@ -300,6 +303,7 @@ class XRTRunner:
                 stochastic_expected_outputs=stochastic_expected_outputs,
                 rtol=rtol,
                 atol=atol,
+                max_mismatch_percentage=max_mismatch_percentage,
             ):
                 print("PASS!")
                 return_code = 0
@@ -324,6 +328,7 @@ class XRTRunner:
         expected_outputs: List[np.ndarray],
         rtol: float = 1e-3,
         atol: float = 1e-8,
+        max_mismatch_percentage: float = 0,
     ):
         assert len(actual_outputs) == len(
             expected_outputs
@@ -349,13 +354,13 @@ class XRTRunner:
                 if expected.dtype == bfloat16:
                     expected = expected.astype(np.float64)
                     actual = actual.astype(np.float64)
-                if not np.allclose(actual, expected, rtol=rtol, atol=atol):
+                close_mask = np.isclose(actual, expected, rtol=rtol, atol=atol)
+                mismatch_indices = np.where(~close_mask)
+                num_mismatches = len(mismatch_indices[0])
+                total_elements = expected.size
+                max_acceptable = int(total_elements * max_mismatch_percentage / 100)
+                if num_mismatches > max_acceptable:
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    # Find mismatched elements
-                    close_mask = np.isclose(actual, expected, rtol=rtol, atol=atol)
-                    mismatch_indices = np.where(~close_mask)
-                    num_mismatches = len(mismatch_indices[0])
-                    total_elements = expected.size
                     print(f"Shape: {expected.shape}")
                     if total_elements > 0:
                         print(
@@ -364,6 +369,10 @@ class XRTRunner:
                     else:
                         print(
                             f"Mismatches: {num_mismatches} / {total_elements} elements (empty array)"
+                        )
+                    if max_acceptable > 0:
+                        print(
+                            f"Max acceptable: {max_acceptable} ({max_mismatch_percentage}%)"
                         )
                     # Show first N mismatches
                     max_display = 20
@@ -421,6 +430,7 @@ class XRTRunner:
         stochastic_expected_outputs: List[np.ndarray],
         rtol: float = 1e-3,
         atol: float = 1e-8,
+        max_mismatch_percentage: float = 0,
     ):
         assert len(actual_outputs) == len(
             stochastic_expected_outputs
@@ -456,26 +466,23 @@ class XRTRunner:
                     expected["values"] = expected["values"].astype(np.float64)
                     actual = actual.astype(np.float64)
                 actual_stochastic = actual[tuple(expected["indices"])]
-                if not np.allclose(
+                close_mask = np.isclose(
                     actual_stochastic, expected["values"], rtol=rtol, atol=atol
-                ):
+                )
+                mismatch_positions = np.where(~close_mask)[0]
+                num_mismatches = len(mismatch_positions)
+                total_elements = len(expected["values"])
+                max_acceptable = int(total_elements * max_mismatch_percentage / 100)
+                if num_mismatches > max_acceptable:
                     print(f"ERROR: Output {i} does not meet expected output.")
-                    # Find mismatched elements
-                    close_mask = np.isclose(
-                        actual_stochastic, expected["values"], rtol=rtol, atol=atol
-                    )
-                    mismatch_positions = np.where(~close_mask)[0]
-                    num_mismatches = len(mismatch_positions)
-                    total_elements = len(expected["values"])
                     print(f"Shape: {expected['shape']}")
                     print(f"Stochastic check: {total_elements} sampled elements")
-                    if total_elements > 0:
+                    print(
+                        f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
+                    )
+                    if max_acceptable > 0:
                         print(
-                            f"Mismatches: {num_mismatches} / {total_elements} elements ({100*num_mismatches/total_elements:.2f}%)"
-                        )
-                    else:
-                        print(
-                            f"Mismatches: {num_mismatches} / {total_elements} elements (empty array)"
+                            f"Max acceptable: {max_acceptable} ({max_mismatch_percentage}%)"
                         )
                     # Show first N mismatches
                     max_display = 20

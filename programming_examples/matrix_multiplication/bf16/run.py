@@ -478,7 +478,7 @@ if __name__ == "__main__":
     HERD_M = 4
     HERD_N = 4
     INPUT_DATATYPE = bfloat16
-    OUTPUT_DATATYPE = bfloat16  # also supports np.float32
+    OUTPUT_DATATYPE = bfloat16
 
     parser = argparse.ArgumentParser(
         prog="run.py",
@@ -557,6 +557,12 @@ if __name__ == "__main__":
         help="Target AIE architecture (aie2 or aie2p)",
     )
     args = parser.parse_args()
+
+    # aie2p uses f32 accumulation output for better precision (both direct-codegen
+    # and external kernel paths). This avoids bf16 truncation between K-tile
+    # iterations and eliminates sensitivity to rounding mode.
+    if args.arch == "aie2p":
+        OUTPUT_DATATYPE = np.float32
 
     # Check for PEANO_INSTALL_DIR if direct codegen is enabled
     if args.direct_codegen:
@@ -646,7 +652,7 @@ if __name__ == "__main__":
                 
                 %vector_contracts = transform.structured.match ops{["vector.contract"]} in %arg1 : (!transform.any_op) -> !transform.any_op
                 %result11 = transform.air.vector_type_cast %vector_contracts {target_element_type = f32, input_indices = [2], output_indices = [0]} : (!transform.any_op) -> !transform.any_op
-                
+
                 // Hoist all accumulator transfer pairs from the innermost loop
                 %innermost_for_updated_3 = transform.air.hoist_loop_invariant_transfers %herd2_1, %innermost_for : (!transform.any_op, !transform.any_op) -> !transform.any_op
 
@@ -655,34 +661,34 @@ if __name__ == "__main__":
 
                 %fors_to_hoist_ptrs = transform.structured.match ops{["scf.for"]} in %herd2_1 : (!transform.any_op) -> !transform.any_op
                 %innermost_for1, %outer_fors1 = transform.split_handle %fors_to_hoist_ptrs {overflow_result = 1}: (!transform.any_op) -> (!transform.any_op, !transform.any_op)
- 
+
                 // Hoist the 4 extf/truncf pairs from the innermost loop
                 %all_extf_loop = transform.structured.match ops{["arith.extf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop = transform.structured.match ops{["arith.truncf"]} in %innermost_for1 : (!transform.any_op) -> !transform.any_op
-                
+
                 // Split to get individual operations (4 extf total)
                 %extf_bf16_1, %extf_bf16_2, %extf_bf16_3, %extf_bf16_4 = transform.split_handle %all_extf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                
+
                 // The 4 truncf ops correspond to the 4 vector.contract results
                 %truncf_1, %truncf_2, %truncf_3, %truncf_4 = transform.split_handle %all_truncf_loop : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
-                
+
                 // Hoist first pair
                 %for1_1_hoisted_1 = transform.air.hoist_cast_pair %extf_bf16_1, %truncf_1, %innermost_for1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
+
                 // Re-match and hoist second pair
                 %all_extf_loop_2 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop_2 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_1 : (!transform.any_op) -> !transform.any_op
                 %extf_bf16_2_new, %e2_5, %e2_6 = transform.split_handle %all_extf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
                 %truncf_2_1, %truncf_2_2, %truncf_2_3 = transform.split_handle %all_truncf_loop_2 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
                 %for1_1_hoisted_2 = transform.air.hoist_cast_pair %extf_bf16_2_new, %truncf_2_1, %for1_1_hoisted_1 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
+
                 // Re-match and hoist third pair
                 %all_extf_loop_3 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop_3 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_2 : (!transform.any_op) -> !transform.any_op
                 %extf_bf16_3_new, %e3_7 = transform.split_handle %all_extf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
                 %truncf_3_1, %truncf_3_2 = transform.split_handle %all_truncf_loop_3 : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
                 %for1_1_hoisted_3 = transform.air.hoist_cast_pair %extf_bf16_3_new, %truncf_3_1, %for1_1_hoisted_2 : (!transform.any_op, !transform.any_op, !transform.any_op) -> !transform.any_op
-                
+
                 // Re-match and hoist fourth pair
                 %all_extf_loop_4 = transform.structured.match ops{["arith.extf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
                 %all_truncf_loop_4 = transform.structured.match ops{["arith.truncf"]} in %for1_1_hoisted_3 : (!transform.any_op) -> !transform.any_op
@@ -707,12 +713,8 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    input_a = np.arange(0, args.m * args.k, dtype=INPUT_DATATYPE).reshape(
-        args.m, args.k
-    )
-    input_b = np.arange(0, args.k * args.n, dtype=INPUT_DATATYPE).reshape(
-        args.k, args.n
-    )
+    input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
+    input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
         # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
@@ -761,7 +763,9 @@ if __name__ == "__main__":
                 mlir_module,
                 inputs=[input_a, input_b],
                 stochastic_expected_outputs=[sampled_data],
-                rtol=1e0,
+                rtol=0.05,
+                atol=4,
+                max_mismatch_percentage=5,
             )
         )
 
