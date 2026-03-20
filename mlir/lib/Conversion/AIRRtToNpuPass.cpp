@@ -2198,7 +2198,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
       OpBuilder &builder, std::vector<std::pair<uint8_t, uint8_t>> &ports,
       uint32_t offset, IntegerAttr col, IntegerAttr row) {
     uint32_t v0 = 0;
-    for (unsigned i = 0; i < std::min(ports.size(), 4UL); i++) {
+    for (unsigned i = 0; i < std::min(ports.size(), (size_t)4); i++) {
       v0 |= (ports[i].second << (i * 8));
       v0 |= (ports[i].first << ((i * 8) + 5));
     }
@@ -2206,7 +2206,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                nullptr, col, row);
     uint32_t v1 = 0;
     if (ports.size() > 4)
-      for (unsigned i = 4; i < std::min(ports.size(), 8UL); i++) {
+      for (unsigned i = 4; i < std::min(ports.size(), (size_t)8); i++) {
         v1 |= (ports[i].second << ((i - 4) * 8));
         v1 |= (ports[i].first << (((i - 4) * 8) + 5));
       }
@@ -2221,11 +2221,11 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
                                  uint32_t offset, IntegerAttr col,
                                  IntegerAttr row) {
     uint32_t v0 = 0;
-    for (unsigned i = 0; i < std::min(events.size(), 4UL); i++)
+    for (unsigned i = 0; i < std::min(events.size(), (size_t)4); i++)
       v0 |= ((events[i] & 0xff) << (i * 8));
     uint32_t v1 = 0;
     if (events.size() > 4)
-      for (unsigned i = 4; i < std::min(events.size(), 8UL); i++)
+      for (unsigned i = 4; i < std::min(events.size(), (size_t)8); i++)
         v1 |= ((events[i] & 0xff) << ((i - 4) * 8));
 
     AIEX::NpuWrite32Op::create(builder, builder.getUnknownLoc(), offset, v0,
