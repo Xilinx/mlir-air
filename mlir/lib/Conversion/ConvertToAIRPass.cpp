@@ -1356,8 +1356,8 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
 
     // Simplify all the subviews so we can rewrite them easily.
     // Mostly this is propagating constant sizes into dimensioned memref types.
-    RewritePatternSet stage1Patterns =
-        linalg::getLinalgTilingCanonicalizationPatterns(context);
+    RewritePatternSet stage1Patterns(context);
+    linalg::populateLinalgTilingCanonicalizationPatterns(stage1Patterns);
     memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
     memref::populateComposeSubViewPatterns(stage1Patterns, context);
     (void)applyPatternsGreedily(module, std::move(stage1Patterns));
