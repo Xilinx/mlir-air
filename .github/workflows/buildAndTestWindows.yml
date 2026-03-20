@@ -1,0 +1,110 @@
+# Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: Build and Test (Windows)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [assigned, opened, synchronize, reopened, ready_for_review]
+  merge_group:
+  workflow_dispatch:
+
+defaults:
+  run:
+    # Force bash on Windows (Git Bash) for cross-platform script compatibility.
+    shell: bash
+
+concurrency:
+  # A PR number if a pull request and otherwise the commit hash. This cancels
+  # queued and in-progress runs for the same PR (presubmit) or commit
+  # (postsubmit).
+  group: ci-build-test-air-windows-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  build-repo:
+    name: Build and Test (Windows)
+    runs-on: windows-2022
+
+    steps:
+      - name: Get the project repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          submodules: "true"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Cpp
+        uses: aminya/setup-cpp@1fd813945e55021261b381c59275db442da4082f
+        with:
+          compiler: msvc
+          vcvarsall: true
+          cmake: true
+          ninja: true
+          cppcheck: false
+          clangtidy: false
+          clangformat: false
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install lit PyYAML numpy nanobind
+
+      - name: Ccache for C++ compilation
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-release
+          max-size: 1G
+
+      - name: Get MLIR
+        run: |
+          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          echo "MLIR wheel version: $VERSION"
+          pip -q download mlir==$VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          unzip -q mlir-*.whl
+
+      - name: Get mlir-aie
+        run: |
+          MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
+          echo "mlir-aie wheel version: $MLIR_AIE_VERSION"
+          pip install mlir_aie==$MLIR_AIE_VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/
+
+      - name: Get cmakeModules
+        run: |
+          git clone --depth 1 https://github.com/Xilinx/cmakeModules.git
+
+      - name: Build
+        run: |
+          MLIR_AIE_DIR=$(python -c "import mlir_aie; import pathlib; print(pathlib.Path(mlir_aie.__path__[0]).as_posix())")
+          # 'where' on Windows may return multiple matches; take only the first line
+          LLVM_EXTERNAL_LIT="$(where lit | head -1 | tr -d '\r')"
+          PYTHON_EXE="$(which python | tr -d '\r')"
+
+          mkdir build
+          cd build
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON \
+            -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
+            -DCMAKE_C_VISIBILITY_PRESET=hidden \
+            -DCMAKE_CXX_VISIBILITY_PRESET=hidden \
+            -DCMAKE_MODULE_PATH=$PWD/../cmakeModules \
+            -DMLIR_DIR=$PWD/../mlir/lib/cmake/mlir \
+            -DLLVM_DIR=$PWD/../mlir/lib/cmake/llvm \
+            -DAIE_DIR=$MLIR_AIE_DIR/lib/cmake/aie \
+            -DLLVM_EXTERNAL_LIT="$LLVM_EXTERNAL_LIT" \
+            -DPython3_EXECUTABLE="$PYTHON_EXE" \
+            -DCMAKE_INSTALL_PREFIX=install
+
+          ninja
