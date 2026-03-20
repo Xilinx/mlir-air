@@ -11,6 +11,7 @@
 
 #if AIR_ENABLE_AIE
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
+#include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 #endif
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -35,6 +36,7 @@ using namespace mlir;
 
 // AIE-specific pass definitions
 #if AIR_ENABLE_AIE
+#define GEN_PASS_DEF_AIRHIERARCHYTOAIE
 #define GEN_PASS_DEF_AIRLINALGTOFUNC
 #define GEN_PASS_DEF_AIRLOWERING
 #define GEN_PASS_DEF_AIRPIPELINETOAFFINE

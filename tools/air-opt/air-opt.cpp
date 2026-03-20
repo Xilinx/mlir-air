@@ -13,6 +13,8 @@
 #if AIR_ENABLE_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
+#include "aie/Dialect/Conduit/IR/ConduitDialect.h"
+#include "aie/Dialect/Conduit/Transforms/ConduitPasses.h"
 #endif
 
 #include "mlir/IR/Dialect.h"
@@ -40,12 +42,16 @@ int main(int argc, char **argv) {
 #if AIR_ENABLE_AIE
   registry.insert<xilinx::AIE::AIEDialect>();
   registry.insert<xilinx::AIEX::AIEXDialect>();
+  registry.insert<xilinx::conduit::ConduitDialect>();
 #endif
 
   registerAllExtensions(registry);
 
   registerAllPasses();
   xilinx::air::registerAllPasses();
+#if AIR_ENABLE_AIE
+  xilinx::conduit::registerConduitPasses();
+#endif
 
   return failed(
       MlirOptMain(argc, argv, "MLIR-AIR modular optimizer driver\n", registry));

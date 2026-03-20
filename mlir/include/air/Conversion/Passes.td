@@ -163,6 +163,57 @@ def AIRLinalgToFunc : Pass<"air-linalg-to-func", "ModuleOp"> {
   ];
 }
 
+def AIRHierarchyToAIE : Pass<"air-hierarchy-to-aie", "ModuleOp"> {
+  let summary = "Lower AIR hierarchy (launch/segment/herd) to AIE tiles+cores, "
+                "preserving air.channel ops for subsequent Conduit lowering";
+  let constructor = "xilinx::air::createAIRHierarchyToAIEPass()";
+  let description = [{
+    Extracts the hierarchy-lowering portion of --air-to-aie and stops before
+    channel/DMA lowering.  After this pass the IR contains:
+
+      - aie.device, aie.tile, aie.core (hierarchy lowered)
+      - air.channel declarations still present inside aie.device
+      - air.channel.put/get/wait_all still present inside aie.core bodies
+      - No aie.objectfifo, no aie.lock, no aie.flow, no aie.dma_bd
+
+    This is the intended entry point for the Conduit pipeline on AIR programs:
+
+      air-opt --air-hierarchy-to-aie \
+              --air-channel-to-conduit \
+              --conduit-to-dma <file.mlir>
+
+    The pass runs steps 1-5 of the AIRToAIE pipeline:
+      1. renumberMemcpyIfOps (module-level)
+      2. createAIEModulesAndOutlineCores
+      3. cloneL2AndL3MemcpysToDeviceOp
+      4. specializeHerdAffineIf + lowerAirExecute + lowerScfAirTokens
+      5. specializeChannelBundle + removeOrphanedChannels
+  }];
+  let options = [
+    Option<"clRowOffset", "row-offset", "unsigned", /*default=*/"1",
+           "The default start row for any herds without 'y_loc' attribute.">,
+    Option<"clColOffset", "col-offset", "unsigned", /*default=*/"1",
+           "The default start column for any herds without 'x_loc' attribute.">,
+    Option<"clEmitWhileLoop", "emit-while-loop", "bool",
+           /*default=*/"false",
+           "Emit a while(1) around the herd code in generated AIR.core ops.">,
+    Option<"clEmitHerdLock", "emit-herd-lock", "bool",
+           /*default=*/"false",
+           "Acquire and release a lock at the start and end of herd execution.">,
+    Option<"clDevice", "device", "std::string",
+          /*default=*/"\"xcvc1902\"",
+           "AIE device to target.">,
+    Option<"clUseLockRaceConditionFix", "use-lock-race-condition-fix", "bool",
+          /*default=*/"false",
+          "Insert dummy channel ops to balance L2 buffer BDs "
+          "(race condition fix).">,
+  ];
+  let dependentDialects = [
+    "xilinx::AIE::AIEDialect",
+    "xilinx::AIEX::AIEXDialect",
+  ];
+}
+
 def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
   let summary = "Lower air.launch_herd to AIE dialect";
   let constructor = "xilinx::air::createAIRToAIEPass()";
