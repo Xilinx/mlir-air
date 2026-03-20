@@ -18,10 +18,9 @@ K_L2_TILE ?= 16
 HERD_M ?= 4
 HERD_N ?= 4
 
-COMMON_FLAGS = --k-l2-tile $(K_L2_TILE) --herd-m $(HERD_M) --herd-n $(HERD_N) \
-	--arch $(AIE_TARGET)
+COMMON_FLAGS = --k-l2-tile $(K_L2_TILE) --herd-m $(HERD_M) --herd-n $(HERD_N)
 
-# Pad M/N to launch-tile-aligned for profile (test.exe needs xclbin format)
+# Pad M/N to launch-tile-aligned for profile
 LAUNCH_TILE_M = $(shell echo $$(( $(TILE_M) * $(HERD_M) )))
 LAUNCH_TILE_N = $(shell echo $$(( $(TILE_N) * $(HERD_N) )))
 M_PADDED = $(shell python3 -c "import math; print(math.ceil($(M)/$(LAUNCH_TILE_M))*$(LAUNCH_TILE_M))")
@@ -59,11 +58,11 @@ build-test-exe:
 		-luuid -lxrt_coreutil -lrt -lstdc++ -ltest_utils
 
 profile: build-test-exe
-	@echo "Profiling M=$(M) N=$(N) K=$(K) (padded to $(M_PADDED)x$(N_PADDED)) arch=$(AIE_TARGET)"
+	@echo "Profiling M=$(M) N=$(N) K=$(K) (padded to $(M_PADDED)x$(N_PADDED))"
 	mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && python3 ${srcdir}/run.py $(COMMON_FLAGS) \
 		--M $(M_PADDED) --N $(N_PADDED) --K $(K) --compile-mode compile-only
-	cd $(BUILD_DIR) && ./test.exe -x air.xclbin -k MLIR_AIE -i air.insts.bin \
+	cd $(BUILD_DIR) && ./test.exe -e air.elf -k main:matmul_padding_kernel \
 		-M $(M) -K $(K) -N $(N) --alloc_m $(M_PADDED) --alloc_n $(N_PADDED)
 
 clean:

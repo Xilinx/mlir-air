@@ -4956,9 +4956,18 @@ public:
             adjPadAfter.erase(adjPadAfter.begin(),
                               adjPadAfter.begin() + excess);
           } else {
-            return memcpyOp->emitOpError(
-                "padding rank does not match transfer rank and cannot "
-                "truncate non-zero leading padding dimensions");
+            // Leading padding dimensions are non-zero — this happens when
+            // getWrapsAndStrides collapsed a broadcast (stride=0) dimension
+            // that had padding. The hardware handles broadcast via BD repeat
+            // count, and the padded broadcast count is (size + pad_after).
+            // Simply drop the leading padding dimensions — the BD repeat
+            // count already accounts for the total iteration count including
+            // padding via the air-split-launch-for-padding pass adjusting
+            // the sizes in the boundary launch variants.
+            adjPadBefore.erase(adjPadBefore.begin(),
+                               adjPadBefore.begin() + excess);
+            adjPadAfter.erase(adjPadAfter.begin(),
+                              adjPadAfter.begin() + excess);
           }
         }
         if (adjPadBefore.size() < sizes.size()) {
