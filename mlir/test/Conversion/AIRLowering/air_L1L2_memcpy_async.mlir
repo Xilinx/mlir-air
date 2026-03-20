@@ -8,9 +8,9 @@
 
 // RUN: air-opt %s -air-to-std | FileCheck %s
 // CHECK: %[[M0:.*]] = airrt.alloc : memref<1024xi32, 1>
-// CHECK: %[[E0:.*]] = airrt.dma_memcpy_nd(%c1_i32, {{.*}}, {{.*}}, %0[{{.*}}], [{{.*}}], [{{.*}}]) : (i32, i64, i64, memref<1024xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK: %[[E0:.*]] = airrt.dma_memcpy_nd(%c1_i32, {{.*}}, {{.*}}, %0[{{.*}}], [{{.*}}], [{{.*}}]) : (i32, i64, i64, memref<1024xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
 // CHECK: airrt.wait_all %[[E0]]
-// CHECK: %[[E1:.*]] = airrt.dma_memcpy_nd(%c2_i32, {{.*}}, {{.*}}, %0[{{.*}}], [{{.*}}], [{{.*}}]) : (i32, i64, i64, memref<1024xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+// CHECK: %[[E1:.*]] = airrt.dma_memcpy_nd(%c2_i32, {{.*}}, {{.*}}, %0[{{.*}}], [{{.*}}], [{{.*}}]) : (i32, i64, i64, memref<1024xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
 // CHECK: airrt.wait_all %[[E0]], %[[E1]]
 // CHECK: airrt.dealloc %[[M0]] : memref<1024xi32, 1>
 module  {

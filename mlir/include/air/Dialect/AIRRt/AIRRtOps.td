@@ -130,18 +130,19 @@ def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", []> {
         I64:$length0,
         I64:$stride3,
         I64:$stride2,
-        I64:$stride1
+        I64:$stride1,
+        I64:$stride0
   );
   let results = (outs Optional<AIRRt_Event>:$event);
   let assemblyFormat = [{
     `(` $id `,`$x `,`$y `,`$memref
     `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
     `[` $length3`,`$length2`,`$length1`,`$length0 `]` `,`
-    `[` $stride3`,`$stride2`,`$stride1 `]` `)` attr-dict `:`
+    `[` $stride3`,`$stride2`,`$stride1`,`$stride0 `]` `)` attr-dict `:`
     `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
     `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
     `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
-    `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)` (`:` type($event)^)?
+    `[` type($stride3)`,`type($stride2)`,`type($stride1)`,` type($stride0) `]` `)` (`:` type($event)^)?
   }];
   let description = [{
     nd half dma operator
@@ -163,18 +164,19 @@ def AIRRt_MemcpyNdOp: AIRRt_Op<"memcpy_nd", []> {
         I64:$length0,
         I64:$stride3,
         I64:$stride2,
-        I64:$stride1
+        I64:$stride1,
+        I64:$stride0
   );
   let results = (outs Optional<AIRRt_Event>:$event);
   let assemblyFormat = [{
     `(` $dst`,`$src`,`
     `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
     `[` $length3`,`$length2`,`$length1`,`$length0 `]` `,`
-    `[` $stride3`,`$stride2`,`$stride1 `]` `)` attr-dict `:`
+    `[` $stride3`,`$stride2`,`$stride1`,`$stride0 `]` `)` attr-dict `:`
     `(` type($dst)`,`type($src)`,`
     `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
     `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
-    `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)`  (`:` type($event)^)?
+    `[` type($stride3)`,`type($stride2)`,`type($stride1)`,` type($stride0) `]` `)`  (`:` type($event)^)?
   }];
   let description = [{
     nd memcpy operator
