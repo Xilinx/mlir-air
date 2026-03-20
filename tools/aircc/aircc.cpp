@@ -155,7 +155,9 @@ static cl::opt<bool> noXchesscc("no-xchesscc", cl::desc("Compile using peano"),
                                 cl::init(false), cl::cat(airCompilerOptions));
 
 static cl::opt<std::string> peanoInstallDir(
-    "peano", cl::desc("Root directory where peano compiler is installed"),
+    "peano",
+    cl::desc("Root directory where peano compiler is installed. "
+             "Falls back to PEANO_INSTALL_DIR env var if not specified."),
     cl::init(""), cl::cat(airCompilerOptions));
 
 static cl::opt<std::string> deviceName("device", cl::desc("Target AIE device"),
@@ -1193,10 +1195,10 @@ static LogicalResult runAieCompilation() {
         aieccCmd.push_back("--xclbin-input=" + xclbinInput.getValue());
     }
 
-    // Peano
+    // Peano — use --peano=<dir> (equals-joined) so that downstream aiecc
+    // never risks consuming the next argument as the peano value.
     if (!peanoInstallDir.empty()) {
-      aieccCmd.push_back("--peano");
-      aieccCmd.push_back(peanoInstallDir.getValue());
+      aieccCmd.push_back("--peano=" + peanoInstallDir.getValue());
     }
 
     aieccCmd.push_back("-O");
@@ -1625,6 +1627,23 @@ int main(int argc, char **argv) {
     llvm::errs() << "Error creating directory " << tmpDir << ": "
                  << ec.message() << "\n";
     return 1;
+  }
+
+  // Resolve --peano: fall back to PEANO_INSTALL_DIR env var when --peano was
+  // not specified on the command line. This matches the Python backend behavior
+  // (e.g. python/air/backend/xrt.py) where callers read the env var and pass
+  // it via --peano. Supporting the env var directly lets callers omit --peano
+  // entirely when the value may be empty. Note that if a shell invocation
+  // expands to `--peano input.mlir` (e.g. `--peano $EMPTY_VAR input.mlir`
+  // with EMPTY_VAR unset), cl::ParseCommandLineOptions will consume the input
+  // path as the option value before this fallback runs. To avoid this, callers
+  // should either omit --peano entirely or use `--peano=$VAR`.
+  //
+  // Gate on getNumOccurrences() so that explicit `--peano=` (intentionally
+  // empty) is not silently overridden by the env var.
+  if (peanoInstallDir.getNumOccurrences() == 0) {
+    if (auto envPeano = sys::Process::GetEnv("PEANO_INSTALL_DIR"))
+      peanoInstallDir = *envPeano;
   }
 
   // Resolve conflicting options
