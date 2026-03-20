@@ -1014,6 +1014,12 @@ static LogicalResult runAieCompilation() {
   if (debugIr)
     addCheckpoint("AIR Placement Complete", "placed.air.mlir");
 
+  // Split launch for non-tile-aligned DMA padding. No-op if no launch
+  // has the air.actual_sizes attribute (set by air-wrap-func-with-parallel).
+  if (failed(runPassPipeline("builtin.module(air-split-launch-for-padding)",
+                             placedModule.get())))
+    return failure();
+
   // --- AIR to AIE conversion ---
   std::string airToAiePipeline;
   {
