@@ -1558,9 +1558,6 @@ struct UnrollScfParallel : public OpRewritePattern<scf::ParallelOp> {
       IRMapping remap;
       std::vector<unsigned> position =
           air::getMDVectorFromIterator(par_size, iter);
-      std::reverse(position.begin(),
-                   position.end()); // scf.parallel induction vars. have LSD at
-                                    // highest index.
       // Create arith.const ops per position
       SmallVector<Value> positionVals;
       for (unsigned i = 0; i < position.size(); i++) {

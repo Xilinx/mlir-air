@@ -4223,7 +4223,8 @@ public:
           shim_name += "_" + std::to_string(t_idx);
         StringAttr shim_name_attr = builder.getStringAttr(shim_name);
 
-        // Create shim allocation op.
+        // Create shim allocation op in the allocation's own DeviceOp.
+        builder.setInsertionPoint(deviceOp.getBody()->getTerminator());
         if (!SymbolTable::lookupSymbolIn(deviceOp, shim_name)) {
           auto shimAllocationOp = AIE::ShimDMAAllocationOp::create(
               builder, builder.getUnknownLoc(), shim_name_attr, t.getDmaTile(),
@@ -5758,6 +5759,16 @@ public:
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
 
+    // Deferred shim DMA metadata: for segment-unrolled devices, collect all
+    // allocations across devices and build metadataArrays in a single call.
+    // This produces correctly-ordered entries without relying on the post-hoc
+    // name-parsing sort.
+    std::vector<air::allocation_info_t> combinedS2MMAllocs, combinedMM2SAllocs;
+    air::LaunchOp deferredLaunch = nullptr;
+    std::map<int, int> deferredChanRenumberMap;
+    func::FuncOp deferredFunc = nullptr;
+    MLIRContext *deferredCtx = nullptr;
+
     std::set<AIE::DeviceOp> seen;
     for (auto &p : aie_devices) {
       auto device = std::get<0>(p);
@@ -5915,42 +5926,57 @@ public:
       }
 
       if (isa<AIE::AIE2TargetModel>(device.getTargetModel()) && !clUseObjFifo) {
-        // Shim dma allocation metadata linkage (AIE2)
-        auto func = h->getParentOfType<func::FuncOp>();
-        std::vector<air::MemcpyInterface> shimMemcpyIfOps;
-        // Filter shim memcpy ops by target launch to only include ops
-        // belonging to the current device's parent launch.
-        func.walk([&](air::ChannelInterface o) {
-          // Filter by target launch: only collect ops from the current launch
-          auto parentLaunch = o->getParentOfType<air::LaunchOp>();
-          if (parentLaunch && parentLaunch != targetLaunch)
+        bool isSegmentUnrolled = device->hasAttr("segment_unroll_x") ||
+                                 device->hasAttr("segment_unroll_y");
+        if (isSegmentUnrolled) {
+          // Defer: collect allocations from all segment-unrolled devices
+          // so metadataArrays can be built in one pass with all entries.
+          combinedS2MMAllocs.insert(combinedS2MMAllocs.end(),
+                                    shimDmaAlloc.s2mm_allocs.begin(),
+                                    shimDmaAlloc.s2mm_allocs.end());
+          combinedMM2SAllocs.insert(combinedMM2SAllocs.end(),
+                                    shimDmaAlloc.mm2s_allocs.begin(),
+                                    shimDmaAlloc.mm2s_allocs.end());
+          if (!deferredLaunch) {
+            deferredLaunch = targetLaunch;
+            deferredChanRenumberMap = chan_renumber_reverse_map;
+            deferredFunc = h->getParentOfType<func::FuncOp>();
+            deferredCtx = ctx;
+          }
+        } else {
+          // Non-unrolled: process immediately as before.
+          auto func = h->getParentOfType<func::FuncOp>();
+          std::vector<air::MemcpyInterface> shimMemcpyIfOps;
+          func.walk([&](air::ChannelInterface o) {
+            auto parentLaunch = o->getParentOfType<air::LaunchOp>();
+            if (parentLaunch && parentLaunch != targetLaunch)
+              return;
+            auto memrefTy =
+                dyn_cast_if_present<BaseMemRefType>(o.getMemref().getType());
+            if (memrefTy && air::isL3(memrefTy))
+              shimMemcpyIfOps.push_back(
+                  dyn_cast_if_present<air::MemcpyInterface>(o.getOperation()));
+          });
+          func.walk([&](air::DmaMemcpyNdOp o) {
+            auto parentLaunch = o->getParentOfType<air::LaunchOp>();
+            if (parentLaunch && parentLaunch != targetLaunch)
+              return;
+            auto srcMemrefTy =
+                dyn_cast_if_present<BaseMemRefType>(o.getSrcMemref().getType());
+            if (srcMemrefTy && air::isL3(srcMemrefTy))
+              shimMemcpyIfOps.push_back(o);
+            auto dstMemrefTy =
+                dyn_cast_if_present<BaseMemRefType>(o.getDstMemref().getType());
+            if (dstMemrefTy && air::isL3(dstMemrefTy))
+              shimMemcpyIfOps.push_back(o);
+          });
+          builder.setInsertionPoint(device.getBody()->getTerminator());
+          if (failed(createShimDMAAllocationOps(builder, ctx, shimMemcpyIfOps,
+                                                shimDmaAlloc,
+                                                chan_renumber_reverse_map))) {
+            signalPassFailure();
             return;
-          auto memrefTy =
-              dyn_cast_if_present<BaseMemRefType>(o.getMemref().getType());
-          if (memrefTy && air::isL3(memrefTy))
-            shimMemcpyIfOps.push_back(
-                dyn_cast_if_present<air::MemcpyInterface>(o.getOperation()));
-        });
-        func.walk([&](air::DmaMemcpyNdOp o) {
-          // Filter by target launch: only collect ops from the current launch
-          auto parentLaunch = o->getParentOfType<air::LaunchOp>();
-          if (parentLaunch && parentLaunch != targetLaunch)
-            return;
-          auto srcMemrefTy =
-              dyn_cast_if_present<BaseMemRefType>(o.getSrcMemref().getType());
-          if (srcMemrefTy && air::isL3(srcMemrefTy))
-            shimMemcpyIfOps.push_back(o);
-          auto dstMemrefTy =
-              dyn_cast_if_present<BaseMemRefType>(o.getDstMemref().getType());
-          if (dstMemrefTy && air::isL3(dstMemrefTy))
-            shimMemcpyIfOps.push_back(o);
-        });
-        builder.setInsertionPoint(device.getBody()->getTerminator());
-        if (failed(createShimDMAAllocationOps(builder, ctx, shimMemcpyIfOps,
-                                              shimDmaAlloc,
-                                              chan_renumber_reverse_map))) {
-          signalPassFailure();
-          return;
+          }
         }
       }
 
@@ -5991,6 +6017,56 @@ public:
       // Clean up dead memref.get_global/memref.global left by outlineAIECores
       // after DMA/channel lowering consumed their users.
       removeDeadGlobalOps(device);
+    }
+
+    // Deferred shim DMA metadata: process all segment-unrolled devices'
+    // allocations in a single call so metadataArrays are built with all
+    // entries present, producing correctly-ordered arrays.
+    if (deferredFunc &&
+        (!combinedS2MMAllocs.empty() || !combinedMM2SAllocs.empty())) {
+      std::vector<air::MemcpyInterface> shimMemcpyIfOps;
+      deferredFunc.walk([&](air::ChannelInterface o) {
+        auto parentLaunch = o->getParentOfType<air::LaunchOp>();
+        if (parentLaunch && parentLaunch != deferredLaunch)
+          return;
+        auto memrefTy =
+            dyn_cast_if_present<BaseMemRefType>(o.getMemref().getType());
+        if (memrefTy && air::isL3(memrefTy))
+          shimMemcpyIfOps.push_back(
+              dyn_cast_if_present<air::MemcpyInterface>(o.getOperation()));
+      });
+      deferredFunc.walk([&](air::DmaMemcpyNdOp o) {
+        auto parentLaunch = o->getParentOfType<air::LaunchOp>();
+        if (parentLaunch && parentLaunch != deferredLaunch)
+          return;
+        auto srcMemrefTy =
+            dyn_cast_if_present<BaseMemRefType>(o.getSrcMemref().getType());
+        if (srcMemrefTy && air::isL3(srcMemrefTy))
+          shimMemcpyIfOps.push_back(o);
+        auto dstMemrefTy =
+            dyn_cast_if_present<BaseMemRefType>(o.getDstMemref().getType());
+        if (dstMemrefTy && air::isL3(dstMemrefTy))
+          shimMemcpyIfOps.push_back(o);
+      });
+      // Use a temporary allocator wrapper to pass combined allocations.
+      // The builder insertion point is set per-allocation inside
+      // createShimDMAAllocationOpsImpl (each op is created in its own
+      // DeviceOp).
+      air::ShimDMAAllocator combinedAlloc(
+          combinedS2MMAllocs.empty() ? combinedMM2SAllocs.front()
+                                           .getDmaTile()
+                                           ->getParentOfType<AIE::DeviceOp>()
+                                     : combinedS2MMAllocs.front()
+                                           .getDmaTile()
+                                           ->getParentOfType<AIE::DeviceOp>());
+      combinedAlloc.s2mm_allocs = std::move(combinedS2MMAllocs);
+      combinedAlloc.mm2s_allocs = std::move(combinedMM2SAllocs);
+      if (failed(createShimDMAAllocationOps(builder, deferredCtx,
+                                            shimMemcpyIfOps, combinedAlloc,
+                                            deferredChanRenumberMap))) {
+        signalPassFailure();
+        return;
+      }
     }
   }
 

@@ -884,41 +884,42 @@ air::convertVecOfConstIndexToVecOfUInt(SmallVector<Value> svec) {
   return output;
 }
 
-// Get iterator corresponding to a position in a multi-dimensional vector
+// Get iterator corresponding to a position in a multi-dimensional vector.
+// Row-major linearization: position[0] is slowest-varying, position[N-1] is
+// fastest-varying.
+//
+// Note: If dims.size() != position.size(), returns 0 as a sentinel value.
+// Callers must not treat the return value as a valid linearized index in that
+// case.
 unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
                                       std::vector<unsigned> position) {
   if (dims.size() != position.size())
     return 0;
 
-  std::reverse(position.begin(), position.end());
   unsigned output = 0;
-  for (int i = dims.size() - 1; i >= 0; i--) { // In reversed order
-    unsigned scale_factor = 1;
-    for (int j = 0; j < i; j++) {
-      scale_factor *= dims[i];
-    }
-    output += scale_factor * position[i];
+  for (unsigned i = 0; i < dims.size(); i++) {
+    unsigned stride = 1;
+    for (unsigned j = i + 1; j < dims.size(); j++)
+      stride *= dims[j];
+    output += position[i] * stride;
   }
   return output;
 }
 
 // Get coordinates corresponding to a position in a multi-dimensional vector
-// from an iterator
+// from an iterator. Row-major delinearization: output[0] is slowest-varying,
+// output[N-1] is fastest-varying. This is the inverse of
+// getIteratorFromMDVector when all dims[i] > 0 and
+// 0 <= iter < product(dims).
 std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
                                                    unsigned iter) {
   std::vector<unsigned> output;
-  if (dims.size() > 1) {
-    for (int i = dims.size() - 1; i >= 0; i--) { // reversed order
-      unsigned denominator = 1;
-      for (int j = 0; j < i; j++) {
-        denominator *= dims[j];
-      }
-      output.push_back((iter / (denominator)) % dims[i]);
-    }
-    // Reverse to original order
-    std::reverse(output.begin(), output.end());
-  } else if (dims.size() == 1)
-    output.push_back(iter);
+  for (unsigned i = 0; i < dims.size(); i++) {
+    unsigned stride = 1;
+    for (unsigned j = i + 1; j < dims.size(); j++)
+      stride *= dims[j];
+    output.push_back((iter / stride) % dims[i]);
+  }
   return output;
 }
 
