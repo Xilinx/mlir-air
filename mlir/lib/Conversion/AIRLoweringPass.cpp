@@ -433,18 +433,24 @@ public:
 
     SmallVector<Value, 4> offsets(4, zero);
     SmallVector<Value, 4> lengths(4, one);
-    SmallVector<Value, 3> strides(3, zero);
+    SmallVector<Value, 4> strides(4, zero);
 
     int idx = 4 - src.getRank();
     for (auto o : isFromTile ? op.getDstOffsets() : op.getSrcOffsets())
       offsets[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
                                                   IntegerType::get(ctx, 64), o);
-    idx = 4 - dst.getRank();
     auto op_strides = isFromTile ? op.getDstStrides() : op.getSrcStrides();
-    if (op_strides.size())
-      for (auto o : op_strides.drop_back())
+    if (op_strides.size()) {
+      // Take last min(4, N) strides, drop leading strides if N > 4.
+      // The innermost stride (last element) is now preserved.
+      auto strides_to_use = op_strides;
+      if (strides_to_use.size() > 4)
+        strides_to_use = strides_to_use.drop_front(strides_to_use.size() - 4);
+      idx = 4 - strides_to_use.size();
+      for (auto o : strides_to_use)
         strides[idx++] = arith::IndexCastOp::create(
             rewriter, op->getLoc(), IntegerType::get(ctx, 64), o);
+    }
     idx = 4 - src.getRank();
     for (auto o : isFromTile ? op.getDstSizes() : op.getSrcSizes())
       lengths[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
@@ -561,14 +567,23 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     return failure();
   }
 
-  strides.pop_back();
+  while (offsets.size() > 4) {
+    offsets.erase(offsets.begin());
+  }
   while (offsets.size() < 4) {
     offsets.insert(offsets.begin(), zero_idx);
+  }
+  while (wraps.size() > 4) {
+    wraps.erase(wraps.begin());
   }
   while (wraps.size() < 4) {
     wraps.insert(wraps.begin(), one_idx);
   }
-  while (strides.size() < 3) {
+  // Truncate to last 4 elements if more than 4 strides.
+  while (strides.size() > 4) {
+    strides.erase(strides.begin());
+  }
+  while (strides.size() < 4) {
     strides.insert(strides.begin(), zero_idx);
   }
 

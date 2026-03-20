@@ -65,7 +65,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c64_i64 = arith.constant 64 : i64
     %c7_i32 = arith.constant 7 : i32
-    %0 = airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     airrt.wait_all %0 {"air.launch_end"}
     %p = airrt.segment_load "segment0" : i64
     return
@@ -117,7 +117,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c64_i64 = arith.constant 64 : i64
     %c8_i32 = arith.constant 8 : i32
-    %0 = airrt.dma_memcpy_nd(%c8_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId8} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c8_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId8} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     airrt.wait_all %0 {"air.launch_end"}
     %p = airrt.segment_load "segment_no_repeat" : i64
     return
@@ -169,7 +169,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c64_i64 = arith.constant 64 : i64
     %c9_i32 = arith.constant 9 : i32
-    %0 = airrt.dma_memcpy_nd(%c9_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId9} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c9_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId9} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     airrt.wait_all %0 {"air.launch_end"}
     %p = airrt.segment_load "segment_npu1" : i64
     return
@@ -221,7 +221,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c64_i64 = arith.constant 64 : i64
     %c10_i32 = arith.constant 10 : i32
-    %0 = airrt.dma_memcpy_nd(%c10_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId10} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c10_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId10} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     // Regular wait_all without air.launch_end
     airrt.wait_all %0
     %p = airrt.segment_load "segment_no_launch_end" : i64
@@ -274,7 +274,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c64_i64 = arith.constant 64 : i64
     %c11_i32 = arith.constant 11 : i32
-    %0 = airrt.dma_memcpy_nd(%c11_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId11} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c11_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId11} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     airrt.wait_all %0 {"air.launch_end"}
     %p = airrt.segment_load "segment_memtile" : i64
     return
@@ -334,7 +334,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c64_i64 = arith.constant 64 : i64
     %c12_i32 = arith.constant 12 : i32
-    %0 = airrt.dma_memcpy_nd(%c12_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId12} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c12_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId12} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     airrt.wait_all %0 {"air.launch_end"}
     %p = airrt.segment_load "segment_with_core" : i64
     return
@@ -385,7 +385,7 @@ module {
     %c1_i64 = arith.constant 1 : i64
     %c64_i64 = arith.constant 64 : i64
     %c13_i32 = arith.constant 13 : i32
-    %0 = airrt.dma_memcpy_nd(%c13_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId13} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+    %0 = airrt.dma_memcpy_nd(%c13_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId13} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64]) : !airrt.event
     // WaitAllOp with air.launch_end but NO DMA operands
     // Pattern 1 won't match (no DMA operands), Pattern 2 handles it.
     // With output-elf=true, should emit NpuDmaWaitOp for @airMemcpyId13.

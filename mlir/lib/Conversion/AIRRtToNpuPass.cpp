@@ -392,7 +392,10 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
       staticStrides.push_back(*const_int);
     else
       staticStrides.push_back(0);
-    staticStrides.push_back(1); // Last stride is always 1
+    if (auto const_int = getConstantIntValue(adaptor.getStride0()))
+      staticStrides.push_back(*const_int);
+    else
+      staticStrides.push_back(0);
 
     // Calculate total offset in elements
     // For npu.dma_memcpy_nd, the offset is computed as:
@@ -1181,12 +1184,8 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
   auto oper_begin = memcpy_op.getOperands().begin();
   SmallVector<Value> offsets(oper_begin + 4, oper_begin + 8);
   SmallVector<Value> wraps(oper_begin + 8, oper_begin + 12);
-  SmallVector<Value> strides(oper_begin + 12, oper_begin + 15);
-  // Stride field implicit last element one
+  SmallVector<Value> strides(oper_begin + 12, oper_begin + 16);
   OpBuilder builder(memcpy_op);
-  strides.push_back(
-      arith::ConstantOp::create(builder, loc, builder.getI64Type(),
-                                IntegerAttr::get(builder.getI64Type(), 1)));
 
   for (int i = wraps.size() - 1; i >= 0; i--) {
     auto const_wrap = *getConstantIntValue(wraps[i]);
@@ -1296,8 +1295,7 @@ void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
       inner_affine_for_iv = inner_affine_for.getInductionVar();
   }
 
-  // Stride field implicit last element one, pop.
-  strides.pop_back();
+  // Keep all strides including the innermost (stride0).
 
   // Create new airrt.dma_memcpy_nd op.
   SmallVector<Value> new_opers;
