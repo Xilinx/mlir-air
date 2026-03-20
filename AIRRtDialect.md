@@ -60,11 +60,11 @@ Syntax:
 operation ::= `airrt.dma_memcpy_nd` `(` $id `,`$x `,`$y `,`$memref
               `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
               `[` $length3`,`$length2`,`$length1`,`$length0 `]` `,`
-              `[` $stride3`,`$stride2`,`$stride1 `]` `)` attr-dict `:`
+              `[` $stride3`,`$stride2`,`$stride1`,`$stride0 `]` `)` attr-dict `:`
               `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
               `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
               `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
-              `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)` (`:` type($event)^)?
+              `[` type($stride3)`,`type($stride2)`,`type($stride1)`,` type($stride0) `]` `)` (`:` type($event)^)?
 ```
 
 nd half dma operator
@@ -88,6 +88,7 @@ nd half dma operator
 | `stride3` | 64-bit signless integer |
 | `stride2` | 64-bit signless integer |
 | `stride1` | 64-bit signless integer |
+| `stride0` | 64-bit signless integer |
 
 #### Results:
 
@@ -177,11 +178,11 @@ Syntax:
 operation ::= `airrt.memcpy_nd` `(` $dst`,`$src`,`
               `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
               `[` $length3`,`$length2`,`$length1`,`$length0 `]` `,`
-              `[` $stride3`,`$stride2`,`$stride1 `]` `)` attr-dict `:`
+              `[` $stride3`,`$stride2`,`$stride1`,`$stride0 `]` `)` attr-dict `:`
               `(` type($dst)`,`type($src)`,`
               `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
               `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
-              `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)`  (`:` type($event)^)?
+              `[` type($stride3)`,`type($stride2)`,`type($stride1)`,` type($stride0) `]` `)`  (`:` type($event)^)?
 ```
 
 nd memcpy operator
@@ -203,6 +204,7 @@ nd memcpy operator
 | `stride3` | 64-bit signless integer |
 | `stride2` | 64-bit signless integer |
 | `stride1` | 64-bit signless integer |
+| `stride0` | 64-bit signless integer |
 
 #### Results:
 
