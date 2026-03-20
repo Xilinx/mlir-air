@@ -12,7 +12,6 @@
 #include "mlir/IR/Iterators.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallSet.h"
-#include <sys/stat.h>
 
 #define DEBUG_TYPE "air-dependency-util"
 

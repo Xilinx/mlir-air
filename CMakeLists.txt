@@ -179,6 +179,9 @@ set(AIR_RUNTIME_TEST_TARGET
     CACHE STRING "Runtime architecture to test with.")
 set(AIR_RUNTIME_TEST_TARGET_VAL ${AIR_RUNTIME_TEST_TARGET})
 
+# Runtime libraries depend on POSIX APIs (dlopen, mmap, ioctl) and the Linux
+# amdair kernel driver (/dev/amdair) that are not available on Windows.
+if(NOT WIN32)
 foreach(target ${AIR_RUNTIME_TARGETS})
   # By default, we test the first architecture in AIR_RUNTIME_TARGETS.
   # Alternatively, this can be defined to force testing with a particular
@@ -224,11 +227,14 @@ foreach(target ${AIR_RUNTIME_TARGETS})
     TEST_BEFORE_INSTALL true
     TEST_EXCLUDE_FROM_MAIN true)
 endforeach()
+endif() # NOT WIN32
 
 add_subdirectory(python)
 
-# Build native GPU runtime library when AIR_ENABLE_GPU is enabled
-if(AIR_ENABLE_GPU)
+# Build native GPU runtime library when AIR_ENABLE_GPU is enabled.
+# This build assumes a Linux ROCm installation (hardcoded /opt/rocm path
+# and libamdhip64.so linkage).
+if(AIR_ENABLE_GPU AND NOT WIN32)
   # Find ROCm/HIP
   if(DEFINED ENV{ROCM_PATH})
     set(ROCM_PATH $ENV{ROCM_PATH})
@@ -260,7 +266,9 @@ if(AIR_ENABLE_GPU)
   endif()
 endif()
 
-if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
+if(WIN32)
+  message(STATUS "Skipping e2e tests on Windows (runtime libraries not built)")
+elseif(NOT AIR_RUNTIME_TEST_TARGET_VAL)
   message(
     "Skipping e2e tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
   )
