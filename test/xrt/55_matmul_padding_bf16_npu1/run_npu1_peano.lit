@@ -1,0 +1,13 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu1, peano
+//
+// Non-tile-aligned f32 matmul with on-device bf16 truncation on NPU1.
+// Inputs are f32; a dedicated truncf herd converts f32→bf16 in L1.
+// Uses native 4x8x4 bf16 matmul with f32 accumulation.
+// Host-side padding pads inputs to tile-aligned sizes.
+//
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run M=500 N=500 K=784 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// CHECK: PASS
