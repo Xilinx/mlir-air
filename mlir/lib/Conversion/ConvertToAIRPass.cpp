@@ -217,6 +217,38 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
     extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
                                src_strides);
     src = subview.getSource();
+    // Also peel a reinterpret_cast if the subview's source is one.
+    // For transposed memrefs (stride-1 in the first dimension, i.e. the
+    // outer stride is > 1), the reinterpret_cast has a flat offset into
+    // the buffer corresponding to the launch's induction variable offset
+    // in that dimension. We find the dimension with stride 1 and add the
+    // reinterpret_cast offset there; all other offset slots retain the
+    // subview offsets which are expressed relative to the cast's base.
+    if (auto reinterpretCast = src.getDefiningOp<memref::ReinterpretCastOp>()) {
+      auto rcOffsets = reinterpretCast.getOffsets();
+      if (!rcOffsets.empty() && !src_offsets.empty()) {
+        // Determine which subview dimension has stride == 1 (innermost).
+        // The reinterpret_cast flat offset belongs to that dimension.
+        int strideOneIdx = static_cast<int>(src_strides.size()) - 1;
+        for (int i = 0; i < static_cast<int>(src_strides.size()); ++i) {
+          if (auto cst = getConstantIntValue(src_strides[i])) {
+            if (*cst == 1) {
+              strideOneIdx = i;
+              break;
+            }
+          }
+        }
+        // Add the reinterpret_cast flat offset to the stride-1 dimension's
+        // subview offset. This is the only dimension where the flat offset
+        // adds without a stride multiplier.
+        Value rcOff = rcOffsets[0];
+        Value combined =
+            arith::AddIOp::create(rewriter, reinterpretCast.getLoc(),
+                                  src_offsets[strideOneIdx], rcOff);
+        src_offsets[strideOneIdx] = combined;
+      }
+      src = reinterpretCast.getSource();
+    }
   } else if (auto reinterpretCast =
                  src.getDefiningOp<memref::ReinterpretCastOp>()) {
     extractOperandsFromReinterpretCast(reinterpretCast, rewriter, src_offsets,
@@ -228,6 +260,26 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
     extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
                                dst_strides);
     dst = subview.getSource();
+    if (auto reinterpretCast = dst.getDefiningOp<memref::ReinterpretCastOp>()) {
+      auto rcOffsets = reinterpretCast.getOffsets();
+      if (!rcOffsets.empty() && !dst_offsets.empty()) {
+        int strideOneIdx = static_cast<int>(dst_strides.size()) - 1;
+        for (int i = 0; i < static_cast<int>(dst_strides.size()); ++i) {
+          if (auto cst = getConstantIntValue(dst_strides[i])) {
+            if (*cst == 1) {
+              strideOneIdx = i;
+              break;
+            }
+          }
+        }
+        Value rcOff = rcOffsets[0];
+        Value combined =
+            arith::AddIOp::create(rewriter, reinterpretCast.getLoc(),
+                                  dst_offsets[strideOneIdx], rcOff);
+        dst_offsets[strideOneIdx] = combined;
+      }
+      dst = reinterpretCast.getSource();
+    }
   } else if (auto reinterpretCast =
                  dst.getDefiningOp<memref::ReinterpretCastOp>()) {
     extractOperandsFromReinterpretCast(reinterpretCast, rewriter, dst_offsets,
