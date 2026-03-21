@@ -313,6 +313,30 @@ EXAMPLES = [
         "datatypes": "bf16",
     },
     {
+        "category": "ML Pipeline",
+        "name": "MNIST-FC (Broadcast Bias Add)",
+        "path": "mnist_fc/broadcast_bias_add",
+        "datatypes": "f32",
+    },
+    {
+        "category": "ML Pipeline",
+        "name": "MNIST-FC (ReLU 2D)",
+        "path": "mnist_fc/relu",
+        "datatypes": "f32/bf16",
+    },
+    {
+        "category": "ML Pipeline",
+        "name": "MNIST-FC (Argmax)",
+        "path": "mnist_fc/argmax",
+        "datatypes": "f32\u2192i32",
+    },
+    {
+        "category": "ML Pipeline",
+        "name": "MNIST-FC (Integration)",
+        "path": "mnist_fc/integration",
+        "datatypes": "f32",
+    },
+    {
         "category": "Memory",
         "name": "Shared L1 Buffer",
         "path": "shared_l1",
