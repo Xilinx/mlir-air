@@ -119,7 +119,6 @@ def build_module(m, n, tile_m, tile_n, herd_m, herd_n, vector_size=16):
                     l1_tile_in = AllocOp(l1TileTy_f32, [], [])
                     l1_tile_out = AllocOp(l1TileTy_f32, [], [])
                     l1_tile_bf16 = AllocOp(l1TileTy_bf16, [], [])
-                    l1_tile_relu_bf16 = AllocOp(l1TileTy_bf16, [], [])
 
                     # m_offset = launch_offset_m + tx * tile_m
                     # n_offset = launch_offset_n + ty * tile_n
@@ -185,13 +184,6 @@ def build_module(m, n, tile_m, tile_n, herd_m, herd_n, vector_size=16):
                             )
                             sub_in_bf16 = subview(
                                 l1_tile_bf16.result,
-                                [i, j],
-                                [1, vector_size],
-                                [1, 1],
-                                result_type=l1SubviewTy_bf16,
-                            )
-                            sub_relu_bf16 = subview(
-                                l1_tile_relu_bf16.result,
                                 [i, j],
                                 [1, vector_size],
                                 [1, 1],
@@ -266,7 +258,6 @@ def build_module(m, n, tile_m, tile_n, herd_m, herd_n, vector_size=16):
                     DeallocOp(l1_tile_in)
                     DeallocOp(l1_tile_out)
                     DeallocOp(l1_tile_bf16)
-                    DeallocOp(l1_tile_relu_bf16)
 
 
 if __name__ == "__main__":

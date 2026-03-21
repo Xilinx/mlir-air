@@ -3,21 +3,20 @@
 # Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 #
-# MNIST-FC inference integration test.
-# Chains: matmul1(500x500x784) -> bias_add+relu -> bias_add2 -> argmax
-# in a single multi-launch module on NPU2.
+# MNIST-FC inference integration test (partial pipeline).
+# Chains matmul1 with element-wise post-processing in a single
+# multi-launch module on NPU2.
 #
-# Data layout: test 54's matmul outputs (M, N) with N contiguous.
-# Bias is per-row (axis=0). Argmax reduces along axis=0.
-#
-# Pipeline (4 launches):
-#   Launch 1: matmul1      W1[K,M1] x X[K,N1] -> C1[M1,N1]     (784,500 x 784,500 -> 500,500)
-#   Launch 2: bias_add2    C3[i,j] = matmul2_out[i,j] + bias2[i] (10x500)
+# Pipeline (4 launches in one module):
+#   Launch 1: matmul1      W1[K,M1] x X[K,N1] -> C1[M1,N1]       (784x500 x 784x500 -> 500x500)
+#   Launch 2: bias_add2    C3[i,j] = matmul2_out[i,j] + bias2[i]  (10x500, matmul2 output provided by host)
 #   Launch 3: argmax       out[j]  = argmax_i(C3[i,j])            (10x500 -> 500)
 #   Launch 4: bias+relu    C2[i,j] = max(C1[i,j]+bias1[i], 0)    (500x500)
 #
-# Strategy: build matmul module from test54, apply its transform,
-# then parse and extend with element-wise launches.
+# Note: matmul2 is not yet included in this module; its output is
+# provided as a host input. The matmul1 launch is built by importing
+# test 54's build_module and applying its vectorization transform,
+# then extending the function with element-wise launches.
 
 import argparse
 import math
@@ -52,11 +51,7 @@ test54_dir = os.path.join(
     "54_matmul_padding_f32_bf16_emulation",
 )
 sys.path.insert(0, test54_dir)
-from run import (
-    build_module as build_matmul_module,
-    truncf_op,
-    block_matmul,
-)  # noqa: E402
+from run import build_module as build_matmul_module  # noqa: E402
 
 sys.path.pop(0)
 
@@ -530,27 +525,9 @@ def build_integration_module(
     transform_ir = Module.parse(transform_ir_string, context=matmul_module.context)
     run_transform(transform_ir, matmul_module)
 
-    # ── Phase 2: serialize vectorized matmul, extend with element-wise ──
-    # Get the matmul function's IR, then rebuild a module that includes
-    # both the matmul launch and the element-wise launches.
-    matmul_ir = str(matmul_module)
-
-    # Parse the vectorized matmul module, then add element-wise launches
-    # by modifying the function to accept additional arguments.
-    # Strategy: re-parse the matmul IR, add extra func arguments and
-    # append element-wise launches into the function body.
-
-    # We need to extend the function signature. The matmul func has:
-    #   func @matmul_f32(%A, %B, %C) -> ()
-    # We need to change it to:
-    #   func @mnist_fc(%A, %B, %C, %bias1, %relu_out, %mat2_out, %bias2, %bias2_out, %argmax_out) -> ()
-    # And add the element-wise launches after the matmul launch.
-
-    # Simplest approach: rebuild from scratch with the matmul IR as a string
-    # embedded in the new module. But this is fragile.
-
-    # Better approach: use the matmul module directly, modify its function
-    # to add more arguments and more launches.
+    # ── Phase 2: extend vectorized matmul with element-wise launches ──
+    # Modify the matmul function in-place: add extra arguments and
+    # append element-wise launches before the return op.
 
     ctx = matmul_module.context
     with ctx, Location.unknown():
