@@ -266,6 +266,12 @@ EXAMPLES = [
     },
     {
         "category": "Communication",
+        "name": "3D Channel with Segment Unroll",
+        "path": "channel_examples/channel_3d_segment_unroll",
+        "datatypes": "i32",
+    },
+    {
+        "category": "Communication",
         "name": "Multi-Segment Examples",
         "path": "multi_segment",
         "datatypes": "i32",
