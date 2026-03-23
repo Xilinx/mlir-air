@@ -457,28 +457,28 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     Block *bodyBlock = rewriter.createBlock(&configTaskOp.getBody());
     rewriter.setInsertionPointToStart(bodyBlock);
 
-    // Create aie.dma_bd inside the task body
-    if (dimLayouts.empty()) {
+    // Check for packet attribute on the source DMA op. This is needed for
+    // direct L3→L1 packet-switched flows where the shim DMA BD must include
+    // the packet header for correct routing.
+    auto pktAttr = op->getAttrOfType<AIE::PacketInfoAttr>("packet");
+
+    // Create aie.dma_bd inside the task body, passing packet info if present.
+    if (dimLayouts.empty() && !pktAttr) {
       AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
                            static_cast<int>(totalOffset),
                            static_cast<int>(transferLen));
-    } else {
+    } else if (dimLayouts.empty() && pktAttr) {
+      AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
+                           static_cast<int>(totalOffset),
+                           static_cast<int>(transferLen), pktAttr);
+    } else if (!dimLayouts.empty() && !pktAttr) {
       AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
                            static_cast<int>(totalOffset),
                            static_cast<int>(transferLen), dimsAttr);
-    }
-
-    // Transfer packet attribute from the AIR-level DMA op to the BD.
-    // This is needed for direct L3→L1 packet-switched flows where the
-    // shim DMA BD must include the packet header for correct routing.
-    if (auto pktAttr = op->getAttrOfType<AIE::PacketInfoAttr>("packet")) {
-      auto &bdBlock = configTaskOp.getBody().front();
-      for (auto &bdOp : bdBlock) {
-        if (auto dmaBdOp = dyn_cast<AIE::DMABDOp>(bdOp)) {
-          dmaBdOp->setAttr("packet", pktAttr);
-          break;
-        }
-      }
+    } else {
+      AIE::DMABDOp::create(rewriter, op.getLoc(), memref,
+                           static_cast<int>(totalOffset),
+                           static_cast<int>(transferLen), dimsAttr, pktAttr);
     }
 
     // Create aie.end to terminate the block
