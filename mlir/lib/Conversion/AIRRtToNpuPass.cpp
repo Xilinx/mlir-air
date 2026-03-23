@@ -468,6 +468,19 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
                            static_cast<int>(transferLen), dimsAttr);
     }
 
+    // Transfer packet attribute from the AIR-level DMA op to the BD.
+    // This is needed for direct L3→L1 packet-switched flows where the
+    // shim DMA BD must include the packet header for correct routing.
+    if (auto pktAttr = op->getAttrOfType<AIE::PacketInfoAttr>("packet")) {
+      auto &bdBlock = configTaskOp.getBody().front();
+      for (auto &bdOp : bdBlock) {
+        if (auto dmaBdOp = dyn_cast<AIE::DMABDOp>(bdOp)) {
+          dmaBdOp->setAttr("packet", pktAttr);
+          break;
+        }
+      }
+    }
+
     // Create aie.end to terminate the block
     AIE::EndOp::create(rewriter, op.getLoc());
 
