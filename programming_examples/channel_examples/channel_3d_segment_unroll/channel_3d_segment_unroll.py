@@ -79,7 +79,7 @@ def build_module():
     Channel("chan_out", size=[NUM_SEGMENTS, NUM_COLS])
 
     @FuncOp.from_py_func(l3MemrefTyIn, l3MemrefTyOut)
-    def broadcast_cascade_acc(arg0, arg1):
+    def channel_3d_segment_unroll(arg0, arg1):
 
         launch_size = [1, 1]
 
@@ -195,7 +195,7 @@ def build_module():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="run.py",
-        description="Builds, runs, and tests the broadcast cascade accumulate example",
+        description="Builds, runs, and tests the 3D channel with segment unroll example",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("-p", "--print-module-only", action="store_true")
@@ -235,7 +235,7 @@ if __name__ == "__main__":
         verbose=args.verbose,
         omit_while_true_loop=False,
         output_format=args.output_format,
-        instance_name="broadcast_cascade_acc",
+        instance_name="channel_3d_segment_unroll",
     )
     exit(
         runner.run_test(
