@@ -2,12 +2,7 @@
 # SPDX-License-Identifier: MIT
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
-# Determine build dir based on whether PEANO_INSTALL_DIR is set
-ifdef PEANO_INSTALL_DIR
-  BUILD_DIR := build_peano
-else
-  BUILD_DIR := build_chess
-endif
+BUILD_DIR := build_peano
 
 # Output format: xclbin (default) or elf
 OUTPUT_FORMAT ?= xclbin
