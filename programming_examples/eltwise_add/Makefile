@@ -47,14 +47,14 @@ all: run
 
 print:
 	${powershell} python3 ${srcdir}/eltwise_add.py $(OUTPUT_FORMAT_FLAG) \
-		--dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
+		--n $(N) --dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
 		--herd-x $(HERD_X) --herd-y $(HERD_Y) \
 		--tile-n $(TILE_N) $(EXTRA_PY_FLAGS) -p
 
 run:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/eltwise_add.py \
-		$(OUTPUT_FORMAT_FLAG) --dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
+		$(OUTPUT_FORMAT_FLAG) --n $(N) --dtype $(DTYPE) --vector-size $(VECTOR_SIZE) \
 		--herd-x $(HERD_X) --herd-y $(HERD_Y) --tile-n $(TILE_N) $(EXTRA_PY_FLAGS)
 
 profile: build-test-exe
