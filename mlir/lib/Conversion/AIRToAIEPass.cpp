@@ -3329,6 +3329,26 @@ public:
       }
     }
 
+    // Map index-typed segment kernel arguments to constant 0.  When a
+    // segment receives launch iteration indices as kernel arguments (e.g.,
+    // for computing L3 subview offsets), those SSA values live outside the
+    // aie.device's isolated-from-above region.  At the device level the
+    // actual offsets are handled by the shimDMA / NPU instruction sequence,
+    // so zero is the correct placeholder.
+    for (auto func : module.getOps<func::FuncOp>()) {
+      func.walk([&](air::SegmentOp segOp) {
+        for (unsigned i = 0, e = segOp.getNumKernelOperands(); i < e; i++) {
+          Value karg = segOp.getKernelArgument(i);
+          if (!isa<IndexType>(karg.getType()))
+            continue;
+          if (remap.contains(karg))
+            continue;
+          remap.map(karg, arith::ConstantIndexOp::create(
+                              builder, builder.getUnknownLoc(), 0));
+        }
+      });
+    }
+
     // Pre-create AIE::ExternalBufferOp for any L3 memrefs that will be used
     // by cloned ops. This is necessary because aie.device is an isolated-from-
     // above region and cannot reference values defined outside it.
