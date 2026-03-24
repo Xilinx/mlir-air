@@ -44,7 +44,8 @@ public:
 
       // Parse dependency graphs
       hostGraph = dependencyGraph(func, true);
-      canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx);
+      if (failed(canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx)))
+        return signalPassFailure();
 
       // Transitive reduction
       xilinx::air::dependencyGraph trHostGraph;

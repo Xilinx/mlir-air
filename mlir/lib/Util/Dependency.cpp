@@ -1483,12 +1483,10 @@ void dependencyCanonicalizer::connectAndUpdateGraphPointers(
   }
 }
 
-void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
-                                                 dependencyGraph &global_graph,
-                                                 dependencyContext &dep_ctx,
-                                                 std::string granularity,
-                                                 bool dump_dot,
-                                                 std::string dump_dir) {
+LogicalResult dependencyCanonicalizer::parseCommandGraphs(
+    func::FuncOp &toplevel, dependencyGraph &global_graph,
+    dependencyContext &dep_ctx, std::string granularity, bool dump_dot,
+    std::string dump_dir) {
   // Graph parsing granularity. Tuple format: <expandLaunch, expandSegment,
   // expandHerd, expandCore>
   graphGranularityProperties expandHier = {true, true, true, false};
@@ -1500,30 +1498,38 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
     std::get<3>(expandHier) = true;
   } else {
     toplevel->emitOpError("unknown graph parsing granularity");
-    return;
+    return failure();
   }
 
   // Create vertices for graphs
   // Build up host graph
+  LogicalResult result = success();
   toplevel.walk([&](Operation *op) {
     if (!op->getParentOfType<air::HierarchyInterface>()) {
-      addVertexFromOpImpls(op, &global_graph, dep_ctx);
+      if (failed(addVertexFromOpImpls(op, &global_graph, dep_ctx)))
+        result = failure();
       if (auto launch = dyn_cast_if_present<air::LaunchOp>(op)) {
-        addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx,
-                            expandHier);
+        if (failed(addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx,
+                                       expandHier)))
+          result = failure();
       } else if (dyn_cast_if_present<air::SegmentOp>(op) &&
                  (!op->getParentOfType<air::LaunchOp>())) {
         auto segment = dyn_cast_if_present<air::SegmentOp>(op);
-        addVerticesInSegment(global_graph.subgraphs, segment, dep_ctx,
-                             expandHier);
+        if (failed(addVerticesInSegment(global_graph.subgraphs, segment,
+                                        dep_ctx, expandHier)))
+          result = failure();
       } else if (dyn_cast_if_present<air::HerdOp>(op) &&
                  (!op->getParentOfType<air::LaunchOp>()) &&
                  (!op->getParentOfType<air::SegmentOp>())) {
         auto herd = dyn_cast_if_present<air::HerdOp>(op);
-        addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx, expandHier);
+        if (failed(addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx,
+                                     expandHier)))
+          result = failure();
       }
     }
   });
+  if (failed(result))
+    return failure();
 
   // Adds edges between async ops.
   parseAllDependencyEdges(global_graph, dep_ctx);
@@ -1542,12 +1548,14 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
   for (auto &launchGraph : global_graph.subgraphs) {
     connectAndUpdateGraphPointers(launchGraph, &global_graph);
   }
+  return success();
 }
 
-void dependencyCanonicalizer::addVerticesInHerd(
+LogicalResult dependencyCanonicalizer::addVerticesInHerd(
     std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd,
     dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
   // Build up herd graph
+  LogicalResult result = success();
   bool showCores = std::get<3>(expandHier);
   if (showCores) {
     auto hier =
@@ -1571,7 +1579,9 @@ void dependencyCanonicalizer::addVerticesInHerd(
 
       herd.walk([&](Operation *herd_childop) {
         if (!dyn_cast_if_present<air::HerdOp>(herd_childop)) {
-          addVertexFromOpImpls(herd_childop, current_herd_graph, dep_ctx);
+          if (failed(addVertexFromOpImpls(herd_childop, current_herd_graph,
+                                          dep_ctx)))
+            result = failure();
         }
       });
     }
@@ -1581,35 +1591,44 @@ void dependencyCanonicalizer::addVerticesInHerd(
 
     herd.walk([&](Operation *herd_childop) {
       if (!dyn_cast_if_present<air::HerdOp>(herd_childop)) {
-        addVertexFromOpImpls(herd_childop, current_herd_graph, dep_ctx);
+        if (failed(addVertexFromOpImpls(herd_childop, current_herd_graph,
+                                        dep_ctx)))
+          result = failure();
       }
     });
   }
+  return result;
 }
 
-void dependencyCanonicalizer::addVerticesInSegment(
+LogicalResult dependencyCanonicalizer::addVerticesInSegment(
     std::vector<dependencyGraph> &part_subgraphs, air::SegmentOp segment,
     dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
   // Build up segment graph
+  LogicalResult result = success();
   part_subgraphs.push_back(dependencyGraph(segment.getOperation(), true));
   dependencyGraph *current_part_graph = &(part_subgraphs.back());
 
   segment.walk([&](Operation *part_childop) {
     if (!part_childop->getParentOfType<air::HerdOp>() &&
         !dyn_cast_if_present<air::SegmentOp>(part_childop)) {
-      addVertexFromOpImpls(part_childop, current_part_graph, dep_ctx);
+      if (failed(
+              addVertexFromOpImpls(part_childop, current_part_graph, dep_ctx)))
+        result = failure();
       if (auto herd = dyn_cast_if_present<air::HerdOp>(part_childop)) {
-        addVerticesInHerd(current_part_graph->subgraphs, herd, dep_ctx,
-                          expandHier);
+        if (failed(addVerticesInHerd(current_part_graph->subgraphs, herd,
+                                     dep_ctx, expandHier)))
+          result = failure();
       }
     }
   });
+  return result;
 }
 
-void dependencyCanonicalizer::addVerticesInLaunch(
+LogicalResult dependencyCanonicalizer::addVerticesInLaunch(
     std::vector<dependencyGraph> &launch_subgraphs, air::LaunchOp launch,
     dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
   // Build up launch graph
+  LogicalResult result = success();
   launch_subgraphs.push_back(dependencyGraph(launch.getOperation(), true));
   dependencyGraph *current_launch_graph = &(launch_subgraphs.back());
 
@@ -1617,50 +1636,68 @@ void dependencyCanonicalizer::addVerticesInLaunch(
     if (!launch_childop->getParentOfType<air::SegmentOp>() &&
         !launch_childop->getParentOfType<air::HerdOp>() &&
         !dyn_cast_if_present<air::LaunchOp>(launch_childop)) {
-      addVertexFromOpImpls(launch_childop, current_launch_graph, dep_ctx);
+      if (failed(addVertexFromOpImpls(launch_childop, current_launch_graph,
+                                      dep_ctx)))
+        result = failure();
       if (auto segment = dyn_cast_if_present<air::SegmentOp>(launch_childop)) {
-        addVerticesInSegment(current_launch_graph->subgraphs, segment, dep_ctx,
-                             expandHier);
+        if (failed(addVerticesInSegment(current_launch_graph->subgraphs,
+                                        segment, dep_ctx, expandHier)))
+          result = failure();
       } else if (dyn_cast_if_present<air::HerdOp>(launch_childop) &&
                  (!launch_childop->getParentOfType<air::SegmentOp>())) {
         auto herd = dyn_cast_if_present<air::HerdOp>(launch_childop);
-        addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx,
-                          expandHier);
+        if (failed(addVerticesInHerd(current_launch_graph->subgraphs, herd,
+                                     dep_ctx, expandHier)))
+          result = failure();
       }
     }
   });
+  return result;
 }
 
-Graph::VertexId
+LogicalResult
 dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
                                               dependencyContext &dep_ctx) {
   if (auto dma_op = mlir::dyn_cast_if_present<xilinx::air::DmaMemcpyNdOp>(op)) {
-    return addVertexFromDmaOp(dma_op, G, dep_ctx);
+    addVertexFromDmaOp(dma_op, G, dep_ctx);
   } else if (auto channel_op =
                  mlir::dyn_cast_if_present<xilinx::air::ChannelInterface>(op)) {
-    return addVertexFromChannelOp(channel_op, G, dep_ctx);
+    addVertexFromChannelOp(channel_op, G, dep_ctx);
   } else if (auto execute_op =
                  dyn_cast_if_present<xilinx::air::ExecuteOp>(op)) {
-    return addVertexFromExecuteOp(execute_op, G, dep_ctx);
+    addVertexFromExecuteOp(execute_op, G, dep_ctx);
   } else if (auto wa_op = dyn_cast_if_present<xilinx::air::WaitAllOp>(op)) {
-    return addVertexFromWaitAllOp(wa_op, G, dep_ctx);
+    addVertexFromWaitAllOp(wa_op, G, dep_ctx);
   } else if (auto forop = dyn_cast_if_present<scf::ForOp>(op)) {
-    return addVertexFromOp(op, dep_ctx.ForOpID, "for_loop", "ScfForOp",
-                           graphNodeProperties("control"), G, dep_ctx);
+    addVertexFromOp(op, dep_ctx.ForOpID, "for_loop", "ScfForOp",
+                    graphNodeProperties("control"), G, dep_ctx);
   } else if (auto parallelop = dyn_cast_if_present<scf::ParallelOp>(op)) {
-    return addVertexFromOp(op, dep_ctx.ParallelOpID, "parallel_loop",
-                           "ScfParallelOp", graphNodeProperties("control"), G,
-                           dep_ctx);
+    addVertexFromOp(op, dep_ctx.ParallelOpID, "parallel_loop", "ScfParallelOp",
+                    graphNodeProperties("control"), G, dep_ctx);
+  } else if (auto ifop = dyn_cast_if_present<scf::IfOp>(op)) {
+    addVertexFromOp(op, dep_ctx.IfOpID, "if_branch", "ScfIfOp",
+                    graphNodeProperties("control"), G, dep_ctx);
+  } else if (auto affineifop = dyn_cast_if_present<affine::AffineIfOp>(op)) {
+    addVertexFromOp(op, dep_ctx.IfOpID, "if_branch", "AffineIfOp",
+                    graphNodeProperties("control"), G, dep_ctx);
   } else if (auto hier_op =
                  mlir::dyn_cast_if_present<xilinx::air::HierarchyInterface>(
                      op)) {
-    return addVertexFromHierarchyOp(hier_op, G, dep_ctx);
+    addVertexFromHierarchyOp(hier_op, G, dep_ctx);
   } else if (auto reduce_op = dyn_cast_if_present<scf::ReduceOp>(op)) {
-    return addVertexFromReduceOp(reduce_op, G, dep_ctx);
+    addVertexFromReduceOp(reduce_op, G, dep_ctx);
   } else if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
-    return addVertexFromTerminatorOp(op, G, dep_ctx);
-  } else
-    return 0;
+    addVertexFromTerminatorOp(op, G, dep_ctx);
+  } else if (!isa<xilinx::air::ExecuteOp>(op->getParentOp()) &&
+             !op->getResultTypes().empty()) {
+    // Unknown op producing results outside of air.execute; signal an error
+    // only if it produces async tokens that could be used as dependencies.
+    for (auto resultType : op->getResultTypes()) {
+      if (isa<air::AsyncTokenType>(resultType))
+        return op->emitOpError("unknown op type producing async token");
+    }
+  }
+  return success();
 }
 
 // Create graph vertex from op
@@ -1855,6 +1892,16 @@ Graph::VertexId dependencyCanonicalizer::addVertexFromTerminatorOp(
       return addVertexFromOp(
           op, dep_ctx.TerminatorID, "terminator", "ScfForYieldOp",
           graphNodeProperties("control", detailed_description), G, dep_ctx);
+    } else if (getScfParentOpFromYieldOp<scf::IfOp>(op)) {
+      return addVertexFromOp(
+          op, dep_ctx.TerminatorID, "terminator", "ScfIfYieldOp",
+          graphNodeProperties("control", detailed_description), G, dep_ctx);
+    }
+  } else if (isa<affine::AffineYieldOp>(op)) {
+    if (op->getParentOfType<affine::AffineIfOp>()) {
+      return addVertexFromOp(
+          op, dep_ctx.TerminatorID, "terminator", "AffineIfYieldOp",
+          graphNodeProperties("control", detailed_description), G, dep_ctx);
     }
   }
   return 0;
@@ -1981,6 +2028,10 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
     return "for_loop";
   } else if (isa<scf::ParallelOp>(op)) {
     return "parallel_loop";
+  } else if (isa<scf::IfOp>(op)) {
+    return "if_branch";
+  } else if (isa<affine::AffineIfOp>(op)) {
+    return "if_branch";
   } else if (isa<xilinx::air::LaunchTerminatorOp>(op)) {
     return "hierarchy_terminator";
   } else if (isa<xilinx::air::SegmentTerminatorOp>(op)) {
@@ -1990,6 +2041,8 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
   } else if (isa<scf::YieldOp>(op)) {
     return "terminator";
   } else if (isa<scf::ReduceOp>(op)) {
+    return "terminator";
+  } else if (isa<affine::AffineYieldOp>(op)) {
     return "terminator";
   } else {
     if (isa<xilinx::air::ExecuteOp>(op->getParentOp())) {
@@ -2081,6 +2134,13 @@ void dependencyCanonicalizer::connectOpToItsDepListImpls(
       dep_list.push_back(operand);
     }
   }
+  // affine.yield
+  else if (auto affineyieldop =
+               dyn_cast_if_present<affine::AffineYieldOp>(op)) {
+    for (auto operand : affineyieldop->getOperands()) {
+      dep_list.push_back(operand);
+    }
+  }
   if (dep_list.size()) {
     connectOpToItsDepList(op, dep_list, g, dep_ctx);
   }
@@ -2146,6 +2206,28 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
       output.push_back(parallelop_reduceop);
       return output;
     }
+  }
+  // Else if dependency token is from scf if (joint token from both branches)
+  else if (dep_token.getDefiningOp() &&
+           dyn_cast_if_present<scf::IfOp>(dep_token.getDefiningOp())) {
+    auto ifop = dyn_cast_if_present<scf::IfOp>(dep_token.getDefiningOp());
+    // Then block
+    auto then_terminator = ifop.thenBlock()->getTerminator();
+    for (auto operand : then_terminator->getOperands()) {
+      if (auto op = operand.getDefiningOp()) {
+        output.push_back(op);
+      }
+    }
+    // Else block
+    if (ifop.elseBlock()) {
+      auto else_terminator = ifop.elseBlock()->getTerminator();
+      for (auto operand : else_terminator->getOperands()) {
+        if (auto op = operand.getDefiningOp()) {
+          output.push_back(op);
+        }
+      }
+    }
+    return output;
   }
   // Else if dependency token is from affine if (joint token from multiple ops)
   else if (dep_token.getDefiningOp() &&

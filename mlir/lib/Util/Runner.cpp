@@ -372,8 +372,11 @@ public:
     // Walk the launch op and create a graph using dependencyCanonicalizer
     // intepreter
     hostGraph = dependencyGraph(toplevel, true);
-    canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx,
-                                     sim_granularity);
+    if (failed(canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx,
+                                                sim_granularity))) {
+      toplevel->emitOpError("failed to parse dependency command graphs");
+      return;
+    }
 
     // Walk the launch graph and write process name metadata in trace
     writeTraceMetadataProcNames(hostGraph);

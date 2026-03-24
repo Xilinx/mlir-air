@@ -238,13 +238,15 @@ struct dependencyContext {
   uint64_t WaitAllOpID;
   uint64_t ForOpID;
   uint64_t ParallelOpID;
+  uint64_t IfOpID;
   uint64_t TerminatorID;
   operation_to_vertex_map op_to_v;
   operation_to_graph_map op_to_g;
 
   dependencyContext()
       : ExecuteOpID(0), DmaOpID(0), ChannelOpID(0), HierarchyOpID(0),
-        WaitAllOpID(0), ForOpID(0), ParallelOpID(0), TerminatorID(0) {}
+        WaitAllOpID(0), ForOpID(0), ParallelOpID(0), IfOpID(0),
+        TerminatorID(0) {}
 };
 
 using VertexId = dependencyGraph::VertexId;
@@ -254,10 +256,12 @@ class dependencyCanonicalizer {
   typedef std::tuple<bool, bool, bool, bool> graphGranularityProperties;
 
 public:
-  void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph,
-                          dependencyContext &dep_ctx,
-                          std::string granularity = "herd",
-                          bool dump_dot = false, std::string dump_dir = "");
+  LogicalResult parseCommandGraphs(func::FuncOp &toplevel,
+                                   dependencyGraph &global_graph,
+                                   dependencyContext &dep_ctx,
+                                   std::string granularity = "herd",
+                                   bool dump_dot = false,
+                                   std::string dump_dir = "");
   void canonicalizeRecursive(const dependencyGraph &src, dependencyGraph &dst);
   void buildEmptyGraphStructure(const dependencyGraph &src,
                                 dependencyGraph &dst);
@@ -278,20 +282,20 @@ public:
   LogicalResult redoDepTraceIfDepOnHier(func::FuncOp func);
 
 private:
-  void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
-                         air::HerdOp herd, dependencyContext &dep_ctx,
-                         graphGranularityProperties expandHier = {true, true,
-                                                                  true, false});
-  void addVerticesInSegment(std::vector<dependencyGraph> &part_subgraphs,
-                            air::SegmentOp segment, dependencyContext &dep_ctx,
-                            graphGranularityProperties expandHier = {
-                                true, true, true, false});
-  void addVerticesInLaunch(std::vector<dependencyGraph> &launch_subgraphs,
-                           air::LaunchOp launch, dependencyContext &dep_ctx,
-                           graphGranularityProperties expandHier = {
-                               true, true, true, false});
-  VertexId addVertexFromOpImpls(Operation *op, dependencyGraph *G,
-                                dependencyContext &dep_ctx);
+  LogicalResult addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
+                                  air::HerdOp herd, dependencyContext &dep_ctx,
+                                  graphGranularityProperties expandHier = {
+                                      true, true, true, false});
+  LogicalResult addVerticesInSegment(
+      std::vector<dependencyGraph> &part_subgraphs, air::SegmentOp segment,
+      dependencyContext &dep_ctx,
+      graphGranularityProperties expandHier = {true, true, true, false});
+  LogicalResult addVerticesInLaunch(
+      std::vector<dependencyGraph> &launch_subgraphs, air::LaunchOp launch,
+      dependencyContext &dep_ctx,
+      graphGranularityProperties expandHier = {true, true, true, false});
+  LogicalResult addVertexFromOpImpls(Operation *op, dependencyGraph *G,
+                                     dependencyContext &dep_ctx);
   VertexId addVertexFromOp(Operation *op, uint64_t &id, std::string event_type,
                            std::string event_name,
                            graphNodeProperties properties, dependencyGraph *G,
