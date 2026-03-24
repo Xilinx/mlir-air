@@ -1380,6 +1380,7 @@ module {
 // CHECK:   scf.if
 // CHECK:     air.channel.put
 // CHECK-NOT: scf.for
+// CHECK:   return
 
 module {
   air.channel @chan_get [2]
