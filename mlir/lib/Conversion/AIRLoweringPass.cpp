@@ -201,6 +201,62 @@ public:
       }
     }
 
+    // Replace any remaining L2 channel ops nested inside scf.if/scf.for
+    // within the segment body. The top-level loop above only processes
+    // direct children; channel ops inside conditionals (e.g., scf.if on
+    // segment unroll index) are missed. Replace them with wait_all to
+    // eliminate data movement that was already handled by air-to-aie.
+    scfPar.walk([&](air::ChannelInterface chanOp) {
+      auto memrefTy = llvm::cast<BaseMemRefType>(chanOp.getMemref().getType());
+      if (air::isL3(memrefTy))
+        return;
+      Operation *o = chanOp.getOperation();
+      if (o->getNumResults()) {
+        auto tok = o->getResult(0);
+        auto async = cast<air::AsyncOpInterface>(o);
+        SmallVector<Value> deps;
+        for (auto d : async.getAsyncDependencies())
+          deps.push_back(d);
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(o);
+        auto w =
+            air::WaitAllOp::create(rewriter, o->getLoc(), tok.getType(), deps);
+        tok.replaceAllUsesWith(w.getResult(0));
+        rewriter.eraseOp(o);
+      }
+    });
+
+    // After replacing nested L2 channel ops, scf.if ops on segment unroll
+    // indices may have both branches producing identical wait_all ops.
+    // Fold these by inlining the then branch, since the condition is
+    // irrelevant when both branches are semantically identical.
+    SmallVector<scf::IfOp> ifsToFold;
+    scfPar.walk([&](scf::IfOp ifOp) {
+      if (!ifOp.elseBlock())
+        return;
+      // Check: no channel ops remain in either branch (all replaced).
+      bool hasChannelOps = false;
+      ifOp.getThenRegion().walk(
+          [&](air::ChannelInterface) { hasChannelOps = true; });
+      ifOp.getElseRegion().walk(
+          [&](air::ChannelInterface) { hasChannelOps = true; });
+      if (!hasChannelOps)
+        ifsToFold.push_back(ifOp);
+    });
+    for (auto ifOp : ifsToFold) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *thenBlock = ifOp.thenBlock();
+      auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
+      // Splice then-block ops (excluding yield) before the scf.if.
+      auto &ops = thenBlock->getOperations();
+      ifOp->getBlock()->getOperations().splice(Block::iterator(ifOp), ops,
+                                               ops.begin(), --ops.end());
+      for (auto [res, yieldVal] :
+           llvm::zip(ifOp.getResults(), thenYield.getOperands()))
+        res.replaceAllUsesWith(yieldVal);
+      rewriter.eraseOp(ifOp);
+    }
+
     if (op->getNumResults()) {
       SmallVector<Value> deps;
       for (auto &o : operands)
@@ -1248,6 +1304,55 @@ public:
             applyPartialConversion(module, target, std::move(air_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
       signalPassFailure();
+    }
+
+    // Fold scf.if ops that became trivially redundant after segment-unroll
+    // channel specialization. When scf.if on the unroll index originally
+    // selected different L2 channels, but air-to-aie resolved those into
+    // separate devices, the lowered scf.if branches contain identical
+    // wait_all ops. Fold by inlining the then branch.
+    // Only fold scf.if whose condition is a cmpi comparing a scf.parallel
+    // induction variable to a constant — this is the segment-unroll index
+    // check pattern. General scf.if ops with runtime conditions are kept.
+    SmallVector<scf::IfOp> ifsToFold;
+    module.walk([&](scf::IfOp ifOp) {
+      if (!ifOp.elseBlock() || ifOp.getNumResults() == 0)
+        return;
+      // Check condition: must be arith.cmpi with one operand being a
+      // scf.parallel induction variable.
+      auto cmpOp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+      if (!cmpOp)
+        return;
+      bool hasParIV = false;
+      for (auto operand : cmpOp->getOperands()) {
+        if (auto blockArg = dyn_cast<BlockArgument>(operand))
+          if (isa<scf::ParallelOp>(blockArg.getOwner()->getParentOp()))
+            hasParIV = true;
+      }
+      if (!hasParIV)
+        return;
+      // Check that ALL ops in both branches are wait_all or yield.
+      auto isAllWaitAllOrYield = [](Block *block) {
+        for (auto &op : block->getOperations()) {
+          if (!isa<airrt::WaitAllOp, scf::YieldOp>(op))
+            return false;
+        }
+        return true;
+      };
+      if (isAllWaitAllOrYield(ifOp.thenBlock()) &&
+          isAllWaitAllOrYield(ifOp.elseBlock()))
+        ifsToFold.push_back(ifOp);
+    });
+    for (auto ifOp : ifsToFold) {
+      Block *thenBlock = ifOp.thenBlock();
+      auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
+      auto &ops = thenBlock->getOperations();
+      ifOp->getBlock()->getOperations().splice(Block::iterator(ifOp), ops,
+                                               ops.begin(), --ops.end());
+      for (auto [res, yieldVal] :
+           llvm::zip(ifOp.getResults(), thenYield.getOperands()))
+        res.replaceAllUsesWith(yieldVal);
+      ifOp->erase();
     }
 
     // If scf parallel loops containing memcpy ops exist in the same scope as
