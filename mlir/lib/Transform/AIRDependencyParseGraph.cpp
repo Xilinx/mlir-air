@@ -38,8 +38,9 @@ public:
       // Parse dependency graphs
       std::string graphGranularity = (clShowCores) ? ("core") : ("herd");
       hostGraph = dependencyGraph(func, true);
-      canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx,
-                                       graphGranularity);
+      if (failed(canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx,
+                                                  graphGranularity)))
+        return signalPassFailure();
 
       // Dump DOT files
       std::string dumpDir = clDumpDir;
