@@ -136,3 +136,84 @@ module {
     return
   }
 }
+
+// -----
+
+// Test that segment-level scf.if on the unroll index is correctly specialized
+// inside the device. When the segment body contains scf.if checking the unroll
+// index to select different L2 channels, the specialize patterns must resolve
+// these conditionals inside the device (not just inside aie.core).
+// Without this fix, the scf.if remains unresolved, causing both branches'
+// channel ops to exist in both devices, leading to orphaned channels and
+// shim DMA linkage failures.
+
+// FULL-LABEL: aie.device{{.*}}@segment_scfif_0_0
+// Device 0: scf.if should be resolved to true (unroll_x=0),
+// so only @chan_a should remain, @chan_b removed as orphaned.
+// FULL:         air.channel @chan_a
+// FULL-NOT:     air.channel @chan_b
+// FULL:       segment_unroll_x = 0
+
+// FULL-LABEL: aie.device{{.*}}@segment_scfif_1_0
+// Device 1: scf.if should be resolved to false (unroll_x=1),
+// so only @chan_b should remain, @chan_a removed as orphaned.
+// FULL:         air.channel @chan_b
+// FULL-NOT:     air.channel @chan_a
+// FULL:       segment_unroll_x = 1
+
+module {
+  air.channel @chan_a [1, 1]
+  air.channel @chan_b [1, 1]
+
+  func.func @test_segment_level_scf_if(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+    %0 = air.launch async () in () args(%in0=%arg0, %in1=%arg1) : memref<64xi32>, memref<64xi32> attributes {id = 1 : i32} {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c32 = arith.constant 32 : index
+
+      // L3 puts for two different channels
+      %put_a = air.channel.put async @chan_a[%c0, %c0] (%in0[%c0] [%c32] [%c1]) {id = 1 : i32} : (memref<64xi32>)
+      %put_b = air.channel.put async @chan_b[%c0, %c0] (%in1[%c0] [%c32] [%c1]) {id = 2 : i32} : (memref<64xi32>)
+
+      %segment = air.segment @segment_scfif async unroll(%ux, %uy) in (%sx=%c2, %sy=%c1)
+          attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 4 : i64, y_loc = 2 : i64, y_size = 2 : i64} {
+        %c0_seg = arith.constant 0 : index
+        %c1_seg = arith.constant 1 : index
+
+        // Segment-level scf.if on unroll index: selects which L2 buffer
+        // to allocate and which channel to get from.
+        // Device 0 (ux=0): takes then branch -> gets from @chan_a
+        // Device 1 (ux=1): takes else branch -> gets from @chan_b
+        %cond = arith.cmpi eq, %ux, %c0_seg : index
+        %async_token, %buf = air.execute -> (memref<32xi32, 1 : i32>) {
+          %alloc = memref.alloc() : memref<32xi32, 1 : i32>
+          air.execute_terminator %alloc : memref<32xi32, 1 : i32>
+        }
+        %3 = scf.if %cond -> (!air.async.token) {
+          %get = air.channel.get async [%async_token] @chan_a[%c0_seg, %c0_seg] (%buf[] [] []) {id = 3 : i32} : (memref<32xi32, 1 : i32>)
+          scf.yield %get : !air.async.token
+        } else {
+          %get = air.channel.get async [%async_token] @chan_b[%c0_seg, %c0_seg] (%buf[] [] []) {id = 4 : i32} : (memref<32xi32, 1 : i32>)
+          scf.yield %get : !air.async.token
+        }
+
+        %herd = air.herd @herd_scfif async tile (%tx, %ty) in (%htx=%c1_seg, %hty=%c1_seg)
+            args(%hbuf=%buf) : memref<32xi32, 1 : i32>
+            attributes {id = 3 : i32} {
+          %async_token_h, %lbuf = air.execute -> (memref<32xi32, 2>) {
+            %alloc = memref.alloc() : memref<32xi32, 2>
+            air.execute_terminator %alloc : memref<32xi32, 2>
+          }
+          %dealloc = air.execute [%async_token_h] {
+            memref.dealloc %lbuf : memref<32xi32, 2>
+          }
+        }
+        %async_token_d = air.execute [%3] {
+          memref.dealloc %buf : memref<32xi32, 1 : i32>
+        }
+      }
+    }
+    return
+  }
+}
