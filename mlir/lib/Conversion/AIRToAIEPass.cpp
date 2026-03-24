@@ -4227,8 +4227,19 @@ public:
       ArrayAttr existingMeta =
           memcpyIfOp->getAttrOfType<ArrayAttr>("metadataArray");
       int t_idx = existingMeta ? existingMeta.size() : 0;
+      // Track per-device allocation index so the shim name encodes a
+      // within-device tile index (not the globally-sequential t_idx).
+      // The metadataArray sorting code parses this trailing index as
+      // tileIdx and feeds it to getIteratorFromMDVector; using the global
+      // t_idx causes out-of-bounds linearized indices for device 1+.
+      Operation *prevDevice = nullptr;
+      int perDeviceIdx = 0;
       for (air::allocation_info_t &t : shimChanSymbolToAlloc[dma_name]) {
         auto deviceOp = t.getDmaTile()->getParentOfType<AIE::DeviceOp>();
+        if (deviceOp.getOperation() != prevDevice) {
+          perDeviceIdx = 0;
+          prevDevice = deviceOp.getOperation();
+        }
         // Create shim allocation symbol name shim_name_attr.
         // When segment unroll is active, append unroll indices to ensure
         // unique symbol names across devices.
@@ -4242,7 +4253,8 @@ public:
           shim_name += "_" + std::to_string(unrollYAttr.getInt());
         }
         if (shimChanSymbolToAlloc[dma_name].size() > 1 || t_idx > 0)
-          shim_name += "_" + std::to_string(t_idx);
+          shim_name += "_" + std::to_string(perDeviceIdx);
+        perDeviceIdx++;
         StringAttr shim_name_attr = builder.getStringAttr(shim_name);
 
         // Create shim allocation op in the allocation's own DeviceOp.
