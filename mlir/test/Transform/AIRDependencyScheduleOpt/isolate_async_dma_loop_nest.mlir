@@ -1366,3 +1366,45 @@ module {
     return
   }
 }
+
+// -----
+
+// A channel.get followed by an scf.if containing channel.put ops that depend
+// on the channel.get's async token must not be split into independent loops.
+// The scf.if implicitly depends on the channel.get through the async token
+// consumed by the channel.put ops in its branches.
+
+// CHECK-LABEL: func_scf_if_with_async_dep
+// CHECK: scf.for
+// CHECK:   air.channel.get
+// CHECK:   scf.if
+// CHECK:     air.channel.put
+// CHECK-NOT: scf.for
+
+module {
+  air.channel @chan_get [2]
+  air.channel @chan_put_0 [1, 1, 1]
+  air.channel @chan_put_1 [1, 1, 1]
+  func.func @func_scf_if_with_async_dep(%arg0: memref<64x64xbf16, 1 : i32>, %arg1: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c8 = arith.constant 8 : index
+    %c64 = arith.constant 64 : index
+    %c512 = arith.constant 512 : index
+    %async_token = air.wait_all async
+    %0 = scf.for %i = %c0 to %c2 step %c1 iter_args(%t = %async_token) -> (!air.async.token) {
+      %1 = air.channel.get async [%t] @chan_get[%arg1] (%arg0[] [] []) {id = 1 : i32} : (memref<64x64xbf16, 1 : i32>)
+      %cmp = arith.cmpi eq, %arg1, %c0 : index
+      %2 = scf.if %cmp -> (!air.async.token) {
+        %3 = air.channel.put async [%1] @chan_put_0[%c0, %c0, %c0] (%arg0[%c0, %c0, %c0, %c0] [%c8, %c8, %c8, %c8] [%c8, %c512, %c64, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1 : i32>)
+        scf.yield %3 : !air.async.token
+      } else {
+        %3 = air.channel.put async [%1] @chan_put_1[%c0, %c0, %c0] (%arg0[%c0, %c0, %c0, %c0] [%c8, %c8, %c8, %c8] [%c8, %c512, %c64, %c1]) {id = 3 : i32} : (memref<64x64xbf16, 1 : i32>)
+        scf.yield %3 : !air.async.token
+      }
+      scf.yield %2 : !air.async.token
+    }
+    return
+  }
+}
