@@ -441,6 +441,34 @@ SmallVector<Value> getAsyncDependenciesFromOpImpl(affine::AffineIfOp op) {
   }
   return depList;
 }
+SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::IfOp op) {
+  // Collect async token values used inside the scf.if but defined outside.
+  // This allows areAsyncDependent to detect that an scf.if implicitly depends
+  // on async tokens consumed by ops in its then/else branches.
+  SmallVector<Value> depList;
+  for (auto &region : op->getRegions()) {
+    region.walk([&](Operation *innerOp) {
+      for (auto operand : innerOp->getOperands()) {
+        if (!isa<air::AsyncTokenType>(operand.getType()))
+          continue;
+        // Check if defined outside the scf.if.
+        if (auto *defOp = operand.getDefiningOp()) {
+          if (op->isAncestor(defOp))
+            continue;
+        } else {
+          // Block argument: check if the owning block is inside the scf.if.
+          auto blockArg = cast<BlockArgument>(operand);
+          if (auto *ownerOp = blockArg.getOwner()->getParentOp())
+            if (op->isAncestor(ownerOp))
+              continue;
+        }
+        if (llvm::find(depList, operand) == depList.end())
+          depList.push_back(operand);
+      }
+    });
+  }
+  return depList;
+}
 SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
   if (auto async_op = dyn_cast_if_present<air::AsyncOpInterface>(op))
     return getAsyncDependenciesFromOpImpl(async_op);
@@ -450,6 +478,8 @@ SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
     return getAsyncDependenciesFromOpImpl(par_op);
   else if (auto aif_op = dyn_cast_if_present<affine::AffineIfOp>(op))
     return getAsyncDependenciesFromOpImpl(aif_op);
+  else if (auto if_op = dyn_cast_if_present<scf::IfOp>(op))
+    return getAsyncDependenciesFromOpImpl(if_op);
   else
     return SmallVector<Value>();
 }
