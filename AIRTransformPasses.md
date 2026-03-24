@@ -1240,8 +1240,8 @@ efficient mapping to hardware buffer descriptors.
 
 _Specialize dma operations for broadcast pattern_
 
-Specializes `air.dma_memcpy_nd` operations for broadcast patterns within a 
-computation. This specialization involves transforming data movement operations 
+Specializes `air.dma_memcpy_nd` operations for broadcast patterns within a
+computation. This specialization involves transforming data movement operations
 into more optimized versions that are aware of the broadcast semantics.
 
 ### `-air-split-l2-memref`
