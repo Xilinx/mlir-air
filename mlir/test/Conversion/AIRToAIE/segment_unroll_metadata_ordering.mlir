@@ -21,7 +21,7 @@
 
 // Check that both devices are created with correct allocations:
 // CHECK-LABEL: aie.device{{.*}}@segment_meta_0_0
-// CHECK:       aie.shim_dma_allocation @air_out_chan_0_0_0
+// CHECK:       aie.shim_dma_allocation @air_out_chan_0_0
 // CHECK:       segment_unroll_x = 0
 
 // CHECK-LABEL: aie.device{{.*}}@segment_meta_1_0
@@ -29,13 +29,14 @@
 // CHECK:       segment_unroll_x = 1
 
 // Check metadataArray ordering on the launch-body channel gets.
-// With segment unroll, entries should include allocations from both devices.
-// The metadataArray must be ordered to match getIteratorFromMDVector.
+// With per-device processing, each device independently adds its allocation
+// to the metadataArray. Entries accumulate in device iteration order.
+// Device 1's index continues from device 0's count (index=1).
 // CHECK: air.channel.get @out_chan[%c0]
-// CHECK-SAME: metadataArray = [{base = "air_out_chan_0_0_0"
+// CHECK-SAME: metadataArray = [{base = "air_out_chan_0_0"
 // CHECK-SAME:                   {base = "air_out_chan_1_0_1"
 // CHECK: air.channel.get @out_chan[%c1]
-// CHECK-SAME: metadataArray = [{base = "air_out_chan_0_0_0"
+// CHECK-SAME: metadataArray = [{base = "air_out_chan_0_0"
 // CHECK-SAME:                   {base = "air_out_chan_1_0_1"
 
 module {
