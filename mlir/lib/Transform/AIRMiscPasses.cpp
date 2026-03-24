@@ -282,51 +282,160 @@ public:
       OpBuilder::InsertionGuard g(rewriter);
       rewriter.setInsertionPoint(get);
 
+      // Check if the get has enough indices for the specialized dimension.
+      if (get.getIndices().size() <= (size_t)specializeDim)
+        return get->emitOpError(
+            "air.channel.get has fewer indices than the specialized "
+            "dimension requires");
+      auto idxVal = get.getIndices()[specializeDim];
+      auto idxOpt = getConstantIntValue(idxVal);
+
+      // Case 1: Static index — directly rewrite to the specialized channel.
+      if (idxOpt && *idxOpt >= 0 && *idxOpt < numSegments) {
+        int64_t idx = *idxOpt;
+        get.setChanName(specializedChannels[idx].getSymName());
+        get->setOperand(get.getAsyncDependencies().size() + specializeDim,
+                        getValueOrCreateConstantIndexOp(
+                            rewriter, loc, rewriter.getIndexAttr(0)));
+        continue;
+      }
+
+      // Collect herd IDs.
       SmallVector<Value, 4> herdIds;
       for (BlockArgument arg : herd.getIds())
         herdIds.push_back(Value(arg));
-      // Helper lambda to create and yield a ChannelGetOp
-      auto createAndYieldChannelGet = [&](int idx) -> Value {
-        auto newGet = air::ChannelGetOp::create(
-            rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
-            rewriter.getStringAttr(specializedChannels[idx].getSymName()),
-            get.getIndices(), get.getMemref(), get.getOffsets(), get.getSizes(),
-            get.getStrides(),
-            /*pad_before=*/nullptr, /*pad_after=*/nullptr);
-        air::copyPaddingAttributes(get, newGet);
-        affine::AffineYieldOp::create(rewriter, loc, newGet.getAsyncToken());
-        return newGet.getAsyncToken();
-      };
 
-      for (int64_t i = 0; i < numSegments; ++i) {
-        SmallVector<AffineExpr, 4> exprs;
-        SmallVector<bool, 4> eqFlags;
-        makeBroadcastAffineSetConstraints(herdIds.size(), specializeDim, i,
-                                          herd.getNumCols(), ctx, exprs,
-                                          eqFlags);
-        auto intSet = IntegerSet::get(0, herdIds.size(), exprs, eqFlags);
-        SmallVector<Value, 4> setArgs = herdIds;
-        if (i == 0) {
-          auto aif = affine::AffineIfOp::create(
-              rewriter, loc, get.getResultTypes(), intSet, setArgs, true);
-          rewriter.setInsertionPointToStart(aif.getThenBlock());
-          createAndYieldChannelGet(i);
-          rewriter.replaceAllUsesWith(get.getAsyncToken(), aif.getResult(0));
-          rewriter.setInsertionPointToStart(aif.getElseBlock());
-        } else if (i < numSegments - 1) {
-          auto aif = affine::AffineIfOp::create(
-              rewriter, loc, get.getResultTypes(), intSet, setArgs, true);
-          rewriter.setInsertionPointToStart(aif.getThenBlock());
-          createAndYieldChannelGet(i);
-          rewriter.setInsertionPointAfter(aif);
-          SmallVector<Value, 1> parentBlockYieldToken{aif.getResult(0)};
-          affine::AffineYieldOp::create(rewriter, loc, parentBlockYieldToken);
-          rewriter.setInsertionPointToStart(aif.getElseBlock());
-        } else {
-          createAndYieldChannelGet(i);
+      // Find which herd dimension (if any) this channel index corresponds to.
+      int64_t herdDimIdx = -1;
+      for (size_t d = 0; d < herdIds.size(); ++d) {
+        if (idxVal == herdIds[d]) {
+          herdDimIdx = d;
+          break;
         }
       }
-      rewriter.eraseOp(get);
+
+      bool isAsync = !get.getResultTypes().empty();
+
+      if (herdDimIdx >= 0) {
+        // Case 2: Herd ID dimension — use affine.if dispatch.
+        // Build specialized indices with the specialized dim set to 0.
+        SmallVector<Value, 4> specializedIndices(get.getIndices().begin(),
+                                                 get.getIndices().end());
+        specializedIndices[specializeDim] = getValueOrCreateConstantIndexOp(
+            rewriter, loc, rewriter.getIndexAttr(0));
+        auto createChannelGet = [&](int idx) {
+          auto newGet = air::ChannelGetOp::create(
+              rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
+              rewriter.getStringAttr(specializedChannels[idx].getSymName()),
+              specializedIndices, get.getMemref(), get.getOffsets(),
+              get.getSizes(), get.getStrides(),
+              /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+          air::copyPaddingAttributes(get, newGet);
+          if (isAsync)
+            affine::AffineYieldOp::create(rewriter, loc,
+                                          newGet.getAsyncToken());
+          return newGet;
+        };
+
+        for (int64_t i = 0; i < numSegments; ++i) {
+          SmallVector<AffineExpr, 4> exprs;
+          SmallVector<bool, 4> eqFlags;
+          makeBroadcastAffineSetConstraints(herdIds.size(), herdDimIdx, i,
+                                            herd.getNumCols(), ctx, exprs,
+                                            eqFlags);
+          auto intSet = IntegerSet::get(0, herdIds.size(), exprs, eqFlags);
+          SmallVector<Value, 4> setArgs = herdIds;
+          if (i == 0) {
+            auto aif = affine::AffineIfOp::create(
+                rewriter, loc, get.getResultTypes(), intSet, setArgs, true);
+            rewriter.setInsertionPointToStart(aif.getThenBlock());
+            createChannelGet(i);
+            if (isAsync)
+              rewriter.replaceAllUsesWith(get.getAsyncToken(),
+                                          aif.getResult(0));
+            rewriter.setInsertionPointToStart(aif.getElseBlock());
+          } else if (i < numSegments - 1) {
+            auto aif = affine::AffineIfOp::create(
+                rewriter, loc, get.getResultTypes(), intSet, setArgs, true);
+            rewriter.setInsertionPointToStart(aif.getThenBlock());
+            createChannelGet(i);
+            if (isAsync) {
+              rewriter.setInsertionPointAfter(aif);
+              SmallVector<Value, 1> parentBlockYieldToken{aif.getResult(0)};
+              affine::AffineYieldOp::create(rewriter, loc,
+                                            parentBlockYieldToken);
+            }
+            rewriter.setInsertionPointToStart(aif.getElseBlock());
+          } else {
+            createChannelGet(i);
+          }
+        }
+        rewriter.eraseOp(get);
+      } else {
+        // Case 3: Non-herd dimension (e.g. segment unroll index) — use scf.if
+        // dispatch, mirroring the put-side logic.
+        auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        Value result;
+        for (int64_t i = numSegments - 1; i >= 0; --i) {
+          SmallVector<Value> newIndices(get.getIndices().begin(),
+                                        get.getIndices().end());
+          newIndices[specializeDim] = zeroIdx;
+          if (i == numSegments - 1) {
+            // Default case (last segment).
+            auto newGet = air::ChannelGetOp::create(
+                rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
+                rewriter.getStringAttr(specializedChannels[i].getSymName()),
+                newIndices, get.getMemref(), get.getOffsets(), get.getSizes(),
+                get.getStrides(),
+                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+            air::copyPaddingAttributes(get, newGet);
+            newGet->setAttrs(get->getDiscardableAttrDictionary());
+            if (isAsync) {
+              result = newGet.getAsyncToken();
+            } else {
+              // Synchronous: no result to thread through.
+              result = nullptr;
+            }
+          } else {
+            auto cmpVal = arith::ConstantIndexOp::create(rewriter, loc, i);
+            auto cond = arith::CmpIOp::create(
+                rewriter, loc, arith::CmpIPredicate::eq, idxVal, cmpVal);
+            auto ifOp = scf::IfOp::create(rewriter, loc, get.getResultTypes(),
+                                          cond, /*withElse=*/true);
+            rewriter.setInsertionPointToStart(ifOp.thenBlock());
+            auto newGet = air::ChannelGetOp::create(
+                rewriter, loc, get.getResultTypes(), get.getAsyncDependencies(),
+                rewriter.getStringAttr(specializedChannels[i].getSymName()),
+                newIndices, get.getMemref(), get.getOffsets(), get.getSizes(),
+                get.getStrides(),
+                /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+            air::copyPaddingAttributes(get, newGet);
+            newGet->setAttrs(get->getDiscardableAttrDictionary());
+            if (isAsync)
+              scf::YieldOp::create(rewriter, loc, newGet->getResults());
+            else
+              scf::YieldOp::create(rewriter, loc);
+            rewriter.setInsertionPointToStart(ifOp.elseBlock());
+            if (isAsync) {
+              result.getDefiningOp()->moveBefore(ifOp.elseBlock(),
+                                                 ifOp.elseBlock()->begin());
+              scf::YieldOp::create(rewriter, loc, ValueRange{result});
+            } else {
+              // Move the previous default get into the else block.
+              if (auto *defOp = result.getDefiningOp())
+                defOp->moveBefore(ifOp.elseBlock(), ifOp.elseBlock()->begin());
+              scf::YieldOp::create(rewriter, loc);
+            }
+            rewriter.setInsertionPoint(get);
+            if (isAsync)
+              result = ifOp.getResult(0);
+          }
+        }
+        if (isAsync)
+          rewriter.replaceOp(get, result);
+        else
+          rewriter.eraseOp(get);
+      }
     }
     return success();
   }
