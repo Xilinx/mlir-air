@@ -2625,6 +2625,31 @@ LogicalResult air::ChannelOp::verify() {
     auto broadcast_shape = getBroadcastShape();
     if (bundle_size.size() != broadcast_shape.size())
       return emitOpError("bundle rank should match broadcast_shape rank");
+
+    // Validate NumPy-style broadcasting rules for each dimension.
+    for (unsigned i = 0; i < bundle_size.size(); i++) {
+      auto sizeAttr = dyn_cast_if_present<IntegerAttr>(bundle_size[i]);
+      if (!sizeAttr)
+        return emitOpError() << "expected integer attribute for size[" << i
+                             << "], but found " << bundle_size[i];
+      auto bcastAttr = dyn_cast_if_present<IntegerAttr>(broadcast_shape[i]);
+      if (!bcastAttr)
+        return emitOpError()
+               << "expected integer attribute for broadcast_shape[" << i
+               << "], but found " << broadcast_shape[i];
+      int64_t sizeVal = sizeAttr.getInt();
+      int64_t bcastVal = bcastAttr.getInt();
+      if (bcastVal < sizeVal)
+        return emitOpError() << "broadcast_shape[" << i << "] (" << bcastVal
+                             << ") must be >= size[" << i << "] (" << sizeVal
+                             << "): broadcasting cannot shrink a dimension";
+      if (sizeVal != bcastVal && sizeVal != 1)
+        return emitOpError()
+               << "size[" << i << "] (" << sizeVal
+               << ") is not compatible with broadcast_shape[" << i << "] ("
+               << bcastVal << "): size must be 1 or equal to broadcast_shape "
+               << "(NumPy broadcasting rules)";
+    }
   }
   return success();
 }
