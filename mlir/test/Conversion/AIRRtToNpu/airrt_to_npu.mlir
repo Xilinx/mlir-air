@@ -783,3 +783,79 @@ module {
     return
   }
 }
+
+// -----
+
+// Packet attribute transfer from airrt.dma_memcpy_nd to aie.dma_bd.
+// The MM2S DMA with a packet attribute should produce a dma_bd with the packet
+// field set. The S2MM DMA without a packet attribute should not.
+
+// CHECK-LABEL: aie.device(npu1_1col) @segment0
+// CHECK: aie.runtime_sequence @packet_attr_transfer(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
+// CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<64xi32>, 0, 64,{{.*}}) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>}
+// CHECK:   }
+// CHECK:   aiex.dma_start_task
+// CHECK:   %[[T1:.*]] = aiex.dma_configure_task_for @airMemcpyId7 {
+// CHECK-NOT: packet
+// CHECK:     aie.dma_bd(%[[VAL_1]] : memref<64xi32>, 0, 64
+// CHECK:   } {issue_token = true}
+// CHECK:   aiex.dma_start_task(%[[T1]])
+// CHECK: }
+
+module {
+  aie.device(npu1_1col) {
+    %tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId7(%tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%tile_0_0, MM2S, 0)
+  } {sym_name = "segment0"}
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
+  func.func @packet_attr_transfer(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c7_i32 = arith.constant 7 : i32
+    // MM2S DMA with packet attribute (direct L3->L1 packet-switched flow)
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId2, packet = #aie.packet_info<pkt_type = 0, pkt_id = 3>} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    %p = airrt.segment_load "segment0" : i64
+    // S2MM DMA without packet attribute
+    airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    return
+  }
+}
+
+// -----
+
+// Packet attribute transfer with multi-dimensional DMA (dims + packet).
+
+// CHECK-LABEL: aie.device(npu1_1col) @segment0
+// CHECK: aie.runtime_sequence @packet_attr_with_dims(%[[VAL_0:.*]]: memref<32x64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
+// CHECK:   aiex.dma_configure_task_for @airMemcpyId2 {
+// CHECK:     aie.dma_bd(%[[VAL_0]] : memref<32x64xi32>, 0, 128, [<size = 2, stride = 64>{{.*}}]) {packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>}
+// CHECK:   }
+// CHECK:   aiex.dma_start_task
+
+module {
+  aie.device(npu1_1col) {
+    %tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId7(%tile_0_0, S2MM, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%tile_0_0, MM2S, 0)
+  } {sym_name = "segment0"}
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
+  func.func @packet_attr_with_dims(%arg0: memref<32x64xi32>, %arg1: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i64 = arith.constant 2 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c7_i32 = arith.constant 7 : i32
+    // MM2S DMA with packet attribute and non-trivial dimensions
+    airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c2_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64, %c0_i64]) {metadata = @airMemcpyId2, packet = #aie.packet_info<pkt_type = 0, pkt_id = 5>} : (i32, i64, i64, memref<32x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    %p = airrt.segment_load "segment0" : i64
+    airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+    return
+  }
+}
