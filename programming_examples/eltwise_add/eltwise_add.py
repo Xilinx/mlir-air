@@ -91,16 +91,16 @@ def build_module(
             l1_b_data = AllocOp(l1MemrefTy, [], [])
             l1_out_data = AllocOp(l1MemrefTy, [], [])
 
-            for _l_ivx in range_(0, n, tile_n * total_tiles):
+            chunk_size = n // total_tiles
+            for _l_ivx in range_(0, chunk_size, tile_n):
 
-                # Compute linear tile index: tx * herd_y + ty
-                # offset = loop_var + linear_tile_idx * tile_n
+                # Contiguous partitioning: each tile gets a contiguous block.
+                # offset = linear_tile_idx * chunk_size + loop_var
                 offset_map = AffineMap.get(
                     0,
                     3,
                     [
                         AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
                             AffineExpr.get_mul(
                                 AffineExpr.get_add(
                                     AffineExpr.get_mul(
@@ -109,8 +109,9 @@ def build_module(
                                     ),
                                     AffineSymbolExpr.get(2),
                                 ),
-                                AffineConstantExpr.get(tile_n),
+                                AffineConstantExpr.get(chunk_size),
                             ),
+                            AffineSymbolExpr.get(0),
                         )
                     ],
                 )

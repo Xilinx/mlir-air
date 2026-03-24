@@ -272,6 +272,12 @@ EXAMPLES = [
     },
     {
         "category": "Communication",
+        "name": "Broadcast Selective Capture",
+        "path": "channel_examples/broadcast_selective_capture",
+        "datatypes": "i32",
+    },
+    {
+        "category": "Communication",
         "name": "Multi-Segment Examples",
         "path": "multi_segment",
         "datatypes": "i32",
