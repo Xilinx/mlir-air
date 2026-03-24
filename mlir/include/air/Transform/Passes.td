@@ -1186,10 +1186,15 @@ def AIRSpecializeDmaBroadcast : Pass<"air-specialize-dma-broadcast", "ModuleOp">
   let summary = "Specialize dma operations for broadcast pattern";
   let constructor = "xilinx::air::createAIRSpecializeDmaBroadcast()";
   let description = [{
-    Specializes `air.dma_memcpy_nd` operations for broadcast patterns within a 
-    computation. This specialization involves transforming data movement operations 
+    Specializes `air.dma_memcpy_nd` operations for broadcast patterns within a
+    computation. This specialization involves transforming data movement operations
     into more optimized versions that are aware of the broadcast semantics.
   }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "scf::SCFDialect"
+  ];
 }
 
 def AIRLinalgNamePass : Pass<"air-linalg-name", "ModuleOp"> {
