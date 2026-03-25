@@ -3,13 +3,13 @@
 srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 # Attention parameters
-LK ?= 12288
-LKP ?= 96
+LK ?= 512
+LKP ?= 64
 LQ ?= 512
-LQP ?= 128
+LQP ?= 256
 DK ?= 64
 DV ?= 64
-NUM_HEADS ?= 12
+NUM_HEADS ?= 2
 NUM_KV_HEADS ?= $(NUM_HEADS)
 VAL_RANGE ?= 3
 
@@ -32,37 +32,18 @@ PEANOWRAP2P_FLAGS = -O2 -std=c++20 --target=aie2p-none-unknown-elf ${WARNING_FLA
 all: run
 
 print:
-	${powershell} python3 ${srcdir}/attn.py -p --lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS)
+	${powershell} python3 ${srcdir}/attn.py -p --lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS)
 
 run: compile-kernel
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py --lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS) --val-range $(VAL_RANGE) $(EXTRA_PY_FLAGS)
-
-# Run with user-provided MLIR file
-# Usage: make run-mlir MLIR_FILE=path/to/your.mlir [LK=...] [LQ=...] etc.
-run-mlir: compile-kernel
-	@if [ -z "$(MLIR_FILE)" ]; then \
-		echo "Error: MLIR_FILE is required. Usage: make run-mlir MLIR_FILE=path/to/your.mlir"; \
-		exit 1; \
-	fi
-	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py \
-		--mlir-file $(abspath $(MLIR_FILE)) \
-		--lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py --lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS) $(EXTRA_PY_FLAGS)
 
 # Profile ELF: compile elf and run with C++ test executable for elf format
-# Usage: make profile-elf [MLIR_FILE=...] [LK=...] [LQ=...] etc.
+# Usage: make profile [LK=...] [LQ=...] etc.
 profile: compile-kernel build-test-exe
-	@if [ -n "$(MLIR_FILE)" ]; then \
-		PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py \
-			--mlir-file $(abspath $(MLIR_FILE)) \
-			--lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS) \
-			--compile-mode compile; \
-	else \
-		PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py \
-			--lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS) \
-			--compile-mode compile; \
-	fi
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/attn.py \
+		--lk $(LK) --lkp $(LKP) --lq $(LQ) --lqp $(LQP) --num-heads $(NUM_HEADS) --num-kv-heads $(NUM_KV_HEADS) \
+		--compile-mode compile-only
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ./test_elf.exe -e air.elf -k "main:attention_bf16" \
 		--lq $(LQ) --lk $(LK) --dk $(DK) --dv $(DV) --num-heads $(NUM_HEADS)
 

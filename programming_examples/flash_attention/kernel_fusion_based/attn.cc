@@ -96,10 +96,14 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
 
               aie::vector<T_in, MMUL::size_B> B0, B1;
               if constexpr (transpose_b) {
-                // K DMA inner layout is [n_in, k_in] — need software transpose
-                // to [k_in, n_in] before hardware mul_8x8_8x8T.
-                B0 = aie::transpose(aie::load_v<MMUL::size_B>(pB1), t, s);
-                B1 = aie::transpose(aie::load_v<MMUL::size_B>(pB2), t, s);
+                // K DMA k-major block layout: block (n=j, k=i) at i*colB+j.
+                // Sub-tile elements are [n_in, k_in], transpose to [k_in, n_in].
+                const T_in *__restrict pBk0 =
+                    pB + (i * colB + j) * MMUL::size_B;
+                const T_in *__restrict pBk1 =
+                    pB + (i * colB + (j + 1)) * MMUL::size_B;
+                B0 = aie::transpose(aie::load_v<MMUL::size_B>(pBk0), t, s);
+                B1 = aie::transpose(aie::load_v<MMUL::size_B>(pBk1), t, s);
               } else {
                 // V DMA inner layout is [k_in, n_in] — already correct for
                 // hardware mul_8x8_8x8T, no software transpose needed.
