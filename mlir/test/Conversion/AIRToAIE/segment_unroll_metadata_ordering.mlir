@@ -10,8 +10,7 @@
 // 1) 1D channel [2] with 2x1 unroll — per-device naming only (no sort needed)
 // 2) 2D channel [2, 2] with 2x1 unroll — sort code reorders metadataArray
 
-// RUN: air-opt %s -split-input-file -air-to-aie='row-offset=2 col-offset=0 device=npu2' 2>&1 | FileCheck %s --check-prefix=CHECK1D
-// RUN: air-opt %s -split-input-file -air-to-aie='row-offset=2 col-offset=0 device=npu2' 2>&1 | FileCheck %s --check-prefix=CHECK2D
+// RUN: air-opt %s -split-input-file -air-to-aie='row-offset=2 col-offset=0 device=npu2' 2>&1 | FileCheck %s --check-prefixes=CHECK1D,CHECK2D
 
 // ============================================================
 // Test 1: 1D channel with segment unroll (per-device naming)
@@ -132,7 +131,7 @@ module {
       %c192 = arith.constant 192 : index
 
       // Output channel gets at launch level (L2→L3)
-      // 4 gets for channel_0[col, head] where col=0..1, head=0..1
+      // 4 gets for @out_2d[col, head] where col=0..1, head=0..1
       air.channel.get @out_2d[%c0, %c0] (%output[%c0] [%c64] [%c1]) {id = 10 : i32} : (memref<256xbf16>)
       air.channel.get @out_2d[%c1, %c0] (%output[%c64] [%c64] [%c1]) {id = 11 : i32} : (memref<256xbf16>)
       air.channel.get @out_2d[%c0, %c1] (%output[%c128] [%c64] [%c1]) {id = 12 : i32} : (memref<256xbf16>)
