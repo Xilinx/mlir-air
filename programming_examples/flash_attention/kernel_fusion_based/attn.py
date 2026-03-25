@@ -1076,7 +1076,7 @@ if __name__ == "__main__":
 
     INPUT_DATATYPE = OUTPUT_DATATYPE = bfloat16
     rng = np.random.default_rng(42)
-    val_range = 3.0
+    val_range = 4.0
     input_q = rng.uniform(
         0, val_range, (num_heads, lq, dk)
     ).astype(INPUT_DATATYPE)
@@ -1105,44 +1105,28 @@ if __name__ == "__main__":
         P = P / np.sum(P, axis=-1, keepdims=True)
         sdpa_output[h] = (P @ Vf).astype(OUTPUT_DATATYPE)
 
+    runner = XRTRunner(
+        omit_while_true_loop=False,
+        omit_pingpong="all",
+        verbose=args.verbose,
+        runtime_loop_tiling_sizes=[1, 1],
+        output_format=args.output_format,
+        instance_name="attention_bf16",
+        target_device="npu2",
+    )
+
     if args.compile_mode == "compile-and-run":
-        import filelock
-        backend = XRTBackend(
-            omit_while_true_loop=False,
-            omit_pingpong="all",
-            verbose=args.verbose,
-            runtime_loop_tiling_sizes=[1, 1],
-            output_format=args.output_format,
-            instance_name="attention_bf16",
-            target_device="npu2",
+        exit(
+            runner.run_test(
+                mlir_module,
+                inputs=[input_q, input_k, input_v],
+                expected_outputs=[sdpa_output],
+                atol=0.15,
+                rtol=0.04,
+                max_mismatch_percentage=0.5,
+                min_correlation=0.99,
+            )
         )
-        artifact = backend.compile(mlir_module)
-        print("Compiled. Running on device...")
-        with filelock.FileLock("/tmp/npu.lock"):
-            invoker = backend.load(artifact)
-            results = invoker(
-                input_q, input_k, input_v,
-                np.zeros((num_heads, lq, dv), dtype=INPUT_DATATYPE),
-            )
-        npu = results[3].reshape(num_heads, lq, dv).astype(np.float32)
-        ref = sdpa_output.astype(np.float32)
-        backend.unload()
-        # Per-head correlation
-        all_pass = True
-        for h in range(num_heads):
-            c_h = float(
-                np.corrcoef(
-                    npu[h].flatten(), ref[h].flatten()
-                )[0, 1]
-            )
-            status = "PASS" if c_h > 0.99 else "FAIL"
-            print(f"Head {h} correlation: {c_h:.6f} [{status}]")
-            if c_h <= 0.99:
-                all_pass = False
-        c = float(np.corrcoef(npu.flatten(), ref.flatten())[0, 1])
-        print(f"Overall correlation: {c:.6f}")
-        print(f"{'PASS!' if all_pass else 'FAIL'}")
-        exit(0 if all_pass else 1)
     elif args.compile_mode == "compile-only":
         backend = XRTBackend(
             omit_while_true_loop=False,

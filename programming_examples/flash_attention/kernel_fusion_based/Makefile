@@ -11,7 +11,6 @@ DK ?= 64
 DV ?= 64
 NUM_HEADS ?= 2
 NUM_KV_HEADS ?= $(NUM_HEADS)
-VAL_RANGE ?= 3
 
 # Derived: kernel tile size = LQP / num_q_tiles (4)
 NUM_Q_TILES ?= 4
