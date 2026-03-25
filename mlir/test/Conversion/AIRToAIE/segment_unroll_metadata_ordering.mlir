@@ -8,9 +8,10 @@
 // Test that metadataArray entries use per-device tile indices and are correctly
 // reordered for segment unroll. Two cases are tested:
 // 1) 1D channel [2] with 2x1 unroll — per-device naming only (no sort needed)
-// 2) 2D channel [2, 2] with 2x1 unroll — sort code reorders metadataArray
+// 2) 2D channel [3, 2] with 2x1 unroll — sort code reorders metadataArray
+// 3) 2D channel [2, 2] with 2x1 unroll — ambiguous dims, sort skipped
 
-// RUN: air-opt %s -split-input-file -air-to-aie='row-offset=2 col-offset=0 device=npu2' 2>&1 | FileCheck %s --check-prefixes=CHECK1D,CHECK2D
+// RUN: air-opt %s -split-input-file -air-to-aie='row-offset=2 col-offset=0 device=npu2' 2>&1 | FileCheck %s --check-prefixes=CHECK1D,CHECK2D,CHECKAMB
 
 // ============================================================
 // Test 1: 1D channel with segment unroll (per-device naming)
@@ -173,6 +174,70 @@ module {
         memref.dealloc %l2_out_0 : memref<64xbf16, 1>
         memref.dealloc %l2_out_1 : memref<64xbf16, 1>
         memref.dealloc %l2_out_2 : memref<64xbf16, 1>
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// ============================================================
+// Test 3: 2D channel with equal dims (ambiguous, sort skipped)
+// ============================================================
+
+// The output channel @out_eq has size=[2, 2] where dim[0]=segments and
+// dim[1]=tiles. With 2x1 segment unroll, numUnrollCopies=2 matches BOTH
+// dims, so the sort code cannot determine which dimension is the unroll
+// dimension. It skips sorting, preserving device-iteration order:
+//   [dev0_t0, dev0_t1, dev1_t0, dev1_t1]
+// This is correct because getIteratorFromMDVector({2,2}, {seg, ty}) gives
+// seg*2+ty, and device-iteration order has seg=0 first, then seg=1.
+
+// CHECKAMB: air.channel.get @out_eq[%c0, %c0]
+// CHECKAMB-SAME: metadataArray = [{base = "air_out_eq_0_0_0"
+// CHECKAMB-SAME:                   {base = "air_out_eq_0_0_1"
+// CHECKAMB-SAME:                   {base = "air_out_eq_1_0_0"
+// CHECKAMB-SAME:                   {base = "air_out_eq_1_0_1"
+
+module {
+  air.channel @out_eq [2, 2]
+
+  func.func @test_ambiguous_dims(%arg0: memref<256xbf16>, %out: memref<256xbf16>) {
+    %0 = air.launch async () in () args(%input=%arg0, %output=%out) : memref<256xbf16>, memref<256xbf16> attributes {id = 1 : i32} {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c64 = arith.constant 64 : index
+      %c128 = arith.constant 128 : index
+      %c192 = arith.constant 192 : index
+
+      air.channel.get @out_eq[%c0, %c0] (%output[%c0] [%c64] [%c1]) {id = 10 : i32} : (memref<256xbf16>)
+      air.channel.get @out_eq[%c0, %c1] (%output[%c64] [%c64] [%c1]) {id = 11 : i32} : (memref<256xbf16>)
+      air.channel.get @out_eq[%c1, %c0] (%output[%c128] [%c64] [%c1]) {id = 12 : i32} : (memref<256xbf16>)
+      air.channel.get @out_eq[%c1, %c1] (%output[%c192] [%c64] [%c1]) {id = 13 : i32} : (memref<256xbf16>)
+
+      // 2x1 segment unroll: unroll dim maps to the first channel index
+      %segment = air.segment @segment_eq async unroll(%ux, %uy) in (%sx=%c2, %sy=%c1)
+          attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 2 : i64, y_loc = 2 : i64, y_size = 2 : i64} {
+        %c0_s = arith.constant 0 : index
+        %c1_s = arith.constant 1 : index
+
+        %l2_out_0 = memref.alloc() : memref<64xbf16, 1>
+        %l2_out_1 = memref.alloc() : memref<64xbf16, 1>
+
+        // unroll index is first dim: chan_out[%ux, ty]
+        air.channel.put @out_eq[%ux, %c0_s] (%l2_out_0[] [] []) {id = 14 : i32} : (memref<64xbf16, 1>)
+        air.channel.put @out_eq[%ux, %c1_s] (%l2_out_1[] [] []) {id = 15 : i32} : (memref<64xbf16, 1>)
+
+        %herd = air.herd @herd_eq async tile (%tx, %ty) in (%htx=%c1_s, %hty=%c1_s)
+            attributes {id = 3 : i32} {
+          %l1_buf = memref.alloc() : memref<64xbf16, 2>
+          memref.dealloc %l1_buf : memref<64xbf16, 2>
+        }
+
+        memref.dealloc %l2_out_0 : memref<64xbf16, 1>
+        memref.dealloc %l2_out_1 : memref<64xbf16, 1>
       }
     }
     return
