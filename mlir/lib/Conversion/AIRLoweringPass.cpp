@@ -49,6 +49,99 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
+/// Return true if \p ifOp's condition is an arith.cmpi comparing a
+/// scf.parallel induction variable — the segment-unroll index check pattern.
+static bool isSegmentUnrollCondition(scf::IfOp ifOp) {
+  auto cmpOp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+  if (!cmpOp)
+    return false;
+  for (auto operand : cmpOp->getOperands())
+    if (auto blockArg = dyn_cast<BlockArgument>(operand))
+      if (isa<scf::ParallelOp>(blockArg.getOwner()->getParentOp()))
+        return true;
+  return false;
+}
+
+/// Return true if two blocks are structurally equivalent: same number of ops,
+/// same op types in order, and same operands (values defined outside the
+/// blocks, such as dependencies, must match).
+static bool blocksAreEquivalent(Block *a, Block *b) {
+  auto &opsA = a->getOperations();
+  auto &opsB = b->getOperations();
+  if (opsA.size() != opsB.size())
+    return false;
+  // Build a mapping from block-a values to block-b values for results
+  // defined within the blocks.
+  DenseMap<Value, Value> valueMap;
+  auto itA = opsA.begin(), itB = opsB.begin();
+  for (; itA != opsA.end(); ++itA, ++itB) {
+    if (itA->getName() != itB->getName())
+      return false;
+    if (itA->getNumOperands() != itB->getNumOperands())
+      return false;
+    if (itA->getNumResults() != itB->getNumResults())
+      return false;
+    // Check operands are equivalent (same external value, or mapped internal).
+    for (auto [opA, opB] : llvm::zip(itA->getOperands(), itB->getOperands())) {
+      auto it = valueMap.find(opA);
+      if (it != valueMap.end()) {
+        if (it->second != opB)
+          return false;
+      } else if (opA != opB) {
+        return false;
+      }
+    }
+    // Map results from A to B for subsequent operand checks.
+    for (auto [resA, resB] : llvm::zip(itA->getResults(), itB->getResults()))
+      valueMap[resA] = resB;
+  }
+  return true;
+}
+
+/// Fold scf.if ops whose both branches contain only trivial ops (as determined
+/// by \p isEligibleOp) and are structurally equivalent, by inlining the
+/// then-branch before the scf.if. When segment-unroll channel specialization
+/// replaces L2 channel ops with wait_all, both branches become semantically
+/// identical and the scf.if is dead.
+/// If \p requireSegmentUnrollCond is true, only fold scf.if ops whose
+/// condition matches the segment-unroll index check pattern.
+static void foldTrivialScfIfs(Operation *rootOp,
+                              function_ref<bool(Operation &)> isEligibleOp,
+                              bool requireSegmentUnrollCond = false,
+                              PatternRewriter *rewriter = nullptr) {
+  SmallVector<scf::IfOp> ifsToFold;
+  rootOp->walk([&](scf::IfOp ifOp) {
+    if (!ifOp.elseBlock())
+      return;
+    if (requireSegmentUnrollCond && !isSegmentUnrollCondition(ifOp))
+      return;
+    auto allEligible = [&](Block *block) {
+      return llvm::all_of(block->getOperations(),
+                          [&](Operation &op) { return isEligibleOp(op); });
+    };
+    if (!allEligible(ifOp.thenBlock()) || !allEligible(ifOp.elseBlock()))
+      return;
+    // Verify both branches are structurally equivalent to avoid dropping
+    // dependencies that only exist in the else-branch.
+    if (blocksAreEquivalent(ifOp.thenBlock(), ifOp.elseBlock()))
+      ifsToFold.push_back(ifOp);
+  });
+  for (auto ifOp : ifsToFold) {
+    Block *thenBlock = ifOp.thenBlock();
+    auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
+    auto &ops = thenBlock->getOperations();
+    ifOp->getBlock()->getOperations().splice(Block::iterator(ifOp), ops,
+                                             ops.begin(), --ops.end());
+    for (auto [res, yieldVal] :
+         llvm::zip(ifOp.getResults(), thenYield.getOperands()))
+      res.replaceAllUsesWith(yieldVal);
+    if (rewriter)
+      rewriter->eraseOp(ifOp);
+    else
+      ifOp->erase();
+  }
+}
+
 class AIRLaunchConversion : public ConversionPattern {
 public:
   explicit AIRLaunchConversion(MLIRContext *context)
@@ -200,6 +293,45 @@ public:
         }
       }
     }
+
+    // Replace any remaining non-L3 channel ops nested inside scf.if/scf.for
+    // within the segment body. The top-level loop above only processes
+    // direct children; channel ops inside conditionals (e.g., scf.if on
+    // segment unroll index) are missed. Replace them with wait_all (or
+    // erase if non-async) to eliminate data movement already handled by
+    // air-to-aie. Both L1 and L2 channel ops are replaced; only L3
+    // (shim DMA) channel ops are preserved.
+    SmallVector<air::ChannelInterface> nestedChanOps;
+    scfPar.walk([&](air::ChannelInterface chanOp) {
+      auto memrefTy = llvm::cast<BaseMemRefType>(chanOp.getMemref().getType());
+      if (!air::isL3(memrefTy))
+        nestedChanOps.push_back(chanOp);
+    });
+    for (auto chanOp : nestedChanOps) {
+      Operation *o = chanOp.getOperation();
+      if (o->getNumResults()) {
+        auto tok = o->getResult(0);
+        auto async = cast<air::AsyncOpInterface>(o);
+        SmallVector<Value> deps;
+        for (auto d : async.getAsyncDependencies())
+          deps.push_back(d);
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(o);
+        auto w =
+            air::WaitAllOp::create(rewriter, o->getLoc(), tok.getType(), deps);
+        tok.replaceAllUsesWith(w.getResult(0));
+      }
+      rewriter.eraseOp(o);
+    }
+
+    // After replacing nested L2 channel ops, scf.if ops on segment unroll
+    // indices may have both branches containing only wait_all + yield.
+    // Fold these by inlining the then branch, since both branches are
+    // semantically identical.
+    foldTrivialScfIfs(
+        scfPar,
+        [](Operation &op) { return isa<air::WaitAllOp, scf::YieldOp>(op); },
+        /*requireSegmentUnrollCond=*/false, &rewriter);
 
     if (op->getNumResults()) {
       SmallVector<Value> deps;
@@ -1249,6 +1381,16 @@ public:
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
       signalPassFailure();
     }
+
+    // Fold scf.if ops that became trivially redundant after segment-unroll
+    // channel specialization. Both branches contain only airrt.wait_all +
+    // scf.yield after L2 channel ops were replaced. Only fold when the
+    // condition is a segment-unroll index check (cmpi on scf.parallel IV)
+    // to avoid folding general scf.if ops with runtime conditions.
+    foldTrivialScfIfs(
+        module,
+        [](Operation &op) { return isa<airrt::WaitAllOp, scf::YieldOp>(op); },
+        /*requireSegmentUnrollCond=*/true);
 
     // If scf parallel loops containing memcpy ops exist in the same scope as
     // herd load, then attempt to serialize the asynchronous control programs.

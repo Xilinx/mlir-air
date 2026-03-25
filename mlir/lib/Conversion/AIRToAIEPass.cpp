@@ -1417,8 +1417,10 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
   LogicalResult matchAndRewrite(affine::AffineIfOp op,
                                 PatternRewriter &rewriter) const override {
 
-    auto core = op->getParentOfType<AIE::CoreOp>();
-    if (!core)
+    // Allow specialization inside both AIE cores and at the segment level
+    // within a device (for segment-unrolled affine.if ops on unroll indices).
+    if (!op->getParentOfType<AIE::CoreOp>() &&
+        !op->getParentOfType<AIE::DeviceOp>())
       return failure();
 
     bool in_set = false;
@@ -1483,8 +1485,10 @@ struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
   LogicalResult matchAndRewrite(scf::IfOp op,
                                 PatternRewriter &rewriter) const override {
 
-    auto core = op->getParentOfType<AIE::CoreOp>();
-    if (!core)
+    // Allow specialization inside both AIE cores and at the segment level
+    // within a device (for segment-unrolled scf.if ops on unroll indices).
+    if (!op->getParentOfType<AIE::CoreOp>() &&
+        !op->getParentOfType<AIE::DeviceOp>())
       return failure();
 
     // Try to resolve the condition to a constant boolean.
@@ -1501,7 +1505,12 @@ struct SpecializeScfIfPattern : public OpRewritePattern<scf::IfOp> {
       auto lhsConst = mlir::getConstantIntValue(cmpOp.getLhs());
       auto rhsConst = mlir::getConstantIntValue(cmpOp.getRhs());
       if (lhsConst && rhsConst) {
-        unsigned bitWidth = cmpOp.getLhs().getType().getIntOrFloatBitWidth();
+        // Use 64-bit APInt for index types (which have no fixed bit width),
+        // and the actual bit width for integer types.
+        unsigned bitWidth =
+            isa<IndexType>(cmpOp.getLhs().getType())
+                ? 64
+                : cmpOp.getLhs().getType().getIntOrFloatBitWidth();
         APInt lhs(bitWidth, *lhsConst, /*isSigned=*/true);
         APInt rhs(bitWidth, *rhsConst, /*isSigned=*/true);
         condValue = arith::applyCmpPredicate(cmpOp.getPredicate(), lhs, rhs);
@@ -4090,11 +4099,16 @@ public:
 
   // Create shim DMA allocation ops and annotate the corresponding memcpy
   // operations with symbolic metadata.
+  // When skipUnlinked is true, shim-side memcpy ops that don't match any
+  // allocation are silently skipped instead of producing an error. This is
+  // used for segment-unrolled designs where each device processes its own
+  // allocations independently, so ops belonging to other devices are expected
+  // to be unlinked.
   LogicalResult createShimDMAAllocationOps(
       OpBuilder builder, MLIRContext *ctx,
       std::vector<air::MemcpyInterface> shimSideMemcpyIfOps,
       air::ShimDMAAllocator &shimDmaAllocs,
-      std::map<int, int> chanRenumberReverseMap) {
+      std::map<int, int> chanRenumberReverseMap, bool skipUnlinked = false) {
     std::vector<air::MemcpyInterface> shimMemcpyS2MMOps, shimMemcpyMM2SOps;
 
     // Separate memcpy ops into S2MM and MM2S based on direction.
@@ -4121,14 +4135,14 @@ public:
     // Create shim-side S2MM DMA allocs and annotate corresponding ops.
     if (failed(createShimDMAAllocationOpsImpl(
             builder, ctx, shimMemcpyS2MMOps, shimDmaAllocs.s2mm_allocs,
-            AIE::DMAChannelDir::S2MM, chanRenumberReverseMap))) {
+            AIE::DMAChannelDir::S2MM, chanRenumberReverseMap, skipUnlinked))) {
       return failure();
     }
 
     // Create shim-side MM2S DMA allocs and annotate corresponding ops.
     if (failed(createShimDMAAllocationOpsImpl(
             builder, ctx, shimMemcpyMM2SOps, shimDmaAllocs.mm2s_allocs,
-            AIE::DMAChannelDir::MM2S, chanRenumberReverseMap))) {
+            AIE::DMAChannelDir::MM2S, chanRenumberReverseMap, skipUnlinked))) {
       return failure();
     }
     return success();
@@ -4161,7 +4175,7 @@ public:
       OpBuilder builder, MLIRContext *ctx,
       std::vector<air::MemcpyInterface> shimSideMemcpyIfOps,
       std::vector<air::allocation_info_t> allocs, AIE::DMAChannelDir dir,
-      std::map<int, int> chanRenumberReverseMap) {
+      std::map<int, int> chanRenumberReverseMap, bool skipUnlinked = false) {
 
     // Helper function getting dma_name from the air::MemcpyInterface op.
     auto getDmaNameFromMemcpyIfOp = [](air::MemcpyInterface memcpyIfOp) {
@@ -4210,23 +4224,42 @@ public:
     }
 
     // Capture errors when any shim memcpy op fails to link to shim allocation.
-    auto unlinkedMemcpyIfOp = llvm::find_if(
-        shimSideMemcpyIfOps, [&](air::MemcpyInterface memcpyIfOp) {
-          std::string dma_name = getDmaNameFromMemcpyIfOp(memcpyIfOp);
-          return !shimChanSymbolToAlloc.count(dma_name);
-        });
-    if (unlinkedMemcpyIfOp != shimSideMemcpyIfOps.end()) {
-      unlinkedMemcpyIfOp->emitOpError(
-          "failed to link to any shim dma allocation.");
-      return failure();
+    // When skipUnlinked is true (segment-unrolled per-device processing),
+    // unlinked ops belong to other devices and are silently skipped.
+    if (!skipUnlinked) {
+      auto unlinkedMemcpyIfOp = llvm::find_if(
+          shimSideMemcpyIfOps, [&](air::MemcpyInterface memcpyIfOp) {
+            std::string dma_name = getDmaNameFromMemcpyIfOp(memcpyIfOp);
+            return !shimChanSymbolToAlloc.count(dma_name);
+          });
+      if (unlinkedMemcpyIfOp != shimSideMemcpyIfOps.end()) {
+        unlinkedMemcpyIfOp->emitOpError(
+            "failed to link to any shim dma allocation.");
+        return failure();
+      }
     }
 
     // Create shim dma allocation ops.
     for (auto memcpyIfOp : shimSideMemcpyIfOps) {
       std::string dma_name = getDmaNameFromMemcpyIfOp(memcpyIfOp);
-      int t_idx = 0;
+      // Start index from the existing metadataArray size so that per-device
+      // calls produce globally sequential indices across devices.
+      ArrayAttr existingMeta =
+          memcpyIfOp->getAttrOfType<ArrayAttr>("metadataArray");
+      int t_idx = existingMeta ? existingMeta.size() : 0;
+      // Track per-device allocation index so the shim name encodes a
+      // within-device tile index (not the globally-sequential t_idx).
+      // The metadataArray sorting code parses this trailing index as
+      // tileIdx and feeds it to getIteratorFromMDVector; using the global
+      // t_idx causes out-of-bounds linearized indices for device 1+.
+      Operation *prevDevice = nullptr;
+      int perDeviceIdx = 0;
       for (air::allocation_info_t &t : shimChanSymbolToAlloc[dma_name]) {
         auto deviceOp = t.getDmaTile()->getParentOfType<AIE::DeviceOp>();
+        if (deviceOp.getOperation() != prevDevice) {
+          perDeviceIdx = 0;
+          prevDevice = deviceOp.getOperation();
+        }
         // Create shim allocation symbol name shim_name_attr.
         // When segment unroll is active, append unroll indices to ensure
         // unique symbol names across devices.
@@ -4239,8 +4272,9 @@ public:
                 deviceOp->getAttrOfType<IntegerAttr>("segment_unroll_y")) {
           shim_name += "_" + std::to_string(unrollYAttr.getInt());
         }
-        if (shimChanSymbolToAlloc[dma_name].size() > 1)
-          shim_name += "_" + std::to_string(t_idx);
+        if (shimChanSymbolToAlloc[dma_name].size() > 1 || t_idx > 0)
+          shim_name += "_" + std::to_string(perDeviceIdx);
+        perDeviceIdx++;
         StringAttr shim_name_attr = builder.getStringAttr(shim_name);
 
         // Create shim allocation op in the allocation's own DeviceOp.
@@ -4327,8 +4361,8 @@ public:
 
             if (hasUnroll) {
               // Build the linearized-index-to-entry map. Parse each entry's
-              // base name to extract [tileIdx, unrollCopy] and compute the
-              // linearized position.
+              // base name to extract unrollCopy and tileIdx, then compute
+              // the linearized position.
               std::vector<unsigned> channelDims;
               for (auto a : chanDecl.getSize()) {
                 if (auto intAttr = dyn_cast_if_present<IntegerAttr>(a))
@@ -4340,9 +4374,12 @@ public:
               for (unsigned d : channelDims)
                 totalExpected *= d;
 
-              if (totalExpected == metadataArray.size()) {
-                SmallVector<Attribute, 8> sorted(totalExpected);
-
+              if (channelDims.size() == 2 &&
+                  totalExpected == metadataArray.size()) {
+                // Determine which channel dimension corresponds to the
+                // segment unroll index. Count distinct unrollCopy values
+                // to get numUnrollCopies.
+                llvm::SmallSet<int, 4> unrollValues;
                 for (auto attr : metadataArray) {
                   auto dict = dyn_cast_if_present<DictionaryAttr>(attr);
                   if (!dict)
@@ -4350,44 +4387,78 @@ public:
                   auto base = dict.getAs<StringAttr>("base");
                   if (!base)
                     continue;
-
-                  // Parse "air_channel_0_X_Y_Z" to extract X (unroll copy)
-                  // and Z (tile within copy). Name format:
-                  // air_<chanName>_<unrollX>_<unrollY>_<tileIdx>
-                  StringRef name = base.getValue();
                   SmallVector<StringRef, 8> parts;
-                  name.split(parts, '_');
-                  // For "air_channel_0_X_Y_Z": parts = [air, channel, 0, X, Y,
-                  // Z] X = unroll copy, Y = channel dim (usually 0), Z = tile
-                  // idx
+                  base.getValue().split(parts, '_');
                   if (parts.size() >= 6) {
-                    int unrollCopy = 0, tileIdx = 0;
+                    int unrollCopy = 0;
                     parts[3].getAsInteger(10, unrollCopy);
-                    parts.back().getAsInteger(10, tileIdx);
+                    unrollValues.insert(unrollCopy);
+                  }
+                }
+                unsigned numUnrollCopies = unrollValues.size();
 
-                    std::vector<unsigned> position = {
-                        static_cast<unsigned>(tileIdx),
-                        static_cast<unsigned>(unrollCopy)};
-                    if (position.size() == channelDims.size()) {
+                // Determine the unroll dimension index. The unroll
+                // dimension is the one whose size equals
+                // numUnrollCopies, while the other dimension is the
+                // per-device tile count. When ambiguous (both dims
+                // equal numUnrollCopies), skip sorting — device-
+                // iteration order is already correct for this case.
+                int unrollDimIdx = -1;
+                int numMatches = 0;
+                for (unsigned i = 0; i < channelDims.size(); i++) {
+                  if (channelDims[i] == numUnrollCopies) {
+                    unrollDimIdx = i;
+                    numMatches++;
+                  }
+                }
+                // Only sort when exactly one dimension matches the
+                // unroll count, giving an unambiguous mapping.
+                if (numMatches == 1) {
+                  SmallVector<Attribute, 8> sorted(totalExpected);
+
+                  for (auto attr : metadataArray) {
+                    auto dict = dyn_cast_if_present<DictionaryAttr>(attr);
+                    if (!dict)
+                      continue;
+                    auto base = dict.getAs<StringAttr>("base");
+                    if (!base)
+                      continue;
+
+                    StringRef name = base.getValue();
+                    SmallVector<StringRef, 8> parts;
+                    name.split(parts, '_');
+                    if (parts.size() >= 6) {
+                      int unrollCopy = 0, tileIdx = 0;
+                      parts[3].getAsInteger(10, unrollCopy);
+                      parts.back().getAsInteger(10, tileIdx);
+
+                      // Build position vector matching channelDims order:
+                      // the unroll dimension gets unrollCopy, the other
+                      // dimension gets tileIdx.
+                      std::vector<unsigned> position(2);
+                      position[unrollDimIdx] =
+                          static_cast<unsigned>(unrollCopy);
+                      position[1 - unrollDimIdx] =
+                          static_cast<unsigned>(tileIdx);
                       unsigned linIdx =
                           air::getIteratorFromMDVector(channelDims, position);
                       if (linIdx < totalExpected)
                         sorted[linIdx] = attr;
                     }
                   }
-                }
 
-                // Verify all positions were filled.
-                bool allFilled = true;
-                for (auto &a : sorted) {
-                  if (!a) {
-                    allFilled = false;
-                    break;
+                  // Verify all positions were filled.
+                  bool allFilled = true;
+                  for (auto &a : sorted) {
+                    if (!a) {
+                      allFilled = false;
+                      break;
+                    }
                   }
-                }
-                if (allFilled) {
-                  memcpyIfOp->setAttr("metadataArray",
-                                      builder.getArrayAttr(sorted));
+                  if (allFilled) {
+                    memcpyIfOp->setAttr("metadataArray",
+                                        builder.getArrayAttr(sorted));
+                  }
                 }
               }
             }
@@ -5788,16 +5859,6 @@ public:
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
 
-    // Deferred shim DMA metadata: for segment-unrolled devices, collect all
-    // allocations across devices and build metadataArrays in a single call.
-    // This produces correctly-ordered entries without relying on the post-hoc
-    // name-parsing sort.
-    std::vector<air::allocation_info_t> combinedS2MMAllocs, combinedMM2SAllocs;
-    air::LaunchOp deferredLaunch = nullptr;
-    std::map<int, int> deferredChanRenumberMap;
-    func::FuncOp deferredFunc = nullptr;
-    MLIRContext *deferredCtx = nullptr;
-
     std::set<AIE::DeviceOp> seen;
     for (auto &p : aie_devices) {
       auto device = std::get<0>(p);
@@ -5957,55 +6018,42 @@ public:
       if (isa<AIE::AIE2TargetModel>(device.getTargetModel()) && !clUseObjFifo) {
         bool isSegmentUnrolled = device->hasAttr("segment_unroll_x") ||
                                  device->hasAttr("segment_unroll_y");
-        if (isSegmentUnrolled) {
-          // Defer: collect allocations from all segment-unrolled devices
-          // so metadataArrays can be built in one pass with all entries.
-          combinedS2MMAllocs.insert(combinedS2MMAllocs.end(),
-                                    shimDmaAlloc.s2mm_allocs.begin(),
-                                    shimDmaAlloc.s2mm_allocs.end());
-          combinedMM2SAllocs.insert(combinedMM2SAllocs.end(),
-                                    shimDmaAlloc.mm2s_allocs.begin(),
-                                    shimDmaAlloc.mm2s_allocs.end());
-          if (!deferredLaunch) {
-            deferredLaunch = targetLaunch;
-            deferredChanRenumberMap = chan_renumber_reverse_map;
-            deferredFunc = h->getParentOfType<func::FuncOp>();
-            deferredCtx = ctx;
-          }
-        } else {
-          // Non-unrolled: process immediately as before.
-          auto func = h->getParentOfType<func::FuncOp>();
-          std::vector<air::MemcpyInterface> shimMemcpyIfOps;
-          func.walk([&](air::ChannelInterface o) {
-            auto parentLaunch = o->getParentOfType<air::LaunchOp>();
-            if (parentLaunch && parentLaunch != targetLaunch)
-              return;
-            auto memrefTy =
-                dyn_cast_if_present<BaseMemRefType>(o.getMemref().getType());
-            if (memrefTy && air::isL3(memrefTy))
-              shimMemcpyIfOps.push_back(
-                  dyn_cast_if_present<air::MemcpyInterface>(o.getOperation()));
-          });
-          func.walk([&](air::DmaMemcpyNdOp o) {
-            auto parentLaunch = o->getParentOfType<air::LaunchOp>();
-            if (parentLaunch && parentLaunch != targetLaunch)
-              return;
-            auto srcMemrefTy =
-                dyn_cast_if_present<BaseMemRefType>(o.getSrcMemref().getType());
-            if (srcMemrefTy && air::isL3(srcMemrefTy))
-              shimMemcpyIfOps.push_back(o);
-            auto dstMemrefTy =
-                dyn_cast_if_present<BaseMemRefType>(o.getDstMemref().getType());
-            if (dstMemrefTy && air::isL3(dstMemrefTy))
-              shimMemcpyIfOps.push_back(o);
-          });
-          builder.setInsertionPoint(device.getBody()->getTerminator());
-          if (failed(createShimDMAAllocationOps(builder, ctx, shimMemcpyIfOps,
-                                                shimDmaAlloc,
-                                                chan_renumber_reverse_map))) {
-            signalPassFailure();
+        // Process shim DMA metadata per-device. For segment-unrolled designs,
+        // each device processes its own allocations independently. Shim-side
+        // ops belonging to other devices are silently skipped (skipUnlinked).
+        auto func = h->getParentOfType<func::FuncOp>();
+        std::vector<air::MemcpyInterface> shimMemcpyIfOps;
+        func.walk([&](air::ChannelInterface o) {
+          auto parentLaunch = o->getParentOfType<air::LaunchOp>();
+          if (parentLaunch && parentLaunch != targetLaunch)
             return;
-          }
+          auto memrefTy =
+              dyn_cast_if_present<BaseMemRefType>(o.getMemref().getType());
+          if (memrefTy && air::isL3(memrefTy))
+            shimMemcpyIfOps.push_back(
+                dyn_cast_if_present<air::MemcpyInterface>(o.getOperation()));
+        });
+        func.walk([&](air::DmaMemcpyNdOp o) {
+          auto parentLaunch = o->getParentOfType<air::LaunchOp>();
+          if (parentLaunch && parentLaunch != targetLaunch)
+            return;
+          auto srcMemrefTy =
+              dyn_cast_if_present<BaseMemRefType>(o.getSrcMemref().getType());
+          if (srcMemrefTy && air::isL3(srcMemrefTy))
+            shimMemcpyIfOps.push_back(o);
+          auto dstMemrefTy =
+              dyn_cast_if_present<BaseMemRefType>(o.getDstMemref().getType());
+          if (dstMemrefTy && air::isL3(dstMemrefTy))
+            shimMemcpyIfOps.push_back(o);
+        });
+        builder.setInsertionPoint(device.getBody()->getTerminator());
+        if (failed(createShimDMAAllocationOps(builder, ctx, shimMemcpyIfOps,
+                                              shimDmaAlloc,
+                                              chan_renumber_reverse_map,
+                                              /*skipUnlinked=*/
+                                              isSegmentUnrolled))) {
+          signalPassFailure();
+          return;
         }
       }
 
@@ -6046,56 +6094,6 @@ public:
       // Clean up dead memref.get_global/memref.global left by outlineAIECores
       // after DMA/channel lowering consumed their users.
       removeDeadGlobalOps(device);
-    }
-
-    // Deferred shim DMA metadata: process all segment-unrolled devices'
-    // allocations in a single call so metadataArrays are built with all
-    // entries present, producing correctly-ordered arrays.
-    if (deferredFunc &&
-        (!combinedS2MMAllocs.empty() || !combinedMM2SAllocs.empty())) {
-      std::vector<air::MemcpyInterface> shimMemcpyIfOps;
-      deferredFunc.walk([&](air::ChannelInterface o) {
-        auto parentLaunch = o->getParentOfType<air::LaunchOp>();
-        if (parentLaunch && parentLaunch != deferredLaunch)
-          return;
-        auto memrefTy =
-            dyn_cast_if_present<BaseMemRefType>(o.getMemref().getType());
-        if (memrefTy && air::isL3(memrefTy))
-          shimMemcpyIfOps.push_back(
-              dyn_cast_if_present<air::MemcpyInterface>(o.getOperation()));
-      });
-      deferredFunc.walk([&](air::DmaMemcpyNdOp o) {
-        auto parentLaunch = o->getParentOfType<air::LaunchOp>();
-        if (parentLaunch && parentLaunch != deferredLaunch)
-          return;
-        auto srcMemrefTy =
-            dyn_cast_if_present<BaseMemRefType>(o.getSrcMemref().getType());
-        if (srcMemrefTy && air::isL3(srcMemrefTy))
-          shimMemcpyIfOps.push_back(o);
-        auto dstMemrefTy =
-            dyn_cast_if_present<BaseMemRefType>(o.getDstMemref().getType());
-        if (dstMemrefTy && air::isL3(dstMemrefTy))
-          shimMemcpyIfOps.push_back(o);
-      });
-      // Use a temporary allocator wrapper to pass combined allocations.
-      // The builder insertion point is set per-allocation inside
-      // createShimDMAAllocationOpsImpl (each op is created in its own
-      // DeviceOp).
-      air::ShimDMAAllocator combinedAlloc(
-          combinedS2MMAllocs.empty() ? combinedMM2SAllocs.front()
-                                           .getDmaTile()
-                                           ->getParentOfType<AIE::DeviceOp>()
-                                     : combinedS2MMAllocs.front()
-                                           .getDmaTile()
-                                           ->getParentOfType<AIE::DeviceOp>());
-      combinedAlloc.s2mm_allocs = std::move(combinedS2MMAllocs);
-      combinedAlloc.mm2s_allocs = std::move(combinedMM2SAllocs);
-      if (failed(createShimDMAAllocationOps(builder, deferredCtx,
-                                            shimMemcpyIfOps, combinedAlloc,
-                                            deferredChanRenumberMap))) {
-        signalPassFailure();
-        return;
-      }
     }
   }
 
