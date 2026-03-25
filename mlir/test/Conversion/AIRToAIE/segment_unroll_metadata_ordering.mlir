@@ -83,73 +83,86 @@ module {
 // Test 2: 2D channel with segment unroll (sort code exercised)
 // ============================================================
 
-// The output channel @out_2d has size=[2, 2] (2 tiles × 2 unroll heads).
-// With 2x1 segment unroll, each device produces 2 tiles of output.
-// This creates 4 shim allocations total (2 per device).
+// The output channel @out_2d has size=[3, 2] (3 tiles × 2 unroll heads).
+// With 2x1 segment unroll, each device produces 3 tiles of output.
+// This creates 6 shim allocations total (3 per device).
+// The dims are non-equal ([3] != [2]), so the sort code can unambiguously
+// determine that dim[1]=2 is the unroll dimension.
 //
 // Without the per-device index fix, device 1's allocations would have
-// tileIdx=2,3 in their names (global t_idx), causing the sort code to
+// tileIdx=3,4,5 in their names (global t_idx), causing the sort code to
 // compute out-of-bounds linearized indices and silently skip sorting.
 //
-// With the fix, device 1's allocations have tileIdx=0,1 (per-device),
+// With the fix, device 1's allocations have tileIdx=0,1,2 (per-device),
 // and the sort code correctly reorders the metadataArray so that
-// getIteratorFromMDVector({2,2}, {col, head}) maps to the right entry:
+// getIteratorFromMDVector({3,2}, {col, head}) maps to the right entry:
 //   [0,0]→pos 0 (dev0 tile0), [0,1]→pos 1 (dev1 tile0),
-//   [1,0]→pos 2 (dev0 tile1), [1,1]→pos 3 (dev1 tile1)
+//   [1,0]→pos 2 (dev0 tile1), [1,1]→pos 3 (dev1 tile1),
+//   [2,0]→pos 4 (dev0 tile2), [2,1]→pos 5 (dev1 tile2)
 
 // Check per-device shim allocations have per-device tile indices:
 // CHECK2D-LABEL: aie.device{{.*}}@segment_2d_0_0
-// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_0_0_0(%{{.*}}, S2MM, 0)
-// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_0_0_1(%{{.*}}, S2MM, 1)
+// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_0_0_0
+// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_0_0_1
+// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_0_0_2
 
 // CHECK2D-LABEL: aie.device{{.*}}@segment_2d_1_0
-// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_0(%{{.*}}, S2MM, 0)
-// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_1(%{{.*}}, S2MM, 1)
+// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_0
+// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_1
+// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_2
 
 // Check that the metadataArray is sorted to match getIteratorFromMDVector
-// linearization: position = {tileIdx, unrollCopy}, dims = {2, 2}.
-//   linIdx 0 = {0,0} → dev0 tile0 (air_out_2d_0_0_0)
-//   linIdx 1 = {0,1} → dev1 tile0 (air_out_2d_1_0_0)
-//   linIdx 2 = {1,0} → dev0 tile1 (air_out_2d_0_0_1)
-//   linIdx 3 = {1,1} → dev1 tile1 (air_out_2d_1_0_1)
+// linearization: position = {tileIdx, unrollCopy}, dims = {3, 2}.
+//   linIdx 0 = {0,0} → dev0 tile0, linIdx 1 = {0,1} → dev1 tile0,
+//   linIdx 2 = {1,0} → dev0 tile1, linIdx 3 = {1,1} → dev1 tile1,
+//   linIdx 4 = {2,0} → dev0 tile2, linIdx 5 = {2,1} → dev1 tile2
 // CHECK2D: air.channel.get @out_2d[%c0, %c0]
 // CHECK2D-SAME: metadataArray = [{base = "air_out_2d_0_0_0"
 // CHECK2D-SAME:                   {base = "air_out_2d_1_0_0"
 // CHECK2D-SAME:                   {base = "air_out_2d_0_0_1"
 // CHECK2D-SAME:                   {base = "air_out_2d_1_0_1"
+// CHECK2D-SAME:                   {base = "air_out_2d_0_0_2"
+// CHECK2D-SAME:                   {base = "air_out_2d_1_0_2"
 
 module {
-  air.channel @out_2d [2, 2]
+  air.channel @out_2d [3, 2]
 
-  func.func @test_2d_metadata_sort(%arg0: memref<256xbf16>, %out: memref<256xbf16>) {
-    %0 = air.launch async () in () args(%input=%arg0, %output=%out) : memref<256xbf16>, memref<256xbf16> attributes {id = 1 : i32} {
+  func.func @test_2d_metadata_sort(%arg0: memref<384xbf16>, %out: memref<384xbf16>) {
+    %0 = air.launch async () in () args(%input=%arg0, %output=%out) : memref<384xbf16>, memref<384xbf16> attributes {id = 1 : i32} {
       %c0 = arith.constant 0 : index
       %c1 = arith.constant 1 : index
       %c2 = arith.constant 2 : index
       %c64 = arith.constant 64 : index
       %c128 = arith.constant 128 : index
       %c192 = arith.constant 192 : index
+      %c256 = arith.constant 256 : index
+      %c320 = arith.constant 320 : index
 
       // Output channel gets at launch level (L2→L3)
-      // 4 gets for @out_2d[col, head] where col=0..1, head=0..1
-      air.channel.get @out_2d[%c0, %c0] (%output[%c0] [%c64] [%c1]) {id = 10 : i32} : (memref<256xbf16>)
-      air.channel.get @out_2d[%c1, %c0] (%output[%c64] [%c64] [%c1]) {id = 11 : i32} : (memref<256xbf16>)
-      air.channel.get @out_2d[%c0, %c1] (%output[%c128] [%c64] [%c1]) {id = 12 : i32} : (memref<256xbf16>)
-      air.channel.get @out_2d[%c1, %c1] (%output[%c192] [%c64] [%c1]) {id = 13 : i32} : (memref<256xbf16>)
+      // 6 gets for @out_2d[col, head] where col=0..2, head=0..1
+      air.channel.get @out_2d[%c0, %c0] (%output[%c0] [%c64] [%c1]) {id = 10 : i32} : (memref<384xbf16>)
+      air.channel.get @out_2d[%c1, %c0] (%output[%c64] [%c64] [%c1]) {id = 11 : i32} : (memref<384xbf16>)
+      air.channel.get @out_2d[%c2, %c0] (%output[%c128] [%c64] [%c1]) {id = 12 : i32} : (memref<384xbf16>)
+      air.channel.get @out_2d[%c0, %c1] (%output[%c192] [%c64] [%c1]) {id = 13 : i32} : (memref<384xbf16>)
+      air.channel.get @out_2d[%c1, %c1] (%output[%c256] [%c64] [%c1]) {id = 14 : i32} : (memref<384xbf16>)
+      air.channel.get @out_2d[%c2, %c1] (%output[%c320] [%c64] [%c1]) {id = 15 : i32} : (memref<384xbf16>)
 
       // 2x1 segment unroll: unroll dim maps to the second channel index
       %segment = air.segment @segment_2d async unroll(%ux, %uy) in (%sx=%c2, %sy=%c1)
           attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 2 : i64, y_loc = 2 : i64, y_size = 2 : i64} {
         %c0_s = arith.constant 0 : index
         %c1_s = arith.constant 1 : index
+        %c2_s = arith.constant 2 : index
 
         // L2 output buffers — one per tile column
         %l2_out_0 = memref.alloc() : memref<64xbf16, 1>
         %l2_out_1 = memref.alloc() : memref<64xbf16, 1>
+        %l2_out_2 = memref.alloc() : memref<64xbf16, 1>
 
-        // Output channel puts: 2 tiles per device, unroll index selects head
-        air.channel.put @out_2d[%c0_s, %ux] (%l2_out_0[] [] []) {id = 14 : i32} : (memref<64xbf16, 1>)
-        air.channel.put @out_2d[%c1_s, %ux] (%l2_out_1[] [] []) {id = 15 : i32} : (memref<64xbf16, 1>)
+        // Output channel puts: 3 tiles per device, unroll index selects head
+        air.channel.put @out_2d[%c0_s, %ux] (%l2_out_0[] [] []) {id = 16 : i32} : (memref<64xbf16, 1>)
+        air.channel.put @out_2d[%c1_s, %ux] (%l2_out_1[] [] []) {id = 17 : i32} : (memref<64xbf16, 1>)
+        air.channel.put @out_2d[%c2_s, %ux] (%l2_out_2[] [] []) {id = 18 : i32} : (memref<64xbf16, 1>)
 
         %herd = air.herd @herd_2d async tile (%tx, %ty) in (%htx=%c1_s, %hty=%c1_s)
             attributes {id = 3 : i32} {
@@ -159,6 +172,7 @@ module {
 
         memref.dealloc %l2_out_0 : memref<64xbf16, 1>
         memref.dealloc %l2_out_1 : memref<64xbf16, 1>
+        memref.dealloc %l2_out_2 : memref<64xbf16, 1>
       }
     }
     return

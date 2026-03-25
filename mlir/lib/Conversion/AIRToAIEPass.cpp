@@ -4341,8 +4341,8 @@ public:
 
             if (hasUnroll) {
               // Build the linearized-index-to-entry map. Parse each entry's
-              // base name to extract [tileIdx, unrollCopy] and compute the
-              // linearized position.
+              // base name to extract unrollCopy and tileIdx, then compute
+              // the linearized position.
               std::vector<unsigned> channelDims;
               for (auto a : chanDecl.getSize()) {
                 if (auto intAttr = dyn_cast_if_present<IntegerAttr>(a))
@@ -4354,9 +4354,12 @@ public:
               for (unsigned d : channelDims)
                 totalExpected *= d;
 
-              if (totalExpected == metadataArray.size()) {
-                SmallVector<Attribute, 8> sorted(totalExpected);
-
+              if (channelDims.size() == 2 &&
+                  totalExpected == metadataArray.size()) {
+                // Determine which channel dimension corresponds to the
+                // segment unroll index. Count distinct unrollCopy values
+                // to get numUnrollCopies.
+                llvm::SmallSet<int, 4> unrollValues;
                 for (auto attr : metadataArray) {
                   auto dict = dyn_cast_if_present<DictionaryAttr>(attr);
                   if (!dict)
@@ -4364,44 +4367,78 @@ public:
                   auto base = dict.getAs<StringAttr>("base");
                   if (!base)
                     continue;
-
-                  // Parse "air_channel_0_X_Y_Z" to extract X (unroll copy)
-                  // and Z (tile within copy). Name format:
-                  // air_<chanName>_<unrollX>_<unrollY>_<tileIdx>
-                  StringRef name = base.getValue();
                   SmallVector<StringRef, 8> parts;
-                  name.split(parts, '_');
-                  // For "air_channel_0_X_Y_Z": parts = [air, channel, 0, X, Y,
-                  // Z] X = unroll copy, Y = channel dim (usually 0), Z = tile
-                  // idx
+                  base.getValue().split(parts, '_');
                   if (parts.size() >= 6) {
-                    int unrollCopy = 0, tileIdx = 0;
+                    int unrollCopy = 0;
                     parts[3].getAsInteger(10, unrollCopy);
-                    parts.back().getAsInteger(10, tileIdx);
+                    unrollValues.insert(unrollCopy);
+                  }
+                }
+                unsigned numUnrollCopies = unrollValues.size();
 
-                    std::vector<unsigned> position = {
-                        static_cast<unsigned>(tileIdx),
-                        static_cast<unsigned>(unrollCopy)};
-                    if (position.size() == channelDims.size()) {
+                // Determine the unroll dimension index. The unroll
+                // dimension is the one whose size equals
+                // numUnrollCopies, while the other dimension is the
+                // per-device tile count. When ambiguous (both dims
+                // equal numUnrollCopies), skip sorting — device-
+                // iteration order is already correct for this case.
+                int unrollDimIdx = -1;
+                int numMatches = 0;
+                for (unsigned i = 0; i < channelDims.size(); i++) {
+                  if (channelDims[i] == numUnrollCopies) {
+                    unrollDimIdx = i;
+                    numMatches++;
+                  }
+                }
+                // Only sort when exactly one dimension matches the
+                // unroll count, giving an unambiguous mapping.
+                if (numMatches == 1) {
+                  SmallVector<Attribute, 8> sorted(totalExpected);
+
+                  for (auto attr : metadataArray) {
+                    auto dict = dyn_cast_if_present<DictionaryAttr>(attr);
+                    if (!dict)
+                      continue;
+                    auto base = dict.getAs<StringAttr>("base");
+                    if (!base)
+                      continue;
+
+                    StringRef name = base.getValue();
+                    SmallVector<StringRef, 8> parts;
+                    name.split(parts, '_');
+                    if (parts.size() >= 6) {
+                      int unrollCopy = 0, tileIdx = 0;
+                      parts[3].getAsInteger(10, unrollCopy);
+                      parts.back().getAsInteger(10, tileIdx);
+
+                      // Build position vector matching channelDims order:
+                      // the unroll dimension gets unrollCopy, the other
+                      // dimension gets tileIdx.
+                      std::vector<unsigned> position(2);
+                      position[unrollDimIdx] =
+                          static_cast<unsigned>(unrollCopy);
+                      position[1 - unrollDimIdx] =
+                          static_cast<unsigned>(tileIdx);
                       unsigned linIdx =
                           air::getIteratorFromMDVector(channelDims, position);
                       if (linIdx < totalExpected)
                         sorted[linIdx] = attr;
                     }
                   }
-                }
 
-                // Verify all positions were filled.
-                bool allFilled = true;
-                for (auto &a : sorted) {
-                  if (!a) {
-                    allFilled = false;
-                    break;
+                  // Verify all positions were filled.
+                  bool allFilled = true;
+                  for (auto &a : sorted) {
+                    if (!a) {
+                      allFilled = false;
+                      break;
+                    }
                   }
-                }
-                if (allFilled) {
-                  memcpyIfOp->setAttr("metadataArray",
-                                      builder.getArrayAttr(sorted));
+                  if (allFilled) {
+                    memcpyIfOp->setAttr("metadataArray",
+                                        builder.getArrayAttr(sorted));
+                  }
                 }
               }
             }
