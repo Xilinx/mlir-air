@@ -4227,19 +4227,8 @@ public:
       ArrayAttr existingMeta =
           memcpyIfOp->getAttrOfType<ArrayAttr>("metadataArray");
       int t_idx = existingMeta ? existingMeta.size() : 0;
-      // Track per-device allocation index so the shim name encodes a
-      // within-device tile index (not the globally-sequential t_idx).
-      // The metadataArray sorting code parses this trailing index as
-      // tileIdx and feeds it to getIteratorFromMDVector; using the global
-      // t_idx causes out-of-bounds linearized indices for device 1+.
-      Operation *prevDevice = nullptr;
-      int perDeviceIdx = 0;
       for (air::allocation_info_t &t : shimChanSymbolToAlloc[dma_name]) {
         auto deviceOp = t.getDmaTile()->getParentOfType<AIE::DeviceOp>();
-        if (deviceOp.getOperation() != prevDevice) {
-          perDeviceIdx = 0;
-          prevDevice = deviceOp.getOperation();
-        }
         // Create shim allocation symbol name shim_name_attr.
         // When segment unroll is active, append unroll indices to ensure
         // unique symbol names across devices.
@@ -4253,8 +4242,7 @@ public:
           shim_name += "_" + std::to_string(unrollYAttr.getInt());
         }
         if (shimChanSymbolToAlloc[dma_name].size() > 1 || t_idx > 0)
-          shim_name += "_" + std::to_string(perDeviceIdx);
-        perDeviceIdx++;
+          shim_name += "_" + std::to_string(t_idx);
         StringAttr shim_name_attr = builder.getStringAttr(shim_name);
 
         // Create shim allocation op in the allocation's own DeviceOp.
@@ -4394,37 +4382,34 @@ public:
                 // Only sort when exactly one dimension matches the
                 // unroll count, giving an unambiguous mapping.
                 if (numMatches == 1) {
+                  unsigned numTilesPerDevice = channelDims[1 - unrollDimIdx];
                   SmallVector<Attribute, 8> sorted(totalExpected);
 
                   for (auto attr : metadataArray) {
                     auto dict = dyn_cast_if_present<DictionaryAttr>(attr);
                     if (!dict)
                       continue;
-                    auto base = dict.getAs<StringAttr>("base");
-                    if (!base)
+                    // Use the index field (global sequential position)
+                    // to compute tileIdx and unrollCopy. This is robust
+                    // regardless of the name suffix convention.
+                    auto indexAttr = dict.getAs<IntegerAttr>("index");
+                    if (!indexAttr)
                       continue;
+                    unsigned globalIdx =
+                        static_cast<unsigned>(indexAttr.getInt());
+                    unsigned tileIdx = globalIdx % numTilesPerDevice;
+                    unsigned unrollCopy = globalIdx / numTilesPerDevice;
 
-                    StringRef name = base.getValue();
-                    SmallVector<StringRef, 8> parts;
-                    name.split(parts, '_');
-                    if (parts.size() >= 6) {
-                      int unrollCopy = 0, tileIdx = 0;
-                      parts[3].getAsInteger(10, unrollCopy);
-                      parts.back().getAsInteger(10, tileIdx);
-
-                      // Build position vector matching channelDims order:
-                      // the unroll dimension gets unrollCopy, the other
-                      // dimension gets tileIdx.
-                      std::vector<unsigned> position(2);
-                      position[unrollDimIdx] =
-                          static_cast<unsigned>(unrollCopy);
-                      position[1 - unrollDimIdx] =
-                          static_cast<unsigned>(tileIdx);
-                      unsigned linIdx =
-                          air::getIteratorFromMDVector(channelDims, position);
-                      if (linIdx < totalExpected)
-                        sorted[linIdx] = attr;
-                    }
+                    // Build position vector matching channelDims order:
+                    // the unroll dimension gets unrollCopy, the other
+                    // dimension gets tileIdx.
+                    std::vector<unsigned> position(2);
+                    position[unrollDimIdx] = unrollCopy;
+                    position[1 - unrollDimIdx] = tileIdx;
+                    unsigned linIdx =
+                        air::getIteratorFromMDVector(channelDims, position);
+                    if (linIdx < totalExpected)
+                      sorted[linIdx] = attr;
                   }
 
                   // Verify all positions were filled.

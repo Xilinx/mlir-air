@@ -919,8 +919,7 @@ air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
 
 FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     air::MemcpyInterface &memcpyOp, int col, int row,
-    std::vector<Operation *> &dma_ops,
-    std::string colAllocConstraint = "same_column") {
+    std::vector<Operation *> &dma_ops, bool preferSameColumn) {
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
     return failure();
@@ -939,7 +938,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   }
   AIE::TileOp tile = nullptr;
   int colIdx = 0;
-  if (colAllocConstraint == "same_column") {
+  if (preferSameColumn) {
     // Attempt to use shim dma channels within the same column.
     auto it = find(dma_columns.begin(), dma_columns.end(), col);
     if (it != dma_columns.end())
@@ -1552,9 +1551,16 @@ LogicalResult air::simpleDMAChannelAllocation(
           if (!f.S2MM_alloc[i].getDmaTile())
             return memcpyOpIf->emitOpError(
                 "failed to get S2MM tile for L3 allocation.");
+          // Don't force same-column for L3 MM2S (shim→memtile) allocations.
+          // The AIE routing infrastructure (aie.flow) handles routing
+          // between any shim tile and any memtile regardless of column.
+          // Sequential packing (filling all channels on one shim tile
+          // before opening the next) produces better allocations when
+          // multiple channel types target different memtile columns.
           auto alloc_res = shim_dma_alloc.allocNewDmaChannel(
               memcpyOpIf, f.S2MM_alloc[i].getDmaTile().getCol(),
-              f.S2MM_alloc[i].getDmaTile().getRow(), f.S2MM[i]);
+              f.S2MM_alloc[i].getDmaTile().getRow(), f.S2MM[i],
+              /*preferSameColumn=*/false);
           if (failed(alloc_res) || !alloc_res->valid())
             return failure();
           f.MM2S_alloc = alloc_res.value();

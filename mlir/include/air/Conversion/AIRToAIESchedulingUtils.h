@@ -173,7 +173,7 @@ public:
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col, int row,
                      std::vector<Operation *> &dma_ops,
-                     std::string colAllocConstraint);
+                     bool preferSameColumn = true);
 
   FailureOr<allocation_info_t>
   allocNewDmaChannel(air::MemcpyInterface &memcpyOp,

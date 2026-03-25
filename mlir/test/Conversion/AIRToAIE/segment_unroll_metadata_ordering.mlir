@@ -28,16 +28,16 @@
 // CHECK1D:       segment_unroll_x = 0
 
 // CHECK1D-LABEL: aie.device{{.*}}@segment_meta_1_0
-// CHECK1D:       aie.shim_dma_allocation @air_out_chan_1_0_0
+// CHECK1D:       aie.shim_dma_allocation @air_out_chan_1_0_1
 // CHECK1D:       segment_unroll_x = 1
 
 // Check metadataArray ordering on the launch-body channel gets.
 // CHECK1D: air.channel.get @out_chan[%c0]
 // CHECK1D-SAME: metadataArray = [{base = "air_out_chan_0_0"
-// CHECK1D-SAME:                   {base = "air_out_chan_1_0_0"
+// CHECK1D-SAME:                   {base = "air_out_chan_1_0_1"
 // CHECK1D: air.channel.get @out_chan[%c1]
 // CHECK1D-SAME: metadataArray = [{base = "air_out_chan_0_0"
-// CHECK1D-SAME:                   {base = "air_out_chan_1_0_0"
+// CHECK1D-SAME:                   {base = "air_out_chan_1_0_1"
 
 module {
   air.channel @out_chan [2]
@@ -90,27 +90,25 @@ module {
 // The dims are non-equal ([3] != [2]), so the sort code can unambiguously
 // determine that dim[1]=2 is the unroll dimension.
 //
-// Without the per-device index fix, device 1's allocations would have
-// tileIdx=3,4,5 in their names (global t_idx), causing the sort code to
-// compute out-of-bounds linearized indices and silently skip sorting.
-//
-// With the fix, device 1's allocations have tileIdx=0,1,2 (per-device),
-// and the sort code correctly reorders the metadataArray so that
-// getIteratorFromMDVector({3,2}, {col, head}) maps to the right entry:
+// Device 1's allocations have global indices 3,4,5 (continuing from
+// device 0's 0,1,2). The sort code uses the metadata index field to
+// compute tileIdx = globalIdx % numTilesPerDevice and correctly
+// reorders the metadataArray so that getIteratorFromMDVector({3,2},
+// {col, head}) maps to the right entry:
 //   [0,0]→pos 0 (dev0 tile0), [0,1]→pos 1 (dev1 tile0),
 //   [1,0]→pos 2 (dev0 tile1), [1,1]→pos 3 (dev1 tile1),
 //   [2,0]→pos 4 (dev0 tile2), [2,1]→pos 5 (dev1 tile2)
 
-// Check per-device shim allocations have per-device tile indices:
+// Check shim allocations have globally sequential tile indices:
 // CHECK2D-LABEL: aie.device{{.*}}@segment_2d_0_0
 // CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_0_0_0
 // CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_0_0_1
 // CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_0_0_2
 
 // CHECK2D-LABEL: aie.device{{.*}}@segment_2d_1_0
-// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_0
-// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_1
-// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_2
+// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_3
+// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_4
+// CHECK2D-DAG:   aie.shim_dma_allocation @air_out_2d_1_0_5
 
 // Check that the metadataArray is sorted to match getIteratorFromMDVector
 // linearization: position = {tileIdx, unrollCopy}, dims = {3, 2}.
@@ -119,11 +117,11 @@ module {
 //   linIdx 4 = {2,0} → dev0 tile2, linIdx 5 = {2,1} → dev1 tile2
 // CHECK2D: air.channel.get @out_2d[%c0, %c0]
 // CHECK2D-SAME: metadataArray = [{base = "air_out_2d_0_0_0"
-// CHECK2D-SAME:                   {base = "air_out_2d_1_0_0"
+// CHECK2D-SAME:                   {base = "air_out_2d_1_0_3"
 // CHECK2D-SAME:                   {base = "air_out_2d_0_0_1"
-// CHECK2D-SAME:                   {base = "air_out_2d_1_0_1"
+// CHECK2D-SAME:                   {base = "air_out_2d_1_0_4"
 // CHECK2D-SAME:                   {base = "air_out_2d_0_0_2"
-// CHECK2D-SAME:                   {base = "air_out_2d_1_0_2"
+// CHECK2D-SAME:                   {base = "air_out_2d_1_0_5"
 
 module {
   air.channel @out_2d [3, 2]
@@ -197,8 +195,8 @@ module {
 // CHECKAMB: air.channel.get @out_eq[%c0, %c0]
 // CHECKAMB-SAME: metadataArray = [{base = "air_out_eq_0_0_0"
 // CHECKAMB-SAME:                   {base = "air_out_eq_0_0_1"
-// CHECKAMB-SAME:                   {base = "air_out_eq_1_0_0"
-// CHECKAMB-SAME:                   {base = "air_out_eq_1_0_1"
+// CHECKAMB-SAME:                   {base = "air_out_eq_1_0_2"
+// CHECKAMB-SAME:                   {base = "air_out_eq_1_0_3"
 
 module {
   air.channel @out_eq [2, 2]
