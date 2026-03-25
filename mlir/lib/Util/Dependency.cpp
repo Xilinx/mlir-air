@@ -2483,16 +2483,15 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
       } else if (auto async_src_op =
                      dyn_cast_if_present<xilinx::air::AsyncOpInterface>(
                          src_op)) {
-        // Elevate src token if src op is in affine if
-        while (auto parent_affine_if_op =
-                   dyn_cast_if_present<affine::AffineIfOp>(
-                       src_op->getParentOp())) {
+        // Elevate src token if src op is in affine.if or scf.if
+        while (isa_and_present<affine::AffineIfOp, scf::IfOp>(
+            src_op->getParentOp())) {
           DominanceInfo domInfo(src_op);
           if (domInfo.properlyDominates(src_op, async_op)) {
             // SSA dominance check passed. Jump to adding dependency edge.
             break;
           }
-          src_op = parent_affine_if_op.getOperation();
+          src_op = src_op->getParentOp();
         }
         if (src_op->isAncestor(async_op))
           continue; // Avoid depending on its ancestor.
