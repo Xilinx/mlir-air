@@ -136,21 +136,22 @@ def build_module(
     # L1 MemRefTypes
     q_l1_t = MemRefType.get([tile_size_q, dk], bf16, memory_space=l1_space)
     k_l1_t = MemRefType.get([lkp, dk], bf16, memory_space=l1_space)
-    v_l1_t = MemRefType.get([lkp, dk], bf16, memory_space=l1_space)
+    v_l1_t = MemRefType.get([lkp, dv], bf16, memory_space=l1_space)
     g_l1_2d = MemRefType.get([tile_size_q, lkp], bf16, memory_space=l1_space)
     g_l1_1d = MemRefType.get([tile_size_q * lkp], bf16, memory_space=l1_space)
-    gp_l1_t = MemRefType.get([tile_size_q, dk], bf16, memory_space=l1_space)
+    gp_l1_t = MemRefType.get([tile_size_q, dv], bf16, memory_space=l1_space)
     up_l1_t = MemRefType.get([tile_size_q, 1], bf16, memory_space=l1_space)
 
     # L2 MemRefTypes
-    v_l2_t = MemRefType.get([lkp, dk], bf16, memory_space=l2_space)
-    gp_l2_t = MemRefType.get([lqp, dk], bf16, memory_space=l2_space)
+    qk_l2_t = MemRefType.get([lkp, dk], bf16, memory_space=l2_space)
+    v_l2_t = MemRefType.get([lkp, dv], bf16, memory_space=l2_space)
+    gp_l2_t = MemRefType.get([lqp, dv], bf16, memory_space=l2_space)
 
     # L3 MemRefTypes (3D with head dimension)
     q_l3_t = MemRefType.get([num_heads, lq, dk], bf16)
     k_l3_t = MemRefType.get([num_kv_heads, lk, dk], bf16)
     v_l3_t = MemRefType.get([num_kv_heads, lk, dv], bf16)
-    gp_l3_t = MemRefType.get([num_heads, lq, dk], bf16)
+    gp_l3_t = MemRefType.get([num_heads, lq, dv], bf16)
 
     # External function declarations
     def external_func(name, inputs, outputs=None, link_with=None,
@@ -265,6 +266,16 @@ def build_module(
             )
             q_launch_off = affine_apply(affine_map_q_launch, [lx])
 
+            # Output launch offset (output dim is dv, not dk)
+            affine_map_out_launch = AffineMap.get(
+                0, 1,
+                [AffineExpr.get_mul(
+                    AffineSymbolExpr.get(0),
+                    AffineConstantExpr.get(lqp * dv),
+                )],
+            )
+            out_launch_off = affine_apply(affine_map_out_launch, [lx])
+
             # Compute head base from head group index (ly)
             # head_base = ly * num_heads_per_unroll
             affine_map_head_base = AffineMap.get(
@@ -296,6 +307,13 @@ def build_module(
                 [AffineExpr.get_mul(
                     AffineSymbolExpr.get(0),
                     AffineConstantExpr.get(lk * dv),
+                )],
+            )
+            affine_map_head_out = AffineMap.get(
+                0, 1,
+                [AffineExpr.get_mul(
+                    AffineSymbolExpr.get(0),
+                    AffineConstantExpr.get(lq * dv),
                 )],
             )
 
@@ -348,11 +366,14 @@ def build_module(
                 head_q_off = affine_apply(affine_map_head_q, [head_idx])
                 head_k_off = affine_apply(affine_map_head_k, [kv_head_idx])
                 head_v_off = affine_apply(affine_map_head_v, [kv_head_idx])
+                head_out_off = affine_apply(affine_map_head_out, [head_idx])
 
                 head_offset_idx = ConstantOp(index_type, head_local)
 
                 # Combined Q offset = head_q_off + q_launch_off
                 q_combined = affine_apply(affine_map_add, [head_q_off, q_launch_off])
+                # Combined output offset (uses dv stride, not dk)
+                out_combined = affine_apply(affine_map_add, [head_out_off, out_launch_off])
 
                 # Q puts: flat transfer per stage to QKIn (memtile relay)
                 for stage in range(NS):
@@ -394,12 +415,12 @@ def build_module(
                         strides=[lkp * dv, dv, 1],
                     )
 
-                # Output get: combined offset = head_q_off + q_launch_off
+                # Output get: combined offset = head_out_off + out_launch_off
                 ChannelGet(
                     "GpOut", gp,
                     indices=[head_offset_idx],
-                    offsets=[q_combined],
-                    sizes=[lqp * dk],
+                    offsets=[out_combined],
+                    sizes=[lqp * dv],
                     strides=[1],
                 )
 
@@ -417,7 +438,7 @@ def build_module(
             def segment_body(seg_x, seg_y, seg_sx, seg_sy):
                 # L2 allocations for QK and V (per-stage) and output
                 qk_l2_bufs = [
-                    AllocOp(v_l2_t, [], []) for _ in range(NS)
+                    AllocOp(qk_l2_t, [], []) for _ in range(NS)
                 ]
                 v_l2_bufs = [
                     AllocOp(v_l2_t, [], []) for _ in range(NS)
@@ -1068,7 +1089,7 @@ if __name__ == "__main__":
 
     inv_sqrt_dk = 1.0 / sqrt(dk)
     sdpa_output = np.zeros(
-        (num_heads, lq, dk), dtype=OUTPUT_DATATYPE
+        (num_heads, lq, dv), dtype=OUTPUT_DATATYPE
     )
     for h in range(num_heads):
         kv_h = h // gqa_group_size
@@ -1101,9 +1122,9 @@ if __name__ == "__main__":
             invoker = backend.load(artifact)
             results = invoker(
                 input_q, input_k, input_v,
-                np.zeros((num_heads, lq, dk), dtype=INPUT_DATATYPE),
+                np.zeros((num_heads, lq, dv), dtype=INPUT_DATATYPE),
             )
-        npu = results[3].reshape(num_heads, lq, dk).astype(np.float32)
+        npu = results[3].reshape(num_heads, lq, dv).astype(np.float32)
         ref = sdpa_output.astype(np.float32)
         backend.unload()
         # Per-head correlation
