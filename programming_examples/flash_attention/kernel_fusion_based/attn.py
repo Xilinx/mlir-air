@@ -99,10 +99,6 @@ def build_module(
     assert dv % dv_tile == 0, f"dv ({dv}) must be divisible by dv_tile/lkp ({dv_tile})"
     dv_chunks = dv // dv_tile
     if causal:
-        assert dv_chunks == 1, (
-            f"Causal masking with dv tiling (dv_chunks={dv_chunks}) not yet "
-            f"supported — causal counter conflicts with dv launch dimension"
-        )
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
         assert lqp // num_q_tiles == lkp, (
             f"Causal masking requires tile_size_q == lkp, got "
@@ -525,7 +521,10 @@ def build_module(
                 up_l1 = AllocOp(up_l1_t, [], [])
                 sp_l1 = AllocOp(up_l1_t, [], [])
                 if causal:
-                    ctr_t = MemRefType.get([3], i32, memory_space=l1_space)
+                    # Counter layout: [0]=q_block, [1]=boot_flag, [2]=head_local,
+                    # [3]=dv_iter (counts dv_chunk iterations, for dv_chunks>1 guard)
+                    ctr_size = 4 if dv_chunks > 1 else 3
+                    ctr_t = MemRefType.get([ctr_size], i32, memory_space=l1_space)
                     causal_ctr = AllocOp(ctr_t, [], [])
 
                 c_nq = ConstantOp(index_type, NQ)
@@ -680,6 +679,7 @@ def build_module(
                         c0_ctr = ConstantOp(index_type, 0)
                         c1_ctr = ConstantOp(index_type, 1)
                         c2_ctr = ConstantOp(index_type, 2)
+                        c3_ctr = ConstantOp(index_type, 3) if dv_chunks > 1 else None
                         boot_flag = load(counter_buf, [c1_ctr])
                         is_first = arith.CmpIOp(
                             arith.CmpIPredicate.eq,
@@ -691,6 +691,8 @@ def build_module(
                             store(ConstantOp(i32, 0), counter_buf, [c0_ctr])
                             store(ConstantOp(i32, 1), counter_buf, [c1_ctr])
                             store(ConstantOp(i32, 0), counter_buf, [c2_ctr])
+                            if dv_chunks > 1:
+                                store(ConstantOp(i32, 0), counter_buf, [c3_ctr])
                             scf.YieldOp([])
 
                     # === Q SELECTIVE CAPTURE ===
@@ -1043,33 +1045,77 @@ def build_module(
                         affine.AffineYieldOp([])
 
                     # === CAUSAL COUNTER INCREMENT ===
+                    # Only increment on the last dv_chunk iteration to avoid
+                    # double-counting when dv_chunks > 1. Uses counter_buf[3]
+                    # as a dv_iter counter that tracks position within the
+                    # dv_chunks cycle.
                     if causal:
-                        head_cur = load(counter_buf, [c2_ctr])
-                        c1_i32_inc = ConstantOp(i32, 1)
-                        head_next = arith.AddIOp(head_cur, c1_i32_inc)
-                        total_hg = ConstantOp(i32, num_head_groups)
-                        wrapped = arith.CmpIOp(
-                            arith.CmpIPredicate.sge,
-                            head_next.result,
-                            total_hg,
-                        )
-                        if_wrap = scf.IfOp(wrapped)
-                        with InsertionPoint(if_wrap.then_block):
-                            q_cur = load(counter_buf, [c0_ctr])
-                            c_nq_i32 = ConstantOp(i32, NQ)
-                            q_next = arith.AddIOp(q_cur, c_nq_i32)
-                            store(q_next.result, counter_buf, [c0_ctr])
-                            store(ConstantOp(i32, 0), counter_buf, [c2_ctr])
-                            scf.YieldOp([])
-                        not_wrapped = arith.CmpIOp(
-                            arith.CmpIPredicate.slt,
-                            head_next.result,
-                            total_hg,
-                        )
-                        if_no_wrap = scf.IfOp(not_wrapped)
-                        with InsertionPoint(if_no_wrap.then_block):
-                            store(head_next.result, counter_buf, [c2_ctr])
-                            scf.YieldOp([])
+
+                        def _emit_counter_increment():
+                            head_cur = load(counter_buf, [c2_ctr])
+                            c1_i32_inc = ConstantOp(i32, 1)
+                            head_next = arith.AddIOp(head_cur, c1_i32_inc)
+                            total_hg = ConstantOp(i32, num_head_groups)
+                            wrapped = arith.CmpIOp(
+                                arith.CmpIPredicate.sge,
+                                head_next.result,
+                                total_hg,
+                            )
+                            if_wrap = scf.IfOp(wrapped)
+                            with InsertionPoint(if_wrap.then_block):
+                                q_cur = load(counter_buf, [c0_ctr])
+                                c_nq_i32 = ConstantOp(i32, NQ)
+                                q_next = arith.AddIOp(q_cur, c_nq_i32)
+                                store(q_next.result, counter_buf, [c0_ctr])
+                                store(ConstantOp(i32, 0), counter_buf, [c2_ctr])
+                                scf.YieldOp([])
+                            not_wrapped = arith.CmpIOp(
+                                arith.CmpIPredicate.slt,
+                                head_next.result,
+                                total_hg,
+                            )
+                            if_no_wrap = scf.IfOp(not_wrapped)
+                            with InsertionPoint(if_no_wrap.then_block):
+                                store(head_next.result, counter_buf, [c2_ctr])
+                                scf.YieldOp([])
+
+                        if dv_chunks > 1:
+                            # Use counter_buf[3] as dv_iter counter
+                            dv_iter_cur = load(counter_buf, [c3_ctr])
+                            c_dv_last_i32 = ConstantOp(i32, dv_chunks - 1)
+                            is_last_dv = arith.CmpIOp(
+                                arith.CmpIPredicate.sge,
+                                dv_iter_cur,
+                                c_dv_last_i32,
+                            )
+                            if_last_dv = scf.IfOp(is_last_dv)
+                            with InsertionPoint(if_last_dv.then_block):
+                                _emit_counter_increment()
+                                # Reset dv_iter counter
+                                store(
+                                    ConstantOp(i32, 0),
+                                    counter_buf,
+                                    [c3_ctr],
+                                )
+                                scf.YieldOp([])
+                            # If not last dv_chunk, just increment dv_iter
+                            not_last_dv = arith.CmpIOp(
+                                arith.CmpIPredicate.slt,
+                                dv_iter_cur,
+                                c_dv_last_i32,
+                            )
+                            if_not_last = scf.IfOp(not_last_dv)
+                            with InsertionPoint(if_not_last.then_block):
+                                c1_i32_dv = ConstantOp(i32, 1)
+                                dv_next = arith.AddIOp(dv_iter_cur, c1_i32_dv)
+                                store(
+                                    dv_next.result,
+                                    counter_buf,
+                                    [c3_ctr],
+                                )
+                                scf.YieldOp([])
+                        else:
+                            _emit_counter_increment()
 
                 # Deallocs for segment-level buffers
                 for q_buf in q_saved_bufs:
