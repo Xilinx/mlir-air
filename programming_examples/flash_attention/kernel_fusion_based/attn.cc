@@ -36,6 +36,10 @@
 #define dv 64
 #endif
 
+#ifndef dv_full
+#define dv_full dv
+#endif
+
 // Column-major B matmul with compile-time transpose control.
 // transpose_b: true  = apply aie::transpose before mac (K DMA: inner [n_in,
 // k_in])

@@ -93,7 +93,16 @@ def build_module(
         f"dk ({dk}) must be divisible by dk_tile/lkp ({dk_tile})"
     )
     dk_chunks = dk // dk_tile
+    dv_tile = lkp
+    assert dv % dv_tile == 0, (
+        f"dv ({dv}) must be divisible by dv_tile/lkp ({dv_tile})"
+    )
+    dv_chunks = dv // dv_tile
     if causal:
+        assert dv_chunks == 1, (
+            f"Causal masking with dv tiling (dv_chunks={dv_chunks}) not yet "
+            f"supported — causal counter conflicts with dv launch dimension"
+        )
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
         assert lqp // num_q_tiles == lkp, (
             f"Causal masking requires tile_size_q == lkp, got "
@@ -140,22 +149,24 @@ def build_module(
     # L1 MemRefTypes (Q and K use dk_tile, not full dk)
     q_l1_t = MemRefType.get([tile_size_q, dk_tile], bf16, memory_space=l1_space)
     k_l1_t = MemRefType.get([lkp, dk_tile], bf16, memory_space=l1_space)
-    v_l1_t = MemRefType.get([lkp, dv], bf16, memory_space=l1_space)
+    v_l1_t = MemRefType.get([lkp, dv_tile], bf16, memory_space=l1_space)
     g_l1_2d = MemRefType.get([tile_size_q, lkp], bf16, memory_space=l1_space)
     g_l1_1d = MemRefType.get([tile_size_q * lkp], bf16, memory_space=l1_space)
-    gp_l1_t = MemRefType.get([tile_size_q, dv], bf16, memory_space=l1_space)
+    gp_l1_t = MemRefType.get([tile_size_q, dv_tile], bf16, memory_space=l1_space)
     up_l1_t = MemRefType.get([tile_size_q, 1], bf16, memory_space=l1_space)
 
     # L2 MemRefTypes (QK relay uses dk_tile)
     qk_l2_t = MemRefType.get([lkp, dk_tile], bf16, memory_space=l2_space)
-    v_l2_t = MemRefType.get([lkp, dv], bf16, memory_space=l2_space)
-    gp_l2_t = MemRefType.get([lqp, dv], bf16, memory_space=l2_space)
+    v_l2_t = MemRefType.get([lkp, dv_tile], bf16, memory_space=l2_space)
+    gp_l2_t = MemRefType.get([lqp, dv_tile], bf16, memory_space=l2_space)
 
     # L3 MemRefTypes (3D with head dimension)
     q_l3_t = MemRefType.get([num_heads, lq, dk], bf16)
     k_l3_t = MemRefType.get([num_kv_heads, lk, dk], bf16)
-    v_l3_t = MemRefType.get([num_kv_heads, lk, dv], bf16)
-    gp_l3_t = MemRefType.get([num_heads, lq, dv], bf16)
+    # V and output L3 use transposed layout for contiguous dv_tile access:
+    # [heads * dv_chunks, seq, dv_tile] instead of [heads, seq, dv]
+    v_l3_t = MemRefType.get([num_kv_heads * dv_chunks, lk, dv_tile], bf16)
+    gp_l3_t = MemRefType.get([num_heads * dv_chunks, lq, dv_tile], bf16)
 
     # External function declarations
     def external_func(name, inputs, outputs=None, link_with=None,
@@ -254,11 +265,22 @@ def build_module(
         c_lq_iters = ConstantOp(index_type, num_lq_iters)
         c_num_head_groups = ConstantOp(index_type, num_head_groups)
 
+        if dv_chunks > 1:
+            c_dv_chunks = ConstantOp(index_type, dv_chunks)
+            launch_sizes = [c_lq_iters, c_num_head_groups, c_dv_chunks]
+        else:
+            launch_sizes = [c_lq_iters, c_num_head_groups]
+
         @launch(
             operands=[q_in, k_in, v_in, gp_out],
-            sizes=[c_lq_iters, c_num_head_groups],
+            sizes=launch_sizes,
         )
-        def launch_body(lx, ly, lsx, lsy, q, k, v, gp):
+        def launch_body(*launch_args):
+            if dv_chunks > 1:
+                lx, ly, lz, lsx, lsy, lsz, q, k, v, gp = launch_args
+            else:
+                lx, ly, lsx, lsy, q, k, v, gp = launch_args
+                lz = ConstantOp(index_type, 0)
 
             # Compute Q offset from launch iteration index
             affine_map_q_launch = AffineMap.get(
@@ -270,12 +292,12 @@ def build_module(
             )
             q_launch_off = affine_apply(affine_map_q_launch, [lx])
 
-            # Output launch offset (output dim is dv, not dk)
+            # Output launch offset (transposed layout uses dv_tile, not dv)
             affine_map_out_launch = AffineMap.get(
                 0, 1,
                 [AffineExpr.get_mul(
                     AffineSymbolExpr.get(0),
-                    AffineConstantExpr.get(lqp * dv),
+                    AffineConstantExpr.get(lqp * dv_tile),
                 )],
             )
             out_launch_off = affine_apply(affine_map_out_launch, [lx])
@@ -306,18 +328,33 @@ def build_module(
                     AffineConstantExpr.get(lk * dk),
                 )],
             )
-            affine_map_head_v = AffineMap.get(
-                0, 1,
+            # V/output head offsets use transposed layout:
+            # head_v_off = (kv_head * dv_chunks + lz) * lk * dv_tile
+            # head_out_off = (head * dv_chunks + lz) * lq * dv_tile
+            affine_map_head_v_dv = AffineMap.get(
+                0, 2,
                 [AffineExpr.get_mul(
-                    AffineSymbolExpr.get(0),
-                    AffineConstantExpr.get(lk * dv),
+                    AffineExpr.get_add(
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(dv_chunks),
+                        ),
+                        AffineSymbolExpr.get(1),
+                    ),
+                    AffineConstantExpr.get(lk * dv_tile),
                 )],
             )
-            affine_map_head_out = AffineMap.get(
-                0, 1,
+            affine_map_head_out_dv = AffineMap.get(
+                0, 2,
                 [AffineExpr.get_mul(
-                    AffineSymbolExpr.get(0),
-                    AffineConstantExpr.get(lq * dv),
+                    AffineExpr.get_add(
+                        AffineExpr.get_mul(
+                            AffineSymbolExpr.get(0),
+                            AffineConstantExpr.get(dv_chunks),
+                        ),
+                        AffineSymbolExpr.get(1),
+                    ),
+                    AffineConstantExpr.get(lq * dv_tile),
                 )],
             )
 
@@ -369,8 +406,8 @@ def build_module(
 
                 head_q_off = affine_apply(affine_map_head_q, [head_idx])
                 head_k_off = affine_apply(affine_map_head_k, [kv_head_idx])
-                head_v_off = affine_apply(affine_map_head_v, [kv_head_idx])
-                head_out_off = affine_apply(affine_map_head_out, [head_idx])
+                head_v_off = affine_apply(affine_map_head_v_dv, [kv_head_idx, lz])
+                head_out_off = affine_apply(affine_map_head_out_dv, [head_idx, lz])
 
                 head_offset_idx = ConstantOp(index_type, head_local)
 
@@ -408,9 +445,9 @@ def build_module(
                         strides=[lkp * dk, dk_tile, dk, 1],
                     )
 
-                # V puts: combined offset = head_v_off + stage_off
+                # V puts: contiguous dv_tile slice (transposed L3 layout)
                 for stage in range(NS):
-                    v_stage_off_val = stage * lk_per_stage * dv
+                    v_stage_off_val = stage * lk_per_stage * dv_tile
                     v_combined = affine_apply(
                         affine_map_add,
                         [head_v_off, ConstantOp(index_type, v_stage_off_val)],
@@ -419,16 +456,16 @@ def build_module(
                         f"VIn_{stage}", v,
                         indices=[head_offset_idx],
                         offsets=[0, 0, v_combined],
-                        sizes=[chunks_per_stage, lkp, dv],
-                        strides=[lkp * dv, dv, 1],
+                        sizes=[chunks_per_stage, lkp, dv_tile],
+                        strides=[lkp * dv_tile, dv_tile, 1],
                     )
 
-                # Output get: combined offset = head_out_off + out_launch_off
+                # Output get: contiguous dv_tile slice (transposed L3 layout)
                 ChannelGet(
                     "GpOut", gp,
                     indices=[head_offset_idx],
                     offsets=[out_combined],
-                    sizes=[lqp * dv],
+                    sizes=[lqp * dv_tile],
                     strides=[1],
                 )
 
@@ -518,8 +555,8 @@ def build_module(
                             f"V2L1_{stage}", v_l2_bufs[stage].result,
                             indices=[seg_x, c0_seg, c0_seg],  # [head, stage_dim=0, col_dim=0]
                             offsets=[0, 0, 0, 0],
-                            sizes=[dv // M, lkp // M, M, M],
-                            strides=[M, dv * M, dv, 1],
+                            sizes=[dv_tile // M, lkp // M, M, M],
+                            strides=[M, dv_tile * M, dv_tile, 1],
                         )
                         yield_([])
 
@@ -543,8 +580,8 @@ def build_module(
                         "Gp2L2", gp_l2.result,
                         indices=[par_out.induction_variables[0], 0],
                         offsets=[apply_off, 0],
-                        sizes=[tile_size_q, dv],
-                        strides=[dv, 1],
+                        sizes=[tile_size_q, dv_tile],
+                        strides=[dv_tile, 1],
                     )
                     scf.InParallelOp()
 
@@ -935,7 +972,7 @@ def build_module(
                                 sizes=[
                                     tile_size_q // M,
                                     M,
-                                    dv // M,
+                                    dv_tile // M,
                                     M,
                                 ],
                                 strides=[
@@ -1036,6 +1073,10 @@ if __name__ == "__main__":
         help="Key dimension (default: 64). Must be divisible by lkp.",
     )
     parser.add_argument(
+        "--dv", type=int, default=64,
+        help="Value dimension (default: 64). Must be divisible by lkp.",
+    )
+    parser.add_argument(
         "--num-cascade-stages", type=int, default=4,
         help="Number of cascade pipeline stages (default: 4)",
     )
@@ -1069,7 +1110,7 @@ if __name__ == "__main__":
     lq = args.lq
     lqp = args.lqp
     dk = args.dk
-    dv = 64
+    dv = args.dv
     num_cascade_stages = args.num_cascade_stages
     num_q_tiles = 4
     num_heads = args.num_heads
@@ -1108,9 +1149,16 @@ if __name__ == "__main__":
     input_k = rng.uniform(
         0, val_range, (num_kv_heads, lk, dk)
     ).astype(INPUT_DATATYPE)
-    input_v = rng.uniform(
+    input_v_orig = rng.uniform(
         0, val_range, (num_kv_heads, lk, dv)
     ).astype(INPUT_DATATYPE)
+    # Transpose V to [num_kv_heads * dv_chunks, lk, dv_tile] for contiguous access
+    dv_chunks_host = dv // lkp
+    input_v = input_v_orig.reshape(
+        num_kv_heads, lk, dv_chunks_host, lkp
+    ).transpose(0, 2, 1, 3).reshape(
+        num_kv_heads * dv_chunks_host, lk, lkp
+    ).copy()
 
     inv_sqrt_dk = 1.0 / sqrt(dk)
     sdpa_output = np.zeros(
@@ -1120,7 +1168,7 @@ if __name__ == "__main__":
         kv_h = h // gqa_group_size
         Qf = input_q[h].astype(np.float32)
         Kf = input_k[kv_h].astype(np.float32)
-        Vf = input_v[kv_h].astype(np.float32)
+        Vf = input_v_orig[kv_h].astype(np.float32)
         scores = Qf @ Kf.T * inv_sqrt_dk
         if causal:
             mask = np.triu(np.ones(scores.shape, dtype=bool), k=1)
@@ -1130,11 +1178,19 @@ if __name__ == "__main__":
         P = P / np.sum(P, axis=-1, keepdims=True)
         sdpa_output[h] = (P @ Vf).astype(OUTPUT_DATATYPE)
 
+    # Transpose expected output to match transposed L3 layout
+    sdpa_output_transposed = sdpa_output.reshape(
+        num_heads, lq, dv_chunks_host, lkp
+    ).transpose(0, 2, 1, 3).reshape(
+        num_heads * dv_chunks_host, lq, lkp
+    ).copy()
+
+    tiling = [1, 1, 1] if dv_chunks_host > 1 else [1, 1]
     runner = XRTRunner(
         omit_while_true_loop=False,
         omit_pingpong="all",
         verbose=args.verbose,
-        runtime_loop_tiling_sizes=[1, 1],
+        runtime_loop_tiling_sizes=tiling,
         output_format=args.output_format,
         instance_name="attention_bf16",
         target_device="npu2",
@@ -1145,7 +1201,7 @@ if __name__ == "__main__":
             runner.run_test(
                 mlir_module,
                 inputs=[input_q, input_k, input_v],
-                expected_outputs=[sdpa_output],
+                expected_outputs=[sdpa_output_transposed],
                 atol=0.15,
                 rtol=0.04,
                 max_mismatch_percentage=0.5,
