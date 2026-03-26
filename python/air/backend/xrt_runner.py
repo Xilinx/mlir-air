@@ -405,9 +405,7 @@ class XRTRunner:
                 corr_ok = True
                 if min_correlation is not None and total_elements > 0:
                     corr = float(
-                        np.corrcoef(
-                            actual.flatten(), expected.flatten()
-                        )[0, 1]
+                        np.corrcoef(actual.flatten(), expected.flatten())[0, 1]
                     )
                     print(
                         f"Output {i} correlation: {corr:.6f} "
