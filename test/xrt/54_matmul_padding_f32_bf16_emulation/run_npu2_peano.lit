@@ -8,6 +8,6 @@
 // Inputs and outputs are f32; convert-vector-to-aievec with bf16-emulation=true
 // emulates f32 arithmetic using bf16/bfp16 operations on AIE2P.
 //
-// RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run M=500 N=500 K=784 AIE_TARGET=aie2p PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
+// RUN: make -f %S/Makefile clean BUILD_DIR=build_large
+// RUN: make -f %S/Makefile run M=500 N=500 K=784 AIE_TARGET=aie2p BUILD_DIR=build_large PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS
