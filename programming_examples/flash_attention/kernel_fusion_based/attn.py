@@ -88,7 +88,11 @@ def build_module(
         f"lk ({lk}) must be divisible by lkp * num_cascade_stages "
         f"({lkp * num_cascade_stages})"
     )
-    assert lkp == dk, "L3-to-L1 mode requires lkp == dk (shared buffers)"
+    dk_tile = lkp
+    assert dk % dk_tile == 0, (
+        f"dk ({dk}) must be divisible by dk_tile/lkp ({dk_tile})"
+    )
+    dk_chunks = dk // dk_tile
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
         assert lqp // num_q_tiles == lkp, (
@@ -133,17 +137,17 @@ def build_module(
     l1_space = IntegerAttr.get(i32, 2)
     l2_space = IntegerAttr.get(i32, 1)
 
-    # L1 MemRefTypes
-    q_l1_t = MemRefType.get([tile_size_q, dk], bf16, memory_space=l1_space)
-    k_l1_t = MemRefType.get([lkp, dk], bf16, memory_space=l1_space)
+    # L1 MemRefTypes (Q and K use dk_tile, not full dk)
+    q_l1_t = MemRefType.get([tile_size_q, dk_tile], bf16, memory_space=l1_space)
+    k_l1_t = MemRefType.get([lkp, dk_tile], bf16, memory_space=l1_space)
     v_l1_t = MemRefType.get([lkp, dv], bf16, memory_space=l1_space)
     g_l1_2d = MemRefType.get([tile_size_q, lkp], bf16, memory_space=l1_space)
     g_l1_1d = MemRefType.get([tile_size_q * lkp], bf16, memory_space=l1_space)
     gp_l1_t = MemRefType.get([tile_size_q, dv], bf16, memory_space=l1_space)
     up_l1_t = MemRefType.get([tile_size_q, 1], bf16, memory_space=l1_space)
 
-    # L2 MemRefTypes
-    qk_l2_t = MemRefType.get([lkp, dk], bf16, memory_space=l2_space)
+    # L2 MemRefTypes (QK relay uses dk_tile)
+    qk_l2_t = MemRefType.get([lkp, dk_tile], bf16, memory_space=l2_space)
     v_l2_t = MemRefType.get([lkp, dv], bf16, memory_space=l2_space)
     gp_l2_t = MemRefType.get([lqp, dv], bf16, memory_space=l2_space)
 
@@ -375,17 +379,21 @@ def build_module(
                 # Combined output offset (uses dv stride, not dk)
                 out_combined = affine_apply(affine_map_add, [head_out_off, out_launch_off])
 
-                # Q puts: flat transfer per stage to QKIn (memtile relay)
+                # Q puts: 4D transfer with dk_chunks tiling
+                # Sends Q_tile0_dk0, Q_tile0_dk1, ..., Q_tileN_dk(C-1)
+                # Each sub-transfer is [tile_size_q, dk_tile]
                 for stage in range(NS):
                     ChannelPut(
                         f"QKIn_{stage}", q,
                         indices=[head_offset_idx],
                         offsets=[0, q_combined],
-                        sizes=[NQ * tile_size_q, dk],
-                        strides=[dk, 1],
+                        sizes=[NQ, dk_chunks, tile_size_q, dk_tile],
+                        strides=[tile_size_q * dk, dk_tile, dk, 1],
                     )
 
-                # K puts: flat transfer per stage to QKIn (memtile relay)
+                # K puts: 4D transfer with dk_chunks tiling
+                # Sends K_chunk0_dk0, K_chunk0_dk1, ..., K_chunkN_dk(C-1)
+                # Each sub-transfer is [lkp, dk_tile]
                 for stage in range(NS):
                     k_stage_off_val = stage * lk_per_stage * dk
                     k_combined = affine_apply(
@@ -396,8 +404,8 @@ def build_module(
                         f"QKIn_{stage}", k,
                         indices=[head_offset_idx],
                         offsets=[0, k_combined],
-                        sizes=[lk_per_stage, dk],
-                        strides=[dk, 1],
+                        sizes=[chunks_per_stage, dk_chunks, lkp, dk_tile],
+                        strides=[lkp * dk, dk_tile, dk, 1],
                     )
 
                 # V puts: combined offset = head_v_off + stage_off
@@ -446,7 +454,7 @@ def build_module(
                 gp_l2 = AllocOp(gp_l2_t, [], [])
 
                 # L1 allocations passed to herd
-                q_saved = AllocOp(q_l1_t, [], [])
+                q_saved_bufs = [AllocOp(q_l1_t, [], []) for _ in range(dk_chunks)]
                 qk_buf = AllocOp(k_l1_t, [], [])
                 v_l1 = AllocOp(v_l1_t, [], [])
                 g_l1 = AllocOp(g_l1_2d, [], [])
@@ -463,9 +471,12 @@ def build_module(
                 c_chunks_s = ConstantOp(index_type, chunks_per_stage)
 
                 # QK streaming: L3-to-L2-to-L1 per stage
-                # Q: NQ tiles, then K: chunks_per_stage chunks
+                # Q: NQ * dk_chunks transfers, then K: chunks_per_stage * dk_chunks
+                # L2 buffer is [lkp, dk_tile], all transfers are [dk_tile, dk_tile]
+                c_nq_dk = ConstantOp(index_type, NQ * dk_chunks)
+                c_chunks_dk = ConstantOp(index_type, chunks_per_stage * dk_chunks)
                 for stage in range(NS):
-                    for qt_iter in scf_range(0, c_nq, 1):
+                    for qt_iter in scf_range(0, c_nq_dk, 1):
                         ChannelGet(
                             f"QKIn_{stage}",
                             qk_l2_bufs[stage].result,
@@ -476,11 +487,11 @@ def build_module(
                             qk_l2_bufs[stage].result,
                             indices=[seg_x, c0_seg, c0_seg],
                             offsets=[0, 0, 0, 0],
-                            sizes=[dk // M, lkp // M, M, M],
-                            strides=[M, dk * M, dk, 1],
+                            sizes=[dk_tile // M, lkp // M, M, M],
+                            strides=[M, dk_tile * M, dk_tile, 1],
                         )
                         yield_([])
-                    for chunk_iter in scf_range(0, c_chunks_s, 1):
+                    for chunk_iter in scf_range(0, c_chunks_dk, 1):
                         ChannelGet(
                             f"QKIn_{stage}",
                             qk_l2_bufs[stage].result,
@@ -491,8 +502,8 @@ def build_module(
                             qk_l2_bufs[stage].result,
                             indices=[seg_x, c0_seg, c0_seg],
                             offsets=[0, 0, 0, 0],
-                            sizes=[dk // M, lkp // M, M, M],
-                            strides=[M, dk * M, dk, 1],
+                            sizes=[dk_tile // M, lkp // M, M, M],
+                            strides=[M, dk_tile * M, dk_tile, 1],
                         )
                         yield_([])
 
@@ -543,10 +554,10 @@ def build_module(
                 # ----------------------------------------------------------
                 # Herd: [NQ, NS] — pass seg_x as operand
                 # ----------------------------------------------------------
-                herd_operands = [
-                    q_saved, qk_buf, v_l1, g_l1, gp_l1, up_l1, sp_l1,
-                    seg_x,
-                ]
+                herd_operands = (
+                    q_saved_bufs
+                    + [qk_buf, v_l1, g_l1, gp_l1, up_l1, sp_l1, seg_x]
+                )
                 if causal:
                     herd_operands.append(causal_ctr)
 
@@ -556,10 +567,17 @@ def build_module(
                     operands=herd_operands,
                     link_with="attn.o",
                 )
-                def herd_body(tx, ty, hsx, hsy,
-                              q, qk, v, g, gp, up_buf, sp_buf,
-                              h_seg_x, *extra_args):
-                    counter_buf = extra_args[0] if causal else None
+                def herd_body(tx, ty, hsx, hsy, *all_args):
+                    # Unpack: dk_chunks Q buffers, then qk, v, g, gp, up, sp, seg_x, [causal_ctr]
+                    q_bufs = list(all_args[:dk_chunks])
+                    qk = all_args[dk_chunks]
+                    v = all_args[dk_chunks + 1]
+                    g = all_args[dk_chunks + 2]
+                    gp = all_args[dk_chunks + 3]
+                    up_buf = all_args[dk_chunks + 4]
+                    sp_buf = all_args[dk_chunks + 5]
+                    h_seg_x = all_args[dk_chunks + 6]
+                    counter_buf = all_args[dk_chunks + 7] if causal else None
                     # Precompute affine sets for per-stage V dispatch
                     s0 = AffineSymbolExpr.get(0)
                     s1 = AffineSymbolExpr.get(1)
@@ -601,52 +619,57 @@ def build_module(
                             scf.YieldOp([])
 
                     # === Q SELECTIVE CAPTURE ===
-                    # Receive all NQ Q tiles, but only copy the one
-                    # matching this tile's tx index.
+                    # Receive all NQ Q tiles × dk_chunks dk slices, but only
+                    # copy the one matching this tile's tx index.
                     # Stage-gated get from per-stage QK2L1_s channels.
                     for qt in range(NQ):
-                        for s in range(NS):
-                            if_qk_q = affine.AffineIfOp(
-                                stage_sets[s],
-                                cond_operands=[tx, ty],
-                            )
-                            with InsertionPoint(if_qk_q.then_block):
-                                ChannelGet(
-                                    f"QK2L1_{s}", qk,
-                                    indices=[h_seg_x, ty, tx],
+                        for dk_c in range(dk_chunks):
+                            for s in range(NS):
+                                if_qk_q = affine.AffineIfOp(
+                                    stage_sets[s],
+                                    cond_operands=[tx, ty],
                                 )
-                                affine.AffineYieldOp([])
-                        cmp = arith.CmpIOp(
-                            arith.CmpIPredicate.eq,
-                            arith.IndexCastOp(i32, tx),
-                            arith.ConstantOp(i32, qt),
-                        )
-                        if_cap = scf.IfOp(cmp)
-                        with InsertionPoint(if_cap.then_block):
-                            CallOp([], "copy_tile", [qk, q])
-                            scf.YieldOp([])
+                                with InsertionPoint(if_qk_q.then_block):
+                                    ChannelGet(
+                                        f"QK2L1_{s}", qk,
+                                        indices=[h_seg_x, ty, tx],
+                                    )
+                                    affine.AffineYieldOp([])
+                            cmp = arith.CmpIOp(
+                                arith.CmpIPredicate.eq,
+                                arith.IndexCastOp(i32, tx),
+                                arith.ConstantOp(i32, qt),
+                            )
+                            if_cap = scf.IfOp(cmp)
+                            with InsertionPoint(if_cap.then_block):
+                                CallOp([], "copy_tile", [qk, q_bufs[dk_c]])
+                                scf.YieldOp([])
 
                     # === K CHUNK LOOP ===
                     c_chunks_h = ConstantOp(index_type, chunks_per_stage)
                     for chunk_iter in scf_range(0, c_chunks_h, 1):
-                        # 1. Zero fill G (FIRST)
+                        # 1. Zero fill G (FIRST — once per K seq chunk)
                         g1d = CollapseShapeOp(g_l1_1d, g, [[0, 1]])
                         CallOp([], "zero_fill_g_bf16", [g1d])
 
-                        # 2. K get (SECOND) — stage-gated per-stage channels
-                        for s in range(NS):
-                            if_qk_k = affine.AffineIfOp(
-                                stage_sets[s],
-                                cond_operands=[tx, ty],
-                            )
-                            with InsertionPoint(if_qk_k.then_block):
-                                ChannelGet(
-                                    f"QK2L1_{s}", qk,
-                                    indices=[h_seg_x, ty, tx],
+                        # 2. dk_chunks loop: K get + matmul (accumulate G)
+                        for dk_c in range(dk_chunks):
+                            for s in range(NS):
+                                if_qk_k = affine.AffineIfOp(
+                                    stage_sets[s],
+                                    cond_operands=[tx, ty],
                                 )
-                                affine.AffineYieldOp([])
+                                with InsertionPoint(if_qk_k.then_block):
+                                    ChannelGet(
+                                        f"QK2L1_{s}", qk,
+                                        indices=[h_seg_x, ty, tx],
+                                    )
+                                    affine.AffineYieldOp([])
+                            # Matmul Q_dk_slice @ K_dk_slice^T → G (accumulate)
+                            CallOp([], "matmul_a_b_bf16",
+                                   [q_bufs[dk_c], qk, g1d])
 
-                        # 3. V get via affine.if per stage (THIRD)
+                        # 3. V get via affine.if per stage (AFTER dk_chunks)
                         #    — 3D index with head dim
                         for s in range(NS):
                             if_v = affine.AffineIfOp(
@@ -659,9 +682,6 @@ def build_module(
                                     indices=[h_seg_x, ty, tx],
                                 )
                                 affine.AffineYieldOp([])
-
-                        # 4. Matmul Q @ K^T (FOURTH)
-                        CallOp([], "matmul_a_b_bf16", [q, qk, g1d])
 
                         # 4b. Apply causal mask (after matmul, before softmax)
                         if causal:
@@ -966,7 +986,8 @@ def build_module(
                             scf.YieldOp([])
 
                 # Deallocs for segment-level buffers
-                DeallocOp(q_saved)
+                for q_buf in q_saved_bufs:
+                    DeallocOp(q_buf)
                 DeallocOp(qk_buf)
                 DeallocOp(v_l1)
                 DeallocOp(g_l1)
@@ -1011,6 +1032,10 @@ if __name__ == "__main__":
         help="K/V chunk size per tile (default: 64)",
     )
     parser.add_argument(
+        "--dk", type=int, default=64,
+        help="Key dimension (default: 64). Must be divisible by lkp.",
+    )
+    parser.add_argument(
         "--num-cascade-stages", type=int, default=4,
         help="Number of cascade pipeline stages (default: 4)",
     )
@@ -1043,7 +1068,7 @@ if __name__ == "__main__":
     lkp = args.lkp
     lq = args.lq
     lqp = args.lqp
-    dk = 64
+    dk = args.dk
     dv = 64
     num_cascade_stages = args.num_cascade_stages
     num_q_tiles = 4

@@ -86,15 +86,13 @@ int main(int argc, const char *argv[]) {
   int num_heads = vm["num-heads"].as<int>();
 
   size_t Q_VOLUME = (size_t)num_heads * lq * dk;
-  size_t K_VOLUME = (size_t)num_heads * dk * lk;
+  size_t K_VOLUME = (size_t)num_heads * lk * dk;
   size_t V_VOLUME = (size_t)num_heads * lk * dv;
-  size_t M_VOLUME = (size_t)num_heads * lq * lk;
   size_t OUTPUT_VOLUME = (size_t)num_heads * lq * dv;
 
   size_t Q_SIZE = Q_VOLUME * sizeof(DATATYPE);
   size_t K_SIZE = K_VOLUME * sizeof(DATATYPE);
   size_t V_SIZE = V_VOLUME * sizeof(DATATYPE);
-  size_t M_SIZE = M_VOLUME * sizeof(DATATYPE);
   size_t OUTPUT_SIZE = OUTPUT_VOLUME * sizeof(DATATYPE);
 
   int verbosity = vm["verbosity"].as<int>();
@@ -120,10 +118,10 @@ int main(int argc, const char *argv[]) {
   auto kernel = xrt::ext::kernel(context, kernelName);
 
   // Create buffer objects using xrt::ext::bo (declared as xrt::bo type)
+  // Kernel signature: attention_bf16(Q, K, V, Output) — 4 args, no mask buffer
   xrt::bo bo_q = xrt::ext::bo{device, Q_SIZE};
   xrt::bo bo_k = xrt::ext::bo{device, K_SIZE};
   xrt::bo bo_v = xrt::ext::bo{device, V_SIZE};
-  xrt::bo bo_m = xrt::ext::bo{device, M_SIZE};
   xrt::bo bo_out =
       xrt::ext::bo{device, OUTPUT_SIZE + static_cast<size_t>(trace_size)};
 
@@ -144,7 +142,7 @@ int main(int argc, const char *argv[]) {
             << ", dk=" << dk << ", dv=" << dv << std::endl;
   std::cout << "  Q: [" << num_heads << "x" << lq << "x" << dk << "] ("
             << Q_SIZE << " bytes)" << std::endl;
-  std::cout << "  K: [" << num_heads << "x" << dk << "x" << lk << "] ("
+  std::cout << "  K: [" << num_heads << "x" << lk << "x" << dk << "] ("
             << K_SIZE << " bytes)" << std::endl;
   std::cout << "  V: [" << num_heads << "x" << lk << "x" << dv << "] ("
             << V_SIZE << " bytes)" << std::endl;
@@ -172,19 +170,12 @@ int main(int argc, const char *argv[]) {
     VVec.push_back(random_bfloat16_t());
   memcpy(bufV, VVec.data(), (VVec.size() * sizeof(DATATYPE)));
 
-  DATATYPE *bufM = bo_m.map<DATATYPE *>();
-  std::vector<DATATYPE> MVec;
-  for (size_t i = 0; i < M_VOLUME; i++)
-    MVec.push_back(std::bfloat16_t(0.0f)); // Mask initialized to zero
-  memcpy(bufM, MVec.data(), (MVec.size() * sizeof(DATATYPE)));
-
   DATATYPE *bufOut = bo_out.map<DATATYPE *>();
   memset(bufOut, 0, OUTPUT_SIZE + trace_size);
 
   bo_q.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_k.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_v.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_m.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_out.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
   for (unsigned iter = 0; iter < num_iter; iter++) {
@@ -195,8 +186,7 @@ int main(int argc, const char *argv[]) {
     run.set_arg(0, bo_q);
     run.set_arg(1, bo_k);
     run.set_arg(2, bo_v);
-    run.set_arg(3, bo_m);
-    run.set_arg(4, bo_out);
+    run.set_arg(3, bo_out);
 
     auto start = std::chrono::high_resolution_clock::now();
     run.start();

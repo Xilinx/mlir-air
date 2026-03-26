@@ -151,12 +151,24 @@ matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
                                     (n / t), r, s, t, transpose_b>(pA, pB, pC);
 }
 
-// Combined scale: log2e / sqrt(dk). IRON uses this to apply 1/sqrt(dk)
+// Combined scale: log2e / sqrt(dk_full). IRON uses this to apply 1/sqrt(dk)
 // inside softmax with accfloat precision, avoiding bf16 truncation of Q.
-// dk is a macro from the Makefile (-Ddk=64).
+// dk is the tile dimension (= lkp), dk_full is the full key dimension.
+// When dk_full == dk (default), sqrt(64) = 8.0 — no change.
 #include <cmath>
+
+#ifndef dk_full
+#define dk_full dk
+#endif
+
+constexpr double constexpr_sqrt_dk =
+    (dk_full == 64)  ? 8.0 :
+    (dk_full == 128) ? 11.313708498984761 :
+    (dk_full == 256) ? 16.0 :
+    (dk_full == 512) ? 22.627416997969522 :
+    8.0;
+
 #define log2e (1.44269504089 / constexpr_sqrt_dk)
-constexpr double constexpr_sqrt_dk = 8.0; // sqrt(64) — matches dk=64
 
 __attribute__((always_inline)) v8bfloat16 getExpBf16(v8bfloat16 x) {
 
