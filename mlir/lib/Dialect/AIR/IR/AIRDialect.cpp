@@ -2169,7 +2169,29 @@ static LogicalResult EraseSelfCopyDma(air::DmaMemcpyNdOp op,
   return success();
 }
 
+/// Verify that sizes and strides operand lists have the same number of
+/// elements. Offsets may have fewer dimensions (implying leading zeros).
+/// All three being empty is valid.
+static LogicalResult verifySizesStridesRank(Operation *op, OperandRange sizes,
+                                            OperandRange strides,
+                                            StringRef label) {
+  if (sizes.size() != strides.size())
+    return op->emitOpError()
+           << label
+           << " sizes and strides must have the same number of dimensions, "
+              "but got "
+           << sizes.size() << " and " << strides.size();
+  return success();
+}
+
 LogicalResult air::DmaMemcpyNdOp::verify() {
+  if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
+                                    getSrcStrides(), "src")))
+    return failure();
+  if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
+                                    getDstStrides(), "dst")))
+    return failure();
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -2528,6 +2550,10 @@ LogicalResult air::ChannelPutOp::getResultTilePosition(
 }
 
 LogicalResult air::ChannelPutOp::verify() {
+  if (failed(verifySizesStridesRank(getOperation(), getSrcSizes(),
+                                    getSrcStrides(), "src")))
+    return failure();
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -2590,6 +2616,10 @@ LogicalResult air::ChannelGetOp::getResultTilePosition(
 }
 
 LogicalResult air::ChannelGetOp::verify() {
+  if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
+                                    getDstStrides(), "dst")))
+    return failure();
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
