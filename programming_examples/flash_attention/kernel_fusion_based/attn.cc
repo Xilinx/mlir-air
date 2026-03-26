@@ -171,6 +171,9 @@ constexpr double constexpr_sqrt_dk = (dk_full == 64)    ? 8.0
                                      : (dk_full == 256) ? 16.0
                                      : (dk_full == 512) ? 22.627416997969522
                                                         : 8.0;
+static_assert(dk_full == 64 || dk_full == 128 || dk_full == 256 ||
+                  dk_full == 512,
+              "Unsupported dk_full value: update constexpr_sqrt_dk");
 
 #define log2e (1.44269504089 / constexpr_sqrt_dk)
 

@@ -15,10 +15,11 @@ Multi-head support via 3D channels with segment unroll:
   - 3D channels have head dimension as first index
   - Cascade channels remain 2D (shared within each segment instance)
 
-Design parameters:
+Supports multi-head (MHA), grouped-query (GQA), and causal masking.
+
+Default design parameters:
   lk=512, lkp=64, lq=512, lqp=256, dk=64, dv=64
   num_q_tiles=4, num_cascade_stages=4, num_heads=2
-  Non-causal only.
   Shared-buffer mode (lkp == dk).
 
 DMA channel strategy (2 S2MM + 2 MM2S per compute tile):
@@ -77,6 +78,9 @@ def build_module(
         num_q_tiles: Number of tiles to partition Q chunk into (default: 4)
         num_cascade_stages: Number of cascade pipeline stages (default: 4)
         num_heads: Number of attention heads (default: 2)
+        num_kv_heads: Number of key/value heads for grouped-query attention
+            (GQA). If None, defaults to num_heads (standard MHA).
+        causal: Whether to enable causal (autoregressive) masking.
     """
     # Validate
     assert lq % lqp == 0, f"lq ({lq}) must be divisible by lqp ({lqp})"
@@ -1078,6 +1082,8 @@ def build_module(
                 DeallocOp(sp_l1)
                 for stage in range(NS):
                     DeallocOp(v_l2_bufs[stage])
+                for stage in range(NS):
+                    DeallocOp(qk_l2_bufs[stage])
                 DeallocOp(gp_l2)
                 if causal:
                     DeallocOp(causal_ctr)
@@ -1085,8 +1091,9 @@ def build_module(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog="attn_l3l1.py",
-        description="Flash attention with L3-to-L1 direct Q/K — " "selective capture",
+        prog="attn.py",
+        description="Flash attention with memtile-relayed L3-to-L1 Q/K/V — "
+        "selective Q capture",
     )
     parser.add_argument(
         "-p",
@@ -1279,7 +1286,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             omit_pingpong="all",
             verbose=args.verbose,
-            runtime_loop_tiling_sizes=[1, 1],
+            runtime_loop_tiling_sizes=tiling,
             output_format=args.output_format,
             instance_name="attention_bf16",
             target_device="npu2",

@@ -411,7 +411,7 @@ class XRTRunner:
                         f"Output {i} correlation: {corr:.6f} "
                         f"(threshold: {min_correlation})"
                     )
-                    if corr < min_correlation:
+                    if not np.isfinite(corr) or corr < min_correlation:
                         corr_ok = False
                         print(
                             f"ERROR: Output {i} correlation {corr:.6f} "
