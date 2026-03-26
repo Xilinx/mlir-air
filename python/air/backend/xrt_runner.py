@@ -77,6 +77,7 @@ class XRTRunner:
         num_device_cols: int = 0,
         debug_ir: bool = False,
         bf16_emulation: bool = False,
+        target_device: str = None,
     ):
         """
         Args:
@@ -103,6 +104,7 @@ class XRTRunner:
             debug_ir: enable debug mode to emit IR after each individual pass for fine-grained inspection.
                 IRs are saved to <tmpdir>/debug_ir/ with sequence numbers.
             bf16_emulation: emulate f32 vector arithmetic using bf16 operations.
+            target_device: specify target device explicitly ("npu1", "npu2", etc.). If None, will attempt auto-detection.
         """
         self.verbose = verbose
         self.omit_while_true_loop = omit_while_true_loop
@@ -128,6 +130,7 @@ class XRTRunner:
         self.num_device_cols = num_device_cols
         self.debug_ir = debug_ir
         self.bf16_emulation = bf16_emulation
+        self.target_device = target_device
 
     def run_test(
         self,
@@ -138,6 +141,7 @@ class XRTRunner:
         rtol: float = 1e-3,
         atol: float = 1e-8,
         max_mismatch_percentage: float = 0,
+        min_correlation: float = None,
         trace_file: str = None,
     ):
         """
@@ -149,6 +153,7 @@ class XRTRunner:
             rtol: relative error tolerance.
             atol: absolute error tolerance.
             max_mismatch_percentage: max percentage (0-100) of elements allowed to exceed tolerance (0 = all must pass, 20 = 20% can fail).
+            min_correlation: minimum Pearson correlation coefficient (0-1) between actual and expected outputs for floating-point data. None disables this check.
             trace_file: optional override for trace data filename. If None, uses instance default.
         """
         if self.verbose:
@@ -175,6 +180,7 @@ class XRTRunner:
             num_device_cols=self.num_device_cols,
             debug_ir=self.debug_ir,
             bf16_emulation=self.bf16_emulation,
+            target_device=self.target_device,
         )
 
         # Use per-test trace file if provided, otherwise use instance default
@@ -291,6 +297,7 @@ class XRTRunner:
                 rtol=rtol,
                 atol=atol,
                 max_mismatch_percentage=max_mismatch_percentage,
+                min_correlation=min_correlation,
             ):
                 print("PASS!")
                 return_code = 0
@@ -329,6 +336,7 @@ class XRTRunner:
         rtol: float = 1e-3,
         atol: float = 1e-8,
         max_mismatch_percentage: float = 0,
+        min_correlation: float = None,
     ):
         assert len(actual_outputs) == len(
             expected_outputs
@@ -354,12 +362,16 @@ class XRTRunner:
                 if expected.dtype == bfloat16:
                     expected = expected.astype(np.float64)
                     actual = actual.astype(np.float64)
+
+                # Element-wise tolerance check
+                elementwise_ok = True
                 close_mask = np.isclose(actual, expected, rtol=rtol, atol=atol)
                 mismatch_indices = np.where(~close_mask)
                 num_mismatches = len(mismatch_indices[0])
                 total_elements = expected.size
                 max_acceptable = int(total_elements * max_mismatch_percentage / 100)
                 if num_mismatches > max_acceptable:
+                    elementwise_ok = False
                     print(f"ERROR: Output {i} does not meet expected output.")
                     print(f"Shape: {expected.shape}")
                     if total_elements > 0:
@@ -388,6 +400,25 @@ class XRTRunner:
                         print(
                             f"  ... and {num_mismatches - max_display} more mismatches"
                         )
+
+                # Correlation check (parallel with element-wise)
+                corr_ok = True
+                if min_correlation is not None and total_elements > 0:
+                    corr = float(
+                        np.corrcoef(actual.flatten(), expected.flatten())[0, 1]
+                    )
+                    print(
+                        f"Output {i} correlation: {corr:.6f} "
+                        f"(threshold: {min_correlation})"
+                    )
+                    if corr < min_correlation:
+                        corr_ok = False
+                        print(
+                            f"ERROR: Output {i} correlation {corr:.6f} "
+                            f"below threshold {min_correlation}"
+                        )
+
+                if not elementwise_ok or not corr_ok:
                     return False
             else:
                 if not np.array_equal(actual, expected):
