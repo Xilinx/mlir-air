@@ -187,8 +187,8 @@ def parse_args(args=None):
         type=int,
         nargs="*",  # Accept zero or more integers
         dest="runtime_loop_tiling_sizes",
-        default=[4, 4],
-        help="Adds tiling factors to be applied to the runtime host affine loop nest. It is an experimental pass which enforces extra innermost tilings at runtime, to comply with constraints of certain hardware. If this option is omitted, the default tiling factors [4, 4] are used; specifying the flag without any values disables shim-dma-tile-sizes; providing one or more integers overrides the default tiling factors.",
+        default=[],
+        help="Adds tiling factors to be applied to the runtime host affine loop nest. It is an experimental pass which enforces extra innermost tilings at runtime, to comply with constraints of certain hardware. If this option is omitted, no tiling is applied by default; providing one or more integers enables tiling with those factors.",
     )
     parser.add_argument(
         "--omit-auto-broadcast",

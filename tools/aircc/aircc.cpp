@@ -207,7 +207,7 @@ static cl::opt<bool>
 static cl::list<unsigned> runtimeLoopTilingSizes(
     "air-runtime-loop-tiling-sizes",
     cl::desc("Tiling factors for runtime host affine loop nest. "
-             "Omit for default [4,4]; use flag with no values to disable."),
+             "Omit to disable tiling; provide one or more values to enable."),
     cl::cat(airCompilerOptions));
 
 // Track whether the flag was present on the command line at all
@@ -1068,7 +1068,7 @@ static LogicalResult runAieCompilation() {
       // If flag was explicitly passed with no values, disable tiling.
       std::vector<unsigned> tilingSizes;
       if (!runtimeLoopTilingSizesPresent) {
-        tilingSizes = {4, 4}; // Default when flag not used
+        tilingSizes = {}; // Default: no tiling when flag not used
       } else {
         tilingSizes.assign(runtimeLoopTilingSizes.begin(),
                            runtimeLoopTilingSizes.end());

@@ -265,7 +265,6 @@ with air.ir.Context() as ctx, Location.unknown():
             omit_while_true_loop=False,
             verbose=args.verbose,
             debug_ir=args.debug_aircc,
-            runtime_loop_tiling_sizes=[],
             output_format=args.output_format,
             instance_name="softmax_kernel",
         )
@@ -288,7 +287,6 @@ with air.ir.Context() as ctx, Location.unknown():
         ###### Compile and test
         runner = XRTRunner(
             omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[],  # No tiling = single large DMA transfer
             verbose=args.verbose,
             debug_ir=args.debug_aircc,
             output_format=args.output_format,
