@@ -116,6 +116,7 @@ def run_test(size, idtype, odtype):
     backend = xrt_backend.XRTBackend(
         verbose=verbose,
         use_lock_race_condition_fix=True,
+        runtime_loop_tiling_sizes=[4, 4],
     )
 
     # run the module

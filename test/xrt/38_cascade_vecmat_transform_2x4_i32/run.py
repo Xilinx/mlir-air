@@ -190,7 +190,11 @@ if args.compile_mode == "compile-and-run":
         "indices": sampled_indices,
         "values": sampled_values,
     }
-    runner = XRTRunner(verbose=args.verbose, omit_while_true_loop=False)
+    runner = XRTRunner(
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
+    )
     exit(
         runner.run_test(
             air_module,
@@ -204,6 +208,7 @@ elif args.compile_mode == "compile-only":
     backend = XRTBackend(
         verbose=args.verbose,
         omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
     )
     module_function = backend.compile(air_module)
 

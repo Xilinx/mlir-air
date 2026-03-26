@@ -133,7 +133,10 @@ if __name__ == "__main__":
     output_matrix = input_matrix.copy()
 
     runner = XRTRunner(
-        verbose=args.verbose, output_format=args.output_format, instance_name="copy"
+        verbose=args.verbose,
+        output_format=args.output_format,
+        instance_name="copy",
+        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(

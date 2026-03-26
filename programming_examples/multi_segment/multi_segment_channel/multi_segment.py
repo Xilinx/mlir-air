@@ -130,7 +130,10 @@ if __name__ == "__main__":
     output_d = np.full(VECTOR_LEN, 13, dtype=INOUT_DATATYPE)
 
     runner = XRTRunner(
-        verbose=args.verbose, output_format=args.output_format, instance_name="copy"
+        verbose=args.verbose,
+        output_format=args.output_format,
+        instance_name="copy",
+        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(

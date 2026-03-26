@@ -287,6 +287,7 @@ with air.ir.Context() as ctx, Location.unknown():
             omit_while_true_loop=False,
             output_format="elf",
             bf16_emulation=True,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(air_module)
         backend.unload()

@@ -386,6 +386,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format="elf" if needs_padding else "xclbin",
             instance_name="relu",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         # bf16 truncation introduces rounding; use bf16-appropriate tolerance
         exit(
@@ -402,6 +403,7 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             output_format="elf" if needs_padding else "xclbin",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

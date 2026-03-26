@@ -1063,7 +1063,8 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             debug_ir=args.debug_ir,
-            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues
+            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues,
+            runtime_loop_tiling_sizes=[4, 4],
         )
 
         # Custom comparison with scale factor tolerance
@@ -1101,7 +1102,8 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             debug_ir=args.debug_ir,
-            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues
+            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

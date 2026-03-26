@@ -272,6 +272,7 @@ with air.ir.Context() as ctx, Location.unknown():
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(air_module)
         backend.unload()

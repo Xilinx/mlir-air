@@ -310,6 +310,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="eltwise_add",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         # BF16 has ~0.8% relative precision; use looser tolerance
         rtol = 0.01 if INPUT_DATATYPE == bfloat16 else 1e-3
@@ -329,6 +330,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             omit_auto_broadcast=True,
             output_format=args.output_format,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
 
