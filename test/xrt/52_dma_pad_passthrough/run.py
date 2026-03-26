@@ -193,6 +193,7 @@ if __name__ == "__main__":
         verbose=args.verbose,
         output_format=args.output_format,
         instance_name="pad_passthrough",
+        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(

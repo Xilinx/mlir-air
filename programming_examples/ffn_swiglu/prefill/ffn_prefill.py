@@ -325,6 +325,7 @@ if __name__ == "__main__":
         verbose=args.verbose,
         omit_while_true_loop=False,
         omit_pingpong=True,
+        runtime_loop_tiling_sizes=[4, 4],
         output_format=args.output_format,
         instance_name="ffn_swiglu",
     )

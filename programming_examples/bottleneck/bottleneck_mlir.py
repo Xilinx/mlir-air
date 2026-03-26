@@ -1551,6 +1551,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             debug_ir=args.debug_ir,
             omit_pingpong="all",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         output_placeholder = np.zeros(expected_out.shape, expected_out.dtype)
         expanded_inputs = [input_act_flat, total_wts, output_placeholder]
@@ -1575,7 +1576,8 @@ if __name__ == "__main__":
             verbose=args.verbose,
             omit_while_true_loop=False,
             debug_ir=args.debug_ir,
-            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues
+            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
         backend.unload()

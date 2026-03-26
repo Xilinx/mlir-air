@@ -302,6 +302,7 @@ with air.ir.Context() as ctx, Location.unknown():
         bf16_emulation=args.bf16_emulation,
         verbose=args.verbose,
         debug_ir=args.debug_ir,
+        runtime_loop_tiling_sizes=[4, 4],
     )
     exit(
         runner.run_test(

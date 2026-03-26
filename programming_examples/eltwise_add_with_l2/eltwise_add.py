@@ -254,6 +254,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             output_format=args.output_format,
             instance_name="eltwise_add",
+            runtime_loop_tiling_sizes=[4, 4],
         )
         exit(
             runner.run_test(
@@ -271,6 +272,7 @@ if __name__ == "__main__":
             omit_while_true_loop=False,
             omit_auto_broadcast=True,
             output_format=args.output_format,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(mlir_module)
 

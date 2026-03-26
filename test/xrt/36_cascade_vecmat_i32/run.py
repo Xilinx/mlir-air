@@ -168,7 +168,11 @@ with air.ir.Context() as ctx, Location.unknown():
     input_b = np.arange(0, K * N, dtype=np.int32).reshape(K, N)
     if args.compile_mode == "compile-and-run":
         output_c = np.dot(input_a.astype(np.int32), input_b.astype(np.int32))
-        runner = XRTRunner(verbose=args.verbose, omit_while_true_loop=False)
+        runner = XRTRunner(
+            verbose=args.verbose,
+            omit_while_true_loop=False,
+            runtime_loop_tiling_sizes=[4, 4],
+        )
         exit(
             runner.run_test(
                 air_module,
@@ -182,6 +186,7 @@ with air.ir.Context() as ctx, Location.unknown():
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            runtime_loop_tiling_sizes=[4, 4],
         )
         module_function = backend.compile(air_module)
 

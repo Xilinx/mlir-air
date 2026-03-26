@@ -163,6 +163,7 @@ runner = XRTRunner(
     trace_offset=opts.trace_offset,
     trace_size=opts.trace_size,
     trace_file=opts.trace_file,
+    runtime_loop_tiling_sizes=[4, 4],
 )
 exit(
     runner.run_test(
