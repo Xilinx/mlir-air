@@ -101,7 +101,8 @@ static inline void matmul_vectorized_2x2_mmul(const T_in *__restrict pA,
               aie::vector<T_in, MMUL::size_B> B0, B1;
               if constexpr (transpose_b) {
                 // K DMA k-major block layout: block (n=j, k=i) at i*colB+j.
-                // Sub-tile elements are [n_in, k_in], transpose to [k_in, n_in].
+                // Sub-tile elements are [n_in, k_in], transpose to [k_in,
+                // n_in].
                 const T_in *__restrict pBk0 =
                     pB + (i * colB + j) * MMUL::size_B;
                 const T_in *__restrict pBk1 =
@@ -155,8 +156,8 @@ matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
                                     (n / t), r, s, t, transpose_b>(pA, pB, pC);
 }
 
-// Combined scale: log2e / sqrt(dk_full). IRON uses this to apply 1/sqrt(dk)
-// inside softmax with accfloat precision, avoiding bf16 truncation of Q.
+// Combined scale: log2e / sqrt(dk_full). Applies 1/sqrt(dk) inside softmax
+// with accfloat precision, avoiding bf16 truncation of Q.
 // dk is the tile dimension (= lkp), dk_full is the full key dimension.
 // When dk_full == dk (default), sqrt(64) = 8.0 — no change.
 #include <cmath>
@@ -165,12 +166,11 @@ matmul_vectorized_8x8x8_bf16_bf16(const bfloat16 *__restrict pA,
 #define dk_full dk
 #endif
 
-constexpr double constexpr_sqrt_dk =
-    (dk_full == 64)  ? 8.0 :
-    (dk_full == 128) ? 11.313708498984761 :
-    (dk_full == 256) ? 16.0 :
-    (dk_full == 512) ? 22.627416997969522 :
-    8.0;
+constexpr double constexpr_sqrt_dk = (dk_full == 64)    ? 8.0
+                                     : (dk_full == 128) ? 11.313708498984761
+                                     : (dk_full == 256) ? 16.0
+                                     : (dk_full == 512) ? 22.627416997969522
+                                                        : 8.0;
 
 #define log2e (1.44269504089 / constexpr_sqrt_dk)
 
@@ -193,7 +193,7 @@ __attribute__((always_inline)) v8bfloat16 getExpBf16(v8bfloat16 x) {
 extern "C" {
 
 // Set rounding mode at the start of every extern C function.
-// IRON sets conv_even in every softmax function; without this,
+// Setting conv_even rounding in every softmax function; without this,
 // softmax intermediates use the system default rounding mode,
 // causing ~44% errors at val_range=4 due to rounding noise
 // amplified by softmax's peaked distribution.
@@ -491,7 +491,7 @@ void sum_g(bfloat16 *g, bfloat16 *s) {
           sum_acc = aie::add(sum_acc, v);
         }
       // Reduce each 8-element row slice to get per-row sum.
-      // Use f32 for reduce_add to preserve precision (IRON does this).
+      // Use f32 for reduce_add to preserve precision.
       aie::vector<float, VecLen> sum_v = sum_acc.to_vector<float>();
       aie::vector<float, 8> r0 = sum_v.extract<8>(0);
       aie::vector<float, 8> r1 = sum_v.extract<8>(1);
