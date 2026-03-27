@@ -1222,9 +1222,9 @@ private:
                                SmallVector<Value, 1> iter_operands) const {
 
     builder.setInsertionPoint(loop_op);
-    scf::ForOp new_loop_op = builder.create<scf::ForOp>(
-        loop_op.getLoc(), loop_op.getLowerBound(), loop_op.getUpperBound(),
-        loop_op.getStep(), iter_operands);
+    scf::ForOp new_loop_op = scf::ForOp::create(
+        builder, loop_op.getLoc(), loop_op.getLowerBound(),
+        loop_op.getUpperBound(), loop_op.getStep(), iter_operands);
 
     // LLVM 23: ForOp::create may not auto-insert a yield. Ensure one
     // exists before splicing so ops get inserted before it.
