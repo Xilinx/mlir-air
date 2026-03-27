@@ -28,8 +28,7 @@ from utils import (
     vec_read,
     vec_write,
     make_air_parser,
-    make_xrt_runner,
-    make_xrt_backend,
+    run_on_npu,
     check_print_module,
 )
 
@@ -151,35 +150,29 @@ if __name__ == "__main__":
     # Use a safe range [1, 10] to avoid division by zero
     input_a = np.random.uniform(1.0, 10.0, args.n).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack(
-            [
-                np.random.randint(0, args.n, num_samples),
-            ]
+    num_samples = 100
+    sampled_indices = np.vstack(
+        [
+            np.random.randint(0, args.n, num_samples),
+        ]
+    )
+    # Compute reference results for sampled indices: 1.0 / x
+    sampled_values = np.array(
+        [np.float32(1.0) / np.float32(input_a[i]) for i in sampled_indices[0]],
+        dtype=INPUT_DATATYPE,
+    )
+    sampled_data = {
+        "shape": (args.n,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="vector_reciprocal",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-5,
         )
-        # Compute reference results for sampled indices: 1.0 / x
-        sampled_values = np.array(
-            [np.float32(1.0) / np.float32(input_a[i]) for i in sampled_indices[0]],
-            dtype=INPUT_DATATYPE,
-        )
-        sampled_data = {
-            "shape": (args.n,),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-        runner = make_xrt_runner(args, "vector_reciprocal")
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-5,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = make_xrt_backend(args)
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
+    )

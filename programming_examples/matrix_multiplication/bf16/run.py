@@ -13,7 +13,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from air.extras import types as extrasT
 from air.dialects.linalg.opdsl.lang import *
 import air.dialects.linalg.opdsl.lang as linalg_lang
@@ -715,8 +715,13 @@ if __name__ == "__main__":
     input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
     input_b = (np.random.rand(args.k, args.n) * 4).astype(INPUT_DATATYPE)
 
+    # Build common compile kwargs
+    compile_kwargs = {"runtime_loop_tiling_sizes": [2, 2]}
+    if not args.direct_codegen:
+        compile_kwargs["lower_linalg_to_func"] = "mm.o"
+
     if args.compile_mode == "compile-and-run":
-        # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
+        # Stochastically sample num_sample results, and pass to run_on_npu for verification.
         num_samples = 100
         sampled_indices = np.vstack(
             [
@@ -746,64 +751,35 @@ if __name__ == "__main__":
             "values": sampled_values,
         }
 
-        ###### Compile and test
-        runner_kwargs = {
-            "verbose": args.verbose,
-            "omit_while_true_loop": False,
-            "runtime_loop_tiling_sizes": [2, 2],
-        }
-        # Only use external kernel library if NOT in direct codegen mode
-        if not args.direct_codegen:
-            runner_kwargs["lower_linalg_to_func"] = "mm.o"
-
-        runner = XRTRunner(**runner_kwargs, instance_name="matmul_bf16")
         exit(
-            runner.run_test(
+            run_on_npu(
+                args,
                 mlir_module,
                 inputs=[input_a, input_b],
+                instance_name="matmul_bf16",
                 stochastic_expected_outputs=[sampled_data],
                 rtol=0.05,
                 atol=4,
                 max_mismatch_percentage=5,
+                **compile_kwargs,
             )
         )
 
-    elif args.compile_mode == "compile-and-xclbin":
-        ###### Compile and generate xclbin (requires XRT, no execution)
-        backend_kwargs = {
-            "verbose": args.verbose,
-            "omit_while_true_loop": False,
-            "runtime_loop_tiling_sizes": [2, 2],
-        }
-        # Only use external kernel library if NOT in direct codegen mode
-        if not args.direct_codegen:
-            backend_kwargs["lower_linalg_to_func"] = "mm.o"
-
-        backend = XRTBackend(**backend_kwargs)
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
-
-    elif args.compile_mode == "compile-only":
-        ###### Compile only (without XRT dependencies)
-        # Map architecture to target device
-        target_device = "npu2" if args.arch == "aie2p" else "npu1"
-
-        backend_kwargs = {
-            "verbose": args.verbose,
-            "target_device": target_device,  # Explicit target based on arch (no xrt dependencies)
-            "output_format": "none",  # Skip xclbin generation (no xrt dependencies)
-            "omit_while_true_loop": False,
-            "runtime_loop_tiling_sizes": [2, 2],
-        }
-        # Only use external kernel library if NOT in direct codegen mode
-        if not args.direct_codegen:
-            backend_kwargs["lower_linalg_to_func"] = "mm.o"
-
-        backend = XRTBackend(**backend_kwargs)
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
-
-        print("Compilation completed successfully!")
-        sys.exit(0)
+    elif args.compile_mode in ("compile-and-xclbin", "compile-only"):
+        ###### Compile only (no execution)
+        if args.compile_mode == "compile-only":
+            # Skip xclbin generation (no xrt dependencies)
+            target_device = "npu2" if args.arch == "aie2p" else "npu1"
+            compile_kwargs["target_device"] = target_device
+            compile_kwargs["output_format"] = "none"
+        # Remap to compile-only so run_on_npu dispatches correctly
+        args.compile_mode = "compile-only"
+        exit(
+            run_on_npu(
+                args,
+                mlir_module,
+                inputs=[],
+                instance_name="matmul_bf16",
+                **compile_kwargs,
+            )
+        )

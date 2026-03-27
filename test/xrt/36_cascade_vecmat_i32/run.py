@@ -13,8 +13,12 @@ from air.compiler.util import run_transform
 import argparse
 import sys
 
-from air.backend.xrt_runner import XRTRunner
-from air.backend.xrt import XRTBackend
+from air.backend.xrt import compile_air, get_air_runtime
+import aie.utils
+
+import numpy as np
+
+np.random.seed(42)
 
 parser = argparse.ArgumentParser(
     prog="run.py",
@@ -111,8 +115,8 @@ with air.ir.Context() as ctx, Location.unknown():
                   linalg.vecmat ins(%alloc_17, %alloc_18 : memref<32xi32, 2 : i32>, memref<32x32xi32, 2 : i32>) outs(%subview_16 : memref<32xi32, strided<[1]>, 2 : i32>)
                   memref.dealloc %alloc_17 : memref<32xi32, 2 : i32>
                   memref.dealloc %alloc_18 : memref<32x32xi32, 2 : i32>
-                }                
-                
+                }
+
                 scf.reduce(%alloc_12 : memref<32xi32, 2 : i32>) {
                 ^bb0(%a4: memref<32xi32, 2 : i32>, %a5: memref<32xi32, 2 : i32>):
                   linalg.add ins(%a4, %a5 : memref<32xi32, 2 : i32>, memref<32xi32, 2 : i32>) outs(%a4 : memref<32xi32, 2 : i32>)
@@ -166,28 +170,23 @@ with air.ir.Context() as ctx, Location.unknown():
         K,
     )
     input_b = np.arange(0, K * N, dtype=np.int32).reshape(K, N)
-    if args.compile_mode == "compile-and-run":
-        output_c = np.dot(input_a.astype(np.int32), input_b.astype(np.int32))
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                air_module,
-                inputs=[input_a, input_b],
-                expected_outputs=[output_c],
-            )
-        )
 
-    elif args.compile_mode == "compile-only":
-        ###### Compile only
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(air_module)
+    npu_kernel = compile_air(
+        air_module,
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
+    )
 
-        backend.unload()
+    if args.compile_mode == "compile-only":
+        exit(0)
+
+    output_c = np.dot(input_a.astype(np.int32), input_b.astype(np.int32))
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(input_a),
+        aie.utils.tensor(input_b),
+        aie.utils.tensor(np.zeros(output_c.shape, output_c.dtype)),
+    ]
+    refs = {2: output_c}
+    exit(runtime.run_test(npu_kernel, io_args, refs=refs))

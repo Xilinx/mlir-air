@@ -25,7 +25,7 @@ from air.dialects import arith
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 

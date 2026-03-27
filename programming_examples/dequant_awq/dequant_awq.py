@@ -21,7 +21,7 @@ from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, run_on_npu
 
 
 @module_builder
@@ -148,29 +148,16 @@ if __name__ == "__main__":
 
     packed_i8 = packed_weights.view(np.int8)
 
-    if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_pingpong=True,
-            output_format=args.output_format,
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[packed_i8, params],
             instance_name="dequant",
+            expected_outputs=[ref_output],
+            rtol=1e-1,
+            atol=5e-2,
             runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[packed_i8, params],
-                expected_outputs=[ref_output],
-                rtol=1e-1,
-                atol=5e-2,
-            )
-        )
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
             omit_pingpong=True,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
         )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    )

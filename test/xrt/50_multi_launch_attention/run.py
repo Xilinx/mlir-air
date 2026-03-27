@@ -15,11 +15,12 @@ This test validates the multi-launch attention example by:
 4. Comparing results
 """
 
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.ir import *
 from ml_dtypes import bfloat16
 import numpy as np
 import os
+import aie.utils
 
 
 def softmax(x, axis=-1):
@@ -74,18 +75,21 @@ with Context() as ctx, Location.unknown():
     # Run test
     ###############################################
 
-    runner = XRTRunner(
+    npu_kernel = compile_air(
+        air_module,
         output_format="elf",
-        instance_name="attention",  # matches func.func @attention
+        instance_name="attention",
         omit_while_true_loop=False,
         verbose=False,
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(
-        runner.run_test(
-            mlir_module=air_module,
-            inputs=[Q, K_T, V, S_buffer, P_buffer],
-            expected_outputs=[O_expected],
-            atol=2e3,
-        )
-    )
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(Q),
+        aie.utils.tensor(K_T),
+        aie.utils.tensor(V),
+        aie.utils.tensor(S_buffer),
+        aie.utils.tensor(P_buffer),
+        aie.utils.tensor(np.zeros(O_expected.shape, O_expected.dtype)),
+    ]
+    exit(runtime.run_test(npu_kernel, io_args, refs={5: O_expected}, atol=2e3))

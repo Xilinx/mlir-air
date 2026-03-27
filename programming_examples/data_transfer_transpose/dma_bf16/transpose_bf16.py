@@ -21,7 +21,7 @@ from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 INOUT_DATATYPE = bfloat16
 
@@ -84,4 +84,12 @@ if __name__ == "__main__":
     input_matrix = np.random.uniform(-1.0, 1.0, (args.m, args.k)).astype(INOUT_DATATYPE)
     expected_output = np.transpose(input_matrix)
 
-    exit(run_on_npu(args, mlir_module, inputs=[input_matrix.reshape(-1)], instance_name="transpose", expected_outputs=[expected_output.reshape(-1)]))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_matrix.reshape(-1)],
+            instance_name="transpose",
+            expected_outputs=[expected_output.reshape(-1)],
+        )
+    )

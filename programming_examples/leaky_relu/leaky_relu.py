@@ -29,7 +29,7 @@ from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.vector import BroadcastOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from utils import vec_read, vec_write
 
 range_ = for_
@@ -142,15 +142,25 @@ if __name__ == "__main__":
 
     sampled_indices = np.vstack([np.random.randint(0, args.n, 100)])
     sampled_values = np.array(
-        [np.where(input_a[i] >= 0, input_a[i], args.alpha * input_a[i]) for i in zip(*sampled_indices)],
+        [
+            np.where(input_a[i] >= 0, input_a[i], args.alpha * input_a[i])
+            for i in zip(*sampled_indices)
+        ],
         dtype=INPUT_DATATYPE,
     )
-    sampled_data = {"shape": (args.n,), "indices": sampled_indices, "values": sampled_values}
+    sampled_data = {
+        "shape": (args.n,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-    exit(run_on_npu(
-        args, mlir_module,
-        inputs=[input_a],
-        instance_name="leaky_relu",
-        stochastic_expected_outputs=[sampled_data],
-        rtol=1e-2,
-    ))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="leaky_relu",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-2,
+        )
+    )

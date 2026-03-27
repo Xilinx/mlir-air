@@ -9,7 +9,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp, CallOp
 from air.dialects import scf
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -147,16 +147,13 @@ if __name__ == "__main__":
     inputs = np.arange(0, args.n, dtype=INPUT_DATATYPE).reshape(args.n)
     outputs = inputs * 100
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
-        instance_name="conditional_branch",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
-    res0 = runner.run_test(
+    res0 = run_on_npu(
+        args,
         mlir_module,
         inputs=[inputs],
+        instance_name="conditional_branch",
         expected_outputs=[outputs],
+        runtime_loop_tiling_sizes=[4, 4],
     )
 
     ###### Compile and test, param = 1
@@ -170,10 +167,13 @@ if __name__ == "__main__":
     )
 
     outputs = inputs + 100
-    res1 = runner.run_test(
+    res1 = run_on_npu(
+        args,
         mlir_module,
         inputs=[inputs],
+        instance_name="conditional_branch",
         expected_outputs=[outputs],
+        runtime_loop_tiling_sizes=[4, 4],
     )
     if res0 == 0 and res1 == 0:
         print("Both conditions PASS!")

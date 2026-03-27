@@ -28,8 +28,7 @@ from utils import (
     vec_read,
     vec_write,
     make_air_parser,
-    make_xrt_runner,
-    make_xrt_backend,
+    run_on_npu,
     stochastic_check,
     check_print_module,
 )
@@ -153,22 +152,16 @@ if __name__ == "__main__":
     # Generate input values in a safe range for exp operation to avoid overflow
     input_a = np.random.uniform(-5, 5, args.n).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        sampled_data = stochastic_check(
-            [input_a], args.n, lambda x: np.exp(x), INPUT_DATATYPE
+    sampled_data = stochastic_check(
+        [input_a], args.n, lambda x: np.exp(x), INPUT_DATATYPE
+    )
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="vector_exp",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-1,
         )
-        runner = make_xrt_runner(args, "vector_exp")
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = make_xrt_backend(args)
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
+    )

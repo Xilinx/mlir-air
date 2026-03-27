@@ -5,12 +5,11 @@
 
 import argparse
 import numpy as np
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.compiler.util import run_transform
 from air.ir import *
 import air.passmanager
-import filelock
+import aie.utils
 
 parser = argparse.ArgumentParser(
     prog="run.py",
@@ -295,7 +294,8 @@ with air.ir.Context() as ctx, Location.unknown():
     y_expected = (x_arg - mean.reshape(-1, 1)) * rstd.reshape(-1, 1)  # Shape [M, N]
 
     ###### Compile and test
-    runner = XRTRunner(
+    npu_kernel = compile_air(
+        air_module,
         omit_while_true_loop=False,
         output_format=args.output_format,
         instance_name="_layer_norm_fwd_fused",
@@ -304,11 +304,16 @@ with air.ir.Context() as ctx, Location.unknown():
         debug_ir=args.debug_ir,
         runtime_loop_tiling_sizes=[4, 4],
     )
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(x_arg),
+        aie.utils.tensor(np.zeros(y_expected.shape, y_expected.dtype)),
+    ]
     exit(
-        runner.run_test(
-            air_module,
-            inputs=[x_arg],
-            expected_outputs=[y_expected],
+        runtime.run_test(
+            npu_kernel,
+            io_args,
+            refs={1: y_expected},
             rtol=5e-2 if args.bf16_emulation else 1e-2,
             atol=5e-1 if args.bf16_emulation else 1e-1,
         )

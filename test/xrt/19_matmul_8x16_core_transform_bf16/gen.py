@@ -1,10 +1,9 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-from air.backend.xrt import XRTBackend
+from air.backend.xrt import compile_air
 from air.ir import *
 import air.passmanager
-
 
 ################################################
 ## Input SCF and Linalg IR
@@ -109,9 +108,9 @@ pm.run(air_module.operation)
 # Run compile and load
 ###############################################
 
-backend = XRTBackend(
+compile_air(
+    air_module,
     air_loop_fusion=True,
     lower_linalg_to_func="kernel.o",
     runtime_loop_tiling_sizes=[4, 4],
 )
-backend.compile(air_module)

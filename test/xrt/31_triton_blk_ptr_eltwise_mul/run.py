@@ -4,11 +4,10 @@
 # SPDX-License-Identifier: MIT
 
 import argparse
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.ir import *
 import air.passmanager
-import filelock
+import aie.utils
 
 import numpy as np
 
@@ -104,19 +103,20 @@ with air.ir.Context() as ctx, Location.unknown():
     inputs_b = (np.random.rand(*input_size)).reshape(input_size).astype(input_type)
     ref = (inputs_a * inputs_b).astype(input_type)
 
-    ###### Compile and test
-    runner = XRTRunner(
+    npu_kernel = compile_air(
+        air_module,
         omit_while_true_loop=False,
         use_lock_race_condition_fix=True,
         output_format=args.output_format,
         instance_name="kernel",
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(
-        runner.run_test(
-            air_module,
-            inputs=[inputs_a, inputs_b],
-            expected_outputs=[ref],
-            rtol=1e-3,
-        )
-    )
+
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(inputs_a),
+        aie.utils.tensor(inputs_b),
+        aie.utils.tensor(np.zeros(ref.shape, ref.dtype)),
+    ]
+    refs = {2: ref}
+    exit(runtime.run_test(npu_kernel, io_args, refs=refs, rtol=1e-3))

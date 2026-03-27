@@ -20,7 +20,7 @@ from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
 from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import run_on_npu
 from ml_dtypes import bfloat16
 
 # Constants for buffer sizes and loop bounds
@@ -68,6 +68,13 @@ def parse_args():
         default="xclbin",
         dest="output_format",
         help="Output format for the compiled binary (default: xclbin)",
+    )
+    parser.add_argument(
+        "--compile-mode",
+        type=str,
+        choices=["compile-only", "compile-and-run"],
+        dest="compile_mode",
+        default="compile-and-run",
     )
     args = parser.parse_args()
     return args
@@ -456,20 +463,15 @@ def main():
     B = np.random.rand(M_SIZE, N_SIZE).astype(bfloat16)
     C = (A + B + 3.0).astype(bfloat16)
 
-    # Run the module using XRTRunner
-    runner = XRTRunner(
-        omit_while_true_loop=False,
-        verbose=False,
-        runtime_loop_tiling_sizes=[2, 2],
-        output_format=args.output_format,
-        instance_name="func1",
-    )
     exit(
-        runner.run_test(
+        run_on_npu(
+            args,
             mlir_module,
             inputs=[A, B],
+            instance_name="func1",
             expected_outputs=[C],
             rtol=1e-2,
+            runtime_loop_tiling_sizes=[2, 2],
         )
     )
 

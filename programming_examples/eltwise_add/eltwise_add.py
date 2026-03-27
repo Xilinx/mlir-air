@@ -27,7 +27,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 import numpy as np
 
@@ -142,12 +142,8 @@ def build_module(
                         sub_a = subview(l1_a_data.result, [j], [vector_size], [1])
                         sub_b = subview(l1_b_data.result, [j], [vector_size], [1])
                         sub_c = subview(l1_out_data.result, [j], [vector_size], [1])
-                        v_a = transfer_read(
-                            vecTy, sub_a, [c0], imap, cst0, [True]
-                        )
-                        v_b = transfer_read(
-                            vecTy, sub_b, [c0], imap, cst0, [True]
-                        )
+                        v_a = transfer_read(vecTy, sub_a, [c0], imap, cst0, [True])
+                        v_b = transfer_read(vecTy, sub_b, [c0], imap, cst0, [True])
                         v_c = arith.AddFOp(v_a, v_b)
                         transfer_write(None, v_c, sub_c, [c0], imap, [True])
                         yield_([])
@@ -270,10 +266,13 @@ if __name__ == "__main__":
 
     # BF16 has ~0.8% relative precision; use looser tolerance
     rtol = 0.01 if INPUT_DATATYPE == bfloat16 else 1e-3
-    exit(run_on_npu(
-        args, mlir_module,
-        inputs=[input_a, input_b],
-        instance_name="eltwise_add",
-        stochastic_expected_outputs=[sampled_data],
-        rtol=rtol,
-    ))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a, input_b],
+            instance_name="eltwise_add",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=rtol,
+        )
+    )

@@ -28,7 +28,7 @@ from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.vector import BroadcastOp, fma
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from utils import vec_read, vec_write
 
 import numpy as np
@@ -160,12 +160,19 @@ if __name__ == "__main__":
         [args.alpha * input_x[i] + input_y[i] for i in zip(*sampled_indices)],
         dtype=INPUT_DATATYPE,
     )
-    sampled_data = {"shape": (args.n,), "indices": sampled_indices, "values": sampled_values}
+    sampled_data = {
+        "shape": (args.n,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-    exit(run_on_npu(
-        args, mlir_module,
-        inputs=[input_x, input_y],
-        instance_name="axpy",
-        stochastic_expected_outputs=[sampled_data],
-        rtol=1e-2,
-    ))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_x, input_y],
+            instance_name="axpy",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-2,
+        )
+    )

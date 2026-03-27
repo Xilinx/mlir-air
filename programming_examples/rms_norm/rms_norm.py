@@ -28,7 +28,7 @@ from air.dialects.vector import (
 )
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -179,11 +179,14 @@ if __name__ == "__main__":
     )
     y_expected = (x_input / rms).astype(INPUT_DATATYPE)
 
-    exit(run_on_npu(
-        args, mlir_module,
-        inputs=[x_input],
-        instance_name="rms_norm",
-        expected_outputs=[y_expected],
-        rtol=5e-2,
-        atol=5e-1,
-    ))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[x_input],
+            instance_name="rms_norm",
+            expected_outputs=[y_expected],
+            rtol=5e-2,
+            atol=5e-1,
+        )
+    )

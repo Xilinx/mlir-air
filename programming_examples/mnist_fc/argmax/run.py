@@ -25,7 +25,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, subview, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, run_on_npu
 from air.extras import types as extrasT
 
 np.random.seed(42)
@@ -196,6 +196,13 @@ if __name__ == "__main__":
         dest="compile_mode",
         default="compile-and-run",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+    )
 
     args = parser.parse_args()
 
@@ -257,29 +264,26 @@ if __name__ == "__main__":
             "values": sampled_values,
         }
 
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format="xclbin",
-            instance_name="argmax",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
         exit(
-            runner.run_test(
+            run_on_npu(
+                args,
                 mlir_module,
                 inputs=[input_a],
+                instance_name="argmax",
                 stochastic_expected_outputs=[sampled_data],
                 rtol=0,
                 atol=0,
+                runtime_loop_tiling_sizes=[4, 4],
             )
         )
 
     elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format="xclbin",
-            runtime_loop_tiling_sizes=[4, 4],
+        exit(
+            run_on_npu(
+                args,
+                mlir_module,
+                inputs=[],
+                instance_name="argmax",
+                runtime_loop_tiling_sizes=[4, 4],
+            )
         )
-        module_function = backend.compile(mlir_module)
-        backend.unload()

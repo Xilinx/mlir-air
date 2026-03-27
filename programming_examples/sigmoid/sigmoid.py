@@ -30,7 +30,7 @@ from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.vector import BroadcastOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from utils import vec_read, vec_write
 
 range_ = for_
@@ -134,13 +134,20 @@ if __name__ == "__main__":
         [sigmoid_ref(input_a[i]) for i in zip(*sampled_indices)],
         dtype=INPUT_DATATYPE,
     )
-    sampled_data = {"shape": (args.n,), "indices": sampled_indices, "values": sampled_values}
+    sampled_data = {
+        "shape": (args.n,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-    exit(run_on_npu(
-        args, mlir_module,
-        inputs=[input_a],
-        instance_name="sigmoid",
-        stochastic_expected_outputs=[sampled_data],
-        rtol=1e-1,
-        atol=5e-2,
-    ))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="sigmoid",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-1,
+            atol=5e-2,
+        )
+    )

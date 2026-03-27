@@ -29,8 +29,7 @@ from utils import (
     vec_read,
     vec_write,
     make_air_parser,
-    make_xrt_runner,
-    make_xrt_backend,
+    run_on_npu,
     stochastic_check,
     check_print_module,
 )
@@ -160,24 +159,19 @@ if __name__ == "__main__":
     input_b = np.random.uniform(-10.0, 10.0, args.n).astype(INPUT_DATATYPE)
     input_c = np.random.uniform(-10.0, 10.0, args.n).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        sampled_data = stochastic_check(
-            [input_b, input_c],
-            args.n,
-            lambda b, c: args.alpha * b + c,
-            INPUT_DATATYPE,
+    sampled_data = stochastic_check(
+        [input_b, input_c],
+        args.n,
+        lambda b, c: args.alpha * b + c,
+        INPUT_DATATYPE,
+    )
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_b, input_c],
+            instance_name="vector_muladd",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-2,
         )
-        runner = make_xrt_runner(args, "vector_muladd")
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_b, input_c],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-2,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = make_xrt_backend(args)
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    )

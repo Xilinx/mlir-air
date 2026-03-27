@@ -29,7 +29,7 @@ from air.dialects import arith, linalg, scf
 from air.dialects.memref import AllocOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 import numpy as np
 
@@ -186,7 +186,9 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = make_air_parser("Builds, runs, and tests the 3D channel with segment unroll example")
+    parser = make_air_parser(
+        "Builds, runs, and tests the 3D channel with segment unroll example"
+    )
     args = parser.parse_args()
 
     mlir_module = build_module()
@@ -212,4 +214,12 @@ if __name__ == "__main__":
                     in_start : in_start + DATA_SIZE
                 ]
 
-    exit(run_on_npu(args, mlir_module, inputs=[input_a], instance_name="channel_3d_segment_unroll", expected_outputs=[expected_output]))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="channel_3d_segment_unroll",
+            expected_outputs=[expected_output],
+        )
+    )

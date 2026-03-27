@@ -8,7 +8,7 @@ from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 dtype_map = {
     "uint32": np.uint32,
@@ -43,7 +43,9 @@ def build_module(m, k, dtype):
                 @herd(name="herd", sizes=[1, 1])
                 def herd_body(_tx, _ty, _sx, _sy):
                     # This is the type definition of the tensor
-                    tensor_type = l1_memref_type([k * m], xrt_dtype)  # Read as one large array
+                    tensor_type = l1_memref_type(
+                        [k * m], xrt_dtype
+                    )  # Read as one large array
 
                     # We must allocate a buffer of tile size for the input/output
                     tensor_in = AllocOp(tensor_type, [], [])
@@ -55,7 +57,9 @@ def build_module(m, k, dtype):
 
 
 if __name__ == "__main__":
-    parser = make_air_parser("Builds, runs, and tests the matrix_scalar_add/single_core_channel example")
+    parser = make_air_parser(
+        "Builds, runs, and tests the matrix_scalar_add/single_core_channel example"
+    )
     parser.add_argument(
         "-m",
         type=int,
@@ -106,4 +110,12 @@ if __name__ == "__main__":
         )
     expected_output_matrix = np.transpose(input_matrix)
 
-    exit(run_on_npu(args, mlir_module, inputs=[input_matrix], instance_name="transpose", expected_outputs=[expected_output_matrix]))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_matrix],
+            instance_name="transpose",
+            expected_outputs=[expected_output_matrix],
+        )
+    )

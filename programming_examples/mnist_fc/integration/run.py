@@ -35,7 +35,7 @@ from air.dialects.memref import AllocOp, DeallocOp, subview, load, store
 from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, run_on_npu
 from air.compiler.util import run_transform
 from air.extras import types as extrasT
 
@@ -695,6 +695,13 @@ if __name__ == "__main__":
         dest="compile_mode",
         default="compile-and-run",
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="elf",
+        dest="output_format",
+    )
     args = parser.parse_args()
 
     # aie2p mmul dimensions
@@ -810,15 +817,9 @@ if __name__ == "__main__":
             "values": golden_argmax_pad[sampled_cols],
         }
 
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format="elf",
-            instance_name="mnist_fc",
-            runtime_loop_tiling_sizes=[1, 1],
-        )
         exit(
-            runner.run_test(
+            run_on_npu(
+                args,
                 mlir_module,
                 inputs=[
                     W1,
@@ -830,18 +831,21 @@ if __name__ == "__main__":
                     bias2,
                     bias2_out,
                 ],
+                instance_name="mnist_fc",
                 stochastic_expected_outputs=[sampled_data],
                 rtol=0,
                 atol=0,
+                runtime_loop_tiling_sizes=[1, 1],
             )
         )
 
     elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format="elf",
-            runtime_loop_tiling_sizes=[1, 1],
+        exit(
+            run_on_npu(
+                args,
+                mlir_module,
+                inputs=[],
+                instance_name="mnist_fc",
+                runtime_loop_tiling_sizes=[1, 1],
+            )
         )
-        module_function = backend.compile(mlir_module)
-        backend.unload()

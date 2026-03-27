@@ -31,7 +31,7 @@ from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.vector import BroadcastOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from utils import vec_read, vec_write
 
 range_ = for_
@@ -142,9 +142,7 @@ if __name__ == "__main__":
         x_bf = INPUT_DATATYPE(x)
         x2 = INPUT_DATATYPE(np.float32(x_bf) * np.float32(x_bf))
         x3 = INPUT_DATATYPE(np.float32(x_bf) * np.float32(x2))
-        beta_x3 = INPUT_DATATYPE(
-            np.float32(x3) * np.float32(INPUT_DATATYPE(GELU_BETA))
-        )
+        beta_x3 = INPUT_DATATYPE(np.float32(x3) * np.float32(INPUT_DATATYPE(GELU_BETA)))
         inner = INPUT_DATATYPE(np.float32(x_bf) + np.float32(beta_x3))
         scaled = INPUT_DATATYPE(
             np.float32(inner) * np.float32(INPUT_DATATYPE(SQRT_2_OVER_PI))
@@ -161,13 +159,20 @@ if __name__ == "__main__":
         [gelu_ref(input_a[i]) for i in zip(*sampled_indices)],
         dtype=INPUT_DATATYPE,
     )
-    sampled_data = {"shape": (args.n,), "indices": sampled_indices, "values": sampled_values}
+    sampled_data = {
+        "shape": (args.n,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-    exit(run_on_npu(
-        args, mlir_module,
-        inputs=[input_a],
-        instance_name="gelu",
-        stochastic_expected_outputs=[sampled_data],
-        rtol=1e-1,
-        atol=5e-2,
-    ))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="gelu",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-1,
+            atol=5e-2,
+        )
+    )

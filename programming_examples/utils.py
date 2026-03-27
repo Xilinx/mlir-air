@@ -19,10 +19,9 @@ from air.dialects import arith
 from air.dialects.memref import subview
 from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.air import MemorySpace
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, run_on_npu, make_air_parser
+from air.backend.xrt import compile_air, get_air_runtime, XRTTensor
 from air.extras import types as T
-
 
 # ---------------------------------------------------------------------------
 # MLIR construct helpers (used inside @module_builder)
@@ -131,34 +130,6 @@ def make_air_parser(description, prog="run.py"):
 
 
 # ---------------------------------------------------------------------------
-# Runner/backend factory helpers
-# ---------------------------------------------------------------------------
-
-
-def make_xrt_runner(args, instance_name, **kwargs):
-    """XRTRunner with the standard fixed defaults (omit_while_true_loop=False, tiling=[4,4])."""
-    return XRTRunner(
-        verbose=args.verbose,
-        omit_while_true_loop=False,
-        output_format=args.output_format,
-        instance_name=instance_name,
-        runtime_loop_tiling_sizes=[4, 4],
-        **kwargs,
-    )
-
-
-def make_xrt_backend(args, **kwargs):
-    """XRTBackend with the standard fixed defaults."""
-    return XRTBackend(
-        verbose=args.verbose,
-        omit_while_true_loop=False,
-        output_format=args.output_format,
-        runtime_loop_tiling_sizes=[4, 4],
-        **kwargs,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Stochastic sampling helper
 # ---------------------------------------------------------------------------
 
@@ -174,7 +145,7 @@ def stochastic_check(inputs, n, ref_fn, dtype, num_samples=100):
         dtype:       output numpy dtype
         num_samples: number of randomly sampled indices
     Returns:
-        dict with "shape", "indices", "values" for XRTRunner.run_test()
+        dict with "shape", "indices", "values" for run_on_npu() stochastic verification
     """
     sampled_indices = np.vstack([np.random.randint(0, n, num_samples)])
     sampled_values = np.array(

@@ -27,7 +27,7 @@ from air.dialects.vector import (
 )
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 import numpy as np
 
@@ -211,10 +211,13 @@ if __name__ == "__main__":
         "values": sampled_values,
     }
 
-    exit(run_on_npu(
-        args, mlir_module,
-        inputs=[input_a],
-        instance_name="average_pool",
-        stochastic_expected_outputs=[sampled_data],
-        rtol=1e-1,
-    ))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="average_pool",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-1,
+        )
+    )

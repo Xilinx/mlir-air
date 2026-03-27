@@ -14,13 +14,12 @@
 import argparse
 import math
 
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.compiler.util import run_transform
 from air.ir import *
 import air.passmanager
 from ml_dtypes import bfloat16
-import filelock
+import aie.utils
 
 import numpy as np
 
@@ -237,42 +236,44 @@ with air.ir.Context() as ctx, Location.unknown():
     C_ref = np.zeros((M_padded, N_padded), dtype=output_type)
     C_ref[:M_actual, :N_actual] = C_ref_actual
 
-    if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-            output_format="elf" if needs_padding else "xclbin",
-            instance_name="matmul_bf16",
-        )
+    npu_kernel = compile_air(
+        air_module,
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
+        output_format="elf" if needs_padding else "xclbin",
+        instance_name="matmul_bf16",
+    )
 
-        num_samples = 200
-        sampled_row = np.random.randint(0, M_actual, num_samples)
-        sampled_col = np.random.randint(0, N_actual, num_samples)
-        sampled_indices = np.vstack([sampled_row, sampled_col])
-        sampled_values = np.array(
-            [C_ref_actual[r, c] for r, c in zip(sampled_row, sampled_col)],
-            dtype=output_type,
-        )
-        sampled_data = {
-            "shape": (M_padded, N_padded),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
+    if args.compile_mode == "compile-only":
+        exit(0)
 
-        exit(
-            runner.run_test(
-                air_module,
-                inputs=[A, B],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=max(1e-1, 2e-2 * (K_FULL / K_L2_TILE)),
-            )
+    num_samples = 200
+    sampled_row = np.random.randint(0, M_actual, num_samples)
+    sampled_col = np.random.randint(0, N_actual, num_samples)
+    sampled_indices = np.vstack([sampled_row, sampled_col])
+    sampled_values = np.array(
+        [C_ref_actual[r, c] for r, c in zip(sampled_row, sampled_col)],
+        dtype=output_type,
+    )
+    sampled_data = {
+        "shape": (M_padded, N_padded),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
+
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(A),
+        aie.utils.tensor(B),
+        aie.utils.tensor(np.zeros((M_padded, N_padded), output_type)),
+    ]
+    exit(
+        runtime.run_test(
+            npu_kernel,
+            io_args,
+            refs={},
+            stochastic_refs=[sampled_data],
+            rtol=max(1e-1, 2e-2 * (K_FULL / K_L2_TILE)),
         )
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(air_module)
-        backend.unload()
+    )

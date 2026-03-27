@@ -41,8 +41,7 @@ from utils import (
     vec_read,
     vec_write,
     make_air_parser,
-    make_xrt_runner,
-    make_xrt_backend,
+    run_on_npu,
     stochastic_check,
     check_print_module,
 )
@@ -140,24 +139,19 @@ if __name__ == "__main__":
     np.random.seed(42)
     input_a = np.random.uniform(-4.0, 4.0, args.n).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        # Reference: compute tanh in f32 precision
-        def tanh_ref(x):
-            return np.tanh(x.astype(np.float32))
+    # Reference: compute tanh in f32 precision
+    def tanh_ref(x):
+        return np.tanh(x.astype(np.float32))
 
-        sampled_data = stochastic_check([input_a], args.n, tanh_ref, INPUT_DATATYPE)
-        runner = make_xrt_runner(args, "vector_tanh")
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
-                atol=5e-2,
-            )
+    sampled_data = stochastic_check([input_a], args.n, tanh_ref, INPUT_DATATYPE)
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="vector_tanh",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-1,
+            atol=5e-2,
         )
-
-    elif args.compile_mode == "compile-only":
-        backend = make_xrt_backend(args)
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    )

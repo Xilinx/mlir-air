@@ -32,7 +32,7 @@ from air.dialects.memref import AllocOp, DeallocOp, subview
 from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 

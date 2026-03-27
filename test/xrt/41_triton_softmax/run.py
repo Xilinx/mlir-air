@@ -7,12 +7,11 @@ import argparse
 import numpy as np
 
 np.random.seed(42)
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.compiler.util import run_transform
 from air.ir import *
 import air.passmanager
-import filelock
+import aie.utils
 
 parser = argparse.ArgumentParser(
     prog="run.py",
@@ -200,35 +199,18 @@ with air.ir.Context() as ctx, Location.unknown():
     # Run compile and load
     ###############################################
 
-    if args.compile_only:
-        # Compile-only mode: generate xclbin and instruction binary without validation
-        print("Compile-only mode: generating xclbin and instruction binary...")
-        backend = XRTBackend(
-            omit_while_true_loop=False, runtime_loop_tiling_sizes=[4, 4]
-        )
-        module_function = backend.compile(air_module)
-        backend.unload()
-        print("Compilation complete. Generated files:")
-        print("  - air.xclbin")
-        print("  - air.insts.bin")
-        print("Run profiling with: ./test.exe")
-        exit(0)
-    else:
-        # Normal mode: compile and run validation
-        input_type = np.float32
-        A = np.random.rand(M, N).astype(input_type)  # Shape [M, N]
-        C = softmax(A).astype(input_type)
+    npu_kernel = compile_air(
+        air_module, omit_while_true_loop=False, runtime_loop_tiling_sizes=[4, 4]
+    )
 
-        ###### Compile and test
-        runner = XRTRunner(
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                air_module,
-                inputs=[A],
-                expected_outputs=[C],
-                rtol=1e-2,
-            )
-        )
+    if args.compile_only:
+        exit(0)
+
+    # Normal mode: compile and run validation
+    input_type = np.float32
+    A = np.random.rand(M, N).astype(input_type)  # Shape [M, N]
+    C = softmax(A).astype(input_type)
+
+    runtime = get_air_runtime()
+    io_args = [aie.utils.tensor(A), aie.utils.tensor(np.zeros(C.shape, C.dtype))]
+    exit(runtime.run_test(npu_kernel, io_args, refs={1: C}, rtol=1e-2))

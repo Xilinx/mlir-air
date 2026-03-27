@@ -32,7 +32,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -191,7 +191,9 @@ if __name__ == "__main__":
     HERD_N = 4
     INPUT_DATATYPE = bfloat16
 
-    parser = make_air_parser("Builds, runs, and tests the RoPE (on-chip sin/cos) example")
+    parser = make_air_parser(
+        "Builds, runs, and tests the RoPE (on-chip sin/cos) example"
+    )
     parser.add_argument("--head-size", type=int, default=HEAD_SIZE, help="Head size")
     parser.add_argument(
         "--num-heads", type=int, default=NUM_HEADS, help="Number of heads"

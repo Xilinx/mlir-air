@@ -26,7 +26,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -117,7 +117,9 @@ if __name__ == "__main__":
     SHIFT_AMOUNT = 4
     INPUT_DATATYPE = np.int32
 
-    parser = make_air_parser("Builds, runs, and tests the scalar shift+saturate example")
+    parser = make_air_parser(
+        "Builds, runs, and tests the scalar shift+saturate example"
+    )
     parser.add_argument("--n", type=int, default=N, help="Total number of elements")
     parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
     parser.add_argument(

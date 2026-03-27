@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: MIT
 
 import numpy as np
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from shim_dma_2d import *
 
 INOUT_DATATYPE = np.int32

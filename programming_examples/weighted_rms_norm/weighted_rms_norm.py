@@ -30,7 +30,7 @@ from air.dialects.vector import (
 )
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -158,7 +158,9 @@ if __name__ == "__main__":
     VECTOR_SIZE = 16
     INPUT_DATATYPE = bfloat16
 
-    parser = make_air_parser("Builds, runs, and tests the weighted RMS normalization example")
+    parser = make_air_parser(
+        "Builds, runs, and tests the weighted RMS normalization example"
+    )
     parser.add_argument("--M", type=int, default=M_DEFAULT, help="M dimension (rows)")
     parser.add_argument("--N", type=int, default=N_DEFAULT, help="N dimension (cols)")
     parser.add_argument(
@@ -187,11 +189,14 @@ if __name__ == "__main__":
         (x_input.astype(np.float32) / rms) * weight.astype(np.float32)
     ).astype(INPUT_DATATYPE)
 
-    exit(run_on_npu(
-        args, mlir_module,
-        inputs=[x_input, weight],
-        instance_name="weighted_rms_norm",
-        expected_outputs=[y_expected],
-        rtol=5e-2,
-        atol=5e-1,
-    ))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[x_input, weight],
+            instance_name="weighted_rms_norm",
+            expected_outputs=[y_expected],
+            rtol=5e-2,
+            atol=5e-1,
+        )
+    )

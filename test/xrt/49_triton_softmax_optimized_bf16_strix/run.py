@@ -11,12 +11,11 @@ import os
 import numpy as np
 
 np.random.seed(42)
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.compiler.util import run_transform
 from air.ir import *
 import air.passmanager
-import filelock
+import aie.utils
 from ml_dtypes import bfloat16
 
 # Get the directory containing this script
@@ -258,48 +257,35 @@ with air.ir.Context() as ctx, Location.unknown():
     # Run compile and load
     ###############################################
 
-    if args.compile_only:
-        # Compile-only mode: generate xclbin and instruction binary without validation
-        print("Compile-only mode: generating xclbin and instruction binary...")
-        backend = XRTBackend(
-            omit_while_true_loop=False,
-            verbose=args.verbose,
-            debug_ir=args.debug_aircc,
-            output_format=args.output_format,
-            instance_name="softmax_kernel",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(air_module)
-        backend.unload()
-        print("Compilation complete. Generated files:")
-        print("  - air.xclbin")
-        print("  - air.insts.bin")
-        print("Run profiling with: ./test.exe")
-        exit(0)
-    else:
-        # Normal mode: compile and run validation
-        input_type = bfloat16
-        # Generate random input in range [-512, 512]
-        A = (np.random.rand(M, N) * 1024 - 512).astype(
-            input_type
-        )  # Shape [M, N], range [-512, 512]
-        C = softmax(A).astype(input_type)
+    npu_kernel = compile_air(
+        air_module,
+        omit_while_true_loop=False,
+        verbose=args.verbose,
+        debug_ir=args.debug_aircc,
+        output_format=args.output_format,
+        instance_name="softmax_kernel",
+        runtime_loop_tiling_sizes=[4, 4],
+    )
 
-        ###### Compile and test
-        runner = XRTRunner(
-            omit_while_true_loop=False,
-            verbose=args.verbose,
-            debug_ir=args.debug_aircc,
-            output_format=args.output_format,
-            instance_name="softmax_kernel",
-            runtime_loop_tiling_sizes=[4, 4],
+    if args.compile_only:
+        exit(0)
+
+    # Normal mode: compile and run validation
+    input_type = bfloat16
+    # Generate random input in range [-512, 512]
+    A = (np.random.rand(M, N) * 1024 - 512).astype(
+        input_type
+    )  # Shape [M, N], range [-512, 512]
+    C = softmax(A).astype(input_type)
+
+    runtime = get_air_runtime()
+    io_args = [aie.utils.tensor(A), aie.utils.tensor(np.zeros(C.shape, C.dtype))]
+    exit(
+        runtime.run_test(
+            npu_kernel,
+            io_args,
+            refs={1: C},
+            rtol=0.04,  # 4% relative tolerance (matches mlir-aie reference)
+            atol=0.001,
         )
-        exit(
-            runner.run_test(
-                air_module,
-                inputs=[A],
-                expected_outputs=[C],
-                rtol=0.04,  # 4% relative tolerance (matches mlir-aie reference)
-                atol=0.001,  # Absolute tolerance (matches mlir-aie reference)
-            )
-        )
+    )  # Absolute tolerance (matches mlir-aie reference)

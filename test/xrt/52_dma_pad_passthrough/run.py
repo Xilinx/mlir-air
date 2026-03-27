@@ -22,7 +22,9 @@ from air.dialects.air import *
 from air.dialects import arith
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt import compile_air, get_air_runtime
+from air.backend.xrt_runner import type_mapper
+import aie.utils
 
 INPUT_ROWS = 64
 INPUT_COLS = 480
@@ -189,16 +191,16 @@ if __name__ == "__main__":
         "values": sampled_values,
     }
 
-    runner = XRTRunner(
+    npu_kernel = compile_air(
+        mlir_module,
         verbose=args.verbose,
         output_format=args.output_format,
         instance_name="pad_passthrough",
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(
-        runner.run_test(
-            mlir_module,
-            inputs=[input_data],
-            stochastic_expected_outputs=[sampled_data],
-        )
-    )
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(input_data),
+        aie.utils.tensor(np.zeros((INPUT_ROWS, PADDED_COLS), INOUT_DATATYPE)),
+    ]
+    exit(runtime.run_test(npu_kernel, io_args, refs={}, stochastic_refs=[sampled_data]))

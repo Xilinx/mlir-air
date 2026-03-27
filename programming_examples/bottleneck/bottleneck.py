@@ -52,7 +52,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -1011,52 +1011,31 @@ if __name__ == "__main__":
         print(f"Expected output shape: {expected_out.shape}")
 
         print("\nRunning AIR bottleneck design...")
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            debug_ir=args.debug_ir,
-            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-
-        # Custom comparison with scale factor tolerance
-        def compare_with_tolerance(actual, expected):
-            """Compare outputs with tolerance based on quantization scale."""
-            actual_scaled = actual.astype(np.float32) * inp_scale4
-            expected_scaled = expected.astype(np.float32) * inp_scale4
-
-            if np.allclose(actual_scaled, expected_scaled, rtol=0, atol=inp_scale4):
-                print("\n✓ PASS: Output matches golden reference!")
-                return True
-            else:
-                diff = np.abs(actual_scaled - expected_scaled)
-                print(f"\n✗ FAIL: Output mismatch")
-                print(f"  Max difference: {diff.max():.4f}")
-                print(f"  Mean difference: {diff.mean():.4f}")
-                print(
-                    f"  Mismatched elements: {np.sum(diff > inp_scale4)} / {len(diff)}"
-                )
-                return False
-
         exit(
-            runner.run_test(
+            run_on_npu(
+                args,
                 mlir_module,
                 inputs=[input_act_flat, total_wts],
+                instance_name="bottleneck_block",
                 expected_outputs=[expected_out],
                 rtol=0,
                 atol=1,  # Allow 1 unit of quantization error
+                runtime_loop_tiling_sizes=[4, 4],
+                debug_ir=args.debug_ir,
+                omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues
             )
         )
 
     elif args.compile_mode == "compile-only":
         print("\nCompiling AIR bottleneck design (no execution)...")
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            debug_ir=args.debug_ir,
-            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues,
-            runtime_loop_tiling_sizes=[4, 4],
+        exit(
+            run_on_npu(
+                args,
+                mlir_module,
+                inputs=[],
+                instance_name="bottleneck_block",
+                runtime_loop_tiling_sizes=[4, 4],
+                debug_ir=args.debug_ir,
+                omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues
+            )
         )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
-        print("Compilation successful!")

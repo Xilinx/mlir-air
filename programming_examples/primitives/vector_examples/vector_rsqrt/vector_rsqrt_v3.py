@@ -30,8 +30,7 @@ from utils import (
     vec_read,
     vec_write,
     make_air_parser,
-    make_xrt_runner,
-    make_xrt_backend,
+    run_on_npu,
     check_print_module,
 )
 
@@ -91,7 +90,9 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2"):
                 cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
                 for j in range_(c0, cTileN, cVecSize):
                     # Load bf16 vector
-                    v_a_bf16 = vec_read(l1_a_data, j, VECTOR_SIZE, c0, vecTy, cst0, imap)
+                    v_a_bf16 = vec_read(
+                        l1_a_data, j, VECTOR_SIZE, c0, vecTy, cst0, imap
+                    )
 
                     # Extend bf16 to f32
                     v_a_f32 = extf(
@@ -162,34 +163,28 @@ if __name__ == "__main__":
     np.random.seed(10)
     input_a = np.abs(np.random.uniform(0.1, 3.0, args.n)).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack(
-            [
-                np.random.randint(0, args.n, num_samples),
-            ]
+    num_samples = 100
+    sampled_indices = np.vstack(
+        [
+            np.random.randint(0, args.n, num_samples),
+        ]
+    )
+    sampled_values = np.array(
+        [1.0 / np.sqrt(input_a[i]) for i in sampled_indices[0]],
+        dtype=INPUT_DATATYPE,
+    )
+    sampled_data = {
+        "shape": (args.n,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="vector_rsqrt",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-1,
         )
-        sampled_values = np.array(
-            [1.0 / np.sqrt(input_a[i]) for i in sampled_indices[0]],
-            dtype=INPUT_DATATYPE,
-        )
-        sampled_data = {
-            "shape": (args.n,),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-        runner = make_xrt_runner(args, "vector_rsqrt")
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = make_xrt_backend(args)
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
+    )

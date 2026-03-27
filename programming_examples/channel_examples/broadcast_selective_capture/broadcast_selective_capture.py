@@ -26,7 +26,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects import arith, scf
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -126,7 +126,9 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = make_air_parser("Builds, runs, and tests the broadcast selective capture example")
+    parser = make_air_parser(
+        "Builds, runs, and tests the broadcast selective capture example"
+    )
 
     args = parser.parse_args()
 
@@ -148,4 +150,12 @@ if __name__ == "__main__":
         end = start + TILE_SIZE
         expected_output[start:end] = input_a[start:end] + ty
 
-    exit(run_on_npu(args, mlir_module, inputs=[input_a], instance_name="broadcast_selective_capture", expected_outputs=[expected_output]))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="broadcast_selective_capture",
+            expected_outputs=[expected_output],
+        )
+    )

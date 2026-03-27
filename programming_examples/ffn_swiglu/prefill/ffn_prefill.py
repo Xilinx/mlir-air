@@ -30,7 +30,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -267,6 +267,13 @@ if __name__ == "__main__":
         default="elf",
         dest="output_format",
     )
+    parser.add_argument(
+        "--compile-mode",
+        type=str,
+        choices=["compile-only", "compile-and-run"],
+        dest="compile_mode",
+        default="compile-and-run",
+    )
     args = parser.parse_args()
 
     seq_len = args.seq_len
@@ -320,16 +327,9 @@ if __name__ == "__main__":
     intermediate = silu_gate * up
     ref_out = (intermediate @ W_down.astype(np.float32).T).astype(INPUT_DATATYPE)
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        omit_while_true_loop=False,
-        omit_pingpong=True,
-        runtime_loop_tiling_sizes=[4, 4],
-        output_format=args.output_format,
-        instance_name="ffn_swiglu",
-    )
     exit(
-        runner.run_test(
+        run_on_npu(
+            args,
             mlir_module,
             inputs=[
                 x.reshape(-1),
@@ -338,8 +338,11 @@ if __name__ == "__main__":
                 up_buf,
                 inter_buf,
             ],
+            instance_name="ffn_swiglu",
             expected_outputs=[ref_out.reshape(-1)],
             rtol=1e0,
             atol=0.5,
+            runtime_loop_tiling_sizes=[4, 4],
+            omit_pingpong=True,
         )
     )

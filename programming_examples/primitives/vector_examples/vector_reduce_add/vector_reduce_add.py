@@ -34,8 +34,7 @@ from utils import (
     identity_map_1d,
     tiled_1d_offset,
     make_air_parser,
-    make_xrt_runner,
-    make_xrt_backend,
+    run_on_npu,
     stochastic_check,
     check_print_module,
 )
@@ -196,36 +195,30 @@ if __name__ == "__main__":
         args.m, args.n
     )
 
-    if args.compile_mode == "compile-and-run":
-        # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
-        num_samples = 100
-        sampled_indices = np.vstack([np.random.randint(0, args.m, num_samples)])
+    # Stochastically sample num_sample results for verification.
+    num_samples = 100
+    sampled_indices = np.vstack([np.random.randint(0, args.m, num_samples)])
 
-        # Compute reference results for sampled indices
-        sampled_values = np.array(
-            [np.sum(input_a[i]) for i in zip(*sampled_indices)],
-            dtype=INPUT_DATATYPE,
+    # Compute reference results for sampled indices
+    sampled_values = np.array(
+        [np.sum(input_a[i]) for i in zip(*sampled_indices)],
+        dtype=INPUT_DATATYPE,
+    )
+
+    # Store as a dictionary
+    sampled_data = {
+        "shape": (args.m,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
+
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="vector_reduce_add",
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-1,
         )
-
-        # Store as a dictionary
-        sampled_data = {
-            "shape": (args.m,),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-
-        runner = make_xrt_runner(args, "vector_reduce_add")
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = make_xrt_backend(args)
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
+    )

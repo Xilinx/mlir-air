@@ -7,7 +7,7 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -92,4 +92,12 @@ if __name__ == "__main__":
     output_c = np.full(VECTOR_LEN, 5, dtype=INOUT_DATATYPE)
     output_d = np.full(VECTOR_LEN, 13, dtype=INOUT_DATATYPE)
 
-    exit(run_on_npu(args, mlir_module, inputs=[input_a, input_b], instance_name="copy", expected_outputs=[output_c, output_d]))
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a, input_b],
+            instance_name="copy",
+            expected_outputs=[output_c, output_d],
+        )
+    )
