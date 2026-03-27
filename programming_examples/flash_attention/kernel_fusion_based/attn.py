@@ -50,6 +50,7 @@ from air.dialects.memref import AllocOp, CollapseShapeOp, DeallocOp, load, store
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_ as scf_range, yield_
 from air.dialects import scf, affine, arith
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 
 @module_builder
@@ -1259,8 +1260,6 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    from air.backend.xrt_runner import XRTRunner
-    from air.backend.xrt import XRTBackend
     from ml_dtypes import bfloat16
 
     INPUT_DATATYPE = OUTPUT_DATATYPE = bfloat16

@@ -12,11 +12,9 @@ reduced to a single scalar using vector.reduction with ADD.
 Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
 """
 
-import argparse
 from ml_dtypes import bfloat16
 
 from air.ir import *
-from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
 from air.dialects import arith
 from air.dialects.arith import ConstantOp
@@ -29,8 +27,7 @@ from air.dialects.vector import (
 )
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 import numpy as np
 
@@ -54,16 +51,8 @@ def build_module(m, n, tile_m, np_dtype_in):
     l3outputMemrefTy = MemRefType.get(out_size, xrt_dtype_in)
 
     # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_m, n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-    l1outputMemrefTy = MemRefType.get(
-        shape=[tile_m, 1],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    l1MemrefTy = l1_memref_type([tile_m, n], xrt_dtype_in)
+    l1outputMemrefTy = l1_memref_type([tile_m, 1], xrt_dtype_in)
 
     @FuncOp.from_py_func(l3memrefTy, l3outputMemrefTy)
     def average_pool(arg0, arg2):
@@ -85,20 +74,7 @@ def build_module(m, n, tile_m, np_dtype_in):
 
             for _l_ivx in range_(0, m, tile_m * num_tiles):
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_m),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                offset = tile_offset_1d(_l_ivx, _ty, tile_m)
 
                 dma_memcpy_nd(
                     l1_a_data,
@@ -151,16 +127,16 @@ def build_module(m, n, tile_m, np_dtype_in):
                     )
                     cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
                     v_a = transfer_read(
-                        VectorType.get([n], xrt_dtype_in),
+                        vec_type(n, xrt_dtype_in),
                         collapse_a,
                         [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
+                        identity_map_attr(),
                         cst0,
                         [True],
                     )
                     # Multiply by 1/N before reduction to avoid scalar bf16
                     # multiply which can produce corrupted output on AIE2.
-                    v_inv_n = broadcast(VectorType.get([n], xrt_dtype_in), inv_n)
+                    v_inv_n = broadcast(vec_type(n, xrt_dtype_in), inv_n)
                     v_scaled = arith.mulf(v_a, v_inv_n)
                     v_avg = reduction(xrt_dtype_in, CombiningKind.ADD, v_scaled)
                     store(v_avg, collapse_c, [c0])
@@ -188,20 +164,7 @@ if __name__ == "__main__":
     TILE_M = 256
     INPUT_DATATYPE = bfloat16
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the AveragePool example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the AveragePool example")
     parser.add_argument(
         "--m",
         type=int,
@@ -215,20 +178,6 @@ if __name__ == "__main__":
         help="Input size (dimension N, pool width)",
     )
     parser.add_argument("--tile-m", type=int, default=TILE_M, help="Tile size M")
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-    )
 
     args = parser.parse_args()
 
@@ -246,46 +195,26 @@ if __name__ == "__main__":
         args.m, args.n
     )
 
-    if args.compile_mode == "compile-and-run":
+    num_samples = 100
+    sampled_indices = np.vstack([np.random.randint(0, args.m, num_samples)])
 
-        num_samples = 100
-        sampled_indices = np.vstack([np.random.randint(0, args.m, num_samples)])
+    # AveragePool reference: sum of (each element * 1/N) per row
+    inv_n_bf16 = INPUT_DATATYPE(1.0 / args.n)
+    sampled_values = np.array(
+        [np.sum(input_a[i] * inv_n_bf16) for i in zip(*sampled_indices)],
+        dtype=INPUT_DATATYPE,
+    )
 
-        # AveragePool reference: sum of (each element * 1/N) per row
-        inv_n_bf16 = INPUT_DATATYPE(1.0 / args.n)
-        sampled_values = np.array(
-            [np.sum(input_a[i] * inv_n_bf16) for i in zip(*sampled_indices)],
-            dtype=INPUT_DATATYPE,
-        )
+    sampled_data = {
+        "shape": (args.m,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-        sampled_data = {
-            "shape": (args.m,),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="average_pool",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    exit(run_on_npu(
+        args, mlir_module,
+        inputs=[input_a],
+        instance_name="average_pool",
+        stochastic_expected_outputs=[sampled_data],
+        rtol=1e-1,
+    ))

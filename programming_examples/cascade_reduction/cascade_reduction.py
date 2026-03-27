@@ -16,16 +16,13 @@ Data flows through a 1x4 herd in a pipeline:
 Final result: output = input + 4
 """
 
-import argparse
-
 from air.ir import *
 from air.dialects.air import *
 from air.dialects import arith, linalg, memref, scf
 from air.dialects.memref import AllocOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 import numpy as np
 
@@ -45,11 +42,7 @@ def build_module():
     # L3 types
     l3MemrefTy = MemRefType.get(data_shape, xrt_dtype)
     # L1 types
-    l1MemrefTy = MemRefType.get(
-        data_shape,
-        xrt_dtype,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    l1MemrefTy = l1_memref_type(data_shape, xrt_dtype)
 
     # Channels: chan_in/chan_out use DMA (L3<->L1), chan_cascade uses
     # direct core-to-core cascade connections between adjacent tiles.
@@ -125,26 +118,7 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the cascade reduction example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-    )
+    parser = make_air_parser("Builds, runs, and tests the cascade reduction example")
     args = parser.parse_args()
 
     mlir_module = build_module()
@@ -154,48 +128,32 @@ if __name__ == "__main__":
 
     input_a = np.arange(0, DATA_SIZE, dtype=np.int32).reshape(1, 1, DATA_SIZE)
 
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack(
-            [
-                np.zeros(num_samples, dtype=int),
-                np.zeros(num_samples, dtype=int),
-                np.random.randint(0, DATA_SIZE, num_samples),
-            ]
-        )
+    num_samples = 100
+    sampled_indices = np.vstack(
+        [
+            np.zeros(num_samples, dtype=int),
+            np.zeros(num_samples, dtype=int),
+            np.random.randint(0, DATA_SIZE, num_samples),
+        ]
+    )
 
-        sampled_values = np.array(
-            [input_a[i, j, k] + NUM_TILES for i, j, k in zip(*sampled_indices)],
-            dtype=np.int32,
-        )
+    sampled_values = np.array(
+        [input_a[i, j, k] + NUM_TILES for i, j, k in zip(*sampled_indices)],
+        dtype=np.int32,
+    )
 
-        sampled_data = {
-            "shape": (1, 1, DATA_SIZE),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
+    sampled_data = {
+        "shape": (1, 1, DATA_SIZE),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="cascade_reduce",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    run_on_npu(
+        args,
+        mlir_module,
+        inputs=[input_a],
+        stochastic_expected_outputs=[sampled_data],
+        instance_name="cascade_reduce",
+        omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
+    )

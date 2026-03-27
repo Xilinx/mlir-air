@@ -35,8 +35,7 @@ from air.dialects.memref import AllocOp, DeallocOp, subview, load, store
 from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 from air.compiler.util import run_transform
 from air.extras import types as extrasT
 

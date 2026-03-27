@@ -23,16 +23,13 @@ Net effect per cascade column:
   output[seg, ty] = sum_{tx=0}^{3} input[seg, tx, ty]
 """
 
-import argparse
-
 from air.ir import *
 from air.dialects.air import *
 from air.dialects import arith, linalg, scf
 from air.dialects.memref import AllocOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 import numpy as np
 
@@ -59,11 +56,7 @@ def build_module():
     l3MemrefTyOut = MemRefType.get([TOTAL_OUT], xrt_dtype)
 
     # L1 type: one tile per core
-    l1MemrefTy = MemRefType.get(
-        tile_shape,
-        xrt_dtype,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    l1MemrefTy = l1_memref_type(tile_shape, xrt_dtype)
 
     # 3D input channel: [NUM_SEGMENTS, NUM_TILES, NUM_COLS].
     # Each core (seg, tx, ty) gets its own unique tile.
@@ -193,19 +186,7 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the 3D channel with segment unroll example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-    )
+    parser = make_air_parser("Builds, runs, and tests the 3D channel with segment unroll example")
     args = parser.parse_args()
 
     mlir_module = build_module()
@@ -231,17 +212,4 @@ if __name__ == "__main__":
                     in_start : in_start + DATA_SIZE
                 ]
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        omit_while_true_loop=False,
-        output_format=args.output_format,
-        instance_name="channel_3d_segment_unroll",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
-    exit(
-        runner.run_test(
-            mlir_module,
-            inputs=[input_a],
-            expected_outputs=[expected_output],
-        )
-    )
+    exit(run_on_npu(args, mlir_module, inputs=[input_a], instance_name="channel_3d_segment_unroll", expected_outputs=[expected_output]))

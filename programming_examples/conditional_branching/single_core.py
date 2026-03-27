@@ -1,6 +1,5 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 from math import cos, sin
 
 from air.ir import *
@@ -10,8 +9,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp, CallOp
 from air.dialects import scf
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -47,17 +45,8 @@ def build_module(n, np_dtype_in, np_dtype_out, param):
                 _l3_out_data,
             ):
                 # L2 MemRefTypes
-                l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
-                l2MemrefTyIn = MemRefType.get(
-                    shape=[n],
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
-                l2MemrefTyOut = MemRefType.get(
-                    shape=[n],
-                    element_type=xrt_dtype_in,
-                    memory_space=l2_mem_space,
-                )
+                l2MemrefTyIn = l2_memref_type([n], xrt_dtype_in)
+                l2MemrefTyOut = l2_memref_type([n], xrt_dtype_in)
                 l2_in_data = AllocOp(l2MemrefTyIn, [], [])
                 l2_out_data = AllocOp(l2MemrefTyOut, [], [])
                 dma_memcpy_nd(
@@ -76,17 +65,8 @@ def build_module(n, np_dtype_in, np_dtype_out, param):
                     _tx, _ty, _sx, _sy, _l2_in_data, _l2_out_data, _param_arg
                 ):
 
-                    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-                    l1MemrefTyIn = MemRefType.get(
-                        shape=[n],
-                        element_type=xrt_dtype_in,
-                        memory_space=l1_mem_space,
-                    )
-                    l1MemrefTyOut = MemRefType.get(
-                        shape=[n],
-                        element_type=xrt_dtype_in,
-                        memory_space=l1_mem_space,
-                    )
+                    l1MemrefTyIn = l1_memref_type([n], xrt_dtype_in)
+                    l1MemrefTyOut = l1_memref_type([n], xrt_dtype_in)
 
                     l1_in_data = AllocOp(l1MemrefTyIn, [], [])
                     dma_memcpy_nd(
@@ -141,33 +121,12 @@ if __name__ == "__main__":
     INPUT_DATATYPE = np.int32
     OUTPUT_DATATYPE = np.int32
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the passthrough_dma example")
     parser.add_argument(
         "--n",
         type=int,
         default=N,
         help="N dimension size in a (1xK) * (KxN) matmul",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
 
     args = parser.parse_args()

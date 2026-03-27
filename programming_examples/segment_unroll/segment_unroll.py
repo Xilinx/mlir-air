@@ -13,7 +13,6 @@ segments, and writes the result back. Each segment processes a portion of the
 input data using channels indexed by segment coordinates.
 """
 
-import argparse
 import numpy as np
 
 from air.ir import *
@@ -22,7 +21,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.dialects import arith
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -53,12 +52,7 @@ def build_module():
     memrefTyInOut = T.memref(VECTOR_LEN, xrt_dtype)
 
     # L1 memory space for tile data
-    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    image_type_l1 = MemRefType.get(
-        shape=[VECTOR_LEN // SEGMENT_SIZE_X],
-        element_type=xrt_dtype,
-        memory_space=mem_space_l1,
-    )
+    image_type_l1 = l1_memref_type([VECTOR_LEN // SEGMENT_SIZE_X], xrt_dtype)
 
     # Define channels for data movement with dimensions matching segment unroll
     # Each unrolled segment instance needs its own channel endpoint
@@ -131,31 +125,7 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="segment_unroll.py",
-        description="Builds, runs, and tests the segment unroll example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Enable verbose output",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-        help="Print the generated MLIR module and exit",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
-    )
-
+    parser = make_air_parser("Builds, runs, and tests the segment unroll example")
     args = parser.parse_args()
 
     mlir_module = build_module()
@@ -169,10 +139,11 @@ if __name__ == "__main__":
     input_a = np.arange(VECTOR_LEN, dtype=INOUT_DATATYPE)
     output_b = input_a + 10
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
+    run_on_npu(
+        args,
+        mlir_module,
+        inputs=[input_a],
+        expected_outputs=[output_b],
         instance_name="segment_unroll_test",
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

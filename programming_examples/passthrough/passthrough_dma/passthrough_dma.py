@@ -1,6 +1,5 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -9,7 +8,7 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -36,12 +35,7 @@ def build_module(vector_size, num_subvectors, np_dtype):
     lineWidthInBytes = vector_size // num_subvectors
 
     # Memref type definition used by the compute core and external function
-    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    tensor_type = MemRefType.get(
-        shape=[lineWidthInBytes],
-        element_type=xrt_dtype,
-        memory_space=mem_space,
-    )
+    tensor_type = l1_memref_type([lineWidthInBytes], xrt_dtype)
 
     @FuncOp.from_py_func(memrefTyInOut, memrefTyInOut)
     def copy(arg0, arg1):
@@ -95,10 +89,7 @@ def build_module(vector_size, num_subvectors, np_dtype):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
-    )
+    parser = make_air_parser("Builds, runs, and tests the passthrough_dma example")
     parser.add_argument(
         "-s",
         "--vector_size",
@@ -111,24 +102,6 @@ if __name__ == "__main__":
         type=int,
         default=4,
         help="The number of sub-vectors to break the vector into",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
     parser.add_argument(
         "-t",
@@ -148,10 +121,4 @@ if __name__ == "__main__":
     input_a = np.arange(args.vector_size, dtype=np_dtype)
     output_b = np.arange(args.vector_size, dtype=np_dtype)
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
-        instance_name="copy",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
-    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))
+    exit(run_on_npu(args, mlir_module, inputs=[input_a], instance_name="copy", expected_outputs=[output_b]))

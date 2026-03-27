@@ -1,19 +1,38 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
+import os
+import sys
+
+sys.path.insert(
+    0,
+    os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    ),
+)
+
 from ml_dtypes import bfloat16
 
 from air.ir import *
-from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
 from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
-from air.dialects.vector import transfer_read, transfer_write
+from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.dialects.math import exp
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper
+from utils import (
+    make_l1_memref,
+    make_vec_type,
+    identity_map_1d,
+    tiled_1d_offset,
+    vec_read,
+    vec_write,
+    make_air_parser,
+    make_xrt_runner,
+    make_xrt_backend,
+    stochastic_check,
+    check_print_module,
+)
 
 import numpy as np
 
@@ -25,22 +44,16 @@ range_ = for_
 @module_builder
 def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
     a_size = [n]
-    out_size = a_size
     xrt_dtype_in = type_mapper(np_dtype_in)
     num_tiles = 2
     assert n % (tile_n * num_tiles) == 0
     VECTOR_SIZE = vector_size
     index_type = IndexType.get()
 
-    # L3 MemRefTypes
     l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
-
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    l1MemrefTy = make_l1_memref([tile_n], xrt_dtype_in)
+    vecTy = make_vec_type(VECTOR_SIZE, xrt_dtype_in)
+    imap = identity_map_1d()
 
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
     def vector_exp(arg0, arg2):
@@ -66,74 +79,29 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
             l1_out_data = AllocOp(l1MemrefTy, [], [])
 
             for _l_ivx in range_(0, n, tile_n * num_tiles):
-
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                offset = tiled_1d_offset(_l_ivx, _ty, tile_n)
 
                 dma_memcpy_nd(
                     l1_a_data,
                     _l3_a,
-                    src_offsets=[
-                        offset,
-                    ],
+                    src_offsets=[offset],
                     src_sizes=[tile_n],
                     src_strides=[1],
                 )
                 c0 = ConstantOp(index_type, 0)
-                c1 = ConstantOp(index_type, 1)
                 cVecSize = ConstantOp(index_type, VECTOR_SIZE)
                 cTileN = ConstantOp(index_type, tile_n)
+                cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
                 for j in range_(c0, cTileN, cVecSize):
-                    sub_a_vec = subview(
-                        l1_a_data.result,
-                        [j],
-                        [VECTOR_SIZE],
-                        [1],
-                    )
-                    sub_c_vec = subview(
-                        l1_out_data.result,
-                        [j],
-                        [VECTOR_SIZE],
-                        [1],
-                    )
-                    cst0 = arith.ConstantOp(xrt_dtype_in, 0.0)
-                    v_a = transfer_read(
-                        VectorType.get([VECTOR_SIZE], xrt_dtype_in),
-                        sub_a_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        cst0,
-                        [True],
-                    )
+                    v_a = vec_read(l1_a_data, j, VECTOR_SIZE, c0, vecTy, cst0, imap)
                     v_c = exp(v_a)
-                    transfer_write(
-                        None,
-                        v_c,
-                        sub_c_vec,
-                        [c0],
-                        AffineMapAttr.get(AffineMap.get_identity(1)),
-                        [True],
-                    )
+                    vec_write(v_c, l1_out_data, j, VECTOR_SIZE, c0, imap)
                     yield_([])
 
                 dma_memcpy_nd(
                     _l3_c,
                     l1_out_data,
-                    dst_offsets=[
-                        offset,
-                    ],
+                    dst_offsets=[offset],
                     dst_sizes=[tile_n],
                     dst_strides=[1],
                 )
@@ -144,26 +112,12 @@ def build_module(n, tile_n, np_dtype_in, arch="aie2", vector_size=16):
 
 
 if __name__ == "__main__":
-    # Default values.
     N = 65536
     TILE_N = 1024
     VECTOR_SIZE = 16
     INPUT_DATATYPE = bfloat16
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the passthrough_dma example")
     parser.add_argument(
         "--n",
         type=int,
@@ -184,22 +138,6 @@ if __name__ == "__main__":
         default="aie2",
         help="Target AIE architecture (aie2 or aie2p)",
     )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-        help="Configure to whether to run after compile",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
-    )
 
     args = parser.parse_args()
 
@@ -210,45 +148,16 @@ if __name__ == "__main__":
         args.arch,
         args.vector_size,
     )
-    if args.print_module_only:
-        print(mlir_module)
-        exit(0)
+    check_print_module(mlir_module, args)
 
     # Generate input values in a safe range for exp operation to avoid overflow
-    # Using values between -5 and 5 to ensure exp(x) stays within bfloat16 range
     input_a = np.random.uniform(-5, 5, args.n).astype(INPUT_DATATYPE)
 
     if args.compile_mode == "compile-and-run":
-
-        # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
-        num_samples = 100
-        sampled_indices = np.vstack(
-            [
-                np.random.randint(0, args.n, num_samples),  # i indices
-            ]
+        sampled_data = stochastic_check(
+            [input_a], args.n, lambda x: np.exp(x), INPUT_DATATYPE
         )
-
-        # Compute reference results for sampled indices
-        sampled_values = np.array(
-            [np.exp(input_a[i]) for i in zip(*sampled_indices)],
-            dtype=INPUT_DATATYPE,
-        )
-
-        # Store as a dictionary
-        sampled_data = {
-            "shape": (args.n,),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-
-        ###### Compile and test
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="vector_exp",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
+        runner = make_xrt_runner(args, "vector_exp")
         exit(
             runner.run_test(
                 mlir_module,
@@ -259,13 +168,7 @@ if __name__ == "__main__":
         )
 
     elif args.compile_mode == "compile-only":
-        ###### Compile only
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
+        backend = make_xrt_backend(args)
         module_function = backend.compile(mlir_module)
 
         backend.unload()

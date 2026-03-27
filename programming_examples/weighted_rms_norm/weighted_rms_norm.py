@@ -15,7 +15,6 @@ Computation is vectorized using vector.transfer_read/write with
 configurable VECTOR_SIZE (default 16 for AIE2).
 """
 
-import argparse
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -31,8 +30,7 @@ from air.dialects.vector import (
 )
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -46,17 +44,16 @@ def build_module(M, N, np_dtype, vector_size=16):
         N % vector_size == 0
     ), f"N ({N}) must be divisible by vector_size ({vector_size})"
 
-    vecTy = VectorType.get([vector_size], xrt_dtype)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    vecTy = vec_type(vector_size, xrt_dtype)
+    identity_map = identity_map_attr()
 
     # L3 types
     l3MemrefTy = MemRefType.get([M, N], xrt_dtype)
     l3WeightTy = MemRefType.get([N], xrt_dtype)
 
     # L1 types
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1RowTy = MemRefType.get([N], xrt_dtype, memory_space=l1_mem_space)
-    l1VecTy = MemRefType.get([vector_size], xrt_dtype, memory_space=l1_mem_space)
+    l1RowTy = l1_memref_type([N], xrt_dtype)
+    l1VecTy = l1_memref_type([vector_size], xrt_dtype)
 
     @FuncOp.from_py_func(l3MemrefTy, l3WeightTy, l3MemrefTy)
     def weighted_rms_norm(arg0, arg1, arg2):
@@ -161,12 +158,7 @@ if __name__ == "__main__":
     VECTOR_SIZE = 16
     INPUT_DATATYPE = bfloat16
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the weighted RMS normalization example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
+    parser = make_air_parser("Builds, runs, and tests the weighted RMS normalization example")
     parser.add_argument("--M", type=int, default=M_DEFAULT, help="M dimension (rows)")
     parser.add_argument("--N", type=int, default=N_DEFAULT, help="N dimension (cols)")
     parser.add_argument(
@@ -174,20 +166,6 @@ if __name__ == "__main__":
         type=int,
         default=VECTOR_SIZE,
         help="Vector size for SIMD operations",
-    )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
     )
     args = parser.parse_args()
 
@@ -209,30 +187,11 @@ if __name__ == "__main__":
         (x_input.astype(np.float32) / rms) * weight.astype(np.float32)
     ).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="weighted_rms_norm",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[x_input, weight],
-                expected_outputs=[y_expected],
-                rtol=5e-2,
-                atol=5e-1,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    exit(run_on_npu(
+        args, mlir_module,
+        inputs=[x_input, weight],
+        instance_name="weighted_rms_norm",
+        expected_outputs=[y_expected],
+        rtol=5e-2,
+        atol=5e-1,
+    ))

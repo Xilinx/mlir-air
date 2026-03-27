@@ -20,7 +20,7 @@ from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
 from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 from ml_dtypes import bfloat16
 
 # Constants for buffer sizes and loop bounds

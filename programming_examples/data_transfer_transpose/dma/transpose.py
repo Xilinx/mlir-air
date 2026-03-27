@@ -1,6 +1,5 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 import numpy as np
 
 np.random.seed(42)
@@ -9,7 +8,7 @@ from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 dtype_map = {
     "uint32": np.uint32,
@@ -34,15 +33,8 @@ def build_module(m, k, dtype):
             def segment_body(arg2, arg3):
                 @herd(name="herd", sizes=[1, 1], operands=[arg2, arg3])
                 def herd_body(_tx, _ty, _sx, _sy, a, b):
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
                     # This is the type definition of the tensor
-                    tensor_type = MemRefType.get(
-                        shape=[m * k],  # Read as one large array
-                        element_type=xrt_dtype,
-                        memory_space=mem_space,
-                    )
+                    tensor_type = l1_memref_type([m * k], xrt_dtype)  # Read as one large array
 
                     # We must allocate a buffer of tile size for the input/output
                     tensor_in = AllocOp(tensor_type, [], [])
@@ -69,16 +61,7 @@ def build_module(m, k, dtype):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the matrix_scalar_add/single_core_channel example",
-    )
-
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the matrix_scalar_add/single_core_channel example")
     parser.add_argument(
         "-m",
         type=int,
@@ -97,19 +80,6 @@ if __name__ == "__main__":
         default=DEFAULT_DTYPE,
         choices=dtype_map.keys(),
         help="The data type of the matrix",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
 
     args = parser.parse_args()
@@ -142,16 +112,4 @@ if __name__ == "__main__":
         )
     expected_output_matrix = np.transpose(input_matrix)
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
-        instance_name="transpose",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
-    exit(
-        runner.run_test(
-            mlir_module,
-            inputs=[input_matrix],
-            expected_outputs=[expected_output_matrix],
-        )
-    )
+    exit(run_on_npu(args, mlir_module, inputs=[input_matrix], instance_name="transpose", expected_outputs=[expected_output_matrix]))

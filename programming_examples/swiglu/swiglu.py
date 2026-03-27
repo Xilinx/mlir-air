@@ -21,7 +21,6 @@ Uses a single AIE tile with DMA transfers between L3 and L1 memory.
 Computation is vectorized using vector.transfer_read/write.
 """
 
-import argparse
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -33,8 +32,7 @@ from air.dialects.memref import AllocOp, DeallocOp, subview
 from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -51,21 +49,12 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
     # gate and up packed as [2, N]: row 0 = gate, row 1 = up
     l3GateUpTy = MemRefType.get([2, n], xrt_dtype_in)
 
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
+    l1MemrefTy = l1_memref_type([tile_n], xrt_dtype_in)
     # L1 buffer for gate+up tile: flat [2*tile_n] for simple 1D indexing
-    l1GateUpTy = MemRefType.get(
-        shape=[2 * tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=l1_mem_space,
-    )
+    l1GateUpTy = l1_memref_type([2 * tile_n], xrt_dtype_in)
 
-    vecTy = VectorType.get([VECTOR_SIZE], xrt_dtype_in)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    vecTy = vec_type(VECTOR_SIZE, xrt_dtype_in)
+    identity_map = identity_map_attr()
 
     @FuncOp.from_py_func(l3memrefTy, l3GateUpTy, l3memrefTy)
     def swiglu(arg0, arg1, arg2):
@@ -175,30 +164,11 @@ if __name__ == "__main__":
     TILE_N = 1024
     INPUT_DATATYPE = bfloat16
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the SwiGLU example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
+    parser = make_air_parser("Builds, runs, and tests the SwiGLU example")
     parser.add_argument("--n", type=int, default=N, help="Total number of elements")
     parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
     parser.add_argument(
         "--vector-size", type=int, default=16, help="Vector size for SIMD operations"
-    )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
     )
     args = parser.parse_args()
 
@@ -215,55 +185,39 @@ if __name__ == "__main__":
     # Pack gate and up into [2, N]: row 0 = gate, row 1 = up
     input_gate_up = np.stack([input_gate, input_up]).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
+    num_samples = 100
+    sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
 
-        # SwiGLU reference using tanh-based sigmoid (matches hardware computation)
-        def swiglu_ref(x, gate, up):
-            x_f32 = x.astype(np.float32)
-            g_f32 = gate.astype(np.float32)
-            u_f32 = up.astype(np.float32)
-            xg = x_f32 * g_f32
-            silu_xg = xg * 0.5 * (np.tanh(xg / 2.0) + 1.0)
-            return silu_xg * (x_f32 * u_f32)
+    # SwiGLU reference using tanh-based sigmoid (matches hardware computation)
+    def swiglu_ref(x, gate, up):
+        x_f32 = x.astype(np.float32)
+        g_f32 = gate.astype(np.float32)
+        u_f32 = up.astype(np.float32)
+        xg = x_f32 * g_f32
+        silu_xg = xg * 0.5 * (np.tanh(xg / 2.0) + 1.0)
+        return silu_xg * (x_f32 * u_f32)
 
-        sampled_values = np.array(
-            [
-                swiglu_ref(input_x[i], input_gate[i], input_up[i])
-                for i in zip(*sampled_indices)
-            ],
-            dtype=INPUT_DATATYPE,
-        )
-        sampled_data = {
-            "shape": (args.n,),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
+    sampled_values = np.array(
+        [
+            swiglu_ref(input_x[i], input_gate[i], input_up[i])
+            for i in zip(*sampled_indices)
+        ],
+        dtype=INPUT_DATATYPE,
+    )
+    sampled_data = {
+        "shape": (args.n,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="swiglu",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_x, input_gate_up],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
-                atol=5e-2,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    run_on_npu(
+        args,
+        mlir_module,
+        inputs=[input_x, input_gate_up],
+        stochastic_expected_outputs=[sampled_data],
+        instance_name="swiglu",
+        omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
+        rtol=1e-1,
+        atol=5e-2,
+    )

@@ -12,8 +12,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
 from air.dialects import scf, affine, arith
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 from ml_dtypes import bfloat16
 
 range_ = for_
@@ -753,9 +752,6 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    # Import XRT dependencies only when running tests
-    from air.backend.xrt_runner import XRTRunner, type_mapper
-    from air.backend.xrt import XRTBackend
     from air.extras import types as extrasT
     from ml_dtypes import bfloat16
 

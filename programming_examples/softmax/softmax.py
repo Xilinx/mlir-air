@@ -1,17 +1,14 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 from math import cos, sin, sqrt, exp
 
 from air.ir import *
-from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
 from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 from ml_dtypes import bfloat16
 
 import numpy as np
@@ -32,11 +29,7 @@ def build_module(n, tile_n, herd_n, np_dtype_in):
     l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
 
     # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    l1MemrefTy = l1_memref_type([tile_n], xrt_dtype_in)
 
     # Function declaration
     softmax_func = FuncOp(
@@ -68,20 +61,7 @@ def build_module(n, tile_n, herd_n, np_dtype_in):
 
             for t in range_(0, n, tile_n * herd_n):
 
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [t, _ty])
+                offset = tile_offset_1d(t, _ty, tile_n)
 
                 dma_memcpy_nd(
                     l1_a_data,
@@ -121,20 +101,7 @@ if __name__ == "__main__":
     HERD_N = 4
     INPUT_DATATYPE = bfloat16
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the passthrough_dma example")
     parser.add_argument(
         "--n",
         type=int,
@@ -147,22 +114,6 @@ if __name__ == "__main__":
         type=int,
         default=HERD_N,
         help="Number of L1 tiles along the N dimension",
-    )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-        help="Configure to whether to run after compile",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
 
     args = parser.parse_args()
@@ -191,33 +142,13 @@ if __name__ == "__main__":
         for i in range(args.tile_n):
             outputs[j][i] = outputs[j][i] / sum_val
 
-    if args.compile_mode == "compile-and-run":
-
-        ###### Compile and test
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="softmax",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[inputs],
-                expected_outputs=[outputs],
-                rtol=1e-1,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        ###### Compile only
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
+    run_on_npu(
+        args,
+        mlir_module,
+        inputs=[inputs],
+        expected_outputs=[outputs],
+        instance_name="softmax",
+        omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
+        rtol=1e-1,
+    )

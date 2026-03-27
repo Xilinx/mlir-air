@@ -1,6 +1,5 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 import numpy as np
 
 from air.ir import *
@@ -8,7 +7,7 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import XRTRunner, XRTBackend, type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -21,15 +20,8 @@ def build_module():
     xrt_dtype = type_mapper(INOUT_DATATYPE)
     memrefTyInOut = T.memref(VECTOR_LEN, xrt_dtype)
 
-    # We want to store our data in L1 memory
-    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
     # This is the type definition of the tile
-    image_type_l1 = MemRefType.get(
-        shape=[VECTOR_LEN],
-        element_type=xrt_dtype,
-        memory_space=mem_space_l1,
-    )
+    image_type_l1 = l1_memref_type([VECTOR_LEN], xrt_dtype)
 
     Channel("ChanInA")
     Channel("ChanInB")
@@ -94,28 +86,7 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the multi segment channel example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
-    )
+    parser = make_air_parser("Builds, runs, and tests the multi segment channel example")
 
     args = parser.parse_args()
 
@@ -129,16 +100,4 @@ if __name__ == "__main__":
     output_c = np.full(VECTOR_LEN, 5, dtype=INOUT_DATATYPE)
     output_d = np.full(VECTOR_LEN, 13, dtype=INOUT_DATATYPE)
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
-        instance_name="copy",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
-    exit(
-        runner.run_test(
-            mlir_module,
-            inputs=[input_a, input_b],
-            expected_outputs=[output_c, output_d],
-        )
-    )
+    exit(run_on_npu(args, mlir_module, inputs=[input_a, input_b], instance_name="copy", expected_outputs=[output_c, output_d]))
