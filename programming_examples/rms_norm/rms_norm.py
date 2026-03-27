@@ -13,6 +13,7 @@ Computation is vectorized using vector.transfer_read/write with
 configurable VECTOR_SIZE (default 16 for AIE2).
 """
 
+import numpy as np
 from ml_dtypes import bfloat16
 
 from air.ir import *

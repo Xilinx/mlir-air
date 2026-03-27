@@ -16,7 +16,6 @@ Uses the external rope.cc kernel from mlir-aie (aie_kernels/aie2p).
 Uses a single AIE tile with DMA transfers between L3 and L1 memory.
 """
 
-import argparse
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -109,29 +108,10 @@ if __name__ == "__main__":
     INPUT_DATATYPE = bfloat16
     THETA = 10000.0
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the RoPE (LUT-based) example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
+    parser = make_air_parser("Builds, runs, and tests the RoPE (LUT-based) example")
     parser.add_argument("--seq-len", type=int, default=SEQ_LEN, help="Sequence length")
     parser.add_argument(
         "--embed-dim", type=int, default=EMBED_DIM, help="Embedding dimension"
-    )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
     )
     args = parser.parse_args()
 
@@ -159,44 +139,28 @@ if __name__ == "__main__":
             lut[r, 2 * i + 1] = np.sin(angle)
     lut = lut.astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        # Compute reference output
-        ref = np.copy(input_data).astype(np.float32)
-        input_f32 = input_data.astype(np.float32)
-        lut_f32 = lut.astype(np.float32)
-        for r in range(seq_len):
-            for i in range(embed_dim // 2):
-                cos_v = lut_f32[r, 2 * i]
-                sin_v = lut_f32[r, 2 * i + 1]
-                x0 = input_f32[r, 2 * i]
-                x1 = input_f32[r, 2 * i + 1]
-                ref[r, 2 * i] = x0 * cos_v - x1 * sin_v
-                ref[r, 2 * i + 1] = x0 * sin_v + x1 * cos_v
-        ref_flat = ref.flatten().astype(INPUT_DATATYPE)
+    # Compute reference output
+    ref = np.copy(input_data).astype(np.float32)
+    input_f32 = input_data.astype(np.float32)
+    lut_f32 = lut.astype(np.float32)
+    for r in range(seq_len):
+        for i in range(embed_dim // 2):
+            cos_v = lut_f32[r, 2 * i]
+            sin_v = lut_f32[r, 2 * i + 1]
+            x0 = input_f32[r, 2 * i]
+            x1 = input_f32[r, 2 * i + 1]
+            ref[r, 2 * i] = x0 * cos_v - x1 * sin_v
+            ref[r, 2 * i + 1] = x0 * sin_v + x1 * cos_v
+    ref_flat = ref.flatten().astype(INPUT_DATATYPE)
 
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_data.flatten(), lut.flatten()],
             instance_name="rope",
-            runtime_loop_tiling_sizes=[4, 4],
+            expected_outputs=[ref_flat],
+            rtol=5e-2,
+            atol=5e-2,
         )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_data.flatten(), lut.flatten()],
-                expected_outputs=[ref_flat],
-                rtol=5e-2,
-                atol=5e-2,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    )

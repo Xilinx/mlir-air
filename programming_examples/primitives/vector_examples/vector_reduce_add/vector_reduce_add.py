@@ -28,8 +28,10 @@ from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.dialects.math import exp
 from air.backend.xrt_runner import type_mapper
+from air.dialects import arith
 from utils import (
     make_l1_memref,
+    identity_map_1d,
     tiled_1d_offset,
     make_air_parser,
     make_xrt_runner,
@@ -59,8 +61,8 @@ def build_module(m, n, tile_m, np_dtype_in):
     l3outputMemrefTy = MemRefType.get(out_size, xrt_dtype_in)
 
     # L1 MemRefTypes
-    l1MemrefTy = l1_memref_type([tile_m, n], xrt_dtype_in)
-    l1outputMemrefTy = l1_memref_type([tile_m, 1], xrt_dtype_in)
+    l1MemrefTy = make_l1_memref([tile_m, n], xrt_dtype_in)
+    l1outputMemrefTy = make_l1_memref([tile_m, 1], xrt_dtype_in)
 
     @FuncOp.from_py_func(l3memrefTy, l3outputMemrefTy)
     def vector_reduce_add(arg0, arg2):
@@ -136,7 +138,7 @@ def build_module(m, n, tile_m, np_dtype_in):
                         VectorType.get([n], xrt_dtype_in),
                         collapse_a,
                         [c0],
-                        identity_map_attr(),
+                        identity_map_1d(),
                         cst0,
                         [True],
                     )

@@ -18,6 +18,7 @@ Data flows:
   3. DMA output tile from L1 to L3
 """
 
+import numpy as np
 from air.ir import *
 from air.dialects.air import *
 from air.dialects import arith

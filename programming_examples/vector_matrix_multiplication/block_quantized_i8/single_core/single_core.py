@@ -1,7 +1,5 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
-
 from air.ir import *
 from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
@@ -404,20 +402,7 @@ if __name__ == "__main__":
     ACC_DATATYPE = np.int32
     OUTPUT_DATATYPE = np.float32
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the passthrough_dma example")
     parser.add_argument(
         "--k", type=int, default=K, help="K dimension size in a (1xK) * (KxN) matmul"
     )
@@ -438,14 +423,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--tile-n", type=int, default=TILE_N, help="N dimension size of each L1 tile"
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
 
     args = parser.parse_args()
@@ -499,17 +476,12 @@ if __name__ == "__main__":
             )
             ival = 0
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        omit_while_true_loop=False,
-        output_format=args.output_format,
-        instance_name="vecmat_i8",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
     exit(
-        runner.run_test(
+        run_on_npu(
+            args,
             mlir_module,
             inputs=[input_a, input_a_s, input_b, input_b_s],
+            instance_name="vecmat_i8",
             expected_outputs=[output_c],
         )
     )
