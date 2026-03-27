@@ -15,6 +15,8 @@ from ..extras.meta import region_op
 
 from ..extras import types as T
 from .func import FuncOp, CallOp
+from ._air_enum_gen import MemorySpace as _MemorySpace
+from .affine import apply as _affine_apply
 
 
 def pyint_to_index(i):
@@ -324,7 +326,7 @@ def l1_memref_type(shape, element_type):
     """Create a MemRef type in L1 (per-core scratchpad) memory space."""
     return MemRefType.get(
         shape, element_type,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
+        memory_space=IntegerAttr.get(T.i32(), _MemorySpace.L1),
     )
 
 
@@ -332,7 +334,7 @@ def l2_memref_type(shape, element_type):
     """Create a MemRef type in L2 (segment-shared) memory space."""
     return MemRefType.get(
         shape, element_type,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L2),
+        memory_space=IntegerAttr.get(T.i32(), _MemorySpace.L2),
     )
 
 
@@ -361,7 +363,6 @@ def tile_offset_1d(loop_var, tile_idx, tile_n):
     Returns:
         SSA Value holding the computed index.
     """
-    from .affine import apply as affine_apply
     offset_map = AffineMap.get(
         0, 2,
         [
@@ -374,7 +375,7 @@ def tile_offset_1d(loop_var, tile_idx, tile_n):
             )
         ],
     )
-    return affine_apply(offset_map, [loop_var, tile_idx])
+    return _affine_apply(offset_map, [loop_var, tile_idx])
 
 
 def external_func(name, inputs, outputs=None, visibility="private"):
