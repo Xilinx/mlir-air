@@ -85,8 +85,8 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
         )
         result = result.stdout.decode("utf-8").split("\n")
         # Older format is "|[0000:41:00.1]  ||RyzenAI-npu1  |"
-        # Newer format is "|[0000:41:00.1]  |NPU Phoenix  |"
-        p = re.compile(r"[\|]?(\[.+:.+:.+\]).+\|(RyzenAI-(npu\d)|NPU (\w+))\W*\|")
+        # Newer format is "|[0000:41:00.1]  |NPU Phoenix  |" or "|[0000:c6:00.1]  |NPU Strix Halo  |"
+        p = re.compile(r"[\|]?(\[.+:.+:.+\]).+\|(RyzenAI-(npu\d)|NPU ([\w ]+?))\s*\|")
         for l in result:
             m = p.match(l)
             if not m:
@@ -94,9 +94,9 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
             print("Found Ryzen AI device:", m.group(1))
             model = "unknown"
             if m.group(3):
-                model = str(m.group(3))
+                model = str(m.group(3)).strip()
             if m.group(4):
-                model = str(m.group(4))
+                model = str(m.group(4)).strip()
             print(f"\tmodel: '{model}'")
             config.available_features.add("ryzen_ai")
             run_on_npu = (
@@ -106,10 +106,10 @@ if config.xrt_lib_dir and config.enable_run_xrt_tests:
                 run_on_npu1 = run_on_npu
                 config.available_features.add("ryzen_ai_npu1")
                 print("Running tests on NPU1 with command line: ", run_on_npu)
-            elif model in ["npu4", "Strix"]:
+            elif "Strix" in model or model in ["npu4"]:
                 run_on_npu2 = run_on_npu
                 config.available_features.add("ryzen_ai_npu2")
-                print("Running tests on NPU4 with command line: ", run_on_2npu)
+                print("Running tests on NPU2 with command line: ", run_on_npu)
             else:
                 print(f"WARNING: xrt-smi reported unknown NPU model '{model}'.")
             break
