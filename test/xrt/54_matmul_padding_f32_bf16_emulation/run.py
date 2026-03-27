@@ -94,10 +94,12 @@ if args.verbose:
     print(f"M_padded={M_padded}, N_padded={N_padded}")
     print(f"Launch grid: {LAUNCH_M}x{LAUNCH_N}x1")
 
-# Block-aligned allocation sizes for input buffers (same as test 54).
-INNER_BLOCK = 8
-M_alloc = math.ceil(M_actual / INNER_BLOCK) * INNER_BLOCK
-N_alloc = math.ceil(N_actual / INNER_BLOCK) * INNER_BLOCK
+# Allocation sizes: use full padded dimensions so L3→L2 DMA can read
+# entire launch tiles from zero-filled host buffers. This handles both
+# large matrices (multiple launches) and small matrices (M,N < tile size)
+# where the actual data is smaller than a single launch tile.
+M_alloc = M_padded
+N_alloc = N_padded
 
 ################################################
 # Load and transform IR
