@@ -1828,8 +1828,8 @@ public:
           LinalgTransformationFilter(StringAttr::get(ctx, "promote_HERD"),
                                      StringAttr::get(ctx, "HERD")));
 
-      RewritePatternSet stage2Patterns =
-          linalg::getLinalgTilingCanonicalizationPatterns(ctx);
+      RewritePatternSet stage2Patterns(ctx);
+      linalg::populateLinalgTilingCanonicalizationPatterns(stage2Patterns);
       scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
 
       RewritePatternSet stage3Patterns(&getContext());

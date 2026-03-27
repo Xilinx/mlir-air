@@ -16,10 +16,9 @@
 // CHECK: linalg.pack %[[subview_5]] outer_dims_perm = [0, 1] inner_dims_pos = [0, 1] inner_tiles = [64, 32] into %{{.*}}
 // CHECK: %[[subview_6:.*]] = memref.subview %[[subview_3]][0, 0] [32, 256] [1, 1]
 // CHECK: linalg.pack %[[subview_6]] outer_dims_perm = [1, 0] inner_dims_pos = [0, 1] inner_tiles = [32, 64] into %{{.*}}
-// CHECK: %[[transpose_9:.*]] = memref.transpose %{{.*}} (d0, d1, d2, d3) -> (d0, d2, d1, d3)
-// CHECK: air.dma_memcpy_nd (%[[subview_4]][] [] [], %[[transpose_9]][] [] [])
-// CHECK: %[[subview_10:.*]] = memref.subview %{{.*}}[%[[apply0]], %[[apply1]]] [256, 256] [1, 1]
-// CHECK: memref.copy %[[subview_4]], %[[subview_10]]
+// CHECK: linalg.unpack %{{.*}} inner_dims_pos = [0, 1] inner_tiles = [64, 64] into %[[subview_4]]
+// CHECK: %[[subview_7:.*]] = memref.subview %{{.*}}[%[[apply0]], %[[apply1]]] [256, 256] [1, 1]
+// CHECK: memref.copy %[[subview_4]], %[[subview_7]]
 
 #map = affine_map<(d0) -> (d0 * 256)>
 module {

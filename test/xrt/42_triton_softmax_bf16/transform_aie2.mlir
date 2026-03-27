@@ -358,7 +358,9 @@ module attributes {transform.with_named_sequence} {
             transform.apply_patterns.scf.for_loop_canonicalization
             transform.apply_patterns.canonicalization
             transform.apply_patterns.vector.cast_away_vector_leading_one_dim
-            transform.apply_patterns.vector.lower_multi_reduction lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.reorder_multi_reduction_dims lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.multi_reduction_flattening lowering_strategy = "innerreduction"
+            transform.apply_patterns.vector.multi_reduction_unrolling lowering_strategy = "innerreduction"
         } : !transform.any_op
         transform.apply_cse to %func7_transformed : !transform.any_op
     transform.yield

@@ -459,6 +459,54 @@ class LinalgPackToAIRDma : public OpRewritePattern<linalg::PackOp> {
   }
 };
 
+// Pattern to lower `linalg.unpack` on memrefs into transpose +
+// dma_memcpy_nd. Mirrors LinalgPackToAIRDma for the inverse direction.
+class LinalgUnPackToAIRDma : public OpRewritePattern<linalg::UnPackOp> {
+  using OpRewritePattern<linalg::UnPackOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(linalg::UnPackOp op,
+                                PatternRewriter &rewriter) const override {
+    auto srcType = dyn_cast_if_present<MemRefType>(op.getSource().getType());
+    auto dstType = dyn_cast_if_present<MemRefType>(op.getDest().getType());
+    if (!srcType || !dstType)
+      return failure();
+    if (llvm::any_of(op.getStaticInnerTiles(),
+                     [](int64_t s) { return ShapedType::isDynamic(s); }))
+      return failure();
+
+    Location loc = op->getLoc();
+    auto innerDimsPos = op.getInnerDimsPos();
+    auto srcShape = srcType.getShape();
+    SmallVector<int64_t> transpPerm;
+    Value tile = nullptr;
+
+    if (llvm::any_of(innerDimsPos,
+                     [srcShape](int64_t i) { return srcShape[i] != 1; })) {
+      // Non-degenerate case: transpose from packed layout to strip-mined.
+      auto perm = getPackUnpackStripMinedPerm(srcShape, innerDimsPos,
+                                              op.getOuterDimsPerm());
+      tile = op.getSource();
+      transpPerm = perm;
+    } else {
+      // Degenerate inner dims: use normalized permutation (inverted).
+      tile = op.getSource();
+      transpPerm = getPackUnpackNormalizedPerm(srcType.getRank(), innerDimsPos);
+      transpPerm = invertPermutationVector(transpPerm);
+    }
+
+    auto transposeOp = memref::TransposeOp::create(
+        rewriter, loc, tile,
+        AffineMapAttr::get(
+            AffineMap::getPermutationMap(transpPerm, op->getContext())));
+    SmallVector<Value, 2> empty;
+    xilinx::air::DmaMemcpyNdOp::create(
+        rewriter, loc, SmallVector<Type, 1>{}, empty, op.getDest(), empty,
+        empty, empty, transposeOp.getResult(), empty, empty, empty,
+        /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class AffineParToHerdConversion
     : public OpRewritePattern<affine::AffineParallelOp> {
 public:
@@ -1408,15 +1456,15 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
 
     // Simplify all the subviews so we can rewrite them easily.
     // Mostly this is propagating constant sizes into dimensioned memref types.
-    RewritePatternSet stage1Patterns =
-        linalg::getLinalgTilingCanonicalizationPatterns(context);
+    RewritePatternSet stage1Patterns(context);
+    linalg::populateLinalgTilingCanonicalizationPatterns(stage1Patterns);
     memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
     memref::populateComposeSubViewPatterns(stage1Patterns, context);
     (void)applyPatternsGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
     stage2Patterns.insert<LinalgCopyToMemRefCopy, MemrefCopyToAIRDmaConversion,
-                          LinalgPackToAIRDma>(context);
+                          LinalgPackToAIRDma, LinalgUnPackToAIRDma>(context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(stage2Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
