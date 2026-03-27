@@ -54,6 +54,98 @@ def type_mapper(np_dtype):
     return xrt_dtype
 
 
+def make_air_parser(description, prog="run.py"):
+    """
+    Create an argparse.ArgumentParser pre-populated with the four standard
+    flags shared by every AIR programming example:
+        -v / --verbose
+        -p / --print-module-only
+        --compile-mode  {compile-only, compile-and-run}
+        --output-format {xclbin, elf}
+
+    The caller adds any example-specific arguments (--n, --tile-n, etc.)
+    after calling this function.
+    """
+    import argparse
+    parser = argparse.ArgumentParser(prog=prog, description=description)
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-p", "--print-module-only", action="store_true")
+    parser.add_argument(
+        "--compile-mode",
+        type=str,
+        choices=["compile-only", "compile-and-run"],
+        dest="compile_mode",
+        default="compile-and-run",
+    )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        choices=["xclbin", "elf"],
+        default="xclbin",
+        dest="output_format",
+    )
+    return parser
+
+
+def run_on_npu(
+    args,
+    mlir_module,
+    inputs,
+    instance_name,
+    expected_outputs=None,
+    stochastic_expected_outputs=None,
+    rtol=1e-3,
+    atol=1e-8,
+    runtime_loop_tiling_sizes=None,
+):
+    """
+    Dispatch compile-only vs compile-and-run based on args.compile_mode.
+
+    Replaces the if/elif compile_mode block in every example's __main__ section.
+
+    Args:
+        args:                          parsed argparse namespace
+        mlir_module:                   MLIR module from build_module()
+        inputs:                        list of numpy input arrays
+        instance_name:                 xclbin instance name string
+        expected_outputs:              list of numpy reference arrays (dense check)
+        stochastic_expected_outputs:   list of {"shape","indices","values"} dicts
+        rtol, atol:                    tolerances forwarded to XRTRunner.run_test()
+        runtime_loop_tiling_sizes:     tiling sizes (default [4, 4])
+    Returns:
+        int exit code (0 = pass, -1 = fail), or None for compile-only.
+    """
+    if runtime_loop_tiling_sizes is None:
+        runtime_loop_tiling_sizes = [4, 4]
+
+    if args.compile_mode == "compile-and-run":
+        runner = XRTRunner(
+            verbose=args.verbose,
+            omit_while_true_loop=False,
+            output_format=args.output_format,
+            instance_name=instance_name,
+            runtime_loop_tiling_sizes=runtime_loop_tiling_sizes,
+        )
+        return runner.run_test(
+            mlir_module,
+            inputs=inputs,
+            expected_outputs=expected_outputs or [],
+            stochastic_expected_outputs=stochastic_expected_outputs or [],
+            rtol=rtol,
+            atol=atol,
+        )
+    elif args.compile_mode == "compile-only":
+        backend = XRTBackend(
+            verbose=args.verbose,
+            omit_while_true_loop=False,
+            output_format=args.output_format,
+            runtime_loop_tiling_sizes=runtime_loop_tiling_sizes,
+        )
+        backend.compile(mlir_module)
+        backend.unload()
+        return 0
+
+
 class XRTRunner:
     def __init__(
         self,

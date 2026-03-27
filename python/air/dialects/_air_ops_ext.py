@@ -320,6 +320,63 @@ launch = region_op(Launch, terminator=lambda *_args: LaunchTerminatorOp())
 segment = region_op(Segment, terminator=lambda *_args: SegmentTerminatorOp())
 
 
+def l1_memref_type(shape, element_type):
+    """Create a MemRef type in L1 (per-core scratchpad) memory space."""
+    return MemRefType.get(
+        shape, element_type,
+        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
+    )
+
+
+def l2_memref_type(shape, element_type):
+    """Create a MemRef type in L2 (segment-shared) memory space."""
+    return MemRefType.get(
+        shape, element_type,
+        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L2),
+    )
+
+
+def vec_type(size, element_type):
+    """Create a 1D VectorType of given length and element type."""
+    return VectorType.get([size], element_type)
+
+
+def identity_map_attr():
+    """Return a 1D identity AffineMapAttr (the standard transfer_read/write map)."""
+    return AffineMapAttr.get(AffineMap.get_identity(1))
+
+
+def tile_offset_1d(loop_var, tile_idx, tile_n):
+    """
+    Compute the 1D strided-tile offset: loop_var + tile_idx * tile_n.
+
+    Replaces the 12-line AffineMap.get / AffineExpr.get_add / AffineExpr.get_mul
+    / AffineSymbolExpr.get / AffineConstantExpr.get / affine_apply block used
+    in every 1D vectorized example with a 1x2 herd.
+
+    Args:
+        loop_var:  outer loop induction variable (SSA Value)
+        tile_idx:  herd tile index, e.g. _ty          (SSA Value)
+        tile_n:    tile size in elements               (Python int)
+    Returns:
+        SSA Value holding the computed index.
+    """
+    from .affine import apply as affine_apply
+    offset_map = AffineMap.get(
+        0, 2,
+        [
+            AffineExpr.get_add(
+                AffineSymbolExpr.get(0),
+                AffineExpr.get_mul(
+                    AffineSymbolExpr.get(1),
+                    AffineConstantExpr.get(tile_n),
+                ),
+            )
+        ],
+    )
+    return affine_apply(offset_map, [loop_var, tile_idx])
+
+
 def external_func(name, inputs, outputs=None, visibility="private"):
     if outputs is None:
         outputs = []
