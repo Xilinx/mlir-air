@@ -15,6 +15,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -51,98 +52,53 @@ namespace air {
 
 static std::atomic<uint64_t> DmaMemcpyOpID;
 
-static void extractOperandsFromSubview(memref::SubViewOp subview,
-                                       OpBuilder &builder,
-                                       SmallVector<Value, 4> &offsets,
-                                       SmallVector<Value, 4> &sizes,
-                                       SmallVector<Value, 4> &strides) {
-  auto subview_offsets = subview.getOffsets().begin();
+static LogicalResult
+extractOperandsFromSubview(memref::SubViewOp subview, OpBuilder &builder,
+                           SmallVector<Value, 4> &offsets,
+                           SmallVector<Value, 4> &sizes,
+                           SmallVector<Value, 4> &strides) {
+  auto loc = subview.getLoc();
+
+  // Strides: the DMA needs the result type's memory layout strides
+  // (= source_stride * subview_stride), not the subview's own strides.
   auto static_offsets = subview.getStaticOffsets();
   auto static_sizes = subview.getStaticSizes();
   auto static_strides = subview.getStaticStrides();
-  auto loc = subview.getLoc();
-
-  // get the strides and offsets from the memref type
   auto inferredType = llvm::cast<MemRefType>(memref::SubViewOp::inferResultType(
       subview.getSourceType(), static_offsets, static_sizes, static_strides));
   int64_t offset;
   SmallVector<int64_t, 4> layout_strides;
-  auto successStrides =
-      inferredType.getStridesAndOffset(layout_strides, offset);
-  if (failed(successStrides)) {
-    llvm::outs() << "Failed to get strides\n";
-    return; // failure();
+  if (failed(inferredType.getStridesAndOffset(layout_strides, offset)))
+    return failure();
+
+  for (auto ls : layout_strides) {
+    if (ShapedType::isDynamic(ls))
+      return failure();
+    strides.push_back(arith::ConstantIndexOp::create(builder, loc, ls));
   }
 
-  for (auto o : static_offsets) {
-    if (o >= 0)
-      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, o));
-    else
-      offsets.push_back(*subview_offsets++);
-  }
-  for (auto s : static_sizes)
-    sizes.push_back(arith::ConstantIndexOp::create(builder, loc, s));
-  for (auto s : layout_strides)
-    strides.push_back(arith::ConstantIndexOp::create(builder, loc, s));
+  // Offsets and sizes: use getMixed* APIs to handle static/dynamic uniformly.
+  for (auto ofr : subview.getMixedOffsets())
+    offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+  for (auto ofr : subview.getMixedSizes())
+    sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+
+  return success();
 }
 
 static void extractOperandsFromReinterpretCast(
     memref::ReinterpretCastOp reinterpretCast, OpBuilder &builder,
     SmallVector<Value, 4> &offsets, SmallVector<Value, 4> &sizes,
     SmallVector<Value, 4> &strides) {
-  auto reinterpretCast_offsets = reinterpretCast.getOffsets().begin();
-  auto static_offsets = reinterpretCast.getStaticOffsets();
-  auto static_sizes = reinterpretCast.getStaticSizes();
   auto loc = reinterpretCast.getLoc();
 
-  // Fixup an issue in the reinterpretCast output memref's strided layout giving
-  // false dynamic strides
-  auto constifyStridesInStridedLayout =
-      [](MemRefType rankedMemRefType,
-         memref::ReinterpretCastOp reinterpretCast) {
-        StridedLayoutAttr stridedLayout =
-            dyn_cast_if_present<StridedLayoutAttr>(
-                rankedMemRefType.getLayout());
-        SmallVector<int64_t> correctedStaticStrides(
-            stridedLayout.getStrides().size(), 0);
-        for (auto [index, stride] :
-             llvm::enumerate(reinterpretCast.getMixedStrides())) {
-          if (auto constStride = getConstantIntValue(stride))
-            correctedStaticStrides[index] = *constStride;
-          else
-            correctedStaticStrides[index] = stridedLayout.getStrides()[index];
-        }
-        auto correctedStridedLayout = StridedLayoutAttr::get(
-            reinterpretCast->getContext(), stridedLayout.getOffset(),
-            ArrayRef(correctedStaticStrides));
-        return MemRefType::Builder(rankedMemRefType)
-            .setShape(rankedMemRefType.getShape())
-            .setLayout(correctedStridedLayout);
-      };
-
-  MemRefType reinterpretCastType = constifyStridesInStridedLayout(
-      reinterpretCast.getType(), reinterpretCast);
-
-  // get the strides and offsets from the memref type
-  int64_t offset;
-  SmallVector<int64_t, 4> layout_strides;
-  auto successStrides =
-      reinterpretCastType.getStridesAndOffset(layout_strides, offset);
-  if (failed(successStrides)) {
-    llvm::outs() << "Failed to get strides\n";
-    return; // failure();
-  }
-
-  for (auto o : static_offsets) {
-    if (o >= 0)
-      offsets.push_back(arith::ConstantIndexOp::create(builder, loc, o));
-    else
-      offsets.push_back(*reinterpretCast_offsets++);
-  }
-  for (auto s : static_sizes)
-    sizes.push_back(arith::ConstantIndexOp::create(builder, loc, s));
-  for (auto s : layout_strides)
-    strides.push_back(arith::ConstantIndexOp::create(builder, loc, s));
+  // Use getMixed* APIs to handle static/dynamic values uniformly.
+  for (auto ofr : reinterpretCast.getMixedOffsets())
+    offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+  for (auto ofr : reinterpretCast.getMixedSizes())
+    sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+  for (auto ofr : reinterpretCast.getMixedStrides())
+    strides.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
   while (offsets.size() < sizes.size())
     offsets.insert(offsets.begin(),
                    arith::ConstantIndexOp::create(builder, loc, 0));
@@ -206,16 +162,14 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   if (air::isL3(src_type) && air::isL3(dst_type))
     return failure();
 
-  if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
-    return failure();
-
   SmallVector<Value, 4> src_offsets, dst_offsets;
   SmallVector<Value, 4> src_strides, dst_strides;
   SmallVector<Value, 4> src_sizes, dst_sizes;
 
   if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
-                               src_strides);
+    if (failed(extractOperandsFromSubview(subview, rewriter, src_offsets,
+                                          src_sizes, src_strides)))
+      return failure();
     src = subview.getSource();
     // Also peel a reinterpret_cast if the subview's source is one.
     // For transposed memrefs (stride-1 in the first dimension, i.e. the
@@ -257,8 +211,9 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   }
 
   if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
-                               dst_strides);
+    if (failed(extractOperandsFromSubview(subview, rewriter, dst_offsets,
+                                          dst_sizes, dst_strides)))
+      return failure();
     dst = subview.getSource();
     if (auto reinterpretCast = dst.getDefiningOp<memref::ReinterpretCastOp>()) {
       auto rcOffsets = reinterpretCast.getOffsets();
