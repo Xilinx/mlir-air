@@ -52,18 +52,12 @@ namespace air {
 
 static std::atomic<uint64_t> DmaMemcpyOpID;
 
-static void extractOperandsFromSubview(memref::SubViewOp subview,
-                                       OpBuilder &builder,
-                                       SmallVector<Value, 4> &offsets,
-                                       SmallVector<Value, 4> &sizes,
-                                       SmallVector<Value, 4> &strides) {
+static LogicalResult
+extractOperandsFromSubview(memref::SubViewOp subview, OpBuilder &builder,
+                           SmallVector<Value, 4> &offsets,
+                           SmallVector<Value, 4> &sizes,
+                           SmallVector<Value, 4> &strides) {
   auto loc = subview.getLoc();
-
-  // Offsets and sizes: use getMixed* APIs to handle static/dynamic uniformly.
-  for (auto ofr : subview.getMixedOffsets())
-    offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
-  for (auto ofr : subview.getMixedSizes())
-    sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
 
   // Strides: the DMA needs the result type's memory layout strides
   // (= source_stride * subview_stride), not the subview's own strides.
@@ -74,25 +68,22 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
       subview.getSourceType(), static_offsets, static_sizes, static_strides));
   int64_t offset;
   SmallVector<int64_t, 4> layout_strides;
-  auto successStrides =
-      inferredType.getStridesAndOffset(layout_strides, offset);
-  if (failed(successStrides)) {
-    llvm::outs() << "Failed to get strides\n";
-    return;
-  }
+  if (failed(inferredType.getStridesAndOffset(layout_strides, offset)))
+    return failure();
 
   for (auto ls : layout_strides) {
-    if (!ShapedType::isDynamic(ls)) {
-      strides.push_back(arith::ConstantIndexOp::create(builder, loc, ls));
-    } else {
-      // Dynamic result strides are not yet supported; clear outputs so the
-      // caller falls back to the plain memref path.
-      offsets.clear();
-      sizes.clear();
-      strides.clear();
-      return;
-    }
+    if (ShapedType::isDynamic(ls))
+      return failure();
+    strides.push_back(arith::ConstantIndexOp::create(builder, loc, ls));
   }
+
+  // Offsets and sizes: use getMixed* APIs to handle static/dynamic uniformly.
+  for (auto ofr : subview.getMixedOffsets())
+    offsets.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+  for (auto ofr : subview.getMixedSizes())
+    sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
+
+  return success();
 }
 
 static void extractOperandsFromReinterpretCast(
@@ -176,8 +167,9 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   SmallVector<Value, 4> src_sizes, dst_sizes;
 
   if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
-                               src_strides);
+    if (failed(extractOperandsFromSubview(subview, rewriter, src_offsets,
+                                          src_sizes, src_strides)))
+      return failure();
     src = subview.getSource();
     // Also peel a reinterpret_cast if the subview's source is one.
     // For transposed memrefs (stride-1 in the first dimension, i.e. the
@@ -219,8 +211,9 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   }
 
   if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-    extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
-                               dst_strides);
+    if (failed(extractOperandsFromSubview(subview, rewriter, dst_offsets,
+                                          dst_sizes, dst_strides)))
+      return failure();
     dst = subview.getSource();
     if (auto reinterpretCast = dst.getDefiningOp<memref::ReinterpretCastOp>()) {
       auto rcOffsets = reinterpretCast.getOffsets();

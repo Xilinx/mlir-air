@@ -34,8 +34,7 @@ func.func @dynamic_size_reinterpret_cast(%arg0: memref<*xf32>, %off: index, %n: 
   return
 }
 
-// Both source and destination have dynamic shapes (no subview/reinterpret_cast).
-// The copy should still be converted to air.dma_memcpy_nd.
+// Dynamic source without subview/reinterpret_cast, static L1 destination.
 // CHECK-LABEL: func.func @plain_dynamic_memref
 // CHECK: air.dma_memcpy_nd
 func.func @plain_dynamic_memref(%arg0: memref<?x64xf32>, %arg1: memref<16x64xf32, 2>) {
