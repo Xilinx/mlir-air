@@ -1,6 +1,5 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 import numpy as np
 
 from air.ir import *
@@ -8,7 +7,7 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -24,19 +23,8 @@ def build_module():
     xrt_dtype = type_mapper(INOUT_DATATYPE)
     memrefTyInOut = MemRefType.get(IMAGE_SIZE, xrt_dtype)
 
-    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L2)
-
-    image_type_l1 = MemRefType.get(
-        shape=IMAGE_SIZE,
-        element_type=xrt_dtype,
-        memory_space=mem_space_l1,
-    )
-    image_type_l2 = MemRefType.get(
-        shape=IMAGE_SIZE,
-        element_type=xrt_dtype,
-        memory_space=mem_space_l2,
-    )
+    image_type_l1 = l1_memref_type(IMAGE_SIZE, xrt_dtype)
+    image_type_l2 = l2_memref_type(IMAGE_SIZE, xrt_dtype)
 
     Channel("ChanInL2")
     Channel("ChanOutL2")
@@ -96,28 +84,7 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the channel hierarchical example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
-    )
+    parser = make_air_parser("Builds, runs, and tests the channel hierarchical example")
 
     args = parser.parse_args()
 
@@ -133,14 +100,12 @@ if __name__ == "__main__":
         IMAGE_SIZE
     )
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
-        instance_name="copy",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
     exit(
-        runner.run_test(
-            mlir_module, inputs=[input_matrix], expected_outputs=[output_matrix]
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_matrix],
+            instance_name="copy",
+            expected_outputs=[output_matrix],
         )
     )

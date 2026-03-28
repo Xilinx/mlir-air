@@ -5,13 +5,14 @@
 # SPDX-License-Identifier: MIT
 
 """
-Test script that uses XRTRunner to compile, run, and validate the
+Test script that compiles, runs, and validates the
 multi-launch PDI reconfiguration example using ELF output format.
 """
 
 import numpy as np
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.ir import *
+import aie.utils
 
 # Define the AIR module with two air.launch operations using iteration spaces
 # - Launch 1 (add_two): iterates 8 times, processing tiles at offsets 0,16,32,...,112 (adds 2)
@@ -157,21 +158,19 @@ def main():
     with Context() as ctx, Location.unknown():
         air_module = Module.parse(air_tiled_ir_string)
 
-        # Create XRTRunner with ELF output format
-        # instance_name should match the func.func name (@reconfigure_example)
-        runner = XRTRunner(
+        npu_kernel = compile_air(
+            air_module,
             output_format="elf",
-            instance_name="reconfigure_example",  # matches func.func @reconfigure_example
+            instance_name="reconfigure_example",
             omit_while_true_loop=False,
             runtime_loop_tiling_sizes=[4, 4],
         )
-
-        # Run the test
-        result = runner.run_test(
-            mlir_module=air_module,
-            inputs=[input_data],
-            expected_outputs=[expected_output],
-        )
+        runtime = get_air_runtime()
+        io_args = [
+            aie.utils.tensor(input_data),
+            aie.utils.tensor(np.zeros(expected_output.shape, expected_output.dtype)),
+        ]
+        result = runtime.run_test(npu_kernel, io_args, refs={1: expected_output})
 
         return result
 

@@ -12,8 +12,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
 from air.dialects import scf, affine, arith
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from ml_dtypes import bfloat16
 
 range_ = for_
@@ -733,6 +732,13 @@ if __name__ == "__main__":
         default="aie2",
         help="Target architecture (default: aie2)",
     )
+    parser.add_argument(
+        "--compile-mode",
+        type=str,
+        choices=["compile-only", "compile-and-run"],
+        dest="compile_mode",
+        default="compile-and-run",
+    )
 
     args = parser.parse_args()
 
@@ -753,9 +759,6 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    # Import XRT dependencies only when running tests
-    from air.backend.xrt_runner import XRTRunner, type_mapper
-    from air.backend.xrt import XRTBackend
     from air.extras import types as extrasT
     from ml_dtypes import bfloat16
 
@@ -800,19 +803,15 @@ if __name__ == "__main__":
 
     lazy_attn_output = (Gp / sp).astype(OUTPUT_DATATYPE)
 
-    runner = XRTRunner(
-        omit_while_true_loop=False,
-        omit_pingpong=True,
-        verbose=False,
-        runtime_loop_tiling_sizes=[1, 1],
-        output_format=args.output_format,
-        instance_name="attention_bf16",
-    )
     exit(
-        runner.run_test(
+        run_on_npu(
+            args,
             mlir_module,
             inputs=[input_q_scaled, input_k, input_v, input_m],
+            instance_name="attention_bf16",
             expected_outputs=[lazy_attn_output],
             rtol=1e-1,
+            runtime_loop_tiling_sizes=[1, 1],
+            omit_pingpong=True,
         )
     )

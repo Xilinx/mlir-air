@@ -1,6 +1,5 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 import numpy as np
 
 from air.ir import *
@@ -8,7 +7,7 @@ from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -42,15 +41,8 @@ def build_module():
             # The arguments are still the input and the output
             @segment(name="seg", operands=[a, b])
             def segment_body(arg2, arg3):
-                # We want to store our data in L1 memory
-                mem_space_l2 = IntegerAttr.get(T.i32(), MemorySpace.L2)
-
                 # This is the type definition of the tile
-                tile_type_l2 = MemRefType.get(
-                    shape=TILE_SIZE,
-                    element_type=xrt_dtype,
-                    memory_space=mem_space_l2,
-                )
+                tile_type_l2 = l2_memref_type(TILE_SIZE, xrt_dtype)
 
                 # We must allocate a buffer of tile size for the input/output
                 tile_in_l2 = AllocOp(tile_type_l2, [], [])
@@ -60,15 +52,8 @@ def build_module():
                 @herd(name="copyherd", sizes=[1, 1], operands=[arg2, arg3, tile_in_l2])
                 def herd_body(tx, ty, sx, sy, a, b, my_l2_tile):
 
-                    # We want to store our data in L1 memory
-                    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
                     # This is the type definition of the tile
-                    tile_type_l1 = MemRefType.get(
-                        shape=TILE_SIZE,
-                        element_type=xrt_dtype,
-                        memory_space=mem_space_l1,
-                    )
+                    tile_type_l1 = l1_memref_type(TILE_SIZE, xrt_dtype)
 
                     # We must allocate a buffer of tile size for the input/output
                     tile_in_l1 = AllocOp(tile_type_l1, [], [])
@@ -114,29 +99,7 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the segment_alloc example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
-    )
-
+    parser = make_air_parser("Builds, runs, and tests the segment_alloc example")
     args = parser.parse_args()
 
     mlir_module = build_module()
@@ -150,10 +113,11 @@ if __name__ == "__main__":
         for w in range(TILE_WIDTH):
             output_b[h, w] = input_a[h, w]
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
+    run_on_npu(
+        args,
+        mlir_module,
+        inputs=[input_a],
+        expected_outputs=[output_b],
         instance_name="copy",
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

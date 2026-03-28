@@ -7,12 +7,11 @@ import argparse
 import numpy as np
 
 np.random.seed(42)
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.compiler.util import run_transform
 from air.ir import *
 import air.passmanager
-import filelock
+import aie.utils
 from ml_dtypes import bfloat16 as bfloat16_t
 
 parser = argparse.ArgumentParser(
@@ -130,54 +129,31 @@ with air.ir.Context() as ctx, Location.unknown():
     # Run compile and load
     ###############################################
 
-    # Determine output file extension based on format
-    output_ext = "elf" if args.output_format == "elf" else "xclbin"
+    npu_kernel = compile_air(
+        air_module,
+        omit_while_true_loop=False,
+        output_format=args.output_format,
+        instance_name="bare_matmul",
+        runtime_loop_tiling_sizes=[4, 4],
+    )
 
     if args.compile_only:
-        # Compile-only mode: generate binary without validation
-        print(f"Compile-only mode: generating {output_ext} binary...")
-        backend = XRTBackend(
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="bare_matmul",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(air_module)
-        backend.unload()
-        print("Compilation complete. Generated files:")
-        print(f"  - air.{output_ext}")
-        if args.output_format == "xclbin":
-            print("  - air.insts.bin")
-        print("Run profiling with: ./test.exe")
         exit(0)
-    else:
-        # Normal mode: compile and run validation
 
-        input_type = np.int8
-        output_type = np.int32
-        A = np.random.randint(
-            low=0, high=8, size=(M, K), dtype=input_type
-        )  # Shape [M, K]
-        B = np.random.randint(
-            low=0, high=8, size=(K, N), dtype=input_type
-        )  # Shape [K, N]
+    # Normal mode: compile and run validation
+    input_type = np.int8
+    output_type = np.int32
+    A = np.random.randint(low=0, high=8, size=(M, K), dtype=input_type)  # Shape [M, K]
+    B = np.random.randint(low=0, high=8, size=(K, N), dtype=input_type)  # Shape [K, N]
 
-        C = np.matmul(A.astype(output_type), B.astype(output_type)).astype(
-            output_type
-        )  # Shape [M, N]
+    C = np.matmul(A.astype(output_type), B.astype(output_type)).astype(
+        output_type
+    )  # Shape [M, N]
 
-        runner = XRTRunner(
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-            output_format=args.output_format,
-            instance_name="bare_matmul",
-            # verbose=True,
-        )
-        exit(
-            runner.run_test(
-                air_module,
-                inputs=[A, B],
-                expected_outputs=[C],
-                # rtol=1e-1,
-            )
-        )
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(A),
+        aie.utils.tensor(B),
+        aie.utils.tensor(np.zeros(C.shape, C.dtype)),
+    ]
+    exit(runtime.run_test(npu_kernel, io_args, refs={2: C}))

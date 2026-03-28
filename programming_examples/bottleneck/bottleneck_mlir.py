@@ -57,8 +57,8 @@ from air.dialects.func import FuncOp, CallOp
 from air.dialects import scf
 from air.dialects.scf import for_, yield_
 from air.dialects import vector as vector_dialect
-from air.backend.xrt_runner import XRTRunner
-from air.backend.xrt import XRTBackend
+import aie.utils
+from air.backend.xrt import compile_air, get_air_runtime
 
 range_ = for_
 
@@ -1542,27 +1542,31 @@ if __name__ == "__main__":
                 return False
 
         # Compile and run directly to get actual outputs for custom comparison
-        # (XRTRunner._check_outputs uses exact match for integers, but AIE2P
-        # SRS positive_inf rounding can differ by 1 from Python's rounding)
+        # (run_test uses atol check, but AIE2P SRS positive_inf rounding can
+        # differ by 1 from Python's rounding, so we use a custom comparison.)
         import filelock
 
-        backend = XRTBackend(
+        npu_kernel = compile_air(
+            mlir_module,
             verbose=args.verbose,
-            omit_while_true_loop=False,
+            output_format=args.output_format,
             debug_ir=args.debug_ir,
             omit_pingpong="all",
             runtime_loop_tiling_sizes=[4, 4],
+            instance_name="bottleneck_block",
         )
         output_placeholder = np.zeros(expected_out.shape, expected_out.dtype)
-        expanded_inputs = [input_act_flat, total_wts, output_placeholder]
-
-        compiled_module = backend.compile(mlir_module)
+        runtime = get_air_runtime()
+        io_args = [
+            aie.utils.tensor(input_act_flat),
+            aie.utils.tensor(total_wts),
+            aie.utils.tensor(output_placeholder),
+        ]
+        handle = runtime.load(npu_kernel)
         with filelock.FileLock("/tmp/npu.lock"):
-            module_function = backend.load(compiled_module)
-            actual_outputs = module_function(*expanded_inputs)
-        backend.unload()
+            runtime.run(handle, io_args)
 
-        actual_out = actual_outputs[len([input_act_flat, total_wts])]
+        actual_out = io_args[len([input_act_flat, total_wts])].numpy()
 
         if compare_with_tolerance(actual_out, expected_out):
             print("PASS!")
@@ -1572,13 +1576,13 @@ if __name__ == "__main__":
 
     elif args.compile_mode == "compile-only":
         print("\nCompiling AIR bottleneck design (no execution)...")
-        backend = XRTBackend(
+        compile_air(
+            mlir_module,
             verbose=args.verbose,
-            omit_while_true_loop=False,
+            output_format=args.output_format,
             debug_ir=args.debug_ir,
-            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues,
+            omit_pingpong="all",
             runtime_loop_tiling_sizes=[4, 4],
+            instance_name="bottleneck_block",
         )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
         print("Compilation successful!")

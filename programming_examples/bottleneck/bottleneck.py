@@ -42,7 +42,6 @@ This models the AIE architecture where adjacent tiles can share L1 memory,
 enabling zero-copy data transfer between neighboring cores.
 """
 
-import argparse
 import numpy as np
 
 from air.ir import *
@@ -53,8 +52,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -105,62 +103,38 @@ def build_module():
     l3_wts_ty = MemRefType.get((TOTAL_WEIGHTS,), i8)
     l3_act_out_ty = MemRefType.get((ACTIVATIONS_OUT,), i8)
 
-    # L2 memory space
-    l2_mem_space = IntegerAttr.get(i32, MemorySpace.L2)
-
-    # L1 memory space
-    l1_mem_space = IntegerAttr.get(i32, MemorySpace.L1)
-
     # Per-row tile types (processing one row at a time for depth-first dataflow)
     # Layer 1 input: one row of 32 pixels with 256 input channels
-    l1_layer1_in_ty = MemRefType.get(
-        (TENSOR_IN_W, 1, TENSOR_L1_IN_C), i8, memory_space=l1_mem_space
-    )
-    l1_wts_layer1_ty = MemRefType.get((WEIGHTS_L1_SZ,), i8, memory_space=l1_mem_space)
-    l1_layer1_out_ty = MemRefType.get(
-        (TENSOR_IN_W, 1, TENSOR_L1_OUT_C), i8, memory_space=l1_mem_space
-    )
+    l1_layer1_in_ty = l1_memref_type((TENSOR_IN_W, 1, TENSOR_L1_IN_C), i8)
+    l1_wts_layer1_ty = l1_memref_type((WEIGHTS_L1_SZ,), i8)
+    l1_layer1_out_ty = l1_memref_type((TENSOR_IN_W, 1, TENSOR_L1_OUT_C), i8)
 
     # Layer 2 (3x3 conv) types
-    l1_layer2_in_ty = MemRefType.get(
-        (TENSOR_IN_W, 1, TENSOR_L2_IN_C), i8, memory_space=l1_mem_space
-    )
+    l1_layer2_in_ty = l1_memref_type((TENSOR_IN_W, 1, TENSOR_L2_IN_C), i8)
     # L1 weights for layer 2 (36KB fits in AIE2's 64KB L1)
-    l1_wts_layer2_ty = MemRefType.get((WEIGHTS_L2_SZ,), i8, memory_space=l1_mem_space)
+    l1_wts_layer2_ty = l1_memref_type((WEIGHTS_L2_SZ,), i8)
     # Each 3x3 core produces half the output channels
-    l1_layer2_out_ty = MemRefType.get(
-        (TENSOR_IN_W, 1, TENSOR_L2_OUT_C // 2), i8, memory_space=l1_mem_space
-    )
+    l1_layer2_out_ty = l1_memref_type((TENSOR_IN_W, 1, TENSOR_L2_OUT_C // 2), i8)
     # Combined output buffer for both 3x3 conv cores (shared L1, flat 1D)
     # Core 0 writes first 1024 bytes, Core 1 writes next 1024 bytes
     CONV3X3_OUT_HALF_SIZE = TENSOR_IN_W * 1 * (TENSOR_L2_OUT_C // 2)  # 1024
-    l1_layer2_out_combined_ty = MemRefType.get(
-        (CONV3X3_OUT_HALF_SIZE * 2,), i8, memory_space=l1_mem_space
-    )
+    l1_layer2_out_combined_ty = l1_memref_type((CONV3X3_OUT_HALF_SIZE * 2,), i8)
 
     # Layer 3 (1x1 conv + skip) types
-    l1_layer3_in_ty = MemRefType.get(
-        (TENSOR_IN_W, 1, TENSOR_L3_IN_C // 2), i8, memory_space=l1_mem_space
-    )
-    l1_wts_layer3_ty = MemRefType.get((WEIGHTS_L3_SZ,), i8, memory_space=l1_mem_space)
-    l1_layer3_out_ty = MemRefType.get(
-        (TENSOR_IN_W, 1, TENSOR_L3_OUT_C), i8, memory_space=l1_mem_space
-    )
+    l1_layer3_in_ty = l1_memref_type((TENSOR_IN_W, 1, TENSOR_L3_IN_C // 2), i8)
+    l1_wts_layer3_ty = l1_memref_type((WEIGHTS_L3_SZ,), i8)
+    l1_layer3_out_ty = l1_memref_type((TENSOR_IN_W, 1, TENSOR_L3_OUT_C), i8)
 
     # L2 buffer types for skip connection
-    l2_skip_buf_ty = MemRefType.get(
-        (TENSOR_IN_W, 1, TENSOR_L1_IN_C), i8, memory_space=l2_mem_space
-    )
+    l2_skip_buf_ty = l2_memref_type((TENSOR_IN_W, 1, TENSOR_L1_IN_C), i8)
 
     # L2 buffer type for output
-    l2_out_buf_ty = MemRefType.get(
-        (TENSOR_IN_W, 1, TENSOR_L3_OUT_C), i8, memory_space=l2_mem_space
-    )
+    l2_out_buf_ty = l2_memref_type((TENSOR_IN_W, 1, TENSOR_L3_OUT_C), i8)
 
     # L2 buffer types for weight staging
-    l2_wts_layer1_ty = MemRefType.get((WEIGHTS_L1_SZ,), i8, memory_space=l2_mem_space)
-    l2_wts_layer2_ty = MemRefType.get((WEIGHTS_L2_SZ,), i8, memory_space=l2_mem_space)
-    l2_wts_layer3_ty = MemRefType.get((WEIGHTS_L3_SZ,), i8, memory_space=l2_mem_space)
+    l2_wts_layer1_ty = l2_memref_type((WEIGHTS_L1_SZ,), i8)
+    l2_wts_layer2_ty = l2_memref_type((WEIGHTS_L2_SZ,), i8)
+    l2_wts_layer3_ty = l2_memref_type((WEIGHTS_L3_SZ,), i8)
 
     # Declare external convolution kernel functions
     # These would be linked from compiled convolution kernels
@@ -951,29 +925,7 @@ def compute_golden_reference(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="bottleneck.py",
-        description="Builds, runs, and tests the bottleneck block example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-        help="Print MLIR IR and exit",
-    )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-        help="Configure whether to run after compile",
-    )
+    parser = make_air_parser("Builds, runs, and tests the bottleneck block example")
     parser.add_argument(
         "--debug-ir",
         action="store_true",
@@ -1059,52 +1011,31 @@ if __name__ == "__main__":
         print(f"Expected output shape: {expected_out.shape}")
 
         print("\nRunning AIR bottleneck design...")
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            debug_ir=args.debug_ir,
-            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-
-        # Custom comparison with scale factor tolerance
-        def compare_with_tolerance(actual, expected):
-            """Compare outputs with tolerance based on quantization scale."""
-            actual_scaled = actual.astype(np.float32) * inp_scale4
-            expected_scaled = expected.astype(np.float32) * inp_scale4
-
-            if np.allclose(actual_scaled, expected_scaled, rtol=0, atol=inp_scale4):
-                print("\n✓ PASS: Output matches golden reference!")
-                return True
-            else:
-                diff = np.abs(actual_scaled - expected_scaled)
-                print(f"\n✗ FAIL: Output mismatch")
-                print(f"  Max difference: {diff.max():.4f}")
-                print(f"  Mean difference: {diff.mean():.4f}")
-                print(
-                    f"  Mismatched elements: {np.sum(diff > inp_scale4)} / {len(diff)}"
-                )
-                return False
-
         exit(
-            runner.run_test(
+            run_on_npu(
+                args,
                 mlir_module,
                 inputs=[input_act_flat, total_wts],
+                instance_name="bottleneck_block",
                 expected_outputs=[expected_out],
                 rtol=0,
                 atol=1,  # Allow 1 unit of quantization error
+                runtime_loop_tiling_sizes=[4, 4],
+                debug_ir=args.debug_ir,
+                omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues
             )
         )
 
     elif args.compile_mode == "compile-only":
         print("\nCompiling AIR bottleneck design (no execution)...")
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            debug_ir=args.debug_ir,
-            omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues,
-            runtime_loop_tiling_sizes=[4, 4],
+        exit(
+            run_on_npu(
+                args,
+                mlir_module,
+                inputs=[],
+                instance_name="bottleneck_block",
+                runtime_loop_tiling_sizes=[4, 4],
+                debug_ir=args.debug_ir,
+                omit_pingpong="all",  # Disable all ping-pong to avoid shared buffer sync issues
+            )
         )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
-        print("Compilation successful!")

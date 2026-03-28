@@ -7,12 +7,11 @@ import argparse
 import numpy as np
 
 np.random.seed(42)
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.compiler.util import run_transform
 from air.ir import *
 import air.passmanager
-import filelock
+import aie.utils
 from ml_dtypes import bfloat16
 
 parser = argparse.ArgumentParser(
@@ -201,18 +200,13 @@ with air.ir.Context() as ctx, Location.unknown():
     C = softmax(A).astype(input_type)
 
     ###### Compile and test
-    runner = XRTRunner(
+    npu_kernel = compile_air(
+        air_module,
         omit_while_true_loop=False,
         output_format=args.output_format,
         instance_name="softmax_kernel",
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(
-        runner.run_test(
-            air_module,
-            inputs=[A],
-            expected_outputs=[C],
-            rtol=1e-2,
-            atol=1e-3,
-        )
-    )
+    runtime = get_air_runtime()
+    io_args = [aie.utils.tensor(A), aie.utils.tensor(np.zeros(C.shape, C.dtype))]
+    exit(runtime.run_test(npu_kernel, io_args, refs={1: C}, rtol=1e-2, atol=1e-3))

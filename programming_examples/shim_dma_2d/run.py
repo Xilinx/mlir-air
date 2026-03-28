@@ -3,35 +3,22 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-import argparse
 import numpy as np
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from shim_dma_2d import *
 
 INOUT_DATATYPE = np.int32
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the shim_dma_2d example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
-    )
+    parser = make_air_parser("Builds, runs, and tests the shim_dma_2d example")
     args = parser.parse_args()
 
     mlir_module = build_module()
+
+    if args.print_module_only:
+        print(mlir_module)
+        exit(0)
 
     input_a = np.arange(np.prod(IMAGE_SIZE), dtype=INOUT_DATATYPE).reshape(IMAGE_SIZE)
     output_b = np.zeros(shape=IMAGE_SIZE, dtype=INOUT_DATATYPE)
@@ -39,10 +26,12 @@ if __name__ == "__main__":
         for w in range(TILE_WIDTH):
             output_b[h, w] = input_a[h, w]
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
-        instance_name="copy",
-        runtime_loop_tiling_sizes=[4, 4],
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
+            instance_name="copy",
+            expected_outputs=[output_b],
+        )
     )
-    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

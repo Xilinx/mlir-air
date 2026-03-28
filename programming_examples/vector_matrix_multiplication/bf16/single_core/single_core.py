@@ -1,6 +1,5 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 from ml_dtypes import bfloat16
 
 from air.ir import *
@@ -10,7 +9,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -272,20 +271,7 @@ if __name__ == "__main__":
     INPUT_DATATYPE = bfloat16
     OUTPUT_DATATYPE = bfloat16
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the passthrough_dma example")
     parser.add_argument(
         "--k", type=int, default=K, help="K dimension size in a (1xK) * (KxN) matmul"
     )
@@ -300,14 +286,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--tile-n", type=int, default=TILE_N, help="N dimension size of each L1 tile"
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
 
     args = parser.parse_args()
@@ -330,17 +308,12 @@ if __name__ == "__main__":
     )
     output_c = np.dot(input_a.astype(OUTPUT_DATATYPE), input_b.astype(OUTPUT_DATATYPE))
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        omit_while_true_loop=False,
-        output_format=args.output_format,
-        instance_name="vecmat_bf16",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
     exit(
-        runner.run_test(
+        run_on_npu(
+            args,
             mlir_module,
             inputs=[input_a, input_b],
+            instance_name="vecmat_bf16",
             expected_outputs=[output_c],
             rtol=0.04,
         )

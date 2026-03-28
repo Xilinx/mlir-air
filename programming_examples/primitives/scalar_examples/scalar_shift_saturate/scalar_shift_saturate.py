@@ -17,19 +17,16 @@ round-trip preserves the pattern match while keeping DMA types uniform.
 Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
 """
 
-import argparse
 import numpy as np
 
 from air.ir import *
-from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
 from air.dialects import arith
 from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -45,11 +42,7 @@ def build_module(n, tile_n, np_dtype, shift_amount=4):
     l3memrefTy = MemRefType.get([n], xrt_dtype)
 
     # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    l1MemrefTy = l1_memref_type([tile_n], xrt_dtype)
 
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
     def scalar_shift_saturate(arg0, arg1):
@@ -64,21 +57,7 @@ def build_module(n, tile_n, np_dtype, shift_amount=4):
             l1_out = AllocOp(l1MemrefTy, [], [])
 
             for _l_ivx in range_(0, n, tile_n * num_tiles):
-
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                offset = tile_offset_1d(_l_ivx, _ty, tile_n)
 
                 dma_memcpy_nd(
                     l1_in,
@@ -138,12 +117,9 @@ if __name__ == "__main__":
     SHIFT_AMOUNT = 4
     INPUT_DATATYPE = np.int32
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the scalar shift+saturate example",
+    parser = make_air_parser(
+        "Builds, runs, and tests the scalar shift+saturate example"
     )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
     parser.add_argument("--n", type=int, default=N, help="Total number of elements")
     parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
     parser.add_argument(
@@ -151,20 +127,6 @@ if __name__ == "__main__":
         type=int,
         default=SHIFT_AMOUNT,
         help="Right shift amount (quantization scale factor)",
-    )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
     )
 
     args = parser.parse_args()
@@ -181,53 +143,37 @@ if __name__ == "__main__":
     max_val = (127 << args.shift_amount) + (1 << args.shift_amount)
     input_a = np.random.randint(-max_val, max_val, args.n, dtype=INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
+    num_samples = 100
+    sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
 
-        # Reference: SRS (Shift-Round-Saturate) with positive_inf rounding.
-        # AIECoreToStandard sets rounding mode 9 (positive_inf) for integer SRS,
-        # which rounds toward positive infinity at the midpoint.
-        def ref_shift_saturate(x, shift):
-            shifted = (x + (1 << (shift - 1))) >> shift
-            return np.clip(shifted, -128, 127).astype(np.int8).astype(np.int32)
+    # Reference: SRS (Shift-Round-Saturate) with positive_inf rounding.
+    # AIECoreToStandard sets rounding mode 9 (positive_inf) for integer SRS,
+    # which rounds toward positive infinity at the midpoint.
+    def ref_shift_saturate(x, shift):
+        shifted = (x + (1 << (shift - 1))) >> shift
+        return np.clip(shifted, -128, 127).astype(np.int8).astype(np.int32)
 
-        sampled_values = np.array(
-            [
-                ref_shift_saturate(input_a[i], args.shift_amount)
-                for i in zip(*sampled_indices)
-            ],
-            dtype=INPUT_DATATYPE,
-        )
-        sampled_data = {
-            "shape": (args.n,),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
+    sampled_values = np.array(
+        [
+            ref_shift_saturate(input_a[i], args.shift_amount)
+            for i in zip(*sampled_indices)
+        ],
+        dtype=INPUT_DATATYPE,
+    )
+    sampled_data = {
+        "shape": (args.n,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
             instance_name="scalar_shift_saturate",
-            runtime_loop_tiling_sizes=[4, 4],
+            stochastic_expected_outputs=[sampled_data],
+            rtol=0,
+            atol=0,
         )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=0,
-                atol=0,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    )

@@ -9,7 +9,7 @@ from air.ir import *
 import air.passmanager
 from air._mlir_libs._air import run_transform
 from air.dialects.air import module_builder
-from air.backend.xrt import XRTBackend
+from air.backend.xrt import compile_air
 
 import argparse
 
@@ -132,10 +132,10 @@ pm.run(air_module.operation)
 # Run compile and load
 ###############################################
 
-backend = XRTBackend(
+compile_air(
+    air_module,
     air_loop_fusion=True,
     runtime_loop_tiling_sizes=[1, 1],
     lower_linalg_to_func="kernel.o",
     use_lock_race_condition_fix=True,
 )
-backend.compile(air_module)

@@ -10,8 +10,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from ml_dtypes import bfloat16
 
 range_ = for_
@@ -867,37 +866,16 @@ if __name__ == "__main__":
         for i in range(0, args.n):
             output_xb[i] += softmax_output[t] * output_vc[t][i]
 
-    if args.compile_mode == "compile-and-run":
-        ###### Compile and test
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            omit_pingpong=True,
-            output_format=args.output_format,
-            instance_name="mha_bf16",
+    instance_name = args.instance_name if args.instance_name else "mha_bf16"
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a, input_b, output_kc, output_vc],
+            instance_name=instance_name,
+            expected_outputs=[output_xb],
+            rtol=1e0,
             runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a, input_b, output_kc, output_vc],
-                expected_outputs=[output_xb],
-                rtol=1e0,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        ####### Compile only
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
             omit_pingpong=True,
-            kernel_name=args.kernel_name,
-            instance_name=args.instance_name,
-            kernel_id=args.kernel_id,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
         )
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
+    )

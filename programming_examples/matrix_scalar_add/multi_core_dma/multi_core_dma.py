@@ -1,14 +1,11 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
-
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.dialects.affine import apply as affine_apply
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -43,62 +40,16 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                     operands=[arg2, arg3],
                 )
                 def herd_body(tx, ty, _sx, _sy, a, b):
-                    scaled_index_map_height = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(tile_height),
-                            )
-                        ],
+                    offset0 = tile_offset_1d(tx, 0, tile_height)
+                    offset1 = tile_offset_1d(ty, 0, tile_width)
+                    tile_index_height = arith.muli(
+                        tx,
+                        arith.ConstantOp.create_index(image_width // tile_width),
                     )
-                    scaled_index_map_width = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(tile_width),
-                            )
-                        ],
-                    )
-                    create_tile_index_height = AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(image_width // tile_width),
-                            )
-                        ],
-                    )
-                    create_tile_index = AffineMap.get(
-                        0,
-                        2,
-                        [
-                            AffineExpr.get_add(
-                                AffineSymbolExpr.get(0),
-                                AffineSymbolExpr.get(1),
-                            )
-                        ],
-                    )
-                    offset0 = affine_apply(scaled_index_map_height, [tx])
-                    offset1 = affine_apply(scaled_index_map_width, [ty])
-                    tile_index_height = affine_apply(create_tile_index_height, [tx])
-                    compute_tile_id = affine_apply(
-                        create_tile_index, [tile_index_height, ty]
-                    )
-
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
+                    compute_tile_id = arith.addi(tile_index_height, ty)
 
                     # This is the type definition of the tile
-                    tile_type = MemRefType.get(
-                        shape=tile_size,
-                        element_type=T.i32(),
-                        memory_space=mem_space,
-                    )
+                    tile_type = l1_memref_type(tile_size, T.i32())
 
                     # We must allocate a buffer of tile size for the input/output
                     tile_in = AllocOp(tile_type, [], [])
@@ -151,20 +102,7 @@ if __name__ == "__main__":
     TILE_HEIGHT = 16
     INOUT_DATATYPE = np.int32
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the passthrough_dma example")
     parser.add_argument(
         "--image-height",
         type=int,
@@ -179,14 +117,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--tile-width", type=int, default=TILE_WIDTH, help="Width of the tile data"
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
 
     args = parser.parse_args()
@@ -217,10 +147,11 @@ if __name__ == "__main__":
             )
             output_b[i, j] = input_a[i, j] + tile_num
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
+    run_on_npu(
+        args,
+        mlir_module,
+        inputs=[input_a],
+        expected_outputs=[output_b],
         instance_name="copy",
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

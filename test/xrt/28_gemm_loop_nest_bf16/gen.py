@@ -3,7 +3,7 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-from air.backend.xrt import XRTBackend
+from air.backend.xrt import compile_air
 from air.ir import *
 import air.passmanager
 
@@ -121,10 +121,10 @@ with air.ir.Context() as ctx, Location.unknown():
     # Run compile and load
     ###############################################
 
-    backend = XRTBackend(
+    compile_air(
+        air_module,
         omit_pingpong=True,
         lower_linalg_to_func="mm.o",
         use_lock_race_condition_fix=True,
         runtime_loop_tiling_sizes=[4, 4],
     )
-    backend.compile(air_module)

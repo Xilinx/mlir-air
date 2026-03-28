@@ -24,8 +24,7 @@ from air.dialects.memref import AllocOp, DeallocOp, subview
 from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, run_on_npu
 from air.extras import types as extrasT
 
 np.random.seed(42)
@@ -335,6 +334,9 @@ if __name__ == "__main__":
         np.float32
     )
 
+    # Set output_format based on padding requirements
+    args.output_format = "elf" if needs_padding else "xclbin"
+
     if args.compile_mode == "compile-and-run":
         # Golden reference: max(x, 0)
         num_samples = 100
@@ -381,29 +383,26 @@ if __name__ == "__main__":
             "values": sampled_values,
         }
 
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format="elf" if needs_padding else "xclbin",
-            instance_name="relu",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
         # bf16 truncation introduces rounding; use bf16-appropriate tolerance
         exit(
-            runner.run_test(
+            run_on_npu(
+                args,
                 mlir_module,
                 inputs=[input_a],
+                instance_name="relu",
                 stochastic_expected_outputs=[sampled_data],
                 rtol=1e-2,
+                runtime_loop_tiling_sizes=[4, 4],
             )
         )
 
     elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format="elf" if needs_padding else "xclbin",
-            runtime_loop_tiling_sizes=[4, 4],
+        exit(
+            run_on_npu(
+                args,
+                mlir_module,
+                inputs=[],
+                instance_name="relu",
+                runtime_loop_tiling_sizes=[4, 4],
+            )
         )
-        module_function = backend.compile(mlir_module)
-        backend.unload()

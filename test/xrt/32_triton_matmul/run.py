@@ -3,12 +3,11 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.compiler.util import run_transform
 from air.ir import *
 import air.passmanager
-import filelock
+import aie.utils
 
 import numpy as np
 
@@ -121,17 +120,18 @@ with air.ir.Context() as ctx, Location.unknown():
     B = np.random.rand(K, N).astype(input_type)  # Shape [K, N]
     C = np.matmul(A, B).astype(input_type)  # Shape [M, N]
 
-    ###### Compile and test
-    runner = XRTRunner(
+    npu_kernel = compile_air(
+        air_module,
         omit_while_true_loop=False,
         use_lock_race_condition_fix=True,
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(
-        runner.run_test(
-            air_module,
-            inputs=[A, B],
-            expected_outputs=[C],
-            rtol=1e-3,
-        )
-    )
+
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(A),
+        aie.utils.tensor(B),
+        aie.utils.tensor(np.zeros(C.shape, C.dtype)),
+    ]
+    refs = {2: C}
+    exit(runtime.run_test(npu_kernel, io_args, refs=refs, rtol=1e-3))

@@ -14,21 +14,24 @@ Uses a 1x2 AIE herd with DMA transfers between L3 and L1 memory.
 Computation is vectorized using vector.transfer_read/write.
 """
 
-import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 from ml_dtypes import bfloat16
 
 from air.ir import *
-from air.dialects.affine import apply as affine_apply
 from air.dialects.air import *
 from air.dialects import arith, math as math_dialect
 from air.dialects.arith import ConstantOp
-from air.dialects.memref import AllocOp, DeallocOp, subview
-from air.dialects.vector import transfer_read, transfer_write, BroadcastOp
+from air.dialects.memref import AllocOp, DeallocOp
+from air.dialects.vector import BroadcastOp
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
+from utils import vec_read, vec_write
 
 range_ = for_
 
@@ -43,14 +46,9 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
     index_type = IndexType.get()
 
     l3memrefTy = MemRefType.get([n], xrt_dtype_in)
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
-
-    vecTy = VectorType.get([VECTOR_SIZE], xrt_dtype_in)
-    identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+    l1MemrefTy = l1_memref_type([tile_n], xrt_dtype_in)
+    vecTy = vec_type(VECTOR_SIZE, xrt_dtype_in)
+    imap = identity_map_attr()
 
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy)
     def silu(arg0, arg1):
@@ -61,20 +59,7 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
             l1_out = AllocOp(l1MemrefTy, [], [])
 
             for _l_ivx in range_(0, n, tile_n * num_tiles):
-                offset_map = AffineMap.get(
-                    0,
-                    2,
-                    [
-                        AffineExpr.get_add(
-                            AffineSymbolExpr.get(0),
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(1),
-                                AffineConstantExpr.get(tile_n),
-                            ),
-                        )
-                    ],
-                )
-                offset = affine_apply(offset_map, [_l_ivx, _ty])
+                offset = tile_offset_1d(_l_ivx, _ty, tile_n)
 
                 dma_memcpy_nd(
                     l1_in,
@@ -94,10 +79,7 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
                 v_one = BroadcastOp(vecTy, one_const)
 
                 for j in range_(c0, cTileN, cVecSize):
-                    sub_in = subview(l1_in.result, [j], [VECTOR_SIZE], [1])
-                    sub_out = subview(l1_out.result, [j], [VECTOR_SIZE], [1])
-
-                    v_x = transfer_read(vecTy, sub_in, [c0], identity_map, cst0, [True])
+                    v_x = vec_read(l1_in, j, VECTOR_SIZE, c0, vecTy, cst0, imap)
 
                     # SiLU(x) = x * sigmoid(x)
                     #         = x * 0.5 * (tanh(x/2) + 1)
@@ -108,7 +90,7 @@ def build_module(n, tile_n, np_dtype_in, vector_size=16):
                     v_sigmoid = arith.mulf(v_tanh_plus_one, v_half.result)
                     v_silu = arith.mulf(v_x, v_sigmoid)
 
-                    transfer_write(None, v_silu, sub_out, [c0], identity_map, [True])
+                    vec_write(v_silu, l1_out, j, VECTOR_SIZE, c0, imap)
                     yield_([])
 
                 dma_memcpy_nd(
@@ -128,30 +110,11 @@ if __name__ == "__main__":
     TILE_N = 1024
     INPUT_DATATYPE = bfloat16
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the SiLU example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
+    parser = make_air_parser("Builds, runs, and tests the SiLU example")
     parser.add_argument("--n", type=int, default=N, help="Total number of elements")
     parser.add_argument("--tile-n", type=int, default=TILE_N, help="Tile size")
     parser.add_argument(
         "--vector-size", type=int, default=16, help="Vector size for SIMD operations"
-    )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
     )
     args = parser.parse_args()
 
@@ -163,48 +126,30 @@ if __name__ == "__main__":
     np.random.seed(0)
     input_a = np.random.uniform(-4.0, 4.0, args.n).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack([np.random.randint(0, args.n, num_samples)])
+    # SiLU reference using tanh-based sigmoid (matches hardware computation)
+    def silu_ref(x):
+        x_f32 = x.astype(np.float32)
+        return x_f32 * 0.5 * (np.tanh(x_f32 / 2.0) + 1.0)
 
-        # SiLU reference using tanh-based sigmoid (matches hardware computation)
-        def silu_ref(x):
-            x_f32 = x.astype(np.float32)
-            return x_f32 * 0.5 * (np.tanh(x_f32 / 2.0) + 1.0)
+    sampled_indices = np.vstack([np.random.randint(0, args.n, 100)])
+    sampled_values = np.array(
+        [silu_ref(input_a[i]) for i in zip(*sampled_indices)],
+        dtype=INPUT_DATATYPE,
+    )
+    sampled_data = {
+        "shape": (args.n,),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-        sampled_values = np.array(
-            [silu_ref(input_a[i]) for i in zip(*sampled_indices)],
-            dtype=INPUT_DATATYPE,
-        )
-        sampled_data = {
-            "shape": (args.n,),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a],
             instance_name="silu",
-            runtime_loop_tiling_sizes=[4, 4],
+            stochastic_expected_outputs=[sampled_data],
+            rtol=1e-1,
+            atol=5e-2,
         )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=1e-1,
-                atol=5e-2,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    )

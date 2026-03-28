@@ -21,7 +21,9 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects import arith, scf
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt import compile_air, get_air_runtime
+from air.backend.xrt_runner import type_mapper
+import aie.utils
 
 range_ = for_
 
@@ -143,10 +145,16 @@ if __name__ == "__main__":
     input_a = np.full(IMAGE_SIZE, 0x2, dtype=INOUT_DATATYPE)
     output_b = np.full(IMAGE_SIZE, 0x5, dtype=INOUT_DATATYPE)
 
-    runner = XRTRunner(
+    npu_kernel = compile_air(
+        mlir_module,
         verbose=args.verbose,
         output_format=args.output_format,
         instance_name="copy",
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(input_a),
+        aie.utils.tensor(np.zeros(output_b.shape, output_b.dtype)),
+    ]
+    exit(runtime.run_test(npu_kernel, io_args, refs={1: output_b}))

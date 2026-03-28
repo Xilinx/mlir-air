@@ -21,7 +21,6 @@ Note: The kernel uses Chess-specific shuffle intrinsics and is currently
 XFAIL on Peano. See rope_lut/ for a Peano-compatible alternative.
 """
 
-import argparse
 import numpy as np
 from math import cos, sin
 from ml_dtypes import bfloat16
@@ -33,8 +32,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -193,12 +191,9 @@ if __name__ == "__main__":
     HERD_N = 4
     INPUT_DATATYPE = bfloat16
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the RoPE (on-chip sin/cos) example",
+    parser = make_air_parser(
+        "Builds, runs, and tests the RoPE (on-chip sin/cos) example"
     )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
     parser.add_argument("--head-size", type=int, default=HEAD_SIZE, help="Head size")
     parser.add_argument(
         "--num-heads", type=int, default=NUM_HEADS, help="Number of heads"
@@ -208,20 +203,6 @@ if __name__ == "__main__":
         type=int,
         default=HERD_N,
         help="Number of L1 tiles along the N dimension",
-    )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
     )
     args = parser.parse_args()
 
@@ -258,29 +239,13 @@ if __name__ == "__main__":
             outputs[i][s + args.head_size] = v0 * fcr - v1 * fci
             outputs[i][s + args.head_size + 1] = v0 * fci + v1 * fcr
 
-    if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[inputs],
             instance_name="rope",
-            runtime_loop_tiling_sizes=[4, 4],
+            expected_outputs=[outputs],
+            rtol=1e1,
         )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[inputs],
-                expected_outputs=[outputs],
-                rtol=1e1,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    )

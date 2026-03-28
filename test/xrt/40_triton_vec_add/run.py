@@ -4,13 +4,12 @@
 # SPDX-License-Identifier: MIT
 
 import argparse
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.compiler.util import run_transform
 from air.ir import *
 import air.passmanager
 from ml_dtypes import bfloat16
-import filelock
+import aie.utils
 import numpy as np
 
 np.random.seed(42)
@@ -130,16 +129,16 @@ with air.ir.Context() as ctx, Location.unknown():
     C = np.add(A, B).astype(output_type)  # Shape [M]
 
     ###### Compile and test
-    runner = XRTRunner(
+    npu_kernel = compile_air(
+        air_module,
         omit_while_true_loop=False,
         use_lock_race_condition_fix=True,
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(
-        runner.run_test(
-            air_module,
-            inputs=[A, B],
-            expected_outputs=[C],
-            rtol=1e-2,
-        )
-    )
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(A),
+        aie.utils.tensor(B),
+        aie.utils.tensor(np.zeros(C.shape, C.dtype)),
+    ]
+    exit(runtime.run_test(npu_kernel, io_args, refs={2: C}, rtol=1e-2))

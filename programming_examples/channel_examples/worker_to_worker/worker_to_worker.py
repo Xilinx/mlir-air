@@ -1,6 +1,5 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 import numpy as np
 
 from air.ir import *
@@ -9,7 +8,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
 from air.dialects.affine import apply as affine_apply
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -138,15 +137,8 @@ def build_module():
                     )
                     th_next = affine_apply(get_tile_height_next, [tw, sw, th, sh])
 
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
                     # This is the type definition of the tile
-                    tile_type = MemRefType.get(
-                        shape=TILE_SIZE,
-                        element_type=xrt_dtype,
-                        memory_space=mem_space,
-                    )
+                    tile_type = l1_memref_type(TILE_SIZE, xrt_dtype)
 
                     # We must allocate a buffer of tile size for the input/output
                     tile_in = AllocOp(tile_type, [], [])
@@ -195,27 +187,8 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the channel worker_to_worker example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
+    parser = make_air_parser(
+        "Builds, runs, and tests the channel worker_to_worker example"
     )
 
     args = parser.parse_args()
@@ -257,14 +230,12 @@ if __name__ == "__main__":
                 input_matrix[i, j] + tile_num_map[(i // TILE_HEIGHT, j // TILE_WIDTH)]
             )
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
-        instance_name="copy",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
     exit(
-        runner.run_test(
-            mlir_module, inputs=[input_matrix], expected_outputs=[output_matrix]
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_matrix],
+            instance_name="copy",
+            expected_outputs=[output_matrix],
         )
     )

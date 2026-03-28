@@ -13,8 +13,8 @@ from air.compiler.util import run_transform
 import argparse
 import sys
 
-from air.backend.xrt_runner import XRTRunner
-from air.backend.xrt import XRTBackend
+from air.backend.xrt import compile_air, get_air_runtime
+import aie.utils
 
 import numpy as np
 
@@ -97,44 +97,40 @@ with air.ir.Context() as ctx, Location.unknown():
     ###############################################
 
     input_a = np.arange(0, 2048, dtype=np.int32)
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack([np.random.randint(0, 2048, num_samples)])
 
-        # Compute reference results for sampled indices
-        sampled_values = np.array(
-            [input_a[i] + 4 for i in zip(*sampled_indices)],
-            dtype=np.int32,
-        )
+    npu_kernel = compile_air(
+        air_module,
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
+    )
 
-        # Store as a dictionary
-        sampled_data = {
-            "shape": (2048),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
+    if args.compile_mode == "compile-only":
+        exit(0)
 
-        ###### Compile and test
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                air_module,
-                inputs=[input_a],
-                stochastic_expected_outputs=[sampled_data],
-            )
-        )
+    num_samples = 100
+    sampled_indices = np.vstack([np.random.randint(0, 2048, num_samples)])
 
-    elif args.compile_mode == "compile-only":
-        ###### Compile only
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
+    # Compute reference results for sampled indices
+    sampled_values = np.array(
+        [input_a[i] + 4 for i in zip(*sampled_indices)],
+        dtype=np.int32,
+    )
 
-        backend.unload()
+    # Store as a dictionary
+    sampled_data = {
+        "shape": (2048),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
+
+    runtime = get_air_runtime()
+    dtype = sampled_data["values"].dtype
+    shape = sampled_data["shape"]
+    if isinstance(shape, int):
+        shape = (shape,)
+    io_args = [
+        aie.utils.tensor(input_a),
+        aie.utils.tensor(np.zeros(shape, dtype)),
+    ]
+    exit(runtime.run_test(npu_kernel, io_args, refs={}, stochastic_refs=[sampled_data]))

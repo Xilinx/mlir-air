@@ -3,7 +3,7 @@
 
 # RUN: %PYTHON %s | FileCheck %s
 
-import air.backend.xrt as xrt_backend
+from air.backend.xrt import compile_air, get_air_runtime
 from air.dialects.air import *
 from air.dialects.func import FuncOp, ReturnOp
 import air.dialects.linalg.opdsl.lang as linalg_lang
@@ -12,6 +12,7 @@ from air.dialects.scf import for_, yield_
 from air.ir import *
 
 import argparse
+import aie.utils
 import numpy as np
 
 np.random.seed(42)
@@ -115,20 +116,25 @@ def run_test(size, idtype, odtype):
     ref = (input_a * input_b).astype(odtype)
     input_c = np.ones_like(ref)
 
-    backend = xrt_backend.XRTBackend(
+    npu_kernel = compile_air(
+        mlir_module,
         omit_pingpong=True,
         verbose=verbose,
         use_lock_race_condition_fix=True,
         runtime_loop_tiling_sizes=[4, 4],
     )
 
-    # run the module
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(input_a),
+        aie.utils.tensor(input_b),
+        aie.utils.tensor(input_c),
+    ]
     with filelock.FileLock("/tmp/npu.lock"):
-        mul = backend.compile_and_load(mlir_module)
+        handle = runtime.load(npu_kernel)
         print("running")
-        _, _, output_c = mul(input_a, input_b, input_c)
-
-    backend.unload()
+        runtime.run(handle, io_args)
+    output_c = io_args[2].numpy()
 
     print("inputA:", input_a)
     print("inputB:", input_b)

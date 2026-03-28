@@ -18,16 +18,14 @@ Data flows:
   3. DMA output tile from L1 to L3
 """
 
-import argparse
-
+import numpy as np
 from air.ir import *
 from air.dialects.air import *
 from air.dialects import arith
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -56,10 +54,9 @@ def build_module(H, W, Ci, Co, Kh, Kw, np_dtype):
 
     # L1 types: drop the batch dimension (N=1) since we process one
     # sample. The DMA copies the full extent which matches because N=1.
-    l1_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1InTy = MemRefType.get([H, W, Ci], xrt_dtype, memory_space=l1_mem_space)
-    l1FilterTy = MemRefType.get([Kh, Kw, Ci, Co], xrt_dtype, memory_space=l1_mem_space)
-    l1OutTy = MemRefType.get([Ho, Wo, Co], xrt_dtype, memory_space=l1_mem_space)
+    l1InTy = l1_memref_type([H, W, Ci], xrt_dtype)
+    l1FilterTy = l1_memref_type([Kh, Kw, Ci, Co], xrt_dtype)
+    l1OutTy = l1_memref_type([Ho, Wo, Co], xrt_dtype)
 
     @FuncOp.from_py_func(l3InTy, l3FilterTy, l3OutTy)
     def conv2d(arg_in, arg_filter, arg_out):
@@ -122,30 +119,11 @@ def build_module(H, W, Ci, Co, Kh, Kw, np_dtype):
 if __name__ == "__main__":
     INPUT_DATATYPE = np.int32
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the 2D convolution example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
+    parser = make_air_parser("Builds, runs, and tests the 2D convolution example")
     parser.add_argument("--H", type=int, default=H_DEFAULT, help="Input height")
     parser.add_argument("--W", type=int, default=W_DEFAULT, help="Input width")
     parser.add_argument("--Ci", type=int, default=CI_DEFAULT, help="Input channels")
     parser.add_argument("--Co", type=int, default=CO_DEFAULT, help="Output channels")
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-    )
     args = parser.parse_args()
 
     Ho = args.H - KH + 1
@@ -177,28 +155,12 @@ if __name__ == "__main__":
                                 * filter_data[kh, kw, ci, co]
                             )
 
-    if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            instance_name="conv2d",
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_data, filter_data],
-                expected_outputs=[output_ref],
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    run_on_npu(
+        args,
+        mlir_module,
+        inputs=[input_data, filter_data],
+        expected_outputs=[output_ref],
+        instance_name="conv2d",
+        omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
+    )

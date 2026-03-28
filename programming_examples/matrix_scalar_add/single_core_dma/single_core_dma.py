@@ -1,13 +1,11 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
-
 from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -38,15 +36,8 @@ def build_module(image_height, image_width, tile_height, tile_width, np_dtype):
                 # We just need one compute core, so we ask for a 1x1 herd
                 @herd(name="xaddherd", sizes=[1, 1], operands=[arg2, arg3])
                 def herd_body(_tx, _ty, _sx, _sy, a, b):
-                    # We want to store our data in L1 memory
-                    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-
                     # This is the type definition of the tile
-                    tile_type = MemRefType.get(
-                        shape=tile_size,
-                        element_type=T.i32(),
-                        memory_space=mem_space,
-                    )
+                    tile_type = l1_memref_type(tile_size, T.i32())
 
                     # Loop over columns and rows of tiles
                     for tile_index0 in range_(image_height // tile_height):
@@ -121,20 +112,7 @@ if __name__ == "__main__":
     TILE_HEIGHT = 16
     INOUT_DATATYPE = np.int32
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the passthrough_dma example")
     parser.add_argument(
         "--image-height",
         type=int,
@@ -149,14 +127,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--tile-width", type=int, default=TILE_WIDTH, help="Width of the tile data"
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
 
     args = parser.parse_args()
@@ -187,10 +157,11 @@ if __name__ == "__main__":
             )
             output_b[i, j] = input_a[i, j] + tile_num
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
+    run_on_npu(
+        args,
+        mlir_module,
+        inputs=[input_a],
+        expected_outputs=[output_b],
         instance_name="copy",
         runtime_loop_tiling_sizes=[4, 4],
     )
-    exit(runner.run_test(mlir_module, inputs=[input_a], expected_outputs=[output_b]))

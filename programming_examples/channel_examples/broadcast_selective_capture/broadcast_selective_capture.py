@@ -18,7 +18,6 @@
 # The net effect is equivalent to a non-broadcast scatter, but implemented
 # over a single broadcast channel to conserve DMA channels.
 
-import argparse
 import numpy as np
 
 from air.ir import *
@@ -27,7 +26,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store
 from air.dialects.func import FuncOp
 from air.dialects import arith, scf
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -45,12 +44,7 @@ def build_module():
     memrefTyIn = MemRefType.get([total_size], xrt_dtype)
     memrefTyOut = MemRefType.get([total_size], xrt_dtype)
 
-    mem_space_l1 = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    tile_type_l1 = MemRefType.get(
-        shape=[TILE_SIZE],
-        element_type=xrt_dtype,
-        memory_space=mem_space_l1,
-    )
+    tile_type_l1 = l1_memref_type([TILE_SIZE], xrt_dtype)
 
     # Broadcast channel: size [1, 1] broadcast to [1, NUM_TILES]
     # All cores in the herd receive the same data on each put.
@@ -132,27 +126,8 @@ def build_module():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the broadcast selective capture example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
+    parser = make_air_parser(
+        "Builds, runs, and tests the broadcast selective capture example"
     )
 
     args = parser.parse_args()
@@ -175,16 +150,12 @@ if __name__ == "__main__":
         end = start + TILE_SIZE
         expected_output[start:end] = input_a[start:end] + ty
 
-    runner = XRTRunner(
-        verbose=args.verbose,
-        output_format=args.output_format,
-        instance_name="broadcast_selective_capture",
-        runtime_loop_tiling_sizes=[4, 4],
-    )
     exit(
-        runner.run_test(
+        run_on_npu(
+            args,
             mlir_module,
             inputs=[input_a],
+            instance_name="broadcast_selective_capture",
             expected_outputs=[expected_output],
         )
     )

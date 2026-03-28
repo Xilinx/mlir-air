@@ -12,7 +12,6 @@ Instead, we DMA the matrix into L1 contiguously and let the kernel
 perform the transpose.
 """
 
-import argparse
 import numpy as np
 from ml_dtypes import bfloat16
 
@@ -22,8 +21,7 @@ from air.ir import *
 from air.dialects.air import *
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 INOUT_DATATYPE = bfloat16
 
@@ -35,12 +33,7 @@ def build_module(m, k):
     memrefTyIn = MemRefType.get(shape=[m * k], element_type=xrt_dtype)
     memrefTyOut = MemRefType.get(shape=[k * m], element_type=xrt_dtype)
 
-    mem_space = IntegerAttr.get(T.i32(), MemorySpace.L1)
-    l1_type = MemRefType.get(
-        shape=[m * k],
-        element_type=xrt_dtype,
-        memory_space=mem_space,
-    )
+    l1_type = l1_memref_type([m * k], xrt_dtype)
 
     transpose_func = external_func("transpose_bf16", inputs=[l1_type, l1_type])
 
@@ -78,28 +71,9 @@ if __name__ == "__main__":
     M = 64
     K = 32
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the bf16 transpose example",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-p", "--print-module-only", action="store_true")
+    parser = make_air_parser("Builds, runs, and tests the bf16 transpose example")
     parser.add_argument("-m", type=int, default=M, help="Matrix rows")
     parser.add_argument("-k", type=int, default=K, help="Matrix columns")
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-    )
     args = parser.parse_args()
 
     mlir_module = build_module(args.m, args.k)
@@ -110,25 +84,12 @@ if __name__ == "__main__":
     input_matrix = np.random.uniform(-1.0, 1.0, (args.m, args.k)).astype(INOUT_DATATYPE)
     expected_output = np.transpose(input_matrix)
 
-    if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(
-            verbose=args.verbose,
-            output_format=args.output_format,
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_matrix.reshape(-1)],
             instance_name="transpose",
-            runtime_loop_tiling_sizes=[4, 4],
+            expected_outputs=[expected_output.reshape(-1)],
         )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_matrix.reshape(-1)],
-                expected_outputs=[expected_output.reshape(-1)],
-            )
-        )
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-        backend.unload()
+    )

@@ -28,9 +28,10 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt import compile_air, get_air_runtime
+from air.backend.xrt_runner import type_mapper
 from air.compiler.util import run_transform
+import aie.utils
 from air.extras import types as extrasT
 from air.dialects.linalg.opdsl.lang import *
 import air.dialects.linalg.opdsl.lang as linalg_lang
@@ -697,17 +698,25 @@ if __name__ == "__main__":
         "values": sampled_values,
     }
 
-    runner = XRTRunner(
+    npu_kernel = compile_air(
+        mlir_module,
         verbose=args.verbose,
         omit_while_true_loop=False,
         runtime_loop_tiling_sizes=[4, 4],
         instance_name="matmul_f32",
     )
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(input_a),
+        aie.utils.tensor(input_b),
+        aie.utils.tensor(np.zeros((M_padded, N_padded), np.float32)),
+    ]
     exit(
-        runner.run_test(
-            mlir_module,
-            inputs=[input_a, input_b],
-            stochastic_expected_outputs=[sampled_data],
+        runtime.run_test(
+            npu_kernel,
+            io_args,
+            refs={},
+            stochastic_refs=[sampled_data],
             rtol=0.1,
             max_mismatch_percentage=10,
         )

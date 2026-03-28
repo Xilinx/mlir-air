@@ -9,12 +9,10 @@ from air.dialects.linalg.opdsl.lang import *
 from air.compiler.util import run_transform
 import argparse
 
-from air.backend.xrt import XRTBackend
+from air.backend.xrt import compile_air, get_air_runtime
 from air.ir import *
 import air.passmanager
-
-from air.backend.xrt_runner import XRTRunner
-from air.backend.xrt import XRTBackend
+import aie.utils
 
 import numpy as np
 
@@ -161,55 +159,54 @@ np.random.seed(42)
 max_val = 1024  # Conservative estimate
 input_a = np.random.randint(1, max_val + 1, size=(1, K), dtype=np.int32)
 input_b = np.random.randint(1, max_val + 1, size=(K, N), dtype=np.int32)
-if args.compile_mode == "compile-and-run":
-    # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
-    num_samples = 100
-    sampled_indices = np.vstack(
-        [
-            np.random.randint(0, 1, num_samples),  # i indices
-            np.random.randint(0, args.N, num_samples),  # j indices
-        ]
-    )
 
-    # Compute reference results for sampled indices
-    sampled_values = np.array(
-        [
-            np.sum(
-                (input_a[i, :].astype(np.int32) * input_b[:, j].astype(np.int32)),
-                dtype=np.int32,
-            )
-            for i, j in zip(*sampled_indices)
-        ],
-        dtype=np.int32,
-    )
-    print(sampled_values)
+npu_kernel = compile_air(
+    air_module,
+    verbose=args.verbose,
+    omit_while_true_loop=False,
+    runtime_loop_tiling_sizes=[4, 4],
+)
 
-    # Store as a dictionary
-    sampled_data = {
-        "shape": (1, args.N),
-        "indices": sampled_indices,
-        "values": sampled_values,
-    }
-    runner = XRTRunner(
-        verbose=args.verbose,
-        omit_while_true_loop=False,
-        runtime_loop_tiling_sizes=[4, 4],
-    )
-    exit(
-        runner.run_test(
-            air_module,
-            inputs=[input_a, input_b],
-            stochastic_expected_outputs=[sampled_data],
+if args.compile_mode == "compile-only":
+    exit(0)
+
+# Stochastically sample num_sample results, and pass to runtime backend for verification.
+num_samples = 100
+sampled_indices = np.vstack(
+    [
+        np.random.randint(0, 1, num_samples),  # i indices
+        np.random.randint(0, args.N, num_samples),  # j indices
+    ]
+)
+
+# Compute reference results for sampled indices
+sampled_values = np.array(
+    [
+        np.sum(
+            (input_a[i, :].astype(np.int32) * input_b[:, j].astype(np.int32)),
+            dtype=np.int32,
         )
-    )
+        for i, j in zip(*sampled_indices)
+    ],
+    dtype=np.int32,
+)
+print(sampled_values)
 
-elif args.compile_mode == "compile-only":
-    ###### Compile only
-    backend = XRTBackend(
-        verbose=args.verbose,
-        omit_while_true_loop=False,
-        runtime_loop_tiling_sizes=[4, 4],
-    )
-    module_function = backend.compile(air_module)
+# Store as a dictionary
+sampled_data = {
+    "shape": (1, args.N),
+    "indices": sampled_indices,
+    "values": sampled_values,
+}
 
-    backend.unload()
+runtime = get_air_runtime()
+dtype = sampled_data["values"].dtype
+shape = sampled_data["shape"]
+if isinstance(shape, int):
+    shape = (shape,)
+io_args = [
+    aie.utils.tensor(input_a),
+    aie.utils.tensor(input_b),
+    aie.utils.tensor(np.zeros(shape, dtype)),
+]
+exit(runtime.run_test(npu_kernel, io_args, refs={}, stochastic_refs=[sampled_data]))

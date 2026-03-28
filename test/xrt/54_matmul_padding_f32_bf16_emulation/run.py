@@ -14,12 +14,12 @@ import argparse
 import math
 import os
 
-from air.backend.xrt import XRTBackend
-from air.backend.xrt_runner import XRTRunner
+from air.backend.xrt import compile_air, get_air_runtime
 from air.compiler.util import run_transform
 from air.ir import *
 import air.passmanager
 from ml_dtypes import bfloat16
+import aie.utils
 
 import numpy as np
 
@@ -213,83 +213,80 @@ with air.ir.Context() as ctx, Location.unknown():
     input_b = np.zeros((K_FULL, N_alloc), dtype=np.float32)
     input_b[:, :N_actual] = (np.random.rand(K_FULL, N_actual) * 4).astype(np.float32)
 
-    if args.compile_mode == "compile-and-run":
-        num_samples = 100
-        sampled_indices = np.vstack(
+    npu_kernel = compile_air(
+        air_module,
+        verbose=args.verbose,
+        omit_while_true_loop=False,
+        runtime_loop_tiling_sizes=[4, 4],
+        output_format="elf",
+        instance_name="matmul_padding_kernel",
+        bf16_emulation=True,
+        debug_ir=True,
+    )
+
+    if args.compile_mode == "compile-only":
+        exit(0)
+
+    num_samples = 100
+    sampled_indices = np.vstack(
+        [
+            np.random.randint(0, M_actual, num_samples),
+            np.random.randint(0, N_actual, num_samples),
+        ]
+    )
+
+    # Add deterministic boundary-tile samples to catch padding errors.
+    boundary_m = list(
+        set(
             [
-                np.random.randint(0, M_actual, num_samples),
-                np.random.randint(0, N_actual, num_samples),
+                min(M_actual - 1, m)
+                for m in [M_actual - 1, M_actual - TILE_M + 1, 0]
+                if m >= 0
             ]
         )
-
-        # Add deterministic boundary-tile samples to catch padding errors.
-        boundary_m = list(
-            set(
-                [
-                    min(M_actual - 1, m)
-                    for m in [M_actual - 1, M_actual - TILE_M + 1, 0]
-                    if m >= 0
-                ]
-            )
-        )
-        boundary_n = list(
-            set(
-                [
-                    min(N_actual - 1, n)
-                    for n in [N_actual - 1, N_actual - TILE_N + 1, 0]
-                    if n >= 0
-                ]
-            )
-        )
-        boundary_indices = np.array([[m, n] for m in boundary_m for n in boundary_n]).T
-        sampled_indices = np.hstack([sampled_indices, boundary_indices])
-
-        # Golden: truncate f32 inputs to bf16 (matching hardware truncf_op),
-        # then compute dot product with f32 accumulation.
-        input_a_bf16 = input_a.astype(bfloat16)
-        input_b_bf16 = input_b.astype(bfloat16)
-        sampled_values = np.array(
+    )
+    boundary_n = list(
+        set(
             [
-                np.sum(
-                    input_a_bf16[:, i].astype(np.float32)
-                    * input_b_bf16[:, j].astype(np.float32),
-                    dtype=np.float32,
-                )
-                for i, j in zip(*sampled_indices)
-            ],
-            dtype=np.float32,
+                min(N_actual - 1, n)
+                for n in [N_actual - 1, N_actual - TILE_N + 1, 0]
+                if n >= 0
+            ]
         )
+    )
+    boundary_indices = np.array([[m, n] for m in boundary_m for n in boundary_n]).T
+    sampled_indices = np.hstack([sampled_indices, boundary_indices])
 
-        sampled_data = {
-            "shape": (M_padded, N_padded),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-            output_format="elf",
-            instance_name="matmul_padding_kernel",
-            bf16_emulation=True,
-            debug_ir=True,
-        )
-        exit(
-            runner.run_test(
-                air_module,
-                inputs=[input_a, input_b],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=0.1,
+    # Golden: truncate f32 inputs to bf16 (matching hardware truncf_op),
+    # then compute dot product with f32 accumulation.
+    input_a_bf16 = input_a.astype(bfloat16)
+    input_b_bf16 = input_b.astype(bfloat16)
+    sampled_values = np.array(
+        [
+            np.sum(
+                input_a_bf16[:, i].astype(np.float32)
+                * input_b_bf16[:, j].astype(np.float32),
+                dtype=np.float32,
             )
+            for i, j in zip(*sampled_indices)
+        ],
+        dtype=np.float32,
+    )
+
+    sampled_data = {
+        "shape": (M_padded, N_padded),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
+
+    runtime = get_air_runtime()
+    io_args = [
+        aie.utils.tensor(input_a),
+        aie.utils.tensor(input_b),
+        aie.utils.tensor(np.zeros((M_padded, N_padded), np.float32)),
+    ]
+    exit(
+        runtime.run_test(
+            npu_kernel, io_args, refs={}, stochastic_refs=[sampled_data], rtol=0.1
         )
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format="elf",
-            bf16_emulation=True,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(air_module)
-        backend.unload()
+    )

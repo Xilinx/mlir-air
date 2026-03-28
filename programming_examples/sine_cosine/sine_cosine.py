@@ -1,6 +1,5 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
-import argparse
 from math import cos, sin, sqrt, exp
 
 from air.ir import *
@@ -10,8 +9,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 from ml_dtypes import bfloat16
 
 import numpy as np
@@ -141,20 +139,7 @@ if __name__ == "__main__":
     SIN_OR_COS = "sin"
     INPUT_DATATYPE = bfloat16
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the passthrough_dma example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the passthrough_dma example")
     parser.add_argument(
         "--n",
         type=int,
@@ -174,22 +159,6 @@ if __name__ == "__main__":
         default=SIN_OR_COS,
         choices=["sin", "cos"],
         help="Sine or cosine mode (must be one of [sin, cos])",
-    )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-        help="Configure to whether to run after compile",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
     )
 
     args = parser.parse_args()
@@ -217,33 +186,13 @@ if __name__ == "__main__":
         else:
             raise AssertionError
 
-    if args.compile_mode == "compile-and-run":
-
-        ###### Compile and test
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[inputs],
             instance_name="sine_cosine",
-            runtime_loop_tiling_sizes=[4, 4],
+            expected_outputs=[outputs],
+            rtol=1e0,
         )
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[inputs],
-                expected_outputs=[outputs],
-                rtol=1e0,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        ###### Compile only
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
+    )

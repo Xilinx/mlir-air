@@ -50,6 +50,7 @@ from air.dialects.memref import AllocOp, CollapseShapeOp, DeallocOp, load, store
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_ as scf_range, yield_
 from air.dialects import scf, affine, arith
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 
 @module_builder
@@ -1259,8 +1260,6 @@ if __name__ == "__main__":
         print(mlir_module)
         exit(0)
 
-    from air.backend.xrt_runner import XRTRunner
-    from air.backend.xrt import XRTBackend
     from ml_dtypes import bfloat16
 
     INPUT_DATATYPE = OUTPUT_DATATYPE = bfloat16
@@ -1305,37 +1304,19 @@ if __name__ == "__main__":
     )
 
     tiling = [1, 1, 1] if dv_chunks_host > 1 else [1, 1]
-    runner = XRTRunner(
-        omit_while_true_loop=False,
-        omit_pingpong="all",
-        verbose=args.verbose,
-        runtime_loop_tiling_sizes=tiling,
-        output_format=args.output_format,
-        instance_name="attention_bf16",
-        target_device="npu2",
-    )
-
-    if args.compile_mode == "compile-and-run":
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_q, input_k, input_v],
-                expected_outputs=[sdpa_output_transposed],
-                atol=0.15,
-                rtol=0.04,
-                max_mismatch_percentage=0.5,
-                min_correlation=0.99,
-            )
-        )
-    elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            omit_while_true_loop=False,
-            omit_pingpong="all",
-            verbose=args.verbose,
-            runtime_loop_tiling_sizes=tiling,
-            output_format=args.output_format,
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_q, input_k, input_v],
             instance_name="attention_bf16",
+            expected_outputs=[sdpa_output_transposed],
+            atol=0.15,
+            rtol=0.04,
+            max_mismatch_percentage=0.5,
+            min_correlation=0.99,
+            runtime_loop_tiling_sizes=tiling,
+            omit_pingpong="all",
             target_device="npu2",
         )
-        module_function = backend.compile(mlir_module)
-        print("Compilation complete.")
+    )

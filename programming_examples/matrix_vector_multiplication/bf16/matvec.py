@@ -25,8 +25,7 @@ from air.dialects.arith import ConstantOp
 from air.dialects.memref import AllocOp, DeallocOp
 from air.dialects.func import FuncOp, CallOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 range_ = for_
 
@@ -376,28 +375,28 @@ if __name__ == "__main__":
             input_a.astype(np.float32), input_b.astype(np.float32)
         ).astype(OUTPUT_DATATYPE)
 
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
-            output_format=args.output_format,
-            instance_name="matvec_bf16",
-        )
         exit(
-            runner.run_test(
+            run_on_npu(
+                args,
                 mlir_module,
                 inputs=[input_a, input_b],
+                instance_name="matvec_bf16",
                 expected_outputs=[output_c],
                 rtol=0.04,
                 atol=1e-3,
+                runtime_loop_tiling_sizes=[4, 4],
             )
         )
 
     elif args.compile_mode == "compile-and-xclbin":
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            runtime_loop_tiling_sizes=[4, 4],
+        # Remap to compile-only so run_on_npu dispatches correctly
+        args.compile_mode = "compile-only"
+        exit(
+            run_on_npu(
+                args,
+                mlir_module,
+                inputs=[],
+                instance_name="matvec_bf16",
+                runtime_loop_tiling_sizes=[4, 4],
+            )
         )
-        module_function = backend.compile(mlir_module)
-        backend.unload()

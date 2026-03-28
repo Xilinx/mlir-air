@@ -11,7 +11,10 @@ Computation is vectorized using vector.transfer_read/write with
 configurable VECTOR_SIZE (default 16 for BF16, 8 for F32).
 """
 
-import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ml_dtypes import bfloat16
 
@@ -24,8 +27,7 @@ from air.dialects.memref import AllocOp, DeallocOp, load, store, subview
 from air.dialects.vector import transfer_read, transfer_write
 from air.dialects.func import FuncOp
 from air.dialects.scf import for_, yield_
-from air.backend.xrt_runner import XRTRunner, type_mapper
-from air.backend.xrt import XRTBackend
+from air.backend.xrt_runner import type_mapper, make_air_parser, run_on_npu
 
 import numpy as np
 
@@ -51,15 +53,8 @@ def build_module(
         n % (tile_n * total_tiles) == 0
     ), f"n ({n}) must be divisible by tile_n*total_tiles ({tile_n}*{total_tiles}={tile_n*total_tiles})"
 
-    # L3 MemRefTypes
     l3memrefTy = MemRefType.get(a_size, xrt_dtype_in)
-
-    # L1 MemRefTypes
-    l1MemrefTy = MemRefType.get(
-        shape=[tile_n],
-        element_type=xrt_dtype_in,
-        memory_space=IntegerAttr.get(T.i32(), MemorySpace.L1),
-    )
+    l1MemrefTy = l1_memref_type([tile_n], xrt_dtype_in)
 
     # Vectorization setup
     vectorize = vector_size > 0
@@ -67,8 +62,8 @@ def build_module(
         assert (
             tile_n % vector_size == 0
         ), f"tile_n ({tile_n}) must be divisible by vector_size ({vector_size})"
-        vecTy = VectorType.get([vector_size], xrt_dtype_in)
-        identity_map = AffineMapAttr.get(AffineMap.get_identity(1))
+        vecTy = vec_type(vector_size, xrt_dtype_in)
+        imap = identity_map_attr()
         index_type = IndexType.get()
 
     @FuncOp.from_py_func(l3memrefTy, l3memrefTy, l3memrefTy)
@@ -147,14 +142,10 @@ def build_module(
                         sub_a = subview(l1_a_data.result, [j], [vector_size], [1])
                         sub_b = subview(l1_b_data.result, [j], [vector_size], [1])
                         sub_c = subview(l1_out_data.result, [j], [vector_size], [1])
-                        v_a = transfer_read(
-                            vecTy, sub_a, [c0], identity_map, cst0, [True]
-                        )
-                        v_b = transfer_read(
-                            vecTy, sub_b, [c0], identity_map, cst0, [True]
-                        )
+                        v_a = transfer_read(vecTy, sub_a, [c0], imap, cst0, [True])
+                        v_b = transfer_read(vecTy, sub_b, [c0], imap, cst0, [True])
                         v_c = arith.AddFOp(v_a, v_b)
-                        transfer_write(None, v_c, sub_c, [c0], identity_map, [True])
+                        transfer_write(None, v_c, sub_c, [c0], imap, [True])
                         yield_([])
                 else:
                     # Scalar compute loop (original)
@@ -190,20 +181,7 @@ if __name__ == "__main__":
     VECTOR_SIZE = 16
     NUM_TILES = 2
 
-    parser = argparse.ArgumentParser(
-        prog="run.py",
-        description="Builds, runs, and tests the eltwise_add example",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-p",
-        "--print-module-only",
-        action="store_true",
-    )
+    parser = make_air_parser("Builds, runs, and tests the eltwise_add example")
     parser.add_argument(
         "--n",
         type=int,
@@ -242,22 +220,6 @@ if __name__ == "__main__":
         default="bf16",
         help="Data type (default: bf16)",
     )
-    parser.add_argument(
-        "--compile-mode",
-        type=str,
-        choices=["compile-only", "compile-and-run"],
-        dest="compile_mode",
-        default="compile-and-run",
-        help="Configure to whether to run after compile",
-    )
-    parser.add_argument(
-        "--output-format",
-        type=str,
-        choices=["xclbin", "elf"],
-        default="xclbin",
-        dest="output_format",
-        help="Output format for the compiled binary (default: xclbin)",
-    )
     args = parser.parse_args()
 
     if args.dtype == "bf16":
@@ -281,57 +243,36 @@ if __name__ == "__main__":
     input_a = np.random.uniform(0, 4, args.n).astype(INPUT_DATATYPE)
     input_b = np.random.uniform(0, 4, args.n).astype(INPUT_DATATYPE)
 
-    if args.compile_mode == "compile-and-run":
+    # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
+    num_samples = 100
+    sampled_indices = np.vstack(
+        [
+            np.random.randint(0, args.n, num_samples),  # i indices
+        ]
+    )
 
-        # Stochastically sample num_sample results, and pass to XRTRunner backend for verification.
-        num_samples = 100
-        sampled_indices = np.vstack(
-            [
-                np.random.randint(0, args.n, num_samples),  # i indices
-            ]
-        )
+    # Compute reference results for sampled indices
+    sampled_values = np.array(
+        [input_a[i] + input_b[i] for i in zip(*sampled_indices)],
+        dtype=INPUT_DATATYPE,
+    )
 
-        # Compute reference results for sampled indices
-        sampled_values = np.array(
-            [input_a[i] + input_b[i] for i in zip(*sampled_indices)],
-            dtype=INPUT_DATATYPE,
-        )
+    # Store as a dictionary
+    sampled_data = {
+        "shape": (args.n),
+        "indices": sampled_indices,
+        "values": sampled_values,
+    }
 
-        # Store as a dictionary
-        sampled_data = {
-            "shape": (args.n),
-            "indices": sampled_indices,
-            "values": sampled_values,
-        }
-
-        ###### Compile and test
-        runner = XRTRunner(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            output_format=args.output_format,
+    # BF16 has ~0.8% relative precision; use looser tolerance
+    rtol = 0.01 if INPUT_DATATYPE == bfloat16 else 1e-3
+    exit(
+        run_on_npu(
+            args,
+            mlir_module,
+            inputs=[input_a, input_b],
             instance_name="eltwise_add",
-            runtime_loop_tiling_sizes=[4, 4],
+            stochastic_expected_outputs=[sampled_data],
+            rtol=rtol,
         )
-        # BF16 has ~0.8% relative precision; use looser tolerance
-        rtol = 0.01 if INPUT_DATATYPE == bfloat16 else 1e-3
-        exit(
-            runner.run_test(
-                mlir_module,
-                inputs=[input_a, input_b],
-                stochastic_expected_outputs=[sampled_data],
-                rtol=rtol,
-            )
-        )
-
-    elif args.compile_mode == "compile-only":
-        ###### Compile only
-        backend = XRTBackend(
-            verbose=args.verbose,
-            omit_while_true_loop=False,
-            omit_auto_broadcast=True,
-            output_format=args.output_format,
-            runtime_loop_tiling_sizes=[4, 4],
-        )
-        module_function = backend.compile(mlir_module)
-
-        backend.unload()
+    )
