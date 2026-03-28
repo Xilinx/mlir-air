@@ -166,8 +166,8 @@ public:
 
       // Create merged device (insert before the first device)
       builder.setInsertionPoint(devices[0]);
-      auto mergedDevice = builder.create<AIE::DeviceOp>(
-          devices[0].getLoc(),
+      auto mergedDevice = AIE::DeviceOp::create(
+          builder, devices[0].getLoc(),
           AIE::AIEDeviceAttr::get(builder.getContext(), mergedType));
       mergedDevice->setAttr(SymbolTable::getSymbolAttrName(),
                             builder.getStringAttr(baseName));
@@ -178,7 +178,7 @@ public:
 
       // Create the device body with a terminator
       builder.createBlock(&mergedDevice.getRegion());
-      builder.create<AIE::EndOp>(mergedDevice.getLoc());
+      AIE::EndOp::create(builder, mergedDevice.getLoc());
 
       // Track function names and types already added to avoid duplicates
       // and verify signature consistency
@@ -240,7 +240,7 @@ private:
         mapping.map(tileOp.getResult(), existingTile.getResult());
       } else {
         auto newTile =
-            builder.create<AIE::TileOp>(tileOp.getLoc(), newCol, row);
+            AIE::TileOp::create(builder, tileOp.getLoc(), newCol, row);
         mapping.map(tileOp.getResult(), newTile.getResult());
       }
     }
@@ -320,10 +320,11 @@ private:
     // Create merged segment metadata
     OpBuilder builder(moduleMeta.getContext());
     builder.setInsertionPoint(segmentMetas[0]);
-    auto mergedMeta = builder.create<airrt::SegmentMetadataOp>(
-        builder.getUnknownLoc(), baseName);
+    auto mergedMeta = airrt::SegmentMetadataOp::create(
+        builder, builder.getUnknownLoc(), baseName);
     builder.createBlock(&mergedMeta.getHerds());
-    builder.create<airrt::SegmentMetadataTerminatorOp>(builder.getUnknownLoc());
+    airrt::SegmentMetadataTerminatorOp::create(builder,
+                                               builder.getUnknownLoc());
 
     // Clone herd metadata from all segments into the merged one
     for (auto segMeta : segmentMetas) {
