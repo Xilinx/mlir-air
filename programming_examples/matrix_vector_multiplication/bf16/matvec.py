@@ -4,14 +4,11 @@
 # Matrix-vector multiplication (GEMV): C[M] = A[M,K] @ B[K]
 # BF16 input/output, accfloat accumulation in the kernel.
 #
-# Follows the IRON GEMV design style:
-#   - Full K vector B loaded once into L1 (no K tiling)
-#   - A rows streamed through L2→L1 in m_input-sized chunks
-#   - Output C accumulated in L1, written back once
-#
+# L2 (MemTile) staging for A and C; B goes L3→L1 directly.
+# Multi-column support: herd_m AIE columns process independent row chunks
+# in parallel. Each column handles tile_m output rows per launch.
 # The outer M tiling is handled by `launch` (each launch instance handles
-# tile_m_l2 output rows). The inner m_input loop is inside the herd.
-# L2 holds tile_m_l2 * K elements of A — must fit in MemTile (256KB).
+# herd_m * tile_m output rows). The inner m_input loop is inside the herd.
 
 import argparse
 import numpy as np
@@ -32,39 +29,46 @@ range_ = for_
 
 
 @module_builder
-def build_module(m, k, tile_m_l2, m_input, np_dtype_in, np_dtype_out):
-    assert m % tile_m_l2 == 0, f"M ({m}) must be divisible by tile_m_l2 ({tile_m_l2})"
+def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out):
     assert (
-        tile_m_l2 % m_input == 0
-    ), f"tile_m_l2 ({tile_m_l2}) must be divisible by m_input ({m_input})"
+        m % (tile_m * herd_m) == 0
+    ), f"M ({m}) must be divisible by tile_m * herd_m ({tile_m * herd_m})"
+    assert (
+        tile_m % m_input == 0
+    ), f"tile_m ({tile_m}) must be divisible by m_input ({m_input})"
     assert k % 64 == 0, f"K ({k}) must be divisible by 64 (vector width)"
 
-    # Check L2 capacity: A tile must fit in MemTile
-    l2_a_bytes = tile_m_l2 * k * 2  # bf16 = 2 bytes
-    assert l2_a_bytes <= 256 * 1024, (
-        f"L2 A tile ({l2_a_bytes} bytes) exceeds MemTile capacity (256KB). "
-        f"Reduce tile_m_l2 or K."
+    # Guard MemTile/L2 capacity for staged A and C tiles.
+    bytes_per_elem_in = np.dtype(np_dtype_in).itemsize
+    bytes_per_elem_out = np.dtype(np_dtype_out).itemsize
+    a_l2_bytes = herd_m * tile_m * k * bytes_per_elem_in
+    c_l2_bytes = herd_m * tile_m * bytes_per_elem_out
+    L2_CAPACITY = 512 * 1024  # 512 KiB per MemTile
+    assert a_l2_bytes + c_l2_bytes <= L2_CAPACITY, (
+        f"L2 capacity exceeded: A={a_l2_bytes}B + C={c_l2_bytes}B = "
+        f"{a_l2_bytes + c_l2_bytes}B > {L2_CAPACITY}B. "
+        f"Reduce herd_m ({herd_m}), tile_m ({tile_m}), or k ({k})."
     )
 
     xrt_dtype_in = type_mapper(np_dtype_in)
     xrt_dtype_out = type_mapper(np_dtype_out)
 
     # L3 MemRefTypes
-    memrefTyA = MemRefType.get([m, k], xrt_dtype_in)  # matrix A[M,K]
-    memrefTyB = MemRefType.get([k], xrt_dtype_in)  # vector B[K]
-    memrefTyC = MemRefType.get([m], xrt_dtype_out)  # output C[M]
+    memrefTyA = MemRefType.get([m, k], xrt_dtype_in)
+    memrefTyB = MemRefType.get([k], xrt_dtype_in)
+    memrefTyC = MemRefType.get([m], xrt_dtype_out)
 
     # L2 MemRefTypes
-    # L2 holds full tile_m_l2 rows of A so the inner loop can be inside the herd
     l2_mem_space = IntegerAttr.get(T.i32(), MemorySpace.L2)
     l2MemrefTyA = MemRefType.get(
-        shape=[tile_m_l2, k], element_type=xrt_dtype_in, memory_space=l2_mem_space
-    )
-    l2MemrefTyB = MemRefType.get(
-        shape=[k], element_type=xrt_dtype_in, memory_space=l2_mem_space
+        shape=[herd_m, tile_m, k],
+        element_type=xrt_dtype_in,
+        memory_space=l2_mem_space,
     )
     l2MemrefTyC = MemRefType.get(
-        shape=[tile_m_l2], element_type=xrt_dtype_out, memory_space=l2_mem_space
+        shape=[herd_m, tile_m],
+        element_type=xrt_dtype_out,
+        memory_space=l2_mem_space,
     )
 
     # L1 MemRefTypes
@@ -76,17 +80,17 @@ def build_module(m, k, tile_m_l2, m_input, np_dtype_in, np_dtype_out):
         shape=[k], element_type=xrt_dtype_in, memory_space=l1_mem_space
     )
     l1MemrefTyC = MemRefType.get(
-        shape=[tile_m_l2], element_type=xrt_dtype_out, memory_space=l1_mem_space
+        shape=[tile_m],
+        element_type=xrt_dtype_out,
+        memory_space=l1_mem_space,
     )
 
     # External kernel declarations
-    # matvec_vectorized_bf16_bf16(i32 m, i32 k, i32 row_offset, A, B, C)
     matvec_func = FuncOp(
         "matvec_vectorized_bf16_bf16",
         ([T.i32(), T.i32(), T.i32(), l1MemrefTyA, l1MemrefTyB, l1MemrefTyC], []),
         visibility="private",
     )
-    # linalg_fill_bf16(bf16 val, C) — matches VecMat pattern
     linalg_fill_func = FuncOp(
         "linalg_fill_bf16",
         ([xrt_dtype_out, l1MemrefTyC], []),
@@ -99,8 +103,8 @@ def build_module(m, k, tile_m_l2, m_input, np_dtype_in, np_dtype_out):
     @FuncOp.from_py_func(memrefTyA, memrefTyB, memrefTyC)
     def matvec_bf16(arg0, arg1, arg2):
 
-        # Each launch instance handles tile_m_l2 output rows.
-        launch_size = [m // tile_m_l2, 1]
+        # Each launch handles herd_m * tile_m output rows.
+        launch_size = [m // tile_m // herd_m, 1]
 
         @launch(operands=[arg0, arg1, arg2], sizes=launch_size)
         def launch_body(
@@ -123,96 +127,67 @@ def build_module(m, k, tile_m_l2, m_input, np_dtype_in, np_dtype_out):
                 l3_b_data_s,
                 l3_c_data_s,
             ):
-                # Affine map for launch_ivx: row offset = launch_ivx * tile_m_l2
+                # Affine map: row offset = launch_ivx * tile_m * herd_m
                 launch_ivx_map = AffineMap.get(
                     0,
                     1,
                     [
                         AffineExpr.get_mul(
                             AffineSymbolExpr.get(0),
-                            AffineConstantExpr.get(tile_m_l2),
+                            AffineConstantExpr.get(tile_m * herd_m),
                         )
                     ],
                 )
                 launch_offset_m = affine_apply(launch_ivx_map, [launch_ivx_s])
 
-                # L2 memref allocs
+                # Alloc L2 (A and C; B skips L2) and L1
                 l2_a_data = AllocOp(l2MemrefTyA, [], [])
-                l2_b_data = AllocOp(l2MemrefTyB, [], [])
                 l2_c_data = AllocOp(l2MemrefTyC, [], [])
-                # L1 memref allocs
                 l1_a_data = AllocOp(l1MemrefTyA, [], [])
                 l1_b_data = AllocOp(l1MemrefTyB, [], [])
                 l1_c_data = AllocOp(l1MemrefTyC, [], [])
 
-                # --- Load B: L3 → L2 ---
-                dma_memcpy_nd(
-                    l2_b_data,
-                    l3_b_data_s,
-                    src_offsets=[],
-                    src_sizes=[k],
-                    src_strides=[1],
-                )
-
-                # --- Load A tile: L3 → L2 (all tile_m_l2 rows at once) ---
+                # L3→L2: A (all herd_m * tile_m rows)
                 dma_memcpy_nd(
                     l2_a_data,
                     l3_a_data_s,
-                    src_offsets=[launch_offset_m, 0],
-                    src_sizes=[tile_m_l2, k],
-                    src_strides=[k, 1],
+                    src_offsets=[0, launch_offset_m, 0],
+                    src_sizes=[herd_m, tile_m, k],
+                    src_strides=[tile_m * k, k, 1],
                 )
 
-                # --- Zero-fill C in L1 ---
+                # Single compute herd: zero-fill + loop(A L2→L1 + B L3→L1, kernel) + C L1→L2
+                # B skips L2 — loaded directly L3→L1 inside loop for channel hoisting
                 @herd(
                     name="herd_0",
-                    sizes=[1, 1],
-                    operands=[l1_c_data],
-                )
-                def herd_body(_tx, _ty, _sx, _sy, _l1_c):
-                    zero_const = ConstantOp(FloatAttr.get(xrt_dtype_out, 0), None)
-                    CallOp(linalg_fill_func, [zero_const, _l1_c])
-
-                herd_body.attributes["link_with"] = StringAttr.get("mv.o")
-
-                # Affine map: s0 * constant
-                def make_scale_map(scale):
-                    return AffineMap.get(
-                        0,
-                        1,
-                        [
-                            AffineExpr.get_mul(
-                                AffineSymbolExpr.get(0),
-                                AffineConstantExpr.get(scale),
-                            )
-                        ],
-                    )
-
-                # --- Compute: inner m_input loop inside herd ---
-                @herd(
-                    name="herd_0",
-                    sizes=[1, 1],
+                    sizes=[herd_m, 1],
                     operands=[
                         l1_a_data,
                         l1_b_data,
                         l1_c_data,
                         l2_a_data,
-                        l2_b_data,
+                        l3_b_data_s,
+                        l2_c_data,
                     ],
                 )
-                def herd_body(_tx, _ty, _sx, _sy, _l1_a, _l1_b, _l1_c, _l2_a, _l2_b):
-                    # DMA B: L2 → L1 (once, before the loop)
-                    dma_memcpy_nd(
-                        _l1_b,
-                        _l2_b,
-                        src_offsets=[],
-                        src_sizes=[k],
-                        src_strides=[1],
-                    )
+                def herd_body(
+                    _tx,
+                    _ty,
+                    _sx,
+                    _sy,
+                    _l1_a,
+                    _l1_b,
+                    _l1_c,
+                    _l2_a,
+                    _l3_b,
+                    _l2_c,
+                ):
+                    # Zero-fill C
+                    zero = ConstantOp(FloatAttr.get(xrt_dtype_out, 0), None)
+                    CallOp(linalg_fill_func, [zero, _l1_c])
 
-                    for j_m in range_(0, tile_m_l2 // m_input):
-                        # Compute L2 row offset for A: j_m * m_input
-                        l2_a_row_map = AffineMap.get(
+                    for j_m in range_(0, tile_m // m_input):
+                        j_m_map = AffineMap.get(
                             0,
                             1,
                             [
@@ -222,19 +197,30 @@ def build_module(m, k, tile_m_l2, m_input, np_dtype_in, np_dtype_out):
                                 )
                             ],
                         )
-                        l2_a_row_offset = affine_apply(l2_a_row_map, [j_m])
+                        j_m_offset = affine_apply(j_m_map, [j_m])
 
-                        # DMA A: L2[j_m*m_input:, K] → L1
+                        # L3→L1: B directly (inside loop so the compiler's
+                        # air-dma-to-channel pass can hoist it into a channel
+                        # with repeat_count, avoiding extra L2 staging for B).
+                        dma_memcpy_nd(
+                            _l1_b,
+                            _l3_b,
+                            src_offsets=[],
+                            src_sizes=[k],
+                            src_strides=[1],
+                        )
+
+                        # L2→L1: A[_tx, j_m*m_input:, :]
                         dma_memcpy_nd(
                             _l1_a,
                             _l2_a,
-                            src_offsets=[l2_a_row_offset, 0],
-                            src_sizes=[m_input, k],
-                            src_strides=[k, 1],
+                            src_offsets=[_tx, j_m_offset, 0],
+                            src_sizes=[1, m_input, k],
+                            src_strides=[tile_m * k, k, 1],
                         )
 
-                        # Compute row_offset for kernel
-                        row_offset_i32 = arith.index_cast(T.i32(), l2_a_row_offset)
+                        # Kernel
+                        row_offset_i32 = arith.index_cast(T.i32(), j_m_offset)
                         m_const = ConstantOp(IntegerAttr.get(T.i32(), m_input), None)
                         k_const = ConstantOp(IntegerAttr.get(T.i32(), k), None)
 
@@ -252,36 +238,33 @@ def build_module(m, k, tile_m_l2, m_input, np_dtype_in, np_dtype_out):
 
                         yield_([])
 
-                herd_body.attributes["link_with"] = StringAttr.get("mv.o")
-
-                # --- Writeback C: L1 → L2 ---
-                @herd(
-                    name="herd_0",
-                    sizes=[1, 1],
-                    operands=[l1_c_data, l2_c_data],
-                )
-                def herd_body(_tx, _ty, _sx, _sy, _l1_c, _l2_c):
+                    # L1→L2: C writeback (per-column offset on L2 side)
                     dma_memcpy_nd(
                         _l2_c,
                         _l1_c,
+                        dst_offsets=[_tx, 0],
+                        dst_sizes=[1, tile_m],
+                        dst_strides=[tile_m, 1],
                         src_offsets=[],
-                        src_sizes=[tile_m_l2],
+                        src_sizes=[tile_m],
                         src_strides=[1],
                     )
 
                 herd_body.attributes["link_with"] = StringAttr.get("mv.o")
 
-                # --- Writeback C: L2 → L3 ---
+                # L2→L3: C
                 dma_memcpy_nd(
                     l3_c_data_s,
                     l2_c_data,
                     dst_offsets=[launch_offset_m],
-                    dst_sizes=[tile_m_l2],
+                    dst_sizes=[herd_m * tile_m],
                     dst_strides=[1],
+                    src_offsets=[0, 0],
+                    src_sizes=[herd_m, tile_m],
+                    src_strides=[tile_m, 1],
                 )
 
                 DeallocOp(l2_a_data)
-                DeallocOp(l2_b_data)
                 DeallocOp(l2_c_data)
                 DeallocOp(l1_a_data)
                 DeallocOp(l1_b_data)
@@ -289,11 +272,12 @@ def build_module(m, k, tile_m_l2, m_input, np_dtype_in, np_dtype_out):
 
 
 if __name__ == "__main__":
-    # Default values (M=2048, K=8192 matching IRON test case 1)
+    # Default values (M=2048, K=8192, 4 AIE columns)
     M = 2048
     K = 8192
-    TILE_M_L2 = 2048
+    TILE_M = 4
     M_INPUT = 1
+    HERD_M = 4
     INPUT_DATATYPE = bfloat16
     OUTPUT_DATATYPE = bfloat16
 
@@ -324,16 +308,24 @@ if __name__ == "__main__":
         help="K dimension (matrix columns / vector length)",
     )
     parser.add_argument(
-        "--tile-m-l2",
+        "--tile-m",
+        "--tile-m-l2",  # backward compat alias
         type=int,
-        default=TILE_M_L2,
-        help="Number of output rows per L2 output tile",
+        default=TILE_M,
+        dest="tile_m",
+        help="Number of output rows per tile per column",
     )
     parser.add_argument(
         "--m-input",
         type=int,
         default=M_INPUT,
         help="Number of matrix rows per kernel call",
+    )
+    parser.add_argument(
+        "--herd-m",
+        type=int,
+        default=HERD_M,
+        help="Number of AIE columns (parallel compute tiles along M dimension)",
     )
     parser.add_argument(
         "--output-format",
@@ -351,14 +343,21 @@ if __name__ == "__main__":
         default="compile-and-run",
         help="compile-and-run (default): compile and validate; compile-and-xclbin: generate xclbin only",
     )
+    parser.add_argument(
+        "--debug-ir",
+        action="store_true",
+        dest="debug_ir",
+        help="Emit IR after each pass into debug_ir/ directory",
+    )
 
     args = parser.parse_args()
 
     mlir_module = build_module(
         args.m,
         args.k,
-        args.tile_m_l2,
+        args.tile_m,
         args.m_input,
+        args.herd_m,
         INPUT_DATATYPE,
         OUTPUT_DATATYPE,
     )
@@ -367,11 +366,9 @@ if __name__ == "__main__":
         exit(0)
 
     if args.compile_mode == "compile-and-run":
-        # Generate test data matching IRON reference.py pattern
         np.random.seed(42)
         input_a = (np.random.randn(args.m, args.k) * 4).astype(INPUT_DATATYPE)
         input_b = (np.random.randn(args.k) * 4).astype(INPUT_DATATYPE)
-        # Compute reference in float32 for accuracy, cast back to output dtype
         output_c = np.dot(
             input_a.astype(np.float32), input_b.astype(np.float32)
         ).astype(OUTPUT_DATATYPE)
@@ -379,9 +376,12 @@ if __name__ == "__main__":
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            omit_pingpong=True,
             runtime_loop_tiling_sizes=[4, 4],
             output_format=args.output_format,
             instance_name="matvec_bf16",
+            debug_ir=args.debug_ir,
+            use_lock_race_condition_fix=True,
         )
         exit(
             runner.run_test(
@@ -397,7 +397,9 @@ if __name__ == "__main__":
         backend = XRTBackend(
             verbose=args.verbose,
             omit_while_true_loop=False,
+            omit_pingpong=True,
             runtime_loop_tiling_sizes=[4, 4],
+            use_lock_race_condition_fix=True,
         )
         module_function = backend.compile(mlir_module)
         backend.unload()
