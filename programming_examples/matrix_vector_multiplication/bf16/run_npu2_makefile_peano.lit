@@ -8,21 +8,21 @@
 // RUN: make -f %S/Makefile clean
 //
 // Correctness: M=2048, K=8192, 4 columns
-// RUN: make -f %S/Makefile run M=2048 K=8192 TILE_M_L2=4 M_INPUT=1 HERD_M=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN1
+// RUN: make -f %S/Makefile run M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_M=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN1
 // RUN1: PASS!
 //
 // Correctness: M=8192, K=2048, 4 columns
-// RUN: make -f %S/Makefile run M=8192 K=2048 TILE_M_L2=16 M_INPUT=4 HERD_M=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN2
+// RUN: make -f %S/Makefile run M=8192 K=2048 TILE_M=16 M_INPUT=4 HERD_M=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN2
 // RUN2: PASS!
 //
 // Correctness: M=2048, K=8192, single column (backward compat)
-// RUN: make -f %S/Makefile run M=2048 K=8192 TILE_M_L2=4 M_INPUT=1 HERD_M=1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN3
+// RUN: make -f %S/Makefile run M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_M=1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN3
 // RUN3: PASS!
 //
 // Profiling: M=2048, K=8192, 4 columns
-// RUN: make -f %S/Makefile profile M=2048 K=8192 TILE_M_L2=4 M_INPUT=1 HERD_M=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR XILINX_XRT=%XRT_DIR | FileCheck %s --check-prefix=PROFILE1
+// RUN: make -f %S/Makefile profile M=2048 K=8192 TILE_M=4 M_INPUT=1 HERD_M=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR XILINX_XRT=%XRT_DIR | FileCheck %s --check-prefix=PROFILE1
 // PROFILE1: Avg NPU GEMV time
 //
 // Profiling: M=8192, K=2048, 4 columns
-// RUN: make -f %S/Makefile profile M=8192 K=2048 TILE_M_L2=16 M_INPUT=4 HERD_M=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR XILINX_XRT=%XRT_DIR | FileCheck %s --check-prefix=PROFILE2
+// RUN: make -f %S/Makefile profile M=8192 K=2048 TILE_M=16 M_INPUT=4 HERD_M=4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR XILINX_XRT=%XRT_DIR | FileCheck %s --check-prefix=PROFILE2
 // PROFILE2: Avg NPU GEMV time

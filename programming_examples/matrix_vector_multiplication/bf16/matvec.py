@@ -38,6 +38,18 @@ def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out):
     ), f"tile_m ({tile_m}) must be divisible by m_input ({m_input})"
     assert k % 64 == 0, f"K ({k}) must be divisible by 64 (vector width)"
 
+    # Guard MemTile/L2 capacity for staged A and C tiles.
+    bytes_per_elem_in = np.dtype(np_dtype_in).itemsize
+    bytes_per_elem_out = np.dtype(np_dtype_out).itemsize
+    a_l2_bytes = herd_m * tile_m * k * bytes_per_elem_in
+    c_l2_bytes = herd_m * tile_m * bytes_per_elem_out
+    L2_CAPACITY = 512 * 1024  # 512 KiB per MemTile
+    assert a_l2_bytes + c_l2_bytes <= L2_CAPACITY, (
+        f"L2 capacity exceeded: A={a_l2_bytes}B + C={c_l2_bytes}B = "
+        f"{a_l2_bytes + c_l2_bytes}B > {L2_CAPACITY}B. "
+        f"Reduce herd_m ({herd_m}), tile_m ({tile_m}), or k ({k})."
+    )
+
     xrt_dtype_in = type_mapper(np_dtype_in)
     xrt_dtype_out = type_mapper(np_dtype_out)
 
@@ -187,7 +199,9 @@ def build_module(m, k, tile_m, m_input, herd_m, np_dtype_in, np_dtype_out):
                         )
                         j_m_offset = affine_apply(j_m_map, [j_m])
 
-                        # L3→L1: B directly (inside loop for channel hoisting)
+                        # L3→L1: B directly (inside loop so the compiler's
+                        # air-dma-to-channel pass can hoist it into a channel
+                        # with repeat_count, avoiding extra L2 staging for B).
                         dma_memcpy_nd(
                             _l1_b,
                             _l3_b,
@@ -294,7 +308,8 @@ if __name__ == "__main__":
         help="K dimension (matrix columns / vector length)",
     )
     parser.add_argument(
-        "--tile-m-l2",
+        "--tile-m",
+        "--tile-m-l2",  # backward compat alias
         type=int,
         default=TILE_M,
         dest="tile_m",
