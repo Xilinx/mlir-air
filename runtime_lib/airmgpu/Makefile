@@ -2,8 +2,7 @@
 # Build libair_mgpu_runtime.so — VMem-backed GPU runtime for MLIR-AIR
 
 ROCM_PATH ?= /opt/rocm
-HIPCC     ?= $(ROCM_PATH)/bin/hipcc
-CXX       ?= $(HIPCC)
+HIPCC     := $(ROCM_PATH)/bin/hipcc
 
 CXXFLAGS  = -std=c++17 -fPIC -O2 -Wall -Wextra -Wno-unused-parameter
 INCLUDES  = -I$(ROCM_PATH)/include -I.
@@ -18,10 +17,10 @@ OBJECTS   = $(SOURCES:.cpp=.o)
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
-	$(CXX) $(LDFLAGS) -o $@ $^
+	$(HIPCC) $(LDFLAGS) -o $@ $^
 
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+	$(HIPCC) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
 
 clean:
 	rm -f $(OBJECTS) $(TARGET)
