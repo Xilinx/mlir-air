@@ -83,6 +83,17 @@ then the `depth` option can to used to specify which loop depth to convert.
 -depth : Given a nest of parallel for loops, which depth to map to air.segment-1 means converting the innermost parallel loop; any other negative value means converting all parallel loops
 ```
 
+### `-air-rank-to-launch`
+
+_Serialize air.rank into scf.for loops_
+
+This pass lowers `air.rank` operations by serializing them into
+`scf.for` loops. Each iteration of the loop corresponds to one
+rank (device) executing the body sequentially. The rank index
+is threaded into the enclosed operations as loop induction variables.
+
+After this pass, no `air.rank` operations remain in the IR.
+
 ### `-air-split-devices`
 
 _Split the input into one output per aie.device op_

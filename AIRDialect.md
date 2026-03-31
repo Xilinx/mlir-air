@@ -536,6 +536,71 @@ Effects: `MemoryEffects::Effect{}`
 
 
 
+### `air.rank` (xilinx::air::RankOp)
+
+_Multi-device rank_
+
+Represents a communicating world of rank instances, where each instance
+corresponds to a complete GPU device or a CPU host process. `air.rank`
+is the outermost hierarchy level, sitting above `air.launch`.
+
+The operation defines an N-dimensional iteration space. Each point is a
+rank instance. The body is `IsolatedFromAbove`; values are passed via
+explicit kernel operands.
+
+An optional `universe` operand of type `!air.universe` constrains the
+physical pool from which rank instances are scheduled.
+
+Traits: `AffineScope`, `AttrSizedOperandSegments`, `IsolatedFromAbove`, `SingleBlockImplicitTerminator<RankTerminatorOp>`, `SingleBlock`
+
+Interfaces: `air_AsyncOpInterface`, `air_HierarchyInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `async_dependencies` | variadic of async token type |
+| `universe` | universe type |
+| `sizes` | variadic of index |
+| `rank_operands` | variadic of any type |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `async_token` | async token type |
+
+
+
+### `air.rank_terminator` (xilinx::air::RankTerminatorOp)
+
+_Terminator for `air.rank`._
+
+Syntax:
+
+```
+operation ::= `air.rank_terminator` attr-dict
+```
+
+A terminator operation for the body of `air.rank` operations.
+`air.rank` operations are not expected to return any value so the
+terminator takes no operands.
+
+Traits: `AlwaysSpeculatableImplTrait`, `HasParent<RankOp>`, `Terminator`
+
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+
+Effects: `MemoryEffects::Effect{}`
+
+
+
 ### `air.segment` (xilinx::air::SegmentOp)
 
 _Segment_
@@ -591,6 +656,41 @@ Effects: `MemoryEffects::Effect{}`
 
 
 
+### `air.universe.alloc` (xilinx::air::UniverseAllocOp)
+
+_Allocate a universe of devices_
+
+Syntax:
+
+```
+operation ::= `air.universe.alloc` `(` $capacity `)` attr-dict
+```
+
+Creates an `!air.universe` value representing a bounded pool of
+`capacity` devices or hosts. The universe value is consumed by
+`air.rank` to constrain the physical pool from which rank instances
+are scheduled.
+
+Traits: `AlwaysSpeculatableImplTrait`
+
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+
+Effects: `MemoryEffects::Effect{}`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `capacity` | index |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `universe` | universe type |
+
+
+
 ### `air.wait_all` (xilinx::air::WaitAllOp)
 
 _Wait for all operator_
@@ -622,6 +722,9 @@ Interfaces: `air_AsyncOpInterface`
 ## Type constraints
 
 ### async token type
+
+
+### universe type
 
 
 ## Enums
