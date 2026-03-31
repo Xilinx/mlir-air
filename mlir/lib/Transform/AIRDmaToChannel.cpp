@@ -578,7 +578,7 @@ bool isInMatchingHierarchy(air::ChannelInterface getput) {
                getput->getParentOfType<air::HierarchyInterface>()) &&
            (air::isL2(memrefType) || air::isL1(memrefType)))
     return true;
-  else if (isa<air::LaunchOp>(
+  else if (isa<air::LaunchOp, air::RankOp>(
                getput->getParentOfType<air::HierarchyInterface>())) {
     // Already at the outermost hierarchy level. No where to hoist.
     return true;
@@ -947,6 +947,8 @@ static Value insertArgToHierOp(OpBuilder &builder, Operation *op,
     return insertArgToHierOpImpl<air::SegmentOp>(builder, segment, vec);
   else if (auto launch = dyn_cast_if_present<air::LaunchOp>(op))
     return insertArgToHierOpImpl<air::LaunchOp>(builder, launch, vec);
+  else if (auto rank = dyn_cast_if_present<air::RankOp>(op))
+    return insertArgToHierOpImpl<air::RankOp>(builder, rank, vec);
   else
     return nullptr;
 }
