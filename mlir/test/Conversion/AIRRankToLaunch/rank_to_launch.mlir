@@ -44,3 +44,20 @@ func.func @test_rank_async_serialization(%arg0 : memref<16x16xf32>) {
   air.wait_all [%t0]
   return
 }
+
+// CHECK-LABEL: func.func @test_rank_async_deps_serialization
+// CHECK: %[[DEP:.*]] = air.wait_all async
+// CHECK: air.wait_all [%[[DEP]]]
+// CHECK: scf.for
+// CHECK: air.wait_all async
+func.func @test_rank_async_deps_serialization(%arg0 : memref<16x16xf32>) {
+  %c2 = arith.constant 2 : index
+  %dep = air.wait_all async
+  %t0 = air.rank async [%dep] (%rx) in (%sx = %c2) args(%a=%arg0) : memref<16x16xf32> {
+    %c1 = arith.constant 1 : index
+    %t1 = air.launch async (%lx) in (%ls = %c1) args(%la=%a) : memref<16x16xf32> {
+    }
+  }
+  air.wait_all [%t0]
+  return
+}

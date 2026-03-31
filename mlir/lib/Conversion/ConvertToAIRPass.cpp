@@ -2014,6 +2014,13 @@ struct AIRRankToLaunchPass
       OpBuilder builder(rankOp);
       auto loc = rankOp.getLoc();
 
+      // If the rank has async dependencies, insert a blocking wait before
+      // the serialized loops so that execution respects the dependency order.
+      if (!rankOp.getAsyncDependencies().empty()) {
+        air::WaitAllOp::create(builder, loc, Type{},
+                               rankOp.getAsyncDependencies());
+      }
+
       auto c0 = arith::ConstantIndexOp::create(builder, loc, 0);
       auto c1 = arith::ConstantIndexOp::create(builder, loc, 1);
 
@@ -2039,7 +2046,9 @@ struct AIRRankToLaunchPass
       for (auto oi = ops.begin(), oe = --ops.end(); oi != oe; ++oi)
         builder.clone(*oi, remap);
 
-      // Handle async token replacement.
+      // Handle async token replacement. The scf.for loops are synchronous,
+      // so all iterations complete before execution proceeds past the
+      // outermost loop. The wait_all simply produces a completion token.
       if (rankOp.getAsyncToken()) {
         builder.setInsertionPointAfter(loops.front());
         auto waitAll = air::WaitAllOp::create(
