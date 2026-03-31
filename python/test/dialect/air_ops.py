@@ -64,6 +64,19 @@ def herdOp():
         HerdTerminatorOp()
 
 
+# CHECK-LABEL: TEST: rankOp
+# CHECK: %[[C2:.*]] = arith.constant 2 : index
+# CHECK: air.rank @pyRank (%{{.*}}) in (%{{.*}}=%[[C2]]) {
+# CHECK:   %{{.*}} = arith.constant 1 : index
+@constructAndPrintInFunc
+def rankOp():
+    R = Rank("pyRank", [2])
+    with InsertionPoint(R.body.blocks[0]):
+        idx_ty = IndexType.get()
+        ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 1))
+        RankTerminatorOp()
+
+
 # CHECK-LABEL: TEST: waitallOp
 # CHECK: %0 = air.wait_all async
 # CHECK: air.wait_all [%0]
