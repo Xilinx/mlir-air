@@ -21,6 +21,13 @@ import subprocess
 
 from ml_dtypes import bfloat16
 
+# Device name mappings aligned with mlir-aie (hostruntime.py, lit_config_helpers.py)
+# Maps generation name to list of model strings that may appear in xrt-smi
+NPU_MODELS = {
+    "npu1": ["npu1", "Phoenix"],
+    "npu2": ["npu4", "Strix", "npu5", "Strix Halo", "npu6", "Krackan"],
+}
+
 
 class XRTCompileArtifact:
     """A class encompassing information on the artifacts produced by compilation for the NPU/XRT"""
@@ -161,38 +168,40 @@ class XRTBackend(AirBackend):
             # Try to auto-detect device via xrt-smi
             target_device = "npu1"  # Default fallback
             try:
-                import re
-
                 xrtsmi = "/opt/xilinx/xrt/bin/xrt-smi"
                 result = subprocess.run(
-                    [xrtsmi, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    [xrtsmi, "examine"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=10,
                 )
-                result = result.stdout.decode("utf-8").split("\n")
-                # Older format is "|[0000:41:00.1]  ||RyzenAI-npu1  |"
-                # Newer format is "|[0000:41:00.1]  |NPU Phoenix  |"
-                p = re.compile(
-                    r"[\|]?(\[.+:.+:.+\]).+\|(RyzenAI-(npu\d)|NPU (\w+))\W*\|"
-                )
-                for l in result:
-                    m = p.match(l)
-                    if not m:
-                        continue
+                if result.returncode != 0:
                     if self.verbose:
-                        print("Found Ryzen AI device:", m.group(1))
-                    model = "unknown"
-                    if m.group(3):
-                        model = str(m.group(3))
-                    if m.group(4):
-                        model = str(m.group(4))
-                    if self.verbose:
-                        print(f"\tmodel: '{model}'")
-                    if model in ["npu1", "Phoenix"]:
-                        target_device = "npu1"
-                    elif model in ["npu4", "Strix"]:
-                        target_device = "npu2"
-                    else:
-                        print("WARNING: xrt-smi reported unknown NPU model '{model}'.")
-                    break
+                        print(
+                            f"xrt-smi exited with code {result.returncode}, "
+                            f"using default target device"
+                        )
+                        stderr = result.stderr.decode("utf-8").strip()
+                        if stderr:
+                            print(f"xrt-smi stderr: {stderr}")
+                else:
+                    output_lc = result.stdout.decode("utf-8").lower()
+                    # Use case-insensitive substring matching against NPU_MODELS,
+                    # aligned with mlir-aie's hostruntime.py approach.
+                    detected = False
+                    for version, keywords in NPU_MODELS.items():
+                        if any(kw.lower() in output_lc for kw in keywords):
+                            target_device = version
+                            detected = True
+                            if self.verbose:
+                                print(f"Detected NPU device: {version}")
+                            break
+                    if not detected:
+                        print(
+                            f"WARNING: xrt-smi did not report a recognized NPU model. "
+                            f"Supported: {dict(NPU_MODELS)}. "
+                            f"Falling back to '{target_device}'."
+                        )
             except Exception as e:
                 if self.verbose:
                     print("Failed to run xrt-smi, using default target device")
