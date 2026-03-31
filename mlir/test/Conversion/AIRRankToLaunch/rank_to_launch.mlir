@@ -1,3 +1,10 @@
+//===- rank_to_launch.mlir --------------------------------------*- MLIR -*-===//
+//
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: air-opt %s -air-rank-to-launch | FileCheck %s
 
 // CHECK-LABEL: func.func @test_rank_1d_serialization

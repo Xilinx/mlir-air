@@ -1,3 +1,10 @@
+//===- air_rank.mlir -------------------------------------------*- MLIR -*-===//
+//
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: air-opt %s | FileCheck %s
 
 // CHECK-LABEL: func.func @test_rank_1d
