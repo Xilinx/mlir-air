@@ -578,7 +578,7 @@ bool isInMatchingHierarchy(air::ChannelInterface getput) {
                getput->getParentOfType<air::HierarchyInterface>()) &&
            (air::isL2(memrefType) || air::isL1(memrefType)))
     return true;
-  else if (isa<air::LaunchOp>(
+  else if (isa<air::LaunchOp, air::RankOp>(
                getput->getParentOfType<air::HierarchyInterface>())) {
     // Already at the outermost hierarchy level. No where to hoist.
     return true;
@@ -937,6 +937,50 @@ static Value insertArgToHierOpImpl(OpBuilder &builder, T op,
   return newOp.getKernelOperand(newOp.getNumKernelOperands() - 1);
 }
 
+// Specialized version for RankOp that threads the optional universe operand.
+static Value insertArgToRankOp(OpBuilder &builder, air::RankOp op,
+                               SmallVector<Value> vec) {
+  SmallVector<Value> newOperands;
+  SmallVector<int> newOperandsIdx;
+  for (int i = 0, e = op.getNumKernelOperands(); i < e; i++) {
+    newOperands.push_back(op.getKernelOperand(i));
+    newOperandsIdx.push_back(i);
+  }
+  newOperands.insert(newOperands.end(), vec.begin(), vec.end());
+
+  SmallVector<Value> newAsyncDeps = op.getAsyncDependencies();
+
+  builder.setInsertionPoint(op);
+  IRMapping remap;
+  auto newOp =
+      air::RankOp::create(builder, op.getLoc(), newAsyncDeps, op.getUniverse(),
+                          op.getSizeOperands(), newOperands,
+                          op->getNumResults() > 0, op->getAttrs());
+
+  builder.setInsertionPointToStart(&newOp.getBody().front());
+  for (auto p : llvm::zip(op.getSize(), newOp.getSize()))
+    remap.map(std::get<0>(p), std::get<1>(p));
+  for (auto p : llvm::zip(op.getIds(), newOp.getIds()))
+    remap.map(std::get<0>(p), std::get<1>(p));
+
+  int newIdx = 0;
+  for (int i : newOperandsIdx)
+    remap.map(op.getKernelArgument(i), newOp.getKernelArgument(newIdx++));
+  for (uint64_t i = 0; i < vec.size(); i++)
+    remap.map(vec[i], newOp.getKernelArgument(op.getNumKernelOperands() + i));
+
+  for (Operation &o : op.getRegion().front().getOperations())
+    if (!isa<air::RankTerminatorOp>(o))
+      builder.clone(o, remap);
+
+  int res_idx = 0;
+  for (auto r : op.getResults())
+    r.replaceAllUsesWith(newOp->getResult(res_idx++));
+  op->erase();
+
+  return newOp.getKernelOperand(newOp.getNumKernelOperands() - 1);
+}
+
 static Value insertArgToHierOp(OpBuilder &builder, Operation *op,
                                SmallVector<Value> vec) {
   if (!isa<air::HierarchyInterface>(op))
@@ -947,6 +991,8 @@ static Value insertArgToHierOp(OpBuilder &builder, Operation *op,
     return insertArgToHierOpImpl<air::SegmentOp>(builder, segment, vec);
   else if (auto launch = dyn_cast_if_present<air::LaunchOp>(op))
     return insertArgToHierOpImpl<air::LaunchOp>(builder, launch, vec);
+  else if (auto rank = dyn_cast_if_present<air::RankOp>(op))
+    return insertArgToRankOp(builder, rank, vec);
   else
     return nullptr;
 }

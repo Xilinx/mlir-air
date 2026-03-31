@@ -1947,6 +1947,76 @@ struct InsertEmptyLaunchOverHerdPass
   }
 };
 
+struct AIRRankToLaunchPass
+    : public air::impl::AIRRankToLaunchBase<AIRRankToLaunchPass> {
+
+  AIRRankToLaunchPass() = default;
+  AIRRankToLaunchPass(const AIRRankToLaunchPass &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<air::airDialect>();
+    registry.insert<scf::SCFDialect>();
+    registry.insert<arith::ArithDialect>();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+
+    SmallVector<air::RankOp> rankOps;
+    module.walk([&](air::RankOp op) { rankOps.push_back(op); });
+
+    for (auto rankOp : rankOps) {
+      OpBuilder builder(rankOp);
+      auto loc = rankOp.getLoc();
+
+      // If the rank has async dependencies, insert a blocking wait before
+      // the serialized loops so that execution respects the dependency order.
+      if (!rankOp.getAsyncDependencies().empty()) {
+        air::WaitAllOp::create(builder, loc, Type{},
+                               rankOp.getAsyncDependencies());
+      }
+
+      auto c0 = arith::ConstantIndexOp::create(builder, loc, 0);
+      auto c1 = arith::ConstantIndexOp::create(builder, loc, 1);
+
+      // Build nested scf.for loops for each rank dimension.
+      SmallVector<scf::ForOp> loops;
+      auto sizeOpers = rankOp.getSizeOperands();
+      for (unsigned d = 0; d < rankOp.getNumDims(); ++d) {
+        auto loop = scf::ForOp::create(builder, loc, c0, sizeOpers[d], c1);
+        loops.push_back(loop);
+        builder.setInsertionPointToStart(loop.getBody());
+      }
+
+      // Clone the body of rank into the innermost loop.
+      IRMapping remap;
+      for (unsigned d = 0; d < rankOp.getNumDims(); ++d) {
+        remap.map(rankOp.getIds()[d], loops[d].getInductionVar());
+        remap.map(rankOp.getSize()[d], sizeOpers[d]);
+      }
+      for (unsigned i = 0; i < rankOp.getNumKernelOperands(); ++i)
+        remap.map(rankOp.getKernelArgument(i), rankOp.getKernelOperand(i));
+
+      auto &ops = rankOp.getBody().front().getOperations();
+      for (auto oi = ops.begin(), oe = --ops.end(); oi != oe; ++oi)
+        builder.clone(*oi, remap);
+
+      // Handle async token replacement. The scf.for loops are synchronous,
+      // so all iterations complete before execution proceeds past the
+      // outermost loop. The wait_all simply produces a completion token.
+      if (rankOp.getAsyncToken()) {
+        builder.setInsertionPointAfter(loops.front());
+        auto waitAll = air::WaitAllOp::create(
+            builder, loc, air::AsyncTokenType::get(builder.getContext()),
+            ValueRange{});
+        rankOp.getAsyncToken().replaceAllUsesWith(waitAll.getAsyncToken());
+      }
+
+      rankOp.erase();
+    }
+  }
+};
+
 // Identifies arith operations where all operands are either constants, or
 // produced by IndexCastOp casting from IndexType. If detected, canonicalize
 // IndexCast ops by changing the arith op's input/output types to IndexType.
@@ -2608,6 +2678,10 @@ std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
 
 std::unique_ptr<mlir::Pass> createInsertEmptyLaunchOverHerdPass() {
   return std::make_unique<InsertEmptyLaunchOverHerdPass>();
+}
+
+std::unique_ptr<mlir::Pass> createAIRRankToLaunchPass() {
+  return std::make_unique<AIRRankToLaunchPass>();
 }
 
 std::unique_ptr<Pass> createAIRWrapFuncWithParallelPass() {

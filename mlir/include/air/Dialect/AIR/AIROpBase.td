@@ -91,6 +91,10 @@ def air_AsyncToken : DialectType<
   air_Dialect, CPred<"llvm::isa<xilinx::air::AsyncTokenType>($_self)">, "async token type">,
              BuildableType<"xilinx::air::AsyncTokenType::get($_builder.getContext())">;
 
+def air_Universe : DialectType<
+  air_Dialect, CPred<"llvm::isa<xilinx::air::UniverseType>($_self)">, "universe type">,
+             BuildableType<"xilinx::air::UniverseType::get($_builder.getContext())">;
+
 def air_AsyncOpInterface : OpInterface<"AsyncOpInterface"> {
   let description = [{
     Interface for AIR operations that execute asynchronously.
