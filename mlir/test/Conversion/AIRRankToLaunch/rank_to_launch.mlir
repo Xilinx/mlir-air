@@ -68,3 +68,21 @@ func.func @test_rank_async_deps_serialization(%arg0 : memref<16x16xf32>) {
   air.wait_all [%t0]
   return
 }
+
+// CHECK-LABEL: func.func @test_rank_in_launch_serialization
+// CHECK: air.launch
+// CHECK-NOT: air.rank
+// CHECK:   scf.for
+// CHECK:     air.launch
+func.func @test_rank_in_launch_serialization() {
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  air.launch (%lx) in (%ls = %c1) args(%sz=%c4) : index {
+    air.rank (%rx) in (%sx = %sz) {
+      %c1_0 = arith.constant 1 : index
+      air.launch (%lx2) in (%ls2 = %c1_0) {
+      }
+    }
+  }
+  return
+}

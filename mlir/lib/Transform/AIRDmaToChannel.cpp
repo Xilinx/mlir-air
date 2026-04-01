@@ -578,10 +578,16 @@ bool isInMatchingHierarchy(air::ChannelInterface getput) {
                getput->getParentOfType<air::HierarchyInterface>()) &&
            (air::isL2(memrefType) || air::isL1(memrefType)))
     return true;
-  else if (isa<air::LaunchOp, air::RankOp>(
+  else if (isa<air::LaunchOp>(
                getput->getParentOfType<air::HierarchyInterface>())) {
-    // Already at the outermost hierarchy level. No where to hoist.
+    // Already at the launch level. No where to hoist.
     return true;
+  } else if (isa<air::RankOp>(
+                 getput->getParentOfType<air::HierarchyInterface>())) {
+    // RankOp is outermost only if it has no parent hierarchy op.
+    if (!getput->getParentOfType<air::HierarchyInterface>()
+             ->getParentOfType<air::HierarchyInterface>())
+      return true;
   }
   return false;
 }

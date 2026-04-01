@@ -1171,14 +1171,13 @@ unsigned air::RankOp::getNumDims() {
 }
 
 LogicalResult air::RankOp::verify() {
-  // RankOp must not be nested inside any hierarchy op.
-  if ((*this)->getParentOfType<air::LaunchOp>() ||
-      (*this)->getParentOfType<air::SegmentOp>() ||
+  // RankOp may be nested inside air.launch (for multi-GPU parallelism),
+  // but not inside air.segment, air.herd, or another air.rank.
+  if ((*this)->getParentOfType<air::SegmentOp>() ||
       (*this)->getParentOfType<air::HerdOp>() ||
       (*this)->getParentOfType<air::RankOp>())
-    return emitOpError("must be the outermost hierarchy op; cannot be nested "
-                       "inside air.launch, air.segment, air.herd, or another "
-                       "air.rank");
+    return emitOpError("cannot be nested inside air.segment, air.herd, "
+                       "or another air.rank");
   return success();
 }
 
