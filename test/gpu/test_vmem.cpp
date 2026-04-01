@@ -55,8 +55,8 @@ int main() {
   int mismatches = 0;
   for (size_t i = 0; i < N; i++) {
     if (h_output[i] != h_input[i]) {
-      fprintf(stderr, "Mismatch at [%zu]: expected %f, got %f\n", i,
-              h_input[i], h_output[i]);
+      fprintf(stderr, "Mismatch at [%zu]: expected %f, got %f\n", i, h_input[i],
+              h_output[i]);
       mismatches++;
       if (mismatches > 5)
         break;

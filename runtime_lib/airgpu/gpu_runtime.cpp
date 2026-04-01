@@ -22,7 +22,7 @@
     hipError_t result = (expr);                                                \
     if (result != hipSuccess) {                                                \
       fprintf(stderr, "'%s' failed with '%s'\n", #expr,                        \
-              hipGetErrorString(result));                                       \
+              hipGetErrorString(result));                                      \
     }                                                                          \
   }
 
@@ -163,14 +163,14 @@ extern "C" void mgpuMemcpy(void *dst, void *src, size_t sizeBytes,
 
 extern "C" void mgpuMemset32(void *dst, int value, size_t count,
                              hipStream_t stream) {
-  HIP_REPORT_IF_ERROR(hipMemsetD32Async(
-      reinterpret_cast<hipDeviceptr_t>(dst), value, count, stream));
+  HIP_REPORT_IF_ERROR(hipMemsetD32Async(reinterpret_cast<hipDeviceptr_t>(dst),
+                                        value, count, stream));
 }
 
 extern "C" void mgpuMemset16(void *dst, short value, size_t count,
                              hipStream_t stream) {
-  HIP_REPORT_IF_ERROR(hipMemsetD16Async(
-      reinterpret_cast<hipDeviceptr_t>(dst), value, count, stream));
+  HIP_REPORT_IF_ERROR(hipMemsetD16Async(reinterpret_cast<hipDeviceptr_t>(dst),
+                                        value, count, stream));
 }
 
 // ===========================================================================
@@ -178,13 +178,12 @@ extern "C" void mgpuMemset16(void *dst, short value, size_t count,
 // ===========================================================================
 
 extern "C" void mgpuMemHostRegister(void *ptr, uint64_t sizeBytes) {
-  HIP_REPORT_IF_ERROR(
-      hipHostRegister(ptr, sizeBytes, hipHostRegisterDefault));
+  HIP_REPORT_IF_ERROR(hipHostRegister(ptr, sizeBytes, hipHostRegisterDefault));
 }
 
-extern "C" void mgpuMemHostRegisterMemRef(
-    int64_t rank, StridedMemRefType<char, 1> *descriptor,
-    int64_t elementSizeBytes) {
+extern "C" void
+mgpuMemHostRegisterMemRef(int64_t rank, StridedMemRefType<char, 1> *descriptor,
+                          int64_t elementSizeBytes) {
   if (rank > 0 && descriptor) {
     int64_t size = descriptor->sizes[0] * elementSizeBytes;
     HIP_REPORT_IF_ERROR(
@@ -196,9 +195,10 @@ extern "C" void mgpuMemHostUnregister(void *ptr) {
   HIP_REPORT_IF_ERROR(hipHostUnregister(ptr));
 }
 
-extern "C" void mgpuMemHostUnregisterMemRef(
-    int64_t rank, StridedMemRefType<char, 1> *descriptor,
-    int64_t elementSizeBytes) {
+extern "C" void
+mgpuMemHostUnregisterMemRef(int64_t rank,
+                            StridedMemRefType<char, 1> *descriptor,
+                            int64_t elementSizeBytes) {
   if (descriptor) {
     HIP_REPORT_IF_ERROR(hipHostUnregister(descriptor->data));
   }

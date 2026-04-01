@@ -10,8 +10,8 @@
   do {                                                                         \
     hipError_t err_ = (expr);                                                  \
     if (err_ != hipSuccess) {                                                  \
-      fprintf(stderr, "airgpu: %s failed: %s (%d)\n", #expr,                  \
-              hipGetErrorString(err_), static_cast<int>(err_));                 \
+      fprintf(stderr, "airgpu: %s failed: %s (%d)\n", #expr,                   \
+              hipGetErrorString(err_), static_cast<int>(err_));                \
       abort();                                                                 \
     }                                                                          \
   } while (0)
@@ -36,8 +36,8 @@ VMemAllocator::VMemAllocator(size_t heap_size) {
   prop.location.id = device_id_;
 
   size_t gran = 0;
-  HIP_CHECK(hipMemGetAllocationGranularity(
-      &gran, &prop, hipMemAllocationGranularityMinimum));
+  HIP_CHECK(hipMemGetAllocationGranularity(&gran, &prop,
+                                           hipMemAllocationGranularityMinimum));
   granularity_ = gran;
 
   // Align heap size up to granularity
