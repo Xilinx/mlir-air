@@ -890,3 +890,75 @@ module {
     }
   }
 }
+
+// -----
+
+// stride=0 at dim 2 only (broadcast pattern with non-zero stride at dim 1).
+// Regression test for issue #1484.
+
+// CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero_dim2
+// CHECK-SAME: %[[ARG0:.*]]: memref<256xbf16>
+// CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId3 {
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<256xbf16>, 0, 128, [<size = 2, stride = 128>, <size = 64, stride = 1>])
+// CHECK: } {repeat_count = 2 : i32}
+// CHECK: aiex.dma_start_task
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId3(%shim_noc_tile_0_0, MM2S, 0)
+    func.func @broadcast_stride_zero_dim2(%arg0: memref<256xbf16>) {
+      %c0_i64 = arith.constant 0 : i64
+      %c1_i64 = arith.constant 1 : i64
+      %c2_i64 = arith.constant 2 : i64
+      %c3_i64 = arith.constant 3 : i64
+      %c64_i64 = arith.constant 64 : i64
+      %c128_i64 = arith.constant 128 : i64
+      %c3_i32 = arith.constant 3 : i32
+      // sizes=[1, 2, 3, 64] strides=[0, 128, 0, 1]
+      // dim 0: size=1 -> repeat_count=0 (no repeat)
+      // dim 1: stride=128 size=2 -> BD dim (non-zero stride)
+      // dim 2: stride=0 size=3 -> fold into repeat_count: (0+1)*3-1=2
+      // dim 3: stride=1 size=64 -> BD dim
+      // Expected: repeat_count=2, BD dims=[<size=2, stride=128>, <size=64, stride=1>]
+      // transferLen = 2*3*64=384 -> 384/3=128 per BD execution (after folding dim 2)
+      airrt.dma_memcpy_nd(%c3_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c2_i64, %c3_i64, %c64_i64], [%c0_i64, %c128_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId3} : (i32, i64, i64, memref<256xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+      return
+    }
+  }
+}
+
+// -----
+
+// stride=0 at both dim 1 and dim 2 (nested broadcast). Tests that nested
+// repeat folding produces correct repeat_count. Regression test for issue #1484.
+
+// CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero_nested
+// CHECK-SAME: %[[ARG0:.*]]: memref<64xbf16>
+// CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId4 {
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<64xbf16>, 0, 64, [<size = 64, stride = 1>])
+// CHECK: } {repeat_count = 11 : i32}
+// CHECK: aiex.dma_start_task
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(%shim_noc_tile_0_0, MM2S, 0)
+    func.func @broadcast_stride_zero_nested(%arg0: memref<64xbf16>) {
+      %c0_i64 = arith.constant 0 : i64
+      %c1_i64 = arith.constant 1 : i64
+      %c2_i64 = arith.constant 2 : i64
+      %c3_i64 = arith.constant 3 : i64
+      %c4_i64 = arith.constant 4 : i64
+      %c64_i64 = arith.constant 64 : i64
+      %c4_i32 = arith.constant 4 : i32
+      // sizes=[2, 3, 2, 64] strides=[0, 0, 0, 1]
+      // dim 0: stride=0 size=2 -> repeat_count=1
+      // dim 1: stride=0 size=3 -> fold: repeat_count=(1+1)*3-1=5
+      // dim 2: stride=0 size=2 -> fold: repeat_count=(5+1)*2-1=11
+      // dim 3: stride=1 size=64 -> BD dim
+      // Expected: repeat_count=11, BD dims=[<size=64, stride=1>]
+      // Total transfers: 64 * 12 = 768 = 2*3*2*64. Correct.
+      airrt.dma_memcpy_nd(%c4_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c3_i64, %c2_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId4} : (i32, i64, i64, memref<64xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+      return
+    }
+  }
+}
