@@ -813,6 +813,7 @@ extern "C" {
         air_placed = opts.tmpdir + "/placed." + air_mlir_filename
         pass_pipeline = ",".join(
             [
+                "air-rank-to-launch",
                 "air-insert-launch-around-herd{insert-segment=true}",
                 "func.func(air-lower-herd-parallel)",
                 "scf-forall-to-parallel",

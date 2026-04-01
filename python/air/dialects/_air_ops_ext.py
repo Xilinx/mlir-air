@@ -130,6 +130,34 @@ class Herd(HerdOp):
         self.regions[0].blocks.append(*operand_types)
 
 
+class Rank(RankOp):
+    """Specialization for RankOp class."""
+
+    def __init__(
+        self,
+        name=None,
+        sizes=[],
+        async_token=None,
+        async_dependencies=[],
+        operands=[],
+        universe=None,
+        attributes={},
+        loc=None,
+        ip=None,
+    ):
+        sizes = list(map(pyint_to_index, sizes))
+        super().__init__(
+            async_token=async_token,
+            async_dependencies=async_dependencies,
+            universe=universe,
+            sizes=sizes,
+            rank_operands=operands,
+            sym_name=name,
+        )
+        operand_types = [s.type for s in sizes] * 2 + get_region_operand_types(operands)
+        self.regions[0].blocks.append(*operand_types)
+
+
 class Channel(ChannelOp):
     def __init__(
         self,
@@ -318,6 +346,7 @@ def module_builder(module_function):
 herd = region_op(Herd, terminator=lambda *_args: HerdTerminatorOp())
 launch = region_op(Launch, terminator=lambda *_args: LaunchTerminatorOp())
 segment = region_op(Segment, terminator=lambda *_args: SegmentTerminatorOp())
+rank = region_op(Rank, terminator=lambda *_args: RankTerminatorOp())
 
 
 def external_func(name, inputs, outputs=None, visibility="private"):
