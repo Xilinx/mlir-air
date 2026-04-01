@@ -1307,17 +1307,18 @@ if __name__ == "__main__":
     )
 
     tiling = [1, 1, 1] if dv_chunks_host > 1 else [1, 1]
+    backend_opts = dict(
+        omit_while_true_loop=False,
+        omit_pingpong="all",
+        verbose=args.verbose,
+        runtime_loop_tiling_sizes=tiling,
+        output_format=args.output_format,
+        instance_name="attention_bf16",
+        target_device="npu2",
+    )
 
     if args.compile_mode == "compile-and-run":
-        runner = XRTRunner(
-            omit_while_true_loop=False,
-            omit_pingpong="all",
-            verbose=args.verbose,
-            runtime_loop_tiling_sizes=tiling,
-            output_format=args.output_format,
-            instance_name="attention_bf16",
-            target_device="npu2",
-        )
+        runner = XRTRunner(**backend_opts)
         exit(
             runner.run_test(
                 mlir_module,
@@ -1330,14 +1331,6 @@ if __name__ == "__main__":
             )
         )
     elif args.compile_mode == "compile-only":
-        backend = XRTBackend(
-            omit_while_true_loop=False,
-            omit_pingpong="all",
-            verbose=args.verbose,
-            runtime_loop_tiling_sizes=tiling,
-            output_format=args.output_format,
-            instance_name="attention_bf16",
-            target_device="npu2",
-        )
+        backend = XRTBackend(**backend_opts)
         module_function = backend.compile(mlir_module)
         print("Compilation complete.")
