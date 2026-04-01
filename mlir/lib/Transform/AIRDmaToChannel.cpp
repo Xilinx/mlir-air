@@ -569,24 +569,20 @@ bool isInMatchingHierarchy(air::ChannelInterface getput) {
   if (!memrefType)
     return false;
   // Skip if channel op is already at its correct memory hierarchy.
-  if (!getput->getParentOfType<air::HierarchyInterface>())
+  auto parentHier = getput->getParentOfType<air::HierarchyInterface>();
+  if (!parentHier)
     return true;
-  if (isa<air::HerdOp>(getput->getParentOfType<air::HierarchyInterface>()) &&
-      air::isL1(memrefType))
+  if (isa<air::HerdOp>(parentHier) && air::isL1(memrefType))
     return true;
-  else if (isa<air::SegmentOp>(
-               getput->getParentOfType<air::HierarchyInterface>()) &&
+  else if (isa<air::SegmentOp>(parentHier) &&
            (air::isL2(memrefType) || air::isL1(memrefType)))
     return true;
-  else if (isa<air::LaunchOp>(
-               getput->getParentOfType<air::HierarchyInterface>())) {
-    // Already at the launch level. No where to hoist.
+  else if (isa<air::LaunchOp>(parentHier)) {
+    // Already at the launch level. Nowhere to hoist.
     return true;
-  } else if (isa<air::RankOp>(
-                 getput->getParentOfType<air::HierarchyInterface>())) {
+  } else if (isa<air::RankOp>(parentHier)) {
     // RankOp is outermost only if it has no parent hierarchy op.
-    if (!getput->getParentOfType<air::HierarchyInterface>()
-             ->getParentOfType<air::HierarchyInterface>())
+    if (!parentHier->getParentOfType<air::HierarchyInterface>())
       return true;
   }
   return false;
