@@ -245,7 +245,9 @@ if(AIR_ENABLE_GPU AND NOT WIN32)
   if(EXISTS "${ROCM_PATH}/include/hip/hip_runtime.h")
     message(STATUS "Building native GPU runtime library (airgpu)")
     add_library(airgpu SHARED
-      ${PROJECT_SOURCE_DIR}/runtime_lib/airgpu/GpuTestUtils.cpp
+      ${PROJECT_SOURCE_DIR}/runtime_lib/airgpu/gpu_runtime.cpp
+      ${PROJECT_SOURCE_DIR}/runtime_lib/airgpu/gpu_test_utils.cpp
+      ${PROJECT_SOURCE_DIR}/runtime_lib/airgpu/vmem_allocator.cpp
     )
     set_property(TARGET airgpu PROPERTY POSITION_INDEPENDENT_CODE ON)
     target_compile_definitions(airgpu PRIVATE
@@ -253,6 +255,7 @@ if(AIR_ENABLE_GPU AND NOT WIN32)
     )
     target_include_directories(airgpu PRIVATE
       ${ROCM_PATH}/include
+      ${PROJECT_SOURCE_DIR}/runtime_lib/airgpu
     )
     target_link_libraries(airgpu PRIVATE
       ${ROCM_PATH}/lib/libamdhip64.so
