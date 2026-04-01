@@ -69,14 +69,25 @@ VMemAllocator::VMemAllocator(size_t heap_size) {
 VMemAllocator::~VMemAllocator() {
   // Unmap and release all tracked allocations
   for (auto &rec : alloc_records_) {
-    hipMemUnmap(reinterpret_cast<hipDeviceptr_t>(rec.va_ptr), rec.size);
-    hipMemRelease(rec.handle);
+    hipError_t err;
+    err = hipMemUnmap(reinterpret_cast<hipDeviceptr_t>(rec.va_ptr), rec.size);
+    if (err != hipSuccess)
+      fprintf(stderr, "airgpu: hipMemUnmap(%p) failed: %s\n", rec.va_ptr,
+              hipGetErrorString(err));
+    err = hipMemRelease(rec.handle);
+    if (err != hipSuccess)
+      fprintf(stderr, "airgpu: hipMemRelease failed: %s\n",
+              hipGetErrorString(err));
   }
   alloc_records_.clear();
 
   // Free reserved VA
   if (va_base_) {
-    hipMemAddressFree(reinterpret_cast<hipDeviceptr_t>(va_base_), heap_size_);
+    hipError_t err = hipMemAddressFree(
+        reinterpret_cast<hipDeviceptr_t>(va_base_), heap_size_);
+    if (err != hipSuccess)
+      fprintf(stderr, "airgpu: hipMemAddressFree failed: %s\n",
+              hipGetErrorString(err));
     va_base_ = nullptr;
   }
 }
