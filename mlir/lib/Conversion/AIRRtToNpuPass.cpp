@@ -991,7 +991,7 @@ bool isLaunchBoundaryLoop(affine::AffineForOp forOp) {
 // Identify launch regions within a function.
 // Launch regions are delimited by affine.for %arg = 0 to 1 loops
 // with "affine_opt_label" attribute, and contain airrt.segment_load
-// operations that link to device ops.
+// or airrt.herd_load operations that link to device ops.
 SmallVector<LaunchRegion> identifyLaunchRegions(func::FuncOp funcOp,
                                                 ModuleOp module) {
   SmallVector<LaunchRegion> regions;
@@ -1001,9 +1001,15 @@ SmallVector<LaunchRegion> identifyLaunchRegions(func::FuncOp funcOp,
     if (!isLaunchBoundaryLoop(forOp))
       return;
 
-    // Look for airrt.segment_load inside this loop
-    forOp.walk([&](airrt::SegmentLoadOp segLoadOp) {
-      StringRef deviceName = segLoadOp.getSymName();
+    // Look for airrt.segment_load or airrt.herd_load inside this loop
+    forOp.walk([&](Operation *op) {
+      StringRef deviceName;
+      if (auto segLoad = dyn_cast<airrt::SegmentLoadOp>(op))
+        deviceName = segLoad.getSymName();
+      else if (auto herdLoad = dyn_cast<airrt::HerdLoadOp>(op))
+        deviceName = herdLoad.getSymName();
+      else
+        return;
       AIE::DeviceOp device = getDeviceByName(module, deviceName);
       if (device) {
         regions.push_back({forOp, deviceName, device});
@@ -1545,7 +1551,7 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
 
     for (auto funcOp : funcOps) {
       // Identify launch regions (affine.for with affine_opt_label containing
-      // segment_load)
+      // segment_load/herd_load)
       SmallVector<LaunchRegion> regions = identifyLaunchRegions(funcOp, module);
 
       if (regions.empty()) {
