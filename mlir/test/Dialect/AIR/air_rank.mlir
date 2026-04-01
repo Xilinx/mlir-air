@@ -69,3 +69,19 @@ func.func @test_rank_named() {
   air.rank @my_rank (%rx) in (%sx = %c1)
   return
 }
+
+// CHECK-LABEL: func.func @test_rank_in_launch
+func.func @test_rank_in_launch(%arg0 : memref<64xf32>) {
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  // CHECK: air.launch
+  air.launch (%lx) in (%ls = %c1) args(%la=%arg0, %sz=%c4) : memref<64xf32>, index {
+    // CHECK: air.rank (%{{.*}}) in (%{{.*}}=%{{.*}}) args(%{{.*}}=%{{.*}}) : memref<64xf32>
+    air.rank (%rx) in (%sx = %sz) args(%ra=%la) : memref<64xf32> {
+      %c1_0 = arith.constant 1 : index
+      air.launch (%lx2) in (%ls2 = %c1_0) args(%la2=%ra) : memref<64xf32> {
+      }
+    }
+  }
+  return
+}
