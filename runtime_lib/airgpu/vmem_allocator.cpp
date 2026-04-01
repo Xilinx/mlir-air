@@ -23,7 +23,10 @@ size_t VMemAllocator::alignUp(size_t value, size_t alignment) {
 VMemAllocator::VMemAllocator(size_t heap_size) {
   // Allow override from environment
   if (const char *env = std::getenv("AIRGPU_HEAP_SIZE")) {
-    heap_size = static_cast<size_t>(std::atol(env));
+    char *end = nullptr;
+    unsigned long long val = std::strtoull(env, &end, 0);
+    if (end != env && *end == '\0' && val > 0)
+      heap_size = static_cast<size_t>(val);
   }
 
   HIP_CHECK(hipGetDevice(&device_id_));
