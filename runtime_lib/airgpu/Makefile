@@ -9,7 +9,7 @@ INCLUDES  = -I$(ROCM_PATH)/include -I.
 LDFLAGS   = -shared -L$(ROCM_PATH)/lib -lamdhip64
 
 TARGET    = libairgpu.so
-SOURCES   = GpuRuntimeWrappers.cpp GpuTestUtils.cpp vmem_allocator.cpp
+SOURCES   = gpu_runtime.cpp gpu_test_utils.cpp vmem_allocator.cpp
 OBJECTS   = $(SOURCES:.cpp=.o)
 
 .PHONY: all clean test

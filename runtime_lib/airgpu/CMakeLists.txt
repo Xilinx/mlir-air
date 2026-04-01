@@ -12,8 +12,8 @@ if(EXISTS "${ROCM_PATH}/include/hip/hip_runtime.h")
   message(STATUS "Found ROCm at: ${ROCM_PATH}")
 
   add_library(airgpu SHARED
-    GpuRuntimeWrappers.cpp
-    GpuTestUtils.cpp
+    gpu_runtime.cpp
+    gpu_test_utils.cpp
     vmem_allocator.cpp
   )
 
