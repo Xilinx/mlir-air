@@ -1,4 +1,4 @@
-//===- attn.cc --------------------------------------------------*- C++ -*-===//
+//===- attn_npu2.cc -----------------------------------------------*- C++ -*-===//
 //
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2025, Advanced Micro Devices, Inc.

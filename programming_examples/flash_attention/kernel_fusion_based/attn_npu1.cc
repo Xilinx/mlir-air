@@ -4,7 +4,7 @@
 // Copyright (C) 2025, Advanced Micro Devices, Inc.
 //
 // NPU1 (AIE2) variant of kernel_fusion_based flash attention.
-// Key differences from NPU2 (attn.cc):
+// Key differences from NPU2 (attn_npu2.cc):
 //   - mmul<4,8,4> instead of mmul<8,8,8>
 //   - LUT-based exp instead of aie::exp2
 //   - Column-major 4x4 block tiling instead of 8x8

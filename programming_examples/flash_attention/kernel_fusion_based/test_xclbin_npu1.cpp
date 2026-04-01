@@ -1,12 +1,15 @@
-//===- test_elf.cpp ---------------------------------------------*- C++ -*-===//
+//===- test_xclbin_npu1.cpp ---------------------------------------*- C++ -*-===//
 //
 // SPDX-License-Identifier: MIT
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc.
 //
+// Flash attention benchmark for NPU1 (xclbin format).
+//
 //===----------------------------------------------------------------------===//
 
 #include "cxxopts.hpp"
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -22,38 +25,32 @@
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
-// Experimental headers for elf format support
-#include <xrt/experimental/xrt_elf.h>
-#include <xrt/experimental/xrt_ext.h>
-#include <xrt/experimental/xrt_module.h>
-
 using DATATYPE = std::bfloat16_t;
 
 static inline std::bfloat16_t random_bfloat16_t() {
-  // Random numbers should NOT be uniformly between 0 and 1, because that
-  // would make the matrix product AB always close to 1.
   return std::bfloat16_t(4.0 * (float)rand() / (float)(RAND_MAX));
 }
 
 int main(int argc, const char *argv[]) {
 
-  // Program arguments parsing
   cxxopts::Options options("Allowed options");
 
   options.add_options()("help,h", "produce help message")(
-      "elf,e", "the input elf path", cxxopts::value<std::string>())(
-      "kernel,k", "the kernel name (format: <kernel_name>:<instance_name>)",
+      "xclbin,x", "the input xclbin path", cxxopts::value<std::string>())(
+      "kernel,k", "the kernel name in the XCLBIN",
+      cxxopts::value<std::string>())(
+      "instr,i", "path of file containing instructions (instr.bin)",
       cxxopts::value<std::string>())("verbosity,v",
                                      "the verbosity of the output",
                                      cxxopts::value<int>()->default_value("0"))(
       "lq", "Query sequence length",
       cxxopts::value<int>()->default_value("512"))(
       "lk", "Key/Value sequence length",
-      cxxopts::value<int>()->default_value("12288"))(
+      cxxopts::value<int>()->default_value("512"))(
       "dk", "Key dimension", cxxopts::value<int>()->default_value("64"))(
       "dv", "Value dimension", cxxopts::value<int>()->default_value("64"))(
       "num-heads", "Number of attention heads",
-      cxxopts::value<int>()->default_value("12"))(
+      cxxopts::value<int>()->default_value("2"))(
       "warmup,w", "Number of warmup iterations",
       cxxopts::value<int>()->default_value("10"))(
       "iterations,n", "Number of iterations",
@@ -68,22 +65,19 @@ int main(int argc, const char *argv[]) {
     return 1;
   }
 
-  // Check required options
-  if (!vm.count("elf") || !vm.count("kernel")) {
-    std::cerr << "Error: Required options missing\n\n";
+  if (!vm.count("xclbin") || !vm.count("kernel") || !vm.count("instr")) {
+    std::cerr << "Error: Required options --xclbin, --kernel, --instr\n\n";
     std::cerr << "Usage:\n" << options.help() << std::endl;
     return 1;
   }
 
-  // Get trace size from command line
   int trace_size = vm["trace-size"].as<int>();
-
-  // Get dimensions from command line
   int lq = vm["lq"].as<int>();
   int lk = vm["lk"].as<int>();
   int dk = vm["dk"].as<int>();
   int dv = vm["dv"].as<int>();
   int num_heads = vm["num-heads"].as<int>();
+  int verbosity = vm["verbosity"].as<int>();
 
   size_t Q_VOLUME = (size_t)num_heads * lq * dk;
   size_t K_VOLUME = (size_t)num_heads * lk * dk;
@@ -95,49 +89,99 @@ int main(int argc, const char *argv[]) {
   size_t V_SIZE = V_VOLUME * sizeof(DATATYPE);
   size_t OUTPUT_SIZE = OUTPUT_VOLUME * sizeof(DATATYPE);
 
-  int verbosity = vm["verbosity"].as<int>();
+  // Load instruction binary
+  std::vector<uint32_t> instr_v =
+      test_utils::load_instr_binary(vm["instr"].as<std::string>());
 
-  // Start the XRT test code
-  // Get a device handle
+  if (verbosity >= 1)
+    std::cout << "Instruction count: " << instr_v.size() << "\n";
+
+  // Get device handle
   unsigned int device_index = 0;
   auto device = xrt::device(device_index);
 
-  // Load the elf and create context
-  std::string elfPath = vm["elf"].as<std::string>();
+  // Load xclbin
+  auto xclbin = xrt::xclbin(vm["xclbin"].as<std::string>());
+
+  // Find kernel in xclbin
+  std::string Node = vm["kernel"].as<std::string>();
+  auto xkernels = xclbin.get_kernels();
+  auto xkernel = *std::find_if(xkernels.begin(), xkernels.end(),
+                               [Node, verbosity](xrt::xclbin::kernel &k) {
+                                 auto name = k.get_name();
+                                 if (verbosity >= 1)
+                                   std::cout << "Found kernel: " << name
+                                             << std::endl;
+                                 return name.rfind(Node, 0) == 0;
+                               });
+  auto kernelName = xkernel.get_name();
+
   if (verbosity >= 1)
-    std::cout << "Loading elf: " << elfPath << "\n";
+    std::cout << "Using kernel: " << kernelName << "\n";
 
-  xrt::elf ctx_elf{elfPath};
-  xrt::hw_context context = xrt::hw_context(device, ctx_elf);
+  // Register xclbin and create context
+  device.register_xclbin(xclbin);
+  xrt::hw_context context(device, xclbin.get_uuid());
+  auto kernel = xrt::kernel(context, kernelName);
 
-  // The name format here is <kernel_name>:<instance_name> from the config.json
-  std::string kernelName = vm["kernel"].as<std::string>();
-  if (verbosity >= 1)
-    std::cout << "Kernel name: " << kernelName << "\n";
+  // Allocate buffer objects
+  auto bo_instr = xrt::bo(device, instr_v.size() * sizeof(int),
+                          XCL_BO_FLAGS_CACHEABLE, kernel.group_id(1));
 
-  auto kernel = xrt::ext::kernel(context, kernelName);
+  auto bo_q =
+      xrt::bo(device, Q_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
+  auto bo_k =
+      xrt::bo(device, K_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
+  auto bo_v =
+      xrt::bo(device, V_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(5));
+  auto bo_out = xrt::bo(device, OUTPUT_SIZE + static_cast<size_t>(trace_size),
+                        XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(6));
 
-  // Create buffer objects using xrt::ext::bo (declared as xrt::bo type)
-  // Kernel signature: attention_bf16(Q, K, V, Output) — 4 args, no mask buffer
-  xrt::bo bo_q = xrt::ext::bo{device, Q_SIZE};
-  xrt::bo bo_k = xrt::ext::bo{device, K_SIZE};
-  xrt::bo bo_v = xrt::ext::bo{device, V_SIZE};
-  xrt::bo bo_out =
-      xrt::ext::bo{device, OUTPUT_SIZE + static_cast<size_t>(trace_size)};
+  // Fill input data
+  DATATYPE *bufQ = bo_q.map<DATATYPE *>();
+  std::vector<DATATYPE> QVec;
+  for (size_t i = 0; i < Q_VOLUME; i++)
+    QVec.push_back(random_bfloat16_t());
+  memcpy(bufQ, QVec.data(), Q_SIZE);
 
-  unsigned n_iterations = vm["iterations"].as<int>();
-  unsigned n_warmup_iterations = vm["warmup"].as<int>();
-  unsigned num_iter = n_iterations + n_warmup_iterations;
+  DATATYPE *bufK = bo_k.map<DATATYPE *>();
+  std::vector<DATATYPE> KVec;
+  for (size_t i = 0; i < K_VOLUME; i++)
+    KVec.push_back(random_bfloat16_t());
+  memcpy(bufK, KVec.data(), K_SIZE);
+
+  DATATYPE *bufV = bo_v.map<DATATYPE *>();
+  std::vector<DATATYPE> VVec;
+  for (size_t i = 0; i < V_VOLUME; i++)
+    VVec.push_back(random_bfloat16_t());
+  memcpy(bufV, VVec.data(), V_SIZE);
+
+  DATATYPE *bufOut = bo_out.map<DATATYPE *>();
+  memset(bufOut, 0, OUTPUT_SIZE + trace_size);
+
+  // Copy instructions
+  void *bufInstr = bo_instr.map<void *>();
+  memcpy(bufInstr, instr_v.data(), instr_v.size() * sizeof(int));
+
+  // Sync to device
+  bo_instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bo_q.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bo_k.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bo_v.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bo_out.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+  unsigned int n_iterations = vm["iterations"].as<int>();
+  unsigned int n_warmup_iterations = vm["warmup"].as<int>();
+  unsigned int num_iter = n_iterations + n_warmup_iterations;
   float npu_time_total = 0;
   float npu_time_min = std::numeric_limits<float>::max();
   float npu_time_max = 0;
 
-  // FLOPs for attention: Q@K^T (lq*lk*dk*2) + softmax(~5*lq*lk) + S@V
-  // (lq*dv*lk*2) per head, multiplied by num_heads
+  // FLOPs: Q@K^T (lq*lk*dk*2) + S@V (lq*dv*lk*2) per head
   float macs =
       (float)num_heads * ((float)lq * lk * dk * 2 + (float)lk * lq * dv * 2);
 
-  std::cout << "Flash Attention Benchmark (ELF format)" << std::endl;
+  std::cout << "Flash Attention Benchmark (xclbin format, NPU1)" << std::endl;
   std::cout << "  num_heads=" << num_heads << ", lq=" << lq << ", lk=" << lk
             << ", dk=" << dk << ", dv=" << dv << std::endl;
   std::cout << "  Q: [" << num_heads << "x" << lq << "x" << dk << "] ("
@@ -148,57 +192,27 @@ int main(int argc, const char *argv[]) {
             << V_SIZE << " bytes)" << std::endl;
   std::cout << "  Output: [" << num_heads << "x" << lq << "x" << dv << "] ("
             << OUTPUT_SIZE << " bytes)" << std::endl;
+  std::cout << "  Warmup: " << n_warmup_iterations
+            << ", Iterations: " << n_iterations << std::endl;
 
-  if (verbosity >= 1)
-    std::cout << "Writing data into buffer objects.\n";
-
-  DATATYPE *bufQ = bo_q.map<DATATYPE *>();
-  std::vector<DATATYPE> QVec;
-  for (size_t i = 0; i < Q_VOLUME; i++)
-    QVec.push_back(random_bfloat16_t());
-  memcpy(bufQ, QVec.data(), (QVec.size() * sizeof(DATATYPE)));
-
-  DATATYPE *bufK = bo_k.map<DATATYPE *>();
-  std::vector<DATATYPE> KVec;
-  for (size_t i = 0; i < K_VOLUME; i++)
-    KVec.push_back(random_bfloat16_t());
-  memcpy(bufK, KVec.data(), (KVec.size() * sizeof(DATATYPE)));
-
-  DATATYPE *bufV = bo_v.map<DATATYPE *>();
-  std::vector<DATATYPE> VVec;
-  for (size_t i = 0; i < V_VOLUME; i++)
-    VVec.push_back(random_bfloat16_t());
-  memcpy(bufV, VVec.data(), (VVec.size() * sizeof(DATATYPE)));
-
-  DATATYPE *bufOut = bo_out.map<DATATYPE *>();
-  memset(bufOut, 0, OUTPUT_SIZE + trace_size);
-
-  bo_q.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_k.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_v.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_out.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  unsigned int opcode = 3;
 
   for (unsigned iter = 0; iter < num_iter; iter++) {
     if (verbosity >= 1)
       std::cout << "Running Kernel (iteration " << iter << ").\n";
 
-    auto run = xrt::run(kernel);
-    run.set_arg(0, bo_q);
-    run.set_arg(1, bo_k);
-    run.set_arg(2, bo_v);
-    run.set_arg(3, bo_out);
-
     auto start = std::chrono::high_resolution_clock::now();
-    run.start();
-    run.wait2();
+
+    auto run =
+        kernel(opcode, bo_instr, instr_v.size(), bo_q, bo_k, bo_v, bo_out);
+    run.wait();
+
     auto stop = std::chrono::high_resolution_clock::now();
 
     bo_out.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
-    if (iter < n_warmup_iterations) {
-      /* Warmup iterations do not count towards average runtime. */
+    if (iter < n_warmup_iterations)
       continue;
-    }
 
     float npu_time =
         std::chrono::duration_cast<std::chrono::microseconds>(stop - start)
@@ -208,6 +222,7 @@ int main(int argc, const char *argv[]) {
     npu_time_min = (npu_time < npu_time_min) ? npu_time : npu_time_min;
     npu_time_max = (npu_time > npu_time_max) ? npu_time : npu_time_max;
   }
+
   if (verbosity >= 1)
     std::cout << "Done Running Kernel.\n";
 

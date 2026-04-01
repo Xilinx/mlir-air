@@ -175,43 +175,45 @@ def build_module(
             func.attributes["link_with"] = StringAttr.get(link_with)
         return func
 
-    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
-    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
-    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
-    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn_npu2.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn_npu2.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn_npu2.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn_npu2.o")
     external_func(
         "matmul_a_b_bf16",
         [q_l1_t, k_l1_t, g_l1_1d],
-        link_with="attn.o",
+        link_with="attn_npu2.o",
     )
     external_func(
         "matmul_g_b_bf16",
         [g_l1_1d, v_l1_t, gp_l1_t],
-        link_with="attn.o",
+        link_with="attn_npu2.o",
     )
     external_func(
         "fused_softmax",
         [g_l1_1d, up_l1_t, up_l1_t, up_l1_t],
-        link_with="attn.o",
+        link_with="attn_npu2.o",
     )
-    external_func("maximum_up_u_bf16", [up_l1_t, up_l1_t], link_with="attn.o")
+    external_func("maximum_up_u_bf16", [up_l1_t, up_l1_t], link_with="attn_npu2.o")
     external_func(
         "exp_up_minus_u",
         [up_l1_t, up_l1_t, up_l1_t],
-        link_with="attn.o",
+        link_with="attn_npu2.o",
     )
-    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn_npu2.o")
     external_func(
         "accum_sp_r_s",
         [up_l1_t, up_l1_t, up_l1_t],
-        link_with="attn.o",
+        link_with="attn_npu2.o",
     )
-    external_func("vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o")
-    external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn.o")
-    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
-    external_func("add_gp_g", [gp_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn_npu2.o"
+    )
+    external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn_npu2.o")
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn_npu2.o")
+    external_func("add_gp_g", [gp_l1_t, gp_l1_t], link_with="attn_npu2.o")
     if causal:
-        external_func("apply_causal_mask", [g_l1_2d, i32, i32], link_with="attn.o")
+        external_func("apply_causal_mask", [g_l1_2d, i32, i32], link_with="attn_npu2.o")
 
     # ----------------------------------------------------------------
     # Channel declarations (3D with head dimension for multi-head)
@@ -640,7 +642,7 @@ def build_module(
                     name="herd_0",
                     sizes=[c_nq, c_ns],
                     operands=herd_operands,
-                    link_with="attn.o",
+                    link_with="attn_npu2.o",
                 )
                 def herd_body(tx, ty, hsx, hsy, *all_args):
                     # Unpack: dk_chunks Q buffers, then qk, v, g, gp, up, sp, seg_x, [causal_ctr]
@@ -1137,7 +1139,7 @@ def build_module(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog="attn.py",
+        prog="attn_npu2.py",
         description="Flash attention with memtile-relayed L3-to-L1 Q/K/V — "
         "selective Q capture",
     )
