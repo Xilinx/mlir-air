@@ -136,6 +136,7 @@ def build_module(
     index_type = IndexType.get()
 
     M = 4  # mmul_m = mmul_n = 4 for AIE2 mmul<4,8,4>
+    K_mmul = 8  # mmul_k = 8 for AIE2 mmul<4,8,4>
 
     # Derived parameters
     num_lq_iters = lq // lqp
@@ -560,8 +561,8 @@ def build_module(
                             qk_l2_bufs[stage].result,
                             indices=[seg_x, c0_seg, c0_seg],
                             offsets=[0, 0, 0, 0],
-                            sizes=[dk_tile // M, lkp // M, M, M],
-                            strides=[M, dk_tile * M, dk_tile, 1],
+                            sizes=[dk_tile // K_mmul, lkp // M, M, K_mmul],
+                            strides=[K_mmul, dk_tile * M, dk_tile, 1],
                         )
                         yield_([])
                     for chunk_iter in scf_range(0, c_chunks_dk, 1):
@@ -575,8 +576,8 @@ def build_module(
                             qk_l2_bufs[stage].result,
                             indices=[seg_x, c0_seg, c0_seg],
                             offsets=[0, 0, 0, 0],
-                            sizes=[dk_tile // M, lkp // M, M, M],
-                            strides=[M, dk_tile * M, dk_tile, 1],
+                            sizes=[dk_tile // K_mmul, lkp // M, M, K_mmul],
+                            strides=[K_mmul, dk_tile * M, dk_tile, 1],
                         )
                         yield_([])
 
@@ -597,8 +598,8 @@ def build_module(
                                 c0_seg,
                             ],  # [head, stage_dim=0, col_dim=0]
                             offsets=[0, 0, 0, 0],
-                            sizes=[dv_tile // M, lkp // M, M, M],
-                            strides=[M, dv_tile * M, dv_tile, 1],
+                            sizes=[dv_tile // M, lkp // K_mmul, K_mmul, M],
+                            strides=[M, dv_tile * K_mmul, dv_tile, 1],
                         )
                         yield_([])
 
