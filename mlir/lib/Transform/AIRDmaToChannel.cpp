@@ -178,7 +178,8 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
 SmallVector<Operation *>
 air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
                              affine::AffineIfOp aif_op) {
-  // Clone the affine if op body instead of the if op.
+  // Clone the affine if op body instead of the if op, flattening both
+  // then/else blocks into the parent scope.
   SmallVector<Operation *> clonedOps;
   auto clonedThenOps = cloneOpsInBlock(aif_op.getThenBlock(), builder, remap);
   clonedOps.insert(clonedOps.end(), clonedThenOps.begin(), clonedThenOps.end());
@@ -187,6 +188,41 @@ air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
     clonedOps.insert(clonedOps.end(), clonedElseOps.begin(),
                      clonedElseOps.end());
   }
+
+  // When the affine.if has results (e.g., async tokens from
+  // air-specialize-dma-broadcast), map them to replacement values so
+  // downstream uses don't become orphaned (SSA dominance fix for #1484).
+  if (aif_op.getNumResults() > 0) {
+    // Collect async tokens produced by cloned ops to create a wait_all.
+    SmallVector<Value> asyncDeps;
+    for (auto *clonedOp : clonedOps) {
+      if (auto asyncOp = dyn_cast_if_present<air::AsyncOpInterface>(clonedOp)) {
+        if (auto token = asyncOp.getAsyncToken())
+          asyncDeps.push_back(token);
+      }
+    }
+    // Create a wait_all that merges all cloned ops' async tokens, then map
+    // each affine.if result to the wait_all's token.
+    if (!asyncDeps.empty()) {
+      auto waitAll = air::WaitAllOp::create(
+          builder, builder.getUnknownLoc(),
+          air::AsyncTokenType::get(aif_op->getContext()), asyncDeps);
+      waitAll->setAttr("hoist", StringAttr::get(aif_op->getContext(), "dep"));
+      clonedOps.push_back(waitAll);
+      for (unsigned i = 0; i < aif_op.getNumResults(); i++) {
+        remap.map(aif_op.getResult(i), waitAll.getAsyncToken());
+      }
+    } else {
+      // Fallback: map results to then-block's yielded values.
+      auto thenYield = aif_op.getThenBlock()->getTerminator();
+      for (unsigned i = 0; i < aif_op.getNumResults(); i++) {
+        Value yieldedVal = thenYield->getOperand(i);
+        Value remappedVal = remap.lookupOrDefault(yieldedVal);
+        remap.map(aif_op.getResult(i), remappedVal);
+      }
+    }
+  }
+
   return clonedOps;
 }
 

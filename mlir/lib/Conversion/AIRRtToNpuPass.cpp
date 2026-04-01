@@ -429,6 +429,16 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
     for (int i = startDim; i < 4; i++) {
       int64_t size = staticSizes[i];
       int64_t stride = staticStrides[i];
+      // stride=0 with size>1 at dims 1-2 means "repeat at same address"
+      // (broadcast pattern). Fold into repeat_count instead of passing to
+      // BD dimensions, since aie.dma_bd rejects stride=0. Dim 3 (innermost)
+      // is excluded because stride=0 there is the trivial/degenerate case.
+      if (i > 0 && i < 3 && stride == 0 && size > 1) {
+        repeatCount = (repeatCount + 1) * size - 1;
+        // Adjust transfer length to exclude the folded dimension.
+        transferLen /= size;
+        continue;
+      }
       // Include dimension if size > 1, or if it's the innermost dimension
       if (size > 1 || i == 3) {
         auto dimLayout = AIE::BDDimLayoutAttr::get(ctx, size, stride);

@@ -859,3 +859,34 @@ module {
     return
   }
 }
+
+// -----
+
+// stride=0 at dim 1 (broadcast pattern) should be folded into repeat_count
+// and NOT passed to aie.dma_bd dimensions. Regression test for issue #1484.
+
+// CHECK-LABEL: aie.runtime_sequence @broadcast_stride_zero
+// CHECK-SAME: %[[ARG0:.*]]: memref<64xbf16>
+// CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId2 {
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<64xbf16>, 0, 64, [<size = 64, stride = 1>])
+// CHECK: } {repeat_count = 3 : i32}
+// CHECK: aiex.dma_start_task
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(%shim_noc_tile_0_0, MM2S, 0)
+    func.func @broadcast_stride_zero(%arg0: memref<64xbf16>) {
+      %c0_i64 = arith.constant 0 : i64
+      %c1_i64 = arith.constant 1 : i64
+      %c2_i64 = arith.constant 2 : i64
+      %c64_i64 = arith.constant 64 : i64
+      %c2_i32 = arith.constant 2 : i32
+      // sizes=[2, 2, 1, 64] strides=[0, 0, 0, 1]
+      // dim 0: stride=0 size=2 -> repeat_count=1
+      // dim 1: stride=0 size=2 -> should fold into repeat_count, NOT pass to BD
+      // Expected: repeat_count = (1+1)*2 - 1 = 3, BD dims = [<size=64, stride=1>]
+      airrt.dma_memcpy_nd(%c2_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c2_i64, %c2_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64, %c1_i64]) {metadata = @airMemcpyId2} : (i32, i64, i64, memref<64xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+      return
+    }
+  }
+}
