@@ -1,6 +1,7 @@
 # Copyright (C) 2025, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 """Flash attention with memtile-relayed dataflow — selective Q capture.
+NPU1 (AIE2) variant using 4x8x4 mmul and LUT-based exp.
 
 All data (Q, K, V) routes through memtile for L3→L2→L1 transfer.
 Per-stage QKIn/QK2L1 and VIn/V2L1 channels handle the relay.
@@ -9,7 +10,7 @@ but only copies the one matching its tx. Cascade merge follows the
 cascade-after pattern.
 
 Multi-head support via 3D channels with segment unroll:
-  - num_heads_per_unroll=2 heads are processed per segment unroll
+  - num_heads_per_unroll=1 on NPU1 (4x4 array, one head at a time)
   - Segment sizes=[num_heads_per_unroll, 1], each segment instance handles
     one head index
   - 3D channels have head dimension as first index
@@ -19,8 +20,16 @@ Supports multi-head (MHA), grouped-query (GQA), and causal masking.
 
 Default design parameters:
   lk=512, lkp=64, lq=512, lqp=256, dk=64, dv=64
-  num_q_tiles=4, num_cascade_stages=4, num_heads=2
+  num_q_tiles=4, num_cascade_stages=4, num_heads=1
   Shared-buffer mode (lkp == dk).
+
+Key differences from NPU2 (attn.py):
+  - M=4 (mmul<4,8,4>) instead of M=8 (mmul<8,8,8>)
+  - num_heads_per_unroll=1 (4x4 array can only do one head at a time)
+  - LUT-based exp (no aie::exp2 on AIE2)
+  - 1/sqrt(dk) scaling done inside fused_softmax kernel (scale_g_bf16)
+  - target_device="npu1", output_format default="xclbin"
+  - Links with attn_npu1.o instead of attn.o
 
 DMA channel strategy (2 S2MM + 2 MM2S per compute tile):
   S2MM 0: QK channel (Q selective capture, then K chunks)
@@ -62,11 +71,11 @@ def build_module(
     dv=64,
     num_q_tiles=4,
     num_cascade_stages=4,
-    num_heads=2,
+    num_heads=1,
     num_kv_heads=None,
     causal=False,
 ):
-    """Build flash attention module with selective Q capture pattern.
+    """Build flash attention module with selective Q capture pattern (NPU1).
 
     Args:
         lk: Total K/V sequence length (default: 512)
@@ -77,7 +86,7 @@ def build_module(
         dv: Value dimension (default: 64)
         num_q_tiles: Number of tiles to partition Q chunk into (default: 4)
         num_cascade_stages: Number of cascade pipeline stages (default: 4)
-        num_heads: Number of attention heads (default: 2)
+        num_heads: Number of attention heads (default: 1)
         num_kv_heads: Number of key/value heads for grouped-query attention
             (GQA). If None, defaults to num_heads (standard MHA).
         causal: Whether to enable causal (autoregressive) masking.
@@ -115,7 +124,7 @@ def build_module(
     )
     gqa_group_size = num_heads // num_kv_heads
 
-    num_heads_per_unroll = 2
+    num_heads_per_unroll = 1
     assert num_heads % num_heads_per_unroll == 0, (
         f"num_heads ({num_heads}) must be divisible by "
         f"num_heads_per_unroll ({num_heads_per_unroll})"
@@ -126,7 +135,8 @@ def build_module(
     i32 = IntegerType.get_signless(32)
     index_type = IndexType.get()
 
-    M = 8  # mmul_m = mmul_k = mmul_n
+    M = 4  # mmul_m = mmul_n = 4 for AIE2 mmul<4,8,4>
+    K_mmul = 8  # mmul_k = 8 for AIE2 mmul<4,8,4>
 
     # Derived parameters
     num_lq_iters = lq // lqp
@@ -175,43 +185,45 @@ def build_module(
             func.attributes["link_with"] = StringAttr.get(link_with)
         return func
 
-    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn.o")
-    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn.o")
-    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn.o")
-    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn.o")
+    external_func("zero_fill_g_bf16", [g_l1_1d], link_with="attn_npu1.o")
+    external_func("zero_fill_gp_bf16", [gp_l1_t], link_with="attn_npu1.o")
+    external_func("zero_fill_sp_bf16", [up_l1_t], link_with="attn_npu1.o")
+    external_func("neg_inf_fill_up_bf16", [up_l1_t], link_with="attn_npu1.o")
     external_func(
         "matmul_a_b_bf16",
         [q_l1_t, k_l1_t, g_l1_1d],
-        link_with="attn.o",
+        link_with="attn_npu1.o",
     )
     external_func(
         "matmul_g_b_bf16",
         [g_l1_1d, v_l1_t, gp_l1_t],
-        link_with="attn.o",
+        link_with="attn_npu1.o",
     )
     external_func(
         "fused_softmax",
         [g_l1_1d, up_l1_t, up_l1_t, up_l1_t],
-        link_with="attn.o",
+        link_with="attn_npu1.o",
     )
-    external_func("maximum_up_u_bf16", [up_l1_t, up_l1_t], link_with="attn.o")
+    external_func("maximum_up_u_bf16", [up_l1_t, up_l1_t], link_with="attn_npu1.o")
     external_func(
         "exp_up_minus_u",
         [up_l1_t, up_l1_t, up_l1_t],
-        link_with="attn.o",
+        link_with="attn_npu1.o",
     )
-    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn.o")
+    external_func("mul_r_gp", [up_l1_t, gp_l1_t], link_with="attn_npu1.o")
     external_func(
         "accum_sp_r_s",
         [up_l1_t, up_l1_t, up_l1_t],
-        link_with="attn.o",
+        link_with="attn_npu1.o",
     )
-    external_func("vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn.o")
-    external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn.o")
-    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn.o")
-    external_func("add_gp_g", [gp_l1_t, gp_l1_t], link_with="attn.o")
+    external_func(
+        "vector_copy_32elems", [i32, up_l1_t, up_l1_t], link_with="attn_npu1.o"
+    )
+    external_func("copy_tile", [k_l1_t, q_l1_t], link_with="attn_npu1.o")
+    external_func("div_gp_sp", [up_l1_t, gp_l1_t], link_with="attn_npu1.o")
+    external_func("add_gp_g", [gp_l1_t, gp_l1_t], link_with="attn_npu1.o")
     if causal:
-        external_func("apply_causal_mask", [g_l1_2d, i32, i32], link_with="attn.o")
+        external_func("apply_causal_mask", [g_l1_2d, i32, i32], link_with="attn_npu1.o")
 
     # ----------------------------------------------------------------
     # Channel declarations (3D with head dimension for multi-head)
@@ -549,8 +561,8 @@ def build_module(
                             qk_l2_bufs[stage].result,
                             indices=[seg_x, c0_seg, c0_seg],
                             offsets=[0, 0, 0, 0],
-                            sizes=[dk_tile // M, lkp // M, M, M],
-                            strides=[M, dk_tile * M, dk_tile, 1],
+                            sizes=[dk_tile // K_mmul, lkp // M, M, K_mmul],
+                            strides=[K_mmul, dk_tile * M, dk_tile, 1],
                         )
                         yield_([])
                     for chunk_iter in scf_range(0, c_chunks_dk, 1):
@@ -564,8 +576,8 @@ def build_module(
                             qk_l2_bufs[stage].result,
                             indices=[seg_x, c0_seg, c0_seg],
                             offsets=[0, 0, 0, 0],
-                            sizes=[dk_tile // M, lkp // M, M, M],
-                            strides=[M, dk_tile * M, dk_tile, 1],
+                            sizes=[dk_tile // K_mmul, lkp // M, M, K_mmul],
+                            strides=[K_mmul, dk_tile * M, dk_tile, 1],
                         )
                         yield_([])
 
@@ -586,8 +598,8 @@ def build_module(
                                 c0_seg,
                             ],  # [head, stage_dim=0, col_dim=0]
                             offsets=[0, 0, 0, 0],
-                            sizes=[dv_tile // M, lkp // M, M, M],
-                            strides=[M, dv_tile * M, dv_tile, 1],
+                            sizes=[dv_tile // M, lkp // K_mmul, K_mmul, M],
+                            strides=[M, dv_tile * K_mmul, dv_tile, 1],
                         )
                         yield_([])
 
@@ -640,7 +652,7 @@ def build_module(
                     name="herd_0",
                     sizes=[c_nq, c_ns],
                     operands=herd_operands,
-                    link_with="attn.o",
+                    link_with="attn_npu1.o",
                 )
                 def herd_body(tx, ty, hsx, hsy, *all_args):
                     # Unpack: dk_chunks Q buffers, then qk, v, g, gp, up, sp, seg_x, [causal_ctr]
@@ -1137,9 +1149,9 @@ def build_module(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog="attn.py",
+        prog="attn_npu1.py",
         description="Flash attention with memtile-relayed L3-to-L1 Q/K/V — "
-        "selective Q capture",
+        "selective Q capture (NPU1/AIE2 variant)",
     )
     parser.add_argument(
         "-p",
@@ -1198,8 +1210,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-heads",
         type=int,
-        default=2,
-        help="Number of attention heads (default: 2)",
+        default=1,
+        help="Number of attention heads (default: 1)",
     )
     parser.add_argument(
         "--num-kv-heads",
@@ -1217,9 +1229,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-format",
         type=str,
-        default="elf",
+        default="xclbin",
         choices=["xclbin", "elf"],
-        help="Output format (default: elf)",
+        help="Output format (default: xclbin)",
     )
     parser.add_argument(
         "--causal",
@@ -1312,7 +1324,7 @@ if __name__ == "__main__":
         runtime_loop_tiling_sizes=tiling,
         output_format=args.output_format,
         instance_name="attention_bf16",
-        target_device="npu2",
+        target_device="npu1",
     )
 
     if args.compile_mode == "compile-and-run":
@@ -1335,7 +1347,7 @@ if __name__ == "__main__":
             runtime_loop_tiling_sizes=tiling,
             output_format=args.output_format,
             instance_name="attention_bf16",
-            target_device="npu2",
+            target_device="npu1",
         )
         module_function = backend.compile(mlir_module)
         print("Compilation complete.")

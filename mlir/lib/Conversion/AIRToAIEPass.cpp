@@ -3302,39 +3302,35 @@ public:
     builder.setInsertionPointAfter(t);
     IRMapping remap;
 
-    // Set up segment operand -> constant remapping for unrolled segments.
-    // This ensures channel ops outside the segment (at L3 level) that use
-    // segment indices get specialized to the correct unroll iteration.
-    if (auto unrollXAttr =
-            aie_device->getAttrOfType<IntegerAttr>("segment_unroll_x")) {
+    // Set up segment operand -> constant remapping.
+    // For unrolled segments (totalUnroll > 1), use the stored unroll indices.
+    // For non-unrolled segments (totalUnroll == 1), also remap segment IDs to
+    // constant 0 so that channel ops using segment indices as channel bundle
+    // positions get properly specialized (e.g., ChannelPut with indices=[seg_x]
+    // becomes indices=[0]).
+    {
+      int64_t unrollX = 0;
+      int64_t unrollY = 0;
+      if (auto unrollXAttr =
+              aie_device->getAttrOfType<IntegerAttr>("segment_unroll_x"))
+        unrollX = unrollXAttr.getInt();
       if (auto unrollYAttr =
-              aie_device->getAttrOfType<IntegerAttr>("segment_unroll_y")) {
-        int64_t unrollX = unrollXAttr.getInt();
-        int64_t unrollY = unrollYAttr.getInt();
-        // Find segments and map their size operands (iteration indices) to
-        // constants. The size operands are the SSA values (typically function
-        // arguments) that define the segment's iteration space.
-        for (auto func : module.getOps<func::FuncOp>()) {
-          func.walk([&](air::SegmentOp segOp) {
-            // Map segment IDs (block arguments inside segment) to constants.
-            // Note: Only remap segment IDs (induction variables), NOT size
-            // operands. Size operands represent the iteration space size
-            // (e.g., 2x1), while IDs represent the current iteration (e.g.,
-            // 0 or 1).
-            // Handle dimension-by-dimension to support 1-D segments.
-            auto segIds = segOp.getIds();
-            if (segIds.size() >= 1) {
-              remap.map(segIds[0],
-                        arith::ConstantIndexOp::create(
-                            builder, builder.getUnknownLoc(), unrollX));
-            }
-            if (segIds.size() >= 2) {
-              remap.map(segIds[1],
-                        arith::ConstantIndexOp::create(
-                            builder, builder.getUnknownLoc(), unrollY));
-            }
-          });
-        }
+              aie_device->getAttrOfType<IntegerAttr>("segment_unroll_y"))
+        unrollY = unrollYAttr.getInt();
+      for (auto func : module.getOps<func::FuncOp>()) {
+        func.walk([&](air::SegmentOp segOp) {
+          auto segIds = segOp.getIds();
+          if (segIds.size() >= 1) {
+            remap.map(segIds[0],
+                      arith::ConstantIndexOp::create(
+                          builder, builder.getUnknownLoc(), unrollX));
+          }
+          if (segIds.size() >= 2) {
+            remap.map(segIds[1],
+                      arith::ConstantIndexOp::create(
+                          builder, builder.getUnknownLoc(), unrollY));
+          }
+        });
       }
     }
 
