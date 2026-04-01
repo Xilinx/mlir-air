@@ -1,4 +1,4 @@
-//===- GpuTestUtils.cpp - Custom GPU test utilities for mlir-air ---------===//
+//===- gpu_test_utils.cpp - Custom GPU test utilities for mlir-air --------===//
 //
 // Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -9,7 +9,7 @@
 // These functions supplement the standard libmlir_rocm_runtime.so from LLVM.
 //
 // Usage:
-//   mlir-runner --shared-libs=libmlir_rocm_runtime.so,libairgpu.so output.mlir
+//   mlir-runner --shared-libs=libairgpu.so output.mlir
 //
 //===----------------------------------------------------------------------===//
 

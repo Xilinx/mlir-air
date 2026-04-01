@@ -8,52 +8,52 @@
 
 #pragma once
 
-#include <hip/hip_runtime.h>
 #include <cstddef>
 #include <cstdint>
+#include <hip/hip_runtime.h>
 #include <mutex>
 #include <vector>
 
 struct AllocRecord {
-    void *va_ptr;
-    size_t size;
-    hipMemGenericAllocationHandle_t handle;
+  void *va_ptr;
+  size_t size;
+  hipMemGenericAllocationHandle_t handle;
 };
 
 class VMemAllocator {
 public:
-    // heap_size: total VA space to reserve (default 1GB, env AIRGPU_HEAP_SIZE)
-    explicit VMemAllocator(size_t heap_size = 1ULL << 30);
-    ~VMemAllocator();
+  // heap_size: total VA space to reserve (default 1GB, env AIRGPU_HEAP_SIZE)
+  explicit VMemAllocator(size_t heap_size = 1ULL << 30);
+  ~VMemAllocator();
 
-    // Allocate device memory backed by VMem.
-    // Returns device pointer accessible from all GPUs (access granted at alloc).
-    void *allocate(size_t size_bytes);
+  // Allocate device memory backed by VMem.
+  // Returns device pointer accessible from all GPUs (access granted at alloc).
+  void *allocate(size_t size_bytes);
 
-    // Free a previously allocated pointer.
-    void free(void *ptr);
+  // Free a previously allocated pointer.
+  void free(void *ptr);
 
-    // Accessors for future symmetric heap extension
-    void *get_va_base() const { return va_base_; }
-    size_t get_heap_size() const { return heap_size_; }
-    size_t get_granularity() const { return granularity_; }
-    int get_device_id() const { return device_id_; }
-    int get_num_devices() const { return num_devices_; }
+  // Accessors for future symmetric heap extension
+  void *getVaBase() const { return va_base_; }
+  size_t getHeapSize() const { return heap_size_; }
+  size_t getGranularity() const { return granularity_; }
+  int getDeviceId() const { return device_id_; }
+  int getNumDevices() const { return num_devices_; }
 
-    VMemAllocator(const VMemAllocator &) = delete;
-    VMemAllocator &operator=(const VMemAllocator &) = delete;
+  VMemAllocator(const VMemAllocator &) = delete;
+  VMemAllocator &operator=(const VMemAllocator &) = delete;
 
 private:
-    void *va_base_ = nullptr;
-    size_t heap_size_;
-    size_t current_offset_ = 0;
-    size_t granularity_;
-    int device_id_ = 0;
-    int num_devices_ = 1;
+  void *va_base_ = nullptr;
+  size_t heap_size_;
+  size_t current_offset_ = 0;
+  size_t granularity_;
+  int device_id_ = 0;
+  int num_devices_ = 1;
 
-    std::vector<hipMemAccessDesc> access_descs_;
-    std::vector<AllocRecord> alloc_records_;
-    std::mutex mutex_;
+  std::vector<hipMemAccessDesc> access_descs_;
+  std::vector<AllocRecord> alloc_records_;
+  std::mutex mutex_;
 
-    static size_t align_up(size_t value, size_t alignment);
+  static size_t alignUp(size_t value, size_t alignment);
 };
