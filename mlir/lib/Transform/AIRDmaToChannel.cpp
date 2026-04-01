@@ -178,7 +178,8 @@ SmallVector<Operation *> air::cloneOpsInBlock(Block *blk, OpBuilder &builder,
 SmallVector<Operation *>
 air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
                              affine::AffineIfOp aif_op) {
-  // Clone the affine if op body instead of the if op.
+  // Clone the affine if op body instead of the if op, flattening both
+  // then/else blocks into the parent scope.
   SmallVector<Operation *> clonedOps;
   auto clonedThenOps = cloneOpsInBlock(aif_op.getThenBlock(), builder, remap);
   clonedOps.insert(clonedOps.end(), clonedThenOps.begin(), clonedThenOps.end());
@@ -187,6 +188,66 @@ air::cloneAffineIfUsingRemap(OpBuilder builder, IRMapping &remap,
     clonedOps.insert(clonedOps.end(), clonedElseOps.begin(),
                      clonedElseOps.end());
   }
+
+  // When the affine.if has results (e.g., async tokens from
+  // air-specialize-dma-broadcast), map them to replacement values so
+  // downstream uses don't become orphaned (SSA dominance fix for #1484).
+  if (aif_op.getNumResults() > 0) {
+    // Check whether any results are async tokens.
+    bool hasAsyncTokenResult = false;
+    for (Value res : aif_op.getResults()) {
+      if (isa<air::AsyncTokenType>(res.getType())) {
+        hasAsyncTokenResult = true;
+        break;
+      }
+    }
+
+    // Fallback mapping source for all non-token results (and for token
+    // results if we fail to build a wait_all): the then-block's yielded
+    // values, remapped through the IRMapping.
+    auto thenYield = aif_op.getThenBlock()->getTerminator();
+
+    air::WaitAllOp waitAllOp;
+    if (hasAsyncTokenResult) {
+      // Collect async tokens produced by cloned ops to create a wait_all.
+      SmallVector<Value> asyncDeps;
+      for (auto *clonedOp : clonedOps) {
+        if (auto asyncOp =
+                dyn_cast_if_present<air::AsyncOpInterface>(clonedOp)) {
+          if (auto token = asyncOp.getAsyncToken())
+            asyncDeps.push_back(token);
+        }
+      }
+      // Create a wait_all that merges all cloned ops' async tokens, which
+      // can be used to replace async-token results of the affine.if.
+      if (!asyncDeps.empty()) {
+        waitAllOp = air::WaitAllOp::create(
+            builder, aif_op.getLoc(),
+            air::AsyncTokenType::get(aif_op->getContext()), asyncDeps);
+        waitAllOp->setAttr("hoist",
+                           StringAttr::get(aif_op->getContext(), "dep"));
+        clonedOps.push_back(waitAllOp);
+      }
+    }
+
+    // Map each affine.if result:
+    //  - async-token results: to the wait_all token if it exists, otherwise
+    //    to the corresponding remapped yielded value;
+    //  - non-token results: always to the corresponding remapped yielded
+    //    value.
+    for (unsigned i = 0; i < aif_op.getNumResults(); i++) {
+      Value ifResult = aif_op.getResult(i);
+      Value mappedValue;
+      if (isa<air::AsyncTokenType>(ifResult.getType()) && waitAllOp) {
+        mappedValue = waitAllOp.getAsyncToken();
+      } else {
+        Value yieldedVal = thenYield->getOperand(i);
+        mappedValue = remap.lookupOrDefault(yieldedVal);
+      }
+      remap.map(ifResult, mappedValue);
+    }
+  }
+
   return clonedOps;
 }
 
@@ -208,6 +269,51 @@ SmallVector<Operation *> air::cloneScfIfUsingRemap(OpBuilder builder,
       clonedOps.insert(clonedOps.end(), clonedElseOps.begin(),
                        clonedElseOps.end());
     }
+
+    // Map scf.if results to replacement values so downstream uses don't
+    // become orphaned (same pattern as cloneAffineIfUsingRemap).
+    bool hasAsyncTokenResult = false;
+    for (Value res : scf_if_op.getResults()) {
+      if (isa<air::AsyncTokenType>(res.getType())) {
+        hasAsyncTokenResult = true;
+        break;
+      }
+    }
+
+    auto thenYield = scf_if_op.thenBlock()->getTerminator();
+
+    air::WaitAllOp waitAllOp;
+    if (hasAsyncTokenResult) {
+      SmallVector<Value> asyncDeps;
+      for (auto *clonedOp : clonedOps) {
+        if (auto asyncOp =
+                dyn_cast_if_present<air::AsyncOpInterface>(clonedOp)) {
+          if (auto token = asyncOp.getAsyncToken())
+            asyncDeps.push_back(token);
+        }
+      }
+      if (!asyncDeps.empty()) {
+        waitAllOp = air::WaitAllOp::create(
+            builder, scf_if_op.getLoc(),
+            air::AsyncTokenType::get(scf_if_op->getContext()), asyncDeps);
+        waitAllOp->setAttr("hoist",
+                           StringAttr::get(scf_if_op->getContext(), "dep"));
+        clonedOps.push_back(waitAllOp);
+      }
+    }
+
+    for (unsigned i = 0; i < scf_if_op.getNumResults(); i++) {
+      Value ifResult = scf_if_op.getResult(i);
+      Value mappedValue;
+      if (isa<air::AsyncTokenType>(ifResult.getType()) && waitAllOp) {
+        mappedValue = waitAllOp.getAsyncToken();
+      } else {
+        Value yieldedVal = thenYield->getOperand(i);
+        mappedValue = remap.lookupOrDefault(yieldedVal);
+      }
+      remap.map(ifResult, mappedValue);
+    }
+
     return clonedOps;
   }
 
