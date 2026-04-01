@@ -3,8 +3,8 @@
 //
 // REQUIRES: ryzen_ai_npu1, peano
 //
-// RUN: mkdir -p test_npu1_peano
-// RUN: cd test_npu1_peano
-// RUN: make -f %S/Makefile clean
+// RUN: mkdir -p %t
+// RUN: cd %t
+// RUN: make -f %S/Makefile clean PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
 // RUN: make -f %S/Makefile run-npu1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
 // CHECK: PASS!

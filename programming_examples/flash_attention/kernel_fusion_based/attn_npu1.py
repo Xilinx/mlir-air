@@ -86,7 +86,7 @@ def build_module(
         dv: Value dimension (default: 64)
         num_q_tiles: Number of tiles to partition Q chunk into (default: 4)
         num_cascade_stages: Number of cascade pipeline stages (default: 4)
-        num_heads: Number of attention heads (default: 2)
+        num_heads: Number of attention heads (default: 1)
         num_kv_heads: Number of key/value heads for grouped-query attention
             (GQA). If None, defaults to num_heads (standard MHA).
         causal: Whether to enable causal (autoregressive) masking.

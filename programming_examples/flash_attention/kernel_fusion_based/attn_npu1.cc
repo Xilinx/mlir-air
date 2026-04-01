@@ -376,16 +376,9 @@ __attribute__((always_inline)) v16accfloat getExpBf16(v16bfloat16 x) {
 // ============================================================================
 #include <cmath>
 
-constexpr double constexpr_sqrt_dk = (dk_full == 64)    ? 8.0
-                                     : (dk_full == 128) ? 11.313708498984761
-                                     : (dk_full == 256) ? 16.0
-                                     : (dk_full == 512) ? 22.627416997969522
-                                                        : 8.0;
-static_assert(dk_full == 64 || dk_full == 128 || dk_full == 256 ||
-                  dk_full == 512,
-              "Unsupported dk_full value: update constexpr_sqrt_dk");
+static const double inv_sqrt_dk_val = 1.0 / sqrt((double)dk_full);
 
-#define inv_sqrt_dk (1.0 / constexpr_sqrt_dk)
+#define inv_sqrt_dk inv_sqrt_dk_val
 
 // ============================================================================
 // Kernel functions
