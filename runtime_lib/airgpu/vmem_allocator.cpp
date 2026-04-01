@@ -10,7 +10,7 @@
     do {                                                                       \
         hipError_t err_ = (expr);                                              \
         if (err_ != hipSuccess) {                                              \
-            fprintf(stderr, "air_mgpu: %s failed: %s (%d)\n", #expr,          \
+            fprintf(stderr, "airgpu: %s failed: %s (%d)\n", #expr,            \
                     hipGetErrorString(err_), static_cast<int>(err_));           \
             abort();                                                           \
         }                                                                      \
@@ -22,7 +22,7 @@ size_t VMemAllocator::align_up(size_t value, size_t alignment) {
 
 VMemAllocator::VMemAllocator(size_t heap_size) {
     // Allow override from environment
-    if (const char *env = std::getenv("AIR_MGPU_HEAP_SIZE")) {
+    if (const char *env = std::getenv("AIRGPU_HEAP_SIZE")) {
         heap_size = static_cast<size_t>(std::atol(env));
     }
 
@@ -57,7 +57,7 @@ VMemAllocator::VMemAllocator(size_t heap_size) {
     }
 
     fprintf(stderr,
-            "air_mgpu: VMemAllocator initialized on GPU %d "
+            "airgpu: VMemAllocator initialized on GPU %d "
             "(VA base=%p, heap=%zu MB, granularity=%zu KB, %d GPUs)\n",
             device_id_, va_base_, heap_size_ >> 20, granularity_ >> 10,
             num_devices_);
@@ -90,7 +90,7 @@ void *VMemAllocator::allocate(size_t size_bytes) {
 
     if (aligned_offset + aligned_size > heap_size_) {
         fprintf(stderr,
-                "air_mgpu: VMem heap exhausted "
+                "airgpu: VMem heap exhausted "
                 "(requested %zu, used %zu, total %zu)\n",
                 aligned_size, aligned_offset, heap_size_);
         abort();
@@ -108,7 +108,7 @@ void *VMemAllocator::allocate(size_t size_bytes) {
     hipMemGenericAllocationHandle_t handle;
     HIP_CHECK(hipMemCreate(&handle, aligned_size, &prop, 0));
 
-    // Map physical → VA
+    // Map physical -> VA
     HIP_CHECK(hipMemMap(dptr, aligned_size, 0, handle, 0));
 
     // Set access for all GPUs
@@ -129,7 +129,7 @@ void VMemAllocator::free(void *ptr) {
         std::find_if(alloc_records_.begin(), alloc_records_.end(),
                       [ptr](const AllocRecord &r) { return r.va_ptr == ptr; });
     if (it == alloc_records_.end()) {
-        fprintf(stderr, "air_mgpu: free of unknown pointer %p\n", ptr);
+        fprintf(stderr, "airgpu: free of unknown pointer %p\n", ptr);
         return;
     }
 

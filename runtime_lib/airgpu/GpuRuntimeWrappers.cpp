@@ -7,13 +7,8 @@
 //
 // Usage:
 //   mlir-runner --entry-point-result=void \
-//       --shared-libs=libair_mgpu_runtime.so \
 //       --shared-libs=libairgpu.so \
 //       final.mlir
-//
-// The 26 mgpu* functions match LLVM's RocmRuntimeWrappers.cpp exactly.
-// Two are VMem-backed (mgpuMemAlloc, mgpuMemFree).
-// The rest are thin HIP wrappers identical to LLVM's implementation.
 
 #include "vmem_allocator.h"
 #include <hip/hip_runtime.h>
@@ -46,11 +41,11 @@ template <typename T, int N> struct StridedMemRefType {
 
 static VMemAllocator *g_allocator = nullptr;
 
-__attribute__((constructor)) static void air_mgpu_runtime_init() {
+__attribute__((constructor)) static void airgpu_runtime_init() {
     g_allocator = new VMemAllocator();
 }
 
-__attribute__((destructor)) static void air_mgpu_runtime_shutdown() {
+__attribute__((destructor)) static void airgpu_runtime_shutdown() {
     delete g_allocator;
     g_allocator = nullptr;
 }

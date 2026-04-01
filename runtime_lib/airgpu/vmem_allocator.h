@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
 //
-// VMem-backed GPU memory allocator for MLIR-AIR.
+// VMem-backed GPU memory allocator for mlir-air.
 // Uses HIP VMem APIs (hipMemCreate, hipMemMap, hipMemSetAccess) instead of
 // hipMalloc. This makes allocated memory future-ready for symmetric heap /
 // multi-GPU access via XGMI without reallocation.
@@ -22,7 +22,7 @@ struct AllocRecord {
 
 class VMemAllocator {
 public:
-    // heap_size: total VA space to reserve (default 1GB, env AIR_MGPU_HEAP_SIZE)
+    // heap_size: total VA space to reserve (default 1GB, env AIRGPU_HEAP_SIZE)
     explicit VMemAllocator(size_t heap_size = 1ULL << 30);
     ~VMemAllocator();
 

@@ -7,7 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 
-// Import mgpu* functions from our runtime
+// Import mgpu* functions from libairgpu.so
 extern "C" {
 void *mgpuMemAlloc(uint64_t sizeBytes, hipStream_t stream, bool isHostShared);
 void mgpuMemFree(void *ptr, hipStream_t stream);
@@ -43,11 +43,11 @@ int main() {
     }
     memset(h_output, 0, size);
 
-    // Copy host → device → host
+    // Copy host -> device -> host
     hipStream_t stream = mgpuStreamCreate();
-    printf("Copying host → device...\n");
+    printf("Copying host -> device...\n");
     mgpuMemcpy(d_buf, h_input, size, stream);
-    printf("Copying device → host...\n");
+    printf("Copying device -> host...\n");
     mgpuMemcpy(h_output, d_buf, size, stream);
     mgpuStreamSynchronize(stream);
 
