@@ -27,27 +27,31 @@ import shutil
 import subprocess
 
 import ctypes
+import sys
 from pathlib import Path
 from typing import List
 
-# First need to load the libhsa-runtime64.so.1 so we can load libairhost_shared
-try:
-    ctypes.CDLL(f"{rocm_path}/../../libhsa-runtime64.so.1", mode=ctypes.RTLD_GLOBAL)
-except Exception as e:
-    print("[WARNING] We were not able to load .so for libhsa-runtime64.so.1")
-    print(e)
-    pass
+# Runtime libraries (libhsa-runtime64, libairhost_shared) use POSIX APIs
+# (dlopen, mmap, ioctl) and are not available on Windows.
+if sys.platform != "win32":
+    # First need to load the libhsa-runtime64.so.1 so we can load libairhost_shared
+    try:
+        ctypes.CDLL(f"{rocm_path}/../../libhsa-runtime64.so.1", mode=ctypes.RTLD_GLOBAL)
+    except Exception as e:
+        print("[WARNING] We were not able to load .so for libhsa-runtime64.so.1")
+        print(e)
+        pass
 
-# After loading libhsa-runtime64.so we can load the AIR runtime functions
-try:
-    ctypes.CDLL(
-        f"{install_path()}/runtime_lib/x86_64/airhost/libairhost_shared.so",
-        mode=ctypes.RTLD_GLOBAL,
-    )
-except Exception as e:
-    print("[WARNING] We were not able to load .so for libairhost_shared.so")
-    print(e)
-    pass
+    # After loading libhsa-runtime64.so we can load the AIR runtime functions
+    try:
+        ctypes.CDLL(
+            f"{install_path()}/runtime_lib/x86_64/airhost/libairhost_shared.so",
+            mode=ctypes.RTLD_GLOBAL,
+        )
+    except Exception as e:
+        print("[WARNING] We were not able to load .so for libairhost_shared.so")
+        print(e)
+        pass
 try:
     import air._mlir_libs._airRt as airrt
 except Exception as e:

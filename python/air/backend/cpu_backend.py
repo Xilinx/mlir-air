@@ -11,17 +11,19 @@ import air.ir
 import air.passmanager
 
 import os
+import sys
 
 # override the default library paths for the mlir extras refbackend
-os.environ["ASYNC_RUNTIME_LIB_PATH"] = (
-    f"{install_path()}/python/air/_mlir_libs/libmlir_async_runtime.so"
-)
-os.environ["C_RUNNER_UTILS_LIB_PATH"] = (
-    f"{install_path()}/python/air/_mlir_libs/libmlir_c_runner_utils.so"
-)
-os.environ["RUNNER_UTILS_LIB_PATH"] = (
-    f"{install_path()}/python/air/_mlir_libs/libmlir_runner_utils.so"
-)
+if sys.platform != "win32":
+    os.environ["ASYNC_RUNTIME_LIB_PATH"] = (
+        f"{install_path()}/python/air/_mlir_libs/libmlir_async_runtime.so"
+    )
+    os.environ["C_RUNNER_UTILS_LIB_PATH"] = (
+        f"{install_path()}/python/air/_mlir_libs/libmlir_c_runner_utils.so"
+    )
+    os.environ["RUNNER_UTILS_LIB_PATH"] = (
+        f"{install_path()}/python/air/_mlir_libs/libmlir_runner_utils.so"
+    )
 from aie.extras.runtime.refbackend import LLVMJITBackend
 import aie.ir as aieir
 
@@ -31,13 +33,15 @@ import air.compiler.util
 
 import ctypes
 
-ctypes.CDLL(
-    f"{install_path()}/runtime_lib/x86_64/aircpu/libaircpu.so", mode=ctypes.RTLD_GLOBAL
-)
-ctypes.CDLL(
-    f"{install_path()}/python/air/_mlir_libs/libmlir_async_runtime.so",
-    mode=ctypes.RTLD_GLOBAL,
-)
+if sys.platform != "win32":
+    ctypes.CDLL(
+        f"{install_path()}/runtime_lib/x86_64/aircpu/libaircpu.so",
+        mode=ctypes.RTLD_GLOBAL,
+    )
+    ctypes.CDLL(
+        f"{install_path()}/python/air/_mlir_libs/libmlir_async_runtime.so",
+        mode=ctypes.RTLD_GLOBAL,
+    )
 
 __all__ = ["AirCpuBackend", "DEFAULT_PIPELINE"]
 
