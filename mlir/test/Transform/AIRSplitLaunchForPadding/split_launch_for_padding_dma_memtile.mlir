@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-split-launch-for-padding='pad-location=memtile' | FileCheck %s
 
-// Tests memtile padding with DMA ops (combination 2: AIE with dma_memcpy_nd).
+// Tests memtile padding with DMA ops (pad-location=memtile + dma_memcpy_nd).
 // M=300, M_TILE=64 -> launchM=5, last M-block has 300-4*64=44 rows, pad=20
 // N=300, N_TILE=64 -> launchN=5, last N-block has 300-4*64=44 cols, pad=20
 // Expected: 4 partitions, L2->L1 DMAs get pad_after, L3->L2 sizes reduced.

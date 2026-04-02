@@ -7042,7 +7042,7 @@ class AIRSplitLaunchForPadding
     : public xilinx::air::impl::AIRSplitLaunchForPaddingBase<
           AIRSplitLaunchForPadding> {
 public:
-  // Padding location: memtile (L2 MM2S, 3-level AIE) or source (L3 read).
+  // Padding location: memtile (L2 MM2S, 3-level hierarchy) or source.
   enum class PadLocation { Memtile, Source };
   // IR representation: channel ops or dma_memcpy_nd ops.
   enum class OpKind { Channel, Dma };
@@ -7718,10 +7718,9 @@ public:
     }
   }
 
-  // Add padding to DMA ops in a boundary launch (GPU path).
+  // Source-level padding for DMA ops.
   // Walks air.dma_memcpy_nd ops, reduces src_sizes at the padded dimension,
-  // and sets pad_after attribute. Much simpler than the channel/memtile path
-  // since there is only one DMA level (global → local).
+  // and sets pad_after attribute.
   void addSourcePaddingForDma(air::LaunchOp launch, bool padM, bool padN,
                               int64_t mActualLast, int64_t nActualLast,
                               int64_t tileM, int64_t tileN) {
@@ -7778,7 +7777,7 @@ public:
     });
   }
 
-  // Source-level padding for channel ops (GPU with channels).
+  // Source-level padding for channel ops.
   // Same algorithm as addSourcePaddingForDma but using ChannelInterface.
   void addSourcePaddingForChannels(air::LaunchOp launch, bool padM, bool padN,
                                    int64_t mActualLast, int64_t nActualLast,
@@ -8078,7 +8077,7 @@ public:
     }
   }
 
-  // L2 MM2S padding for DMA ops (AIE with air.dma_memcpy_nd).
+  // Memtile (L2 MM2S) padding for DMA ops.
   // Same 5-step algorithm as addMemtilePaddingForChannels, but operating on
   // DmaMemcpyNdOp. Links L3→L2 and L2→L1 DMAs by shared L2 buffer rather
   // than channel names.

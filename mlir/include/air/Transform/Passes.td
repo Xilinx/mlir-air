@@ -1070,11 +1070,12 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
     Two orthogonal axes control behavior:
 
     **Padding location** (`pad-location` option):
-    - `memtile` (default): Apply padding at L2 MM2S DMAs (3-level AIE
-      hierarchy). L2->L1 ops get pad_after, L3->L2 sizes are reduced,
-      L3->L2 S2MM ops get explicit strides. Hardware limit: 31 blocks.
-    - `source`: Apply padding directly on the DMA/channel reading from
-      L3 (1-level GPU path). Source sizes reduced, pad_after set.
+    - `memtile` (default): Apply padding at L2 MM2S DMAs in a 3-level
+      memory hierarchy (L3->L2->L1). L2->L1 ops get pad_after, L3->L2
+      sizes are reduced, L3->L2 S2MM ops get explicit strides. Hardware
+      limit: 31 blocks per padded dimension.
+    - `source`: Apply padding directly on the op reading from L3.
+      Source sizes reduced, pad_after set on the source-level op.
 
     **IR representation** (auto-detected):
     The pass detects whether the launch contains air.channel.put/get or
@@ -1089,8 +1090,8 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
   let options = [
     Option<"clPadLocation", "pad-location", "std::string",
            /*default=*/"\"memtile\"",
-           "Where to apply DMA padding: 'memtile' (L2 MM2S, 3-level AIE) "
-           "or 'source' (pad at L3 read, 1-level GPU).">,
+           "Where to apply DMA padding: 'memtile' (L2 MM2S, 3-level hierarchy) "
+           "or 'source' (pad at L3 read, direct source-level padding).">,
     Option<"clUseDmaMemcpy", "use-dma-memcpy", "bool", /*default=*/"false",
            "DEPRECATED: Use pad-location='source' instead.">
   ];
