@@ -270,7 +270,7 @@ jobs:
         shell: bash
         run: |
           pip install -r utils/requirements.txt
-          pip install setuptools wheel delvewheel importlib_metadata "ninja>=1.13.1"
+          pip install setuptools wheel delvewheel importlib_metadata "ninja!=1.13.0"
 
       - name: Get MLIR
         shell: bash
