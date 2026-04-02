@@ -7043,7 +7043,8 @@ class AIRSplitLaunchForPadding
           AIRSplitLaunchForPadding> {
 public:
   AIRSplitLaunchForPadding() = default;
-  AIRSplitLaunchForPadding(const AIRSplitLaunchForPadding &pass) {}
+  AIRSplitLaunchForPadding(const AIRSplitLaunchForPadding &pass)
+      : AIRSplitLaunchForPaddingBase(pass) {}
   AIRSplitLaunchForPadding(const AIRSplitLaunchForPaddingOptions &options)
       : AIRSplitLaunchForPaddingBase(options) {}
 
@@ -7076,125 +7077,6 @@ public:
       }
     }
     return UINT_MAX;
-  }
-
-  // Check if a Value depends on a target Value, following one level of
-  // arith.addi. Used by inferDmaPadDimIndices to trace launch offsets through
-  // offset arithmetic chains (e.g., %offset = arith.addi %mOffset, %kOffset).
-  static bool dependsOnValue(Value v, Value target) {
-    if (v == target)
-      return true;
-    if (auto addOp = v.getDefiningOp<arith::AddIOp>())
-      return addOp.getLhs() == target || addOp.getRhs() == target;
-    return false;
-  }
-
-  // Collect arith.muli results that use a given block index Value.
-  static void
-  collectMulResults(Value blockIdx,
-                    SmallVectorImpl<std::pair<int64_t, Value>> &out) {
-    for (auto &use : blockIdx.getUses()) {
-      if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
-        Value other =
-            (mulOp.getLhs() == blockIdx) ? mulOp.getRhs() : mulOp.getLhs();
-        if (auto constVal = getConstantIntValue(other))
-          if (*constVal > 0)
-            out.push_back({*constVal, mulOp.getResult()});
-      }
-    }
-  }
-
-  // Find the launch offset Value (result of arith.muli of launch ID with tile
-  // size) for a given dimension, following through segment hierarchy if needed.
-  // When multiple muli uses exist, picks the one with the smallest constant
-  // (the tile size, not stride).
-  Value findLaunchOffset(air::LaunchOp launchOp, unsigned dimIdx) {
-    auto ids = launchOp.getIds();
-    if (dimIdx >= ids.size())
-      return nullptr;
-    Value blockIdx = ids[dimIdx];
-
-    SmallVector<std::pair<int64_t, Value>> candidates;
-
-    // Check direct uses at launch level.
-    collectMulResults(blockIdx, candidates);
-
-    // Follow through segment hierarchy.
-    for (auto &use : blockIdx.getUses()) {
-      if (auto hier = dyn_cast<air::HierarchyInterface>(use.getOwner())) {
-        auto kernelOperands = hier.getKernelOperands();
-        auto kernelBodyArgs = hier.getKernelArguments();
-        for (unsigned i = 0; i < kernelOperands.size(); ++i) {
-          if (kernelOperands[i] == blockIdx) {
-            collectMulResults(kernelBodyArgs[i], candidates);
-            break;
-          }
-        }
-      }
-    }
-
-    if (candidates.empty())
-      return nullptr;
-    // Pick the muli with the smallest constant (tile size, not stride).
-    auto best = std::min_element(
-        candidates.begin(), candidates.end(),
-        [](const auto &a, const auto &b) { return a.first < b.first; });
-    return best->second;
-  }
-
-  // Find the padded dimension index in DMA src_sizes for inputs A and B.
-  // GPU equivalent of inferL3PadDimIndices — walks DmaMemcpyNdOp instead of
-  // ChannelPutOp. Must be called on the ORIGINAL launch (before
-  // cloneAndSpecializeLaunch replaces block indices with constants).
-  std::pair<int64_t, int64_t>
-  inferDmaPadDimIndices(air::LaunchOp launchOp, int64_t tileM, int64_t tileN) {
-    int64_t aPadDim = -1;
-    int64_t bPadDim = -1;
-
-    // Find launch offset values for M (dim 0) and N (dim 1).
-    Value mOffset = findLaunchOffset(launchOp, 0);
-    Value nOffset = findLaunchOffset(launchOp, 1);
-
-    // Walk DmaMemcpyNdOp ops to find which src_offset dim uses launch offsets.
-    launchOp.walk([&](air::DmaMemcpyNdOp dmaOp) {
-      unsigned argIdx = traceFuncArgIdx(dmaOp.getSrcMemref());
-      if (argIdx > 1)
-        return; // Only handle A (arg 0) and B (arg 1)
-
-      auto srcOffsets = dmaOp.getSrcOffsets();
-      auto srcSizes = dmaOp.getSrcSizes();
-      if (srcOffsets.empty() || srcSizes.empty())
-        return;
-
-      for (unsigned i = 0; i < srcOffsets.size() && i < srcSizes.size(); ++i) {
-        if (argIdx == 0 && mOffset && dependsOnValue(srcOffsets[i], mOffset)) {
-          // The padded dim is the first dim in src_sizes whose value matches
-          // tileM. For 2D DMA [rows, cols], the row count dim matches tileM.
-          for (unsigned j = 0; j < srcSizes.size(); ++j) {
-            auto sizeOpt = getConstantIntValue(srcSizes[j]);
-            if (sizeOpt && *sizeOpt == tileM) {
-              aPadDim = j;
-              break;
-            }
-          }
-          if (aPadDim < 0)
-            aPadDim = i; // Fallback: use offset dim
-        } else if (argIdx == 1 && nOffset &&
-                   dependsOnValue(srcOffsets[i], nOffset)) {
-          for (unsigned j = 0; j < srcSizes.size(); ++j) {
-            auto sizeOpt = getConstantIntValue(srcSizes[j]);
-            if (sizeOpt && *sizeOpt == tileN) {
-              bPadDim = j;
-              break;
-            }
-          }
-          if (bPadDim < 0)
-            bPadDim = i; // Fallback: use offset dim
-        }
-      }
-    });
-
-    return {aPadDim, bPadDim};
   }
 
   // Per-shim padding info for a channel.put/get op.
@@ -7647,12 +7529,10 @@ public:
 
       // Pre-compute pad dimension indices from the ORIGINAL launch
       // (before cloning replaces block indices with constants).
+      // Only needed for the AIE/channel path; the DMA path infers pad
+      // dimensions directly inside addDmaPaddingToLaunch.
       int64_t padDimIdxA = 0, padDimIdxB = -1;
-      if (clUseDmaMemcpy) {
-        // GPU/DMA path: infer from DmaMemcpyNdOp src offsets/sizes.
-        std::tie(padDimIdxA, padDimIdxB) =
-            inferDmaPadDimIndices(launchOp, tileM, tileN);
-      } else {
+      if (!clUseDmaMemcpy) {
         // AIE/channel path: infer from L3→L2 ChannelPutOp offsets.
         DenseMap<StringRef, unsigned> chanToArgIdxOrig;
         launchOp.walk([&](air::ChannelPutOp putOp) {
