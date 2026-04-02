@@ -174,7 +174,7 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_CXX_COMPILER=clang++",
             ]
 
-        if shutil.which("lld"):
+        if shutil.which("lld") and platform.system() != "Windows":
             cmake_args.append("-DLLVM_USE_LINKER=lld")
 
         if "CMAKE_ARGS" in os.environ:
@@ -186,6 +186,11 @@ class CMakeBuild(build_ext):
         build_args = [f"-j{os.getenv('PARALLEL_LEVEL', 2 * os.cpu_count())}"]
 
         build_temp = Path(self.build_temp) / ext.name
+        if platform.system() == "Windows":
+            # Use a short build path to avoid exceeding MAX_PATH limits
+            build_temp = Path("C:/tmp/airbld")
+            if build_temp.exists():
+                shutil.rmtree(build_temp, ignore_errors=True)
         if not build_temp.exists():
             build_temp.mkdir(parents=True)
 
