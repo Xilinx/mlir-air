@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+// RUN: air-opt %s -air-split-launch-for-padding='pad-location=source' | FileCheck %s
 // RUN: air-opt %s -air-split-launch-for-padding='use-dma-memcpy=true' | FileCheck %s
 
 // M=512 (tile-aligned with tileM=64, launchM=8), actualM=0 means no M padding

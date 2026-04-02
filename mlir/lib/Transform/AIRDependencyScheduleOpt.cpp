@@ -7042,6 +7042,11 @@ class AIRSplitLaunchForPadding
     : public xilinx::air::impl::AIRSplitLaunchForPaddingBase<
           AIRSplitLaunchForPadding> {
 public:
+  // Padding location: memtile (L2 MM2S, 3-level AIE) or source (L3 read).
+  enum class PadLocation { Memtile, Source };
+  // IR representation: channel ops or dma_memcpy_nd ops.
+  enum class OpKind { Channel, Dma };
+
   AIRSplitLaunchForPadding() = default;
   AIRSplitLaunchForPadding(const AIRSplitLaunchForPadding &pass)
       : AIRSplitLaunchForPaddingBase(pass) {}
@@ -7050,6 +7055,25 @@ public:
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect, arith::ArithDialect>();
+  }
+
+  // Resolve effective pad location from options (handles deprecated flag).
+  PadLocation getEffectivePadLocation() const {
+    if (clUseDmaMemcpy)
+      return PadLocation::Source;
+    if (clPadLocation == "source")
+      return PadLocation::Source;
+    return PadLocation::Memtile;
+  }
+
+  // Auto-detect whether the launch uses channel ops or DMA ops.
+  static OpKind detectOpKind(air::LaunchOp launch) {
+    bool hasChannels = false;
+    launch.walk([&](Operation *op) {
+      if (isa<air::ChannelPutOp, air::ChannelGetOp>(op))
+        hasChannels = true;
+    });
+    return hasChannels ? OpKind::Channel : OpKind::Dma;
   }
 
   // Trace a memref Value through block args to its function argument index.
@@ -7089,7 +7113,7 @@ public:
   };
 
   // Pre-computed info for an L3→L2 channel.get that needs explicit
-  // sizes/strides added (Step 5 of addMemtilePaddingToLaunch).
+  // sizes/strides added (Step 5 of addMemtilePaddingForChannels).
   struct S2MMReplaceInfo {
     air::ChannelGetOp getOp;
     int64_t padDimInMemref;
@@ -7155,6 +7179,54 @@ public:
     return {aPadDim, bPadDim};
   }
 
+  // DMA counterpart to inferL3PadDimIndices. Traces launch offset Values
+  // through DmaMemcpyNdOp src_offsets to find which dimension is padded.
+  std::pair<int64_t, int64_t>
+  inferL3PadDimIndicesForDma(air::LaunchOp launchOp) {
+    int64_t aPadDim = 0;
+    int64_t bPadDim = -1;
+
+    auto launchIds = launchOp.getIds();
+    if (launchIds.size() < 2)
+      return {aPadDim, bPadDim};
+
+    // Find launch offset values for M/N (first arith.muli of each ID).
+    Value mOffset = nullptr, nOffset = nullptr;
+    for (auto &use : launchIds[0].getUses()) {
+      if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
+        mOffset = mulOp.getResult();
+        break;
+      }
+    }
+    for (auto &use : launchIds[1].getUses()) {
+      if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
+        nOffset = mulOp.getResult();
+        break;
+      }
+    }
+
+    // Scan launch-level DMA ops (not inside segment).
+    launchOp.walk([&](air::DmaMemcpyNdOp dmaOp) {
+      if (dmaOp->getParentOfType<air::SegmentOp>())
+        return;
+      unsigned argIdx = traceFuncArgIdx(dmaOp.getSrcMemref());
+      if (argIdx > 1)
+        return;
+      auto offsets = dmaOp.getSrcOffsets();
+      auto sizes = dmaOp.getSrcSizes();
+      if (offsets.empty() || sizes.empty())
+        return;
+      for (unsigned i = 0; i < offsets.size() && i < sizes.size(); ++i) {
+        if (argIdx == 0 && mOffset && offsets[i] == mOffset)
+          aPadDim = i;
+        else if (argIdx == 1 && nOffset && offsets[i] == nOffset)
+          bPadDim = i;
+      }
+    });
+
+    return {aPadDim, bPadDim};
+  }
+
   // Compute per-shim padding info for an L3 channel op.
   // padDimIdxA/B are pre-computed from the original launch (before cloning).
   std::optional<ShimPadInfo> computeShimPadInfo(air::ChannelInterface chOp,
@@ -7184,6 +7256,37 @@ public:
         shimIdx = *shimIdxOpt;
     }
 
+    int64_t dimActualLast = isA ? mActualLast : nActualLast;
+    int64_t shimOffset = shimIdx * chunkSize;
+    int64_t actualForShim =
+        std::max(int64_t(0), std::min(chunkSize, dimActualLast - shimOffset));
+    int64_t padForShim = chunkSize - actualForShim;
+
+    return ShimPadInfo{shimIdx, chunkSize, actualForShim, padForShim,
+                       padDimIdx};
+  }
+
+  // DMA counterpart to computeShimPadInfo. No channel indices, so
+  // shimIdx is always 0 (no multiplexing).
+  std::optional<ShimPadInfo>
+  computeShimPadInfoForDma(air::DmaMemcpyNdOp dmaOp, bool isA,
+                           int64_t mActualLast, int64_t nActualLast,
+                           int64_t padDimIdxA, int64_t padDimIdxB) {
+    auto sizes = dmaOp.getSrcSizes();
+    if (sizes.empty())
+      return std::nullopt;
+
+    int64_t padDimIdx =
+        isA ? padDimIdxA
+            : (padDimIdxB >= 0 ? padDimIdxB : ((int64_t)sizes.size() - 1));
+    if (padDimIdx < 0 || padDimIdx >= (int64_t)sizes.size())
+      return std::nullopt;
+    auto chunkSizeOpt = getConstantIntValue(sizes[padDimIdx]);
+    if (!chunkSizeOpt)
+      return std::nullopt;
+    int64_t chunkSize = *chunkSizeOpt;
+
+    int64_t shimIdx = 0; // DMA: no channel multiplexing
     int64_t dimActualLast = isA ? mActualLast : nActualLast;
     int64_t shimOffset = shimIdx * chunkSize;
     int64_t actualForShim =
@@ -7527,28 +7630,54 @@ public:
       OpBuilder builder(launchOp);
       Location loc = launchOp.getLoc();
 
+      // Determine padding strategy and IR representation.
+      auto padLoc = getEffectivePadLocation();
+      auto opKind = detectOpKind(launchOp);
+
       // Pre-compute pad dimension indices from the ORIGINAL launch
       // (before cloning replaces block indices with constants).
-      // Only needed for the AIE/channel path; the DMA path infers pad
-      // dimensions directly inside addDmaPaddingToLaunch.
+      // Only needed for the memtile path.
       int64_t padDimIdxA = 0, padDimIdxB = -1;
-      if (!clUseDmaMemcpy) {
-        // AIE/channel path: infer from L3→L2 ChannelPutOp offsets.
-        DenseMap<StringRef, unsigned> chanToArgIdxOrig;
-        launchOp.walk([&](air::ChannelPutOp putOp) {
-          if (putOp->getParentOfType<air::SegmentOp>())
-            return;
-          auto memrefType =
-              dyn_cast<BaseMemRefType>(putOp.getMemref().getType());
-          if (memrefType &&
-              getMemorySpace(memrefType) == air::MemorySpace::L3) {
-            unsigned argIdx = traceFuncArgIdx(putOp.getMemref());
-            chanToArgIdxOrig[putOp.getChanName()] = argIdx;
-          }
-        });
-        std::tie(padDimIdxA, padDimIdxB) =
-            inferL3PadDimIndices(launchOp, chanToArgIdxOrig);
+      if (padLoc == PadLocation::Memtile) {
+        if (opKind == OpKind::Channel) {
+          DenseMap<StringRef, unsigned> chanToArgIdxOrig;
+          launchOp.walk([&](air::ChannelPutOp putOp) {
+            if (putOp->getParentOfType<air::SegmentOp>())
+              return;
+            auto memrefType =
+                dyn_cast<BaseMemRefType>(putOp.getMemref().getType());
+            if (memrefType &&
+                getMemorySpace(memrefType) == air::MemorySpace::L3) {
+              unsigned argIdx = traceFuncArgIdx(putOp.getMemref());
+              chanToArgIdxOrig[putOp.getChanName()] = argIdx;
+            }
+          });
+          std::tie(padDimIdxA, padDimIdxB) =
+              inferL3PadDimIndices(launchOp, chanToArgIdxOrig);
+        } else {
+          std::tie(padDimIdxA, padDimIdxB) =
+              inferL3PadDimIndicesForDma(launchOp);
+        }
       }
+
+      // Helper lambda to apply padding to a boundary partition.
+      auto applyPadding = [&](air::LaunchOp boundary, bool padM, bool padN) {
+        if (padLoc == PadLocation::Source) {
+          if (opKind == OpKind::Channel)
+            addSourcePaddingForChannels(boundary, padM, padN, mActualLast,
+                                        nActualLast, tileM, tileN);
+          else
+            addSourcePaddingForDma(boundary, padM, padN, mActualLast,
+                                   nActualLast, tileM, tileN);
+        } else {
+          if (opKind == OpKind::Channel)
+            addMemtilePaddingForChannels(boundary, padM, padN, mActualLast,
+                                         nActualLast, padDimIdxA, padDimIdxB);
+          else
+            addMemtilePaddingForDma(boundary, padM, padN, mActualLast,
+                                    nActualLast, padDimIdxA, padDimIdxB);
+        }
+      };
 
       // Partition the launch grid into up to 4 partitions:
       // interior, M-boundary, N-boundary, corner.
@@ -7567,39 +7696,21 @@ public:
         auto mBound = cloneAndSpecializeLaunch(
             launchOp, builder, loc, /*fixedDimM=*/launchM - 1,
             /*fixedDimN=*/-1, 1, interiorN, "_m_boundary");
-        if (clUseDmaMemcpy)
-          addDmaPaddingToLaunch(mBound, /*padM=*/true, /*padN=*/false,
-                                mActualLast, nActualLast, tileM, tileN);
-        else
-          addMemtilePaddingToLaunch(mBound, /*padM=*/true, /*padN=*/false,
-                                    mActualLast, nActualLast, padDimIdxA,
-                                    padDimIdxB);
+        applyPadding(mBound, /*padM=*/true, /*padN=*/false);
       }
       // N-boundary: all interior M-blocks, last N-block.
       if (nRem && interiorM > 0) {
         auto nBound = cloneAndSpecializeLaunch(
             launchOp, builder, loc, /*fixedDimM=*/-1,
             /*fixedDimN=*/launchN - 1, interiorM, 1, "_n_boundary");
-        if (clUseDmaMemcpy)
-          addDmaPaddingToLaunch(nBound, /*padM=*/false, /*padN=*/true,
-                                mActualLast, nActualLast, tileM, tileN);
-        else
-          addMemtilePaddingToLaunch(nBound, /*padM=*/false, /*padN=*/true,
-                                    mActualLast, nActualLast, padDimIdxA,
-                                    padDimIdxB);
+        applyPadding(nBound, /*padM=*/false, /*padN=*/true);
       }
       // Corner: last M-block, last N-block.
       if (mRem && nRem) {
         auto corner = cloneAndSpecializeLaunch(
             launchOp, builder, loc, /*fixedDimM=*/launchM - 1,
             /*fixedDimN=*/launchN - 1, 1, 1, "_corner");
-        if (clUseDmaMemcpy)
-          addDmaPaddingToLaunch(corner, /*padM=*/true, /*padN=*/true,
-                                mActualLast, nActualLast, tileM, tileN);
-        else
-          addMemtilePaddingToLaunch(corner, /*padM=*/true, /*padN=*/true,
-                                    mActualLast, nActualLast, padDimIdxA,
-                                    padDimIdxB);
+        applyPadding(corner, /*padM=*/true, /*padN=*/true);
       }
 
       // Erase the original launch.
@@ -7611,9 +7722,9 @@ public:
   // Walks air.dma_memcpy_nd ops, reduces src_sizes at the padded dimension,
   // and sets pad_after attribute. Much simpler than the channel/memtile path
   // since there is only one DMA level (global → local).
-  void addDmaPaddingToLaunch(air::LaunchOp launch, bool padM, bool padN,
-                             int64_t mActualLast, int64_t nActualLast,
-                             int64_t tileM, int64_t tileN) {
+  void addSourcePaddingForDma(air::LaunchOp launch, bool padM, bool padN,
+                              int64_t mActualLast, int64_t nActualLast,
+                              int64_t tileM, int64_t tileN) {
     launch.walk([&](air::DmaMemcpyNdOp dmaOp) {
       unsigned argIdx = traceFuncArgIdx(dmaOp.getSrcMemref());
       if (argIdx > 1)
@@ -7667,6 +7778,62 @@ public:
     });
   }
 
+  // Source-level padding for channel ops (GPU with channels).
+  // Same algorithm as addSourcePaddingForDma but using ChannelInterface.
+  void addSourcePaddingForChannels(air::LaunchOp launch, bool padM, bool padN,
+                                   int64_t mActualLast, int64_t nActualLast,
+                                   int64_t tileM, int64_t tileN) {
+    launch.walk([&](air::ChannelPutOp putOp) {
+      unsigned argIdx = traceFuncArgIdx(putOp.getMemref());
+      if (argIdx > 1)
+        return;
+      if (skipInput(argIdx, padM, padN))
+        return;
+
+      bool isA = (argIdx == 0);
+      int64_t tileSize = isA ? tileM : tileN;
+      int64_t actualLast = isA ? mActualLast : nActualLast;
+
+      // Find the padded dimension in sizes by matching tile size.
+      auto sizes = putOp.getSizes();
+      if (sizes.empty())
+        return;
+
+      int64_t padDimIdx = -1;
+      for (unsigned i = 0; i < sizes.size(); ++i) {
+        auto sizeOpt = getConstantIntValue(sizes[i]);
+        if (sizeOpt && *sizeOpt == tileSize) {
+          padDimIdx = i;
+          break;
+        }
+      }
+      if (padDimIdx < 0)
+        return;
+
+      int64_t padAmount = tileSize - actualLast;
+      if (padAmount <= 0)
+        return;
+
+      // Reduce sizes[padDimIdx] to actualLast.
+      OpBuilder builder(putOp);
+      Location loc = putOp.getLoc();
+      Value actualVal =
+          arith::ConstantIndexOp::create(builder, loc, actualLast);
+      unsigned sizeBegin = sizes.getBeginOperandIndex();
+      putOp->setOperand(sizeBegin + padDimIdx, actualVal);
+
+      // Set pad_after attribute.
+      int64_t numDims = sizes.size();
+      SmallVector<int32_t> padBefore(numDims, 0);
+      SmallVector<int32_t> padAfter(numDims, 0);
+      padAfter[padDimIdx] = padAmount;
+      putOp->setAttr("pad_before",
+                     DenseI32ArrayAttr::get(putOp.getContext(), padBefore));
+      putOp->setAttr("pad_after",
+                     DenseI32ArrayAttr::get(putOp.getContext(), padAfter));
+    });
+  }
+
   // Add memtile (L2→L1) padding and reduce L3→L2 shim DMA sizes for a
   // boundary launch. Steps:
   // 1-3: Map channels, compute padding, add pad_after on L2→L1 ops.
@@ -7680,9 +7847,9 @@ public:
   // CONVENTION: Function argument 0 = matrix A (M×K), argument 1 = matrix B
   // (K×N). M padding applies to A, N padding applies to B. This matches the
   // @module_builder and transform-script patterns.
-  void addMemtilePaddingToLaunch(air::LaunchOp launch, bool padM, bool padN,
-                                 int64_t mActualLast, int64_t nActualLast,
-                                 int64_t padDimIdxA, int64_t padDimIdxB) {
+  void addMemtilePaddingForChannels(air::LaunchOp launch, bool padM, bool padN,
+                                    int64_t mActualLast, int64_t nActualLast,
+                                    int64_t padDimIdxA, int64_t padDimIdxB) {
     // Step 1: Build mapping from L3 channel names to input type (A=0, B=1).
     DenseMap<StringRef, unsigned> chanToArgIdx;
     launch.walk([&](air::ChannelPutOp putOp) {
@@ -7908,6 +8075,249 @@ public:
       if (getOp.getAsyncToken())
         getOp.getAsyncToken().replaceAllUsesWith(newGet.getAsyncToken());
       getOp.erase();
+    }
+  }
+
+  // L2 MM2S padding for DMA ops (AIE with air.dma_memcpy_nd).
+  // Same 5-step algorithm as addMemtilePaddingForChannels, but operating on
+  // DmaMemcpyNdOp. Links L3→L2 and L2→L1 DMAs by shared L2 buffer rather
+  // than channel names.
+  void addMemtilePaddingForDma(air::LaunchOp launch, bool padM, bool padN,
+                               int64_t mActualLast, int64_t nActualLast,
+                               int64_t padDimIdxA, int64_t padDimIdxB) {
+    // Step 1: Map L3→L2 DMAs to arg indices. The dst of these DMAs is the L2
+    // buffer.
+    DenseMap<Value, unsigned> l2BufToArgIdx;
+    launch.walk([&](air::DmaMemcpyNdOp dmaOp) {
+      if (dmaOp->getParentOfType<air::SegmentOp>())
+        return;
+      auto srcType = dyn_cast<BaseMemRefType>(dmaOp.getSrcMemref().getType());
+      if (!srcType || getMemorySpace(srcType) != air::MemorySpace::L3)
+        return;
+      unsigned argIdx = traceFuncArgIdx(dmaOp.getSrcMemref());
+      l2BufToArgIdx[dmaOp.getDstMemref()] = argIdx;
+    });
+
+    // Step 2: Trace L2 buffers through segment hierarchy. The launch-level L2
+    // alloc is passed as a kernel operand to air.segment; inside the segment
+    // body, the corresponding block arg is the same L2 buffer.
+    DenseMap<Value, Value> segArgToLaunchL2;
+    launch.walk([&](air::SegmentOp segOp) {
+      auto kernelOperands = segOp.getKernelOperands();
+      auto kernelBodyArgs = segOp.getKernelArguments();
+      for (unsigned i = 0; i < kernelOperands.size(); ++i) {
+        if (l2BufToArgIdx.count(kernelOperands[i]))
+          segArgToLaunchL2[kernelBodyArgs[i]] = kernelOperands[i];
+      }
+    });
+
+    // Step 3: Add padding on L2→L1 DMA ops (segment-level, src=L2, dst=L1).
+    launch.walk([&](air::DmaMemcpyNdOp dmaOp) {
+      if (!dmaOp->getParentOfType<air::SegmentOp>())
+        return;
+      auto srcType = dyn_cast<BaseMemRefType>(dmaOp.getSrcMemref().getType());
+      auto dstType = dyn_cast<BaseMemRefType>(dmaOp.getDstMemref().getType());
+      if (!srcType || !dstType)
+        return;
+      if (getMemorySpace(srcType) != air::MemorySpace::L2 ||
+          getMemorySpace(dstType) != air::MemorySpace::L1)
+        return;
+
+      // Match L2 buffer to arg index through segment hierarchy.
+      Value srcBuf = dmaOp.getSrcMemref();
+      auto segIt = segArgToLaunchL2.find(srcBuf);
+      if (segIt != segArgToLaunchL2.end())
+        srcBuf = segIt->second;
+      auto argIt = l2BufToArgIdx.find(srcBuf);
+      if (argIt == l2BufToArgIdx.end())
+        return;
+
+      unsigned argIdx = argIt->second;
+      if (skipInput(argIdx, padM, padN))
+        return;
+      bool isA = (argIdx == 0);
+
+      int64_t dimActualLast = isA ? mActualLast : nActualLast;
+
+      auto sizes = dmaOp.getSrcSizes();
+      auto strides = dmaOp.getSrcStrides();
+      if (sizes.empty() || strides.empty())
+        return;
+
+      // Use the pre-computed pad dimension index from L3→L2 offset analysis.
+      // We cannot use findPadDimInChannelSizes here because when both
+      // dimensions have the same tile size, it cannot distinguish which one
+      // needs padding — only the L3 offset tracing knows the correct axis.
+      int64_t l2l1PadDimIdx =
+          isA ? padDimIdxA
+              : (padDimIdxB >= 0 ? padDimIdxB : ((int64_t)sizes.size() - 1));
+      if (l2l1PadDimIdx < 0 || l2l1PadDimIdx >= (int64_t)sizes.size())
+        return;
+
+      auto fullBlocksOpt = getConstantIntValue(sizes[l2l1PadDimIdx]);
+      if (!fullBlocksOpt)
+        return;
+      int64_t fullBlocks = *fullBlocksOpt;
+
+      // For L2→L1 DMAs with 2D sizes like [64, 64] [64, 1], dimActualLast
+      // counts in units of the padded dimension (e.g. rows), NOT in total
+      // elements. Each "block" at the padded dimension is 1 unit, so
+      // innerBlockSize=1. This differs from the channel path where sizes
+      // represent flattened sub-tile transfers with connected dimensions.
+      int64_t actualBlocks = dimActualLast;
+      if (actualBlocks >= fullBlocks || actualBlocks <= 0)
+        return;
+
+      int64_t padBlocks = fullBlocks - actualBlocks;
+      if (padBlocks <= 0)
+        return;
+      if (padBlocks > 31) {
+        dmaOp.emitRemark("memtile padding of ")
+            << padBlocks << " blocks exceeds hardware limit of 31; "
+            << "host-side zero-padded buffers required for this shim";
+        return;
+      }
+
+      // Reduce src_sizes and add pad_after.
+      OpBuilder builder(dmaOp);
+      Location loc = dmaOp.getLoc();
+      Value actualVal =
+          arith::ConstantIndexOp::create(builder, loc, actualBlocks);
+      dmaOp.getSrcSizesMutable().slice(l2l1PadDimIdx, 1).assign(actualVal);
+
+      int64_t numDims = sizes.size();
+      SmallVector<int32_t> padBefore(numDims, 0);
+      SmallVector<int32_t> padAfter(numDims, 0);
+      padAfter[l2l1PadDimIdx] = padBlocks;
+      dmaOp->setAttr("pad_before",
+                     DenseI32ArrayAttr::get(dmaOp.getContext(), padBefore));
+      dmaOp->setAttr("pad_after",
+                     DenseI32ArrayAttr::get(dmaOp.getContext(), padAfter));
+    });
+
+    // Step 4: Reduce L3→L2 DMA src_sizes (launch-level).
+    launch.walk([&](air::DmaMemcpyNdOp dmaOp) {
+      if (dmaOp->getParentOfType<air::SegmentOp>())
+        return;
+      auto srcType = dyn_cast<BaseMemRefType>(dmaOp.getSrcMemref().getType());
+      if (!srcType || getMemorySpace(srcType) != air::MemorySpace::L3)
+        return;
+      unsigned argIdx = traceFuncArgIdx(dmaOp.getSrcMemref());
+      if (skipInput(argIdx, padM, padN))
+        return;
+      bool isA = (argIdx == 0);
+
+      auto info = computeShimPadInfoForDma(dmaOp, isA, mActualLast, nActualLast,
+                                           padDimIdxA, padDimIdxB);
+      if (!info || info->actualForShim >= info->chunkSize ||
+          info->actualForShim <= 0)
+        return;
+
+      OpBuilder builder(dmaOp);
+      Location loc = dmaOp.getLoc();
+      Value actualVal =
+          arith::ConstantIndexOp::create(builder, loc, info->actualForShim);
+      dmaOp.getSrcSizesMutable().slice(info->padDimIdx, 1).assign(actualVal);
+    });
+
+    // Step 5: Modify segment-level L3→L2 DMAs to add explicit dst_sizes with
+    // reduced size at padded dimension (preserves L2 buffer layout).
+    // DMA ops have mutable dst operands, so we modify in-place.
+    struct DmaS2MMInfo {
+      air::DmaMemcpyNdOp dmaOp;
+      int64_t padDimInMemref;
+      int64_t actualForShim;
+    };
+    SmallVector<DmaS2MMInfo> dmasToFixup;
+
+    launch.walk([&](air::DmaMemcpyNdOp dmaOp) {
+      if (!dmaOp->getParentOfType<air::SegmentOp>())
+        return;
+      auto dstType = dyn_cast<BaseMemRefType>(dmaOp.getDstMemref().getType());
+      auto srcType = dyn_cast<BaseMemRefType>(dmaOp.getSrcMemref().getType());
+      if (!dstType || !srcType)
+        return;
+      if (getMemorySpace(dstType) != air::MemorySpace::L2 ||
+          getMemorySpace(srcType) != air::MemorySpace::L3)
+        return;
+      // Only fixup if dst_sizes are empty (implicit full-buffer write).
+      if (!dmaOp.getDstSizes().empty())
+        return;
+
+      // Trace dst memref to launch-level L2 buffer.
+      Value dstBuf = dmaOp.getDstMemref();
+      auto segIt = segArgToLaunchL2.find(dstBuf);
+      Value launchBuf =
+          (segIt != segArgToLaunchL2.end()) ? segIt->second : dstBuf;
+      auto argIt = l2BufToArgIdx.find(launchBuf);
+      if (argIt == l2BufToArgIdx.end())
+        return;
+      unsigned argIdx = argIt->second;
+      if (skipInput(argIdx, padM, padN))
+        return;
+      bool isA = (argIdx == 0);
+
+      auto memrefType = dyn_cast<MemRefType>(dmaOp.getDstMemref().getType());
+      if (!memrefType || memrefType.getRank() < 2)
+        return;
+      auto shape = memrefType.getShape();
+      int64_t dimActualLast = isA ? mActualLast : nActualLast;
+      int64_t shimIdx = 0;
+
+      int64_t padDimInMemref = findPadDimInMemrefShape(
+          shape, shimIdx, dimActualLast, /*searchForward=*/isA);
+      if (padDimInMemref < 0)
+        return;
+
+      int64_t chunkSize = shape[padDimInMemref];
+      int64_t shimOffset = shimIdx * chunkSize;
+      int64_t actualForShim =
+          std::max(int64_t(0), std::min(chunkSize, dimActualLast - shimOffset));
+      if (actualForShim >= chunkSize || actualForShim <= 0)
+        return;
+
+      dmasToFixup.push_back({dmaOp, padDimInMemref, actualForShim});
+    });
+
+    for (auto &info : dmasToFixup) {
+      auto dmaOp = info.dmaOp;
+      auto memrefType = cast<MemRefType>(dmaOp.getDstMemref().getType());
+      auto shape = memrefType.getShape();
+      int64_t rank = memrefType.getRank();
+
+      OpBuilder builder(dmaOp);
+      Location loc = dmaOp.getLoc();
+
+      // Build explicit dst offsets (zeros), sizes (reduced at padDim),
+      // and strides (row-major from original shape).
+      SmallVector<Value> offsets, sizes, strides;
+      for (int64_t d = 0; d < rank; ++d) {
+        offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
+        int64_t dimSize =
+            (d == info.padDimInMemref) ? info.actualForShim : shape[d];
+        sizes.push_back(arith::ConstantIndexOp::create(builder, loc, dimSize));
+        int64_t stride = 1;
+        for (int64_t j = d + 1; j < rank; ++j)
+          stride *= shape[j];
+        strides.push_back(arith::ConstantIndexOp::create(builder, loc, stride));
+      }
+
+      // Rebuild the DMA op with explicit dst offsets/sizes/strides.
+      auto newDma = air::DmaMemcpyNdOp::create(
+          builder, loc,
+          dmaOp.getAsyncToken() ? dmaOp.getAsyncToken().getType() : Type(),
+          dmaOp.getAsyncDependencies(), dmaOp.getDstMemref(), offsets, sizes,
+          strides, dmaOp.getSrcMemref(), dmaOp.getSrcOffsets(),
+          dmaOp.getSrcSizes(), dmaOp.getSrcStrides(),
+          /*pad_before=*/DenseI32ArrayAttr(),
+          /*pad_after=*/DenseI32ArrayAttr());
+      for (auto attr : dmaOp->getAttrs()) {
+        if (attr.getName() != "operandSegmentSizes")
+          newDma->setAttr(attr.getName(), attr.getValue());
+      }
+      if (dmaOp.getAsyncToken())
+        dmaOp.getAsyncToken().replaceAllUsesWith(newDma.getAsyncToken());
+      dmaOp.erase();
     }
   }
 };

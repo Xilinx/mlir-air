@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+// RUN: air-opt %s -air-split-launch-for-padding='pad-location=source' | FileCheck %s
 // RUN: air-opt %s -air-split-launch-for-padding='use-dma-memcpy=true' | FileCheck %s
 
 // M=500, M_TILE=64 → launchM=8, last M-block has 500-7*64=52 rows

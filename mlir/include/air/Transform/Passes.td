@@ -1067,29 +1067,32 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
     Tile sizes are inferred from arith.muli offset computations in the
     launch body.
 
-    For boundary partitions:
-    - L2->L1 channel.put ops get memtile DMA padding (pad_after via
-      BDPadLayoutAttr) where hardware supports zero-padding (max 31 per
-      dimension). When exceeded, a diagnostic is emitted.
-    - L3->L2 channel.put sizes are reduced so shim DMAs read only
-      block-aligned actual data from DDR.
-    - L3->L2 channel.get ops get explicit sizes/strides to preserve L2
-      buffer layout when receiving fewer elements.
+    Two orthogonal axes control behavior:
+
+    **Padding location** (`pad-location` option):
+    - `memtile` (default): Apply padding at L2 MM2S DMAs (3-level AIE
+      hierarchy). L2->L1 ops get pad_after, L3->L2 sizes are reduced,
+      L3->L2 S2MM ops get explicit strides. Hardware limit: 31 blocks.
+    - `source`: Apply padding directly on the DMA/channel reading from
+      L3 (1-level GPU path). Source sizes reduced, pad_after set.
+
+    **IR representation** (auto-detected):
+    The pass detects whether the launch contains air.channel.put/get or
+    air.dma_memcpy_nd ops and handles each correctly. Both op types are
+    supported for both padding locations.
 
     Each partition gets unique channel names and segment names. The core
-    program is identical across all partitions; lightweight load_pdi
-    reconfigures memtile DMAs between launches.
+    program is identical across all partitions.
 
     Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.
-
-    When `use-dma-memcpy` is true (GPU path), the pass operates on
-    air.dma_memcpy_nd ops instead of air.channel.put/get ops.
-    Boundary DMA ops get their src_sizes reduced at the padded dimension
-    and receive a pad_after attribute.
   }];
   let options = [
+    Option<"clPadLocation", "pad-location", "std::string",
+           /*default=*/"\"memtile\"",
+           "Where to apply DMA padding: 'memtile' (L2 MM2S, 3-level AIE) "
+           "or 'source' (pad at L3 read, 1-level GPU).">,
     Option<"clUseDmaMemcpy", "use-dma-memcpy", "bool", /*default=*/"false",
-           "Operate on air.dma_memcpy_nd instead of air.channel.put/get">
+           "DEPRECATED: Use pad-location='source' instead.">
   ];
 }
 
