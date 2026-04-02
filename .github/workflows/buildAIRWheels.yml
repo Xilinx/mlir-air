@@ -284,10 +284,13 @@ jobs:
           VERSION=$(utils/clone-llvm.sh --get-wheel-version)
           pip -q download --no-deps "mlir${NO_RTTI}==${VERSION}" \
             -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
-          # Extract to a separate directory to avoid clobbering the source mlir/ tree
-          mkdir -p deps
-          python -m zipfile -e mlir*.whl deps
-          find "deps/mlir${NO_RTTI_UNDERSCORE}" -exec touch -a -m -t 201108231405.14 {} \;
+          # Extract to a short path to keep linker .rsp file paths under
+          # MSVC limits.  Junction links don't help because CMake resolves
+          # them to the real path internally.
+          rm -rf /c/tmp/airwhls/m
+          python -m zipfile -e mlir*.whl /c/tmp/airwhls
+          mv "/c/tmp/airwhls/mlir${NO_RTTI_UNDERSCORE}" /c/tmp/airwhls/m
+          find /c/tmp/airwhls/m -exec touch -a -m -t 201108231405.14 {} \;
 
       - name: Get mlir-aie
         shell: bash
@@ -304,7 +307,12 @@ jobs:
           pip -q download --no-deps --platform win_amd64 \
             "mlir_aie==${MLIR_AIE_VERSION}${NO_RTTI_DOT}" \
             -f "$MLIR_AIE_WHEELS_URL"
-          python -m zipfile -e mlir_aie*.whl deps
+          # Extract to a short path alongside MLIR
+          MLIR_AIE_EXTRACT=/c/tmp/airwhls/a
+          rm -rf "$MLIR_AIE_EXTRACT"
+          mkdir -p /c/tmp/airwhls
+          python -m zipfile -e mlir_aie*.whl /c/tmp/airwhls
+          mv /c/tmp/airwhls/mlir_aie "$MLIR_AIE_EXTRACT"
 
       - name: Build wheel
         shell: bash
@@ -313,15 +321,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          NO_RTTI_UNDERSCORE=""
-          if [ x"${{ matrix.ENABLE_RTTI }}" == x"OFF" ]; then
-            NO_RTTI_UNDERSCORE="_no_rtti"
-          fi
-
           ROOT=$(python -c "import os; print(os.getcwd().replace('\\\\', '/'))")
 
-          export MLIR_INSTALL_ABS_PATH="${ROOT}/deps/mlir${NO_RTTI_UNDERSCORE}"
-          export MLIR_AIE_INSTALL_PATH="${ROOT}/deps/mlir_aie"
+          export MLIR_INSTALL_ABS_PATH="C:/tmp/airwhls/m"
+          export MLIR_AIE_INSTALL_PATH="C:/tmp/airwhls/a"
           export MLIR_AIR_SOURCE_DIR="${ROOT}"
           export ENABLE_RTTI=${{ matrix.ENABLE_RTTI }}
           export CIBW_ARCHS=AMD64

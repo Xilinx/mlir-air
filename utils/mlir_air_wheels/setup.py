@@ -166,17 +166,9 @@ class CMakeBuild(build_ext):
         cmake_source_dir = Path(ext.sourcedir)
 
         if platform.system() == "Windows":
-            # Create junction links to keep all paths short and on the same
-            # drive, avoiding MSVC linker LNK1181 errors from long paths.
-            cmake_source_dir = _windows_short_alias(
-                "src", cmake_source_dir
-            ).absolute()
-            MLIR_INSTALL_ABS_PATH = _windows_short_alias(
-                "m", MLIR_INSTALL_ABS_PATH
-            ).absolute()
-            MLIR_AIE_INSTALL_PATH = _windows_short_alias(
-                "a", MLIR_AIE_INSTALL_PATH
-            ).absolute()
+            # Create junction links to keep source path short, avoiding
+            # MSVC linker issues from long paths in .rsp files.
+            cmake_source_dir = _windows_short_alias("src", cmake_source_dir).absolute()
 
         cmake_args = [
             "-G",
