@@ -7044,6 +7044,8 @@ class AIRSplitLaunchForPadding
 public:
   AIRSplitLaunchForPadding() = default;
   AIRSplitLaunchForPadding(const AIRSplitLaunchForPadding &pass) {}
+  AIRSplitLaunchForPadding(const AIRSplitLaunchForPaddingOptions &options)
+      : AIRSplitLaunchForPaddingBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect, arith::ArithDialect>();
@@ -7074,6 +7076,125 @@ public:
       }
     }
     return UINT_MAX;
+  }
+
+  // Check if a Value depends on a target Value, following one level of
+  // arith.addi. Used by inferDmaPadDimIndices to trace launch offsets through
+  // offset arithmetic chains (e.g., %offset = arith.addi %mOffset, %kOffset).
+  static bool dependsOnValue(Value v, Value target) {
+    if (v == target)
+      return true;
+    if (auto addOp = v.getDefiningOp<arith::AddIOp>())
+      return addOp.getLhs() == target || addOp.getRhs() == target;
+    return false;
+  }
+
+  // Collect arith.muli results that use a given block index Value.
+  static void
+  collectMulResults(Value blockIdx,
+                    SmallVectorImpl<std::pair<int64_t, Value>> &out) {
+    for (auto &use : blockIdx.getUses()) {
+      if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
+        Value other =
+            (mulOp.getLhs() == blockIdx) ? mulOp.getRhs() : mulOp.getLhs();
+        if (auto constVal = getConstantIntValue(other))
+          if (*constVal > 0)
+            out.push_back({*constVal, mulOp.getResult()});
+      }
+    }
+  }
+
+  // Find the launch offset Value (result of arith.muli of launch ID with tile
+  // size) for a given dimension, following through segment hierarchy if needed.
+  // When multiple muli uses exist, picks the one with the smallest constant
+  // (the tile size, not stride).
+  Value findLaunchOffset(air::LaunchOp launchOp, unsigned dimIdx) {
+    auto ids = launchOp.getIds();
+    if (dimIdx >= ids.size())
+      return nullptr;
+    Value blockIdx = ids[dimIdx];
+
+    SmallVector<std::pair<int64_t, Value>> candidates;
+
+    // Check direct uses at launch level.
+    collectMulResults(blockIdx, candidates);
+
+    // Follow through segment hierarchy.
+    for (auto &use : blockIdx.getUses()) {
+      if (auto hier = dyn_cast<air::HierarchyInterface>(use.getOwner())) {
+        auto kernelOperands = hier.getKernelOperands();
+        auto kernelBodyArgs = hier.getKernelArguments();
+        for (unsigned i = 0; i < kernelOperands.size(); ++i) {
+          if (kernelOperands[i] == blockIdx) {
+            collectMulResults(kernelBodyArgs[i], candidates);
+            break;
+          }
+        }
+      }
+    }
+
+    if (candidates.empty())
+      return nullptr;
+    // Pick the muli with the smallest constant (tile size, not stride).
+    auto best = std::min_element(
+        candidates.begin(), candidates.end(),
+        [](const auto &a, const auto &b) { return a.first < b.first; });
+    return best->second;
+  }
+
+  // Find the padded dimension index in DMA src_sizes for inputs A and B.
+  // GPU equivalent of inferL3PadDimIndices — walks DmaMemcpyNdOp instead of
+  // ChannelPutOp. Must be called on the ORIGINAL launch (before
+  // cloneAndSpecializeLaunch replaces block indices with constants).
+  std::pair<int64_t, int64_t>
+  inferDmaPadDimIndices(air::LaunchOp launchOp, int64_t tileM, int64_t tileN) {
+    int64_t aPadDim = -1;
+    int64_t bPadDim = -1;
+
+    // Find launch offset values for M (dim 0) and N (dim 1).
+    Value mOffset = findLaunchOffset(launchOp, 0);
+    Value nOffset = findLaunchOffset(launchOp, 1);
+
+    // Walk DmaMemcpyNdOp ops to find which src_offset dim uses launch offsets.
+    launchOp.walk([&](air::DmaMemcpyNdOp dmaOp) {
+      unsigned argIdx = traceFuncArgIdx(dmaOp.getSrcMemref());
+      if (argIdx > 1)
+        return; // Only handle A (arg 0) and B (arg 1)
+
+      auto srcOffsets = dmaOp.getSrcOffsets();
+      auto srcSizes = dmaOp.getSrcSizes();
+      if (srcOffsets.empty() || srcSizes.empty())
+        return;
+
+      for (unsigned i = 0; i < srcOffsets.size() && i < srcSizes.size(); ++i) {
+        if (argIdx == 0 && mOffset && dependsOnValue(srcOffsets[i], mOffset)) {
+          // The padded dim is the first dim in src_sizes whose value matches
+          // tileM. For 2D DMA [rows, cols], the row count dim matches tileM.
+          for (unsigned j = 0; j < srcSizes.size(); ++j) {
+            auto sizeOpt = getConstantIntValue(srcSizes[j]);
+            if (sizeOpt && *sizeOpt == tileM) {
+              aPadDim = j;
+              break;
+            }
+          }
+          if (aPadDim < 0)
+            aPadDim = i; // Fallback: use offset dim
+        } else if (argIdx == 1 && nOffset &&
+                   dependsOnValue(srcOffsets[i], nOffset)) {
+          for (unsigned j = 0; j < srcSizes.size(); ++j) {
+            auto sizeOpt = getConstantIntValue(srcSizes[j]);
+            if (sizeOpt && *sizeOpt == tileN) {
+              bPadDim = j;
+              break;
+            }
+          }
+          if (bPadDim < 0)
+            bPadDim = i; // Fallback: use offset dim
+        }
+      }
+    });
+
+    return {aPadDim, bPadDim};
   }
 
   // Per-shim padding info for a channel.put/get op.
@@ -7415,23 +7536,56 @@ public:
     return clonedOp;
   }
 
-  // Infer tile size from the launch body by finding arith.muli of a launch
-  // block index with a constant. E.g., %offset = arith.muli %arg9, %c128
-  // means tileM = 128.
-  int64_t inferTileSize(air::LaunchOp launchOp, unsigned dimIdx) {
-    auto ids = launchOp.getIds();
-    if (dimIdx >= ids.size())
-      return 0;
-    Value blockIdx = ids[dimIdx];
+  // Collect all tile size candidates from arith.muli uses of a Value.
+  static void collectTileSizeCandidates(Value blockIdx,
+                                        SmallVectorImpl<int64_t> &candidates) {
     for (auto &use : blockIdx.getUses()) {
       if (auto mulOp = dyn_cast<arith::MulIOp>(use.getOwner())) {
         Value other =
             (mulOp.getLhs() == blockIdx) ? mulOp.getRhs() : mulOp.getLhs();
         if (auto constVal = getConstantIntValue(other))
-          return *constVal;
+          if (*constVal > 0)
+            candidates.push_back(*constVal);
       }
     }
-    return 0;
+  }
+
+  // Infer tile size from the launch body by finding arith.muli of a launch
+  // block index with a constant. E.g., %offset = arith.muli %arg9, %c128
+  // means tileM = 128. Also follows the value through air.segment hierarchy
+  // (launch ID → segment operand → segment body arg → arith.muli).
+  // When multiple arith.muli uses exist (e.g., tile offset and output stride),
+  // the smallest positive constant is chosen as the tile size.
+  int64_t inferTileSize(air::LaunchOp launchOp, unsigned dimIdx) {
+    auto ids = launchOp.getIds();
+    if (dimIdx >= ids.size())
+      return 0;
+    Value blockIdx = ids[dimIdx];
+
+    SmallVector<int64_t> candidates;
+
+    // Collect from direct uses at launch level.
+    collectTileSizeCandidates(blockIdx, candidates);
+
+    // Follow through segment hierarchy: if the launch ID is passed as a
+    // kernel operand to an air.segment, check uses of the corresponding
+    // segment body arg.
+    for (auto &use : blockIdx.getUses()) {
+      if (auto hier = dyn_cast<air::HierarchyInterface>(use.getOwner())) {
+        auto kernelOperands = hier.getKernelOperands();
+        auto kernelBodyArgs = hier.getKernelArguments();
+        for (unsigned i = 0; i < kernelOperands.size(); ++i) {
+          if (kernelOperands[i] == blockIdx) {
+            collectTileSizeCandidates(kernelBodyArgs[i], candidates);
+            break;
+          }
+        }
+      }
+    }
+
+    if (candidates.empty())
+      return 0;
+    return *llvm::min_element(candidates);
   }
 
   void runOnOperation() override {
@@ -7491,20 +7645,30 @@ public:
       OpBuilder builder(launchOp);
       Location loc = launchOp.getLoc();
 
-      // Pre-compute L3→L2 pad dimension indices from the ORIGINAL launch
+      // Pre-compute pad dimension indices from the ORIGINAL launch
       // (before cloning replaces block indices with constants).
-      DenseMap<StringRef, unsigned> chanToArgIdxOrig;
-      launchOp.walk([&](air::ChannelPutOp putOp) {
-        if (putOp->getParentOfType<air::SegmentOp>())
-          return;
-        auto memrefType = dyn_cast<BaseMemRefType>(putOp.getMemref().getType());
-        if (memrefType && getMemorySpace(memrefType) == air::MemorySpace::L3) {
-          unsigned argIdx = traceFuncArgIdx(putOp.getMemref());
-          chanToArgIdxOrig[putOp.getChanName()] = argIdx;
-        }
-      });
-      auto [padDimIdxA, padDimIdxB] =
-          inferL3PadDimIndices(launchOp, chanToArgIdxOrig);
+      int64_t padDimIdxA = 0, padDimIdxB = -1;
+      if (clUseDmaMemcpy) {
+        // GPU/DMA path: infer from DmaMemcpyNdOp src offsets/sizes.
+        std::tie(padDimIdxA, padDimIdxB) =
+            inferDmaPadDimIndices(launchOp, tileM, tileN);
+      } else {
+        // AIE/channel path: infer from L3→L2 ChannelPutOp offsets.
+        DenseMap<StringRef, unsigned> chanToArgIdxOrig;
+        launchOp.walk([&](air::ChannelPutOp putOp) {
+          if (putOp->getParentOfType<air::SegmentOp>())
+            return;
+          auto memrefType =
+              dyn_cast<BaseMemRefType>(putOp.getMemref().getType());
+          if (memrefType &&
+              getMemorySpace(memrefType) == air::MemorySpace::L3) {
+            unsigned argIdx = traceFuncArgIdx(putOp.getMemref());
+            chanToArgIdxOrig[putOp.getChanName()] = argIdx;
+          }
+        });
+        std::tie(padDimIdxA, padDimIdxB) =
+            inferL3PadDimIndices(launchOp, chanToArgIdxOrig);
+      }
 
       // Partition the launch grid into up to 4 partitions:
       // interior, M-boundary, N-boundary, corner.
@@ -7523,32 +7687,104 @@ public:
         auto mBound = cloneAndSpecializeLaunch(
             launchOp, builder, loc, /*fixedDimM=*/launchM - 1,
             /*fixedDimN=*/-1, 1, interiorN, "_m_boundary");
-        addMemtilePaddingToLaunch(mBound, /*padM=*/true, /*padN=*/false,
-                                  mActualLast, nActualLast, padDimIdxA,
-                                  padDimIdxB);
+        if (clUseDmaMemcpy)
+          addDmaPaddingToLaunch(mBound, /*padM=*/true, /*padN=*/false,
+                                mActualLast, nActualLast, tileM, tileN);
+        else
+          addMemtilePaddingToLaunch(mBound, /*padM=*/true, /*padN=*/false,
+                                    mActualLast, nActualLast, padDimIdxA,
+                                    padDimIdxB);
       }
       // N-boundary: all interior M-blocks, last N-block.
       if (nRem && interiorM > 0) {
         auto nBound = cloneAndSpecializeLaunch(
             launchOp, builder, loc, /*fixedDimM=*/-1,
             /*fixedDimN=*/launchN - 1, interiorM, 1, "_n_boundary");
-        addMemtilePaddingToLaunch(nBound, /*padM=*/false, /*padN=*/true,
-                                  mActualLast, nActualLast, padDimIdxA,
-                                  padDimIdxB);
+        if (clUseDmaMemcpy)
+          addDmaPaddingToLaunch(nBound, /*padM=*/false, /*padN=*/true,
+                                mActualLast, nActualLast, tileM, tileN);
+        else
+          addMemtilePaddingToLaunch(nBound, /*padM=*/false, /*padN=*/true,
+                                    mActualLast, nActualLast, padDimIdxA,
+                                    padDimIdxB);
       }
       // Corner: last M-block, last N-block.
       if (mRem && nRem) {
         auto corner = cloneAndSpecializeLaunch(
             launchOp, builder, loc, /*fixedDimM=*/launchM - 1,
             /*fixedDimN=*/launchN - 1, 1, 1, "_corner");
-        addMemtilePaddingToLaunch(corner, /*padM=*/true, /*padN=*/true,
-                                  mActualLast, nActualLast, padDimIdxA,
-                                  padDimIdxB);
+        if (clUseDmaMemcpy)
+          addDmaPaddingToLaunch(corner, /*padM=*/true, /*padN=*/true,
+                                mActualLast, nActualLast, tileM, tileN);
+        else
+          addMemtilePaddingToLaunch(corner, /*padM=*/true, /*padN=*/true,
+                                    mActualLast, nActualLast, padDimIdxA,
+                                    padDimIdxB);
       }
 
       // Erase the original launch.
       launchOp.erase();
     }
+  }
+
+  // Add padding to DMA ops in a boundary launch (GPU path).
+  // Walks air.dma_memcpy_nd ops, reduces src_sizes at the padded dimension,
+  // and sets pad_after attribute. Much simpler than the channel/memtile path
+  // since there is only one DMA level (global → local).
+  void addDmaPaddingToLaunch(air::LaunchOp launch, bool padM, bool padN,
+                             int64_t mActualLast, int64_t nActualLast,
+                             int64_t tileM, int64_t tileN) {
+    launch.walk([&](air::DmaMemcpyNdOp dmaOp) {
+      unsigned argIdx = traceFuncArgIdx(dmaOp.getSrcMemref());
+      if (argIdx > 1)
+        return;
+      if (skipInput(argIdx, padM, padN))
+        return;
+
+      bool isA = (argIdx == 0);
+      int64_t tileSize = isA ? tileM : tileN;
+      int64_t actualLast = isA ? mActualLast : nActualLast;
+
+      // Find the padded dimension in src_sizes by matching tile size.
+      auto srcSizes = dmaOp.getSrcSizes();
+      if (srcSizes.empty())
+        return;
+
+      int64_t padDimIdx = -1;
+      for (unsigned i = 0; i < srcSizes.size(); ++i) {
+        auto sizeOpt = getConstantIntValue(srcSizes[i]);
+        if (sizeOpt && *sizeOpt == tileSize) {
+          padDimIdx = i;
+          break;
+        }
+      }
+      if (padDimIdx < 0)
+        return;
+
+      int64_t padAmount = tileSize - actualLast;
+      if (padAmount <= 0)
+        return;
+
+      // Reduce src_sizes[padDimIdx] to actualLast.
+      OpBuilder builder(dmaOp);
+      Location loc = dmaOp.getLoc();
+      Value actualVal =
+          arith::ConstantIndexOp::create(builder, loc, actualLast);
+      // src_sizes operands start after dst-side operands and src
+      // memref/offsets.
+      auto srcSizeMutable = dmaOp.getSrcSizesMutable();
+      srcSizeMutable.slice(padDimIdx, 1).assign(actualVal);
+
+      // Set pad_after attribute.
+      int64_t numDims = srcSizes.size();
+      SmallVector<int32_t> padBefore(numDims, 0);
+      SmallVector<int32_t> padAfter(numDims, 0);
+      padAfter[padDimIdx] = padAmount;
+      dmaOp->setAttr("pad_before",
+                     DenseI32ArrayAttr::get(dmaOp.getContext(), padBefore));
+      dmaOp->setAttr("pad_after",
+                     DenseI32ArrayAttr::get(dmaOp.getContext(), padAfter));
+    });
   }
 
   // Add memtile (L2→L1) padding and reduce L3→L2 shim DMA sizes for a
@@ -7798,6 +8034,10 @@ public:
 
 std::unique_ptr<mlir::Pass> createAIRSplitLaunchForPadding() {
   return std::make_unique<AIRSplitLaunchForPadding>();
+}
+std::unique_ptr<OperationPass<ModuleOp>>
+createAIRSplitLaunchForPadding(const AIRSplitLaunchForPaddingOptions &options) {
+  return std::make_unique<AIRSplitLaunchForPadding>(options);
 }
 
 } // namespace air

@@ -1081,7 +1081,16 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
     reconfigures memtile DMAs between launches.
 
     Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.
+
+    When `use-dma-memcpy` is true (GPU path), the pass operates on
+    air.dma_memcpy_nd ops instead of air.channel.put/get ops.
+    Boundary DMA ops get their src_sizes reduced at the padded dimension
+    and receive a pad_after attribute.
   }];
+  let options = [
+    Option<"clUseDmaMemcpy", "use-dma-memcpy", "bool", /*default=*/"false",
+           "Operate on air.dma_memcpy_nd instead of air.channel.put/get">
+  ];
 }
 
 def AIRLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
