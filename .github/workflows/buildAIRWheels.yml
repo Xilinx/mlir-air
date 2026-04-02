@@ -232,3 +232,147 @@ jobs:
           allowUpdates: true
           replacesArtifacts: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
           makeLatest: ${{ github.event_name == 'push' }}
+
+  build-windows:
+    name: Build and upload mlir_air wheels (Windows)
+    needs: check-new-commits
+    if: always() && (github.event_name != 'schedule' || needs.check-new-commits.outputs.has_new_commits == 'true')
+
+    runs-on: windows-2022
+
+    permissions:
+      id-token: write
+      contents: write
+      packages: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python_version: "3.12"
+            ENABLE_RTTI: ON
+          # Expand to 3.10-3.14 x RTTI ON/OFF once validated
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "true"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Python packages
+        shell: bash
+        run: |
+          pip install -r utils/requirements.txt
+          pip install setuptools wheel delvewheel importlib_metadata "ninja!=1.13.0"
+
+      - name: Get MLIR
+        shell: bash
+        run: |
+          NO_RTTI="" NO_RTTI_UNDERSCORE=""
+          if [ x"${{ matrix.ENABLE_RTTI }}" == x"OFF" ]; then
+            NO_RTTI="-no-rtti"
+            NO_RTTI_UNDERSCORE="_no_rtti"
+          fi
+
+          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          pip -q download --no-deps "mlir${NO_RTTI}==${VERSION}" \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          # Extract to a short path to keep linker .rsp file paths under
+          # MSVC limits.  Junction links don't help because CMake resolves
+          # them to the real path internally.
+          rm -rf /c/tmp/airwhls/m
+          python -m zipfile -e mlir*.whl /c/tmp/airwhls
+          mv "/c/tmp/airwhls/mlir${NO_RTTI_UNDERSCORE}" /c/tmp/airwhls/m
+          find /c/tmp/airwhls/m -exec touch -a -m -t 201108231405.14 {} \;
+
+      - name: Get mlir-aie
+        shell: bash
+        run: |
+          NO_RTTI_DOT=""
+          if [ x"${{ matrix.ENABLE_RTTI }}" == x"OFF" ]; then
+            NO_RTTI_DOT=".no.rtti"
+            MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-no-rtti"
+          else
+            MLIR_AIE_WHEELS_URL="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3/"
+          fi
+
+          MLIR_AIE_VERSION=$(utils/clone-mlir-aie.sh --get-wheel-version)
+          pip -q download --no-deps --platform win_amd64 \
+            "mlir_aie==${MLIR_AIE_VERSION}${NO_RTTI_DOT}" \
+            -f "$MLIR_AIE_WHEELS_URL"
+          # Extract to a short path alongside MLIR
+          MLIR_AIE_EXTRACT=/c/tmp/airwhls/a
+          rm -rf "$MLIR_AIE_EXTRACT"
+          mkdir -p /c/tmp/airwhls
+          python -m zipfile -e mlir_aie*.whl /c/tmp/airwhls
+          mv /c/tmp/airwhls/mlir_aie "$MLIR_AIE_EXTRACT"
+
+      - name: Build wheel
+        shell: bash
+        env:
+          AIR_WHEEL_VERSION: ${{ (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) && github.ref_name || '' }}
+        run: |
+          set -euo pipefail
+
+          ROOT=$(python -c "import os; print(os.getcwd().replace('\\\\', '/'))")
+
+          export MLIR_INSTALL_ABS_PATH="C:/tmp/airwhls/m"
+          export MLIR_AIE_INSTALL_PATH="C:/tmp/airwhls/a"
+          export MLIR_AIR_SOURCE_DIR="${ROOT}"
+          export ENABLE_RTTI=${{ matrix.ENABLE_RTTI }}
+          export CIBW_ARCHS=AMD64
+
+          if [ x"${{ inputs.AIR_COMMIT }}" == x"" ]; then
+            export AIR_PROJECT_COMMIT=$(git rev-parse --short HEAD)
+          else
+            export AIR_PROJECT_COMMIT="${{ inputs.AIR_COMMIT }}"
+            export AIR_PROJECT_COMMIT="${AIR_PROJECT_COMMIT:0:7}"
+          fi
+          export DATETIME=$(date +"%Y%m%d%H")
+
+          export WHEELHOUSE_DIR="${ROOT}/wheelhouse"
+          mkdir -p "$WHEELHOUSE_DIR"
+          rm -rf "$WHEELHOUSE_DIR"/mlir_air*.whl
+          rm -rf "$WHEELHOUSE_DIR"/repaired_wheel/*
+
+          ninja --version
+
+          pushd utils/mlir_air_wheels
+          pip wheel . -v -w "$WHEELHOUSE_DIR" --no-build-isolation
+          popd
+
+      - name: Repair wheel
+        shell: bash
+        run: |
+          python -m delvewheel repair \
+            --ignore-existing --analyze-existing-exes \
+            -w wheelhouse/repaired_wheel \
+            wheelhouse/mlir_air*.whl
+
+      - name: Upload mlir_air
+        uses: actions/upload-artifact@v4
+        with:
+          path: wheelhouse/repaired_wheel/mlir_air*whl
+          name: mlir_air_windows_rtti_${{ matrix.ENABLE_RTTI }}-${{ matrix.python_version }}
+
+      - name: Release
+        if: |
+          github.event_name == 'workflow_dispatch' ||
+          github.event_name == 'schedule' ||
+          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+        uses: ncipollo/release-action@v1.12.0
+        with:
+          artifacts: wheelhouse/repaired_wheel/mlir_air*whl
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          tag: ${{ github.event_name == 'push' && github.ref_name || (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') }}
+          name: ${{ github.event_name == 'push' && github.ref_name || (matrix.ENABLE_RTTI == 'ON' && 'latest-air-wheels' || 'latest-air-wheels-no-rtti') }}
+          allowUpdates: true
+          replacesArtifacts: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+          makeLatest: ${{ github.event_name == 'push' }}
