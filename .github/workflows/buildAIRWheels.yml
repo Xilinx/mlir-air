@@ -270,7 +270,7 @@ jobs:
         shell: bash
         run: |
           pip install -r utils/requirements.txt
-          pip install setuptools wheel delvewheel importlib_metadata ninja
+          pip install setuptools wheel delvewheel importlib_metadata "ninja>=1.13.1"
 
       - name: Get MLIR
         shell: bash
@@ -342,13 +342,10 @@ jobs:
           rm -rf "$WHEELHOUSE_DIR"/mlir_air*.whl
           rm -rf "$WHEELHOUSE_DIR"/repaired_wheel/*
 
+          ninja --version
+
           pushd utils/mlir_air_wheels
-          pip wheel . -v -w "$WHEELHOUSE_DIR" --no-build-isolation || {
-            echo "=== Build failed, dumping .rsp file for diagnosis ==="
-            cat /c/tmp/airwhls/bld/CMakeFiles/AirAggregateCAPI.rsp 2>/dev/null || true
-            echo "=== End .rsp dump ==="
-            exit 1
-          }
+          pip wheel . -v -w "$WHEELHOUSE_DIR" --no-build-isolation
           popd
 
       - name: Repair wheel
