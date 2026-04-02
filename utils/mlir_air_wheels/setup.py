@@ -19,6 +19,53 @@ def check_env(build, default=0):
     return os.getenv(build, str(default)) in {"1", "true", "True", "ON", "YES"}
 
 
+# Always use forward slashes for CMake paths.
+def _cmake_path(p: object) -> str:
+    return os.fspath(p).replace("\\", "/")
+
+
+# ---------------------------------------------------------------------------
+# Windows short-path helpers (junction links).  Matches the pattern used in
+# mlir-aie's wheel builds to keep all paths well under MAX_PATH (260 chars).
+# ---------------------------------------------------------------------------
+def _windows_short_root() -> Path:
+    return Path(os.getenv("AIR_WHEEL_BUILD_ROOT", "C:/tmp/airwhls")).absolute()
+
+
+def _windows_short_dir(name: str, *, clean: bool = False) -> Path:
+    path = _windows_short_root() / name
+    if clean and path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _windows_short_alias(name: str, target: Path) -> Path:
+    """Create a junction link at *_windows_short_root()/name* → *target*."""
+    link = _windows_short_root() / name
+    target = target.absolute()
+    if link.exists():
+        try:
+            if link.resolve() == target.resolve():
+                return link
+        except OSError:
+            pass
+        subprocess.run(
+            ["cmd", "/c", "rmdir", str(link)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    link.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return link
+
+
 class CMakeExtension(Extension):
     def __init__(self, name: str, sourcedir: str = "") -> None:
         super().__init__(name, sources=[])
@@ -116,25 +163,31 @@ class CMakeBuild(build_ext):
             )
         ).absolute()
 
+        cmake_source_dir = Path(ext.sourcedir)
+
         if platform.system() == "Windows":
-            # Use C:/tmp/m so MLIR install is on the same drive as the build
-            # directory (C:/tmp/airbld). Cross-drive relative paths are
-            # impossible on Windows and cause MSVC linker failures.
-            mlir_short = Path("C:/tmp/m")
-            if not mlir_short.exists() and MLIR_INSTALL_ABS_PATH.exists():
-                mlir_short.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(MLIR_INSTALL_ABS_PATH, mlir_short)
-            MLIR_INSTALL_ABS_PATH = mlir_short.absolute()
+            # Create junction links to keep all paths short and on the same
+            # drive, avoiding MSVC linker LNK1181 errors from long paths.
+            cmake_source_dir = _windows_short_alias(
+                "src", cmake_source_dir
+            ).absolute()
+            MLIR_INSTALL_ABS_PATH = _windows_short_alias(
+                "m", MLIR_INSTALL_ABS_PATH
+            ).absolute()
+            MLIR_AIE_INSTALL_PATH = _windows_short_alias(
+                "a", MLIR_AIE_INSTALL_PATH
+            ).absolute()
 
         cmake_args = [
-            f"-G {cmake_generator}",
-            f"-DCMAKE_INSTALL_PREFIX={install_dir}",
-            f"-DPython3_EXECUTABLE={sys.executable}",
+            "-G",
+            cmake_generator,
+            f"-DCMAKE_INSTALL_PREFIX={_cmake_path(install_dir)}",
+            f"-DPython3_EXECUTABLE={_cmake_path(sys.executable)}",
             f"-DCMAKE_BUILD_TYPE={cfg}",
-            f"-DLLVM_DIR={MLIR_INSTALL_ABS_PATH}/lib/cmake/llvm",
-            f"-DMLIR_DIR={MLIR_INSTALL_ABS_PATH}/lib/cmake/mlir",
-            f"-DAIE_DIR={MLIR_AIE_INSTALL_PATH}/lib/cmake/aie",
-            f"-DCMAKE_MODULE_PATH={MLIR_AIR_SOURCE_DIR}/cmake/modules",
+            f"-DLLVM_DIR={_cmake_path(MLIR_INSTALL_ABS_PATH)}/lib/cmake/llvm",
+            f"-DMLIR_DIR={_cmake_path(MLIR_INSTALL_ABS_PATH)}/lib/cmake/mlir",
+            f"-DAIE_DIR={_cmake_path(MLIR_AIE_INSTALL_PATH)}/lib/cmake/aie",
+            f"-DCMAKE_MODULE_PATH={_cmake_path(cmake_source_dir)}/cmake/modules",
             # Prevent symbol collision
             "-DCMAKE_VISIBILITY_INLINES_HIDDEN=ON",
             "-DCMAKE_C_VISIBILITY_PRESET=hidden",
@@ -147,7 +200,7 @@ class CMakeBuild(build_ext):
             "-DAIE_ENABLE_BINDINGS_PYTHON=ON",
             "-DMLIR_DETECT_PYTHON_ENV_PRIME_SEARCH=ON",
             "-DAIR_RUNTIME_TARGETS=x86_64",
-            f"-Dx86_64_TOOLCHAIN_FILE={MLIR_AIR_SOURCE_DIR}/cmake/modules/toolchain_x86_64.cmake",
+            f"-Dx86_64_TOOLCHAIN_FILE={_cmake_path(cmake_source_dir)}/cmake/modules/toolchain_x86_64.cmake",
             "-DPython_FIND_VIRTUALENV=ONLY",
             "-DPython3_FIND_VIRTUALENV=ONLY",
         ]
@@ -171,7 +224,6 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
                 "-DCMAKE_C_FLAGS=/MT",
                 "-DCMAKE_CXX_FLAGS=/MT",
-                "-DCMAKE_OBJECT_PATH_MAX=260",
             ]
         else:
             cmake_args += [
@@ -192,21 +244,17 @@ class CMakeBuild(build_ext):
 
         build_temp = Path(self.build_temp) / ext.name
         if platform.system() == "Windows":
-            # Use a short build path to avoid exceeding MAX_PATH limits
-            build_temp = Path("C:/tmp/airbld")
-            if build_temp.exists():
-                shutil.rmtree(build_temp, ignore_errors=True)
-        if not build_temp.exists():
+            build_temp = _windows_short_dir("bld", clean=True)
+        elif not build_temp.exists():
             build_temp.mkdir(parents=True)
 
         print("ENV", pprint(os.environ), file=sys.stderr)
         print("cmake", " ".join(cmake_args), file=sys.stderr)
 
-        if platform.system() == "Windows":
-            cmake_args = [c.replace("\\", "\\\\") for c in cmake_args]
-
         subprocess.run(
-            ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, check=True
+            ["cmake", _cmake_path(cmake_source_dir), *cmake_args],
+            cwd=build_temp,
+            check=True,
         )
         subprocess.run(
             ["cmake", "--build", ".", "--target", "install", *build_args],
