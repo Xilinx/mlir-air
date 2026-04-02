@@ -117,10 +117,14 @@ class CMakeBuild(build_ext):
         ).absolute()
 
         if platform.system() == "Windows":
-            # Handle long paths on Windows
-            if not Path("/tmp/m").exists() and MLIR_INSTALL_ABS_PATH.exists():
-                shutil.move(MLIR_INSTALL_ABS_PATH, "/tmp/m")
-            MLIR_INSTALL_ABS_PATH = Path("/tmp/m").absolute()
+            # Use C:/tmp/m so MLIR install is on the same drive as the build
+            # directory (C:/tmp/airbld). Cross-drive relative paths are
+            # impossible on Windows and cause MSVC linker failures.
+            mlir_short = Path("C:/tmp/m")
+            if not mlir_short.exists() and MLIR_INSTALL_ABS_PATH.exists():
+                mlir_short.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(MLIR_INSTALL_ABS_PATH, mlir_short)
+            MLIR_INSTALL_ABS_PATH = mlir_short.absolute()
 
         cmake_args = [
             f"-G {cmake_generator}",
