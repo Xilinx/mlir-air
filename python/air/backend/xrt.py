@@ -168,7 +168,7 @@ class XRTBackend(AirBackend):
             # Try to auto-detect device via xrt-smi
             target_device = "npu1"  # Default fallback
             try:
-                xrtsmi = "/opt/xilinx/xrt/bin/xrt-smi"
+                xrtsmi = shutil.which("xrt-smi") or "/opt/xilinx/xrt/bin/xrt-smi"
                 result = subprocess.run(
                     [xrtsmi, "examine"],
                     stdout=subprocess.PIPE,

@@ -3,6 +3,9 @@
 # Copyright (C) 2024, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
+import os
+import tempfile
+
 import numpy as np
 from .xrt import XRTBackend
 from air.dialects.air import *
@@ -255,7 +258,7 @@ class XRTRunner:
         expanded_inputs = inputs + output_placeholders
 
         compiled_module = backend.compile(mlir_module)
-        with filelock.FileLock("/tmp/npu.lock"):
+        with filelock.FileLock(os.path.join(tempfile.gettempdir(), "npu.lock")):
             module_function = backend.load(compiled_module)
             actual_outputs = module_function(*expanded_inputs)
 
