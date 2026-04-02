@@ -167,6 +167,7 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
                 "-DCMAKE_C_FLAGS=/MT",
                 "-DCMAKE_CXX_FLAGS=/MT",
+                "-DCMAKE_OBJECT_PATH_MAX=260",
             ]
         else:
             cmake_args += [
