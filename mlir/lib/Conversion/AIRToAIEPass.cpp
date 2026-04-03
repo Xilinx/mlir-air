@@ -398,6 +398,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
                                herd_lock, lockAction, lockValue);
       }
 
+      unsigned rtp_slot = 0;
       for (unsigned ki = 0, ke = h.getNumKernelOperands(); ki < ke; ki++) {
         BlockArgument karg = h.getKernelArgument(ki);
 
@@ -418,7 +419,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
 
           // load from rtp buffer
           SmallVector<Value> offsets{
-              arith::ConstantIndexOp::create(core_builder, hloc, ki)};
+              arith::ConstantIndexOp::create(core_builder, hloc, rtp_slot)};
           auto load = memref::LoadOp::create(core_builder, hloc,
                                              IntegerType::get(ctx, 32),
                                              rtp_buffer, offsets);
@@ -453,7 +454,8 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
           if (rtp)
             remap.map(karg, rtp);
           else
-            h.emitWarning("Unsupported runtime parmeter int or float type");
+            h.emitWarning("Unsupported runtime parameter int or float type");
+          rtp_slot++;
         }
 
         auto memrefTy = llvm::dyn_cast_if_present<MemRefType>(karg.getType());

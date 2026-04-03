@@ -609,6 +609,7 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
         }
 
         if (rtpBufferExists) {
+          unsigned rtp_slot = 0;
           for (int i = 0, e = op.getNumOperands(); i < e; i++) {
             Value oper = adaptor.getOperands()[i];
             if (!llvm::isa<IntegerType, IndexType, FloatType>(oper.getType()))
@@ -616,10 +617,12 @@ struct HerdLoadToNpuPattern : public OpConversionPattern<airrt::HerdLoadOp> {
 
             auto constOp =
                 dyn_cast_if_present<arith::ConstantOp>(oper.getDefiningOp());
-            if (!constOp)
-              continue;
-            uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
-            AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, i, v);
+            if (constOp) {
+              uint32_t v = cast<IntegerAttr>(constOp.getValue()).getInt();
+              AIEX::NpuWriteRTPOp::create(rewriter, op.getLoc(), name, rtp_slot,
+                                          v);
+            }
+            rtp_slot++;
           }
         }
         // FIXME: this should depend on the metadata to enable and to get the id

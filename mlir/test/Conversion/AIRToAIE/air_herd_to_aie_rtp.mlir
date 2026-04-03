@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie | FileCheck %s
+// RUN: air-opt %s --split-input-file -air-to-aie | FileCheck %s
 
 func.func @herd1(%arg0: i32, %arg1: i32, %arg2: i32) {
   // CHECK-LABEL: aie.device
@@ -46,3 +46,30 @@ func.func @herd1(%arg0: i32, %arg1: i32, %arg2: i32) {
   return
 }
 
+// -----
+
+// Test that L1 memref operands before scalar operands don't inflate RTP
+// indices. The two scalar args should get RTP slots 0 and 1, not 2 and 3.
+
+func.func @herd_rtp_with_memref_before_scalar(%arg0: i32, %arg1: i32) {
+  // CHECK-LABEL: aie.device
+  // CHECK: %[[TILE:.*]] = aie.tile(1, 1)
+  // CHECK: %[[RTP:.*]] = aie.buffer(%[[TILE]]) {{{.*}}sym_name = "__air_herd_rtp_1_1"{{.*}}} : memref<2xi32>
+  // CHECK: aie.core(%[[TILE]])
+  // CHECK: memref.load %[[RTP]][%c0] : memref<2xi32>
+  // CHECK: memref.load %[[RTP]][%c1] : memref<2xi32>
+  %cst1 = arith.constant 1 : index
+  %cst12 = arith.constant 12 : i32
+  %cst34 = arith.constant 34 : i32
+  %buf0 = memref.alloc() : memref<16xi32, 2>
+  %buf1 = memref.alloc() : memref<16xi32, 2>
+  air.herd @herd2 tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) args(%m0 = %buf0, %m1 = %buf1, %a = %cst12, %b = %cst34) : memref<16xi32, 2>, memref<16xi32, 2>, i32, i32 {
+    %zero = arith.constant 0 : index
+    %0 = memref.load %m0[%zero] : memref<16xi32, 2>
+    %1 = arith.addi %0, %a : i32
+    %2 = arith.addi %1, %b : i32
+    memref.store %2, %m1[%zero] : memref<16xi32, 2>
+    air.herd_terminator
+  }
+  return
+}
