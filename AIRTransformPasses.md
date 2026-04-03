@@ -1415,20 +1415,32 @@ actual data dimensions. If absent, the launch is left unchanged.
 Tile sizes are inferred from arith.muli offset computations in the
 launch body.
 
-For boundary partitions:
-- L2->L1 channel.put ops get memtile DMA padding (pad_after via
-  BDPadLayoutAttr) where hardware supports zero-padding (max 31 per
-  dimension). When exceeded, a diagnostic is emitted.
-- L3->L2 channel.put sizes are reduced so shim DMAs read only
-  block-aligned actual data from DDR.
-- L3->L2 channel.get ops get explicit sizes/strides to preserve L2
-  buffer layout when receiving fewer elements.
+Two orthogonal axes control behavior:
+
+**Padding location** (`pad-location` option):
+- `memtile` (default): Apply padding at L2 MM2S DMAs in a 3-level
+  memory hierarchy (L3->L2->L1). L2->L1 ops get pad_after, L3->L2
+  sizes are reduced, L3->L2 S2MM ops get explicit strides. Hardware
+  limit: 31 blocks per padded dimension.
+- `source`: Apply padding directly on the op reading from L3.
+  Source sizes reduced, pad_after set on the source-level op.
+
+**IR representation** (auto-detected):
+The pass detects whether the launch contains air.channel.put/get or
+air.dma_memcpy_nd ops and handles each correctly. Both op types are
+supported for both padding locations.
 
 Each partition gets unique channel names and segment names. The core
-program is identical across all partitions; lightweight load_pdi
-reconfigures memtile DMAs between launches.
+program is identical across all partitions.
 
 Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.
+
+#### Options
+
+```
+-pad-location   : Where to apply DMA padding: 'memtile' (L2 MM2S, 3-level hierarchy) or 'source' (pad at L3 read, direct source-level padding).
+-use-dma-memcpy : DEPRECATED: Use pad-location='source' instead.
+```
 
 ### `-air-transform`
 
