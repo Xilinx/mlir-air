@@ -175,6 +175,7 @@ class CMakeBuild(build_ext):
             cmake_generator,
             f"-DCMAKE_INSTALL_PREFIX={_cmake_path(install_dir)}",
             f"-DPython3_EXECUTABLE={_cmake_path(sys.executable)}",
+            f"-DPython_EXECUTABLE={_cmake_path(sys.executable)}",
             f"-DCMAKE_BUILD_TYPE={cfg}",
             f"-DLLVM_DIR={_cmake_path(MLIR_INSTALL_ABS_PATH)}/lib/cmake/llvm",
             f"-DMLIR_DIR={_cmake_path(MLIR_INSTALL_ABS_PATH)}/lib/cmake/mlir",
