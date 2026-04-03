@@ -985,7 +985,7 @@ The full GPU lowering pipeline is:
    serialises the GPU binary with `gpu-module-to-binary`.
 
 See [buildingGPU.md](buildingGPU.md) for build instructions and the complete
-`aircc.py` compilation pipeline.
+`aircc` compilation pipeline.
 
 ---
 

@@ -10,8 +10,8 @@
 // It orchestrates the compilation flow for AIR MLIR programs targeting
 // AIE/NPU devices.
 //
-// This C++ implementation replaces the Python aircc.py tool with the
-// following architecture:
+// This is the native C++ aircc compiler driver with the following
+// architecture:
 //
 // 1. Command-line argument parsing using LLVM CommandLine library
 // 2. MLIR module loading and parsing
@@ -605,7 +605,7 @@ static LogicalResult runSinglePass(StringRef passStr, ModuleOp moduleOp) {
 /// The pipeline should be in the form "builtin.module(pass1,pass2,...)".
 ///
 /// In debug mode (--debug-ir), splits the pipeline into individual passes
-/// and saves IR after each one — matching the Python aircc.py behavior.
+/// and saves IR after each one.
 /// This produces files like pass_001_after_air-dependency.mlir,
 /// pass_002_after_air-dma-to-channel.mlir, etc.
 static LogicalResult runPassPipeline(StringRef pipeline, ModuleOp moduleOp) {
@@ -976,7 +976,8 @@ static LogicalResult runAieCompilation() {
   {
     raw_string_ostream os(placementPipeline);
     os << "builtin.module(";
-    os << "air-insert-launch-around-herd{insert-segment=true}";
+    os << "air-rank-to-launch";
+    os << ",air-insert-launch-around-herd{insert-segment=true}";
     os << ",func.func(air-lower-herd-parallel)";
     os << ",scf-forall-to-parallel";
 

@@ -14,7 +14,7 @@ python shim_dma_2d.py
 For illustrative purposes, we provide three different ways to run and test this example. The three approaches are functionally equivalent but the implementation of each approach differs. The general workflow of each is:
 * Build
   * The AIR Python bindings are used to generate AIR MLIR (generally a file called ```air.mlir```)
-  * The AIR MLIR code is transformed and compiled by ```aircc.py```, which may be invoked either on the command line or through a python wrapper. ```aircc.py``` calls ```air-opt``` to run pipelines of passes over the initial AIR MLIR. For more control, there also exist mechanisms (not shown in this example) to customize the passes used. For the curious reader, most of the tests in [```/test/xrt```](/test/xrt) take this approach.
+  * The AIR MLIR code is transformed and compiled by ```aircc```, which may be invoked either on the command line or through a python wrapper. ```aircc``` calls ```air-opt``` to run pipelines of passes over the initial AIR MLIR. For more control, there also exist mechanisms (not shown in this example) to customize the passes used. For the curious reader, most of the tests in [```/test/xrt```](/test/xrt) take this approach.
   * The final step is to produce the ```xclbin``` binary which contains one or more kernels that are capable of running on an NPU.
 * Test
   * Setup input/output regions
@@ -24,7 +24,7 @@ For illustrative purposes, we provide three different ways to run and test this 
 
 ### Method 1: Run and test with AIR utility functions
 
-This is the cleanest and simplest method of specifying a workflow to run AIR MLIR on an NPU, and uses code in the [run.py](run.py) file. The utility class ```XRTRunner``` simplifies setting up input/output data and allows the user to specify the input and an expected output using ```numpy``` ```ndarray```s. Behind the scenes, ```XRTRunner``` calls ```aircc.py``` with the default set of pipelines and passes.
+This is the cleanest and simplest method of specifying a workflow to run AIR MLIR on an NPU, and uses code in the [run.py](run.py) file. The utility class ```XRTRunner``` simplifies setting up input/output data and allows the user to specify the input and an expected output using ```numpy``` ```ndarray```s. Behind the scenes, ```XRTRunner``` calls ```aircc``` with the default set of pipelines and passes.
 ```bash
 make pyworkflow
 ```

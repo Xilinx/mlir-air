@@ -58,7 +58,7 @@ elif [ -d "$MLIR_AIR_DIR/python" ]; then
 fi
 
 if [ -z "$PYTHON_DIR" ]; then
-    echo "WARNING: Python bindings not found. aircc.py may not work."
+    echo "WARNING: Python bindings not found. Python-based workflows may not work."
     echo "Checked: $PROJECT_DIR/build/python"
     echo "         $MLIR_AIR_DIR/python"
 fi
@@ -85,9 +85,9 @@ echo "PYTHONPATH:           $PYTHON_DIR"
 echo ""
 echo "Tools available:"
 which air-opt 2>/dev/null && echo "  - air-opt: $(which air-opt)"
-which aircc.py 2>/dev/null && echo "  - aircc.py: $(which aircc.py)"
+which aircc 2>/dev/null && echo "  - aircc: $(which aircc)"
 which mlir-opt 2>/dev/null && echo "  - mlir-opt: $(which mlir-opt)"
 echo ""
 echo "Example usage:"
-echo "  aircc.py --target gpu --gpu-arch gfx942 -o output.mlir input.mlir"
+echo "  aircc --target gpu --gpu-arch gfx942 -o output.mlir input.mlir"
 echo ""

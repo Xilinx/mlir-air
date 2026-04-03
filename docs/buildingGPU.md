@@ -91,9 +91,9 @@ With GPU-only build, the following passes are available:
 
 AIE-specific passes (e.g., `air-to-aie`) are not available in this configuration; attempts to invoke them will fail because AIE support is disabled (`AIR_ENABLE_AIE=OFF`).
 
-## GPU Compilation with aircc.py
+## GPU Compilation with aircc
 
-The `aircc.py` compiler supports GPU targets.
+The `aircc` compiler supports GPU targets.
 
 ### Quick Start
 
@@ -102,16 +102,16 @@ The `aircc.py` compiler supports GPU targets.
 source utils/env_setup_gpu.sh install
 
 # Compile the 4k x 4k matrix multiplication example for MI300X
-aircc.py --target gpu --gpu-arch gfx942 -o output.mlir test/gpu/4k_4k_mul/air_sync.mlir
+aircc --target gpu --gpu-arch gfx942 -o output.mlir test/gpu/4k_4k_mul/air_sync.mlir
 
 # With verbose output to see compilation steps
-aircc.py --target gpu --gpu-arch gfx942 -v -o output.mlir test/gpu/4k_4k_mul/air_sync.mlir
+aircc --target gpu --gpu-arch gfx942 -v -o output.mlir test/gpu/4k_4k_mul/air_sync.mlir
 
 # Keep intermediate files for debugging
-aircc.py --target gpu --gpu-arch gfx942 -v --tmpdir /tmp/mytest -o output.mlir test/gpu/4k_4k_mul/air_sync.mlir
+aircc --target gpu --gpu-arch gfx942 -v --tmpdir /tmp/mytest -o output.mlir test/gpu/4k_4k_mul/air_sync.mlir
 ```
 
-### aircc.py Options for GPU
+### aircc Options for GPU
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -133,7 +133,7 @@ aircc.py --target gpu --gpu-arch gfx942 -v --tmpdir /tmp/mytest -o output.mlir t
 
 ### Compilation Pipeline
 
-The aircc.py GPU pipeline runs the following passes:
+The aircc GPU pipeline runs the following passes:
 
 1. **AIR to ROCDL** (`air-opt -air-to-rocdl`)
    - Converts `air.launch`, `air.segment`, `air.herd` → `gpu.launch`
@@ -164,7 +164,7 @@ The `test/gpu/4k_4k_mul/` directory contains a matrix multiplication example.
 source utils/env_setup_gpu.sh install
 
 # Compile the example
-aircc.py --target gpu --gpu-arch gfx942 -v \
+aircc --target gpu --gpu-arch gfx942 -v \
     --tmpdir /tmp/matmul \
     -o /tmp/matmul/output.mlir \
     test/gpu/4k_4k_mul/air_sync.mlir
@@ -215,7 +215,7 @@ Full example (compile and run):
 source utils/env_setup_gpu.sh install
 
 # Compile
-aircc.py --target gpu --gpu-arch gfx942 \
+aircc --target gpu --gpu-arch gfx942 \
     -o /tmp/output.mlir \
     test/gpu/4k_4k_mul/air_sync.mlir
 
@@ -313,7 +313,7 @@ If you see errors like:
 error: AIRToAIE pass requires AIE support. Rebuild with -DAIR_ENABLE_AIE=ON
 ```
 
-This is expected behavior. The GPU-only build does not include AIE backend support. Use `--target gpu` with aircc.py for GPU targets.
+This is expected behavior. The GPU-only build does not include AIE backend support. Use `--target gpu` with aircc for GPU targets.
 
 ### Missing air-opt or mlir-opt
 
@@ -341,7 +341,7 @@ If you see:
 error: cannot evaluate equated symbol 'air_kernel_0.num_named_barrier'
 ```
 
-This can be fixed by configuring the `rocdl-attach-target` pass with `wave64=true`. Note that this is not enabled by default in `aircc.py`, so you must pass this option explicitly in your GPU pipeline.
+This can be fixed by configuring the `rocdl-attach-target` pass with `wave64=true`. Note that this is not enabled by default in `aircc`, so you must pass this option explicitly in your GPU pipeline.
 
 ## Building with Both AIE and GPU Support
 
