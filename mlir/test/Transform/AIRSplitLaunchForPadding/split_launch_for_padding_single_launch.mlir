@@ -22,19 +22,31 @@
 // CHECK:   scf.if %[[CMP_M]]
 // Inner scf.if: is N interior?
 // CHECK:     scf.if
-// Interior body (no padding):
+// Interior body (no padding on either DMA):
+// CHECK:       air.dma_memcpy_nd
+// CHECK-NOT:   pad_after
 // CHECK:       air.dma_memcpy_nd
 // CHECK-NOT:   pad_after
 // CHECK:     } else {
-// N-boundary body:
+// N-boundary body: A has no padding, B pads dim 1.
 // CHECK:       air.dma_memcpy_nd
+// CHECK-NOT:   pad_after
+// CHECK:       air.dma_memcpy_nd
+// CHECK-SAME:  pad_after = array<i32: 0, 20>
 // CHECK:   } else {
 // M-boundary or corner:
 // CHECK:     scf.if
+// M-boundary body: A pads dim 0, B has no padding.
 // CHECK:       air.dma_memcpy_nd
+// CHECK-SAME:  pad_after = array<i32: 20, 0>
+// CHECK:       air.dma_memcpy_nd
+// CHECK-NOT:   pad_after
 // CHECK:     } else {
-// Corner body:
+// Corner body: A pads dim 0, B pads dim 1.
 // CHECK:       air.dma_memcpy_nd
+// CHECK-SAME:  pad_after = array<i32: 20, 0>
+// CHECK:       air.dma_memcpy_nd
+// CHECK-SAME:  pad_after = array<i32: 0, 20>
 
 module {
   func.func @single_launch_both_boundary(%arg0: memref<*xbf16>, %arg1: memref<*xbf16>, %arg2: memref<*xbf16>) {

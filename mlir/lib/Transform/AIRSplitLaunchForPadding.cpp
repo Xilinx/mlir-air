@@ -1,5 +1,4 @@
-//===- AIRSplitLaunchForPadding.cpp ------------------------------*- C++
-//-*-===//
+//===- AIRSplitLaunchForPadding.cpp ----------------------------*- C++ -*-===//
 //
 // Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -682,6 +681,14 @@ public:
         continue;
       auto actualSizes = SmallVector<int64_t>(actualSizesAttr.asArrayRef());
 
+      // Single-launch mode only supports dma_memcpy_nd ops.
+      if (detectOpKind(launchOp) == OpKind::Channel) {
+        launchOp.emitError(
+            "air-split-launch-for-padding: single-launch mode does not "
+            "support air.channel.put/get ops; use split-mode=multi-launch");
+        return signalPassFailure();
+      }
+
       auto launchIds = launchOp.getIds();
       if (launchIds.empty() || actualSizes.empty())
         continue;
@@ -748,6 +755,11 @@ public:
       Value blockM = ids[0];
       Value blockN = has2D ? Value(ids[1]) : Value();
 
+      // Pre-compute pad dimension indices from the original launch using
+      // offset-based tracing. This must be done before cloning replaces
+      // block indices with constants.
+      auto [aPadDim, bPadDim] = inferL3PadDimIndicesForDma(launchOp);
+
       Value interiorMConst =
           arith::ConstantIndexOp::create(builder, loc, interiorM);
       Value isMInterior = arith::CmpIOp::create(
@@ -798,19 +810,12 @@ public:
             if (srcSizes.empty())
               continue;
 
-            int64_t padDimIdx = -1;
-            for (unsigned i = 0; i < srcSizes.size(); ++i) {
-              auto sizeOpt = getConstantIntValue(srcSizes[i]);
-              if (!sizeOpt)
-                continue;
-              if (*sizeOpt == tileSize || *sizeOpt == actualLast) {
-                padDimIdx = i;
-                break;
-              }
-            }
-            if (padDimIdx < 0 && !srcSizes.empty())
-              padDimIdx = 0;
+            // Use pre-computed pad dimension from offset-based tracing.
+            int64_t padDimIdx = isA ? aPadDim : bPadDim;
+            // Fallback: if offset tracing didn't find a match, use dim 0.
             if (padDimIdx < 0)
+              padDimIdx = 0;
+            if (padDimIdx >= (int64_t)srcSizes.size())
               continue;
 
             int64_t padAmount = tileSize - actualLast;

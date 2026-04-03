@@ -1086,7 +1086,9 @@ def AIRSplitLaunchForPadding: Pass<"air-split-launch-for-padding", "ModuleOp"> {
 
     **IR representation** (auto-detected):
     The pass detects whether the launch contains air.channel.put/get or
-    air.dma_memcpy_nd ops and handles each correctly.
+    air.dma_memcpy_nd ops and handles each correctly in multi-launch mode.
+    Single-launch mode currently only supports air.dma_memcpy_nd; using
+    it with channel-based IR will produce an error.
 
     Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.
   }];
