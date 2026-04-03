@@ -11,7 +11,7 @@ This example is functionally a data passthrough, but what makes it interesting i
 
 ## Source Files Overview
 
-1. [`segment_alloc.py`](./segment_alloc.py): Python scripts that defines the module design for the example using MLIR-AIR Python bindings. The file generates MLIR that is then compiled using `aircc.py` to produce design binaries (i.e. `XCLBIN` and `inst.txt` for the NPU in Ryzen™ AI). This file also contains the code needed to run the program on the NPU and test the output.
+1. [`segment_alloc.py`](./segment_alloc.py): Python scripts that defines the module design for the example using MLIR-AIR Python bindings. The file generates MLIR that is then compiled using `aircc` to produce design binaries (i.e. `XCLBIN` and `inst.txt` for the NPU in Ryzen™ AI). This file also contains the code needed to run the program on the NPU and test the output.
 
 ## Usage
 

@@ -37,7 +37,7 @@ channel.async.o: channel.async.bc
 	$(CC) -g -O0 -o $@ -c $<
 
 channel.air.a: channel.air.mlir
-	aircc.py -o $@ --sysroot=${SYSROOT} -row-offset=2 -col-offset=7 $<
+	aircc -o $@ --sysroot=${SYSROOT} -row-offset=2 -col-offset=7 $<
 
 clean:
 	rm -rf air_project channel.async.* channel.*mlir* *.elf *.exe *.o *.a

@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // Verify that --debug-ir produces per-pass IR files and a pass.log with
-// checkpoint markers, matching the Python aircc.py behavior.
+// checkpoint markers.
 
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: aircc %s --device=npu1 --tmpdir=%t --output-format=none --debug-ir -v 2>&1 | tee %t/stdout.log || true
@@ -14,9 +14,10 @@
 
 // Verify per-pass IR files are created
 // RUN: ls %t/debug_ir/pass_000_initial_input.mlir
-// RUN: ls %t/debug_ir/pass_001_after_air-insert-launch-around-herd.mlir
-// RUN: ls %t/debug_ir/pass_004_after_air-dependency.mlir
-// RUN: ls %t/debug_ir/pass_008_after_air-dma-to-channel.mlir
+// RUN: ls %t/debug_ir/pass_001_after_air-rank-to-launch.mlir
+// RUN: ls %t/debug_ir/pass_002_after_air-insert-launch-around-herd.mlir
+// RUN: ls %t/debug_ir/pass_005_after_air-dependency.mlir
+// RUN: ls %t/debug_ir/pass_009_after_air-dma-to-channel.mlir
 
 // Verify pass.log exists and has correct structure
 // RUN: FileCheck %s --input-file=%t/debug_ir/pass.log --check-prefix=LOG
@@ -24,9 +25,10 @@
 // Verbose output should show per-pass execution
 // CHECK: [DEBUG] Splitting pipeline into
 // CHECK: [PASS 000] Saved initial IR
-// CHECK: [PASS 001] air-insert-launch-around-herd
-// CHECK: [PASS 004] air-dependency
-// CHECK: [PASS 008] air-dma-to-channel
+// CHECK: [PASS 001] air-rank-to-launch
+// CHECK: [PASS 002] air-insert-launch-around-herd
+// CHECK: [PASS 005] air-dependency
+// CHECK: [PASS 009] air-dma-to-channel
 
 // Pass log should have checkpoints
 // LOG: MLIR-AIR Compilation Pass Log
