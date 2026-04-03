@@ -855,7 +855,7 @@ extern "C" {
         # Split launch for non-tile-aligned DMA padding. No-op if no launch
         # has the air.actual_sizes attribute (set by air-wrap-func-with-parallel).
         run_passes(
-            "builtin.module(air-split-launch-for-padding)",
+            "builtin.module(air-split-launch-for-padding{pad-location=memtile})",
             air_placed_module,
             opts,
         )
