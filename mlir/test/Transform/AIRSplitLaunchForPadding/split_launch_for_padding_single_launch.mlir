@@ -48,6 +48,33 @@
 // CHECK:       air.dma_memcpy_nd
 // CHECK-SAME:  pad_after = array<i32: 0, 20>
 
+// -----
+
+// Tests that branch-invariant ops (memref.alloc, arith.constant that don't
+// depend on block indices) are hoisted above the scf.if tree instead of
+// being duplicated into each partition branch.
+
+// CHECK-LABEL: func.func @single_launch_hoist_alloc
+// CHECK: air.launch (%[[HM:.*]], %[[HN:.*]]) in
+//
+// Branch-invariant ops: constants and alloc appear once before scf.if.
+// CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
+// CHECK-DAG:   %[[C1:.*]] = arith.constant 1 : index
+// CHECK-DAG:   %[[C64:.*]] = arith.constant 64 : index
+// CHECK-DAG:   %[[C300:.*]] = arith.constant 300 : index
+// CHECK:       %[[ALLOC:.*]] = memref.alloc() : memref<64x64xbf16>
+// CHECK:       memref.dealloc %[[ALLOC]]
+// CHECK:       arith.cmpi
+// CHECK:       scf.if
+//
+// The alloc must NOT be duplicated inside any branch.
+// CHECK-NOT:   memref.alloc
+//
+// But branches must still reference the hoisted alloc in DMAs.
+// CHECK:         air.dma_memcpy_nd (%[[ALLOC]]
+// CHECK:       } else {
+// CHECK:         air.dma_memcpy_nd (%[[ALLOC]]
+
 module {
   func.func @single_launch_both_boundary(%arg0: memref<*xbf16>, %arg1: memref<*xbf16>, %arg2: memref<*xbf16>) {
     %c5 = arith.constant 5 : index
@@ -62,6 +89,28 @@ module {
 
       air.dma_memcpy_nd (%arg17[%offset_a, %c0] [%c64, %c64] [%c300, %c1], %arg15[%offset_a, %c0] [%c64, %c64] [%c300, %c1]) {id = 1 : i32} : (memref<*xbf16>, memref<*xbf16>)
       air.dma_memcpy_nd (%arg17[%c0, %offset_b] [%c64, %c64] [%c300, %c1], %arg16[%c0, %offset_b] [%c64, %c64] [%c300, %c1]) {id = 2 : i32} : (memref<*xbf16>, memref<*xbf16>)
+    }
+    return
+  }
+
+  func.func @single_launch_hoist_alloc(%arg0: memref<*xbf16>, %arg1: memref<*xbf16>, %arg2: memref<*xbf16>) {
+    %c5 = arith.constant 5 : index
+    air.launch (%arg9, %arg10) in (%arg12=%c5, %arg13=%c5) args(%arg15=%arg0, %arg16=%arg1, %arg17=%arg2) : memref<*xbf16>, memref<*xbf16>, memref<*xbf16> attributes {air.actual_sizes = array<i64: 300, 300>} {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c300 = arith.constant 300 : index
+
+      // This alloc does NOT depend on block indices -> should be hoisted.
+      %workspace = memref.alloc() : memref<64x64xbf16>
+
+      %offset_a = arith.muli %arg9, %c64 : index
+      %offset_b = arith.muli %arg10, %c64 : index
+
+      air.dma_memcpy_nd (%workspace[%c0, %c0] [%c64, %c64] [%c64, %c1], %arg15[%offset_a, %c0] [%c64, %c64] [%c300, %c1]) {id = 1 : i32} : (memref<64x64xbf16>, memref<*xbf16>)
+      air.dma_memcpy_nd (%arg17[%c0, %offset_b] [%c64, %c64] [%c300, %c1], %arg16[%c0, %offset_b] [%c64, %c64] [%c300, %c1]) {id = 2 : i32} : (memref<*xbf16>, memref<*xbf16>)
+
+      memref.dealloc %workspace : memref<64x64xbf16>
     }
     return
   }

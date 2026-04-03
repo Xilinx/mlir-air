@@ -744,21 +744,43 @@ public:
       Block &origBody = launchOp.getBody().front();
       auto ids = launchOp.getIds();
 
-      SmallVector<Operation *> origOps;
       auto *terminator = origBody.getTerminator();
-      for (auto &op : origBody)
-        if (&op != terminator)
-          origOps.push_back(&op);
-
-      builder.setInsertionPoint(terminator);
-
-      Value blockM = ids[0];
-      Value blockN = has2D ? Value(ids[1]) : Value();
 
       // Pre-compute pad dimension indices from the original launch using
       // offset-based tracing. This must be done before cloning replaces
       // block indices with constants.
       auto [aPadDim, bPadDim] = inferL3PadDimIndicesForDma(launchOp);
+
+      // Partition body ops into branch-invariant (hoistable) and
+      // branch-varying (cloneable). An op is branch-varying if any of its
+      // operands transitively depend on a block index that differs across
+      // partitions. Hoistable ops are emitted once before the scf.if tree;
+      // only cloneable ops are duplicated into each branch.
+      DenseSet<Value> branchVarying;
+      branchVarying.insert(ids[0]); // blockM
+      if (has2D)
+        branchVarying.insert(ids[1]); // blockN
+
+      SmallVector<Operation *> hoistableOps, cloneableOps;
+      for (auto &op : origBody) {
+        if (&op == terminator)
+          continue;
+        bool dependsOnBranch = llvm::any_of(op.getOperands(), [&](Value v) {
+          return branchVarying.contains(v);
+        });
+        if (dependsOnBranch) {
+          cloneableOps.push_back(&op);
+          for (Value r : op.getResults())
+            branchVarying.insert(r);
+        } else {
+          hoistableOps.push_back(&op);
+        }
+      }
+
+      builder.setInsertionPoint(terminator);
+
+      Value blockM = ids[0];
+      Value blockN = has2D ? Value(ids[1]) : Value();
 
       Value interiorMConst =
           arith::ConstantIndexOp::create(builder, loc, interiorM);
@@ -771,8 +793,10 @@ public:
                                      nc);
       };
 
-      // Clone original body ops into a partition, optionally replacing block
-      // IDs with constants and adding pad_after to boundary DMAs.
+      // Clone only branch-varying ops into a partition, optionally replacing
+      // block IDs with constants and adding pad_after to boundary DMAs.
+      // Hoistable ops remain before the scf.if tree and are visible to all
+      // branches without cloning.
       auto cloneAndPad = [&](OpBuilder &ifBuilder, int64_t fixedM,
                              int64_t fixedN, bool padM, bool padN) {
         IRMapping mapping;
@@ -785,7 +809,7 @@ public:
           mapping.map(ids[1], cst);
         }
 
-        for (auto *op : origOps) {
+        for (auto *op : cloneableOps) {
           if (auto *blockTerm = ifBuilder.getInsertionBlock()->getTerminator())
             ifBuilder.setInsertionPoint(blockTerm);
           ifBuilder.clone(*op, mapping);
@@ -911,8 +935,9 @@ public:
         }
       }
 
-      // Erase the original (unguarded) body ops.
-      for (auto *op : llvm::reverse(origOps))
+      // Erase the original branch-varying ops (now duplicated inside scf.if).
+      // Hoistable ops remain in the launch body, before the scf.if tree.
+      for (auto *op : llvm::reverse(cloneableOps))
         op->erase();
     }
   }
