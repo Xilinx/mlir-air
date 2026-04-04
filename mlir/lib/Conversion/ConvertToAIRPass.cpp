@@ -2206,6 +2206,11 @@ public:
       const ::xilinx::air::AIRWrapFuncWithParallelPassOptions &options)
       : AIRWrapFuncWithParallelPassBase(options) {}
 
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect>();
+    registry.insert<arith::ArithDialect>();
+  }
+
   void runOnOperation() override;
 
 private:
