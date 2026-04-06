@@ -1406,38 +1406,44 @@ _Split L2 memref into smaller buffers to better fit with the data movement harwa
 
 _Split air.launch into partitions for device-side DMA padding_
 
-For non-tile-aligned dimensions, splits the air.launch into up to 4
-partitions: interior (multi-iteration, no padding), M-boundary,
-N-boundary, and corner (single-iteration each, with padding).
+For non-tile-aligned dimensions, partitions the air.launch to apply
+DMA padding on boundary tiles.
 
 Reads the `air.actual_sizes` attribute from air.launch to determine
 actual data dimensions. If absent, the launch is left unchanged.
 Tile sizes are inferred from arith.muli offset computations in the
 launch body.
 
-Two orthogonal axes control behavior:
+Three orthogonal axes control behavior:
+
+**Split mode** (`split-mode` option):
+- `multi-launch` (default): Create up to 4 separate launches (interior,
+  M-boundary, N-boundary, corner), each with a specialized grid size.
+  Each partition gets unique channel/segment names.
+- `single-launch`: Keep a single launch with the original grid size and
+  use scf.if on block indices to dispatch between interior and boundary
+  partition bodies. Suitable for GPU targets where multiple launches
+  don't map to a single kernel dispatch.
 
 **Padding location** (`pad-location` option):
 - `memtile` (default): Apply padding at L2 MM2S DMAs in a 3-level
-  memory hierarchy (L3->L2->L1). L2->L1 ops get pad_after, L3->L2
-  sizes are reduced, L3->L2 S2MM ops get explicit strides. Hardware
-  limit: 31 blocks per padded dimension.
+  memory hierarchy (L3->L2->L1). Only available with
+  split-mode=multi-launch.
 - `source`: Apply padding directly on the op reading from L3.
   Source sizes reduced, pad_after set on the source-level op.
 
 **IR representation** (auto-detected):
 The pass detects whether the launch contains air.channel.put/get or
-air.dma_memcpy_nd ops and handles each correctly. Both op types are
-supported for both padding locations.
-
-Each partition gets unique channel names and segment names. The core
-program is identical across all partitions.
+air.dma_memcpy_nd ops and handles each correctly in multi-launch mode.
+Single-launch mode currently only supports air.dma_memcpy_nd; using
+it with channel-based IR will produce an error.
 
 Must run AFTER air-fuse-channels/air-place-herds and BEFORE air-to-aie.
 
 #### Options
 
 ```
+-split-mode     : How to partition the launch grid: 'multi-launch' (separate launches per partition) or 'single-launch' (single launch with scf.if on block indices).
 -pad-location   : Where to apply DMA padding: 'memtile' (L2 MM2S, 3-level hierarchy) or 'source' (pad at L3 read, direct source-level padding).
 -use-dma-memcpy : DEPRECATED: Use pad-location='source' instead.
 ```
