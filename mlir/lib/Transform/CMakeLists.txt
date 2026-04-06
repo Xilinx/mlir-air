@@ -40,6 +40,7 @@ endif()
 list(APPEND TRANSFORM_SOURCES
   AIRMiscPasses.cpp
   AIRRegularizeLoopPass.cpp
+  AIRSplitLaunchForPadding.cpp
   AIRTilingUtils.cpp
   AIRTransformInterpreter.cpp
   AffineLoopOptPass.cpp
