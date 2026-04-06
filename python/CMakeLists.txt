@@ -24,6 +24,14 @@ if(AIE_ENABLE_BINDINGS_PYTHON)
     ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
   )
 
+  # Register AIR dialects into MLIR Python contexts via _site_initialize.
+  declare_mlir_python_sources(AirPythonSources.SiteInit
+    ADD_TO_PARENT AirPythonSources
+    ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
+    SOURCES
+      _mlir_libs/_site_initialize_0.py
+  )
+
   declare_mlir_python_sources(AirPythonExtensions)
 
   declare_mlir_python_sources(AirPythonSources.Dialects
