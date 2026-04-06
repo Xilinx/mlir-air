@@ -36,6 +36,12 @@ NB_MODULE(_air, m) {
       [](MlirDialectRegistry registry) { airRegisterAllDialects(registry); },
       "registry"_a);
 
+  // Alias matching the MLIR Python _site_initialize convention.
+  m.def(
+      "register_dialects",
+      [](MlirDialectRegistry registry) { airRegisterAllDialects(registry); },
+      "registry"_a);
+
   // AIR types bindings
   nanobind_adaptors::mlir_type_subclass(m, "AsyncTokenType",
                                         mlirTypeIsAIRAsyncTokenType)
