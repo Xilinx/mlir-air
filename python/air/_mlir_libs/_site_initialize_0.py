@@ -6,10 +6,11 @@
 # modules and calls their register_dialects(registry) function and/or
 # context_init_hook(context) after construction.
 #
-# We use context_init_hook because the _air nanobind extension cannot be
-# imported during _site_initialize (circular import: _air links
-# AirAggregateCAPI which requires MLIR Python types not yet initialized).
-# The hook runs after the Context is constructed, when _air can be loaded.
+# We use context_init_hook instead of register_dialects because the _air
+# nanobind extension references mlir.ir.Type (via nanobind_adaptors)
+# which is not yet initialized when _site_initialize runs — importing
+# _air at that point triggers a circular import.  The hook runs after
+# Context construction when _air can be safely imported.
 
 
 def context_init_hook(context):
