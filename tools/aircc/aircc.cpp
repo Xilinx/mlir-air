@@ -800,7 +800,7 @@ static std::string buildOptimizationPipeline() {
 
   os << ",air-dma-to-channel,canonicalize,cse";
   os << ",air-dependency-canonicalize,canonicalize,cse";
-  os << ",air-isolate-async-dma-loop-nests,canonicalize,cse";
+  os << ",air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse";
 
   // Channel multiplexing
   if (!channelMultiplexing.empty()) {
@@ -820,7 +820,7 @@ static std::string buildOptimizationPipeline() {
   // L2 splitting (skip for npu_1col)
   if (deviceName.getValue().find("npu_1col") == std::string::npos) {
     os << ",func.func(air-split-l2-memref),canonicalize,cse";
-    os << ",air-isolate-async-dma-loop-nests,canonicalize,cse";
+    os << ",air-isolate-async-dma-loop-nests{scope=launch},canonicalize,cse";
   }
 
   // Loop fusion or alloc/dealloc optimization
