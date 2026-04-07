@@ -1934,9 +1934,16 @@ private:
   // Other utilities
   //===----------------------------------------------------------------------===//
 
-  // Check if two partial memref tiles have identical access patterns
+  // Check if two partial memref tiles have potentially conflicting access
+  // patterns. Returns true if the accesses overlap or cannot be proven
+  // disjoint. A full-buffer access (empty offsets) is treated as conflicting
+  // with any other access.
   bool areEqualIndexPartialMemrefs(partialMemref *tile_0,
                                    partialMemref *tile_1) {
+    // A full-buffer access (empty offsets) overlaps with any other access.
+    if (tile_0->offsets.empty() || tile_1->offsets.empty())
+      return true;
+
     // Check if all static offsets of each partialMemref lead to equal overall
     // offset.
     auto getOffsetFromOffsetsAndStrides = [&](partialMemref *tile) {
