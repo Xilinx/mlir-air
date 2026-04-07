@@ -1937,6 +1937,10 @@ private:
   // Check if two partial memref tiles have identical access patterns
   bool areEqualIndexPartialMemrefs(partialMemref *tile_0,
                                    partialMemref *tile_1) {
+    // A full-buffer access (empty offsets) overlaps with any other access.
+    if (tile_0->offsets.empty() || tile_1->offsets.empty())
+      return true;
+
     // Check if all static offsets of each partialMemref lead to equal overall
     // offset.
     auto getOffsetFromOffsetsAndStrides = [&](partialMemref *tile) {
