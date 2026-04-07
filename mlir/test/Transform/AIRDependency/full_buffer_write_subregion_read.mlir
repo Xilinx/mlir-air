@@ -1,6 +1,6 @@
 //===- full_buffer_write_subregion_read.mlir --------------------*- MLIR -*-===//
 //
-// Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2026, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
