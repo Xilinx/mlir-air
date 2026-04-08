@@ -962,3 +962,46 @@ module {
     }
   }
 }
+
+// -----
+
+// 4D BD pattern with size-1 gap: sizes=[4, 1, 128, 64] strides=[65536, 64, 512, 1].
+// The size-1 dim must be retained when use4thDimInBd is true, so that the 4th BD
+// dimension provides iteration_stride to the hardware. Without the fix, the size-1
+// dim is skipped, collapsing to 3 entries where the repeat dim appears in both
+// repeat_count AND dimLayouts, causing validator rejection (4*128*64 != 8192).
+// The fix retains size-1 middle dims when use4thDimInBd is true.
+
+// CHECK-LABEL: aie.runtime_sequence @bd_repeat_dim_size1_gap
+// CHECK-SAME: %[[ARG0:.*]]: memref<512x512xbf16>
+// CHECK-NEXT: aiex.dma_configure_task_for @airMemcpyId5 {
+// CHECK:        aie.dma_bd(%[[ARG0]] : memref<512x512xbf16>, 64, 8192, [<size = 4, stride = 65536>, <size = 1, stride = 64>, <size = 128, stride = 512>, <size = 64, stride = 1>])
+// CHECK: } {repeat_count = 3 : i32}
+// CHECK: aiex.dma_start_task
+module {
+  aie.device(npu1_1col) {
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId5(%shim_noc_tile_0_0, MM2S, 0)
+    func.func @bd_repeat_dim_size1_gap(%arg0: memref<512x512xbf16>) {
+      %c0_i64 = arith.constant 0 : i64
+      %c1_i64 = arith.constant 1 : i64
+      %c4_i64 = arith.constant 4 : i64
+      %c64_i64 = arith.constant 64 : i64
+      %c128_i64 = arith.constant 128 : i64
+      %c512_i64 = arith.constant 512 : i64
+      %c65536_i64 = arith.constant 65536 : i64
+      %c5_i32 = arith.constant 5 : i32
+      // sizes=[4, 1, 128, 64] strides=[65536, 64, 512, 1]
+      // use4thDimInBd=true (strides[0]=65536 != 0), repeat_count=3
+      // dim 0: size=4 stride=65536 -> iteration dim (4th BD dim)
+      // dim 1: size=1 stride=64 -> retained (degenerate, preserves 4D layout)
+      // dim 2: size=128 stride=512 -> BD dim
+      // dim 3: size=64 stride=1 -> BD dim (innermost)
+      // transferLen = 1*128*64 = 8192
+      // Without fix: dim 1 skipped -> 3 entries -> validator: 4*128*64=32768 != 8192 FAIL
+      // With fix: dim 1 retained -> 4 entries -> validator checks lowest 3: 1*128*64=8192 PASS
+      airrt.dma_memcpy_nd(%c5_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c64_i64], [%c4_i64, %c1_i64, %c128_i64, %c64_i64], [%c65536_i64, %c64_i64, %c512_i64, %c1_i64]) {metadata = @airMemcpyId5} : (i32, i64, i64, memref<512x512xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64, i64])
+      return
+    }
+  }
+}
