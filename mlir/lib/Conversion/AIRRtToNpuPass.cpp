@@ -439,8 +439,10 @@ struct DmaToNpuPattern : public OpConversionPattern<airrt::DmaMemcpyNdOp> {
         transferLen /= size;
         continue;
       }
-      // Include dimension if size > 1, or if it's the innermost dimension
-      if (size > 1 || i == 3) {
+      // Include dimension if size > 1, if it's the innermost dimension,
+      // or if the 4th dim is in use and this is a middle dim (retain size-1
+      // dims to preserve the 4-entry layout needed for iteration_stride).
+      if (size > 1 || i == 3 || (use4thDimInBd && i > 0)) {
         auto dimLayout = AIE::BDDimLayoutAttr::get(ctx, size, stride);
         dimLayouts.push_back(dimLayout);
       }
