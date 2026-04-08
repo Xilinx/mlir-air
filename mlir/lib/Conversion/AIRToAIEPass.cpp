@@ -2331,11 +2331,6 @@ struct SpecializeChannelBundlePattern
       for (auto put : channelPuts) {
         auto indices_uint =
             air::convertVecOfConstIndexToVecOfUInt(put.getIndices());
-        if (indices_uint.empty() && !put.getIndices().empty() && iter == 0)
-          put->emitWarning(
-              "channel bundle indices cannot be resolved to compile-time "
-              "constants; this channel put will be replaced with "
-              "air.wait_all, which may cause data loss");
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel put for this channel
           rewriter.setInsertionPoint(put);
@@ -2354,11 +2349,6 @@ struct SpecializeChannelBundlePattern
       for (auto get : channelGets) {
         auto indices_uint =
             air::convertVecOfConstIndexToVecOfUInt(get.getIndices());
-        if (indices_uint.empty() && !get.getIndices().empty() && iter == 0)
-          get->emitWarning(
-              "channel bundle indices cannot be resolved to compile-time "
-              "constants; this channel get will be replaced with "
-              "air.wait_all, which may cause data loss");
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel get for this channel
           rewriter.setInsertionPoint(get);
@@ -3023,47 +3013,57 @@ public:
       return AIE::PacketFlowOp(); // Only air.channel_interface ops support
                                   // packet-flow routing.
 
-    // Convert a flow map from Operation pointers to channel symbol names.
+    // Determine if this is a shim flow by checking if EITHER source OR
+    // destination tile is a shim tile. This must be consistent with
+    // placeDMAChannelsAndRouteFlows which uses the same criteria.
+    auto sourceTileOp = source.getDefiningOp<AIE::TileOp>();
+    bool sourceIsShim = sourceTileOp && sourceTileOp.isShimNOCorPLTile();
+
+    // Check if the destination involves a shim tile by examining the memcpy's
+    // memory spaces (L3 memory space indicates shim tile involvement)
+    bool destIsShim = false;
+    if (auto srcMemref = memcpyOp.getSrcMemref()) {
+      auto memrefTy = dyn_cast_if_present<BaseMemRefType>(srcMemref.getType());
+      if (memrefTy && air::isL3(memrefTy))
+        destIsShim = true;
+    }
+    if (auto dstMemref = memcpyOp.getDstMemref()) {
+      auto memrefTy = dyn_cast_if_present<BaseMemRefType>(dstMemref.getType());
+      if (memrefTy && air::isL3(memrefTy))
+        destIsShim = true;
+    }
+
+    bool isShimFlow = sourceIsShim || destIsShim;
+
+    // Select the appropriate flow map based on whether this involves shim tiles
+    const SetVector<Operation *> &flowMap =
+        isShimFlow ? shimFlowOpToFlowIdMap : intraDeviceFlowOpToFlowIdMap;
+
+    // Convert flowMap from Operation pointers to channel symbol names.
     // This is necessary because air.channel declarations are duplicated
     // under aie.device op and its parent module op, requiring symbol-based
     // matching.
-    auto buildFlowIdMap =
-        [](const SetVector<Operation *> &fmap) -> std::vector<std::string> {
-      std::vector<std::string> result;
-      for (auto op : fmap) {
-        auto flowChanOp = dyn_cast_if_present<air::ChannelOp>(op);
-        if (!flowChanOp) {
-          result.push_back("");
-          continue;
-        }
-        result.push_back(flowChanOp.getSymName().str());
+    std::vector<std::string> flowOpStringsToFlowIdMap;
+    for (auto op : flowMap) {
+      auto flowChanOp = dyn_cast_if_present<air::ChannelOp>(op);
+      if (!flowChanOp) {
+        flowOpStringsToFlowIdMap.push_back("");
+        continue;
       }
-      return result;
-    };
-
-    // Search both flow maps by channel name. Channel names are unique symbols,
-    // so each channel appears in exactly one map. We search the shim (device-
-    // host) map first, then the intra-device map.
-    //
-    // Note: we cannot reliably determine which map to search from the memcpy
-    // op alone, because ChannelPutOp::getDstMemref() and ChannelGetOp::
-    // getSrcMemref() return nullptr by design (the other end of a channel op
-    // is implicit via the channel symbol). Searching both maps directly is
-    // simpler and always correct.
-    std::string chanName = chanIfOp.getChanName().str();
-
-    for (const auto &flowMap : {std::cref(shimFlowOpToFlowIdMap),
-                                std::cref(intraDeviceFlowOpToFlowIdMap)}) {
-      auto flowStrings = buildFlowIdMap(flowMap.get());
-      auto it = llvm::find(flowStrings, chanName);
-      if (it != flowStrings.end()) {
-        int flowID = std::distance(flowStrings.begin(), it);
-        return findPacketFlowOp(source, sourceBundle, sourceChannel,
-                                /*checkFlowID=*/true, flowID);
-      }
+      flowOpStringsToFlowIdMap.push_back(flowChanOp.getSymName().str());
     }
 
-    return AIE::PacketFlowOp();
+    // Find the flowID by matching the channel name
+    auto it =
+        llvm::find(flowOpStringsToFlowIdMap, chanIfOp.getChanName().str());
+    if (it == flowOpStringsToFlowIdMap.end()) {
+      return AIE::PacketFlowOp();
+    }
+    int flowID = std::distance(flowOpStringsToFlowIdMap.begin(), it);
+
+    // Search for the packet flow with matching source and flowID
+    return findPacketFlowOp(source, sourceBundle, sourceChannel,
+                            /*checkFlowID=*/true, flowID);
   }
 
   /// Query an existing packet flow operation from the runtime function.
@@ -4053,8 +4053,8 @@ public:
       // Get index to metadataArray based on channel indices.
       auto iter = air::getIndexToMetadataArrayFromChannelIndices(ci);
       if (!iter) {
-        ci->emitOpError(
-            "channel indices failed to convert to metadataArray index.");
+        ci->emitOpError("channel indices failed to convert to convert to "
+                        "metadataArray index.");
         return failure();
       }
       // Get metadata from metadataArray.
@@ -4678,25 +4678,6 @@ public:
       alloc = memcpyOpIf.getSrcMemref();
     }
 
-    // Detect if multiple outbound puts in this DMA allocation share the same
-    // source buffer. When true, use per-put interleaved lock placement to
-    // prevent the second put from overwriting the buffer before the DMA
-    // finishes reading the first put's data.
-    bool sharedStagingBuffer = false;
-    if (!tileInbound.value() && isa<AIE::BufferOp>(alloc.getDefiningOp()) &&
-        dma_alloc.value().memcpyOps.size() > 1) {
-      int sameBufCount = 0;
-      for (auto *op : dma_alloc.value().memcpyOps) {
-        if (auto other = dyn_cast_if_present<air::MemcpyInterface>(op)) {
-          auto otherInbound = isTileInbound(other, air::MemorySpace::L1);
-          if (succeeded(otherInbound) && !otherInbound.value() &&
-              other.getSrcMemref() == alloc)
-            sameBufCount++;
-        }
-      }
-      sharedStagingBuffer = sameBufCount > 1;
-    }
-
     if (auto bco = dyn_cast_if_present<bufferization::ToBufferOp>(
             alloc.getDefiningOp()))
       builder.setInsertionPoint(bco.getOperand().getDefiningOp());
@@ -4704,19 +4685,7 @@ public:
       builder.setInsertionPoint(alloc.getDefiningOp());
     else if (!tileInbound.value() &&
              isa<AIE::BufferOp>(alloc.getDefiningOp())) {
-      if (sharedStagingBuffer) {
-        // Interleaved mode: acquire immediately before this specific put, so
-        // the core waits for the DMA to finish reading the previous put's
-        // data before overwriting the buffer.
-        builder.setInsertionPoint(memcpyOpIf);
-      } else {
-        auto br = dyn_cast_if_present<cf::BranchOp>(
-            memcpyOpIf->getBlock()->getTerminator());
-        if (br)
-          builder.setInsertionPointToStart(br.getDest());
-        else
-          builder.setInsertionPointToStart(memcpyOpIf->getBlock());
-      }
+      builder.setInsertionPoint(memcpyOpIf);
     } else
       builder.setInsertionPoint(memcpyOpIf);
 
@@ -4727,11 +4696,10 @@ public:
                            lockAqValue);
 
     // Try to find the end of lifetime for the data copied by memcpyOpIf, and
-    // put the unlock.
-    if (sharedStagingBuffer) {
-      // Interleaved mode: release rlock immediately after the put so the DMA
-      // can read the buffer before the next put overwrites it. The next put's
-      // acquire(wlock) will block until the DMA completes reading.
+    // put the unlock. For outbound puts from AIE::BufferOp, release
+    // immediately after the put to enable interleaved operation when multiple
+    // puts share the same staging buffer.
+    if (!tileInbound.value() && isa<AIE::BufferOp>(alloc.getDefiningOp())) {
       builder.setInsertionPointAfter(memcpyOpIf);
       AIE::UseLockOp::create(builder, memcpyOpIf->getLoc(), relLockOp,
                              AIE::LockAction::Release, lockRelValue);

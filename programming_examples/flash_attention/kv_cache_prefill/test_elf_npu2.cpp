@@ -122,14 +122,15 @@ int main(int argc, const char *argv[]) {
   auto kernel = xrt::ext::kernel(context, kernelName);
 
   // Create buffer objects using xrt::ext::bo (declared as xrt::bo type)
-  // Kernel signature: attention_bf16(Q, K, V, Output, K_cache, V_cache)
+  // Kernel signature: attention_bf16(Q, K, V, Output, KV_cache)
+  // KV cache is interleaved: [K_c0, V_c0, K_c1, V_c1, ...]
+  size_t KV_CACHE_SIZE = (size_t)num_heads * lk * dk * 2 * sizeof(DATATYPE);
   xrt::bo bo_q = xrt::ext::bo{device, Q_SIZE};
   xrt::bo bo_k = xrt::ext::bo{device, K_SIZE};
   xrt::bo bo_v = xrt::ext::bo{device, V_SIZE};
   xrt::bo bo_out =
       xrt::ext::bo{device, OUTPUT_SIZE + static_cast<size_t>(trace_size)};
-  xrt::bo bo_k_cache = xrt::ext::bo{device, K_SIZE};
-  xrt::bo bo_v_cache = xrt::ext::bo{device, V_SIZE};
+  xrt::bo bo_kv_cache = xrt::ext::bo{device, KV_CACHE_SIZE};
 
   unsigned n_iterations = vm["iterations"].as<int>();
   unsigned n_warmup_iterations = vm["warmup"].as<int>();
@@ -180,17 +181,14 @@ int main(int argc, const char *argv[]) {
   DATATYPE *bufOut = bo_out.map<DATATYPE *>();
   memset(bufOut, 0, OUTPUT_SIZE + trace_size);
 
-  DATATYPE *bufKCache = bo_k_cache.map<DATATYPE *>();
-  memset(bufKCache, 0, K_SIZE);
-  DATATYPE *bufVCache = bo_v_cache.map<DATATYPE *>();
-  memset(bufVCache, 0, V_SIZE);
+  DATATYPE *bufKVCache = bo_kv_cache.map<DATATYPE *>();
+  memset(bufKVCache, 0, KV_CACHE_SIZE);
 
   bo_q.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_k.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_v.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_out.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_k_cache.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_v_cache.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bo_kv_cache.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
   for (unsigned iter = 0; iter < num_iter; iter++) {
     if (verbosity >= 1)
@@ -201,8 +199,7 @@ int main(int argc, const char *argv[]) {
     run.set_arg(1, bo_k);
     run.set_arg(2, bo_v);
     run.set_arg(3, bo_out);
-    run.set_arg(4, bo_k_cache);
-    run.set_arg(5, bo_v_cache);
+    run.set_arg(4, bo_kv_cache);
 
     auto start = std::chrono::high_resolution_clock::now();
     run.start();
@@ -210,8 +207,7 @@ int main(int argc, const char *argv[]) {
     auto stop = std::chrono::high_resolution_clock::now();
 
     bo_out.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-    bo_k_cache.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-    bo_v_cache.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+    bo_kv_cache.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
     if (iter < n_warmup_iterations) {
       /* Warmup iterations do not count towards average runtime. */
