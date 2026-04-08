@@ -740,6 +740,14 @@ air::DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col,
                    (std::get<2>(lock_allocation_list[i]) == channel)) {
           return std::make_pair(std::get<3>(lock_allocation_list[i]),
                                 std::get<4>(lock_allocation_list[i]));
+        } else if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&
+                   (std::get<2>(lock_allocation_list[i]) == channel)) {
+          // Same physical buffer and same DMA channel but different
+          // air.channel symbols. This handles multiple outbound puts sharing
+          // a staging buffer (e.g., K and V writeback through the same L1
+          // buffer).
+          return std::make_pair(std::get<3>(lock_allocation_list[i]),
+                                std::get<4>(lock_allocation_list[i]));
         }
       }
     } else {
