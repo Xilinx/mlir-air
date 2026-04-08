@@ -1764,3 +1764,48 @@ module {
     return
   }
 }
+
+// -----
+
+// L1-to-L3 packet flow: ChannelPut in herd (L1 source) with ChannelGet in
+// launch (L3 destination). Verifies that the packet attribute is generated on
+// the compute tile MM2S BD despite ChannelPut.getDstMemref() returning null.
+
+// CHECK:      aie.mem(%[[TILE:.*]]) {
+// CHECK:        aie.dma_start(MM2S, 0
+// CHECK:        aie.dma_bd(%{{.*}} : memref<64xbf16, 2>{{.*}}) {{{.*}}packet = #aie.packet_info<pkt_type = 0, pkt_id = 0>
+// CHECK:      aie.packet_flow(0) {
+// CHECK:        aie.packet_source<%[[TILE]], DMA : 0>
+// CHECK:        aie.packet_dest<%{{.*}}, DMA :
+
+// RACECONDFIX: @func21
+
+module {
+  air.channel @L1ToL3Pkt [1, 1] {channel_type = "dma_packet"}
+  func.func @func21(%arg0: memref<64xbf16>) {
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %0 = air.launch async () in () args(%out=%arg0) : memref<64xbf16> attributes {id = 1 : i32} {
+      %lc0 = arith.constant 0 : index
+      // L3 destination: ChannelGet into L3 memref
+      %1 = air.channel.get async @L1ToL3Pkt[%lc0, %lc0] (%out[] [] []) {id = 1 : i32} : (memref<64xbf16>)
+      %lc1 = arith.constant 1 : index
+      %2 = air.segment @seg async attributes {id = 2 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
+        %sc1 = arith.constant 1 : index
+        %3 = air.herd @herd async tile (%tx, %ty) in (%htx=%sc1, %hty=%sc1) attributes {id = 3 : i32} {
+          %hc0 = arith.constant 0 : index
+          %async_token, %buf = air.execute -> (memref<64xbf16, 2>) {
+            %alloc = memref.alloc() : memref<64xbf16, 2>
+            air.execute_terminator %alloc : memref<64xbf16, 2>
+          }
+          // L1 source: ChannelPut from L1 buffer
+          %put = air.channel.put async [%async_token] @L1ToL3Pkt[%hc0, %hc0] (%buf[] [] []) {id = 2 : i32} : (memref<64xbf16, 2>)
+          %4 = air.execute [%put] {
+            memref.dealloc %buf : memref<64xbf16, 2>
+          }
+        }
+      }
+    }
+    return
+  }
+}
