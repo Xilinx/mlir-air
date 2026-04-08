@@ -286,6 +286,10 @@ public:
               channel_op;
         } else if (auto hier_op =
                        dyn_cast_if_present<air::HierarchyInterface>(op)) {
+          traceDeps<air::HierarchyInterface>(sink_op_memref_reads, hier_op,
+                                             "RAW");
+          traceDeps<air::HierarchyInterface>(sink_op_memref_writes, hier_op,
+                                             "WAW/WAR");
           opIdToOpMap[std::make_pair("hierarchy", hier_op.getId())] = hier_op;
         }
       });
