@@ -51,3 +51,33 @@ air.channel @valid_3d [2, 1, 4] {broadcast_shape = [2, 4, 4]}
 
 // Test: valid all-ones size broadcasting (positive test).
 air.channel @valid_all_ones [1, 1] {broadcast_shape = [4, 4]}
+
+// -----
+
+// Test: channel.put with scf.for induction variable as channel bundle index.
+air.channel @temporal_put [2, 1]
+func.func @channel_put_temporal_for_iv(%m: memref<64xi32>) {
+  %c0 = arith.constant 0 : index
+  %c2 = arith.constant 2 : index
+  %c1 = arith.constant 1 : index
+  scf.for %iv = %c0 to %c2 step %c1 {
+    // expected-error @+1 {{'air.channel.put' op channel index 0 is an scf.for induction variable; channel bundle indices must not be temporal scf.for induction variables}}
+    air.channel.put @temporal_put[%iv, %c0] (%m[] [] []) : (memref<64xi32>)
+  }
+  return
+}
+
+// -----
+
+// Test: channel.get with scf.for induction variable as channel bundle index.
+air.channel @temporal_get [2, 1]
+func.func @channel_get_temporal_for_iv(%m: memref<64xi32>) {
+  %c0 = arith.constant 0 : index
+  %c2 = arith.constant 2 : index
+  %c1 = arith.constant 1 : index
+  scf.for %iv = %c0 to %c2 step %c1 {
+    // expected-error @+1 {{'air.channel.get' op channel index 0 is an scf.for induction variable; channel bundle indices must not be temporal scf.for induction variables}}
+    air.channel.get @temporal_get[%iv, %c0] (%m[] [] []) : (memref<64xi32>)
+  }
+  return
+}

@@ -749,7 +749,9 @@ public:
       // Pre-compute pad dimension indices from the original launch using
       // offset-based tracing. This must be done before cloning replaces
       // block indices with constants.
-      auto [aPadDim, bPadDim] = inferL3PadDimIndicesForDma(launchOp);
+      auto padDims = inferL3PadDimIndicesForDma(launchOp);
+      int64_t aPadDim = padDims.first;
+      int64_t bPadDim = padDims.second;
 
       // Partition body ops into branch-invariant (hoistable) and
       // branch-varying (cloneable). An op is branch-varying if any of its

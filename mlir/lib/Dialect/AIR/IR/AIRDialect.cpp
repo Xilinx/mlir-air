@@ -2948,6 +2948,15 @@ LogicalResult air::ChannelPutOp::verify() {
                                     getSrcStrides(), "src")))
     return failure();
 
+  // Channel bundle indices must not be temporal loop induction variables.
+  for (auto [i, idx] : llvm::enumerate(getIndices())) {
+    if (scf::getForInductionVarOwner(idx))
+      return emitOpError()
+             << "channel index " << i
+             << " is an scf.for induction variable; channel bundle indices "
+                "must not be temporal scf.for induction variables";
+  }
+
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
   if (padBefore.has_value() != padAfter.has_value())
@@ -3013,6 +3022,15 @@ LogicalResult air::ChannelGetOp::verify() {
   if (failed(verifySizesStridesRank(getOperation(), getDstSizes(),
                                     getDstStrides(), "dst")))
     return failure();
+
+  // Channel bundle indices must not be temporal loop induction variables.
+  for (auto [i, idx] : llvm::enumerate(getIndices())) {
+    if (scf::getForInductionVarOwner(idx))
+      return emitOpError()
+             << "channel index " << i
+             << " is an scf.for induction variable; channel bundle indices "
+                "must not be temporal scf.for induction variables";
+  }
 
   auto padBefore = getPadBefore();
   auto padAfter = getPadAfter();
