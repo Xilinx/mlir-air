@@ -546,7 +546,6 @@ if __name__ == "__main__":
         runner = XRTRunner(
             verbose=args.verbose,
             omit_while_true_loop=False,
-            omit_pingpong="all",
             lower_linalg_to_func="swiglu_fused.o",
             instance_name="swiglu_fused",
             runtime_loop_tiling_sizes=[1, 1],
@@ -568,7 +567,6 @@ if __name__ == "__main__":
             target_device="npu2",
             output_format=args.output_format,
             omit_while_true_loop=False,
-            omit_pingpong="all",
             lower_linalg_to_func="swiglu_fused.o",
             runtime_loop_tiling_sizes=[1, 1],
         )
@@ -587,7 +585,6 @@ if __name__ == "__main__":
             target_device="npu2",
             output_format="xclbin",
             omit_while_true_loop=False,
-            omit_pingpong="all",
             lower_linalg_to_func="swiglu_fused.o",
             runtime_loop_tiling_sizes=[1, 1],
             instance_name="swiglu_fused",
