@@ -5,9 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifndef __AIENGINE__
 #define __AIENGINE__ 2
+#endif
 #define NOCPP
+#ifndef __AIEARCH__
 #define __AIEARCH__ 20
+#endif
 
 #include <stdint.h>
 #include <stdio.h>
@@ -18,6 +22,14 @@
 #define REL_READ 1
 
 #include <aie_api/aie.hpp>
+
+// On AIE2P, use native-width vectors (n=16) to avoid sub-native-width
+// accfloat codegen issues in the Peano backend. On AIE2, use n=8.
+#if __AIEARCH__ >= 21
+static constexpr unsigned SINCOS_VEC = 16;
+#else
+static constexpr unsigned SINCOS_VEC = 8;
+#endif
 
 template <unsigned N, unsigned n, bool isSine>
 void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
@@ -38,15 +50,11 @@ void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
     aie::accum<accfloat, n> ux_acc, x_acc, r_acc, x3_acc, t_acc, output_acc;
     aie::accum<accfloat, n> poly_acs, acs0, acs2, out_acs;
     aie::accum<accfloat, n> poly_acc, acc0, acc2, out_acc;
-    aie::accum<accfloat, n> zp_acc, z_acc, one_acc;
+    aie::accum<accfloat, n> zp_acc, one_acc;
 
     aie::vector<bfloat16, n> x, r, r2, out_abs;
     aie::vector<bfloat16, n> s0, s1, s2, s3, c0, c1, c2, c3;
-    aie::vector<bfloat16, n> twobypi, oneby2, negoneby2, piby2_1, one, zero_f,
-        negone;
-    aie::vector<int16_t, n> z, zeroint16, oneint16, twoint16, threeint16;
-
-    // preparing vector & accum
+    aie::vector<bfloat16, n> twobypi, oneby2, negoneby2, piby2_1, one, negone;
     s0 = aie::broadcast<bfloat16, n>(sin_poly_factors[0]);
     s1 = aie::broadcast<bfloat16, n>(sin_poly_factors[1]);
     s2 = aie::broadcast<bfloat16, n>(sin_poly_factors[2]);
@@ -61,11 +69,6 @@ void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
     negoneby2 = aie::broadcast<bfloat16, n>(-0.5);
     one = aie::broadcast<bfloat16, n>(1.0);
     negone = aie::broadcast<bfloat16, n>(-1.0);
-    // preparing vector for z
-    zeroint16 = aie::broadcast<int16, n>(0);
-    oneint16 = aie::broadcast<int16, n>(1);
-    twoint16 = aie::broadcast<int16, n>(2);
-    threeint16 = aie::broadcast<int16, n>(3);
     // acc
     acs0.from_vector(s0);
     acs2.from_vector(s2);
@@ -85,37 +88,57 @@ void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
     outs = mac(t1s, r2, t2s.template to_vector<bfloat16>());                   \
     outc = mac(t1c, r2, t2c.template to_vector<bfloat16>());                   \
   }
+
+    // Range reduction: z = round(ux * 2/pi), x = ux - z * pi/2.
+    // Uses scalar rounding and quadrant detection to avoid vector int16
+    // operations (bit_and, to_fixed) that crash the Peano backend.
     zp_acc.from_vector(oneby2);
     ux_acc.from_vector(ux);
     zp_acc = mac(zp_acc, ux, twobypi);
-    z = to_fixed<int16_t>(zp_acc.template to_vector<bfloat16>(), 0);
-    x_acc = msc(ux_acc, piby2_1, to_float<bfloat16>(z));
-
+    aie::vector<bfloat16, n> zp_bf16 = zp_acc.template to_vector<bfloat16>();
+    alignas(aie::vector_decl_align) bfloat16 zp_buf[n];
+    aie::store_v(zp_buf, zp_bf16);
+    alignas(aie::vector_decl_align) bfloat16 z_buf[n];
     aie::mask<n> is_odd, is_neg;
-    if (isSine) {
-      is_odd = eq(bit_and(z, oneint16), oneint16); // select sin or cos
-      is_neg =
-          eq(bit_and(z, twoint16), twoint16); // select positive or negetive
-    } else {
-      is_odd = eq(bit_and(z, oneint16), zeroint16); // select sin or cos
-      is_neg =
-          eq(bit_xor(downshift(bit_and(z, twoint16), 1), bit_and(z, oneint16)),
-             oneint16); // select positive or negetive
+    {
+      uint32_t odd_bits = 0, neg_bits = 0;
+      for (unsigned j = 0; j < n; j++) {
+        int zj = (int)(float)zp_buf[j];
+        z_buf[j] = (bfloat16)(float)zj;
+        if (isSine) {
+          if (zj & 1)
+            odd_bits |= (1u << j);
+          if (zj & 2)
+            neg_bits |= (1u << j);
+        } else {
+          if (!(zj & 1))
+            odd_bits |= (1u << j);
+          if (((zj >> 1) & 1) ^ (zj & 1))
+            neg_bits |= (1u << j);
+        }
+      }
+      is_odd = aie::mask<n>::from_uint32(odd_bits);
+      is_neg = aie::mask<n>::from_uint32(neg_bits);
     }
+    aie::vector<bfloat16, n> z_rounded = aie::load_v<n>(z_buf);
+    x_acc = msc(ux_acc, piby2_1, z_rounded);
 
     x = x_acc.template to_vector<bfloat16>();
-    r_acc = mul(x, x);
-    r = r_acc.template to_vector<bfloat16>();
+    r = aie::mul(x, x).template to_vector<bfloat16>();
 
-    t_acc = mac(one_acc, negoneby2, r);
+    aie::vector<bfloat16, n> t_vec =
+        mac(one_acc, negoneby2, r).template to_vector<bfloat16>();
 
     POLY_EVAL_4_VECTOR(r, acs0, s1, acs2, s3, acc0, c1, acc2, c3, poly_acs,
                        poly_acc, r2);
 
-    x3_acc = mul(r, x);
-    out_acs = mac(x_acc, x3_acc.template to_vector<bfloat16>(),
-                  poly_acs.template to_vector<bfloat16>());
-    out_acc = mac(t_acc, r2, poly_acc.template to_vector<bfloat16>());
+    aie::accum<accfloat, n> x_acc_fresh;
+    x_acc_fresh.from_vector(x);
+    aie::vector<bfloat16, n> x3 = aie::mul(r, x).template to_vector<bfloat16>();
+    out_acs = mac(x_acc_fresh, x3, poly_acs.template to_vector<bfloat16>());
+    aie::accum<accfloat, n> t_acc_fresh;
+    t_acc_fresh.from_vector(t_vec);
+    out_acc = mac(t_acc_fresh, r2, poly_acc.template to_vector<bfloat16>());
 
     out_abs = select(out_acs.template to_vector<bfloat16>(),
                      out_acc.template to_vector<bfloat16>(), is_odd);
@@ -125,76 +148,88 @@ void sinf_cosf_poly_bf16(const bfloat16 *__restrict inputs,
         pOut,
         select(out_abs, output_acc.template to_vector<bfloat16>(), is_neg));
   }
+#undef POLY_EVAL_4_VECTOR
 }
 
-template <unsigned n>
-void freq_pos_bf16_24(int pos, bfloat16 *__restrict outputs) {
+// Frequency table padded to 32 entries for n=16 processing on AIE2P.
+// The extra 8 entries are zero (sin(0)=0, cos(0)=1 — correct but unused).
+alignas(aie::vector_decl_align) static const bfloat16 freq_table[32] = {
+    0x1p0,
+    0x1.5cd25p-1,
+    0x1.db4c78p-2,
+    0x1.43d136p-2,
+    0x1.b93a6cp-3,
+    0x1.2c9af4p-3,
+    0x1.99999ap-4,
+    0x1.170ea6p-4,
+    0x1.7c3d2cp-5,
+    0x1.030dc6p-5,
+    0x1.60fb8ap-6,
+    0x1.e0f7eep-7,
+    0x1.47ae14p-7,
+    0x1.be7dd8p-8,
+    0x1.3030fp-8,
+    0x1.9e7c72p-9,
+    0x1.1a62d8p-9,
+    0x1.80c652p-10,
+    0x1.0624dep-10,
+    0x1.653176p-11,
+    0x1.e6b4bcp-12,
+    0x1.4b96cep-12,
+    0x1.c3d114p-13,
+    0x1.33d1eap-13,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+};
 
-  alignas(aie::vector_decl_align) const bfloat16 freq[] = {
-      0x1p0,          0x1.5cd25p-1,   0x1.db4c78p-2,  0x1.43d136p-2,
-      0x1.b93a6cp-3,  0x1.2c9af4p-3,  0x1.99999ap-4,  0x1.170ea6p-4,
-      0x1.7c3d2cp-5,  0x1.030dc6p-5,  0x1.60fb8ap-6,  0x1.e0f7eep-7,
-      0x1.47ae14p-7,  0x1.be7dd8p-8,  0x1.3030fp-8,   0x1.9e7c72p-9,
-      0x1.1a62d8p-9,  0x1.80c652p-10, 0x1.0624dep-10, 0x1.653176p-11,
-      0x1.e6b4bcp-12, 0x1.4b96cep-12, 0x1.c3d114p-13, 0x1.33d1eap-13,
-  };
-  const bfloat16 *freq_ptr = freq;
-  aie::vector<bfloat16, n> vec0 = aie::load_v<n>(freq_ptr);
-  freq_ptr += n;
-  aie::vector<bfloat16, n> vec1 = aie::load_v<n>(freq_ptr);
-  freq_ptr += n;
-  aie::vector<bfloat16, n> vec2 = aie::load_v<n>(freq_ptr);
-  freq_ptr += n;
+template <unsigned N, unsigned n>
+void freq_pos_bf16(int pos, bfloat16 *__restrict outputs) {
+  const bfloat16 *freq_ptr = freq_table;
   aie::vector<bfloat16, n> vecPos =
       aie::broadcast<bfloat16, n>(aie::to_float<bfloat16>(pos));
   bfloat16 *__restrict pOut = outputs;
-  aie::store_v(pOut, aie::mul(vecPos, vec0).template to_vector<bfloat16>());
-  pOut += n;
-  aie::store_v(pOut, aie::mul(vecPos, vec1).template to_vector<bfloat16>());
-  pOut += n;
-  aie::store_v(pOut, aie::mul(vecPos, vec2).template to_vector<bfloat16>());
-  pOut += n;
+  for (unsigned i = 0; i < N; i += n) {
+    aie::vector<bfloat16, n> v = aie::load_v<n>(freq_ptr);
+    freq_ptr += n;
+    aie::store_v(pOut, aie::mul(vecPos, v).template to_vector<bfloat16>());
+    pOut += n;
+  }
 }
 
-template <unsigned N>
-void shuffle_apply_rope_bf16_8(int offset, const bfloat16 *__restrict fcr,
-                               const bfloat16 *__restrict fci,
-                               bfloat16 *__restrict outputs) {
+// Apply RoPE rotation using n-wide vectors. On AIE2P, n=SINCOS_VEC=16
+// ensures all accfloat operations use native-width registers.
+// N must be divisible by 2*n. For head_size=48, the caller pads to 64.
+template <unsigned N, unsigned n>
+void shuffle_apply_rope(int offset, const bfloat16 *__restrict fcr,
+                        const bfloat16 *__restrict fci,
+                        bfloat16 *__restrict outputs) {
 
-  constexpr unsigned n = 8;
   constexpr unsigned two_n = n * 2;
 
   const bfloat16 *__restrict pFcr = fcr;
   const bfloat16 *__restrict pFci = fci;
   for (unsigned i = 0; i < N; i += two_n) {
-    const bfloat16 *__restrict pA1 = outputs + i + offset;
-    aie::vector<bfloat16, n> v0Lo = aie::load_v<n>(pA1);
-    pA1 += n;
-    aie::vector<bfloat16, n> v0Hi = aie::load_v<n>(pA1);
-    pA1 += n;
-    aie::vector<bfloat16, two_n> v0 = aie::concat(v0Lo, v0Hi);
+    aie::vector<bfloat16, two_n> v0 = aie::load_v<two_n>(outputs + i + offset);
 
-    aie::vector<bfloat16, n> zerosV8 = aie::zeros<bfloat16, n>();
-    aie::vector<bfloat16, two_n> zerosV16 = aie::zeros<bfloat16, two_n>();
-    aie::vector<bfloat16, two_n> v0Shuffled = extract_v16bfloat16(
-        ::shuffle(aie::concat(zerosV16, v0), ::shuffle_T16_8x2), 1);
-    aie::vector<bfloat16, n> v0ShuffledEven = extract_v8bfloat16(v0Shuffled, 0);
-    aie::vector<bfloat16, n> v0ShuffledOdd = extract_v8bfloat16(v0Shuffled, 1);
+    aie::vector<bfloat16, n> v0Even = aie::filter_even(v0, 1);
+    aie::vector<bfloat16, n> v0Odd = aie::filter_odd(v0, 1);
 
     aie::vector<bfloat16, n> vFcr = aie::load_v<n>(pFcr);
     pFcr += n;
     aie::vector<bfloat16, n> vFci = aie::load_v<n>(pFci);
     pFci += n;
+    // out_even = even*cos - odd*sin, out_odd = even*sin + odd*cos
     aie::vector<bfloat16, n> vOutEven =
-        aie::sub(aie::mul(v0ShuffledEven, vFcr), aie::mul(v0ShuffledOdd, vFci));
+        msc(aie::mul(v0Even, vFcr), v0Odd, vFci).template to_vector<bfloat16>();
     aie::vector<bfloat16, n> vOutOdd =
-        aie::add(aie::mul(v0ShuffledEven, vFci), aie::mul(v0ShuffledOdd, vFcr));
-    aie::vector<bfloat16, two_n> vOutUnshuffled = extract_v16bfloat16(
-        ::shuffle(aie::concat(zerosV8, zerosV8, vOutEven, vOutOdd),
-                  ::shuffle_T16_2x8),
-        1);
-    aie::vector<bfloat16, n> vOutLo = extract_v8bfloat16(vOutUnshuffled, 0);
-    aie::vector<bfloat16, n> vOutHi = extract_v8bfloat16(vOutUnshuffled, 1);
+        mac(aie::mul(v0Even, vFci), v0Odd, vFcr).template to_vector<bfloat16>();
+    auto [vOutLo, vOutHi] = aie::interleave_zip(vOutEven, vOutOdd, 1);
 
     bfloat16 *__restrict pOut = outputs + i + offset;
     aie::store_v(pOut, vOutLo);
@@ -202,6 +237,46 @@ void shuffle_apply_rope_bf16_8(int offset, const bfloat16 *__restrict fcr,
     aie::store_v(pOut, vOutHi);
     pOut += n;
   }
+}
+
+// Wrapper that pads head_size to a multiple of 2*SINCOS_VEC using a local
+// work buffer, so ALL operations use native-width vectors on AIE2P.
+template <unsigned head_size>
+void shuffle_apply_rope_padded(int offset, const bfloat16 *__restrict fcr,
+                               const bfloat16 *__restrict fci,
+                               bfloat16 *__restrict outputs) {
+  static_assert(head_size % 16 == 0,
+                "head_size must be a multiple of 16 for vectorized copy");
+  constexpr unsigned n = SINCOS_VEC;
+  constexpr unsigned two_n = n * 2;
+  // Round up head_size to next multiple of two_n
+  constexpr unsigned padded = ((head_size + two_n - 1) / two_n) * two_n;
+
+  // Copy data to padded work buffer (head_size elements + zero padding)
+  alignas(aie::vector_decl_align) bfloat16 work[padded];
+  for (unsigned j = 0; j < head_size; j += 16)
+    aie::store_v(work + j, aie::load_v<16>(outputs + j + offset));
+  for (unsigned j = head_size; j < padded; j += 16)
+    aie::store_v(work + j, aie::zeros<bfloat16, 16>());
+
+  // Copy sin/cos buffers to padded local arrays.
+  // Source buffers are 32 elements (already zero-padded by sinf/cosf).
+  // We need padded/2 elements; pad any excess with zeros.
+  alignas(aie::vector_decl_align) bfloat16 fcr_pad[padded / 2];
+  alignas(aie::vector_decl_align) bfloat16 fci_pad[padded / 2];
+  for (unsigned j = 0; j < padded / 2; j += 16) {
+    aie::store_v(fcr_pad + j, j < 32 ? aie::load_v<16>(fcr + j)
+                                     : aie::zeros<bfloat16, 16>());
+    aie::store_v(fci_pad + j, j < 32 ? aie::load_v<16>(fci + j)
+                                     : aie::zeros<bfloat16, 16>());
+  }
+
+  // Process with native-width vectors
+  shuffle_apply_rope<padded, n>(0, fcr_pad, fci_pad, work);
+
+  // Copy results back (only head_size elements)
+  for (unsigned j = 0; j < head_size; j += 16)
+    aie::store_v(outputs + j + offset, aie::load_v<16>(work + j));
 }
 
 template <unsigned N, unsigned v>
@@ -219,29 +294,36 @@ void vector_copy_bf16(const bfloat16 *__restrict inputs,
 
 extern "C" {
 
-void sinf_bf16_24_8(const bfloat16 *__restrict inputs,
-                    bfloat16 *__restrict outputs) {
-  sinf_cosf_poly_bf16<24, 8, true>(inputs, outputs);
+// sinf/cosf: on AIE2P use n=16 with N=32 (padded), on AIE2 use n=8 with N=24.
+// The extern "C" wrappers handle padding internally so callers always pass
+// 32-element buffers (extra 8 elements are unused padding on AIE2).
+void sinf_bf16(const bfloat16 *__restrict inputs,
+               bfloat16 *__restrict outputs) {
+  sinf_cosf_poly_bf16<32, SINCOS_VEC, true>(inputs, outputs);
 }
-void cosf_bf16_24_8(const bfloat16 *__restrict inputs,
-                    bfloat16 *__restrict outputs) {
-  sinf_cosf_poly_bf16<24, 8, false>(inputs, outputs);
+void cosf_bf16(const bfloat16 *__restrict inputs,
+               bfloat16 *__restrict outputs) {
+  sinf_cosf_poly_bf16<32, SINCOS_VEC, false>(inputs, outputs);
 }
 
-void freq_pos_bf16_24_8(const int pos, bfloat16 *__restrict outputs) {
-  // Head size 48 (24 even + 24 odd indexed elements), vector size 8.
-  freq_pos_bf16_24<8>(pos, outputs);
+void freq_pos_bf16(const int pos, bfloat16 *__restrict outputs) {
+  freq_pos_bf16<32, SINCOS_VEC>(pos, outputs);
 }
 
 void shuffle_apply_rope_bf16_48(int offset, const bfloat16 *__restrict fcr,
                                 const bfloat16 *__restrict fci,
                                 bfloat16 *__restrict outputs) {
-  shuffle_apply_rope_bf16_8<48>(offset, fcr, fci, outputs);
+#if __AIEARCH__ >= 21
+  // AIE2P: use padded work buffer to ensure all ops use native-width n=16
+  shuffle_apply_rope_padded<48>(offset, fcr, fci, outputs);
+#else
+  shuffle_apply_rope<48, 8>(offset, fcr, fci, outputs);
+#endif
 }
 
-void vector_copy_bf16_192_16(const bfloat16 *__restrict inputs,
+void vector_copy_bf16_144_16(const bfloat16 *__restrict inputs,
                              bfloat16 *__restrict outputs) {
-  vector_copy_bf16<192, 16>(inputs, outputs);
+  vector_copy_bf16<144, 16>(inputs, outputs);
 }
 
 } // extern "C"
