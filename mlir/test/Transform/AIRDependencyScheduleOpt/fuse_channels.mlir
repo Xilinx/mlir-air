@@ -2007,6 +2007,11 @@ module {
 // CHECK: air.channel.put @channel_0
 // CHECK: scf.for
 // CHECK: air.channel.put @channel_1
+// CHECK: air.channel.get @channel_0
+// CHECK: air.channel.get @channel_1
+// Aggressive mode does not have the sibling-loop same-buffer guard, so it
+// still merges these channels. This is by design: aggressive mode trades
+// correctness for resource savings and requires the user to ensure safety.
 // AGGRESSIVE-LABEL: func_sibling_loop_same_l2_buf
 // AGGRESSIVE: air.segment
 // AGGRESSIVE: scf.for
