@@ -2331,6 +2331,11 @@ struct SpecializeChannelBundlePattern
       for (auto put : channelPuts) {
         auto indices_uint =
             air::convertVecOfConstIndexToVecOfUInt(put.getIndices());
+        if (indices_uint.empty() && !put.getIndices().empty() && iter == 0)
+          put->emitWarning(
+              "channel bundle indices cannot be resolved to compile-time "
+              "constants; this channel put will be replaced with "
+              "air.wait_all, which may cause data loss");
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel put for this channel
           rewriter.setInsertionPoint(put);
@@ -2349,6 +2354,11 @@ struct SpecializeChannelBundlePattern
       for (auto get : channelGets) {
         auto indices_uint =
             air::convertVecOfConstIndexToVecOfUInt(get.getIndices());
+        if (indices_uint.empty() && !get.getIndices().empty() && iter == 0)
+          get->emitWarning(
+              "channel bundle indices cannot be resolved to compile-time "
+              "constants; this channel get will be replaced with "
+              "air.wait_all, which may cause data loss");
         if (areIdenticalVectors(indices_uint, position)) {
           // Found channel get for this channel
           rewriter.setInsertionPoint(get);
@@ -4043,8 +4053,8 @@ public:
       // Get index to metadataArray based on channel indices.
       auto iter = air::getIndexToMetadataArrayFromChannelIndices(ci);
       if (!iter) {
-        ci->emitOpError("channel indices failed to convert to convert to "
-                        "metadataArray index.");
+        ci->emitOpError(
+            "channel indices failed to convert to metadataArray index.");
         return failure();
       }
       // Get metadata from metadataArray.

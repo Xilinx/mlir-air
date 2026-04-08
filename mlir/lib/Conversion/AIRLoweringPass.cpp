@@ -756,7 +756,7 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto iter = air::getIndexToMetadataArrayFromChannelIndices(thisOp);
   if (!iter) {
     thisOp->emitOpError(
-        "channel indices failed to convert to convert to metadataArray index.");
+        "channel indices failed to convert to metadataArray index.");
     return failure();
   }
 
