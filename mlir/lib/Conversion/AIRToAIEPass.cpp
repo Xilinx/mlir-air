@@ -4678,6 +4678,25 @@ public:
       alloc = memcpyOpIf.getSrcMemref();
     }
 
+    // Detect if multiple outbound puts in this DMA allocation share the same
+    // source buffer. When true, use per-put interleaved lock placement to
+    // prevent the second put from overwriting the buffer before the DMA
+    // finishes reading the first put's data.
+    bool sharedStagingBuffer = false;
+    if (!tileInbound.value() && isa<AIE::BufferOp>(alloc.getDefiningOp()) &&
+        dma_alloc.value().memcpyOps.size() > 1) {
+      int sameBufCount = 0;
+      for (auto *op : dma_alloc.value().memcpyOps) {
+        if (auto other = dyn_cast_if_present<air::MemcpyInterface>(op)) {
+          auto otherInbound = isTileInbound(other, air::MemorySpace::L1);
+          if (succeeded(otherInbound) && !otherInbound.value() &&
+              other.getSrcMemref() == alloc)
+            sameBufCount++;
+        }
+      }
+      sharedStagingBuffer = sameBufCount > 1;
+    }
+
     if (auto bco = dyn_cast_if_present<bufferization::ToBufferOp>(
             alloc.getDefiningOp()))
       builder.setInsertionPoint(bco.getOperand().getDefiningOp());
@@ -4685,12 +4704,19 @@ public:
       builder.setInsertionPoint(alloc.getDefiningOp());
     else if (!tileInbound.value() &&
              isa<AIE::BufferOp>(alloc.getDefiningOp())) {
-      auto br = dyn_cast_if_present<cf::BranchOp>(
-          memcpyOpIf->getBlock()->getTerminator());
-      if (br)
-        builder.setInsertionPointToStart(br.getDest());
-      else
-        builder.setInsertionPointToStart(memcpyOpIf->getBlock());
+      if (sharedStagingBuffer) {
+        // Interleaved mode: acquire immediately before this specific put, so
+        // the core waits for the DMA to finish reading the previous put's
+        // data before overwriting the buffer.
+        builder.setInsertionPoint(memcpyOpIf);
+      } else {
+        auto br = dyn_cast_if_present<cf::BranchOp>(
+            memcpyOpIf->getBlock()->getTerminator());
+        if (br)
+          builder.setInsertionPointToStart(br.getDest());
+        else
+          builder.setInsertionPointToStart(memcpyOpIf->getBlock());
+      }
     } else
       builder.setInsertionPoint(memcpyOpIf);
 
@@ -4702,7 +4728,14 @@ public:
 
     // Try to find the end of lifetime for the data copied by memcpyOpIf, and
     // put the unlock.
-    if (auto nextWriter = findNextDmaWriteOp(memcpyOpIf, alloc)) {
+    if (sharedStagingBuffer) {
+      // Interleaved mode: release rlock immediately after the put so the DMA
+      // can read the buffer before the next put overwrites it. The next put's
+      // acquire(wlock) will block until the DMA completes reading.
+      builder.setInsertionPointAfter(memcpyOpIf);
+      AIE::UseLockOp::create(builder, memcpyOpIf->getLoc(), relLockOp,
+                             AIE::LockAction::Release, lockRelValue);
+    } else if (auto nextWriter = findNextDmaWriteOp(memcpyOpIf, alloc)) {
       // Lifetime ends if dma writes into the same buffer.
       builder.setInsertionPoint(nextWriter);
       AIE::UseLockOp::create(builder, nextWriter->getLoc(), relLockOp,
