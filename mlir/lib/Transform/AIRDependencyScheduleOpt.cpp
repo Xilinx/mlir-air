@@ -4157,6 +4157,30 @@ private:
     for (unsigned i = 0; i < a_gets.size(); i++)
       if ((!areUnderTheSameAffineIfCond(a_gets[i], b_gets[i])))
         return notMergeable;
+    // Prevent temporal merge when channel puts read from the same non-L3
+    // buffer (same SSA value) in sibling loops at the same nesting depth but
+    // in different loop bodies. The buffer may contain different data in each
+    // phase (e.g., gate vs up weights refilled by different L3-to-L2 transfers
+    // in sequential scf.for loops), and merging would collapse both phases into
+    // one, losing the second phase's data.
+    // We only check same-size nests here; different-size nests proceed to
+    // checkIfTemporalMergeableImpl which handles valid loop-unpeeling merges.
+    // We use SSA identity (==) rather than memrefsAreAffinitiveToSameChannel
+    // because affinity means "can share a DMA channel" (hardware
+    // compatibility), not "contains the same data." NOTE: This guard only
+    // applies to the non-aggressive temporal merge path. The aggressive spatial
+    // merge path (checkIfMergeable / mergeChannels) does not have this guard
+    // and may still merge such channels.
+    if (a_puts[0].getMemref() == b_puts[0].getMemref()) {
+      auto ms = air::getMemorySpace(
+          llvm::cast<BaseMemRefType>(a_puts[0].getMemref().getType()));
+      if (ms && *ms != air::MemorySpace::L3) {
+        auto aNest = getParentLoopNest(a_puts[0].getOperation());
+        auto bNest = getParentLoopNest(b_puts[0].getOperation());
+        if (aNest.size() == bNest.size() && aNest != bNest)
+          return notMergeable;
+      }
+    }
     std::vector<std::tuple<bool, std::string>> putResults;
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
