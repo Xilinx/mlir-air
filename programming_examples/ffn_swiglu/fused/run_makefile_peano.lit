@@ -1,0 +1,5 @@
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run4x4 COMPILE_MODE=compile-and-run 2>&1 | FileCheck %s
+// CHECK: PASS
+
+// REQUIRES: ryzen_ai, peano
