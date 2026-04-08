@@ -48,4 +48,26 @@ module  {
     }
     return
   }
+  // Sequential herds sharing the same buffer: second herd must depend on first.
+  // traceDeps for HierarchyInterface creates RAW dependency between herds.
+  func.func @sequential_herds_same_buffer() {
+    %c1 = arith.constant 1 : index
+    air.launch (%arg0, %arg1) in (%arg2=%c1, %arg3=%c1) {
+    // CHECK: air.launch async
+      air.segment {
+        %c1_0 = arith.constant 1 : index
+        %buf = memref.alloc() : memref<256xi32, 2>
+        // CHECK: %[[ALLOC:.*]], %[[BUF:.*]] = air.execute
+        air.herd tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<256xi32, 2> {
+        // CHECK: %[[HERD1:.*]] = air.herd async [{{.*}}%[[ALLOC]]{{.*}}]
+        }
+        air.herd tile (%tx, %ty) in (%sx=%c1_0, %sy=%c1_0) args(%a=%buf) : memref<256xi32, 2> {
+        // CHECK: %[[HERD2:.*]] = air.herd async [{{.*}}%[[HERD1]]{{.*}}]
+        }
+        memref.dealloc %buf : memref<256xi32, 2>
+        // CHECK: air.execute [{{.*}}%[[HERD2]]{{.*}}]
+      }
+    }
+    return
+  }
 }
