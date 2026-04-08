@@ -3011,57 +3011,47 @@ public:
       return AIE::PacketFlowOp(); // Only air.channel_interface ops support
                                   // packet-flow routing.
 
-    // Determine if this is a shim flow by checking if EITHER source OR
-    // destination tile is a shim tile. This must be consistent with
-    // placeDMAChannelsAndRouteFlows which uses the same criteria.
-    auto sourceTileOp = source.getDefiningOp<AIE::TileOp>();
-    bool sourceIsShim = sourceTileOp && sourceTileOp.isShimNOCorPLTile();
-
-    // Check if the destination involves a shim tile by examining the memcpy's
-    // memory spaces (L3 memory space indicates shim tile involvement)
-    bool destIsShim = false;
-    if (auto srcMemref = memcpyOp.getSrcMemref()) {
-      auto memrefTy = dyn_cast_if_present<BaseMemRefType>(srcMemref.getType());
-      if (memrefTy && air::isL3(memrefTy))
-        destIsShim = true;
-    }
-    if (auto dstMemref = memcpyOp.getDstMemref()) {
-      auto memrefTy = dyn_cast_if_present<BaseMemRefType>(dstMemref.getType());
-      if (memrefTy && air::isL3(memrefTy))
-        destIsShim = true;
-    }
-
-    bool isShimFlow = sourceIsShim || destIsShim;
-
-    // Select the appropriate flow map based on whether this involves shim tiles
-    const SetVector<Operation *> &flowMap =
-        isShimFlow ? shimFlowOpToFlowIdMap : intraDeviceFlowOpToFlowIdMap;
-
-    // Convert flowMap from Operation pointers to channel symbol names.
+    // Convert a flow map from Operation pointers to channel symbol names.
     // This is necessary because air.channel declarations are duplicated
     // under aie.device op and its parent module op, requiring symbol-based
     // matching.
-    std::vector<std::string> flowOpStringsToFlowIdMap;
-    for (auto op : flowMap) {
-      auto flowChanOp = dyn_cast_if_present<air::ChannelOp>(op);
-      if (!flowChanOp) {
-        flowOpStringsToFlowIdMap.push_back("");
-        continue;
+    auto buildFlowIdMap =
+        [](const SetVector<Operation *> &fmap) -> std::vector<std::string> {
+      std::vector<std::string> result;
+      for (auto op : fmap) {
+        auto flowChanOp = dyn_cast_if_present<air::ChannelOp>(op);
+        if (!flowChanOp) {
+          result.push_back("");
+          continue;
+        }
+        result.push_back(flowChanOp.getSymName().str());
       }
-      flowOpStringsToFlowIdMap.push_back(flowChanOp.getSymName().str());
+      return result;
+    };
+
+    // Search both flow maps by channel name. Channel names are unique symbols,
+    // so each channel appears in exactly one map. We search the shim (device-
+    // host) map first, then the intra-device map.
+    //
+    // Note: we cannot reliably determine which map to search from the memcpy
+    // op alone, because ChannelPutOp::getDstMemref() and ChannelGetOp::
+    // getSrcMemref() return nullptr by design (the other end of a channel op
+    // is implicit via the channel symbol). Searching both maps directly is
+    // simpler and always correct.
+    std::string chanName = chanIfOp.getChanName().str();
+
+    for (const auto &flowMap : {std::cref(shimFlowOpToFlowIdMap),
+                                std::cref(intraDeviceFlowOpToFlowIdMap)}) {
+      auto flowStrings = buildFlowIdMap(flowMap.get());
+      auto it = llvm::find(flowStrings, chanName);
+      if (it != flowStrings.end()) {
+        int flowID = std::distance(flowStrings.begin(), it);
+        return findPacketFlowOp(source, sourceBundle, sourceChannel,
+                                /*checkFlowID=*/true, flowID);
+      }
     }
 
-    // Find the flowID by matching the channel name
-    auto it =
-        llvm::find(flowOpStringsToFlowIdMap, chanIfOp.getChanName().str());
-    if (it == flowOpStringsToFlowIdMap.end()) {
-      return AIE::PacketFlowOp();
-    }
-    int flowID = std::distance(flowOpStringsToFlowIdMap.begin(), it);
-
-    // Search for the packet flow with matching source and flowID
-    return findPacketFlowOp(source, sourceBundle, sourceChannel,
-                            /*checkFlowID=*/true, flowID);
+    return AIE::PacketFlowOp();
   }
 
   /// Query an existing packet flow operation from the runtime function.
