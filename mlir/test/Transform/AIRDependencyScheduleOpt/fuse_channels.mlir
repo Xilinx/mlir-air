@@ -1993,3 +1993,54 @@ module {
     return
   }
 }
+
+// -----
+
+// Do not merge L2-to-L1 channel puts that access the same shared L2 buffer
+// in sibling scf.for loops. These loops carry different data in each phase
+// (e.g., gate vs up weights refilled by different L3-to-L2 transfers).
+// Merging would collapse both phases into one, losing the second phase's data.
+
+// CHECK-LABEL: func_sibling_loop_same_l2_buf
+// CHECK: air.segment
+// CHECK: scf.for
+// CHECK: air.channel.put @channel_0
+// CHECK: scf.for
+// CHECK: air.channel.put @channel_1
+// AGGRESSIVE-LABEL: func_sibling_loop_same_l2_buf
+// AGGRESSIVE: air.segment
+// AGGRESSIVE: scf.for
+// AGGRESSIVE: air.channel.put @channel_0
+// AGGRESSIVE: air.channel.put @channel_0
+
+module {
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
+  func.func @func_sibling_loop_same_l2_buf(){
+    %c1 = arith.constant 1 : index
+    air.launch (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) {
+      air.segment {
+        %c0 = arith.constant 0 : index
+        %c1_0 = arith.constant 1 : index
+        %c2 = arith.constant 2 : index
+        %c4 = arith.constant 4 : index
+        // Shared L2 buffer — both loops put from same memref.
+        %alloc_l2 = memref.alloc() : memref<4x4xi32, 1>
+        // Phase 1 (gate): fill l2 via L3->L2, then put to L1
+        scf.for %i = %c0 to %c4 step %c1_0 {
+          air.channel.put @channel_0[] (%alloc_l2[] [] []) : (memref<4x4xi32, 1>)
+        }
+        // Phase 2 (up): l2 refilled by different L3->L2 transfer, put to L1
+        scf.for %i = %c0 to %c4 step %c1_0 {
+          air.channel.put @channel_1[] (%alloc_l2[] [] []) : (memref<4x4xi32, 1>)
+        }
+        air.herd @herd_0 tile (%arg12, %arg13) in (%arg14=%c2, %arg15=%c2) args(%arg16=%alloc_l2) : memref<4x4xi32, 1> {
+          air.channel.get @channel_0[] (%arg16[] [] []) : (memref<4x4xi32, 1>)
+          air.channel.get @channel_1[] (%arg16[] [] []) : (memref<4x4xi32, 1>)
+        }
+        memref.dealloc %alloc_l2 : memref<4x4xi32, 1>
+      }
+    }
+    return
+  }
+}

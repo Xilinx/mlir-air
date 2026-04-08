@@ -4157,6 +4157,29 @@ private:
     for (unsigned i = 0; i < a_gets.size(); i++)
       if ((!areUnderTheSameAffineIfCond(a_gets[i], b_gets[i])))
         return notMergeable;
+    // Prevent temporal merge when channel puts read from the same non-L3
+    // buffer in different sequential loop nests. The buffer may contain
+    // different data in each phase (e.g., gate vs up weights refilled by
+    // different L3-to-L2 transfers), and merging would collapse both phases
+    // into one, losing the second phase's data.
+    {
+      Value putMemrefA = a_puts[0].getMemref();
+      Value putMemrefB = b_puts[0].getMemref();
+      if (putMemrefA == putMemrefB) {
+        auto ms = air::getMemorySpace(
+            llvm::cast<BaseMemRefType>(putMemrefA.getType()));
+        if (ms && *ms != air::MemorySpace::L3) {
+          auto aNest = getParentLoopNest(a_puts[0].getOperation());
+          auto bNest = getParentLoopNest(b_puts[0].getOperation());
+          if (aNest.size() == bNest.size()) {
+            for (unsigned i = 0; i < aNest.size(); i++) {
+              if (aNest[i] != bNest[i])
+                return notMergeable;
+            }
+          }
+        }
+      }
+    }
     std::vector<std::tuple<bool, std::string>> putResults;
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
