@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -59,9 +60,10 @@ int main(int argc, const char *argv[]) {
   int K = vm["size_k"].as<int>();
   int N = vm["size_n"].as<int>();
 
-  // x: [M, K], w_combined: [K, 2*N], out: [M, N]
+  // x: [M, K], w_gate: [K, N], w_up: [K, N], out: [M, N]
   size_t X_SIZE = (size_t)M * K * sizeof(DATATYPE);
-  size_t W_COMBINED_SIZE = (size_t)K * 2 * N * sizeof(DATATYPE);
+  size_t WGATE_SIZE = (size_t)K * N * sizeof(DATATYPE);
+  size_t WUP_SIZE = (size_t)K * N * sizeof(DATATYPE);
   size_t OUT_SIZE = (size_t)M * N * sizeof(DATATYPE);
 
   srand(time(NULL));
@@ -82,7 +84,8 @@ int main(int argc, const char *argv[]) {
 
   // Use xrt::ext::bo (no group_id needed for ELF)
   xrt::bo bo_x = xrt::ext::bo(device, X_SIZE);
-  xrt::bo bo_w = xrt::ext::bo(device, W_COMBINED_SIZE);
+  xrt::bo bo_wgate = xrt::ext::bo(device, WGATE_SIZE);
+  xrt::bo bo_wup = xrt::ext::bo(device, WUP_SIZE);
   xrt::bo bo_out = xrt::ext::bo(device, OUT_SIZE);
 
   // Fill inputs with random data
@@ -90,15 +93,20 @@ int main(int argc, const char *argv[]) {
   for (size_t i = 0; i < (size_t)M * K; i++)
     bufX[i] = random_bfloat16_t();
 
-  DATATYPE *bufW = bo_w.map<DATATYPE *>();
-  for (size_t i = 0; i < (size_t)K * 2 * N; i++)
-    bufW[i] = random_bfloat16_t();
+  DATATYPE *bufWgate = bo_wgate.map<DATATYPE *>();
+  for (size_t i = 0; i < (size_t)K * N; i++)
+    bufWgate[i] = random_bfloat16_t();
+
+  DATATYPE *bufWup = bo_wup.map<DATATYPE *>();
+  for (size_t i = 0; i < (size_t)K * N; i++)
+    bufWup[i] = random_bfloat16_t();
 
   DATATYPE *bufOut = bo_out.map<DATATYPE *>();
-  memset(bufOut, 0, OUT_SIZE);
+  std::memset(bufOut, 0, OUT_SIZE);
 
   bo_x.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_w.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bo_wgate.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bo_wup.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bo_out.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
   unsigned n_iterations = vm["iterations"].as<int>();
@@ -117,8 +125,10 @@ int main(int argc, const char *argv[]) {
   std::cout << "  M=" << M << ", K=" << K << ", N=" << N << std::endl;
   std::cout << "  x: [" << M << "x" << K << "] (" << X_SIZE << " bytes)"
             << std::endl;
-  std::cout << "  w_combined: [" << K << "x" << 2 * N << "] ("
-            << W_COMBINED_SIZE << " bytes)" << std::endl;
+  std::cout << "  w_gate: [" << K << "x" << N << "] (" << WGATE_SIZE
+            << " bytes)" << std::endl;
+  std::cout << "  w_up: [" << K << "x" << N << "] (" << WUP_SIZE << " bytes)"
+            << std::endl;
   std::cout << "  output: [" << M << "x" << N << "] (" << OUT_SIZE << " bytes)"
             << std::endl;
   std::cout << "  warmup=" << n_warmup_iterations
@@ -129,11 +139,12 @@ int main(int argc, const char *argv[]) {
       std::cout << "Running Kernel (iteration " << iter << ").\n";
 
     auto start = std::chrono::high_resolution_clock::now();
-    // ELF path: use xrt::run with set_arg
+    // ELF path: use xrt::run with set_arg (4 args: x, w_gate, w_up, out)
     auto run = xrt::run(kernel);
     run.set_arg(0, bo_x);
-    run.set_arg(1, bo_w);
-    run.set_arg(2, bo_out);
+    run.set_arg(1, bo_wgate);
+    run.set_arg(2, bo_wup);
+    run.set_arg(3, bo_out);
     run.start();
     run.wait2();
     auto stop = std::chrono::high_resolution_clock::now();

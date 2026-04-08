@@ -1,5 +1,5 @@
-// RUN: make -f %S/Makefile clean
-// RUN: make -f %S/Makefile run4x4 COMPILE_MODE=compile-and-run 2>&1 | FileCheck %s
-// CHECK: PASS
+// RUN: make -f %S/Makefile clean PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR
+// RUN: make -f %S/Makefile run4x4 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR COMPILE_MODE=compile-and-run OUTPUT_FORMAT=elf 2>&1 | FileCheck %s
+// CHECK: PASS!
 
 // REQUIRES: ryzen_ai, peano
