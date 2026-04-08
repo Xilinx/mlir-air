@@ -567,14 +567,18 @@ public:
     SmallVector<Value, 4> lengths(4, one);
     SmallVector<Value, 4> strides(4, zero);
 
-    int idx = 4 - src.getRank();
-    for (auto o : isFromTile ? op.getDstOffsets() : op.getSrcOffsets())
+    // Take last min(4, N) elements for offsets, sizes, and strides.
+    // When N > 4, drop leading elements to fit the 4D airrt format.
+    auto op_offsets = isFromTile ? op.getDstOffsets() : op.getSrcOffsets();
+    auto offsets_to_use = op_offsets;
+    if (offsets_to_use.size() > 4)
+      offsets_to_use = offsets_to_use.drop_front(offsets_to_use.size() - 4);
+    int idx = 4 - offsets_to_use.size();
+    for (auto o : offsets_to_use)
       offsets[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
                                                   IntegerType::get(ctx, 64), o);
     auto op_strides = isFromTile ? op.getDstStrides() : op.getSrcStrides();
     if (op_strides.size()) {
-      // Take last min(4, N) strides, drop leading strides if N > 4.
-      // The innermost stride (last element) is now preserved.
       auto strides_to_use = op_strides;
       if (strides_to_use.size() > 4)
         strides_to_use = strides_to_use.drop_front(strides_to_use.size() - 4);
@@ -583,8 +587,12 @@ public:
         strides[idx++] = arith::IndexCastOp::create(
             rewriter, op->getLoc(), IntegerType::get(ctx, 64), o);
     }
-    idx = 4 - src.getRank();
-    for (auto o : isFromTile ? op.getDstSizes() : op.getSrcSizes())
+    auto op_sizes = isFromTile ? op.getDstSizes() : op.getSrcSizes();
+    auto sizes_to_use = op_sizes;
+    if (sizes_to_use.size() > 4)
+      sizes_to_use = sizes_to_use.drop_front(sizes_to_use.size() - 4);
+    idx = 4 - sizes_to_use.size();
+    for (auto o : sizes_to_use)
       lengths[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
                                                   IntegerType::get(ctx, 64), o);
 
