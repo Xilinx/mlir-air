@@ -123,8 +123,15 @@ int main(int argc, const char *argv[]) {
 
   // Create buffer objects using xrt::ext::bo (declared as xrt::bo type)
   // Kernel signature: attention_bf16(Q, K, V, Output, KV_cache)
-  // KV cache is interleaved: [K_c0, V_c0, K_c1, V_c1, ...]
-  size_t KV_CACHE_SIZE = (size_t)num_heads * lk * dk * 2 * sizeof(DATATYPE);
+  // KV cache is interleaved: [K_dk0, ..., K_dk(N-1), V_dv_lz] per chunk
+  // Per (kv_head, dv_chunk) pair: num_chunks * (dk_chunks + 1) * lkp * dk_tile
+  int lkp = 64; // tile size
+  int dk_chunks = dk / lkp;
+  int dv_chunks = dv / lkp;
+  int slots_per_chunk = dk_chunks + 1;
+  int num_chunks = lk / lkp;
+  size_t KV_CACHE_SIZE = (size_t)num_heads * dv_chunks * num_chunks *
+                         slots_per_chunk * lkp * lkp * sizeof(DATATYPE);
   xrt::bo bo_q = xrt::ext::bo{device, Q_SIZE};
   xrt::bo bo_k = xrt::ext::bo{device, K_SIZE};
   xrt::bo bo_v = xrt::ext::bo{device, V_SIZE};

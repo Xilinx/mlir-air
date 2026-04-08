@@ -141,12 +141,9 @@ def build_module(
     assert dv % dv_tile == 0, f"dv ({dv}) must be divisible by dv_tile/lkp ({dv_tile})"
     dv_chunks = dv // dv_tile
     enable_cache_writeback = enable_k_writeback or enable_v_writeback
-    if enable_cache_writeback:
-        assert dk == lkp and dv == lkp, (
-            f"Interleaved KV cache write-back requires dk == dv == lkp, "
-            f"got dk={dk}, dv={dv}, lkp={lkp}. "
-            f"Use --no-k-writeback --no-v-writeback to disable."
-        )
+    # Number of dk_tile-sized slots per chunk in the interleaved KV cache:
+    # dk_chunks K tiles + 1 V tile (V is always one dv_tile per launch iter)
+    cache_slots_per_chunk = dk_chunks + 1
     if causal:
         assert lq == lk, f"Causal masking requires lq == lk, got lq={lq}, lk={lk}"
         assert lqp // num_q_tiles == lkp, (
@@ -214,13 +211,18 @@ def build_module(
     gp_l3_t = MemRefType.get([num_heads * dv_chunks, lq, dv_tile], bf16)
 
     # KV cache L3 types
-    if enable_k_writeback or enable_v_writeback:
-        # Interleaved KV cache: [num_kv_heads, num_chunks, 2, lkp, dk_tile]
-        # K at index 0, V at index 1 within each chunk pair
+    if enable_cache_writeback:
+        # Interleaved KV cache per chunk per (kv_head, dv_chunk) pair:
+        #   [K_dk0, K_dk1, ..., K_dk(dk_chunks-1), V_dv_lz]
+        # Each slot is [lkp, dk_tile] = lkp*dk_tile elements.
+        # The outer dimension combines kv_head and dv_chunk (like V L3 layout).
+        # K is redundantly stored per dv_chunk (same data, different lz iters).
+        kv_slot_size = lkp * dk_tile  # elements per slot
+        kv_chunk_stride = cache_slots_per_chunk * kv_slot_size
+        num_kv_cache_heads = num_kv_heads * dv_chunks
         kv_cache_l3_t = MemRefType.get(
-            [num_kv_heads * num_chunks * 2 * lkp * dk_tile], bf16
+            [num_kv_cache_heads * num_chunks * kv_chunk_stride], bf16
         )
-        kv_chunk_stride = 2 * lkp * dk_tile  # stride between K and V in a pair
     # Legacy separate caches (when writeback disabled, used as placeholders)
     k_cache_l3_t = MemRefType.get([num_kv_heads, lk, dk], bf16)
     v_cache_l3_t = MemRefType.get([num_kv_heads * dv_chunks, lk, dv_tile], bf16)
@@ -576,26 +578,40 @@ def build_module(
                         gqa_group_size == 1 or head_local % gqa_group_size == 0
                     )
                     if is_first_in_gqa_group:
-                        # KV head offset into the flat kv_cache buffer
-                        kv_head_off = affine_apply(
-                            AffineMap.get(
-                                0,
-                                1,
-                                [
-                                    AffineExpr.get_mul(
-                                        AffineSymbolExpr.get(0),
-                                        AffineConstantExpr.get(
-                                            num_chunks * 2 * lkp * dk_tile
+                        # KV cache head offset uses the same combined
+                        # (kv_head * dv_chunks + lz) indexing as head_v_off,
+                        # but with kv_chunk_stride instead of lk * dv_tile.
+                        # head_v_off = (kv_head * dv_chunks + lz) * lk * dv_tile
+                        # kv_head_off = (kv_head * dv_chunks + lz) * num_chunks * kv_chunk_stride
+                        affine_map_kv_head = AffineMap.get(
+                            0,
+                            2,
+                            [
+                                AffineExpr.get_mul(
+                                    AffineExpr.get_add(
+                                        AffineExpr.get_mul(
+                                            AffineSymbolExpr.get(0),
+                                            AffineConstantExpr.get(dv_chunks),
                                         ),
-                                    )
-                                ],
-                            ),
-                            [kv_head_idx],
+                                        AffineSymbolExpr.get(1),
+                                    ),
+                                    AffineConstantExpr.get(
+                                        num_chunks * kv_chunk_stride
+                                    ),
+                                )
+                            ],
+                        )
+                        kv_head_off = affine_apply(
+                            affine_map_kv_head, [kv_head_idx, lz]
                         )
                         # Use scf.for to allow the compiler to fold
                         # consecutive CacheWB BDs into higher-dimensional
                         # shim DMA BDs, avoiding BD exhaustion at scale.
-                        c_cps2 = ConstantOp(index_type, chunks_per_stage * 2)
+                        # Each chunk has cache_slots_per_chunk slots
+                        # (dk_chunks K tiles + 1 V tile).
+                        c_slots = ConstantOp(
+                            index_type, chunks_per_stage * cache_slots_per_chunk
+                        )
                         affine_map_kv_off = AffineMap.get(
                             0,
                             2,
@@ -604,7 +620,7 @@ def build_module(
                                     AffineSymbolExpr.get(0),
                                     AffineExpr.get_mul(
                                         AffineSymbolExpr.get(1),
-                                        AffineConstantExpr.get(lkp * dk_tile),
+                                        AffineConstantExpr.get(kv_slot_size),
                                     ),
                                 )
                             ],
@@ -615,7 +631,7 @@ def build_module(
                                 affine_map_add,
                                 [kv_head_off, ConstantOp(index_type, stage_base_val)],
                             )
-                            for chunk_kv_iter in scf_range(0, c_cps2, 1):
+                            for chunk_kv_iter in scf_range(0, c_slots, 1):
                                 wb_off = affine_apply(
                                     affine_map_kv_off,
                                     [stage_base, chunk_kv_iter],
@@ -1563,26 +1579,40 @@ if __name__ == "__main__":
         target_device="npu2",
     )
 
-    # Build expected KV cache (interleaved: [K_c0, V_c0, K_c1, V_c1, ...])
+    # Build expected KV cache (interleaved layout).
+    # Per (kv_head, dv_chunk) pair, per chunk:
+    #   [K_dk0, K_dk1, ..., K_dk(dk_chunks-1), V_dv_lz]
     enable_cache_writeback = enable_k_writeback or enable_v_writeback
+    dk_chunks_host = dk // lkp
+    slot_size = lkp * lkp  # lkp * dk_tile = lkp * lkp
+    slots_per_chunk = dk_chunks_host + 1
+    chunk_stride = slots_per_chunk * slot_size
     if enable_cache_writeback:
         num_chunks_host = lk // lkp
-        kv_cache_size = num_kv_heads * num_chunks_host * 2 * lkp * dk
+        num_cache_heads = num_kv_heads * dv_chunks_host
+        kv_cache_size = num_cache_heads * num_chunks_host * chunk_stride
         expected_kv_cache = np.zeros(kv_cache_size, dtype=INPUT_DATATYPE)
         for h in range(num_kv_heads):
-            for c in range(num_chunks_host):
-                k_off = h * num_chunks_host * 2 * lkp * dk + c * 2 * lkp * dk
-                v_off = k_off + lkp * dk
-                # K chunk: RoPE'd K data, row-major [lkp, dk]
-                expected_kv_cache[k_off : k_off + lkp * dk] = k_roped[
-                    h, c * lkp : (c + 1) * lkp, :
-                ].flatten()
-                # V chunk: raw V data in transposed tile format [lkp, dv_tile]
-                # V was transposed to [num_kv_heads * dv_chunks, lk, dv_tile]
-                # For dv_chunks=1, this is just [num_kv_heads, lk, dv_tile]
-                expected_kv_cache[v_off : v_off + lkp * dk] = input_v[
-                    h, c * lkp : (c + 1) * lkp, :
-                ].flatten()
+            for dv_idx in range(dv_chunks_host):
+                cache_head = h * dv_chunks_host + dv_idx
+                for c in range(num_chunks_host):
+                    base = (
+                        cache_head * num_chunks_host * chunk_stride + c * chunk_stride
+                    )
+                    # K tiles: dk_chunks tiles of [lkp, dk_tile]
+                    for dk_idx in range(dk_chunks_host):
+                        k_off = base + dk_idx * slot_size
+                        expected_kv_cache[k_off : k_off + slot_size] = k_roped[
+                            h,
+                            c * lkp : (c + 1) * lkp,
+                            dk_idx * lkp : (dk_idx + 1) * lkp,
+                        ].flatten()
+                    # V tile: 1 tile of [lkp, dv_tile]
+                    v_off = base + dk_chunks_host * slot_size
+                    v_head = h * dv_chunks_host + dv_idx
+                    expected_kv_cache[v_off : v_off + slot_size] = input_v[
+                        v_head, c * lkp : (c + 1) * lkp, :
+                    ].flatten()
     else:
         expected_k_cache = k_roped.copy()
 
@@ -1642,43 +1672,35 @@ if __name__ == "__main__":
                 "(BFP16 emulation tolerance)"
             )
 
-        # --- Output 1: KV cache (interleaved [K_c0, V_c0, K_c1, V_c1, ...]) ---
+        # --- Output 1: KV cache (interleaved) ---
         if enable_cache_writeback:
             kv_actual = actual_outputs[1].flatten()
             kv_mismatches = int(np.sum(kv_actual != expected_kv_cache))
             kv_total = kv_actual.size
-            chunk_size = lkp * dk
-            num_chunks_total = num_kv_heads * (lk // lkp)
             print(f"Output 1 (KV cache): mismatches={kv_mismatches}/{kv_total}")
             if kv_mismatches > 0:
                 print(f"FAIL: KV cache has {kv_mismatches} mismatches")
-                for h in range(num_kv_heads):
+                for ch in range(num_cache_heads):
                     for c in range(lk // lkp):
-                        k_off = h * (lk // lkp) * 2 * chunk_size + c * 2 * chunk_size
-                        v_off = k_off + chunk_size
-                        k_m = int(
-                            np.sum(
-                                kv_actual[k_off : k_off + chunk_size]
-                                == expected_kv_cache[k_off : k_off + chunk_size]
+                        base = ch * (lk // lkp) * chunk_stride + c * chunk_stride
+                        # Check each slot
+                        for s in range(slots_per_chunk):
+                            s_off = base + s * slot_size
+                            s_m = int(
+                                np.sum(
+                                    kv_actual[s_off : s_off + slot_size]
+                                    == expected_kv_cache[s_off : s_off + slot_size]
+                                )
                             )
-                        )
-                        v_m = int(
-                            np.sum(
-                                kv_actual[v_off : v_off + chunk_size]
-                                == expected_kv_cache[v_off : v_off + chunk_size]
-                            )
-                        )
-                        k_label = (
-                            "EXACT" if k_m == chunk_size else f"{k_m}/{chunk_size}"
-                        )
-                        v_label = (
-                            "EXACT" if v_m == chunk_size else f"{v_m}/{chunk_size}"
-                        )
-                        if k_m < chunk_size or v_m < chunk_size:
-                            print(f"  h={h} c={c}: K={k_label}, V={v_label}")
+                            if s_m < slot_size:
+                                label = "K" if s < dk_chunks_host else "V"
+                                print(
+                                    f"  ch={ch} c={c} slot={s}({label}): "
+                                    f"{s_m}/{slot_size}"
+                                )
                 failed = True
             else:
-                print("PASS: KV cache matches expected (K=RoPE'd K, V=raw V)")
+                print("PASS: KV cache matches expected")
         else:
             print("Output 1 (KV cache): SKIPPED (cache write-back disabled)")
 
