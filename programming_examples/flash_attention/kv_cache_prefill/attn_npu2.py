@@ -574,6 +574,10 @@ def build_module(
                 # this K,V,K,V get ordering.
                 # ----------------------------------------------------------
                 if enable_cache_writeback:
+                    # GQA: skip duplicate writes within the same unroll group.
+                    # Note: for gqa_group_size > num_heads_per_unroll, heads
+                    # in different unroll groups sharing the same KV head will
+                    # still write redundantly (same data, harmless).
                     is_first_in_gqa_group = (
                         gqa_group_size == 1 or head_local % gqa_group_size == 0
                     )

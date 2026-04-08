@@ -7,4 +7,4 @@
 // RUN: cd test_npu2_peano_elf
 // RUN: make -f %S/Makefile clean
 // RUN: make -f %S/Makefile run PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s
-// CHECK: PASS!
+// CHECK: OVERALL: PASSED

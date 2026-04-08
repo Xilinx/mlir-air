@@ -8,8 +8,11 @@
 
 #include "cxxopts.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -162,7 +165,7 @@ int main(int argc, const char *argv[]) {
             << V_SIZE << " bytes)" << std::endl;
   std::cout << "  Output: [" << num_heads << "x" << lq << "x" << dv << "] ("
             << OUTPUT_SIZE << " bytes)" << std::endl;
-  std::cout << "  RoPE: computed in-kernel (sincos)" << std::endl;
+  std::cout << "  RoPE: host pre-rotation" << std::endl;
 
   if (verbosity >= 1)
     std::cout << "Writing data into buffer objects.\n";
