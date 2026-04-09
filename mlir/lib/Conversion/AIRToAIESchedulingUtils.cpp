@@ -878,8 +878,11 @@ air::TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
       return t;
     }
     // Search for existing packet-flow allocations on this tile, and try to
-    // reuse the channel allocation.
-    if (isPacketFlowOp && t.foundPacketFlowAllocInTile(col, row)) {
+    // reuse the channel allocation. Only reuse for MM2S (outbound) channels;
+    // S2MM (inbound) channels need separate allocations so the packet switch
+    // can route different packet IDs to different buffer descriptors.
+    if (isPacketFlowOp && isMM2S.value() &&
+        t.foundPacketFlowAllocInTile(col, row)) {
       t.memcpyOps.push_back(memcpyOp.getOperation());
       return t;
     }
