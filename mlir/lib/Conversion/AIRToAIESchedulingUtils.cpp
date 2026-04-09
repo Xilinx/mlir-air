@@ -13,6 +13,7 @@
 
 #include "llvm/ADT/SmallSet.h"
 
+#include <map>
 #include <mutex>
 #include <set>
 
@@ -936,6 +937,14 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   AIE::DMAChannelDir dir =
       isMM2S.value() ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
 
+  // Check if allocating for a packet flow (packet flow supports channel time
+  // multiplexing at the shim DMA level)
+  bool isPacketFlowOp = false;
+  auto chanTypeRes = getChannelType(memcpyOp);
+  if (succeeded(chanTypeRes)) {
+    isPacketFlowOp = chanTypeRes.value().str() == "dma_packet";
+  }
+
   // Search for existing dma channel allocation
   for (auto &t : *allocs) {
     if (t.foundAlloc(getChannelDeclarationThroughSymbol(
@@ -954,6 +963,62 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       colIdx = it - dma_columns.begin();
   }
   int dma_col = dma_columns[colIdx];
+
+  // For packet-flow ops, reuse an existing channel on this shim tile via time
+  // multiplexing. Balance across all available channels by picking the one
+  // with the fewest existing packet-flow allocations.
+  if (isPacketFlowOp) {
+    // Count packet-flow allocations per channel on this shim tile.
+    std::map<int, int> chanUseCounts;
+    for (int ch = 0; ch < shim_dma_channels; ch++)
+      chanUseCounts[ch] = 0;
+    for (auto &t : *allocs) {
+      if (t.foundPacketFlowAllocInTile(dma_col, 0))
+        chanUseCounts[t.dma_channel.channel]++;
+    }
+    // Pick the channel with the fewest allocations (round-robin balancing).
+    int bestChan = 0;
+    int minCount = chanUseCounts[0];
+    for (int ch = 1; ch < shim_dma_channels; ch++) {
+      if (chanUseCounts[ch] < minCount) {
+        minCount = chanUseCounts[ch];
+        bestChan = ch;
+      }
+    }
+    // If at least one channel already has packet-flow allocs, or if we want
+    // to share even with an empty channel (first alloc on this tile), we
+    // reuse. But if no packet-flow allocs exist yet, fall through to the
+    // normal allocation path below which handles the first allocation.
+    bool hasExistingPktAlloc = false;
+    for (auto &t : *allocs) {
+      if (t.foundPacketFlowAllocInTile(dma_col, 0)) {
+        hasExistingPktAlloc = true;
+        break;
+      }
+    }
+    if (hasExistingPktAlloc) {
+      std::vector<int> dma_ops_get_id;
+      for (auto op : dma_ops) {
+        if (op->hasAttr("id"))
+          dma_ops_get_id.push_back(
+              op->getAttrOfType<IntegerAttr>("id").getInt());
+        else
+          dma_ops_get_id.push_back(-1);
+      }
+      tile = getPhysTileOp(device, dma_col, 0);
+      AIE::DMAChannel aie_chan_best = {dir, bestChan};
+      air::allocation_info_t newAlloc = {tile,
+                                         col,
+                                         row,
+                                         aie_chan_best,
+                                         bestChan,
+                                         dma_ops_get_id,
+                                         {memcpyOp.getOperation()}};
+      allocs->push_back(newAlloc);
+      return newAlloc;
+    }
+  }
+
   int dma_channel = 0;
   int colTripCount = 0;
   while (any_of(allocs->begin(), allocs->end(), [&](air::allocation_info_t &a) {
