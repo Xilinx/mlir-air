@@ -127,8 +127,9 @@ module attributes {transform.with_named_sequence} {
 
     // Step 14: Tile linalg.add for vectorization.
     // Purpose: Final tiling to enable vectorized execution on AIE hardware.
-    // The tile size matches the AIE vector lane count for the element type:
-    //   i8 -> 64 lanes (512-bit), i16 -> 32 lanes, f32/bf16 -> 16 lanes.
+    // The tile size is configurable via @VECTOR_SIZE@ and should match the
+    // AIE vector lane count. Defaults: i16 -> 32, f32/bf16 -> 16.
+    // i8 defaults to 32 (not 64) due to a Peano backend limitation on AIE2P.
         %linalg_generics = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %inner_most_generics, %vec_loops:1 =
           transform.structured.tile_using_for %linalg_generics tile_sizes [@VECTOR_SIZE@]

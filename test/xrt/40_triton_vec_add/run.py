@@ -20,7 +20,7 @@ np.random.seed(42)
 #   np_type: numpy dtype for host data
 #   add_op: arith add operation name
 #   pad_val: padding value literal in MLIR
-#   default_vector_size: default AIE vector lane count (512-bit register)
+#   default_vector_size: default vector lane count (i8 uses 32 due to backend limitation)
 #   rtol: relative tolerance for output comparison
 DTYPE_CONFIG = {
     "bf16": {
@@ -171,7 +171,6 @@ with air.ir.Context() as ctx, Location.unknown():
     # Load the MLIR transform IR from an external file
     with open(args.transform_script, "r") as f:
         transform_ir_string = f.read()
-    transform_ir_string = transform_ir_string.replace("@DTYPE@", dtype_str)
     transform_ir_string = transform_ir_string.replace("@PAD_VAL@", pad_val)
     transform_ir_string = transform_ir_string.replace("@VECTOR_SIZE@", str(vector_size))
     transform_ir_string = transform_ir_string.replace(
