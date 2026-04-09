@@ -108,7 +108,9 @@ input_type = cfg["np_type"]
 output_type = cfg["np_type"]
 add_op = cfg["add_op"]
 pad_val = cfg["pad_val"]
-vector_size = args.vector_size if args.vector_size is not None else cfg["default_vector_size"]
+vector_size = (
+    args.vector_size if args.vector_size is not None else cfg["default_vector_size"]
+)
 rtol = cfg["rtol"]
 num_tiles = args.num_tiles
 herd_tile_size = 256 // num_tiles
@@ -171,9 +173,7 @@ with air.ir.Context() as ctx, Location.unknown():
         transform_ir_string = f.read()
     transform_ir_string = transform_ir_string.replace("@DTYPE@", dtype_str)
     transform_ir_string = transform_ir_string.replace("@PAD_VAL@", pad_val)
-    transform_ir_string = transform_ir_string.replace(
-        "@VECTOR_SIZE@", str(vector_size)
-    )
+    transform_ir_string = transform_ir_string.replace("@VECTOR_SIZE@", str(vector_size))
     transform_ir_string = transform_ir_string.replace(
         "@HERD_TILE_SIZE@", str(herd_tile_size)
     )
