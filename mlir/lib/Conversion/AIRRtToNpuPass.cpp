@@ -1522,6 +1522,10 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
     // DMAConfigureTaskForOp result.
     generateAwaitsFromWaitAllOps(module);
 
+    // Insert periodic free for MM2S tasks to prevent BD exhaustion when a
+    // shim tile has more than 8 MM2S tasks (e.g., RoPE LUT + V interleaving).
+    insertPeriodicMM2SFrees(module);
+
     // Renumber npu dma ops
     renumberNpuDmaOps(module.getBody());
 
@@ -1987,6 +1991,77 @@ struct AIRRtToNpuPass : public impl::AIRRtToNpuBase<AIRRtToNpuPass> {
         waitOp->erase();
       }
     }
+  }
+
+  // Insert periodic dma_free_task for MM2S tasks when a shim tile has
+  // more than BD_BATCH_SIZE MM2S tasks. This prevents BD ID exhaustion
+  // (16 BDs per tile) by recycling IDs in the compile-time allocator.
+  //
+  // NOTE: Only dma_free_task is used, NOT dma_await_task. Awaiting MM2S
+  // tasks would deadlock the host because the downstream consumer
+  // (memtile/core) may need data from other channels that haven't been
+  // submitted yet. The hardware task queue handles ordering — BD slots
+  // are physically reused after each task completes in the FIFO queue.
+  // dma_free_task only releases BD IDs in the compile-time allocator.
+  //
+  // Must be called AFTER generateAwaitsFromWaitAllOps and BEFORE
+  // renumberNpuDmaOps.
+  void insertPeriodicMM2SFrees(ModuleOp module) {
+    constexpr int BD_BATCH_SIZE = 8; // half the 16-BD limit per tile
+
+    module.walk([&](func::FuncOp f) {
+      auto device = f->getParentOfType<AIE::DeviceOp>();
+      if (!device || f.getBody().empty())
+        return;
+
+      using TileKey = std::pair<int, int>;
+      llvm::MapVector<TileKey, SmallVector<AIEX::DMAConfigureTaskForOp>>
+          mm2sTasksByTile;
+
+      f.walk([&](AIEX::DMAConfigureTaskForOp configTask) {
+        auto allocSymbol = configTask.getAlloc();
+        StringRef metadata = allocSymbol.getLeafReference().getValue();
+        auto allocOp =
+            AIE::ShimDMAAllocationOp::getForSymbol(device, metadata);
+        if (!allocOp)
+          return;
+        if (allocOp.getChannelDir() != AIE::DMAChannelDir::MM2S)
+          return;
+        if (configTask.getIssueToken())
+          return;
+        AIE::TileOp tile = allocOp.getTileOp();
+        mm2sTasksByTile[{tile.getCol(), tile.getRow()}].push_back(configTask);
+      });
+
+      for (auto &[tileKey, tasks] : mm2sTasksByTile) {
+        if ((int)tasks.size() <= BD_BATCH_SIZE)
+          continue;
+
+        for (int batch = 0; batch < (int)tasks.size();
+             batch += BD_BATCH_SIZE) {
+          int end = std::min(batch + BD_BATCH_SIZE, (int)tasks.size());
+          auto lastTask = tasks[end - 1];
+
+          // Find the DMAStartTaskOp that uses lastTask's result
+          AIEX::DMAStartTaskOp startOp = nullptr;
+          for (auto *user : lastTask.getResult().getUsers()) {
+            if (auto st = dyn_cast<AIEX::DMAStartTaskOp>(user)) {
+              startOp = st;
+              break;
+            }
+          }
+          if (!startOp)
+            continue;
+
+          // Insert free for all tasks in this batch (compile-time only)
+          OpBuilder builder(startOp->getNextNode());
+          for (int i = batch; i < end; i++) {
+            AIEX::DMAFreeTaskOp::create(builder, tasks[i].getLoc(),
+                                        tasks[i].getResult());
+          }
+        }
+      }
+    });
   }
 
   // Purge DMA async tokens - they are no longer needed after WaitAllOp
