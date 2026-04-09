@@ -61,7 +61,7 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Ensures that the computation is aligned to tile sizes, handles boundary conditions.
     // Assumption: Padding values/types are correct for the op; nofold_flags prevent folding of padding.
         %padded_add, %pad_add, %__ = transform.structured.pad %add_2 {
-            padding_values=[0.0 : bf16, 0.0 : bf16, 0.0 : bf16],
+            padding_values=[@PAD_VAL@, @PAD_VAL@, @PAD_VAL@],
             padding_dimensions=[0, 1, 2],
             nofold_flags=[1, 1, 1],
             copy_back_op="linalg.copy"
@@ -125,12 +125,13 @@ module attributes {transform.with_named_sequence} {
         %func_op_updated = transform.air.remove_uninitialized_copy %func6 : (!transform.any_op) -> !transform.any_op
         %func_op_updated_1 = transform.air.eliminate_cascade_memcpy %func_op_updated : (!transform.any_op) -> !transform.any_op
 
-    // Step 14: Tile linalg.add for vectorization (tile size 16).
+    // Step 14: Tile linalg.add for vectorization.
     // Purpose: Final tiling to enable vectorized execution on AIE hardware.
-    // Assumption: The innermost dimension is a multiple of 16, or padding has handled the remainder. Vec size 16 for @llvm.aie2.add.accfloat(<8 x i64> %acc1, <8 x i64> %acc2).
+    // The tile size matches the AIE vector lane count for the element type:
+    //   i8 -> 64 lanes (512-bit), i16 -> 32 lanes, f32/bf16 -> 16 lanes.
         %linalg_generics = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %inner_most_generics, %vec_loops:1 =
-          transform.structured.tile_using_for %linalg_generics tile_sizes [16]
+          transform.structured.tile_using_for %linalg_generics tile_sizes [@VECTOR_SIZE@]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
     // Step 15: AIR Constructs Mapping
