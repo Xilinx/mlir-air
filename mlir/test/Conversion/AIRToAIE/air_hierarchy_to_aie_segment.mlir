@@ -17,23 +17,25 @@
 //   - No aie.lock / aie.flow / aie.dma_bd (those come from Pass C)
 
 // RUN: air-opt %s -air-hierarchy-to-aie="row-offset=2 col-offset=0 device=npu1_1col" | FileCheck %s
-// XFAIL: *
 
 // CHECK: aie.device(npu1_1col)
-
-// Channels must survive.
-// CHECK:   air.channel @inA
-// CHECK:   air.channel @outC
 
 // No DMA lowering yet.
 // CHECK-NOT: aie.lock
 // CHECK-NOT: aie.flow
 // CHECK-NOT: aie.dma_bd
 
-// Core should contain channel ops.
-// CHECK:   aie.core
-// CHECK:     air.channel.get{{.*}}@inA
-// CHECK:     air.channel.put{{.*}}@outC
+// The segment-level put (outside the herd) is hoisted to device scope before the core.
+// CHECK: air.channel.put{{.*}}@inA
+
+// Core (from herd) should contain get then put.
+// CHECK: aie.core
+// CHECK:   air.channel.get{{.*}}@inA
+// CHECK:   air.channel.put{{.*}}@outC
+
+// Channel declarations survive in the device body (emitted after the core).
+// CHECK-DAG: air.channel @inA
+// CHECK-DAG: air.channel @outC
 
 air.channel @inA [1, 1]
 air.channel @outC [1, 1]

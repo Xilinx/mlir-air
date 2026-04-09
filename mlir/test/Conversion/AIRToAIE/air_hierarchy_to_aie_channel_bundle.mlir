@@ -19,23 +19,25 @@
 //   - No aie.lock / aie.flow / aie.dma_bd
 
 // RUN: air-opt %s -air-hierarchy-to-aie="row-offset=2 col-offset=0 device=npu1_1col" | FileCheck %s
-// XFAIL: *
 
 // CHECK: aie.device(npu1_1col)
-
-// After specialization, channels should be present.
-// CHECK: air.channel
 
 // No DMA lowering.
 // CHECK-NOT: aie.lock
 // CHECK-NOT: aie.flow
 // CHECK-NOT: aie.dma_bd
 
-// Cores should still contain channel ops.
+// Both tile positions in the herd use put (the input has only put ops).
+// Cores are emitted before channel declarations in the device body.
 // CHECK: aie.core
-// CHECK:   air.channel.put
+// CHECK:   air.channel.put{{.*}}@channel_
 // CHECK: aie.core
-// CHECK:   air.channel.get
+// CHECK:   air.channel.put{{.*}}@channel_
+
+// After specialization, scalar channel declarations survive in the device body.
+// They appear after cores; use CHECK-DAG so ordering relative to each other doesn't matter.
+// CHECK-DAG: air.channel @channel_0
+// CHECK-DAG: air.channel @channel_1
 
 air.channel @ch [1, 2]
 func.func @channel_bundle_test() {

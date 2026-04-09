@@ -16,24 +16,24 @@
 //   - No DMA infrastructure (no aie.lock / aie.flow / aie.dma_bd)
 
 // RUN: air-opt %s -air-hierarchy-to-aie="row-offset=2 col-offset=0 device=npu1_1col" | FileCheck %s
-// XFAIL: *
 
 // CHECK: aie.device(npu1_1col)
-
-// Specialized per-tile channel declarations must survive.
-// CHECK-DAG: air.channel @channel_0
-// CHECK-DAG: air.channel @channel_1
 
 // No DMA infrastructure.
 // CHECK-NOT: aie.lock
 // CHECK-NOT: aie.flow
 // CHECK-NOT: aie.dma_bd
 
-// Multiple cores with specialized channel ops.
+// Both tile positions use put (the input herd has only put ops).
+// Cores are emitted before channel declarations in the device body.
 // CHECK: aie.core
 // CHECK:   air.channel.put{{.*}}@channel_
 // CHECK: aie.core
 // CHECK:   air.channel.put{{.*}}@channel_
+
+// Specialized per-tile channel declarations survive in the device body after cores.
+// CHECK-DAG: air.channel @channel_0
+// CHECK-DAG: air.channel @channel_1
 
 air.channel @data_ch [1, 2]
 func.func @multi_tile_channels() {
