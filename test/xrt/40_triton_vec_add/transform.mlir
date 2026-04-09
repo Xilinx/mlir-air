@@ -36,12 +36,12 @@ module attributes {transform.with_named_sequence} {
         %add_res_shared, %new_add = transform.structured.bufferize_to_allocation %add_flattened
           {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
 
-    // Step 4: Tile the computation using scf.forall with tile size 64.
+    // Step 4: Tile the computation using scf.forall for herd parallelism.
     // Purpose: Introduces parallelism and prepares for mapping to AIE columns.
-    // Assumption: The problem size is a multiple of 64, or padding will be handled later.
+    // The tile size = 256 / num_tiles (e.g., 64 for 4 tiles, 32 for 8 tiles).
         %add_1 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %tiled_add_1, %forall_add_1 =
-          transform.structured.tile_using_forall %add_1 tile_sizes [64] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+          transform.structured.tile_using_forall %add_1 tile_sizes [@HERD_TILE_SIZE@] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
     // Step 5: Run canonicalization and CSE.
     // Purpose: Cleans up the IR after tiling, merges redundant ops, and prepares for further transforms.
@@ -61,7 +61,7 @@ module attributes {transform.with_named_sequence} {
     // Purpose: Ensures that the computation is aligned to tile sizes, handles boundary conditions.
     // Assumption: Padding values/types are correct for the op; nofold_flags prevent folding of padding.
         %padded_add, %pad_add, %__ = transform.structured.pad %add_2 {
-            padding_values=[0.0 : bf16, 0.0 : bf16, 0.0 : bf16],
+            padding_values=[@PAD_VAL@, @PAD_VAL@, @PAD_VAL@],
             padding_dimensions=[0, 1, 2],
             nofold_flags=[1, 1, 1],
             copy_back_op="linalg.copy"
@@ -125,12 +125,14 @@ module attributes {transform.with_named_sequence} {
         %func_op_updated = transform.air.remove_uninitialized_copy %func6 : (!transform.any_op) -> !transform.any_op
         %func_op_updated_1 = transform.air.eliminate_cascade_memcpy %func_op_updated : (!transform.any_op) -> !transform.any_op
 
-    // Step 14: Tile linalg.add for vectorization (tile size 16).
+    // Step 14: Tile linalg.add for vectorization.
     // Purpose: Final tiling to enable vectorized execution on AIE hardware.
-    // Assumption: The innermost dimension is a multiple of 16, or padding has handled the remainder. Vec size 16 for @llvm.aie2.add.accfloat(<8 x i64> %acc1, <8 x i64> %acc2).
+    // The tile size is configurable via @VECTOR_SIZE@ and should match the
+    // AIE vector lane count. Defaults: i16 -> 32, f32/bf16 -> 16.
+    // i8 defaults to 32 (not 64) due to a Peano backend limitation on AIE2P.
         %linalg_generics = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %inner_most_generics, %vec_loops:1 =
-          transform.structured.tile_using_for %linalg_generics tile_sizes [16]
+          transform.structured.tile_using_for %linalg_generics tile_sizes [@VECTOR_SIZE@]
           : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
     // Step 15: AIR Constructs Mapping
