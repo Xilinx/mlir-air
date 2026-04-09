@@ -2209,6 +2209,291 @@ private:
   bool &skipZeroStride;
 };
 
+// This pattern extends AIRSpecializeChannelWrapAndStrideInScfFor to handle
+// loops containing MULTIPLE channel ops alongside non-channel impure ops (like
+// air.segment). For each channel op in the loop body, it independently folds
+// the loop's iteration into the channel op's wrap/stride dimensions and hoists
+// the folded op outside the loop. The loop is retained for the remaining
+// non-channel ops. This enables BD folding of launch loops that contain both
+// L3 channel puts and segment ops, which the single-channel pattern rejects.
+struct AIRSpecializeMultiChannelWrapAndStrideInScfFor
+    : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  AIRSpecializeMultiChannelWrapAndStrideInScfFor(MLIRContext *ctx,
+                                                 int &maxNumDims, int &maxSize,
+                                                 bool &enableRepeatAtHighestDim,
+                                                 bool &skipZeroStride)
+      : OpRewritePattern(ctx), maxNumDims(maxNumDims), maxSize(maxSize),
+        enableRepeatAtHighestDim(enableRepeatAtHighestDim),
+        skipZeroStride(skipZeroStride) {}
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = for_op->getLoc();
+    auto ctx = for_op->getContext();
+
+    // Only match loops at the outermost level (direct child of launch, func, or
+    // rank op). This avoids dominance issues when hoisting ops from nested
+    // loops whose channel ops reference outer loop IVs.
+    if (isa<scf::ForOp>(for_op->getParentOp()))
+      return failure();
+
+    // Collect direct-child channel ops in the loop body.
+    auto channelOps = llvm::to_vector(
+        for_op.getBody()->getOps<air::ChannelInterface>());
+    if (channelOps.empty())
+      return failure();
+
+    // Only match when the loop body has non-channel impure ops (like segment)
+    // that prevent the single-channel pattern from matching. This ensures we
+    // don't interfere with the existing single-channel pattern.
+    bool hasNonChannelImpureOp = false;
+    for (auto &op : for_op.getBody()->getOperations()) {
+      if (isa<air::ChannelInterface>(op))
+        continue;
+      if (isa<air::WaitAllOp>(op))
+        continue;
+      if (air::isPure(&op))
+        continue;
+      if (isa<scf::YieldOp>(op))
+        continue;
+      // Found a non-channel, non-wait_all impure op (e.g., segment, herd).
+      hasNonChannelImpureOp = true;
+      break;
+    }
+    if (!hasNonChannelImpureOp)
+      return failure(); // No segment/herd blocking the single-channel pattern.
+
+    // Must be async (with iter args for token threading).
+    if (for_op.getRegionIterArgs().empty())
+      return failure();
+    Value iterArg = for_op.getRegionIterArgs()[0];
+    if (!isa<air::AsyncTokenType>(iterArg.getType()))
+      return failure();
+
+    // Collect the for_op's init dependencies (async tokens).
+    SmallVector<Value, 1> forDeps =
+        for_op.getOperands().drop_front(for_op.getNumControlOperands());
+
+    // Process each channel op independently.
+    SmallVector<air::ChannelInterface> foldedOrigOps;
+    SmallVector<Value> newOpTokens;
+
+    for (auto channel_op : channelOps) {
+      // Set insertion point before for_op for each channel op's hoisted code.
+      rewriter.setInsertionPoint(for_op);
+
+      // Compute wraps and strides for this channel op.
+      SmallVector<Value> offsets = channel_op.getOffsets();
+      SmallVector<Value> wraps = channel_op.getSizes();
+      SmallVector<Value> strides = channel_op.getStrides();
+
+      // Use a temporary OpBuilder for canonicalization inside the loop body.
+      OpBuilder b(channel_op);
+      (void)canonicalizeWrapAndStrideList(
+          b, offsets, wraps, strides,
+          air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
+
+      if (offsets.empty() && wraps.empty() && strides.empty())
+        populateDefaultWrapsAndStrides(b, channel_op.getMemref(), offsets, wraps,
+                                       strides);
+
+      // Check BD dim budget.
+      int numActualWrapDims = 0;
+      for (auto v : wraps) {
+        auto constV = getConstantIntValue(v);
+        if (constV && *constV > 1)
+          numActualWrapDims++;
+      }
+      if (maxNumDims >= 0 && numActualWrapDims > maxNumDims - 1)
+        continue; // No room to fold this loop; skip.
+
+      // Ensure insertion point is before for_op for fold helper.
+      rewriter.setInsertionPoint(for_op);
+
+      // Try to fold the for loop into this channel op's wraps/strides.
+      auto res = foldForLoopNestAsExtendedSizesAndStrides(
+          rewriter, for_op.getOperation(), channel_op.getOperation(), offsets,
+          wraps, strides, channel_op.getMemref(), skipZeroStride);
+      if (res.failed())
+        continue;
+
+      // Reset insertion point again after fold helper may have changed it.
+      rewriter.setInsertionPoint(for_op);
+
+      (void)canonicalizeWrapAndStrideList(
+          rewriter, offsets, wraps, strides,
+          air::getTensorVolume(channel_op.getMemref().getType()), maxSize);
+
+      // Handle repeat at highest dimension.
+      bool repeatFailed = false;
+      if (enableRepeatAtHighestDim && !wraps.empty()) {
+        auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        auto oneIdx = arith::ConstantIndexOp::create(rewriter, loc, 1);
+        while ((int)offsets.size() < maxNumDims)
+          offsets.insert(offsets.begin(), zeroIdx);
+        while ((int)wraps.size() < maxNumDims)
+          wraps.insert(wraps.begin(), oneIdx);
+        while ((int)strides.size() < maxNumDims)
+          strides.insert(strides.begin(), zeroIdx);
+
+        unsigned activeDimsInBetween = 0;
+        for (unsigned i = 1; i < strides.size(); i++) {
+          auto constWrap = mlir::getConstantIntValue(wraps[i]);
+          auto constStride = mlir::getConstantIntValue(strides[i]);
+          if (!constWrap || !constStride)
+            continue;
+          if (*constWrap <= 1)
+            continue;
+          if (*constStride) {
+            activeDimsInBetween++;
+            continue;
+          }
+          // Repeat dimension.
+          if (mlir::getConstantIntValue(wraps[0]) &&
+              *mlir::getConstantIntValue(wraps[0]) == 1 &&
+              !activeDimsInBetween) {
+            auto tmp = wraps[0];
+            wraps[0] = wraps[i];
+            wraps[i] = tmp;
+            tmp = strides[0];
+            strides[0] = strides[i];
+            strides[i] = tmp;
+            tmp = offsets[0];
+            offsets[0] = offsets[i];
+            offsets[i] = tmp;
+          } else {
+            repeatFailed = true;
+            break;
+          }
+        }
+      }
+      if (repeatFailed)
+        continue; // Can't handle repeat for this op; skip.
+
+      // Ensure insertion point is before for_op for hoisting.
+      rewriter.setInsertionPoint(for_op);
+
+      // Hoist backward slice of pure ops that the new channel op depends on.
+      SmallVector<Value> new_opers = llvm::to_vector(llvm::concat<Value>(
+          SmallVector<Value>{channel_op.getMemref()},
+          channel_op.getIndices(), offsets, wraps, strides));
+      IRMapping remap;
+      llvm::SetVector<Operation *> backwardSlices;
+      air::getBackwardSliceInRegion(rewriter, &for_op.getRegion(), new_opers,
+                                    backwardSlices);
+      SmallVector<Value> deps(forDeps.begin(), forDeps.end());
+      for (auto o : backwardSlices) {
+        auto cloned = rewriter.clone(*o, remap);
+        clearAsyncDependenciesOfAsyncOp(cloned);
+        for (auto token : deps)
+          addAsyncDependencyIfNew(cloned, token);
+        if (auto token = getAsyncTokenFromOp(cloned))
+          deps.push_back(token);
+      }
+
+      // Create the folded channel op outside the loop.
+      SmallVector<Type, 1> tys;
+      if (isAsyncOp(channel_op.getOperation()))
+        tys.push_back(air::AsyncTokenType::get(ctx));
+
+      air::ChannelInterface new_chan_op = nullptr;
+      if (isa<air::ChannelPutOp>(channel_op))
+        new_chan_op = air::ChannelPutOp::create(
+            rewriter, loc, tys, deps, channel_op.getChanName(),
+            air::lookupOrDefaultRange(channel_op.getIndices(), remap),
+            air::lookupOrDefaultRange(channel_op.getMemref(), remap),
+            air::lookupOrDefaultRange(offsets, remap),
+            air::lookupOrDefaultRange(wraps, remap),
+            air::lookupOrDefaultRange(strides, remap),
+            /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+      else if (isa<air::ChannelGetOp>(channel_op))
+        new_chan_op = air::ChannelGetOp::create(
+            rewriter, loc, tys, deps, channel_op.getChanName(),
+            air::lookupOrDefaultRange(channel_op.getIndices(), remap),
+            air::lookupOrDefaultRange(channel_op.getMemref(), remap),
+            air::lookupOrDefaultRange(offsets, remap),
+            air::lookupOrDefaultRange(wraps, remap),
+            air::lookupOrDefaultRange(strides, remap),
+            /*pad_before=*/nullptr, /*pad_after=*/nullptr);
+      new_chan_op->setAttrs(channel_op->getDiscardableAttrDictionary());
+      air::copyPaddingAttributes(channel_op, new_chan_op);
+
+      foldedOrigOps.push_back(channel_op);
+      if (isAsyncOp(new_chan_op.getOperation()))
+        newOpTokens.push_back(
+            getAsyncTokenFromOp(new_chan_op.getOperation()));
+    }
+
+    if (foldedOrigOps.empty())
+      return failure();
+
+    // Set insertion point before for_op for wait_all creation.
+    rewriter.setInsertionPoint(for_op);
+
+    // Create a wait_all collecting all hoisted ops' tokens.
+    Value hoistedWaitAll;
+    if (!newOpTokens.empty()) {
+      auto waitAll = air::WaitAllOp::create(
+          rewriter, loc, air::AsyncTokenType::get(ctx), newOpTokens);
+      hoistedWaitAll = waitAll.getAsyncToken();
+    }
+
+    // Inside the loop body, replace uses of folded channel ops' tokens with
+    // the loop's iter arg, then erase the original channel ops.
+    for (auto origOp : foldedOrigOps) {
+      if (isAsyncOp(origOp.getOperation())) {
+        Value oldToken = getAsyncTokenFromOp(origOp.getOperation());
+        oldToken.replaceAllUsesWith(iterArg);
+      }
+      rewriter.eraseOp(origOp.getOperation());
+    }
+
+    // Update the loop's init operand to include the hoisted wait_all,
+    // so the loop (with remaining segment ops) starts after all hoisted
+    // channel ops are configured.
+    if (hoistedWaitAll) {
+      // Create a wait_all combining old init and hoisted tokens.
+      SmallVector<Value> combinedDeps;
+      for (auto init : for_op.getInitArgs())
+        if (isa<air::AsyncTokenType>(init.getType()))
+          combinedDeps.push_back(init);
+      combinedDeps.push_back(hoistedWaitAll);
+      auto combinedWait = air::WaitAllOp::create(
+          rewriter, loc, air::AsyncTokenType::get(ctx), combinedDeps);
+      for_op.getInitArgsMutable()[0].set(combinedWait.getAsyncToken());
+    }
+
+    // Clean up dead wait_all ops inside the loop body that no longer have
+    // meaningful dependencies.
+    SmallVector<air::WaitAllOp> deadWaitAlls;
+    for (auto &op : *for_op.getBody()) {
+      if (auto wa = dyn_cast<air::WaitAllOp>(op)) {
+        bool allIterArg = true;
+        for (auto dep : wa.getAsyncDependencies()) {
+          if (dep != iterArg)
+            allIterArg = false;
+        }
+        if (allIterArg && wa.getAsyncDependencies().size() > 1) {
+          wa.getAsyncToken().replaceAllUsesWith(iterArg);
+          deadWaitAlls.push_back(wa);
+        }
+      }
+    }
+    for (auto wa : deadWaitAlls)
+      rewriter.eraseOp(wa);
+
+    return success();
+  }
+
+private:
+  int &maxNumDims;
+  int &maxSize;
+  bool &enableRepeatAtHighestDim;
+  bool &skipZeroStride;
+};
+
 // This pattern should be executed after
 // AIRSpecializeChannelWrapAndStrideInScfFor. The pattern unrolls any remaining
 // scf.for loops that iterates over air.channel.put/get but cannot be converted
@@ -3338,6 +3623,19 @@ LogicalResult AIRSpecializeChannelWrapAndStrideImpl(
   air::ExecuteOp::getCanonicalizationPatterns(patterns, ctx);
   affine::AffineApplyOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsGreedily(*region, std::move(patterns));
+
+  // After single-channel folding, try multi-channel folding for loops that
+  // contain multiple channel ops alongside non-channel ops (e.g., segment).
+  // This hoists folded channel ops outside loops that the single-channel
+  // pattern cannot handle.
+  {
+    RewritePatternSet multiChanPatterns(ctx);
+    multiChanPatterns
+        .insert<AIRSpecializeMultiChannelWrapAndStrideInScfFor>(
+            ctx, maxNumDims, maxSize, enableRepeatAtHighestDim,
+            skipZeroStride);
+    (void)applyPatternsGreedily(*region, std::move(multiChanPatterns));
+  }
 
   // Unroll any remaining loops which contain only data movements.
   if (enableForLoopUnrolling) {
@@ -6194,6 +6492,206 @@ struct AIRLaunchToScfForPattern : public OpRewritePattern<air::LaunchOp> {
   }
 };
 
+// Merge adjacent flat air.channel.put (or .get) ops that share the same
+// channel name, indices, memref, sizes, and strides — but whose offsets differ
+// by a constant stride in exactly one position — into a single op with an
+// extra outermost BD dimension.  When two ops with identical BD structure are
+// merged, the new outermost dim captures the stride between them (size=2).
+// If the existing outermost dim already has the right stride relationship,
+// the dim is extended instead (size += size_B[0]).
+// Applied iteratively via applyPatternsGreedily, this reduces N flat ops
+// (from launch-loop unrolling) to a single op with a repeat/stride dim.
+template <typename ChannelOpTy>
+struct AIRMergeAdjacentChannelOps : public OpRewritePattern<ChannelOpTy> {
+  using OpRewritePattern<ChannelOpTy>::OpRewritePattern;
+
+  int maxNumDims;
+
+  AIRMergeAdjacentChannelOps(MLIRContext *ctx, int maxNumDims)
+      : OpRewritePattern<ChannelOpTy>(ctx), maxNumDims(maxNumDims) {}
+
+  LogicalResult matchAndRewrite(ChannelOpTy opA,
+                                PatternRewriter &rewriter) const override {
+    auto *block = opA->getBlock();
+    if (!block)
+      return failure();
+
+    // Find the next channel op of the same type with matching name+indices.
+    ChannelOpTy opB = nullptr;
+    for (auto it = std::next(opA->getIterator()); it != block->end(); ++it) {
+      auto candidate = dyn_cast<ChannelOpTy>(&*it);
+      if (!candidate)
+        continue;
+      if (candidate.getChanName() != opA.getChanName())
+        continue;
+      if (candidate.getIndices().size() != opA.getIndices().size())
+        continue;
+      bool sameIndices = true;
+      for (unsigned i = 0; i < opA.getIndices().size(); i++) {
+        auto idxA = getConstantIntValue(opA.getIndices()[i]);
+        auto idxB = getConstantIntValue(candidate.getIndices()[i]);
+        if (!idxA || !idxB || *idxA != *idxB) {
+          sameIndices = false;
+          break;
+        }
+      }
+      if (!sameIndices)
+        continue;
+      // Found a same-channel op. Check if it can be merged.
+      opB = candidate;
+      break;
+    }
+    if (!opB)
+      return failure();
+
+    // Must have the same memref.
+    if (opA.getMemref() != opB.getMemref())
+      return failure();
+
+    // Must have the same sizes and strides (element-wise equal constants).
+    auto sizesA = opA.getSizes();
+    auto sizesB = opB.getSizes();
+    auto stridesA = opA.getStrides();
+    auto stridesB = opB.getStrides();
+    if (sizesA.size() != sizesB.size() || stridesA.size() != stridesB.size())
+      return failure();
+    for (unsigned i = 0; i < sizesA.size(); i++) {
+      auto sa = getConstantIntValue(sizesA[i]);
+      auto sb = getConstantIntValue(sizesB[i]);
+      if (!sa || !sb || *sa != *sb)
+        return failure();
+    }
+    for (unsigned i = 0; i < stridesA.size(); i++) {
+      auto sa = getConstantIntValue(stridesA[i]);
+      auto sb = getConstantIntValue(stridesB[i]);
+      if (!sa || !sb || *sa != *sb)
+        return failure();
+    }
+
+    // Must have same discardable attrs (metadata, etc.).
+    if (opA->getDiscardableAttrDictionary() !=
+        opB->getDiscardableAttrDictionary())
+      return failure();
+
+    // Find offset diff: exactly one position with constant positive delta,
+    // or all identical (repeat, delta=0).
+    auto offsetsA = opA.getOffsets();
+    auto offsetsB = opB.getOffsets();
+    if (offsetsA.size() != offsetsB.size())
+      return failure();
+
+    int diffPos = -1;
+    int64_t delta = 0;
+    for (unsigned i = 0; i < offsetsA.size(); i++) {
+      auto oA = getConstantIntValue(offsetsA[i]);
+      auto oB = getConstantIntValue(offsetsB[i]);
+      if (!oA || !oB)
+        return failure();
+      if (*oA != *oB) {
+        if (diffPos >= 0)
+          return failure(); // More than one position differs.
+        diffPos = i;
+        delta = *oB - *oA;
+        if (delta <= 0)
+          return failure(); // Must be positive stride.
+      }
+    }
+    // If offsets are all identical (repeat), skip. Repeat merging is less
+    // beneficial than cross-tile merging and can block it.
+    if (diffPos < 0)
+      return failure();
+
+    // Try to extend the outermost dim if the delta matches stride[0]*size[0].
+    auto loc = opA->getLoc();
+    SmallVector<Value> newOffsets(offsetsA.begin(), offsetsA.end());
+    SmallVector<Value> newSizes(sizesA.begin(), sizesA.end());
+    SmallVector<Value> newStrides(stridesA.begin(), stridesA.end());
+
+    bool extended = false;
+    if (diffPos == 0 && !sizesA.empty()) {
+      auto sA0 = getConstantIntValue(sizesA[0]);
+      auto dA0 = getConstantIntValue(stridesA[0]);
+      auto sB0 = getConstantIntValue(sizesB[0]);
+      if (sA0 && dA0 && sB0 && delta == *sA0 * *dA0) {
+        // Extend outermost dim: sizes[0] = sA0 + sB0, strides unchanged.
+        newSizes[0] = arith::ConstantIndexOp::create(rewriter, loc,
+                                                      *sA0 + *sB0);
+        extended = true;
+      }
+    }
+
+    if (!extended) {
+      // Check BD dim budget: adding a new dim would push total dims to
+      // sizesA.size() + 1, which must not exceed maxNumDims (hardware limit).
+      if (maxNumDims >= 0 && (int)sizesA.size() >= maxNumDims)
+        return failure(); // No room for an additional dim.
+
+      // Add new outermost dim: size=2, stride=delta.
+      newSizes.insert(newSizes.begin(),
+                      arith::ConstantIndexOp::create(rewriter, loc, 2));
+      newStrides.insert(newStrides.begin(),
+                        arith::ConstantIndexOp::create(rewriter, loc, delta));
+      // Prepend a zero offset for the new outermost dim.
+      newOffsets.insert(newOffsets.begin(),
+                        arith::ConstantIndexOp::create(rewriter, loc, 0));
+    }
+
+    // Build the merged op.
+    SmallVector<Type, 1> resultTypes;
+    bool isAsync = air::isAsyncOp(opA.getOperation());
+    if (isAsync)
+      resultTypes.push_back(air::AsyncTokenType::get(rewriter.getContext()));
+
+    // Collect deps: all from opA, plus from opB (excluding opA's token).
+    SmallVector<Value> deps;
+    if (auto asyncA =
+            dyn_cast<air::AsyncOpInterface>(opA.getOperation()))
+      for (auto dep : asyncA.getAsyncDependencies())
+        deps.push_back(dep);
+    if (auto asyncB =
+            dyn_cast<air::AsyncOpInterface>(opB.getOperation())) {
+      Value tokenA =
+          isAsync ? air::getAsyncTokenFromOp(opA.getOperation()) : Value();
+      for (auto dep : asyncB.getAsyncDependencies())
+        if (dep != tokenA)
+          deps.push_back(dep);
+    }
+
+    rewriter.setInsertionPoint(opA);
+    air::ChannelInterface newOp = nullptr;
+    if (isa<air::ChannelPutOp>(opA))
+      newOp = air::ChannelPutOp::create(rewriter, loc, resultTypes, deps,
+                                         opA.getChanName(), opA.getIndices(),
+                                         opA.getMemref(), newOffsets, newSizes,
+                                         newStrides, nullptr, nullptr);
+    else
+      newOp = air::ChannelGetOp::create(rewriter, loc, resultTypes, deps,
+                                         opA.getChanName(), opA.getIndices(),
+                                         opA.getMemref(), newOffsets, newSizes,
+                                         newStrides, nullptr, nullptr);
+    newOp->setAttrs(opA->getDiscardableAttrDictionary());
+    air::copyPaddingAttributes(opA, newOp);
+
+    // Replace token uses.
+    if (isAsync) {
+      Value newToken = air::getAsyncTokenFromOp(newOp.getOperation());
+      air::getAsyncTokenFromOp(opA.getOperation())
+          .replaceAllUsesWith(newToken);
+      air::getAsyncTokenFromOp(opB.getOperation())
+          .replaceAllUsesWith(newToken);
+    }
+    rewriter.eraseOp(opB.getOperation());
+    rewriter.eraseOp(opA.getOperation());
+
+    return success();
+  }
+};
+
+using AIRMergeAdjacentChannelPuts =
+    AIRMergeAdjacentChannelOps<air::ChannelPutOp>;
+using AIRMergeAdjacentChannelGets =
+    AIRMergeAdjacentChannelOps<air::ChannelGetOp>;
+
 // A pass which performs a series of scf.for loop splitting, fusion and
 // specialization, with the goal of generating efficient shim dma block
 // descriptors (BD).
@@ -6451,6 +6949,13 @@ private:
           /*enableForLoopUnrolling=*/enableForLoopUnrolling,
           /*enableRepeatAtHighestDim=*/true);
     }
+
+    // NOTE: The AIRMergeAdjacentChannelOps pattern (merging flat puts after
+    // unrolling) is intentionally not applied here. While it reduces L3 BD
+    // count for non-SwiGLU cases, it can incorrectly merge channel puts that
+    // have ordering constraints (gate/up phase interleaving in SwiGLU), causing
+    // hardware correctness failures. The pattern needs additional guards to
+    // ensure FIFO ordering is preserved before it can be safely enabled.
   }
 };
 

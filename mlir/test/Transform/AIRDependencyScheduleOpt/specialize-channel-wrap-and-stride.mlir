@@ -732,10 +732,46 @@ module {
         }
         scf.reduce(%4 : !air.async.token) {
         ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
-          %5 = air.wait_all async [%arg5, %arg6] 
+          %5 = air.wait_all async [%arg5, %arg6]
           scf.reduce.return %5 : !air.async.token
         }
       }
+    }
+    return
+  }
+
+  // Multi-channel specialization: a for loop containing multiple channel puts
+  // alongside a segment op. The channel puts should be hoisted and folded
+  // outside the loop, while the segment stays inside the loop.
+
+  // CHECK-LABEL: test_multi_channel_with_segment
+  // CHECK: air.channel.put async{{.*}}@channel_A
+  // CHECK: air.channel.put async{{.*}}@channel_B
+  // CHECK: air.wait_all
+  // CHECK: scf.for
+  // CHECK:   air.segment
+  // CHECK:   scf.yield
+
+  func.func @test_multi_channel_with_segment(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+    %c256 = arith.constant 256 : index
+    %c512 = arith.constant 512 : index
+    %async_token_init = air.wait_all async
+    %0 = scf.for %iv = %c0 to %c2 step %c1 iter_args(%iter = %async_token_init) -> (!air.async.token) {
+      %off = affine.apply affine_map<(d0) -> (d0 * 256)>(%iv)
+      %put_a = air.channel.put async [%iter] @channel_A[%c0, %c0] (%arg0[%off, %c0] [%c256, %c64] [%c512, %c1]) : (memref<512x512xbf16>)
+      %put_b = air.channel.put async [%iter] @channel_B[%c0, %c0] (%arg1[%c0, %off] [%c64, %c256] [%c512, %c1]) : (memref<512x512xbf16>)
+      %wait = air.wait_all async [%put_a, %put_b]
+      %seg = air.segment async [%wait] {
+        %c1_s = arith.constant 1 : index
+        air.herd tile (%tx, %ty) in (%sx=%c1_s, %sy=%c1_s) {
+        }
+      }
+      scf.yield %seg : !air.async.token
     }
     return
   }
