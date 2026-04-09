@@ -493,7 +493,7 @@ def AirChannelToConduit : Pass<"air-channel-to-conduit", "ModuleOp"> {
   let options = [
     Option<"inferRates", "infer-rates", "bool", /*default=*/"false",
            "Run conduit-infer-rates inline at the end of the pass. "
-           "Default is false because air.channel capacity does not match "
+           "Default is false because air.channel slot_elems does not match "
            "CSDF buffer-slot semantics; enabling triggers spurious M7.">,
   ];
   let dependentDialects = [
