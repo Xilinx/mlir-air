@@ -36,12 +36,12 @@ module attributes {transform.with_named_sequence} {
         %add_res_shared, %new_add = transform.structured.bufferize_to_allocation %add_flattened
           {memory_space = 1, bufferize_destination_only, emit_dealloc} : !transform.any_op
 
-    // Step 4: Tile the computation using scf.forall with tile size 64.
+    // Step 4: Tile the computation using scf.forall for herd parallelism.
     // Purpose: Introduces parallelism and prepares for mapping to AIE columns.
-    // Assumption: The problem size is a multiple of 64, or padding will be handled later.
+    // The tile size = 256 / num_tiles (e.g., 64 for 4 tiles, 32 for 8 tiles).
         %add_1 = transform.structured.match ops{["linalg.generic"]} in %arg1 : (!transform.any_op) -> !transform.any_op
         %tiled_add_1, %forall_add_1 =
-          transform.structured.tile_using_forall %add_1 tile_sizes [64] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
+          transform.structured.tile_using_forall %add_1 tile_sizes [@HERD_TILE_SIZE@] : (!transform.any_op) -> (!transform.any_op, !transform.any_op)
 
     // Step 5: Run canonicalization and CSE.
     // Purpose: Cleans up the IR after tiling, merges redundant ops, and prepares for further transforms.

@@ -83,6 +83,13 @@ parser.add_argument(
     help="Vector size for SIMD operations (default: auto based on dtype)",
 )
 parser.add_argument(
+    "--num-tiles",
+    type=int,
+    dest="num_tiles",
+    default=4,
+    help="Number of AIE compute tiles (herd size). NPU1 has 4 columns, NPU2 has 8 (default: 4).",
+)
+parser.add_argument(
     "--bf16-emulation",
     dest="bf16_emulation",
     default=False,
@@ -103,6 +110,8 @@ add_op = cfg["add_op"]
 pad_val = cfg["pad_val"]
 vector_size = args.vector_size if args.vector_size is not None else cfg["default_vector_size"]
 rtol = cfg["rtol"]
+num_tiles = args.num_tiles
+herd_tile_size = 256 // num_tiles
 
 # bf16_emulation only applies to f32 dtype
 bf16_emulation = args.bf16_emulation and args.dtype == "f32"
@@ -164,6 +173,9 @@ with air.ir.Context() as ctx, Location.unknown():
     transform_ir_string = transform_ir_string.replace("@PAD_VAL@", pad_val)
     transform_ir_string = transform_ir_string.replace(
         "@VECTOR_SIZE@", str(vector_size)
+    )
+    transform_ir_string = transform_ir_string.replace(
+        "@HERD_TILE_SIZE@", str(herd_tile_size)
     )
     transform_ir = Module.parse(transform_ir_string)
     run_transform(transform_ir, air_module)
