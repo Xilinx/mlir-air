@@ -4652,9 +4652,16 @@ struct IsolateAsyncDmaLoopNestInSCFForPattern
       return failure();
 
     // If necessary, hoist allocs out of the loops, too.
+    // Scope to the nearest IsolatedFromAbove ancestor to avoid O(N^2) cost
+    // when multiple launches each contain for loops.
     RewritePatternSet patterns(f.getContext());
     patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
-    (void)applyPatternsGreedily(f, std::move(patterns));
+    auto *isolatedParent =
+        for_op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
+    if (isolatedParent)
+      (void)applyPatternsGreedily(isolatedParent, std::move(patterns));
+    else
+      (void)applyPatternsGreedily(f, std::move(patterns));
 
     // Hoist ops out of each scf.for.
     llvm::SetVector<Operation *> erasedOps;
@@ -6362,6 +6369,7 @@ public:
       (void)applyPatternsGreedily(region, std::move(affineArithCanoPatterns));
       return;
     };
+
     // Canonicalize IR to make loop bounds explicitly static.
     applyCanonicalizationPatterns(ctx, func.getBody());
 
@@ -6411,21 +6419,38 @@ private:
   void applyAIRL3DmaFoldingPatterns(func::FuncOp func, AIE::AIEDevice device) {
     // Preprocess the IR's L3 dma bds by applying loop splitting, fusion and
     // specialization patterns.
-    if (isa<AIE::AIE2TargetModel>(AIE::getTargetModel(device)))
-      air::applyAIRIsolateAsyncDmaLoopNestsPattern(&func.getBody());
+    //
+    // Scope the work per-launch to avoid super-linear scaling. Since
+    // air.launch is IsolatedFromAbove, each launch's channel ops can be
+    // processed independently.
+    const auto &tm = AIE::getTargetModel(device);
+    bool isAIE1 = isa<AIE::AIE1TargetModel>(tm);
+    bool isAIE2 = isa<AIE::AIE2TargetModel>(tm);
+    int maxNumDims = isAIE1 ? 1 : 4;
+    int maxSize = isAIE1 ? -1 : 1023;
+    bool enableForLoopUnrolling = !isAIE1;
 
-    int maxNumDims =
-        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(device)) ? 1 : 4;
-    int maxSize =
-        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(device)) ? -1 : 1023;
-    bool enableForLoopUnrolling =
-        isa<AIE::AIE1TargetModel>(AIE::getTargetModel(device)) ? false : true;
-    air::applyAIRSpecializeChannelWrapAndStridePattern(
-        &func.getRegion(),
-        /*maxNumDims=*/maxNumDims,
-        /*maxSize=*/maxSize,
-        /*enableForLoopUnrolling=*/enableForLoopUnrolling,
-        /*enableRepeatAtHighestDim=*/true);
+    // Collect launch regions to process. If there are no launches, fall back
+    // to the function region (e.g. when channel ops are directly in the
+    // function body).
+    SmallVector<Region *> regionsToProcess;
+    func.walk([&](air::LaunchOp launch) {
+      regionsToProcess.push_back(&launch.getRegion());
+    });
+    if (regionsToProcess.empty())
+      regionsToProcess.push_back(&func.getRegion());
+
+    for (Region *region : regionsToProcess) {
+      if (isAIE2)
+        air::applyAIRIsolateAsyncDmaLoopNestsPattern(region);
+
+      air::applyAIRSpecializeChannelWrapAndStridePattern(
+          region,
+          /*maxNumDims=*/maxNumDims,
+          /*maxSize=*/maxSize,
+          /*enableForLoopUnrolling=*/enableForLoopUnrolling,
+          /*enableRepeatAtHighestDim=*/true);
+    }
   }
 };
 

@@ -913,4 +913,45 @@ module {
     }
     return
   }
+
+  // Multiple air.launch ops in one function. Each launch's shim DMA BDs
+  // should be optimized independently. The scf.for loops in each launch
+  // are folded into the channel wrap-and-stride dimensions.
+
+  // CHECK-LABEL: func_multi_launch
+  // CHECK: air.launch
+  // CHECK: air.channel.put{{.*}}@channel_0{{.*}}[%c2{{.*}}, %c256{{.*}}, %c64{{.*}}]
+  // CHECK: air.wait_all{{.*}}{air.launch_end}
+  // CHECK: air.launch
+  // CHECK: air.channel.get{{.*}}@channel_1{{.*}}[%c2{{.*}}, %c256{{.*}}, %c64{{.*}}]
+  // CHECK: air.wait_all{{.*}}{air.launch_end}
+
+  func.func @func_multi_launch(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>) {
+    %c1 = arith.constant 1 : index
+    %0 = air.launch async (%tx) in (%sx=%c1) args(%buf=%arg0) : memref<512x512xbf16> {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c256 = arith.constant 256 : index
+      %c512 = arith.constant 512 : index
+      %1 = air.wait_all async
+      %2 = scf.for %i = %c0 to %c512 step %c256 iter_args(%tok = %1) -> (!air.async.token) {
+        %3 = air.channel.put async [%tok]  @channel_0[%c0, %c0] (%buf[%c0, %i] [%c256, %c64] [%c512, %c1_0]) {id = 1 : i32} : (memref<512x512xbf16>)
+        scf.yield %3 : !air.async.token
+      }
+    }
+    %4 = air.launch async [%0] (%ty) in (%sy=%c1) args(%buf2=%arg1) : memref<512x512xbf16> {
+      %c0 = arith.constant 0 : index
+      %c1_0 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c256 = arith.constant 256 : index
+      %c512 = arith.constant 512 : index
+      %5 = air.wait_all async
+      %6 = scf.for %j = %c0 to %c512 step %c256 iter_args(%tok2 = %5) -> (!air.async.token) {
+        %7 = air.channel.get async [%tok2]  @channel_1[%c0, %c0] (%buf2[%c0, %j] [%c256, %c64] [%c512, %c1_0]) {id = 2 : i32} : (memref<512x512xbf16>)
+        scf.yield %7 : !air.async.token
+      }
+    }
+    return
+  }
 }
