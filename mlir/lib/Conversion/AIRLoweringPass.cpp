@@ -49,6 +49,11 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
+// Maximum number of dimensions for offsets/sizes/strides in the airrt DMA
+// format.  Matches the 4-element layout of airrt.dma_memcpy_nd and
+// airrt.memcpy_nd (offset3..offset0, length3..length0, stride3..stride0).
+static constexpr unsigned kAIRRtMaxNDims = 4;
+
 /// Return true if \p ifOp's condition is an arith.cmpi comparing a
 /// scf.parallel induction variable — the segment-unroll index check pattern.
 static bool isSegmentUnrollCondition(scf::IfOp ifOp) {
@@ -563,45 +568,46 @@ public:
     auto one = arith::ConstantOp::create(rewriter, loc, i64Ty,
                                          IntegerAttr::get(i64Ty, 1));
 
-    SmallVector<Value, 4> offsets(4, zero);
-    SmallVector<Value, 4> lengths(4, one);
-    SmallVector<Value, 4> strides(4, zero);
+    SmallVector<Value, 4> offsets(kAIRRtMaxNDims, zero);
+    SmallVector<Value, 4> lengths(kAIRRtMaxNDims, one);
+    SmallVector<Value, 4> strides(kAIRRtMaxNDims, zero);
 
-    // The airrt format supports at most 4 dimensions for offsets, sizes, and
-    // strides. When N > 4 (e.g., from BD optimization or block-layout
-    // lowering), keep only the last 4 elements. The leading dimensions are
-    // always zero-offset as inserted by
+    // The airrt format supports at most kAIRRtMaxNDims dimensions for offsets,
+    // sizes, and strides. When N exceeds this (e.g., from BD optimization or
+    // block-layout lowering), keep only the last kAIRRtMaxNDims elements. The
+    // leading dimensions are always zero-offset as inserted by
     // foldForLoopNestAsExtendedSizesAndStrides and would silently produce
     // incorrect transfers if non-zero.
-    auto truncateToLast4 = [](auto range) {
-      return range.size() > 4 ? range.take_back(4) : range;
+    auto truncateToMaxDims = [](auto range) {
+      return range.size() > kAIRRtMaxNDims ? range.take_back(kAIRRtMaxNDims)
+                                           : range;
     };
 
     auto allOffsets = isFromTile ? op.getDstOffsets() : op.getSrcOffsets();
-    if (allOffsets.size() > 4) {
-      for (auto o : allOffsets.drop_back(4)) {
+    if (allOffsets.size() > kAIRRtMaxNDims) {
+      for (auto o : allOffsets.drop_back(kAIRRtMaxNDims)) {
         auto v = getConstantIntValue(o);
         assert((!v || *v == 0) && "dropping non-zero leading DMA offset");
       }
     }
-    auto op_offsets = truncateToLast4(allOffsets);
-    int idx = 4 - op_offsets.size();
+    auto op_offsets = truncateToMaxDims(allOffsets);
+    int idx = kAIRRtMaxNDims - op_offsets.size();
     for (auto o : op_offsets)
       offsets[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
                                                   IntegerType::get(ctx, 64), o);
 
     auto op_strides =
-        truncateToLast4(isFromTile ? op.getDstStrides() : op.getSrcStrides());
+        truncateToMaxDims(isFromTile ? op.getDstStrides() : op.getSrcStrides());
     if (op_strides.size()) {
-      idx = 4 - op_strides.size();
+      idx = kAIRRtMaxNDims - op_strides.size();
       for (auto o : op_strides)
         strides[idx++] = arith::IndexCastOp::create(
             rewriter, op->getLoc(), IntegerType::get(ctx, 64), o);
     }
 
     auto op_sizes =
-        truncateToLast4(isFromTile ? op.getDstSizes() : op.getSrcSizes());
-    idx = 4 - op_sizes.size();
+        truncateToMaxDims(isFromTile ? op.getDstSizes() : op.getSrcSizes());
+    idx = kAIRRtMaxNDims - op_sizes.size();
     for (auto o : op_sizes)
       lengths[idx++] = arith::IndexCastOp::create(rewriter, op->getLoc(),
                                                   IntegerType::get(ctx, 64), o);
@@ -717,23 +723,22 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     return failure();
   }
 
-  while (offsets.size() > 4) {
+  while (offsets.size() > kAIRRtMaxNDims) {
     offsets.erase(offsets.begin());
   }
-  while (offsets.size() < 4) {
+  while (offsets.size() < kAIRRtMaxNDims) {
     offsets.insert(offsets.begin(), zero_idx);
   }
-  while (wraps.size() > 4) {
+  while (wraps.size() > kAIRRtMaxNDims) {
     wraps.erase(wraps.begin());
   }
-  while (wraps.size() < 4) {
+  while (wraps.size() < kAIRRtMaxNDims) {
     wraps.insert(wraps.begin(), one_idx);
   }
-  // Truncate to last 4 elements if more than 4 strides.
-  while (strides.size() > 4) {
+  while (strides.size() > kAIRRtMaxNDims) {
     strides.erase(strides.begin());
   }
-  while (strides.size() < 4) {
+  while (strides.size() < kAIRRtMaxNDims) {
     strides.insert(strides.begin(), zero_idx);
   }
 
