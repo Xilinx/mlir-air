@@ -982,8 +982,13 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
             dma_ops_get_id.push_back(-1);
         }
         AIE::DMAChannel aie_chan = {dir, t.dma_channel.channel};
-        allocs->push_back({tile, col, row, aie_chan, t.dma_channel.channel,
-                           dma_ops_get_id, {memcpyOp.getOperation()}});
+        allocs->push_back({tile,
+                           col,
+                           row,
+                           aie_chan,
+                           t.dma_channel.channel,
+                           dma_ops_get_id,
+                           {memcpyOp.getOperation()}});
         return allocs->back();
       }
     }
