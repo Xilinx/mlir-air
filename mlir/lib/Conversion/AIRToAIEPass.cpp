@@ -6091,7 +6091,13 @@ public:
           RewritePatternSet shimUnrollPatterns(ctx);
           air::populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
               shimUnrollPatterns);
-          (void)applyPatternsGreedily(func, std::move(shimUnrollPatterns));
+          if (failed(
+                  applyPatternsGreedily(func, std::move(shimUnrollPatterns)))) {
+            func->emitOpError(
+                "failed to unroll scf.parallel around shim channel ops");
+            signalPassFailure();
+            return;
+          }
         }
 
         std::vector<air::MemcpyInterface> shimMemcpyIfOps;

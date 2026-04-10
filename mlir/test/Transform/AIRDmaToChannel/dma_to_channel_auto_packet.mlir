@@ -6,23 +6,20 @@
 //===----------------------------------------------------------------------===//
 
 // Test that air-dma-to-channel auto-detects when packet switching is needed
-// for multi-herd designs. When a segment has multiple herds and the total
-// L3-to-L1 input channels exceed 2 per column, the pass should mark them
-// as dma_packet.
+// for multi-herd designs. Two 1x1 herds with 2 inputs each = 4 input channels.
+// Capacity = 2 channels/col * 1 col = 2. Since 4 > 2, input channels are
+// upgraded to dma_packet. Output channels (2 total) do not exceed capacity.
 
 // RUN: air-opt %s -air-dma-to-channel | FileCheck %s
 
-// Two herds with 2 inputs each = 4 input channels > 2 per-column limit.
 // CHECK-COUNT-4: air.channel {{.*}} {channel_type = "dma_packet"}
-
-// Two output channels stay as default (2 outputs <= 2 per-column limit).
-// The default channel_type is "dma_stream" which is not printed when it
-// matches the default.
+// CHECK-NOT: channel_type = "dma_packet"
 
 module {
-  func.func @dual_herd(%arg0: memref<1024xbf16>, %arg1: memref<1024xbf16>,
-                        %arg2: memref<1024xbf16>, %arg3: memref<1024xbf16>,
-                        %arg4: memref<1024xbf16>, %arg5: memref<1024xbf16>) {
+  func.func @dual_herd_overflow(%arg0: memref<1024xbf16>,
+      %arg1: memref<1024xbf16>, %arg2: memref<1024xbf16>,
+      %arg3: memref<1024xbf16>, %arg4: memref<1024xbf16>,
+      %arg5: memref<1024xbf16>) {
     air.launch () in () args(%a0=%arg0, %b0=%arg1, %a1=%arg2, %b1=%arg3,
                               %co=%arg4, %cm=%arg5)
         : memref<1024xbf16>, memref<1024xbf16>, memref<1024xbf16>,

@@ -1595,6 +1595,13 @@ def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
     }
     ```
   }];
+  let options = [
+    Option<"clShimDmaChannelsPerCol", "shim-dma-channels-per-col", "int",
+           /*default=*/"2",
+           "Number of physical DMA channels per direction per shim tile "
+           "column. Used by auto-packet-switching detection to determine "
+           "when channel count exceeds physical capacity.">,
+  ];
 }
 
 def AIROverrideMemRefMemorySpace : Pass<"air-override-memref-memory-space", "ModuleOp"> {
