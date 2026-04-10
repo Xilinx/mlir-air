@@ -3791,6 +3791,16 @@ public:
               (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
           // Update global shim flow ID following the local packet assignment.
           globalShimFlowID = std::max(globalShimFlowID, flowID);
+          // Store flow ID in matching MM2S shim alloc for labeling phase.
+          for (auto &sa : shim_dma_alloc.mm2s_allocs) {
+            if (sa.getDmaTile() == f.MM2S_alloc.getDmaTile() &&
+                sa.dma_channel == f.MM2S_alloc.dma_channel &&
+                sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
+                sa.dma_id == f.MM2S_alloc.dma_id) {
+              sa.packet_flow_id = flowID;
+              break;
+            }
+          }
         } else if (f.memcpyResourceType == "dma_packet") {
           // Use appropriate flow map based on whether flow involves shim tiles
           if (isShimFlow) {
@@ -3805,6 +3815,16 @@ public:
                 (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
             // Update global shim flow ID following the local packet assignment.
             globalShimFlowID = std::max(globalShimFlowID, flowID);
+            // Store flow ID in matching MM2S shim alloc for labeling phase.
+            for (auto &sa : shim_dma_alloc.mm2s_allocs) {
+              if (sa.getDmaTile() == f.MM2S_alloc.getDmaTile() &&
+                  sa.dma_channel == f.MM2S_alloc.dma_channel &&
+                  sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
+                  sa.dma_id == f.MM2S_alloc.dma_id) {
+                sa.packet_flow_id = flowID;
+                break;
+              }
+            }
           } else {
             // Intra-device flows use per-device flow ID (can restart from 0)
             intraDeviceFlowOpToFlowIdMap.insert(f.air_flow_op);
@@ -4040,9 +4060,18 @@ public:
   // information, specifically for MM2S (host-to-AIE) directions.
   LogicalResult labelMemcpyOpsWithPacketFlow(air::MemcpyInterface memcpyOpIf,
                                              StringAttr dmaNameAttr,
-                                             AIE::TileOp tileOp, int channel) {
-    auto pktFlowOp = getExistingPacketFlowOpFromRuntime(
-        tileOp, AIE::WireBundle::DMA, channel);
+                                             AIE::TileOp tileOp, int channel,
+                                             int packetFlowId = -1) {
+    // When a packet flow ID is available (from flow creation phase), use
+    // exact flow ID matching to disambiguate multiple flows sharing the
+    // same shim DMA channel. Otherwise fall back to source-only lookup.
+    AIE::PacketFlowOp pktFlowOp;
+    if (packetFlowId >= 0)
+      pktFlowOp = findPacketFlowOp(tileOp, AIE::WireBundle::DMA, channel,
+                                   /*checkFlowID=*/true, packetFlowId);
+    if (!pktFlowOp)
+      pktFlowOp = getExistingPacketFlowOpFromRuntime(
+          tileOp, AIE::WireBundle::DMA, channel);
     if (!pktFlowOp)
       return success();
 
@@ -4314,9 +4343,9 @@ public:
         // Annotate shim DMA packed-flow ops with packet information,
         // specifically for MM2S (host-to-AIE) directions.
         if (dir == AIE::DMAChannelDir::MM2S)
-          if (failed(labelMemcpyOpsWithPacketFlow(memcpyIfOp, shim_name_attr,
-                                                  t.getDmaTile(),
-                                                  t.dma_channel.channel)))
+          if (failed(labelMemcpyOpsWithPacketFlow(
+                  memcpyIfOp, shim_name_attr, t.getDmaTile(),
+                  t.dma_channel.channel, t.packet_flow_id)))
             return failure();
       }
 

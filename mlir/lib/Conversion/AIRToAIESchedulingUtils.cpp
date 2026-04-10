@@ -829,8 +829,10 @@ FailureOr<air::allocation_info_t> air::DMAAllocator::allocNewDmaChannel(
       return t;
     }
   }
-  air::allocation_info_t output = {
-      tile, col, row, aie_chan, chan, dma_id, {memcpyOp.getOperation()}};
+  air::allocation_info_t output = {tile,   col,
+                                   row,    aie_chan,
+                                   chan,   /*packet_flow_id=*/-1,
+                                   dma_id, {memcpyOp.getOperation()}};
   allocs->push_back(output);
   return output;
 }
@@ -1336,6 +1338,7 @@ air::CascadeAllocator::allocNewCascade(air::MemcpyInterface &memcpyOp,
                                    /*row*/ -1,
                                    /*aie_chan*/ AIE::DMAChannel(),
                                    /*chan*/ -1,
+                                   /*packet_flow_id=*/-1,
                                    /*dma_id*/ std::vector<int>{},
                                    {memcpyOp.getOperation()}};
   allocs->push_back(output);
