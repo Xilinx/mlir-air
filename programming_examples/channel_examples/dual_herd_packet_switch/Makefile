@@ -13,6 +13,11 @@ endif
 OUTPUT_FORMAT ?= elf
 OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
 
+# Profile parameters
+TILE_SIZE ?= 4096
+WARMUP ?= 5
+ITERATIONS ?= 100
+
 all: run
 
 print:
@@ -21,6 +26,11 @@ print:
 run:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG)
+
+profile:
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG) \
+		--tile-size $(TILE_SIZE) --warmup $(WARMUP) --iterations $(ITERATIONS)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
