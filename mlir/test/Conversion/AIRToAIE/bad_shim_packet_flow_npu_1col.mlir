@@ -5,9 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1_1col use-pkt-flow-at-shim-dma=true})' --split-input-file -verify-diagnostics
+// RUN: not air-opt %s -pass-pipeline='builtin.module(air-to-aie{row-offset=2 col-offset=0 device=npu1_1col})' --split-input-file 2>&1 | FileCheck %s
 
-// 4x4 NPU1 array. Should fail expectedly when allocating shim dma channels.
+// 4x4 NPU1 array on 1-column device. Should fail because the design
+// requires more columns than the device provides.
+
+// CHECK: error: 'aie.tile' op column index (1) must be less than the number of columns in the device (1)
 
 #map = affine_map<()[s0] -> (s0 * 256)>
 #set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
@@ -19,7 +22,7 @@ module {
   air.channel @channel_13 [1, 1] {broadcast_shape = [1, 4]}
   air.channel @channel_14 [1, 1] {broadcast_shape = [1, 4]}
   air.channel @channel_15 [1, 1] {broadcast_shape = [1, 4]}
-  air.channel @channel_2 [4, 1]
+  air.channel @channel_2 [4, 1] {channel_type = "dma_packet"}
   func.func @func2(%arg0: memref<512x512xbf16>) {
     %c2 = arith.constant 2 : index
     %0 = air.launch async (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0) : memref<512x512xbf16> attributes {id = 1 : i32} {
@@ -37,7 +40,6 @@ module {
       %1 = scf.for %arg8 = %c0 to %c512 step %c64 iter_args(%arg9 = %async_token) -> (!air.async.token) {
         %3 = air.channel.put async [%arg9]  @channel_2[%c0, %c0] (%arg7[%c0, %c0, %results, %arg8] [%c1, %c1, %c64, %c64] [%c32768, %c64, %c512, %c1]) {id = 1 : i32} : (memref<512x512xbf16>)
         %4 = air.channel.put async [%arg9]  @channel_2[%c1, %c0] (%arg7[%c1, %c0, %results, %arg8] [%c1, %c1, %c64, %c64] [%c32768, %c64, %c512, %c1]) {id = 2 : i32} : (memref<512x512xbf16>)
-// expected-error@+1 {{'air.channel.put' op failed to map to shim dma channels: out of channels.}}
         %5 = air.channel.put async [%arg9]  @channel_2[%c2_0, %c0] (%arg7[%c2_0, %c0, %results, %arg8] [%c1, %c1, %c64, %c64] [%c32768, %c64, %c512, %c1]) {id = 3 : i32} : (memref<512x512xbf16>)
         %6 = air.channel.put async [%arg9]  @channel_2[%c3, %c0] (%arg7[%c3, %c0, %results, %arg8] [%c1, %c1, %c64, %c64] [%c32768, %c64, %c512, %c1]) {id = 4 : i32} : (memref<512x512xbf16>)
         %7 = air.wait_all async [%3, %4, %5, %6] 

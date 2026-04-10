@@ -1601,6 +1601,11 @@ def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
            "Number of physical DMA channels per direction per shim tile "
            "column. Used by auto-packet-switching detection to determine "
            "when channel count exceeds physical capacity.">,
+    Option<"clForceShimPacketFlow", "force-shim-packet-flow", "bool",
+           /*default=*/"false",
+           "Unconditionally mark all shim-bound channels (both input and "
+           "output) as dma_packet, to enable time-multiplexed sharing with "
+           "control packet flows.">,
   ];
 }
 

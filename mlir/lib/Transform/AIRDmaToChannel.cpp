@@ -1554,50 +1554,61 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       });
     }
 
-    // Auto-detect channels that need packet switching. When a segment has
-    // multiple herds, each herd's L3-to-L1 channels share shim DMA resources.
-    // Each logical channel is replicated on every shim column (not distributed
-    // across columns), so the per-column channel pressure equals the total
-    // number of L3-bound channels in a given direction. If this exceeds the
-    // physical shim DMA channel limit per column, mark those channels as
-    // dma_packet to enable time-multiplexed sharing via packet IDs.
+    // Auto-detect channels that need packet switching. For each segment,
+    // count L3-bound channels (both L3↔L1 and L3↔L2) per direction. Each
+    // logical channel is replicated on every shim column, so per-column
+    // pressure equals the total channel count. If this exceeds the physical
+    // shim DMA channel limit per column, mark those channels as dma_packet.
     module.walk([&](air::SegmentOp seg) {
-      // Collect all herds in this segment.
-      SmallVector<air::HerdOp> herds;
-      seg.walk([&](air::HerdOp h) { herds.push_back(h); });
-      if (herds.size() <= 1)
-        return;
-
-      // Count L3-bound input/output channels per direction. Only channels
-      // that have one endpoint inside a herd AND the other endpoint at launch
-      // level operating on an L3 memref are shim-bound.
-      // Input = channel.get inside herd + channel.put at launch on L3 memref.
-      // Output = channel.put inside herd + channel.get at launch on L3 memref.
+      // Classify shim-bound channels. A channel is shim-bound if it has:
+      //   - An endpoint inside the segment (herd-level L1 or segment-level
+      //     L2), AND
+      //   - An endpoint at launch level operating on an L3 memref.
+      // Both L3↔L1 and L3↔L2 channels consume shim DMA resources.
       SmallVector<air::ChannelOp> inputChannels, outputChannels;
       for (auto &op : module.getBody()->getOperations()) {
         auto chanOp = dyn_cast<air::ChannelOp>(op);
         if (!chanOp)
           continue;
+
+        // Skip channels already marked as dma_packet by the user.
+        if (chanOp.getChannelType() == "dma_packet")
+          continue;
+
         auto channelName = chanOp.getSymName();
 
-        // Check herd-side endpoint in this segment.
+        // Check segment-side endpoint: either inside a herd (L1) or inside
+        // the segment but outside any herd (L2).
         bool hasHerdSideGet = false;
         bool hasHerdSidePut = false;
+        bool hasSegmentSideL2Get = false;
+        bool hasSegmentSideL2Put = false;
         seg.walk([&](air::ChannelInterface ci) -> WalkResult {
-          if (hasHerdSideGet || hasHerdSidePut)
-            return WalkResult::interrupt();
           if (ci.getChanName() != channelName)
             return WalkResult::advance();
           if (ci->getParentOfType<air::HerdOp>()) {
+            // Herd-level endpoint (L1).
             if (isa<air::ChannelGetOp>(ci.getOperation()))
               hasHerdSideGet = true;
             else
               hasHerdSidePut = true;
             return WalkResult::interrupt();
           }
+          // Segment-level endpoint (outside herd, check for L2 memref).
+          auto memrefTy =
+              dyn_cast_if_present<BaseMemRefType>(ci.getMemref().getType());
+          if (memrefTy && air::isL2(memrefTy)) {
+            if (isa<air::ChannelGetOp>(ci.getOperation()))
+              hasSegmentSideL2Get = true;
+            else
+              hasSegmentSideL2Put = true;
+            return WalkResult::interrupt();
+          }
           return WalkResult::advance();
         });
-        if (!hasHerdSideGet && !hasHerdSidePut)
+        bool hasSegSideInput = hasHerdSideGet || hasSegmentSideL2Get;
+        bool hasSegSideOutput = hasHerdSidePut || hasSegmentSideL2Put;
+        if (!hasSegSideInput && !hasSegSideOutput)
           continue;
 
         // Verify the launch-side endpoint operates on an L3 memref.
@@ -1623,29 +1634,43 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           return WalkResult::interrupt();
         });
 
-        // Input: get in herd + put at launch on L3 (L3->L1).
-        // Output: put in herd + get at launch on L3 (L1->L3).
-        if (hasHerdSideGet && hasLaunchSideL3Put)
+        // Input (L3→device): segment-side get + launch-side L3 put.
+        // Output (device→L3): segment-side put + launch-side L3 get.
+        if (hasSegSideInput && hasLaunchSideL3Put)
           inputChannels.push_back(chanOp);
-        else if (hasHerdSidePut && hasLaunchSideL3Get)
+        else if (hasSegSideOutput && hasLaunchSideL3Get)
           outputChannels.push_back(chanOp);
       }
 
       // Per-column shim DMA limit. Each channel is replicated on every
       // column, so the per-column count equals the total channel count.
-      // If it exceeds the physical limit, upgrade to dma_packet.
       int64_t shimChannelsPerCol = clShimDmaChannelsPerCol;
 
-      auto upgradeToPacket = [&](SmallVector<air::ChannelOp> &channels) {
+      auto upgradeToPacket = [&](SmallVector<air::ChannelOp> &channels,
+                                 StringRef direction) {
+        seg->emitWarning() << "auto-upgrading " << channels.size() << " "
+                           << direction
+                           << " channels to dma_packet (exceeds per-column "
+                              "shim DMA limit of "
+                           << shimChannelsPerCol << ")";
         for (auto chanOp : channels) {
           chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
         }
       };
 
+      // Force mode: upgrade all shim-bound channels unconditionally.
+      if (clForceShimPacketFlow) {
+        for (auto chanOp : inputChannels)
+          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+        for (auto chanOp : outputChannels)
+          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+        return;
+      }
+
       if ((int64_t)inputChannels.size() > shimChannelsPerCol)
-        upgradeToPacket(inputChannels);
+        upgradeToPacket(inputChannels, "input");
       if ((int64_t)outputChannels.size() > shimChannelsPerCol)
-        upgradeToPacket(outputChannels);
+        upgradeToPacket(outputChannels, "output");
     });
   }
 
