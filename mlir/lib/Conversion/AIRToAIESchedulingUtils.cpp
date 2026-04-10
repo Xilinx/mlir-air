@@ -938,6 +938,14 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   AIE::DMAChannelDir dir =
       isMM2S.value() ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
 
+  // Check if allocating for a packet flow (packet flow supports channel time
+  // multiplexing at the shim DMA level)
+  bool isPacketFlowOp = false;
+  auto chanTypeRes = getChannelType(memcpyOp);
+  if (succeeded(chanTypeRes)) {
+    isPacketFlowOp = chanTypeRes.value().str() == "dma_packet";
+  }
+
   // Search for existing dma channel allocation
   for (auto &t : *allocs) {
     if (t.foundAlloc(getChannelDeclarationThroughSymbol(
@@ -956,6 +964,39 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
       colIdx = it - dma_columns.begin();
   }
   int dma_col = dma_columns[colIdx];
+
+  // For packet-flow ops, reuse an existing physical channel on this shim tile
+  // via time multiplexing. Each logical channel needs its own allocation entry
+  // (for downstream shim_dma_allocation metadata linking) but shares the same
+  // physical DMA channel. We bypass DMAAllocator::allocNewDmaChannel since its
+  // dedup check would merge into the existing entry instead of creating a new
+  // one.
+  if (isPacketFlowOp) {
+    for (auto &t : *allocs) {
+      if (t.foundPacketFlowAllocInTile(dma_col, 0)) {
+        tile = getPhysTileOp(device, dma_col, 0);
+        std::vector<int> dma_ops_get_id;
+        for (auto op : dma_ops) {
+          if (op->hasAttr("id"))
+            dma_ops_get_id.push_back(
+                op->getAttrOfType<IntegerAttr>("id").getInt());
+          else
+            dma_ops_get_id.push_back(-1);
+        }
+        AIE::DMAChannel aie_chan = {dir, t.dma_channel.channel};
+        allocs->push_back({tile,
+                           col,
+                           row,
+                           aie_chan,
+                           t.dma_channel.channel,
+                           /*packet_flow_id=*/-1,
+                           dma_ops_get_id,
+                           {memcpyOp.getOperation()}});
+        return allocs->back();
+      }
+    }
+  }
+
   int dma_channel = 0;
   int colTripCount = 0;
   while (any_of(allocs->begin(), allocs->end(), [&](air::allocation_info_t &a) {
