@@ -13,7 +13,6 @@
 
 #include "llvm/ADT/SmallSet.h"
 
-#include <map>
 #include <mutex>
 #include <set>
 
@@ -964,58 +963,29 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
   }
   int dma_col = dma_columns[colIdx];
 
-  // For packet-flow ops, reuse an existing channel on this shim tile via time
-  // multiplexing. Balance across all available channels by picking the one
-  // with the fewest existing packet-flow allocations.
+  // For packet-flow ops, reuse an existing physical channel on this shim tile
+  // via time multiplexing. Each logical channel needs its own allocation entry
+  // (for downstream shim_dma_allocation metadata linking) but shares the same
+  // physical DMA channel. We bypass DMAAllocator::allocNewDmaChannel since its
+  // dedup check would merge into the existing entry instead of creating a new
+  // one.
   if (isPacketFlowOp) {
-    // Count packet-flow allocations per channel on this shim tile.
-    std::map<int, int> chanUseCounts;
-    for (int ch = 0; ch < shim_dma_channels; ch++)
-      chanUseCounts[ch] = 0;
-    for (auto &t : *allocs) {
-      if (t.foundPacketFlowAllocInTile(dma_col, 0))
-        chanUseCounts[t.dma_channel.channel]++;
-    }
-    // Pick the channel with the fewest allocations (round-robin balancing).
-    int bestChan = 0;
-    int minCount = chanUseCounts[0];
-    for (int ch = 1; ch < shim_dma_channels; ch++) {
-      if (chanUseCounts[ch] < minCount) {
-        minCount = chanUseCounts[ch];
-        bestChan = ch;
-      }
-    }
-    // If at least one channel already has packet-flow allocs, or if we want
-    // to share even with an empty channel (first alloc on this tile), we
-    // reuse. But if no packet-flow allocs exist yet, fall through to the
-    // normal allocation path below which handles the first allocation.
-    bool hasExistingPktAlloc = false;
     for (auto &t : *allocs) {
       if (t.foundPacketFlowAllocInTile(dma_col, 0)) {
-        hasExistingPktAlloc = true;
-        break;
+        tile = getPhysTileOp(device, dma_col, 0);
+        std::vector<int> dma_ops_get_id;
+        for (auto op : dma_ops) {
+          if (op->hasAttr("id"))
+            dma_ops_get_id.push_back(
+                op->getAttrOfType<IntegerAttr>("id").getInt());
+          else
+            dma_ops_get_id.push_back(-1);
+        }
+        AIE::DMAChannel aie_chan = {dir, t.dma_channel.channel};
+        allocs->push_back({tile, col, row, aie_chan, t.dma_channel.channel,
+                           dma_ops_get_id, {memcpyOp.getOperation()}});
+        return allocs->back();
       }
-    }
-    if (hasExistingPktAlloc) {
-      std::vector<int> dma_ops_get_id;
-      for (auto op : dma_ops) {
-        if (op->hasAttr("id"))
-          dma_ops_get_id.push_back(
-              op->getAttrOfType<IntegerAttr>("id").getInt());
-        else
-          dma_ops_get_id.push_back(-1);
-      }
-      tile = getPhysTileOp(device, dma_col, 0);
-      AIE::DMAChannel aie_chan_best = {dir, bestChan};
-      air::allocation_info_t newAlloc = {tile,
-                                         col,
-                                         row,
-                                         aie_chan_best,
-                                         bestChan,
-                                         dma_ops_get_id,
-                                         {memcpyOp.getOperation()}};
-      allocs->push_back(newAlloc);
-      return newAlloc;
     }
   }
 
