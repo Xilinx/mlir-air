@@ -278,6 +278,12 @@ EXAMPLES = [
     },
     {
         "category": "Communication",
+        "name": "Dual-Herd Packet Switch",
+        "path": "channel_examples/dual_herd_packet_switch",
+        "datatypes": "bf16",
+    },
+    {
+        "category": "Communication",
         "name": "Multi-Segment Examples",
         "path": "multi_segment",
         "datatypes": "i32",

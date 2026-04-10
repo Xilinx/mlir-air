@@ -59,14 +59,10 @@ def build_module():
     )
 
     # --- Input channels: packet-switched for shim DMA sharing ---
-    chan_a0 = Channel("A0_to_L1", size=[HERD_SIZE, 1])
-    chan_a0.attributes["channel_type"] = StringAttr.get("dma_packet")
-    chan_b0 = Channel("B0_to_L1", size=[HERD_SIZE, 1])
-    chan_b0.attributes["channel_type"] = StringAttr.get("dma_packet")
-    chan_a1 = Channel("A1_to_L1", size=[HERD_SIZE, 1])
-    chan_a1.attributes["channel_type"] = StringAttr.get("dma_packet")
-    chan_b1 = Channel("B1_to_L1", size=[HERD_SIZE, 1])
-    chan_b1.attributes["channel_type"] = StringAttr.get("dma_packet")
+    channel("A0_to_L1", size=[HERD_SIZE, 1], channel_type="dma_packet")
+    channel("B0_to_L1", size=[HERD_SIZE, 1], channel_type="dma_packet")
+    channel("A1_to_L1", size=[HERD_SIZE, 1], channel_type="dma_packet")
+    channel("B1_to_L1", size=[HERD_SIZE, 1], channel_type="dma_packet")
 
     # --- Output channels: circuit-switched (default dma_stream) ---
     Channel("Add_out", size=[HERD_SIZE, 1])
@@ -199,6 +195,7 @@ if __name__ == "__main__":
         choices=["xclbin", "elf"],
         default="elf",
         dest="output_format",
+        help="Output format for the compiled binary (default: elf)",
     )
     args = parser.parse_args()
 

@@ -1,0 +1,26 @@
+# (c) Copyright 2026 Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+srcdir := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
+
+# Determine build dir based on whether PEANO_INSTALL_DIR is set
+ifdef PEANO_INSTALL_DIR
+  BUILD_DIR := build_peano
+else
+  BUILD_DIR := build_chess
+endif
+
+# Output format: xclbin (default) or elf
+OUTPUT_FORMAT ?= elf
+OUTPUT_FORMAT_FLAG = --output-format $(OUTPUT_FORMAT)
+
+all: run
+
+print:
+	${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG) -p
+
+run:
+	mkdir -p $(BUILD_DIR)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG)
+
+clean:
+	rm -rf $(BUILD_DIR) __pycache__
