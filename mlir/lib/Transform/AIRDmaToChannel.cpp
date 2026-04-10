@@ -1556,28 +1556,16 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
     // Auto-detect channels that need packet switching. When a segment has
     // multiple herds, each herd's L3-to-L1 channels share shim DMA resources.
-    // If the total number of L3-bound input (or output) channels across all
-    // herds exceeds the total physical shim DMA channel capacity
-    // (channels-per-col * herd-width), mark those channels as dma_packet to
-    // enable time-multiplexed sharing via packet IDs.
+    // Each logical channel is replicated on every shim column (not distributed
+    // across columns), so the per-column channel pressure equals the total
+    // number of L3-bound channels in a given direction. If this exceeds the
+    // physical shim DMA channel limit per column, mark those channels as
+    // dma_packet to enable time-multiplexed sharing via packet IDs.
     module.walk([&](air::SegmentOp seg) {
       // Collect all herds in this segment.
       SmallVector<air::HerdOp> herds;
       seg.walk([&](air::HerdOp h) { herds.push_back(h); });
       if (herds.size() <= 1)
-        return;
-
-      // Determine the maximum herd width (number of columns) across herds.
-      // This approximates the number of shim tile columns available.
-      int64_t herdWidth = 0;
-      for (auto h : herds) {
-        auto sizes = h.getSizeOperands();
-        if (!sizes.empty()) {
-          if (auto cst = sizes[0].getDefiningOp<arith::ConstantIndexOp>())
-            herdWidth = std::max(herdWidth, (int64_t)cst.value());
-        }
-      }
-      if (herdWidth == 0)
         return;
 
       // Count L3-bound input/output channels per direction. Only channels
@@ -1643,11 +1631,10 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           outputChannels.push_back(chanOp);
       }
 
-      // Total shim DMA capacity = channels_per_col * number_of_columns.
-      // If the channel count in a direction exceeds this capacity, upgrade
-      // all channels in that direction to dma_packet.
+      // Per-column shim DMA limit. Each channel is replicated on every
+      // column, so the per-column count equals the total channel count.
+      // If it exceeds the physical limit, upgrade to dma_packet.
       int64_t shimChannelsPerCol = clShimDmaChannelsPerCol;
-      int64_t totalCapacity = shimChannelsPerCol * herdWidth;
 
       auto upgradeToPacket = [&](SmallVector<air::ChannelOp> &channels) {
         for (auto chanOp : channels) {
@@ -1655,9 +1642,9 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         }
       };
 
-      if ((int64_t)inputChannels.size() > totalCapacity)
+      if ((int64_t)inputChannels.size() > shimChannelsPerCol)
         upgradeToPacket(inputChannels);
-      if ((int64_t)outputChannels.size() > totalCapacity)
+      if ((int64_t)outputChannels.size() > shimChannelsPerCol)
         upgradeToPacket(outputChannels);
     });
   }
