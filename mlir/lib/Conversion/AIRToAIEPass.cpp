@@ -5920,6 +5920,7 @@ public:
                                     options);
 
     std::set<AIE::DeviceOp> seen;
+    DenseSet<func::FuncOp> shimUnrolledFuncs;
     for (auto &p : aie_devices) {
       auto device = std::get<0>(p);
       air::HerdOp h = std::get<1>(p);
@@ -6087,7 +6088,10 @@ public:
         // level) so each tile gets a discrete channel put/get. This is needed
         // when air-dma-to-channel wraps channel ops in scf.parallel; without
         // unrolling, all tiles share one channel op and get the same packet ID.
-        {
+        // Guard with shimUnrolledFuncs to avoid redundant rewrites when
+        // multiple devices share the same parent func.
+        if (!shimUnrolledFuncs.contains(func)) {
+          shimUnrolledFuncs.insert(func);
           RewritePatternSet shimUnrollPatterns(ctx);
           air::populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
               shimUnrollPatterns);

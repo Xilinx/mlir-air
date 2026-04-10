@@ -1580,35 +1580,66 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       if (herdWidth == 0)
         return;
 
-      // Count L3-bound input/output channels per direction.
-      // Input = channel.get inside herd (L3->L1 direction).
-      // Output = channel.put inside herd (L1->L3 direction).
+      // Count L3-bound input/output channels per direction. Only channels
+      // that have one endpoint inside a herd AND the other endpoint at launch
+      // level operating on an L3 memref are shim-bound.
+      // Input = channel.get inside herd + channel.put at launch on L3 memref.
+      // Output = channel.put inside herd + channel.get at launch on L3 memref.
       SmallVector<air::ChannelOp> inputChannels, outputChannels;
       for (auto &op : module.getBody()->getOperations()) {
         auto chanOp = dyn_cast<air::ChannelOp>(op);
         if (!chanOp)
           continue;
-        // Check if this channel has a put/get inside one of the herds.
-        bool hasHerdSideOp = false;
-        bool isInput = false;
         auto channelName = chanOp.getSymName();
+
+        // Check herd-side endpoint in this segment.
+        bool hasHerdSideGet = false;
+        bool hasHerdSidePut = false;
         seg.walk([&](air::ChannelInterface ci) -> WalkResult {
-          if (hasHerdSideOp)
+          if (hasHerdSideGet || hasHerdSidePut)
             return WalkResult::interrupt();
           if (ci.getChanName() != channelName)
             return WalkResult::advance();
           if (ci->getParentOfType<air::HerdOp>()) {
-            hasHerdSideOp = true;
-            isInput = isa<air::ChannelGetOp>(ci.getOperation());
+            if (isa<air::ChannelGetOp>(ci.getOperation()))
+              hasHerdSideGet = true;
+            else
+              hasHerdSidePut = true;
             return WalkResult::interrupt();
           }
           return WalkResult::advance();
         });
-        if (!hasHerdSideOp)
+        if (!hasHerdSideGet && !hasHerdSidePut)
           continue;
-        if (isInput)
+
+        // Verify the launch-side endpoint operates on an L3 memref.
+        bool hasLaunchSideL3Put = false;
+        bool hasLaunchSideL3Get = false;
+        module.walk([&](air::ChannelInterface ci) -> WalkResult {
+          if (hasLaunchSideL3Put || hasLaunchSideL3Get)
+            return WalkResult::interrupt();
+          if (ci.getChanName() != channelName)
+            return WalkResult::advance();
+          // Must be at launch level, not inside herd or segment.
+          if (ci->getParentOfType<air::HerdOp>() ||
+              ci->getParentOfType<air::SegmentOp>())
+            return WalkResult::advance();
+          auto memrefTy =
+              dyn_cast_if_present<BaseMemRefType>(ci.getMemref().getType());
+          if (!memrefTy || !air::isL3(memrefTy))
+            return WalkResult::advance();
+          if (isa<air::ChannelPutOp>(ci.getOperation()))
+            hasLaunchSideL3Put = true;
+          else
+            hasLaunchSideL3Get = true;
+          return WalkResult::interrupt();
+        });
+
+        // Input: get in herd + put at launch on L3 (L3->L1).
+        // Output: put in herd + get at launch on L3 (L1->L3).
+        if (hasHerdSideGet && hasLaunchSideL3Put)
           inputChannels.push_back(chanOp);
-        else
+        else if (hasHerdSidePut && hasLaunchSideL3Get)
           outputChannels.push_back(chanOp);
       }
 
