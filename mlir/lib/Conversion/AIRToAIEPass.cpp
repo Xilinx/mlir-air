@@ -3784,7 +3784,7 @@ public:
           shimFlowOpToFlowIdMap.insert(f.air_flow_op);
           auto it = llvm::find(shimFlowOpToFlowIdMap, f.air_flow_op);
           int flowID = std::distance(shimFlowOpToFlowIdMap.begin(), it);
-          getPacketFlowOp(
+          auto pktFlowOp = getPacketFlowOp(
               aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
               (uint32_t)f.MM2S_alloc.dma_channel.channel,
               f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
@@ -3792,12 +3792,15 @@ public:
           // Update global shim flow ID following the local packet assignment.
           globalShimFlowID = std::max(globalShimFlowID, flowID);
           // Store flow ID in matching MM2S shim alloc for labeling phase.
+          // Use the packet flow op's actual ID, not the mutated flowID
+          // (createPacketFlowOp post-increments flowID by reference).
+          int storedFlowID = pktFlowOp ? pktFlowOp.getID() : flowID;
           for (auto &sa : shim_dma_alloc.mm2s_allocs) {
             if (sa.getDmaTile() == f.MM2S_alloc.getDmaTile() &&
                 sa.dma_channel == f.MM2S_alloc.dma_channel &&
                 sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
                 sa.dma_id == f.MM2S_alloc.dma_id) {
-              sa.packet_flow_id = flowID;
+              sa.packet_flow_id = storedFlowID;
               break;
             }
           }
@@ -3808,7 +3811,7 @@ public:
             shimFlowOpToFlowIdMap.insert(f.air_flow_op);
             auto it = llvm::find(shimFlowOpToFlowIdMap, f.air_flow_op);
             int flowID = std::distance(shimFlowOpToFlowIdMap.begin(), it);
-            getPacketFlowOp(
+            auto pktFlowOp = getPacketFlowOp(
                 aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
                 (uint32_t)f.MM2S_alloc.dma_channel.channel,
                 f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
@@ -3816,12 +3819,15 @@ public:
             // Update global shim flow ID following the local packet assignment.
             globalShimFlowID = std::max(globalShimFlowID, flowID);
             // Store flow ID in matching MM2S shim alloc for labeling phase.
+            // Use the packet flow op's actual ID, not the mutated flowID
+            // (createPacketFlowOp post-increments flowID by reference).
+            int storedFlowID = pktFlowOp ? pktFlowOp.getID() : flowID;
             for (auto &sa : shim_dma_alloc.mm2s_allocs) {
               if (sa.getDmaTile() == f.MM2S_alloc.getDmaTile() &&
                   sa.dma_channel == f.MM2S_alloc.dma_channel &&
                   sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
                   sa.dma_id == f.MM2S_alloc.dma_id) {
-                sa.packet_flow_id = flowID;
+                sa.packet_flow_id = storedFlowID;
                 break;
               }
             }
