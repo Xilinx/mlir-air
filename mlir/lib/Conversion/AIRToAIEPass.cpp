@@ -6082,6 +6082,18 @@ public:
         // each device processes its own allocations independently. Shim-side
         // ops belonging to other devices are silently skipped (skipUnlinked).
         auto func = h->getParentOfType<func::FuncOp>();
+
+        // Unroll scf.parallel loops around shim-side channel ops (at func
+        // level) so each tile gets a discrete channel put/get. This is needed
+        // when air-dma-to-channel wraps channel ops in scf.parallel; without
+        // unrolling, all tiles share one channel op and get the same packet ID.
+        {
+          RewritePatternSet shimUnrollPatterns(ctx);
+          air::populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
+              shimUnrollPatterns);
+          (void)applyPatternsGreedily(func, std::move(shimUnrollPatterns));
+        }
+
         std::vector<air::MemcpyInterface> shimMemcpyIfOps;
         func.walk([&](air::ChannelInterface o) {
           auto parentLaunch = o->getParentOfType<air::LaunchOp>();

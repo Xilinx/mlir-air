@@ -1553,6 +1553,85 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         op->removeAttr("hoist");
       });
     }
+
+    // Auto-detect channels that need packet switching. When a segment has
+    // multiple herds, each herd's L3-to-L1 channels share shim DMA resources.
+    // If the total number of L3-bound input (or output) channels across all
+    // herds exceeds the physical shim DMA channel limit (2 per direction per
+    // column), mark excess channels as dma_packet to enable time-multiplexed
+    // sharing via packet IDs.
+    module.walk([&](air::SegmentOp seg) {
+      // Collect all herds in this segment.
+      SmallVector<air::HerdOp> herds;
+      seg.walk([&](air::HerdOp h) { herds.push_back(h); });
+      if (herds.size() <= 1)
+        return;
+
+      // For each direction (L3->L1 = "input", L1->L3 = "output"), count
+      // how many unique channels each column needs. A channel is L3-bound
+      // if it has a put or get at launch level (outside the segment).
+      // Group channels by the herd column they target.
+      //
+      // Simplified heuristic: if the total number of L3-to-L1 input channels
+      // across all herds > 2 * herd_width (where herd_width is the number of
+      // columns), then mark input channels as dma_packet. Same for outputs.
+      int64_t herdWidth = 0;
+      for (auto h : herds) {
+        auto sizes = h.getSizeOperands();
+        if (!sizes.empty()) {
+          if (auto cst = sizes[0].getDefiningOp<arith::ConstantIndexOp>())
+            herdWidth = std::max(herdWidth, (int64_t)cst.value());
+        }
+      }
+      if (herdWidth == 0)
+        return;
+
+      // Count L3-bound input/output channels per direction.
+      // Input = channel.put at launch level, channel.get inside herd.
+      // Output = channel.get at launch level, channel.put inside herd.
+      SmallVector<air::ChannelOp> inputChannels, outputChannels;
+      for (auto &op : module.getBody()->getOperations()) {
+        auto chanOp = dyn_cast<air::ChannelOp>(op);
+        if (!chanOp)
+          continue;
+        // Check if this channel has a put/get inside one of the herds.
+        bool hasHerdSideOp = false;
+        bool isInput = false; // true = L3->L1 (put at launch, get in herd)
+        auto channelName = chanOp.getSymName();
+        seg.walk([&](air::ChannelInterface ci) {
+          if (ci.getChanName() != channelName)
+            return;
+          if (ci->getParentOfType<air::HerdOp>()) {
+            hasHerdSideOp = true;
+            isInput = isa<air::ChannelGetOp>(ci.getOperation());
+          }
+        });
+        if (!hasHerdSideOp)
+          continue;
+        if (isInput)
+          inputChannels.push_back(chanOp);
+        else
+          outputChannels.push_back(chanOp);
+      }
+
+      // Physical limit: 2 MM2S and 2 S2MM channels per shim tile. After
+      // segment unrolling, each channel bundle index maps to a shim column.
+      // The per-column channel count equals the number of unique channels
+      // targeting herds on that column. If this exceeds the physical limit,
+      // mark all channels in that direction as dma_packet.
+      int64_t shimChannelsPerCol = 2;
+
+      auto upgradeToPacket = [&](SmallVector<air::ChannelOp> &channels) {
+        for (auto chanOp : channels) {
+          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+        }
+      };
+
+      if ((int64_t)inputChannels.size() > shimChannelsPerCol)
+        upgradeToPacket(inputChannels);
+      if ((int64_t)outputChannels.size() > shimChannelsPerCol)
+        upgradeToPacket(outputChannels);
+    });
   }
 
   void updateDependencyOnFunction(func::FuncOp f) {
