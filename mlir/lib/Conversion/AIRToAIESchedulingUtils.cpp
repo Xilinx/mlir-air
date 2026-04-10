@@ -989,6 +989,7 @@ FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
                            row,
                            aie_chan,
                            t.dma_channel.channel,
+                           /*packet_flow_id=*/-1,
                            dma_ops_get_id,
                            {memcpyOp.getOperation()}});
         return allocs->back();
