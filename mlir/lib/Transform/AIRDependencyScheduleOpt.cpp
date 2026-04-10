@@ -2533,7 +2533,7 @@ public:
     sizes[chanDim] *= factor;
     air::ChannelOp::create(builder, op->getLoc(), chan_op.getSymName().str(),
                            builder.getI64ArrayAttr(sizes),
-                           builder.getStringAttr("dma_stream"));
+                           chan_op.getChannelType());
 
     // Add scf.parallel to unroll channel puts and gets
     auto puts = air::getChannelPutOpThroughSymbol(chan_op);
