@@ -27,10 +27,22 @@ run:
 	mkdir -p $(BUILD_DIR)
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG)
 
+PROFILE_ARGS = $(OUTPUT_FORMAT_FLAG) --tile-size $(TILE_SIZE) --warmup $(WARMUP) --iterations $(ITERATIONS)
+
 profile:
 	mkdir -p $(BUILD_DIR)
-	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(OUTPUT_FORMAT_FLAG) \
-		--tile-size $(TILE_SIZE) --warmup $(WARMUP) --iterations $(ITERATIONS)
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(PROFILE_ARGS)
+
+compare:
+	mkdir -p $(BUILD_DIR)
+	@echo "=== Single-herd add ==="
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_herd_add.py $(PROFILE_ARGS)
+	@echo ""
+	@echo "=== Single-herd mul ==="
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/single_herd_mul.py $(PROFILE_ARGS)
+	@echo ""
+	@echo "=== Dual-herd (fused) ==="
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/dual_herd_packet_switch.py $(PROFILE_ARGS)
 
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
