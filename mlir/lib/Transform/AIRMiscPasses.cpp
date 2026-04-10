@@ -2622,7 +2622,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         }
         new_chan = air::ChannelOp::create(
             rewriter, loc, cname, rewriter.getI64ArrayAttr(channel_sizes),
-            origChanOp.getChannelTypeAttr());
+            origChanOp.getChannelType());
       }
 
       // Perform tiling on these channel put/get ops which are using the memref.
