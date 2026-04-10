@@ -72,6 +72,7 @@ struct allocation_info_t {
   int64_t row = -1;
   AIE::DMAChannel dma_channel = {AIE::DMAChannelDir::MM2S, -1};
   int64_t tile_channel = -1;
+  int packet_flow_id = -1; // Packet flow ID assigned during flow creation
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
   bool valid();
