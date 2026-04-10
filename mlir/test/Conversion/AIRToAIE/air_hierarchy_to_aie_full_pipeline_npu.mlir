@@ -24,6 +24,7 @@
 // RUN: air-opt %s \
 // RUN:   -air-hierarchy-to-aie="row-offset=2 col-offset=0 device=npu1_1col" \
 // RUN:   --air-channel-to-conduit \
+// RUN:   --conduit-depth-promote \
 // RUN: | aie-opt --conduit-to-dma \
 // RUN: | FileCheck %s
 
