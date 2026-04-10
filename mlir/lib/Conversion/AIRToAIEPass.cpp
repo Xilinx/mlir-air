@@ -5926,6 +5926,7 @@ public:
                                     options);
 
     std::set<AIE::DeviceOp> seen;
+    DenseSet<func::FuncOp> shimUnrolledFuncs;
     for (auto &p : aie_devices) {
       auto device = std::get<0>(p);
       air::HerdOp h = std::get<1>(p);
@@ -6088,6 +6089,27 @@ public:
         // each device processes its own allocations independently. Shim-side
         // ops belonging to other devices are silently skipped (skipUnlinked).
         auto func = h->getParentOfType<func::FuncOp>();
+
+        // Unroll scf.parallel loops around shim-side channel ops (at func
+        // level) so each tile gets a discrete channel put/get. This is needed
+        // when air-dma-to-channel wraps channel ops in scf.parallel; without
+        // unrolling, all tiles share one channel op and get the same packet ID.
+        // Guard with shimUnrolledFuncs to avoid redundant rewrites when
+        // multiple devices share the same parent func.
+        if (!shimUnrolledFuncs.contains(func)) {
+          shimUnrolledFuncs.insert(func);
+          RewritePatternSet shimUnrollPatterns(ctx);
+          air::populateAIRunrollAIRChannelPutGetInScfParallelPatterns(
+              shimUnrollPatterns);
+          if (failed(
+                  applyPatternsGreedily(func, std::move(shimUnrollPatterns)))) {
+            func->emitOpError(
+                "failed to unroll scf.parallel around shim channel ops");
+            signalPassFailure();
+            return;
+          }
+        }
+
         std::vector<air::MemcpyInterface> shimMemcpyIfOps;
         func.walk([&](air::ChannelInterface o) {
           auto parentLaunch = o->getParentOfType<air::LaunchOp>();
