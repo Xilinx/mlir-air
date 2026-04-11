@@ -49,8 +49,7 @@ static SymmetricHeap *g_symmetric_heap = nullptr;
 // without a symmetric heap).  Avoids pinning device 0 at library load time.
 static std::once_flag g_allocator_flag;
 static VMemAllocator *getDefaultAllocator() {
-  std::call_once(g_allocator_flag,
-                 [] { g_allocator = new VMemAllocator(); });
+  std::call_once(g_allocator_flag, [] { g_allocator = new VMemAllocator(); });
   return g_allocator;
 }
 
