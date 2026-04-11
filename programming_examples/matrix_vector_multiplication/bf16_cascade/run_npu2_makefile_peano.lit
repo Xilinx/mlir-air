@@ -1,0 +1,16 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: ryzen_ai_npu2, peano
+//
+// RUN: mkdir -p test_npu2_peano
+// RUN: cd test_npu2_peano
+// RUN: make -f %S/Makefile clean
+//
+// Correctness: M=2048, K=8192, 8 columns x 4 cascade tiles (tile_m=2 for L2 fit)
+// RUN: make -f %S/Makefile run M=2048 K=8192 TILE_M=2 M_INPUT=1 HERD_COLS=8 N_CASCADE=4 OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN1
+// RUN1: PASS!
+//
+// Correctness: smaller test, 2 columns x 4 cascade tiles
+// RUN: make -f %S/Makefile run M=256 K=512 TILE_M=4 M_INPUT=1 HERD_COLS=2 N_CASCADE=4 OUTPUT_FORMAT=elf PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR | FileCheck %s --check-prefix=RUN2
+// RUN2: PASS!
