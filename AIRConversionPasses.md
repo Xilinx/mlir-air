@@ -220,7 +220,6 @@ airrt.module_metadata{
 -use-objectfifo              : Choose whether to lower data movement ops to aie.objectFifo, or directly to aie.locks.
 -generate-shim-dma           : Choose whether to schedule shim data movement via generating AIE shim DMA program, or AIR runtime.
 -insert-trace-packet-flow    : Create packet routed traces for cores and memtiles
--use-pkt-flow-at-shim-dma    : Switch to using packet flows for all data movements at shim DMAs, to enable time-multiplex sharing with control packet flows.
 -use-lock-race-condition-fix : Switch to enable a fix for lock race condition, which protects against the risk of race condition, at the cost of inserting extra dummy DMA BDs
 ```
 
