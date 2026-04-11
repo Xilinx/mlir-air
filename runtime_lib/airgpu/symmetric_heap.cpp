@@ -43,11 +43,12 @@ SymmetricHeap::SymmetricHeap(size_t heap_size) {
   // Set GPU for this rank
   HIP_CHECK(hipSetDevice(device_id_));
 
+  heap_size_ = heap_size;
+
   // Create local VMem allocator and pre-map the full heap.
   // This maps the entire heap as one physical chunk so peers can import it.
   allocator_ = new VMemAllocator(heap_size);
   allocator_->allocate(heap_size);
-  allocator_->resetOffset();
 
   // Initialize heap_bases — local rank gets its own VA base
   heap_bases_.resize(world_size_, nullptr);
@@ -97,12 +98,22 @@ SymmetricHeap::~SymmetricHeap() {
 }
 
 void *SymmetricHeap::allocate(size_t size_bytes) {
-  void *ptr = allocator_->allocate(size_bytes);
-  if (!ptr) {
-    fprintf(stderr, "airgpu: symmetric heap out of memory (requested %zu)\n",
-            size_bytes);
+  // Simple bump allocator within the pre-mapped heap.
+  // No new hipMemCreate/hipMemMap — the full heap is already mapped.
+  size_t granularity = allocator_->getGranularity();
+  size_t aligned = (size_bytes + granularity - 1) & ~(granularity - 1);
+  size_t offset = (alloc_offset_ + granularity - 1) & ~(granularity - 1);
+
+  if (offset + aligned > heap_size_) {
+    fprintf(stderr,
+            "airgpu: symmetric heap out of memory "
+            "(requested %zu, used %zu, total %zu)\n",
+            size_bytes, offset, heap_size_);
     abort();
   }
+
+  void *ptr = static_cast<char *>(allocator_->getVaBase()) + offset;
+  alloc_offset_ = offset + aligned;
   return ptr;
 }
 

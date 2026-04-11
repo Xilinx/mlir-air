@@ -54,6 +54,8 @@ private:
   int device_id_;
 
   VMemAllocator *allocator_;
+  size_t heap_size_;
+  size_t alloc_offset_ = 0; // bump pointer within pre-mapped heap
 
   // Socket mesh for fd passing (peer_rank -> socket fd)
   std::map<int, int> fd_mesh_;
