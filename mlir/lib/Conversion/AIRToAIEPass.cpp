@@ -1919,7 +1919,9 @@ void L2MemrefToMemTileMap(
       memref_buckets.push_back(SmallVector<memref::AllocOp>{alloc});
     }
   }
-  // Second stage in memref placement: placing memref groups to memtiles.
+  // Second stage in memref placement: round-robin placement of memref groups
+  // to memtiles. This distributes buffer count evenly, which correlates well
+  // with DMA channel/BD pressure.
   int memtile_id = 0;
   for (auto &bucket : memref_buckets) {
     for (auto bucket_elem : bucket) {
@@ -1931,6 +1933,145 @@ void L2MemrefToMemTileMap(
     }
     memtile_id++;
     memtile_id %= memtiles.size();
+  }
+
+  // Third stage: column-affinity optimization via pairwise swaps.
+  //
+  // The round-robin above distributes DMA pressure evenly but ignores
+  // topology. When a bucket's channels all connect to cores in a single
+  // column, placing it on that column's memtile avoids cross-column routing.
+  // We improve locality by swapping pairs of buckets between memtiles when:
+  //   - at least one bucket moves closer to its affinity column, and
+  //   - neither bucket moves further from its affinity column, and
+  //   - both memtiles have enough capacity after the swap.
+  // Because swaps are count-neutral (each memtile keeps the same number of
+  // buckets), DMA channel/BD pressure remains balanced.
+
+  // Build column-to-memtile-index map.
+  std::map<int, int> colToMemtileIdx;
+  for (int i = 0; i < (int)memtiles.size(); i++)
+    colToMemtileIdx[memtiles[i].getCol()] = i;
+
+  // Cache channel → connected core columns.
+  DenseMap<air::ChannelOp, SmallVector<int>> channelToCoreCols;
+  auto getCoreCols = [&](air::ChannelOp channelOp) -> ArrayRef<int> {
+    auto it = channelToCoreCols.find(channelOp);
+    if (it != channelToCoreCols.end())
+      return it->second;
+    llvm::SmallSetVector<int, 8> cols;
+    for (auto put : air::getChannelPutOpThroughSymbol(channelOp, m))
+      if (auto core = put->getParentOfType<AIE::CoreOp>())
+        cols.insert(core.getTileOp().getCol());
+    for (auto get : air::getChannelGetOpThroughSymbol(channelOp, m))
+      if (auto core = get->getParentOfType<AIE::CoreOp>())
+        cols.insert(core.getTileOp().getCol());
+    auto &entry = channelToCoreCols[channelOp];
+    entry.assign(cols.begin(), cols.end());
+    return entry;
+  };
+
+  // Compute affinity column for each bucket (-1 = no single-column affinity).
+  SmallVector<int> bucketAffinityCol(memref_buckets.size(), -1);
+  for (int bi = 0; bi < (int)memref_buckets.size(); bi++) {
+    llvm::SmallSetVector<int, 8> cols;
+    for (auto alloc : memref_buckets[bi]) {
+      for (auto user : alloc.getMemref().getUsers()) {
+        auto chanIf = dyn_cast<air::ChannelInterface>(user);
+        if (!chanIf)
+          continue;
+        auto channelOp = air::getChannelDeclarationThroughSymbol(chanIf);
+        if (!channelOp)
+          continue;
+        for (int c : getCoreCols(channelOp))
+          cols.insert(c);
+      }
+    }
+    if (cols.size() == 1)
+      bucketAffinityCol[bi] = cols.front();
+  }
+
+  // Compute bucket sizes.
+  SmallVector<uint32_t> bucketSizes(memref_buckets.size(), 0);
+  for (int bi = 0; bi < (int)memref_buckets.size(); bi++) {
+    for (auto alloc : memref_buckets[bi]) {
+      MemRefType ty = llvm::cast<MemRefType>(alloc.getMemref().getType());
+      bucketSizes[bi] +=
+          air::getElementSizeInBytes(ty) * air::getTensorVolume(ty);
+    }
+  }
+
+  // Record current memtile index for each bucket.
+  SmallVector<int> bucketMemtileIdx(memref_buckets.size());
+  for (int bi = 0; bi < (int)memref_buckets.size(); bi++) {
+    auto alloc0 = memref_buckets[bi][0];
+    auto tile = memrefToMemTileMap[alloc0];
+    for (int mi = 0; mi < (int)memtiles.size(); mi++) {
+      if (memtiles[mi] == tile) {
+        bucketMemtileIdx[bi] = mi;
+        break;
+      }
+    }
+  }
+
+  // Helper: does bucket bi sit on its affinity column's memtile?
+  auto isOnAffinityMemtile = [&](int bi) -> bool {
+    if (bucketAffinityCol[bi] < 0)
+      return false;
+    auto it = colToMemtileIdx.find(bucketAffinityCol[bi]);
+    return it != colToMemtileIdx.end() && it->second == bucketMemtileIdx[bi];
+  };
+
+  // Try pairwise swaps. Iterate all bucket pairs (i, j) on different
+  // memtiles. A swap is beneficial if it strictly improves affinity for at
+  // least one bucket without hurting the other.
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int i = 0; i < (int)memref_buckets.size(); i++) {
+      if (bucketAffinityCol[i] < 0)
+        continue; // no affinity preference
+      if (isOnAffinityMemtile(i))
+        continue; // already optimal
+      auto affinityIt = colToMemtileIdx.find(bucketAffinityCol[i]);
+      if (affinityIt == colToMemtileIdx.end())
+        continue;
+      int targetMtIdx = affinityIt->second;
+
+      for (int j = 0; j < (int)memref_buckets.size(); j++) {
+        if (i == j)
+          continue;
+        if (bucketMemtileIdx[j] != targetMtIdx)
+          continue; // j is not on i's target memtile
+
+        // Don't swap if j is already on its own affinity memtile.
+        if (isOnAffinityMemtile(j))
+          continue;
+
+        // Check capacity: can the memtiles accommodate the swap?
+        int mtI = bucketMemtileIdx[i];
+        int mtJ = bucketMemtileIdx[j]; // == targetMtIdx
+        int32_t deltaI = (int32_t)bucketSizes[j] - (int32_t)bucketSizes[i];
+        int32_t deltaJ = (int32_t)bucketSizes[i] - (int32_t)bucketSizes[j];
+        if ((int32_t)memtileToSizeMap[memtiles[mtI]] + deltaI < 0)
+          continue;
+        if ((int32_t)memtileToSizeMap[memtiles[mtJ]] + deltaJ < 0)
+          continue;
+
+        // Perform the swap.
+        memtileToSizeMap[memtiles[mtI]] += deltaI;
+        memtileToSizeMap[memtiles[mtJ]] += deltaJ;
+        bucketMemtileIdx[i] = mtJ;
+        bucketMemtileIdx[j] = mtI;
+        for (auto alloc : memref_buckets[i])
+          memrefToMemTileMap[alloc] = memtiles[mtJ];
+        for (auto alloc : memref_buckets[j])
+          memrefToMemTileMap[alloc] = memtiles[mtI];
+        changed = true;
+        break; // restart inner loop for bucket i (it moved)
+      }
+      if (changed)
+        break; // restart outer loop
+    }
   }
 }
 
