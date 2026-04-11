@@ -7,8 +7,8 @@
 
 // RUN: air-opt %s -air-copy-to-dma | FileCheck %s
 
-// Test that air-copy-to-dma correctly handles subview(reinterpret_cast) chains
-// by placing the reinterpret_cast flat offset in the stride-1 dimension.
+// Test that air-copy-to-dma correctly handles reinterpret_cast offsets
+// by placing flat offsets in the stride-1 dimension.
 
 // CHECK-LABEL: func.func @transposed_a
 // The transposed A has strides [1, 512]. The reinterpret_cast offset %arg1
@@ -55,5 +55,63 @@ func.func @normal_layout(%arg0: memref<*xf32>, %arg1: index, %arg2: index) {
   memref.copy %sv, %sv_dst
     : memref<16x256xf32, strided<[1024, 1], offset: ?>>
       to memref<16x256xf32, strided<[256, 1], offset: ?>, 1>
+  return
+}
+
+// -----
+
+// Tests for standalone reinterpret_cast (no subview wrapper).
+// These exercise extractOperandsFromReinterpretCast directly.
+
+// CHECK-LABEL: func.func @standalone_transposed
+// Transposed layout strides [1, 504]. The single flat offset %arg1 must go
+// in dim0 (stride=1), producing offsets [%arg1, 0].
+// CHECK: air.dma_memcpy_nd
+// CHECK-SAME: %arg0[%arg1, %c0]
+// CHECK-SAME: [%c256, %c16]
+// CHECK-SAME: [%c1, %c504]
+func.func @standalone_transposed(%arg0: memref<*xf32>, %arg1: index) {
+  %alloc = memref.alloc() : memref<256x16xf32, 1>
+  %rc = memref.reinterpret_cast %arg0 to
+    offset: [%arg1], sizes: [256, 16], strides: [1, 504]
+    : memref<*xf32> to memref<256x16xf32, strided<[1, 504], offset: ?>>
+  memref.copy %rc, %alloc
+    : memref<256x16xf32, strided<[1, 504], offset: ?>>
+      to memref<256x16xf32, 1>
+  return
+}
+
+// CHECK-LABEL: func.func @standalone_normal
+// Normal layout strides [504, 1]. The single flat offset %arg1 must go
+// in dim1 (stride=1), producing offsets [0, %arg1].
+// CHECK: air.dma_memcpy_nd
+// CHECK-SAME: %arg0[%c0, %arg1]
+// CHECK-SAME: [%c16, %c256]
+// CHECK-SAME: [%c504, %c1]
+func.func @standalone_normal(%arg0: memref<*xf32>, %arg1: index) {
+  %alloc = memref.alloc() : memref<16x256xf32, 1>
+  %rc = memref.reinterpret_cast %arg0 to
+    offset: [%arg1], sizes: [16, 256], strides: [504, 1]
+    : memref<*xf32> to memref<16x256xf32, strided<[504, 1], offset: ?>>
+  memref.copy %rc, %alloc
+    : memref<16x256xf32, strided<[504, 1], offset: ?>>
+      to memref<16x256xf32, 1>
+  return
+}
+
+// CHECK-LABEL: func.func @standalone_transposed_const_offset
+// Transposed layout with constant offset 256. Should produce offsets [c256, 0].
+// CHECK: air.dma_memcpy_nd
+// CHECK-SAME: %arg0[%c256, %c0]
+// CHECK-SAME: [%c64, %c16]
+// CHECK-SAME: [%c1, %c504]
+func.func @standalone_transposed_const_offset(%arg0: memref<*xf32>) {
+  %alloc = memref.alloc() : memref<64x16xf32, 1>
+  %rc = memref.reinterpret_cast %arg0 to
+    offset: [256], sizes: [64, 16], strides: [1, 504]
+    : memref<*xf32> to memref<64x16xf32, strided<[1, 504], offset: 256>>
+  memref.copy %rc, %alloc
+    : memref<64x16xf32, strided<[1, 504], offset: 256>>
+      to memref<64x16xf32, 1>
   return
 }
