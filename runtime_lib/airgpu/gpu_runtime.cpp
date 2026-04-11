@@ -44,8 +44,12 @@ struct StridedMemRefType {
 static VMemAllocator *g_allocator = nullptr;
 static SymmetricHeap *g_symmetric_heap = nullptr;
 
-__attribute__((constructor)) static void airgpu_runtime_init() {
-  g_allocator = new VMemAllocator();
+// Lazy-init the standalone allocator (only when mgpuMemAlloc is called
+// without a symmetric heap).  Avoids pinning device 0 at library load time.
+static VMemAllocator *getDefaultAllocator() {
+  if (!g_allocator)
+    g_allocator = new VMemAllocator();
+  return g_allocator;
 }
 
 __attribute__((destructor)) static void airgpu_runtime_shutdown() {
@@ -147,12 +151,12 @@ extern "C" void mgpuEventRecord(hipEvent_t event, hipStream_t stream) {
 
 extern "C" void *mgpuMemAlloc(uint64_t sizeBytes, hipStream_t /*stream*/,
                               bool /*isHostShared*/) {
-  return g_allocator->allocate(static_cast<size_t>(sizeBytes));
+  return getDefaultAllocator()->allocate(static_cast<size_t>(sizeBytes));
 }
 
 extern "C" void mgpuMemFree(void *ptr, hipStream_t /*stream*/) {
   if (ptr)
-    g_allocator->free(ptr);
+    getDefaultAllocator()->free(ptr);
 }
 
 // ===========================================================================
