@@ -3,6 +3,7 @@
 
 #include "symmetric_heap.h"
 #include "fd_passing.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -117,7 +118,10 @@ void *SymmetricHeap::allocate(size_t size_bytes) {
   return ptr;
 }
 
-void SymmetricHeap::free(void *ptr) { allocator_->free(ptr); }
+void SymmetricHeap::free(void * /*ptr*/) {
+  // Bump allocator — individual frees are a no-op.
+  // The full heap is released when SymmetricHeap is destroyed.
+}
 
 void *SymmetricHeap::getHeapBase(int rank) const {
   if (rank < 0 || rank >= world_size_)
@@ -137,11 +141,17 @@ void SymmetricHeap::barrier() {
   char token = 0;
   for (auto &[peer, sock] : fd_mesh_) {
     if (rank_ < peer) {
-      sendAll(sock, &token, 1);
-      recvAll(sock, &token, 1);
+      if (sendAll(sock, &token, 1) < 0 || recvAll(sock, &token, 1) < 0) {
+        fprintf(stderr, "airgpu: barrier failed (rank=%d, peer=%d)\n", rank_,
+                peer);
+        abort();
+      }
     } else {
-      recvAll(sock, &token, 1);
-      sendAll(sock, &token, 1);
+      if (recvAll(sock, &token, 1) < 0 || sendAll(sock, &token, 1) < 0) {
+        fprintf(stderr, "airgpu: barrier failed (rank=%d, peer=%d)\n", rank_,
+                peer);
+        abort();
+      }
     }
   }
 }

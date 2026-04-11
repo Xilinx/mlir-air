@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <hip/hip_runtime.h>
+#include <mutex>
 
 #define HIP_REPORT_IF_ERROR(expr)                                              \
   {                                                                            \
@@ -46,9 +47,10 @@ static SymmetricHeap *g_symmetric_heap = nullptr;
 
 // Lazy-init the standalone allocator (only when mgpuMemAlloc is called
 // without a symmetric heap).  Avoids pinning device 0 at library load time.
+static std::once_flag g_allocator_flag;
 static VMemAllocator *getDefaultAllocator() {
-  if (!g_allocator)
-    g_allocator = new VMemAllocator();
+  std::call_once(g_allocator_flag,
+                 [] { g_allocator = new VMemAllocator(); });
   return g_allocator;
 }
 

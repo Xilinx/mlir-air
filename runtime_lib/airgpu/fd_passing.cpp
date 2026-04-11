@@ -12,9 +12,13 @@
 #include <unistd.h>
 
 static std::string sockPath(int rank) {
+  const char *job_id = std::getenv("AIRGPU_JOB_ID");
   char buf[108];
-  snprintf(buf, sizeof(buf), "/tmp/airgpu_%d_%d.sock",
-           static_cast<int>(getuid()), rank);
+  if (job_id && job_id[0] != '\0')
+    snprintf(buf, sizeof(buf), "/tmp/airgpu_%s_%d.sock", job_id, rank);
+  else
+    snprintf(buf, sizeof(buf), "/tmp/airgpu_%d_%d.sock",
+             static_cast<int>(getuid()), rank);
   return std::string(buf);
 }
 
@@ -85,7 +89,9 @@ int sendAll(int sock_fd, const void *buf, size_t len) {
   const char *p = static_cast<const char *>(buf);
   while (len > 0) {
     ssize_t n = send(sock_fd, p, len, 0);
-    if (n <= 0) {
+    if (n < 0) {
+      if (errno == EINTR)
+        continue;
       perror("airgpu: sendAll");
       return -1;
     }
@@ -99,8 +105,14 @@ int recvAll(int sock_fd, void *buf, size_t len) {
   char *p = static_cast<char *>(buf);
   while (len > 0) {
     ssize_t n = recv(sock_fd, p, len, 0);
-    if (n <= 0) {
+    if (n < 0) {
+      if (errno == EINTR)
+        continue;
       perror("airgpu: recvAll");
+      return -1;
+    }
+    if (n == 0) {
+      fprintf(stderr, "airgpu: recvAll: peer disconnected\n");
       return -1;
     }
     p += n;

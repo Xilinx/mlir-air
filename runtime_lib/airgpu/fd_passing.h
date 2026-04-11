@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <map>
 
 // Send one file descriptor over a connected AF_UNIX socket.

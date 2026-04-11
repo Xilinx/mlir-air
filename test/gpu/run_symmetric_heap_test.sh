@@ -6,6 +6,7 @@
 
 set -e
 
+export AIRGPU_JOB_ID="${AIRGPU_JOB_ID:-$$}"
 NUM_RANKS=${1:-2}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEST_BIN="${SCRIPT_DIR}/../../runtime_lib/airgpu/test_symmetric_heap"
@@ -26,8 +27,8 @@ PIDS=()
 PASS=1
 
 for i in $(seq 0 $((NUM_RANKS - 1))); do
-  RANK=$i WORLD_SIZE=$NUM_RANKS LOCAL_RANK=$i \
-    "$TEST_BIN" 2>&1 | sed "s/^/[rank $i] /" &
+  (set -o pipefail; RANK=$i WORLD_SIZE=$NUM_RANKS LOCAL_RANK=$i \
+    "$TEST_BIN" 2>&1 | sed "s/^/[rank $i] /") &
   PIDS+=($!)
 done
 

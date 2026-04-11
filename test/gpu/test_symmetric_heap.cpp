@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 #include <hip/hip_runtime.h>
 
 // Forward-declare the mgpu* C ABI
