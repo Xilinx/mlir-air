@@ -72,20 +72,33 @@ SymmetricHeap::SymmetricHeap(size_t heap_size) {
 
 SymmetricHeap::~SymmetricHeap() {
   // Synchronize before cleanup
-  hipDeviceSynchronize();
+  hipError_t sync_err = hipDeviceSynchronize();
+  if (sync_err != hipSuccess)
+    fprintf(stderr, "airgpu: hipDeviceSynchronize failed: %s\n",
+            hipGetErrorString(sync_err));
 
   // Unmap and release all peer imports
   for (auto &[peer, mappings] : peer_mappings_) {
     for (auto &m : mappings) {
-      hipMemUnmap(reinterpret_cast<hipDeviceptr_t>(m.va), m.size);
-      hipMemRelease(m.handle);
+      hipError_t err =
+          hipMemUnmap(reinterpret_cast<hipDeviceptr_t>(m.va), m.size);
+      if (err != hipSuccess)
+        fprintf(stderr, "airgpu: hipMemUnmap(%p) failed: %s\n", m.va,
+                hipGetErrorString(err));
+      err = hipMemRelease(m.handle);
+      if (err != hipSuccess)
+        fprintf(stderr, "airgpu: hipMemRelease failed: %s\n",
+                hipGetErrorString(err));
     }
   }
 
   // Free peer VA reservations
   for (auto &[peer, va] : peer_va_bases_) {
-    hipMemAddressFree(reinterpret_cast<hipDeviceptr_t>(va),
-                      allocator_->getHeapSize());
+    hipError_t err = hipMemAddressFree(reinterpret_cast<hipDeviceptr_t>(va),
+                                       allocator_->getHeapSize());
+    if (err != hipSuccess)
+      fprintf(stderr, "airgpu: hipMemAddressFree(%p) failed: %s\n", va,
+              hipGetErrorString(err));
   }
 
   // Teardown socket mesh

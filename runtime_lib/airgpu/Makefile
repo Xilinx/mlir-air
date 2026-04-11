@@ -4,7 +4,7 @@
 ROCM_PATH ?= /opt/rocm
 HIPCC     := $(ROCM_PATH)/bin/hipcc
 
-CXXFLAGS  = -std=c++17 -fPIC -O2 -Wall -Wextra -Wno-unused-parameter
+CXXFLAGS  = -std=c++17 -fPIC -O2 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-return-type-c-linkage
 INCLUDES  = -I$(ROCM_PATH)/include -I.
 LDFLAGS   = -shared -L$(ROCM_PATH)/lib -lamdhip64
 

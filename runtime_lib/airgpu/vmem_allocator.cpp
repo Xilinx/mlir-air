@@ -148,7 +148,14 @@ void VMemAllocator::free(void *ptr) {
     return;
   }
 
-  hipMemUnmap(reinterpret_cast<hipDeviceptr_t>(it->va_ptr), it->size);
-  hipMemRelease(it->handle);
+  hipError_t e1 =
+      hipMemUnmap(reinterpret_cast<hipDeviceptr_t>(it->va_ptr), it->size);
+  if (e1 != hipSuccess)
+    fprintf(stderr, "airgpu: hipMemUnmap(%p) failed: %s\n", it->va_ptr,
+            hipGetErrorString(e1));
+  hipError_t e2 = hipMemRelease(it->handle);
+  if (e2 != hipSuccess)
+    fprintf(stderr, "airgpu: hipMemRelease failed: %s\n",
+            hipGetErrorString(e2));
   alloc_records_.erase(it);
 }
