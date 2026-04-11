@@ -23,7 +23,8 @@
 //
 // Invocation:
 //   air-opt --allow-unregistered-dialect --air-channel-to-conduit <file.mlir>
-//   air-opt --allow-unregistered-dialect --air-channel-flatten-indices <file.mlir>
+//   air-opt --allow-unregistered-dialect --air-channel-flatten-indices
+//   <file.mlir>
 //
 //===----------------------------------------------------------------------===//
 
