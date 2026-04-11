@@ -40,6 +40,11 @@ public:
   int getDeviceId() const { return device_id_; }
   int getNumDevices() const { return num_devices_; }
 
+  // Get all allocation records (for symmetric heap export).
+  const std::vector<AllocRecord> &getAllocRecords() const {
+    return alloc_records_;
+  }
+
   VMemAllocator(const VMemAllocator &) = delete;
   VMemAllocator &operator=(const VMemAllocator &) = delete;
 
