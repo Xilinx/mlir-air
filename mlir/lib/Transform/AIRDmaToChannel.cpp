@@ -1560,14 +1560,20 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     // pressure equals the total channel count. If this exceeds the physical
     // shim DMA channel limit per column, mark those channels as dma_packet.
     module.walk([&](air::SegmentOp seg) {
-      // Classify shim-bound channels. A channel is shim-bound if it has:
-      //   - An endpoint inside the segment (herd-level L1 or segment-level
-      //     L2), AND
-      //   - An endpoint at launch level operating on an L3 memref.
-      // Both L3↔L1 and L3↔L2 channels consume shim DMA resources.
-      // Classify shim-bound channels into upgradeable (dma_stream) and
-      // pre-existing (dma_packet). Both count toward shim DMA pressure,
-      // but only dma_stream channels are upgraded.
+      // Classify shim-bound channels that create per-column pressure.
+      //
+      // A channel creates per-column shim DMA pressure if:
+      //   1. It has a herd-side endpoint (pinned to herd column via
+      //      same_column constraint in ShimDMAAllocator), OR
+      //   2. Its bundle column dimension > 1 (replicated across columns
+      //      after SpecializeChannelBundlePattern in air-to-aie).
+      //
+      // Channels with bundle [1,1] and only segment-level endpoints
+      // (L3↔L2) are globally allocated across columns by the allocator
+      // and do NOT create per-column pressure — they are skipped.
+      //
+      // Pre-existing dma_packet channels count toward pressure but are
+      // not upgraded (already packet flow).
       SmallVector<air::ChannelOp> inputChannels, outputChannels;
       int64_t preExistingInputPackets = 0, preExistingOutputPackets = 0;
       for (auto &op : module.getBody()->getOperations()) {
@@ -1578,38 +1584,36 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         bool isAlreadyPacket = (chanOp.getChannelType() == "dma_packet");
         auto channelName = chanOp.getSymName();
 
-        // Check segment-side endpoint: either inside a herd (L1) or inside
-        // the segment but outside any herd (L2).
+        // Check if this channel has a herd-side endpoint in this segment.
         bool hasHerdSideGet = false;
         bool hasHerdSidePut = false;
-        bool hasSegmentSideL2Get = false;
-        bool hasSegmentSideL2Put = false;
         seg.walk([&](air::ChannelInterface ci) -> WalkResult {
+          if (hasHerdSideGet || hasHerdSidePut)
+            return WalkResult::interrupt();
           if (ci.getChanName() != channelName)
             return WalkResult::advance();
           if (ci->getParentOfType<air::HerdOp>()) {
-            // Herd-level endpoint (L1).
             if (isa<air::ChannelGetOp>(ci.getOperation()))
               hasHerdSideGet = true;
             else
               hasHerdSidePut = true;
             return WalkResult::interrupt();
           }
-          // Segment-level endpoint (outside herd, check for L2 memref).
-          auto memrefTy =
-              dyn_cast_if_present<BaseMemRefType>(ci.getMemref().getType());
-          if (memrefTy && air::isL2(memrefTy)) {
-            if (isa<air::ChannelGetOp>(ci.getOperation()))
-              hasSegmentSideL2Get = true;
-            else
-              hasSegmentSideL2Put = true;
-            return WalkResult::interrupt();
-          }
           return WalkResult::advance();
         });
-        bool hasSegSideInput = hasHerdSideGet || hasSegmentSideL2Get;
-        bool hasSegSideOutput = hasHerdSidePut || hasSegmentSideL2Put;
-        if (!hasSegSideInput && !hasSegSideOutput)
+
+        // Check bundle column dimension for non-herd channels.
+        bool isPerColumnReplicated = hasHerdSideGet || hasHerdSidePut;
+        if (!isPerColumnReplicated) {
+          // Check if bundle col_dim > 1 (replicated across columns).
+          auto bundleSizes = chanOp.getSize();
+          int64_t colDim = 1;
+          if (!bundleSizes.empty())
+            colDim = cast<IntegerAttr>(bundleSizes[0]).getInt();
+          if (colDim > 1)
+            isPerColumnReplicated = true;
+        }
+        if (!isPerColumnReplicated)
           continue;
 
         // Verify the launch-side endpoint operates on an L3 memref.
@@ -1635,14 +1639,16 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           return WalkResult::interrupt();
         });
 
-        // Input (L3→device): segment-side get + launch-side L3 put.
-        // Output (device→L3): segment-side put + launch-side L3 get.
-        if (hasSegSideInput && hasLaunchSideL3Put) {
+        // Input (L3→device): herd-side get + launch-side L3 put.
+        // Output (device→L3): herd-side put + launch-side L3 get.
+        bool isInput = hasHerdSideGet || hasLaunchSideL3Put;
+        bool isOutput = hasHerdSidePut || hasLaunchSideL3Get;
+        if (isInput && hasLaunchSideL3Put) {
           if (isAlreadyPacket)
             preExistingInputPackets++;
           else
             inputChannels.push_back(chanOp);
-        } else if (hasSegSideOutput && hasLaunchSideL3Get) {
+        } else if (isOutput && hasLaunchSideL3Get) {
           if (isAlreadyPacket)
             preExistingOutputPackets++;
           else
