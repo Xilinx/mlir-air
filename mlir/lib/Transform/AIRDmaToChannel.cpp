@@ -1555,25 +1555,19 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     }
 
     // Auto-detect channels that need packet switching. For each segment,
-    // count L3-bound channels (both L3↔L1 and L3↔L2) per direction. Each
-    // logical channel is replicated on every shim column, so per-column
-    // pressure equals the total channel count. If this exceeds the physical
-    // shim DMA channel limit per column, mark those channels as dma_packet.
+    // count L3-bound channels with herd-side endpoints per direction. Each
+    // such channel is replicated on every shim column (pinned via
+    // same_column constraint in ShimDMAAllocator), so per-column pressure
+    // equals the total channel count. If this exceeds the physical shim
+    // DMA channel limit per column, mark those channels as dma_packet.
+    //
+    // Channels with only segment-level endpoints (L3↔L2) are globally
+    // allocated across columns by the allocator and do NOT create
+    // per-column pressure — they are skipped.
+    //
+    // Pre-existing dma_packet channels count toward pressure but are
+    // not upgraded (already packet flow).
     module.walk([&](air::SegmentOp seg) {
-      // Classify shim-bound channels that create per-column pressure.
-      //
-      // A channel creates per-column shim DMA pressure if:
-      //   1. It has a herd-side endpoint (pinned to herd column via
-      //      same_column constraint in ShimDMAAllocator), OR
-      //   2. Its bundle column dimension > 1 (replicated across columns
-      //      after SpecializeChannelBundlePattern in air-to-aie).
-      //
-      // Channels with bundle [1,1] and only segment-level endpoints
-      // (L3↔L2) are globally allocated across columns by the allocator
-      // and do NOT create per-column pressure — they are skipped.
-      //
-      // Pre-existing dma_packet channels count toward pressure but are
-      // not upgraded (already packet flow).
       SmallVector<air::ChannelOp> inputChannels, outputChannels;
       int64_t preExistingInputPackets = 0, preExistingOutputPackets = 0;
       for (auto &op : module.getBody()->getOperations()) {
@@ -1602,18 +1596,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           return WalkResult::advance();
         });
 
-        // Check bundle column dimension for non-herd channels.
-        bool isPerColumnReplicated = hasHerdSideGet || hasHerdSidePut;
-        if (!isPerColumnReplicated) {
-          // Check if bundle col_dim > 1 (replicated across columns).
-          auto bundleSizes = chanOp.getSize();
-          int64_t colDim = 1;
-          if (!bundleSizes.empty())
-            colDim = cast<IntegerAttr>(bundleSizes[0]).getInt();
-          if (colDim > 1)
-            isPerColumnReplicated = true;
-        }
-        if (!isPerColumnReplicated)
+        if (!hasHerdSideGet && !hasHerdSidePut)
           continue;
 
         // Verify the launch-side endpoint operates on an L3 memref.
@@ -1639,16 +1622,14 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           return WalkResult::interrupt();
         });
 
-        // Input (L3→device): herd-side get + launch-side L3 put.
-        // Output (device→L3): herd-side put + launch-side L3 get.
-        bool isInput = hasHerdSideGet || hasLaunchSideL3Put;
-        bool isOutput = hasHerdSidePut || hasLaunchSideL3Get;
-        if (isInput && hasLaunchSideL3Put) {
+        // Input (L3→L1): herd-side get + launch-side L3 put.
+        // Output (L1→L3): herd-side put + launch-side L3 get.
+        if (hasHerdSideGet && hasLaunchSideL3Put) {
           if (isAlreadyPacket)
             preExistingInputPackets++;
           else
             inputChannels.push_back(chanOp);
-        } else if (isOutput && hasLaunchSideL3Get) {
+        } else if (hasHerdSidePut && hasLaunchSideL3Get) {
           if (isAlreadyPacket)
             preExistingOutputPackets++;
           else
