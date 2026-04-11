@@ -1554,33 +1554,31 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
       });
     }
 
-    // Auto-detect channels that need packet switching. When a segment has
-    // multiple herds, each herd's L3-to-L1 channels share shim DMA resources.
-    // Each logical channel is replicated on every shim column (not distributed
-    // across columns), so the per-column channel pressure equals the total
-    // number of L3-bound channels in a given direction. If this exceeds the
-    // physical shim DMA channel limit per column, mark those channels as
-    // dma_packet to enable time-multiplexed sharing via packet IDs.
+    // Auto-detect channels that need packet switching. For each segment,
+    // count L3-bound channels with herd-side endpoints per direction. Each
+    // such channel is replicated on every shim column (pinned via
+    // same_column constraint in ShimDMAAllocator), so per-column pressure
+    // equals the total channel count. If this exceeds the physical shim
+    // DMA channel limit per column, mark those channels as dma_packet.
+    //
+    // Channels with only segment-level endpoints (L3↔L2) are globally
+    // allocated across columns by the allocator and do NOT create
+    // per-column pressure — they are skipped.
+    //
+    // Pre-existing dma_packet channels count toward pressure but are
+    // not upgraded (already packet flow).
     module.walk([&](air::SegmentOp seg) {
-      // Collect all herds in this segment.
-      SmallVector<air::HerdOp> herds;
-      seg.walk([&](air::HerdOp h) { herds.push_back(h); });
-      if (herds.size() <= 1)
-        return;
-
-      // Count L3-bound input/output channels per direction. Only channels
-      // that have one endpoint inside a herd AND the other endpoint at launch
-      // level operating on an L3 memref are shim-bound.
-      // Input = channel.get inside herd + channel.put at launch on L3 memref.
-      // Output = channel.put inside herd + channel.get at launch on L3 memref.
       SmallVector<air::ChannelOp> inputChannels, outputChannels;
+      int64_t preExistingInputPackets = 0, preExistingOutputPackets = 0;
       for (auto &op : module.getBody()->getOperations()) {
         auto chanOp = dyn_cast<air::ChannelOp>(op);
         if (!chanOp)
           continue;
+
+        bool isAlreadyPacket = (chanOp.getChannelType() == "dma_packet");
         auto channelName = chanOp.getSymName();
 
-        // Check herd-side endpoint in this segment.
+        // Check if this channel has a herd-side endpoint in this segment.
         bool hasHerdSideGet = false;
         bool hasHerdSidePut = false;
         seg.walk([&](air::ChannelInterface ci) -> WalkResult {
@@ -1597,6 +1595,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           }
           return WalkResult::advance();
         });
+
         if (!hasHerdSideGet && !hasHerdSidePut)
           continue;
 
@@ -1623,29 +1622,60 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           return WalkResult::interrupt();
         });
 
-        // Input: get in herd + put at launch on L3 (L3->L1).
-        // Output: put in herd + get at launch on L3 (L1->L3).
-        if (hasHerdSideGet && hasLaunchSideL3Put)
-          inputChannels.push_back(chanOp);
-        else if (hasHerdSidePut && hasLaunchSideL3Get)
-          outputChannels.push_back(chanOp);
+        // Input (L3→L1): herd-side get + launch-side L3 put.
+        // Output (L1→L3): herd-side put + launch-side L3 get.
+        if (hasHerdSideGet && hasLaunchSideL3Put) {
+          if (isAlreadyPacket)
+            preExistingInputPackets++;
+          else
+            inputChannels.push_back(chanOp);
+        } else if (hasHerdSidePut && hasLaunchSideL3Get) {
+          if (isAlreadyPacket)
+            preExistingOutputPackets++;
+          else
+            outputChannels.push_back(chanOp);
+        }
       }
 
       // Per-column shim DMA limit. Each channel is replicated on every
       // column, so the per-column count equals the total channel count.
-      // If it exceeds the physical limit, upgrade to dma_packet.
+      // Pre-existing dma_packet channels count toward pressure but are
+      // not upgraded (already packet flow).
       int64_t shimChannelsPerCol = clShimDmaChannelsPerCol;
+      int64_t totalInputPressure =
+          (int64_t)inputChannels.size() + preExistingInputPackets;
+      int64_t totalOutputPressure =
+          (int64_t)outputChannels.size() + preExistingOutputPackets;
 
-      auto upgradeToPacket = [&](SmallVector<air::ChannelOp> &channels) {
+      auto upgradeToPacket = [&](SmallVector<air::ChannelOp> &channels,
+                                 StringRef direction) {
+        seg->emitWarning() << "auto-upgrading " << channels.size() << " "
+                           << direction
+                           << " channels to dma_packet (exceeds per-column "
+                              "shim DMA limit of "
+                           << shimChannelsPerCol << ")";
         for (auto chanOp : channels) {
           chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
         }
       };
 
-      if ((int64_t)inputChannels.size() > shimChannelsPerCol)
-        upgradeToPacket(inputChannels);
-      if ((int64_t)outputChannels.size() > shimChannelsPerCol)
-        upgradeToPacket(outputChannels);
+      // Force mode: upgrade all shim-bound channels unconditionally.
+      if (clForceShimPacketFlow) {
+        if (!inputChannels.empty() || !outputChannels.empty())
+          seg->emitRemark() << "force-upgrading "
+                            << inputChannels.size() + outputChannels.size()
+                            << " shim-bound channels to dma_packet";
+        for (auto chanOp : inputChannels)
+          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+        for (auto chanOp : outputChannels)
+          chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
+        return;
+      }
+
+      if (totalInputPressure > shimChannelsPerCol)
+        upgradeToPacket(inputChannels, "input");
+      if (totalOutputPressure > shimChannelsPerCol)
+        upgradeToPacket(outputChannels, "output");
     });
   }
 

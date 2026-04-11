@@ -66,7 +66,6 @@ struct AIRToAIEConversionOptions {
   bool emit_herd_lock;
   bool generate_shim_dma;
   bool insert_trace_packet_flow;
-  bool use_packet_flow_at_shim_dmas;
   bool use_lock_race_condition_fix;
   AIE::AIEDevice device;
 };
@@ -3776,35 +3775,7 @@ public:
         bool isShimFlow = f.MM2S_alloc.getDmaTile().isShimNOCorPLTile() ||
                           f.S2MM_alloc[i].getDmaTile().isShimNOCorPLTile();
 
-        if (options.use_packet_flow_at_shim_dmas &&
-            f.MM2S_alloc.getDmaTile().isShimNOCorPLTile()) {
-          // use_packet_flow_at_shim_dmas mode: use packet flow for all shim dma
-          // mm2s, to enable dma channel sharing with control packets
-          // Device-host flows use global shim flow ID
-          shimFlowOpToFlowIdMap.insert(f.air_flow_op);
-          auto it = llvm::find(shimFlowOpToFlowIdMap, f.air_flow_op);
-          int flowID = std::distance(shimFlowOpToFlowIdMap.begin(), it);
-          auto pktFlowOp = getPacketFlowOp(
-              aie_device, f.MM2S_alloc.getDmaTile(), AIE::WireBundle::DMA,
-              (uint32_t)f.MM2S_alloc.dma_channel.channel,
-              f.S2MM_alloc[i].getDmaTile(), AIE::WireBundle::DMA,
-              (uint32_t)f.S2MM_alloc[i].dma_channel.channel, flowID);
-          // Update global shim flow ID following the local packet assignment.
-          globalShimFlowID = std::max(globalShimFlowID, flowID);
-          // Store flow ID in matching MM2S shim alloc for labeling phase.
-          // Use the packet flow op's actual ID, not the mutated flowID
-          // (createPacketFlowOp post-increments flowID by reference).
-          int storedFlowID = pktFlowOp ? pktFlowOp.getID() : flowID;
-          for (auto &sa : shim_dma_alloc.mm2s_allocs) {
-            if (sa.getDmaTile() == f.MM2S_alloc.getDmaTile() &&
-                sa.dma_channel == f.MM2S_alloc.dma_channel &&
-                sa.col == f.MM2S_alloc.col && sa.row == f.MM2S_alloc.row &&
-                sa.dma_id == f.MM2S_alloc.dma_id) {
-              sa.packet_flow_id = storedFlowID;
-              break;
-            }
-          }
-        } else if (f.memcpyResourceType == "dma_packet") {
+        if (f.memcpyResourceType == "dma_packet") {
           // Use appropriate flow map based on whether flow involves shim tiles
           if (isShimFlow) {
             // Device-host flows use global shim flow ID
@@ -5806,7 +5777,6 @@ public:
           /*.emit_herd_lock = */ clEmitHerdLock,
           /*.generate_shim_dma = */ clGenerateShimDMA,
           /*.insert_trace_packet_flow = */ clInsertTracePacketFlow,
-          /*.use_packet_flow_at_shim_dmas = */ clUsePktFlowsAtShimDma,
           /*.use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
           /*.device = */ *device};
 
@@ -5919,7 +5889,6 @@ public:
         /* .emit_herd_lock = */ clEmitHerdLock,
         /* .generate_shim_dma = */ clGenerateShimDMA,
         /* .insert_trace_packet_flow = */ clInsertTracePacketFlow,
-        /* .use_packet_flow_at_shim_dmas = */ clUsePktFlowsAtShimDma,
         /* .use_lock_race_condition_fix = */ clUseLockRaceConditionFix,
         /* .device = */ *device};
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
@@ -6052,12 +6021,6 @@ public:
 
         herd_meta->setAttr("dma_allocations",
                            ArrayAttr::get(ctx, dma_allocations));
-
-        // Control packet generation for AIE1 is not yet implemented.
-        if (isa<AIE::AIE1TargetModel>(device.getTargetModel()) &&
-            device_options.use_packet_flow_at_shim_dmas)
-          herd->emitOpError("control packet flow generation is not yet "
-                            "supported for AIE1.");
       }
       for (auto seg : segs) {
         std::vector<Attribute> dma_allocations;
@@ -6074,12 +6037,6 @@ public:
             getOrCreateSegmentMetadata(module_meta, segment_name);
         segment_meta->setAttr("dma_allocations",
                               ArrayAttr::get(ctx, dma_allocations));
-
-        // Control packet generation for AIE1 is not yet implemented.
-        if (isa<AIE::AIE1TargetModel>(device.getTargetModel()) &&
-            device_options.use_packet_flow_at_shim_dmas)
-          seg->emitOpError("control packet flow generation is not yet "
-                           "supported for AIE1.");
       }
 
       if (isa<AIE::AIE2TargetModel>(device.getTargetModel()) && !clUseObjFifo) {
@@ -6447,8 +6404,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
       /* .emit_while = */ false,
       /* .emit_herd_lock = */ false,
       /* .generate_shim_dma = */ false,
-      /* .trace_size = */ 0,
-      /* .ctrl_packet = */ false,
+      /* .insert_trace_packet_flow = */ false,
       /* .use_lock_race_condition_fix = */ true,
       /* .device = */ *device};
   std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
