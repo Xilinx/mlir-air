@@ -105,9 +105,11 @@ static void extractOperandsFromReinterpretCast(
   // (stride-1 in the first dimension), the flat offset corresponds to the
   // stride-1 dimension, not the last dimension. Find the stride-1
   // dimension and place the offset there; pad others with zero.
+  // Search backward so that ambiguous cases (e.g., strides=[1,1]) default
+  // to the last dimension, matching the original prepend-zeros behavior.
   if (offsets.size() < sizes.size()) {
     int strideOneIdx = static_cast<int>(strides.size()) - 1;
-    for (int i = 0; i < static_cast<int>(strides.size()); ++i) {
+    for (int i = static_cast<int>(strides.size()) - 1; i >= 0; --i) {
       if (auto cst =
               getConstantIntValue(reinterpretCast.getMixedStrides()[i])) {
         if (*cst == 1) {
