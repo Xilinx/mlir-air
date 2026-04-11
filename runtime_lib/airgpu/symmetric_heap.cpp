@@ -12,7 +12,7 @@
   do {                                                                         \
     hipError_t err_ = (expr);                                                  \
     if (err_ != hipSuccess) {                                                  \
-      fprintf(stderr, "airgpu: %s failed: %s (%d)\n", #expr,                  \
+      fprintf(stderr, "airgpu: %s failed: %s (%d)\n", #expr,                   \
               hipGetErrorString(err_), static_cast<int>(err_));                \
       abort();                                                                 \
     }                                                                          \
@@ -183,8 +183,7 @@ void SymmetricHeap::establishPeerAccess() {
     // Reserve a SEPARATE VA range for this peer's heap
     // (critical for gfx950 — imported handles can't share VA with local ones)
     hipDeviceptr_t peer_va = 0;
-    HIP_CHECK(
-        hipMemAddressReserve(&peer_va, heap_size, granularity, 0, 0));
+    HIP_CHECK(hipMemAddressReserve(&peer_va, heap_size, granularity, 0, 0));
     peer_va_bases_[peer] = reinterpret_cast<void *>(peer_va);
 
     // Exchange allocation count
@@ -206,16 +205,16 @@ void SymmetricHeap::establishPeerAccess() {
       if (peer < rank_) {
         // Send local record, then recv peer record
         if (i < my_count) {
-          uint64_t offset = reinterpret_cast<uintptr_t>(records[i].va_ptr) -
-                            reinterpret_cast<uintptr_t>(allocator_->getVaBase());
+          uint64_t offset =
+              reinterpret_cast<uintptr_t>(records[i].va_ptr) -
+              reinterpret_cast<uintptr_t>(allocator_->getVaBase());
           uint64_t size = records[i].size;
           sendAll(sock, &offset, sizeof(offset));
           sendAll(sock, &size, sizeof(size));
 
           int fd = -1;
           HIP_CHECK(hipMemExportToShareableHandle(
-              &fd, records[i].handle,
-              hipMemHandleTypePosixFileDescriptor, 0));
+              &fd, records[i].handle, hipMemHandleTypePosixFileDescriptor, 0));
           sendFd(sock, fd);
           close(fd);
         }
@@ -228,7 +227,8 @@ void SymmetricHeap::establishPeerAccess() {
           // Import the peer's handle
           hipMemGenericAllocationHandle_t imported = {};
           HIP_CHECK(hipMemImportFromShareableHandle(
-              &imported, reinterpret_cast<void *>(static_cast<intptr_t>(peer_fd)),
+              &imported,
+              reinterpret_cast<void *>(static_cast<intptr_t>(peer_fd)),
               hipMemHandleTypePosixFileDescriptor));
           close(peer_fd);
 
@@ -251,7 +251,8 @@ void SymmetricHeap::establishPeerAccess() {
 
           hipMemGenericAllocationHandle_t imported = {};
           HIP_CHECK(hipMemImportFromShareableHandle(
-              &imported, reinterpret_cast<void *>(static_cast<intptr_t>(peer_fd)),
+              &imported,
+              reinterpret_cast<void *>(static_cast<intptr_t>(peer_fd)),
               hipMemHandleTypePosixFileDescriptor));
           close(peer_fd);
 
@@ -264,16 +265,16 @@ void SymmetricHeap::establishPeerAccess() {
               {imported, reinterpret_cast<void *>(target), size});
         }
         if (i < my_count) {
-          uint64_t offset = reinterpret_cast<uintptr_t>(records[i].va_ptr) -
-                            reinterpret_cast<uintptr_t>(allocator_->getVaBase());
+          uint64_t offset =
+              reinterpret_cast<uintptr_t>(records[i].va_ptr) -
+              reinterpret_cast<uintptr_t>(allocator_->getVaBase());
           uint64_t size = records[i].size;
           sendAll(sock, &offset, sizeof(offset));
           sendAll(sock, &size, sizeof(size));
 
           int fd = -1;
           HIP_CHECK(hipMemExportToShareableHandle(
-              &fd, records[i].handle,
-              hipMemHandleTypePosixFileDescriptor, 0));
+              &fd, records[i].handle, hipMemHandleTypePosixFileDescriptor, 0));
           sendFd(sock, fd);
           close(fd);
         }

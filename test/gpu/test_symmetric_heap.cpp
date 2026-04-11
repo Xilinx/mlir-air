@@ -29,8 +29,8 @@ void mgpuSetDevice(int32_t device_id);
   do {                                                                         \
     hipError_t err = (expr);                                                   \
     if (err != hipSuccess) {                                                   \
-      fprintf(stderr, "HIP error: %s (%d) at %s:%d\n",                        \
-              hipGetErrorString(err), err, __FILE__, __LINE__);                \
+      fprintf(stderr, "HIP error: %s (%d) at %s:%d\n", hipGetErrorString(err), \
+              err, __FILE__, __LINE__);                                        \
       return 1;                                                                \
     }                                                                          \
   } while (0)
@@ -70,8 +70,8 @@ int main() {
   HIP_CHECK(hipMemset(buf, 0, N * sizeof(float)));
   // Use a simple kernel-free approach: write from host
   std::vector<float> host_buf(N, rank_f);
-  HIP_CHECK(
-      hipMemcpy(buf, host_buf.data(), N * sizeof(float), hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(buf, host_buf.data(), N * sizeof(float),
+                      hipMemcpyHostToDevice));
 
   mgpuBarrier();
 
@@ -83,15 +83,13 @@ int main() {
     // The peer wrote (peer+1) to its buffer. The buffer is at offset 0
     // from the peer's heap base, so we can read it directly.
     // But we need to know the offset of `buf` within the heap.
-    // Since buf is the first allocation, it's at offset = granularity-aligned(0).
-    // Let's compute the offset from our local base.
-    uintptr_t local_offset =
-        reinterpret_cast<uintptr_t>(buf) -
-        reinterpret_cast<uintptr_t>(bases[rank]);
+    // Since buf is the first allocation, it's at offset =
+    // granularity-aligned(0). Let's compute the offset from our local base.
+    uintptr_t local_offset = reinterpret_cast<uintptr_t>(buf) -
+                             reinterpret_cast<uintptr_t>(bases[rank]);
 
-    float *peer_buf =
-        reinterpret_cast<float *>(reinterpret_cast<uintptr_t>(peer_base) +
-                                  local_offset);
+    float *peer_buf = reinterpret_cast<float *>(
+        reinterpret_cast<uintptr_t>(peer_base) + local_offset);
 
     // Copy peer data to a local buffer first (D2D), then read to host.
     // Direct D2H from imported VA may not be supported.
@@ -110,9 +108,10 @@ int main() {
     for (size_t i = 0; i < N; i++) {
       if (readback[i] != expected) {
         if (mismatches < 5)
-          fprintf(stderr,
-                  "[test] rank %d: MISMATCH at [%zu]: got %.1f, expected %.1f\n",
-                  rank, i, readback[i], expected);
+          fprintf(
+              stderr,
+              "[test] rank %d: MISMATCH at [%zu]: got %.1f, expected %.1f\n",
+              rank, i, readback[i], expected);
         mismatches++;
       }
     }
@@ -122,8 +121,9 @@ int main() {
              "(all %zu values = %.1f)\n",
              rank, peer, N, expected);
     } else {
-      fprintf(stderr, "[test] rank %d: cross-rank read FAILED (%d/%zu "
-                      "mismatches)\n",
+      fprintf(stderr,
+              "[test] rank %d: cross-rank read FAILED (%d/%zu "
+              "mismatches)\n",
               rank, mismatches, N);
       return 1;
     }

@@ -71,8 +71,7 @@ int recvFd(int sock_fd) {
   }
 
   struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-  if (cmsg && cmsg->cmsg_level == SOL_SOCKET &&
-      cmsg->cmsg_type == SCM_RIGHTS) {
+  if (cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
     int fd;
     memcpy(&fd, CMSG_DATA(cmsg), sizeof(int));
     return fd;
@@ -129,8 +128,8 @@ std::map<int, int> setupFdMesh(int rank, int world_size) {
   addr.sun_family = AF_UNIX;
   strncpy(addr.sun_path, my_path.c_str(), sizeof(addr.sun_path) - 1);
 
-  if (bind(listener, reinterpret_cast<struct sockaddr *>(&addr),
-           sizeof(addr)) < 0) {
+  if (bind(listener, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) <
+      0) {
     perror("airgpu: bind");
     abort();
   }
@@ -164,9 +163,8 @@ std::map<int, int> setupFdMesh(int rank, int world_size) {
       usleep(10000); // 10ms
     }
     if (!connected) {
-      fprintf(stderr,
-              "airgpu: rank %d timed out connecting to rank %d at %s\n", rank,
-              peer, peer_path.c_str());
+      fprintf(stderr, "airgpu: rank %d timed out connecting to rank %d at %s\n",
+              rank, peer, peer_path.c_str());
       abort();
     }
 
