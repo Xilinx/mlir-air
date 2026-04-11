@@ -99,9 +99,36 @@ static void extractOperandsFromReinterpretCast(
     sizes.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
   for (auto ofr : reinterpretCast.getMixedStrides())
     strides.push_back(getValueOrCreateConstantIndexOp(builder, loc, ofr));
-  while (offsets.size() < sizes.size())
-    offsets.insert(offsets.begin(),
-                   arith::ConstantIndexOp::create(builder, loc, 0));
+  // When the reinterpret_cast has fewer offset dimensions than the memref
+  // rank (e.g., a single flat offset for a 2D memref), we need to place
+  // the flat offset in the correct dimension. For transposed memrefs
+  // (stride-1 in the first dimension), the flat offset corresponds to the
+  // stride-1 dimension, not the last dimension. Find the stride-1
+  // dimension and place the offset there; pad others with zero.
+  // Search backward so that ambiguous cases (e.g., strides=[1,1]) default
+  // to the last dimension, matching the original prepend-zeros behavior.
+  if (offsets.size() < sizes.size()) {
+    int strideOneIdx = static_cast<int>(strides.size()) - 1;
+    for (int i = static_cast<int>(strides.size()) - 1; i >= 0; --i) {
+      if (auto cst =
+              getConstantIntValue(reinterpretCast.getMixedStrides()[i])) {
+        if (*cst == 1) {
+          strideOneIdx = i;
+          break;
+        }
+      }
+    }
+    // Save existing offsets (typically just one flat offset).
+    SmallVector<Value, 4> existingOffsets(offsets);
+    offsets.clear();
+    for (size_t i = 0; i < sizes.size(); ++i) {
+      if (static_cast<int>(i) == strideOneIdx && !existingOffsets.empty()) {
+        offsets.push_back(existingOffsets[0]);
+      } else {
+        offsets.push_back(arith::ConstantIndexOp::create(builder, loc, 0));
+      }
+    }
+  }
 }
 
 // Detect self-copies that would produce invalid self-DMAs. After unwrapping

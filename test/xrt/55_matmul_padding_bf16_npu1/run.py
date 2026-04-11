@@ -6,10 +6,12 @@
 # Non-tile-aligned f32 matmul with bf16 computation on NPU1.
 # Host data is f32. A is stored in K×M layout (same as test 54).
 # L3→L2 DMA transposes A from K×M to M×K using f32 strides (4-byte aligned).
-# A dedicated truncf herd converts f32→bf16 in L1 before the compute herd.
-# This 4-herd pattern (prologue, truncf, compute, epilogue) avoids the
-# problematic combined truncf+matmul pattern that fails on NPU1.
+# The compute herd DMAs f32 from L2→L1, truncates f32→bf16 in-register,
+# and runs block_matmul with bf16 inputs and f32 accumulation.
 # Output is f32.
+#
+# Uses a 3-herd pattern (prologue, compute, epilogue) — the combined
+# truncf+matmul pattern works correctly on NPU1 (aie2).
 #
 # Target: NPU1/Phoenix, aie2 architecture with native 4x8x4 bf16 matmul.
 
@@ -42,7 +44,7 @@ np.random.seed(42)
 range_ = for_
 
 
-# Element-wise truncation: f32 → bf16
+# Element-wise truncation: f32 → bf16, applied in-register inside compute herd
 @linalg_structured_op()
 def truncf_op(
     A=TensorDef(linalg_lang.TV.T1, S.a, S.b, S.c, S.d, S.e, S.f),
@@ -80,19 +82,19 @@ def build_module(
     herd_m,
     herd_n,
 ):
-    """Build matmul module with 4-herd pattern: prologue, truncf, compute, epilogue.
+    """Build matmul module with 3-herd pattern: prologue, compute, epilogue.
 
     L3 inputs are f32 in K×M / K×N layout. L3→L2 DMA transposes A to M×K.
-    A dedicated truncf herd converts f32→bf16 in L1.
-    The compute herd reads bf16 from L1 and runs block_matmul.
-    This avoids the problematic combined truncf+matmul herd pattern on NPU1."""
+    The compute herd DMAs f32 from L2→L1, truncates f32→bf16 in-register,
+    and runs block_matmul with bf16 inputs and f32 accumulation.
+    The combined truncf+matmul pattern works on NPU1 (aie2)."""
     assert m % tile_m == 0
     assert k % tile_k_l2 == 0
     assert tile_k_l2 % tile_k_l1 == 0
     assert n % tile_n == 0
     assert (
         tile_k_l2 == tile_k_l1
-    ), "truncf herd approach requires tile_k_l2 == tile_k_l1"
+    ), "single-herd approach requires tile_k_l2 == tile_k_l1"
 
     mmul_mkn = [4, 8, 4]  # aie2 native bf16 matmul
 
@@ -131,7 +133,7 @@ def build_module(
         mmul_mkn[2],
     ]
 
-    # L1 buffers: f32 for DMA input, bf16 for matmul, f32 for output
+    # L1 buffers: f32 for DMA input, bf16 for matmul input, f32 for accumulator
     l1MemrefTyA_f32 = MemRefType.get(
         shape=a_l1_size, element_type=xrt_dtype_f32, memory_space=l1_mem_space
     )
@@ -274,7 +276,7 @@ def build_module(
                         src_strides=[n_alloc * tile_k_l2, tile_n, n_alloc, 1],
                     )
 
-                    # Herd 2 (truncf): DMA f32 L2→L1, convert f32→bf16 in L1
+                    # Herd 2 (compute): DMA f32 L2→L1, truncf→matmul in one herd
                     @herd(
                         name="herd_0",
                         sizes=[herd_m, herd_n],
@@ -288,7 +290,7 @@ def build_module(
                             l2_b,
                         ],
                     )
-                    def truncf_herd(
+                    def compute_herd(
                         _tx,
                         _ty,
                         _sx,
@@ -345,37 +347,9 @@ def build_module(
                                 1,
                             ],
                         )
-                        # Convert f32→bf16 in L1
+                        # Convert f32→bf16 in L1 and run matmul (combined)
                         truncf_op(_l1_a_f32, outs=[_l1_a_bf16])
                         truncf_op(_l1_b_f32, outs=[_l1_b_bf16])
-
-                    # Herd 3 (compute): read bf16 from L1, block_matmul
-                    @herd(
-                        name="herd_0",
-                        sizes=[herd_m, herd_n],
-                        operands=[
-                            l1_a_f32,
-                            l1_b_f32,
-                            l1_a_bf16,
-                            l1_b_bf16,
-                            l1_c,
-                            l2_a,
-                            l2_b,
-                        ],
-                    )
-                    def compute_herd(
-                        _tx,
-                        _ty,
-                        _sx,
-                        _sy,
-                        _af,
-                        _bf,
-                        _l1_a,
-                        _l1_b,
-                        _l1_c,
-                        _l2a,
-                        _l2b,
-                    ):
                         l1_c_sv = subview(
                             _l1_c,
                             offsets=[_tx, _ty, 0, 0, 0, 0],
@@ -389,11 +363,11 @@ def build_module(
                             ],
                             strides=[1, 1, 1, 1, 1, 1],
                         )
-                        block_matmul(_l1_a, _l1_b, outs=[l1_c_sv])
+                        block_matmul(_l1_a_bf16, _l1_b_bf16, outs=[l1_c_sv])
 
                     yield_([])
 
-                # Herd 4 (epilogue): write C from L1→L2
+                # Herd 3 (epilogue): write C from L1→L2
                 @herd(
                     name="herd_0",
                     sizes=[herd_m, herd_n],
@@ -541,9 +515,8 @@ if __name__ == "__main__":
     )
 
     # Vectorization transform: tile truncf and block_matmul for vectorization.
-    # 4 herds → split_handle produces 4 handles.
-    # Truncf herd (herd2) has 2 truncf_op generics.
-    # Compute herd (herd3) has 1 block_matmul generic.
+    # 3 herds → split_handle produces 3 handles.
+    # Compute herd has 2 truncf_op generics + 1 block_matmul generic.
     transform_ir_string = """
         module attributes {transform.with_named_sequence} {
           transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
@@ -584,10 +557,10 @@ if __name__ == "__main__":
               transform.structured.tile_using_for %linalg_fills tile_sizes [0, 0, 1, 1]
               : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
-            // Vectorize all herds (4 herds: prologue, truncf, compute, epilogue)
+            // Vectorize all herds (3 herds: prologue, compute, epilogue)
             %herds = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
             %vectorized_herds = transform.air.herd_vectorize %herds : (!transform.any_op) -> !transform.any_op
-            %herd1, %herd2, %herd3, %herd4 = transform.split_handle %vectorized_herds : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
+            %herd1, %herd2, %herd3 = transform.split_handle %vectorized_herds : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
             %func1 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
             transform.apply_patterns to %func1 {
@@ -605,11 +578,12 @@ if __name__ == "__main__":
             // Re-vectorize after cleanup
             %herds_1 = transform.structured.match ops{["air.herd"]} in %arg1 : (!transform.any_op) -> !transform.any_op
             %vectorized_herds_1 = transform.air.herd_vectorize %herds_1 : (!transform.any_op) -> !transform.any_op
-            %h1, %h2, %h3, %h4 = transform.split_handle %vectorized_herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
+            %h1, %h2, %h3 = transform.split_handle %vectorized_herds_1 : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op)
 
             // No vector_type_cast needed — accumulator is already f32.
-            // The arith.extf on bf16 inputs before vector.contract will be
-            // fused into aievec.matmul by convert-vector-to-aievec in aircc.
+            // The arith.truncf on f32 inputs and arith.extf before
+            // vector.contract will be fused into aievec.matmul by
+            // convert-vector-to-aievec in aircc.
 
             %func2 = transform.structured.match ops{["func.func"]} in %arg1 : (!transform.any_op) -> !transform.any_op
             transform.apply_patterns to %func2 {
