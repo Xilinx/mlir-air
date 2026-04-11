@@ -151,11 +151,17 @@ extern "C" void mgpuEventRecord(hipEvent_t event, hipStream_t stream) {
 
 extern "C" void *mgpuMemAlloc(uint64_t sizeBytes, hipStream_t /*stream*/,
                               bool /*isHostShared*/) {
+  if (g_symmetric_heap)
+    return g_symmetric_heap->allocate(static_cast<size_t>(sizeBytes));
   return getDefaultAllocator()->allocate(static_cast<size_t>(sizeBytes));
 }
 
 extern "C" void mgpuMemFree(void *ptr, hipStream_t /*stream*/) {
-  if (ptr)
+  if (!ptr)
+    return;
+  if (g_symmetric_heap)
+    g_symmetric_heap->free(ptr);
+  else
     getDefaultAllocator()->free(ptr);
 }
 
