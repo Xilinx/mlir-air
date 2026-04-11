@@ -10,11 +10,15 @@ NUM_RANKS=${1:-2}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEST_BIN="${SCRIPT_DIR}/../../runtime_lib/airgpu/test_symmetric_heap"
 
+LIB_DIR="${SCRIPT_DIR}/../../runtime_lib/airgpu"
+
 if [ ! -f "$TEST_BIN" ]; then
   echo "Error: test binary not found at $TEST_BIN"
   echo "Build it first: cd runtime_lib/airgpu && make test_symmetric_heap"
   exit 1
 fi
+
+export LD_LIBRARY_PATH="${LIB_DIR}:${LD_LIBRARY_PATH}"
 
 echo "=== Symmetric heap test: ${NUM_RANKS} ranks ==="
 
