@@ -10,6 +10,7 @@
 //       --shared-libs=libairgpu.so \
 //       final.mlir
 
+#include "symmetric_heap.h"
 #include "vmem_allocator.h"
 #include <cstdint>
 #include <cstdio>
@@ -41,12 +42,15 @@ struct StridedMemRefType {
 // ---------------------------------------------------------------------------
 
 static VMemAllocator *g_allocator = nullptr;
+static SymmetricHeap *g_symmetric_heap = nullptr;
 
 __attribute__((constructor)) static void airgpu_runtime_init() {
   g_allocator = new VMemAllocator();
 }
 
 __attribute__((destructor)) static void airgpu_runtime_shutdown() {
+  delete g_symmetric_heap;
+  g_symmetric_heap = nullptr;
   delete g_allocator;
   g_allocator = nullptr;
 }
@@ -234,4 +238,68 @@ mgpuMemGetDeviceMemRef1dInt32(int32_t *allocated, int32_t *aligned,
   result.sizes[0] = size;
   result.strides[0] = stride;
   return result;
+}
+
+// ===========================================================================
+// Symmetric Heap — multi-GPU memory sharing
+// ===========================================================================
+
+extern "C" void mgpuSymmetricHeapInit(uint64_t heap_size) {
+  if (g_symmetric_heap) {
+    fprintf(stderr, "airgpu: symmetric heap already initialized\n");
+    return;
+  }
+  g_symmetric_heap = new SymmetricHeap(static_cast<size_t>(heap_size));
+}
+
+extern "C" void mgpuSymmetricHeapDestroy() {
+  delete g_symmetric_heap;
+  g_symmetric_heap = nullptr;
+}
+
+extern "C" int32_t mgpuGetRank() {
+  if (!g_symmetric_heap)
+    return 0;
+  return g_symmetric_heap->getRank();
+}
+
+extern "C" int32_t mgpuGetWorldSize() {
+  if (!g_symmetric_heap)
+    return 1;
+  return g_symmetric_heap->getWorldSize();
+}
+
+extern "C" void *mgpuSymmetricAlloc(uint64_t sizeBytes,
+                                    hipStream_t /*stream*/) {
+  if (!g_symmetric_heap) {
+    fprintf(stderr, "airgpu: symmetric heap not initialized\n");
+    abort();
+  }
+  return g_symmetric_heap->allocate(static_cast<size_t>(sizeBytes));
+}
+
+extern "C" void mgpuSymmetricFree(void *ptr, hipStream_t /*stream*/) {
+  if (g_symmetric_heap && ptr)
+    g_symmetric_heap->free(ptr);
+}
+
+extern "C" void *mgpuGetHeapBase(int32_t rank) {
+  if (!g_symmetric_heap)
+    return nullptr;
+  return g_symmetric_heap->getHeapBase(rank);
+}
+
+extern "C" void **mgpuGetHeapBases() {
+  if (!g_symmetric_heap)
+    return nullptr;
+  return g_symmetric_heap->getHeapBases();
+}
+
+extern "C" void mgpuBarrier() {
+  if (g_symmetric_heap)
+    g_symmetric_heap->barrier();
+}
+
+extern "C" void mgpuSetDevice(int32_t device_id) {
+  HIP_REPORT_IF_ERROR(hipSetDevice(device_id));
 }

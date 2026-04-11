@@ -37,6 +37,7 @@ VMemAllocator::VMemAllocator(size_t heap_size) {
   prop.type = hipMemAllocationTypePinned;
   prop.location.type = hipMemLocationTypeDevice;
   prop.location.id = device_id_;
+  prop.requestedHandleType = hipMemHandleTypePosixFileDescriptor;
 
   size_t gran = 0;
   HIP_CHECK(hipMemGetAllocationGranularity(&gran, &prop,
@@ -51,7 +52,7 @@ VMemAllocator::VMemAllocator(size_t heap_size) {
   HIP_CHECK(hipMemAddressReserve(&va, heap_size_, granularity_, 0, 0));
   va_base_ = reinterpret_cast<void *>(va);
 
-  // Build access descriptors for ALL GPUs (future-ready for symmetric heap)
+  // Build access descriptors for ALL GPUs (enables cross-GPU access via XGMI)
   access_descs_.resize(num_devices_);
   for (int i = 0; i < num_devices_; i++) {
     access_descs_[i].location.type = hipMemLocationTypeDevice;
@@ -117,6 +118,7 @@ void *VMemAllocator::allocate(size_t size_bytes) {
   prop.type = hipMemAllocationTypePinned;
   prop.location.type = hipMemLocationTypeDevice;
   prop.location.id = device_id_;
+  prop.requestedHandleType = hipMemHandleTypePosixFileDescriptor;
 
   hipMemGenericAllocationHandle_t handle;
   HIP_CHECK(hipMemCreate(&handle, aligned_size, &prop, 0));

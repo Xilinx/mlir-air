@@ -40,6 +40,14 @@ public:
   int getDeviceId() const { return device_id_; }
   int getNumDevices() const { return num_devices_; }
 
+  // Get all allocation records (for symmetric heap export).
+  const std::vector<AllocRecord> &getAllocRecords() const {
+    return alloc_records_;
+  }
+
+  // Reset the bump pointer to 0 (used after pre-mapping the full heap).
+  void resetOffset() { current_offset_ = 0; }
+
   VMemAllocator(const VMemAllocator &) = delete;
   VMemAllocator &operator=(const VMemAllocator &) = delete;
 
