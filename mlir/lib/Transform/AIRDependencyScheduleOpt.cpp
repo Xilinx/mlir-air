@@ -6373,9 +6373,10 @@ public:
     // Canonicalize IR to make loop bounds explicitly static.
     applyCanonicalizationPatterns(ctx, func.getBody());
 
-    // Unroll outer scf.for loop nest.
+    // Unroll outer scf.for loop nest. Use lightweight clone to avoid
+    // deep-copying segment/herd bodies that BD folding never touches.
     for (auto scfFor : forLoopsToUnroll) {
-      if (failed(air::loopUnrollFullWithAsyncTokenPreserved(scfFor)))
+      if (failed(air::loopUnrollFullLightweight(scfFor)))
         signalPassFailure();
     }
     // Canonicalize IR to make loop bounds explicitly static.

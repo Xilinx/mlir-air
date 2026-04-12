@@ -79,6 +79,10 @@ scf::ForOp hoistTargetOpsToNewSCFFor(PatternRewriter &rewriter,
 LogicalResult loopUnrollFullWithAsyncTokenPreserved(
     scf::ForOp forOp,
     function_ref<void(unsigned, Operation *, OpBuilder)> annotateFn = nullptr);
+// Lightweight variant that clones empty shells for SegmentOp/HerdOp on
+// iterations 1..N, avoiding O(N*body_size) IR explosion from deep-cloning
+// hierarchy bodies that shim DMA BD folding never touches.
+LogicalResult loopUnrollFullLightweight(scf::ForOp forOp);
 
 // Unrolls an `scf.for` loop by a given factor while preserving async token
 // dependencies.
