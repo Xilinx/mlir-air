@@ -6235,6 +6235,23 @@ public:
       return;
     }
 
+    // When tile sizes are empty or all-1, skip tiling and unrolling. Tiling by
+    // 1 followed by full unrolling is equivalent to full unrolling of the
+    // runtime loop, which creates N copies of the entire launch body (including
+    // segment/herd/channel ops). This is wasteful because the BD folding only
+    // operates on the ~16 L3 channel ops per iteration, while the ~700 lines
+    // of segment/herd bodies are dead weight stripped later by airrt-to-npu.
+    //
+    // We still convert air.launch to scf.for + dummyLaunch (needed so that
+    // launch IVs are valid as affine symbols in downstream passes), but skip
+    // the tiling/unrolling. The scf.for loops survive through air-to-std and
+    // are unrolled later in airrt-to-npu AFTER removeDeadDeviceComputeOps
+    // strips the heavy segment/herd bodies, yielding O(16) ops per iteration
+    // instead of O(700).
+    bool allTileSizesAreOne =
+        !clTileSizes.empty() &&
+        llvm::all_of(clTileSizes, [](unsigned s) { return s == 1; });
+
     // Convert air.launch to scf.for.
     RewritePatternSet patterns(ctx);
     patterns.insert<AIRLaunchToScfForPattern>(ctx);
@@ -6252,6 +6269,58 @@ public:
     if (shimFors.empty()) {
       // No for loops at shim to tile. Apply dma folding and finish.
       applyAIRL3DmaFoldingPatterns(func, *device);
+      return;
+    }
+    // Check if there are runtime loops from launch conversion (inside a
+    // dummyLaunch) with non-trivial trip count. Only skip tiling/unrolling
+    // for these — they cause O(N) IR explosion when unrolled. Loops directly
+    // in functions (not from launch conversion) still need BD folding.
+    bool hasNonTrivialLaunchLoop = llvm::any_of(shimFors, [](scf::ForOp f) {
+      auto tc = air::getStaticScfForTripCountAsInt(f);
+      if (!tc || *tc <= 1)
+        return false;
+      auto parentLaunch = f->getParentOfType<air::LaunchOp>();
+      return parentLaunch && parentLaunch->hasAttr("dummyLaunch");
+    });
+    if ((clTileSizes.empty() || allTileSizesAreOne) &&
+        hasNonTrivialLaunchLoop) {
+      // Skip tiling and unrolling. The runtime scf.for loops survive through
+      // air-to-std and are unrolled in airrt-to-npu after dead device compute
+      // ops (segment/herd bodies) are stripped, making unrolling much cheaper.
+      // Do NOT apply BD folding here — the AIRUnrollScfForIntoBDChain pattern
+      // inside BD folding would unroll the runtime scf.for loops, defeating
+      // the purpose of skipping unrolling. The channel ops already have valid
+      // wraps/strides from earlier passes (air-dma-to-channel etc.).
+      //
+      // Generate air.launch_end barriers. Collect async tokens from
+      // top-level channel ops (isolated by BD folding) and scf.for results
+      // (which carry the async dependency from runtime loop iterations).
+      IRRewriter rw(ctx);
+      SmallVector<Block *> funcAndLaunchBlocks(1, &func.getBody().front());
+      func.walk([&funcAndLaunchBlocks](air::LaunchOp launch) {
+        if (air::isAsyncOp(launch))
+          funcAndLaunchBlocks.push_back(&launch.getRegion().front());
+      });
+      for (auto blk : funcAndLaunchBlocks) {
+        OpBuilder::InsertionGuard guard(rw);
+        SmallVector<Value> asyncTokens;
+        for (auto chan : blk->getOps<air::ChannelInterface>())
+          if (air::isAsyncOp(chan))
+            asyncTokens.push_back(air::getAsyncTokenFromOp(chan));
+        for (auto forOp : blk->getOps<scf::ForOp>())
+          for (auto result : forOp->getResults())
+            if (isa<air::AsyncTokenType>(result.getType()))
+              asyncTokens.push_back(result);
+
+        if (blk->mightHaveTerminator())
+          rw.setInsertionPoint(blk->getTerminator());
+        else
+          rw.setInsertionPointToEnd(blk);
+        auto launchEndWaitAll =
+            air::WaitAllOp::create(rw, rw.getUnknownLoc(),
+                                   /*result_type*/ Type(), asyncTokens);
+        launchEndWaitAll->setAttr("air.launch_end", rw.getUnitAttr());
+      }
       return;
     }
     // Helper function converting a vector of unsigned int to a vector of Value.
