@@ -1948,9 +1948,13 @@ void L2MemrefToMemTileMap(
   // buckets), DMA channel/BD pressure remains balanced.
 
   // Build column-to-memtile-index map.
-  std::map<int, int> colToMemtileIdx;
-  for (int i = 0; i < (int)memtiles.size(); i++)
+  DenseMap<int, int> colToMemtileIdx;
+  for (int i = 0; i < (int)memtiles.size(); i++) {
+    assert(!colToMemtileIdx.count(memtiles[i].getCol()) &&
+           "multiple memtiles in same column not supported by column-affinity "
+           "optimization");
     colToMemtileIdx[memtiles[i].getCol()] = i;
+  }
 
   // Cache channel → connected core columns.
   DenseMap<air::ChannelOp, SmallVector<int>> channelToCoreCols;
@@ -1988,6 +1992,10 @@ void L2MemrefToMemTileMap(
     }
     if (cols.size() == 1)
       bucketAffinityCol[bi] = cols.front();
+    LLVM_DEBUG(llvm::dbgs()
+               << "L2MemrefToMemTileMap: bucket " << bi << " has "
+               << memref_buckets[bi].size() << " alloc(s), affinity col = "
+               << bucketAffinityCol[bi] << "\n");
   }
 
   // Compute bucket sizes.
@@ -2058,6 +2066,12 @@ void L2MemrefToMemTileMap(
           continue;
 
         // Perform the swap.
+        LLVM_DEBUG(llvm::dbgs()
+                   << "L2MemrefToMemTileMap: swapping bucket " << i
+                   << " (affinity col " << bucketAffinityCol[i]
+                   << ", on memtile " << mtI << ") with bucket " << j
+                   << " (affinity col " << bucketAffinityCol[j]
+                   << ", on memtile " << mtJ << ")\n");
         memtileToSizeMap[memtiles[mtI]] += deltaI;
         memtileToSizeMap[memtiles[mtJ]] += deltaJ;
         bucketMemtileIdx[i] = mtJ;
@@ -2073,6 +2087,17 @@ void L2MemrefToMemTileMap(
         break; // restart outer loop
     }
   }
+  LLVM_DEBUG({
+    int swappedCount = 0;
+    for (int bi = 0; bi < (int)memref_buckets.size(); bi++) {
+      if (isOnAffinityMemtile(bi))
+        swappedCount++;
+    }
+    llvm::dbgs() << "L2MemrefToMemTileMap: column-affinity optimization "
+                    "placed "
+                 << swappedCount << " of " << memref_buckets.size()
+                 << " bucket(s) on their affinity memtile\n";
+  });
 }
 
 void allocL2Buffers(AIE::DeviceOp m,
