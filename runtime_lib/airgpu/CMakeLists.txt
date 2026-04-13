@@ -15,6 +15,8 @@ if(EXISTS "${ROCM_PATH}/include/hip/hip_runtime.h")
     gpu_runtime.cpp
     gpu_test_utils.cpp
     vmem_allocator.cpp
+    symmetric_heap.cpp
+    fd_passing.cpp
   )
 
   set_property(TARGET airgpu PROPERTY POSITION_INDEPENDENT_CODE ON)
