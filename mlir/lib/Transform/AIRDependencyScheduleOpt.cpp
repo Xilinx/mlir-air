@@ -6373,10 +6373,18 @@ public:
     // Canonicalize IR to make loop bounds explicitly static.
     applyCanonicalizationPatterns(ctx, func.getBody());
 
-    // Unroll outer scf.for loop nest. Use lightweight clone to avoid
-    // deep-copying segment/herd bodies that BD folding never touches.
+    // Unroll outer scf.for loop nest. Strip segment/herd bodies in cloned
+    // iterations — BD folding only needs L3 channel ops, not the inner
+    // hierarchy compute. Only strip inside dummyLaunch (from
+    // AIRLaunchToScfForPattern); standalone herds keep their bodies.
+    auto shouldStripBody = [](Operation *op) -> bool {
+      if (!isa<air::SegmentOp, air::HerdOp>(op))
+        return false;
+      auto parentLaunch = op->getParentOfType<air::LaunchOp>();
+      return parentLaunch && parentLaunch->hasAttr("dummyLaunch");
+    };
     for (auto scfFor : forLoopsToUnroll) {
-      if (failed(air::loopUnrollFullLightweight(scfFor)))
+      if (failed(air::loopUnrollFullLightweight(scfFor, shouldStripBody)))
         signalPassFailure();
     }
     // Canonicalize IR to make loop bounds explicitly static.

@@ -954,4 +954,59 @@ module {
     }
     return
   }
+
+  // air.launch with iteration space > 1, containing air.segment/air.herd
+  // with non-trivial body. Tests that loopUnrollFullLightweight strips
+  // segment/herd bodies in cloned iterations (1..N) while keeping
+  // iteration 0's body intact.
+
+  // No tiling: launch converted to dummyLaunch with scf.for; segment/herd
+  // body is preserved (no unrolling).
+  // CHECK-LABEL: func_with_segment_herd
+  // CHECK: air.launch
+  // CHECK: scf.for
+  // CHECK: air.segment
+  // CHECK: air.herd
+  // CHECK: memref.alloc
+
+  // Tiling (tile size 2, trip count 4): outer loop (tc=2) unrolled. Iteration 0
+  // keeps the full segment/herd body; iteration 1's segment body is stripped.
+  // NPUTILED-LABEL: func_with_segment_herd
+  // NPUTILED: air.channel.put
+  // NPUTILED: air.segment async
+  // NPUTILED: air.herd @herd_0
+  // NPUTILED: memref.alloc
+  // NPUTILED: air.channel.put
+  // NPUTILED: air.segment async {
+  // NPUTILED-NEXT: }
+  // NPUTILED: air.wait_all{{.*}}{air.launch_end}
+
+  // AIE1 early-returns without conversion; original launch preserved.
+  // AIE1-LABEL: func_with_segment_herd
+  // AIE1: air.launch
+  // AIE1: air.segment
+  // AIE1: air.herd
+  // AIE1: memref.alloc
+
+  air.channel @channel_2 [1, 1]
+
+  func.func @func_with_segment_herd(%arg0: memref<512x512xbf16>) {
+    %c4 = arith.constant 4 : index
+    %0 = air.launch async (%tx) in (%sx=%c4) args(%buf=%arg0) : memref<512x512xbf16> {
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : index
+      %c64 = arith.constant 64 : index
+      %c512 = arith.constant 512 : index
+      %1 = air.channel.put async @channel_2[%c0, %c0] (%buf[%tx, %c0] [%c1, %c64] [%c512, %c1]) {id = 1 : i32, metadata = @airMemcpyId30} : (memref<512x512xbf16>)
+      %2 = air.segment async {
+        %c2_0 = arith.constant 2 : index
+        %3 = air.herd @herd_0 async tile (%ax, %ay) in (%hx=%c2_0, %hy=%c2_0) {
+          %alloc = memref.alloc() : memref<32x32xbf16, 2>
+          memref.dealloc %alloc : memref<32x32xbf16, 2>
+        }
+      }
+    }
+    return
+  }
 }

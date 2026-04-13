@@ -1006,13 +1006,13 @@ LogicalResult loopUnrollFullWithAsyncTokenPreserved(
   return success();
 }
 
-// Lightweight unroll: clones empty shells for SegmentOp/HerdOp on iterations
-// 1..N-1, keeping the full body only for iteration 0. This avoids the
-// O(N * body_size) IR explosion from deep-cloning segment/herd bodies that
-// BD folding never touches. The downstream air-to-std channel matching only
-// needs one copy of the segment body (via ChannelCounterpartCache which
-// stores the first get/put per channel name).
-LogicalResult loopUnrollFullLightweight(scf::ForOp forOp) {
+// Lightweight loop unroll that, for ops where shouldStripBody returns true,
+// replaces region bodies with just the terminator in cloned iterations 1..N.
+// This avoids the O(N * body_size) IR explosion from deep-cloning hierarchy
+// bodies that the caller knows are unnecessary.
+LogicalResult
+loopUnrollFullLightweight(scf::ForOp forOp,
+                          function_ref<bool(Operation *)> shouldStripBody) {
   auto tripCount = air::getStaticScfForTripCountAsInt(forOp);
   if (!tripCount) {
     // Dynamic loop bound — fall back to standard unroll.
@@ -1064,33 +1064,29 @@ LogicalResult loopUnrollFullLightweight(scf::ForOp forOp) {
       operandMap.map(iv, newIV);
     }
 
-    // Clone each op in the body. After cloning, strip segment/herd bodies
-    // in the cloned copy (they are deep inside inner loops but BD folding
-    // never touches them — only L3 channel ops at the launch level matter).
+    // Clone each op in the body. After cloning, strip region bodies of ops
+    // matching the caller's predicate — these are deep hierarchy bodies that
+    // the caller knows are unnecessary in cloned iterations.
     for (auto it = body->begin(); it != std::next(srcBlockEnd); it++) {
       Operation *clonedOp = builder.clone(*it, operandMap);
 
-      // Walk the cloned op and strip segment/herd bodies, but only those
-      // inside a dummyLaunch (from AIRLaunchToScfForPattern). Standalone
-      // herds at the function level must keep their bodies.
-      clonedOp->walk([&](Operation *nested) {
-        if (!isa<air::SegmentOp, air::HerdOp>(nested))
-          return;
-        auto parentLaunch = nested->getParentOfType<air::LaunchOp>();
-        if (!parentLaunch || !parentLaunch->hasAttr("dummyLaunch"))
-          return;
-        for (Region &region : nested->getRegions()) {
-          if (region.empty())
-            continue;
-          Block &blk = region.front();
-          // Erase all ops except the terminator.
-          while (blk.getOperations().size() > 1) {
-            Operation &op = *std::prev(blk.end(), 2);
-            op.dropAllUses();
-            op.erase();
+      if (shouldStripBody) {
+        clonedOp->walk([&](Operation *nested) {
+          if (!shouldStripBody(nested))
+            return;
+          for (Region &region : nested->getRegions()) {
+            if (region.empty())
+              continue;
+            Block &blk = region.front();
+            // Erase all ops except the terminator.
+            while (blk.getOperations().size() > 1) {
+              Operation &op = *std::prev(blk.end(), 2);
+              op.dropAllUses();
+              op.erase();
+            }
           }
-        }
-      });
+        });
+      }
     }
 
     // Update yielded values for the next iteration.
