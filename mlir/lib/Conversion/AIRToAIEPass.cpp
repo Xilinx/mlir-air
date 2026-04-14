@@ -557,6 +557,14 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
           for (auto [operand, inputType] :
                llvm::zip(call.getOperands(), fnType.getInputs())) {
             if (operand.getType() != inputType) {
+              if (!memref::CastOp::areCastCompatible(operand.getType(),
+                                                     inputType)) {
+                call.emitError("cannot cast operand type ")
+                    << operand.getType() << " to normalized function type "
+                    << inputType;
+                newOperands.push_back(operand);
+                continue;
+              }
               auto cast = memref::CastOp::create(castBuilder, call.getLoc(),
                                                  inputType, operand);
               newOperands.push_back(cast);
