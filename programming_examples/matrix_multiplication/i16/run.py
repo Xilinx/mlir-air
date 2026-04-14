@@ -400,19 +400,6 @@ def build_module(
                     _l2_b,
                     _l2_c,
                 ):
-                    l1_c_subview = subview(
-                        _l1_c,
-                        offsets=[_tx, _ty, 0, 0, 0, 0],
-                        sizes=[
-                            1,
-                            1,
-                            tile_n // mmul_mkn[2],
-                            tile_m // mmul_mkn[0],
-                            mmul_mkn[0],
-                            mmul_mkn[2],
-                        ],
-                        strides=[1, 1, 1, 1, 1, 1],
-                    )
                     dma_memcpy_nd(
                         _l2_c,
                         _l1_c,

@@ -81,6 +81,33 @@ run2x2: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 2 --herd-n 2 --m 512 --n 512 --k 512 \
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
 
+run1x1: compile-kernel-1x1
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 1 --herd-n 1 --m 64 --n 64 --k 64 --tile-m 32 --tile-k-l2 32 --tile-k-l1 16 --tile-n 32 --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
+
+compile-kernel-1x1:
+	mkdir -p $(BUILD_DIR)
+	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
+		if [ -x "$(PEANO_INSTALL_DIR)/bin/clang++" ]; then \
+			if [ "$(AIE_TARGET)" = "aie2p" ]; then \
+				$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm_aie2p.cc -o $(BUILD_DIR)/mm.o -DDIM_M=32 -DDIM_N=32 -DDIM_K=16 -DDIM_N_DIV_4=8 -DDIM_M_DIV_4=8 -DDIM_N_DIV_8=4 -DDIM_M_DIV_8=4 -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16; \
+			else \
+				$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -DBIT_WIDTH=8 -c ${srcdir}/mm.cc -o $(BUILD_DIR)/mm.o -DDIM_M=32 -DDIM_N=32 -DDIM_K=16 -DDIM_N_DIV_4=8 -DDIM_M_DIV_4=8; \
+			fi; \
+		else \
+			echo "Error: invalid PEANO_INSTALL_DIR, clang++ not found."; \
+			exit 1; \
+		fi; \
+	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
+		if [ "$(AIE_TARGET)" = "aie2p" ]; then \
+			cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm_aie2p.cc -o mm.o -DDIM_M=32 -DDIM_N=32 -DDIM_K=16 -DDIM_N_DIV_4=8 -DDIM_M_DIV_4=8 -DDIM_N_DIV_8=4 -DDIM_M_DIV_8=4 -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16; \
+		else \
+			cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mm.cc -o mm.o -DDIM_M=32 -DDIM_N=32 -DDIM_K=16 -DDIM_N_DIV_4=8 -DDIM_M_DIV_4=8; \
+		fi; \
+	else \
+		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
+		exit 1; \
+	fi
+
 run3x3: compile-kernel
 	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/run.py --herd-m 3 --herd-n 3 --m 576 --n 576 --k 576 \
 		--tile-m $(TILE_M) --tile-k-l2 $(TILE_K_L2) --tile-k-l1 $(TILE_K_L1) --tile-n $(TILE_N) --compile-mode $(COMPILE_MODE) --arch $(AIE_TARGET) $(DIRECT_CODEGEN_FLAG)
