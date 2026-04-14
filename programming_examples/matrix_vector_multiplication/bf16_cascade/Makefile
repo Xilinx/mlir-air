@@ -118,5 +118,23 @@ compile-kernel:
 		exit 1; \
 	fi
 
+compile-transform-kernel:
+	mkdir -p $(BUILD_DIR)
+	@if [ -n "$(PEANO_INSTALL_DIR)" ]; then \
+		echo "Compiling transform kernel with PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR)"; \
+		$(PEANO_INSTALL_DIR)/bin/clang++ ${PEANO_FLAGS} -c ${srcdir}/mv_transform.cc -o $(BUILD_DIR)/mv_transform.o; \
+	elif command -v xchesscc_wrapper >/dev/null 2>&1; then \
+		echo "Compiling transform kernel with xchesscc_wrapper"; \
+		cd $(BUILD_DIR) && ${powershell} xchesscc_wrapper ${AIE_TARGET} -c ${srcdir}/mv_transform.cc -o mv_transform.o; \
+	else \
+		echo "Error: Neither PEANO_INSTALL_DIR nor xchesscc_wrapper found."; \
+		exit 1; \
+	fi
+
+run-transform: compile-transform-kernel
+	PEANO_INSTALL_DIR=$(PEANO_INSTALL_DIR) cd $(BUILD_DIR) && ${powershell} python3 ${srcdir}/matvec_cascade_transform.py $(OUTPUT_FORMAT_FLAG) --m $(M) --k $(K) --herd-cols $(HERD_COLS) --n-cascade $(N_CASCADE) --k-tile $(K_TILE)
+
+K_TILE ?= 32
+
 clean:
 	rm -rf $(BUILD_DIR) __pycache__
