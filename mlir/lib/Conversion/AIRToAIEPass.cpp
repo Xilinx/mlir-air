@@ -28,6 +28,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -506,11 +507,66 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         if (auto call = dyn_cast_if_present<func::CallOp>(op)) {
           auto fn = aie_device.lookupSymbol<func::FuncOp>(call.getCallee());
           if (!fn) {
+            // Normalize memref types: strip strided layout so that
+            // convert-func-to-llvm with bare-ptr calling convention can
+            // handle the declaration. External kernels use C ABI (raw
+            // pointers), so MLIR layout metadata is irrelevant.
+            SmallVector<Type> normalizedInputs;
+            for (Type t : call.getCalleeType().getInputs()) {
+              if (auto memrefTy = dyn_cast<MemRefType>(t)) {
+                normalizedInputs.push_back(MemRefType::get(
+                    memrefTy.getShape(), memrefTy.getElementType(),
+                    MemRefLayoutAttrInterface{}, memrefTy.getMemorySpace()));
+              } else {
+                normalizedInputs.push_back(t);
+              }
+            }
+            auto normalizedType =
+                FunctionType::get(aie_device.getContext(), normalizedInputs,
+                                  call.getCalleeType().getResults());
             fn = func::FuncOp::create(aie_device.getLoc(), call.getCallee(),
-                                      call.getCalleeType());
+                                      normalizedType);
             fn.setPrivate();
+            // Copy attributes from the original declaration in the parent
+            // module (e.g. link_with, llvm.emit_c_interface).
+            if (auto parentModule = aie_device->getParentOfType<ModuleOp>()) {
+              if (auto origFn = parentModule.lookupSymbol<func::FuncOp>(
+                      call.getCallee())) {
+                for (auto attr : origFn->getDiscardableAttrs())
+                  fn->setAttr(attr.getName(), attr.getValue());
+              }
+            }
+            // Fallback: if link_with was not found from parent module,
+            // use the attribute from the aie.core op.
+            if (!fn->hasAttr("link_with")) {
+              if (auto attr = core->getAttrOfType<StringAttr>("link_with"))
+                fn->setAttr("link_with", attr);
+            }
+            if (!fn->hasAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName())) {
+              fn->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
+                          UnitAttr::get(aie_device.getContext()));
+            }
             aie_device.insert(aie_device.getBody()->getTerminator(), fn);
           }
+          // Insert memref.cast at call sites where operand types differ
+          // from the (possibly normalized) declaration types.
+          auto fnType = fn.getFunctionType();
+          OpBuilder castBuilder(call);
+          SmallVector<Value> newOperands;
+          bool needsUpdate = false;
+          for (auto [operand, inputType] :
+               llvm::zip(call.getOperands(), fnType.getInputs())) {
+            if (operand.getType() != inputType) {
+              auto cast = memref::CastOp::create(castBuilder, call.getLoc(),
+                                                 inputType, operand);
+              newOperands.push_back(cast);
+              needsUpdate = true;
+            } else {
+              newOperands.push_back(operand);
+            }
+          }
+          if (needsUpdate)
+            call->setOperands(newOperands);
         }
       });
 
