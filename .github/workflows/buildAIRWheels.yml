@@ -162,6 +162,7 @@ jobs:
             source ${{ github.workspace }}/air-venv/bin/activate
 
             pip install -r utils/requirements.txt
+            pip install -r utils/requirements_dev.txt
 
             export ENABLE_RTTI=${{ matrix.ENABLE_RTTI }}
 
@@ -286,6 +287,7 @@ jobs:
         shell: bash
         run: |
           pip install -r utils/requirements.txt
+          pip install -r utils/requirements_dev.txt
           pip install setuptools wheel delvewheel importlib_metadata "ninja!=1.13.0"
 
       - name: Get MLIR
