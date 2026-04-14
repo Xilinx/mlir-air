@@ -929,8 +929,7 @@ air::ShimDMAAllocator::ShimDMAAllocator(AIE::DeviceOp device)
 
 FailureOr<air::allocation_info_t> air::ShimDMAAllocator::allocNewDmaChannel(
     air::MemcpyInterface &memcpyOp, int col, int row,
-    std::vector<Operation *> &dma_ops,
-    std::string colAllocConstraint = "same_column") {
+    std::vector<Operation *> &dma_ops, std::string colAllocConstraint) {
   auto isMM2S = isTileOutbound(memcpyOp, dmaMemorySpace);
   if (failed(isMM2S))
     return failure();

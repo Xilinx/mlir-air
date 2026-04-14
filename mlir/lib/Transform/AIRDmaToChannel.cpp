@@ -1555,15 +1555,30 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     }
 
     // Auto-detect channels that need packet switching. For each segment,
-    // count L3-bound channels with herd-side endpoints per direction. Each
-    // such channel is replicated on every shim column (pinned via
-    // same_column constraint in ShimDMAAllocator), so per-column pressure
-    // equals the total channel count. If this exceeds the physical shim
-    // DMA channel limit per column, mark those channels as dma_packet.
+    // estimate per-column shim DMA pressure from L3-bound channels with
+    // herd-side endpoints.
     //
-    // Channels with only segment-level endpoints (L3↔L2) are globally
-    // allocated across columns by the allocator and do NOT create
-    // per-column pressure — they are skipped.
+    // The downstream shim DMA allocator deduplicates by channel declaration,
+    // so each distinct channel consumes exactly ONE shim DMA slot. The
+    // question is how many channels compete for the same shim column.
+    //
+    // Non-broadcast channels: all initially target the same column (via the
+    // same_column allocation constraint). Per-column pressure equals their
+    // count.
+    //
+    // Broadcast channels (those with broadcast_shape): each consumes one
+    // shim DMA slot, but the allocator distributes them across available
+    // columns within their broadcast column span (broadcast_shape[0]).
+    // For K broadcast channels sharing column span C, worst-case per-column
+    // pressure is ceil(K / C). Channels with different column spans are
+    // grouped separately since they can only distribute within their own
+    // span.
+    //
+    // Total per-column pressure:
+    //   numNonBroadcast + sum_over_spans(ceil(count_i / span_i))
+    //
+    // Channels with only segment-level endpoints (L3<->L2) are globally
+    // allocated across columns and do NOT create per-column pressure.
     //
     // Pre-existing dma_packet channels count toward pressure but are
     // not upgraded (already packet flow).
@@ -1622,8 +1637,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
           return WalkResult::interrupt();
         });
 
-        // Input (L3→L1): herd-side get + launch-side L3 put.
-        // Output (L1→L3): herd-side put + launch-side L3 get.
+        // Input (L3->L1): herd-side get + launch-side L3 put.
+        // Output (L1->L3): herd-side put + launch-side L3 get.
         if (hasHerdSideGet && hasLaunchSideL3Put) {
           if (isAlreadyPacket)
             preExistingInputPackets++;
@@ -1637,22 +1652,55 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         }
       }
 
-      // Per-column shim DMA limit. Each channel is replicated on every
-      // column, so the per-column count equals the total channel count.
-      // Pre-existing dma_packet channels count toward pressure but are
-      // not upgraded (already packet flow).
+      // Estimate per-column shim DMA pressure for a set of channels.
+      // Broadcast channels can spread across their column span (first
+      // dimension of broadcast_shape); non-broadcast channels all compete
+      // for the same column. Broadcast channels are grouped by column span
+      // since channels with different spans distribute independently.
+      auto computePerColumnPressure =
+          [](const SmallVector<air::ChannelOp> &channels,
+             int64_t preExistingPackets) -> int64_t {
+        int64_t numNonBroadcast = 0;
+
+        // Group broadcast channels by their column span.
+        llvm::SmallDenseMap<int64_t, int64_t> broadcastCountBySpan;
+
+        for (auto chanOp : channels) {
+          if (chanOp.isBroadcast()) {
+            int64_t colSpan = 1;
+            auto bcastShape = chanOp.getBroadcastShape();
+            if (bcastShape && bcastShape.size() > 0) {
+              if (auto colSpanAttr =
+                      llvm::dyn_cast_if_present<IntegerAttr>(bcastShape[0]))
+                colSpan = std::max((int64_t)1, colSpanAttr.getInt());
+            }
+            broadcastCountBySpan[colSpan]++;
+          } else {
+            numNonBroadcast++;
+          }
+        }
+
+        // Per group: K channels spanning C columns have worst-case
+        // per-column pressure ceil(K / C).
+        int64_t broadcastPressure = 0;
+        for (auto &[span, count] : broadcastCountBySpan)
+          broadcastPressure += (count + span - 1) / span;
+
+        return numNonBroadcast + broadcastPressure + preExistingPackets;
+      };
+
       int64_t shimChannelsPerCol = clShimDmaChannelsPerCol;
-      int64_t totalInputPressure =
-          (int64_t)inputChannels.size() + preExistingInputPackets;
-      int64_t totalOutputPressure =
-          (int64_t)outputChannels.size() + preExistingOutputPackets;
+      int64_t inputPressure =
+          computePerColumnPressure(inputChannels, preExistingInputPackets);
+      int64_t outputPressure =
+          computePerColumnPressure(outputChannels, preExistingOutputPackets);
 
       auto upgradeToPacket = [&](SmallVector<air::ChannelOp> &channels,
-                                 StringRef direction) {
+                                 StringRef direction, int64_t pressure) {
         seg->emitWarning() << "auto-upgrading " << channels.size() << " "
                            << direction
-                           << " channels to dma_packet (exceeds per-column "
-                              "shim DMA limit of "
+                           << " channels to dma_packet (per-column pressure "
+                           << pressure << " exceeds shim DMA limit of "
                            << shimChannelsPerCol << ")";
         for (auto chanOp : channels) {
           chanOp.setChannelType(StringAttr::get(context, "dma_packet"));
@@ -1672,10 +1720,10 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
         return;
       }
 
-      if (totalInputPressure > shimChannelsPerCol)
-        upgradeToPacket(inputChannels, "input");
-      if (totalOutputPressure > shimChannelsPerCol)
-        upgradeToPacket(outputChannels, "output");
+      if (inputPressure > shimChannelsPerCol)
+        upgradeToPacket(inputChannels, "input", inputPressure);
+      if (outputPressure > shimChannelsPerCol)
+        upgradeToPacket(outputChannels, "output", outputPressure);
     });
   }
 
