@@ -6290,10 +6290,15 @@ public:
       }
       return actualTileSizes;
     };
+    // Check if all tile sizes are 1 — tiling by 1 is a no-op.
+    bool allTileSizesAreOne =
+        !clTileSizes.empty() &&
+        llvm::all_of(clTileSizes, [](unsigned s) { return s == 1; });
+
     // Tile each for loop band operated by shim dma bds.
     llvm::SetVector<scf::ForOp> forLoopsToUnroll;
     for (auto forOp : shimFors) {
-      if (optTileSizes.empty())
+      if (optTileSizes.empty() || allTileSizesAreOne)
         break;
       SmallVector<Value> actualTileSizes =
           getActualTileSizesPerScfRoot(rewriter, forOp, optTileSizes);
@@ -6383,9 +6388,53 @@ public:
       auto parentLaunch = op->getParentOfType<air::LaunchOp>();
       return parentLaunch && parentLaunch->hasAttr("dummyLaunch");
     };
-    for (auto scfFor : forLoopsToUnroll) {
-      if (failed(air::loopUnrollFullLightweight(scfFor, shouldStripBody)))
-        signalPassFailure();
+    if (allTileSizesAreOne && !shimFors.empty()) {
+      // All-1 tile sizes: skip tiling AND unrolling entirely. The scf.for
+      // loops will survive through air-to-std and be unrolled in
+      // airrt-to-npu after removeDeadDeviceComputeOps strips the heavy
+      // segment/herd bodies. Insert air.launch_end inside the innermost
+      // loop body for per-iteration BD recycling.
+      for (auto rootFor : shimFors) {
+        // Find innermost nested scf.for.
+        scf::ForOp innermostFor = rootFor;
+        while (true) {
+          scf::ForOp nested = nullptr;
+          for (auto &op : innermostFor.getBody()->getOperations())
+            if (auto f = dyn_cast<scf::ForOp>(op)) {
+              nested = f;
+              break;
+            }
+          if (!nested)
+            break;
+          innermostFor = nested;
+        }
+
+        // Insert air.launch_end barrier in the innermost loop.
+        if (innermostFor->getNumResults()) {
+          OpBuilder::InsertionGuard guard(rewriter);
+          auto *yieldOp = innermostFor.getBody()->getTerminator();
+          rewriter.setInsertionPoint(yieldOp);
+          Value iterResult = yieldOp->getOperand(0);
+          auto blockingWaitAll =
+              air::WaitAllOp::create(rewriter, rewriter.getUnknownLoc(), Type(),
+                                     SmallVector<Value>{iterResult});
+          blockingWaitAll->setAttr("air.launch_end", rewriter.getUnitAttr());
+          auto disconnectedWaitAll = air::WaitAllOp::create(
+              rewriter, innermostFor->getLoc(),
+              air::AsyncTokenType::get(rewriter.getContext()),
+              SmallVector<Value>{});
+          rewriter.replaceOpWithNewOp<scf::YieldOp>(
+              yieldOp, disconnectedWaitAll.getAsyncToken());
+        }
+      }
+      // Skip DMA folding — patterns crash on heterogeneous loop bodies.
+      // Skip canonicalization — loop bounds are already static.
+      return;
+    } else {
+      for (auto scfFor : forLoopsToUnroll) {
+        if (failed(air::loopUnrollFullLightweight(scfFor, shouldStripBody)))
+          signalPassFailure();
+      }
     }
     // Canonicalize IR to make loop bounds explicitly static.
     applyCanonicalizationPatterns(ctx, func.getBody());
@@ -6393,7 +6442,7 @@ public:
     // Apply DMA folding.
     applyAIRL3DmaFoldingPatterns(func, *device);
 
-    if (forLoopsToUnroll.empty()) {
+    if (forLoopsToUnroll.empty() && !allTileSizesAreOne) {
       // If no loop unrolling was performed, gather all air.channel_put/get
       // tokens from block, and generate a blocking wait all.
       SmallVector<Block *> funcAndLaunchBlocks(1, &func.getBody().front());
