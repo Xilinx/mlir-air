@@ -1,0 +1,10 @@
+// (c) Copyright 2026 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+// REQUIRES: peano
+//
+// RUN: mkdir -p test_npu1_peano_compile_only_1x1
+// RUN: cd test_npu1_peano_compile_only_1x1
+// RUN: make -f %S/Makefile clean
+// RUN: make -f %S/Makefile run1x1 PEANO_INSTALL_DIR=%PEANO_INSTALL_DIR AIE_TARGET=aie2 COMPILE_MODE=compile-only | FileCheck %s
+// CHECK: Compilation completed successfully!
