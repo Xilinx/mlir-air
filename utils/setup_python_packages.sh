@@ -17,3 +17,4 @@ source sandbox/bin/activate
 # Install essential python packages
 python3 -m pip install --upgrade pip
 python3 -m pip install -r utils/requirements.txt
+python3 -m pip install -r utils/requirements_dev.txt
