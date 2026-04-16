@@ -5,14 +5,13 @@
 // memref type's total element count, not default to 1.
 //
 // A memref<16x32xi32> has 512 elements, so num_elems must be 512.
-// Phase 2b also patches slot_elems from the sentinel (1) to 512.
+// Phase 2b also infers num_elems from the memref type.
 
 // CHECK-LABEL: module
 //
 // CHECK:   conduit.create @chan
 // CHECK-SAME: depth = 0
 // CHECK-SAME: element_type = memref<16x32xi32>
-// CHECK-SAME: slot_elems = 512
 //
 // --- put: num_elems = 16*32 = 512 (NOT 1) ---
 // CHECK:   %[[TOK0:.*]] = conduit.put_memref_async

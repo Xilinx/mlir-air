@@ -2478,7 +2478,8 @@ struct SpecializeChannelBundlePattern
       SmallVector<int64_t, 2> channel_sizes = {1, 1};
       auto new_chan = air::ChannelOp::create(
           rewriter, channel->getLoc(), cname,
-          rewriter.getI64ArrayAttr(channel_sizes), channel.getChannelType());
+          rewriter.getI64ArrayAttr(channel_sizes), channel.getChannelType(),
+          /*fusion_group=*/mlir::StringAttr{});
       if (channel->hasAttr("broadcast_shape")) {
         auto broadcast_shape = specializeBroadcastShape(rewriter, channel);
         new_chan->setAttr("broadcast_shape",
@@ -5323,7 +5324,8 @@ public:
 
       // Create the AIE get_cascade op to fetch cascade data as a single vector.
       Value cascadeData =
-          AIE::GetCascadeOp::create(rewriter, loc, collapsedVecTy);
+          AIE::GetCascadeOp::create(rewriter, loc, collapsedVecTy,
+                                        /*conduit_channel=*/mlir::FlatSymbolRefAttr{});
 
       // Collapse the destination memref into a 1D memref to match the data
       // layout.
@@ -5359,7 +5361,8 @@ public:
           /*inBounds*/ SmallVector<bool>{true});
 
       // Send the vector data via AIE put_cascade.
-      AIE::PutCascadeOp::create(rewriter, loc, cascadeData);
+      AIE::PutCascadeOp::create(rewriter, loc, cascadeData,
+                                    /*conduit_channel=*/mlir::FlatSymbolRefAttr{});
     }
 
     // Remove the original air.channel.get op

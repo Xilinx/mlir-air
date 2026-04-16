@@ -498,7 +498,8 @@ public:
       std::string newName = baseName + "_" + std::to_string(i);
       auto newChan = air::ChannelOp::create(
           rewriter, loc, rewriter.getStringAttr(newName),
-          rewriter.getArrayAttr(newSize), channelOp.getChannelType());
+          rewriter.getArrayAttr(newSize), channelOp.getChannelType(),
+          /*fusion_group=*/mlir::StringAttr{});
       newChan->setAttr("broadcast_shape", ArrayAttr::get(rewriter.getContext(),
                                                          newBcastShapeAttrs));
       specializedChannels.push_back(newChan);
@@ -2622,7 +2623,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         }
         new_chan = air::ChannelOp::create(
             rewriter, loc, cname, rewriter.getI64ArrayAttr(channel_sizes),
-            origChanOp.getChannelType());
+            origChanOp.getChannelType(),
+            /*fusion_group=*/mlir::StringAttr{});
       }
 
       // Perform tiling on these channel put/get ops which are using the memref.

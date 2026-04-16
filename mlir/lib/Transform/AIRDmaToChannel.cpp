@@ -489,7 +489,8 @@ createChannelOp(OpBuilder builder, ModuleOp module, std::string cname,
 
   auto channel_op = air::ChannelOp::create(
       builder, loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
-      builder.getStringAttr("dma_stream"));
+      builder.getStringAttr("dma_stream"),
+      /*fusion_group=*/mlir::StringAttr{});
 
   builder.restoreInsertionPoint(insertionCheckpoint);
 

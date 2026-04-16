@@ -2533,7 +2533,8 @@ public:
     sizes[chanDim] *= factor;
     air::ChannelOp::create(builder, op->getLoc(), chan_op.getSymName().str(),
                            builder.getI64ArrayAttr(sizes),
-                           chan_op.getChannelType());
+                           chan_op.getChannelType(),
+                           /*fusion_group=*/mlir::StringAttr{});
 
     // Add scf.parallel to unroll channel puts and gets
     auto puts = air::getChannelPutOpThroughSymbol(chan_op);

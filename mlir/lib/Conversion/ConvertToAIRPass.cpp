@@ -800,7 +800,8 @@ createCascadeChannelOp(OpBuilder &builder, ModuleOp module, Location loc,
   // Create the channel op with the given bundle sizes and "cascade" tag.
   auto channel_op = air::ChannelOp::create(
       builder, loc, cname, builder.getI64ArrayAttr(channel_bundle_sizes),
-      builder.getStringAttr("cascade"));
+      builder.getStringAttr("cascade"),
+      /*fusion_group=*/mlir::StringAttr{});
 
   return channel_op;
 }
