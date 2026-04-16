@@ -529,7 +529,8 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
 def air_ChannelOp : air_Op<"channel", [Symbol]>,
     Arguments<(ins SymbolNameAttr:$sym_name,
                    DefaultValuedAttr<I64ArrayAttr, "{}">:$size,
-                   DefaultValuedAttr<StrAttr, "\"dma_stream\"">:$channel_type)> {
+                   DefaultValuedAttr<StrAttr, "\"dma_stream\"">:$channel_type,
+                   OptionalAttr<StrAttr>:$fusion_group)> {
   let assemblyFormat = [{
     $sym_name $size attr-dict
   }];

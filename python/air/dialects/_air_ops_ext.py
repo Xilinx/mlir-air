@@ -166,6 +166,7 @@ class Channel(ChannelOp):
             Union[Sequence[Union[int, IntegerAttr, Operation, Value]], ArrayAttr]
         ] = None,
         size=None,
+        fusion_group: Optional[str] = None,
         loc=None,
         ip=None,
     ):
@@ -188,6 +189,9 @@ class Channel(ChannelOp):
                         static_sizes.append(ShapedType.get_dynamic_size())
                 broadcast_shape_attr = ArrayAttr.get(static_sizes)
             super().attributes["broadcast_shape"] = broadcast_shape_attr
+
+        if fusion_group is not None:
+            super().attributes["fusion_group"] = StringAttr.get(fusion_group)
 
 
 class ChannelGet(ChannelGetOp):
